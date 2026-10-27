@@ -22,7 +22,7 @@ use wgpu::{
 
 /// WGSL shader with these fragment entry points:
 /// - `fs_layer`: blits a layer into a viewport rect, discards outside
-/// - `fs_ui`: alpha-blends the Vello UI on top. Vello 0.7 stores straight
+/// - `fs_ui`: alpha-blends the Vello UI on top. Vello (0.7 to 0.11) stores straight
 ///   (not premultiplied) alpha (`fine.wgsl` divides by alpha at the final
 ///   store), so the colour is premultiplied here and blended `One,
 ///   OneMinusSrcAlpha`: the target then holds premultiplied pixels.
@@ -260,8 +260,8 @@ impl LayerCompositor {
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("layer compositor pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         // Shared vertex state (both pipelines use the same vertex shader)
@@ -290,7 +290,7 @@ impl LayerCompositor {
             primitive: PrimitiveState::default(),
             depth_stencil: None,
             multisample: MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -323,7 +323,7 @@ impl LayerCompositor {
             primitive: PrimitiveState::default(),
             depth_stencil: None,
             multisample: MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -355,7 +355,7 @@ impl LayerCompositor {
                 primitive: PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         });
@@ -469,6 +469,7 @@ impl LayerCompositor {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         pass.set_pipeline(&self.layer_pipeline);
@@ -568,6 +569,7 @@ impl LayerCompositor {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         pass.set_pipeline(&self.layer_pipeline);
@@ -678,6 +680,7 @@ impl LayerCompositor {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         pass.set_pipeline(pipeline);
@@ -699,11 +702,13 @@ mod gpu_alpha_tests {
     const H: u32 = 4;
 
     fn device() -> (Device, Queue) {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .expect("a GPU adapter (these fixtures are #[ignore]d for hosts without one)");
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
@@ -829,7 +834,10 @@ mod gpu_alpha_tests {
         queue.submit(Some(encoder.finish()));
         buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let data = buffer.slice(..).get_mapped_range();
+        let data = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("the buffer is mapped");
         (0..H)
             .flat_map(|y| {
                 let data = &data;
@@ -917,6 +925,7 @@ mod gpu_alpha_tests {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
         }
         compositor.overlay_ui(&device, &mut encoder, &frame, &view);
@@ -1007,6 +1016,7 @@ mod gpu_alpha_tests {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
         }
 
@@ -1090,6 +1100,7 @@ mod gpu_alpha_tests {
                 width: 4,
                 height: 2,
                 decoded: None,
+                frame: None,
                 opaque: true,
             },
             transform,
@@ -1099,11 +1110,116 @@ mod gpu_alpha_tests {
         read(&device, &queue, &target)
     }
 
+    /// #1955: stock Vello 0.11 replaced its image atlas on a render whose
+    /// scene had no image, gradient or glyph run (a solid-colour partial
+    /// frame), and every image still resident then drew transparent on every
+    /// later render. The patched `vello_encoding` keeps the atlas.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_alpha_vello_image_survives_a_solid_only_render() {
+        use rinch_dom::paint::painter::{PaintImage, Painter};
+        let (device, queue) = device();
+        let target = texture(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+        );
+        let decoded = rinch_dom::image_cache::DecodedImage::new(
+            (0..W * H).flat_map(|_| [255u8, 0, 0, 255]).collect(),
+            W,
+            H,
+        );
+        let mut with_image = rinch_dom::paint::vello_painter::VelloPainter::new();
+        with_image.draw_image(
+            &PaintImage {
+                data: &decoded.data,
+                width: W,
+                height: H,
+                decoded: Some(&decoded),
+                frame: None,
+                opaque: true,
+            },
+            Affine::IDENTITY,
+        );
+        let mut solid = rinch_dom::paint::vello_painter::VelloPainter::new();
+        solid.fill_color(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(0, 255, 0, 255),
+            &rinch_dom::paint::painter::PaintShape::Rect(Rect::new(0.0, 0.0, 1.0, 1.0)),
+        );
+        let mut renderer = renderer(&device);
+        render(&device, &queue, &mut renderer, &target, with_image.scene());
+        let before = read(&device, &queue, &target)[(W + 3) as usize];
+        render(&device, &queue, &mut renderer, &target, solid.scene());
+        render(&device, &queue, &mut renderer, &target, with_image.scene());
+        let after = read(&device, &queue, &target)[(W + 3) as usize];
+        assert_eq!(before, [255, 0, 0, 255], "control: the image is drawn");
+        assert_eq!(after, before, "the image after a solid-only render");
+    }
+
+    /// #1955 (review of PR #1960): every repaint drew six 2000x2000 images
+    /// with blobs of their own, as a paint of pixels made per draw does, and
+    /// as `draw_image` did for every image before it kept one blob per image.
+    /// Stock Vello 0.11 keeps an image resident for two renders after its
+    /// last use and the 8192x8192 atlas cannot hold three repaints of these,
+    /// so two of the six went undrawn every third repaint. The patched
+    /// `vello_encoding` (`Cargo.toml`) gives an image the current render does
+    /// not draw up to one that does not fit, and all six draw every time.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_alpha_vello_repaints_keep_every_large_image() {
+        use rinch_dom::paint::painter::{PaintImage, Painter};
+        const N: u32 = 6;
+        const SIDE: u32 = 2000;
+        let (device, queue) = device();
+        let target = texture(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+        );
+        let data: Vec<u8> = (0..SIDE * SIDE).flat_map(|_| [255u8, 0, 0, 255]).collect();
+        let mut renderer = renderer(&device);
+        let mut frames = Vec::new();
+        for _ in 0..6 {
+            let mut painter = rinch_dom::paint::vello_painter::VelloPainter::new();
+            for i in 0..N {
+                painter.draw_image(
+                    &PaintImage {
+                        data: &data,
+                        width: SIDE,
+                        height: SIDE,
+                        decoded: None,
+                        frame: None,
+                        opaque: true,
+                    },
+                    Affine::translate((i as f64, 0.0))
+                        * Affine::scale_non_uniform(1.0 / SIDE as f64, H as f64 / SIDE as f64),
+                );
+            }
+            render(&device, &queue, &mut renderer, &target, painter.scene());
+            let px = read(&device, &queue, &target);
+            frames.push(
+                (0..N)
+                    .map(|i| px[(W + i) as usize] == [255, 0, 0, 255])
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert!(
+            frames.iter().all(|f| f.iter().all(|&drawn| drawn)),
+            "an image went undrawn on a repaint (per repaint, per image): {frames:?}"
+        );
+    }
+
     /// #1027: an image at a whole-pixel origin, scale 1, reproduces its
-    /// texels as tiny-skia does. Vello 0.7 samples bilinearly from the
+    /// texels as tiny-skia does. Vello 0.7 sampled bilinearly from the
     /// pixel's corner, so each pixel read half its left/top neighbour
     /// (texel 200 came out 105) until the painter moved the sample to the
-    /// pixel's centre.
+    /// pixel's centre; Vello 0.9+ samples at the centre itself (#1955).
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_alpha_vello_draw_image_at_a_whole_pixel_origin_is_exact() {

@@ -33,7 +33,7 @@ rinch-editable = { workspace = true, optional = true }
 rinch-words = { workspace = true, optional = true }
 parley = { workspace = true, optional = true }
 peniko = { version = "0.6", optional = true }
-vello = { version = "0.7", optional = true }
+vello = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
 
 # Desktop-only windowing/rendering (optional, enabled by `desktop` feature)

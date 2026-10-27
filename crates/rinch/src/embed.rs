@@ -355,6 +355,13 @@ impl RinchContext {
     /// The returned scene contains the full rinch UI and can be rendered
     /// to a texture via [`RinchOverlayRenderer`] or your own Vello setup.
     ///
+    /// **Every app on rinch copies its `vello_encoding` patch.** rinch builds
+    /// against a patched `vello_encoding` (the `[patch.crates-io]` line in rinch's
+    /// workspace `Cargo.toml`, #1955); Cargo patches are not transitive, so copy
+    /// that line into your workspace. With stock Vello 0.11, images already in
+    /// the atlas draw transparent after any render of a scene without images,
+    /// gradients or text, and large or many images can go undrawn on repaints.
+    ///
     /// This context's mounted `RenderSurface`s are driven here, as the desktop
     /// paint drives them: each is told its layout size, its render callback
     /// runs, and its latest frame is painted inline at its box. Call it once
@@ -838,6 +845,13 @@ impl RinchContext {
 /// Game engines with their own Vello setup can skip this and render the
 /// scene directly. This struct manages a [`vello::Renderer`] and an
 /// intermediate render texture sized to the window.
+///
+/// **Every app on rinch copies its `vello_encoding` patch.** rinch builds
+/// against a patched `vello_encoding` (the `[patch.crates-io]` line in rinch's
+/// workspace `Cargo.toml`, #1955); Cargo patches are not transitive, so copy
+/// that line into your workspace. With stock Vello 0.11, images already in
+/// the atlas draw transparent after any render of a scene without images,
+/// gradients or text, and large or many images can go undrawn on repaints.
 ///
 /// # Usage
 ///

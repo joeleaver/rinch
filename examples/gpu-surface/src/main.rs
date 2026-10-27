@@ -68,7 +68,7 @@ impl Gpu {
                     compilation_options: Default::default(),
                     targets: &[Some(f.format.into())],
                 }),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
         let uniform = f.device.create_buffer(&wgpu::BufferDescriptor {
@@ -121,6 +121,7 @@ impl Gpu {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);

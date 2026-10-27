@@ -53,10 +53,10 @@ rinch-screen-capture = { path = "crates/rinch-screen-capture" }
 rinch-android = { path = "crates/rinch-android" }
 
 # Rendering
-anyrender = "0.7"
-anyrender_vello = "0.7"
-vello = "0.7"
-wgpu = "27"
+anyrender = "0.14"
+anyrender_vello = "0.15"
+vello = "0.11"
+wgpu = "30"
 
 # Windowing and input (using fork with Wayland DnD support)
 winit = "0.31.0-beta.2"
@@ -97,16 +97,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Hot reload
 notify = "7"
 
-# Patch wgpu to use our fork with fixes for Rgba8Unorm storage texture validation
-# Required for transparent windows with Vello on Windows (DX12 + DirectComposition)
-# See: https://github.com/gfx-rs/wgpu/pull/8908 (still open as of Jan 2026)
-# Fork rebased to wgpu v27.0.1 for Vello rendering
+# wgpu fork removed (#1955): rinch renders to an Rgba8Unorm intermediate, whose
+# STORAGE_BINDING WebGPU guarantees; gfx-rs/wgpu#8908 closed unmerged.
 [patch.crates-io]
-wgpu = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-core = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-hal = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-types = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-naga = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+# Vello fork (#1955): joeleaver/vello-fork, branch rinch-patch, one commit on
+# vello v0.11.0 touching only `vello_encoding` (the image atlas). It fixes two
+# Vello 0.9+ atlas behaviours rinch cannot work around cheaply: a render of a
+# scene with no image, gradient or glyph run wiped the persistent atlas, so
+# every resident image then drew transparent; and an image stayed resident for
+# two renders after its last use, so the atlas had to hold three scenes' images
+# and large or many images (re-encoded each paint, or live frames) vanished.
+# Carried until upstream behaves the same; Cargo patches are not transitive, so
+# an app depending on rinch copies this line (docs/internals/app-and-windows.md).
+vello_encoding = { git = "https://github.com/joeleaver/vello-fork", branch = "rinch-patch" }
 # Patch winit to use our fork with Wayland DnD support
 # Upstream winit 0.31-beta.2 has no Wayland drag-and-drop implementation, and no
 # wlr-layer-shell window role (WindowAttributesWayland::with_layer_shell, #1523).

@@ -1,6 +1,6 @@
 # Dependencies: Taffy, Parley, skrifa (pins and their traps)
 
-Read this page when your task touches: a Taffy, Parley or skrifa bump, text shaping/line breaking, white space, tabs, NBSP, justify.
+Read this page when your task touches: a Taffy, Parley, skrifa, wgpu or Vello bump, text shaping/line breaking, white space, tabs, NBSP, justify.
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
@@ -235,8 +235,8 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     negative total is clamped to 0 (Chrome lets a negative margin pull the
     content back). A split inline (#513) gets no edge boxes.
     `tests/inline_edge_room_1426_tests.rs` is the pin.
-- **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.11.1 depends on; parley does not re-export it, so a parley bump that moves skrifa silently builds a second copy unless this pin moves with it.
-- **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
+- **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.11.1 depends on — and Vello 0.11 too (`vello`/`vello_encoding` ^0.44; the Vello 0.7 rinch had before #1955 built a second skrifa, 0.40). parley does not re-export it, so a parley (or Vello) bump that moves skrifa silently builds a second copy unless this pin moves with it. (swash 0.2, the software painter's glyph rasteriser, still brings its own skrifa 0.37.)
+- **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`). **Vello 0.11 on wgpu 30** (#1955; workspace `[workspace.dependencies]`, every crate takes `workspace = true`), no wgpu patch (`app-and-windows.md` "wgpu Fork"). Vello pins wgpu's major (0.8 → 28, 0.9/0.10 → 29, 0.11 → 30) and anyrender_vello pins Vello's (0.15 → 0.11), so the three move together; peniko stays 0.6 (kurbo 0.13). Check `cargo tree -d` for a second wgpu/vello/skrifa after a bump. wgpu 30 needs wasm-bindgen ≥ 0.2.127 (CI's `wasm-bindgen-test-runner` follows `Cargo.lock`). Rendering changes met in 0.7 → 0.11: images are sampled at the pixel centre since Vello 0.9 (rinch dropped its own half-pixel shift for images; `platform.md` item 6); `ImageQuality::High` became bicubic (rinch uses Low/Medium only); gradients are still evaluated at the pixel corner and the ramp is unchanged for the default `InterpolationAlphaSpace::Premultiplied`. `anyrender`/`anyrender_vello` are dependencies of the `gpu` feature that no rinch code uses yet. **`vello_encoding` is patched** (joeleaver/vello-fork, `rinch-patch`): Vello 0.9+ keeps its image atlas across renders, and the patch fixes the atlas being wiped by a render with no images, gradients or glyphs and images staying resident two renders after their last use (`app-and-windows.md` "Vello Fork"). Apps on rinch copy that `[patch]` line. Images reach Vello as one blob per image (`DecodedImage::blob`, `frame_blob`), so a repainted image stays resident.
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)
 - **softbuffer** - Software window presentation (default mode)
 - **winit** - Cross-platform windowing and input

@@ -404,7 +404,7 @@ pub use window::{
 /// Embedders that share a GPU device with rinch (see [`run_with_gpu_config`],
 /// [`run_with_external_device`], [`gpu_handle`], and
 /// [`render_surface::GpuTextureRegistrar`]) must construct `wgpu` types from
-/// **this** `wgpu` so the types match rinch's (rinch pins a patched fork). Use
+/// **this** `wgpu` (wgpu 30) so the types match rinch's. Use
 /// `rinch::wgpu::…` rather than a separate `wgpu` dependency.
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub use wgpu;

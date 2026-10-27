@@ -335,10 +335,9 @@ transitive `ashpd` that fails to build.)
 **System deps (Linux):** GTK3, GLib, ATK, Cairo, Pango, gdk-pixbuf, libxdo, libmpv
 development packages.
 
-**wgpu fork:** the workspace patches wgpu crates from `joeleaver/wgpu-fork` (branch
-`rinch-patch`) for transparent-window support. Cargo patches are not transitive, so
-downstream consumers must copy the `[patch.crates-io]` section into their own
-workspace.
+**wgpu:** plain crates.io wgpu 30 (with Vello 0.11). The old `joeleaver/wgpu-fork`
+patch was removed in #1955, so downstream consumers no longer copy any wgpu
+`[patch.crates-io]` entries (the winit patch is separate and still applies).
 
 ## Common Pitfalls
 

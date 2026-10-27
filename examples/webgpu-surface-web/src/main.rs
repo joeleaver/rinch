@@ -70,14 +70,15 @@ impl GpuState {
 
     /// Draw one frame.
     fn render(&self) {
+        use wgpu::CurrentSurfaceTexture as Current;
         let frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(_) => {
+            Current::Success(f) | Current::Suboptimal(f) => f,
+            _ => {
                 // Lost/outdated surface — reconfigure and try once more.
                 self.surface.configure(&self.device, &self.config);
                 match self.surface.get_current_texture() {
-                    Ok(f) => f,
-                    Err(_) => return,
+                    Current::Success(f) | Current::Suboptimal(f) => f,
+                    _ => return,
                 }
             }
         };
@@ -109,12 +110,13 @@ impl GpuState {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
-        frame.present();
+        self.queue.present(frame);
     }
 }
 
@@ -169,9 +171,9 @@ async fn init_gpu(canvas: web_sys::HtmlCanvasElement, width: u32, height: u32) -
     };
     log::info!("webgpu-surface-web: rendering via {backend_name}");
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends,
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     // rinch handed us the raw <canvas>; wgpu takes ownership of it for the
@@ -185,6 +187,7 @@ async fn init_gpu(canvas: web_sys::HtmlCanvasElement, width: u32, height: u32) -
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         })
         .await
         .ok()?;
@@ -233,7 +236,7 @@ async fn init_gpu(canvas: web_sys::HtmlCanvasElement, width: u32, height: u32) -
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -246,6 +249,7 @@ async fn init_gpu(canvas: web_sys::HtmlCanvasElement, width: u32, height: u32) -
         desired_maximum_frame_latency: 2,
         alpha_mode: caps.alpha_modes[0],
         view_formats: vec![],
+        color_space: wgpu::SurfaceColorSpace::Auto,
     };
     surface.configure(&device, &config);
 

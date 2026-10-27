@@ -152,7 +152,8 @@ pub struct ExternalGpu {
 /// How the desktop `WgpuRenderer` should obtain its GPU device.
 pub(crate) enum GpuInit {
     /// rinch creates the device with the given extra features/limits.
-    Config(RinchGpuConfig),
+    /// Boxed: wgpu 30's `Limits` make the config much larger than `External`.
+    Config(Box<RinchGpuConfig>),
     /// The embedder supplies the whole GPU stack.
     External(ExternalGpu),
 }
@@ -375,11 +376,12 @@ impl WgpuRenderer {
             None => {
                 let backends = Backends::from_env()
                     .unwrap_or(Backends::VULKAN | Backends::METAL | Backends::DX12);
-                Instance::new(&InstanceDescriptor {
+                Instance::new(InstanceDescriptor {
                     backends,
                     flags: wgpu::InstanceFlags::from_build_config().with_env(),
                     backend_options: wgpu::BackendOptions::from_env_or_default(),
                     memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+                    display: None,
                 })
             }
         };
@@ -389,10 +391,12 @@ impl WgpuRenderer {
         let surface = unsafe {
             use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
             let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: window
-                    .display_handle()
-                    .map_err(|e| format!("no display handle for a GPU surface: {e}"))?
-                    .as_raw(),
+                raw_display_handle: Some(
+                    window
+                        .display_handle()
+                        .map_err(|e| format!("no display handle for a GPU surface: {e}"))?
+                        .as_raw(),
+                ),
                 raw_window_handle: window
                     .window_handle()
                     .map_err(|e| format!("no window handle for a GPU surface: {e}"))?
@@ -429,6 +433,7 @@ impl WgpuRenderer {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     compatible_surface: Some(&surface),
                     force_fallback_adapter: false,
+                    apply_limit_buckets: false,
                 }))
                 .map_err(|e| format!("Failed to find adapter: {e}"))?,
             ),
@@ -493,8 +498,8 @@ impl WgpuRenderer {
         // creating the texture, compiling Vello's shaders) through the device's
         // error handler, which panics by default. Scope them so a device that
         // cannot do the work is an `Err` like every step above.
-        device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let surface_config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
@@ -505,6 +510,7 @@ impl WgpuRenderer {
             desired_maximum_frame_latency: 2,
             alpha_mode,
             view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
 
         surface.configure(&device, &surface_config);
@@ -528,8 +534,8 @@ impl WgpuRenderer {
             },
         );
 
-        let validation = pollster::block_on(device.pop_error_scope());
-        let out_of_memory = pollster::block_on(device.pop_error_scope());
+        let validation = pollster::block_on(validation_scope.pop());
+        let out_of_memory = pollster::block_on(out_of_memory_scope.pop());
         if let Some(e) = validation.or(out_of_memory) {
             return Err(format!("the GPU device cannot present this window: {e}"));
         }
@@ -843,19 +849,24 @@ impl WgpuRenderer {
     /// cannot be acquired this frame skips the present, and the UI texture
     /// still holds the frame for the next one.
     fn present(&mut self, base_color: Color) -> Result<(), RenderError> {
+        use wgpu::CurrentSurfaceTexture as Current;
         let surface_texture = match self.surface.get_current_texture() {
-            Ok(t) => t,
+            Current::Success(t) | Current::Suboptimal(t) => t,
             // Swapchain went stale (resize/DPI/occlusion/GPU reset) — recreate it and retry once.
-            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+            Current::Outdated | Current::Lost => {
                 self.surface.configure(&self.device, &self.surface_config);
                 match self.surface.get_current_texture() {
-                    Ok(t) => t,
-                    Err(_) => return Ok(()), // try again on the next redraw
+                    Current::Success(t) | Current::Suboptimal(t) => t,
+                    _ => return Ok(()), // try again on the next redraw
                 }
             }
             // Transient — skip this frame.
-            Err(wgpu::SurfaceError::Timeout) => return Ok(()),
-            Err(e) => return Err(RenderError::Internal(format!("get_current_texture: {e:?}"))),
+            Current::Timeout | Current::Occluded => return Ok(()),
+            Current::Validation => {
+                return Err(RenderError::Internal(
+                    "get_current_texture: validation error".to_string(),
+                ));
+            }
         };
 
         let mut encoder = self
@@ -1004,7 +1015,7 @@ impl WgpuRenderer {
             }
 
             self.queue.submit(Some(encoder.finish()));
-            surface_texture.present();
+            self.queue.present(surface_texture);
             self.device
                 .poll(wgpu::PollType::Poll)
                 .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
@@ -1083,7 +1094,7 @@ impl WgpuRenderer {
                 }
             }
             self.queue.submit(Some(encoder.finish()));
-            surface_texture.present();
+            self.queue.present(surface_texture);
             self.device
                 .poll(wgpu::PollType::Poll)
                 .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
@@ -1143,7 +1154,7 @@ impl WgpuRenderer {
         }
 
         self.queue.submit(Some(encoder.finish()));
-        surface_texture.present();
+        self.queue.present(surface_texture);
         self.device
             .poll(wgpu::PollType::Poll)
             .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
@@ -1325,7 +1336,15 @@ impl SurfaceImages {
         let mut now = std::collections::HashMap::new();
         for (id, texture) in frames {
             let image = match self.by_surface.remove(&id) {
-                Some((kept, image)) if kept == texture => image,
+                Some((kept, image)) if kept == texture => {
+                    // Vello 0.9+ keeps an image resident in its atlas and
+                    // copies an override texture again only when told to
+                    // (Vello 0.7 copied every one each render). The surface
+                    // may have drawn into this texture since the last render,
+                    // so mark it (#1955).
+                    renderer.mark_override_image_dirty(&image);
+                    image
+                }
                 old => {
                     if let Some((_, image)) = old {
                         renderer.unregister_texture(image);
@@ -1337,6 +1356,9 @@ impl SurfaceImages {
             };
             now.insert(id, (texture, image));
         }
+        // A dropped registration's atlas space is taken by the next render
+        // that needs it: the patched `vello_encoding` evicts any image the
+        // current render does not draw (#1955, `Cargo.toml`'s Vello fork).
         for (_, (_, image)) in std::mem::replace(&mut self.by_surface, now) {
             renderer.unregister_texture(image);
         }
