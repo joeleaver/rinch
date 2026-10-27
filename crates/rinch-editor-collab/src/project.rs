@@ -49,6 +49,7 @@ use crate::projection::{
     model_atoms, node_content, read_node, read_node_data, reconcile_child_list, visible_indices,
     write_child_diff,
 };
+use crate::remote::holds_atoms;
 
 impl CollabDoc {
     /// Project a freshly-applied local transaction onto the CRDT. A no-op for a
@@ -70,6 +71,9 @@ impl CollabDoc {
         // The `atoms` map is read at most once for the whole change (review of #1503,
         // F4).
         let _overlay = overlay_scope(&self.overlay);
+        let epoch = self.epoch.load(std::sync::atomic::Ordering::Relaxed);
+        // Until a path below says otherwise (`CollabDoc::touched_atoms`).
+        self.touched_atoms = true;
         // A CRDT holding zero blocks is a legitimate converged state (issue #192: two
         // peers deleting *different* blocks concurrently deletes every block), and the
         // model cannot mirror it — the schema requires at least one block, so `to_doc`
@@ -308,6 +312,18 @@ impl CollabDoc {
                 );
             }
         }
+        drop(txn);
+        self.touched_atoms = (prefix..prefix + pre_mid).any(|i| holds_atoms(before.child(i)))
+            || (prefix..prefix + post_mid).any(|i| holds_atoms(after.child(i)));
+        // A table's cell index stays true through a change that left the table alone:
+        // every top-level table outside the blocks it changed (#1241), so a keystroke
+        // in a paragraph does not cost the next keystroke in a table, mine or a peer's,
+        // a read of the table.
+        let written = self.epoch.load(std::sync::atomic::Ordering::Relaxed);
+        crate::table::carry_cell_indexes(self.uid, epoch, written, |_, table| {
+            (!(prefix..prefix + pre_mid).any(|i| before.child(i).same_ref(table)))
+                .then(|| table.clone())
+        });
         Ok(())
     }
 
@@ -380,8 +396,9 @@ impl CollabDoc {
                 &per_char,
             )?;
         }
-        let epoch = self.epoch.load(std::sync::atomic::Ordering::Relaxed);
-        crate::table::rekey_cell_index(self.uid, before, after, epoch);
+        let written = self.epoch.load(std::sync::atomic::Ordering::Relaxed);
+        crate::table::rekey_cell_index(self.uid, before, after, epoch, written);
+        self.touched_atoms = holds_atoms(cell.before) || holds_atoms(cell.after);
         Ok(true)
     }
 

@@ -27,7 +27,7 @@
 //! Each case also asserts the shadow is still painted outside the box, so a
 //! "fix" that drops the layers the punch cannot handle fails here too.
 
-use peniko::kurbo::{Affine, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Stroke};
+use peniko::kurbo::{Affine, PathEl, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Stroke};
 use peniko::{Brush, Fill, FontData};
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
@@ -378,7 +378,9 @@ fn the_whole_rotated_border_box_stays_empty() {
 /// outer edge. Under `scale(0.125)` a pad of two local pixels is a quarter of
 /// a device pixel and dimmed the edge pixel (review of #1638: up to 41 alpha
 /// levels). Checked on the commands: every point 1.5 device pixels outside a
-/// clipped shadow fill's device bounds is inside its even-odd clip.
+/// clipped shadow fill's device bounds is inside its box clip — the clip
+/// that is a compound path, a rect round the hole plus the hole (non-zero,
+/// the hole wound against the rect, since #1865 D9; it was even-odd).
 #[test]
 fn the_box_clip_reaches_past_the_shadow_in_device_pixels() {
     for scale in [1.0f64, 0.5, 0.125, 3.0] {
@@ -388,7 +390,14 @@ fn the_box_clip_reaches_past_the_shadow_in_device_pixels() {
         for (Cmd::Fill(_, t, shape), clips) in &r.fills {
             let cut: Vec<_> = clips
                 .iter()
-                .filter(|(f, _, _)| matches!(f, Fill::EvenOdd))
+                .filter(|(_, _, cs)| {
+                    matches!(cs, PaintShape::BezPath(p) if p
+                        .elements()
+                        .iter()
+                        .filter(|e| matches!(e, PathEl::MoveTo(_)))
+                        .count()
+                        > 1)
+                })
                 .collect();
             if cut.is_empty() {
                 continue;

@@ -75,7 +75,9 @@ impl Drop for WasmAudioOutputState {
 }
 
 impl AudioOutputStream {
-    /// Returns the config used for this stream.
+    /// What the stream really runs: the sample rate and channel count the
+    /// device was opened with, which may differ from what was requested.
+    /// `fill` must write interleaved samples in this layout.
     pub fn config(&self) -> &AudioOutputConfig {
         &self.config
     }
@@ -161,16 +163,21 @@ pub fn open_audio_output(
     #[cfg(all(not(target_arch = "wasm32"), feature = "audio"))]
     {
         let device = crate::native::cpal_audio::default_output_device()?;
-        let stream = crate::native::cpal_audio::open_output_stream(
+        let (stream, n) = crate::native::cpal_audio::open_output_stream(
             &device,
             config.sample_rate,
             config.channels,
             config.buffer_size,
-            fill,
+            move |_| fill,
         )?;
+        // What the device really runs (the nearest it supports).
         Ok(AudioOutputStream {
             _stream: stream,
-            config,
+            config: AudioOutputConfig {
+                sample_rate: n.sample_rate,
+                channels: n.channels,
+                ..config
+            },
         })
     }
 
@@ -197,16 +204,21 @@ pub fn open_audio_output_on(
     #[cfg(all(not(target_arch = "wasm32"), feature = "audio"))]
     {
         let dev = crate::native::cpal_audio::get_output_device(device)?;
-        let stream = crate::native::cpal_audio::open_output_stream(
+        let (stream, n) = crate::native::cpal_audio::open_output_stream(
             &dev,
             config.sample_rate,
             config.channels,
             config.buffer_size,
-            fill,
+            move |_| fill,
         )?;
+        // What the device really runs (the nearest it supports).
         Ok(AudioOutputStream {
             _stream: stream,
-            config,
+            config: AudioOutputConfig {
+                sample_rate: n.sample_rate,
+                channels: n.channels,
+                ..config
+            },
         })
     }
 

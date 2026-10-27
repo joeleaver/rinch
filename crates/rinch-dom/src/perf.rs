@@ -218,6 +218,11 @@ define_counters! {
     /// tabs at their tab stops (#1122): shaped and broken again with each
     /// tab widened. One for tabs on lines that do not wrap; at most three.
     IfcTabRebuilds = "ifc_tab_rebuilds",
+    /// Lines the hanging-space pass asked `ifc::css_line` where CSS ends
+    /// them, each a scan of the line's units (#1426 edge boxes, #1238
+    /// seams, #1243 `pre` spaces): a line whose break parley may have put
+    /// where CSS does not. One per such line of a pass, not per paragraph.
+    IfcCssLineScans = "ifc_css_line_scans",
 
     // ── Layout ─────────────────────────────────────────────────────────
     /// `resolve_layout` calls.
@@ -420,6 +425,18 @@ define_counters! {
     /// instead of sampled through `draw_pixmap` — a frame whose producer
     /// vouched every pixel opaque, drawn with no rotation or skew, a positive scale, destination edges on whole pixels, and a clip that is fully on or fully off wherever the frame lands (#361). Scaled draws count.
     OpaqueImageCopies = "opaque_image_copies",
+    /// GPU window, split path (#1865): video frames uploaded for the
+    /// compositor. One per new frame of a video the window composites split,
+    /// after paint; a video drawn in the scene uploads none here.
+    SplitFrameUploads = "split_frame_uploads",
+    /// GPU window, split path (#1865 S4): kept regions a partial frame did
+    /// not re-render below over, because every change in them was painted
+    /// after the surface (into its above slices).
+    SplitBelowKept = "split_below_kept",
+    /// GPU window, split path (#1865 S4): nodes the attribution walked to
+    /// find a negatively z-indexed descendant hoisted out of a changed box
+    /// (at most 256 a changed box, on frames with a surface kept split).
+    SplitHoistWalkNodes = "split_hoist_walk_nodes",
 
     // ── Input ──────────────────────────────────────────────────────────
     /// Hit tests run (`RinchApp::hit_test`).

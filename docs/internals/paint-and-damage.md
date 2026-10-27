@@ -234,6 +234,35 @@ frame on software and the placeholder on GPU. The flip is the attribute write's 
 damage, the node's box. Pins: `crates/rinch/src/app/viewport_ready_348_tests.rs`
 (software pixels and `viewport_ready`); the two `paint_gpu` call sites have no fixture.
 
+**Rings are filled non-zero, not even-odd (#1865 D9).** Every shape rinch cuts a hole
+out of where the hole lies inside the outline — a rounded solid border, an elliptical
+solid outline, an outer shadow's layers when the border box fits inside them and the
+clip round the border box when it does not, an unblurred inset shadow — is one path
+filled `Fill::NonZero`, the hole's contours appended wound against the outline
+(`punched` in `paint/borders.rs`). They used to be `Fill::EvenOdd` with both contours
+wound the same way. Vello 0.7's MSAA even-odd fill (`fill_path_ms_evenodd`,
+`vello_shaders/shader/fine.wgsl`, unchanged on upstream `main` as of 2026-10-23) clears
+its workgroup winding words before its first barrier, and nothing orders that after the
+previous fill's last reads of them, so a subgroup narrower than the 64-invocation
+workgroup can zero a row another has not read. Lavapipe (8-wide subgroups, run one after
+another) does it every time: a rounded border's corner tile came out as a 1/8-coverage
+wash (`(223, 239, 223)` for green on white). A `workgroupBarrier()` at the end of that
+function, in a patched `vello_shaders`, cured it with the even-odd fills left in place.
+On RADV (one 64-wide wave per workgroup, so no race) the switch moves a few pixels by
+one MSAA sample (at most 16/255): the #1891 review's 379-style sweep found 25 such pixels
+in 9 cases, not confined to tile edges, and against analytic coverage they lean neither
+way, so they are two MSAA routines disagreeing, not an even-odd error. tiny-skia is
+byte-identical. Under Area anti-aliasing (Android) the switch also removes a solid band
+main painted for a zero-size ring such as `box-shadow: 0 0 0 0`. Non-zero with the hole
+reversed is also what Vello's analytic area coverage needs (see
+`BorderRadii::path_with_holes`). Pinned backend-neutrally by
+`crates/rinch-dom/tests/ring_fill_rule_1865_tests.rs` (no compound path is even-odd; the
+hole's centre winds to 0) and on a real adapter by
+`gpu_render_callback_frames_sit_in_the_content_box`, which CI's `test-gpu (lavapipe)` job
+runs. **Still even-odd:** the backgrounds and inset-shadow clips with viewport holes
+(`path_with_holes`, whose holes need not be disjoint) and an SVG `fill-rule="evenodd"`,
+both drawn by the same Vello code on the GPU painter.
+
 **Which viewports have a frame, and which punch, is a paint input, so a change in it is
 damage** (#349). No DOM write carries it: a surface that unregisters while its
 `data-viewport` node stays in the document, or one that delivers its first frame, changes
@@ -273,3 +302,63 @@ paint; a literal `style` value that is no paint is dropped and the attribute
 applies, as Chrome 155 does. Not read: a `fill`/`stroke` in a stylesheet
 rule, and `stroke-width`/`stroke-linecap`/`stroke-linejoin` in `style` (still
 attributes only). Pins: `crates/rinch-dom/tests/svg_paint_var_1800_tests.rs`.
+
+### Split GPU surfaces in the Vello painter (#1865)
+
+Design record: `docs/design/split-layer-gpu-surfaces.md`, *Painter split*.
+`paint_surface_frame` offers each GPU frame to `Painter::split_surface`
+before drawing it; the default refuses (`Refusal::Unsupported`) and the frame
+is drawn in the scene as before. `VelloPainter` takes it only on a frame
+opened with `begin_slicing(window)` (after `reset`, which closes it), and the
+surfaces it took come back from `take_slices()` as `paint::slicing::SurfaceSlice`:
+region R; `above_in` and `above_out` (scenes in window coordinates, rendered where the window draws them and R kept, or `None`);
+`own` and `ancestors` coverage (each a whole-pixel rect or a mask scene); the
+in-scene image transform; `tainted`.
+
+- **Refusals**, the frame then drawn in-scene: a group effect open around it
+  (a layer with opacity below 1 or a non-normal blend, or any isolated
+  layer: masks, text-shadow groups), a transform that rotates or skews, or a
+  region overlapping an earlier split surface's, or a surface the runtime
+  named with `refuse_split(ids)` after `begin_slicing` (`Refusal::MemoryCap`,
+  its memory cap, D6). R is the content box snapped out to whole pixels, a
+  pixel further left only when that left edge (or the fitted frame's, in R's
+  first column) is fractional; routing bounds grow the same way. Two surfaces
+  touching at whole pixels both split.
+- **Per-region repainting (S4)**: `compute_damage_attributed` names the
+  node whose paint draws each change (`NodeDamage`); paint reports watched
+  nodes' starts (`set_paint_order_watch`, `Painter::note_node_start`,
+  forwarded by `ClipTrackingPainter`) as counts of surfaces split so far
+  (`VelloPainter::node_starts`). A frame whose every change in a kept region
+  started after its surface skips below over that region
+  (`split_below_kept`). A change to a box that is no stacking context with a
+  negatively z-indexed descendant hoisted out of it is never placed: that
+  descendant paints before the box starts (`hoists_negative_z`, bounded at
+  256 nodes, `split_hoist_walk_nodes`; #1929 is the older damage bug next to
+  it). Design record: *Damage per slice → As built (S4)*.
+- **No surface costs one bool per draw**: `route!` (a macro, not a generic)
+  tests `VelloPainter::routing`, set when a surface splits, and otherwise is
+  the draw itself; no closure or bounds are built.
+- **Routing** (`paint/slicing.rs`): every draw after the split goes by its
+  device bounds. Disjoint from every R: the window's scene, unclipped. Inside
+  one R: that surface's above scene only. Across an edge, or bounds unknown
+  (`append`): every above scene it meets, and the window's scene inside the
+  inverse clip (the window with every R cut out, holes wound backwards,
+  **non-zero**; even-odd nested in a clip drops coverage on lavapipe). The
+  inverse clip is opened only around such draws and closed before any push or
+  pop, so it never wraps a layer boundary.
+- **Two above scenes.** `above_in` takes what is painted while every entry
+  open at the split is still open, **without** those entries: the compositor
+  applies the ancestors' coverage once, to the surface and `above_in`
+  together, as the scene does (applying it to each separately conflated on a
+  rounded card's ring, #1887 review). `above_out` starts when the first of
+  them closes, with those still open replayed; a draw over R while one of
+  those is not a whole-pixel rect clip taints the slice. Pushes and pops
+  after the split go to whichever is current. Without `begin_slicing` nothing is mirrored
+  and no shape is copied; a sliced frame with nothing split encodes the
+  window's scene byte for byte as an unsliced one
+  (`tests/split_surface_painter_1865_tests.rs`).
+- **Taint** (D5a): a non-normal blend layer (grayscale's saturation overlay)
+  over an R, not inside an isolated layer opened after the split, marks the
+  slice: the runtime must paint the frame again with it in-scene.
+- Not routed yet: content the runtime appends to `scene_mut()` after
+  `paint_document` (drag ghost, inspect highlight, tooltip) — PR 3.

@@ -118,7 +118,7 @@ rsx! { div { style: "flex: 1;", RenderSurface { surface: Some(surface) } } }
   times the transform's scale along each axis, as a CPU frame's is: under a `scale(2)` it is
   twice the layout size, so it stays sharp; under a `rotate()` it keeps the box's shape and
   turns with it. The surface's own `border-radius` rounds the frame, as an `<img>`'s does.
-- **Large and many surfaces.** A frame lives in Vello's image atlas for the paint: one
+- **Large and many surfaces.** A frame drawn in the scene lives in Vello's image atlas for the paint: one
   texture of at most 8192×8192 shared by every image in the scene. A surface past the
   device's largest texture or 8192 px a side gets a target scaled down to fit (aspect kept;
   `f.size` says how big; `layout_size()` stays the real size), and when the GPU frames of a
@@ -126,9 +126,14 @@ rsx! { div { style: "flex: 1;", RenderSurface { surface: Some(surface) } } }
   are drawn at one smaller scale, and at full size again once there is room. Either way the
   frame is drawn — scaled up into the box, so softer — and rinch logs a warning once. A
   surface laid out off screen counts toward the share; one under `display: none` does not.
-- **Cost.** Each frame the surface draws costs a Vello render of (at least) its region.
-  Measured on an integrated GPU (Radeon 890M): a 640×360 surface 3–7 ms a frame, a
-  full-window 1080p one about 12 ms, a full-window 4K one about 15 ms.
+- **Cost.** On the desktop GPU window the frame is composited outside the scene when it
+  can be (#1865, the split path): a new frame under a still UI renders no Vello at all, about
+  what a compositor layer cost, and the pixels are the scene's. A surface inside an opacity
+  group, a blend or a mask, under a rotating or skewing transform, overlapping another split
+  surface, or past the window's split memory cap is drawn in the scene instead, where each
+  frame costs a Vello render of (at least) its region. Measured in the scene on an
+  integrated GPU (Radeon 890M): a 640×360 surface 3–7 ms a frame, a full-window 1080p one
+  about 12 ms, a full-window 4K one about 15 ms. Nothing in the app chooses between the two.
 - A GPU frame needs a GPU renderer presenting the window (`gpu_frames_available()`). Under
   the software renderer and in an embedded context the ordinary render callback runs
   instead, if you set one.
@@ -147,7 +152,14 @@ Example: `examples/gpu-surface` (a rotating triangle, Pause / One frame).
 
 ### GPU Texture Compositing
 
-For zero-copy compositing, use `GpuTextureRegistrar` to provide a `wgpu::TextureView` directly:
+> **For new code, use the GPU render callback above.** It draws on the same shared device
+> with no readback, and its frame is an element: in paint order, clipped, rounded and
+> faded like an `<img>`, and composited outside the scene when it can be. A texture
+> registered with `set_texture_source` is the older route: the compositor draws it as a
+> layer, which neither takes the element's place in paint order nor splits. The ui-zoo cube
+> and `examples/gpu-device-config`'s `zerocopy` mode moved to the callback (#1865).
+
+To hand rinch a `wgpu::TextureView` you render yourself, use `GpuTextureRegistrar`:
 
 ```rust
 let surface = create_render_surface();
@@ -797,7 +809,7 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > | | `RenderSurface` | video | `GameViewport` |
 > |---|---|---|---|
 > | **software** | inline | **inline** | **inline** |
-> | **GPU** | inline (a GPU frame is an image in the scene, #1768) | **inline** (#1768) | compositor |
+> | **GPU** | split, or inline when it can't be (#1768, #1865) | **split**, or inline (#1768, #1865) | compositor |
 >
 > Software used to blit its compositor frames onto the **finished** pixel
 > buffer, after the whole UI had been painted, clipped only by the viewport's
@@ -812,6 +824,20 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > like any other. Cost, measured on an integrated GPU (Radeon 890M): a 4K
 > full-window video is about 25 ms a frame in the scene against 6 ms as a layer;
 > a 640×360 one 3–6 ms against 1–3.
+>
+> Since #1865 the desktop GPU window gets the layer's cost back without its
+> limits: a video or a GPU `RenderSurface` is composited outside the scene
+> with the UI above it cut out around it, so a new frame under a still UI is
+> an upload and a composite, about what a layer cost. Its pixels are the
+> scene's except on the edge classes the design record's D10 bounds
+> (`docs/design/split-layer-gpu-surfaces.md`). A surface inside an opacity group, a blend or a mask, under a
+> rotating or skewing transform, or overlapping another split surface is
+> drawn in the scene instead. So is one past the window's split memory cap:
+> what splitting adds over the scene (slice textures and a scratch target,
+> not the video frame, which the scene holds too) may be four times the
+> window's own texture bytes (33 MB at 1080p, 133 MB at 4K). The surfaces
+> kept split from earlier frames are counted first, then this frame's in
+> paint order.
 >
 > So on software a frame goes through **paint** instead, on the same inline
 > path a `RenderSurface` component has always used: the `data-viewport` node

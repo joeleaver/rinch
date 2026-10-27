@@ -76,6 +76,67 @@ pub(crate) fn store(uid: u64, generation: u64, doc: Node, ids: Vec<BlockId>) {
 pub(crate) fn forget(uid: u64) {
     let _ = CACHE.try_with(|c| c.borrow_mut().remove(&uid));
     inline_forget(uid);
+    forget_synced(uid);
+}
+
+// ─── The document the CRDT reads as (#1241) ──────────────────────────────────
+
+/// A model document the session knows to be what its CRDT reads as at one
+/// [`epoch`](crate::CollabDoc), and whether it holds any atom.
+struct Synced {
+    epoch: u64,
+    doc: Node,
+    no_atoms: bool,
+}
+
+thread_local! {
+    /// Per session: the last [`Synced`] document. An integrate leaves the document
+    /// it brought the model to (the converged read), and a local edit projected
+    /// from that very document at that epoch leaves the document after it — the
+    /// projection's invariant, `model ≡ project(model)`, which the local diff
+    /// already trusts. An integrate that finds the model it is handed here, at the
+    /// epoch the CRDT is at, reads back only what the update changed.
+    static SYNCED: RefCell<HashMap<u64, Synced>> = RefCell::new(HashMap::new());
+}
+
+/// Whether session `uid` knows `doc` to be its CRDT's read at `epoch`, and if so
+/// whether `doc` holds no atom (`Some(true)`) or may (`Some(false)`).
+pub(crate) fn synced(uid: u64, doc: &Node, epoch: u64) -> Option<bool> {
+    SYNCED
+        .try_with(|c| {
+            c.borrow()
+                .get(&uid)
+                .filter(|s| s.epoch == epoch && s.doc.same_ref(doc))
+                .map(|s| s.no_atoms)
+        })
+        .ok()
+        .flatten()
+}
+
+/// Whether session `uid` knows a document its CRDT reads as at `epoch`.
+pub(crate) fn synced_at(uid: u64, epoch: u64) -> bool {
+    SYNCED
+        .try_with(|c| c.borrow().get(&uid).is_some_and(|s| s.epoch == epoch))
+        .unwrap_or(false)
+}
+
+/// Note that session `uid`'s CRDT reads as `doc` at `epoch`.
+pub(crate) fn set_synced(uid: u64, doc: Node, epoch: u64, no_atoms: bool) {
+    let _ = SYNCED.try_with(|c| {
+        c.borrow_mut().insert(
+            uid,
+            Synced {
+                epoch,
+                doc,
+                no_atoms,
+            },
+        )
+    });
+}
+
+/// Forget what session `uid`'s CRDT reads as.
+pub(crate) fn forget_synced(uid: u64) {
+    let _ = SYNCED.try_with(|c| c.borrow_mut().remove(&uid));
 }
 
 /// A [`BlockId`] that names no CRDT block and equals no other: what a leaf block
@@ -160,6 +221,12 @@ pub(crate) fn inline_lookup(uid: u64, doc: &Node) -> Vec<Option<String>> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Remember that `doc` holds no inline atom: [`inline_store`] with no ids, without
+/// walking a document known to hold none.
+pub(crate) fn inline_store_none(uid: u64) {
+    let _ = INLINE.try_with(|c| c.borrow_mut().insert(uid, Vec::new()));
 }
 
 /// Remember that `doc`'s inline atoms are, in document order, `ids`.

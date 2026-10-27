@@ -2359,6 +2359,29 @@ impl EditorHandle {
         )
     }
 
+    /// Where an Up/Down step from the caret into a table lands when the
+    /// platform's geometry fell back to `target` (the next textblock in
+    /// document order): the cell of the table's edge row under `goal_x`
+    /// instead of its last (first) cell
+    /// ([`vertical_entry`](rinch_editor_core::commands::table_ops::vertical_entry)).
+    /// `x_of` gives a position's caret x in the platform's coordinates.
+    /// `None` leaves `target` as it is.
+    pub fn vertical_table_entry(
+        &self,
+        target: Pos,
+        down: bool,
+        goal_x: f32,
+        x_of: impl Fn(Pos) -> Option<f32>,
+    ) -> Option<Pos> {
+        let (doc, head) = {
+            let core = self.core();
+            (core.state.doc.clone(), core.state.selection.head())
+        };
+        rinch_editor_core::commands::table_ops::vertical_entry(
+            &doc, head, target, down, goal_x, x_of,
+        )
+    }
+
     /// A [`Selection::Node`] for the leaf node (image / horizontal rule) whose host
     /// element is `host_id` — the pointer hit-test path for node-selecting a leaf the
     /// user clicks. `None` if `host_id` isn't a placed node, or its node isn't
@@ -2569,13 +2592,37 @@ impl EditorHandle {
     /// visual-line and vertical geometry on top.
     pub fn move_cursor(&self, motion: CursorMotion, extend: bool) -> bool {
         let st = self.state();
-        match rinch_editor_core::resolve_cursor_motion(
+        let horizontal = match motion {
+            CursorMotion::CharLeft | CursorMotion::WordLeft => Some(-1),
+            CursorMotion::CharRight | CursorMotion::WordRight => Some(1),
+            _ => None,
+        };
+        // Over a cell selection a horizontal Shift+arrow steps its head cell;
+        // the text motion has no head to start from.
+        if extend
+            && let Some(dir) = horizontal
+            && matches!(st.selection, Selection::Cell(_))
+        {
+            return self.shift_arrow_cells(rinch_editor_core::tables::Axis::Horiz, dir, None);
+        }
+        let resolved = rinch_editor_core::resolve_cursor_motion(
             &st.doc,
             st.selection.head(),
             st.selection.anchor(),
             motion,
             extend,
-        ) {
+        );
+        if extend
+            && let Some(dir) = horizontal
+            && self.shift_arrow_cells(
+                rinch_editor_core::tables::Axis::Horiz,
+                dir,
+                resolved.as_ref().map(|s| s.head()),
+            )
+        {
+            return true;
+        }
+        match resolved {
             // A caret moved onto a node a view is drawn for offers it the
             // keyboard (`NodeViewSpec::on_caret_enter`).
             Some(sel) if !extend => {
@@ -2588,6 +2635,36 @@ impl EditorHandle {
                 self.select_from_arrow(sel, from);
                 true
             }
+            Some(sel) => {
+                self.set_selection(sel);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Shift+arrow at a table cell's edge, or over a cell selection: select
+    /// cells, as prosemirror-tables' `shiftArrow` does
+    /// ([`shift_arrow`](rinch_editor_core::commands::table_ops::shift_arrow)).
+    /// `new_head` is where the plain extension would put the head (the text
+    /// motion, or the platform's vertical step; `None` when it goes nowhere).
+    /// Returns whether the cell rule took the key, having set the selection;
+    /// `false` leaves the plain extension to the caller.
+    ///
+    /// [`move_cursor`](Self::move_cursor) asks it for every horizontal
+    /// Shift+arrow; the platforms ask it for Shift+Up/Down with their
+    /// geometry's step (#1847).
+    pub fn shift_arrow_cells(
+        &self,
+        axis: rinch_editor_core::tables::Axis,
+        dir: i32,
+        new_head: Option<Pos>,
+    ) -> bool {
+        let next = {
+            let core = self.core();
+            rinch_editor_core::commands::table_ops::shift_arrow(&core.state, axis, dir, new_head)
+        };
+        match next {
             Some(sel) => {
                 self.set_selection(sel);
                 true
@@ -2850,16 +2927,26 @@ impl EditorHandle {
     /// the plain text is the `text/plain` alternative.
     ///
     /// A selection inside a list is copied with the list around its items
-    /// (`<ol start="3">`, a task list with its checkboxes), and one across
-    /// table cells with its table: content that is nothing without the node
-    /// it was in keeps it ([`clipboard_slice`]).
+    /// (`<ol start="3">`, a task list with its checkboxes): content that is
+    /// nothing without the node it was in keeps it ([`clipboard_slice`]). A
+    /// selection across the cells of one table is a cell selection (#1847),
+    /// which copies as a table of the selected cells, whole
+    /// ([`cell_selection_slice`](rinch_editor_core::commands::table_ops::cell_selection_slice)),
+    /// as ProseMirror copies one.
     pub fn selection_clipboard(&self) -> Option<(String, String)> {
         let core = self.core();
         let sel = &core.state.selection;
         if sel.is_empty() {
             return None;
         }
-        let slice = clipboard_slice(&core.state.doc, sel.from().0, sel.to().0).ok()?;
+        // A cell selection's `from()..to()` is not a range of content: it
+        // copies as a table of the selected cells.
+        let slice = match sel {
+            Selection::Cell(_) => {
+                rinch_editor_core::commands::table_ops::cell_selection_slice(&core.state)?
+            }
+            _ => clipboard_slice(&core.state.doc, sel.from().0, sel.to().0).ok()?,
+        };
         Some((slice_to_html(&slice), slice_to_text(&slice)))
     }
 

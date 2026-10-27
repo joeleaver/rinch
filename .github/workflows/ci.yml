@@ -13,8 +13,8 @@ on:
 
 # Batched merges (docs/internals/ci.md). An ordinary pull request into `main` (a
 # *component* PR) runs only the fast jobs: `fmt`, `clippy`, `clippy-wasm`,
-# `clippy-android` and `check-android`. The slow ones (the `test` shards and
-# `test-wasm`) run on a pull request whose head branch starts with `batch/`, on
+# `clippy-android` and `check-android`. The slow ones (the `test` shards,
+# `test-wasm` and `test-gpu`) run on a pull request whose head branch starts with `batch/`, on
 # every push to `main`, and on a manual dispatch. The lead merges several
 # reviewed component PRs into one `batch/YYYY-MM-DD-N` branch and opens one PR
 # for it, so the full suite runs once per batch rather than once per push to
@@ -101,7 +101,7 @@ jobs:
   test:
     name: test (${{ matrix.shard }})
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # One shard failing says nothing about the others; let them all finish.
       fail-fast: false
@@ -163,6 +163,12 @@ jobs:
             run: |
               cargo test -p rinch-editor-core --features serde,markdown
               cargo test -p rinch-editor-view --features collaboration
+              # rinch-rtc's `media` feature (#1916), which nothing in the
+              # workspace turns on: its unit tests (src/tests.rs
+              # `media_events`, the codecs' round trips) and the native media
+              # tests (tests/media_*.rs: two peers in the process, synthetic
+              # sources, no audio device).
+              cargo test -p rinch-rtc --features media
               cargo test -p rinch --features desktop,embed,theme,clipboard,debug
               # Bare on purpose: `desktop` (the default) WITHOUT `clipboard`. The
               # text context menu's no-clipboard pin (#813,
@@ -213,7 +219,22 @@ jobs:
         with:
           packages: >-
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
-            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev libmpv-dev
+            libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev libmpv-dev
+
+      # rinch-rtc's `media` feature (#1916), built by this shard only
+      # (`cargo test -p rinch-rtc --features media`):
+      # - libvpx-dev: VP8 (M2). env-libvpx-sys finds it by pkg-config and
+      #   generates its bindings with bindgen, which uses the image's
+      #   libclang (as nokhwa's v4l2-sys already does).
+      # - nasm: openh264's assembly. Without it openh264 builds C only: no
+      #   slower to build (its build script: 30.5 s vs 28.4 s), but encoding
+      #   runs 2.8x slower (640x480: 6.75 -> 2.37 ms/frame), and CI should
+      #   build what an app's release build does.
+      - name: Install rinch-rtc media dependencies
+        if: matrix.shard == 'feature-gated'
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libvpx-dev nasm
 
       - name: Install Rust toolchain
         id: rust
@@ -228,8 +249,116 @@ jobs:
       - name: Run tests
         run: ${{ matrix.run }}
 
+  # The `#[ignore]`d GPU pixel tests (#1865 D9), on lavapipe: Mesa's software
+  # Vulkan driver, so a runner with no GPU still has a Vulkan adapter. They
+  # render real Vello scenes and compositor passes through wgpu and read the
+  # pixels back; every other job skips them (`#[ignore]`, "needs a GPU
+  # adapter"), so until this job they ran only on a developer's machine.
+  #
+  # A batch / `main` job like the `test` shards (same job-level `if`).
+  #
+  # The adapter is pinned, not hoped for. `VK_ICD_FILENAMES` (set by the
+  # check step to the ICD file the package installed, `lvp_icd.json` or
+  # `lvp_icd.x86_64.json` by Mesa version) makes the Vulkan loader see
+  # lavapipe alone, and `WGPU_BACKEND=vulkan` makes wgpu
+  # enumerate Vulkan alone — the fixtures build their instance with
+  # `InstanceDescriptor::from_env_or_default()` so that they read it. With no
+  # lavapipe there is then no adapter at all, and every fixture fails on its
+  # `.expect("a GPU adapter")`, instead of wgpu falling back to Mesa's GL
+  # (llvmpipe) and testing something else. The first step checks the device
+  # before anything is built.
+  #
+  # The counts are exact. A filtered `cargo test` that matches nothing prints
+  # `0 passed` and exits 0, and a fixture whose `cfg` went false compiles to
+  # nothing; either would turn this job into a green no-op. So each run states
+  # how many tests it passes, and a GPU fixture added or removed changes the
+  # number here in the same PR.
+  #
+  # `a_later_window_presents_with_the_shared_device` (`render_surface`) is
+  # `#[ignore]`d for an adapter too but also opens a window, which a runner
+  # has no display for; `gpu_` does not match it. `gpu_hover_probe` is a
+  # timing printout, not a test.
+  #
+  # Its own cache key: `-p rinch --features gpu,video` and `-p rinch-dom
+  # --no-default-features` resolve features differently from the `test`
+  # shards' `--workspace`, so their dependency artifacts would not match.
+  test-gpu:
+    name: test-gpu (lavapipe)
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Install system dependencies
+        # The desktop stack's packages, plus lavapipe (mesa-vulkan-drivers)
+        # and vulkaninfo (vulkan-tools).
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
+            libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev libmpv-dev
+            mesa-vulkan-drivers vulkan-tools
+
+      - name: Check the Vulkan device is lavapipe
+        run: |
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2>/dev/null | head -n 1)
+          [ -n "$icd" ] || { echo "::error::no lavapipe ICD in /usr/share/vulkan/icd.d"; exit 1; }
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          VK_ICD_FILENAMES=$icd vulkaninfo --summary | tee vulkan-summary.txt
+          grep -Eq 'driverName += llvmpipe' vulkan-summary.txt \
+            || { echo "::error::the Vulkan loader shows no lavapipe (llvmpipe) device"; exit 1; }
+
+      - name: Install Rust toolchain
+        id: rust
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Cache cargo (dependencies)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-gpu
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Run the GPU tests
+        run: |
+          set -euo pipefail
+          # run <expected passed> <cargo test args...>: the run must pass and
+          # pass exactly that many tests (summed over its `test result:` lines).
+          run() {
+            local want=$1; shift
+            cargo test "$@" 2>&1 | tee gpu-test.log
+            local got
+            got=$(sed -nE 's/^test result: .* ([0-9]+) passed;.*/\1/p' gpu-test.log \
+                  | awk '{ s += $1 } END { print s + 0 }')
+            if [ "$got" -ne "$want" ]; then
+              echo "::error::cargo test $* passed $got tests; this job expects $want (update the count in ci.yml if a GPU fixture was added or removed)"
+              exit 1
+            fi
+          }
+          # The render-surface, compositor and partial-frame fixtures, and
+          # the split oracles (`gpu_split_*`, #1865: 25 compositor, 33 runtime,
+          # 2 pages).
+          run 79 -p rinch --features gpu,video --lib -- \
+            --ignored gpu_ --skip gpu_hover_probe --test-threads=1
+          # #1798's gradients and masks against Chrome's pixels.
+          run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
+            --ignored --test-threads=1
+          # The image-brush background path, which is cfg'd on the software
+          # painter being off (the `embed` build).
+          run 2 -p rinch-dom --no-default-features --test background_tiling_embed_tests -- \
+            --ignored gpu_ --test-threads=1
+
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -238,9 +367,10 @@ jobs:
         # (.github/actions/apt-install explains both, #1792).
         uses: ./.github/actions/apt-install
         with:
+          # libvpx-dev: the rinch-rtc `media` lines below (VP8, #1916).
           packages: >-
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
-            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev libmpv-dev
+            libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev libmpv-dev libvpx-dev
 
       - name: Install Rust toolchain
         id: rust
@@ -297,6 +427,10 @@ jobs:
           cargo clippy -p rinch --no-default-features --features embed --all-targets -- -D warnings
           cargo clippy -p rinch --features gpu,embed --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features components,theme -- -D warnings
+          # rinch-rtc's `media` feature (#1916) is off by default and nothing
+          # in the workspace turns it on yet.
+          cargo clippy -p rinch-rtc --features media --all-targets -- -D warnings
+          cargo clippy -p rinch-rtc --features media-cisco-openh264 --all-targets -- -D warnings
 
       # Every optional feature of `rinch` that builds on this host, in one
       # build (#1786). Nothing else in the workspace turns `file-dialogs` on,
@@ -338,7 +472,7 @@ jobs:
   # automerge -> uuid -> getrandom refused to build for wasm32 unless a *consuming app*
   # turned on a randomness feature. yrs needs no such shim.
   clippy-wasm:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -364,7 +498,7 @@ jobs:
       - name: Run clippy (wasm32)
         run: |
           for crate in rinch-core rinch-words rinch-editor-core rinch-editor-collab \
-                       rinch-editor-view rinch-http rinch-ws rinch-web; do
+                       rinch-editor-view rinch-http rinch-ws rinch-rtc rinch-web; do
             echo "::group::clippy $crate (wasm32)"
             cargo clippy -p "$crate" --target wasm32-unknown-unknown \
               --all-targets -- -D warnings
@@ -375,9 +509,19 @@ jobs:
           # above, but `embed` on wasm32 is reached by no crate in the
           # workspace and broke unnoticed (an OS file-drop path calling a
           # native-only `LocalFile::from_path`).
+          # rinch-av's web capture, with the features that compile it.
+          echo "::group::clippy rinch-av audio,camera (wasm32)"
+          cargo clippy -p rinch-av --features audio,camera --target wasm32-unknown-unknown \
+            --all-targets -- -D warnings
+          echo "::endgroup::"
           echo "::group::clippy rinch embed (wasm32)"
           cargo clippy -p rinch --no-default-features --features components,theme,embed \
             --target wasm32-unknown-unknown -- -D warnings
+          echo "::endgroup::"
+          # rinch-rtc's `media` feature (#1916), which nothing turns on.
+          echo "::group::clippy rinch-rtc media (wasm32)"
+          cargo clippy -p rinch-rtc --features media --target wasm32-unknown-unknown \
+            --all-targets -- -D warnings
           echo "::endgroup::"
 
       # The web examples are excluded from the workspace (they pin their own
@@ -442,7 +586,7 @@ jobs:
   # equivalent, so they're now gated `cfg(not(target_os = "android"))` too,
   # matching `disarm_log` itself — and this job runs `--all-targets` for real.
   clippy-android:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -485,7 +629,7 @@ jobs:
   test-wasm:
     # Slow: batches, `main` and dispatches only (see the note under `on:`).
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -510,6 +654,13 @@ jobs:
           npx --yes @puppeteer/browsers install "chromedriver@$chrome_version"
           echo "CHROMEDRIVER=$(find "$PWD/chromedriver" -name chromedriver -type f | head -1)" >> "$GITHUB_ENV"
 
+      # media_echo (rinch-rtc's native media peer, #1916) links rinch-av's
+      # cpal (ALSA), libvpx (VP8) and openh264 (nasm: its assembly).
+      - name: Install system dependencies
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libasound2-dev libvpx-dev nasm
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -528,6 +679,48 @@ jobs:
           cargo test -p rinch-storage --target wasm32-unknown-unknown
           cargo test -p rinch-ws --target wasm32-unknown-unknown
           cargo test -p rinch-web --target wasm32-unknown-unknown
+          # rinch-av's web capture against synthetic sources (an oscillator,
+          # a canvas stream; no device). Its crates/rinch-av/webdriver.json
+          # lets Chrome run audio without a user gesture.
+          cargo test -p rinch-av --features audio,camera --target wasm32-unknown-unknown
+          # rinch-rtc against the interop target (design record
+          # docs/design/webrtc-data-channels.md, section 4): a str0m ICE-lite
+          # echo peer behind `lite_echo`'s HTTP signalling. Its URL is baked in
+          # at build time, and RINCH_RTC_REQUIRE_LIVE makes the live test FAIL
+          # rather than skip if it is missing: a skip must not read as a pass.
+          # The URL is fixed (port 47811), so the Firefox step below builds
+          # the same test binaries and rebuilds nothing.
+          cargo build -p rinch-rtc --example lite_echo
+          target/debug/examples/lite_echo --port 47811 --url-file lite_echo.url &
+          for i in $(seq 1 50); do [ -s lite_echo.url ] && break; sleep 0.2; done
+          test "$(cat lite_echo.url)" = http://127.0.0.1:47811
+          RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
+            cargo test -p rinch-rtc --target wasm32-unknown-unknown
+          # rinch-rtc's audio and video (#1916), behind its `media` feature:
+          # two peers in the page, synthetic sources only (no getUserMedia).
+          # The crate's webdriver.json lets audio play without a gesture.
+          # The runner's timeout covers the whole binary (20 s by default),
+          # and these 15 tests take about 25 s in Firefox: in batch 30 the
+          # runner killed a suite that was still passing (each test alone:
+          # 0.03-15 s; every wait inside a test is bounded and fails with
+          # its name).
+          WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
+            --features media --test web_media
+          # Browser <-> native media (#1916, design record section 6): the
+          # browser sends a box to media_echo, a native rinch-rtc peer that
+          # decodes it and sends it back re-encoded. Two echoes: both codecs
+          # on 47812 (a browser offers VP8 first: VP8 through libvpx), and
+          # `--h264-only` on 47813 (H.264 through openh264). The URLs are
+          # fixed so the Firefox step reuses these binaries.
+          cargo build -p rinch-rtc --features media --example media_echo
+          target/debug/examples/media_echo --port 47812 --url-file media_echo.url &
+          target/debug/examples/media_echo --port 47813 --h264-only --url-file media_echo_h264.url &
+          for i in $(seq 1 100); do [ -s media_echo.url ] && [ -s media_echo_h264.url ] && break; sleep 0.2; done
+          test "$(cat media_echo.url)" = http://127.0.0.1:47812
+          test "$(cat media_echo_h264.url)" = http://127.0.0.1:47813
+          RINCH_RTC_MEDIA_URL=http://127.0.0.1:47812 RINCH_RTC_MEDIA_H264_URL=http://127.0.0.1:47813 \
+            RINCH_RTC_REQUIRE_LIVE=1 WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc \
+            --target wasm32-unknown-unknown --features media --test web_media_native
           # The editor's read-only collaboration fixture is
           # `#[cfg(feature = "collaboration")]`, which the bare run above does not
           # turn on — it would have run nowhere, and a test that never runs reads
@@ -540,6 +733,27 @@ jobs:
           # the one place CI compiles rinch-web with `word-dictionary` on.
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features word-dictionary --test editor_word_dictionary
+
+      # rinch-av's audio capture where the browser holds an AudioContext
+      # until a user gesture (Chrome's default; the step above allows
+      # autoplay). The capture must say `WaitingForGesture`, not deliver
+      # silence with no error (#1928's review). Built with
+      # RINCH_AV_NO_AUTOPLAY=1, the test asserts that state, so a run
+      # under the permissive webdriver.json fails rather than passes.
+      - name: Run rinch-av capture without autoplay (headless Chrome)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        working-directory: crates/rinch-av
+        run: |
+          set -o pipefail
+          cp webdriver.json webdriver.json.keep
+          echo '{"goog:chromeOptions":{"args":["--headless=new"]}}' > webdriver.json
+          RINCH_AV_NO_AUTOPLAY=1 cargo test -p rinch-av --features audio,camera \
+            --target wasm32-unknown-unknown --test web_capture_lifetimes \
+            -- audio_status 2>&1 | tee noautoplay.log
+          mv webdriver.json.keep webdriver.json
+          # Positive control: the one test ran.
+          grep -q 'test result: ok. 1 passed' noautoplay.log
 
       # `editor_node_view_real_tab` is `#[ignore]`d above (a synthetic keydown moves
       # no focus): this step builds it with RINCH_REAL_KEYS=1 and runs it with
@@ -559,6 +773,27 @@ jobs:
       - name: Run the trusted-key test (headless Chrome)
         run: bash crates/rinch-web/tests/support/run_real_keys.sh
 
+      # rinch-rtc's app-fed audio source where the browser holds an
+      # AudioContext until a user gesture (Chrome's default; the steps above
+      # allow autoplay). The track must say `WaitingForGesture`, not read
+      # `live` while sending silence (#1933's review). Built with
+      # RINCH_RTC_NO_AUTOPLAY=1 the test asserts that state, so a run under
+      # the permissive webdriver.json fails rather than passes.
+      - name: Run rinch-rtc audio source without autoplay (headless Chrome)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        working-directory: crates/rinch-rtc
+        run: |
+          set -o pipefail
+          cp webdriver.json webdriver.json.keep
+          echo '{"goog:chromeOptions":{"args":["--headless=new"]}}' > webdriver.json
+          RINCH_RTC_NO_AUTOPLAY=1 cargo test -p rinch-rtc --features media \
+            --target wasm32-unknown-unknown --test web_media \
+            -- audio_source_status 2>&1 | tee noautoplay.log
+          mv webdriver.json.keep webdriver.json
+          # Positive control: the one test ran.
+          grep -q 'test result: ok. 1 passed' noautoplay.log
+
       # The drag auto-scroll fixtures again at a fractional devicePixelRatio
       # (#1592): at DPR 1 a scroll offset is always whole, so the loop's
       # end-of-list test was right there and spun for ever at 1.5. The runner
@@ -577,6 +812,21 @@ jobs:
           rm webdriver.json
           # Positive control: the browser really ran at 1.5 (review2_1592 logs it).
           grep -q '^dpr 1.5 ' dpr.log
+
+      # Firefox opens an AudioContext only with a working audio output, and
+      # the runner has no sound server: without one every AudioContext stays
+      # `suspended` for ever (measured on ubuntu-24.04, Firefox 157). The
+      # rinch-av capture tests then fail (they used to hang until the
+      # runner killed them). Headless Chrome plays into its own null sink
+      # and needs none of this. A null PulseAudio sink costs about 16 s.
+      - name: Start a null audio sink (for Firefox's AudioContext)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_null
+          pactl set-default-sink ci_null
+          pactl info | grep -E 'Server String|Default Sink'
 
       # The same test binaries, a second engine. The suite was written against
       # Chrome alone, and the first Firefox run found a real bug (the caret on
@@ -599,6 +849,36 @@ jobs:
           cargo test -p rinch-web --target wasm32-unknown-unknown
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
+          cargo test -p rinch-av --features audio,camera --target wasm32-unknown-unknown
+          # The Chrome step's lite_echo, or a new one on the same port if that
+          # one did not outlive its step: the same URL keeps the test binaries
+          # the Chrome step built (no rebuild).
+          if ! curl -s -o /dev/null -X OPTIONS http://127.0.0.1:47811/offer; then
+            rm -f lite_echo_ff.url
+            target/debug/examples/lite_echo --port 47811 --url-file lite_echo_ff.url &
+            for i in $(seq 1 50); do [ -s lite_echo_ff.url ] && break; sleep 0.2; done
+            test "$(cat lite_echo_ff.url)" = http://127.0.0.1:47811
+          fi
+          RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
+            cargo test -p rinch-rtc --target wasm32-unknown-unknown
+          WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
+            --features media --test web_media
+          # Browser <-> native media in Firefox. The runner's Firefox has no
+          # OpenH264 plugin and encodes no H.264 at all, so its video is VP8
+          # (M2, 2026-10-27); the test logs that it skips the H.264 half
+          # and why. The Chrome step's media_echo peers, or new ones on the
+          # same ports.
+          for spec in "47812:" "47813:--h264-only"; do
+            port=${spec%%:*}; flag=${spec#*:}
+            if ! curl -s -o /dev/null -X OPTIONS "http://127.0.0.1:$port/offer"; then
+              rm -f "media_echo_ff_$port.url"
+              target/debug/examples/media_echo --port "$port" $flag --url-file "media_echo_ff_$port.url" &
+              for i in $(seq 1 100); do [ -s "media_echo_ff_$port.url" ] && break; sleep 0.2; done
+            fi
+          done
+          RINCH_RTC_MEDIA_URL=http://127.0.0.1:47812 RINCH_RTC_MEDIA_H264_URL=http://127.0.0.1:47813 \
+            RINCH_RTC_REQUIRE_LIVE=1 WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc \
+            --target wasm32-unknown-unknown --features media --test web_media_native
 
   # Type-check and lint the Android target. Nothing else in this pipeline compiles it.
   #
@@ -630,7 +910,7 @@ jobs:
   # Library targets only: `--all-targets` does not compile rinch's lib-test for
   # Android yet (#793).
   check-android:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -665,7 +945,7 @@ jobs:
           done
 
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 

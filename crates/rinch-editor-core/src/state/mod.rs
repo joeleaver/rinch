@@ -108,7 +108,11 @@ impl EditorState {
     /// a collapsed text cursor (design §5); each plugin folds its state forward.
     pub fn apply(&self, tr: Transaction) -> EditorState {
         let new_doc = tr.doc().clone();
-        let new_selection = tr.selection();
+        // A node selection of a cell or row, or a text range across cells, is
+        // held as the cell selection it stands for (#1847): prosemirror-tables
+        // does this in an appended transaction; it changes no document, so
+        // here it is part of landing the state.
+        let new_selection = tr.selection().normalized(&new_doc);
         // Stored marks survive only if the resulting selection is a bare cursor.
         let stored_marks = if new_selection.is_text_cursor() {
             tr.stored_marks().cloned()

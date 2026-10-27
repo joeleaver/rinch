@@ -36,20 +36,22 @@ impl Default for CameraConfig {
 ///
 /// Dropping this stops the media tracks and cancels the frame loop.
 pub struct CameraCapture {
-    /// Media stream tracks to stop on drop.
-    tracks: Vec<web_sys::MediaStreamTrack>,
-    /// Set to true to cancel the rAF loop.
+    /// The stream's tracks, filled by the setup task once the stream is
+    /// ready, and stopped by `stop` (they used to stay empty, so stopping a
+    /// capture never released the camera).
+    tracks: Rc<RefCell<Vec<web_sys::MediaStreamTrack>>>,
+    /// Cleared to stop the rAF loop, and to tell a setup still waiting for
+    /// its stream to release the camera as soon as it arrives.
     running: Rc<RefCell<bool>>,
 }
 
 impl CameraCapture {
-    /// Stop capture.
+    /// Stop capture: the frame loop ends and the camera is released.
     pub fn stop(&mut self) {
         *self.running.borrow_mut() = false;
-        for track in &self.tracks {
+        for track in self.tracks.borrow_mut().drain(..) {
             track.stop();
         }
-        self.tracks.clear();
     }
 }
 
@@ -191,7 +193,31 @@ fn open_camera_impl(
     let promise = md
         .get_user_media_with_constraints(&constraints)
         .map_err(|e| AvError::Backend(format!("getUserMedia failed: {:?}", e)))?;
+    Ok(start_capture(promise, config, on_frame))
+}
 
+/// Capture frames from a `MediaStream` the app already has: a remote WebRTC
+/// track, `canvas.captureStream()`, or a stream from its own `getUserMedia`.
+/// Web only. `stop` (or dropping the capture) stops the stream's video
+/// tracks.
+pub fn open_camera_from_stream(
+    stream: &web_sys::MediaStream,
+    config: CameraConfig,
+    on_frame: impl FnMut(VideoFrame) + Send + 'static,
+) -> CameraCapture {
+    start_capture(
+        js_sys::Promise::resolve(AsRef::<JsValue>::as_ref(stream)),
+        config,
+        on_frame,
+    )
+}
+
+/// Set up capture once `promise` resolves to a `MediaStream`.
+fn start_capture(
+    promise: js_sys::Promise,
+    config: CameraConfig,
+    on_frame: impl FnMut(VideoFrame) + Send + 'static,
+) -> CameraCapture {
     let running = Rc::new(RefCell::new(true));
     let running_clone = running.clone();
     let tracks_store: Rc<RefCell<Vec<web_sys::MediaStreamTrack>>> =
@@ -211,15 +237,18 @@ fn open_camera_impl(
             }
         };
 
-        // Store tracks for cleanup
         let track_list = stream.get_video_tracks();
-        {
-            let mut tracks = tracks_clone.borrow_mut();
-            for i in 0..track_list.length() {
-                let track: web_sys::MediaStreamTrack = track_list.get(i).into();
-                tracks.push(track);
+        let tracks: Vec<web_sys::MediaStreamTrack> = (0..track_list.length())
+            .map(|i| track_list.get(i).into())
+            .collect();
+        // Stopped before the stream arrived: release the camera at once.
+        if !*running_clone.borrow() {
+            for t in &tracks {
+                t.stop();
             }
+            return;
         }
+        tracks_clone.borrow_mut().extend(tracks);
 
         // Create hidden video element
         let doc = match document() {
@@ -232,6 +261,11 @@ fn open_camera_impl(
         video.set_attribute("autoplay", "").unwrap();
         video.set_attribute("playsinline", "").unwrap();
         video.set_attribute("muted", "").unwrap();
+        // The property, not just the attribute: a `muted` attribute set after
+        // creation does not mute the element, and Chrome refuses to play an
+        // unmuted video without a user gesture, so the camera produced no
+        // frames when opened outside a click.
+        video.set_muted(true);
         video.style().set_property("display", "none").unwrap();
         video.set_src_object(Some(&stream));
 
@@ -241,7 +275,9 @@ fn open_camera_impl(
         }
 
         // Wait for video to be ready
-        let _ = JsFuture::from(video.play().unwrap()).await;
+        if let Err(e) = JsFuture::from(video.play().unwrap()).await {
+            tracing::error!("camera preview video refused to play: {:?}", e);
+        }
 
         // Create hidden canvas for pixel readback
         let canvas: web_sys::HtmlCanvasElement =
@@ -261,17 +297,10 @@ fn open_camera_impl(
         start_frame_loop(running_clone, video, canvas, ctx, w, h, on_frame);
     });
 
-    // Return the CameraCapture immediately.
-    // The tracks_store will be populated asynchronously, but CameraCapture
-    // holds its own running flag to signal stop.
-    //
-    // We need to give CameraCapture the ability to stop tracks. Since the
-    // tracks aren't available yet (async), we store them in a shared RefCell
-    // and give CameraCapture a reference.
-    Ok(CameraCapture {
-        tracks: Vec::new(), // Will be empty initially; stop via running flag
+    CameraCapture {
+        tracks: tracks_store,
         running,
-    })
+    }
 }
 
 fn start_frame_loop(
@@ -287,7 +316,8 @@ fn start_frame_loop(
     let start_time = js_sys::Date::now();
 
     // Recursive rAF closure
-    let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+    type FrameLoop = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
+    let f: FrameLoop = Rc::new(RefCell::new(None));
     let g = f.clone();
 
     *g.borrow_mut() = Some(Closure::new({
@@ -337,18 +367,18 @@ fn start_frame_loop(
             }
 
             // Schedule next frame
-            if let Some(win) = web_sys::window() {
-                if let Some(ref closure) = *f.borrow() {
-                    let _ = win.request_animation_frame(closure.as_ref().unchecked_ref());
-                }
+            if let Some(win) = web_sys::window()
+                && let Some(ref closure) = *f.borrow()
+            {
+                let _ = win.request_animation_frame(closure.as_ref().unchecked_ref());
             }
         }
     }));
 
     // Kick off the first frame
-    if let Some(win) = web_sys::window() {
-        if let Some(ref closure) = *g.borrow() {
-            let _ = win.request_animation_frame(closure.as_ref().unchecked_ref());
-        }
+    if let Some(win) = web_sys::window()
+        && let Some(ref closure) = *g.borrow()
+    {
+        let _ = win.request_animation_frame(closure.as_ref().unchecked_ref());
     }
 }

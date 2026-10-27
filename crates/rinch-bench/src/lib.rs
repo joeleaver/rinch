@@ -646,6 +646,134 @@ pub fn op_full_paint(mut f: PaintFixture) -> PaintFixture {
     f
 }
 
+/// A page painted by the **Vello** painter, the GPU window's: the encoding
+/// walk alone, no GPU. CI's other paint benchmarks measure the software
+/// painter only (#1894 review), and the split-layer path (#1865) lives in
+/// this one: with no GPU surface it must cost nothing, and with one split it
+/// routes every draw over the surface.
+pub struct VelloPaintFixture {
+    pub doc: RinchDocument,
+    pub painter: rinch_dom::paint::vello_painter::VelloPainter,
+    /// The window the frame is opened for slicing over, when it is.
+    pub slicing: Option<peniko::kurbo::Rect>,
+}
+
+impl VelloPaintFixture {
+    /// Paint, and how many surfaces the frame split.
+    fn paint(&mut self) -> usize {
+        use rinch_dom::paint::painter::Painter;
+        self.painter.reset();
+        if let Some(window) = self.slicing {
+            self.painter.begin_slicing(window);
+        }
+        let doc = &mut self.doc;
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut self.painter,
+            1.0,
+            VP,
+            &mut doc.font_cx,
+            &mut doc.layout_cx,
+        );
+        std::hint::black_box(self.painter.take_slices()).len()
+    }
+}
+
+/// The text page of [`setup_full_paint`], painted by the Vello painter on a
+/// frame opened for slicing with no GPU surface in it: the cost of the
+/// split-layer bookkeeping where it does nothing.
+pub fn setup_vello_paint() -> VelloPaintFixture {
+    let PaintFixture { doc, .. } = setup_full_paint();
+    let mut f = VelloPaintFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: Some(peniko::kurbo::Rect::new(
+            0.0,
+            0.0,
+            SIZE.0 as f64,
+            SIZE.1 as f64,
+        )),
+    };
+    f.paint();
+    f
+}
+
+/// A 640x360 GPU surface split out of the scene, 70 boxes painted over it
+/// (rounded, some translucent) and 70 beside it: every draw after the split
+/// is routed. The frame stays installed for the measured paint.
+pub fn setup_vello_paint_split() -> VelloPaintFixture {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; } .b { position: absolute; width: 30px; height: 20px; \
+         border-radius: 4px; background: rgba(20, 30, 40, 0.6); }",
+    );
+    let mut html = String::from(
+        "<div data-render-surface=\"1\" style=\"position: absolute; left: 80px; top: 60px; \
+         width: 640px; height: 360px\"></div>",
+    );
+    for i in 0..140 {
+        let (x, y) = if i < 70 {
+            (90 + (i % 10) * 62, 70 + (i / 10) * 48)
+        } else {
+            (10 + (i % 10) * 70, 450 + ((i - 70) / 10) * 20)
+        };
+        html.push_str(&format!(
+            "<div class=\"b\" style=\"left: {x}px; top: {y}px\"></div>"
+        ));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    rinch_dom::paint::set_surface_gpu_images(Some(std::collections::HashMap::from([(
+        1,
+        peniko::ImageData {
+            data: peniko::Blob::new(std::sync::Arc::new([])),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::AlphaPremultiplied,
+            width: 640,
+            height: 360,
+        },
+    )])));
+    let mut f = VelloPaintFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: Some(peniko::kurbo::Rect::new(
+            0.0,
+            0.0,
+            SIZE.0 as f64,
+            SIZE.1 as f64,
+        )),
+    };
+    f.paint();
+    f
+}
+
+/// The text page of [`setup_vello_paint`] on a frame not opened for slicing:
+/// a window with no GPU surface, which must cost what it did before #1865
+/// (#1899 review).
+pub fn setup_vello_paint_unsliced() -> VelloPaintFixture {
+    let mut f = setup_vello_paint();
+    f.slicing = None;
+    f.paint();
+    f
+}
+
+/// The page of [`setup_vello_paint_split`] on a frame not opened for slicing:
+/// the surface drawn in the scene, as before #1865 (#1899 review).
+pub fn setup_vello_paint_split_unsliced() -> VelloPaintFixture {
+    let mut f = setup_vello_paint_split();
+    f.slicing = None;
+    f.paint();
+    f
+}
+
+/// One Vello paint of the fixture's page.
+pub fn op_vello_paint(mut f: VelloPaintFixture) -> VelloPaintFixture {
+    std::hint::black_box(f.paint());
+    f
+}
+
 /// 40 form fields styled the way an app styles a text input — a 1px border,
 /// a small radius and a blurred `inset` shadow — laid out and painted once
 /// (#974). An inset shadow builds and draws a blurred mask per box per paint,
@@ -1345,5 +1473,346 @@ pub fn setup_collab_table_keystroke(rows: usize) -> CollabFixture {
         before: warm.doc.clone(),
         after: next.doc.clone(),
         session,
+    }
+}
+
+// ── rinch-editor-core: typing over a selection in one cell of a large table ─
+
+/// Columns of the table [`setup_range_type_in_table`] types into.
+pub const RANGE_TABLE_COLS: usize = 10;
+
+/// An editor state, and the state one operation over it led to (kept, so the
+/// measured operation does not also pay to drop it).
+pub struct EditorFixture {
+    pub state: rinch_editor_core::EditorState,
+    pub next: Option<rinch_editor_core::EditorState>,
+}
+
+/// A table of `rows` × [`RANGE_TABLE_COLS`] cells, and a text selection
+/// `len` characters long (`0`: a caret) inside one cell of its middle row.
+///
+/// Typing over a range replaces the selection, which checks the edit for a
+/// table it left ragged (#1847). An edit inside one cell cannot change any
+/// table's grid, so the check reads no table here: the first round of it
+/// walked the whole table (1.0 ms at 1,024 rows, 24.6 ms at 4,096). The
+/// caret variants are the yardstick: a keystroke anywhere in the table is
+/// linear in its rows already (resolving a position walks the row list, and
+/// the edit copies it), and the check adds nothing linear to that: it reads
+/// the start's resolve that the inherited marks need anyway.
+pub fn setup_range_type_in_table((rows, len): (usize, usize)) -> EditorFixture {
+    use rinch_editor_core::{EditorState, Fragment, Pos, Selection, default_plugins};
+    alloc::reserve();
+    let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
+    let para = |text: &str| {
+        let text = schema.text(text).expect("text");
+        schema
+            .branch("paragraph", Fragment::from_node(text))
+            .expect("paragraph")
+    };
+    let branch = |name: &str, children: Vec<rinch_editor_core::Node>| {
+        schema
+            .branch(name, Fragment::from_children(children))
+            .expect(name)
+    };
+    let table = branch(
+        "table",
+        (0..rows)
+            .map(|_| {
+                branch(
+                    "table_row",
+                    (0..RANGE_TABLE_COLS)
+                        .map(|_| branch("table_cell", vec![para("abcd")]))
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    let doc = branch("doc", vec![para("before the table"), table]);
+    // Into the table, the middle row, its third cell and its paragraph; "bc"
+    // of "abcd".
+    let tbl = doc.child(1);
+    let row = tbl.child_count() / 2;
+    let mut at = doc.child(0).node_size() + 1;
+    at += (0..row).map(|r| tbl.child(r).node_size()).sum::<usize>() + 1;
+    at += (0..2)
+        .map(|k| tbl.child(row).child(k).node_size())
+        .sum::<usize>()
+        + 1;
+    at += 1 + 1;
+    let mut state = EditorState::create(schema.clone(), doc, default_plugins());
+    let mut tr = state.tr();
+    tr.set_selection(Selection::text(Pos(at), Pos(at + len)));
+    state = state.apply(tr);
+    EditorFixture { state, next: None }
+}
+
+/// Type one character over the selection, and land the state.
+pub fn op_range_type_in_table(mut f: EditorFixture) -> EditorFixture {
+    let mut tr = f.state.tr();
+    tr.insert_text("Q").expect("insert");
+    f.next = Some(f.state.apply(tr));
+    f
+}
+
+// ── rinch-editor-core: an undo in a large table (#1937) ─────────────────────
+
+/// A keystroke typed in a cell of the middle row of a table of `rows` ×
+/// [`RANGE_TABLE_COLS`] cells, recorded: what [`op_undo`] undoes. With `peer`, a
+/// peer's keystroke follows in the first cell of the table (unrecorded, as a
+/// collaboration integrate applies it), so the undo maps its step through it.
+///
+/// An undo repairs a table it left ragged (#1937). Only an undo mapped through a
+/// change the history did not record can leave one, so a local undo checks
+/// nothing; the peer variant resolves its step's start once, which a keystroke
+/// anywhere in the table already does, and reads no table.
+pub fn setup_undo_in_table((rows, peer): (usize, bool)) -> EditorFixture {
+    use rinch_editor_core::{Pos, Selection};
+    let f = op_range_type_in_table(setup_range_type_in_table((rows, 0)));
+    let mut state = f.next.expect("typed");
+    if peer {
+        // Inside the first cell's paragraph: the table, its row, the cell and
+        // the paragraph open after the paragraph before the table.
+        let at = state.doc.child(0).node_size() + 4 + 1;
+        let mut tr = state.tr();
+        tr.set_selection(Selection::cursor(Pos(at)));
+        tr.insert_text("p").expect("insert");
+        tr.set_add_to_history(false);
+        state = state.apply(tr);
+    }
+    EditorFixture { state, next: None }
+}
+
+/// Undo the newest event.
+pub fn op_undo(mut f: EditorFixture) -> EditorFixture {
+    f.next = f.state.run("undo");
+    f
+}
+
+// ── rinch-editor-core: a cell selection in a large table (#1847) ───────────
+
+/// A table of `rows` × [`RANGE_TABLE_COLS`] cells, each of two paragraphs,
+/// and in its middle row either (`kind` 0) a text range from the first
+/// paragraph of the third cell into its second, or (`kind` 1) a cell
+/// selection of the third and fourth cells. Adopted from the second review
+/// of #1931.
+pub fn setup_cells_in_table((rows, kind): (usize, usize)) -> EditorFixture {
+    use rinch_editor_core::{EditorState, Fragment, Pos, Selection, default_plugins};
+    alloc::reserve();
+    let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
+    let para = |text: &str| {
+        schema
+            .branch(
+                "paragraph",
+                Fragment::from_node(schema.text(text).expect("text")),
+            )
+            .expect("paragraph")
+    };
+    let branch = |name: &str, children: Vec<rinch_editor_core::Node>| {
+        schema
+            .branch(name, Fragment::from_children(children))
+            .expect(name)
+    };
+    let table = branch(
+        "table",
+        (0..rows)
+            .map(|_| {
+                branch(
+                    "table_row",
+                    (0..RANGE_TABLE_COLS)
+                        .map(|_| branch("table_cell", vec![para("abcd"), para("efgh")]))
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    let doc = branch("doc", vec![para("before the table"), table]);
+    let tbl = doc.child(1);
+    let row = tbl.child_count() / 2;
+    let row_start = doc.child(0).node_size()
+        + 1
+        + (0..row).map(|r| tbl.child(r).node_size()).sum::<usize>()
+        + 1;
+    let cell2 = row_start
+        + (0..2)
+            .map(|k| tbl.child(row).child(k).node_size())
+            .sum::<usize>();
+    let cell3 = cell2 + tbl.child(row).child(2).node_size();
+    let sel = if kind == 0 {
+        // "a|bcd" .. "ef|gh" in the third cell.
+        Selection::text(Pos(cell2 + 3), Pos(cell2 + 1 + 6 + 3))
+    } else {
+        Selection::cell(Pos(cell2), Pos(cell3))
+    };
+    let mut state = EditorState::create(schema.clone(), doc, default_plugins());
+    let mut tr = state.tr();
+    tr.set_selection(sel.clone());
+    state = state.apply(tr);
+    assert_eq!(state.selection, sel);
+    // The toolbar's first ask, which computes the table's map; the measured
+    // one is the next mark's.
+    let bold = schema.mark_type("bold").expect("bold").clone();
+    std::hint::black_box(rinch_editor_core::commands::is_mark_active(&state, &bold));
+    EditorFixture { state, next: None }
+}
+
+/// Whether bold is active over the selection: what a toolbar asks once per
+/// mark on every update.
+pub fn op_bold_active(f: EditorFixture) -> EditorFixture {
+    let bold = f.state.schema().mark_type("bold").expect("bold").clone();
+    std::hint::black_box(rinch_editor_core::commands::is_mark_active(&f.state, &bold));
+    f
+}
+
+/// Run `toggleBold` over the selection.
+pub fn op_toggle_bold(mut f: EditorFixture) -> EditorFixture {
+    f.next = f.state.run("toggleBold");
+    f
+}
+
+/// Type one character into cell `col` of the middle row of the table (block 1).
+fn collab_table_type_in(
+    state: &rinch_editor_core::EditorState,
+    col: usize,
+) -> rinch_editor_core::EditorState {
+    use rinch_editor_core::{Pos, Selection};
+    let doc = &state.doc;
+    let table = doc.child(1);
+    let row = table.child_count() / 2;
+    let mut at = doc.child(0).node_size() + 1;
+    at += (0..row).map(|r| table.child(r).node_size()).sum::<usize>() + 1;
+    let cells = table.child(row);
+    at += (0..col).map(|k| cells.child(k).node_size()).sum::<usize>() + 1;
+    at += 1 + 3;
+    let mut tr = state.tr();
+    tr.set_selection(Selection::cursor(Pos(at)));
+    tr.insert_text("x").expect("insert");
+    state.apply(tr)
+}
+
+/// Two peers on a table of `rows` × [`COLLAB_TABLE_COLS`] cells: the host and a guest
+/// joined from its snapshot.
+fn collab_table_peers(
+    rows: usize,
+) -> (
+    Rc<rinch_editor_core::Schema>,
+    (
+        rinch_editor_core::EditorState,
+        rinch_editor_collab::CollabSession,
+    ),
+    (
+        rinch_editor_core::EditorState,
+        rinch_editor_collab::CollabSession,
+    ),
+) {
+    use rinch_editor_core::{EditorState, Plugin, default_plugins};
+    let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
+    let host = collab_table_state(&schema, rows);
+    let host_session = rinch_editor_collab::CollabSession::new(&host).expect("session");
+    let guest_session =
+        rinch_editor_collab::CollabSession::from_bytes(&host_session.snapshot()).expect("join");
+    let mut plugins: Vec<Rc<dyn Plugin>> = default_plugins();
+    plugins.push(Rc::new(rinch_editor_collab::CollabPlugin));
+    let guest = EditorState::create(
+        schema.clone(),
+        guest_session.projected_doc(&schema).expect("read"),
+        plugins,
+    );
+    (schema, (host, host_session), (guest, guest_session))
+}
+
+/// The guest types in `col`, records it, and hands over its delta.
+fn collab_table_peer_types(
+    schema: &rinch_editor_core::Schema,
+    guest: &mut (
+        rinch_editor_core::EditorState,
+        rinch_editor_collab::CollabSession,
+    ),
+    col: usize,
+) -> Vec<u8> {
+    let next = collab_table_type_in(&guest.0, col);
+    guest
+        .1
+        .record_local(schema, &guest.0.doc, &next.doc)
+        .expect("projects");
+    guest.0 = next;
+    guest.1.save_incremental().expect("drain")
+}
+
+/// A peer's keystroke for [`op_collab_integrate`] to integrate: the receiving
+/// editor's state and session, and the delta.
+pub struct CollabIntegrateFixture {
+    pub state: rinch_editor_core::EditorState,
+    pub session: rinch_editor_collab::CollabSession,
+    pub delta: Vec<u8>,
+}
+
+/// A table of `rows` × [`COLLAB_TABLE_COLS`] cells shared by two peers. The guest
+/// types in a cell of the middle row and the host integrates it, once to warm up,
+/// then the guest types again: the host's integrate of that second keystroke is
+/// what [`op_collab_integrate`] measures.
+///
+/// It should not depend on `rows`: the peer changed one cell. #1241 measured it
+/// reading back the whole document (18 ms at 1000 rows, release).
+pub fn setup_collab_table_integrate(rows: usize) -> CollabIntegrateFixture {
+    alloc::reserve();
+    let (schema, mut host, mut guest) = collab_table_peers(rows);
+    let delta = collab_table_peer_types(&schema, &mut guest, 2);
+    host.0 = host
+        .1
+        .integrate_incremental(&host.0, &delta)
+        .expect("integrates")
+        .expect("changes");
+    let delta = collab_table_peer_types(&schema, &mut guest, 2);
+    CollabIntegrateFixture {
+        state: host.0,
+        session: host.1,
+        delta,
+    }
+}
+
+/// Integrate the peer's keystroke into the editor: the converged document as a
+/// transaction, applied (the history's map of it included).
+pub fn op_collab_integrate(mut f: CollabIntegrateFixture) -> CollabIntegrateFixture {
+    f.state = f
+        .session
+        .integrate_incremental(&f.state, &f.delta)
+        .expect("integrates")
+        .expect("changes");
+    f
+}
+
+/// Live collaboration in a table of `rows` × [`COLLAB_TABLE_COLS`] cells: the host
+/// has typed in one cell of the middle row, the guest in another, and the host has
+/// just integrated the guest's keystroke. What [`op_collab_keystroke`] then
+/// projects is the host's next keystroke in its own cell, the first after a peer's
+/// change (#1241: any remote change used to make it read the whole table again).
+pub fn setup_collab_table_keystroke_after_remote(rows: usize) -> CollabFixture {
+    alloc::reserve();
+    let (schema, mut host, mut guest) = collab_table_peers(rows);
+    for _ in 0..2 {
+        let next = collab_table_type_in(&host.0, 1);
+        host.1
+            .record_local(&schema, &host.0.doc, &next.doc)
+            .expect("projects");
+        host.0 = next;
+        let mine = host.1.save_incremental().expect("drain");
+        let theirs = collab_table_peer_types(&schema, &mut guest, 2);
+        guest.0 = guest
+            .1
+            .integrate_incremental(&guest.0, &mine)
+            .expect("integrates")
+            .expect("changes");
+        host.0 = host
+            .1
+            .integrate_incremental(&host.0, &theirs)
+            .expect("integrates")
+            .expect("changes");
+    }
+    let next = collab_table_type_in(&host.0, 1);
+    CollabFixture {
+        schema,
+        before: host.0.doc.clone(),
+        after: next.doc.clone(),
+        session: host.1,
     }
 }

@@ -42,6 +42,17 @@ impl PaintShape {
             PaintShape::Line(l) => l.bounding_box(),
         }
     }
+
+    /// A rect containing the shape, cheaply: a path's control box (its
+    /// points, control points included) rather than its tight bounds, which
+    /// solve each curve's extrema (#1894 review: 6M instructions a paint
+    /// routing ~70 boxes over a split surface). Still conservative.
+    pub fn control_bounds(&self) -> Rect {
+        match self {
+            PaintShape::BezPath(p) => p.control_box(),
+            _ => self.bounding_box(),
+        }
+    }
 }
 
 impl From<Rect> for PaintShape {
@@ -185,6 +196,65 @@ pub struct PaintGlyph {
     pub id: u32,
     pub x: f32,
     pub y: f32,
+}
+
+// ── Split surfaces (#1865) ──────────────────────────────────────────────────
+
+/// A GPU surface's frame at its place in paint order, offered to the painter
+/// to draw outside the scene (`docs/design/split-layer-gpu-surfaces.md`). All
+/// geometry is in device pixels, as paint draws it.
+#[derive(Clone, Debug)]
+pub struct SurfaceSplit {
+    /// The surface's id (`data-render-surface`).
+    pub surface_id: usize,
+    /// The element's content box, before `node_transform`.
+    pub content: Rect,
+    /// The element's transform.
+    pub node_transform: Affine,
+    /// The element's own inner-radius clip, when its corners are rounded.
+    pub inner: Option<PaintShape>,
+    /// Whether the frame is clipped to `content` (`object-fit` overflowing).
+    pub clip_to_content: bool,
+    /// The image-to-device transform the in-scene draw would use
+    /// (`fit_image`), and the image's size in texels.
+    pub image_transform: Affine,
+    pub extents: (u32, u32),
+    /// Whether the frame's texels are straight alpha (a CPU frame, drawn as
+    /// `draw_image` draws one) rather than premultiplied (a registered GPU
+    /// texture, #1768).
+    pub straight_alpha: bool,
+    /// The element's ink in device pixels (its border box grown by its
+    /// shadows and outline, transformed): where the paint cull reaches it,
+    /// so where damage makes the frame paint it, and split it, again.
+    pub ink: Rect,
+}
+
+/// What a painter did with a [`SurfaceSplit`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitVerdict {
+    /// The painter took the frame out of its scene: the compositor draws it.
+    Split,
+    /// The caller draws the frame in the scene, as it would have anyway.
+    InScene(Refusal),
+}
+
+/// Why a surface stays in the scene (#1865, *Fallback to in-scene*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// This painter, or this frame, does not split (software, embed, or a
+    /// frame the runtime did not open for slicing).
+    Unsupported,
+    /// A group effect is open around the surface: opacity below 1, a blend
+    /// other than normal, a mask or another isolated layer (D3a).
+    GroupEffect,
+    /// The element's or the image's transform rotates or skews (D4a).
+    Transform,
+    /// Its region overlaps an earlier split surface's (D7a).
+    Overlap,
+    /// The window's split memory would pass its cap with this surface (D6):
+    /// the runtime names the surfaces that do not fit
+    /// ([`super::vello_painter::VelloPainter::refuse_split`]).
+    MemoryCap,
 }
 
 // ── The Painter trait ───────────────────────────────────────────────────────
@@ -369,6 +439,23 @@ pub trait Painter {
 
     /// Pop the most recent clip or opacity layer.
     fn pop_layer(&mut self);
+
+    /// Offer a GPU surface's frame for the split-layer path (#1865): on
+    /// [`SplitVerdict::Split`] the painter has taken the frame and routes
+    /// everything painted after it by its place against the surface's region;
+    /// the caller then draws nothing for the frame. The default refuses, and
+    /// the caller draws the frame in the scene.
+    fn split_surface(&mut self, split: &SurfaceSplit) -> SplitVerdict {
+        let _ = split;
+        SplitVerdict::InScene(Refusal::Unsupported)
+    }
+
+    /// Paint is starting `node`, one the runtime asked to place in paint
+    /// order against the surfaces split so far (#1865 S4,
+    /// `set_paint_order_watch`). The default ignores it.
+    fn note_node_start(&mut self, node: usize) {
+        let _ = node;
+    }
 
     /// Append all drawing operations from another painter of the same type.
     ///
