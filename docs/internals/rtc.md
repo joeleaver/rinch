@@ -172,8 +172,9 @@ There are no cargo features for the backends: the target picks one.
 
 ## Media (the `media` feature, #1916)
 
-Design record: `docs/design/rtc-media.md`. The web backend is here; native
-media is the next PR (`native_media.rs` returns `NotSupported` until then).
+Design record: `docs/design/rtc-media.md`. Features: `media` (openh264 from
+source) or `media-cisco-openh264` (Cisco's binary, loaded at run time); the
+code's gate is `media-core`, which both turn on.
 
 - **Layout.** `media/mod.rs` holds the API and the main-thread state:
   - local tracks in their own thread-local `LOCALS` (they belong to no
@@ -211,6 +212,140 @@ media is the next PR (`native_media.rs` returns `NotSupported` until then).
   - `on_frame` uses `requestVideoFrameCallback`. A live stream's
     `currentTime` advances with the clock, frames or not, so rAF plus
     `currentTime` re-read the frozen last frame.
+- **Desktop (`native_media.rs`).** The module comment lists the threads.
+  Things that are not obvious:
+  - **One webrtc-rs track per sender, for life.** webrtc-rs 0.21's
+    `RtpSender::replace_track` swaps the track in its core but never binds
+    the new handle, so its writes fail ("bind failed"). `replace_track` here
+    re-points the sender's forwarder from one source to another, and the
+    SSRC and sequence numbers run on, as a browser's replaceTrack does.
+    `add_transceiver` makes its transceiver from a track of ours
+    (`add_transceiver_from_track`) for the same reason. A transceiver that
+    the far side's offer made still goes through webrtc-rs's
+    `replace_track`.
+  - **Senders are `TrackLocalStaticRTP`.** The worker packetizes each
+    sender's frames itself (`forward`, one packetizer per sender), because
+    the codec, and so the payloader, is known only after negotiation.
+  - **The codec and payload type** come from `RtpSender::get_parameters`,
+    polled on a 250 ms tick until known. They are kept per sender: the
+    parameters of a replaced track report no codecs. The sender's codec goes
+    into an `AtomicU8` the pump reads (`wanted_codecs`), so the pump encodes
+    once per codec in use and nothing before any is known.
+  - **Codec order.** `media_engine` registers VP8 then H.264 (when
+    `h264_available()`: built from source, or Cisco's binary loaded), each
+    with RTX. Test hooks: `testing::prefer_h264` puts H.264 first,
+    `testing::h264_only` drops VP8 (`media_echo --h264-only`, for the
+    Chrome H.264 step); both are read when the worker builds the peer's
+    connection.
+  - **Trap: a sender track's codec label.** rtc uses it twice.
+    `codec_preferences_from_encodings` makes it the transceiver's only
+    codec preference (a labelled track offers that codec alone), and
+    `interceptor_local_streams_op` binds the sender to the interceptors
+    (NACK responder, sender reports) only if the label is among the
+    negotiated codecs, so an unlabelled track is never bound and nothing
+    is retransmitted. `video_label` picks the label (the remote offer's
+    first supported codec, else ours) and the worker resets the
+    transceiver's preferences to all codecs, the label first. A label the
+    negotiation leaves out still sends, unbound.
+  - **No RTX.** rtc's NACK generator records arrivals by SSRC before RTX
+    is resolved, so an RTX repair never counted and the same packet was
+    NACKed every 100 ms. Without RTX registered the responder resends the
+    original packet. `tests/media_wire_loss.rs` drops packets in a UDP
+    relay between the peers, which is the only place loss is visible to
+    the interceptors.
+  - **Receive by payload type.** `read_remote` maps payload types to codecs
+    from the receiver's `get_parameters` (refreshed on an unknown one) and
+    rebuilds the decoder and `Assembler` when a packet's codec differs
+    from the current one.
+  - **Keyframes.** On request, plus a 10 s backstop. The default
+    interceptors deliver no PLI/FIR to the sender
+    (`TrackLocalEvent::OnRtcpPacket` fires only for packets an interceptor
+    marks), so `KeyframeRequests`, last in the chain, marks them
+    `Attribute::DeliverToApplication`; the worker's `poll_rtcp` sets the
+    pump's keyframe flag. Also a keyframe on a new sender, on the codec
+    becoming known, and on enable (which also re-reads the source's slot,
+    so a still picture comes back).
+  - **Receive.** `Assembler` is a `SampleBuilder` per codec (512 packets,
+    `with_max_time_delay(500 ms)`: without it one lost packet stalled every
+    later frame). A sequence gap still open after `REPAIR` (200 ms: time for a
+    retransmission) sets `KeyGate::awaiting`: a PLI goes at once (and
+    every 500 ms while it stays set), and frames are held back from the
+    decoder until `VideoCodec::is_keyframe`; it starts set, a codec change
+    sets it, and so does a jump of over 256 (`gate_tests`). The decoder thread sends a PLI on a decode error (at
+    most once a second). The sender honours at most one keyframe request
+    a second.
+  - **Rate.** `PumpEncoder` per codec: a new cap goes to the running
+    encoder (`VideoEncoder::set_bitrate`), and a send budget gates every
+    frame, keyframes included (the request flag is cleared only when a
+    keyframe goes out). libvpx gets `VP8E_SET_MAX_INTRA_BITRATE_PCT`, a
+    fixed one-period duration per frame and a synthetic pts (frame count
+    × period): given the real gap or the wall clock, its rate control read
+    the budget's skipped frames as a slower stream and made larger frames
+    (180 KB, or 4 fps on camera-like content at 300 kbps). Keyframe
+    requests are per encoder (`PumpEncoder::key_pending`). `forward`
+    paces a frame's packets at `Encoded::pace_bps` (2.5 × the bitrate).
+  - **RTP timestamps** step by the time since the codec's last frame
+    (`PumpEncoder::last_sent`), not by 1/fps, before the frame:
+    `forward` calls `skip_samples` and then `packetize(…, 0)`.
+  - **Sizes.** The pump scales a picture under 16 pixels a side up by a
+    whole factor (openh264's minimum) and drops an odd last row or column.
+  - **Mute.** webrtc-rs reports no mute when negotiation stops a track's
+    media (inactive, sendonly on our side). `PeerWorker::refresh`, which
+    runs after every offer, answer and remote description, mutes the
+    remote tracks of transceivers that no longer receive. The reader
+    unmutes on the next packet.
+  - **Remote tracks are keyed on the stack's track id.** `on_track` again
+    for the same id reuses the key and starts a new reader; no second
+    `Track` event.
+  - **Rollback.** `apply_remote` rolls our pending offer back
+    (`SetLocal(rollback)`) before an incoming offer, because webrtc-rs has
+    no implicit rollback. An explicit `Description::rollback()` goes to
+    SetLocal or SetRemote by which offer is pending
+    (`pending_local_description`). `testing::pending_descriptions` reads the
+    native state back, so a test checks that a rollback happened, not just
+    that it returned `Ok`.
+  - **Mirror.** The main thread answers `transceivers()`, `mid()` and the
+    directions from `MIRRORS`. `add_track` and `add_transceiver` push an
+    entry at once; `refresh` fills in mids and negotiated directions. The
+    direction *asked for* is the main thread's own and `refresh` leaves it
+    alone (a SetDirection still on its way would otherwise be overwritten).
+  - **Audio.**
+    - Sources are resampled linearly to 48 kHz (`Resampler`), not with
+      rubato as the record said: one small resampler shared with playback,
+      no new dependency. Fine for voice; a music app may want better.
+    - A source rate that isn't a multiple of 50 Hz (11025, 22050) carries
+      its remainder from one 20 ms tick to the next.
+    - Remote Opus goes through `OpusJitter` on the worker: ordered by
+      extended sequence number, duplicates and late packets dropped, one
+      packet held (`OPUS_HOLD`; more outlasts the mixer's 60 ms), a loss
+      rebuilt from the next packet's in-band FEC or concealed by PLC. The
+      encoder has in-band FEC on, expecting 10% loss. libopus writes FEC
+      only for frames its voice detector calls active speech: a steady tone
+      (the loopback tests' source) gets none, which is why `jitter_tests`
+      encodes a gliding, syllabic buzz.
+    - `OpusJitter` resyncs on a jump: more than `MAX_GAP` (15) packets
+      ahead skips instead of concealing, more than `MAX_LATE` (50) behind
+      starts again; concealment is one packet's duration (`frame`, the
+      last decoded packet's; FEC uses the next packet's).
+    - The send side trims a backlog past 60 ms down to one tick
+      (`audio_pump`), so a stall leaves no lasting latency.
+    - The per-track buffer: 60 ms before it starts, 300 ms at most, and
+      trimmed to 80 ms past 160 ms (`DRIFT_HIGH` / `DRIFT_TARGET`: a sender
+      whose clock runs fast).
+    - The output's rate is published only once the stream is open (0 until
+      then), so the resampler never runs at the wrong rate.
+    - One mixer feeds one rinch-av output, opened on the main thread on the
+      first remote audio. With no device (a CI runner) that is reported
+      once as `RtcError::Media`, and decoding carries on.
+    - `testing::capture_audio_output` replaces the device with a 20 ms
+      pull into a buffer.
+  - **Video sink (M6).** `rinch_core::video_sink` holds the factory the
+    shell installs (`rinch::render_surface::create_video_frame_sink`) from
+    `RinchRuntime::new`; `video_sink::installs_on_this_thread` lets a test
+    see it. rinch-video's `set_frame_sink_factory` forwards to it, and so
+    now takes a `Send + Sync` factory (an API break).
+    `MediaView`'s sink is created on the main thread (the surface registry
+    is the main thread's) and dropped by the view's scope cleanup.
 - **Trap: `MediaStreamTrack` and `MediaStream` have an inherent `clone()`**
   (JS `clone()`, which makes a *new* track), and it outranks `Clone::clone`.
   `track.clone()` handed the sender a copy that `set_enabled` never
@@ -250,6 +385,9 @@ media is the next PR (`native_media.rs` returns `NotSupported` until then).
   - Test hooks: `video_frames_taken`, `audio_samples_taken`,
     `sender_track_id`, `remote_audio_elements`, `live_local_tracks`.
   - CI runs `web_media` in Firefox after a null PulseAudio sink is started.
+    CI also runs `web_media_native` (a desktop peer, `media_echo`, against
+    the browser) in Chrome over VP8 and over H.264, and in Firefox over VP8
+    (CI's Firefox has no OpenH264 plugin).
     It passed without one too, but rinch-av's capture needs it. A Chrome
     step without the autoplay flag pins `WaitingForGesture`
     (`RINCH_RTC_NO_AUTOPLAY`).

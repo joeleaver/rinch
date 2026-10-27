@@ -22,6 +22,8 @@
 
 mod view;
 
+#[cfg(all(feature = "media-cisco-openh264", not(target_arch = "wasm32")))]
+pub use crate::native_media::load_openh264;
 pub use view::{MediaTrack, MediaView};
 
 use std::cell::RefCell;
@@ -488,6 +490,14 @@ impl LocalTrack {
         });
         self
     }
+}
+
+/// Local track `key`'s id (the sender's track id on the wire).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn local_id(key: u64) -> String {
+    LOCALS
+        .with(|l| l.borrow().get(&key).map(|e| e.id.clone()))
+        .unwrap_or_else(|| format!("rinch-{key}"))
 }
 
 /// Whether local track `key` still has a handle (a device that opened

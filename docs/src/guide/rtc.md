@@ -17,9 +17,7 @@ Use it when a WebSocket is the wrong tool:
   ones queued behind it: game ticks, cursors, voice-like data.
 
 Audio and video tracks are behind the `media` feature (see
-[Audio and video](#audio-and-video)). In this release they work on the web
-only; on desktop every media call returns `NotSupported` until the native
-backend lands.
+[Audio and video](#audio-and-video)).
 
 ```toml
 [dependencies]
@@ -289,6 +287,76 @@ Turn on the `media` feature:
 rinch-rtc = { workspace = true, features = ["media"] }
 ```
 
+- **On the web** it uses the browser's own capture, codecs and playback.
+- **On desktop** it uses:
+  - video in **VP8** (the system's libvpx) and **H.264** (openh264, built
+    from Cisco's C source), and Opus audio (libopus, built from source);
+  - capture through rinch-av (cpal and nokhwa);
+  - playback through one rinch-av output stream for the process.
+
+  **Build requirements:** a C compiler, cmake (libopus), libvpx with its
+  headers (`apt install libvpx-dev`, `brew install libvpx`; found by
+  pkg-config), and libclang, since the VP8 bindings are generated at build
+  time. **Install nasm too** (`apt install nasm`, `brew install nasm`):
+  openh264 then uses its assembly and encodes about 3× faster, so a
+  1280×720 call costs a sixth of a core instead of two-thirds. Without
+  nasm it still builds, C only.
+
+  **Which codec a call uses.** A desktop peer offers VP8 first, then
+  H.264, and an answer follows the offer's order. So desktop↔Chrome,
+  desktop↔Firefox and desktop↔desktop calls use VP8. H.264 is used where
+  the other side offers it first, as Safari does. VP8 comes first because
+  every browser can encode it, while a Firefox without Cisco's OpenH264
+  plugin lists H.264 in its offers and then sends nothing. A desktop
+  answers an offer with only the codecs it lists (an H.264-only offer gets
+  an H.264 answer, and is sent H.264), and follows a renegotiation that
+  changes the codec.
+
+  **Bitrate on hard pictures.** `set_max_bitrate` holds in both codecs.
+  A keyframe of a very busy picture can be larger than a second's worth
+  of a low cap, though (openh264's several times larger than VP8's), and
+  the frames after it are skipped to pay it back, so such video pauses
+  after each keyframe. Ordinary camera pictures are not that hard: a
+  busy 640×480 picture with sensor noise keeps 24–28 fps in VP8 at
+  300 kbps and 30 fps in H.264.
+
+  **Packet loss** is repaired by retransmission (NACK): on a link losing
+  3% of video packets the picture does not freeze. A lost packet that
+  cannot be recovered within about 200 ms gets a keyframe request, and
+  nothing corrupt is shown meanwhile.
+  Pictures under 16 pixels a side are scaled up.
+
+### H.264 and its patents: `media` or `media-cisco-openh264`
+
+H.264 is patented. How a desktop build gets its encoder decides who
+covers the licensing:
+
+- **`media`** builds openh264 from Cisco's C source into your app. That
+  build is *not* covered by Cisco's MPEG LA licence: H.264 patent
+  licensing is then your app's own concern.
+- **`media-cisco-openh264`** builds no H.264 code in. Your app downloads
+  Cisco's prebuilt OpenH264 library itself, from
+  `ciscobinary.openh264.org`, separately from your app, as Cisco's terms
+  require (<https://www.openh264.org/faq.html>).
+  - Cisco ships it bzip2'd (`libopenh264-2.6.0-linux64.8.so.bz2` and
+    so on). Decompress it.
+  - Hand its path to `rinch_rtc::media::load_openh264(path)`.
+  - Only **OpenH264 2.6.0** is accepted: the file's SHA-256 must be
+    Cisco's 2.6.0 build for this platform.
+  - The path is made absolute before the file is read. A second call with
+    another file is an error.
+  - The file is hashed, then the system loader opens it again by path, so
+    whoever can replace it in that moment could have other code loaded.
+    Keep it where only your app's user can write.
+  - Until it has loaded, desktop peers offer and accept VP8 only, so video
+    still works, in VP8. Peers made after the load offer H.264 too.
+
+  Cisco's binary licence covers the royalties when its conditions are
+  met.
+
+Pick exactly one. VP8 and Opus are royalty-free either way. This is not
+legal advice; ask your counsel which fits your distribution.
+
 The model is the browser's, simplified.
 
 - A **`LocalTrack`** is something this app sends:
@@ -332,9 +400,23 @@ rsx! {
 }
 ```
 
-`MediaView` is a `<video>` playing the track, muted (remote audio has its
-own element), with `object-fit: contain` on black. Its track is fixed for
-the component's life: key the component on the track to show another.
+`MediaView` shows the track with `object-fit: contain` on black, and its
+track is fixed for the component's life: key the component on the track to
+show another. Under the hood:
+
+- **On the web** it is a `<video>` playing the track, muted (remote audio
+  has its own element).
+- **On desktop** it is a `div` the window's compositor draws decoded frames
+  into. Remote frames are decoded on a thread of their own, with RGBA
+  handed to the renderer. It is black until the first frame.
+
+Both carry `data-rtc-view` with the same view id. On desktop the div also
+carries `data-viewport`, the compositor's key for a video surface, and
+`data-viewport-ready="true"` once a frame has arrived.
+
+**Desktop audio has no echo cancellation** (M5). Browsers cancel echo for
+microphone audio, but desktop capture does not. Two desktop peers on
+speakers will hear themselves, so desktop calls want headphones.
 
 The usual signalling, callback and lifetime rules apply. Media callbacks run
 on the UI thread and are dropped when the component that registered them
@@ -397,5 +479,13 @@ if collision {
 ```
 
 `set_remote_description(Description::rollback())` undoes a pending offer
-explicitly. That's on the web for now; desktop gets it, and the implicit
-rollback above, with the native media PR.
+explicitly.
+
+### Firefox and H.264
+
+Firefox does H.264 through Cisco's OpenH264 plugin, which it downloads by
+itself into the profile shortly after first start. Until it has the
+plugin, Firefox still *lists* H.264 in its offers but encodes nothing.
+Desktop rinch-rtc prefers VP8, so desktop↔Firefox video works either way.
+A desktop app that turns VP8 off (it can't today) or a peer that only
+offers H.264 would hit this.
