@@ -508,10 +508,7 @@ mod tests {
             first.surface_size,
             Some(Size::Logical(LogicalSize::new(560.0, 280.0)))
         );
-        assert_eq!(
-            none.apply(attrs(), req(), false, false).position,
-            None
-        );
+        assert_eq!(none.apply(attrs(), req(), false, false).position, None);
         assert_eq!(none.apply(attrs(), None, false, true).position, None);
     }
 

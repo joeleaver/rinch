@@ -5984,8 +5984,14 @@ fn connected_monitors(event_loop: &dyn ActiveEventLoop) -> Vec<window_geometry::
                 let p = position.to_logical::<f64>(scale);
                 let s = size.to_logical::<f64>(scale);
                 window_geometry::MonitorRect {
-                    position: winit::dpi::PhysicalPosition::new(p.x.round() as i32, p.y.round() as i32),
-                    size: winit::dpi::PhysicalSize::new(s.width.round() as u32, s.height.round() as u32),
+                    position: winit::dpi::PhysicalPosition::new(
+                        p.x.round() as i32,
+                        p.y.round() as i32,
+                    ),
+                    size: winit::dpi::PhysicalSize::new(
+                        s.width.round() as u32,
+                        s.height.round() as u32,
+                    ),
                     scale: 1.0,
                 }
             } else {
@@ -6066,7 +6072,10 @@ mod window_restore_tests {
             y: Some(80),
             ..Default::default()
         });
-        assert!(!rt.begin_appearance(one_monitor(), false), "the sizing window");
+        assert!(
+            !rt.begin_appearance(one_monitor(), false),
+            "the sizing window"
+        );
         assert_eq!(current_window_restore(), None, "nothing on screen yet");
         assert!(rt.begin_appearance(one_monitor(), true), "the first show");
         let attrs = attributes(&mut rt, true);
