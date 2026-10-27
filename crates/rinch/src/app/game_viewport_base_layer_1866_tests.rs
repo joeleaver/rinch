@@ -1,12 +1,16 @@
 //! #1866 on the desktop GPU window: a `GameViewport` is the base layer.
 //!
-//! The window's present path, step by step, minus the window: the app's
-//! scene ([`RinchApp::install_viewport_holes`] with the viewport's name, then
-//! [`RinchApp::build_scene`]) rendered by Vello over the base colour
-//! `WgpuRenderer` picks with a layer present (`ui_base_color`), the game's
-//! layer blitted at [`RinchApp::viewport_rect`] over the window's white base,
-//! and the UI blended on top (`LayerCompositor`). The pixel tests need an
-//! adapter, so they are `#[ignore]`d:
+//! The window's present path, step by step, minus the window, as
+//! `RinchRuntime::paint_gpu` drives it: the viewport handed to paint as a
+//! base layer (`rinch_dom::paint::set_base_viewports`), the frame built with
+//! [`RinchApp::build_gpu_frame_split`] and rendered by Vello into the UI
+//! texture over the window's white base (in full, or partially as
+//! `render_partial` does), the split change applied to the window's
+//! `SplitFrame` and composited with the game's texture (`SplitCompositor`).
+//! A frame whose base split is refused falls back to the layered path
+//! (R1): the box is erased in the scene and the game blitted under the UI
+//! (`LayerCompositor`), which [`Mode::Layered`] drives. The pixel tests need
+//! an adapter, so they are `#[ignore]`d:
 //! `cargo test -p rinch --features gpu --lib -- --ignored gpu_game_viewport_base_layer`.
 //!
 //! The warning tests only build the scene, so they run everywhere (debug
@@ -203,9 +207,25 @@ fn an_opacity_ancestor_warns_on_the_desktop_scene_and_a_plain_one_does_not() {
 mod gpu {
     use super::*;
     use crate::shell::compositor::LayerCompositor;
+    use crate::shell::desktop::{PartialFrame, render_partial};
+    use crate::split_compositor::SplitCompositor;
+    use crate::split_frame::SplitFrame;
+    use rinch_dom::paint::BaseViewport;
     use wgpu::{Device, Queue, Texture, TextureFormat, TextureViewDescriptor};
 
     const MAGENTA: [u8; 4] = [255, 0, 255, 255];
+    /// The id the game's slice is keyed by.
+    const GAME: usize = 9001;
+
+    /// How the window composites the viewport.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    pub(super) enum Mode {
+        /// The split path: a base slice (#1866).
+        Split,
+        /// The fallback for a refused base split (R1): the box erased in the
+        /// scene, the game blitted under the UI.
+        Layered,
+    }
 
     fn device() -> (Device, Queue) {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
@@ -276,91 +296,261 @@ mod gpu {
             .collect()
     }
 
-    /// The window's pixels: the UI over a magenta game layer at the
-    /// viewport's rect, over the window's white base.
-    fn composite(app: &mut RinchApp, name: &str) -> Vec<[u8; 4]> {
-        let (device, queue) = device();
-        build(app, name);
-        let usage = wgpu::TextureUsages::STORAGE_BINDING
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC;
-        let ui = texture(&device, usage);
-        let mut renderer = vello::Renderer::new(
-            &device,
-            vello::RendererOptions {
-                antialiasing_support: vello::AaSupport::all(),
-                use_cpu: false,
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
-        .expect("vello");
-        let base = crate::shell::desktop::ui_base_color(vello::peniko::Color::WHITE, false, true);
-        renderer
-            .render_to_texture(
+    /// A desktop GPU window, as `paint_gpu` and `WgpuRenderer` drive one.
+    pub(super) struct Window {
+        device: Device,
+        queue: Queue,
+        vello: vello::Renderer,
+        ui: Texture,
+        partial: Option<Texture>,
+        split: SplitFrame,
+        compositor: SplitCompositor,
+        layers: LayerCompositor,
+        game: Texture,
+        target: Texture,
+        mode: Mode,
+        /// The game's frame size, and whether it is letterboxed over black
+        /// (a CPU frame's way) rather than stretched (a GPU texture's).
+        extents: (u32, u32),
+        letterbox: bool,
+        /// The UI texture holds a frame (the next may be partial).
+        drawn: bool,
+    }
+
+    impl Window {
+        pub(super) fn new(mode: Mode) -> Self {
+            Self::with_game(mode, [1.0, 0.0, 1.0, 1.0], (W, H), false)
+        }
+
+        /// A window whose game is `extents` texels of the premultiplied
+        /// colour `rgba`, `letterbox`ed or stretched.
+        pub(super) fn with_game(
+            mode: Mode,
+            rgba: [f64; 4],
+            extents: (u32, u32),
+            letterbox: bool,
+        ) -> Self {
+            let (device, queue) = device();
+            let vello = vello::Renderer::new(
                 &device,
-                &queue,
-                app.painter.scene(),
-                &ui.create_view(&TextureViewDescriptor::default()),
-                &vello::RenderParams {
-                    base_color: base,
-                    width: W,
-                    height: H,
-                    antialiasing_method: vello::AaConfig::Msaa16,
+                vello::RendererOptions {
+                    antialiasing_support: vello::AaSupport::all(),
+                    use_cpu: false,
+                    num_init_threads: None,
+                    pipeline_cache: None,
                 },
             )
-            .expect("render");
-
-        let layer = texture(
-            &device,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        );
-        let layer_view = layer.create_view(&TextureViewDescriptor::default());
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &layer_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 1.0,
-                            g: 0.0,
-                            b: 1.0,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
+            .expect("vello");
+            let ui = texture(
+                &device,
+                wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+            );
+            let game = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("game_viewport_base_layer_1866 game"),
+                size: wgpu::Extent3d {
+                    width: extents.0,
+                    height: extents.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
             });
+            let target = texture(
+                &device,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            );
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let view = game.create_view(&TextureViewDescriptor::default());
+                let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: rgba[0],
+                                g: rgba[1],
+                                b: rgba[2],
+                                a: rgba[3],
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+            }
+            queue.submit(Some(encoder.finish()));
+            Self {
+                compositor: SplitCompositor::new(&device, TextureFormat::Rgba8Unorm),
+                layers: LayerCompositor::new(&device, TextureFormat::Rgba8Unorm),
+                device,
+                queue,
+                vello,
+                ui,
+                partial: None,
+                split: SplitFrame::default(),
+                game,
+                target,
+                mode,
+                extents,
+                letterbox,
+                drawn: false,
+            }
         }
-        let ((x, y, w, h), radius) = app.viewport_rect_with_radius(name).expect("the viewport");
-        let compositor = LayerCompositor::new(&device, TextureFormat::Rgba8Unorm);
-        let target = texture(
-            &device,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        );
-        let view = target.create_view(&TextureViewDescriptor::default());
-        compositor.blit_layer_view(
-            &device,
-            &queue,
-            &mut encoder,
-            &layer_view,
-            &view,
-            (x, y, w, h),
-            (W, H),
-            Some(wgpu::Color::WHITE),
-            radius,
-            None,
-        );
-        compositor.overlay_ui(&device, &mut encoder, &ui, &view);
-        queue.submit(Some(encoder.finish()));
-        read(&device, &queue, &target)
+
+        /// Paint, render and composite `app`'s next frame with the viewport
+        /// `name` holding the magenta game (`name` empty: no viewport has a
+        /// game). The first frame is full; later ones are what the damage
+        /// makes them. The window's pixels.
+        pub(super) fn frame(&mut self, app: &mut RinchApp, name: &str) -> Vec<[u8; 4]> {
+            let split = self.mode == Mode::Split;
+            let named = (!name.is_empty()).then(|| name.to_string());
+            app.install_viewport_holes(Some(named.iter().cloned().collect()));
+            if split && let Some(name) = &named {
+                rinch_dom::paint::set_base_viewports(Some(
+                    [(
+                        name.clone(),
+                        BaseViewport {
+                            surface_id: GAME,
+                            extents: self.extents,
+                            letterbox: self.letterbox,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                ));
+            }
+            let _ = rinch_dom::paint::take_base_refused();
+            app.set_split_enabled(split);
+            // The base colour `WgpuRenderer` renders the UI over: the
+            // window's, or transparent over layers.
+            let base = crate::shell::desktop::ui_base_color(
+                vello::peniko::Color::WHITE,
+                false,
+                !split && named.is_some(),
+            );
+            let target = (!self.drawn).then_some(rinch_dom::perf::FullRepaintReason::Invalidated);
+            let (frame, change) = app.build_gpu_frame_split(1.0, (W, H), target);
+            let ui_view = self.ui.create_view(&TextureViewDescriptor::default());
+            match frame {
+                GpuFrame::Full(scene) => self
+                    .vello
+                    .render_to_texture(
+                        &self.device,
+                        &self.queue,
+                        scene,
+                        &ui_view,
+                        &vello::RenderParams {
+                            base_color: base,
+                            width: W,
+                            height: H,
+                            antialiasing_method: vello::AaConfig::Msaa16,
+                        },
+                    )
+                    .expect("render"),
+                GpuFrame::Partial { scene, size, rects } => render_partial(
+                    &self.device,
+                    &self.queue,
+                    &mut self.vello,
+                    &self.ui,
+                    &mut self.partial,
+                    PartialFrame {
+                        scene,
+                        size,
+                        rects: &rects,
+                        base,
+                    },
+                )
+                .expect("partial"),
+                GpuFrame::Unchanged => {}
+            }
+            self.drawn = true;
+            rinch_dom::paint::set_base_viewports(None);
+            rinch_dom::paint::set_active_viewports(None);
+            assert!(
+                !(split && rinch_dom::paint::take_base_refused()),
+                "positive control: the base split was taken"
+            );
+            if let Some(change) = change {
+                self.split
+                    .apply(&self.device, &self.queue, &mut self.vello, change)
+                    .expect("slices");
+            }
+            let game_view = self.game.create_view(&TextureViewDescriptor::default());
+            self.split
+                .set_base_views([(GAME, game_view.clone())].into_iter().collect());
+            let view = self.target.create_view(&TextureViewDescriptor::default());
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            if split {
+                assert_eq!(
+                    self.split.surface_ids().count(),
+                    usize::from(named.is_some()),
+                    "positive control: the window composites the viewport split"
+                );
+                self.split.composite(
+                    &self.compositor,
+                    &self.device,
+                    &mut encoder,
+                    &ui_view,
+                    &view,
+                    (W, H),
+                    &Default::default(),
+                );
+            } else {
+                let mut clear = Some(wgpu::Color::WHITE);
+                if let Some(name) = &named {
+                    let ((x, y, w, h), radius) =
+                        app.viewport_rect_with_radius(name).expect("the viewport");
+                    let clip = app.viewport_clip_rect(name);
+                    self.layers.blit_layer_view(
+                        &self.device,
+                        &self.queue,
+                        &mut encoder,
+                        &game_view,
+                        &view,
+                        (x, y, w, h),
+                        (W, H),
+                        clear.take(),
+                        radius,
+                        clip,
+                    );
+                }
+                if clear.is_some() {
+                    // No game: the UI alone, as the window presents it.
+                    self.split.composite(
+                        &self.compositor,
+                        &self.device,
+                        &mut encoder,
+                        &ui_view,
+                        &view,
+                        (W, H),
+                        &Default::default(),
+                    );
+                } else {
+                    self.layers
+                        .overlay_ui(&self.device, &mut encoder, &self.ui, &view);
+                }
+            }
+            self.queue.submit(Some(encoder.finish()));
+            read(&self.device, &self.queue, &self.target)
+        }
+    }
+
+    /// The window's pixels for `app`'s first frame, on the split path.
+    fn composite(app: &mut RinchApp, name: &str) -> Vec<[u8; 4]> {
+        Window::new(Mode::Split).frame(app, name)
     }
 
     fn near(a: [u8; 4], b: [u8; 4]) -> bool {
@@ -436,5 +626,192 @@ mod gpu {
             .map(|&((x, y), w, what)| (what, (x, y), at(x, y), w))
             .collect();
         assert!(bad.is_empty(), "(what, point, got, want): {bad:?}");
+    }
+
+    /// The game *replaces* what is beneath it (the base rule), it is not
+    /// drawn over it: a half-transparent game over the red earlier sibling
+    /// reads as the game alone (premultiplied, alpha 128), with nothing of
+    /// the red or the green under it. An opaque game cannot tell the two
+    /// apart. And a letterboxed frame (a CPU frame, #354) has black bars
+    /// inside the box, not what is beneath it.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_game_viewport_base_layer_replaces_what_is_beneath() {
+        let name = "desk-replace";
+        let mut app = app_with(page(name));
+        let half = [128.0 / 255.0, 0.0, 128.0 / 255.0, 128.0 / 255.0];
+        let px = Window::with_game(Mode::Split, half, (W, H), false).frame(&mut app, name);
+        let at = |x: u32, y: u32| px[(y * W + x) as usize];
+        let mut bad = Vec::new();
+        for (p, what) in [((100, 100), "over the red sibling"), ((200, 150), "over the green")] {
+            if !near(at(p.0, p.1), [128, 0, 128, 128]) {
+                bad.push((what, p, at(p.0, p.1)));
+            }
+        }
+        // A 300x100 frame letterboxed into the 300x200 box: bars of 50px
+        // above and below it, black.
+        let mut app = app_with(page("desk-letterbox"));
+        let px = Window::with_game(Mode::Split, [1.0, 0.0, 1.0, 1.0], (300, 100), true)
+            .frame(&mut app, "desk-letterbox");
+        let at = |x: u32, y: u32| px[(y * W + x) as usize];
+        for (p, want, what) in [
+            ((100, 75), [0, 0, 0, 255], "the top bar, over the red sibling"),
+            ((200, 225), [0, 0, 0, 255], "the bottom bar"),
+            ((200, 150), MAGENTA, "the frame"),
+        ] {
+            if !near(at(p.0, p.1), want) {
+                bad.push((what, p, at(p.0, p.1)));
+            }
+        }
+        assert!(bad.is_empty(), "(what, point, got): {bad:?}");
+    }
+
+    /// A rounded clipping card (navy, 30px radius) holding, inside its clip,
+    /// a grey panel painted before the viewport and a half-transparent red
+    /// overlay painted after it; the viewport sits in the middle, far from
+    /// the card's edges. `viewport: false` makes the same box a plain `div`.
+    fn halo_page(name: &str, viewport: bool) -> String {
+        let attr = if viewport {
+            format!(" data-viewport=\"{name}\"")
+        } else {
+            String::new()
+        };
+        format!(
+            "<div style=\"position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+             background: rgb(0,128,0)\">\
+             <div style=\"position: absolute; left: 40px; top: 40px; width: 320px; \
+             height: 220px; overflow: hidden; border-radius: 30px; \
+             background: rgb(0,0,128)\">\
+             <div style=\"position: absolute; left: 0; top: 0; width: 320px; height: 220px; \
+             background: rgb(200,200,200)\"></div>\
+             <div{attr} style=\"position: absolute; left: 110px; top: 70px; width: 100px; \
+             height: 80px\"></div>\
+             <div id=\"over\" style=\"position: absolute; left: 0; top: 0; width: 320px; \
+             height: 220px; background: rgba(255,0,0,0.5)\"></div>\
+             </div></div>"
+        )
+    }
+
+    /// The viewport's region R, `(150, 110)..(250, 190)`, grown by one Vello
+    /// tile and a pixel: D10's band, where slicing may round once.
+    fn near_r(x: u32, y: u32) -> bool {
+        (133..267).contains(&x) && (93..207).contains(&y)
+    }
+
+    /// The second review of 461d5e9e: closing the clips open around the
+    /// viewport, erasing, and opening them again composited what the card's
+    /// clip holds in two halves, so every pixel of its antialiased ring where
+    /// both halves drew (the grey panel before, the red overlay after) came
+    /// out up to 64/255 off — along the whole ring, far from the viewport.
+    /// On both paths the window equals the same page with no viewport
+    /// everywhere outside the viewport's neighbourhood (bit for bit), and the
+    /// game shows inside it under the overlay.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_game_viewport_base_layer_no_halo_along_closed_clip_edges() {
+        let mut failures = Vec::new();
+        for mode in [Mode::Split, Mode::Layered] {
+            let name = format!("desk-halo-{mode:?}");
+            let mut app = app_with(halo_page(&name, true));
+            let got = Window::new(mode).frame(&mut app, &name);
+            let mut plain = app_with(halo_page(&name, false));
+            let want = Window::new(mode).frame(&mut plain, "");
+            let mut wrong = 0;
+            let mut worst = (0u8, (0, 0));
+            for y in 0..H {
+                for x in 0..W {
+                    if near_r(x, y) {
+                        continue;
+                    }
+                    let (g, w) = (got[(y * W + x) as usize], want[(y * W + x) as usize]);
+                    let d = g.iter().zip(w).map(|(a, b)| a.abs_diff(b)).max().unwrap();
+                    if d > 0 {
+                        wrong += 1;
+                        if d > worst.0 {
+                            worst = (d, (x, y));
+                        }
+                    }
+                }
+            }
+            if wrong > 0 {
+                failures.push(format!(
+                    "{mode:?}: {wrong} px outside the viewport differ from the page without \
+                     it, worst {} at {:?}",
+                    worst.0, worst.1
+                ));
+            }
+            // Positive control: the game, under the half-red overlay.
+            let mid = got[(150 * W + 200) as usize];
+            if !near(mid, [255, 0, 128, 255]) {
+                failures.push(format!("{mode:?}: the viewport's middle is {mid:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// The second review of 461d5e9e: on the GPU a partial frame must give
+    /// the pixels a full one gives. The halo page's overlay changes colour
+    /// (damage across the viewport and the card's ring); the partial frame's
+    /// window equals a fresh window's full frame of the changed page, bit for
+    /// bit, on the split path and on the layered fallback.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_game_viewport_base_layer_partial_frame_equals_full() {
+        let mut failures = Vec::new();
+        for mode in [Mode::Split, Mode::Layered] {
+            let name = format!("desk-partial-{mode:?}");
+            // The overlay over the card's top-left corner and the viewport's
+            // top-left, small enough for a partial frame.
+            let small = |html: String| {
+                html.replace(
+                    "width: 320px; height: 220px; background: rgba",
+                    "width: 180px; height: 120px; background: rgba",
+                )
+            };
+            let html = small(halo_page(&name, true));
+            assert!(html.contains("180px"), "positive control: the overlay is small");
+            let over: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+            let keep = over.clone();
+            let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+                let root = scope.create_element("div");
+                root.set_inner_html(&html);
+                *keep.borrow_mut() = root.query_selector("#over");
+                root
+            });
+            app.mount_component(W as f32, H as f32);
+            let mut window = Window::new(mode);
+            let _ = window.frame(&mut app, &name);
+            let changed = "position: absolute; left: 0; top: 0; width: 180px; height: 120px; \
+                           background: rgba(0,160,255,0.6)";
+            over.borrow()
+                .clone()
+                .expect("#over")
+                .set_attribute("style", changed);
+            app.resolve_and_repaint(W as f32, H as f32);
+            let _ = app.end_perf_frame();
+            let got = window.frame(&mut app, &name);
+            let stats = app.end_perf_frame().expect("mounted");
+            // Positive control: the second frame was a partial one.
+            if stats.get(rinch_dom::perf::Counter::RepaintPartial) != 1 {
+                failures.push(format!("{mode:?}: the second frame was not partial: {stats:?}"));
+            }
+
+            let fresh_html =
+                small(halo_page(&name, true)).replace("rgba(255,0,0,0.5)", "rgba(0,160,255,0.6)");
+            let mut fresh = app_with(fresh_html);
+            let want = Window::new(mode).frame(&mut fresh, &name);
+            let wrong: Vec<_> = (0..W * H)
+                .filter(|&i| got[i as usize] != want[i as usize])
+                .map(|i| ((i % W, i / W), got[i as usize], want[i as usize]))
+                .collect();
+            if !wrong.is_empty() {
+                failures.push(format!(
+                    "{mode:?}: {} px of the partial frame differ from a full one, first {:?}",
+                    wrong.len(),
+                    wrong[0]
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 }
