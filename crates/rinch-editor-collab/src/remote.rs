@@ -2,9 +2,10 @@
 //!
 //! When a peer's change arrives, yrs merges it (convergence is *its* job). This module
 //! closes the loop back to the model: [`build_remote_transaction`] rebuilds the model
-//! from the converged CRDT ([`CollabDoc::to_doc`](crate::CollabDoc::to_doc)) and emits a
-//! minimal **block-level** `ReplaceStep` (common-prefix/suffix on blocks, so untouched
-//! blocks keep their identity). Because the model is rebuilt from the *same* CRDT both
+//! from the converged CRDT ([`CollabDoc::to_doc`](crate::CollabDoc::to_doc), or, in a
+//! session, a read of only what the update changed: `CollabDoc::read_changed`, #1241)
+//! and emits a minimal **block-level** `ReplaceStep` (common-prefix/suffix on blocks,
+//! so untouched blocks keep their identity). Because the model is rebuilt from the *same* CRDT both
 //! peers converge to, `model ≡ project(model)` is restored exactly — no position-math
 //! risk. Every remote change is therefore a block replace and never a text splice, which
 //! is what makes a block changing *kind* — a paragraph becoming a `horizontal_rule`, or
@@ -169,6 +170,11 @@ pub(crate) struct AtomIds<'a> {
     /// old document and the converged one, in document order, when known
     /// ([`InlineIds`]).
     pub(crate) inline: Option<InlineIds<'a>>,
+    /// Both documents are known to hold no atom of either kind (#1241): every list
+    /// is empty and fits, and no walk counts what the documents hold. Set only from
+    /// what the session knows of the old document and a read of the new one, never
+    /// guessed.
+    pub(crate) none: bool,
 }
 
 /// The identity (`crate::atoms`) of every inline atom of the old document and of
@@ -188,11 +194,17 @@ pub(crate) struct InlineIds<'a> {
 impl AtomIds<'_> {
     /// Whether the lists describe `old` and `target`: one id per leaf block atom.
     pub(crate) fn fits(&self, old: &Node, target: &Node) -> bool {
+        if self.none {
+            return self.old.is_empty() && self.new.is_empty();
+        }
         self.old.len() == block_atoms(old) && self.new.len() == block_atoms(target)
     }
 
     /// The inline identities, when they describe `old` and `target`.
     fn inline_fitting(&self, old: &Node, target: &Node) -> Option<InlineIds<'_>> {
+        if self.none {
+            return self.inline.filter(|i| i.old.is_empty() && i.new.is_empty());
+        }
         self.inline
             .filter(|i| i.old.len() == inline_atoms(old) && i.new.len() == inline_atoms(target))
     }
@@ -251,6 +263,13 @@ pub(crate) fn block_atoms(node: &Node) -> usize {
     }
 }
 
+/// Whether `node` is or holds an atom of either kind.
+pub(crate) fn holds_atoms(node: &Node) -> bool {
+    is_block_atom(node)
+        || is_inline_atom(node)
+        || (!node.is_leaf() && node.content().children().iter().any(holds_atoms))
+}
+
 /// The leaf block atoms `node` is or holds, in the order [`block_atoms`] counts
 /// them (document order).
 pub(crate) fn atom_nodes(node: &Node, out: &mut Vec<Node>) {
@@ -299,7 +318,16 @@ fn changed_middle(
     if on != nn {
         return None;
     }
-    let before: usize = (0..diff.prefix).map(|i| block_atoms(old.child(i))).sum();
+    // Nothing to count in documents that hold no atom (#1241): every count is zero.
+    let none = matches!(atoms, AtomMatch::Ids(ids) if ids.none);
+    let count = |f: fn(&Node) -> usize| -> usize {
+        if none {
+            0
+        } else {
+            (0..diff.prefix).map(|i| f(old.child(i))).sum()
+        }
+    };
+    let before = count(block_atoms);
     let inline = match atoms {
         AtomMatch::Ids(ids) => ids.inline_fitting(old, target),
         AtomMatch::Positional => None,
@@ -309,8 +337,8 @@ fn changed_middle(
     // attributes would keep the shared `Rc` alive where the whole-block replace
     // splits it, and the next local edit's identity match pairs the wrong char
     // (seed 975 of `atom_identity_identical_pictures`). Replace instead.
-    let inline = inline.filter(|_| !holds_an_inline_atom_twice(old));
-    let inline_before: usize = (0..diff.prefix).map(|i| inline_atoms(old.child(i))).sum();
+    let inline = inline.filter(|_| none || !holds_an_inline_atom_twice(old));
+    let inline_before = count(inline_atoms);
     // An identity two chars carry (two copies of one picture that split apart:
     // `crate::atoms`, *What is left*) names neither of them.
     let shared = inline
@@ -329,6 +357,7 @@ fn changed_middle(
         })
         .unwrap_or_default();
     let mut walk = MiddleWalk {
+        none,
         shared,
         edits: Vec::new(),
         atoms,
@@ -349,6 +378,8 @@ fn changed_middle(
 
 /// The walk behind [`changed_middle`].
 struct MiddleWalk<'a> {
+    /// Neither document holds an atom ([`AtomIds::none`]): nothing is counted.
+    none: bool,
     edits: Vec<Edit>,
     atoms: AtomMatch<'a>,
     /// The document-order index of the next leaf block atom, old and new.
@@ -459,8 +490,14 @@ impl MiddleWalk<'_> {
     }
 
     fn pair(&mut self, a: &Node, b: &Node, pos: usize) {
-        let (ca, cb) = (block_atoms(a), block_atoms(b));
-        let (ia, ib) = (inline_atoms(a), inline_atoms(b));
+        let ((ca, cb), (ia, ib)) = if self.none {
+            ((0, 0), (0, 0))
+        } else {
+            (
+                (block_atoms(a), block_atoms(b)),
+                (inline_atoms(a), inline_atoms(b)),
+            )
+        };
         if (a.same_ref(b) || a == b) && self.same_atoms(ca, cb) && self.same_inline(ia, ib) {
             self.ko += ca;
             self.kn += cb;
@@ -495,8 +532,18 @@ impl MiddleWalk<'_> {
             && a.attrs() == b.attrs()
             && a.child_count() == b.child_count()
         {
-            let mut child_pos = pos + 1;
-            for i in 0..a.child_count() {
+            // With no atom to count, the children the two share (`Rc` for `Rc`, at
+            // either end) are skipped by a pointer compare each: a peer's keystroke in
+            // one cell of a big table walks one row and one cell (#1241).
+            let n = a.child_count();
+            let (from, to) = if self.none {
+                let (prefix, suffix) = crate::projection::identity_runs(a, b);
+                (prefix, n - suffix)
+            } else {
+                (0, n)
+            };
+            let mut child_pos = pos + 1 + (0..from).map(|i| a.child(i).node_size()).sum::<usize>();
+            for i in from..to {
                 let ca = a.child(i);
                 self.pair(ca, b.child(i), child_pos);
                 child_pos += ca.node_size();

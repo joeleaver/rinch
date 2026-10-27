@@ -647,6 +647,13 @@ impl RinchRuntime {
         // fallback and reflows once the real face arrives.
         #[cfg(test)]
         let _queue_lock = TestQueueLock::hold();
+        // The named video sink factory (rinch-core's hook), so video players
+        // and rinch-rtc's remote tracks deliver frames through the
+        // RenderSurface compositing pipeline. Here rather than in the two
+        // entry points, which create the event loop and cannot be tested.
+        rinch_core::video_sink::set_video_sink_factory(
+            crate::render_surface::create_video_frame_sink,
+        );
         let mut app = RinchApp::new(component);
         app.register_app_fonts(fonts);
         // The main window's size, scale and focus reach `rinch::window`
@@ -1795,10 +1802,13 @@ impl RinchRuntime {
             .collect();
         let gpu_images = renderer
             .sync_surface_images(gpu_frames.into_iter().map(|(id, texture, _)| (id, texture)));
-        if !fresh.is_empty() {
-            self.app.request_repaint();
-            self.app.mark_surface_nodes_paint_dirty(&fresh);
-        }
+        // A surface the window composites split (#1865) is not damage: its new
+        // frame is composited from the kept slices, with no repaint.
+        self.app.mark_fresh_surfaces(
+            &fresh,
+            &renderer.split_surface_ids(),
+            &renderer.split_stale_ids(),
+        );
         if !gpu_images.is_empty() {
             rinch_dom::paint::set_surface_gpu_images(Some(gpu_images));
         }
@@ -1958,25 +1968,65 @@ impl RinchRuntime {
         // one that has just delivered its first frame.
         //
         // Video frames go in with them: painted inline, in the scene (#1768).
-        self.app.install_gpu_viewport_frames(
-            crate::render_surface::collect_viewport_frames_by_name(),
-            Some(compositor_viewport_names),
+        // Split GPU surfaces and video (#1865) while no `GameViewport` layer is
+        // under the UI: the base-layer path and the split path do not compose
+        // yet (a base layer under split slices is the design's next step).
+        let has_layers = renderer.has_composite_layers() || skipped_unready;
+        let mut viewport_frames = crate::render_surface::collect_viewport_frames_by_name();
+        let split_uploads = super::split_frame::prepare_split_viewports(
+            &mut viewport_frames,
+            &mut renderer.split,
+            !has_layers,
         );
+        self.app
+            .install_gpu_viewport_frames(viewport_frames, Some(compositor_viewport_names));
 
         // Build the frame from the document — CPU surfaces paint inline via
         // draw_image(). Only what its damage reaches is encoded and rendered
         // while the renderer's UI texture holds the last frame (#1718).
-        let frame = self
-            .app
-            .build_gpu_frame(scale, size, renderer.ui_invalid_reason(transparent));
+        self.app.set_split_enabled(!has_layers);
+        let (frame, split_change) =
+            self.app
+                .build_gpu_frame_split(scale, size, renderer.ui_invalid_reason(transparent));
 
         RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_pixels(None);
         rinch_dom::paint::set_surface_gpu_images(None);
+        rinch_dom::paint::set_viewport_split_ids(None);
 
         // Render to screen
         let present_start = std::time::Instant::now();
+        let before: Vec<usize> = renderer.split_surface_ids();
+        if let Some(change) = split_change {
+            renderer.apply_split(change)?;
+        }
+        if has_layers {
+            renderer.split.clear();
+        }
+        // After the change: only the videos this frame keeps split upload
+        // their frame (#1906 review: a hidden or refused one uploaded too).
+        let uploads = {
+            let renderer = &mut *renderer;
+            renderer
+                .split
+                .upload_split_frames(&renderer.device, &renderer.queue, split_uploads)
+        };
+
+        #[cfg(debug_assertions)]
+        {
+            let after = renderer.split_surface_ids();
+            for id in after.iter().filter(|id| !before.contains(id)) {
+                tracing::debug!("rinch: render surface {id} composited split (#1865)");
+            }
+            for id in before.iter().filter(|id| !after.contains(id)) {
+                tracing::debug!("rinch: render surface {id} drawn in the scene (#1865)");
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = before;
         renderer.paint_frame(frame, transparent)?;
+        self.app
+            .perf_add(rinch_dom::perf::Counter::SplitFrameUploads, uploads);
         self.app.perf_add(
             rinch_dom::perf::Counter::TimePresentNs,
             present_start.elapsed().as_nanos() as u64,
@@ -3886,13 +3936,6 @@ where
     // Set global proxy so run_on_main_thread() works from any thread
     install_global_proxy(&proxy);
 
-    // Register video frame sink factory so video players deliver frames
-    // through the RenderSurface compositing pipeline.
-    #[cfg(feature = "video")]
-    {
-        rinch_video::set_frame_sink_factory(crate::render_surface::create_video_frame_sink);
-    }
-
     // Start debug IPC server if feature is enabled (disable with RINCH_DEBUG=0)
     #[cfg(feature = "debug")]
     {
@@ -4011,13 +4054,6 @@ pub fn run_rinch_with_window_props_and_menu<F>(
 
     // Set global proxy so run_on_main_thread() works from any thread
     install_global_proxy(&proxy);
-
-    // Register video frame sink factory so video players deliver frames
-    // through the RenderSurface compositing pipeline.
-    #[cfg(feature = "video")]
-    {
-        rinch_video::set_frame_sink_factory(crate::render_surface::create_video_frame_sink);
-    }
 
     #[cfg(feature = "debug")]
     {
@@ -5146,6 +5182,20 @@ mod bundled_font_tests {
             ],
             "both faces must reach the app, in the order they were declared"
         );
+    }
+
+    /// The shell installs the named video sink factory (rinch-core's hook
+    /// that rinch-video and rinch-rtc draw through). Counted on this thread,
+    /// so another test installing it meanwhile cannot make this pass.
+    #[test]
+    fn the_runtime_installs_the_video_sink_factory() {
+        let before = rinch_core::video_sink::installs_on_this_thread();
+        let _runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        assert_eq!(
+            rinch_core::video_sink::installs_on_this_thread(),
+            before + 1
+        );
+        assert!(rinch_core::video_sink::has_video_sink_factory());
     }
 
     /// And a build that bundles none is not handed a phantom face.

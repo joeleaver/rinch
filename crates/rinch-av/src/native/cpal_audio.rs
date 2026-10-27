@@ -1,7 +1,10 @@
 //! cpal audio backend — device enumeration, stream creation, format negotiation.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{BufferSize, Device, Host, SampleFormat, SampleRate, StreamConfig};
+use cpal::{
+    BufferSize, Device, Host, SampleFormat, StreamConfig, SupportedStreamConfig,
+    SupportedStreamConfigRange,
+};
 
 use crate::device::{DeviceId, DeviceInfo, DeviceKind};
 use crate::error::AvError;
@@ -12,40 +15,32 @@ fn host() -> Host {
 }
 
 /// Map a cpal error into an `AvError`.
-fn map_device_err(e: cpal::DevicesError) -> AvError {
-    AvError::Backend(format!("device enumeration failed: {e}"))
-}
-
-fn map_stream_err(e: cpal::BuildStreamError) -> AvError {
-    match e {
-        cpal::BuildStreamError::DeviceNotAvailable => {
-            AvError::DeviceNotFound("device not available".into())
-        }
-        cpal::BuildStreamError::StreamConfigNotSupported => {
-            AvError::FormatUnsupported("stream config not supported".into())
-        }
-        cpal::BuildStreamError::InvalidArgument => AvError::Backend("invalid argument".into()),
-        cpal::BuildStreamError::StreamIdOverflow => AvError::Backend("stream ID overflow".into()),
-        _ => AvError::Backend(format!("build stream error: {e}")),
+fn map_err(e: cpal::Error) -> AvError {
+    use cpal::ErrorKind as K;
+    match e.kind() {
+        K::DeviceNotAvailable | K::HostUnavailable => AvError::DeviceNotFound(e.to_string()),
+        K::DeviceBusy => AvError::DeviceInUse,
+        K::PermissionDenied => AvError::PermissionDenied,
+        K::UnsupportedConfig => AvError::FormatUnsupported(e.to_string()),
+        _ => AvError::Backend(e.to_string()),
     }
 }
 
-fn map_play_err(e: cpal::PlayStreamError) -> AvError {
-    AvError::Backend(format!("play stream error: {e}"))
-}
-
-fn map_default_err(e: cpal::DefaultStreamConfigError) -> AvError {
-    match e {
-        cpal::DefaultStreamConfigError::DeviceNotAvailable => {
-            AvError::DeviceNotFound("device not available".into())
-        }
-        _ => AvError::Backend(format!("default config error: {e}")),
-    }
-}
-
-/// Build a device name suitable for use as a `DeviceId`.
+/// The backend's own device id (an ALSA PCM name such as `pulse` or
+/// `default:CARD=Webcam`), used as our `DeviceId`.
 fn device_id(device: &Device) -> String {
-    device.name().unwrap_or_else(|_| "unknown".into())
+    device
+        .id()
+        .map(|id| id.id().to_string())
+        .unwrap_or_else(|_| "unknown".into())
+}
+
+/// The device's display name.
+fn device_name(device: &Device) -> String {
+    device
+        .description()
+        .map(|d| d.name().to_string())
+        .unwrap_or_else(|_| "Unknown".into())
 }
 
 // ── Friendly Device Names (Linux) ──
@@ -151,14 +146,14 @@ fn linux_extract_card_id(alsa_name: &str) -> Option<&str> {
 /// Enumerate output devices with friendly names.
 pub(crate) fn enumerate_output_devices() -> Result<Vec<DeviceInfo>, AvError> {
     let host = host();
-    let default_name = host.default_output_device().and_then(|d| d.name().ok());
+    let default_id = host.default_output_device().map(|d| device_id(&d));
 
-    let devices = host.output_devices().map_err(map_device_err)?;
+    let devices = host.output_devices().map_err(map_err)?;
     let mut raw = Vec::new();
     for device in devices {
-        let name = device.name().unwrap_or_else(|_| "Unknown".into());
+        let name = device_name(&device);
         let id = device_id(&device);
-        let is_default = default_name.as_deref() == Some(&name);
+        let is_default = default_id.as_deref() == Some(&id);
         raw.push(DeviceInfo {
             id: DeviceId(id),
             name,
@@ -173,14 +168,14 @@ pub(crate) fn enumerate_output_devices() -> Result<Vec<DeviceInfo>, AvError> {
 /// Enumerate input devices with friendly names.
 pub(crate) fn enumerate_input_devices() -> Result<Vec<DeviceInfo>, AvError> {
     let host = host();
-    let default_name = host.default_input_device().and_then(|d| d.name().ok());
+    let default_id = host.default_input_device().map(|d| device_id(&d));
 
-    let devices = host.input_devices().map_err(map_device_err)?;
+    let devices = host.input_devices().map_err(map_err)?;
     let mut raw = Vec::new();
     for device in devices {
-        let name = device.name().unwrap_or_else(|_| "Unknown".into());
+        let name = device_name(&device);
         let id = device_id(&device);
-        let is_default = default_name.as_deref() == Some(&name);
+        let is_default = default_id.as_deref() == Some(&id);
         raw.push(DeviceInfo {
             id: DeviceId(id),
             name,
@@ -196,7 +191,7 @@ pub(crate) fn enumerate_input_devices() -> Result<Vec<DeviceInfo>, AvError> {
 
 fn find_output_device(device_id: &DeviceId) -> Result<Device, AvError> {
     let host = host();
-    let devices = host.output_devices().map_err(map_device_err)?;
+    let devices = host.output_devices().map_err(map_err)?;
     for device in devices {
         if self::device_id(&device) == device_id.0 {
             return Ok(device);
@@ -207,7 +202,7 @@ fn find_output_device(device_id: &DeviceId) -> Result<Device, AvError> {
 
 fn find_input_device(device_id: &DeviceId) -> Result<Device, AvError> {
     let host = host();
-    let devices = host.input_devices().map_err(map_device_err)?;
+    let devices = host.input_devices().map_err(map_err)?;
     for device in devices {
         if self::device_id(&device) == device_id.0 {
             return Ok(device);
@@ -218,51 +213,115 @@ fn find_input_device(device_id: &DeviceId) -> Result<Device, AvError> {
 
 // ── Stream Config Negotiation ──
 
-/// Build a `StreamConfig` from our config, validating against device capabilities.
-fn negotiate_output_config(
-    device: &Device,
+/// The format and layout a stream was actually opened with: what the
+/// callbacks' samples really are. Interleaved f32 at the API, whatever
+/// `sample_format` the device runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Negotiated {
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub sample_format: SampleFormat,
+}
+
+/// The sample formats the callbacks convert to and from f32, best first.
+fn format_rank(f: SampleFormat) -> Option<u8> {
+    match f {
+        SampleFormat::F32 => Some(0),
+        SampleFormat::I16 => Some(1),
+        SampleFormat::U16 => Some(2),
+        _ => None,
+    }
+}
+
+/// Pick what to open the device with, from what it supports.
+///
+/// Prefers, in order: the requested channel count; a range that contains
+/// the requested rate (otherwise the nearest rate the range allows); a
+/// format the callbacks convert, f32 first. With no usable range, the
+/// device's default config if its format is convertible.
+///
+/// The result is what the stream really runs at, which the caller reports
+/// (it used to report the *requested* rate and channels whatever the device
+/// did, issue #1916 / design record rtc-media.md 3.5).
+pub(crate) fn select_config(
+    ranges: &[SupportedStreamConfigRange],
+    default: Option<&SupportedStreamConfig>,
+    want_rate: u32,
+    want_channels: u16,
+) -> Result<Negotiated, AvError> {
+    let best = ranges
+        .iter()
+        .filter_map(|r| format_rank(r.sample_format()).map(|rank| (r, rank)))
+        .map(|(r, rank)| {
+            // `clamp` panics on min > max; a backend reporting a range
+            // the wrong way round is read as the range it spans.
+            let (lo, hi) = (r.min_sample_rate(), r.max_sample_rate());
+            let rate = want_rate.clamp(lo.min(hi), lo.max(hi));
+            let key = (
+                r.channels() != want_channels,
+                r.channels().abs_diff(want_channels),
+                rate.abs_diff(want_rate),
+                rank,
+            );
+            (key, r, rate)
+        })
+        .min_by_key(|(key, _, _)| *key);
+    if let Some((_, r, rate)) = best {
+        return Ok(Negotiated {
+            sample_rate: rate,
+            channels: r.channels(),
+            sample_format: r.sample_format(),
+        });
+    }
+    match default {
+        Some(d) if format_rank(d.sample_format()).is_some() => Ok(Negotiated {
+            sample_rate: d.sample_rate(),
+            channels: d.channels(),
+            sample_format: d.sample_format(),
+        }),
+        Some(d) => Err(AvError::FormatUnsupported(format!(
+            "unsupported sample format: {:?}",
+            d.sample_format()
+        ))),
+        None => Err(AvError::FormatUnsupported(
+            "the device reports no stream configuration".into(),
+        )),
+    }
+}
+
+fn negotiate(
+    ranges: Result<Vec<SupportedStreamConfigRange>, cpal::Error>,
+    default: Result<SupportedStreamConfig, cpal::Error>,
     sample_rate: u32,
     channels: u16,
     buffer_size: u32,
-) -> Result<(StreamConfig, SampleFormat), AvError> {
-    // Try to get the default config first to check sample format support
-    let default_config = device.default_output_config().map_err(map_default_err)?;
-
-    let sample_format = default_config.sample_format();
-
-    let buf_size = negotiate_buffer_size(&default_config.config(), buffer_size);
-
-    let config = StreamConfig {
-        channels,
-        sample_rate: SampleRate(sample_rate),
-        buffer_size: buf_size,
+) -> Result<(StreamConfig, Negotiated), AvError> {
+    // Either query may fail while the other answers; only when neither
+    // gives anything is it an error, and then it is the backend's own
+    // (a busy or refused device is not "not found").
+    let (ranges, ranges_err) = match ranges {
+        Ok(r) => (r, None),
+        Err(e) => (Vec::new(), Some(e)),
     };
-
-    Ok((config, sample_format))
+    let (default, default_err) = match default {
+        Ok(d) => (Some(d), None),
+        Err(e) => (None, Some(e)),
+    };
+    if ranges.is_empty() && default.is_none() {
+        return Err(ranges_err.or(default_err).map(map_err).unwrap_or_else(|| {
+            AvError::FormatUnsupported("the device reports no stream configuration".into())
+        }));
+    }
+    let n = select_config(&ranges, default.as_ref(), sample_rate, channels)?;
+    let config = StreamConfig {
+        channels: n.channels,
+        sample_rate: n.sample_rate,
+        buffer_size: negotiate_buffer_size(buffer_size),
+    };
+    Ok((config, n))
 }
 
-fn negotiate_input_config(
-    device: &Device,
-    sample_rate: u32,
-    channels: u16,
-    buffer_size: u32,
-) -> Result<(StreamConfig, SampleFormat), AvError> {
-    let default_config = device.default_input_config().map_err(map_default_err)?;
-
-    let sample_format = default_config.sample_format();
-
-    let buf_size = negotiate_buffer_size(&default_config.config(), buffer_size);
-
-    let config = StreamConfig {
-        channels,
-        sample_rate: SampleRate(sample_rate),
-        buffer_size: buf_size,
-    };
-
-    Ok((config, sample_format))
-}
-
-fn negotiate_buffer_size(_default_config: &StreamConfig, requested: u32) -> BufferSize {
+fn negotiate_buffer_size(requested: u32) -> BufferSize {
     // cpal on many backends doesn't support fixed buffer sizes well,
     // so we default to letting the backend choose unless the user
     // explicitly requested something.
@@ -278,37 +337,49 @@ fn negotiate_buffer_size(_default_config: &StreamConfig, requested: u32) -> Buff
 /// Open an output stream on the given device.
 ///
 /// Returns the cpal stream (must be kept alive) and the resolved config.
-pub(crate) fn open_output_stream(
+pub(crate) fn open_output_stream<F: FnMut(&mut [f32]) + Send + 'static>(
     device: &Device,
     sample_rate: u32,
     channels: u16,
     buffer_size: u32,
-    mut fill: impl FnMut(&mut [f32]) + Send + 'static,
-) -> Result<cpal::Stream, AvError> {
-    let (config, sample_format) =
-        negotiate_output_config(device, sample_rate, channels, buffer_size)?;
+    make_fill: impl FnOnce(Negotiated) -> F,
+) -> Result<(cpal::Stream, Negotiated), AvError> {
+    let (config, negotiated) = negotiate(
+        device
+            .supported_output_configs()
+            .map(|it| it.collect::<Vec<_>>()),
+        device.default_output_config(),
+        sample_rate,
+        channels,
+        buffer_size,
+    )?;
+    let sample_format = negotiated.sample_format;
+    // Built now that the stream's real format is known.
+    let mut fill = make_fill(negotiated);
 
-    let err_callback = |err: cpal::StreamError| {
+    let err_callback = |err: cpal::Error| {
         tracing::error!("audio output stream error: {err}");
     };
 
+    let mut f32_buf: Vec<f32> = Vec::new();
     let stream = match sample_format {
         SampleFormat::F32 => device
             .build_output_stream(
-                &config,
+                config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     fill(data);
                 },
                 err_callback,
                 None,
             )
-            .map_err(map_stream_err)?,
+            .map_err(map_err)?,
         SampleFormat::I16 => device
             .build_output_stream(
-                &config,
+                config,
                 move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                    // Convert: call fill with f32 buffer, then convert to i16
-                    let mut f32_buf = vec![0.0f32; data.len()];
+                    // Convert: call fill with an f32 buffer (reused across
+                    // callbacks), then convert to i16.
+                    f32_buf.resize(data.len(), 0.0);
                     fill(&mut f32_buf);
                     for (out, &sample) in data.iter_mut().zip(f32_buf.iter()) {
                         *out = (sample * i16::MAX as f32) as i16;
@@ -317,12 +388,12 @@ pub(crate) fn open_output_stream(
                 err_callback,
                 None,
             )
-            .map_err(map_stream_err)?,
+            .map_err(map_err)?,
         SampleFormat::U16 => device
             .build_output_stream(
-                &config,
+                config,
                 move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
-                    let mut f32_buf = vec![0.0f32; data.len()];
+                    f32_buf.resize(data.len(), 0.0);
                     fill(&mut f32_buf);
                     for (out, &sample) in data.iter_mut().zip(f32_buf.iter()) {
                         // f32 [-1, 1] -> u16 [0, 65535]
@@ -332,7 +403,7 @@ pub(crate) fn open_output_stream(
                 err_callback,
                 None,
             )
-            .map_err(map_stream_err)?,
+            .map_err(map_err)?,
         _ => {
             return Err(AvError::FormatUnsupported(format!(
                 "unsupported sample format: {sample_format:?}"
@@ -340,64 +411,76 @@ pub(crate) fn open_output_stream(
         }
     };
 
-    stream.play().map_err(map_play_err)?;
-    Ok(stream)
+    stream.play().map_err(map_err)?;
+    Ok((stream, negotiated))
 }
 
 // ── Input Stream ──
 
 /// Open an input stream on the given device.
-pub(crate) fn open_input_stream(
+pub(crate) fn open_input_stream<F: FnMut(&[f32]) + Send + 'static>(
     device: &Device,
     sample_rate: u32,
     channels: u16,
     buffer_size: u32,
-    mut on_data: impl FnMut(&[f32]) + Send + 'static,
-) -> Result<cpal::Stream, AvError> {
-    let (config, sample_format) =
-        negotiate_input_config(device, sample_rate, channels, buffer_size)?;
+    make_on_data: impl FnOnce(Negotiated) -> F,
+) -> Result<(cpal::Stream, Negotiated), AvError> {
+    let (config, negotiated) = negotiate(
+        device
+            .supported_input_configs()
+            .map(|it| it.collect::<Vec<_>>()),
+        device.default_input_config(),
+        sample_rate,
+        channels,
+        buffer_size,
+    )?;
+    let sample_format = negotiated.sample_format;
+    // Built now that the stream's real format is known.
+    let mut on_data = make_on_data(negotiated);
 
-    let err_callback = |err: cpal::StreamError| {
+    let err_callback = |err: cpal::Error| {
         tracing::error!("audio input stream error: {err}");
     };
 
+    let mut f32_buf: Vec<f32> = Vec::new();
     let stream = match sample_format {
         SampleFormat::F32 => device
             .build_input_stream(
-                &config,
+                config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     on_data(data);
                 },
                 err_callback,
                 None,
             )
-            .map_err(map_stream_err)?,
+            .map_err(map_err)?,
         SampleFormat::I16 => device
             .build_input_stream(
-                &config,
+                config,
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    let f32_buf: Vec<f32> =
-                        data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+                    f32_buf.clear();
+                    f32_buf.extend(data.iter().map(|&s| s as f32 / i16::MAX as f32));
                     on_data(&f32_buf);
                 },
                 err_callback,
                 None,
             )
-            .map_err(map_stream_err)?,
+            .map_err(map_err)?,
         SampleFormat::U16 => device
             .build_input_stream(
-                &config,
+                config,
                 move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                    let f32_buf: Vec<f32> = data
-                        .iter()
-                        .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0)
-                        .collect();
+                    f32_buf.clear();
+                    f32_buf.extend(
+                        data.iter()
+                            .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0),
+                    );
                     on_data(&f32_buf);
                 },
                 err_callback,
                 None,
             )
-            .map_err(map_stream_err)?,
+            .map_err(map_err)?,
         _ => {
             return Err(AvError::FormatUnsupported(format!(
                 "unsupported sample format: {sample_format:?}"
@@ -405,8 +488,8 @@ pub(crate) fn open_input_stream(
         }
     };
 
-    stream.play().map_err(map_play_err)?;
-    Ok(stream)
+    stream.play().map_err(map_err)?;
+    Ok((stream, negotiated))
 }
 
 /// Get the default output device.
@@ -427,10 +510,7 @@ pub(crate) fn default_output_device() -> Result<Device, AvError> {
     // Fallback: try "pulse" device (works on PipeWire systems via pipewire-alsa)
     if let Ok(devices) = host.output_devices() {
         for device in devices {
-            if let Ok(name) = device.name()
-                && name == "pulse"
-                && device.default_output_config().is_ok()
-            {
+            if device_id(&device) == "pulse" && device.default_output_config().is_ok() {
                 return Ok(device);
             }
         }
@@ -466,10 +546,7 @@ pub(crate) fn default_input_device() -> Result<Device, AvError> {
     // Fallback: try "pulse" device (works on PipeWire systems via pipewire-alsa)
     if let Ok(devices) = host.input_devices() {
         for device in devices {
-            if let Ok(name) = device.name()
-                && name == "pulse"
-                && device.default_input_config().is_ok()
-            {
+            if device_id(&device) == "pulse" && device.default_input_config().is_ok() {
                 return Ok(device);
             }
         }
@@ -495,4 +572,117 @@ pub(crate) fn get_output_device(id: &DeviceId) -> Result<Device, AvError> {
 /// Find a specific input device by ID.
 pub(crate) fn get_input_device(id: &DeviceId) -> Result<Device, AvError> {
     find_input_device(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpal::SupportedBufferSize;
+
+    fn range(ch: u16, min: u32, max: u32, f: SampleFormat) -> SupportedStreamConfigRange {
+        SupportedStreamConfigRange::new(ch, min, max, SupportedBufferSize::Unknown, f)
+    }
+
+    #[test]
+    fn the_requested_format_when_the_device_supports_it() {
+        let ranges = [
+            range(2, 44_100, 48_000, SampleFormat::I16),
+            range(1, 8_000, 96_000, SampleFormat::F32),
+        ];
+        let n = select_config(&ranges, None, 48_000, 1).unwrap();
+        assert_eq!(
+            n,
+            Negotiated {
+                sample_rate: 48_000,
+                channels: 1,
+                sample_format: SampleFormat::F32
+            }
+        );
+    }
+
+    #[test]
+    fn what_the_device_runs_when_it_cannot_do_what_was_asked() {
+        // A stereo-only, 44.1 kHz-only device asked for 48 kHz mono: the
+        // stream really runs 44.1 kHz stereo, and that is what is reported.
+        let ranges = [range(2, 44_100, 44_100, SampleFormat::I16)];
+        let n = select_config(&ranges, None, 48_000, 1).unwrap();
+        assert_eq!((n.sample_rate, n.channels), (44_100, 2));
+        assert_eq!(n.sample_format, SampleFormat::I16);
+    }
+
+    #[test]
+    fn the_nearest_rate_inside_a_range_and_f32_first() {
+        let ranges = [
+            range(1, 16_000, 32_000, SampleFormat::U16),
+            range(1, 16_000, 32_000, SampleFormat::F32),
+            range(1, 16_000, 32_000, SampleFormat::I16),
+        ];
+        let n = select_config(&ranges, None, 48_000, 1).unwrap();
+        assert_eq!(
+            (n.sample_rate, n.sample_format),
+            (32_000, SampleFormat::F32)
+        );
+    }
+
+    #[test]
+    fn the_channel_count_outranks_the_sample_format() {
+        // Mono only in i16, f32 only in stereo, mono asked for: mono i16.
+        let ranges = [
+            range(2, 48_000, 48_000, SampleFormat::F32),
+            range(1, 48_000, 48_000, SampleFormat::I16),
+        ];
+        let n = select_config(&ranges, None, 48_000, 1).unwrap();
+        assert_eq!((n.channels, n.sample_format), (1, SampleFormat::I16));
+    }
+
+    #[test]
+    fn a_range_reported_the_wrong_way_round_does_not_panic() {
+        let ranges = [range(1, 48_000, 16_000, SampleFormat::F32)];
+        let n = select_config(&ranges, None, 96_000, 1).unwrap();
+        assert_eq!(n.sample_rate, 48_000);
+        let n = select_config(&ranges, None, 8_000, 1).unwrap();
+        assert_eq!(n.sample_rate, 16_000);
+    }
+
+    #[test]
+    fn negotiation_passes_the_backends_error_on() {
+        use cpal::ErrorKind as K;
+        let err = |k| cpal::Error::with_message(k, "probe");
+        let busy = negotiate(
+            Err(err(K::DeviceBusy)),
+            Err(err(K::DeviceBusy)),
+            48_000,
+            1,
+            0,
+        );
+        assert!(
+            matches!(busy, Err(AvError::DeviceInUse)),
+            "{:?}",
+            busy.err()
+        );
+        let denied = negotiate(Ok(Vec::new()), Err(err(K::PermissionDenied)), 48_000, 1, 0);
+        assert!(
+            matches!(denied, Err(AvError::PermissionDenied)),
+            "{:?}",
+            denied.err()
+        );
+        // One query failing while the other answers is no error.
+        let default =
+            SupportedStreamConfig::new(1, 44_100, SupportedBufferSize::Unknown, SampleFormat::F32);
+        let (_, n) = negotiate(Err(err(K::DeviceBusy)), Ok(default), 48_000, 1, 0).unwrap();
+        assert_eq!(n.sample_rate, 44_100);
+    }
+
+    #[test]
+    fn unconvertible_formats_fall_back_to_a_convertible_default_or_fail() {
+        let ranges = [range(1, 48_000, 48_000, SampleFormat::I32)];
+        assert!(matches!(
+            select_config(&ranges, None, 48_000, 1),
+            Err(AvError::FormatUnsupported(_))
+        ));
+        let default =
+            SupportedStreamConfig::new(2, 48_000, SupportedBufferSize::Unknown, SampleFormat::F32);
+        let n = select_config(&ranges, Some(&default), 22_050, 1).unwrap();
+        assert_eq!((n.sample_rate, n.channels), (48_000, 2));
+    }
 }

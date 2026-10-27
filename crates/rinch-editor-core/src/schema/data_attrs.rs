@@ -73,7 +73,9 @@ pub const RESERVED_DATA_ATTR_PREFIXES: &[&str] = &[
 ///   (`data-nofocus`, `data-disabled`, `data-trap-focus`, `data-backdrop`,
 ///   `data-scroll-lock-exempt`, `data-drag-window`), compositing holes
 ///   (`data-viewport`, `data-viewport-ready`, `data-render-surface`,
-///   `data-video-player`), a press's block (`data-block-index`);
+///   `data-video-player`), rinch-rtc's `MediaView` element (`data-rtc-view`:
+///   the web backend finds its `<video>` by it and sets the track as its
+///   `srcObject`), a press's block (`data-block-index`);
 /// - state the shell writes on elements (`data-focused`, `data-preedit`, the
 ///   native `<select>` popup's `data-nsel-opt` / `data-selected` /
 ///   `data-highlighted`), and `rsx!`'s and components' runtime markers
@@ -116,6 +118,7 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-viewport-ready",
     "data-render-surface",
     "data-video-player",
+    "data-rtc-view",
     "data-block-index",
     "data-focused",
     "data-preedit",

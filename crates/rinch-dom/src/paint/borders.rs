@@ -252,14 +252,15 @@ pub(super) fn paint_borders(
                 // border box's shape and the padding box's (css-backgrounds-3
                 // §5.5, #977), elliptical corners included — one even-odd
                 // fill, which a stroke of an ellipse cannot draw (an offset
-                // ellipse is no ellipse).
+                // ellipse is no ellipse). Non-zero, the hole wound against
+                // the outline (`punched`).
                 let outer = Rect::new(x, y, x + w, y + h);
                 let mut ring = radii.path(outer);
                 let inner = outer.inset(-bw);
                 if inner.width() > 0.0 && inner.height() > 0.0 {
-                    ring.extend(radii.inner(bw, bw, bw, bw).path(inner).iter());
+                    ring = punched(ring, &radii.inner(bw, bw, bw, bw).path(inner));
                 }
-                painter.fill_color(Fill::EvenOdd, transform, bc, &ring.into());
+                painter.fill_color(Fill::NonZero, transform, bc, &ring.into());
             } else {
                 // The dashed, dotted and double strokes run along the
                 // border's centre line, whose radii are the outer ones less
@@ -747,9 +748,9 @@ pub(super) fn paint_outline(
         let outer_rect = inner_rect.inflate(ow, ow);
         let mut ring = radii.grown(offset + ow).path(outer_rect);
         if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
-            ring.extend(radii.grown(offset).path(inner_rect).iter());
+            ring = punched(ring, &radii.grown(offset).path(inner_rect));
         }
-        painter.fill_color(Fill::EvenOdd, transform, color, &ring.into());
+        painter.fill_color(Fill::NonZero, transform, color, &ring.into());
     } else if !radii.is_square() {
         // Each radius grows by how far the outline's centre line is from the
         // border edge, on both axes (an elliptical corner stays elliptical).
@@ -817,7 +818,8 @@ pub(super) fn paint_box_shadow(
 
     // The element's own border box, which an outer shadow is never painted
     // inside of. Every layer below is drawn as this hole punched out of the
-    // layer's expanded rect, with `Fill::EvenOdd` doing the punching.
+    // layer's expanded rect, wound against it under `Fill::NonZero`
+    // (`punched`).
     //
     // It is what CSS says — an outer `box-shadow` is clipped to the outside of
     // the border box — and it is also, on a software rasteriser, the difference
@@ -850,8 +852,10 @@ pub(super) fn paint_box_shadow(
     /// Whether the hole is wholly inside `outer` — the precondition the punch
     /// needs, and not a rounding detail.
     ///
-    /// `Fill::EvenOdd` counts crossings, so a point inside the hole and
-    /// *outside* the layer is crossed once and fills. Where the border box
+    /// The punch is the hole wound against the layer (`punched`), so a point
+    /// inside the hole and *outside* the layer winds to -1 and fills (under
+    /// `Fill::EvenOdd`, which it used to be, it is crossed once and fills
+    /// just the same). Where the border box
     /// escapes the layer's rect the punch therefore stops subtracting and
     /// starts adding, painting shadow inside the element that CSS says is not
     /// there. It escapes whenever a shadow is offset further than the layer is
@@ -1083,7 +1087,7 @@ type ShadowLayer = (AlphaColor<Srgb>, Rect, BezPath, bool);
 /// box `hole` (#976).
 ///
 /// Where the hole lies inside every layer, each layer is its ring — the
-/// layer's shape plus the hole under `Fill::EvenOdd`, which subtracts the
+/// layer's shape with the hole wound against it (`punched`), which subtracts the
 /// hole and fills only the pixels the ring covers (see `hole_fits` for why
 /// that needs the hole inside the layer).
 ///
@@ -1092,7 +1096,7 @@ type ShadowLayer = (AlphaColor<Srgb>, Rect, BezPath, bool);
 /// the even-odd fill would *add* the part of the hole outside the layer, so
 /// every layer is filled whole through **one** clip for the element that is
 /// everything but the hole: a rect around all the layers and the hole, plus
-/// the hole, under `Fill::EvenOdd`. They used to be filled whole with no clip,
+/// the hole wound against it (`punched`). They used to be filled whole with no clip,
 /// which painted the shadow through an element without an opaque background,
 /// where CSS clips an outer shadow to the outside of the border box. The hole
 /// is the same for every shadow of the element, so a shadow list costs one
@@ -1105,11 +1109,11 @@ fn paint_shadow_layers(
     layers: Vec<ShadowLayer>,
 ) {
     if layers.iter().all(|&(_, _, _, fits)| fits) {
-        for (color, _, mut ring, _) in layers {
-            // `Fill::EvenOdd` over the layer and the hole is what cuts: a
-            // point inside both is crossed twice and left alone.
-            ring.extend(hole.iter());
-            painter.fill_color(Fill::EvenOdd, transform, color, &ring.into());
+        for (color, _, layer, _) in layers {
+            // The layer with the hole wound against it is what cuts: a
+            // point inside both winds to zero and is left alone.
+            let ring = punched(layer, hole);
+            painter.fill_color(Fill::NonZero, transform, color, &ring.into());
         }
         return;
     }
@@ -1128,9 +1132,8 @@ fn paint_shadow_layers(
     let linear = transform.determinant().abs().sqrt();
     let pad = if linear > 1e-6 { 2.0 / linear } else { 2.0 };
     let around = around.union(hole.bounding_box()).inflate(pad, pad);
-    let mut outside_hole = around.into_path(0.1);
-    outside_hole.extend(hole.iter());
-    painter.push_clip(Fill::EvenOdd, transform, &outside_hole.into());
+    let outside_hole = punched(around.into_path(0.1), hole);
+    painter.push_clip(Fill::NonZero, transform, &outside_hole.into());
     for (color, _, outer, _) in layers {
         painter.fill_color(Fill::NonZero, transform, color, &outer.into());
     }
@@ -1156,7 +1159,7 @@ fn paint_shadow_layers(
 /// along the curve (review of #1014, F1), where Vello composites the clip
 /// once.
 ///
-/// - **Unblurred**: the ring is a vector fill (`EvenOdd`, hole cut out).
+/// - **Unblurred**: the ring is a vector fill (the hole cut out by `punched`).
 /// - **Blurred**: the shadow is drawn as images whose alpha is the colour's
 ///   alpha times one minus the hole's coverage blurred by a Gaussian of
 ///   `sigma = blur / 2` — the definition in §7.1 — so corners and rounded
@@ -1257,15 +1260,44 @@ pub(super) fn paint_inset_box_shadow(
         } else {
             let hole_path: BezPath = hole_radii.path(hole);
             // The padding box (and the hole, wherever the offset took it)
-            // with the hole cut out by `EvenOdd`; the clip trims it to the
+            // with the hole cut out (`punched`); the clip trims it to the
             // padding shape. The outer rect contains the hole, so the
-            // even-odd count only ever subtracts.
-            let mut path = pad.union(hole).inflate(1.0, 1.0).into_path(0.1);
-            path.extend(hole_path.iter());
-            painter.fill_color(Fill::EvenOdd, transform, color, &path.into());
+            // hole wound against it only ever subtracts.
+            let path = punched(pad.union(hole).inflate(1.0, 1.0).into_path(0.1), &hole_path);
+            painter.fill_color(Fill::NonZero, transform, color, &path.into());
         }
         painter.pop_layer();
     }
+}
+
+/// `outer` with `hole` cut out of it under `Fill::NonZero`: the hole's
+/// contours are appended wound against `outer`'s, so a point inside both
+/// winds to zero. `hole` must lie inside `outer` — a part of it outside
+/// winds to -1 and fills — which every caller ensures (a border's padding
+/// box, an outline's border box, a shadow's hole that `hole_fits`, the rects
+/// grown around a hole).
+///
+/// Not `Fill::EvenOdd`, which gives the same coverage for a hole inside
+/// `outer` (#1865 D9). Vello's MSAA even-odd fill (`fill_path_ms_evenodd` in
+/// `vello_shaders`' `fine.wgsl`, 0.7 and upstream `main`) clears its
+/// workgroup winding arrays at the start of a fill with no barrier after the
+/// previous fill's last reads of them, so a subgroup narrower than the
+/// 64-invocation workgroup can zero a row another subgroup has not read yet.
+/// Lavapipe (8-wide subgroups, run one after another) does it every time:
+/// a rounded border came out as a 1/8-coverage wash over its whole corner
+/// tile. A GPU whose subgroups are narrower than the workgroup has the same
+/// race in principle (it did not show on RADV, whose wave runs the whole
+/// workgroup). The
+/// non-zero path reads only its own quad's words after its last barrier, and
+/// a hole wound against its outline is also what Vello's analytic area
+/// coverage needs (`BorderRadii::path_with_holes`).
+fn punched(mut outer: BezPath, hole: &BezPath) -> BezPath {
+    if (outer.area() > 0.0) == (hole.area() > 0.0) {
+        outer.extend(hole.reverse_subpaths().iter());
+    } else {
+        outer.extend(hole.iter());
+    }
+    outer
 }
 
 /// The signed distance from `(u, v)` — relative to an ellipse's centre — to

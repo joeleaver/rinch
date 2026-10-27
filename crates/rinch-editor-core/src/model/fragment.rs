@@ -35,6 +35,27 @@ impl Fragment {
         Fragment(Rc::new(FragmentInner { children, size }))
     }
 
+    /// Build a fragment from `children`, joining adjacent text nodes with equal
+    /// marks into one. Port of ProseMirror's `Fragment.fromArray`; a rebuilt run
+    /// of inline content (a mark step's re-marked copy) goes through this, or the
+    /// nodes it leaves equal stay apart (#1856).
+    pub(crate) fn from_array(children: Vec<Node>) -> Fragment {
+        let mut joined: Vec<Node> = Vec::with_capacity(children.len());
+        for node in children {
+            if let Some(last) = joined.last_mut()
+                && last.is_text()
+                && node.is_text()
+                && last.same_markup(&node)
+            {
+                let text = format!("{}{}", last.text().unwrap(), node.text().unwrap());
+                *last = last.with_text(text.into());
+            } else {
+                joined.push(node);
+            }
+        }
+        Fragment::from_children(joined)
+    }
+
     /// Build a single-child fragment.
     pub fn from_node(node: Node) -> Fragment {
         Fragment::from_children(vec![node])

@@ -150,7 +150,7 @@ fn paint_image_pixels(
 /// The transform that places an `iw` x `ih` image into `rect` by
 /// `object_fit` (under `node_transform`), and whether the result must be
 /// clipped to `rect`. `None` for an empty rect.
-fn fit_image(
+pub(crate) fn fit_image(
     iw: f64,
     ih: f64,
     rect: Rect,

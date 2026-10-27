@@ -368,7 +368,7 @@ pub fn av_section() -> NodeHandle {
 
                         // Camera off overlay
                         if camera_off.get() {
-                            div { style: "position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--rinch-color-body); display: flex; align-items: center; justify-content: center; z-index: 1;",
+                            div { style: "position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--rinch-color-body); display: flex; align-items: center; justify-content: center;",
                                 div { style: "display: flex; flex-direction: column; align-items: center; gap: 12px;",
                                     div { style: "width: 80px; height: 80px; border-radius: 50%; background: var(--rinch-color-default); display: flex; align-items: center; justify-content: center;",
                                         div { style: "width: 36px; height: 36px; color: var(--rinch-color-dimmed);",

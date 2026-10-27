@@ -7,6 +7,6 @@ pub mod history;
 pub mod markdown;
 pub mod placeholder;
 
-pub use history::{HISTORY_KEY, HistoryPlugin, HistoryState};
+pub use history::{__history_work, HISTORY_KEY, HistoryPlugin, HistoryState};
 pub use markdown::MarkdownInputRulesPlugin;
 pub use placeholder::{PLACEHOLDER_KEY, PlaceholderPlugin};

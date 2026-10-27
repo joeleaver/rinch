@@ -211,6 +211,66 @@ feature = "web-gpu")))` — an off-by-default `rinch` feature adding `dep:wgpu` 
 with the canvas's current texture as the target. `SurfaceRoute::GpuImage` holds the desktop
 `GpuHandle`; the web arm needs its own variant (or a device abstraction) rather than that type.
 
+**Split-layer fast path (#1865, in progress).** Design record:
+`docs/design/split-layer-gpu-surfaces.md`. PR 1 adds the compositor,
+`shell/split_compositor.rs` (`SplitCompositor`, not yet wired into the present
+path): below around the regions, then per surface `above_out ∘ mix(below,
+above_in ∘ (surface · own ∘ below), ancestors)` in one pass with no blend
+state, every blend in the shader in f32, the surface sampled with Vello's own
+image arithmetic, so a split matches in-scene bit for bit except in the D10
+classes. The ancestors' clip coverage is applied once, to the surface and
+what is painted over it inside those clips (`above_in`, rendered without
+them), as the scene does; applying it to each separately conflated on a
+rounded card's ring (#1887 review).
+The oracle is `shell/split_compositor_1865_tests.rs` (per-pixel allowances
+computed from each case's own renders; `0` everywhere no class names), the
+Vello facts it stands on are pinned in `shell/split_slices_1865_tests.rs`
+(a registered texture no scene draws is never read; a whole-pixel clip has
+binary coverage; the below slice is in-scene but one level near R; an
+inverse clip must be non-zero with the hole wound backwards, since even-odd
+nested in a clip drops coverage on lavapipe). Both are `#[ignore]`d GPU tests
+named `gpu_split_*`; `split_composite_cost_probe` is the cost measurement.
+
+**The split path in the desktop window (#1865 PR 3).** `paint_gpu` enables
+splitting (`RinchApp::set_split_enabled`) unless a `GameViewport` layer is
+under the UI; `build_gpu_frame_split` paints with `VelloPainter::begin_slicing`
+and hands back a `shell::split_frame::SplitChange` (the surfaces whose kept
+slices it replaces, and the new slices); `WgpuRenderer::apply_split` renders
+the new slices into region textures (`SplitFrame`, each slice rendered where
+the window draws it into a scratch target, region kept) and `present`
+composites (`SplitFrame::composite`) when anything is split. A fresh frame of
+a split surface is not damage (`RinchApp::mark_fresh_surfaces`): the window
+composites without repainting. Damage meeting a kept region has the region
+added, so the region's slices are replaced whole. A tainted slice repaints the
+frame in-scene and suspends splitting for 120 frames. Debug builds log each
+surface's placement change (`tracing::debug!`). **Video (PR 4):**
+`split_frame::prepare_split_viewports` names the video viewports paint may
+split (`set_viewport_split_ids`) and drops a split video's new frame from the
+viewport damage, unless its size is not the slice's (a size change is caught
+there, where the frame arrives; `stale_ids` covers `RenderSurface` textures).
+Paint's video arm offers the frame to `split_surface` after its black
+backdrop. After the frame's change is applied,
+`SplitFrame::upload_split_frames` uploads the frames of the videos the window
+keeps split, and only those (one texture per surface id, straight alpha;
+counter `split_frame_uploads`). **Memory cap (PR 5, D6):** a window's split
+memory (the scratch target at the size its kept slices need, each slice's
+masks and above slices; not the window's own textures, a `RenderSurface`'s,
+or the uploaded video frames, which in the scene sit in Vello's atlas:
+`split_frame::COUNT_UPLOADS`) may be `SPLIT_MEMORY_CAP_WINDOWS` (4) times
+the window's texture bytes (`split_frame::split_bytes`, `over_cap`). After
+paint, `RinchApp::gpu_frame_kind` adds this frame's slices in paint order to
+what stays split from earlier frames; the first that passes the cap and every
+one after it are refused (`VelloPainter::refuse_split`,
+`Refusal::MemoryCap`) and the frame is painted again with them in the scene.
+They stay refused until the cap grows (a bigger window: a resize that shrinks
+it keeps them), a split surface the cap did not refuse goes, or 120 painted
+frames pass. A painter that splits what it was told to refuse sends every
+surface to the scene, logs an error once and suspends splitting as taint
+does. The scratch target is dropped
+when it is larger than the kept slices need. Oracle:
+`crates/rinch/src/split_runtime_1865_tests.rs` (`gpu_split_runtime_*`, a child of `render_surface`),
+the runtime's own steps against an in-scene window.
+
 **Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). `gpu_handle()` is `None` whenever the window presents with the software renderer (`RINCH_RENDERER=cpu`, or the `Renderer::Auto` fallback), so handle `None` unless you use one of the two entry points below — they always present on the GPU. By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
 
 | Entry point | Ownership | Use when |

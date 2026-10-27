@@ -115,7 +115,7 @@ jobs:
   # Push to main: build the dependency graph and save it for PRs. No benchmarks.
   seed-cache:
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Check out main
@@ -155,7 +155,7 @@ jobs:
         with:
           packages: >-
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
-            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev
+            libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev
 
       # An exact hit means the dependency tree is already cached for this
       # Cargo.lock and toolchain: there is nothing to build or save.
@@ -185,7 +185,7 @@ jobs:
     concurrency:
       group: perf-${{ github.event.pull_request.number }}
       cancel-in-progress: true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
@@ -259,7 +259,7 @@ jobs:
         with:
           packages: >-
             valgrind libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
-            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev
+            libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev
 
       - name: Check valgrind
         run: valgrind --version
@@ -369,7 +369,7 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       (needs.instruction-counts.result == 'success' || needs.instruction-counts.result == 'failure')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       pull-requests: write

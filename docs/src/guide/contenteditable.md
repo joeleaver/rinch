@@ -122,6 +122,62 @@ table), the new row gets a cell per empty column, unless there are more than 100
 columns and more of them than the whole table has cells; then it gets cells up to 1000
 columns wide.
 
+**Selections in a table are held as cell selections** (#1847), as prosemirror-tables
+holds them. A selection that lands (`set_selection`, a drag, a Shift+click, a peer's
+edit mapping it) is normalized first: a node selection of a cell, or of a row, becomes
+a cell selection of it; a text range whose ends are in two cells of one table becomes
+the cell selection of the rectangle between them, on the web as on the desktop; an end
+between cells or rows belongs to the cell after it (the one before it, at a row's
+end), so a Shift+click from a cell selection keeps its anchor cell; and a range that
+only crosses the boundary between two cells becomes a caret at its start. Two
+selections are left as they are: a node selection of a whole table (Backspace after a
+table selects it, and the next Backspace deletes it), and the whole-document selection
+`selectAll` makes (ProseMirror's `AllSelection`, never a cell selection).
+`selection()` reads back the normalized selection, and copying a cell selection copies
+the selected cells, whole, as a table.
+
+**Shift+arrow at a cell's edge selects cells**, as prosemirror-tables' `shiftArrow`
+does, in front of the normalization: at the end of a cell's last block (Shift+Right,
+or Ctrl+Shift+Right, whose word motion stops there) or the start of its first
+(Shift+Left), or on its last or first line (Shift+Down / Shift+Up), the key selects
+the cell and its neighbour; over a cell selection every Shift+arrow moves the head
+cell, and stops at the table's edge. In any other block of the cell (a paragraph above
+a nested table, say) the selection extends as text, and a nested table counts as inside
+its cell. Past a row's end Shift+Right reaches the next row's first cell; out of the
+table (the last cell's end, the bottom row's last line) the selection extends as text,
+and at the document's start or end the key does nothing. Up or Down into a table from
+outside it lands in the cell under the caret, so Shift+Down out of the bottom row and
+Shift+Up back is a text selection again.
+`EditorHandle::move_cursor` does this for the horizontal motions;
+`EditorHandle::shift_arrow_cells` is the hook a platform's Shift+Up/Down calls with its
+own vertical step, as the desktop and web input paths do.
+
+Over a cell selection, the toolbar commands apply to every selected cell: marks
+(`toggleBold` …, links), block types (`setHeading2` …, `setParagraph`) and alignment
+walk `Selection::ranges`, one content range per cell. Backspace, Delete, typing and
+paste clear the cells first, and so do Shift+Enter (`insertHardBreak`),
+`insertHorizontalRule`, `insertTable` and `insert_image`, which then put their node in
+the first cell. Enter (`enter`, `splitBlock`) does nothing over a cell selection.
+
+A text range with its ends in two different tables, or with one end outside every
+table, has no cell selection to stand for it. An edit over it that takes cells out of
+a row, or rows out from under a `rowspan`, has the table put back in the same
+transaction (one undo step): a span past the last row or into another cell is cut, and
+each short row gets an empty cell for each missing column (one cell spanning each gap,
+when that would be an unreasonable number of cells: a pasted `colspan=1000` cell over
+bare rows), until the table tiles. A pasted table whose rows are ragged is
+padded the same way, at a caret as over a range. Only a table the edit made ragged, or
+pasted, is repaired; a table that was already ragged (loaded that way from HTML) is
+left as it is. An edit inside one cell is not checked against the tables around it, so
+it costs nothing in their size. A range from text inside a cell to text outside the
+table (a drag out of the table) is refused by Backspace, typing and paste, as before
+(#1930). The repair runs in the `Transaction` methods that replace the selection
+(`delete_selection`, `replace_selection`, `insert_text`, `replace_selection_with`,
+`insert_block`), which every built-in command and the handle's typing and paste use.
+**A transaction an app builds from the position methods (`delete`, `replace`,
+`replace_with`, `step`, ...) is not repaired**: give it whole cells or rows, or it can
+leave a ragged table.
+
 A block-type command clears what the new type cannot hold, as ProseMirror's `setBlockType` does: `setCodeBlock` removes the marks (a code block takes none), turns a hard break into a line break (`\n`) and deletes an image.
 
 > Links need a destination, so applying a link is a builder rather than a bare named
@@ -298,7 +354,7 @@ rsx! { Editor { editor: editor.clone() } }
 | `active_link_href() -> Option<String>` | The `href` of the link the selection is on, for pre-filling an "edit link" dialog: for a range, the first link in it; for a caret, the link text typed there would carry. A link is not inclusive, so a caret inside it answers its `href` and a caret at its start or right after its last character answers `None` — except where it runs straight into a different link, where the caret is in the first. |
 | `paste(&PasteContent) -> bool` | Paste `text/plain` and/or `text/html` over the selection the way the user's paste does: your plugins first, then the default. See [Seeing and rewriting a paste](#seeing-and-rewriting-a-paste). |
 | `replace_selection_with_html(&str)` | Replace the selection with parsed HTML (the default rich paste; no plugin sees it), fitted to where it lands. See [What a paste does](#what-a-paste-does). |
-| `selection_clipboard()` | The current selection serialized as `(html, plain_text)` for the clipboard. A selection inside a list is copied with its list, one across table cells with its table. |
+| `selection_clipboard()` | The current selection serialized as `(html, plain_text)` for the clipboard. A selection inside a list is copied with its list, one across table cells with its table. A selection across the cells of one table is a cell selection, and copies those cells whole (#1847). |
 | `anchor_selection() -> SelectionAnchor` | Capture the selection for a later insertion, kept pointing at the same content as the user keeps editing. See [Pasting is asynchronous](#pasting-is-asynchronous). |
 
 HTML is **schema-whitelisted** on load: known block tags become nodes and known
@@ -1854,6 +1910,17 @@ that fans each delta it receives out to the other peers, forwarding the raw byte
 unchanged. A chain — A wired to B, B wired to C, with nothing joining A and C —
 silently partitions: C never sees A's edits, and nothing errors.
 
+**Undo reverts your own edits.** A peer's edit never enters your undo history, and
+your undo steps follow the text through peers' changes: Ctrl+Z after a peer typed
+before, after or inside your edit, bolded or retyped your paragraph, wrapped it in a
+quote or moved a block past it, reverts your edit where it now is (#1249). A step
+whose text a peer deleted is skipped, and so is one that no longer fits (re-making a
+code block of a paragraph a peer has since made bold); the rest of that undo still
+applies, and the undo is used up. One limit: the editor tells your text from a peer's
+by comparing the document before and after their change, so where the two hold
+identical copies (the same word pasted beside yours, two empty paragraphs made at
+once, line breaks side by side) an undo can land on the peer's copy (#1895).
+
 If a peer might have missed deltas — offline, reconnecting, or polling over HTTP with
 no persistent connection at all — reconcile with a **state vector + diff** exchange
 instead of relying on delta delivery being perfect:
@@ -1892,8 +1959,9 @@ text-blocks + marks** (paragraphs, headings, code blocks, bold/italic/link/…),
 list containers (bullet/ordered lists and list items) and block quotes, nested
 into each other to any depth, tables (merged cells included, anything above inside a
 cell), horizontal rules, embeds ([an app's own block](#embeds-blocks-an-app-draws)), and the inline atoms inside a
-line — images and hard breaks (Shift+Enter). Task lists, and a pasted table whose rows are ragged, are still outside
-it: an edit
+line — images and hard breaks (Shift+Enter). Task lists, and a ragged table an app's own
+transaction builds, are still outside it (a pasted table with ragged rows is padded in
+the paste, #1847): an edit
 outside that scope fails loud rather than silently diverging —
 `collab_take_error()` surfaces it, and the CRDT is left untouched (the local edit is
 not projected). Horizontal rules, embeds, images, hard breaks, block quotes and tables all

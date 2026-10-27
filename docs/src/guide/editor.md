@@ -607,9 +607,14 @@ What it does not do, where ProseMirror does:
   asked for either. A fit that would need one fails, and a paste then falls back to
   its plain text.
 - A range whose two ends are in different isolating nodes (two table cells) is not
-  fitted: only the plain `replace` is tried, as before.
+  fitted: only the plain `replace` is tried, as before. Two cells of one table never
+  reach it from a selection: `EditorState::apply` holds that range as a cell
+  selection (`Selection::normalized`, #1847). Across two tables, the selection
+  gestures repair a table the replace left ragged (see `Transaction::delete_selection`).
 - A **cell selection** is not a range: its `from()..to()` are the positions before
-  its two corner cells. `Transaction::replace_selection` refuses one. The paste
+  its two corner cells. `Transaction::replace_selection` refuses one, and so do
+  `delete_selection`, `insert_text`, `replace_selection_with` and `insert_block`
+  (#1847; `splitBlock` and Enter therefore refuse one too). The paste
   (`EditorHandle`) clears the selected cells (`commands::table_ops::clear_cells`) and
   fits the content in the top-left cell, in one transaction — what ProseMirror's
   `CellSelection.replace` does with content that is not cells. `replace_range` itself
@@ -806,8 +811,16 @@ so `performance.now()` in a browser) unless its builder called `set_time` itself
 does must read the same clock, `history_now_ms()`: a time on another clock (epoch
 milliseconds) stops the next keystroke from merging. On undo it pops a group, applies
 its inverted steps as a transaction that doesn't re-enter history, and restores the
-recorded selection. The steps are not mapped over a change the history did not record
-(a collaboration peer's), so an undo after one can revert the wrong text (#1615). `undo` / `redo` are the only history entry points.
+recorded selection. A change the history does not record (a collaboration peer's, any
+transaction with `add_to_history(false)`) is kept as its step maps, and an undo maps each
+inverted step through everything after it before applying it (ProseMirror's
+`Branch.addMaps` / `popEvent`, #1249): it lands on the text where it now is. The maps of
+such a change are reconstructed from the documents before and after it, diffed position by
+position (marks and block types ignored), so where identical content makes that ambiguous an
+undo can land on the wrong copy (#1895). A step that no longer maps (its text was deleted)
+or no longer applies is skipped, and the undo is still used up; an undo of typing a peer has
+since typed inside deletes only the typed text, around theirs. `undo` / `redo` are the only
+history entry points.
 
 ## Plugins
 

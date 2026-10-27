@@ -9,7 +9,7 @@ Two kinds of pull request into `main`:
 | | Component PR (any head branch) | Batch PR (head branch `batch/…`) |
 |---|---|---|
 | `fmt`, `clippy`, `clippy-wasm`, `clippy-android`, `check-android` | run | run |
-| `test (unit)`, `test (integration-a-m)`, `test (integration-n-z)`, `test (feature-gated)`, `test-wasm` | skipped | run |
+| `test (unit)`, `test (integration-a-m)`, `test (integration-n-z)`, `test (feature-gated)`, `test-gpu (lavapipe)`, `test-wasm` | skipped | run |
 | Perf `instruction-counts` (and its `comment`) | skipped | run, against `main` |
 | Documentation `build` (rustdoc, mdBook, UI Zoo, Pages artifact) | skipped | run |
 | Documentation `book` (mdBook only) | run when the PR changes `docs/` | skipped |
@@ -27,6 +27,15 @@ pending for ever. `github.head_ref` is the caller's inside a call from
 Every PR workflow cancels its own superseded run (a push replaces the run of
 the push before it). A run on `main` is never cancelled in progress.
 
+## The runner image
+
+Every workflow runs on **`ubuntu-24.04`**, pinned rather than `ubuntu-latest` (#1901). On 2026-10-25
+`ubuntu-latest` moved to Ubuntu 26.04 with no change on our side, and main went red: the
+transitional `libgdk-pixbuf2.0-dev` was gone, and `libspa` 0.8's bindgen output lost
+`spa_pod_builder`'s fields. Moving to a new image is its own PR with a green batch
+(#1902 tracks 26.04). The apt cache key carries `ImageOS`, so a new image starts with a
+cold `.deb` cache.
+
 ## The `test` shards
 
 The four `test (…)` shards together run exactly what the single `test` job ran
@@ -38,6 +47,36 @@ silently. The integration shards split by the first letter of the target name,
 `[a-m]*` and its exact complement `[!a-m]*`, so a new test file lands in exactly
 one of them whatever it is called. A new feature-gated combination goes in the
 `feature-gated` shard. `ci.yml` has the full reasoning.
+
+## The GPU pixel tests (`test-gpu (lavapipe)`)
+
+The `#[ignore]`d fixtures that need a GPU adapter (they render Vello scenes and
+the compositor's passes through wgpu and read the pixels back) run in the
+`test-gpu (lavapipe)` job, on Mesa's software Vulkan driver, so a runner with no
+GPU has an adapter (#1865 D9). It runs where the `test` shards do. Its check
+step finds lavapipe's ICD file, puts it in `VK_ICD_FILENAMES` and fails if
+`vulkaninfo` shows no `llvmpipe` device; `WGPU_BACKEND=vulkan` keeps wgpu off
+Mesa's GL, which the fixtures honour because they build their instance with
+`InstanceDescriptor::from_env_or_default()` (a new GPU fixture should too). With
+no lavapipe every fixture then fails on its `.expect("a GPU adapter")`.
+
+Each `cargo test` in the job states the **exact** number of tests it passes,
+and the job fails on any other number: a filter that matches nothing, or a
+fixture whose `cfg` went false, prints `0 passed` and exits 0. **A PR that adds
+or removes a GPU fixture changes the count in `ci.yml`** (or the next batch goes
+red saying so). To run the job's tests locally on lavapipe:
+
+```bash
+export WGPU_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+cargo test -p rinch --features gpu,video --lib -- --ignored gpu_ --skip gpu_hover_probe --test-threads=1
+cargo test -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- --ignored --test-threads=1
+cargo test -p rinch-dom --no-default-features --test background_tiling_embed_tests -- --ignored gpu_ --test-threads=1
+```
+
+(The ICD file is `lvp_icd.x86_64.json` on some Mesa packages.) Leave
+`VK_ICD_FILENAMES` out to run them on the host's own GPU. Not in the job:
+`a_later_window_presents_with_the_shared_device`, which opens a window, and
+`gpu_hover_probe`, a timing printout.
 
 ## The batch procedure
 

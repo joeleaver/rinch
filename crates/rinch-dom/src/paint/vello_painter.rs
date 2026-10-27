@@ -5,6 +5,8 @@ use peniko::{Blob, Brush, Fill, FontData, ImageAlphaType, ImageData, ImageFormat
 use vello::Scene;
 
 use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
+use super::slicing::{Open, Slicing, SurfaceSlice};
+use peniko::kurbo::Rect;
 
 /// GPU rendering backend that wraps a [`vello::Scene`].
 ///
@@ -12,20 +14,35 @@ use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
 /// to the Vello rendering pipeline for GPU execution.
 pub struct VelloPainter {
     scene: Scene,
-    /// What is open on the scene, innermost last: each clip with what it was
-    /// pushed with, so [`Painter::erase`] can close and reopen them (#1866).
-    open: Vec<Open>,
+    /// Open on a frame the runtime paints for the split-layer path (#1865).
+    slicing: Option<Slicing>,
+    /// See [`Self::node_starts`].
+    node_starts: std::collections::HashMap<usize, usize>,
+    /// This scene holds a layer that blends with its backdrop (grayscale's
+    /// saturation): appended over a split surface, it taints it (D5a).
+    reads_backdrop: bool,
+    /// A surface was split this frame, so draws are routed by their bounds.
+    /// A plain field, so a draw on a frame with none tests one bool and is
+    /// otherwise the draw itself (#1899 review: the routing generic cost
+    /// 8.1k instructions a text page with no surface).
+    routing: bool,
 }
 
-/// One entry of [`VelloPainter::open`].
-enum Open {
-    Clip {
-        fill: Fill,
-        transform: Affine,
-        shape: PaintShape,
-    },
-    /// A blend or opacity layer: a group the erase does not reach past.
-    Layer,
+/// Paint `$body` (with `$s` the scene) where it belongs: on a frame with no
+/// split surface, the body itself on the window's scene, its bounds never
+/// worked out; else routed by its device bounds (`$bounds()`). A macro, not a
+/// generic method: the no-surface path then builds no closure at all.
+macro_rules! route {
+    ($self:ident, $bounds:expr, |$s:ident| $body:expr) => {
+        if !$self.routing {
+            let $s = &mut $self.scene;
+            $body;
+        } else {
+            $self.draw_routed(&$bounds, &|$s: &mut Scene| {
+                $body;
+            })
+        }
+    };
 }
 
 impl VelloPainter {
@@ -33,7 +50,95 @@ impl VelloPainter {
     pub fn new() -> Self {
         Self {
             scene: Scene::new(),
-            open: Vec::new(),
+            slicing: None,
+            node_starts: Default::default(),
+            reads_backdrop: false,
+            routing: false,
+        }
+    }
+
+    /// Open this frame for the split-layer path (#1865): GPU surfaces offered
+    /// through [`Painter::split_surface`] may leave the scene. `window` is the
+    /// render target in device pixels. Call after [`Painter::reset`], before
+    /// painting; collect with [`Self::take_slices`].
+    pub fn begin_slicing(&mut self, window: Rect) {
+        self.slicing = Some(Slicing::new(window));
+        self.routing = false;
+    }
+
+    /// Refuse to split `ids` this frame ([`super::painter::Refusal::MemoryCap`]):
+    /// the runtime's memory cap (#1865 D6). Call after [`Self::begin_slicing`];
+    /// a frame not opened for slicing splits nothing anyway.
+    pub fn refuse_split(&mut self, ids: &[usize]) {
+        if let Some(slicing) = &mut self.slicing {
+            slicing.refused = ids.to_vec();
+        }
+    }
+
+    /// The surfaces this frame took out of the scene, in paint order, and the
+    /// end of slicing for the frame. Empty when the frame was not opened.
+    pub fn take_slices(&mut self) -> Vec<SurfaceSlice> {
+        self.routing = false;
+        match self.slicing.take() {
+            Some(mut slicing) => {
+                self.node_starts = std::mem::take(&mut slicing.starts);
+                slicing.finish(&mut self.scene)
+            }
+            None => {
+                self.node_starts.clear();
+                Vec::new()
+            }
+        }
+    }
+
+    /// Where the last sliced frame started each watched node
+    /// (`paint::set_paint_order_watch`), as the number of surfaces split
+    /// before its first start (#1865 S4): a node started after the `i`th
+    /// split (0-based) has a count past `i`, every time it starts, since the
+    /// count only grows through a paint. Filled by [`Self::take_slices`].
+    pub fn node_starts(&self) -> &std::collections::HashMap<usize, usize> {
+        &self.node_starts
+    }
+
+    /// Append `other`'s scene under `transform`, routed like any draw on a
+    /// sliced frame (bounds unknown: every region it may meet). The runtime's
+    /// drag ghost (#1865). A ghost that blends with its backdrop (grayscale)
+    /// over a split surface taints it, as a layer painted in place would.
+    pub fn append_scene(&mut self, other: &VelloPainter, transform: Affine) {
+        if other.reads_backdrop
+            && let Some(slicing) = &mut self.slicing
+        {
+            slicing.taint_all();
+        }
+        route!(self, || None, |s| s.append(&other.scene, Some(transform)));
+    }
+
+    /// A draw on a frame with a split surface, routed by its `bounds`
+    /// ([`route!`]).
+    #[inline(never)]
+    fn draw_routed(&mut self, bounds: &dyn Fn() -> Option<Rect>, op: &dyn Fn(&mut Scene)) {
+        let Self { slicing, scene, .. } = self;
+        match slicing {
+            Some(slicing) => slicing.draw(scene, bounds(), op),
+            None => op(scene),
+        }
+    }
+
+    /// Record and push the entry `make` builds on a sliced frame (the callers
+    /// push straight into the scene otherwise, with no copy of the shape).
+    /// Out of line, so a frame not opened for slicing pays one test.
+    #[inline(never)]
+    fn push_sliced(&mut self, make: impl FnOnce() -> Open) {
+        if let Some(slicing) = &mut self.slicing {
+            slicing.push(&mut self.scene, make());
+        }
+    }
+
+    /// Pop on a sliced frame.
+    #[inline(never)]
+    fn pop_sliced(&mut self) {
+        if let Some(slicing) = &mut self.slicing {
+            slicing.pop(&mut self.scene);
         }
     }
 
@@ -46,6 +151,87 @@ impl VelloPainter {
     pub fn scene_mut(&mut self) -> &mut Scene {
         &mut self.scene
     }
+}
+
+impl VelloPainter {
+    /// [`Painter::draw_glyphs`] on a frame with a split surface: routed by
+    /// the run's bounds, its origins grown by two ems for the glyphs' extent
+    /// under any glyph transform (synthetic skew), then mapped.
+    #[allow(clippy::too_many_arguments)]
+    #[cold]
+    #[inline(never)]
+    fn draw_glyphs_routed(
+        &mut self,
+        font: &FontData,
+        font_size: f32,
+        transform: Affine,
+        glyph_transform: Option<Affine>,
+        brush: &Brush,
+        hint: bool,
+        normalized_coords: &[i16],
+        glyphs: &[PaintGlyph],
+    ) {
+        let bounds = || {
+            let mut it = glyphs.iter();
+            let first = it.next()?;
+            let mut r = Rect::new(
+                first.x as f64,
+                first.y as f64,
+                first.x as f64,
+                first.y as f64,
+            );
+            for g in it {
+                r = r.union_pt((g.x as f64, g.y as f64));
+            }
+            let em = 2.0 * font_size as f64;
+            Some(transform.transform_rect_bbox(r.inflate(em, em)))
+        };
+        self.draw_routed(&bounds, &|scene: &mut Scene| {
+            encode_glyphs(
+                scene,
+                font,
+                font_size,
+                transform,
+                glyph_transform,
+                brush,
+                hint,
+                normalized_coords,
+                glyphs,
+            )
+        });
+    }
+}
+
+/// Encode one glyph run into `scene`.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn encode_glyphs(
+    scene: &mut Scene,
+    font: &FontData,
+    font_size: f32,
+    transform: Affine,
+    glyph_transform: Option<Affine>,
+    brush: &Brush,
+    hint: bool,
+    normalized_coords: &[i16],
+    glyphs: &[PaintGlyph],
+) {
+    scene
+        .draw_glyphs(font)
+        .font_size(font_size)
+        .transform(transform)
+        .glyph_transform(glyph_transform)
+        .brush(brush)
+        .hint(hint)
+        .normalized_coords(normalized_coords)
+        .draw(
+            Fill::NonZero,
+            glyphs.iter().map(|g| vello::Glyph {
+                id: g.id,
+                x: g.x,
+                y: g.y,
+            }),
+        );
 }
 
 impl Default for VelloPainter {
@@ -70,7 +256,7 @@ impl Default for VelloPainter {
 /// appended under a scale would not, and none is.
 ///
 /// A degenerate `transform` (which draws nothing) keeps `brush`.
-fn centre_sampling(transform: Affine, brush: Affine) -> Affine {
+pub(crate) fn centre_sampling(transform: Affine, brush: Affine) -> Affine {
     let det = transform.determinant();
     if !det.is_finite() || det == 0.0 {
         return brush;
@@ -133,10 +319,44 @@ macro_rules! dispatch_push_layer {
     };
 }
 
+/// Push `shape` as a clip into `scene`.
+pub(crate) fn push_clip_into(scene: &mut Scene, fill: Fill, transform: Affine, shape: &PaintShape) {
+    dispatch_clip!(scene, fill, transform, shape);
+}
+
+/// Push a `blend` layer at `opacity` into `scene`.
+pub(crate) fn push_layer_into(
+    scene: &mut Scene,
+    blend: BlendMode,
+    opacity: f32,
+    transform: Affine,
+    bounds: &PaintShape,
+) {
+    let mix = match blend {
+        BlendMode::Normal => peniko::BlendMode::from(peniko::Mix::Normal),
+        BlendMode::Saturation => peniko::BlendMode::from(peniko::Mix::Saturation),
+        BlendMode::Plus => peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::Plus),
+        BlendMode::DestinationIn => {
+            peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestIn)
+        }
+        BlendMode::DestinationOut => {
+            peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestOut)
+        }
+    };
+    dispatch_push_layer!(scene, Fill::NonZero, mix, opacity, transform, bounds);
+}
+
+/// The device bounds of `shape` under `transform`.
+fn shape_bounds(transform: Affine, shape: &PaintShape) -> Option<Rect> {
+    Some(transform.transform_rect_bbox(shape.control_bounds()))
+}
+
 impl Painter for VelloPainter {
     fn reset(&mut self) {
         self.scene.reset();
-        self.open.clear();
+        self.slicing = None;
+        self.routing = false;
+        self.reads_backdrop = false;
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
@@ -146,7 +366,11 @@ impl Painter for VelloPainter {
         // gradient fell between two corners and was not drawn (#1798).
         let bt = matches!(brush, Brush::Gradient(_))
             .then(|| centre_sampling(transform, Affine::IDENTITY));
-        dispatch_fill!(self.scene, fill, transform, brush, bt, shape);
+        route!(
+            self,
+            || shape_bounds(transform, shape),
+            |scene| dispatch_fill!(scene, fill, transform, brush, bt, shape)
+        );
     }
 
     fn stroke(
@@ -156,7 +380,17 @@ impl Painter for VelloPainter {
         brush: &Brush,
         shape: &PaintShape,
     ) {
-        dispatch_stroke!(self.scene, stroke, transform, brush, shape);
+        route!(
+            self,
+            || {
+                // Half the width each side, under the transform's largest
+                // stretch.
+                let [a, b, c, d, _, _] = transform.as_coeffs();
+                let grow = stroke.width * (a.abs() + b.abs() + c.abs() + d.abs()) + 1.0;
+                shape_bounds(transform, shape).map(|r| r.inflate(grow, grow))
+            },
+            |scene| dispatch_stroke!(scene, stroke, transform, brush, shape)
+        );
     }
 
     fn draw_glyphs(
@@ -170,22 +404,32 @@ impl Painter for VelloPainter {
         normalized_coords: &[i16],
         glyphs: &[PaintGlyph],
     ) {
-        self.scene
-            .draw_glyphs(font)
-            .font_size(font_size)
-            .transform(transform)
-            .glyph_transform(glyph_transform)
-            .brush(brush)
-            .hint(hint)
-            .normalized_coords(normalized_coords)
-            .draw(
-                Fill::NonZero,
-                glyphs.iter().map(|g| vello::Glyph {
-                    id: g.id,
-                    x: g.x,
-                    y: g.y,
-                }),
+        // The hottest draw: with nothing split it is exactly the encode, and
+        // the routed draw is a call out of line (#1899 review: through
+        // `route!` the glyph path still cost 8.1k instructions a text page).
+        if self.routing {
+            return self.draw_glyphs_routed(
+                font,
+                font_size,
+                transform,
+                glyph_transform,
+                brush,
+                hint,
+                normalized_coords,
+                glyphs,
             );
+        }
+        encode_glyphs(
+            &mut self.scene,
+            font,
+            font_size,
+            transform,
+            glyph_transform,
+            brush,
+            hint,
+            normalized_coords,
+            glyphs,
+        );
     }
 
     fn draw_image(&mut self, image: &PaintImage<'_>, transform: Affine) {
@@ -201,12 +445,11 @@ impl Painter for VelloPainter {
         // brush transform moves the sample to the pixel's centre (#1027).
         let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
         let brush = peniko::ImageBrush::new(image_data);
-        self.scene.fill(
-            Fill::NonZero,
-            transform,
-            &brush,
-            Some(centre_sampling(transform, Affine::IDENTITY)),
-            &rect,
+        let bt = Some(centre_sampling(transform, Affine::IDENTITY));
+        route!(
+            self,
+            || Some(transform.transform_rect_bbox(rect)),
+            |scene| scene.fill(Fill::NonZero, transform, &brush, bt, &rect)
         );
     }
 
@@ -215,12 +458,11 @@ impl Painter for VelloPainter {
         // centre (#1027). The pixels come from the registered texture.
         let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
         let brush = peniko::ImageBrush::new(image.clone());
-        self.scene.fill(
-            Fill::NonZero,
-            transform,
-            &brush,
-            Some(centre_sampling(transform, Affine::IDENTITY)),
-            &rect,
+        let bt = Some(centre_sampling(transform, Affine::IDENTITY));
+        route!(
+            self,
+            || Some(transform.transform_rect_bbox(rect)),
+            |scene| scene.fill(Fill::NonZero, transform, &brush, bt, &rect)
         );
     }
 
@@ -277,20 +519,18 @@ impl Painter for VelloPainter {
             .with_quality(quality)
             .into();
         let brush_transform = Some(centre_sampling(transform, tile_transform));
-        match shape {
-            PaintShape::Rect(r) => self.scene.fill(fill, transform, &brush, brush_transform, r),
-            PaintShape::RoundedRect(r) => {
-                self.scene.fill(fill, transform, &brush, brush_transform, r)
-            }
-            PaintShape::BezPath(p) => self.scene.fill(fill, transform, &brush, brush_transform, p),
-            PaintShape::Circle(c) => self.scene.fill(fill, transform, &brush, brush_transform, c),
-            PaintShape::Line(l) => self.scene.fill(fill, transform, &brush, brush_transform, l),
-        }
+        route!(
+            self,
+            || shape_bounds(transform, shape),
+            |scene| dispatch_fill!(scene, fill, transform, &brush, brush_transform, shape)
+        );
     }
 
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
-        dispatch_clip!(self.scene, fill, transform, shape);
-        self.open.push(Open::Clip {
+        if self.slicing.is_none() {
+            return push_clip_into(&mut self.scene, fill, transform, shape);
+        }
+        self.push_sliced(|| Open::Clip {
             fill,
             transform,
             shape: shape.clone(),
@@ -304,90 +544,74 @@ impl Painter for VelloPainter {
         transform: Affine,
         bounds: &PaintShape,
     ) {
-        let mix = match blend {
-            BlendMode::Normal => peniko::BlendMode::from(peniko::Mix::Normal),
-            BlendMode::Saturation => peniko::BlendMode::from(peniko::Mix::Saturation),
-            BlendMode::Plus => peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::Plus),
-            BlendMode::DestinationIn => {
-                peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestIn)
-            }
-            BlendMode::DestinationOut => {
-                peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestOut)
-            }
-        };
-        dispatch_push_layer!(self.scene, Fill::NonZero, mix, opacity, transform, bounds);
-        self.open.push(Open::Layer);
+        if matches!(blend, BlendMode::Saturation) {
+            self.reads_backdrop = true;
+        }
+        if self.slicing.is_none() {
+            return push_layer_into(&mut self.scene, blend, opacity, transform, bounds);
+        }
+        self.push_sliced(|| Open::Layer {
+            blend,
+            opacity,
+            transform,
+            bounds: bounds.clone(),
+        });
+    }
+
+    fn push_isolated_layer(&mut self, opacity: f32, transform: Affine, bounds: &PaintShape) {
+        if self.slicing.is_none() {
+            return push_layer_into(
+                &mut self.scene,
+                BlendMode::Normal,
+                opacity,
+                transform,
+                bounds,
+            );
+        }
+        self.push_sliced(|| Open::Isolated {
+            opacity,
+            transform,
+            bounds: bounds.clone(),
+        });
     }
 
     fn pop_layer(&mut self) {
-        self.scene.pop_layer();
-        self.open.pop();
+        if self.slicing.is_none() {
+            return self.scene.pop_layer();
+        }
+        self.pop_sliced();
     }
 
-    /// Erase through the clips that are open, not just inside them (#1866).
-    ///
-    /// Vello renders a clip, in every 16px tile its outline crosses, as a
-    /// layer: the backdrop is saved, the clip's content is drawn from
-    /// transparent, and the result is composited back (`fine.wgsl`,
-    /// `CMD_BEGIN_CLIP`/`CMD_END_CLIP`). A `destination-out` drawn inside the
-    /// clip therefore erased only what was drawn *inside* it, and the
-    /// backdrop — the clipping box's own background, everything beneath it —
-    /// came back in a band along the clip's edges. So the clips open above
-    /// the innermost group are closed (their content so far is composited),
-    /// the shape is erased from what is then the backdrop, cut to those same
-    /// clips (pushed again inside the eraser, whose own backdrop starts
-    /// transparent), and the clips are reopened for what is drawn next.
-    ///
-    /// A blend or opacity layer is not closed: its content is composited
-    /// with its effect, so closing it early would change what it draws. The
-    /// erase stops at it, as it does on every backend (the debug warning of
-    /// `clear_viewport_box`). Reopening a clip splits its content into two
-    /// composites, which differs from one only in pixels partly covered by
-    /// the clip where both halves drew.
-    fn erase(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
-        let from = self
-            .open
-            .iter()
-            .rposition(|o| matches!(o, Open::Layer))
-            .map_or(0, |i| i + 1);
-        let clips = &self.open[from..];
-        for _ in clips {
-            self.scene.pop_layer();
-        }
-        let eraser = peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestOut);
-        let bounds = shape.bounding_box();
-        self.scene
-            .push_layer(Fill::NonZero, eraser, 1.0, transform, &bounds);
-        for clip in clips {
-            if let Open::Clip {
-                fill,
-                transform,
-                shape,
-            } = clip
-            {
-                dispatch_clip!(self.scene, *fill, *transform, shape);
-            }
-        }
-        let black = Brush::Solid(peniko::Color::BLACK);
-        dispatch_fill!(self.scene, fill, transform, &black, shape);
-        for _ in clips {
-            self.scene.pop_layer();
-        }
-        self.scene.pop_layer();
-        for clip in clips {
-            if let Open::Clip {
-                fill,
-                transform,
-                shape,
-            } = clip
-            {
-                dispatch_clip!(self.scene, *fill, *transform, shape);
-            }
+    fn split_surface(
+        &mut self,
+        split: &super::painter::SurfaceSplit,
+    ) -> super::painter::SplitVerdict {
+        let verdict = match &mut self.slicing {
+            Some(slicing) => slicing.split(&mut self.scene, split),
+            None => super::painter::SplitVerdict::InScene(super::painter::Refusal::Unsupported),
+        };
+        self.routing |= verdict == super::painter::SplitVerdict::Split;
+        verdict
+    }
+
+    fn note_node_start(&mut self, node: usize) {
+        if let Some(slicing) = &mut self.slicing {
+            // The first start is the earliest: the count only grows.
+            let n = slicing.slices.len();
+            slicing.starts.entry(node).or_insert(n);
         }
     }
 
     fn append(&mut self, other: &Self) {
-        self.scene.append(&other.scene, None);
+        // Bounds unknown: routed as across every region. A scene that blends
+        // with its backdrop taints every split surface (D5a).
+        if other.reads_backdrop
+            && let Some(slicing) = &mut self.slicing
+        {
+            slicing.taint_all();
+        }
+        let scene = &other.scene;
+        route!(self, || None, |s| s.append(scene, None));
     }
 }
 
