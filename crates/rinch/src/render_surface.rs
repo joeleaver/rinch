@@ -1861,7 +1861,9 @@ pub fn readback_gpu_textures() {
             let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
 
             if rx.recv().ok().and_then(|r| r.ok()).is_some() {
-                let data = buffer_slice.get_mapped_range();
+                let data = buffer_slice
+                    .get_mapped_range()
+                    .expect("the buffer is mapped");
 
                 // Copy to the surface's CPU buffer, stripping row padding
                 let mut pixels = Vec::with_capacity((width * height * bytes_per_pixel) as usize);
@@ -3144,7 +3146,9 @@ mod compositor_routing_tests {
     #[cfg(feature = "gpu")]
     pub(super) fn test_gpu() -> &'static crate::shell::desktop::GpuHandle {
         crate::shell::desktop::gpu_handle_for_tests(|| {
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
             let adapter = pollster::block_on(
                 instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
             )
@@ -3218,6 +3222,7 @@ mod compositor_routing_tests {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         f.queue.submit(Some(encoder.finish()));
     }
@@ -3311,7 +3316,10 @@ mod compositor_routing_tests {
         gpu.device
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
-        let data = buffer.slice(..).get_mapped_range();
+        let data = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("the buffer is mapped");
         at.iter()
             .map(|&(x, y)| {
                 let i = (y * row + x * 4) as usize;
@@ -3907,7 +3915,7 @@ mod compositor_routing_tests {
     fn a_later_window_presents_with_the_shared_device() {
         let gpu = test_gpu();
         crate::shell::desktop::publish_instance_for_tests(wgpu::Instance::new(
-            &wgpu::InstanceDescriptor::default(),
+            wgpu::InstanceDescriptor::new_without_display_handle(),
         ));
         let (_, adapter, device, queue) =
             crate::shell::desktop::shared_gpu_stack_for_tests().expect("a shared stack");

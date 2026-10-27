@@ -366,7 +366,7 @@ where
     /// and answers `RecreationAttempt` after the first.
     #[cfg(feature = "gpu")]
     pub fn gpu_config(mut self, gpu: crate::shell::desktop::RinchGpuConfig) -> Self {
-        self.gpu = Some(crate::shell::desktop::GpuInit::Config(gpu));
+        self.gpu = Some(crate::shell::desktop::GpuInit::Config(Box::new(gpu)));
         self
     }
 

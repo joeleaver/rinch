@@ -600,6 +600,7 @@ impl App {
             desired_maximum_frame_latency: 2,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
 
@@ -626,8 +627,8 @@ impl App {
 
         let cube_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&cube_bind_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&cube_bind_layout)],
+            immediate_size: 0,
         });
 
         let cube_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -637,7 +638,7 @@ impl App {
                 module: &cube_shader,
                 entry_point: Some("vs"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -652,7 +653,7 @@ impl App {
                             shader_location: 1,
                         },
                     ],
-                }],
+                })],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -662,8 +663,8 @@ impl App {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -678,7 +679,7 @@ impl App {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -741,8 +742,8 @@ impl App {
 
         let blit_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&blit_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&blit_layout)],
+            immediate_size: 0,
         });
 
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -767,7 +768,7 @@ impl App {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -826,16 +827,17 @@ impl App {
 
         // Acquire surface texture
         let frame = match surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            wgpu::CurrentSurfaceTexture::Success(f)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 // Reconfigure and retry next frame
                 if let Some(cfg) = &self.surface_config {
                     surface.configure(device, cfg);
                 }
                 return;
             }
-            Err(e) => {
-                eprintln!("Surface error: {e:?}");
+            other => {
+                eprintln!("Surface error: {other:?}");
                 return;
             }
         };
@@ -908,6 +910,7 @@ impl App {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(self.cube_pipeline.as_ref().unwrap());
             pass.set_bind_group(0, self.cube_bind_group.as_ref().unwrap(), &[]);
@@ -959,6 +962,7 @@ impl App {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(self.blit_pipeline.as_ref().unwrap());
             pass.set_bind_group(0, &blit_bg, &[]);
@@ -978,7 +982,7 @@ impl App {
             }
         }
 
-        frame.present();
+        queue.present(frame);
     }
 
     // ── Handle resize ───────────────────────────────────────────────────────

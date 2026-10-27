@@ -243,7 +243,7 @@ and the visible target is the one the user is aiming at.
 - DX12 backend with DirectComposition (`WGPU_DX12_PRESENTATION_SYSTEM=DxgiFromVisual`)
 - `CompositeAlphaMode::PreMultiplied`
 - `WS_EX_NOREDIRECTIONBITMAP` window style
-- Patched wgpu for Rgba8Unorm storage textures (see wgpu fork below)
+- Rgba8Unorm storage textures for Vello: no longer a patched wgpu (see "wgpu Fork" below, removed in #1955); Vello writes rinch's Rgba8Unorm intermediate, never the surface
 
 ### BorderlessWindow Component
 
@@ -533,19 +533,100 @@ let window_props = WindowProps {
 
 ### wgpu Fork
 
-Transparent windows require a patched wgpu to enable Rgba8Unorm storage textures for Vello rendering on DX12. The patches are in `[patch.crates-io]` in `Cargo.toml`:
+**Removed in #1955** (wgpu 27 → 30, Vello 0.7 → 0.11). rinch builds against
+crates.io wgpu 30; `[patch.crates-io]` in `Cargo.toml` patches only winit.
 
-- **Repository**: https://github.com/joeleaver/wgpu-fork
-- **Branch**: `rinch-patch`
-- **Upstream PR**: https://github.com/gfx-rs/wgpu/pull/8908
+The fork (`joeleaver/wgpu-fork`, branch `rinch-patch`, one commit `54b7ce08`
+touching `wgpu-core/src/instance.rs`) forced the `STORAGE` flags for
+Rgba8Unorm/Rgba8Snorm/Bgra8Unorm in `Adapter::get_texture_format_features`,
+for transparent Vello windows on DX12 + DirectComposition. Its upstream
+counterpart, gfx-rs/wgpu#8908, was closed unmerged on 2026-01-28. It was dead
+code for rinch: wgpu-core consults that function only for a device with
+`TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` or a downlevel one, and rinch asks
+for `Features::default()` (`shell::desktop`) on DX12, which is not downlevel.
+Otherwise wgpu applies the format's guaranteed features, and Rgba8Unorm always
+includes `STORAGE_BINDING` (WebGPU guarantees it). The only storage texture
+rinch binds is its own Rgba8Unorm intermediate (`WgpuRenderer::create_render_texture`);
+the window surface is configured `RENDER_ATTACHMENT | COPY_DST` and is only
+copied or drawn into. (wgpu-core 30's `present.rs` still gives a surface
+texture `RENDER_ATTACHMENT` alone, so Vello could not write the surface
+directly with or without the patch.)
 
-**The patch is one commit touching one file**: `wgpu-core/src/instance.rs`, forcing storage
-capabilities for Rgba8Unorm/Bgra8Unorm (16 added lines). Checked against the revision `Cargo.lock`
-actually pins — `54b7ce083ac9575b27884054ae74eb652cb541b3` — and against upstream PR #8908, which
-carries the same single file. This list used to name `device/resource.rs` and `present.rs` too;
-**neither is patched, in this fork or upstream**, so do not add them back.
+So downstream projects copy no wgpu patch any more; a wgpu upgrade is a
+version bump. The DX12 transparent-window case still wants a check on a
+Windows host after each upgrade.
 
-**Downstream projects** must copy the `[patch.crates-io]` section from the workspace `Cargo.toml` into their own `Cargo.toml` for transparent windows to work on Windows. This is required because Cargo patches are not transitive — they only apply to the workspace that declares them.
+**Apps that share rinch's `Device`** (`App::gpu_config`, `App::external_gpu`,
+`gpu_handle`, `GpuTextureRegistrar`, the embed API) must build their wgpu
+types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
+`rinch::vello`. The migration from wgpu 27:
+`docs/src/guide/game-engine.md#migrating-from-wgpu-27-to-30`.
+
+### Vello Fork
+
+**Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
+https://github.com/joeleaver/vello-fork, pinned by rev
+(`c6b2e61558962d0074a98f46d55a435c06901865`, branch `rinch-patch`): one commit
+on the vello `v0.11.0` tag, touching only
+`research/vello_encoding/src/{image_cache,resolve}.rs`. The fork's `vello` takes
+`vello_encoding` and `vello_shaders` by path, so all three come from the fork.
+It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
+with nothing to copy; apps build Vello types from `rinch::vello` (a second
+`vello` from crates.io would be an unpatched copy whose types do not match).
+Nothing in the graph may pull crates.io `vello`: `anyrender`/`anyrender_vello`
+did and were unused, so #1955 removed them. The rev is pinned so a push to the
+fork's branch never changes rinch; moving it is a commit here.
+
+Vello 0.9 made the image atlas persistent: an image stays resident across
+renders, keyed on its blob's id, and is uploaded again only when new or marked
+dirty. Two parts of that broke rinch, and neither has a cheap rinch-side fix:
+
+1. **A render of a scene with no late-bound resources wiped the atlas.**
+   `Resolver::resolve` returned `Images::default()` (size 0) for a scene with
+   no image, gradient or glyph run, so the renderer replaced the persistent
+   atlas texture with a 1x1 one, and the next render with images replaced
+   that with an empty full-size one, while the cache still held its images as
+   uploaded: every resident image drew transparent until marked dirty. A
+   solid-colour partial frame (a hover) was enough. The patch reports the
+   current atlas size with nothing to upload.
+2. **An image stayed resident for two renders after its last use**
+   (`EVICT_AFTER_GENERATIONS = 2`), with no call to free it, so the 8192x8192
+   atlas had to hold three scenes' images. Large or many images re-encoded per
+   paint, live frames, and a resized `RenderSurface`'s old texture beside its
+   new one (#1861 item 2) went undrawn. The patch sets it to 0: when an image
+   does not fit, any image the current render does not draw gives up its space.
+
+**Why 0 is safe.** A render's atlas writes are `Queue::write_texture` for CPU
+images and `copy_texture_to_texture` for override textures, recorded in that
+render's own command encoder ahead of its dispatches (`wgpu_engine.rs`,
+`Command::WriteImage`). wgpu documents that `write_texture`/`write_buffer`
+transfers "begin GPU execution only on the next call to `Queue::submit()`,
+just before the explicitly submitted commands" (`Queue::write_buffer` docs,
+wgpu 30), and a queue executes its submissions in order (WebGPU's queue
+timeline), with wgpu-core's resource tracking placing the barriers between a
+texture's uses. So the write for render N+1 runs after every command of
+render N, including render N's reads of the space being reused. The same
+ordering is what stock Vello 0.11 already relies on when it re-uploads a
+resident image marked dirty: that write lands on the very region the previous
+render read, recorded and submitted the same way. (Vello 0.7 is no precedent:
+it created a new atlas texture every render.)
+
+Pins: `compositor::gpu_alpha_tests::gpu_alpha_vello_image_survives_a_solid_only_render`
+(1), `gpu_alpha_vello_repaints_keep_every_large_image` and
+`render_surface::compositor_routing_tests::gpu_render_callback_atlas_share_holds_for_idle_surfaces`
+(2); each fails with stock `vello_encoding`. The fork carries two unit tests in
+`image_cache.rs`.
+
+rinch also hands Vello one blob per image (`DecodedImage::blob`, and
+`vello_painter::frame_blob` for a live frame's shared buffer), so an image
+repainted unchanged stays resident and is not uploaded again, and keeps a
+`RenderSurface` texture it draws into in place fresh with
+`mark_override_image_dirty` (`SurfaceImages::sync`).
+
+**Downstream apps copy nothing for Vello**, and delete the five wgpu-fork
+patch lines they used to copy. On a Vello bump, rebase the commit onto the new
+tag (or go back to crates.io if upstream behaves the same), move the pinned rev,
+and rerun the three pins.
 
 ### Bounds signals on the web (#1781)
 

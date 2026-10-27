@@ -22,11 +22,12 @@ const H: u32 = 48;
 
 /// The device, and the validation errors it raised since it was made.
 pub(super) fn device() -> (Device, Queue, Arc<Mutex<Vec<String>>>) {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::default(),
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .expect("a GPU adapter (these fixtures are #[ignore]d for hosts without one)");
     let (device, queue) =
@@ -127,7 +128,10 @@ fn read(device: &Device, queue: &Queue, texture: &Texture) -> Vec<[u8; 4]> {
     queue.submit(Some(encoder.finish()));
     buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    let data = buffer.slice(..).get_mapped_range();
+    let data = buffer
+        .slice(..)
+        .get_mapped_range()
+        .expect("the buffer is mapped");
     data.as_chunks::<4>().0.to_vec()
 }
 
@@ -515,7 +519,10 @@ fn render_sized(
     queue.submit(Some(encoder.finish()));
     buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    let data = buffer.slice(..).get_mapped_range();
+    let data = buffer
+        .slice(..)
+        .get_mapped_range()
+        .expect("the buffer is mapped");
     (0..h)
         .flat_map(|y| {
             let data = &data;

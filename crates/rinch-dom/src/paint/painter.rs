@@ -155,6 +155,12 @@ pub struct PaintImage<'a> {
     /// premultiplied) can keep that form on the entry instead of converting
     /// on every draw. `None` for a live frame source.
     pub decoded: Option<&'a crate::image_cache::DecodedImage>,
+    /// The shared buffer `data` lives in, for a live frame source (a CPU
+    /// `RenderSurface` frame, a video frame). A painter that keeps images
+    /// (Vello) shares the buffer and keeps one identity per buffer, so a
+    /// frame repainted unchanged is not uploaded again (#1955). `None` for a
+    /// decoded image (it has `decoded`) and for pixels made for one draw.
+    pub frame: Option<&'a std::sync::Arc<Vec<u8>>>,
     /// Every pixel's alpha is 255, as the producer promises (a live frame
     /// source checks at submit, on its own thread). Opaque pixels are their
     /// own premultiplied form, so the software painter skips premultiplying
@@ -355,6 +361,7 @@ pub trait Painter {
                 width,
                 height,
                 decoded: None,
+                frame: None,
                 opaque: false,
             },
             transform,
@@ -393,6 +400,7 @@ pub trait Painter {
             width: tile.width,
             height: tile.height,
             decoded: None,
+            frame: None,
             opaque: false,
         };
         // The shape's bounds in tile-grid space: which repetitions touch it.

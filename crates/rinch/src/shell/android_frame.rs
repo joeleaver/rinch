@@ -239,7 +239,7 @@ pub(crate) fn pump_frame(app: &mut RinchApp, window_size: (u32, u32), scale_fact
 /// spent frame from an 8.33ms interval, gets `Duration::ZERO`, and comes
 /// straight back round. See the table on `android_runtime::GpuSurface` for
 /// the whole of it, including what does move the number (pixels) and what
-/// cannot be moved from this repository (the blit, which wgpu 27 will not let
+/// cannot be moved from this repository (the blit, which wgpu (27 to 30) will not let
 /// vello skip).
 ///
 /// The PDF screen is the exception that keeps the reading honest: 4.9ms after
