@@ -483,7 +483,7 @@ pub fn current_window_size() -> Option<(f64, f64)> {
 /// *current* geometry per [`WindowHandle`]: this is the main window's
 /// *normal* geometry, and its position is `None` where the platform gives
 /// none (Wayland).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WindowRestore {
     /// Outer top-left on the desktop, logical pixels; `None` on Wayland.
     pub position: Option<(f64, f64)>,
@@ -491,6 +491,12 @@ pub struct WindowRestore {
     pub size: (f64, f64),
     /// Whether the window is maximized.
     pub maximized: bool,
+    /// The platform's name for the monitor `position` is on; give it back as
+    /// `WindowProps::monitor`. On a desktop whose monitors have different
+    /// scales a logical position can name a point on two of them, and this
+    /// says which. `None` with no position, or where the platform names no
+    /// monitor.
+    pub monitor: Option<String>,
 }
 
 /// What [`WindowRestore`] says of the current window, to read at exit and
@@ -501,6 +507,7 @@ pub fn current_window_restore() -> Option<WindowRestore> {
         position: g.normal_position,
         size: g.normal_size.or(g.size)?,
         maximized: g.maximized,
+        monitor: g.normal_monitor,
     })
 }
 

@@ -1146,18 +1146,21 @@ impl RinchRuntime {
         if !self.shown_once {
             return;
         }
-        self.take_reading(window_geometry::WindowReading::of(window));
+        self.take_reading(
+            window_geometry::WindowReading::of(window),
+            monitor_name(window),
+        );
     }
 
     /// [`Self::note_geometry`] past the window: a reading of the live main
     /// window, through the wait for a maximize the platform has not reported
     /// yet.
-    fn take_reading(&mut self, reading: window_geometry::WindowReading) {
+    fn take_reading(&mut self, reading: window_geometry::WindowReading, monitor: Option<String>) {
         let reading = self
             .maximize_wait
             .filter(reading, std::time::Instant::now());
         self.saved_geometry.note(&reading);
-        window_geometry::publish_window(&reading);
+        window_geometry::publish_window(&reading, monitor);
         self.publish_layer_position();
     }
 
@@ -1377,16 +1380,19 @@ impl RinchRuntime {
     /// ([`window_geometry::place_requested`]: desktop pixels, resolved in the
     /// scale of the monitor the position is on).
     fn requested_position(&self) -> Option<RequestedPosition> {
-        let (x, y) = self
-            .app
-            .window_props
-            .as_ref()
-            .and_then(|p| Some((p.x?, p.y?)))?;
+        let props = self.app.window_props.as_ref()?;
+        let (x, y) = (props.x?, props.y?);
         let size = Size::Logical(LogicalSize::new(self.width as f64, self.height as f64));
-        let at = window_geometry::place_requested((x as f64, y as f64), size, &self.monitors)?;
+        let placed = window_geometry::place_requested(
+            (x as f64, y as f64),
+            size,
+            props.monitor.as_deref(),
+            &self.monitors,
+        )?;
         Some(RequestedPosition {
             logical: (x as f64, y as f64),
-            at,
+            at: placed.at,
+            monitor: placed.monitor,
         })
     }
 
@@ -1422,8 +1428,10 @@ impl RinchRuntime {
             }
         }
         if first {
+            let requested = self.requested_position();
             window_geometry::publish_created(
-                self.requested_position().map(|r| r.logical),
+                requested.as_ref().map(|r| r.logical),
+                requested.and_then(|r| r.monitor),
                 (self.width as f64, self.height as f64),
                 self.app.window_props.as_ref().is_some_and(|p| p.maximized),
             );
@@ -1534,7 +1542,7 @@ impl RinchRuntime {
                     std::time::Instant::now(),
                 );
                 self.saved_geometry.record(&reading);
-                window_geometry::publish_window(&reading);
+                window_geometry::publish_window(&reading, monitor_name(w.raw()));
                 self.publish_layer_position();
             }
             // The menu bar leaves the window with it (Windows: muda keeps a
@@ -5973,12 +5981,23 @@ mod layer_drag_tests {
 }
 
 /// A `WindowProps::x`/`y` the window can be reached at.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct RequestedPosition {
     /// As asked, logical pixels: what an app reads back.
     logical: (f64, f64),
     /// What winit is given.
     at: Position,
+    /// The monitor it was read in the scale of, by name.
+    monitor: Option<String>,
+}
+
+/// The platform's name for the monitor `window` is on (whose scale it has):
+/// exactly what `MonitorHandle::name` answers, so a name published with a
+/// position finds the same monitor in `connected_monitors`.
+fn monitor_name(window: &dyn winit::window::Window) -> Option<String> {
+    window
+        .current_monitor()
+        .and_then(|m| m.name().map(|n| n.into_owned()))
 }
 
 /// The monitors connected now, in the unit windows are positioned in:
@@ -5991,6 +6010,7 @@ fn connected_monitors(event_loop: &dyn ActiveEventLoop) -> Vec<window_geometry::
             let size = m.current_video_mode()?.size();
             let position = m.position()?;
             let scale = m.scale_factor();
+            let name = m.name().map(|n| n.into_owned());
             Some(if cfg!(target_os = "macos") {
                 let p = position.to_logical::<f64>(scale);
                 let s = size.to_logical::<f64>(scale);
@@ -6004,12 +6024,14 @@ fn connected_monitors(event_loop: &dyn ActiveEventLoop) -> Vec<window_geometry::
                         s.height.round() as u32,
                     ),
                     scale: 1.0,
+                    name,
                 }
             } else {
                 window_geometry::MonitorRect {
                     position,
                     size,
                     scale,
+                    name,
                 }
             })
         })
@@ -6037,6 +6059,7 @@ mod window_restore_tests {
             position: PhysicalPosition::new(0, 0),
             size: PhysicalSize::new(1920, 1080),
             scale: 1.0,
+            name: None,
         }]
     }
 
@@ -6056,6 +6079,12 @@ mod window_restore_tests {
     fn attributes(runtime: &mut RinchRuntime, first_appearance: bool) -> WindowAttributes {
         let steps = runtime.main_window_steps(Backend::X11, true);
         runtime.main_window_attributes(steps, Backend::X11, false, first_appearance)
+    }
+
+    impl RinchRuntime {
+        fn take_reading_unnamed(&mut self, r: WindowReading) {
+            self.take_reading(r, None);
+        }
     }
 
     fn reading(maximized: bool, pos: (i32, i32), size: (u32, u32)) -> WindowReading {
@@ -6097,13 +6126,14 @@ mod window_restore_tests {
         );
         rt.maximize_wait =
             window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
-        rt.take_reading(reading(true, (0, 0), (1920, 1050)));
+        rt.take_reading_unnamed(reading(true, (0, 0), (1920, 1050)));
         assert_eq!(
             current_window_restore(),
             Some(WindowRestore {
                 position: Some((100.0, 80.0)),
                 size: (800.0, 600.0),
                 maximized: true,
+                monitor: None,
             })
         );
         // A later show is no first appearance and publishes nothing new.
@@ -6127,14 +6157,15 @@ mod window_restore_tests {
         let attrs = attributes(&mut rt, true);
         rt.maximize_wait =
             window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
-        rt.take_reading(reading(false, (100, 80), (800, 600)));
-        rt.take_reading(reading(false, (0, 0), (1920, 1050)));
+        rt.take_reading_unnamed(reading(false, (100, 80), (800, 600)));
+        rt.take_reading_unnamed(reading(false, (0, 0), (1920, 1050)));
         assert_eq!(
             current_window_restore(),
             Some(WindowRestore {
                 position: Some((100.0, 80.0)),
                 size: (800.0, 600.0),
                 maximized: true,
+                monitor: None,
             })
         );
         assert_eq!(rt.saved_geometry.size, None, "no normal geometry recorded");

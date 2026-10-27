@@ -444,6 +444,13 @@ pub struct WindowProps {
     /// layer-shell window.
     pub x: Option<i32>,
     pub y: Option<i32>,
+    /// The monitor `x`/`y` is on, by the platform's name for it (what
+    /// `rinch::windows::current_window_restore` answers with the position).
+    /// On a desktop whose monitors have different scales a logical position
+    /// can name a point on two of them; this monitor is tried first, then
+    /// every monitor as without it. Ignored when no connected monitor has
+    /// the name.
+    pub monitor: Option<String>,
     /// Whether the window is a `wlr-layer-shell` surface on native Wayland
     /// (issue #1523): `None` (the default) makes it one when it is
     /// [`non_activating`](Self::non_activating); `Some(true)` makes any window
@@ -625,6 +632,7 @@ impl Default for WindowProps {
             transparent: false,
             always_on_top: false,
             maximized: false,
+            monitor: None,
             visible: true,
             resize_inset: None,
             icon: None,
@@ -647,6 +655,7 @@ impl std::fmt::Debug for WindowProps {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("maximized", &self.maximized)
+            .field("monitor", &self.monitor)
             .field("wayland_layer_shell", &self.wayland_layer_shell)
             .field("output", &self.output)
             .field("borderless", &self.borderless)

@@ -12,11 +12,17 @@ pub fn current_window_size() -> Option<(f64, f64)> {
     None
 }
 /// The desktop's `WindowRestore`; nothing here has one to give.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WindowRestore {
     pub position: Option<(f64, f64)>,
     pub size: (f64, f64),
     pub maximized: bool,
+    /// The platform's name for the monitor `position` is on; give it back as
+    /// `WindowProps::monitor`. On a desktop whose monitors have different
+    /// scales a logical position can name a point on two of them, and this
+    /// says which. `None` with no position, or where the platform names no
+    /// monitor.
+    pub monitor: Option<String>,
 }
 pub fn current_window_restore() -> Option<WindowRestore> {
     None

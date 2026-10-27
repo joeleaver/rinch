@@ -139,11 +139,13 @@ impl SavedGeometry {
 /// desktop pixels on X11 and Windows, points on macOS (where
 /// `connected_monitors` gives every monitor scale 1, so a logical position is
 /// compared as the points it is).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MonitorRect {
     pub position: PhysicalPosition<i32>,
     pub size: PhysicalSize<u32>,
     pub scale: f64,
+    /// The platform's name for it (winit's `MonitorHandle::name`).
+    pub name: Option<String>,
 }
 
 /// The part of a window's top that must be on the desktop for the person to
@@ -168,6 +170,15 @@ pub(crate) fn reachable(position: Position, size: Option<Size>, monitors: &[Moni
     monitors.is_empty() || landing(position, size, monitors).is_some()
 }
 
+/// Where [`place_requested`] puts a window.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Placed {
+    /// What winit is given.
+    pub at: Position,
+    /// The monitor whose scale the position was read in, by its name.
+    pub monitor: Option<String>,
+}
+
 /// Where to create a window that `WindowProps::x`/`y` asks for at `logical`,
 /// or `None` when it would be out of reach there (the system places it).
 ///
@@ -179,58 +190,89 @@ pub(crate) fn reachable(position: Position, size: Option<Size>, monitors: &[Moni
 /// (X11: the monitor under the pointer; Windows: the scale the new window
 /// starts with), which can put it on no monitor at all. On macOS, where
 /// points are the desktop's own unit, the logical position is kept.
+///
+/// Such a position can name a reachable point on two monitors (a window at
+/// desktop (2100, 100) on a scale-2 monitor right of a 1920-wide scale-1 one
+/// publishes (1050, 50), which is also on the scale-1 one). `monitor` — the
+/// name `current_window_restore` gave with it (`WindowProps::monitor`) —
+/// settles it: the monitors of that name are tried first, in the platform's
+/// order (two of one name: the first on which the window is reachable), then
+/// every monitor in that order, as without a name.
 pub(crate) fn place_requested(
     logical: (f64, f64),
     size: Size,
+    monitor: Option<&str>,
     monitors: &[MonitorRect],
-) -> Option<Position> {
+) -> Option<Placed> {
     let position = Position::Logical(LogicalPosition::new(logical.0, logical.1));
     if monitors.is_empty() {
-        return Some(position);
+        return Some(Placed {
+            at: position,
+            monitor: None,
+        });
     }
-    let at = landing(position, Some(size), monitors)?;
-    Some(if cfg!(target_os = "macos") {
-        position
-    } else {
-        Position::Physical(at)
+    let named = monitors
+        .iter()
+        .filter(|m| monitor.is_some() && m.name.as_deref() == monitor);
+    let (at, m) = named
+        .chain(monitors.iter())
+        .find_map(|m| lands_on(position, Some(size), m, monitors).map(|p| (p, m)))?;
+    Some(Placed {
+        at: if cfg!(target_os = "macos") {
+            position
+        } else {
+            Position::Physical(at)
+        },
+        monitor: m.name.clone(),
     })
 }
 
 /// The desktop pixels a window at `position` of `size` lands on, when its
 /// [`GRIP`] is on the desktop there. A logical position names a point in the
 /// scale of the monitor the window is on, so each monitor in turn is tried
-/// as that monitor: the position is converted with its scale and the window's
-/// top must then be on it. On a mixed-scale desktop a logical position can
-/// name a reachable point on two monitors; the first in the platform's
-/// monitor order wins. A physical position is the same on every monitor; the
-/// grip is sized in the scale of a monitor its top is on.
+/// as that monitor ([`lands_on`]). On a mixed-scale desktop a logical
+/// position can name a reachable point on two monitors; the first in the
+/// platform's monitor order wins. A physical position is the same on every
+/// monitor; the grip is sized in the scale of a monitor its top is on.
 fn landing(
     position: Position,
     size: Option<Size>,
     monitors: &[MonitorRect],
 ) -> Option<PhysicalPosition<i32>> {
-    monitors.iter().find_map(|m| {
-        let p: PhysicalPosition<i32> = position.to_physical(m.scale);
-        let (w, h) = match size {
-            Some(s) => {
-                let s: PhysicalSize<u32> = s.to_physical(m.scale);
-                (s.width.max(1) as i64, s.height.max(1) as i64)
-            }
-            // Unknown: one column, and as tall as anything.
-            None => (1, i64::MAX),
-        };
-        let grip_w = ((GRIP.0 * m.scale) as i64).clamp(1, w);
-        let grip_h = ((GRIP.1 * m.scale) as i64).clamp(1, h);
-        let strip_h = ((GRIP_STRIP * m.scale) as i64).clamp(grip_h, h);
-        let (x, y) = (p.x as i64, p.y as i64);
-        let strip = Span {
-            x0: x,
-            x1: x.saturating_add(w),
-            y0: y,
-            y1: y.saturating_add(strip_h),
-        };
-        (strip.overlaps(m) && grip_on_desktop(strip, grip_w, grip_h, monitors)).then_some(p)
-    })
+    monitors
+        .iter()
+        .find_map(|m| lands_on(position, size, m, monitors))
+}
+
+/// Where a window at `position` of `size` lands when the position is read in
+/// the scale of `m`: there, if its top strip is on `m` and its grip on the
+/// desktop (`monitors`).
+fn lands_on(
+    position: Position,
+    size: Option<Size>,
+    m: &MonitorRect,
+    monitors: &[MonitorRect],
+) -> Option<PhysicalPosition<i32>> {
+    let p: PhysicalPosition<i32> = position.to_physical(m.scale);
+    let (w, h) = match size {
+        Some(s) => {
+            let s: PhysicalSize<u32> = s.to_physical(m.scale);
+            (s.width.max(1) as i64, s.height.max(1) as i64)
+        }
+        // Unknown: one column, and as tall as anything.
+        None => (1, i64::MAX),
+    };
+    let grip_w = ((GRIP.0 * m.scale) as i64).clamp(1, w);
+    let grip_h = ((GRIP.1 * m.scale) as i64).clamp(1, h);
+    let strip_h = ((GRIP_STRIP * m.scale) as i64).clamp(grip_h, h);
+    let (x, y) = (p.x as i64, p.y as i64);
+    let strip = Span {
+        x0: x,
+        x1: x.saturating_add(w),
+        y0: y,
+        y1: y.saturating_add(strip_h),
+    };
+    (strip.overlaps(m) && grip_on_desktop(strip, grip_w, grip_h, monitors)).then_some(p)
 }
 
 /// A rectangle in desktop pixels, `[x0, x1) x [y0, y1)`.
@@ -424,7 +466,7 @@ impl MaximizeWait {
 }
 
 /// The main window's geometry as an app reads it: logical pixels.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PublishedGeometry {
     /// Outer position; `None` on Wayland.
     pub position: Option<(f64, f64)>,
@@ -436,15 +478,33 @@ pub(crate) struct PublishedGeometry {
     /// minimized: what an un-maximize returns to.
     pub normal_position: Option<(f64, f64)>,
     pub normal_size: Option<(f64, f64)>,
+    /// The name of the monitor `position` is read in the scale of (the one
+    /// the window is on), and the one `normal_position` was; `None` with no
+    /// position or no name.
+    pub monitor: Option<String>,
+    pub normal_monitor: Option<String>,
 }
 
 /// The last geometry the shell saw for the main window, kept while it is
 /// hidden. `None` until the main window first exists.
 static PUBLISHED: Mutex<Option<PublishedGeometry>> = Mutex::new(None);
 
-/// Publish the geometry of the live main window.
-pub(crate) fn publish_window(r: &WindowReading) {
-    publish(read_into(published().unwrap_or_default(), r));
+/// Publish the geometry of the live main window, on the monitor named
+/// `monitor` (winit's `current_monitor`, whose scale the window has).
+pub(crate) fn publish_window(r: &WindowReading, monitor: Option<String>) {
+    publish(read_on(published().unwrap_or_default(), r, monitor));
+}
+
+/// [`read_into`], with the name of the monitor the window is on.
+fn read_on(g: PublishedGeometry, r: &WindowReading, monitor: Option<String>) -> PublishedGeometry {
+    let mut g = read_into(g, r);
+    if !r.minimized {
+        g.monitor = monitor.filter(|_| g.position.is_some());
+        if r.is_normal() {
+            g.normal_monitor = g.monitor.clone();
+        }
+    }
+    g
 }
 
 /// `g` after reading the live window.
@@ -473,27 +533,46 @@ fn read_into(mut g: PublishedGeometry, r: &WindowReading) -> PublishedGeometry {
 /// Publish the geometry a window is created with, before anything is read
 /// off it: a window that first appears maximized has had no normal geometry
 /// yet, and this is the one an un-maximize returns to.
-pub(crate) fn publish_created(position: Option<(f64, f64)>, size: (f64, f64), maximized: bool) {
-    publish(created_into(
+/// `monitor` names the monitor the position was placed on.
+pub(crate) fn publish_created(
+    position: Option<(f64, f64)>,
+    monitor: Option<String>,
+    size: (f64, f64),
+    maximized: bool,
+) {
+    publish(created_on(
         published().unwrap_or_default(),
         position,
+        monitor,
         size,
         maximized,
     ));
 }
 
-fn created_into(
+fn created_on(
     mut g: PublishedGeometry,
     position: Option<(f64, f64)>,
+    monitor: Option<String>,
     size: (f64, f64),
     maximized: bool,
 ) -> PublishedGeometry {
     if g.normal_size.is_none() {
         g.normal_position = position;
+        g.normal_monitor = monitor.filter(|_| position.is_some());
         g.normal_size = Some(size);
     }
     g.maximized = maximized;
     g
+}
+
+#[cfg(test)]
+fn created_into(
+    g: PublishedGeometry,
+    position: Option<(f64, f64)>,
+    size: (f64, f64),
+    maximized: bool,
+) -> PublishedGeometry {
+    created_on(g, position, None, size, maximized)
 }
 
 /// Publish a position or size the app set while the window was hidden: what
@@ -501,8 +580,12 @@ fn created_into(
 pub(crate) fn publish_hidden(position: Option<(f64, f64)>, size: Option<(f64, f64)>) {
     let mut g = published().unwrap_or_default();
     if position.is_some() {
+        // Set by the app (or a layer surface's margins): on no monitor
+        // rinch can name.
         g.position = position;
         g.normal_position = position;
+        g.monitor = None;
+        g.normal_monitor = None;
     }
     if size.is_some() {
         g.size = size;
@@ -517,7 +600,7 @@ fn publish(g: PublishedGeometry) {
 
 /// The published geometry.
 pub(crate) fn published() -> Option<PublishedGeometry> {
-    *PUBLISHED.lock().unwrap_or_else(|p| p.into_inner())
+    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
 /// For a test that publishes: holds every other such test off and starts
@@ -658,11 +741,13 @@ mod tests {
                 position: PhysicalPosition::new(0, 0),
                 size: PhysicalSize::new(1920, 1080),
                 scale: 1.0,
+                name: None,
             },
             MonitorRect {
                 position: PhysicalPosition::new(1920, 0),
                 size: PhysicalSize::new(2560, 1440),
                 scale: 2.0,
+                name: None,
             },
         ];
         let size = Some(Size::Logical(LogicalSize::new(400.0, 300.0)));
@@ -736,6 +821,14 @@ mod tests {
             position: PhysicalPosition::new(x, y),
             size: PhysicalSize::new(w, h),
             scale,
+            name: None,
+        }
+    }
+
+    fn named(name: &str, m: MonitorRect) -> MonitorRect {
+        MonitorRect {
+            name: Some(name.to_string()),
+            ..m
         }
     }
 
@@ -829,20 +922,15 @@ mod tests {
         } else {
             at(5000, 100)
         };
-        assert_eq!(
-            place_requested((5000.0, 100.0), size, &mixed),
-            Some(expected)
-        );
+        let place = |x, y, m: &[MonitorRect]| place_requested((x, y), size, None, m).map(|p| p.at);
+        assert_eq!(place(5000.0, 100.0, &mixed), Some(expected));
         // On the primary: its scale.
         if !cfg!(target_os = "macos") {
-            assert_eq!(
-                place_requested((500.0, 100.0), size, &mixed),
-                Some(at(1000, 200))
-            );
+            assert_eq!(place(500.0, 100.0, &mixed), Some(at(1000, 200)));
         }
-        assert_eq!(place_requested((9000.0, 100.0), size, &mixed), None);
+        assert_eq!(place(9000.0, 100.0, &mixed), None);
         assert_eq!(
-            place_requested((9000.0, 100.0), size, &[]),
+            place(9000.0, 100.0, &[]),
             Some(Position::Logical(LogicalPosition::new(9000.0, 100.0))),
             "unknown monitors: kept"
         );
@@ -1051,5 +1139,94 @@ mod tests {
             &wait.filter(reading(1.0, (300, 200), (1200, 800)), t(1200)),
         );
         assert_eq!((g.maximized, g.normal_size), (false, Some((1200.0, 800.0))));
+    }
+
+    /// #1884 third review: monitor A (scale 1) at x 0..1920, B (scale 2) at
+    /// 1920..5760. A window on B at desktop (2100, 100) publishes (1050, 50),
+    /// which is also on A: without a name it went to A, listed first. The
+    /// name published with it puts it back on B.
+    #[test]
+    fn the_monitor_name_settles_a_mixed_scale_position() {
+        let a = named("A", monitor(0, 0, 1920, 1080, 1.0));
+        let b = named("B", monitor(1920, 0, 3840, 2160, 2.0));
+        let mons = [a.clone(), b.clone()];
+        let g = read_on(
+            PublishedGeometry::default(),
+            &reading(2.0, (2100, 100), (1600, 1200)),
+            Some("B".to_string()),
+        );
+        assert_eq!(g.normal_monitor.as_deref(), Some("B"));
+        let (x, y) = g.normal_position.unwrap();
+        let size = Size::Logical(LogicalSize::new(800.0, 600.0));
+        let placed = place_requested((x, y), size, g.normal_monitor.as_deref(), &mons).unwrap();
+        assert_eq!(placed.monitor.as_deref(), Some("B"));
+        if !cfg!(target_os = "macos") {
+            assert_eq!(placed.at, at(2100, 100));
+            // No name, or a name no monitor has now: the first that fits.
+            for hint in [None, Some("C")] {
+                let p = place_requested((x, y), size, hint, &mons).unwrap();
+                assert_eq!((p.at, p.monitor.as_deref()), (at(1050, 50), Some("A")));
+            }
+            // A named monitor on which it is out of reach: the others.
+            let p = place_requested((2500.0, 50.0), size, Some("A"), &mons).unwrap();
+            assert_eq!((p.at, p.monitor.as_deref()), (at(5000, 100), Some("B")));
+        }
+    }
+
+    /// Two monitors of one name (two of the same model, where the platform
+    /// names them by model): the first of them on which the window is
+    /// reachable.
+    #[test]
+    fn of_two_monitors_of_one_name_the_first_that_fits_wins() {
+        let left = named("Dell", monitor(0, 0, 1920, 1080, 1.0));
+        let other = named("Lenovo", monitor(1920, 0, 1920, 1080, 1.0));
+        let right = named("Dell", monitor(3840, 0, 3840, 2160, 2.0));
+        let mons = [left, other, right];
+        let size = Size::Logical(LogicalSize::new(400.0, 300.0));
+        if !cfg!(target_os = "macos") {
+            // (2000, 100): on "Lenovo" at scale 1 and on the right "Dell" at
+            // scale 2 (4000, 200); the left "Dell" has no such point. The
+            // name picks the right "Dell".
+            let p = place_requested((2000.0, 100.0), size, Some("Dell"), &mons).unwrap();
+            assert_eq!(p.at, at(4000, 200));
+            // (100, 100) is on the left "Dell" first.
+            let p = place_requested((100.0, 100.0), size, Some("Dell"), &mons).unwrap();
+            assert_eq!(p.at, at(100, 100));
+        }
+    }
+
+    /// The name goes with the position: kept through a maximize as the
+    /// normal monitor, dropped with no position (Wayland) and by a position
+    /// set by the app.
+    #[test]
+    fn the_published_monitor_follows_the_normal_position() {
+        let g = read_on(
+            PublishedGeometry::default(),
+            &reading(1.0, (120, 140), (600, 300)),
+            Some("A".to_string()),
+        );
+        let g = read_on(g, &maxed((1920, 1050)), Some("B".to_string()));
+        assert_eq!(
+            (g.monitor.as_deref(), g.normal_monitor.as_deref()),
+            (Some("B"), Some("A"))
+        );
+        let wayland = WindowReading {
+            position: None,
+            ..reading(1.0, (0, 0), (600, 300))
+        };
+        let g2 = read_on(
+            PublishedGeometry::default(),
+            &wayland,
+            Some("eDP-1".to_string()),
+        );
+        assert_eq!(g2.normal_monitor, None);
+        let g3 = created_on(
+            PublishedGeometry::default(),
+            Some((10.0, 20.0)),
+            Some("A".to_string()),
+            (800.0, 600.0),
+            true,
+        );
+        assert_eq!(g3.normal_monitor.as_deref(), Some("A"));
     }
 }
