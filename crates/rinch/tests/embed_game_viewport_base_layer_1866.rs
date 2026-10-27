@@ -85,8 +85,25 @@ fn an_opacity_ancestor_warns_on_the_embed_scene_and_a_plain_one_does_not() {
     );
 }
 
+/// How the host gets rinch's texture.
+#[cfg(feature = "gpu")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Via {
+    /// `RinchOverlayRenderer::render(device, queue, &mut ctx)`: the viewports
+    /// cut out by the split compositor (#1866).
+    Overlay,
+    /// `ctx.scene()` rendered by the host's own Vello: the viewports erased
+    /// in the scene, approximate inside clips.
+    Scene,
+}
+
 #[cfg(feature = "gpu")]
 fn render(ctx: &mut RinchContext) -> Vec<[u8; 4]> {
+    render_via(ctx, Via::Overlay)
+}
+
+#[cfg(feature = "gpu")]
+fn render_via(ctx: &mut RinchContext, via: Via) -> Vec<[u8; 4]> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::default(),
@@ -98,7 +115,37 @@ fn render(ctx: &mut RinchContext) -> Vec<[u8; 4]> {
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
     let mut overlay =
         rinch::embed::RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
-    let _view = overlay.render(&device, &queue, ctx);
+    match via {
+        Via::Overlay => {
+            let _view = overlay.render(&device, &queue, ctx);
+        }
+        Via::Scene => {
+            let mut vello = vello::Renderer::new(
+                &device,
+                vello::RendererOptions {
+                    antialiasing_support: vello::AaSupport::all(),
+                    use_cpu: false,
+                    num_init_threads: None,
+                    pipeline_cache: None,
+                },
+            )
+            .expect("vello");
+            vello
+                .render_to_texture(
+                    &device,
+                    &queue,
+                    ctx.scene(),
+                    &overlay.texture().create_view(&Default::default()),
+                    &vello::RenderParams {
+                        base_color: vello::peniko::Color::TRANSPARENT,
+                        width: W,
+                        height: H,
+                        antialiasing_method: vello::AaConfig::Msaa16,
+                    },
+                )
+                .expect("render");
+        }
+    }
 
     let row = (W * 4).div_ceil(256) * 256;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -245,6 +292,7 @@ fn gpu_game_viewport_base_layer_under_clipping_ancestors_on_the_embed_overlay() 
         ),
     ];
     let mut failures = Vec::new();
+    let mut bands = Vec::new();
     for (label, html, scroll, (x0, y0, x1, y1), r, ui) in cases {
         let scroller: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
         let keep = scroller.clone();
@@ -271,6 +319,7 @@ fn gpu_game_viewport_base_layer_under_clipping_ancestors_on_the_embed_overlay() 
             ctx.update(&[]);
         }
         let px = render(&mut ctx);
+        let scene_px = render_via(&mut ctx, Via::Scene);
         let at = |x: u32, y: u32| px[(y * W + x) as usize];
         let read = |x: u32, y: u32| {
             if x < x0 || x >= x1 || y < y0 || y >= y1 {
@@ -297,11 +346,80 @@ fn gpu_game_viewport_base_layer_under_clipping_ancestors_on_the_embed_overlay() 
         if wrong > 0 {
             failures.push(format!("{label}: {wrong} px not clear, first {first:?}"));
         }
+        // `ctx.scene()` erases the box in the scene, where Vello's clip
+        // layers keep what the clip saved in the tiles its edge crosses:
+        // the band the overlay's compositor removes.
+        let band = (0..H)
+            .flat_map(|y| (0..W).map(move |x| (x, y)))
+            .filter(|&(x, y)| read(x, y) && scene_px[(y * W + x) as usize][3] != 0)
+            .count();
+        bands.push((label, band));
         for ((x, y), want) in ui {
             if at(x, y).iter().zip(want).any(|(a, b)| a.abs_diff(b) > 2) {
                 failures.push(format!("{label}: ({x}, {y}) {:?}, want {want:?}", at(x, y)));
             }
         }
     }
+    eprintln!("the band ctx.scene() leaves, by case: {bands:?}");
+    assert!(
+        bands.iter().all(|&(_, n)| n > 0),
+        "positive control: ctx.scene() leaves a band under every clip: {bands:?}"
+    );
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The halo page of the desktop fixture on the embed overlay: a rounded
+/// clipping card holding a grey panel painted before the viewport and a
+/// half-transparent red overlay after it, the viewport in the middle.
+/// Through `RinchOverlayRenderer::render` the texture equals the same page
+/// without a viewport everywhere outside the viewport's neighbourhood, bit
+/// for bit: no halo along the card's ring, which closing, erasing and
+/// reopening the clips put there (the second review of 461d5e9e). Inside,
+/// the overlay's red at half alpha over transparent.
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_game_viewport_base_layer_no_halo_on_the_embed_overlay() {
+    let page = |viewport: bool| {
+        let attr = if viewport {
+            " data-viewport=\"embed-halo\""
+        } else {
+            ""
+        };
+        format!(
+            "<div style=\"position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+             background: rgb(0,128,0)\">\
+             <div style=\"position: absolute; left: 40px; top: 40px; width: 320px; \
+             height: 220px; overflow: hidden; border-radius: 30px; \
+             background: rgb(0,0,128)\">\
+             <div style=\"position: absolute; left: 0; top: 0; width: 320px; height: 220px; \
+             background: rgb(200,200,200)\"></div>\
+             <div{attr} style=\"position: absolute; left: 110px; top: 70px; width: 100px; \
+             height: 80px\"></div>\
+             <div style=\"position: absolute; left: 0; top: 0; width: 320px; \
+             height: 220px; background: rgba(255,0,0,0.5)\"></div>\
+             </div></div>"
+        )
+    };
+    let got = render(&mut context(page(true)));
+    let want = render(&mut context(page(false)));
+    // R, (150, 110)..(250, 190), grown by a Vello tile and a pixel (D10).
+    let near_r = |x: u32, y: u32| (133..267).contains(&x) && (93..207).contains(&y);
+    let differ: Vec<_> = (0..W * H)
+        .map(|i| (i % W, i / W))
+        .filter(|&(x, y)| !near_r(x, y) && got[(y * W + x) as usize] != want[(y * W + x) as usize])
+        .collect();
+    assert!(
+        differ.is_empty(),
+        "{} px outside the viewport differ from the page without it, first {:?}: {:?} vs {:?}",
+        differ.len(),
+        differ.first(),
+        differ.first().map(|&(x, y)| got[(y * W + x) as usize]),
+        differ.first().map(|&(x, y)| want[(y * W + x) as usize]),
+    );
+    let mid = got[(150 * W + 200) as usize];
+    assert!(
+        mid[0] >= 253 && mid[1] <= 2 && mid[2] <= 2 && mid[3].abs_diff(128) <= 1,
+        "the viewport's middle: the overlay at half alpha over nothing, got {mid:?}"
+    );
 }
