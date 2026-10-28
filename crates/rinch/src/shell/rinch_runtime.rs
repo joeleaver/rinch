@@ -1926,14 +1926,10 @@ impl RinchRuntime {
                         );
                         // Shared, not copied; uploaded only when new, or
                         // when the window holds no texture for it.
-                        base_pending.push((
+                        base_pending.push(super::base_fallback::pending_base_frame(
                             id,
-                            rinch_dom::paint::SurfacePixelData {
-                                data: std::sync::Arc::clone(&pixels),
-                                width: surf_w,
-                                height: surf_h,
-                                opaque: false,
-                            },
+                            &pixels,
+                            (surf_w, surf_h),
                             fresh,
                         ));
                     }

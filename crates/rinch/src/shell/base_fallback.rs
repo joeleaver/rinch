@@ -11,6 +11,14 @@
 //! `scene_dirty`), so a second build left to its own damage would be
 //! `Unchanged` and the change lost (#1883 review, D1). The window then stays
 //! layered for [`BASE_FALLBACK_FRAMES`] frames before it tries again.
+//!
+//! The first frame that names base viewports after one that did not (the
+//! fallback's end, or the window's first) is built in full too. On a
+//! transparent window the UI texture's base is transparent with layers and
+//! without, so the renderer does not ask for one; a partial frame that does
+//! not reach a viewport neither splits nor refuses it, the layers are gone,
+//! and the viewport showed the layered UI texture's hole with no game behind
+//! it until something repainted it (#1883 verification, D2).
 use std::collections::HashMap;
 
 use crate::app::RinchApp;
@@ -26,6 +34,9 @@ pub(crate) const BASE_FALLBACK_FRAMES: u32 = 120;
 #[derive(Default)]
 pub(crate) struct BaseFallback {
     frames: u32,
+    /// The last frame split its base viewports (named them and none was
+    /// refused).
+    based: bool,
 }
 
 impl BaseFallback {
@@ -56,14 +67,23 @@ impl BaseFallback {
         fall_back: impl FnOnce(),
     ) -> Option<SplitChange> {
         let use_base = bases.is_some();
+        // Entering the split path: every viewport must be painted, and split,
+        // this frame (D2).
+        let target = if use_base && !self.based {
+            Some(FullRepaintReason::Invalidated)
+        } else {
+            target
+        };
         rinch_dom::paint::set_base_viewports(bases);
         let _ = rinch_dom::paint::take_base_refused();
         app.set_split_enabled(split);
         let change = app.build_gpu_frame_split(scale, size, target).1;
         rinch_dom::paint::set_base_viewports(None);
         if !(use_base && rinch_dom::paint::take_base_refused()) {
+            self.based = use_base;
             return change;
         }
+        self.based = false;
         self.frames = BASE_FALLBACK_FRAMES;
         #[cfg(debug_assertions)]
         tracing::debug!(
@@ -78,4 +98,26 @@ impl BaseFallback {
         let _ = rinch_dom::paint::take_base_refused();
         change
     }
+}
+
+/// A CPU `GameViewport` frame as the split path uploads it
+/// (`SplitFrame::upload_split_frames`): shared, not copied, and marked new
+/// only when it is (`collect_surface_frames_shared`'s flag), so an unchanged
+/// game frame is not uploaded again.
+pub(crate) fn pending_base_frame(
+    id: usize,
+    pixels: &std::sync::Arc<Vec<u8>>,
+    (width, height): (u32, u32),
+    fresh: bool,
+) -> crate::split_frame::PendingFrame {
+    (
+        id,
+        rinch_dom::paint::SurfacePixelData {
+            data: std::sync::Arc::clone(pixels),
+            width,
+            height,
+            opaque: false,
+        },
+        fresh,
+    )
 }
