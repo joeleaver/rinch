@@ -169,7 +169,10 @@ fn the_in_page_call_carries_both_patterns_and_the_tone() {
     // The section's video-off sends black frames.
     call.set_video_off(true);
     let seen = fresh(&at_b, 1500, 3);
-    assert!(seen.iter().all(|f| f.0 == 0), "black after video off: {seen:?}");
+    assert!(
+        seen.iter().all(|f| f.0 == 0),
+        "black after video off: {seen:?}"
+    );
     call.set_video_off(false);
     let seen = fresh(&at_b, 1500, 10);
     assert!(box_share(&seen) >= 0.7, "the box again: {seen:?}");

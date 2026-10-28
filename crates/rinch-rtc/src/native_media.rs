@@ -561,7 +561,10 @@ pub(crate) fn stop_local(key: u64) {
     // `try_with`: a track dropped while the thread's locals are torn down
     // (held in a signal at exit) finds these tables gone, and has nothing
     // left to stop. `with` panicked there, which aborts the process.
-    let gone = LOCALS.try_with(|l| l.borrow_mut().remove(&key)).ok().flatten();
+    let gone = LOCALS
+        .try_with(|l| l.borrow_mut().remove(&key))
+        .ok()
+        .flatten();
     if let Some(s) = gone {
         s.stopped.store(true, Ordering::Release);
         // The senders' queues close: they send nothing more.
@@ -572,7 +575,10 @@ pub(crate) fn stop_local(key: u64) {
             v.clear();
         }
     }
-    let capture = CAPTURES.try_with(|c| c.borrow_mut().remove(&key)).ok().flatten();
+    let capture = CAPTURES
+        .try_with(|c| c.borrow_mut().remove(&key))
+        .ok()
+        .flatten();
     drop(capture);
 }
 

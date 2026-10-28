@@ -212,7 +212,9 @@ impl Call {
                 });
             }
             Wire::Bye => {
-                self.ui.status.set("The other side left; waiting for them…".into());
+                self.ui
+                    .status
+                    .set("The other side left; waiting for them…".into());
                 self.polite.set(true);
                 self.new_peer();
             }
@@ -329,9 +331,12 @@ impl Call {
 
     /// Release the camera and microphone; the pattern goes back on.
     fn stop_camera(self: &Rc<Self>) {
-        for t in [self.camera.borrow_mut().take(), self.mic.borrow_mut().take()]
-            .into_iter()
-            .flatten()
+        for t in [
+            self.camera.borrow_mut().take(),
+            self.mic.borrow_mut().take(),
+        ]
+        .into_iter()
+        .flatten()
         {
             t.stop();
         }

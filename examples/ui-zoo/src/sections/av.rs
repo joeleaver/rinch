@@ -327,7 +327,6 @@ pub fn av_section() -> NodeHandle {
         });
     }
 
-
     // Mic test: start/stop recording, then play back
     let recording_buf_for_record = recording_buf.clone();
     let recording_flag_for_record = recording_flag.clone();

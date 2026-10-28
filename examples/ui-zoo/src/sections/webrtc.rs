@@ -173,7 +173,11 @@ pub fn webrtc_section(__scope: &mut RenderScope) -> NodeHandle {
     }
 }
 
-fn state_badge(__scope: &mut RenderScope, label: &'static str, state: Signal<PeerState>) -> NodeHandle {
+fn state_badge(
+    __scope: &mut RenderScope,
+    label: &'static str,
+    state: Signal<PeerState>,
+) -> NodeHandle {
     rsx! {
         Group { gap: "xs",
             div {
