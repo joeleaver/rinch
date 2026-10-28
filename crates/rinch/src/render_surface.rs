@@ -1538,6 +1538,57 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
     })
 }
 
+/// [`collect_surface_frames`]'s frames, shared rather than copied, each
+/// with its surface id and whether it is **new** since the last collection:
+/// `(id, viewport name, pixels, width, height, fresh)`. The GPU window's
+/// `GameViewport` base layers upload a frame only when it is new (#1866).
+#[cfg(feature = "desktop")]
+#[allow(clippy::type_complexity)]
+pub fn collect_surface_frames_shared() -> Vec<(usize, String, Arc<Vec<u8>>, u32, u32, bool)> {
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        let mut frames = Vec::new();
+        for surface in reg.iter() {
+            if !surface_takes_compositor_path(
+                is_inline_surface(surface),
+                surface.is_video,
+                has_gpu_compositor(),
+            ) {
+                continue;
+            }
+            #[cfg(feature = "gpu")]
+            if surface.texture_source.lock().unwrap().is_some() {
+                continue;
+            }
+            let fresh = surface.needs_redraw.swap(false, Ordering::AcqRel);
+            let buf = surface.buffer.lock().unwrap();
+            if !buf.pixels.is_empty() {
+                frames.push((
+                    surface.id,
+                    surface.viewport_name.clone(),
+                    Arc::clone(&buf.pixels),
+                    buf.width,
+                    buf.height,
+                    fresh,
+                ));
+            }
+        }
+        frames
+    })
+}
+
+/// The id of the surface registered under the `data-viewport` name `name`
+/// (a `GameViewport`'s, which the split path keys its base slice by, #1866).
+#[cfg(feature = "desktop")]
+pub fn surface_id_for_viewport(name: &str) -> Option<usize> {
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .find(|s| s.viewport_name == name)
+            .map(|s| s.id)
+    })
+}
+
 /// Collect surface pixel data keyed by surface ID for inline painting.
 ///
 /// Returns a HashMap suitable for passing to `rinch_dom::paint::set_surface_pixels()`.
@@ -3089,7 +3140,7 @@ fn setup_resize_observer(
 // ── #358: which surfaces reach the compositor, and which paint inline ────────
 
 #[cfg(all(test, feature = "desktop"))]
-mod compositor_routing_tests {
+pub(crate) mod compositor_routing_tests {
     use super::*;
 
     /// `renderer::GPU_PRESENTING` is process-global, and two tests below flip
@@ -3097,7 +3148,7 @@ mod compositor_routing_tests {
     /// whole body, or one reads the other's `true` halfway through.
     static PRESENTING: Mutex<()> = Mutex::new(());
 
-    pub(super) fn presenting_lock() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn presenting_lock() -> std::sync::MutexGuard<'static, ()> {
         PRESENTING.lock().unwrap_or_else(|e| e.into_inner())
     }
 

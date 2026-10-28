@@ -1464,6 +1464,7 @@ fn split_runtime_scratch_cost_probe() {
                         (r.0 + r.2) as f64,
                         (r.1 + r.3) as f64,
                     ),
+                    base: None,
                 }],
             };
             let t = std::time::Instant::now();

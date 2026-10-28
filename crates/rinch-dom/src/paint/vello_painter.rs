@@ -355,6 +355,17 @@ macro_rules! dispatch_push_layer {
     };
 }
 
+/// Fill `shape` with `brush` into `scene`.
+pub(crate) fn fill_into(
+    scene: &mut Scene,
+    fill: Fill,
+    transform: Affine,
+    brush: &Brush,
+    shape: &PaintShape,
+) {
+    dispatch_fill!(scene, fill, transform, brush, shape);
+}
+
 /// Push `shape` as a clip into `scene`.
 pub(crate) fn push_clip_into(scene: &mut Scene, fill: Fill, transform: Affine, shape: &PaintShape) {
     dispatch_clip!(scene, fill, transform, shape);
@@ -374,6 +385,9 @@ pub(crate) fn push_layer_into(
         BlendMode::Plus => peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::Plus),
         BlendMode::DestinationIn => {
             peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestIn)
+        }
+        BlendMode::DestinationOut => {
+            peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestOut)
         }
     };
     dispatch_push_layer!(scene, Fill::NonZero, mix, opacity, transform, bounds);

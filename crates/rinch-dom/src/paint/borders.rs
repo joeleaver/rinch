@@ -1152,10 +1152,9 @@ fn paint_shadow_layers(
 /// shadows use). First shadow on top.
 ///
 /// Each shadow reaches each pixel **once**, through **one** clip — the padding box's
-/// rounded shape, less any `viewport_holes` (a `data-viewport` hole shows the
-/// layer beneath, so the shadow is cut out of it exactly as the background
-/// is). Once matters on the software painter: tiny-skia applies the clip
-/// mask per draw, so a stack of translucent fills through one rounded clip
+/// rounded shape. (A `GameViewport` inside the box clears the shadow under it
+/// when paint reaches it, #1866.) Once matters on the software painter:
+/// tiny-skia applies the clip mask per draw, so a stack of translucent fills through one rounded clip
 /// multiplies the clip's edge coverage into itself and leaves a dark rim
 /// along the curve (review of #1014, F1), where Vello composites the clip
 /// once.
@@ -1184,7 +1183,6 @@ pub(super) fn paint_inset_box_shadow(
     radii: BorderRadii,
     node: &Node,
     transform: Affine,
-    viewport_holes: &[Rect],
     perf: &crate::perf::PerfCounters,
 ) {
     if !shadows.iter().any(|s| s.inset) {
@@ -1210,16 +1208,7 @@ pub(super) fn paint_inset_box_shadow(
     // each axis by its own (§5.5; a corner whose two borders differ is
     // elliptical, #977).
     let pad_radii = radii.inner(bt, br, bb, bl);
-    let (clip, clip_fill): (PaintShape, Fill) = if viewport_holes.is_empty() {
-        (pad_radii.shape(pad), Fill::NonZero)
-    } else {
-        // A hole subtracts only where it lies inside the padding shape; any
-        // part outside would count as *inside* under `EvenOdd` (#1030).
-        (
-            pad_radii.path_with_holes(pad, viewport_holes).into(),
-            Fill::EvenOdd,
-        )
-    };
+    let (clip, clip_fill): (PaintShape, Fill) = (pad_radii.shape(pad), Fill::NonZero);
 
     // The first shadow is on top, so paint back to front.
     for shadow in shadows.iter().rev().filter(|s| s.inset) {
