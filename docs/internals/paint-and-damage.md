@@ -233,7 +233,9 @@ its border), one of two things happens:
   (`RinchOverlayRenderer::render(device, queue, &mut ctx)`) paints with
   `set_bases_without_game`: every punching viewport is a base with no texture, keyed
   `BASE_WITHOUT_GAME_IDS + node id`, and `composite_straight` writes the overlay texture in
-  straight alpha.
+  straight alpha. A tainted slice (grayscale over a viewport: D5a) repaints that frame with the
+  viewports cleared in the scene, as `scene()` does; with no game to keep out of the scene there
+  is nothing to suspend, and the next painted frame tries the split again.
 - **Otherwise it is erased in the scene** (`clear_viewport_box` → `Painter::erase`, an opaque fill
   composited `destination-out`): the software painter always, `RinchContext::scene()` (a host
   rendering the scene with its own Vello), and a GPU frame whose base split was **refused** (a
@@ -241,7 +243,16 @@ its border), one of two things happens:
   a taint). A refusal is reported (`take_base_refused`) and the runtime paints that frame again
   with nothing split and the games composited as layers under the UI (`LayerCompositor`, the
   pre-#1865 path), for `BASE_FALLBACK_FRAMES` (120) frames before it tries the split again (R1,
-  Joe 2026-10-27). On Vello the erase is a plain `BlendMode::DestinationOut` layer, and it is
+  Joe 2026-10-27; `shell/base_fallback.rs`, which `paint_gpu` builds every frame through). The
+  second build is forced **full**: the first consumed the frame's damage, and left to it the
+  second was `Unchanged`, so a change on the retry frame was never rendered (#1883 review, D1;
+  `a_refused_base_split_rebuilds_the_frame_in_full_and_retries_after_the_fallback`). The retry is
+  on a fixed count, not on the refusal's cause: when a transient cause ends (an opacity animation
+  settles), the window stays layered, with the band below, until the count runs out, and the next
+  frame splits again (the band then goes at once). A refusal that persists (two overlapping
+  `GameViewport`s, D7a) keeps the window layered for good, video and `RenderSurface` splitting
+  included. A GPU `GameViewport` punches only once its texture source exists (before, it was
+  cleared with nothing behind it). On Vello the erase is a plain `BlendMode::DestinationOut` layer, and it is
   **approximate inside a clip**: Vello renders a clip, in every 16px tile its outline crosses, as
   a layer (backdrop saved, content drawn from transparent, composited back, `fine.wgsl`
   `CMD_BEGIN_CLIP`/`END_CLIP`), so the erase clears only the clip's own content there and the
