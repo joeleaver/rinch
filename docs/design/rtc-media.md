@@ -887,7 +887,8 @@ Where the ports and the removal differ from 5.1–5.3, the code holds:
 - **The av section** opened the camera and the microphone while
   rendering, and never released them. Both now open from buttons and
   close on stop and on unmount. `rinch_av::testing` (a counted, deniable
-  gate on every device open) is what its test asserts on.
+  gate on every device open, behind rinch-av's `test-util` feature) is
+  what its test asserts on.
 - **CI does change** (5.3 said it would not): VP8 (M2) made `media` need
   the system libvpx, and ui-zoo and video-call turn `media` on under
   `--workspace`, so every `test` shard, the docs build and the visual
@@ -895,7 +896,8 @@ Where the ports and the removal differ from 5.1–5.3, the code holds:
   also run in the integration-a-m shard now.
 - **Dependencies that left `Cargo.lock`:** str0m 0.7, `openssl-src` (str0m
   0.7 built a vendored OpenSSL; `openssl-sys` now builds against the
-  system's, for rinch-rtc's tests only), `audiopus_sys` and `sctp-proto`.
+  system's, for rinch-rtc's tests only), `audiopus_sys` and `sctp-proto`
+  0.3 (0.10 stays, under str0m 0.24).
   cpal and nokhwa stay, through rinch-av in ui-zoo and in rinch-rtc's
   `media`.
 - **Found on the way:** a `LocalTrack` still held when its thread exits

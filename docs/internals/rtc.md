@@ -405,8 +405,8 @@ code's gate is `media-core`, which both turn on.
 that ported their two users onto rinch-rtc, so the tree never had two call
 stacks or none (M12). Their workspace members went with them; str0m 0.7,
 its vendored OpenSSL build (`openssl-src`), `audiopus_sys` and
-`sctp-proto` left `Cargo.lock`. str0m 0.24 stays, as rinch-rtc's test-only
-interop peer.
+`sctp-proto` 0.3 left `Cargo.lock`. str0m 0.24 stays, as rinch-rtc's
+test-only interop peer, and with it `sctp-proto` 0.10.
 
 - **`examples/video-call`** (two machines). JSON over a rinch-ws socket to
   `examples/rtc-room-relay`, which forwards text between the two peers of
@@ -434,9 +434,13 @@ interop peer.
   thread as main thread, as rinch-rtc's own tests do).
 - **Devices open only from a click.** video-call's "Start camera", the
   WebRTC section's "Use camera", and the av section's "Start camera" /
-  "Start microphone" are the only paths to a device; the av section used
-  to open both while rendering. `rinch_av::testing` counts every device
-  open in rinch-av and can deny them before they reach hardware;
+  "Start microphone" are the only paths to a camera or a microphone; the
+  av section used to open both while rendering. Other buttons reach other
+  devices: the av section's "Share screen" (screen capture) and the mic
+  test's "Play" (an audio output). `rinch_av::testing` (behind rinch-av's
+  `test-util` feature, off by default; ui-zoo's dev-dependency turns it
+  on) counts every device open in rinch-av and can deny them before they
+  reach hardware;
   `examples/ui-zoo/tests/av_opens_no_device.rs` renders the av section
   with devices denied and asserts zero opens, then clicks both buttons as
   its positive control.
