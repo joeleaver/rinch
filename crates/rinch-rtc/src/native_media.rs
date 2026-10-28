@@ -1192,7 +1192,7 @@ pub(crate) fn transceiver_sender(p: u64, t: u64) -> Option<u64> {
 /// The main thread's part of a peer closing.
 pub(crate) fn peer_closed_main(p: u64) {
     drop_mirror(p);
-    SENDING.with(|m| m.borrow_mut().retain(|(peer, _), _| *peer != p));
+    let _ = SENDING.try_with(|m| m.borrow_mut().retain(|(peer, _), _| *peer != p));
 }
 
 // ============================================================ remote tracks

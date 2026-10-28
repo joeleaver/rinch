@@ -177,6 +177,15 @@ fn the_in_page_call_carries_both_patterns_and_the_tone() {
     let seen = fresh(&at_b, 1500, 10);
     assert!(box_share(&seen) >= 0.7, "the box again: {seen:?}");
 
+    // Review fixture (#1970): B plays nothing until asked (rtc-media.md 5.4),
+    // although A's tone has been arriving all along.
+    pump_for(1500);
+    let loudest = {
+        let m = mixed.lock().unwrap();
+        m.iter().fold(0f32, |acc, s| acc.max(s.abs()))
+    };
+    assert!(loudest < 1e-3, "B played A's audio before it was asked: peak {loudest}");
+
     // B plays A's tone once asked to.
     call.set_hear(true);
     pump_for(1500);
@@ -187,6 +196,19 @@ fn the_in_page_call_carries_both_patterns_and_the_tone() {
     };
     let ratio = tone_ratio(&left, 440.0);
     assert!(ratio > 100.0, "440 Hz stands {ratio}x above other bins");
+
+    // Review fixture (#1970): muting A sends silence (set_enabled), so B's
+    // played audio goes quiet.
+    call.set_muted(true);
+    pump_for(1500);
+    let quiet: Vec<f32> = {
+        let m = mixed.lock().unwrap();
+        let tail = &m[m.len().saturating_sub(48_000 / 2 * 2)..];
+        tail.iter().step_by(2).copied().collect()
+    };
+    let peak = quiet.iter().fold(0f32, |acc, s| acc.max(s.abs()));
+    assert!(peak < 0.01, "A is muted but B still hears it: peak {peak}");
+    call.set_muted(false);
 
     // Nothing in the call asked for a device: A still sends the pattern.
     assert_eq!(call.sending().map(|t| t.id()), {
