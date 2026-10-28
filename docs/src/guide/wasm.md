@@ -419,6 +419,13 @@ on `PATH`, put a `webdriver.json` in `crates/rinch-web/` (do not commit it):
 { "moz:firefoxOptions": { "binary": "/path/to/firefox", "args": ["-headless"] } }
 ```
 
+Set `WASM_BINDGEN_TEST_TIMEOUT=180` (seconds) as CI does. The test runner
+(wasm-bindgen 0.2.127 and later) gives each test binary that long in all, and
+each poll of the page waits for its main thread: a binary that keeps the thread
+busy past the default 20 s (`review_1449_caret_point` takes about 40 s in
+Firefox) is killed with `webdriver POST …/execute/sync timed out`, which reads
+like a hang and is not one.
+
 Two things to know when a test passes in one engine only:
 
 - **A synthetic `ClipboardEvent` does not carry its `clipboardData` in
