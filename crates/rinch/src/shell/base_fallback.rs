@@ -44,6 +44,7 @@ impl BaseFallback {
     /// full. The frame to present is `app.last_gpu_frame()`; the split
     /// change to apply is returned (the second build's, on a refusal, which
     /// drops every kept slice).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         &mut self,
         app: &mut RinchApp,

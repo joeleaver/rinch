@@ -279,7 +279,11 @@ fn a_refused_base_split_rebuilds_the_frame_in_full_and_retries_after_the_fallbac
     );
     // Layered for exactly BASE_FALLBACK_FRAMES frames, nothing to paint.
     for i in 0..BASE_FALLBACK_FRAMES {
-        assert_eq!(frame(&mut app, None), (false, false, "unchanged"), "frame {i}");
+        assert_eq!(
+            frame(&mut app, None),
+            (false, false, "unchanged"),
+            "frame {i}"
+        );
     }
     // A UI change lands on the retry frame. Its first build (the UI texture's
     // base becomes the window's: stale) consumes the damage and is refused;
@@ -774,13 +778,20 @@ mod gpu {
         // The same frame in a square box (no radius): the clear is a rect
         // there, and it is the box, not the image's rect (#1883 review, M2).
         let square = page("desk-letterbox-square").replace("; border-radius: 40px", "");
-        assert!(!square.contains("border-radius"), "positive control: square");
+        assert!(
+            !square.contains("border-radius"),
+            "positive control: square"
+        );
         let mut app = app_with(square);
         let px = Window::with_game(Mode::Split, [1.0, 0.0, 1.0, 1.0], (300, 100), true)
             .frame(&mut app, "desk-letterbox-square");
         let at = |x: u32, y: u32| px[(y * W + x) as usize];
         for (p, want, what) in [
-            ((100, 75), [0, 0, 0, 255], "square: the top bar, over the red sibling"),
+            (
+                (100, 75),
+                [0, 0, 0, 255],
+                "square: the top bar, over the red sibling",
+            ),
             ((52, 52), [0, 0, 0, 255], "square: the top bar's corner"),
             ((200, 225), [0, 0, 0, 255], "square: the bottom bar"),
             ((200, 150), MAGENTA, "square: the frame"),
