@@ -3,16 +3,14 @@ name = "video-call"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Full-featured desktop video calling with WebRTC, camera, mic, and screen sharing"
+description = "A desktop video call on rinch-rtc's audio and video tracks, signalled through rtc-room-relay"
 
 [dependencies]
 rinch = { workspace = true, features = ["desktop", "components", "theme", "debug"] }
 rinch-core = { workspace = true }
-rinch-macros = { workspace = true }
-rinch-tabler-icons = { workspace = true }
-rinch-av = { workspace = true, features = ["audio", "camera"] }
-rinch-webrtc = { workspace = true, features = ["native"] }
-rinch-signaling = { workspace = true }
-rinch-screen-capture = { workspace = true }
+rinch-rtc = { workspace = true, features = ["media", "serde"] }
+rinch-ws = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

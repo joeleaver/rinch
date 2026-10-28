@@ -1,66 +1,542 @@
-//! Full-featured desktop video calling with WebRTC.
+//! A video call between two machines, on rinch-rtc's audio and video tracks
+//! (design record `docs/design/rtc-media.md` 5.1).
 //!
-//! Features:
-//! - Camera preview & remote video via RenderSurface
-//! - Microphone audio with Opus encoding
-//! - Screen sharing via PipeWire/XDG Portal
-//! - WebSocket signaling for call setup
-//! - Mute/unmute audio, enable/disable camera, screen share toggle
-//! - Connection state display
+//! 1. Start the relay somewhere both machines reach:
+//!    `cargo run -p rtc-room-relay` (port 8080).
+//! 2. Run this on each machine, enter the relay's URL and the same room, and
+//!    press Join. The first to join waits; when the second arrives the relay
+//!    tells the first, which makes the offer.
 //!
-//! Usage:
-//!   1. Start the signaling server: `cargo run -p rinch-signaling-server`
-//!   2. Run two instances of this app
-//!   3. One clicks "Start Call", the other clicks "Join Call"
+//! Signalling is JSON over a rinch-ws socket ([`Wire`]); the relay forwards it
+//! unread. Each side sends a generated test pattern until "Start camera" asks
+//! for the camera and the microphone. **Nothing opens a device on start**, so
+//! the example can be launched anywhere (CI, an agent, a machine without a
+//! camera). The camera then replaces the pattern with `replace_track`, and the
+//! "test pattern instead" switch swaps them back and forth, without
+//! renegotiating: both senders exist before the first offer.
+//!
+//! Desktop calls have no echo cancellation (M5): use headphones.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
 
 use rinch::prelude::*;
-use rinch::render_surface::create_render_surface;
-use rinch_av::VideoTrack;
-use rinch_av::camera::CameraConfig;
-use rinch_screen_capture::{CaptureConfig, ScreenCapture};
-use rinch_signaling::WebSocketSignaling;
-use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
-use rinch_webrtc::{ConnectionState, VideoCall};
-use tracing::warn;
+use rinch_rtc::media::{
+    CameraOptions, Direction, LocalTrack, MediaKind, MediaTrack, MediaView, MicrophoneOptions,
+    Sender, VideoSourceOptions, VideoSourceWriter,
+};
+use rinch_rtc::{Description, IceCandidate, Peer, PeerState, RtcConfig, SdpKind, SignalingState};
+use rinch_ws::{WsHandle, WsMessage};
+use serde::{Deserialize, Serialize};
 
-// ── App Store ───────────────────────────────────────────────────────────────
+// ── Signalling ──────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy)]
-struct CallStore {
-    // Connection
-    server_url: Signal<String>,
-    room_id: Signal<String>,
-    state: Signal<ConnectionState>,
-    status_msg: Signal<String>,
-
-    // Media toggles
-    mic_enabled: Signal<bool>,
-    cam_enabled: Signal<bool>,
-    screen_sharing: Signal<bool>,
-
-    // Whether a call is active (started or joined)
-    in_call: Signal<bool>,
+/// What travels over the relay. `peer-joined` and `bye` come from the relay
+/// itself; the rest from the other side.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum Wire {
+    PeerJoined,
+    Bye,
+    Description { description: Description },
+    Candidate { candidate: Option<IceCandidate> },
 }
 
-impl CallStore {
-    fn new() -> Self {
-        Self {
-            server_url: Signal::new("ws://127.0.0.1:9090".into()),
-            room_id: Signal::new("test-room".into()),
-            state: Signal::new(ConnectionState::New),
-            status_msg: Signal::new(String::new()),
-            mic_enabled: Signal::new(true),
-            cam_enabled: Signal::new(true),
-            screen_sharing: Signal::new(false),
-            in_call: Signal::new(false),
+// ── State ───────────────────────────────────────────────────────────────────
+
+/// One video to show, keyed by its track's id (a `MediaView`'s track is
+/// fixed for life, so a new track needs a new view).
+#[derive(Clone)]
+struct Shown(MediaTrack);
+
+impl Shown {
+    fn id(&self) -> String {
+        match &self.0 {
+            MediaTrack::None => String::new(),
+            MediaTrack::Local(t) => t.id(),
+            MediaTrack::Remote(t) => t.id(),
         }
     }
 }
 
-// ── Main ────────────────────────────────────────────────────────────────────
+impl PartialEq for Shown {
+    fn eq(&self, other: &Self) -> bool {
+        self.id() == other.id()
+    }
+}
+
+impl std::fmt::Debug for Shown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.id())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Ui {
+    server_url: Signal<String>,
+    room: Signal<String>,
+    joined: Signal<bool>,
+    status: Signal<String>,
+    state: Signal<PeerState>,
+    camera_on: Signal<bool>,
+    asking: Signal<bool>,
+    use_pattern: Signal<bool>,
+    muted: Signal<bool>,
+    video_off: Signal<bool>,
+    remote_muted: Signal<bool>,
+    local: Signal<Vec<Shown>>,
+    remote: Signal<Vec<Shown>>,
+}
+
+/// The call: the socket, the current peer and its two senders, and the
+/// tracks they can carry. Lives as long as the app (the root component).
+struct Call {
+    ui: Ui,
+    ws: RefCell<Option<WsHandle>>,
+    peer: RefCell<Option<Peer>>,
+    video: RefCell<Option<Sender>>,
+    audio: RefCell<Option<Sender>>,
+    /// Polite in the perfect-negotiation sense: the side that joined second.
+    polite: Cell<bool>,
+    pattern: LocalTrack,
+    camera: RefCell<Option<LocalTrack>>,
+    mic: RefCell<Option<LocalTrack>>,
+}
+
+impl Call {
+    fn send(&self, msg: &Wire) {
+        if let (Some(ws), Ok(text)) = (self.ws.borrow().as_ref(), serde_json::to_string(msg)) {
+            ws.send_text(text);
+        }
+    }
+
+    /// What the video sender should carry now.
+    fn video_track(&self) -> LocalTrack {
+        match self.camera.borrow().as_ref() {
+            Some(camera) if !self.ui.use_pattern.get() => camera.clone(),
+            _ => self.pattern.clone(),
+        }
+    }
+
+    /// Put the right tracks on the senders (no renegotiation), and show what
+    /// is sent.
+    fn update_senders(self: &Rc<Self>) {
+        let video = self.video_track();
+        video.set_enabled(!self.ui.video_off.get());
+        if let Some(mic) = self.mic.borrow().as_ref() {
+            mic.set_enabled(!self.ui.muted.get());
+        }
+        self.ui.local.set(vec![Shown(video.clone().into())]);
+        let (vs, aus) = (self.video.borrow().clone(), self.audio.borrow().clone());
+        let mic = self.mic.borrow().clone();
+        let ui = self.ui;
+        spawn_local(async move {
+            if let Some(s) = vs
+                && let Err(e) = s.replace_track(Some(&video)).await
+            {
+                ui.status.set(format!("replace_track: {e}"));
+            }
+            if let Some(s) = aus
+                && let Err(e) = s.replace_track(mic.as_ref()).await
+            {
+                ui.status.set(format!("replace_track: {e}"));
+            }
+        });
+    }
+
+    /// A fresh peer, with both senders in place before any offer, so later
+    /// changes are `replace_track`s.
+    fn new_peer(self: &Rc<Self>) {
+        if let Some(old) = self.peer.borrow_mut().take() {
+            old.close();
+        }
+        self.ui.remote.set(Vec::new());
+        let peer = match Peer::new(RtcConfig::default()) {
+            Ok(p) => p,
+            Err(e) => {
+                self.ui.status.set(format!("peer: {e}"));
+                return;
+            }
+        };
+        let ui = self.ui;
+        peer.on_connection_state(move |s| {
+            ui.state.set(s);
+            if s == PeerState::Connected {
+                ui.status.set("In a call".into());
+            }
+        });
+        peer.on_error(move |e| ui.status.set(format!("{e}")));
+        let me = Rc::downgrade(self);
+        peer.on_ice_candidate(move |candidate| {
+            if let Some(call) = me.upgrade() {
+                call.send(&Wire::Candidate { candidate });
+            }
+        });
+        peer.on_track(move |remote| {
+            if remote.kind() == MediaKind::Video {
+                remote.on_mute(move || ui.remote_muted.set(true));
+                remote.on_unmute(move || ui.remote_muted.set(false));
+                ui.remote.set(vec![Shown(remote.into())]);
+            }
+            // Remote audio plays by itself.
+        });
+        let video = peer.add_track(&self.video_track());
+        let audio = peer.add_transceiver(MediaKind::Audio, Direction::SendRecv);
+        match (video, audio) {
+            (Ok(v), Ok(a)) => {
+                *self.video.borrow_mut() = Some(v);
+                *self.audio.borrow_mut() = Some(a.sender());
+            }
+            (Err(e), _) | (_, Err(e)) => self.ui.status.set(format!("tracks: {e}")),
+        }
+        *self.peer.borrow_mut() = Some(peer);
+        self.ui.state.set(PeerState::New);
+        self.update_senders();
+    }
+
+    fn on_wire(self: &Rc<Self>, msg: Wire) {
+        let Some(peer) = self.peer.borrow().clone() else {
+            return;
+        };
+        match msg {
+            Wire::PeerJoined => {
+                // We were here first: we offer, and are the impolite side.
+                self.polite.set(false);
+                self.ui.status.set("The other side joined; calling…".into());
+                let me = self.clone();
+                spawn_local(async move {
+                    match peer.create_offer().await {
+                        Ok(offer) => me.send(&Wire::Description { description: offer }),
+                        Err(e) => me.ui.status.set(format!("offer: {e}")),
+                    }
+                });
+            }
+            Wire::Bye => {
+                self.ui.status.set("The other side left; waiting for them…".into());
+                self.polite.set(true);
+                self.new_peer();
+            }
+            Wire::Description { description } => {
+                let me = self.clone();
+                spawn_local(async move { me.on_description(peer, description).await });
+            }
+            Wire::Candidate { candidate } => peer.add_ice_candidate(candidate),
+        }
+    }
+
+    async fn on_description(self: Rc<Self>, peer: Peer, description: Description) {
+        let offer = description.kind == SdpKind::Offer;
+        // Perfect negotiation (see the rinch-rtc guide). Only the first to
+        // join offers, so a collision should not happen; this is the rule if
+        // it does.
+        let collision = offer && peer.signaling_state() != SignalingState::Stable;
+        if collision && !self.polite.get() {
+            return;
+        }
+        if let Err(e) = peer.set_remote_description(description).await {
+            self.ui.status.set(format!("remote description: {e}"));
+            return;
+        }
+        if offer {
+            match peer.create_answer().await {
+                Ok(answer) => self.send(&Wire::Description {
+                    description: answer,
+                }),
+                Err(e) => self.ui.status.set(format!("answer: {e}")),
+            }
+        }
+    }
+
+    fn join(self: &Rc<Self>) {
+        let url = format!(
+            "{}/room/{}",
+            self.ui.server_url.get().trim_end_matches('/'),
+            self.ui.room.get()
+        );
+        let ws = match rinch_ws::connect(url.clone()) {
+            Ok(ws) => ws,
+            Err(e) => {
+                self.ui.status.set(format!("{url}: {e}"));
+                return;
+            }
+        };
+        let ui = self.ui;
+        let me: Weak<Call> = Rc::downgrade(self);
+        ws.on_open(move || ui.status.set("Waiting for the other side…".into()));
+        ws.on_message(move |m: WsMessage| {
+            let (Some(call), Some(text)) = (me.upgrade(), m.as_text()) else {
+                return;
+            };
+            match serde_json::from_str::<Wire>(text) {
+                Ok(msg) => call.on_wire(msg),
+                Err(e) => ui.status.set(format!("bad message: {e}")),
+            }
+        });
+        ws.on_error(move |e| ui.status.set(format!("relay: {e}")));
+        ws.on_close(move |_| {
+            ui.status.set("The relay closed the connection".into());
+            ui.joined.set(false);
+        });
+        *self.ws.borrow_mut() = Some(ws);
+        // Until told otherwise, we are the second to arrive.
+        self.polite.set(true);
+        self.ui.joined.set(true);
+        self.ui.status.set(format!("Connecting to {url}…"));
+        self.new_peer();
+    }
+
+    fn leave(&self) {
+        if let Some(ws) = self.ws.borrow_mut().take() {
+            ws.close();
+        }
+        if let Some(peer) = self.peer.borrow_mut().take() {
+            peer.close();
+        }
+        self.video.borrow_mut().take();
+        self.audio.borrow_mut().take();
+        self.ui.joined.set(false);
+        self.ui.state.set(PeerState::Closed);
+        self.ui.remote.set(Vec::new());
+        self.ui.status.set("Left the call".into());
+    }
+
+    /// Ask for the camera and the microphone (only from the button).
+    fn start_camera(self: &Rc<Self>) {
+        if self.ui.asking.get() || self.ui.camera_on.get() {
+            return;
+        }
+        self.ui.asking.set(true);
+        let me = self.clone();
+        spawn_local(async move {
+            let ui = me.ui;
+            match LocalTrack::camera(CameraOptions::default()).await {
+                Ok(camera) => *me.camera.borrow_mut() = Some(camera),
+                Err(e) => ui.status.set(format!("camera: {e}")),
+            }
+            match LocalTrack::microphone(MicrophoneOptions::default()).await {
+                Ok(mic) => *me.mic.borrow_mut() = Some(mic),
+                Err(e) => ui.status.set(format!("microphone: {e}")),
+            }
+            ui.asking.set(false);
+            let any = me.camera.borrow().is_some() || me.mic.borrow().is_some();
+            ui.camera_on.set(any);
+            if any {
+                ui.use_pattern.set(false);
+            }
+            me.update_senders();
+        });
+    }
+
+    /// Release the camera and microphone; the pattern goes back on.
+    fn stop_camera(self: &Rc<Self>) {
+        for t in [self.camera.borrow_mut().take(), self.mic.borrow_mut().take()]
+            .into_iter()
+            .flatten()
+        {
+            t.stop();
+        }
+        self.ui.camera_on.set(false);
+        self.update_senders();
+    }
+}
+
+// ── The test pattern ────────────────────────────────────────────────────────
+
+const PW: u32 = 640;
+const PH: u32 = 360;
+
+/// A white box moving over a dark blue field: something that obviously moves.
+fn feed_pattern(writer: VideoSourceWriter) {
+    let mut k = 0u32;
+    set_interval(66, move || {
+        k = k.wrapping_add(1);
+        let side = 96;
+        let (x, y) = ((k * 6) % (PW - side), (k * 4) % (PH - side));
+        let mut f = Vec::with_capacity((PW * PH * 4) as usize);
+        for _ in 0..PW * PH {
+            f.extend_from_slice(&[20, 30, 70, 255]);
+        }
+        for row in y..y + side {
+            let start = ((row * PW + x) * 4) as usize;
+            for px in f[start..start + (side * 4) as usize].as_chunks_mut::<4>().0 {
+                px.copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+        writer.push_rgba(&f, PW, PH);
+    });
+}
+
+// ── UI ──────────────────────────────────────────────────────────────────────
+
+#[component]
+fn app() -> NodeHandle {
+    let ui = Ui {
+        server_url: Signal::new("ws://127.0.0.1:8080".into()),
+        room: Signal::new("test-room".into()),
+        joined: Signal::new(false),
+        status: Signal::new("Not in a call".into()),
+        state: Signal::new(PeerState::New),
+        camera_on: Signal::new(false),
+        asking: Signal::new(false),
+        use_pattern: Signal::new(true),
+        muted: Signal::new(false),
+        video_off: Signal::new(false),
+        remote_muted: Signal::new(false),
+        local: Signal::new(Vec::new()),
+        remote: Signal::new(Vec::new()),
+    };
+    let (pattern, writer) = LocalTrack::video_source(VideoSourceOptions {
+        width: PW,
+        height: PH,
+        fps: 15,
+    })
+    .expect("a generated video track");
+    feed_pattern(writer);
+    ui.local.set(vec![Shown(pattern.clone().into())]);
+    let call = Rc::new(Call {
+        ui,
+        ws: RefCell::new(None),
+        peer: RefCell::new(None),
+        video: RefCell::new(None),
+        audio: RefCell::new(None),
+        polite: Cell::new(true),
+        pattern,
+        camera: RefCell::new(None),
+        mic: RefCell::new(None),
+    });
+
+    let cb = |f: fn(&Rc<Call>)| {
+        let call = call.clone();
+        Callback::new(move || f(&call))
+    };
+    let join = cb(|c| {
+        if c.ui.joined.get() {
+            c.leave()
+        } else {
+            c.join()
+        }
+    });
+    let camera = cb(|c| {
+        if c.ui.camera_on.get() {
+            c.stop_camera()
+        } else {
+            c.start_camera()
+        }
+    });
+    let pattern_switch = cb(|c| {
+        c.ui.use_pattern.update(|p| *p = !*p);
+        c.update_senders();
+    });
+    let mute = cb(|c| {
+        c.ui.muted.update(|m| *m = !*m);
+        c.update_senders();
+    });
+    let video_off = cb(|c| {
+        c.ui.video_off.update(|v| *v = !*v);
+        c.update_senders();
+    });
+
+    rsx! {
+        div { style: "display: flex; height: 100vh; background: var(--rinch-color-body);",
+            // The videos
+            div { style: "flex: 1; position: relative; background: #000; min-width: 0;",
+                for shown in ui.remote.get() {
+                    MediaView { track: shown.0.clone(), style: "width: 100%; height: 100%;" }
+                }
+                if ui.remote.get().is_empty() {
+                    div { style: "position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;",
+                        Text { size: "xl", color: "dimmed", "No one here yet" }
+                    }
+                }
+                if ui.remote_muted.get() {
+                    div { style: "position: absolute; top: 12px; left: 12px; background: rgba(0,0,0,0.6); padding: 4px 10px; border-radius: 6px;",
+                        Text { size: "xs", style: "color: white;", "Their video is paused" }
+                    }
+                }
+                div { style: "position: absolute; right: 16px; bottom: 16px; width: 240px; height: 135px; border-radius: 8px; overflow: hidden; border: 2px solid rgba(255,255,255,0.3);",
+                    for shown in ui.local.get() {
+                        MediaView { track: shown.0.clone(), mirrored: true, style: "width: 100%; height: 100%;" }
+                    }
+                }
+            }
+
+            // The controls
+            div { style: "width: 300px; padding: 16px; display: flex; flex-direction: column; gap: 12px; border-left: 1px solid var(--rinch-color-border);",
+                Title { order: 3, "Rinch Video Call" }
+                Group { gap: "xs",
+                    div {
+                        style: {move || format!(
+                            "width: 10px; height: 10px; border-radius: 50%; background: {};",
+                            match ui.state.get() {
+                                PeerState::Connected => "var(--rinch-color-green-6)",
+                                PeerState::Connecting => "var(--rinch-color-yellow-6)",
+                                PeerState::Failed => "var(--rinch-color-red-6)",
+                                PeerState::Disconnected => "var(--rinch-color-orange-6)",
+                                _ => "var(--rinch-color-gray-5)",
+                            }
+                        )}
+                    }
+                    Text { size: "sm", {move || format!("{:?}", ui.state.get())} }
+                }
+                Text { size: "sm", color: "dimmed", {move || ui.status.get()} }
+
+                TextInput {
+                    label: "Relay",
+                    value_fn: move || ui.server_url.get(),
+                    oninput: move |v: String| ui.server_url.set(v),
+                }
+                TextInput {
+                    label: "Room",
+                    value_fn: move || ui.room.get(),
+                    oninput: move |v: String| ui.room.set(v),
+                }
+                Button {
+                    variant: "filled",
+                    color: {move || if ui.joined.get() { "red" } else { "green" }},
+                    onclick: join.clone(),
+                    {move || if ui.joined.get() { "Leave" } else { "Join" }}
+                }
+
+                Divider {}
+                Button {
+                    variant: {move || if ui.camera_on.get() { "light" } else { "filled" }},
+                    disabled: {move || ui.asking.get()},
+                    onclick: camera.clone(),
+                    {move || if ui.asking.get() {
+                        "Asking for the camera…"
+                    } else if ui.camera_on.get() {
+                        "Stop camera"
+                    } else {
+                        "Start camera"
+                    }}
+                }
+                Button {
+                    variant: "light",
+                    disabled: {move || !ui.camera_on.get()},
+                    onclick: pattern_switch.clone(),
+                    {move || if ui.use_pattern.get() { "Send the camera" } else { "Send a test pattern instead" }}
+                }
+                Group { gap: "sm",
+                    Button {
+                        variant: {move || if ui.muted.get() { "filled" } else { "light" }},
+                        color: {move || if ui.muted.get() { "red" } else { "blue" }},
+                        onclick: mute.clone(),
+                        {move || if ui.muted.get() { "Unmute" } else { "Mute" }}
+                    }
+                    Button {
+                        variant: {move || if ui.video_off.get() { "filled" } else { "light" }},
+                        color: {move || if ui.video_off.get() { "red" } else { "blue" }},
+                        onclick: video_off.clone(),
+                        {move || if ui.video_off.get() { "Video on" } else { "Video off" }}
+                    }
+                }
+                Text { size: "xs", color: "dimmed",
+                    "Desktop calls have no echo cancellation: use headphones."
+                }
+            }
+        }
+    }
+}
 
 fn main() {
     tracing_subscriber::fmt()
@@ -76,478 +552,9 @@ fn main() {
         dark_mode: true,
         ..Default::default()
     };
-
     App::new(app)
         .title("Rinch Video Call")
-        .size(960, 700)
+        .size(1100, 680)
         .theme(theme)
         .run();
-}
-
-// ── App Component ───────────────────────────────────────────────────────────
-
-#[component]
-fn app() -> NodeHandle {
-    create_store(CallStore::new());
-
-    rsx! {
-        div {
-            style: "display: flex; flex-direction: column; height: 100vh; background: var(--rinch-color-body);",
-
-            // Header
-            div {
-                style: "padding: 12px 20px; border-bottom: 1px solid var(--rinch-color-dark-4); display: flex; align-items: center; gap: 12px;",
-                Title { order: 3, "Rinch Video Call" }
-                div { style: "flex: 1;" }
-                ConnectionBadge {}
-            }
-
-            // Main content
-            div {
-                style: "flex: 1; display: flex; overflow: hidden;",
-
-                // Video area
-                div {
-                    style: "flex: 1; display: flex; flex-direction: column; gap: 4px; padding: 8px; min-width: 0;",
-                    RemoteVideo {}
-                    LocalPreview {}
-                }
-
-                // Sidebar
-                div {
-                    style: "width: 280px; border-left: 1px solid var(--rinch-color-dark-4); display: flex; flex-direction: column; overflow-y: auto;",
-                    ControlPanel {}
-                }
-            }
-
-            // Bottom toolbar
-            Toolbar {}
-        }
-    }
-}
-
-// ── Connection Badge ────────────────────────────────────────────────────────
-
-#[component]
-fn ConnectionBadge() -> NodeHandle {
-    let store = use_store::<CallStore>();
-
-    rsx! {
-        Badge {
-            variant: {|| match store.state.get() {
-                ConnectionState::Connected => "filled",
-                ConnectionState::Connecting => "light",
-                ConnectionState::Failed => "filled",
-                _ => "outline",
-            }},
-            color: {|| match store.state.get() {
-                ConnectionState::Connected => "green",
-                ConnectionState::Connecting => "yellow",
-                ConnectionState::Failed => "red",
-                ConnectionState::Disconnected => "orange",
-                _ => "gray",
-            }},
-            {|| format!("{:?}", store.state.get())}
-        }
-    }
-}
-
-// ── Remote Video ────────────────────────────────────────────────────────────
-
-#[component]
-fn RemoteVideo() -> NodeHandle {
-    let store = use_store::<CallStore>();
-    let surface = create_render_surface();
-
-    // Render a placeholder or the remote video surface
-    surface.set_render_callback(|writer, w, h| {
-        // Dark background when no remote video
-        let mut pixels = vec![0u8; (w * h * 4) as usize];
-        for chunk in pixels.as_chunks_mut::<4>().0 {
-            chunk[0] = 30;
-            chunk[1] = 30;
-            chunk[2] = 30;
-            chunk[3] = 255;
-        }
-        writer.submit_frame(&pixels, w, h);
-    });
-
-    rsx! {
-        div {
-            style: "flex: 1; position: relative; border-radius: var(--rinch-radius-md); overflow: hidden; min-height: 0;",
-
-            RenderSurface { surface: Some(surface), style: "width: 100%; height: 100%;" }
-
-            // Overlay when not connected
-            div {
-                style: {|| {
-                    let connected = store.state.get() == ConnectionState::Connected;
-                    if connected {
-                        "display: none;"
-                    } else {
-                        "position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.6);"
-                    }
-                }},
-                Text { size: "xl", color: "dimmed",
-                    {|| {
-                        match store.state.get() {
-                            ConnectionState::New => "Start or join a call".to_string(),
-                            ConnectionState::Connecting => "Connecting...".to_string(),
-                            ConnectionState::Disconnected => "Disconnected".to_string(),
-                            ConnectionState::Failed => "Connection failed".to_string(),
-                            ConnectionState::Closed => "Call ended".to_string(),
-                            ConnectionState::Connected => String::new(),
-                        }
-                    }}
-                }
-            }
-        }
-    }
-}
-
-// ── Local Preview ───────────────────────────────────────────────────────────
-
-#[component]
-fn LocalPreview() -> NodeHandle {
-    let store = use_store::<CallStore>();
-    let surface = create_render_surface();
-    let local_video: Rc<RefCell<Option<VideoTrack>>> = Rc::new(RefCell::new(None));
-
-    // Try to open camera and pipe frames to surface
-    let writer = surface.writer();
-    match VideoTrack::from_camera(CameraConfig {
-        width: 320,
-        height: 240,
-        fps: 15,
-        ..Default::default()
-    }) {
-        Ok(track) => {
-            let pipe = track.pipe_to(move |frame| {
-                writer.submit_frame(&frame.data, frame.width, frame.height);
-            });
-            // Keep the pipe alive by leaking it into a static (it stops on drop)
-            std::mem::forget(pipe);
-            *local_video.borrow_mut() = Some(track);
-        }
-        Err(e) => {
-            warn!("Failed to open camera: {e}");
-            // Show dark placeholder
-            surface.set_render_callback(|writer, w, h| {
-                let pixels = vec![20u8; (w * h * 4) as usize];
-                writer.submit_frame(&pixels, w, h);
-            });
-        }
-    }
-
-    rsx! {
-        div {
-            style: "height: 160px; position: relative; border-radius: var(--rinch-radius-md); overflow: hidden; flex-shrink: 0;",
-
-            RenderSurface { surface: Some(surface), style: "width: 100%; height: 100%;" }
-
-            // Label
-            div {
-                style: "position: absolute; bottom: 8px; left: 8px; background: rgba(0,0,0,0.6); padding: 2px 8px; border-radius: 4px;",
-                Text { size: "xs", color: "white", "You" }
-            }
-
-            // Camera off overlay
-            div {
-                style: {|| {
-                    if store.cam_enabled.get() {
-                        "display: none;"
-                    } else {
-                        "position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--rinch-color-dark-7);"
-                    }
-                }},
-                Text { size: "sm", color: "dimmed", "Camera off" }
-            }
-        }
-    }
-}
-
-// ── Control Panel (Sidebar) ─────────────────────────────────────────────────
-
-#[component]
-fn ControlPanel() -> NodeHandle {
-    let store = use_store::<CallStore>();
-
-    rsx! {
-        div {
-            style: "padding: 16px; display: flex; flex-direction: column; gap: 16px;",
-
-            // Connection settings
-            Title { order: 5, "Connection" }
-
-            TextInput {
-                label: "Server URL",
-                placeholder: "ws://127.0.0.1:9090",
-                value_fn: move || store.server_url.get(),
-                oninput: move |val: String| store.server_url.set(val),
-            }
-
-            TextInput {
-                label: "Room ID",
-                placeholder: "test-room",
-                value_fn: move || store.room_id.get(),
-                oninput: move |val: String| store.room_id.set(val),
-            }
-
-            // Call actions
-            Group { gap: "sm", grow: true,
-                Button {
-                    variant: "filled",
-                    color: "green",
-                    disabled: {|| store.in_call.get()},
-                    onclick: {
-                        let store = store;
-                        move || start_call(store)
-                    },
-                    {render_tabler_icon(__scope, TablerIcon::PhoneOutgoing, TablerIconStyle::Outline)}
-                    " Start"
-                }
-
-                Button {
-                    variant: "filled",
-                    color: "blue",
-                    disabled: {|| store.in_call.get()},
-                    onclick: {
-                        let store = store;
-                        move || join_call(store)
-                    },
-                    {render_tabler_icon(__scope, TablerIcon::PhoneIncoming, TablerIconStyle::Outline)}
-                    " Join"
-                }
-            }
-
-            Button {
-                variant: "light",
-                color: "red",
-                disabled: {|| !store.in_call.get()},
-                onclick: move || {
-                    store.in_call.set(false);
-                    store.state.set(ConnectionState::Closed);
-                    store.status_msg.set("Call ended".into());
-                },
-                {render_tabler_icon(__scope, TablerIcon::PhoneOff, TablerIconStyle::Outline)}
-                " Hang Up"
-            }
-
-            // Status message
-            div {
-                style: "min-height: 24px;",
-                Text { size: "sm", color: "dimmed", {|| store.status_msg.get()} }
-            }
-
-            Divider {}
-
-            // Screen sharing
-            Title { order: 5, "Screen Sharing" }
-
-            Button {
-                variant: {|| if store.screen_sharing.get() { "filled" } else { "light" }},
-                color: {|| if store.screen_sharing.get() { "red" } else { "blue" }},
-                onclick: {
-                    let store = store;
-                    move || toggle_screen_share(store)
-                },
-                {render_tabler_icon(__scope, TablerIcon::ScreenShare, TablerIconStyle::Outline)}
-                {|| if store.screen_sharing.get() { " Stop Sharing" } else { " Share Screen" }}
-            }
-        }
-    }
-}
-
-// ── Bottom Toolbar ──────────────────────────────────────────────────────────
-
-#[component]
-fn Toolbar() -> NodeHandle {
-    let store = use_store::<CallStore>();
-
-    rsx! {
-        div {
-            style: "padding: 12px; border-top: 1px solid var(--rinch-color-dark-4); display: flex; justify-content: center; gap: 12px;",
-
-            // Mic toggle
-            ActionIcon {
-                variant: {|| if store.mic_enabled.get() { "filled" } else { "light" }},
-                color: {|| if store.mic_enabled.get() { "blue" } else { "red" }},
-                size: "xl",
-                radius: "xl",
-                onclick: move || store.mic_enabled.update(|v| *v = !*v),
-                if store.mic_enabled.get() {
-                    {render_tabler_icon(__scope, TablerIcon::Microphone, TablerIconStyle::Outline)}
-                } else {
-                    {render_tabler_icon(__scope, TablerIcon::MicrophoneOff, TablerIconStyle::Outline)}
-                }
-            }
-
-            // Camera toggle
-            ActionIcon {
-                variant: {|| if store.cam_enabled.get() { "filled" } else { "light" }},
-                color: {|| if store.cam_enabled.get() { "blue" } else { "red" }},
-                size: "xl",
-                radius: "xl",
-                onclick: move || store.cam_enabled.update(|v| *v = !*v),
-                if store.cam_enabled.get() {
-                    {render_tabler_icon(__scope, TablerIcon::Video, TablerIconStyle::Outline)}
-                } else {
-                    {render_tabler_icon(__scope, TablerIcon::VideoOff, TablerIconStyle::Outline)}
-                }
-            }
-
-            // Screen share toggle
-            ActionIcon {
-                variant: {|| if store.screen_sharing.get() { "filled" } else { "light" }},
-                color: {|| if store.screen_sharing.get() { "red" } else { "gray" }},
-                size: "xl",
-                radius: "xl",
-                onclick: {
-                    let store = store;
-                    move || toggle_screen_share(store)
-                },
-                {render_tabler_icon(__scope, TablerIcon::ScreenShare, TablerIconStyle::Outline)}
-            }
-
-            // Hang up
-            ActionIcon {
-                variant: "filled",
-                color: "red",
-                size: "xl",
-                radius: "xl",
-                disabled: {|| !store.in_call.get()},
-                onclick: move || {
-                    store.in_call.set(false);
-                    store.state.set(ConnectionState::Closed);
-                    store.status_msg.set("Call ended".into());
-                },
-                {render_tabler_icon(__scope, TablerIcon::PhoneOff, TablerIconStyle::Outline)}
-            }
-        }
-    }
-}
-
-// ── Call Logic ───────────────────────────────────────────────────────────────
-
-fn start_call(store: CallStore) {
-    let url = format!("{}/{}", store.server_url.get(), store.room_id.get());
-    store.status_msg.set(format!("Connecting to {url}..."));
-
-    match WebSocketSignaling::connect(&url) {
-        Ok(signaling) => match VideoCall::new() {
-            Ok(mut call) => {
-                let state_sig = store.state;
-                let status_sig = store.status_msg;
-                let in_call_sig = store.in_call;
-
-                call.peer.on_connection_state_change(move |s| {
-                    state_sig.send(s);
-                    status_sig.send(format!("{s:?}"));
-                    if matches!(
-                        s,
-                        ConnectionState::Disconnected
-                            | ConnectionState::Failed
-                            | ConnectionState::Closed
-                    ) {
-                        in_call_sig.send(false);
-                    }
-                });
-
-                let mic = store.mic_enabled.get();
-                let cam = store.cam_enabled.get();
-                match call.start(signaling, mic, cam) {
-                    Ok(()) => {
-                        store.in_call.set(true);
-                        store.status_msg.set("Waiting for peer...".into());
-                    }
-                    Err(e) => {
-                        store.status_msg.set(format!("Start failed: {e:?}"));
-                    }
-                }
-            }
-            Err(e) => store.status_msg.set(format!("WebRTC init failed: {e:?}")),
-        },
-        Err(e) => store.status_msg.set(format!("Connect failed: {e}")),
-    }
-}
-
-fn join_call(store: CallStore) {
-    let url = format!("{}/{}", store.server_url.get(), store.room_id.get());
-    store.status_msg.set(format!("Joining {url}..."));
-
-    match WebSocketSignaling::connect(&url) {
-        Ok(signaling) => match VideoCall::new() {
-            Ok(mut call) => {
-                let state_sig = store.state;
-                let status_sig = store.status_msg;
-                let in_call_sig = store.in_call;
-
-                call.peer.on_connection_state_change(move |s| {
-                    state_sig.send(s);
-                    status_sig.send(format!("{s:?}"));
-                    if matches!(
-                        s,
-                        ConnectionState::Disconnected
-                            | ConnectionState::Failed
-                            | ConnectionState::Closed
-                    ) {
-                        in_call_sig.send(false);
-                    }
-                });
-
-                match call.join(signaling) {
-                    Ok(()) => {
-                        store.in_call.set(true);
-                        store.status_msg.set("Joining call...".into());
-                    }
-                    Err(e) => {
-                        store.status_msg.set(format!("Join failed: {e:?}"));
-                    }
-                }
-            }
-            Err(e) => store.status_msg.set(format!("WebRTC init failed: {e:?}")),
-        },
-        Err(e) => store.status_msg.set(format!("Connect failed: {e}")),
-    }
-}
-
-// Global screen capture handle (kept alive while sharing)
-thread_local! {
-    static SCREEN_CAPTURE: RefCell<Option<ScreenCapture>> = const { RefCell::new(None) };
-}
-
-fn toggle_screen_share(store: CallStore) {
-    if store.screen_sharing.get() {
-        // Stop sharing
-        SCREEN_CAPTURE.with(|c| {
-            c.borrow_mut().take(); // Drop stops capture
-        });
-        store.screen_sharing.set(false);
-        store.status_msg.set("Screen sharing stopped".into());
-    } else {
-        // Start sharing
-        store.status_msg.set("Opening screen picker...".into());
-
-        // Run the portal dialog on a background thread since it blocks
-        let screen_sharing_sig = store.screen_sharing;
-        let status_sig = store.status_msg;
-
-        std::thread::spawn(
-            move || match ScreenCapture::start(CaptureConfig::default()) {
-                Ok(capture) => {
-                    SCREEN_CAPTURE.with(|c| {
-                        *c.borrow_mut() = Some(capture);
-                    });
-                    screen_sharing_sig.send(true);
-                    status_sig.send("Sharing screen".into());
-                }
-                Err(rinch_screen_capture::CaptureError::Cancelled) => {
-                    status_sig.send("Screen share cancelled".into());
-                }
-                Err(e) => {
-                    status_sig.send(format!("Screen share error: {e}"));
-                }
-            },
-        );
-    }
 }

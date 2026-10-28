@@ -7880,13 +7880,11 @@ name = "video-call"
 version = "0.1.0"
 dependencies = [
  "rinch",
- "rinch-av",
  "rinch-core",
- "rinch-macros",
- "rinch-screen-capture",
- "rinch-signaling",
- "rinch-tabler-icons",
- "rinch-webrtc",
+ "rinch-rtc",
+ "rinch-ws",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

@@ -698,6 +698,7 @@ fn toolbar_button(
 // Extracted to its own function so Callback values are passed as owned args
 // (avoids FnOnce issues from reactive `if` blocks capturing non-Copy closures).
 
+#[allow(clippy::too_many_arguments)] // the signals it reads, each by name
 fn mic_test_controls(
     __scope: &mut RenderScope,
     start_recording: Callback,
