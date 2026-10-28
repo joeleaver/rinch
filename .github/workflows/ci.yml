@@ -13,7 +13,7 @@ on:
 
 # Batched merges (docs/internals/ci.md). An ordinary pull request into `main` (a
 # *component* PR) runs only the fast jobs: `fmt`, `clippy`, `clippy-wasm`,
-# `clippy-android` and `check-android`. The slow ones (the `test` shards,
+# `clippy-android`, `check-android` and `check-macos`. The slow ones (the `test` shards,
 # `test-wasm` and `test-gpu`) run on a pull request whose head branch starts with `batch/`, on
 # every push to `main`, and on a manual dispatch. The lead merges several
 # reviewed component PRs into one `batch/YYYY-MM-DD-N` branch and opens one PR
@@ -347,7 +347,7 @@ jobs:
           # The render-surface, compositor and partial-frame fixtures, and
           # the split oracles (`gpu_split_*`, #1865: 25 compositor, 33 runtime,
           # 2 pages).
-          run 79 -p rinch --features gpu,video --lib -- \
+          run 81 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
@@ -630,6 +630,17 @@ jobs:
     # Slow: batches, `main` and dispatches only (see the note under `on:`).
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
     runs-on: ubuntu-24.04
+    env:
+      # Per test binary, the whole run's budget (seconds). wasm-bindgen-test-runner
+      # 0.2.129 (wgpu 30 needs >= 0.2.127, #1955) spends it across every
+      # WebDriver poll of the page, and a poll waits for the page's main thread:
+      # a binary that keeps the thread busy longer than the budget is killed
+      # mid-run. 0.2.126 waited on a blocked poll without limit. The default 20 s
+      # is under what review_1449_caret_point takes in Firefox (40 s on main's
+      # CI, a grid of synchronous caret-from-point calls; killed at 20 s in batch
+      # 35), and review2_1592 and web_media take 19-20 s. Steps that set their own
+      # (rinch-rtc's 180) keep theirs.
+      WASM_BINDGEN_TEST_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
 
@@ -941,6 +952,50 @@ jobs:
               --no-default-features --features android -- -D warnings
             cargo clippy -p rinch --target "$target" \
               --no-default-features --features android-gpu -- -D warnings
+            echo "::endgroup::"
+          done
+
+  # Lint the macOS desktop shell from Linux (#1962). Nothing else builds the
+  # `cfg(target_os = "macos")` code (the panel, the native menu bar, the tray),
+  # so a winit API it calls can go away unseen: winit 0.31.0-beta.3 removed
+  # `WindowAttributesMacOS::with_accepts_first_mouse` and only a macOS build
+  # would have said so. `cargo clippy` type-checks without linking, so no
+  # Apple SDK is needed; the targets are the toolchain's. Warnings are denied,
+  # as in `check-android`, for the same reason (a helper only one platform
+  # calls). Two feature sets: the full desktop one, and the bare one (no tray),
+  # where a tray-only helper goes unused. Runs on every PR, like the lints.
+  check-macos:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        id: rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          components: clippy
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-macos-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-macos-${{ steps.rust.outputs.channel }}-
+
+      - name: Lint the macOS desktop shell
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            echo "::group::$target"
+            cargo clippy -p rinch --target "$target" \
+              --features desktop,gpu,components,theme,file-dialogs,clipboard,system-tray \
+              -- -D warnings
+            cargo clippy -p rinch --target "$target" \
+              --features desktop,components,theme -- -D warnings
             echo "::endgroup::"
           done
 

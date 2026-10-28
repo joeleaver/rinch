@@ -335,10 +335,17 @@ transitive `ashpd` that fails to build.)
 **System deps (Linux):** GTK3, GLib, ATK, Cairo, Pango, gdk-pixbuf, libxdo, libmpv
 development packages.
 
-**wgpu fork:** the workspace patches wgpu crates from `joeleaver/wgpu-fork` (branch
-`rinch-patch`) for transparent-window support. Cargo patches are not transitive, so
-downstream consumers must copy the `[patch.crates-io]` section into their own
-workspace.
+**No `[patch]` lines at all.** rinch depends on crates.io wgpu 30, on Vello
+0.11 from `joeleaver/vello-fork` and on winit 0.31.0-beta.4 from
+`joeleaver/winit-fork`, each fork at a pinned rev, as ordinary dependencies, so
+an app copies no patch for any of them. Delete any old `[patch.crates-io]`
+lines for winit (`winit`, `winit-core`, `winit-common`, `winit-wayland`,
+`winit-x11`, `dpi`) and for wgpu (`wgpu`, `wgpu-core`, `wgpu-hal`,
+`wgpu-types`, `naga`): the winit ones now point Cargo at a branch rinch no
+longer uses. Use `rinch::wgpu` and `rinch::vello` rather than a `wgpu`/`vello`
+dependency of your own, so the versions never drift; add `wgpu = "30"`
+yourself only to turn on an extra feature (e.g. `webgpu`), and Cargo unifies
+it with rinch's.
 
 ## Common Pitfalls
 

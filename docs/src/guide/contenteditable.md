@@ -621,11 +621,11 @@ With the callback registered:
 - While a file drag from outside the window hovers over the editor, a **drop
   caret** (a caret bar of its own, `data-pm-drop-caret`) shows where a picture
   would land and follows the pointer; the drop lands exactly there. It shows
-  when the editor is not read-only and, where the platform names the hovered
-  files (X11, Windows, macOS), one of them is *named* like a picture (its bytes
-  cannot be read before the drop). Wayland names no file before the drop, so
-  there it shows for any file drag, and a drop that holds no picture inserts
-  nothing (the caret just goes away). The selection does not move and
+  when the editor is not read-only and one of the hovered files is *named*
+  like a picture (its bytes cannot be read before the drop). The names arrive
+  a moment after the drag enters the window; until they do (or if the
+  dragging app does not give them), it shows for any file drag, and a drop
+  that holds no picture inserts nothing (the caret just goes away). The selection does not move and
   nothing scrolls to the caret until the drop. Held in the top or bottom band
   of the editor's scroll container, the drag scrolls it, as an in-app drag does,
   so a long note can be targeted. The caret and the scrolling end with the drag:

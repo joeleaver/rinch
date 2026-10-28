@@ -355,6 +355,14 @@ impl RinchContext {
     /// The returned scene contains the full rinch UI and can be rendered
     /// to a texture via [`RinchOverlayRenderer`] or your own Vello setup.
     ///
+    /// **Use `rinch::vello`.** rinch depends on Vello 0.11 from
+    /// `joeleaver/vello-fork` at a pinned commit (#1955), which fixes two
+    /// image-atlas bugs of stock Vello 0.11. Build Vello types from `rinch::vello`
+    /// (and its `peniko`/`kurbo`), and wgpu types from `rinch::wgpu`, instead of
+    /// declaring your own `vello`/`wgpu` dependencies, so the versions can never
+    /// drift (for an extra wgpu feature, keep `wgpu = "30"` with just that feature;
+    /// Cargo unifies it). No `[patch]` line is needed.
+    ///
     /// This context's mounted `RenderSurface`s are driven here, as the desktop
     /// paint drives them: each is told its layout size, its render callback
     /// runs, and its latest frame is painted inline at its box. Call it once
@@ -838,6 +846,14 @@ impl RinchContext {
 /// Game engines with their own Vello setup can skip this and render the
 /// scene directly. This struct manages a [`vello::Renderer`] and an
 /// intermediate render texture sized to the window.
+///
+/// **Use `rinch::vello`.** rinch depends on Vello 0.11 from
+/// `joeleaver/vello-fork` at a pinned commit (#1955), which fixes two
+/// image-atlas bugs of stock Vello 0.11. Build Vello types from `rinch::vello`
+/// (and its `peniko`/`kurbo`), and wgpu types from `rinch::wgpu`, instead of
+/// declaring your own `vello`/`wgpu` dependencies, so the versions can never
+/// drift (for an extra wgpu feature, keep `wgpu = "30"` with just that feature;
+/// Cargo unifies it). No `[patch]` line is needed.
 ///
 /// # Usage
 ///

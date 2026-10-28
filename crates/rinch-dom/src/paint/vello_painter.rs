@@ -240,20 +240,25 @@ impl Default for VelloPainter {
     }
 }
 
-/// The brush transform that makes Vello sample an image at each pixel's
-/// CENTRE, for an image brush whose image-to-device map would otherwise be
-/// `transform * brush` (#1027).
+/// The brush transform that makes a sampler that looks at each pixel's
+/// top-left CORNER see its CENTRE, for a brush whose brush-to-device map
+/// would otherwise be `transform * brush` (#1027, #1798).
 ///
-/// Vello 0.7's fine shader (`fine.wgsl`, `CMD_IMAGE`) maps the pixel's
-/// top-left corner into the image, where CSS and tiny-skia map its centre:
-/// its bilinear arm then reads half a texel up and left of the right point
-/// (an image at a whole-pixel origin comes out averaged with its
-/// neighbours), and its nearest arm picks the texel under the corner. Moving
-/// the image half a DEVICE pixel up and left, `T(-0.5) * transform * brush`,
+/// Vello's fine shader (`fine.wgsl`) evaluates a gradient at the pixel's
+/// top-left corner (`my_xy`), where CSS and tiny-skia use its centre. Moving
+/// the brush half a DEVICE pixel up and left, `T(-0.5) * transform * brush`,
 /// puts the centre where the shader looks, under any scale, rotation or
 /// skew; the shape is unaffected, being drawn with `transform` alone. A
 /// scene appended under a translation keeps it (translations commute); one
 /// appended under a scale would not, and none is.
+///
+/// **Images do not take it any more.** Vello 0.7 sampled images at the corner
+/// too, and this shift was how rinch sampled them at the centre; Vello 0.9
+/// (linebender/vello#1606) moved its image arm (`CMD_IMAGE`) to the pixel
+/// centre, so since the upgrade to Vello 0.11 (#1955) an image brush is drawn
+/// with its own transform, which gives the same image-space sample points as
+/// before. The split-layer compositor's own shader (`split_compositor.rs`,
+/// `fs_surface`) still looks at the corner, so `slicing` keeps the shift for it.
 ///
 /// A degenerate `transform` (which draws nothing) keeps `brush`.
 pub(crate) fn centre_sampling(transform: Affine, brush: Affine) -> Affine {
@@ -262,6 +267,37 @@ pub(crate) fn centre_sampling(transform: Affine, brush: Affine) -> Affine {
         return brush;
     }
     transform.inverse() * Affine::translate((-0.5, -0.5)) * transform * brush
+}
+
+thread_local! {
+    /// Each live frame buffer's blob, by buffer address, held weakly: the
+    /// blob holds the buffer, so the address cannot be reused while the blob
+    /// lives, and a dead entry is skipped and pruned.
+    static FRAME_BLOBS: std::cell::RefCell<std::collections::HashMap<usize, peniko::WeakBlob<u8>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The blob for a live frame buffer: the same one while any holder (a scene,
+/// Vello's atlas) keeps it, so a frame repainted unchanged keeps one Vello
+/// image and is not uploaded again; a new frame (a new buffer) is a new
+/// image. Shares the buffer, copies nothing (#1955).
+pub(crate) fn frame_blob(frame: &std::sync::Arc<Vec<u8>>) -> Blob<u8> {
+    let key = std::sync::Arc::as_ptr(frame) as usize;
+    FRAME_BLOBS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(blob) = cache.get(&key).and_then(|weak| weak.upgrade())
+            && std::ptr::eq(blob.data().as_ptr(), frame.as_ptr())
+            && blob.len() == frame.len()
+        {
+            return blob;
+        }
+        if cache.len() >= 64 {
+            cache.retain(|_, weak| weak.upgrade().is_some());
+        }
+        let blob = Blob::new(frame.clone());
+        cache.insert(key, blob.downgrade());
+        blob
+    })
 }
 
 /// Dispatch a fill operation on a `PaintShape` to the appropriate Scene method.
@@ -358,8 +394,8 @@ impl Painter for VelloPainter {
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
         // Vello's fine shader evaluates a gradient at each pixel's top-left
-        // corner, as it samples an image (#1027), where CSS and tiny-skia
-        // evaluate it at the centre: a 1px hard-stop line of a repeating
+        // corner (it sampled images there too before Vello 0.9, #1027),
+        // where CSS and tiny-skia evaluate it at the centre: a 1px hard-stop line of a repeating
         // gradient fell between two corners and was not drawn (#1798).
         let bt = matches!(brush, Brush::Gradient(_))
             .then(|| centre_sampling(transform, Affine::IDENTITY));
@@ -430,7 +466,15 @@ impl Painter for VelloPainter {
     }
 
     fn draw_image(&mut self, image: &PaintImage<'_>, transform: Affine) {
-        let blob: Blob<u8> = Blob::from(image.data.to_vec());
+        // One blob per image, not per paint: Vello keys its atlas on the
+        // blob's id (#1955). A decoded image keeps its blob; a live frame's
+        // buffer maps to one blob while it lives; pixels made for this draw
+        // alone get a blob of their own.
+        let blob: Blob<u8> = match (image.decoded, image.frame) {
+            (Some(decoded), _) => decoded.blob(),
+            (None, Some(frame)) => frame_blob(frame),
+            (None, None) => Blob::from(image.data.to_vec()),
+        };
         let image_data = ImageData {
             data: blob,
             format: ImageFormat::Rgba8,
@@ -438,28 +482,26 @@ impl Painter for VelloPainter {
             width: image.width,
             height: image.height,
         };
-        // `Scene::draw_image` is this fill with no brush transform; the
-        // brush transform moves the sample to the pixel's centre (#1027).
+        // `Scene::draw_image`. Vello samples an image at each pixel's centre
+        // (since Vello 0.9), as CSS and tiny-skia do (#1027).
         let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
         let brush = peniko::ImageBrush::new(image_data);
-        let bt = Some(centre_sampling(transform, Affine::IDENTITY));
         route!(
             self,
             || Some(transform.transform_rect_bbox(rect)),
-            |scene| scene.fill(Fill::NonZero, transform, &brush, bt, &rect)
+            |scene| scene.fill(Fill::NonZero, transform, &brush, None, &rect)
         );
     }
 
     fn draw_gpu_image(&mut self, image: &ImageData, transform: Affine) {
-        // As `draw_image`: the brush transform moves the sample to the pixel's
-        // centre (#1027). The pixels come from the registered texture.
+        // As `draw_image`, sampled at each pixel's centre (#1027). The pixels
+        // come from the registered texture.
         let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
         let brush = peniko::ImageBrush::new(image.clone());
-        let bt = Some(centre_sampling(transform, Affine::IDENTITY));
         route!(
             self,
             || Some(transform.transform_rect_bbox(rect)),
-            |scene| scene.fill(Fill::NonZero, transform, &brush, bt, &rect)
+            |scene| scene.fill(Fill::NonZero, transform, &brush, None, &rect)
         );
     }
 
@@ -515,7 +557,8 @@ impl Painter for VelloPainter {
             .with_extend(peniko::Extend::Repeat)
             .with_quality(quality)
             .into();
-        let brush_transform = Some(centre_sampling(transform, tile_transform));
+        // Sampled at each pixel's centre by Vello itself (#1027, #1955).
+        let brush_transform = Some(tile_transform);
         route!(
             self,
             || shape_bounds(transform, shape),
@@ -614,8 +657,8 @@ impl Painter for VelloPainter {
 
 #[cfg(test)]
 mod sampling_tests {
-    //! What Vello 0.7's fine shader samples for the images this painter
-    //! encodes (#1027). There is no GPU in CI, so the shader's image arm
+    //! What Vello 0.11's fine shader samples for the images this painter
+    //! encodes (#1027, #1955). There is no GPU in CI, so the shader's image arm
     //! (`fine.wgsl`, `CMD_IMAGE`) is modelled here on the CPU, in `f32`, from
     //! the transform the scene actually encodes for the brush. The model is
     //! checked against a real GPU by the `#[ignore]`d
@@ -644,8 +687,9 @@ mod sampling_tests {
 
     /// `fine.wgsl`'s `CMD_IMAGE` arm for an image at atlas offset 0 with
     /// `Extend::Pad`, for the device pixel whose top-left corner is
-    /// `(x, y)` — the shader's `my_xy` is the pixel's corner, not its centre.
-    /// Returns the grey channel.
+    /// `(x, y)`. Since Vello 0.9 the shader's `my_xy` is the pixel's centre,
+    /// `(x + 0.5, y + 0.5)` (Vello 0.7 used the corner). Returns the grey
+    /// channel.
     fn shader_sample(
         (m, t): ([f32; 4], [f32; 2]),
         x: f32,
@@ -666,6 +710,7 @@ mod sampling_tests {
             -(im[1] * t[0] + im[3] * t[1]),
         ];
         let (ew, eh) = (W as f32, H as f32);
+        let (x, y) = (x + 0.5, y + 0.5);
         let mut u = im[0] * x + im[2] * y + it[0];
         let mut v = im[1] * x + im[3] * y + it[1];
         let extend = |t: f32, max: f32| {
@@ -721,6 +766,7 @@ mod sampling_tests {
                 width: W,
                 height: H,
                 decoded: None,
+                frame: None,
                 opaque: true,
             },
             transform,
@@ -854,13 +900,119 @@ mod sampling_tests {
         let inv_det = 1.0 / (m[0] * m[3] - m[1] * m[2]);
         let (a, c) = (inv_det * m[3], -inv_det * m[2]);
         let u = |x: f32, y: f32| a * x + c * y - (a * t[0] + c * t[1]);
-        // The corner of device pixel 5 (row 7) maps to its centre's texel
-        // coordinate (`centre_sampling`); nearest reads its floor.
-        let at = u(5.0, 7.0);
+        // The centre of device pixel 5 (row 7), where Vello samples, maps to
+        // texel 4.5; nearest reads its floor.
+        let at = u(5.5, 7.5);
         assert!(
             (at - 4.5).abs() < 1e-3,
             "pixel 5's centre is texel {at}; 4.5 is the tile placed on pixel 1"
         );
         assert!((m[0] - 1.0).abs() < 1e-6 && m[1] == 0.0 && m[2] == 0.0);
+    }
+}
+
+#[cfg(test)]
+mod blob_identity_tests {
+    //! Vello keys its image atlas on the blob's id, and Vello 0.9+ keeps an
+    //! image resident across renders: an image must reach it as the same
+    //! blob on every paint, or each repaint is a new image (#1955).
+    use super::*;
+    use crate::image_cache::DecodedImage;
+    use crate::paint::painter::{PaintImage, Painter};
+    use std::sync::Arc;
+    use vello::low_level::vello_encoding::Patch;
+
+    fn image_ids(p: &VelloPainter) -> Vec<u64> {
+        p.scene()
+            .encoding()
+            .resources
+            .patches
+            .iter()
+            .filter_map(|patch| match patch {
+                Patch::Image { image, .. } => Some(image.data.id()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn paint(image: PaintImage<'_>) -> Vec<u64> {
+        let mut p = VelloPainter::new();
+        p.draw_image(&image, Affine::IDENTITY);
+        image_ids(&p)
+    }
+
+    fn pixels() -> Vec<u8> {
+        vec![255; 2 * 2 * 4]
+    }
+
+    /// A decoded image (an `<img>`, a background image) is one blob for
+    /// good, painter after painter.
+    #[test]
+    fn a_decoded_image_is_the_same_blob_on_every_paint() {
+        let decoded = DecodedImage::new(pixels(), 2, 2);
+        let image = || PaintImage {
+            data: &decoded.data,
+            width: 2,
+            height: 2,
+            decoded: Some(&decoded),
+            frame: None,
+            opaque: true,
+        };
+        let (first, second) = (paint(image()), paint(image()));
+        assert_eq!(first.len(), 1);
+        assert_eq!(first, second);
+    }
+
+    /// A live frame is one blob while its buffer is the same one, shared
+    /// rather than copied; a new frame (a new buffer) is a new blob.
+    #[test]
+    fn a_live_frame_is_one_blob_per_buffer() {
+        let frame = Arc::new(pixels());
+        let image = |f: &Arc<Vec<u8>>| {
+            let mut p = VelloPainter::new();
+            p.draw_image(
+                &PaintImage {
+                    data: f,
+                    width: 2,
+                    height: 2,
+                    decoded: None,
+                    frame: Some(f),
+                    opaque: true,
+                },
+                Affine::IDENTITY,
+            );
+            p
+        };
+        let kept = image(&frame);
+        let again = image(&frame);
+        assert_eq!(image_ids(&kept), image_ids(&again));
+        let shared = kept
+            .scene()
+            .encoding()
+            .resources
+            .patches
+            .iter()
+            .any(|patch| {
+                matches!(patch, Patch::Image { image, .. }
+                if std::ptr::eq(image.data.data().as_ptr(), frame.as_ptr()))
+            });
+        assert!(shared, "the frame's buffer is shared, not copied");
+        let next = Arc::new(pixels());
+        assert_ne!(image_ids(&image(&next)), image_ids(&kept));
+    }
+
+    /// Pixels made for one draw (a shadow mask) carry no identity.
+    #[test]
+    fn pixels_made_per_draw_get_a_blob_each() {
+        let data = pixels();
+        let image = || PaintImage {
+            data: &data,
+            width: 2,
+            height: 2,
+            decoded: None,
+            frame: None,
+            opaque: true,
+        };
+        assert_ne!(paint(image()), paint(image()));
     }
 }

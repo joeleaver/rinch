@@ -4911,10 +4911,10 @@ impl RinchApp {
     /// pointer would land, in the editor under it that would take the drop:
     /// one with an [`on_image_input`](crate::editor::EditorHandle::on_image_input)
     /// callback that does not refuse edits, for a drag holding a path named
-    /// like a picture — or naming no path at all (Wayland names none before
-    /// the drop; a drop that holds no picture then inserts nothing). Anywhere
-    /// else, no caret. Neither the selection nor the
-    /// scroll moves: the drop does both. Answers whether an overlay changed.
+    /// like a picture — or naming no path yet (the paths arrive a moment
+    /// after the drag enters; a drop that holds no picture inserts nothing).
+    /// Anywhere else, no caret. Neither the selection nor the scroll moves:
+    /// the drop does both. Answers whether an overlay changed.
     #[cfg(feature = "desktop")]
     pub(crate) fn place_file_drop_caret(&mut self) -> bool {
         let Some(drag) = self.file_drag.as_ref() else {

@@ -371,6 +371,42 @@ fn pointer_id_of(source: &winit::event::PointerSource) -> u64 {
     }
 }
 
+/// `os_file_drag`'s steps carried out on winit's event loop (#1962); the
+/// events are collected and handed to the app after, in order.
+struct WinitDragHost<'a> {
+    event_loop: &'a dyn ActiveEventLoop,
+    events: Vec<PlatformEvent>,
+}
+
+impl super::os_file_drag::DragHost for WinitDragHost<'_> {
+    fn accept(
+        &mut self,
+        id: winit::data_transfer::DataTransferId,
+        actions: &[winit::event_loop::DndAction],
+    ) -> Result<(), String> {
+        self.event_loop
+            .set_valid_dnd_actions(id, actions)
+            .map_err(|e| e.to_string())
+    }
+
+    fn fetch_uri_list(
+        &mut self,
+        id: winit::data_transfer::DataTransferId,
+    ) -> Result<winit::event_loop::AsyncRequestSerial, String> {
+        self.event_loop
+            .fetch_data_transfer(id, &winit::data_transfer::TypeHint::UriList)
+            .map_err(|e| e.to_string())
+    }
+
+    fn emit(&mut self, event: PlatformEvent) {
+        self.events.push(event);
+    }
+
+    fn warn(&mut self, message: String) {
+        tracing::warn!("{message}");
+    }
+}
+
 /// The pointer a winit move came from, as a render surface hears it. `down`:
 /// that pointer has a button or contact down, which decides the pressure a
 /// device that cannot measure it reports.
@@ -397,6 +433,12 @@ fn surface_pointer_of(
             pressure: force_pressure(data.force.as_ref(), down),
             primary,
         },
+        // `PointerSource` is non-exhaustive (winit 0.31.0-beta.3): a source
+        // this shell does not know is a mouse, as `Unknown` is.
+        _ => SurfacePointer {
+            primary,
+            ..SurfacePointer::mouse(down)
+        },
     }
 }
 
@@ -418,6 +460,8 @@ fn surface_pointer_of_button(
             kind: *kind,
             data: data.clone(),
         },
+        // Non-exhaustive (winit 0.31.0-beta.3): an unknown source is a mouse.
+        _ => PointerSource::Mouse,
     };
     let mut pointer = surface_pointer_of(&source, primary, pressed);
     if !pressed {
@@ -510,6 +554,9 @@ pub struct RinchRuntime {
     /// been handed yet (logical px), and which pointer it is. See
     /// [`Self::flush_pointer_move`].
     pending_pointer_move: Option<(f32, f32, SurfacePointer)>,
+    /// The OS file drag over the main window, from winit's data transfer
+    /// events (#1962).
+    os_file_drag: super::os_file_drag::OsFileDrag,
     /// The buttons or contacts down, as `(SurfacePointer::id, button)`: what
     /// decides the pressure a move reports for a device that cannot measure
     /// it. Per button, so a chord's release (right up while left is held)
@@ -679,6 +726,7 @@ impl RinchRuntime {
             native_menu: None,
             draining_native_events: false,
             pending_pointer_move: None,
+            os_file_drag: Default::default(),
             pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
             click_through: false,
@@ -3031,6 +3079,9 @@ impl ApplicationHandler for RinchRuntime {
                     winit::event::MouseScrollDelta::PixelDelta(pos) => {
                         to_logical_point((pos.x, pos.y), self.scale_factor())
                     }
+                    // `MouseScrollDelta` is non-exhaustive (winit 0.31.0-beta.3):
+                    // a kind of delta this shell does not know scrolls nothing.
+                    _ => return,
                 };
                 // Already logical: set from the converted `PointerMoved` above.
                 let (cx, cy) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
@@ -3143,42 +3194,42 @@ impl ApplicationHandler for RinchRuntime {
                 };
                 PlatformEvent::Ime(ime_event)
             }
-            WindowEvent::DragEntered { paths, position } => {
-                let size = self.window_size();
-                let scale = self.scale_factor();
-                // A file-drag position is a pointer position like any other, and
-                // is hit-tested against the layout tree (#299).
-                let position = to_logical_point((position.x, position.y), scale);
-                if paths.is_empty() {
-                    // Wayland: paths arrive on drop, not on enter.
-                    // Fire a FileDragMoved to trigger hover tracking.
-                    let actions = self.app.handle_event(
-                        PlatformEvent::FileDragMoved { position },
-                        size,
-                        scale,
-                    );
-                    self.process_actions(actions, event_loop);
-                } else {
-                    // X11/Windows: paths are known on enter.
-                    for path in paths {
-                        let actions = self.app.handle_event(
-                            PlatformEvent::FileHoverEnter { path, position },
-                            size,
-                            scale,
-                        );
-                        self.process_actions(actions, event_loop);
-                    }
-                }
+            // An OS file drag (#1962): winit's data transfer events, through
+            // `OsFileDrag`, become the path-carrying `File*` events. A
+            // file-drag position is a pointer position like any other, and is
+            // hit-tested against the layout tree (#299).
+            WindowEvent::DragEntered { id, position } => {
+                use winit::data_transfer::TypeHint;
+                let has_uri_list = event_loop
+                    .data_transfer(id)
+                    .is_ok_and(|transfer| transfer.has_type(&TypeHint::UriList));
+                let position = position.map(|p| to_logical_point((p.x, p.y), self.scale_factor()));
+                let steps = self.os_file_drag.entered(id, position, has_uri_list);
+                self.run_file_drag_steps(steps, event_loop);
                 return;
             }
-            WindowEvent::DragMoved { position } => PlatformEvent::FileDragMoved {
-                position: to_logical_point((position.x, position.y), self.scale_factor()),
-            },
-            WindowEvent::DragDropped { paths, position } => PlatformEvent::FileDropped {
-                paths,
-                position: to_logical_point((position.x, position.y), self.scale_factor()),
-            },
-            WindowEvent::DragLeft { .. } => PlatformEvent::FileHoverCancelled,
+            WindowEvent::DragPosition { id, position, .. } => {
+                let position = to_logical_point((position.x, position.y), self.scale_factor());
+                let steps = self.os_file_drag.moved(id, position);
+                self.run_file_drag_steps(steps, event_loop);
+                return;
+            }
+            WindowEvent::DataTransferReceived { id, serial, value } => {
+                let uris = super::os_file_drag::uris_from(value.try_as_uris());
+                let steps = self.os_file_drag.received(id, serial, uris);
+                self.run_file_drag_steps(steps, event_loop);
+                return;
+            }
+            WindowEvent::DragDropped { id, .. } => {
+                let steps = self.os_file_drag.dropped(id, std::time::Instant::now());
+                self.run_file_drag_steps(steps, event_loop);
+                return;
+            }
+            WindowEvent::DragLeft { id } => {
+                let steps = self.os_file_drag.left(id);
+                self.run_file_drag_steps(steps, event_loop);
+                return;
+            }
             _ => return,
         };
         self.dispatch_main_event(platform_event, event_loop);
@@ -3192,6 +3243,24 @@ impl ApplicationHandler for RinchRuntime {
 }
 
 impl RinchRuntime {
+    /// Carry out what [`super::os_file_drag::OsFileDrag`] answered for a drag
+    /// event (accept the drag, ask for its URI list, log), then hand the app
+    /// the events it produced, in order.
+    fn run_file_drag_steps(
+        &mut self,
+        steps: Vec<super::os_file_drag::DragStep>,
+        event_loop: &dyn ActiveEventLoop,
+    ) {
+        let mut host = WinitDragHost {
+            event_loop,
+            events: Vec::new(),
+        };
+        super::os_file_drag::run_steps(&mut self.os_file_drag, steps, &mut host);
+        for event in host.events {
+            self.dispatch_main_event(event, event_loop);
+        }
+    }
+
     /// Hand the app the pointer move [`Self::window_event`] held back, if any.
     fn flush_pointer_move(&mut self, event_loop: &dyn ActiveEventLoop) {
         if let Some((x, y, pointer)) = self.pending_pointer_move.take() {
@@ -3292,9 +3361,9 @@ impl RinchRuntime {
         self.sync_a11y();
 
         // Drive the focused editor's caret blink, and wake for a resting
-        // pointer's `title` tooltip (#1646). These are the only two timed
-        // wakes (`WaitUntil`); with neither it returns the loop to `Wait` so
-        // the app stays idle.
+        // pointer's `title` tooltip (#1646) and a file drop's deadline (#1962).
+        // These are the only timed wakes (`WaitUntil`); with none it returns
+        // the loop to `Wait` so the app stays idle.
         #[cfg(feature = "desktop")]
         self.tick_caret_blink(event_loop);
     }
@@ -3302,9 +3371,10 @@ impl RinchRuntime {
 
 impl RinchRuntime {
     /// Blink the focused editor's caret by arming a `WaitUntil` wake for the next
-    /// phase toggle (see [`crate::editor::caret_blink_tick`]), or for a
-    /// pending `title` tooltip's deadline, whichever is sooner. Owns the event
-    /// loop's control flow: `WaitUntil` while either is due, `Wait` otherwise.
+    /// phase toggle (see [`crate::editor::caret_blink_tick`]), for a pending
+    /// `title` tooltip's deadline, or for a file drop's (ending the drops past
+    /// theirs), whichever is sooner. Owns the event loop's control flow:
+    /// `WaitUntil` while any is due, `Wait` otherwise.
     ///
     /// *Which* editor blinks is [`RinchApp::blinking_editor_id`]'s decision, not
     /// this function's — it excludes a blurred window, so a backgrounded app
@@ -3324,8 +3394,18 @@ impl RinchRuntime {
             None => None,
         };
         // A pointer resting over a `title` shows its tooltip at its deadline
-        // (#1646): the other timed wake.
+        // (#1646): another timed wake.
         let wake = match (blink_at, self.app.title_tooltip_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        // A file drop still waiting for its paths gives up at its deadline
+        // (#1962): the third.
+        let expired = self.os_file_drag.expire(std::time::Instant::now());
+        if !expired.is_empty() {
+            self.run_file_drag_steps(expired, event_loop);
+        }
+        let wake = match (wake, self.os_file_drag.next_deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
@@ -3747,6 +3827,7 @@ impl RinchRuntime {
                     winit::event::MouseScrollDelta::PixelDelta(pos) => {
                         to_logical_point((pos.x, pos.y), scale)
                     }
+                    _ => return,
                 };
                 if let Some(dt_app) = &mut self.devtools_app {
                     let (cx, cy) = dt_app.cursor_pos.unwrap_or((0.0, 0.0));

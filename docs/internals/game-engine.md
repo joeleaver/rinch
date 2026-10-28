@@ -278,7 +278,7 @@ the runtime's own steps against an in-scene window.
 | `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits })` | rinch creates the device (surface-compatible adapter) with your extra features/limits | You just need more capability — **recommended**, always presents correctly |
 | `App::new(component).external_gpu(ExternalGpu { instance, adapter, device, queue })` | You create the whole stack; rinch makes only the surface, validates present-support, composites onto your device | You must keep your exact `DeviceDescriptor` |
 
-Construct `wgpu` types from **`rinch::wgpu`** (rinch pins a patched fork — a separate `wgpu` dep won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
+Construct `wgpu` types from **`rinch::wgpu`** (wgpu 30; a separately pinned `wgpu` of another major won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
 
 **Web (canvas viewport, issue #91):** the **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`, but the model is inverted — the **browser** composites, so rinch only creates and manages a `<canvas>` "viewport hole"; the **app owns the GPU context**. rinch links **no wgpu** on web.
 

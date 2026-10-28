@@ -72,7 +72,9 @@ pub fn capture_texture_rgba(
         .map_err(|e| format!("Channel recv failed: {}", e))?
         .map_err(|e| format!("Buffer mapping failed: {:?}", e))?;
 
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .map_err(|e| format!("Buffer view failed: {e}"))?;
 
     // Remove row padding and handle format conversion
     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
