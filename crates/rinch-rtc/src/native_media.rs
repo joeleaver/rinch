@@ -1,6 +1,6 @@
 //! Native media backend (design record `docs/design/rtc-media.md`, section 3):
-//! webrtc-rs negotiates and carries RTP; libvpx (VP8), openh264 (H.264) and
-//! Opus encode and decode; rinch-av captures and plays; and received video
+//! webrtc-rs negotiates and carries RTP; openh264 (H.264), libvpx (VP8, with
+//! the `media-vp8` feature) and Opus encode and decode; rinch-av captures and plays; and received video
 //! reaches `MediaView` through rinch-core's named video sink (M6).
 //!
 //! Threads:
@@ -15,7 +15,7 @@
 //!   packetizes each sender's encoded frames into RTP, forwards PLIs to the
 //!   pumps, and reads each remote track's RTP.
 //! - **One decoder thread per remote video track** (`rinch-rtc-dec-<key>`):
-//!   VP8 or H.264, whichever the stream carries, I420→RGBA, then the views
+//!   H.264 or VP8, whichever the stream carries, I420→RGBA, then the views
 //!   and `on_frame`. A decode error or a gap sends a PLI.
 //! - **Remote audio** is decoded on the worker (Opus is cheap), buffered per
 //!   track (60 ms before it starts; Opus FEC or PLC for a lost packet),
@@ -120,7 +120,9 @@ static CISCO: std::sync::OnceLock<Cisco> = std::sync::OnceLock::new();
 ///   own user can write, as for any library the app loads.
 /// - Call it once. A second call with the same file is a no-op; with a
 ///   different one it is an error.
-/// - Until it has succeeded, desktop peers offer and accept VP8 only.
+/// - Until it has succeeded, desktop peers offer and accept no H.264. With
+///   `media-vp8` as well they have VP8 meanwhile; without it, no video
+///   codec until then.
 #[cfg(feature = "media-cisco-openh264")]
 pub fn load_openh264(path: impl AsRef<std::path::Path>) -> Result<(), MediaError> {
     let canon = std::fs::canonicalize(path.as_ref()).map_err(|e| {
@@ -215,6 +217,7 @@ type Subscriber = (
 pub(crate) fn codec_id(c: VideoCodec) -> u8 {
     match c {
         VideoCodec::H264 => 1,
+        #[cfg(feature = "media-vp8")]
         VideoCodec::Vp8 => 2,
     }
 }
@@ -222,6 +225,7 @@ pub(crate) fn codec_id(c: VideoCodec) -> u8 {
 fn codec_of(id: u8) -> Option<VideoCodec> {
     match id {
         1 => Some(VideoCodec::H264),
+        #[cfg(feature = "media-vp8")]
         2 => Some(VideoCodec::Vp8),
         _ => None,
     }
@@ -1733,6 +1737,7 @@ pub mod testing {
                 s.wanted_codecs()
                     .into_iter()
                     .map(|c| match c {
+                        #[cfg(feature = "media-vp8")]
                         crate::native_codec::VideoCodec::Vp8 => "VP8",
                         crate::native_codec::VideoCodec::H264 => "H264",
                     })
@@ -1778,8 +1783,9 @@ pub mod testing {
             .unwrap_or(0)
     }
 
-    /// Offer H.264 before VP8 (tests of the H.264 path; the default
-    /// prefers VP8). Read when a peer's connection is built, on the worker
+    /// Offer H.264 before VP8 (tests of the H.264 path; a `media-vp8`
+    /// build prefers VP8, and a build without it offers H.264 alone, so
+    /// this changes nothing there). Read when a peer's connection is built, on the worker
     /// shortly after `Peer::new`: keep it on until the peer's first offer
     /// or answer.
     pub fn prefer_h264(on: bool) {
@@ -1787,8 +1793,8 @@ pub mod testing {
     }
 
     /// Offer and accept H.264 only, no VP8 (`media_echo --h264-only`:
-    /// H.264 interop with a browser, which offers VP8 first). Read as
-    /// `prefer_h264` is.
+    /// H.264 interop with a browser, which offers VP8 first). A build
+    /// without `media-vp8` is H.264-only already. Read as `prefer_h264` is.
     pub fn h264_only(on: bool) {
         super::H264_ONLY.store(on, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1903,12 +1909,15 @@ pub(crate) mod worker {
     use rtc::media::io::sample_builder::SampleBuilder;
     use rtc::media_stream::MediaStreamTrack;
     use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
+    #[cfg(feature = "media-vp8")]
+    use rtc::peer_connection::configuration::media_engine::MIME_TYPE_VP8;
     use rtc::peer_connection::configuration::media_engine::{
-        MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_VP8, MediaEngine,
+        MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine,
     };
     use rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
     use rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
     use rtc::rtp::codec::h264::H264Packet;
+    #[cfg(feature = "media-vp8")]
     use rtc::rtp::codec::vp8::Vp8Packet;
     use rtc::rtp::packetizer::{Packetizer, new_packetizer};
     use rtc::rtp::sequence::{Sequencer, new_random_sequencer};
@@ -1937,6 +1946,7 @@ pub(crate) mod worker {
     use crate::registry::Event;
 
     const H264_PT: u8 = 102;
+    #[cfg(feature = "media-vp8")]
     const VP8_PT: u8 = 96;
     const OPUS_PT: u8 = 111;
     /// The packetizer's MTU (as webrtc-rs's own sample track uses).
@@ -1959,6 +1969,7 @@ pub(crate) mod worker {
         ]
     }
 
+    #[cfg(feature = "media-vp8")]
     fn vp8() -> RTCRtpCodec {
         RTCRtpCodec {
             mime_type: MIME_TYPE_VP8.to_owned(),
@@ -1976,20 +1987,7 @@ pub(crate) mod worker {
             channels: 0,
             sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
                 .to_owned(),
-            rtcp_feedback: vec![
-                RTCPFeedback {
-                    typ: "nack".to_owned(),
-                    parameter: String::new(),
-                },
-                RTCPFeedback {
-                    typ: "nack".to_owned(),
-                    parameter: "pli".to_owned(),
-                },
-                RTCPFeedback {
-                    typ: "ccm".to_owned(),
-                    parameter: "fir".to_owned(),
-                },
-            ],
+            rtcp_feedback: video_feedback(),
         }
     }
 
@@ -2004,22 +2002,26 @@ pub(crate) mod worker {
     }
 
     /// The codecs a media peer offers and accepts, in preference order:
-    /// VP8 first, then H.264 constrained baseline (each with its RTX), and
-    /// Opus (M2, decided 2026-10-27).
+    /// with `media-vp8`, VP8 first, then H.264 constrained baseline; without
+    /// it, H.264 alone; and Opus (M2, decided 2026-10-27, VP8 made opt-in
+    /// 2026-10-28). No RTX (see `media_engine`).
     ///
     /// VP8 first because every browser encodes it, while a Firefox without
     /// Cisco's OpenH264 plugin still *lists* H.264 in its SDP and then
     /// sends nothing: preferring H.264 would pick a codec that side cannot
     /// send. An answer follows the offer's order, so H.264 is used where
-    /// the other side offers it first (Safari does). H.264 is left out
-    /// altogether until it is available (`media-cisco-openh264` before
-    /// `load_openh264`).
-    /// The video codecs a peer offers and accepts, in preference order
-    /// (M2: VP8 first; the testing flags reorder or drop it).
+    /// the other side offers it first (Safari does). Without VP8, a
+    /// browser's VP8-first offer is answered with H.264, the one codec in
+    /// common: Chrome and Safari send it, such a Firefox sends no video.
+    /// H.264 is left out altogether until it is available
+    /// (`media-cisco-openh264` before `load_openh264`). The testing flags
+    /// reorder or drop VP8.
     fn video_codecs() -> Vec<(RTCRtpCodec, u8)> {
-        let mut video = vec![(vp8(), VP8_PT)];
-        if super::H264_ONLY.load(Ordering::Relaxed) {
-            video.clear();
+        #[allow(unused_mut)]
+        let mut video: Vec<(RTCRtpCodec, u8)> = Vec::new();
+        #[cfg(feature = "media-vp8")]
+        if !super::H264_ONLY.load(Ordering::Relaxed) {
+            video.push((vp8(), VP8_PT));
         }
         if super::h264_available() {
             if super::PREFER_H264.load(Ordering::Relaxed) {
@@ -2103,6 +2105,83 @@ pub(crate) mod worker {
         pts.iter()
             .filter_map(|p| names.get(p).map(|n| n.to_string()))
             .collect()
+    }
+
+    /// What to tell the app when a remote offer's video cannot be answered:
+    /// `Some(message)` when some video m-line (port not 0) lists codecs and
+    /// none of them is one this build offers, so the answer rejects it and
+    /// the call goes on without that video. webrtc-rs reports nothing then
+    /// (a VP8-only offer to a build without `media-vp8` connected on audio
+    /// alone, silently: #1975's review). The message names the codecs on
+    /// each side and, where it is the cause, the feature or call that adds
+    /// the missing one.
+    pub(crate) fn unanswerable_video(sdp: &str) -> Option<String> {
+        let ours: Vec<String> = video_codecs()
+            .iter()
+            .filter_map(|(c, _)| c.mime_type.rsplit('/').next().map(str::to_ascii_uppercase))
+            .collect();
+        let mut theirs: Vec<String> = Vec::new();
+        let mut rejected = false;
+        // One m-section at a time: (is live video, its payload types, names).
+        let mut flush = |live: bool, pts: &[&str], names: &HashMap<&str, &str>| {
+            if !live {
+                return;
+            }
+            let listed: Vec<String> = pts
+                .iter()
+                .filter_map(|p| names.get(p).map(|n| n.to_ascii_uppercase()))
+                .collect();
+            if listed.is_empty() || listed.iter().any(|n| ours.contains(n)) {
+                return;
+            }
+            rejected = true;
+            for n in listed {
+                if !theirs.contains(&n) {
+                    theirs.push(n);
+                }
+            }
+        };
+        let mut live = false;
+        let mut pts: Vec<&str> = Vec::new();
+        let mut names: HashMap<&str, &str> = HashMap::new();
+        for l in sdp.lines() {
+            if let Some(m) = l.strip_prefix("m=") {
+                flush(live, &pts, &names);
+                let f: Vec<&str> = m.split(' ').collect();
+                live = f.first() == Some(&"video") && f.get(1).is_some_and(|p| *p != "0");
+                pts = f.iter().skip(3).copied().collect();
+                names.clear();
+            } else if live
+                && let Some(r) = l.strip_prefix("a=rtpmap:")
+                && let Some((pt, rest)) = r.split_once(' ')
+            {
+                names.insert(pt, rest.split('/').next().unwrap_or(""));
+            }
+        }
+        flush(live, &pts, &names);
+        if !rejected {
+            return None;
+        }
+        let have = if ours.is_empty() {
+            "none".to_string()
+        } else {
+            ours.join(", ")
+        };
+        let mut msg = format!(
+            "the remote offer's video lists {} and this build offers {have}: \
+             no codec in common, so that video is rejected and the call goes on without it",
+            theirs.join(", ")
+        );
+        if cfg!(not(feature = "media-vp8")) && theirs.iter().any(|n| n == "VP8") {
+            msg.push_str(
+                ". VP8 needs rinch-rtc's `media-vp8` feature \
+                 (features = [\"media\", \"media-vp8\"])",
+            );
+        }
+        if theirs.iter().any(|n| n == "H264") && !super::h264_available() {
+            msg.push_str(". H.264 needs `rinch_rtc::media::load_openh264` first");
+        }
+        Some(msg)
     }
 
     /// Give the transceiver carrying `rtp` our video codec preferences.
@@ -2443,6 +2522,15 @@ pub(crate) mod worker {
     }
 
     impl PeerWorker {
+        /// After a remote offer is applied: report through `on_error` a
+        /// video m-line the answer will reject for want of a codec
+        /// (`unanswerable_video`).
+        pub(crate) fn check_remote_offer(&self, sdp: &str) {
+            if let Some(msg) = unanswerable_video(sdp) {
+                emit(self.peer, Event::Error(RtcError::Media(msg)));
+            }
+        }
+
         pub(crate) fn new(peer: u64) -> Self {
             Self {
                 peer,
@@ -2862,6 +2950,7 @@ pub(crate) mod worker {
     /// Video depacketizing, for the codec the stream turned out to carry.
     enum Assembler {
         H264(SampleBuilder<H264Packet>),
+        #[cfg(feature = "media-vp8")]
         Vp8(SampleBuilder<Vp8Packet>),
     }
 
@@ -2876,6 +2965,7 @@ pub(crate) mod worker {
                     SampleBuilder::new(512, H264Packet::default(), 90_000)
                         .with_max_time_delay(delay),
                 ),
+                #[cfg(feature = "media-vp8")]
                 VideoCodec::Vp8 => Self::Vp8(
                     SampleBuilder::new(512, Vp8Packet::default(), 90_000)
                         .with_max_time_delay(delay),
@@ -2886,6 +2976,7 @@ pub(crate) mod worker {
         fn push(&mut self, p: rtc::rtp::Packet) {
             match self {
                 Self::H264(b) => b.push(Instant::now(), p),
+                #[cfg(feature = "media-vp8")]
                 Self::Vp8(b) => b.push(Instant::now(), p),
             }
         }
@@ -2894,6 +2985,7 @@ pub(crate) mod worker {
         fn pop(&mut self) -> Option<(bytes::Bytes, bool)> {
             let s = match self {
                 Self::H264(b) => b.pop(Instant::now()),
+                #[cfg(feature = "media-vp8")]
                 Self::Vp8(b) => b.pop(Instant::now()),
             }?;
             Some((s.data, s.prev_dropped_packets > 0))
@@ -3472,21 +3564,79 @@ pub(crate) mod worker {
         }
     }
 
+    #[cfg(all(test, feature = "media"))]
+    mod unanswerable_tests {
+        use super::unanswerable_video;
+
+        const AUDIO: &str = "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n";
+
+        fn video(port: &str, codecs: &[(&str, &str)]) -> String {
+            let pts: Vec<&str> = codecs.iter().map(|(p, _)| *p).collect();
+            let mut s = format!("m=video {port} UDP/TLS/RTP/SAVPF {}\r\n", pts.join(" "));
+            for (p, n) in codecs {
+                s.push_str(&format!("a=rtpmap:{p} {n}/90000\r\n"));
+            }
+            s
+        }
+
+        /// Only a live video m-line with no codec in common is reported, on
+        /// any m-line (not the first video one alone), naming what each side
+        /// has. Every `media` build has H.264 (`load_openh264` aside).
+        #[test]
+        fn only_a_live_video_line_with_no_common_codec_is_reported() {
+            let h264 = video("9", &[("102", "H264")]);
+            let vp9 = video("9", &[("98", "VP9"), ("99", "AV1")]);
+            assert_eq!(unanswerable_video(&format!("{AUDIO}{h264}")), None);
+            // Lower case is the same codec.
+            assert_eq!(unanswerable_video(&video("9", &[("102", "h264")])), None);
+            // A rejected (port 0) m-line is not ours to report.
+            assert_eq!(unanswerable_video(&video("0", &[("98", "VP9")])), None);
+            assert_eq!(unanswerable_video(AUDIO), None);
+            // The second video m-line, after a fine first one.
+            let m = unanswerable_video(&format!("{AUDIO}{h264}{vp9}")).expect("reported");
+            assert!(m.contains("VP9, AV1") && m.contains("H264"), "{m}");
+            assert!(!m.contains("media-vp8"), "no VP8 in the offer: {m}");
+            let m = unanswerable_video(&video("9", &[("96", "VP8")]));
+            if cfg!(feature = "media-vp8") {
+                assert_eq!(m, None);
+            } else {
+                let m = m.expect("reported");
+                assert!(m.contains("VP8") && m.contains("`media-vp8`"), "{m}");
+            }
+        }
+    }
+
     #[cfg(test)]
     mod gate_tests {
         use super::{KeyGate, REPAIR};
         use crate::native_codec::VideoCodec;
 
+        /// H.264 access units: an IDR slice (NAL type 5) is a keyframe, a
+        /// non-IDR slice (type 1) is not. In H.264 so that every `media`
+        /// build runs this (VP8 is `media-vp8`'s).
+        const KEY: &[u8] = &[0, 0, 0, 1, 0x65, 9];
+        const DELTA: &[u8] = &[0, 0, 0, 1, 0x41, 9];
+
         /// VP8 frame tags: bit 0 clear is a key frame.
-        const KEY: &[u8] = &[0x10, 0, 0];
-        const DELTA: &[u8] = &[0x11, 0, 0];
+        #[cfg(feature = "media-vp8")]
+        #[test]
+        fn vp8_key_frames_are_told_by_the_frame_tag() {
+            let v = VideoCodec::Vp8;
+            assert!(v.is_keyframe(&[0x10, 0, 0]));
+            assert!(!v.is_keyframe(&[0x11, 0, 0]));
+            assert!(!v.is_keyframe(&[]));
+            let mut g = KeyGate::default();
+            g.packet(10, std::time::Instant::now());
+            assert!(!g.admit(v, &[0x11, 0, 0], false));
+            assert!(g.admit(v, &[0x10, 0, 0], false));
+        }
 
         #[test]
         fn frames_wait_for_a_keyframe_after_a_gap() {
             let t0 = std::time::Instant::now();
             let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
             let mut g = KeyGate::default();
-            let v = VideoCodec::Vp8;
+            let v = VideoCodec::H264;
             // From the start: deltas wait for the first keyframe.
             g.packet(10, at(0));
             assert!(!g.admit(v, DELTA, false));

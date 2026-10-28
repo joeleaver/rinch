@@ -11,10 +11,12 @@ From zero to window in about ninety seconds.
 - On Linux: `libfontconfig-dev` and `pkg-config` (for font discovery)
 
 Building the repository's own examples needs more. `ui-zoo-desktop` and
-`video-call` use real-time audio and video (rinch-rtc's `media` feature), so
-on Debian or Ubuntu they also need `libvpx-dev` (VP8), `libclang-dev`
-(bindgen, for the libvpx and camera bindings) and `libasound2-dev` (audio);
-`nasm` is optional (openh264's assembly). rinch-rtc's tests and
+`video-call` use real-time audio and video (rinch-rtc's `media` feature:
+H.264 and Opus, built from source, which needs cmake), so on Debian or
+Ubuntu they also need `libclang-dev` (bindgen, for the camera bindings) and
+`libasound2-dev` (audio); `nasm` is optional (openh264's assembly). VP8 is
+opt-in (rinch-rtc's `media-vp8`, which neither example turns on) and needs
+`libvpx-dev` as well. rinch-rtc's tests and
 `cargo clippy --workspace --all-targets` also need `libssl-dev`, for the
 test-only interop peer, which links the system OpenSSL.
 

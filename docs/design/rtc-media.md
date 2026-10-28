@@ -105,9 +105,10 @@ drives it through web-sys, and the same trick works here.
   do (`canvas.captureStream` and a WebAudio graph).
 - **Desktop:** webrtc-rs 0.21 packetizes, depacketizes and negotiates, but
   encodes nothing. The codecs come from elsewhere:
-  - **Video: VP8 through the system libvpx, and H.264 through `openh264`**
-    (built from source with `cc`, BSD, no system library). VP8 is offered
-    first (M2, decided 2026-10-27). The spike sent a test pattern through
+  - **Video: H.264 through `openh264`** (built from source with `cc`, BSD,
+    no system library), **and VP8 through the system libvpx behind the
+    `media-vp8` feature**. Where VP8 is built it is offered first (M2,
+    decided 2026-10-27; VP8 made opt-in 2026-10-28). The spike sent a test pattern through
     webrtc-rs, and 89 of 90 H.264 frames decoded correctly. The H.264
     patent position is M3.
   - **Audio: Opus through `opus` 0.4**, with bundled libopus. On this host it
@@ -539,18 +540,27 @@ M5 is whether v1 ships without it (and documents headphones) or with it.
 
 Where the native backend differs from 3.1–3.6, the code holds:
 
-- **Video codecs (M2, decided 2026-10-27: VP8 and H.264).**
+- **Video codecs (M2, decided 2026-10-27: VP8 and H.264; amended
+  2026-10-28: VP8 behind `media-vp8`).**
   - VP8 is libvpx through `env-libvpx-sys` 5.1.3 with its `generate`
-    feature (bindgen at build time), on the system's libvpx (pkg-config).
-    No `vpx-encode`: `native_codec.rs` calls the encoder and decoder
+    feature (bindgen at build time), on the system's libvpx (pkg-config),
+    only with the `media-vp8` feature (`["media-core", "dep:vpx-sys"]`,
+    added to `media` or to `media-cisco-openh264`; alone a
+    `compile_error!`). No
+    `vpx-encode`: `native_codec/vp8.rs` calls the encoder and decoder
     directly (CBR, `kf_mode` disabled so keyframes come only on request,
-    `cpu-used` 8, error-resilient).
-  - **Order.** A desktop peer registers VP8 first, then H.264 (no RTX;
-    see the retransmission bullet). An answer follows the offer's order, so a call between two desktops
-    or with any browser uses VP8; H.264 is used where the offer puts it
-    first (Safari). VP8 first because every browser encodes it, and a
-    Firefox without the OpenH264 plugin lists H.264 and then sends nothing
-    (3.2). A browser's own offer usually lists VP8 first too.
+    `cpu-used` 8, error-resilient). Without the feature the
+    `VideoCodec::Vp8` variant and every VP8 path are cfg'd out.
+  - **Order.** With `media-vp8`, a desktop peer registers VP8 first, then
+    H.264 (no RTX; see the retransmission bullet). An answer follows the
+    offer's order, so a call between two such desktops or with any browser
+    uses VP8; H.264 is used where the offer puts it first (Safari). VP8
+    first because every browser encodes it, and a Firefox without the
+    OpenH264 plugin lists H.264 and then sends nothing (3.2). A browser's
+    own offer usually lists VP8 first too. Without `media-vp8` a peer
+    registers H.264 alone and answers a VP8-first offer with H.264, so
+    desktop↔Chrome and desktop↔desktop calls are H.264, and a Firefox
+    without the plugin sends that desktop no video.
   - **A sender's track is labelled, and its preferences reset.** webrtc-rs
     0.21 uses a track's codec twice. It becomes the transceiver's only
     codec preference: a VP8-labelled track offered VP8 alone and answered
@@ -580,8 +590,9 @@ Where the native backend differs from 3.1–3.6, the code holds:
     (`testing::h264_only`). Both are read when a peer's connection is
     built, on the worker, shortly after `Peer::new`.
     `tests/media_codecs.rs` pins the order, an answer to an H.264-only and
-    an H.264-first offer (both directions in H.264), and a renegotiated
-    change of codec.
+    (with VP8) an H.264-first offer (both directions in H.264), and with
+    VP8 a renegotiated change of codec; without VP8, the answer to a
+    VP8-first offer (H.264 alone, both directions).
 - **Features (M3).**
   - `media` builds openh264 from source.
   - `media-cisco-openh264` builds no H.264 code and loads Cisco's binary
@@ -589,10 +600,21 @@ Where the native backend differs from 3.1–3.6, the code holds:
     absolute, reads the file once, checks its SHA-256 against Cisco's
     OpenH264 2.6.0 build for the platform, and loads that same file; a
     second call with another path is an error. Until it has loaded, peers
-    offer and accept VP8 only. A window remains between the hash and the
+    offer and accept no H.264; a build with `media-vp8` as well has VP8
+    meanwhile, one without it no video codec. (Before 2026-10-28 VP8 was
+    in `media-core` and so always covered that wait.) A window remains
+    between the hash and the
     loader opening the file again by path (it cannot load from memory);
     the guide says to keep the file where only the app's user can write.
-  - Both turn on `media-core`, the code's gate. VP8 is in both.
+  - Both turn on `media-core`, the code's gate. VP8 is in neither:
+    `media-vp8` (`["media-core", "dep:vpx-sys"]`) adds it to either one,
+    so a Cisco-binary app has VP8 without building H.264 from source
+    (#1975's review; an earlier draft built it on `media`). On its own it
+    is a `compile_error!`: `media-core` has no H.264 backend.
+  - A remote offer whose live video m-line has no codec in common (a
+    VP8-only offer to a build without `media-vp8`) is answered with that
+    m-line rejected, as before, and reported through `on_error` naming the
+    missing codec and its feature; webrtc-rs reports nothing.
 - **A sender keeps one webrtc-rs track for life,** a
   `TrackLocalStaticRTP` that the worker packetizes into itself (one
   packetizer per sender, built once the codec is known), not a
@@ -889,11 +911,15 @@ Where the ports and the removal differ from 5.1–5.3, the code holds:
   close on stop and on unmount. `rinch_av::testing` (a counted, deniable
   gate on every device open, behind rinch-av's `test-util` feature) is
   what its test asserts on.
-- **CI does change** (5.3 said it would not): VP8 (M2) made `media` need
-  the system libvpx, and ui-zoo and video-call turn `media` on under
-  `--workspace`, so every `test` shard, the docs build and the visual
-  tests install `libvpx-dev` (and the shards nasm). The native media tests
-  also run in the integration-a-m shard now.
+- **CI does change** (5.3 said it would not): ui-zoo and video-call turn
+  `media` on under `--workspace`, so every `test` shard installs nasm, and
+  the native media tests also run in the integration-a-m shard now (H.264
+  only). VP8 (M2) first made `media` need the system libvpx, so every
+  shard, the docs build and the visual tests installed `libvpx-dev`; since
+  M2's amendment (2026-10-28) only the jobs that build `media-vp8` do: the
+  `feature-gated` shard (`--features media,media-vp8`), the `clippy` job's
+  `media-vp8` lines (with `media` and with `media-cisco-openh264`), and
+  `test-wasm`'s VP8 `media_echo`.
 - **Dependencies that left `Cargo.lock`:** str0m 0.7, `openssl-src` (str0m
   0.7 built a vendored OpenSSL; `openssl-sys` now builds against the
   system's, for rinch-rtc's tests only), `audiopus_sys` and `sctp-proto`
@@ -959,10 +985,11 @@ None of these tests touches a real device; every source is synthetic.
   - Size: the spike's H.264 loopback binary is 7.77 MB stripped, against
     6.30 MB for the data-channel spike (the same webrtc-rs). That is about
     1.5 MB for openh264, the media engine and the interceptors.
-- **VP8 (M2)** adds the system libvpx (`libvpx-dev`), `env-libvpx-sys`,
-  and **bindgen with libclang at build time**: the crate's pregenerated
-  bindings stop below the libvpx in current distributions (1.14 on
-  ubuntu-24.04, 1.16 on this host).
+- **VP8 (M2, `media-vp8` only since 2026-10-28)** adds the system libvpx
+  (`libvpx-dev`), `env-libvpx-sys`, and **bindgen with libclang at build
+  time**: the crate's pregenerated bindings stop below the libvpx in
+  current distributions (1.14 on ubuntu-24.04, 1.16 on this host).
+  `media` alone adds none of these.
 - **Capture and playback** (cpal, nokhwa) come through rinch-av and are
   already in the tree.
 - **Web:** web-sys feature flags only.
@@ -1011,6 +1038,16 @@ seam with little benefit.
 **M2. The video codec on desktop. Decided by Joe, 2026-10-27: VP8 is
 added, both codecs are negotiated, VP8 first (3.7).** The Firefox interop
 test showed the gap the recommendation below left open.
+**Amended by Joe, 2026-10-28: (c).** VP8 moves behind an opt-in
+`media-vp8` feature (`["media-core", "dep:vpx-sys"]`, added to `media` or
+to `media-cisco-openh264`); `media` is H.264 and
+Opus alone, so that it needs no system package beyond a C compiler and
+cmake. With VP8 in `media`, the cost in the second bullet below (libvpx,
+and libclang for bindgen) reached every build of ui-zoo and video-call and
+every CI job that builds the workspace. Where VP8 is built it is still
+offered first. CI builds it
+for the Firefox interop step, whose Firefox has no OpenH264 plugin, and
+tests the default build against Chrome in H.264 (3.7).
 (a) H.264 only, through `openh264` built from source.
 (b) VP8 only, through the system libvpx.
 (c) H.264 by default, plus VP8 behind a feature.
