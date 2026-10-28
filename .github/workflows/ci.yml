@@ -346,8 +346,8 @@ jobs:
           }
           # The render-surface, compositor and partial-frame fixtures, and
           # the split oracles (`gpu_split_*`, #1865: 25 compositor, 33 runtime,
-          # 2 pages), and #1866's GameViewport base layer (5).
-          run 86 -p rinch --features gpu,video --lib -- \
+          # 2 pages), and #1866's GameViewport base layer (7).
+          run 88 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --test-threads=1
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves).

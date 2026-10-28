@@ -211,7 +211,11 @@ fn an_opacity_ancestor_warns_on_the_desktop_scene_and_a_plain_one_does_not() {
 /// its damage, and a second build left to it was `Unchanged`, so a UI change
 /// landing on the frame the fallback retries the split was never rendered.
 /// The window stays layered for exactly `BASE_FALLBACK_FRAMES` frames, and
-/// the frame after them tries the split again.
+/// the frame after them tries the split again. Every frame after the first is
+/// driven as a transparent window's is (#1883 verification): its UI texture's
+/// base is transparent with layers and without, so the renderer never says
+/// the texture is stale (`target` `None`), and only `BaseFallback` can make
+/// the retry frame full.
 #[test]
 fn a_refused_base_split_rebuilds_the_frame_in_full_and_retries_after_the_fallback() {
     use crate::shell::base_fallback::{BASE_FALLBACK_FRAMES, BaseFallback};
@@ -295,12 +299,86 @@ fn a_refused_base_split_rebuilds_the_frame_in_full_and_retries_after_the_fallbac
     );
     app.resolve_and_repaint(W as f32, H as f32);
     assert_eq!(
-        frame(&mut app, Some(FullRepaintReason::Invalidated)),
+        frame(&mut app, None),
         (true, true, "full"),
         "the retry frame's change must be rendered"
     );
     // And back to the fallback.
     assert_eq!(frame(&mut app, None), (false, false, "unchanged"));
+}
+
+/// #1883 verification, D2: on a transparent window the renderer never asks
+/// for a full frame when the fallback ends (its UI base is transparent with
+/// layers and without). The viewport's group effect goes away during the
+/// fallback; the retry frame must paint the viewport and split it. Before,
+/// it was a partial (or no) frame that did not reach the viewport: nothing
+/// split, nothing refused, the layers dropped, and the viewport a hole with
+/// no game until something repainted it.
+#[test]
+fn the_frame_that_ends_a_fallback_splits_the_viewport_on_a_transparent_window() {
+    use crate::shell::base_fallback::{BASE_FALLBACK_FRAMES, BaseFallback};
+    use rinch_dom::paint::BaseViewport;
+    let name = "r1-transparent";
+    let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let keep = handle.clone();
+    let html = format!("<div id=\"g\" style=\"opacity: 0.5\">{}</div>", page(name));
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_inner_html(&html);
+        *keep.borrow_mut() = root.query_selector("#g");
+        root
+    });
+    app.mount_component(W as f32, H as f32);
+    let names: std::collections::HashSet<String> = [name.to_string()].into_iter().collect();
+    let mut fallback = BaseFallback::default();
+    let mut frame = |app: &mut RinchApp, target| {
+        let retry = fallback.try_split();
+        let mut fell_back = false;
+        app.install_viewport_holes(Some(names.clone()));
+        let bases = retry.then(|| {
+            [(
+                name.to_string(),
+                BaseViewport {
+                    surface_id: 4242,
+                    extents: (W, H),
+                    letterbox: false,
+                },
+            )]
+            .into_iter()
+            .collect()
+        });
+        let change = fallback.build(app, 1.0, (W, H), bases, true, target, || fell_back = true);
+        rinch_dom::paint::set_active_viewports(None);
+        let added: Vec<usize> = change
+            .map(|c| c.add.iter().map(|s| s.surface_id).collect())
+            .unwrap_or_default();
+        (retry, fell_back, added)
+    };
+    let (_, fell_back, _) = frame(
+        &mut app,
+        Some(rinch_dom::perf::FullRepaintReason::Invalidated),
+    );
+    assert!(fell_back, "positive control: refused under opacity");
+    for i in 0..BASE_FALLBACK_FRAMES {
+        if i == 10 {
+            handle
+                .borrow()
+                .as_ref()
+                .expect("#g")
+                .set_attribute("style", "opacity: 1");
+            app.resolve_and_repaint(W as f32, H as f32);
+        }
+        let (retry, ..) = frame(&mut app, None);
+        assert!(!retry, "frame {i} is in the fallback");
+    }
+    assert_eq!(
+        frame(&mut app, None),
+        (true, false, vec![4242]),
+        "the retry frame splits the viewport"
+    );
+    // And keeps it: the next frame has nothing to paint, and splits nothing
+    // new (the slice is kept).
+    assert_eq!(frame(&mut app, None), (true, false, vec![]));
 }
 
 mod gpu {
@@ -419,6 +497,9 @@ mod gpu {
         letterbox: bool,
         /// The UI texture holds a frame (the next may be partial).
         drawn: bool,
+        /// The base colour the UI texture was last rendered over
+        /// ([`Self::runtime_frame`]).
+        ui_base: Option<vello::peniko::Color>,
     }
 
     impl Window {
@@ -512,6 +593,7 @@ mod gpu {
                 extents,
                 letterbox,
                 drawn: false,
+                ui_base: None,
             }
         }
 
@@ -651,6 +733,269 @@ mod gpu {
             self.queue.submit(Some(encoder.finish()));
             read(&self.device, &self.queue, &self.target)
         }
+    }
+
+    impl Window {
+        /// One frame as `RinchRuntime::paint_gpu` makes it, through
+        /// `BaseFallback` (the mode is the fallback's to pick, not
+        /// `self.mode`): the viewport `name` named as a base while the
+        /// fallback allows, the layers otherwise (or after a refusal), the
+        /// renderer's stale-texture reason worked out as `ui_invalid_reason`
+        /// does for a window that is `transparent` or not, the split slices
+        /// dropped while layered, and the composite the window presents.
+        pub(super) fn runtime_frame(
+            &mut self,
+            app: &mut RinchApp,
+            name: &str,
+            fallback: &mut crate::shell::base_fallback::BaseFallback,
+            transparent: bool,
+        ) -> Vec<[u8; 4]> {
+            let window_base = if transparent {
+                vello::peniko::Color::TRANSPARENT
+            } else {
+                vello::peniko::Color::WHITE
+            };
+            let try_base = fallback.try_split();
+            app.install_viewport_holes(Some([name.to_string()].into_iter().collect()));
+            let bases = try_base.then(|| {
+                [(
+                    name.to_string(),
+                    BaseViewport {
+                        surface_id: GAME,
+                        extents: self.extents,
+                        letterbox: self.letterbox,
+                    },
+                )]
+                .into_iter()
+                .collect()
+            });
+            let mut layered = !try_base;
+            let base = crate::shell::desktop::ui_base_color(window_base, false, layered);
+            let target = match self.ui_base {
+                Some(b) if b == base => None,
+                _ => Some(rinch_dom::perf::FullRepaintReason::Invalidated),
+            };
+            let mut fell_back = false;
+            let change = fallback.build(app, 1.0, (W, H), bases, !layered, target, || {
+                fell_back = true
+            });
+            rinch_dom::paint::set_active_viewports(None);
+            layered |= fell_back;
+            let base = crate::shell::desktop::ui_base_color(window_base, false, layered);
+            let ui_view = self.ui.create_view(&TextureViewDescriptor::default());
+            match app.last_gpu_frame() {
+                GpuFrame::Full(scene) => self
+                    .vello
+                    .render_to_texture(
+                        &self.device,
+                        &self.queue,
+                        scene,
+                        &ui_view,
+                        &vello::RenderParams {
+                            base_color: base,
+                            width: W,
+                            height: H,
+                            antialiasing_method: vello::AaConfig::Msaa16,
+                        },
+                    )
+                    .expect("render"),
+                GpuFrame::Partial { scene, size, rects } => render_partial(
+                    &self.device,
+                    &self.queue,
+                    &mut self.vello,
+                    &self.ui,
+                    &mut self.partial,
+                    PartialFrame {
+                        scene,
+                        size,
+                        rects: &rects,
+                        base,
+                    },
+                )
+                .expect("partial"),
+                GpuFrame::Unchanged => {}
+            }
+            self.ui_base = Some(base);
+            if let Some(change) = change {
+                self.split
+                    .apply(&self.device, &self.queue, &mut self.vello, change)
+                    .expect("slices");
+            }
+            if layered {
+                self.split.clear();
+            }
+            let game_view = self.game.create_view(&TextureViewDescriptor::default());
+            self.split
+                .set_base_views([(GAME, game_view.clone())].into_iter().collect());
+            let view = self.target.create_view(&TextureViewDescriptor::default());
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            if layered {
+                let ((x, y, w, h), radius) =
+                    app.viewport_rect_with_radius(name).expect("the viewport");
+                let c = window_base.components;
+                self.layers.blit_layer_view(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &game_view,
+                    &view,
+                    (x, y, w, h),
+                    (W, H),
+                    Some(wgpu::Color {
+                        r: c[0] as f64,
+                        g: c[1] as f64,
+                        b: c[2] as f64,
+                        a: c[3] as f64,
+                    }),
+                    radius,
+                    app.viewport_clip_rect(name),
+                );
+                self.layers
+                    .overlay_ui(&self.device, &mut encoder, &self.ui, &view);
+            } else {
+                // The split path, or no layer and nothing split: the UI.
+                self.split.composite(
+                    &self.compositor,
+                    &self.device,
+                    &mut encoder,
+                    &ui_view,
+                    &view,
+                    (W, H),
+                    &Default::default(),
+                );
+            }
+            self.queue.submit(Some(encoder.finish()));
+            read(&self.device, &self.queue, &self.target)
+        }
+    }
+
+    /// #1883 verification, D2, end to end on a **transparent** window: the
+    /// viewport in an `opacity: 0.5` group is refused, the window falls back
+    /// to the layered path, the group's opacity goes back to 1 during the
+    /// fallback, and the frame that ends it splits the viewport: the game
+    /// shows in its middle on that frame and the next. Before, that frame
+    /// reached no viewport (the renderer asks no full frame on a transparent
+    /// window), the layers were dropped and nothing was split: a hole.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_game_viewport_base_layer_survives_the_end_of_a_fallback_on_a_transparent_window() {
+        use crate::shell::base_fallback::{BASE_FALLBACK_FRAMES, BaseFallback};
+        let name = "desk-transparent-retry";
+        let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let keep = handle.clone();
+        let html = format!("<div id=\"g\" style=\"opacity: 0.5\">{}</div>", page(name));
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_inner_html(&html);
+            *keep.borrow_mut() = root.query_selector("#g");
+            root
+        });
+        app.mount_component(W as f32, H as f32);
+        let mut window = Window::new(Mode::Split);
+        let mut fallback = BaseFallback::default();
+        let mid = |px: &[[u8; 4]]| px[(150 * W + 200) as usize];
+        let first = window.runtime_frame(&mut app, name, &mut fallback, true);
+        // Positive control: layered, the game under the half-faded UI.
+        assert!(
+            mid(&first)[0] > 200 && mid(&first)[2] > 200,
+            "{:?}",
+            mid(&first)
+        );
+        for i in 0..BASE_FALLBACK_FRAMES {
+            if i == 10 {
+                handle
+                    .borrow()
+                    .as_ref()
+                    .expect("#g")
+                    .set_attribute("style", "opacity: 1");
+                app.resolve_and_repaint(W as f32, H as f32);
+            }
+            let _ = window.runtime_frame(&mut app, name, &mut fallback, true);
+        }
+        for which in ["the retry frame", "the frame after it"] {
+            let px = window.runtime_frame(&mut app, name, &mut fallback, true);
+            assert!(
+                near(mid(&px), MAGENTA),
+                "{which}: the viewport's middle is {:?}, not the game",
+                mid(&px)
+            );
+        }
+    }
+
+    /// #1883 verification, M5: a CPU `GameViewport` frame is uploaded only
+    /// when it is new. `collect_surface_frames_shared` marks a submitted
+    /// frame new once; the split path uploads it then, not on a frame that
+    /// collects it unchanged, again when the game submits a new one, and
+    /// again after a fallback dropped the window's textures (unchanged, but
+    /// the window holds none).
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_game_viewport_base_layer_uploads_a_cpu_frame_only_when_new() {
+        use crate::render_surface as rs;
+        use crate::shell::base_fallback::pending_base_frame;
+        use rinch_dom::paint::slicing::{SliceCoverage, SurfaceSlice};
+        let _presenting = rs::compositor_routing_tests::presenting_lock();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let game = rs::create_render_surface_with_name("m5-game");
+        let mut window = Window::new(Mode::Split);
+        let slice = || SurfaceSlice {
+            surface_id: game.id(),
+            region: (0, 0, 4, 2),
+            above_in: None,
+            above_out: None,
+            own: SliceCoverage::Rect([0, 0, 4, 2]),
+            ancestors: SliceCoverage::Rect([0, 0, 4, 2]),
+            device_from_image: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            extents: (4, 2),
+            straight_alpha: false,
+            tainted: false,
+            ink: peniko::kurbo::Rect::new(0.0, 0.0, 4.0, 2.0),
+            base: None,
+        };
+        let keep = |window: &mut Window| {
+            window
+                .split
+                .apply(
+                    &window.device,
+                    &window.queue,
+                    &mut window.vello,
+                    crate::split_frame::SplitChange {
+                        drop: Vec::new(),
+                        all: true,
+                        add: vec![slice()],
+                    },
+                )
+                .expect("slices");
+        };
+        keep(&mut window);
+        let upload = |window: &mut Window| {
+            let pending: Vec<_> = rs::collect_surface_frames_shared()
+                .into_iter()
+                .filter(|f| f.0 == game.id())
+                .map(|(id, _, px, w, h, fresh)| pending_base_frame(id, &px, (w, h), fresh))
+                .collect();
+            assert_eq!(pending.len(), 1, "positive control: the frame is collected");
+            window
+                .split
+                .upload_split_frames(&window.device, &window.queue, pending)
+        };
+        let frame = [7u8; 4 * 4 * 2];
+        game.writer().submit_frame(&frame, 4, 2);
+        let new = upload(&mut window);
+        let unchanged = upload(&mut window);
+        game.writer().submit_frame(&frame, 4, 2);
+        let new_again = upload(&mut window);
+        // A fallback drops the window's split textures; the split comes back.
+        window.split.clear();
+        keep(&mut window);
+        let after_fallback = upload(&mut window);
+        crate::shell::renderer::set_gpu_presenting(false);
+        rs::unregister_render_surface(game.id());
+        assert_eq!(
+            (new, unchanged, new_again, after_fallback),
+            (1, 0, 1, 1),
+            "uploads: (new, unchanged, new again, after a fallback)"
+        );
     }
 
     /// The window's pixels for `app`'s first frame, on the split path.

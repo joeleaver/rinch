@@ -3140,7 +3140,7 @@ fn setup_resize_observer(
 // ── #358: which surfaces reach the compositor, and which paint inline ────────
 
 #[cfg(all(test, feature = "desktop"))]
-mod compositor_routing_tests {
+pub(crate) mod compositor_routing_tests {
     use super::*;
 
     /// `renderer::GPU_PRESENTING` is process-global, and two tests below flip
@@ -3148,7 +3148,7 @@ mod compositor_routing_tests {
     /// whole body, or one reads the other's `true` halfway through.
     static PRESENTING: Mutex<()> = Mutex::new(());
 
-    pub(super) fn presenting_lock() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn presenting_lock() -> std::sync::MutexGuard<'static, ()> {
         PRESENTING.lock().unwrap_or_else(|e| e.into_inner())
     }
 

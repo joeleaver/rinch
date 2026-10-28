@@ -246,7 +246,15 @@ its border), one of two things happens:
   Joe 2026-10-27; `shell/base_fallback.rs`, which `paint_gpu` builds every frame through). The
   second build is forced **full**: the first consumed the frame's damage, and left to it the
   second was `Unchanged`, so a change on the retry frame was never rendered (#1883 review, D1;
-  `a_refused_base_split_rebuilds_the_frame_in_full_and_retries_after_the_fallback`). The retry is
+  `a_refused_base_split_rebuilds_the_frame_in_full_and_retries_after_the_fallback`). The first frame that names base viewports after one that did not (the fallback's end, the
+  window's first) is built in full as well: on a transparent window the UI texture's base is
+  transparent with layers and without, so the renderer asks no full frame there, and a partial
+  frame that missed the viewport neither split nor refused it while the layers were dropped, a
+  hole with no game (#1883 verification, D2;
+  `the_frame_that_ends_a_fallback_splits_the_viewport_on_a_transparent_window`,
+  `gpu_game_viewport_base_layer_survives_the_end_of_a_fallback_on_a_transparent_window`). A CPU
+  frame is uploaded only when it is new (`collect_surface_frames_shared`'s flag,
+  `gpu_game_viewport_base_layer_uploads_a_cpu_frame_only_when_new`). The retry is
   on a fixed count, not on the refusal's cause: when a transient cause ends (an opacity animation
   settles), the window stays layered, with the band below, until the count runs out, and the next
   frame splits again (the band then goes at once). A refusal that persists (two overlapping
