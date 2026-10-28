@@ -163,11 +163,13 @@ jobs:
             run: |
               cargo test -p rinch-editor-core --features serde,markdown
               cargo test -p rinch-editor-view --features collaboration
-              # rinch-rtc's `media` feature (#1916), which nothing in the
-              # workspace turns on: its unit tests (src/tests.rs
-              # `media_events`, the codecs' round trips) and the native media
-              # tests (tests/media_*.rs: two peers in the process, synthetic
-              # sources, no audio device).
+              # rinch-rtc's `media` feature (#1916): its unit tests
+              # (src/tests.rs `media_events`, the codecs' round trips) and the
+              # native media tests (tests/media_*.rs: two peers in the
+              # process, synthetic sources, no audio device). Since #1916's
+              # port, ui-zoo and video-call turn `media` on under
+              # `--workspace`, so the integration-a-m shard runs these too;
+              # named here so that they do not depend on those examples.
               cargo test -p rinch-rtc --features media
               cargo test -p rinch --features desktop,embed,theme,clipboard,debug
               # Bare on purpose: `desktop` (the default) WITHOUT `clipboard`. The
@@ -221,8 +223,10 @@ jobs:
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
             libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev libmpv-dev
 
-      # rinch-rtc's `media` feature (#1916), built by this shard only
-      # (`cargo test -p rinch-rtc --features media`):
+      # rinch-rtc's `media` feature (#1916). Every shard builds it: the
+      # feature-gated one names it (`cargo test -p rinch-rtc --features
+      # media`), and the others build ui-zoo and video-call, which turn it on
+      # under `--workspace` since the call demos were ported onto rinch-rtc.
       # - libvpx-dev: VP8 (M2). env-libvpx-sys finds it by pkg-config and
       #   generates its bindings with bindgen, which uses the image's
       #   libclang (as nokhwa's v4l2-sys already does).
@@ -231,7 +235,6 @@ jobs:
       #   runs 2.8x slower (640x480: 6.75 -> 2.37 ms/frame), and CI should
       #   build what an app's release build does.
       - name: Install rinch-rtc media dependencies
-        if: matrix.shard == 'feature-gated'
         uses: ./.github/actions/apt-install
         with:
           packages: libvpx-dev nasm
@@ -431,8 +434,10 @@ jobs:
           cargo clippy -p rinch --no-default-features --features embed --all-targets -- -D warnings
           cargo clippy -p rinch --features gpu,embed --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features components,theme -- -D warnings
-          # rinch-rtc's `media` feature (#1916) is off by default and nothing
-          # in the workspace turns it on yet.
+          # rinch-rtc's `media` feature (#1916) is off by default. ui-zoo and
+          # video-call turn it on under `--workspace` above; named here so
+          # that its lint does not depend on them. The Cisco-binary variant
+          # is linted only here.
           cargo clippy -p rinch-rtc --features media --all-targets -- -D warnings
           cargo clippy -p rinch-rtc --features media-cisco-openh264 --all-targets -- -D warnings
 
@@ -522,7 +527,7 @@ jobs:
           cargo clippy -p rinch --no-default-features --features components,theme,embed \
             --target wasm32-unknown-unknown -- -D warnings
           echo "::endgroup::"
-          # rinch-rtc's `media` feature (#1916), which nothing turns on.
+          # rinch-rtc's `media` feature (#1916), off by default.
           echo "::group::clippy rinch-rtc media (wasm32)"
           cargo clippy -p rinch-rtc --features media --target wasm32-unknown-unknown \
             --all-targets -- -D warnings

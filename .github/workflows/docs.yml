@@ -109,10 +109,13 @@ jobs:
         # (.github/actions/apt-install explains both, #1792).
         uses: ./.github/actions/apt-install
         with:
+          # libvpx-dev: `cargo doc --workspace` runs build scripts, and ui-zoo
+          # and video-call build rinch-rtc's `media` (VP8 on the system
+          # libvpx, #1916).
           packages: >-
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
             libpango1.0-dev libgdk-pixbuf-2.0-dev libasound2-dev libxdo-dev
-            libmpv-dev
+            libmpv-dev libvpx-dev
 
       - name: Install Rust toolchain
         uses: ./.github/actions/rust-toolchain

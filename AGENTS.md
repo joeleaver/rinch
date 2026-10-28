@@ -74,8 +74,8 @@ list if something looks off.
 
 **Media**
 
-`rinch-video` · `rinch-av` · `rinch-webrtc` (str0m / web_sys) · `rinch-signaling` ·
-`rinch-signaling-server` · `rinch-screen-capture`.
+`rinch-video` · `rinch-av` · `rinch-rtc` (WebRTC data channels, and audio and video
+tracks behind its `media` feature; webrtc-rs / the browser) · `rinch-screen-capture`.
 
 **Tooling**
 

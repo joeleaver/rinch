@@ -380,7 +380,7 @@ If you want a GUI framework that's been blessed by a foundation and has a 200-pa
 | `markdown-editor` | Rich text editor with CRDT backing |
 | `drag-and-drop-demo` | Drag and drop between lists |
 | `game-embed` | Game engine integration demo |
-| `video-call` | WebRTC video calling |
+| `video-call` | A video call between two machines on rinch-rtc (with `rtc-room-relay`) |
 | `paint-desktop` | Drawing application |
 
 [**Live web demo**](https://joeleaver.github.io/rinch/ui-zoo/) (WASM, works in all modern browsers)

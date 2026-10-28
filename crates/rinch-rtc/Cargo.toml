@@ -10,7 +10,8 @@ description = "Cross-platform WebRTC data channels for rinch, with rinch-ws's ca
 # No `native`/`web` cargo features: the backend is picked by target, as in
 # rinch-ws. tokio and webrtc-rs reach only an app that depends on this crate
 # AND builds for a desktop target, which is an app that asked for native
-# data channels; nothing else in the workspace depends on rinch-rtc.
+# data channels. In the workspace that is the examples that use it
+# (rtc-loopback, video-call, ui-zoo).
 
 [dependencies]
 rinch-core = { workspace = true }
@@ -157,8 +158,9 @@ rinch-core = { workspace = true }
 # which turns on rcgen's `aws_lc_rs`, and cargo unifies that into the rcgen
 # webrtc-rs uses, so the tests would make their certificates with aws-lc
 # instead of the ring that rinch-rtc ships, and every workspace build would
-# compile aws-lc-sys. openssl-sys is already built for the workspace
-# (rinch-webrtc's str0m 0.7).
+# compile aws-lc-sys. openssl-sys builds against the system's OpenSSL
+# (libssl-dev). It is in no app's graph: rinch-webrtc
+# and its str0m 0.7, which built a vendored OpenSSL, were removed (#1916).
 str0m = { version = "=0.24.1", default-features = false, features = ["openssl"] }
 
 # Browser tests. Run with a chromedriver (or geckodriver):
