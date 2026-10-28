@@ -538,6 +538,8 @@ mod native {
         #[test]
         fn a_full_message_ring_refuses_and_frames_survive_the_wrap() {
             let (mut p, mut c) = RingBuffer::new(10);
+            // Longer than the ring: refused whole, leaving no stray header behind.
+            assert!(!push_frame(&mut p, &[0; 7]), "11 bytes into 10");
             assert!(push_frame(&mut p, &[1, 2, 3]), "7 of 10 bytes");
             assert!(!push_frame(&mut p, &[4]), "5 more do not fit");
             assert!(!push_frame(&mut p, &[0; 7]), "longer than the ring");
