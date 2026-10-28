@@ -783,7 +783,11 @@ pub(crate) fn set_local_enabled(key: u64, enabled: bool) {
 }
 
 pub(crate) fn stop_local(key: u64) {
-    let gone = LOCAL_WEB.with(|l| l.borrow_mut().remove(&key));
+    // `try_with`: a track dropped during thread exit has nothing left to stop.
+    let gone = LOCAL_WEB
+        .try_with(|l| l.borrow_mut().remove(&key))
+        .ok()
+        .flatten();
     if let Some(w) = gone {
         release(w);
     }
