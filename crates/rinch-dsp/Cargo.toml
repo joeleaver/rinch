@@ -1,0 +1,11 @@
+[package]
+name = "rinch-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "An audio processor that runs on the audio thread: natively in rinch-av's output callback, and on the web compiled to a raw wasm module inside an AudioWorklet"
+
+# DELIBERATELY ZERO DEPENDENCIES. On the web this crate is compiled into a module the AudioWorklet
+# instantiates with an empty import object: no wasm-bindgen glue can run in a worklet's global scope
+# (it has no TextEncoder/TextDecoder/fetch), so anything that would import from the page breaks it.
+[dependencies]

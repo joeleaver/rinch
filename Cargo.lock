@@ -5516,6 +5516,7 @@ dependencies = [
  "js-sys",
  "nokhwa",
  "rinch-core",
+ "rinch-dsp",
  "thiserror 2.0.18",
  "tracing",
  "wasm-bindgen",
@@ -5624,6 +5625,10 @@ dependencies = [
  "web-time",
  "web_atoms",
 ]
+
+[[package]]
+name = "rinch-dsp"
+version = "0.1.0"
 
 [[package]]
 name = "rinch-editable"
