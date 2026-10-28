@@ -33,16 +33,17 @@ rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop",
 - `"clipboard"` — clipboard read/write. Optional.
 - `"file-dialogs"` — native open/save dialogs. Optional.
 
-**wgpu and Vello: no `[patch]` lines.** rinch depends on crates.io wgpu 30
-and on Vello 0.11 from `joeleaver/vello-fork` at a pinned rev, as ordinary
-dependencies, so an app copies no patch for either; delete any old wgpu-fork
-lines (`wgpu`, `wgpu-core`, `wgpu-hal`, `wgpu-types`, `naga`) from your
-`[patch.crates-io]`. Use `rinch::wgpu` and `rinch::vello` rather than a
-`wgpu`/`vello` dependency of your own, so the versions never drift; add
-`wgpu = "30"` yourself only to turn on an extra feature (e.g. `webgpu`), and
-Cargo unifies it with rinch's. (The winit `[patch.crates-io]` lines in rinch's
-workspace `Cargo.toml` are a separate matter and still apply: rinch uses its
-winit fork's Wayland APIs.)
+**No `[patch]` lines at all.** rinch depends on crates.io wgpu 30, on Vello
+0.11 from `joeleaver/vello-fork` and on winit 0.31.0-beta.4 from
+`joeleaver/winit-fork`, each fork at a pinned rev, as ordinary dependencies, so
+an app copies no patch for any of them. Delete any old `[patch.crates-io]`
+lines for winit (`winit`, `winit-core`, `winit-common`, `winit-wayland`,
+`winit-x11`, `dpi`) and for wgpu (`wgpu`, `wgpu-core`, `wgpu-hal`,
+`wgpu-types`, `naga`): the winit ones now point Cargo at a branch rinch no
+longer uses. Use `rinch::wgpu` and `rinch::vello` rather than a `wgpu`/`vello`
+dependency of your own, so the versions never drift; add `wgpu = "30"`
+yourself only to turn on an extra feature (e.g. `webgpu`), and Cargo unifies
+it with rinch's.
 
 ## Write Your App
 

@@ -282,13 +282,30 @@ is new or marked).
 **Migrating an app from the wgpu-27 rinch:**
 
 - Delete your wgpu-fork `[patch.crates-io]` lines (`wgpu`, `wgpu-core`,
-  `wgpu-hal`, `wgpu-types`, `naga`); rinch no longer uses a wgpu fork. Keep the
-  winit ones, and add nothing for Vello.
+  `wgpu-hal`, `wgpu-types`, `naga`); rinch no longer uses a wgpu fork. Delete
+  the winit and dpi ones too (rinch takes its winit fork as a pinned
+  dependency since #1962), and add nothing for Vello.
 - If you share rinch's GPU device or build Vello types, use `rinch::wgpu` and
   `rinch::vello` instead of declaring your own `wgpu`/`vello` dependencies, so
   the versions can never drift.
 - If you need an extra wgpu feature (e.g. `webgpu`), keep `wgpu = "30"` with
   just that feature; Cargo unifies it with rinch's.
+
+**An app that drives winit itself** (an engine's own window and event loop
+beside the embed API, as `examples/game-embed` does) declares its own winit;
+no rinch API takes a winit type. rinch is on winit 0.31.0-beta.4 (#1962);
+naming the same dependency keeps one winit in the build:
+
+```toml
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "34f153bd6e523de53f9da67c6db58bd1f8732542" }
+```
+
+From beta.2, winit's public enums are `#[non_exhaustive]` (a `match` on
+`MouseScrollDelta`, `PointerSource`, `ButtonSource` and the rest needs a `_`
+arm), and an OS drag is a data transfer: `DragEntered { id, position }`,
+`DragPosition`, `DragDropped { id, .. }` and `DragLeft`, with the dragged
+data fetched by `ActiveEventLoop::fetch_data_transfer` and accepted with
+`set_valid_dnd_actions` (winit's changelog, beta.3 and beta.4).
 
 ### Layout Size
 

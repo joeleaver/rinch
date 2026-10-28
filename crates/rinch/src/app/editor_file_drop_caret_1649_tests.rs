@@ -233,7 +233,7 @@ fn no_drop_caret_where_the_drop_would_not_be_the_editors() {
     p.hover(PathBuf::from("/nowhere/cat.png"), a);
     assert!(p.drop_caret().is_none(), "a read-only editor");
     send(&mut p.app, PlatformEvent::FileHoverCancelled);
-    // Read-only, with no path named (Wayland).
+    // Read-only, with no path named (yet, or ever: an unreadable URI list).
     p.drag_to(a);
     assert!(p.drop_caret().is_none(), "a read-only editor, path-less");
     send(&mut p.app, PlatformEvent::FileHoverCancelled);
@@ -443,7 +443,8 @@ fn a_drag_the_editor_would_not_take_does_not_scroll_it() {
     assert_eq!(p.scroll_top(), 0.0);
 }
 
-/// Wayland names no path before the drop (the fork starts the hover with an
+/// A drag hovers with no path named until its URI list is read (#1962; before
+/// it, Wayland named none before the drop: the fork started the hover with an
 /// empty list, and only for an offer carrying `text/uri-list`): the editor
 /// claims the hover on its own say, and the drop decides.
 #[test]

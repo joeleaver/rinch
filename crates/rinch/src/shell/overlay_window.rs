@@ -353,9 +353,11 @@ pub(crate) fn apply_to_attributes(
     #[cfg(target_os = "macos")]
     if steps.mac_panel {
         use winit::platform::macos::WindowAttributesMacOS;
-        let mac = WindowAttributesMacOS::default()
-            .with_panel(true)
-            .with_accepts_first_mouse(true);
+        // A click on the inactive panel acts at once: winit 0.31.0-beta.3+
+        // always accepts the first mouse (`acceptsFirstMouse:` answers yes and
+        // tags the press `is_macos_activation_click`, which rinch does not
+        // filter), so `with_accepts_first_mouse(true)` is gone (#1962).
+        let mac = WindowAttributesMacOS::default().with_panel(true);
         attrs = attrs.with_platform_attributes(Box::new(mac));
     }
     attrs

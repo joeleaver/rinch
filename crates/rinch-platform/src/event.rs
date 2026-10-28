@@ -164,8 +164,9 @@ pub enum PlatformEvent {
     /// The event loop is about to wait for new events.
     AboutToWait,
     /// A file drag entered the window from the OS. `position` is in **logical**
-    /// pixels, like every other pointer coordinate here.
-    /// In winit 0.31, all paths arrive in a single DragEntered event.
+    /// pixels, like every other pointer coordinate here. One per path, once
+    /// the drag's URI list has been read (a moment after it entered; the
+    /// desktop shell's `os_file_drag`).
     FileHoverEnter { path: PathBuf, position: (f64, f64) },
     /// A file drag is moving over the window. `position` is **logical**.
     FileDragMoved { position: (f64, f64) },

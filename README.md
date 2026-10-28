@@ -101,7 +101,7 @@ rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop",
 
 Add `"gpu"` for GPU rendering, or leave it off for software rendering (no GPU required — works in CI, containers, SSH sessions, your grandma's laptop).
 
-No `[patch]` lines are needed for wgpu or Vello (delete any old wgpu-fork ones). Use `rinch::wgpu` and `rinch::vello` instead of your own `wgpu`/`vello` dependencies; add `wgpu = "30"` only to turn on an extra feature. The winit `[patch.crates-io]` lines from rinch's workspace `Cargo.toml` still apply.
+No `[patch]` lines are needed at all: delete any old winit, dpi or wgpu-fork ones from your `[patch.crates-io]`. Use `rinch::wgpu` and `rinch::vello` instead of your own `wgpu`/`vello` dependencies; add `wgpu = "30"` only to turn on an extra feature.
 
 ```bash
 # Run the component showcase
