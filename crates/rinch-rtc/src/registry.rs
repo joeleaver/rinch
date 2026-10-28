@@ -264,7 +264,10 @@ pub(crate) fn insert_peer(id: u64) {
 pub(crate) fn remove_peer(id: u64) {
     // `try_with`: a peer dropped during thread exit (held in a signal)
     // finds the table already gone, and has nothing left to remove.
-    let entry = PEERS.try_with(|p| p.borrow_mut().remove(&id)).ok().flatten();
+    let entry = PEERS
+        .try_with(|p| p.borrow_mut().remove(&id))
+        .ok()
+        .flatten();
     if let Some(entry) = entry {
         for reply in entry.replies.values() {
             if let Some(w) = &reply.waker {

@@ -87,8 +87,15 @@ fn a_camera_the_senders_refuse_is_released() {
     let (camera, mic) = fake_devices();
     let (c, m) = (camera.clone(), mic.clone());
     call.use_devices(async move { Ok::<_, RtcError>((c, m)) });
-    pump_until("the camera is sent", || view.source.get() != Source::Requesting);
-    assert_eq!(view.source.get(), Source::Camera, "error: {}", view.error.get());
+    pump_until("the camera is sent", || {
+        view.source.get() != Source::Requesting
+    });
+    assert_eq!(
+        view.source.get(),
+        Source::Camera,
+        "error: {}",
+        view.error.get()
+    );
     assert_eq!(sending_id(&call), Some(camera.id()));
     assert!(!camera.ended() && !mic.ended());
     call.use_pattern();
@@ -103,13 +110,18 @@ fn a_camera_the_senders_refuse_is_released() {
     mic.stop();
     let (c, m) = (camera.clone(), mic.clone());
     call.use_devices(async move { Ok::<_, RtcError>((c, m)) });
-    pump_until("the swap settles", || view.source.get() != Source::Requesting);
+    pump_until("the swap settles", || {
+        view.source.get() != Source::Requesting
+    });
     assert_eq!(
         view.source.get(),
         Source::Pattern,
         "a failed swap goes back to the pattern, so the button works again"
     );
-    assert!(camera.ended(), "the camera the senders did not keep is released");
+    assert!(
+        camera.ended(),
+        "the camera the senders did not keep is released"
+    );
     assert!(
         view.error.get().contains("replace_track"),
         "the error is shown: {:?}",

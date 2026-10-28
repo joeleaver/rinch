@@ -184,7 +184,10 @@ fn the_in_page_call_carries_both_patterns_and_the_tone() {
         let m = mixed.lock().unwrap();
         m.iter().fold(0f32, |acc, s| acc.max(s.abs()))
     };
-    assert!(loudest < 1e-3, "B played A's audio before it was asked: peak {loudest}");
+    assert!(
+        loudest < 1e-3,
+        "B played A's audio before it was asked: peak {loudest}"
+    );
 
     // B plays A's tone once asked to.
     call.set_hear(true);
