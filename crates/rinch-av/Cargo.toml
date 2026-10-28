@@ -8,6 +8,9 @@ description = "Cross-platform audio/video device access for rinch"
 [dependencies]
 # Always available
 rinch-core = { workspace = true }
+# The processor an output's audio thread runs (`audio::dsp`); dependency-free, so the same crate
+# compiles into the raw module an AudioWorklet instantiates.
+rinch-dsp = { workspace = true }
 tracing = { workspace = true }
 thiserror = "2"
 
@@ -55,6 +58,16 @@ web-sys = { version = "0.3", features = [
     "BaseAudioContext",
     "EventTarget",
     "AddEventListenerOptions",
+    # `audio::dsp` on the web: the processor runs in an AudioWorklet.
+    "AudioWorklet",
+    "AudioWorkletNode",
+    "AudioWorkletNodeOptions",
+    "Worklet",
+    "MessagePort",
+    "MessageEvent",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
 ] }
 
 [features]
