@@ -104,7 +104,8 @@ fn render(ctx: &mut RinchContext) -> Vec<[u8; 4]> {
 
 #[cfg(feature = "gpu")]
 fn render_via(ctx: &mut RinchContext, via: Via) -> Vec<[u8; 4]> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::default(),
         compatible_surface: None,

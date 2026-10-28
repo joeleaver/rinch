@@ -228,12 +228,13 @@ mod gpu {
     }
 
     fn device() -> (Device, Queue) {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: None,
             force_fallback_adapter: false,
-        apply_limit_buckets: false,
+            apply_limit_buckets: false,
         }))
         .expect("a GPU adapter (these fixtures are #[ignore]d for hosts without one)");
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
@@ -286,9 +287,9 @@ mod gpu {
         buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let data = buffer
-        .slice(..)
-        .get_mapped_range()
-        .expect("the buffer is mapped");
+            .slice(..)
+            .get_mapped_range()
+            .expect("the buffer is mapped");
         (0..H)
             .flat_map(|y| {
                 let data = &data;
