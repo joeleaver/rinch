@@ -18,9 +18,10 @@
 //! [`PlatformEvent::FileDropped`] with every path at the last position, and a
 //! [`PlatformEvent::FileHoverCancelled`] for a drag that leaves, or that a new
 //! drag replaces before it ended. A drop whose paths have not arrived yet is
-//! held apart from the hover and handed over when they do; one whose paths do
-//! not arrive within [`DROP_TIMEOUT`] (X11 logs a failed selection read and
-//! sends nothing) ends as cancelled.
+//! handed over when they do; one whose paths do not arrive within
+//! [`DROP_TIMEOUT`] (X11 logs a failed selection read and sends nothing), or
+//! that a new drag's entry finds still waiting, ends as cancelled: the app
+//! holds one drag's state, so the two never overlap.
 //!
 //! [`OsFileDrag`] is the state machine with no winit event loop in it: the
 //! runtime feeds it the events (positions already logical) and carries out the
@@ -117,9 +118,13 @@ pub(crate) struct OsFileDrag {
 impl OsFileDrag {
     /// `DragEntered`. `has_uri_list`: the transfer offers a URI list. A drag
     /// without one (text, an image's bytes) is not a file drag and is left
-    /// rejected; its later events are ignored. Either way it ends the drag
-    /// that was hovering (a `FileHoverCancelled`), whose end never came; a
-    /// drop waiting for its paths is not touched.
+    /// rejected; its later events are ignored. Either way it ends, with one
+    /// `FileHoverCancelled`, the drag the app still holds: the one hovering
+    /// (whose end never came), and any drop still waiting for its paths,
+    /// which is discarded with a warning. The app has one file-drag slot
+    /// (its drop caret, hover target, picture claim): a drop handed over
+    /// while the new drag hovers would land at the new drag's caret and end
+    /// it, and the new drag would start with the old one's state.
     pub(crate) fn entered(
         &mut self,
         id: DataTransferId,
@@ -127,7 +132,16 @@ impl OsFileDrag {
         has_uri_list: bool,
     ) -> Vec<DragStep> {
         let mut steps = Vec::new();
-        if self.hover.take().is_some() {
+        let hovering = self.hover.take().is_some();
+        if !self.drops.is_empty() {
+            let n = self.drops.len();
+            self.drops.clear();
+            steps.push(DragStep::Warn(format!(
+                "a new drag entered before {n} file drop(s) had their paths; the drop is \
+                 cancelled"
+            )));
+        }
+        if hovering || !steps.is_empty() {
             steps.push(DragStep::Emit(PlatformEvent::FileHoverCancelled));
         }
         if !has_uri_list {
@@ -285,8 +299,8 @@ impl OsFileDrag {
     }
 
     /// End every drop whose paths have not come by `now`: it is cancelled
-    /// (the drop caret and the hover target go), unless another drag is
-    /// hovering, whose state the app holds now.
+    /// (the drop caret and the hover target go). No drag hovers while a drop
+    /// waits: a new drag's entry ends the waiting drops ([`Self::entered`]).
     pub(crate) fn expire(&mut self, now: Instant) -> Vec<DragStep> {
         let mut steps = Vec::new();
         let mut i = 0;
@@ -297,9 +311,7 @@ impl OsFileDrag {
                     "a file drop's paths did not come within {DROP_TIMEOUT:?}; the drop is \
                      cancelled"
                 )));
-                if self.hover.is_none() {
-                    steps.push(DragStep::Emit(PlatformEvent::FileHoverCancelled));
-                }
+                steps.push(DragStep::Emit(PlatformEvent::FileHoverCancelled));
             } else {
                 i += 1;
             }
@@ -590,28 +602,43 @@ mod tests {
         assert!(d.left(id(9)).is_empty());
     }
 
-    /// A drop waiting for its paths survives a new drag entering (a second
-    /// seat, a quick second drag), and is handed over when its paths come.
-    #[cfg(unix)]
+    /// A new drag entering ends a drop still waiting for its paths: one
+    /// warning, one `FileHoverCancelled` (which clears the app's drag state)
+    /// before the new drag is accepted, and the old drop's late paths are
+    /// ignored, so they cannot land at the new drag's caret or end it.
     #[test]
-    fn a_pending_drop_survives_a_new_drag() {
+    fn a_new_drag_ends_a_pending_drop() {
         let mut d = OsFileDrag::default();
         d.entered(id(11), Some((1.0, 1.0)), true);
         let serial = AsyncRequestSerial::get();
         d.fetch_started(id(11), Ok(serial));
         assert!(d.dropped(id(11), now()).is_empty());
-        // No hover to cancel: the dropped drag is not the hover any more.
-        assert_steps(
-            d.entered(id(12), None, true),
-            vec![DragStep::Accept(id(12))],
+        let steps = d.entered(id(12), None, true);
+        assert_eq!(steps.len(), 3, "{steps:?}");
+        assert!(matches!(steps[0], DragStep::Warn(_)), "{steps:?}");
+        assert_eq!(
+            format!("{:?}", &steps[1..]),
+            format!(
+                "{:?}",
+                [
+                    DragStep::Emit(PlatformEvent::FileHoverCancelled),
+                    DragStep::Accept(id(12)),
+                ]
+            )
         );
-        assert_steps(
-            d.received(id(11), serial, Some(uris())),
-            vec![DragStep::Emit(PlatformEvent::FileDropped {
-                paths: paths(),
-                position: (1.0, 1.0),
-            })],
-        );
+        assert_eq!(d.next_deadline(), None);
+        assert!(d.received(id(11), serial, Some(uris())).is_empty());
+        // A text drag ends it too.
+        d.entered(id(13), Some((1.0, 1.0)), true);
+        d.fetch_started(id(13), Ok(AsyncRequestSerial::get()));
+        d.dropped(id(13), now());
+        let steps = d.entered(id(14), None, false);
+        assert_eq!(steps.len(), 2, "{steps:?}");
+        assert!(matches!(
+            steps[1],
+            DragStep::Emit(PlatformEvent::FileHoverCancelled)
+        ));
+        assert_eq!(d.next_deadline(), None);
     }
 
     /// A drop whose paths never come (X11's failed selection read sends no
@@ -638,17 +665,6 @@ mod tests {
         assert_eq!(d.next_deadline(), None);
         // A late answer finds nothing.
         assert!(d.received(id(13), serial, Some(uris())).is_empty());
-
-        // With another drag hovering, the app's drag state is that one's: the
-        // expired drop warns but cancels nothing.
-        d.entered(id(14), Some((1.0, 1.0)), true);
-        let serial = AsyncRequestSerial::get();
-        d.fetch_started(id(14), Ok(serial));
-        d.dropped(id(14), t);
-        d.entered(id(15), Some((2.0, 2.0)), true);
-        let steps = d.expire(t + DROP_TIMEOUT);
-        assert_eq!(steps.len(), 1, "{steps:?}");
-        assert!(matches!(steps[0], DragStep::Warn(_)));
     }
 
     #[test]

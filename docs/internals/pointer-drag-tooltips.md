@@ -301,13 +301,16 @@ DnD accepted), its URI list is fetched once a position is known, every position
 is a `FileDragMoved`, the paths arrive as one `FileHoverEnter` each at the last
 position, a drop is one `FileDropped` at the last position, and a leave naming
 the hovering transfer is `FileHoverCancelled`. A drop whose paths have not
-arrived is held apart from the hover until they do (fetched then if the hover's
-fetch failed; a fetch that fails at the drop drops no paths), so a new drag
-entering (a second seat, a quick second drag) does not lose it; one whose paths
-do not come within `DROP_TIMEOUT` (3 s: X11 logs a failed selection read and
-answers nothing) ends as `FileHoverCancelled`, which takes the drop caret and
-the hover target away, unless another drag hovers by then. A new drag entering
-while one hovers (whose end never came) cancels that one first. A read that
+arrived waits for them (fetched then if the hover's fetch failed; a fetch that
+fails at the drop drops no paths); one whose paths do not come within
+`DROP_TIMEOUT` (3 s: X11 logs a failed selection read and answers nothing)
+ends as `FileHoverCancelled`, which takes the drop caret and the hover target
+away. A new drag entering (a second seat, a quick second drag) first ends,
+with one `FileHoverCancelled`, both a drag still hovering (whose end never
+came) and any drop still waiting (discarded, with a warning): the app holds
+one drag's state (`RinchApp::file_drag`, its caret, `file_hover_target`), so a
+late drop handed over while a new drag hovered would land at the new drag's
+caret and end it, and the new drag would start with the old one's state. A read that
 would block or deadlock (`WouldBlock`, `Deadlock`) waits for the next
 `DataTransferReceived`; any other error reads as no paths. A failure is logged
 once per drag (`DragStep::Warn`); a failed hover fetch is not retried per move.
