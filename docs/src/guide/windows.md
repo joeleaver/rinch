@@ -65,6 +65,7 @@ fn main() {
 | `height` | `u32` | 600 | Initial window height in pixels |
 | `x` | `Option<i32>` | `None` | Initial outer x, logical pixels (system-placed if `None`, or if the window would be out of reach there: see [Reachable positions](#reachable-positions)) |
 | `y` | `Option<i32>` | `None` | Initial outer y, as `x` |
+| `monitor` | `Option<String>` | `None` | The monitor `x`/`y` is on, by the platform's name for it (from `current_window_restore`); settles a position on a desktop whose monitors have different scales |
 | `borderless` | `bool` | `false` | Remove native window decorations |
 | `resizable` | `bool` | `true` | Allow window resizing |
 | `transparent` | `bool` | `false` | Enable window transparency |
@@ -325,8 +326,14 @@ position over the scale of the monitor the window is on. On a desktop whose
 monitors have different scale factors, rinch reads a `WindowProps::x`/`y` back
 the same way, in the scale of the monitor it falls on, and creates the window
 at the desktop pixels that names (winit alone would convert it with a guessed
-scale, such as the monitor under the pointer on X11). Where a logical position
-fits two such monitors, the first the platform lists wins. The hide/show round
+scale, such as the monitor under the pointer on X11). A logical position can
+name a point on two such monitors (a window at desktop pixel 2100 on a scale-2
+monitor to the right of a 1920-pixel scale-1 one is at logical 1050, which is
+also on the scale-1 one); `WindowProps::monitor`, the name
+`current_window_restore` gives with the position, says which. Without it, or
+when no connected monitor has that name, the first the platform lists wins.
+Two monitors of one name (macOS names a monitor by its model number, so two of
+one model share it): the first of them on which the window is reachable. The hide/show round
 trip itself does not go through a logical position (it keeps desktop pixels on
 X11 and Windows and points on macOS), so a window comes back to the pixel.
 
@@ -339,8 +346,10 @@ X11 and Windows and points on macOS), so a window comes back to the pixel.
 | `position` | `Option<(f64, f64)>` | Outer top-left, logical pixels, of the window when it is neither maximized nor minimized (what an un-maximize returns to); `None` on Wayland |
 | `size` | `(f64, f64)` | Inner (content) size, logical pixels, likewise |
 | `maximized` | `bool` | Whether the window is maximized |
+| `monitor` | `Option<String>` | The platform's name for the monitor `position` is on; `None` with no position or where the platform names no monitor |
 
-Give them back as `WindowProps::x`/`y`, `width`/`height` and `maximized`. A
+Give them back as `WindowProps::x`/`y`, `width`/`height`, `maximized` and
+`monitor`. A
 window that opens maximized answers the geometry it was created with until it
 is first un-maximized. On X11, where the window manager maximizes it a moment
 after creation, rinch keeps that answer for up to two seconds until the
@@ -355,7 +364,7 @@ first show.
 ```rust
 // At exit:
 if let Some(r) = current_window_restore() {
-    save_restore(r.position, r.size, r.maximized);
+    save_restore(r.position, r.size, r.maximized, r.monitor);
 }
 
 // At startup:
@@ -365,6 +374,7 @@ let props = WindowProps {
     width: saved.size.0 as u32,
     height: saved.size.1 as u32,
     maximized: saved.maximized,
+    monitor: saved.monitor.clone(),
     ..Default::default()
 };
 ```

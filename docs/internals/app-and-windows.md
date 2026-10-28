@@ -386,7 +386,18 @@ twice its coordinates, on no monitor. `place_requested` tries each monitor as
 the one the position is on (convert with its scale; the strip must overlap it
 and be reachable) and gives winit the resulting `Position::Physical`. Where
 two monitors both fit (a logical position is ambiguous on such a desktop) the
-first in winit's order wins; the window is reachable either way. macOS keeps
+first in winit's order wins, unless `WindowProps::monitor` names one: the
+monitors of that name are tried first (two of one name: the first on which the
+window is reachable), then all of them. The name is what winit's
+`MonitorHandle::name()` answers — `connected_monitors` stores it, and the
+published `monitor` / `normal_monitor` come from the window's
+`current_monitor()` at each reading (`monitor_name`; the monitor whose scale
+the window has, so its scale is the one the logical position was computed
+with), or from the monitor `place_requested` chose at a first appearance.
+X11 names an output (`DP-1`), Windows a device (`\\.\DISPLAY1`), macOS
+`Monitor #<model number>` (not unique for two of one model). A position the
+app sets while hidden, a layer surface's, and Wayland's absent one carry no
+name. macOS keeps
 the logical position: `connected_monitors` gives its monitors in points at
 scale 1, the unit AppKit positions in.
 

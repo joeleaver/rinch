@@ -6312,4 +6312,61 @@ mod window_restore_tests {
         rt.begin_appearance(one_monitor(), true);
         assert_eq!(rt.saved_geometry.position, None);
     }
+
+    /// #1884: `WindowProps::monitor` settles a mixed-scale position — A
+    /// (scale 1) at x 0..1920, B (scale 2) at 1920..5760; (1050, 50) is on
+    /// both — and the restore answers the monitor it was placed on.
+    #[test]
+    fn the_requested_monitor_places_the_window_and_is_published() {
+        let _guard = published_test_guard();
+        let mons = || {
+            vec![
+                MonitorRect {
+                    position: PhysicalPosition::new(0, 0),
+                    size: PhysicalSize::new(1920, 1080),
+                    scale: 1.0,
+                    name: Some("A".to_string()),
+                },
+                MonitorRect {
+                    position: PhysicalPosition::new(1920, 0),
+                    size: PhysicalSize::new(3840, 2160),
+                    scale: 2.0,
+                    name: Some("B".to_string()),
+                },
+            ]
+        };
+        let mut rt = runtime(WindowProps {
+            x: Some(1050),
+            y: Some(50),
+            monitor: Some("B".to_string()),
+            ..Default::default()
+        });
+        assert!(rt.begin_appearance(mons(), true));
+        assert_eq!(
+            attributes(&mut rt, true).position,
+            Some(Position::Physical(PhysicalPosition::new(2100, 100)))
+        );
+        let restore = current_window_restore().unwrap();
+        assert_eq!(
+            (restore.position, restore.monitor.as_deref()),
+            (Some((1050.0, 50.0)), Some("B"))
+        );
+    }
+
+    /// A position the app sets while the window is hidden is on no monitor
+    /// rinch can name: the published name goes with the old position.
+    #[test]
+    fn a_position_set_while_hidden_drops_the_monitor_name() {
+        let _guard = published_test_guard();
+        window_geometry::publish_window(
+            &reading(false, (100, 80), (800, 600)),
+            Some("A".to_string()),
+        );
+        assert_eq!(
+            current_window_restore().unwrap().monitor.as_deref(),
+            Some("A")
+        );
+        window_geometry::publish_hidden(Some((300.0, 200.0)), None);
+        assert_eq!(current_window_restore().unwrap().monitor, None);
+    }
 }
