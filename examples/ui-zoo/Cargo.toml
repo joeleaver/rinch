@@ -33,3 +33,5 @@ js-sys = "0.3"
 [dev-dependencies]
 # The headless MockDomDocument the section tests render into.
 rinch-core = { workspace = true, features = ["test-util"] }
+# `rinch_av::testing` (av_opens_no_device.rs): count and deny device opens.
+rinch-av = { workspace = true, features = ["audio", "camera", "test-util"] }

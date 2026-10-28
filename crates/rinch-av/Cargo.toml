@@ -61,6 +61,10 @@ web-sys = { version = "0.3", features = [
 default = []
 audio = ["dep:cpal"]
 camera = ["dep:nokhwa"]
+# `rinch_av::testing`: count device opens and deny them, for an app's test
+# that its UI opens no device until asked. Off by default, so no build an
+# app ships has the switch; turn it on from a dev-dependency.
+test-util = []
 
 # Browser tests, synthetic sources only (an OscillatorNode, a canvas
 # stream): no camera, no microphone, no permission prompt. Run with
