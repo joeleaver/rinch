@@ -121,6 +121,7 @@ fn sizes(codec: &str) {
 #[test]
 fn odd_and_tiny_sizes() {
     init();
+    #[cfg(feature = "media-vp8")]
     sizes("VP8");
     // Read as each peer's connection is built: on for the whole call.
     testing::prefer_h264(true);

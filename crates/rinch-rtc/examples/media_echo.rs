@@ -15,6 +15,10 @@
 //! cargo run -p rinch-rtc --features media --example media_echo -- [--port 0] [--url-file PATH] [--h264-only]
 //! ```
 //!
+//! Built with `media` it offers and accepts H.264 alone; with
+//! `--features media,media-vp8`, VP8 first and H.264, and `--h264-only`
+//! drops VP8 again.
+//!
 //! It prints `media_echo http://127.0.0.1:<port>` (and writes the URL to
 //! `--url-file`).
 
@@ -54,8 +58,9 @@ mod app {
             match a.as_str() {
                 "--port" => port = args.next().and_then(|p| p.parse().ok()).expect("--port N"),
                 "--url-file" => url_file = args.next(),
-                // H.264 only, no VP8: a browser offers VP8 first, so this is
-                // how its H.264 is exercised.
+                // H.264 only, no VP8: a browser offers VP8 first, so in a
+                // `media-vp8` build this is how its H.264 is exercised (a
+                // `media` build is H.264-only already).
                 "--h264-only" => rinch_rtc::testing::h264_only(true),
                 other => panic!("unknown argument {other}"),
             }

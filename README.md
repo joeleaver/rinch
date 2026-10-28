@@ -104,10 +104,12 @@ Add `"gpu"` for GPU rendering, or leave it off for software rendering (no GPU re
 No `[patch]` lines are needed at all: delete any old winit, dpi or wgpu-fork ones from your `[patch.crates-io]`. Use `rinch::wgpu` and `rinch::vello` instead of your own `wgpu`/`vello` dependencies; add `wgpu = "30"` only to turn on an extra feature.
 
 The showcase and `video-call` carry real-time audio and video (rinch-rtc's
-`media`), which needs more system packages than rinch itself. On Debian or
-Ubuntu: `libvpx-dev` (VP8), `libclang-dev` (bindgen, for the libvpx and
-camera bindings) and `libasound2-dev` (audio); `nasm` is optional (openh264's
-assembly). Inside this repository, rinch-rtc's tests and
+`media`: H.264 and Opus, built from source with a C compiler and cmake),
+which needs more system packages than rinch itself. On Debian or Ubuntu:
+`libclang-dev` (bindgen, for the camera bindings) and `libasound2-dev`
+(audio); `nasm` is optional (openh264's assembly). VP8 is opt-in
+(rinch-rtc's `media-vp8`, which neither example turns on) and only that
+needs `libvpx-dev` too. Inside this repository, rinch-rtc's tests and
 `cargo clippy --workspace --all-targets` also need `libssl-dev`: its test-only
 interop peer links the system OpenSSL.
 

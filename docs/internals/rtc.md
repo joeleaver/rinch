@@ -232,12 +232,18 @@ code's gate is `media-core`, which both turn on.
     parameters of a replaced track report no codecs. The sender's codec goes
     into an `AtomicU8` the pump reads (`wanted_codecs`), so the pump encodes
     once per codec in use and nothing before any is known.
-  - **Codec order.** `media_engine` registers VP8 then H.264 (when
-    `h264_available()`: built from source, or Cisco's binary loaded), each
-    with RTX. Test hooks: `testing::prefer_h264` puts H.264 first,
-    `testing::h264_only` drops VP8 (`media_echo --h264-only`, for the
-    Chrome H.264 step); both are read when the worker builds the peer's
-    connection.
+  - **Codec order.** `media_engine` registers VP8 (only with `media-vp8`)
+    then H.264 (when `h264_available()`: built from source, or Cisco's
+    binary loaded), no RTX. Without `media-vp8` the `VideoCodec::Vp8`
+    variant, the VP8 payloader/assembler and `native_codec/vp8.rs` are
+    cfg'd out, and `VideoCodec::from_mime("video/VP8")` is `None`, so a
+    stream in VP8 is never decoded. Test hooks: `testing::prefer_h264` puts
+    H.264 first, `testing::h264_only` drops VP8 (`media_echo --h264-only`);
+    both are read when the worker builds the peer's connection, and both
+    change nothing in a build without VP8, which is H.264-only already.
+    `tests/media_codecs.rs` checks both builds: with VP8, the order and a
+    VP8→H.264 renegotiation; without, that a VP8-first offer (a browser's,
+    munged in) is answered with H.264 alone and flows both ways.
   - **Trap: a sender track's codec label.** rtc uses it twice.
     `codec_preferences_from_encodings` makes it the transceiver's only
     codec preference (a labelled track offers that codec alone), and
@@ -388,7 +394,9 @@ code's gate is `media-core`, which both turn on.
   - CI runs `web_media` in Firefox after a null PulseAudio sink is started.
     CI also runs `web_media_native` (a desktop peer, `media_echo`, against
     the browser) in Chrome over VP8 and over H.264, and in Firefox over VP8
-    (CI's Firefox has no OpenH264 plugin).
+    (CI's Firefox has no OpenH264 plugin). The VP8 echo (47812) is built
+    with `media,media-vp8`; the H.264 echo (47813) is a plain `media` build
+    copied to `media_echo_h264`, the build an app gets by default.
     It passed without one too, but rinch-av's capture needs it. A Chrome
     step without the autoplay flag pins `WaitingForGesture`
     (`RINCH_RTC_NO_AUTOPLAY`).
@@ -450,9 +458,14 @@ test-only interop peer, and with it `sctp-proto` 0.10.
   uses `try_with` for them: with `with` it panicked there, which aborts
   the process (`tests/media_drop_at_exit.rs`).
 - **CI.** With ui-zoo and video-call in the workspace, every `--workspace`
-  build compiles `media` (openh264, libopus, VP8 on the system libvpx), so
-  every `test` shard, the docs build and the visual tests install
-  `libvpx-dev`.
+  build compiles `media` (openh264 and libopus, both from source). Nothing
+  in the workspace turns on `media-vp8` (VP8, on the system libvpx), so
+  `libvpx-dev` is installed only where it is named: the `feature-gated`
+  test shard (`cargo test -p rinch-rtc --features media,media-vp8`), the
+  `clippy` job's `--features media-vp8` line, and `test-wasm` (the VP8
+  `media_echo`). The other shards, the docs build and the visual tests
+  need no libvpx (until 2026-10-28 VP8 was part of `media` and they all
+  installed it).
 
 ## Known gaps
 

@@ -163,14 +163,15 @@ jobs:
             run: |
               cargo test -p rinch-editor-core --features serde,markdown
               cargo test -p rinch-editor-view --features collaboration
-              # rinch-rtc's `media` feature (#1916): its unit tests
-              # (src/tests.rs `media_events`, the codecs' round trips) and the
-              # native media tests (tests/media_*.rs: two peers in the
-              # process, synthetic sources, no audio device). Since #1916's
-              # port, ui-zoo and video-call turn `media` on under
-              # `--workspace`, so the integration-a-m shard runs these too;
-              # named here so that they do not depend on those examples.
-              cargo test -p rinch-rtc --features media
+              # rinch-rtc's `media` feature (#1916) with `media-vp8`: its unit
+              # tests (src/tests.rs `media_events`, the codecs' round trips) and
+              # the native media tests (tests/media_*.rs: two peers in the
+              # process, synthetic sources, no audio device), with VP8. The only
+              # line in these shards that builds VP8 (libvpx). Without
+              # `media-vp8` they run under `--workspace` in the integration-a-m
+              # shard, where ui-zoo and video-call turn `media` on: H.264 alone,
+              # and a browser-shaped VP8-first offer answered in H.264.
+              cargo test -p rinch-rtc --features media,media-vp8
               cargo test -p rinch --features desktop,embed,theme,clipboard,debug
               # Bare on purpose: `desktop` (the default) WITHOUT `clipboard`. The
               # text context menu's no-clipboard pin (#813,
@@ -225,11 +226,9 @@ jobs:
 
       # rinch-rtc's `media` feature (#1916). Every shard builds it: the
       # feature-gated one names it (`cargo test -p rinch-rtc --features
-      # media`), and the others build ui-zoo and video-call, which turn it on
-      # under `--workspace` since the call demos were ported onto rinch-rtc.
-      # - libvpx-dev: VP8 (M2). env-libvpx-sys finds it by pkg-config and
-      #   generates its bindings with bindgen, which uses the image's
-      #   libclang (as nokhwa's v4l2-sys already does).
+      # media,media-vp8`), and the others build ui-zoo and video-call, which
+      # turn `media` on under `--workspace` since the call demos were ported
+      # onto rinch-rtc.
       # - nasm: openh264's assembly. Without it openh264 builds C only: no
       #   slower to build (its build script: 30.5 s vs 28.4 s), but encoding
       #   runs 2.8x slower (640x480: 6.75 -> 2.37 ms/frame), and CI should
@@ -237,7 +236,18 @@ jobs:
       - name: Install rinch-rtc media dependencies
         uses: ./.github/actions/apt-install
         with:
-          packages: libvpx-dev nasm
+          packages: nasm
+
+      # - libvpx-dev: VP8, rinch-rtc's opt-in `media-vp8` (M2, amended
+      #   2026-10-28), which only the feature-gated shard builds; nothing
+      #   under `--workspace` turns it on. env-libvpx-sys finds it by
+      #   pkg-config and generates its bindings with bindgen, which uses the
+      #   image's libclang (as nokhwa's v4l2-sys already does).
+      - name: Install libvpx (rinch-rtc media-vp8)
+        if: matrix.shard == 'feature-gated'
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libvpx-dev
 
       - name: Install Rust toolchain
         id: rust
@@ -374,7 +384,7 @@ jobs:
         # (.github/actions/apt-install explains both, #1792).
         uses: ./.github/actions/apt-install
         with:
-          # libvpx-dev: the rinch-rtc `media` lines below (VP8, #1916).
+          # libvpx-dev: the rinch-rtc `media-vp8` line below (VP8, #1916).
           packages: >-
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
             libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev libmpv-dev libvpx-dev
@@ -437,8 +447,10 @@ jobs:
           # rinch-rtc's `media` feature (#1916) is off by default. ui-zoo and
           # video-call turn it on under `--workspace` above; named here so
           # that its lint does not depend on them. The Cisco-binary variant
-          # is linted only here.
+          # and `media-vp8` (VP8 on libvpx, opt-in; nothing in the workspace
+          # turns it on) are linted only here.
           cargo clippy -p rinch-rtc --features media --all-targets -- -D warnings
+          cargo clippy -p rinch-rtc --features media-vp8 --all-targets -- -D warnings
           cargo clippy -p rinch-rtc --features media-cisco-openh264 --all-targets -- -D warnings
 
       # Every optional feature of `rinch` that builds on this host, in one
@@ -675,7 +687,8 @@ jobs:
           echo "CHROMEDRIVER=$(find "$PWD/chromedriver" -name chromedriver -type f | head -1)" >> "$GITHUB_ENV"
 
       # media_echo (rinch-rtc's native media peer, #1916) links rinch-av's
-      # cpal (ALSA), libvpx (VP8) and openh264 (nasm: its assembly).
+      # cpal (ALSA), openh264 (nasm: its assembly) and, built with
+      # `media-vp8`, libvpx (VP8).
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
         with:
@@ -728,13 +741,18 @@ jobs:
             --features media --test web_media
           # Browser <-> native media (#1916, design record section 6): the
           # browser sends a box to media_echo, a native rinch-rtc peer that
-          # decodes it and sends it back re-encoded. Two echoes: both codecs
-          # on 47812 (a browser offers VP8 first: VP8 through libvpx), and
-          # `--h264-only` on 47813 (H.264 through openh264). The URLs are
-          # fixed so the Firefox step reuses these binaries.
+          # decodes it and sends it back re-encoded. Two echoes, two builds:
+          # `media,media-vp8` on 47812 (a browser offers VP8 first: VP8
+          # through libvpx; Firefox without OpenH264 needs it), and plain
+          # `media` on 47813, an app's default build: H.264 alone, through
+          # openh264, which a browser's VP8-first offer must still reach. The
+          # `media` build is kept as media_echo_h264. The URLs are fixed so
+          # the Firefox step reuses these binaries.
           cargo build -p rinch-rtc --features media --example media_echo
+          cp target/debug/examples/media_echo target/debug/examples/media_echo_h264
+          cargo build -p rinch-rtc --features media,media-vp8 --example media_echo
           target/debug/examples/media_echo --port 47812 --url-file media_echo.url &
-          target/debug/examples/media_echo --port 47813 --h264-only --url-file media_echo_h264.url &
+          target/debug/examples/media_echo_h264 --port 47813 --url-file media_echo_h264.url &
           for i in $(seq 1 100); do [ -s media_echo.url ] && [ -s media_echo_h264.url ] && break; sleep 0.2; done
           test "$(cat media_echo.url)" = http://127.0.0.1:47812
           test "$(cat media_echo_h264.url)" = http://127.0.0.1:47813
@@ -885,14 +903,15 @@ jobs:
             --features media --test web_media
           # Browser <-> native media in Firefox. The runner's Firefox has no
           # OpenH264 plugin and encodes no H.264 at all, so its video is VP8
-          # (M2, 2026-10-27); the test logs that it skips the H.264 half
+          # (M2, 2026-10-27), which is why media_echo on 47812 is built with
+          # `media-vp8`; the test logs that it skips the H.264 half (47813)
           # and why. The Chrome step's media_echo peers, or new ones on the
           # same ports.
-          for spec in "47812:" "47813:--h264-only"; do
-            port=${spec%%:*}; flag=${spec#*:}
+          for spec in "47812:media_echo" "47813:media_echo_h264"; do
+            port=${spec%%:*}; bin=${spec#*:}
             if ! curl -s -o /dev/null -X OPTIONS "http://127.0.0.1:$port/offer"; then
               rm -f "media_echo_ff_$port.url"
-              target/debug/examples/media_echo --port "$port" $flag --url-file "media_echo_ff_$port.url" &
+              "target/debug/examples/$bin" --port "$port" --url-file "media_echo_ff_$port.url" &
               for i in $(seq 1 100); do [ -s "media_echo_ff_$port.url" ] && break; sleep 0.2; done
             fi
           done

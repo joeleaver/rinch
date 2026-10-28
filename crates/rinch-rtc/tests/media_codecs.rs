@@ -1,8 +1,10 @@
 //! Codec negotiation on desktop (#1947's second review, adopted): a desktop
-//! peer offers VP8 and H.264 on every video m-line in its preferred order,
-//! answers whatever subset an offer lists (never a codec the offer did not
-//! list), sends in the codec the answer picked, and follows a change of codec
-//! in a renegotiation. Synthetic sources only.
+//! peer offers its codecs on every video m-line in its preferred order (VP8
+//! and H.264 with `media-vp8`, H.264 alone without it), answers whatever
+//! subset an offer lists (never a codec the offer did not list), sends in the
+//! codec the answer picked, and follows a change of codec in a
+//! renegotiation. Without `media-vp8`, a browser's VP8-first offer is
+//! answered in H.264. Synthetic sources only.
 #![cfg(all(not(target_arch = "wasm32"), feature = "media"))]
 
 mod common;
@@ -41,6 +43,30 @@ fn video_codecs(sdp: &str) -> Vec<String> {
         .filter_map(|p| names.get(p).cloned())
         .filter(|n| !n.eq_ignore_ascii_case("rtx"))
         .collect()
+}
+
+/// `sdp` with VP8 put first on its video m-lines (payload type 96, unused by
+/// a build without VP8): the shape of every browser's offer.
+#[cfg(not(feature = "media-vp8"))]
+fn with_vp8_first(sdp: &str) -> String {
+    assert!(!sdp.contains("a=rtpmap:96 "), "96 is free");
+    let mut out = Vec::new();
+    let mut pending = false;
+    for l in sdp.split("\r\n").filter(|l| !l.is_empty()) {
+        if l.starts_with("m=") {
+            pending = l.starts_with("m=video");
+            if pending {
+                let m: Vec<&str> = l.split(' ').collect();
+                out.push(format!("{} 96 {}", m[..3].join(" "), m[3..].join(" ")));
+                continue;
+            }
+        } else if pending && l.starts_with("a=rtpmap:") {
+            out.push("a=rtpmap:96 VP8/90000".to_string());
+            pending = false;
+        }
+        out.push(l.to_string());
+    }
+    out.join("\r\n") + "\r\n"
 }
 
 /// `sdp` with its video m-lines cut to `keep` (codec names, in that order)
@@ -133,9 +159,10 @@ fn flows(pair: &Pair, c: &Arc<Mutex<(u32, u32)>>, what: &str) {
     );
 }
 
-/// A default desktop offers both codecs, VP8 first; with `prefer_h264`,
-/// H.264 first. Either way the answerer's codec choice is what is sent.
-fn offers_list_both_codecs_in_order() {
+/// A `media-vp8` desktop offers both codecs, VP8 first; with
+/// `prefer_h264`, H.264 first. A `media` desktop offers H.264 alone either
+/// way. The answerer's codec choice is what is sent.
+fn offers_list_our_codecs_in_order() {
     for prefer in [false, true] {
         testing::prefer_h264(prefer);
         let run = Arc::new(AtomicBool::new(true));
@@ -146,10 +173,12 @@ fn offers_list_both_codecs_in_order() {
         pair.a.add_track(&v).unwrap();
         let offer = drive(pair.a.create_offer(), T).unwrap();
         testing::prefer_h264(false);
-        let want = if prefer {
-            ["H264", "VP8"]
+        let want: &[&str] = if !cfg!(feature = "media-vp8") {
+            &["H264"]
+        } else if prefer {
+            &["H264", "VP8"]
         } else {
-            ["VP8", "H264"]
+            &["VP8", "H264"]
         };
         assert_eq!(video_codecs(&offer.sdp), want, "prefer_h264({prefer})");
         drive(pair.b.set_remote_description(offer), T).unwrap();
@@ -176,8 +205,14 @@ fn offers_list_both_codecs_in_order() {
 
 /// An offer that lists H.264 only (Safari's can), or H.264 first: a default
 /// desktop answers with H.264 only / first, and sends and receives H.264.
+// One element without `media-vp8`.
+#[allow(clippy::single_element_loop)]
 fn an_h264_offer_is_answered_in_h264_both_ways() {
-    for keep in [&["H264"][..], &["H264", "VP8"][..]] {
+    for keep in [
+        &["H264"][..],
+        #[cfg(feature = "media-vp8")]
+        &["H264", "VP8"][..],
+    ] {
         let run = Arc::new(AtomicBool::new(true));
         let (va, vb) = (source(&run), source(&run));
         let pair = Pair::new();
@@ -223,9 +258,54 @@ fn an_h264_offer_is_answered_in_h264_both_ways() {
     }
 }
 
+/// Without `media-vp8`: an offer listing VP8 first and H.264 after it (what
+/// every browser offers) is answered with H.264 alone, and H.264 flows both
+/// ways: desktop video with Chrome or Safari needs no libvpx.
+#[cfg(not(feature = "media-vp8"))]
+fn a_vp8_first_offer_is_answered_in_h264() {
+    let run = Arc::new(AtomicBool::new(true));
+    let (va, vb) = (source(&run), source(&run));
+    let pair = Pair::new();
+    let at_a: Rc<RefCell<Vec<RemoteTrack>>> = Rc::default();
+    let r = at_a.clone();
+    pair.a.on_track(move |t| r.borrow_mut().push(t));
+    pair.a.add_track(&va).unwrap();
+    let offer = drive(pair.a.create_offer(), T).unwrap();
+    assert_eq!(
+        video_codecs(&offer.sdp),
+        ["H264"],
+        "a media build offers H.264"
+    );
+    let munged = with_vp8_first(&offer.sdp);
+    assert_eq!(video_codecs(&munged), ["VP8", "H264"]);
+    drive(pair.b.set_remote_description(Description::offer(munged)), T).unwrap();
+    pair.b.add_track(&vb).unwrap();
+    let answer = drive(pair.b.create_answer(), T).unwrap();
+    assert_eq!(
+        video_codecs(&answer.sdp),
+        ["H264"],
+        "the answer to a VP8-first offer"
+    );
+    drive(pair.a.set_remote_description(answer), T).unwrap();
+    pair.until("A's track at B", || !pair.remotes.borrow().is_empty());
+    pair.until("B's track at A", || !at_a.borrow().is_empty());
+    let (cb, ca) = (
+        counter(&pair.remotes.borrow()[0]),
+        counter(&at_a.borrow()[0]),
+    );
+    flows(&pair, &cb, "A -> B");
+    flows(&pair, &ca, "B (the answerer) -> A");
+    assert_eq!(testing::sending_codecs(&va), ["H264"]);
+    assert_eq!(testing::sending_codecs(&vb), ["H264"]);
+    run.store(false, Ordering::Relaxed);
+    pair.close();
+    pair.wait(300);
+}
+
 /// A VP8 call renegotiated to H.264 only (the far side re-offers without
 /// VP8): the answer lists H.264 only, the sender switches, and the receiver
 /// switches decoders: the picture keeps coming.
+#[cfg(feature = "media-vp8")]
 fn a_renegotiated_codec_change_keeps_the_picture() {
     let run = Arc::new(AtomicBool::new(true));
     let v = source(&run);
@@ -259,7 +339,10 @@ fn a_renegotiated_codec_change_keeps_the_picture() {
 #[test]
 fn codec_negotiation() {
     init();
-    offers_list_both_codecs_in_order();
+    offers_list_our_codecs_in_order();
     an_h264_offer_is_answered_in_h264_both_ways();
+    #[cfg(not(feature = "media-vp8"))]
+    a_vp8_first_offer_is_answered_in_h264();
+    #[cfg(feature = "media-vp8")]
     a_renegotiated_codec_change_keeps_the_picture();
 }
