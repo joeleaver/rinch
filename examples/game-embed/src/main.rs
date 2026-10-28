@@ -764,7 +764,11 @@ impl App {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    // `RinchOverlayRenderer` writes straight (not premultiplied)
+                    // alpha, so the overlay is blended `src * a + dst * (1 - a)`.
+                    // Premultiplied blending added the full colour of every
+                    // translucent UI pixel, washing out anti-aliased edges.
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -924,10 +928,8 @@ impl App {
         let ctx = self.rinch_ctx.as_mut().unwrap();
         let events = std::mem::take(&mut self.pending_events);
         let _actions = ctx.update(&events);
-        let scene = ctx.scene();
-
         let overlay = self.overlay.as_mut().unwrap();
-        let overlay_view = overlay.render(device, queue, scene);
+        let overlay_view = overlay.render(device, queue, ctx);
 
         // ── Pass 2: Blit (composite UI over cube) ───────────────────────────
 

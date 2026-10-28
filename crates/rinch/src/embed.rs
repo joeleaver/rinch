@@ -12,7 +12,7 @@
 //!   1. Collect platform events
 //!   2. ctx.update(&events)        // rinch processes input, updates layout
 //!   3. game.render()              // render game scene
-//!   4. overlay.render(ctx.scene()) // render rinch UI to texture
+//!   4. overlay.render(&device, &queue, &mut ctx) // render rinch UI to texture
 //!   5. composite game + UI        // blit both to swapchain
 //! ```
 //!
@@ -52,7 +52,7 @@
 //!
 //! // In your game loop:
 //! let actions = ctx.update(&platform_events);
-//! let scene = ctx.scene();
+//! let ui = overlay.render(&device, &queue, &mut ctx);
 //! ```
 
 use std::sync::Arc;
@@ -352,8 +352,16 @@ impl RinchContext {
 
     /// Get the current Vello scene. Rebuilds only if dirty.
     ///
-    /// The returned scene contains the full rinch UI and can be rendered
-    /// to a texture via [`RinchOverlayRenderer`] or your own Vello setup.
+    /// The returned scene contains the full rinch UI, for a host that
+    /// renders it with its own Vello setup. [`RinchOverlayRenderer::render`]
+    /// takes the context instead, and does not use this.
+    ///
+    /// Each [`GameViewport`]'s box is cleared **in the scene** (#1866), which
+    /// is approximate inside a clip: along a clipping ancestor's edges near the
+    /// viewport (in each 16px tile the clip's outline crosses), Vello keeps
+    /// what the clip saved, so a band of that ancestor's background can show
+    /// over the game. `RinchOverlayRenderer::render` cuts the viewports out
+    /// after Vello instead, exactly.
     ///
     /// **Use `rinch::vello`.** rinch depends on Vello 0.11 from
     /// `joeleaver/vello-fork` at a pinned commit (#1955), which fixes two
@@ -391,6 +399,27 @@ impl RinchContext {
             rinch_dom::paint::set_surface_pixels(None);
         }
         self.app.painter.scene()
+    }
+
+    /// [`Self::scene`] painted for [`RinchOverlayRenderer::render`] (#1866):
+    /// each `GameViewport` split out of the scene as a base layer with no
+    /// game, for the split compositor to cut exactly. The frame's slices when
+    /// it was painted, `None` when the last one is still current; the scene
+    /// is `self.app.painter`'s.
+    fn sliced_frame(&mut self) -> Option<Vec<rinch_dom::paint::slicing::SurfaceSlice>> {
+        let (lw, lh) = self.logical_size();
+        let surface_pixels = self.prepare_render_surfaces();
+        let installed = !surface_pixels.is_empty();
+        if installed {
+            rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
+        }
+        let slices = self
+            .app
+            .build_scene_with(self.scale_factor, (lw as u32, lh as u32), true);
+        if installed {
+            rinch_dom::paint::set_surface_pixels(None);
+        }
+        slices
     }
 
     /// Drive this context's mounted `RenderSurface`s for this frame and return their
@@ -847,6 +876,13 @@ impl RinchContext {
 /// scene directly. This struct manages a [`vello::Renderer`] and an
 /// intermediate render texture sized to the window.
 ///
+/// **The texture holds straight (non-premultiplied) alpha**, which is what
+/// Vello writes: composite it over your game with straight-alpha blending
+/// (`wgpu::BlendState::ALPHA_BLENDING`, `src * a + dst * (1 - a)`), or
+/// premultiply in your shader first. `PREMULTIPLIED_ALPHA_BLENDING` on the
+/// raw texture adds the full colour of every translucent pixel. Where a
+/// [`GameViewport`] is, the texture is transparent (#1866).
+///
 /// **Use `rinch::vello`.** rinch depends on Vello 0.11 from
 /// `joeleaver/vello-fork` at a pinned commit (#1955), which fixes two
 /// image-atlas bugs of stock Vello 0.11. Build Vello types from `rinch::vello`
@@ -861,7 +897,7 @@ impl RinchContext {
 /// let mut overlay = RinchOverlayRenderer::new(&device, 1280, 720, TextureFormat::Rgba8Unorm);
 ///
 /// // Each frame:
-/// let view = overlay.render(&device, &queue, ctx.scene());
+/// let view = overlay.render(&device, &queue, &mut ctx);
 /// // composite `view` on top of your game scene
 /// ```
 pub struct RinchOverlayRenderer {
@@ -870,6 +906,12 @@ pub struct RinchOverlayRenderer {
     width: u32,
     height: u32,
     format: TextureFormat,
+    /// The `GameViewport`s split out of the last painted frame (#1866).
+    split: crate::split_frame::SplitFrame,
+    compositor: Option<crate::split_compositor::SplitCompositor>,
+    /// Where Vello renders the UI while a viewport is split: the split
+    /// compositor then writes `render_texture` from it.
+    below: Option<Texture>,
 }
 
 impl RinchOverlayRenderer {
@@ -900,25 +942,92 @@ impl RinchOverlayRenderer {
             width,
             height,
             format,
+            split: Default::default(),
+            compositor: None,
+            below: None,
         }
     }
 
-    /// Render the rinch scene to a texture.
+    /// Render `ctx`'s UI to a texture.
     ///
     /// Returns a [`TextureView`] that the game can sample/composite.
     /// The texture has a transparent background so it can be alpha-blended
-    /// over the game scene.
-    pub fn render(&mut self, device: &Device, queue: &Queue, scene: &Scene) -> TextureView {
+    /// over the game scene; its alpha is straight, not premultiplied (see the
+    /// type's docs).
+    ///
+    /// Each [`GameViewport`] is the base layer (#1866): the texture is
+    /// transparent inside its box (its own `border-radius`, clipped and
+    /// transformed as the element is), and what is painted after it — its
+    /// children, later siblings, popups — is drawn over it. The box is cut
+    /// out by a compositor pass after Vello, from the frame's slices, so it is
+    /// exact under every clip around the viewport. (Before #1866 this took
+    /// `ctx.scene()`; a scene rendered on its own clears the viewports in the
+    /// scene, which is approximate inside clips, see [`RinchContext::scene`].)
+    ///
+    /// Call it once per frame, in place of `ctx.scene()`: it drives the
+    /// context's `RenderSurface`s as `scene()` does.
+    pub fn render(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        ctx: &mut RinchContext,
+    ) -> TextureView {
+        if let Some(slices) = ctx.sliced_frame() {
+            if let Err(e) = self.split.apply(
+                device,
+                queue,
+                &mut self.renderer,
+                crate::split_frame::SplitChange {
+                    drop: Vec::new(),
+                    all: true,
+                    add: slices,
+                },
+            ) {
+                tracing::error!("rinch: overlay split slices: {e}");
+                self.split.clear();
+            }
+        }
+        let scene = ctx.app.painter.scene();
         let view = self
             .render_texture
             .create_view(&TextureViewDescriptor::default());
+        let split = !self.split.is_empty();
+        let below = if split {
+            let (w, h) = (self.width, self.height);
+            let below = self
+                .below
+                .take()
+                .filter(|t| t.width() == w && t.height() == h)
+                .unwrap_or_else(|| {
+                    device.create_texture(&TextureDescriptor {
+                        label: Some("rinch overlay below"),
+                        size: Extent3d {
+                            width: w,
+                            height: h,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: TextureDimension::D2,
+                        format: TextureFormat::Rgba8Unorm,
+                        usage: TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                });
+            let below_view = below.create_view(&TextureViewDescriptor::default());
+            self.below = Some(below);
+            Some(below_view)
+        } else {
+            self.below = None;
+            None
+        };
 
         self.renderer
             .render_to_texture(
                 device,
                 queue,
                 scene,
-                &view,
+                below.as_ref().unwrap_or(&view),
                 &RenderParams {
                     base_color: Color::TRANSPARENT,
                     width: self.width,
@@ -927,6 +1036,27 @@ impl RinchOverlayRenderer {
                 },
             )
             .expect("Vello render_to_texture failed");
+
+        if let Some(below) = below {
+            let format = self.format;
+            let compositor = self.compositor.get_or_insert_with(|| {
+                crate::split_compositor::SplitCompositor::new(device, format)
+            });
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rinch overlay split"),
+            });
+            self.split.composite_with(
+                compositor,
+                device,
+                &mut encoder,
+                &below,
+                &view,
+                (self.width, self.height),
+                &Default::default(),
+                true,
+            );
+            queue.submit(Some(encoder.finish()));
+        }
 
         view
     }
@@ -972,7 +1102,9 @@ impl RinchOverlayRenderer {
             format,
             usage: TextureUsages::STORAGE_BINDING
                 | TextureUsages::TEXTURE_BINDING
-                | TextureUsages::COPY_SRC,
+                | TextureUsages::COPY_SRC
+                // The split compositor writes it (#1866).
+                | TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         })
     }
@@ -985,6 +1117,16 @@ impl RinchOverlayRenderer {
 /// Place this component in your rinch UI layout wherever you want the game
 /// scene to show through. Use [`RinchContext::viewport_rect`] to query
 /// the computed layout rect and render your game into that region.
+///
+/// The viewport is the **base layer** (#1866): its box (its own
+/// `border-radius`, clipped and transformed as the element is) is
+/// transparent in [`RinchOverlayRenderer::render`]'s texture, so nothing
+/// painted beneath it — ancestor backgrounds, earlier siblings — covers the
+/// game, and anything painted after it — its children, later siblings,
+/// popups — draws over it. ([`RinchContext::scene`] clears it in the scene,
+/// approximate inside clips.) A debug build warns once
+/// where that cannot hold: the viewport inside an `opacity < 1`, `mask-image`
+/// or `filter` group, or under a rotation, scale or skew.
 ///
 /// The component renders as a transparent, **hittable** `div`. Hittability is
 /// what routes input: [`RinchContext::wants_mouse`] hit-tests the DOM and walks

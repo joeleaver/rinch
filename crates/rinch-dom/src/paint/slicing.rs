@@ -37,6 +37,25 @@ use peniko::{Color, Fill};
 use vello::Scene;
 
 use super::painter::{BlendMode, PaintShape, Refusal, SplitVerdict, SurfaceSplit};
+
+/// The coverage of `shape` (drawn with `transform`) over R: a rect when the
+/// shape is a rect on whole device pixels, else a mask scene with the shape
+/// filled white.
+fn shape_coverage(transform: Affine, shape: &PaintShape, r: Rect) -> SliceCoverage {
+    let rect = match shape {
+        PaintShape::Rect(rect) => whole_pixel_rect(transform, *rect),
+        _ => None,
+    };
+    match rect {
+        Some(a) => SliceCoverage::Rect(rect_u32(a.intersect(r))),
+        None => {
+            let mut mask = Scene::new();
+            let white = peniko::Brush::Solid(Color::WHITE);
+            super::vello_painter::fill_into(&mut mask, Fill::NonZero, transform, &white, shape);
+            SliceCoverage::Mask(Box::new(mask))
+        }
+    }
+}
 use super::vello_painter::centre_sampling;
 
 /// A surface the painter took out of the scene, and what the compositor
@@ -71,6 +90,19 @@ pub struct SurfaceSlice {
     /// The element's ink in device pixels (`SurfaceSplit::ink`): damage that
     /// meets it repaints the surface, so its region must be repainted whole.
     pub ink: Rect,
+    /// Set for a `GameViewport`, the base layer (#1866): the compositor
+    /// replaces below with the game inside `clear` rather than drawing the
+    /// game over it.
+    pub base: Option<BaseSlice>,
+}
+
+/// A base layer's slice (#1866): what the game replaces.
+pub struct BaseSlice {
+    /// The viewport's box under its own radius: where below is replaced.
+    /// `own` (the image) lies inside it.
+    pub clear: SliceCoverage,
+    /// Opaque black under the image inside `clear` (a CPU frame's letterbox).
+    pub black_backdrop: bool,
 }
 
 /// The surface's coverage of R's pixels.
@@ -517,6 +549,12 @@ impl Slicing {
             }
         };
 
+        // A base layer's clear: its box under its own radius (#1866).
+        let base = split.base.as_ref().map(|b| BaseSlice {
+            clear: shape_coverage(split.node_transform, &b.clear, r),
+            black_backdrop: b.black_backdrop,
+        });
+
         let t = split.image_transform;
         self.slices.push(Slice {
             out: SurfaceSlice {
@@ -536,6 +574,7 @@ impl Slicing {
                 straight_alpha: split.straight_alpha,
                 ink: split.ink,
                 tainted: false,
+                base,
             },
             r,
             above_in: Scene::new(),
@@ -588,6 +627,7 @@ mod tests {
                 extents: (content.width() as u32, content.height() as u32),
                 straight_alpha: false,
                 ink: content,
+                base: None,
             },
         );
         assert_eq!(verdict, SplitVerdict::Split);

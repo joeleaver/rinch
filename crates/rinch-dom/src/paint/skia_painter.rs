@@ -715,6 +715,11 @@ pub struct SkiaPainterStats {
     /// video frame): a draw with no rotation or skew, a positive scale, destination edges on whole pixels, and a clip that is fully on or fully off wherever the frame lands. Scaled
     /// draws count too; only scale 1 is a plain `memcpy` per row.
     pub opaque_image_copies: u64,
+    /// Erases (`Painter::erase`, a `GameViewport` clearing its box, #1866)
+    /// done as a plain `Source`-transparent rect fill: a square rect under no
+    /// rotation or skew and no clip mask where it lands. The others blend a
+    /// path `destination-out`.
+    pub rect_erases: u64,
     /// Pooled surface-sized buffers released by
     /// [`TinySkiaPainter::end_frame`] because no recent frame needed that
     /// many at once.
@@ -734,6 +739,7 @@ impl SkiaPainterStats {
         perf.add(Counter::PaintSurfaceAllocs, self.surface_allocs);
         perf.add(Counter::ImagePremultiplies, self.image_premultiplies);
         perf.add(Counter::OpaqueImageCopies, self.opaque_image_copies);
+        perf.add(Counter::RectErases, self.rect_erases);
         perf.add(Counter::PaintSurfaceTrims, self.surface_trims);
     }
 }
@@ -1557,6 +1563,57 @@ impl Painter for TinySkiaPainter {
         self.fill_with_paint(fill, transform, &paint, shape);
     }
 
+    /// In place, with no layer: an opaque anti-aliased fill blended
+    /// `destination-out` straight into the target through the clip mask.
+    ///
+    /// **Fast path** (review of #1883): a square rect under no rotation or
+    /// skew, with no clip mask in force wherever it lands, is written
+    /// `Source` transparent — the same pixels (`lerp(dst, 0, coverage)` is
+    /// `dst * (1 - coverage)`), at the cost of a row fill instead of a
+    /// blended path: about 0.16 ms against 3.6–5.3 ms for a 1080p game
+    /// frame. Counted in [`SkiaPainterStats::rect_erases`].
+    fn erase(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
+        let ts = affine_to_transform(transform);
+        if let PaintShape::Rect(r) = shape
+            && !self.reference_mode
+            && ts.kx == 0.0
+            && ts.ky == 0.0
+            && ts.sx > 0.0
+            && ts.sy > 0.0
+            && let Some(rect) =
+                tiny_skia::Rect::from_ltrb(r.x0 as f32, r.y0 as f32, r.x1 as f32, r.y1 as f32)
+        {
+            let (w, h) = (self.pixmap.width(), self.pixmap.height());
+            let (x0, y0, x1, y1) = (rect.left(), rect.top(), rect.right(), rect.bottom());
+            let unmasked = !self.draw_is_masked(x0, y0, x1, y1, ts, 0.0)
+                || self.clip_mask.as_ref().is_some_and(|m| {
+                    device_rect_within(
+                        DeviceRect::from_local(x0, y0, x1, y1, ts, 1.0, w, h),
+                        m.full,
+                    )
+                });
+            if unmasked {
+                self.touch_local(x0, y0, x1, y1, ts);
+                let mut paint = Paint {
+                    anti_alias: true,
+                    blend_mode: tiny_skia::BlendMode::Source,
+                    ..Paint::default()
+                };
+                paint.set_color_rgba8(0, 0, 0, 0);
+                self.pixmap.fill_rect(rect, &paint, ts, None);
+                self.stats.rect_erases += 1;
+                return;
+            }
+        }
+        let mut paint = Paint {
+            anti_alias: true,
+            blend_mode: tiny_skia::BlendMode::DestinationOut,
+            ..Paint::default()
+        };
+        paint.set_color_rgba8(0, 0, 0, 255);
+        self.fill_with_paint(fill, transform, &paint, shape);
+    }
+
     fn fill_repeating(
         &mut self,
         fill: Fill,
@@ -2232,8 +2289,10 @@ impl Painter for TinySkiaPainter {
     ) {
         // A `Plus` layer at opacity 1 still adds rather than covers, so it
         // never takes the fast path below.
-        if !matches!(blend, BlendMode::Plus | BlendMode::DestinationIn)
-            && (opacity - 1.0).abs() < f32::EPSILON
+        if !matches!(
+            blend,
+            BlendMode::Plus | BlendMode::DestinationIn | BlendMode::DestinationOut
+        ) && (opacity - 1.0).abs() < f32::EPSILON
         {
             // Near-opaque: compositing a layer back at this alpha changes no
             // pixel, so no layer is allocated. The push still has to happen —
@@ -2279,6 +2338,7 @@ impl Painter for TinySkiaPainter {
         let blend = match blend {
             BlendMode::Plus => tiny_skia::BlendMode::Plus,
             BlendMode::DestinationIn => tiny_skia::BlendMode::DestinationIn,
+            BlendMode::DestinationOut => tiny_skia::BlendMode::DestinationOut,
             BlendMode::Normal | BlendMode::Saturation => tiny_skia::BlendMode::SourceOver,
         };
         self.open_layer(opacity, blend);

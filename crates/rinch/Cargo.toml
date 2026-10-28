@@ -272,6 +272,8 @@ embed = [
     "dep:peniko",
     "rinch-platform/renderer",
     "dep:vello", "dep:wgpu",
+    # The split compositor's uniforms (#1866).
+    "dep:bytemuck",
 ]
 file-dialogs = ["rfd"]
 clipboard = ["dep:rinch-clipboard"]

@@ -1,11 +1,14 @@
-//! #1030: a `data-viewport` hole cuts only the part of itself that lies
-//! inside the box's rounded shape.
+//! #1030: a `data-viewport` hole at a rounded box's corner leaves nothing
+//! painted outside the box's rounded shape.
 //!
-//! The background (and an inset shadow's clip) is the box's shape with each
-//! hole cut out under `Fill::EvenOdd`. The hole rect used to go in whole, so
-//! where it reached past the shape — the sliver between a rounded corner's arc
-//! and the rect's corner, or past the box altogether — the even-odd count was
-//! one and the background (or the shadow) was painted **outside** the box.
+//! The hole was the box's shape with each viewport rect cut out under
+//! `Fill::EvenOdd`, and the rect used to go in whole, so where it reached past
+//! the shape — the sliver between a rounded corner's arc and the rect's
+//! corner, or past the box altogether — the even-odd count was one and the
+//! background (or the shadow) was painted **outside** the box. Since #1866 the
+//! background is the plain shape and the viewport clears its own box, through
+//! the box's rounded clip, when paint reaches it; these fixtures keep the
+//! outcome pinned.
 //!
 //! Each fixture reads a pixel outside the shape inside the hole (want: nothing
 //! painted), a pixel inside the shape inside the hole (want: nothing — the
@@ -15,10 +18,8 @@
 #![cfg(feature = "software-renderer")]
 
 use peniko::Brush;
-use peniko::kurbo::{PathEl, Point, Rect};
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
-use rinch_dom::paint::radii::BorderRadii;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 
 const W: u32 = 500;
@@ -158,25 +159,28 @@ fn a_hole_past_the_box_edge_paints_nothing_outside_the_box() {
     }
 }
 
-/// Every pixel of a hole at a rounded corner is clear — the ones on the arc
-/// too, where the shape's edge and the hole's cut meet. A hole that cut a
-/// slightly different curve from the one the background fills leaves a
-/// faint line of background along the arc there.
+/// Every pixel of a hole at a rounded corner is clear, except the arc's own
+/// anti-aliasing. Since #1866 the background is painted whole and the clear
+/// erases it through the box's rounded clip, so an arc pixel the shape covers
+/// by `c` keeps `c` of background less `c` of it erased: `c (1 - c)`, at most
+/// a quarter, and only on the arc (Vello conflates the two edges the same
+/// way). Nothing off the arc is left, and no pixel more than a quarter.
 #[test]
-fn no_pixel_of_a_corner_hole_is_painted() {
+fn a_corner_hole_leaves_only_the_arcs_anti_aliasing() {
     let p = painted(&boxed("40px", "background: rgb(0,0,0)", ""));
-    let mut painted_px = Vec::new();
+    let mut bad = Vec::new();
     for y in 150..250 {
         for x in 150..250 {
-            if alpha(&p, x, y) != 0 {
-                painted_px.push((x, y, alpha(&p, x, y)));
+            let a = alpha(&p, x, y);
+            // The corner's circle: centre (190, 190), radius 40.
+            let d = ((x as f64 + 0.5 - 190.0).powi(2) + (y as f64 + 0.5 - 190.0).powi(2)).sqrt();
+            let on_arc = x < 190 && y < 190 && (d - 40.0).abs() < 1.0;
+            if a != 0 && (!on_arc || a > 64) {
+                bad.push((x, y, a));
             }
         }
     }
-    assert!(
-        painted_px.is_empty(),
-        "painted inside the hole: {painted_px:?}"
-    );
+    assert!(bad.is_empty(), "painted inside the hole: {bad:?}");
 }
 
 /// A hole narrower than the box's straight top side ends partway along it,
@@ -256,96 +260,4 @@ fn corners_no_hole_meets_paint_as_without_a_hole() {
         }
     }
     assert!(differ.is_empty(), "differ outside the hole: {differ:?}");
-}
-
-fn contours(path: &peniko::kurbo::BezPath) -> Vec<Vec<Point>> {
-    let mut out: Vec<Vec<Point>> = Vec::new();
-    peniko::kurbo::flatten(path.iter(), 0.01, |el| match el {
-        PathEl::MoveTo(p) => out.push(vec![p]),
-        PathEl::LineTo(p) => out.last_mut().unwrap().push(p),
-        _ => {}
-    });
-    out
-}
-
-/// `poly` clipped to `clip` (an independent Sutherland–Hodgman).
-fn clip_to(poly: &[Point], clip: Rect) -> Vec<Point> {
-    let mut out = poly.to_vec();
-    type Edge = (fn(Point, f64) -> f64, f64);
-    let edges: [Edge; 4] = [
-        (|p, a| p.x - a, clip.x0),
-        (|p, a| a - p.x, clip.x1),
-        (|p, a| p.y - a, clip.y0),
-        (|p, a| a - p.y, clip.y1),
-    ];
-    for (d, a) in edges {
-        let input = std::mem::take(&mut out);
-        let Some(&last) = input.last() else { break };
-        let mut prev = last;
-        for &cur in &input {
-            let (dp, dc) = (d(prev, a), d(cur, a));
-            if dc >= 0.0 {
-                if dp < 0.0 {
-                    out.push(prev.lerp(cur, dp / (dp - dc)));
-                }
-                out.push(cur);
-            } else if dp >= 0.0 {
-                out.push(prev.lerp(cur, dp / (dp - dc)));
-            }
-            prev = cur;
-        }
-    }
-    out
-}
-
-fn signed_area(poly: &[Point]) -> f64 {
-    let n = poly.len();
-    (0..n)
-        .map(|i| {
-            let (a, b) = (poly[i], poly[(i + 1) % n]);
-            a.x * b.y - b.x * a.y
-        })
-        .sum::<f64>()
-        * 0.5
-}
-
-/// Review of #1658, F1: Vello's analytic area anti-aliasing (what Android
-/// renders with) sums each pixel's signed coverage over every contour and
-/// folds it even-odd as `|a - 2 round(a / 2)|` (`fine.wgsl`'s `fill_path`).
-/// A hole contour wound the same way as the outline adds its share of a
-/// shared edge pixel to the outline's instead of cancelling it, and drew a
-/// near-opaque line along the arc. Emulated here exactly, per pixel, over
-/// the hole, on the path itself: no GPU needed.
-#[test]
-fn the_hole_cancels_the_outline_under_area_anti_aliasing() {
-    for (rect, r) in [
-        (Rect::new(150.0, 150.0, 350.0, 350.0), 40.0),
-        (Rect::new(150.3, 150.3, 350.3, 350.3), 40.0),
-        (Rect::new(300.0, 300.0, 900.0, 900.0), 120.0),
-    ] {
-        let hole = Rect::new(
-            rect.x0,
-            rect.y0,
-            rect.x0 + rect.width() / 2.0,
-            rect.y0 + rect.height() / 2.0,
-        );
-        let cs = contours(&BorderRadii::uniform(r).path_with_holes(rect, &[hole]));
-        assert_eq!(cs.len(), 2, "one outline and one hole");
-        let (mut max, mut n) = (0.0f64, 0);
-        for y in hole.y0 as i32..hole.y1 as i32 {
-            for x in hole.x0 as i32..hole.x1 as i32 {
-                let px = Rect::new(x as f64, y as f64, x as f64 + 1.0, y as f64 + 1.0);
-                let a: f64 = cs.iter().map(|c| signed_area(&clip_to(c, px))).sum();
-                let cov = (a - 2.0 * (0.5 * a).round_ties_even()).abs();
-                if cov > 1.0 / 255.0 {
-                    n += 1;
-                }
-                max = max.max(cov);
-            }
-        }
-        assert!(
-            n == 0,
-            "{rect:?} r {r}: {n} px in the hole covered, max coverage {max:.3}"
-        );
-    }
 }
