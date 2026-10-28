@@ -227,7 +227,11 @@ fn issue_1789_repro() {
     let t = doc.create_text("Add Component");
     doc.append_child(b, t);
     let m = doc.create_element("div");
-    doc.set_attribute(m, "style", "position: absolute; left: 0; top: calc(100% + 4px)");
+    doc.set_attribute(
+        m,
+        "style",
+        "position: absolute; left: 0; top: calc(100% + 4px)",
+    );
     let mt = doc.create_text("menu");
     doc.append_child(m, mt);
     doc.append_child(p, b);
@@ -257,7 +261,11 @@ fn issue_1974_repro() {
         let t = doc.create_text("Add");
         doc.append_child(b, t);
         let m = doc.create_element("div");
-        doc.set_attribute(m, "style", "position: absolute; left: 0; top: calc(100% + 4px);");
+        doc.set_attribute(
+            m,
+            "style",
+            "position: absolute; left: 0; top: calc(100% + 4px);",
+        );
         doc.append_child(p, b);
         doc.append_child(p, m);
         doc.append_child(body, p);
