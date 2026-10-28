@@ -114,7 +114,9 @@ accesskit_unix = { version = "0.22", optional = true }
 # X11 overlay hints (`WM_HINTS.input`, `_NET_WM_STATE_SKIP_TASKBAR`, #1519) that
 # winit has no API for, and global hotkeys' X11 grabs + XInput2 raw key events
 # (`global-hotkeys`, #1521). Already in the graph through winit-x11.
-x11rb = { version = "0.13", default-features = false, features = ["xfixes", "shape", "xinput", "xkb"], optional = true }
+# RandR: a monitor's CRTC rectangle, which winit's video mode gives unrotated
+# (a portrait monitor reads as landscape, #1884).
+x11rb = { version = "0.13", default-features = false, features = ["xfixes", "shape", "xinput", "xkb", "randr"], optional = true }
 # zbus for the Wayland GlobalShortcuts portal (`global-hotkeys`, #1521, see
 # hotkey/backend/portal.rs) and the freedesktop notification service
 # (`notifications`, #1522, see notification/backend/freedesktop.rs), each run
