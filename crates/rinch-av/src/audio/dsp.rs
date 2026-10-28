@@ -145,33 +145,8 @@ mod native {
             config.buffer_size,
             move |n| {
                 // Built at the rate the device really runs, before the first callback.
-                let mut processor = make(n.sample_rate, n.channels);
-                let channels = usize::from(n.channels.max(1));
-                let mut planar: Vec<f32> = Vec::new();
-                move |buf: &mut [f32]| {
-                    while let Ok(m) = inbox.try_recv() {
-                        processor.message(&m);
-                    }
-                    let frames = buf.len() / channels;
-                    if planar.len() < frames * channels {
-                        // Grows to the device's buffer in the first callbacks, then never again.
-                        planar.resize(frames * channels, 0.0);
-                    }
-                    let planar = &mut planar[..frames * channels];
-                    planar.fill(0.0);
-                    {
-                        let mut chans: Vec<&mut [f32]> = planar.chunks_mut(frames.max(1)).collect();
-                        processor.render(&mut chans);
-                    }
-                    for (i, frame) in buf.chunks_mut(channels).enumerate() {
-                        for (c, s) in frame.iter_mut().enumerate() {
-                            *s = planar[c * frames + i];
-                        }
-                    }
-                    while let Some(r) = processor.reply() {
-                        let _ = outbox.send(r);
-                    }
-                }
+                let processor = make(n.sample_rate, n.channels);
+                callback(processor, usize::from(n.channels.max(1)), inbox, outbox)
             },
         )?;
         let config = DspOutputConfig {
@@ -187,5 +162,123 @@ mod native {
             },
             config,
         ))
+    }
+
+    /// The output callback's body: apply queued messages, render planar, interleave into `buf`,
+    /// forward replies. Separate from the device so it can be tested without one.
+    pub(super) fn callback<P: DspProcessor>(
+        mut processor: P,
+        channels: usize,
+        inbox: Receiver<Vec<u8>>,
+        outbox: Sender<Vec<u8>>,
+    ) -> impl FnMut(&mut [f32]) {
+        let mut planar: Vec<f32> = Vec::new();
+        move |buf: &mut [f32]| {
+            while let Ok(m) = inbox.try_recv() {
+                processor.message(&m);
+            }
+            let frames = buf.len() / channels;
+            if planar.len() < frames * channels {
+                // Grows to the device's buffer in the first callbacks, then never again.
+                planar.resize(frames * channels, 0.0);
+            }
+            let planar = &mut planar[..frames * channels];
+            planar.fill(0.0);
+            {
+                let mut chans: Vec<&mut [f32]> = planar.chunks_mut(frames.max(1)).collect();
+                processor.render(&mut chans);
+            }
+            for (i, frame) in buf.chunks_mut(channels).enumerate() {
+                for (c, s) in frame.iter_mut().enumerate() {
+                    *s = planar[c * frames + i];
+                }
+            }
+            while let Some(r) = processor.reply() {
+                let _ = outbox.send(r);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::sync::mpsc::channel;
+
+        use super::{DspProcessor, callback};
+
+        /// Renders `channel * 100 + frame + offset`, where a message's first byte is the offset;
+        /// replies with each message and the number of frames of each render.
+        struct Ramp {
+            offset: f32,
+            replies: Vec<Vec<u8>>,
+        }
+        impl DspProcessor for Ramp {
+            fn message(&mut self, b: &[u8]) {
+                self.offset = f32::from(b[0]);
+                self.replies.push(b.to_vec());
+            }
+            fn render(&mut self, out: &mut [&mut [f32]]) {
+                for (c, ch) in out.iter_mut().enumerate() {
+                    for (i, s) in ch.iter_mut().enumerate() {
+                        *s = (c * 100 + i) as f32 + self.offset;
+                    }
+                }
+                self.replies.push(vec![0xff, out[0].len() as u8]);
+            }
+            fn reply(&mut self) -> Option<Vec<u8>> {
+                (!self.replies.is_empty()).then(|| self.replies.remove(0))
+            }
+        }
+
+        #[test]
+        fn messages_apply_before_render_and_planar_is_interleaved_per_frame() {
+            let (to_audio, inbox) = channel();
+            let (outbox, from_audio) = channel();
+            let mut cb = callback(
+                Ramp {
+                    offset: 0.0,
+                    replies: vec![],
+                },
+                3,
+                inbox,
+                outbox,
+            );
+            to_audio.send(vec![7]).unwrap();
+            let mut buf = vec![-1.0; 3 * 4];
+            cb(&mut buf);
+            assert_eq!(
+                buf,
+                vec![
+                    7., 107., 207., 8., 108., 208., 9., 109., 209., 10., 110., 210.
+                ]
+            );
+            let replies: Vec<_> = from_audio.try_iter().collect();
+            assert_eq!(replies, vec![vec![7], vec![0xff, 4]]);
+            // A smaller device buffer reuses the grown planar store, sliced to this callback.
+            let mut buf = vec![-1.0; 3 * 2];
+            cb(&mut buf);
+            assert_eq!(buf, vec![7., 107., 207., 8., 108., 208.]);
+        }
+
+        /// FINDING (review #1964): replies nobody polls pile up without bound in the unbounded
+        /// mpsc channel (and in the web's `VecDeque`); each is an allocation on the audio thread.
+        #[test]
+        fn finding_unpolled_replies_grow_without_bound() {
+            let (_to_audio, inbox) = channel();
+            let (outbox, from_audio) = channel();
+            let mut cb = callback(
+                Ramp {
+                    offset: 0.0,
+                    replies: vec![],
+                },
+                2,
+                inbox,
+                outbox,
+            );
+            let mut buf = vec![0.0; 2 * 128];
+            for _ in 0..10_000 {
+                cb(&mut buf);
+            }
+            assert_eq!(from_audio.try_iter().count(), 10_000);
+        }
     }
 }

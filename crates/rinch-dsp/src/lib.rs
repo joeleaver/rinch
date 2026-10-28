@@ -227,4 +227,38 @@ mod tests {
         assert_eq!(unsafe { *rinch_dsp_reply_ptr() }, 50);
         assert_eq!(rinch_dsp_reply(), 0);
     }
+
+    /// Off the fixed point: every channel and frame distinct, so a wrong planar stride or a
+    /// one-channel render shows. (The test above fills every channel with one level.)
+    #[test]
+    fn render_hands_the_processor_one_slice_per_channel_planar() {
+        struct Ramp;
+        impl DspProcessor for Ramp {
+            fn message(&mut self, _: &[u8]) {}
+            fn render(&mut self, out: &mut [&mut [f32]]) {
+                assert_eq!(out.len(), 3, "one slice per channel");
+                for (c, ch) in out.iter_mut().enumerate() {
+                    assert_eq!(ch.len(), 4, "one sample per frame");
+                    for (i, s) in ch.iter_mut().enumerate() {
+                        *s = (c * 100 + i) as f32;
+                    }
+                }
+            }
+        }
+        let slot = crate::export::Slot(core::cell::UnsafeCell::new(None));
+        crate::export::init(&slot, Box::new(Ramp), 3);
+        let out = crate::export::render(&slot, 4);
+        // SAFETY: 3 channels × 4 frames.
+        let s = unsafe { core::slice::from_raw_parts(out, 12) };
+        assert_eq!(
+            s,
+            &[
+                0., 1., 2., 3., 100., 101., 102., 103., 200., 201., 202., 203.
+            ]
+        );
+        // A message longer than the buffer `alloc` handed out is cut to it.
+        let p = crate::export::alloc(&slot, 2);
+        assert!(!p.is_null());
+        crate::export::message(&slot, 99);
+    }
 }
