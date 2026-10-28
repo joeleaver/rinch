@@ -416,7 +416,11 @@ interop peer.
   before the first offer (video: `add_track` of a generated pattern;
   audio: `add_transceiver(Audio, SendRecv)` with no track), so "Start
   camera", "send a test pattern instead", mute and video off are all
-  `replace_track` / `set_enabled`, never a renegotiation.
+  `replace_track` / `set_enabled`, never a renegotiation. The relay is a
+  library with a thin binary (`rtc_room_relay::run`), so video-call's
+  `src/tests.rs` starts one on an ephemeral port and runs two calls
+  through it with no window: who offers, the pattern arriving both ways,
+  "bye".
 - **ui-zoo's WebRTC section** (`sections/webrtc_call.rs` for the logic,
   `webrtc.rs` for the rsx). Two peers in the window, signalling by direct
   hand-off. A sends a pattern and a 440 Hz tone, B a pattern back;
