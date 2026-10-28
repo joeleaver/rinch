@@ -7,51 +7,69 @@
 //! (`fetch_data_transfer`, answered by `DataTransferReceived`). The drag is
 //! rejected unless the app accepts an action (`set_valid_dnd_actions`). rinch
 //! wants file paths, so a drag counts only when it offers a URI list; it is
-//! accepted as a copy and its URI list is fetched once a position is known
-//! (X11 names the position only with the first `XdndPosition`, and asks for
-//! the data with that position's timestamp).
+//! accepted as a copy, or a move when the source offers only that
+//! ([`ACCEPTED_ACTIONS`]), and its URI list is fetched once a position is
+//! known (X11 names the position only with the first `XdndPosition`, and asks
+//! for the data with that position's timestamp).
 //!
 //! What the app is handed is unchanged from winit beta.2's path-carrying
 //! events: a [`PlatformEvent::FileDragMoved`] at every position, a
 //! [`PlatformEvent::FileHoverEnter`] per path once the paths are known, a
 //! [`PlatformEvent::FileDropped`] with every path at the last position, and a
-//! [`PlatformEvent::FileHoverCancelled`] for a drag that leaves. A drop whose
-//! paths have not arrived yet is handed over when they do.
+//! [`PlatformEvent::FileHoverCancelled`] for a drag that leaves, or that a new
+//! drag replaces before it ended. A drop whose paths have not arrived yet is
+//! held apart from the hover and handed over when they do; one whose paths do
+//! not arrive within [`DROP_TIMEOUT`] (X11 logs a failed selection read and
+//! sends nothing) ends as cancelled.
 //!
 //! [`OsFileDrag`] is the state machine with no winit event loop in it: the
 //! runtime feeds it the events (positions already logical) and carries out the
-//! [`DragStep`]s it answers.
+//! [`DragStep`]s it answers through a [`DragHost`] ([`run_steps`]).
 
+use std::io;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use rinch_platform::PlatformEvent;
 use winit::data_transfer::DataTransferId;
-use winit::event_loop::AsyncRequestSerial;
+use winit::event_loop::{AsyncRequestSerial, DndAction};
+
+/// The actions a file drag is accepted with, by preference: a copy, or a move
+/// for a source that offers only that. The winit fork's Wayland drag and drop
+/// accepted the same pair (`Copy | Move`, preferring `Copy`).
+pub(crate) const ACCEPTED_ACTIONS: [DndAction; 2] = [DndAction::Copy, DndAction::Move];
+
+/// How long a drop waits for its paths before it ends as cancelled.
+pub(crate) const DROP_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// What the runtime does for an [`OsFileDrag`] answer, in order.
 #[derive(Debug)]
 pub(crate) enum DragStep {
-    /// Accept the drag as a copy (`set_valid_dnd_actions(id, [Copy])`).
+    /// Accept the drag ([`ACCEPTED_ACTIONS`]).
     Accept(DataTransferId),
-    /// Ask for the drag's URI list (`fetch_data_transfer(id, UriList)`) and
-    /// report the serial with [`OsFileDrag::fetch_started`].
+    /// Ask for the drag's URI list and report how it went with
+    /// [`OsFileDrag::fetch_started`].
     Fetch(DataTransferId),
     /// Hand the app this event.
     Emit(PlatformEvent),
+    /// Log this (once per drag at most).
+    Warn(String),
 }
 
 /// The fetch of a drag's URI list.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Fetch {
-    /// Not asked for yet (no position known), or the request failed.
+    /// Not asked for yet: no position known.
     NotStarted,
+    /// The request failed; not asked again until the drop.
+    Failed,
     /// Asked for; the answer carries this serial.
     Pending(AsyncRequestSerial),
     /// Answered.
     Done,
 }
 
-/// The one OS file drag in flight.
+/// One OS file drag: the one hovering, or a drop waiting for its paths.
 #[derive(Debug)]
 struct Drag {
     id: DataTransferId,
@@ -60,38 +78,63 @@ struct Drag {
     fetch: Fetch,
     /// The paths, once the URI list has been read.
     paths: Option<Vec<PathBuf>>,
-    /// Dropped; the drop waits for the paths.
-    dropped: bool,
+    /// When a dropped drag stops waiting for its paths.
+    deadline: Option<Instant>,
+    /// A warning has been logged for this drag.
+    warned: bool,
 }
 
-/// The OS file drag over the window, if any.
+impl Drag {
+    fn new(id: DataTransferId) -> Self {
+        Self {
+            id,
+            position: None,
+            fetch: Fetch::NotStarted,
+            paths: None,
+            deadline: None,
+            warned: false,
+        }
+    }
+
+    fn position(&self) -> (f64, f64) {
+        self.position.unwrap_or_default()
+    }
+
+    /// A warning, if this drag has had none yet.
+    fn warn(&mut self, message: String) -> Option<DragStep> {
+        (!std::mem::replace(&mut self.warned, true)).then_some(DragStep::Warn(message))
+    }
+}
+
+/// The OS file drags over the window: at most one hovering, and the drops
+/// still waiting for their paths.
 #[derive(Debug, Default)]
 pub(crate) struct OsFileDrag {
-    drag: Option<Drag>,
+    hover: Option<Drag>,
+    drops: Vec<Drag>,
 }
 
 impl OsFileDrag {
     /// `DragEntered`. `has_uri_list`: the transfer offers a URI list. A drag
     /// without one (text, an image's bytes) is not a file drag and is left
-    /// rejected; its later events are ignored.
+    /// rejected; its later events are ignored. Either way it ends the drag
+    /// that was hovering (a `FileHoverCancelled`), whose end never came; a
+    /// drop waiting for its paths is not touched.
     pub(crate) fn entered(
         &mut self,
         id: DataTransferId,
         position: Option<(f64, f64)>,
         has_uri_list: bool,
     ) -> Vec<DragStep> {
-        self.drag = None;
-        if !has_uri_list {
-            return Vec::new();
+        let mut steps = Vec::new();
+        if self.hover.take().is_some() {
+            steps.push(DragStep::Emit(PlatformEvent::FileHoverCancelled));
         }
-        self.drag = Some(Drag {
-            id,
-            position: None,
-            fetch: Fetch::NotStarted,
-            paths: None,
-            dropped: false,
-        });
-        let mut steps = vec![DragStep::Accept(id)];
+        if !has_uri_list {
+            return steps;
+        }
+        self.hover = Some(Drag::new(id));
+        steps.push(DragStep::Accept(id));
         if let Some(position) = position {
             steps.extend(self.moved(id, position));
         }
@@ -100,7 +143,7 @@ impl OsFileDrag {
 
     /// `DragPosition`.
     pub(crate) fn moved(&mut self, id: DataTransferId, position: (f64, f64)) -> Vec<DragStep> {
-        let Some(drag) = self.drag.as_mut().filter(|d| d.id == id && !d.dropped) else {
+        let Some(drag) = self.hover.as_mut().filter(|d| d.id == id) else {
             return Vec::new();
         };
         drag.position = Some(position);
@@ -112,115 +155,206 @@ impl OsFileDrag {
         steps
     }
 
-    /// The runtime asked for the URI list ([`DragStep::Fetch`]): `Some` with
-    /// the request's serial, `None` when the request failed. A drop waiting
-    /// on a request that failed ends with no paths.
+    /// The runtime asked for the URI list ([`DragStep::Fetch`]): the request's
+    /// serial, or why it failed. A hovering drag whose request failed hovers on
+    /// path-less and asks again at its drop; a drop whose request failed ends
+    /// with no paths.
     pub(crate) fn fetch_started(
         &mut self,
         id: DataTransferId,
-        serial: Option<AsyncRequestSerial>,
+        serial: Result<AsyncRequestSerial, String>,
     ) -> Vec<DragStep> {
-        let Some(drag) = self.drag.as_mut().filter(|d| d.id == id) else {
+        if let Some(drag) = self.hover.as_mut().filter(|d| d.id == id) {
+            return match serial {
+                Ok(serial) => {
+                    drag.fetch = Fetch::Pending(serial);
+                    Vec::new()
+                }
+                Err(e) => {
+                    drag.fetch = Fetch::Failed;
+                    drag.warn(format!("could not read a file drag's paths: {e}"))
+                        .into_iter()
+                        .collect()
+                }
+            };
+        }
+        let Some(at) = self.drops.iter().position(|d| d.id == id) else {
             return Vec::new();
         };
         match serial {
-            Some(serial) => {
-                drag.fetch = Fetch::Pending(serial);
+            Ok(serial) => {
+                self.drops[at].fetch = Fetch::Pending(serial);
                 Vec::new()
             }
-            None => {
-                drag.fetch = Fetch::NotStarted;
-                if drag.dropped {
-                    self.paths_read(id, Vec::new())
-                } else {
-                    Vec::new()
-                }
+            Err(e) => {
+                let mut drag = self.drops.remove(at);
+                let mut steps: Vec<DragStep> = drag
+                    .warn(format!("could not read a file drop's paths: {e}"))
+                    .into_iter()
+                    .collect();
+                steps.push(DragStep::Emit(PlatformEvent::FileDropped {
+                    paths: Vec::new(),
+                    position: drag.position(),
+                }));
+                steps
             }
         }
     }
 
-    /// `DataTransferReceived` for this drag's request `serial`: `uris` is the
-    /// URI list read (`None` while it would block; it comes again with the
-    /// next `DataTransferReceived`), or an empty list when it cannot be read.
+    /// `DataTransferReceived` for request `serial` of transfer `id`: `uris` is
+    /// the URI list read (`None` while it would block; it comes again with the
+    /// next `DataTransferReceived`), or an empty list when it cannot be read
+    /// ([`uris_from`]).
     pub(crate) fn received(
         &mut self,
         id: DataTransferId,
         serial: AsyncRequestSerial,
         uris: Option<Vec<String>>,
     ) -> Vec<DragStep> {
-        let Some(drag) = self.drag.as_mut() else {
-            return Vec::new();
-        };
-        if drag.id != id || drag.fetch != Fetch::Pending(serial) {
-            return Vec::new();
-        }
+        let answers = |d: &Drag| d.id == id && d.fetch == Fetch::Pending(serial);
         let Some(uris) = uris else {
             return Vec::new();
         };
-        let paths = uris
+        let paths: Vec<PathBuf> = uris
             .iter()
             .filter_map(|uri| file_uri_to_path(uri))
             .collect();
-        self.paths_read(id, paths)
-    }
-
-    /// The paths are known: a hover per path, or the drop it was waiting for.
-    fn paths_read(&mut self, id: DataTransferId, paths: Vec<PathBuf>) -> Vec<DragStep> {
-        let Some(drag) = self.drag.as_mut().filter(|d| d.id == id) else {
+        if let Some(drag) = self.hover.as_mut().filter(|d| answers(d)) {
+            drag.fetch = Fetch::Done;
+            let position = drag.position();
+            let steps = paths
+                .iter()
+                .map(|path| {
+                    DragStep::Emit(PlatformEvent::FileHoverEnter {
+                        path: path.clone(),
+                        position,
+                    })
+                })
+                .collect();
+            drag.paths = Some(paths);
+            return steps;
+        }
+        let Some(at) = self.drops.iter().position(answers) else {
             return Vec::new();
         };
-        drag.fetch = Fetch::Done;
-        let position = drag.position.unwrap_or_default();
-        if drag.dropped {
-            self.drag = None;
+        let drag = self.drops.remove(at);
+        vec![DragStep::Emit(PlatformEvent::FileDropped {
+            paths,
+            position: drag.position(),
+        })]
+    }
+
+    /// `DragDropped` at `now`: the drop, at once if the paths are known, else
+    /// when they arrive (asking for them now if nothing is asking), within
+    /// [`DROP_TIMEOUT`].
+    pub(crate) fn dropped(&mut self, id: DataTransferId, now: Instant) -> Vec<DragStep> {
+        if self.hover.as_ref().is_none_or(|d| d.id != id) {
+            return Vec::new();
+        }
+        let mut drag = self.hover.take().expect("checked above");
+        if let Some(paths) = drag.paths.take() {
             return vec![DragStep::Emit(PlatformEvent::FileDropped {
                 paths,
-                position,
+                position: drag.position(),
             })];
         }
-        let steps = paths
-            .iter()
-            .map(|path| {
-                DragStep::Emit(PlatformEvent::FileHoverEnter {
-                    path: path.clone(),
-                    position,
-                })
-            })
-            .collect();
-        drag.paths = Some(paths);
+        drag.deadline = Some(now + DROP_TIMEOUT);
+        let ask = matches!(drag.fetch, Fetch::NotStarted | Fetch::Failed);
+        self.drops.push(drag);
+        if ask {
+            vec![DragStep::Fetch(id)]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// `DragLeft` for transfer `id`: the hovering drag left the window, or was
+    /// cancelled. A leave naming another transfer, or a drop waiting for its
+    /// paths, changes nothing.
+    pub(crate) fn left(&mut self, id: DataTransferId) -> Vec<DragStep> {
+        if self.hover.as_ref().is_some_and(|d| d.id == id) {
+            self.hover = None;
+            return vec![DragStep::Emit(PlatformEvent::FileHoverCancelled)];
+        }
+        Vec::new()
+    }
+
+    /// When the next waiting drop gives up ([`Self::expire`]).
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.drops.iter().filter_map(|d| d.deadline).min()
+    }
+
+    /// End every drop whose paths have not come by `now`: it is cancelled
+    /// (the drop caret and the hover target go), unless another drag is
+    /// hovering, whose state the app holds now.
+    pub(crate) fn expire(&mut self, now: Instant) -> Vec<DragStep> {
+        let mut steps = Vec::new();
+        let mut i = 0;
+        while i < self.drops.len() {
+            if self.drops[i].deadline.is_some_and(|at| at <= now) {
+                let mut drag = self.drops.remove(i);
+                steps.extend(drag.warn(format!(
+                    "a file drop's paths did not come within {DROP_TIMEOUT:?}; the drop is \
+                     cancelled"
+                )));
+                if self.hover.is_none() {
+                    steps.push(DragStep::Emit(PlatformEvent::FileHoverCancelled));
+                }
+            } else {
+                i += 1;
+            }
+        }
         steps
     }
+}
 
-    /// `DragDropped`: the drop, now if the paths are known, else when they
-    /// arrive (asking for them now if nothing has yet).
-    pub(crate) fn dropped(&mut self, id: DataTransferId) -> Vec<DragStep> {
-        let Some(drag) = self.drag.as_mut().filter(|d| d.id == id && !d.dropped) else {
-            return Vec::new();
-        };
-        drag.dropped = true;
-        if let Some(paths) = drag.paths.take() {
-            let position = drag.position.unwrap_or_default();
-            self.drag = None;
-            return vec![DragStep::Emit(PlatformEvent::FileDropped {
-                paths,
-                position,
-            })];
+/// The URI list a `DataTransferReceived` value read as (`TypedData::try_as_uris`):
+/// `None` when the read would block or deadlock on the event loop (winit says
+/// to retry on the next `DataTransferReceived`), an empty list when it cannot
+/// be read at all.
+pub(crate) fn uris_from(read: io::Result<Vec<String>>) -> Option<Vec<String>> {
+    match read {
+        Ok(uris) => Some(uris),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Deadlock
+            ) =>
+        {
+            None
         }
-        match drag.fetch {
-            Fetch::NotStarted => vec![DragStep::Fetch(id)],
-            Fetch::Pending(_) | Fetch::Done => Vec::new(),
-        }
+        Err(_) => Some(Vec::new()),
     }
+}
 
-    /// `DragLeft`: the drag left the window, or was cancelled. A dropped drag
-    /// waiting for its paths is not cancelled by it.
-    pub(crate) fn left(&mut self, id: DataTransferId) -> Vec<DragStep> {
-        match &self.drag {
-            Some(drag) if drag.id == id && !drag.dropped => {
-                self.drag = None;
-                vec![DragStep::Emit(PlatformEvent::FileHoverCancelled)]
+/// What the runtime does for a [`DragStep`]: winit's event loop, or a fake.
+pub(crate) trait DragHost {
+    /// `set_valid_dnd_actions(id, actions)`.
+    fn accept(&mut self, id: DataTransferId, actions: &[DndAction]) -> Result<(), String>;
+    /// `fetch_data_transfer(id, TypeHint::UriList)`.
+    fn fetch_uri_list(&mut self, id: DataTransferId) -> Result<AsyncRequestSerial, String>;
+    /// Hand the app an event.
+    fn emit(&mut self, event: PlatformEvent);
+    /// Log a warning.
+    fn warn(&mut self, message: String);
+}
+
+/// Carry out `steps` through `host`, feeding back what a fetch answers.
+pub(crate) fn run_steps(drag: &mut OsFileDrag, steps: Vec<DragStep>, host: &mut dyn DragHost) {
+    let mut queue: std::collections::VecDeque<DragStep> = steps.into();
+    while let Some(step) = queue.pop_front() {
+        match step {
+            DragStep::Accept(id) => {
+                if let Err(e) = host.accept(id, &ACCEPTED_ACTIONS) {
+                    host.warn(format!("could not accept a file drag: {e}"));
+                }
             }
-            _ => Vec::new(),
+            DragStep::Fetch(id) => {
+                let serial = host.fetch_uri_list(id);
+                queue.extend(drag.fetch_started(id, serial));
+            }
+            DragStep::Emit(event) => host.emit(event),
+            DragStep::Warn(message) => host.warn(message),
         }
     }
 }
@@ -265,6 +399,10 @@ mod tests {
         ]
     }
 
+    fn now() -> Instant {
+        Instant::now()
+    }
+
     /// Wayland, Windows, macOS: the position comes with the enter, so the
     /// URI list is asked for at once; its paths hover, then drop.
     #[cfg(unix)]
@@ -283,17 +421,15 @@ mod tests {
             ],
         );
         let serial = AsyncRequestSerial::get();
-        assert!(d.fetch_started(id(7), Some(serial)).is_empty());
-        let steps = d.moved(id(7), (30.0, 40.0));
+        assert!(d.fetch_started(id(7), Ok(serial)).is_empty());
         assert_steps(
-            steps,
+            d.moved(id(7), (30.0, 40.0)),
             vec![DragStep::Emit(PlatformEvent::FileDragMoved {
                 position: (30.0, 40.0),
             })],
         );
-        let steps = d.received(id(7), serial, Some(uris()));
         assert_steps(
-            steps,
+            d.received(id(7), serial, Some(uris())),
             paths()
                 .into_iter()
                 .map(|path| {
@@ -302,13 +438,12 @@ mod tests {
                         position: (30.0, 40.0),
                     })
                 })
-                .collect::<Vec<_>>(),
+                .collect(),
         );
         let steps = d.moved(id(7), (31.0, 41.0));
         assert_eq!(steps.len(), 1, "no second fetch: {steps:?}");
-        let steps = d.dropped(id(7));
         assert_steps(
-            steps,
+            d.dropped(id(7), now()),
             vec![DragStep::Emit(PlatformEvent::FileDropped {
                 paths: paths(),
                 position: (31.0, 41.0),
@@ -316,6 +451,7 @@ mod tests {
         );
         // The drag is over: a late leave cancels nothing.
         assert!(d.left(id(7)).is_empty());
+        assert_eq!(d.next_deadline(), None);
     }
 
     /// X11: no position on enter; the first position asks for the data.
@@ -342,8 +478,10 @@ mod tests {
         let mut d = OsFileDrag::default();
         d.entered(id(2), Some((1.0, 2.0)), true);
         let serial = AsyncRequestSerial::get();
-        d.fetch_started(id(2), Some(serial));
-        assert!(d.dropped(id(2)).is_empty());
+        d.fetch_started(id(2), Ok(serial));
+        let t = now();
+        assert!(d.dropped(id(2), t).is_empty());
+        assert_eq!(d.next_deadline(), Some(t + DROP_TIMEOUT));
         // Neither a later move nor a leave touches a dropped drag.
         assert!(d.moved(id(2), (9.0, 9.0)).is_empty());
         assert!(d.left(id(2)).is_empty());
@@ -353,6 +491,10 @@ mod tests {
             d.received(id(2), other, Some(uris())).is_empty(),
             "not its serial"
         );
+        assert!(
+            d.received(id(3), serial, Some(uris())).is_empty(),
+            "not its transfer"
+        );
         assert_steps(
             d.received(id(2), serial, Some(uris())),
             vec![DragStep::Emit(PlatformEvent::FileDropped {
@@ -360,23 +502,37 @@ mod tests {
                 position: (1.0, 2.0),
             })],
         );
+        assert_eq!(d.next_deadline(), None);
     }
 
-    /// A drop whose fetch was never started (it failed while hovering) asks
-    /// again; a drop whose fetch fails ends with no paths.
+    /// A hover whose fetch fails warns once (not on every move) and asks
+    /// again at the drop; a drop whose fetch fails too ends with no paths.
     #[test]
-    fn a_drop_with_no_fetch_asks_and_a_failed_fetch_drops_nothing() {
+    fn a_failed_fetch_warns_once_and_is_asked_again_at_the_drop() {
         let mut d = OsFileDrag::default();
         d.entered(id(3), Some((4.0, 5.0)), true);
-        assert!(d.fetch_started(id(3), None).is_empty());
-        assert_steps(d.dropped(id(3)), vec![DragStep::Fetch(id(3))]);
         assert_steps(
-            d.fetch_started(id(3), None),
+            d.fetch_started(id(3), Err("no".into())),
+            vec![DragStep::Warn(
+                "could not read a file drag's paths: no".into(),
+            )],
+        );
+        // No second fetch on a move, so no second warning.
+        assert_steps(
+            d.moved(id(3), (4.0, 5.0)),
+            vec![DragStep::Emit(PlatformEvent::FileDragMoved {
+                position: (4.0, 5.0),
+            })],
+        );
+        assert_steps(d.dropped(id(3), now()), vec![DragStep::Fetch(id(3))]);
+        assert_steps(
+            d.fetch_started(id(3), Err("no".into())),
             vec![DragStep::Emit(PlatformEvent::FileDropped {
                 paths: Vec::new(),
                 position: (4.0, 5.0),
             })],
         );
+        assert_eq!(d.next_deadline(), None);
     }
 
     #[test]
@@ -390,24 +546,218 @@ mod tests {
         assert!(d.moved(id(4), (1.0, 1.0)).is_empty());
     }
 
+    /// A leave names its transfer: one naming another leaves the hover be.
+    #[test]
+    fn a_leave_for_another_transfer_cancels_nothing() {
+        let mut d = OsFileDrag::default();
+        d.entered(id(4), Some((0.5, 0.5)), true);
+        assert!(d.left(id(40)).is_empty());
+        assert_eq!(d.moved(id(4), (1.0, 1.0)).len(), 2, "still hovering");
+    }
+
     /// Text or an image's bytes is no file drag: not accepted, no events.
     #[test]
     fn a_drag_without_a_uri_list_is_ignored() {
         let mut d = OsFileDrag::default();
         assert!(d.entered(id(5), Some((1.0, 1.0)), false).is_empty());
         assert!(d.moved(id(5), (2.0, 2.0)).is_empty());
-        assert!(d.dropped(id(5)).is_empty());
+        assert!(d.dropped(id(5), now()).is_empty());
         assert!(d.left(id(5)).is_empty());
     }
 
-    /// A new drag replaces one whose end never came.
+    /// A new drag ends one whose end never came, with a cancel, whether or
+    /// not the new one is a file drag; the old one's events are ignored after.
     #[test]
-    fn a_new_drag_replaces_a_stale_one() {
+    fn a_new_drag_cancels_a_stale_one() {
         let mut d = OsFileDrag::default();
         d.entered(id(8), Some((1.0, 1.0)), true);
-        d.entered(id(9), Some((2.0, 2.0)), true);
+        let steps = d.entered(id(9), Some((2.0, 2.0)), true);
+        assert_eq!(
+            format!("{:?}", steps[0]),
+            format!("{:?}", DragStep::Emit(PlatformEvent::FileHoverCancelled))
+        );
         assert!(d.moved(id(8), (3.0, 3.0)).is_empty());
         assert_eq!(d.moved(id(9), (3.0, 3.0)).len(), 2);
+
+        assert_steps(
+            d.entered(id(10), Some((2.0, 2.0)), false),
+            vec![DragStep::Emit(PlatformEvent::FileHoverCancelled)],
+        );
+        assert!(
+            d.moved(id(9), (3.0, 3.0)).is_empty(),
+            "a text drag ended it"
+        );
+        assert!(d.left(id(9)).is_empty());
+    }
+
+    /// A drop waiting for its paths survives a new drag entering (a second
+    /// seat, a quick second drag), and is handed over when its paths come.
+    #[cfg(unix)]
+    #[test]
+    fn a_pending_drop_survives_a_new_drag() {
+        let mut d = OsFileDrag::default();
+        d.entered(id(11), Some((1.0, 1.0)), true);
+        let serial = AsyncRequestSerial::get();
+        d.fetch_started(id(11), Ok(serial));
+        assert!(d.dropped(id(11), now()).is_empty());
+        // No hover to cancel: the dropped drag is not the hover any more.
+        assert_steps(
+            d.entered(id(12), None, true),
+            vec![DragStep::Accept(id(12))],
+        );
+        assert_steps(
+            d.received(id(11), serial, Some(uris())),
+            vec![DragStep::Emit(PlatformEvent::FileDropped {
+                paths: paths(),
+                position: (1.0, 1.0),
+            })],
+        );
+    }
+
+    /// A drop whose paths never come (X11's failed selection read sends no
+    /// answer) is cancelled at its deadline, not before, and warns once.
+    #[test]
+    fn a_drop_whose_paths_never_come_is_cancelled_at_its_deadline() {
+        let mut d = OsFileDrag::default();
+        d.entered(id(13), Some((1.0, 1.0)), true);
+        let serial = AsyncRequestSerial::get();
+        d.fetch_started(id(13), Ok(serial));
+        let t = now();
+        d.dropped(id(13), t);
+        assert!(
+            d.expire(t + DROP_TIMEOUT - Duration::from_millis(1))
+                .is_empty()
+        );
+        let steps = d.expire(t + DROP_TIMEOUT);
+        assert_eq!(steps.len(), 2, "{steps:?}");
+        assert!(matches!(steps[0], DragStep::Warn(_)));
+        assert_eq!(
+            format!("{:?}", steps[1]),
+            format!("{:?}", DragStep::Emit(PlatformEvent::FileHoverCancelled))
+        );
+        assert_eq!(d.next_deadline(), None);
+        // A late answer finds nothing.
+        assert!(d.received(id(13), serial, Some(uris())).is_empty());
+
+        // With another drag hovering, the app's drag state is that one's: the
+        // expired drop warns but cancels nothing.
+        d.entered(id(14), Some((1.0, 1.0)), true);
+        let serial = AsyncRequestSerial::get();
+        d.fetch_started(id(14), Ok(serial));
+        d.dropped(id(14), t);
+        d.entered(id(15), Some((2.0, 2.0)), true);
+        let steps = d.expire(t + DROP_TIMEOUT);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(matches!(steps[0], DragStep::Warn(_)));
+    }
+
+    #[test]
+    fn a_read_that_would_block_or_deadlock_is_retried() {
+        let err = |kind| Err(io::Error::from(kind));
+        assert_eq!(
+            uris_from(Ok(vec!["file:///a".into()])),
+            Some(vec!["file:///a".into()])
+        );
+        assert_eq!(uris_from(err(io::ErrorKind::WouldBlock)), None);
+        assert_eq!(uris_from(err(io::ErrorKind::Deadlock)), None);
+        assert_eq!(uris_from(err(io::ErrorKind::InvalidData)), Some(Vec::new()));
+    }
+
+    /// A [`DragHost`] that records what it was asked.
+    #[derive(Default)]
+    struct FakeHost {
+        log: Vec<String>,
+        fetch_fails: bool,
+        accept_fails: bool,
+        serials: Vec<AsyncRequestSerial>,
+    }
+
+    impl DragHost for FakeHost {
+        fn accept(&mut self, id: DataTransferId, actions: &[DndAction]) -> Result<(), String> {
+            self.log
+                .push(format!("accept {} {actions:?}", id.into_raw()));
+            if self.accept_fails {
+                Err("refused".into())
+            } else {
+                Ok(())
+            }
+        }
+        fn fetch_uri_list(&mut self, id: DataTransferId) -> Result<AsyncRequestSerial, String> {
+            self.log.push(format!("fetch {}", id.into_raw()));
+            if self.fetch_fails {
+                return Err("gone".into());
+            }
+            let serial = AsyncRequestSerial::get();
+            self.serials.push(serial);
+            Ok(serial)
+        }
+        fn emit(&mut self, event: PlatformEvent) {
+            self.log.push(format!("emit {event:?}"));
+        }
+        fn warn(&mut self, message: String) {
+            self.log.push(format!("warn {message}"));
+        }
+    }
+
+    /// The steps reach the host in order: accepted as copy-then-move, the
+    /// fetch's serial fed back (so the answer is recognised), events emitted.
+    #[cfg(unix)]
+    #[test]
+    fn run_steps_accepts_fetches_and_emits_in_order() {
+        let mut d = OsFileDrag::default();
+        let mut host = FakeHost::default();
+        let steps = d.entered(id(20), Some((3.0, 4.0)), true);
+        run_steps(&mut d, steps, &mut host);
+        assert_eq!(
+            host.log,
+            vec![
+                "accept 20 [Copy, Move]".to_owned(),
+                "fetch 20".to_owned(),
+                format!(
+                    "emit {:?}",
+                    PlatformEvent::FileDragMoved {
+                        position: (3.0, 4.0)
+                    }
+                ),
+            ]
+        );
+        let serial = host.serials[0];
+        let steps = d.received(id(20), serial, Some(vec!["file:///x/y.png".into()]));
+        assert_eq!(
+            steps.len(),
+            1,
+            "the fed-back serial is the drag's: {steps:?}"
+        );
+    }
+
+    /// A refused accept and a failed fetch are logged; the failed fetch's
+    /// warning comes once however often the drag moves.
+    #[test]
+    fn run_steps_logs_failures_once_per_drag() {
+        let mut d = OsFileDrag::default();
+        let mut host = FakeHost {
+            fetch_fails: true,
+            accept_fails: true,
+            ..Default::default()
+        };
+        let steps = d.entered(id(21), Some((1.0, 1.0)), true);
+        run_steps(&mut d, steps, &mut host);
+        for _ in 0..5 {
+            let steps = d.moved(id(21), (2.0, 2.0));
+            run_steps(&mut d, steps, &mut host);
+        }
+        let warnings: Vec<_> = host.log.iter().filter(|l| l.starts_with("warn")).collect();
+        assert_eq!(
+            warnings,
+            vec![
+                "warn could not accept a file drag: refused",
+                "warn could not read a file drag's paths: gone",
+            ]
+        );
+        assert_eq!(
+            host.log.iter().filter(|l| l.starts_with("fetch")).count(),
+            1
+        );
     }
 
     #[cfg(unix)]

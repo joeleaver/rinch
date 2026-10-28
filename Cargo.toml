@@ -73,9 +73,9 @@ wgpu = "30"
 # own since beta.4. A dependency, not a [patch], so an app on rinch needs no
 # patch lines (an app that uses winit itself can name this rev, for one winit
 # in its build). Pinned by rev so a push to the fork's branch never changes
-# rinch. `dpi` is two crates (the fork's and muda's crates.io one), which
-# never meet: docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "0615ce69e59967c198501bf29a5eabbc026003ca" }
+# rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
+# docs/internals/app-and-windows.md "winit Fork".
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "34f153bd6e523de53f9da67c6db58bd1f8732542" }
 
 # Menus
 muda = "0.15"

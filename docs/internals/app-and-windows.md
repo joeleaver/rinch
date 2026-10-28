@@ -435,7 +435,10 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   `makeKeyAndOrderFront` whatever `active` says, which would make the panel
   key; only the creation-time show honours `with_active(false)`
   (`orderFront`). A tray re-show re-creates the window, so it takes the same
-  path.
+  path. A click on the inactive panel acts at once: winit 0.31.0-beta.3
+  removed `with_accepts_first_mouse` (which rinch set to `true`) and always
+  accepts the first mouse, tagging that press `is_macos_activation_click`,
+  which rinch does not filter (#1962).
 - **X11**: `WM_HINTS.input = False` and `_NET_WM_STATE_SKIP_TASKBAR` /
   `_SKIP_PAGER` written over a separate `x11rb` connection before the map,
   then a round trip; `always_on_top` is asked again after the map, since a
@@ -534,7 +537,7 @@ let window_props = WindowProps {
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`0615ce69e59967c198501bf29a5eabbc026003ca`,
+`rinch-patch-beta4`, pinned by rev** (`34f153bd6e523de53f9da67c6db58bd1f8732542`,
 #1962). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
@@ -543,8 +546,9 @@ API) declares its own dependency, and naming this git rev keeps one winit in
 its build. The rev is pinned so a push to the fork's branch
 never changes rinch; moving it is a commit here.
 
-The branch is upstream's `v0.31.0-beta.4` tag plus four commits, all in
-`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597):
+The branch is upstream's `v0.31.0-beta.4` tag plus five commits: four in
+`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597), and one
+taking crates.io `dpi` (below):
 
 - `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
   window a `zwlr_layer_surface_v1` (layer, keyboard interactivity, anchors,
@@ -574,16 +578,16 @@ positions to physical pixels as a pointer's, so neither is carried. rinch
 translates the data transfer events in `shell::os_file_drag` (see
 `pointer-drag-tooltips.md` "File Drop").
 
-**`dpi`: two copies, on purpose.** The fork's winit takes `dpi` by path from
-the fork (upstream master's `dpi`, not byte-identical to crates.io 0.1.2),
-and muda takes crates.io `dpi` 0.1.2. Without a `[patch]` they cannot be one
-crate, and rinch never hands a `dpi` value to muda (its menus take no position
-or size), so nothing converts between them. Making them one would need the
-fork's workspace to take crates.io `dpi = "0.1.2"` (as the published
-`winit` 0.31.0-beta.4 does); do that if a `dpi` value ever has to cross into
-muda.
+**`dpi`: one crate, crates.io's.** Upstream's workspace takes its in-repo
+`dpi` by path (master's, not byte-identical to crates.io 0.1.2), while the
+published `winit` 0.31.0-beta.4 depends on crates.io `dpi ^0.1.2`, as muda
+does. The fork's commit `34f153bd` makes its workspace take crates.io
+`dpi = "0.1.2"` too, so the graph has one `dpi` and an app that names
+crates.io `dpi` itself never meets "expected `dpi::PhysicalSize`, found
+`dpi::PhysicalSize`". `cargo tree -d` shows no second `dpi`; keep it so on a
+bump.
 
-On a winit bump: rebase the four commits onto the new tag on a new branch
+On a winit bump: rebase the five commits onto the new tag on a new branch
 (apps on the old one keep building), move the rev here, and read upstream's
 changelog for API breaks (beta.3 made most public enums `#[non_exhaustive]`;
 beta.3/4 replaced the path-carrying `DragEntered`/`DragMoved`/`DragDropped`

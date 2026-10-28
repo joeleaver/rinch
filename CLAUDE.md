@@ -563,7 +563,7 @@ about 0.03%. Counts are comparable only between runs on one machine.
 ## CI: batched merges
 
 An ordinary PR into `main` (a **component** PR) runs only the fast jobs: `fmt`,
-the `clippy` jobs and `check-android`. The `test (…)` shards, `test-wasm`, Perf
+the `clippy` jobs, `check-android` and `check-macos`. The `test (…)` shards, `test-wasm`, Perf
 and the full Documentation build run on a PR whose head branch starts with
 `batch/`, and on every push to `main`. To land reviewed PRs, the lead merges
 their heads (`git merge --no-ff`) into `batch/YYYY-MM-DD-N` cut from `main`,

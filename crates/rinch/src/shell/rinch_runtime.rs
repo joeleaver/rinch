@@ -371,6 +371,42 @@ fn pointer_id_of(source: &winit::event::PointerSource) -> u64 {
     }
 }
 
+/// `os_file_drag`'s steps carried out on winit's event loop (#1962); the
+/// events are collected and handed to the app after, in order.
+struct WinitDragHost<'a> {
+    event_loop: &'a dyn ActiveEventLoop,
+    events: Vec<PlatformEvent>,
+}
+
+impl super::os_file_drag::DragHost for WinitDragHost<'_> {
+    fn accept(
+        &mut self,
+        id: winit::data_transfer::DataTransferId,
+        actions: &[winit::event_loop::DndAction],
+    ) -> Result<(), String> {
+        self.event_loop
+            .set_valid_dnd_actions(id, actions)
+            .map_err(|e| e.to_string())
+    }
+
+    fn fetch_uri_list(
+        &mut self,
+        id: winit::data_transfer::DataTransferId,
+    ) -> Result<winit::event_loop::AsyncRequestSerial, String> {
+        self.event_loop
+            .fetch_data_transfer(id, &winit::data_transfer::TypeHint::UriList)
+            .map_err(|e| e.to_string())
+    }
+
+    fn emit(&mut self, event: PlatformEvent) {
+        self.events.push(event);
+    }
+
+    fn warn(&mut self, message: String) {
+        tracing::warn!("{message}");
+    }
+}
+
 /// The pointer a winit move came from, as a render surface hears it. `down`:
 /// that pointer has a button or contact down, which decides the pressure a
 /// device that cannot measure it reports.
@@ -3098,17 +3134,13 @@ impl ApplicationHandler for RinchRuntime {
                 return;
             }
             WindowEvent::DataTransferReceived { id, serial, value } => {
-                let uris = match value.try_as_uris() {
-                    Ok(uris) => Some(uris),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
-                    Err(_) => Some(Vec::new()),
-                };
+                let uris = super::os_file_drag::uris_from(value.try_as_uris());
                 let steps = self.os_file_drag.received(id, serial, uris);
                 self.run_file_drag_steps(steps, event_loop);
                 return;
             }
             WindowEvent::DragDropped { id, .. } => {
-                let steps = self.os_file_drag.dropped(id);
+                let steps = self.os_file_drag.dropped(id, std::time::Instant::now());
                 self.run_file_drag_steps(steps, event_loop);
                 return;
             }
@@ -3131,32 +3163,20 @@ impl ApplicationHandler for RinchRuntime {
 
 impl RinchRuntime {
     /// Carry out what [`super::os_file_drag::OsFileDrag`] answered for a drag
-    /// event: accept the drag, ask for its URI list, hand the app its events.
+    /// event (accept the drag, ask for its URI list, log), then hand the app
+    /// the events it produced, in order.
     fn run_file_drag_steps(
         &mut self,
         steps: Vec<super::os_file_drag::DragStep>,
         event_loop: &dyn ActiveEventLoop,
     ) {
-        use super::os_file_drag::DragStep;
-        use winit::data_transfer::TypeHint;
-        use winit::event_loop::DndAction;
-        let mut queue: VecDeque<DragStep> = steps.into();
-        while let Some(step) = queue.pop_front() {
-            match step {
-                DragStep::Accept(id) => {
-                    if let Err(e) = event_loop.set_valid_dnd_actions(id, &[DndAction::Copy]) {
-                        tracing::warn!("could not accept a file drag: {e}");
-                    }
-                }
-                DragStep::Fetch(id) => {
-                    let serial = event_loop
-                        .fetch_data_transfer(id, &TypeHint::UriList)
-                        .map_err(|e| tracing::warn!("could not read a file drag's paths: {e}"))
-                        .ok();
-                    queue.extend(self.os_file_drag.fetch_started(id, serial));
-                }
-                DragStep::Emit(event) => self.dispatch_main_event(event, event_loop),
-            }
+        let mut host = WinitDragHost {
+            event_loop,
+            events: Vec::new(),
+        };
+        super::os_file_drag::run_steps(&mut self.os_file_drag, steps, &mut host);
+        for event in host.events {
+            self.dispatch_main_event(event, event_loop);
         }
     }
 
@@ -3260,9 +3280,9 @@ impl RinchRuntime {
         self.sync_a11y();
 
         // Drive the focused editor's caret blink, and wake for a resting
-        // pointer's `title` tooltip (#1646). These are the only two timed
-        // wakes (`WaitUntil`); with neither it returns the loop to `Wait` so
-        // the app stays idle.
+        // pointer's `title` tooltip (#1646) and a file drop's deadline (#1962).
+        // These are the only timed wakes (`WaitUntil`); with none it returns
+        // the loop to `Wait` so the app stays idle.
         #[cfg(feature = "desktop")]
         self.tick_caret_blink(event_loop);
     }
@@ -3270,9 +3290,10 @@ impl RinchRuntime {
 
 impl RinchRuntime {
     /// Blink the focused editor's caret by arming a `WaitUntil` wake for the next
-    /// phase toggle (see [`crate::editor::caret_blink_tick`]), or for a
-    /// pending `title` tooltip's deadline, whichever is sooner. Owns the event
-    /// loop's control flow: `WaitUntil` while either is due, `Wait` otherwise.
+    /// phase toggle (see [`crate::editor::caret_blink_tick`]), for a pending
+    /// `title` tooltip's deadline, or for a file drop's (ending the drops past
+    /// theirs), whichever is sooner. Owns the event loop's control flow:
+    /// `WaitUntil` while any is due, `Wait` otherwise.
     ///
     /// *Which* editor blinks is [`RinchApp::blinking_editor_id`]'s decision, not
     /// this function's — it excludes a blurred window, so a backgrounded app
@@ -3292,8 +3313,18 @@ impl RinchRuntime {
             None => None,
         };
         // A pointer resting over a `title` shows its tooltip at its deadline
-        // (#1646): the other timed wake.
+        // (#1646): another timed wake.
         let wake = match (blink_at, self.app.title_tooltip_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        // A file drop still waiting for its paths gives up at its deadline
+        // (#1962): the third.
+        let expired = self.os_file_drag.expire(std::time::Instant::now());
+        if !expired.is_empty() {
+            self.run_file_drag_steps(expired, event_loop);
+        }
+        let wake = match (wake, self.os_file_drag.next_deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };

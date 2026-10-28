@@ -295,18 +295,29 @@ paths), `DragLeft`, and the data fetched asynchronously
 (`fetch_data_transfer` → `DataTransferReceived`). A drag is rejected unless
 the app accepts an action. `OsFileDrag` is the state machine, with no event
 loop in it: a drag counts only if it offers a URI list (`TypeHint::UriList`);
-it is accepted as a copy (`set_valid_dnd_actions(id, [Copy])`), its URI list
-is fetched once a position is known, every position is a `FileDragMoved`, the
-paths arrive as one `FileHoverEnter` each at the last position, a drop is one
-`FileDropped` at the last position (when the paths arrive, if they have not
-yet; fetched then if the hover's fetch failed), and a leave before the drop is
-`FileHoverCancelled`. `file:` URIs become paths with `url::Url::to_file_path`;
+it is accepted as a copy, or a move for a source offering only that
+(`set_valid_dnd_actions(id, [Copy, Move])`, the pair the beta.2 fork's Wayland
+DnD accepted), its URI list is fetched once a position is known, every position
+is a `FileDragMoved`, the paths arrive as one `FileHoverEnter` each at the last
+position, a drop is one `FileDropped` at the last position, and a leave naming
+the hovering transfer is `FileHoverCancelled`. A drop whose paths have not
+arrived is held apart from the hover until they do (fetched then if the hover's
+fetch failed; a fetch that fails at the drop drops no paths), so a new drag
+entering (a second seat, a quick second drag) does not lose it; one whose paths
+do not come within `DROP_TIMEOUT` (3 s: X11 logs a failed selection read and
+answers nothing) ends as `FileHoverCancelled`, which takes the drop caret and
+the hover target away, unless another drag hovers by then. A new drag entering
+while one hovers (whose end never came) cancels that one first. A read that
+would block or deadlock (`WouldBlock`, `Deadlock`) waits for the next
+`DataTransferReceived`; any other error reads as no paths. A failure is logged
+once per drag (`DragStep::Warn`); a failed hover fetch is not retried per move.
+The runtime's wake (`tick_caret_blink`) includes the next drop deadline. `file:` URIs become paths with `url::Url::to_file_path`;
 other URIs are left out. Positions are winit's physical px, made logical
 before `OsFileDrag` sees them. So the app sees the beta.2 shape, except that
 the paths now follow the entry by a moment on every platform (on Wayland they
 used to come only with the drop), and a drag that hovers before they arrive
 is path-less, as Wayland's whole hover used to be (`FileDrag::paths_known`).
-Pins: `shell::os_file_drag::tests`.
+Pins: `shell::os_file_drag::tests`, which drive `run_steps` through a fake `DragHost` as well.
 
 **`ondropfiles` (`data-ondropfiles`, #1771)** is the cross-platform form: the
 files as `rinch_core::file::LocalFile`s (`file.rs`: a name, a size, an optional
