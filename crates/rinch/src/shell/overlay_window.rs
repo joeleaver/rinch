@@ -553,6 +553,20 @@ pub(crate) fn outer_position(window: &dyn Window) -> Option<winit::dpi::Physical
     window.outer_position().ok()
 }
 
+/// The desktop rectangle of the X11 monitor whose RandR CRTC is `crtc`
+/// (winit's `MonitorHandle::native_id` there), `(x, y, width, height)`; `None`
+/// when it cannot be read.
+#[cfg(target_os = "linux")]
+pub(crate) fn x11_crtc_rect(crtc: u32) -> Option<(i32, i32, u32, u32)> {
+    match x11::crtc_rect(crtc) {
+        Ok(rect) => rect,
+        Err(e) => {
+            tracing::debug!("Could not read the RandR CRTC {crtc}: {e}");
+            None
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod x11 {
     use std::cell::RefCell;
@@ -644,6 +658,42 @@ mod x11 {
         let root = conn.get_geometry(xid)?.reply()?.root;
         let at = conn.translate_coordinates(xid, root, 0, 0)?.reply()?;
         Ok(Some((at.dst_x as i32 - left, at.dst_y as i32 - top)))
+    }
+
+    /// `(x, y, width, height)` on the desktop.
+    pub(crate) type CrtcRect = (i32, i32, u32, u32);
+
+    /// The rectangle of RandR CRTC `crtc` on the desktop, `(x, y, width,
+    /// height)`: the monitor's real extent, rotation included (a mode's own
+    /// size is unrotated). `Ok(None)` for a CRTC that drives nothing.
+    pub(crate) fn crtc_rect(crtc: u32) -> Result<Option<CrtcRect>, Box<dyn std::error::Error>> {
+        use x11rb::protocol::randr::ConnectionExt as _;
+        SHAPE_CONN.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.is_none() {
+                let (conn, _) = x11rb::connect(None)?;
+                *slot = Some(conn);
+            }
+            let conn = slot.as_ref().expect("just connected");
+            let result = (|| -> Result<_, Box<dyn std::error::Error>> {
+                // RandR 1.2 requests from a client that has not said it knows
+                // 1.2 are refused.
+                conn.randr_query_version(1, 2)?.reply()?;
+                let c = conn
+                    .randr_get_crtc_info(crtc, x11rb::CURRENT_TIME)?
+                    .reply()?;
+                Ok((c.width > 0 && c.height > 0).then_some((
+                    c.x as i32,
+                    c.y as i32,
+                    c.width as u32,
+                    c.height as u32,
+                )))
+            })();
+            if result.is_err() {
+                *slot = None;
+            }
+            result
+        })
     }
 
     /// Give `window` an empty input shape (pointer passes through) or none
@@ -954,6 +1004,52 @@ mod win32 {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             );
         }
+    }
+}
+
+/// #1884: the RandR CRTC rectangles off a live X server (`$DISPLAY`), as
+/// `connected_monitors` reads them, against RandR's own monitor list. Read
+/// only. `cargo test -p rinch --lib live_crtc -- --ignored`.
+#[cfg(all(test, target_os = "linux"))]
+mod live_crtc {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::randr::ConnectionExt as _;
+
+    #[test]
+    #[ignore = "needs an X server on $DISPLAY"]
+    fn live_crtc_rects_match_the_monitors_randr_lists() {
+        let (conn, screen) = x11rb::connect(None).expect("an X server");
+        let root = conn.setup().roots[screen].root;
+        conn.randr_query_version(1, 5).unwrap().reply().unwrap();
+        let res = conn
+            .randr_get_screen_resources_current(root)
+            .unwrap()
+            .reply()
+            .unwrap();
+        let mut seen = 0;
+        for crtc in res.crtcs {
+            let info = conn
+                .randr_get_crtc_info(crtc, x11rb::CURRENT_TIME)
+                .unwrap()
+                .reply()
+                .unwrap();
+            let rect = super::x11_crtc_rect(crtc);
+            if info.outputs.is_empty() || info.width == 0 {
+                continue;
+            }
+            seen += 1;
+            eprintln!("crtc {crtc}: {rect:?}, rotation {:?}", info.rotation);
+            assert_eq!(
+                rect,
+                Some((
+                    info.x as i32,
+                    info.y as i32,
+                    info.width as u32,
+                    info.height as u32
+                ))
+            );
+        }
+        assert!(seen > 0, "positive control: some CRTC drives an output");
     }
 }
 

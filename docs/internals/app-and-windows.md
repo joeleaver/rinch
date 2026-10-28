@@ -340,6 +340,8 @@ set_click_through_current_window(true);
 // Geometry, logical px, any thread (#1546); kept while hidden:
 let pos: Option<(f64, f64)> = current_window_position(); // None on Wayland
 let size: Option<(f64, f64)> = current_window_size();
+// What to persist and give back as WindowProps x/y, width/height, maximized:
+let restore: Option<WindowRestore> = current_window_restore();
 set_current_window_position(300.0, 200.0); // while hidden: where it comes back
 set_current_window_size(700.0, 200.0);
 ```
@@ -360,9 +362,91 @@ with them
 appearance only). The position is kept in desktop pixels (X11, Windows) or
 points (macOS), the size in logical pixels; a maximized window comes back
 maximized with its earlier normal geometry as the restore geometry. A
-recorded position on no connected monitor at show (`on_some_monitor`) is
-dropped. Wayland restores the size only; a position set while hidden there is
-dropped. **On
+recorded position out of reach at show is dropped (`begin_appearance`). Wayland
+restores the size only; a position set while hidden there is dropped.
+
+**Reachable positions** (`window_geometry::reachable`, #1884). A position —
+recorded at hide, or `WindowProps::x`/`y` — is kept only where a *grip* of the
+window's top is on the desktop: `GRIP` = 64 x 12 logical pixels (each capped at
+the window's width / height), anywhere in its top `GRIP_STRIP` = 24 (a
+Windows outer frame a few pixels above a monitor leaves the title bar below
+it). "On the desktop" is the union of the monitors (`grip_on_desktop`: x-slabs
+between monitor edges, a row band starting at the strip's top or a monitor's
+top edge), so a window across two adjacent monitors counts and a gap between
+monitors does not. The grip is sized in the scale of a monitor the strip
+overlaps. No monitors listed: kept.
+
+**`WindowProps::x`/`y` on a mixed-scale desktop** (`place_requested`). A
+logical desktop position is the outer position over the scale of the monitor
+the window is on (what the getters publish), but winit converts a
+`Position::Logical` with a guessed scale — X11 the monitor under the pointer
+(`winit-x11` `window.rs`, `guessed_monitor`), Windows the scale the new window
+starts with — so a position next to a scale-2 primary could be created at
+twice its coordinates, on no monitor. `place_requested` tries each monitor as
+the one the position is on (convert with its scale; the strip must overlap it
+and be reachable) and gives winit the resulting `Position::Physical`. Where
+two monitors both fit (a logical position is ambiguous on such a desktop) the
+first in winit's order wins, unless `WindowProps::monitor` names one: the
+monitors of that name are tried first (two of one name: the first on which the
+window is reachable), then all of them. The name is what winit's
+`MonitorHandle::name()` answers — `connected_monitors` stores it, and the
+published `monitor` / `normal_monitor` come from the window's
+`current_monitor()` at each reading (`monitor_name`; the monitor whose scale
+the window has, so its scale is the one the logical position was computed
+with), or from the monitor `place_requested` chose at a first appearance.
+X11 names an output (`DP-1`), Windows a device (`\\.\DISPLAY1`), macOS
+`Monitor #<model number>` (not unique for two of one model). A position the
+app sets while hidden, a layer surface's, and Wayland's absent one carry no
+name. macOS keeps
+the logical position: `connected_monitors` gives its monitors in points at
+scale 1, the unit AppKit positions in.
+
+**Each monitor's rectangle is the platform's own** (`native_monitor_rect`,
+#1884). winit gives a monitor's position and its current video mode, and on X11
+the mode is the RandR mode, unrotated (`winit-x11` `util/randr.rs`), so a
+1080x1920 portrait monitor read as 1920x1080 and a position in its lower half
+was refused. On X11 rinch reads the CRTC's rectangle over RandR
+(`overlay_window::x11_crtc_rect`; winit's `native_id` there is the CRTC id,
+the same CRTC winit builds the monitor from); on Windows `GetMonitorInfoW`'s
+`rcMonitor` (physical desktop pixels; winit's `native_id` is the
+`HMONITOR`); on macOS `CGDisplayBounds` (points; `native_id` is the
+`CGDirectDisplayID`), which follow the display's rotation. Where it cannot be
+read (an X error, Wayland) the video mode is used as before. Pinned by
+`a_portrait_monitor_takes_its_native_rectangle` and the `#[ignore]`d
+`overlay_window::live_crtc` test against a live X server.
+
+**First appearance and `current_window_restore`** (#1884). `begin_appearance`
+runs before both `create_window` (visible) and `show_window`: on the first
+appearance — a creation, or the first show after a hidden start —
+`publish_created` publishes the geometry the window is created with as the
+normal (restore) geometry, since a window created maximized has none to read.
+`current_window_restore()` answers `normal_position` / `normal_size` and
+`maximized` from the published geometry. **X11 maximizes late**: the window
+manager applies `with_maximized` after creation, a `SurfaceResized` can come
+while `is_maximized` (read off `_NET_WM_STATE`, which raises no winit event)
+still answers false, and that reading would make the full-screen size the
+normal geometry. `MaximizeWait` (set from the creation attributes; not for a
+non-resizable window, which winit gives equal minimum and maximum sizes and
+window managers refuse to maximize, nor a layer surface) takes not-maximized
+readings as maximized for `MAXIMIZE_GRACE` (2 s) after the creation, while
+the window is at its created size or at the first other size it reached (the
+maximize). It ends — every reading believed — at the first reading that says
+maximized, at the end of the grace, or at a reading at yet another size or
+back at the created one after that first other size (an un-maximize, to the
+created size or to a smaller one a window manager chose because the created
+size does not fit the screen; or a resize by the person). Readings come only
+with events (`Moved`, `SurfaceResized`, a scale change, creation, hide), so a
+window the window manager never maximizes (tiling, a WM rule, none), moved
+inside the grace and then left alone, would keep what the last reading in the
+grace said: maximized, at the creation position. So the shell reads the window
+once more when the grace ends — `MaximizeWait::deadline` is a timed wake in
+`tick_caret_blink`, beside the caret blink, the `title` tooltip and the file
+drop's — and at the main window's `CloseRequested`, before the app's
+`on_close_requested` reads the restore (`settle_maximize_wait`). That reading
+is believed and the wait is `Done`, which has no deadline, so the wake is not
+armed again. Residue: a maximize done in two resizes of different sizes before
+the property is set ends the wait at the second. Pins:
+`window_geometry::tests`, `rinch_runtime::window_restore_tests`. **On
 X11 the frame position is read by rinch** (`overlay_window::outer_position`:
 the client's root coordinates less `_NET_FRAME_EXTENTS`), because winit's
 `outer_position` subtracts extents cached before the window manager wrote

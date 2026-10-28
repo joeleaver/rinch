@@ -433,8 +433,24 @@ pub struct WindowProps {
     pub title: String,
     pub width: u32,
     pub height: u32,
+    /// The outer top-left on the desktop, logical pixels; the system places
+    /// the window when `None`. Taken only where a grip of the window's top
+    /// (its title bar, what moves it: 64 x 12 logical pixels, or all of a
+    /// smaller window) would be on the connected monitors, so a position
+    /// saved on a monitor since unplugged never opens the window out of
+    /// reach. On a desktop whose monitors have different scales, the position
+    /// is read in the scale of the monitor it falls on, as
+    /// `current_window_position` gives it. Ignored on Wayland, except by a
+    /// layer-shell window.
     pub x: Option<i32>,
     pub y: Option<i32>,
+    /// The monitor `x`/`y` is on, by the platform's name for it (what
+    /// `rinch::windows::current_window_restore` answers with the position).
+    /// On a desktop whose monitors have different scales a logical position
+    /// can name a point on two of them; this monitor is tried first, then
+    /// every monitor as without it. Ignored when no connected monitor has
+    /// the name.
+    pub monitor: Option<String>,
     /// Whether the window is a `wlr-layer-shell` surface on native Wayland
     /// (issue #1523): `None` (the default) makes it one when it is
     /// [`non_activating`](Self::non_activating); `Some(true)` makes any window
@@ -468,6 +484,11 @@ pub struct WindowProps {
     /// [`WindowProps::level`] chooses a higher level; this never lowers one
     /// ([`WindowProps::effective_level`]).
     pub always_on_top: bool,
+    /// Whether the window first appears maximized (default `false`), at
+    /// `width` x `height` (and `x`/`y`) when it is restored. With
+    /// `rinch::windows::current_window_restore` read at exit, it brings a
+    /// window back as the person left it.
+    pub maximized: bool,
     /// Whether the window is on screen when the app starts (default `true`).
     ///
     /// `false` starts the app with no window shown — a tray-only app whose
@@ -610,6 +631,8 @@ impl Default for WindowProps {
             resizable: true,
             transparent: false,
             always_on_top: false,
+            maximized: false,
+            monitor: None,
             visible: true,
             resize_inset: None,
             icon: None,
@@ -631,6 +654,8 @@ impl std::fmt::Debug for WindowProps {
             .field("title", &self.title)
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("maximized", &self.maximized)
+            .field("monitor", &self.monitor)
             .field("wayland_layer_shell", &self.wayland_layer_shell)
             .field("output", &self.output)
             .field("borderless", &self.borderless)
