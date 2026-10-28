@@ -371,6 +371,42 @@ fn pointer_id_of(source: &winit::event::PointerSource) -> u64 {
     }
 }
 
+/// `os_file_drag`'s steps carried out on winit's event loop (#1962); the
+/// events are collected and handed to the app after, in order.
+struct WinitDragHost<'a> {
+    event_loop: &'a dyn ActiveEventLoop,
+    events: Vec<PlatformEvent>,
+}
+
+impl super::os_file_drag::DragHost for WinitDragHost<'_> {
+    fn accept(
+        &mut self,
+        id: winit::data_transfer::DataTransferId,
+        actions: &[winit::event_loop::DndAction],
+    ) -> Result<(), String> {
+        self.event_loop
+            .set_valid_dnd_actions(id, actions)
+            .map_err(|e| e.to_string())
+    }
+
+    fn fetch_uri_list(
+        &mut self,
+        id: winit::data_transfer::DataTransferId,
+    ) -> Result<winit::event_loop::AsyncRequestSerial, String> {
+        self.event_loop
+            .fetch_data_transfer(id, &winit::data_transfer::TypeHint::UriList)
+            .map_err(|e| e.to_string())
+    }
+
+    fn emit(&mut self, event: PlatformEvent) {
+        self.events.push(event);
+    }
+
+    fn warn(&mut self, message: String) {
+        tracing::warn!("{message}");
+    }
+}
+
 /// The pointer a winit move came from, as a render surface hears it. `down`:
 /// that pointer has a button or contact down, which decides the pressure a
 /// device that cannot measure it reports.
@@ -397,6 +433,12 @@ fn surface_pointer_of(
             pressure: force_pressure(data.force.as_ref(), down),
             primary,
         },
+        // `PointerSource` is non-exhaustive (winit 0.31.0-beta.3): a source
+        // this shell does not know is a mouse, as `Unknown` is.
+        _ => SurfacePointer {
+            primary,
+            ..SurfacePointer::mouse(down)
+        },
     }
 }
 
@@ -418,6 +460,8 @@ fn surface_pointer_of_button(
             kind: *kind,
             data: data.clone(),
         },
+        // Non-exhaustive (winit 0.31.0-beta.3): an unknown source is a mouse.
+        _ => PointerSource::Mouse,
     };
     let mut pointer = surface_pointer_of(&source, primary, pressed);
     if !pressed {
@@ -510,6 +554,9 @@ pub struct RinchRuntime {
     /// been handed yet (logical px), and which pointer it is. See
     /// [`Self::flush_pointer_move`].
     pending_pointer_move: Option<(f32, f32, SurfacePointer)>,
+    /// The OS file drag over the main window, from winit's data transfer
+    /// events (#1962).
+    os_file_drag: super::os_file_drag::OsFileDrag,
     /// The buttons or contacts down, as `(SurfacePointer::id, button)`: what
     /// decides the pressure a move reports for a device that cannot measure
     /// it. Per button, so a chord's release (right up while left is held)
@@ -530,6 +577,12 @@ pub struct RinchRuntime {
     /// The main window's geometry as it was hidden (#1546), or as the app
     /// set it while hidden: what `show_window` re-creates it with.
     saved_geometry: SavedGeometry,
+    /// The monitors connected when the main window was last (re-)created:
+    /// a requested or saved position must be reachable on one of them.
+    monitors: Vec<window_geometry::MonitorRect>,
+    /// A main window created maximized, until the platform says it is (the
+    /// X11 window manager maximizes it later).
+    maximize_wait: window_geometry::MaximizeWait,
     /// The live main window's layer-shell state, while it is a Wayland
     /// layer surface (#1523).
     layer: Option<LayerState>,
@@ -539,6 +592,12 @@ pub struct RinchRuntime {
     /// A layer surface was closed by the compositor with no output left: show
     /// it again when one appears (#1523).
     layer_awaiting_output: bool,
+    /// Frames left in which the GPU window composites its `GameViewport`s as
+    /// layers under the UI (cleared in the scene) rather than as split base
+    /// layers (#1866): a base split was refused, so the window falls back
+    /// for a while before it tries again.
+    #[cfg(feature = "gpu")]
+    base_fallback: super::base_fallback::BaseFallback,
 
     // ── DevTools ─────────────────────────────────────────────────
     /// Shared DevTools store (persists across open/close cycles).
@@ -673,14 +732,19 @@ impl RinchRuntime {
             native_menu: None,
             draining_native_events: false,
             pending_pointer_move: None,
+            os_file_drag: Default::default(),
             pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
             click_through: false,
             shown_once: false,
             saved_geometry: SavedGeometry::default(),
+            monitors: Vec::new(),
+            maximize_wait: window_geometry::MaximizeWait::Done,
             layer: None,
             output_override: None,
             layer_awaiting_output: false,
+            #[cfg(feature = "gpu")]
+            base_fallback: Default::default(),
             devtools_store: None,
             devtools_app: None,
             devtools_window: None,
@@ -1074,14 +1138,14 @@ impl RinchRuntime {
         // The geometry the window had when it was hidden (#1546), or the
         // requested `WindowProps::x`/`y` on its first appearance — a first
         // creation, or the first show after a hidden start (#1520).
-        let requested = self
-            .app
-            .window_props
-            .as_ref()
-            .and_then(|p| Some((p.x?, p.y?)));
-        let window_attrs = self
-            .saved_geometry
-            .apply(window_attrs, requested, first_appearance);
+        let requested = self.requested_position().map(|r| r.at);
+        let requested_maximized = self.app.window_props.as_ref().is_some_and(|p| p.maximized);
+        let window_attrs = self.saved_geometry.apply(
+            window_attrs,
+            requested,
+            requested_maximized,
+            first_appearance,
+        );
         // A Wayland layer surface (#1523) is placed by its margins: the
         // saved position, or the requested one on a first appearance.
         let layer = steps.wayland_layer.then(|| {
@@ -1138,9 +1202,49 @@ impl RinchRuntime {
         if !self.shown_once {
             return;
         }
-        let reading = window_geometry::WindowReading::of(window);
+        self.take_reading(
+            window_geometry::WindowReading::of(window),
+            monitor_name(window),
+        );
+    }
+
+    /// [`Self::note_geometry`] past the window: a reading of the live main
+    /// window, through the wait for a maximize the platform has not reported
+    /// yet.
+    /// End the maximize wait with one reading of the live main window,
+    /// believed: when its grace ends (a window the window manager never
+    /// maximized, moved inside the grace and then left alone, has had no
+    /// reading since) and at close (what `on_close_requested` reads).
+    fn settle_maximize_wait(&mut self) {
+        if self.maximize_wait == window_geometry::MaximizeWait::Done {
+            return;
+        }
+        let read = self.window.as_ref().filter(|_| self.shown_once).map(|w| {
+            (
+                window_geometry::WindowReading::of(w.raw()),
+                monitor_name(w.raw()),
+            )
+        });
+        self.settle_maximize_wait_with(read);
+    }
+
+    /// [`Self::settle_maximize_wait`] past the window.
+    fn settle_maximize_wait_with(
+        &mut self,
+        read: Option<(window_geometry::WindowReading, Option<String>)>,
+    ) {
+        self.maximize_wait = window_geometry::MaximizeWait::Done;
+        if let Some((reading, monitor)) = read {
+            self.take_reading(reading, monitor);
+        }
+    }
+
+    fn take_reading(&mut self, reading: window_geometry::WindowReading, monitor: Option<String>) {
+        let reading = self
+            .maximize_wait
+            .filter(reading, std::time::Instant::now());
         self.saved_geometry.note(&reading);
-        window_geometry::publish_window(&reading);
+        window_geometry::publish_window(&reading, monitor);
         self.publish_layer_position();
     }
 
@@ -1353,15 +1457,87 @@ impl RinchRuntime {
         }
     }
 
+    /// `WindowProps::x`/`y`, when the window's top would be reachable on the
+    /// monitors connected now (`self.monitors`); otherwise the system places
+    /// the window, so a position saved on a monitor since unplugged never
+    /// opens it out of reach. `at` is where winit is asked to put it
+    /// ([`window_geometry::place_requested`]: desktop pixels, resolved in the
+    /// scale of the monitor the position is on).
+    fn requested_position(&self) -> Option<RequestedPosition> {
+        let props = self.app.window_props.as_ref()?;
+        let (x, y) = (props.x?, props.y?);
+        let size = Size::Logical(LogicalSize::new(self.width as f64, self.height as f64));
+        let placed = window_geometry::place_requested(
+            (x as f64, y as f64),
+            size,
+            props.monitor.as_deref(),
+            &self.monitors,
+        )?;
+        Some(RequestedPosition {
+            logical: (x as f64, y as f64),
+            at: placed.at,
+            monitor: placed.monitor,
+        })
+    }
+
+    /// The geometry half of putting the main window on screen, before winit
+    /// creates it: the monitors connected now (`monitors`), a saved position
+    /// out of reach on them dropped (one unplugged while the window was
+    /// hidden), and on its first appearance — a creation, or the first show
+    /// after a hidden start (#1520) — the geometry it is created with
+    /// published as the one an un-maximize returns to: a window that opens
+    /// maximized has had no normal geometry to read. `on_screen` is false for
+    /// a hidden start's sizing window. Returns whether this is the first
+    /// appearance.
+    fn begin_appearance(
+        &mut self,
+        monitors: Vec<window_geometry::MonitorRect>,
+        on_screen: bool,
+    ) -> bool {
+        self.monitors = monitors;
+        if !on_screen {
+            return false;
+        }
+        let first = !std::mem::replace(&mut self.shown_once, true);
+        if let Some(position) = self.saved_geometry.position {
+            let size = self
+                .saved_geometry
+                .size
+                .unwrap_or(Size::Logical(LogicalSize::new(
+                    self.width as f64,
+                    self.height as f64,
+                )));
+            if !window_geometry::reachable(position, Some(size), &self.monitors) {
+                self.saved_geometry.position = None;
+            }
+        }
+        if first {
+            let requested = self.requested_position();
+            window_geometry::publish_created(
+                requested.as_ref().map(|r| r.logical),
+                requested.and_then(|r| r.monitor),
+                (self.width as f64, self.height as f64),
+                self.app.window_props.as_ref().is_some_and(|p| p.maximized),
+            );
+        }
+        first
+    }
+
     fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
         // A title set before the loop started (#1770).
         self.take_stored_title();
         let hidden = starts_hidden(self.app.window_props.as_ref());
+        self.begin_appearance(connected_monitors(event_loop), !hidden);
         let backend = Backend::of(event_loop);
         let steps = self.main_window_steps(backend, true);
         let window_attrs = hidden_start_attributes(
             self.main_window_attributes(steps, backend, true, true),
             hidden,
+        );
+        self.maximize_wait = window_geometry::MaximizeWait::after_create(
+            &window_attrs,
+            steps.wayland_layer,
+            std::time::Instant::now(),
         );
 
         let window = event_loop
@@ -1372,7 +1548,6 @@ impl RinchRuntime {
         // window `show_window` creates instead.
         if !hidden {
             overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
-            self.shown_once = true;
             self.note_surface_kind(&*window, true);
             self.note_geometry(&*window);
         }
@@ -1446,9 +1621,12 @@ impl RinchRuntime {
             // start (#1520), which was never on screen and sits wherever the
             // system put it.
             if self.shown_once {
-                let reading = window_geometry::WindowReading::of(w.raw());
+                let reading = self.maximize_wait.filter(
+                    window_geometry::WindowReading::of(w.raw()),
+                    std::time::Instant::now(),
+                );
                 self.saved_geometry.record(&reading);
-                window_geometry::publish_window(&reading);
+                window_geometry::publish_window(&reading, monitor_name(w.raw()));
                 self.publish_layer_position();
             }
             // The menu bar leaves the window with it (Windows: muda keeps a
@@ -1491,26 +1669,13 @@ impl RinchRuntime {
         // appearance, so it takes the requested position as a first creation
         // does; a restore from the tray comes back where it was hidden
         // (#1546), with the size it had.
-        let first_show = !std::mem::replace(&mut self.shown_once, true);
-        // A position on no monitor that is connected now (one unplugged
-        // while the window was hidden) is left to the system.
-        if let Some(position) = self.saved_geometry.position {
-            let monitors: Vec<window_geometry::MonitorRect> = event_loop
-                .available_monitors()
-                .filter_map(|m| {
-                    let size = m.current_video_mode()?.size();
-                    Some(window_geometry::MonitorRect {
-                        position: m.position()?,
-                        size,
-                        scale: m.scale_factor(),
-                    })
-                })
-                .collect();
-            if !window_geometry::on_some_monitor(position, self.saved_geometry.size, &monitors) {
-                self.saved_geometry.position = None;
-            }
-        }
+        let first_show = self.begin_appearance(connected_monitors(event_loop), true);
         let window_attrs = self.main_window_attributes(steps, backend, false, first_show);
+        self.maximize_wait = window_geometry::MaximizeWait::after_create(
+            &window_attrs,
+            steps.wayland_layer,
+            std::time::Instant::now(),
+        );
 
         let window = event_loop
             .create_window(window_attrs)
@@ -1816,7 +1981,7 @@ impl RinchRuntime {
         // `GameViewport` surfaces still use the compositor/hole-punch path.
         // Track which viewport names have compositor layers so we can set
         // ACTIVE_VIEWPORTS to prevent hole-punching for inline-painted surfaces.
-        let mut all_layers: Vec<rinch_platform::CompositeLayer> = Vec::new();
+        let all_layers: Vec<rinch_platform::CompositeLayer> = Vec::new();
         let mut gpu_layers = Vec::new();
         let mut compositor_viewport_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
@@ -1827,10 +1992,31 @@ impl RinchRuntime {
         // would show its last frame where the software backend shows none.
         let mut skipped_unready = false;
 
+        // `GameViewport`s as split base layers (#1866): what paint offers to
+        // the painter, the GPU textures and the CPU frames the compositor
+        // reads. The layers above are gathered too, for a frame that falls
+        // back to them.
+        let try_base = self.base_fallback.try_split();
+        let mut base_viewports: std::collections::HashMap<String, rinch_dom::paint::BaseViewport> =
+            std::collections::HashMap::new();
+        let mut base_views = std::collections::HashMap::new();
+        let mut base_pending: Vec<super::split_frame::PendingFrame> = Vec::new();
+        // The CPU frames as the layered path's layers would be built from them.
+        #[allow(clippy::type_complexity)]
+        let mut cpu_layers: Vec<(
+            std::sync::Arc<Vec<u8>>,
+            u32,
+            u32,
+            (f32, f32, f32, f32),
+            (f32, f32, f32, f32),
+            [f32; 4],
+            Option<(f32, f32, f32, f32)>,
+        )> = Vec::new();
+
         // Collect compositor-path surface frames (video, GameViewport — not RenderSurface)
         {
-            let surface_frames = crate::render_surface::collect_surface_frames();
-            for (viewport_name, pixels, surf_w, surf_h) in surface_frames {
+            let surface_frames = crate::render_surface::collect_surface_frames_shared();
+            for (id, viewport_name, pixels, surf_w, surf_h, fresh) in surface_frames {
                 if !self.app.viewport_ready(&viewport_name) {
                     skipped_unready = true;
                     continue;
@@ -1838,6 +2024,24 @@ impl RinchRuntime {
                 if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
                 {
                     compositor_viewport_names.insert(viewport_name.clone());
+                    if surf_w > 0 && surf_h > 0 {
+                        base_viewports.insert(
+                            viewport_name.clone(),
+                            rinch_dom::paint::BaseViewport {
+                                surface_id: id,
+                                extents: (surf_w, surf_h),
+                                letterbox: true,
+                            },
+                        );
+                        // Shared, not copied; uploaded only when new, or
+                        // when the window holds no texture for it.
+                        base_pending.push(super::base_fallback::pending_base_frame(
+                            id,
+                            &pixels,
+                            (surf_w, surf_h),
+                            fresh,
+                        ));
+                    }
                     // The whole box — what paint punched the hole over.
                     let box_viewport = (
                         viewport.0 * s,
@@ -1874,19 +2078,18 @@ impl RinchRuntime {
                     // actually shares with its clip, or a viewport that is only
                     // the top half of a rounded card would have its *middle*
                     // rounded away, leaving a see-through notch.
-                    all_layers.push(black_backdrop_layer(
-                        box_viewport,
-                        radii_at_shared_corners(box_viewport, clip_rect, border_radius),
-                        clip_rect,
-                    ));
-                    all_layers.push(rinch_platform::CompositeLayer {
+                    //
+                    // Built only for the layered path: the split path reads the
+                    // shared frame, and a copy per frame is not free.
+                    cpu_layers.push((
                         pixels,
-                        width: surf_w,
-                        height: surf_h,
+                        surf_w,
+                        surf_h,
+                        box_viewport,
                         viewport,
                         border_radius,
                         clip_rect,
-                    });
+                    ));
                 }
             }
         }
@@ -1904,7 +2107,6 @@ impl RinchRuntime {
 
                 if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
                 {
-                    compositor_viewport_names.insert(viewport_name.clone());
                     let phys_w = (viewport.2 * s) as u32;
                     let phys_h = (viewport.3 * s) as u32;
                     crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
@@ -1924,10 +2126,22 @@ impl RinchRuntime {
                         // Sized above, so the app goes on rendering at the
                         // right size; only the layer is withheld.
                         skipped_unready = true;
-                        compositor_viewport_names.remove(&viewport_name);
                         continue;
                     }
+                    // A hole only once there is a texture to fill it, on both
+                    // paths (#1883 review): before, a viewport whose source
+                    // was cleared punched with nothing behind it.
                     if let Some(ref ts) = *tex_source_arc.lock().unwrap() {
+                        compositor_viewport_names.insert(viewport_name.clone());
+                        base_viewports.insert(
+                            viewport_name.clone(),
+                            rinch_dom::paint::BaseViewport {
+                                surface_id,
+                                extents: (ts.width, ts.height),
+                                letterbox: false,
+                            },
+                        );
+                        base_views.insert(surface_id, ts.view.clone());
                         gpu_layers.push(super::desktop::GpuTextureLayer {
                             view: ts.view.clone(),
                             viewport,
@@ -1943,7 +2157,55 @@ impl RinchRuntime {
         // frames and GPU textures only). Video is drawn in the scene since
         // #1768, so the retention a loaded video needed between its frames
         // (the last cycle's layers kept, with their holes) is gone with it.
-        if !all_layers.is_empty() || !gpu_layers.is_empty() || skipped_unready {
+        //
+        // On the split path (#1866) the viewports are base layers and the
+        // renderer holds no layers: the UI is rendered over the window's base
+        // and the compositor replaces it inside each viewport with its game.
+        let use_base = try_base && !base_viewports.is_empty();
+        let layered = move || {
+            let mut all_layers = all_layers;
+            for (pixels, w, h, box_viewport, viewport, border_radius, clip_rect) in cpu_layers {
+                all_layers.push(black_backdrop_layer(
+                    box_viewport,
+                    radii_at_shared_corners(box_viewport, clip_rect, border_radius),
+                    clip_rect,
+                ));
+                all_layers.push(rinch_platform::CompositeLayer {
+                    pixels: pixels.as_ref().clone(),
+                    width: w,
+                    height: h,
+                    viewport,
+                    border_radius,
+                    clip_rect,
+                });
+            }
+            (all_layers, gpu_layers)
+        };
+        let mut fallback_layers = Some(layered);
+        if use_base {
+            if renderer.has_composite_layers() {
+                renderer.set_composite_layers(vec![]);
+                renderer.set_gpu_layers(vec![]);
+            }
+            // A kept slice made for a frame of another size has a stale
+            // image transform: the viewport is painted, and split, again.
+            let stale: Vec<&str> = base_viewports
+                .iter()
+                .filter(|(_, b)| {
+                    renderer
+                        .split
+                        .kept_extents(b.surface_id)
+                        .is_some_and(|e| e != b.extents)
+                })
+                .map(|(name, _)| name.as_str())
+                .collect();
+            if !stale.is_empty() {
+                self.app.request_repaint();
+                self.app.mark_viewport_nodes_paint_dirty(&stale);
+            }
+        } else if let Some((all_layers, gpu_layers)) = fallback_layers.take().map(|f| f())
+            && (!all_layers.is_empty() || !gpu_layers.is_empty() || skipped_unready)
+        {
             renderer.set_composite_layers(all_layers);
             renderer.set_gpu_layers(gpu_layers);
         } else if renderer.has_composite_layers() {
@@ -1956,7 +2218,7 @@ impl RinchRuntime {
         //
         // Installed unconditionally, empty set included. Skipping the call when
         // nothing has a layer left `ACTIVE_VIEWPORTS` at `None`, which
-        // `find_viewport_rects` reads as "no filter — punch everything": the
+        // `viewport_punches` reads as "no filter — punch everything": the
         // gate was inoperative in exactly the case it exists for, a viewport
         // with no frame behind it (issue #186).
         //
@@ -1971,23 +2233,49 @@ impl RinchRuntime {
         // Split GPU surfaces and video (#1865) while no `GameViewport` layer is
         // under the UI: the base-layer path and the split path do not compose
         // yet (a base layer under split slices is the design's next step).
-        let has_layers = renderer.has_composite_layers() || skipped_unready;
+        let has_layers = !use_base && (renderer.has_composite_layers() || skipped_unready);
         let mut viewport_frames = crate::render_surface::collect_viewport_frames_by_name();
-        let split_uploads = super::split_frame::prepare_split_viewports(
+        let mut split_uploads = super::split_frame::prepare_split_viewports(
             &mut viewport_frames,
             &mut renderer.split,
             !has_layers,
         );
         self.app
             .install_gpu_viewport_frames(viewport_frames, Some(compositor_viewport_names));
+        if use_base {
+            split_uploads.extend(base_pending);
+        }
+        renderer.split.set_base_views(if use_base {
+            base_views
+        } else {
+            Default::default()
+        });
 
         // Build the frame from the document — CPU surfaces paint inline via
         // draw_image(). Only what its damage reaches is encoded and rendered
-        // while the renderer's UI texture holds the last frame (#1718).
-        self.app.set_split_enabled(!has_layers);
-        let (frame, split_change) =
-            self.app
-                .build_gpu_frame_split(scale, size, renderer.ui_invalid_reason(transparent));
+        // while the renderer's UI texture holds the last frame (#1718). A
+        // refused base split builds it again, in full, layered (R1).
+        let target = renderer.ui_invalid_reason(transparent);
+        let mut fell_back = false;
+        let split_change = self.base_fallback.build(
+            &mut self.app,
+            scale,
+            size,
+            use_base.then_some(base_viewports),
+            !has_layers,
+            target,
+            || fell_back = true,
+        );
+        if fell_back {
+            if let Some((all_layers, gpu_layers)) = fallback_layers.take().map(|f| f()) {
+                renderer.set_composite_layers(all_layers);
+                renderer.set_gpu_layers(gpu_layers);
+            }
+            renderer.split.set_base_views(Default::default());
+            split_uploads.clear();
+        }
+        let frame = self.app.last_gpu_frame();
+        let has_layers = renderer.has_composite_layers();
 
         RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_pixels(None);
@@ -2768,7 +3056,11 @@ impl ApplicationHandler for RinchRuntime {
                 self.layer_surface_closed(event_loop);
                 return;
             }
-            WindowEvent::CloseRequested => PlatformEvent::CloseRequested,
+            WindowEvent::CloseRequested => {
+                // What the app reads in `on_close_requested` (#1884).
+                self.settle_maximize_wait();
+                PlatformEvent::CloseRequested
+            }
             WindowEvent::SurfaceResized(size) => {
                 // Also resize the renderer — it works in physical pixels.
                 #[cfg(feature = "gpu")]
@@ -2950,6 +3242,9 @@ impl ApplicationHandler for RinchRuntime {
                     winit::event::MouseScrollDelta::PixelDelta(pos) => {
                         to_logical_point((pos.x, pos.y), self.scale_factor())
                     }
+                    // `MouseScrollDelta` is non-exhaustive (winit 0.31.0-beta.3):
+                    // a kind of delta this shell does not know scrolls nothing.
+                    _ => return,
                 };
                 // Already logical: set from the converted `PointerMoved` above.
                 let (cx, cy) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
@@ -3062,42 +3357,42 @@ impl ApplicationHandler for RinchRuntime {
                 };
                 PlatformEvent::Ime(ime_event)
             }
-            WindowEvent::DragEntered { paths, position } => {
-                let size = self.window_size();
-                let scale = self.scale_factor();
-                // A file-drag position is a pointer position like any other, and
-                // is hit-tested against the layout tree (#299).
-                let position = to_logical_point((position.x, position.y), scale);
-                if paths.is_empty() {
-                    // Wayland: paths arrive on drop, not on enter.
-                    // Fire a FileDragMoved to trigger hover tracking.
-                    let actions = self.app.handle_event(
-                        PlatformEvent::FileDragMoved { position },
-                        size,
-                        scale,
-                    );
-                    self.process_actions(actions, event_loop);
-                } else {
-                    // X11/Windows: paths are known on enter.
-                    for path in paths {
-                        let actions = self.app.handle_event(
-                            PlatformEvent::FileHoverEnter { path, position },
-                            size,
-                            scale,
-                        );
-                        self.process_actions(actions, event_loop);
-                    }
-                }
+            // An OS file drag (#1962): winit's data transfer events, through
+            // `OsFileDrag`, become the path-carrying `File*` events. A
+            // file-drag position is a pointer position like any other, and is
+            // hit-tested against the layout tree (#299).
+            WindowEvent::DragEntered { id, position } => {
+                use winit::data_transfer::TypeHint;
+                let has_uri_list = event_loop
+                    .data_transfer(id)
+                    .is_ok_and(|transfer| transfer.has_type(&TypeHint::UriList));
+                let position = position.map(|p| to_logical_point((p.x, p.y), self.scale_factor()));
+                let steps = self.os_file_drag.entered(id, position, has_uri_list);
+                self.run_file_drag_steps(steps, event_loop);
                 return;
             }
-            WindowEvent::DragMoved { position } => PlatformEvent::FileDragMoved {
-                position: to_logical_point((position.x, position.y), self.scale_factor()),
-            },
-            WindowEvent::DragDropped { paths, position } => PlatformEvent::FileDropped {
-                paths,
-                position: to_logical_point((position.x, position.y), self.scale_factor()),
-            },
-            WindowEvent::DragLeft { .. } => PlatformEvent::FileHoverCancelled,
+            WindowEvent::DragPosition { id, position, .. } => {
+                let position = to_logical_point((position.x, position.y), self.scale_factor());
+                let steps = self.os_file_drag.moved(id, position);
+                self.run_file_drag_steps(steps, event_loop);
+                return;
+            }
+            WindowEvent::DataTransferReceived { id, serial, value } => {
+                let uris = super::os_file_drag::uris_from(value.try_as_uris());
+                let steps = self.os_file_drag.received(id, serial, uris);
+                self.run_file_drag_steps(steps, event_loop);
+                return;
+            }
+            WindowEvent::DragDropped { id, .. } => {
+                let steps = self.os_file_drag.dropped(id, std::time::Instant::now());
+                self.run_file_drag_steps(steps, event_loop);
+                return;
+            }
+            WindowEvent::DragLeft { id } => {
+                let steps = self.os_file_drag.left(id);
+                self.run_file_drag_steps(steps, event_loop);
+                return;
+            }
             _ => return,
         };
         self.dispatch_main_event(platform_event, event_loop);
@@ -3111,6 +3406,24 @@ impl ApplicationHandler for RinchRuntime {
 }
 
 impl RinchRuntime {
+    /// Carry out what [`super::os_file_drag::OsFileDrag`] answered for a drag
+    /// event (accept the drag, ask for its URI list, log), then hand the app
+    /// the events it produced, in order.
+    fn run_file_drag_steps(
+        &mut self,
+        steps: Vec<super::os_file_drag::DragStep>,
+        event_loop: &dyn ActiveEventLoop,
+    ) {
+        let mut host = WinitDragHost {
+            event_loop,
+            events: Vec::new(),
+        };
+        super::os_file_drag::run_steps(&mut self.os_file_drag, steps, &mut host);
+        for event in host.events {
+            self.dispatch_main_event(event, event_loop);
+        }
+    }
+
     /// Hand the app the pointer move [`Self::window_event`] held back, if any.
     fn flush_pointer_move(&mut self, event_loop: &dyn ActiveEventLoop) {
         if let Some((x, y, pointer)) = self.pending_pointer_move.take() {
@@ -3211,9 +3524,9 @@ impl RinchRuntime {
         self.sync_a11y();
 
         // Drive the focused editor's caret blink, and wake for a resting
-        // pointer's `title` tooltip (#1646). These are the only two timed
-        // wakes (`WaitUntil`); with neither it returns the loop to `Wait` so
-        // the app stays idle.
+        // pointer's `title` tooltip (#1646) and a file drop's deadline (#1962).
+        // These are the only timed wakes (`WaitUntil`); with none it returns
+        // the loop to `Wait` so the app stays idle.
         #[cfg(feature = "desktop")]
         self.tick_caret_blink(event_loop);
     }
@@ -3221,9 +3534,10 @@ impl RinchRuntime {
 
 impl RinchRuntime {
     /// Blink the focused editor's caret by arming a `WaitUntil` wake for the next
-    /// phase toggle (see [`crate::editor::caret_blink_tick`]), or for a
-    /// pending `title` tooltip's deadline, whichever is sooner. Owns the event
-    /// loop's control flow: `WaitUntil` while either is due, `Wait` otherwise.
+    /// phase toggle (see [`crate::editor::caret_blink_tick`]), for a pending
+    /// `title` tooltip's deadline, or for a file drop's (ending the drops past
+    /// theirs), whichever is sooner. Owns the event loop's control flow:
+    /// `WaitUntil` while any is due, `Wait` otherwise.
     ///
     /// *Which* editor blinks is [`RinchApp::blinking_editor_id`]'s decision, not
     /// this function's — it excludes a blurred window, so a backgrounded app
@@ -3243,8 +3557,32 @@ impl RinchRuntime {
             None => None,
         };
         // A pointer resting over a `title` shows its tooltip at its deadline
-        // (#1646): the other timed wake.
+        // (#1646): another timed wake.
         let wake = match (blink_at, self.app.title_tooltip_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        // A file drop still waiting for its paths gives up at its deadline
+        // (#1962): the third.
+        let expired = self.os_file_drag.expire(std::time::Instant::now());
+        if !expired.is_empty() {
+            self.run_file_drag_steps(expired, event_loop);
+        }
+        let wake = match (wake, self.os_file_drag.next_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        // A window created maximized is read once more when the maximize
+        // wait's grace ends (#1884): the fourth. Settled, the wait has no
+        // deadline, so it arms nothing after.
+        if self
+            .maximize_wait
+            .deadline()
+            .is_some_and(|d| std::time::Instant::now() >= d)
+        {
+            self.settle_maximize_wait();
+        }
+        let wake = match (wake, self.maximize_wait.deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
@@ -3666,6 +4004,7 @@ impl RinchRuntime {
                     winit::event::MouseScrollDelta::PixelDelta(pos) => {
                         to_logical_point((pos.x, pos.y), scale)
                     }
+                    _ => return,
                 };
                 if let Some(dt_app) = &mut self.devtools_app {
                     let (cx, cy) = dt_app.cursor_pos.unwrap_or((0.0, 0.0));
@@ -5896,5 +6235,439 @@ mod layer_drag_tests {
             ..Default::default()
         });
         assert!(runtime.gpu_surface_transparent());
+    }
+}
+
+/// A `WindowProps::x`/`y` the window can be reached at.
+#[derive(Debug, Clone, PartialEq)]
+struct RequestedPosition {
+    /// As asked, logical pixels: what an app reads back.
+    logical: (f64, f64),
+    /// What winit is given.
+    at: Position,
+    /// The monitor it was read in the scale of, by name.
+    monitor: Option<String>,
+}
+
+/// The platform's name for the monitor `window` is on (whose scale it has):
+/// exactly what `MonitorHandle::name` answers, so a name published with a
+/// position finds the same monitor in `connected_monitors`.
+fn monitor_name(window: &dyn winit::window::Window) -> Option<String> {
+    window
+        .current_monitor()
+        .and_then(|m| m.name().map(|n| n.into_owned()))
+}
+
+/// The monitors connected now, in the unit windows are positioned in:
+/// desktop pixels, or points on macOS (given scale 1). Each monitor's
+/// rectangle is the platform's own where rinch can read it
+/// ([`native_monitor_rect`]): winit gives only a position and the current
+/// video mode, whose size on X11 ignores rotation.
+fn connected_monitors(event_loop: &dyn ActiveEventLoop) -> Vec<window_geometry::MonitorRect> {
+    let backend = Backend::of(event_loop);
+    event_loop
+        .available_monitors()
+        .filter_map(|m| {
+            let mode = m.current_video_mode().map(|v| v.size());
+            let position = m.position();
+            let scale = m.scale_factor();
+            let name = m.name().map(|n| n.into_owned());
+            let native = native_monitor_rect(&m, backend);
+            if cfg!(target_os = "macos") {
+                // Points, the unit AppKit positions windows in.
+                let (p, s) = match native {
+                    Some(rect) => rect,
+                    None => {
+                        let p = position?.to_logical::<f64>(scale);
+                        let s = mode?.to_logical::<f64>(scale);
+                        (
+                            winit::dpi::PhysicalPosition::new(
+                                p.x.round() as i32,
+                                p.y.round() as i32,
+                            ),
+                            winit::dpi::PhysicalSize::new(
+                                s.width.round() as u32,
+                                s.height.round() as u32,
+                            ),
+                        )
+                    }
+                };
+                return Some(window_geometry::MonitorRect::of(p, s, 1.0, name, None));
+            }
+            if native.is_none() && (position.is_none() || mode.is_none()) {
+                return None;
+            }
+            Some(window_geometry::MonitorRect::of(
+                position.unwrap_or_default(),
+                mode.unwrap_or_default(),
+                scale,
+                name,
+                native,
+            ))
+        })
+        .collect()
+}
+
+/// A monitor's rectangle on the desktop as the platform keeps it: the RandR
+/// CRTC on X11 (rotation included), `rcMonitor` on Windows (physical
+/// desktop pixels), `CGDisplayBounds` on macOS (points). `None` where it
+/// cannot be read, and on Wayland, which gives no desktop coordinates.
+#[allow(unused_variables)]
+fn native_monitor_rect(
+    m: &winit::monitor::MonitorHandle,
+    backend: Backend,
+) -> Option<(
+    winit::dpi::PhysicalPosition<i32>,
+    winit::dpi::PhysicalSize<u32>,
+)> {
+    use winit::dpi::{PhysicalPosition, PhysicalSize};
+    #[cfg(target_os = "linux")]
+    if backend == Backend::X11 {
+        let (x, y, w, h) = overlay_window::x11_crtc_rect(m.native_id() as u32)?;
+        return Some((PhysicalPosition::new(x, y), PhysicalSize::new(w, h)));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
+        // SAFETY: a zeroed MONITORINFO with its size set is what
+        // GetMonitorInfoW fills; the handle is winit's HMONITOR.
+        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        let ok = unsafe { GetMonitorInfoW(m.native_id() as usize as HMONITOR, &mut info) };
+        if ok == 0 {
+            return None;
+        }
+        let r = info.rcMonitor;
+        return Some((
+            PhysicalPosition::new(r.left, r.top),
+            PhysicalSize::new(
+                (r.right - r.left).max(0) as u32,
+                (r.bottom - r.top).max(0) as u32,
+            ),
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        #[repr(C)]
+        struct CGPoint {
+            x: f64,
+            y: f64,
+        }
+        #[repr(C)]
+        struct CGSize {
+            width: f64,
+            height: f64,
+        }
+        #[repr(C)]
+        struct CGRect {
+            origin: CGPoint,
+            size: CGSize,
+        }
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGDisplayBounds(display: u32) -> CGRect;
+        }
+        // SAFETY: CGDisplayBounds takes any display id (an unknown one gives
+        // an empty rect) and returns a plain struct.
+        let r = unsafe { CGDisplayBounds(m.native_id() as u32) };
+        if r.size.width <= 0.0 || r.size.height <= 0.0 {
+            return None;
+        }
+        return Some((
+            PhysicalPosition::new(r.origin.x.round() as i32, r.origin.y.round() as i32),
+            PhysicalSize::new(r.size.width.round() as u32, r.size.height.round() as u32),
+        ));
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// #1884: the runtime's half of bringing a window back — the requested
+/// position filtered by reachability, a saved one dropped at a show, the
+/// creation geometry published on a first appearance (a hidden start's
+/// first show included), and readings taken through the maximize wait.
+#[cfg(test)]
+mod window_restore_tests {
+    use super::window_geometry::{MonitorRect, WindowReading, published_test_guard};
+    use super::*;
+    use crate::windows::{WindowRestore, current_window_restore};
+    use rinch_core::element::WindowProps;
+    use winit::dpi::{PhysicalPosition, PhysicalSize};
+
+    fn component(scope: &mut RenderScope) -> NodeHandle {
+        scope.create_element("div")
+    }
+
+    fn one_monitor() -> Vec<MonitorRect> {
+        vec![MonitorRect {
+            position: PhysicalPosition::new(0, 0),
+            size: PhysicalSize::new(1920, 1080),
+            scale: 1.0,
+            name: None,
+        }]
+    }
+
+    fn runtime(props: WindowProps) -> RinchRuntime {
+        build_runtime(
+            component,
+            &WindowProps {
+                width: 800,
+                height: 600,
+                ..props
+            },
+            None,
+            &[],
+        )
+    }
+
+    fn attributes(runtime: &mut RinchRuntime, first_appearance: bool) -> WindowAttributes {
+        let steps = runtime.main_window_steps(Backend::X11, true);
+        runtime.main_window_attributes(steps, Backend::X11, false, first_appearance)
+    }
+
+    impl RinchRuntime {
+        fn take_reading_unnamed(&mut self, r: WindowReading) {
+            self.take_reading(r, None);
+        }
+    }
+
+    fn reading(maximized: bool, pos: (i32, i32), size: (u32, u32)) -> WindowReading {
+        WindowReading {
+            maximized,
+            minimized: false,
+            scale: 1.0,
+            position: Some(PhysicalPosition::new(pos.0, pos.1)),
+            surface: PhysicalSize::new(size.0, size.1),
+        }
+    }
+
+    /// The tray-app path: `visible: false` + `maximized: true`. The first
+    /// show is the first appearance, so it publishes the geometry the window
+    /// is created with; without it the restore answered the maximized size
+    /// and no position (Windows maximizes at creation, so the first reading
+    /// is already maximized).
+    #[test]
+    fn a_hidden_start_publishes_the_restore_geometry_at_its_first_show() {
+        let _guard = published_test_guard();
+        let mut rt = runtime(WindowProps {
+            visible: false,
+            maximized: true,
+            x: Some(100),
+            y: Some(80),
+            ..Default::default()
+        });
+        assert!(
+            !rt.begin_appearance(one_monitor(), false),
+            "the sizing window"
+        );
+        assert_eq!(current_window_restore(), None, "nothing on screen yet");
+        assert!(rt.begin_appearance(one_monitor(), true), "the first show");
+        let attrs = attributes(&mut rt, true);
+        assert!(attrs.maximized);
+        assert_eq!(
+            attrs.position,
+            Some(Position::Physical(PhysicalPosition::new(100, 80)))
+        );
+        rt.maximize_wait =
+            window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
+        rt.take_reading_unnamed(reading(true, (0, 0), (1920, 1050)));
+        assert_eq!(
+            current_window_restore(),
+            Some(WindowRestore {
+                position: Some((100.0, 80.0)),
+                size: (800.0, 600.0),
+                maximized: true,
+                monitor: None,
+            })
+        );
+        // A later show is no first appearance and publishes nothing new.
+        rt.shown_once = true;
+        assert!(!rt.begin_appearance(one_monitor(), true));
+    }
+
+    /// X11: the window manager maximizes later, and a resize can come while
+    /// the window does not say it is maximized yet. The restore keeps the
+    /// creation geometry and `maximized: true`.
+    #[test]
+    fn a_resize_before_the_maximize_is_reported_is_not_the_restore_geometry() {
+        let _guard = published_test_guard();
+        let mut rt = runtime(WindowProps {
+            maximized: true,
+            x: Some(100),
+            y: Some(80),
+            ..Default::default()
+        });
+        assert!(rt.begin_appearance(one_monitor(), true));
+        let attrs = attributes(&mut rt, true);
+        rt.maximize_wait =
+            window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
+        rt.take_reading_unnamed(reading(false, (100, 80), (800, 600)));
+        rt.take_reading_unnamed(reading(false, (0, 0), (1920, 1050)));
+        assert_eq!(
+            current_window_restore(),
+            Some(WindowRestore {
+                position: Some((100.0, 80.0)),
+                size: (800.0, 600.0),
+                maximized: true,
+                monitor: None,
+            })
+        );
+        assert_eq!(rt.saved_geometry.size, None, "no normal geometry recorded");
+    }
+
+    /// `WindowProps::x`/`y` out of reach (a monitor unplugged since it was
+    /// saved) is not given to winit; in reach it is.
+    #[test]
+    fn a_requested_position_out_of_reach_is_left_to_the_system() {
+        let _guard = published_test_guard();
+        let mut gone = runtime(WindowProps {
+            x: Some(5000),
+            y: Some(100),
+            ..Default::default()
+        });
+        gone.begin_appearance(one_monitor(), true);
+        assert_eq!(gone.requested_position(), None);
+        assert_eq!(attributes(&mut gone, true).position, None);
+        assert_eq!(current_window_restore().and_then(|r| r.position), None);
+    }
+
+    /// And one in reach is, in desktop pixels, and is what the restore
+    /// answers.
+    #[test]
+    fn a_requested_position_in_reach_is_taken() {
+        let _guard = published_test_guard();
+        let mut here = runtime(WindowProps {
+            x: Some(300),
+            y: Some(200),
+            ..Default::default()
+        });
+        here.begin_appearance(one_monitor(), true);
+        assert_eq!(
+            attributes(&mut here, true).position,
+            Some(Position::Physical(PhysicalPosition::new(300, 200)))
+        );
+        assert_eq!(
+            current_window_restore().and_then(|r| r.position),
+            Some((300.0, 200.0))
+        );
+    }
+
+    /// A show after a hide drops a saved position out of reach on the
+    /// monitors connected now, and keeps one in reach.
+    #[test]
+    fn a_show_drops_a_saved_position_out_of_reach() {
+        let _guard = published_test_guard();
+        let mut rt = runtime(WindowProps::default());
+        rt.shown_once = true;
+        let gone = Position::Physical(PhysicalPosition::new(5000, 100));
+        rt.saved_geometry.position = Some(gone);
+        assert!(!rt.begin_appearance(one_monitor(), true));
+        assert_eq!(rt.saved_geometry.position, None);
+
+        let kept = Position::Physical(PhysicalPosition::new(300, 200));
+        rt.saved_geometry.position = Some(kept);
+        rt.begin_appearance(one_monitor(), true);
+        assert_eq!(rt.saved_geometry.position, Some(kept));
+        // With no saved size, the window's own size decides: 800 wide at
+        // x = 1880 leaves 40 columns on screen.
+        let sliver = Position::Physical(PhysicalPosition::new(1880, 200));
+        rt.saved_geometry.position = Some(sliver);
+        rt.begin_appearance(one_monitor(), true);
+        assert_eq!(rt.saved_geometry.position, None);
+    }
+
+    /// #1884: `WindowProps::monitor` settles a mixed-scale position — A
+    /// (scale 1) at x 0..1920, B (scale 2) at 1920..5760; (1050, 50) is on
+    /// both — and the restore answers the monitor it was placed on.
+    #[test]
+    fn the_requested_monitor_places_the_window_and_is_published() {
+        let _guard = published_test_guard();
+        let mons = || {
+            vec![
+                MonitorRect {
+                    position: PhysicalPosition::new(0, 0),
+                    size: PhysicalSize::new(1920, 1080),
+                    scale: 1.0,
+                    name: Some("A".to_string()),
+                },
+                MonitorRect {
+                    position: PhysicalPosition::new(1920, 0),
+                    size: PhysicalSize::new(3840, 2160),
+                    scale: 2.0,
+                    name: Some("B".to_string()),
+                },
+            ]
+        };
+        let mut rt = runtime(WindowProps {
+            x: Some(1050),
+            y: Some(50),
+            monitor: Some("B".to_string()),
+            ..Default::default()
+        });
+        assert!(rt.begin_appearance(mons(), true));
+        assert_eq!(
+            attributes(&mut rt, true).position,
+            Some(Position::Physical(PhysicalPosition::new(2100, 100)))
+        );
+        let restore = current_window_restore().unwrap();
+        assert_eq!(
+            (restore.position, restore.monitor.as_deref()),
+            (Some((1050.0, 50.0)), Some("B"))
+        );
+    }
+
+    /// A position the app sets while the window is hidden is on no monitor
+    /// rinch can name: the published name goes with the old position.
+    #[test]
+    fn a_position_set_while_hidden_drops_the_monitor_name() {
+        let _guard = published_test_guard();
+        window_geometry::publish_window(
+            &reading(false, (100, 80), (800, 600)),
+            Some("A".to_string()),
+        );
+        assert_eq!(
+            current_window_restore().unwrap().monitor.as_deref(),
+            Some("A")
+        );
+        window_geometry::publish_hidden(Some((300.0, 200.0)), None);
+        assert_eq!(current_window_restore().unwrap().monitor, None);
+    }
+
+    /// #1884 re-review (D1): the window manager never maximizes a window
+    /// created maximized; it is dragged inside the grace and then left
+    /// alone, so no event reads it again. The reading taken when the grace
+    /// ends records the move and that it is not maximized; after it the
+    /// wait has no deadline, so no timed wake is armed for it again.
+    #[test]
+    fn the_reading_at_the_end_of_the_grace_records_a_refused_maximize() {
+        let _guard = published_test_guard();
+        let mut rt = runtime(WindowProps {
+            maximized: true,
+            x: Some(100),
+            y: Some(80),
+            ..Default::default()
+        });
+        assert!(rt.begin_appearance(one_monitor(), true));
+        let attrs = attributes(&mut rt, true);
+        rt.maximize_wait =
+            window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
+        rt.take_reading_unnamed(reading(false, (100, 80), (800, 600)));
+        rt.take_reading_unnamed(reading(false, (700, 400), (800, 600)));
+        let restore = current_window_restore().unwrap();
+        assert!(restore.maximized, "inside the grace: still waiting");
+        assert!(rt.maximize_wait.deadline().is_some(), "a wake is due");
+        rt.settle_maximize_wait_with(Some((reading(false, (700, 400), (800, 600)), None)));
+        let restore = current_window_restore().unwrap();
+        assert_eq!(
+            (restore.maximized, restore.position),
+            (false, Some((700.0, 400.0)))
+        );
+        assert_eq!(rt.maximize_wait.deadline(), None, "no wake after it");
+        // A window that is not shown (or none) still ends the wait.
+        rt.maximize_wait =
+            window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
+        rt.window = None;
+        rt.settle_maximize_wait();
+        assert_eq!(rt.maximize_wait.deadline(), None);
     }
 }

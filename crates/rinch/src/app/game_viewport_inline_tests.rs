@@ -273,6 +273,95 @@ fn video_keeps_its_black_bars_beside_a_game_viewport() {
     unregister_render_surface(game.id());
 }
 
+/// #1866 on the software window: the game is the base layer, so where its
+/// frame does not reach (a letterbox bar) nothing painted before it shows —
+/// here a white card that does **not** clip, whose background used to be cut
+/// only when it did (#974). The frame itself is drawn over the clear.
+#[test]
+fn a_game_letterbox_clears_a_non_clipping_ancestors_background() {
+    let game = create_render_surface_with_name("game-1866");
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 800px; height: 600px;");
+        let card = scope.create_element("div");
+        card.set_attribute(
+            "style",
+            "width: 400px; height: 100px; background-color: white;",
+        );
+        let viewport = scope.create_element("div");
+        viewport.set_attribute("style", "width: 100%; height: 100%;");
+        viewport.set_attribute("data-viewport", "game-1866");
+        card.append_child(&viewport);
+        root.append_child(&card);
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+
+    // A 2:1 frame in a 4:1 box: 100px bars either side.
+    submit(&game, MAGENTA);
+    paint(&mut app);
+
+    assert!(is(pixel_at(&app, 200, 50), MAGENTA), "the game frame");
+    assert_eq!(
+        pixel_at(&app, 40, 50),
+        [0, 0, 0, 0],
+        "the bar is cleared, not the card's white"
+    );
+
+    unregister_render_surface(game.id());
+}
+
+/// Review of #1883, D2: on the software window a `GameViewport` with a frame
+/// paints its border and its children over the frame, as the GPU window does
+/// over its layer. The inline arm it used to take drew the frame and
+/// nothing else. The frame fills the border box (the padding shows the game).
+#[test]
+fn a_game_viewport_paints_its_border_and_children_over_the_frame() {
+    let game = create_render_surface_with_name("game-1883-d2");
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 800px; height: 600px;");
+        let viewport = scope.create_element("div");
+        viewport.set_attribute(
+            "style",
+            "box-sizing: border-box; width: 400px; height: 200px; padding: 20px; \
+             border: 10px solid rgb(0, 0, 255);",
+        );
+        viewport.set_attribute("data-viewport", "game-1883-d2");
+        let child = scope.create_element("div");
+        child.set_attribute(
+            "style",
+            "width: 50px; height: 30px; background-color: rgb(0, 255, 255);",
+        );
+        viewport.append_child(&child);
+        root.append_child(&viewport);
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+
+    submit(&game, MAGENTA); // 2:1 into the 2:1 border box: no letterbox
+    paint(&mut app);
+
+    assert!(is(pixel_at(&app, 200, 100), MAGENTA), "the game frame");
+    assert!(
+        is(pixel_at(&app, 25, 25), MAGENTA),
+        "the padding shows the game, got {:?}",
+        pixel_at(&app, 25, 25)
+    );
+    assert!(
+        is(pixel_at(&app, 5, 100), BLUE),
+        "the border over the frame, got {:?}",
+        pixel_at(&app, 5, 100)
+    );
+    assert!(
+        is(pixel_at(&app, 50, 45), CYAN),
+        "the child over the frame, got {:?}",
+        pixel_at(&app, 50, 45)
+    );
+
+    unregister_render_surface(game.id());
+}
+
 // ── Cost: the inline frame against the blit it replaced (review of PR #1002) ──
 //
 // `cargo test --release -p rinch --features embed,theme,clipboard --lib --

@@ -580,10 +580,10 @@ impl RinchApp {
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::DropFiles { x, y, paths } => {
-                // An OS file drop, as the shell translates winit's (#1806):
-                // `DragEntered` with its paths is one `FileHoverEnter` per
-                // path at the point (X11 and Windows name the paths on
-                // entry), and `DragDropped` is one `FileDropped`. Through
+                // An OS file drop, as the shell translates winit's (#1806,
+                // #1962): the drag's URI list is one `FileHoverEnter` per
+                // path at the point once it is read, and `DragDropped` is one
+                // `FileDropped`. Through
                 // `handle_event`, so the drag-enter/leave attributes, the
                 // editor's drop caret and picture claim, and the drop
                 // handlers under the point all run as for a real drop. The

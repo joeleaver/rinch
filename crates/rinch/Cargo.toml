@@ -33,14 +33,12 @@ rinch-editable = { workspace = true, optional = true }
 rinch-words = { workspace = true, optional = true }
 parley = { workspace = true, optional = true }
 peniko = { version = "0.6", optional = true }
-vello = { version = "0.7", optional = true }
+vello = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
 
 # Desktop-only windowing/rendering (optional, enabled by `desktop` feature)
 bytemuck = { version = "1", features = ["derive"], optional = true }
 rinch-renderer = { workspace = true, optional = true }
-anyrender = { workspace = true, optional = true }
-anyrender_vello = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
 muda = { workspace = true, optional = true }
@@ -51,6 +49,9 @@ tracing-subscriber = { workspace = true, optional = true }
 png = { version = "0.17", optional = true }
 base64 = { version = "0.22", optional = true }
 keyboard-types = { version = "0.7", optional = true }
+# A file drag's `file:` URIs to paths (#1962; winit 0.31.0-beta.4 hands over
+# URIs, not paths).
+url = { version = "2", optional = true }
 
 # Optional features
 rinch-clipboard = { workspace = true, optional = true }
@@ -113,7 +114,9 @@ accesskit_unix = { version = "0.22", optional = true }
 # X11 overlay hints (`WM_HINTS.input`, `_NET_WM_STATE_SKIP_TASKBAR`, #1519) that
 # winit has no API for, and global hotkeys' X11 grabs + XInput2 raw key events
 # (`global-hotkeys`, #1521). Already in the graph through winit-x11.
-x11rb = { version = "0.13", default-features = false, features = ["xfixes", "shape", "xinput", "xkb"], optional = true }
+# RandR: a monitor's CRTC rectangle, which winit's video mode gives unrotated
+# (a portrait monitor reads as landscape, #1884).
+x11rb = { version = "0.13", default-features = false, features = ["xfixes", "shape", "xinput", "xkb", "randr"], optional = true }
 # zbus for the Wayland GlobalShortcuts portal (`global-hotkeys`, #1521, see
 # hotkey/backend/portal.rs) and the freedesktop notification service
 # (`notifications`, #1522, see notification/backend/freedesktop.rs), each run
@@ -201,7 +204,7 @@ desktop = [
     "dep:winit", "dep:muda",
     "dep:x11rb", "dep:objc2",
     "dep:tracing-subscriber",
-    "dep:png", "dep:base64", "dep:keyboard-types",
+    "dep:png", "dep:base64", "dep:keyboard-types", "dep:url",
     "dep:bytemuck",
     "dep:softbuffer", "rinch-dom/software-renderer",
     # The desktop shell implements + drives `PlatformRenderer` (over vello::Scene), so it
@@ -246,7 +249,7 @@ android = [
 gpu = [
     "desktop",
     "dep:vello", "dep:wgpu",
-    "dep:rinch-renderer", "dep:anyrender", "dep:anyrender_vello",
+    "dep:rinch-renderer",
     "dep:tokio", "dep:pollster", "dep:futures-util",
 ]
 android-gpu = [
@@ -269,6 +272,8 @@ embed = [
     "dep:peniko",
     "rinch-platform/renderer",
     "dep:vello", "dep:wgpu",
+    # The split compositor's uniforms (#1866).
+    "dep:bytemuck",
 ]
 file-dialogs = ["rfd"]
 clipboard = ["dep:rinch-clipboard"]

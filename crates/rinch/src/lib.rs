@@ -95,6 +95,12 @@ pub mod menu;
 pub mod render_surface;
 #[cfg(any(feature = "desktop", feature = "android"))]
 pub mod shell;
+/// The split-layer compositor and a window's split surfaces (#1865), shared
+/// by the desktop GPU window and the embed overlay (#1866).
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub(crate) mod split_compositor;
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub(crate) mod split_frame;
 /// Window-level facts and acts that work on the desktop and in the browser
 /// alike (issue #1770): [`open_url`](window::open_url),
 /// [`set_window_title`](window::set_window_title), and the reactive
@@ -269,19 +275,19 @@ pub mod prelude {
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{
-        close_current_window, current_window_position, current_window_size,
-        current_window_surface_kind, hide_current_window, minimize_current_window,
-        set_click_through_current_window, set_current_window_output, set_current_window_position,
-        set_current_window_size, show_current_window, start_window_drag, start_window_resize,
-        toggle_maximize_current_window,
+        WindowRestore, close_current_window, current_window_position, current_window_restore,
+        current_window_size, current_window_surface_kind, hide_current_window,
+        minimize_current_window, set_click_through_current_window, set_current_window_output,
+        set_current_window_position, set_current_window_size, show_current_window,
+        start_window_drag, start_window_resize, toggle_maximize_current_window,
     };
     #[cfg(all(feature = "android", not(feature = "desktop")))]
     pub use crate::windows_stub::{
-        close_current_window, current_window_position, current_window_size,
-        current_window_surface_kind, hide_current_window, minimize_current_window,
-        set_click_through_current_window, set_current_window_output, set_current_window_position,
-        set_current_window_size, show_current_window, start_window_drag, start_window_resize,
-        toggle_maximize_current_window,
+        WindowRestore, close_current_window, current_window_position, current_window_restore,
+        current_window_size, current_window_surface_kind, hide_current_window,
+        minimize_current_window, set_click_through_current_window, set_current_window_output,
+        set_current_window_position, set_current_window_size, show_current_window,
+        start_window_drag, start_window_resize, toggle_maximize_current_window,
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
@@ -404,10 +410,21 @@ pub use window::{
 /// Embedders that share a GPU device with rinch (see [`run_with_gpu_config`],
 /// [`run_with_external_device`], [`gpu_handle`], and
 /// [`render_surface::GpuTextureRegistrar`]) must construct `wgpu` types from
-/// **this** `wgpu` so the types match rinch's (rinch pins a patched fork). Use
-/// `rinch::wgpu::…` rather than a separate `wgpu` dependency.
+/// **this** `wgpu` (wgpu 30) so the types match rinch's. Use
+/// `rinch::wgpu::…` rather than a separate `wgpu` dependency; an app that
+/// needs an extra wgpu feature (e.g. `webgpu`) keeps `wgpu = "30"` with just
+/// that feature, and Cargo unifies it with rinch's.
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub use wgpu;
+
+/// Re-export of the exact `vello` rinch links against (#1955): Vello 0.11
+/// from `joeleaver/vello-fork` at a pinned commit, whose `vello_encoding`
+/// fixes two image-atlas bugs of stock Vello 0.11. Embedders that render
+/// rinch's scene (`embed::RinchContext::scene`) or build Vello types for it
+/// use `rinch::vello::…` (and `rinch::vello::peniko`, `rinch::vello::kurbo`),
+/// so they share rinch's copy and never link a second, unpatched Vello.
+#[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
+pub use vello;
 
 pub use rinch_core as core;
 /// Reactive primitives (Signal, Effect, Memo, Scope).

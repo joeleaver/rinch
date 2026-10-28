@@ -1534,11 +1534,12 @@ impl GpuContext {
     /// because `probe` is a local that drops before `attach` creates the other
     /// one. Do not hoist it into the returned struct.
     fn new(window: &ndk::native_window::NativeWindow) -> Option<Self> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             flags: wgpu::InstanceFlags::empty(),
             backend_options: wgpu::BackendOptions::from_env_or_default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            display: None,
         });
 
         let probe = match instance.create_surface(AndroidWindow {
@@ -1556,6 +1557,7 @@ impl GpuContext {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&probe),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })) {
                 Ok(a) => a,
                 Err(e) => {
@@ -1564,11 +1566,13 @@ impl GpuContext {
                 }
             };
 
-        let experimental = wgpu::Features::EXPERIMENTAL_RAY_QUERY
-            | wgpu::Features::EXPERIMENTAL_MESH_SHADER
-            | wgpu::Features::EXPERIMENTAL_RAY_HIT_VERTEX_RETURN
-            | wgpu::Features::EXPERIMENTAL_MESH_SHADER_MULTIVIEW
-            | wgpu::Features::EXPERIMENTAL_PASSTHROUGH_SHADERS;
+        // Every adapter feature but the experimental ones (which need
+        // `experimental_features` opted in) and passthrough shaders (an
+        // experimental feature until wgpu 28 renamed it; still excluded as
+        // before). wgpu 30 adds experimental features the old hand-written
+        // list did not name, so take wgpu's own mask (#1955).
+        let experimental =
+            wgpu::Features::all_experimental_mask() | wgpu::Features::PASSTHROUGH_SHADERS;
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("rinch-android-gpu"),
@@ -1785,7 +1789,7 @@ impl GpuContext {
 /// texture with `format_features.allowed_usages =
 /// TextureUsages::RENDER_ATTACHMENT` and a `flags` set containing only the
 /// two multisample bits, hard-coded, whatever the surface advertised. So no
-/// swapchain image is bindable as a storage texture in wgpu 27 and vello can
+/// swapchain image is bindable as a storage texture in wgpu 27 (nor 30) and vello can
 /// never write one, on any driver. That is a wgpu change, not a rinch one,
 /// and it is worth something like a millisecond and a half of a 17.4ms frame
 /// if it ever lands — which is not the difference between 58fps and 120, but
@@ -1919,6 +1923,7 @@ impl GpuSurface {
             desired_maximum_frame_latency: 2,
             alpha_mode,
             view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&ctx.device, &config);
 
@@ -2011,8 +2016,9 @@ impl GpuSurface {
     fn acquire(&mut self) -> Option<wgpu::SurfaceTexture> {
         for attempt in 0..2 {
             match self.surface.get_current_texture() {
-                Ok(frame) => return Some(frame),
-                Err(e @ (wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost))
+                wgpu::CurrentSurfaceTexture::Success(frame)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => return Some(frame),
+                e @ (wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost)
                     if attempt == 0 =>
                 {
                     // Read rather than claim: this line sits in front of the
@@ -2025,7 +2031,7 @@ impl GpuSurface {
                     }
                     self.reconfigure();
                 }
-                Err(e) => {
+                e => {
                     if self.faults.failed() {
                         log::error!(
                             "GPU: acquire failed: {e:?}. The frame is owed, so the loop \
@@ -2110,7 +2116,7 @@ impl GpuSurface {
         self.blitter
             .copy(&self.device, &mut encoder, &self.target_view, &view);
         self.queue.submit(std::iter::once(encoder.finish()));
-        frame.present();
+        self.queue.present(frame);
         self.faults.presented();
         true
     }
@@ -2191,9 +2197,9 @@ mod gpu_diagnostic {
         log::info!("=== GPU DIAGNOSTIC TESTS ===");
 
         // 1. Create device
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         let adapter =
@@ -2201,6 +2207,7 @@ mod gpu_diagnostic {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })) {
                 Ok(a) => a,
                 Err(e) => {
@@ -2213,11 +2220,13 @@ mod gpu_diagnostic {
         log::info!("TEST: Adapter: {} ({:?})", info.name, info.backend);
         log::info!("TEST: Driver: {}", info.driver_info);
 
-        let experimental = wgpu::Features::EXPERIMENTAL_RAY_QUERY
-            | wgpu::Features::EXPERIMENTAL_MESH_SHADER
-            | wgpu::Features::EXPERIMENTAL_RAY_HIT_VERTEX_RETURN
-            | wgpu::Features::EXPERIMENTAL_MESH_SHADER_MULTIVIEW
-            | wgpu::Features::EXPERIMENTAL_PASSTHROUGH_SHADERS;
+        // Every adapter feature but the experimental ones (which need
+        // `experimental_features` opted in) and passthrough shaders (an
+        // experimental feature until wgpu 28 renamed it; still excluded as
+        // before). wgpu 30 adds experimental features the old hand-written
+        // list did not name, so take wgpu's own mask (#1955).
+        let experimental =
+            wgpu::Features::all_experimental_mask() | wgpu::Features::PASSTHROUGH_SHADERS;
         let features = adapter.features() - experimental;
 
         let (device, queue) =
@@ -2298,8 +2307,8 @@ mod gpu_diagnostic {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -2339,7 +2348,7 @@ mod gpu_diagnostic {
             submission_index: None,
             timeout: None,
         });
-        let data = slice.get_mapped_range();
+        let data = slice.get_mapped_range().expect("the buffer is mapped");
         let vals: &[u32] = bytemuck::cast_slice(&data);
         if vals[0] == 42 && vals[1] == 43 {
             log::info!(
@@ -2407,8 +2416,8 @@ mod gpu_diagnostic {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {

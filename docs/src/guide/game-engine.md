@@ -191,7 +191,7 @@ registrar.notify_frame_ready();
 
 `gpu_handle()` returns `None` until the window's GPU renderer has started, and for the whole session when the window presents with the software renderer: `Renderer::Software` was chosen, a user set `RINCH_RENDERER=cpu`, or the GPU would not start and `Renderer::Auto` fell back (see [Rendering Backends](windows.md#rendering-backends)). An app that configures the device with `App::gpu_config` or `App::external_gpu` (below) is exempt: it always presents on the GPU, or panics at startup if the GPU will not start, so once its window is up the handle is there.
 
-> **Use `rinch::wgpu`.** rinch pins a patched `wgpu` fork. Construct every `wgpu` type you hand back to rinch (`TextureView`, config features/limits, …) from `rinch::wgpu::…`, not a separately-pinned `wgpu` dependency, or the types won't match.
+> **Use `rinch::wgpu` and `rinch::vello`.** rinch re-exports the exact crates it links: `rinch::wgpu` (**wgpu 30**, crates.io) and `rinch::vello` (**Vello 0.11** from `joeleaver/vello-fork` at a pinned rev, with `rinch::vello::peniko` and `rinch::vello::kurbo`). Construct every `wgpu` or Vello type you hand to rinch (`TextureView`, config features/limits, a `Scene`, colours, shapes, …) from these, instead of declaring your own `wgpu`/`vello` dependencies, so the versions can never drift. If you need an extra wgpu feature (e.g. `webgpu`), keep `wgpu = "30"` in your `Cargo.toml` with just that feature; Cargo unifies it with rinch's.
 
 ### Sharing a High-Capability GPU Device
 
@@ -231,6 +231,81 @@ App::new(app).external_gpu(gpu).run();
 ```
 
 The provided device is published through `gpu_handle()`. On a single-GPU machine a headless adapter (`compatible_surface: None`) usually presents fine; on multi-GPU systems create the adapter from a surface-compatible one, or prefer `App::gpu_config` (which guarantees compatibility). See the `gpu-device-config` example for both modes.
+
+### Migrating from wgpu 27 to 30
+
+rinch moved from wgpu 27 / Vello 0.7 to **wgpu 30 / Vello 0.11** (#1955), and
+dropped its patched wgpu fork: there is no wgpu `[patch.crates-io]` to copy any
+more. An app that shares rinch's `Device` (`App::gpu_config`,
+`App::external_gpu`, `gpu_handle()`, `GpuTextureRegistrar`, a GPU render
+callback, the embed API) uses the same wgpu, so its own wgpu code moves with
+it. The changes rinch's own code and examples needed:
+
+| wgpu 27 | wgpu 30 |
+|---|---|
+| `Instance::new(&InstanceDescriptor { .. })` | `Instance::new(InstanceDescriptor { .., display: None })` (by value) |
+| `InstanceDescriptor::default()` / `from_env_or_default()` | `new_without_display_handle()` / `new_without_display_handle_from_env()` (or the `with_display_handle` forms) |
+| `SurfaceTargetUnsafe::RawHandle { raw_display_handle: h, .. }` | `raw_display_handle: Some(h)` |
+| `RequestAdapterOptions { .. }` | add `apply_limit_buckets: false` (or `..Default::default()`) |
+| `SurfaceConfiguration { .. }` | add `color_space: SurfaceColorSpace::Auto` (the old behaviour) |
+| `surface.get_current_texture()` → `Result<SurfaceTexture, SurfaceError>` | → `CurrentSurfaceTexture::{Success, Suboptimal, Timeout, Occluded, Outdated, Lost, Validation}` |
+| `frame.present()` | `queue.present(frame)` |
+| `slice.get_mapped_range()` → `BufferView` | → `Result<BufferView, MapRangeError>` |
+| `device.push_error_scope(f); … device.pop_error_scope()` | `let g = device.push_error_scope(f); … g.pop()` |
+| `PipelineLayoutDescriptor { bind_group_layouts: &[&l], push_constant_ranges: &[] }` | `bind_group_layouts: &[Some(&l)], immediate_size: 0` |
+| `RenderPipelineDescriptor { multiview: None, .. }` | `multiview_mask: None` |
+| `RenderPassDescriptor { .. }` | add `multiview_mask: None` |
+| `VertexState { buffers: &[layout] }` | `buffers: &[Some(layout)]` |
+| `DepthStencilState { depth_write_enabled: true, depth_compare: Less, .. }` | `Some(true)`, `Some(CompareFunction::Less)` |
+
+Each row was checked against the wgpu 27.0.1 and 30.0.1 sources; wgpu's own
+changelog has the rest (v28.0.0, v29.0.0, v30.0.0 sections). A `RenderSurface`
+frame, a registered texture and a Vello scene from the embed API composite as
+before; Vello 0.9 began sampling images at pixel centres, and rinch's painter
+adjusted, so its images are drawn at the same pixels.
+
+**Use `rinch::vello`; no patch line is needed.** rinch depends on Vello 0.11
+from `joeleaver/vello-fork` at a pinned commit (#1955): stock Vello 0.11 makes
+every image already in its atlas draw transparent after any render of a scene
+with no image, gradient or text, and keeps an image in its atlas for two renders
+after its last use, so large or many images can go undrawn; the fork fixes both.
+An app on rinch gets it as an ordinary dependency. Build Vello types (a
+`Scene`, `peniko` colours, `kurbo` shapes, a `vello::Renderer` for the embed
+API's `scene()`) from `rinch::vello`, `rinch::vello::peniko` and
+`rinch::vello::kurbo`, not from a `vello` dependency of your own, which would
+be a second, unpatched copy whose types do not match rinch's. If you register your own textures with
+`Renderer::register_texture` and draw into them in place, call
+`Renderer::mark_override_image_dirty` before each render that should show the
+new contents (Vello 0.9+ copies an override texture into its atlas only when it
+is new or marked).
+
+**Migrating an app from the wgpu-27 rinch:**
+
+- Delete your wgpu-fork `[patch.crates-io]` lines (`wgpu`, `wgpu-core`,
+  `wgpu-hal`, `wgpu-types`, `naga`); rinch no longer uses a wgpu fork. Delete
+  the winit and dpi ones too (rinch takes its winit fork as a pinned
+  dependency since #1962), and add nothing for Vello.
+- If you share rinch's GPU device or build Vello types, use `rinch::wgpu` and
+  `rinch::vello` instead of declaring your own `wgpu`/`vello` dependencies, so
+  the versions can never drift.
+- If you need an extra wgpu feature (e.g. `webgpu`), keep `wgpu = "30"` with
+  just that feature; Cargo unifies it with rinch's.
+
+**An app that drives winit itself** (an engine's own window and event loop
+beside the embed API, as `examples/game-embed` does) declares its own winit;
+no rinch API takes a winit type. rinch is on winit 0.31.0-beta.4 (#1962);
+naming the same dependency keeps one winit in the build:
+
+```toml
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "34f153bd6e523de53f9da67c6db58bd1f8732542" }
+```
+
+From beta.2, winit's public enums are `#[non_exhaustive]` (a `match` on
+`MouseScrollDelta`, `PointerSource`, `ButtonSource` and the rest needs a `_`
+arm), and an OS drag is a data transfer: `DragEntered { id, position }`,
+`DragPosition`, `DragDropped { id, .. }` and `DragLeft`, with the dragged
+data fetched by `ActiveEventLoop::fetch_data_transfer` and accepted with
+`set_valid_dnd_actions` (winit's changelog, beta.3 and beta.4).
 
 ### Layout Size
 
@@ -499,7 +574,7 @@ fn main() {
         }
 
         game.render(&device, &queue);
-        let ui_texture = overlay.render(&device, &queue, ctx.scene());
+        let ui_texture = overlay.render(&device, &queue, &mut ctx);
         composite(&device, &queue, &surface, game_texture, ui_texture);
     }
 }
@@ -751,12 +826,70 @@ if let Some(rect) = ctx.viewport_rect("main") {
 }
 ```
 
-> **A hole with nothing behind it: `data-viewport-ready`.** Cutting the hole
-> removes the ancestors' background — `<body>`'s included, since the UA sheet
-> makes it `overflow-y: auto` — so on a transparent window a hole nothing fills
-> is see-through to the desktop, not to your app ([#186]). A viewport whose
+#### The viewport is the base layer
+
+**Nothing behind a `GameViewport` is ever visible.** Its box shows the game's
+pixels: everything painted beneath the viewport — ancestor backgrounds
+(whether or not they clip), earlier siblings, the window's base colour — is
+replaced there by the game (or, in an embedded context, left transparent for
+yours). What
+is painted *after* it draws over the game as usual: its own border, its
+children, later siblings, an element with a higher `z-index`, popups, your
+HUD. So a full-window panel with a background around the viewport needs no
+special treatment.
+
+The clear is the viewport's own shape — a `border-radius` on it rounds the
+game's corners, the UI covering them — and it is clipped by the viewport's
+clipping ancestors and moved by its transform, like any paint of the element.
+It holds on the desktop GPU window, which composites the game under the UI and
+replaces what is beneath the viewport there; in an embedded context, where
+`RinchOverlayRenderer::render(&device, &queue, &mut ctx)` leaves the texture
+transparent inside the viewport for your host to composite the game under;
+and on the software window, which clears the box and draws the frame in the
+scene. A clipping ancestor with a background — an `overflow: hidden` panel,
+square or rounded, or a scroller the viewport is partly scrolled out of — is
+replaced under the viewport's visible part, edges included, on all three.
+
+> **Rendering `ctx.scene()` yourself.** A host that renders the scene with
+> its own Vello renderer, instead of `RinchOverlayRenderer`, gets the
+> viewport cleared *in the scene*, which is approximate inside a clip: along a
+> clipping ancestor's edges near the viewport (within one 16px tile), Vello
+> keeps what the clip saved, so a band of that ancestor's background can show
+> over the game. `RinchOverlayRenderer::render` cuts the viewport out after
+> Vello and has no band. The desktop GPU window falls back to the same
+> in-scene clear for a frame in which the viewport sits in a group effect or
+> under a rotation (below), which the debug warnings name.
+
+**The game fills the viewport's border box.** The viewport is a base layer,
+not a framed element: the game's layer (or, on the software window, its
+frame, fitted `contain`) covers the whole box, and the viewport's own border
+and its children are painted over it, so a border hides the game's edge and
+the padding shows the game. That differs from a `RenderSurface`, whose frame
+sits in its content box, inside its padding. `RinchContext::viewport_rect`
+reports that border box, so render the game at its size.
+
+Two things break the rule, and a **debug build warns once per viewport**,
+naming it and the element responsible:
+
+- **A group effect** on the viewport or an ancestor — `opacity` below 1,
+  `mask-image`, or `filter`. The viewport is cleared inside the group, and the
+  group is then composited over what is beneath it, so that shows through over
+  the game. Put the effect on the viewport's siblings instead, or move the
+  viewport out of the element.
+- **A transform other than a translation** (a rotation, scale or skew) on the
+  viewport or an ancestor: the clear turns with the element, but the game's
+  layer is composited axis-aligned at the viewport's box. Keep the viewport's
+  transforms to translations. (The software window draws the frame under the
+  same transform, so there only the group warning applies; the desktop GPU
+  window composites a translated or scaled viewport exactly, and warns only
+  for a rotation or skew.)
+
+> **A hole with nothing behind it: `data-viewport-ready`.** The clear removes
+> everything beneath the viewport, the window's base included, so on a
+> transparent window a hole nothing fills is see-through to the desktop, not
+> to your app ([#186]). A viewport whose
 > content can be *absent* opts out by stamping `data-viewport-ready="false"` on
-> the hole; paint then leaves the backgrounds alone and the node paints its own
+> the hole; paint then clears nothing and the node paints its own
 > `background`, which is the natural seat for a poster or an error affordance.
 > Set it back to `"true"` once there is something to show.
 >
@@ -787,7 +920,7 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > path only: video is drawn in the scene on the GPU too (below), with the same
 > black bars the software backend paints. The GPU compositor **aspect-fits** a frame inside its viewport,
 > so a source whose aspect ratio differs from the box leaves letterbox or
-> pillarbox bars — inside the punched hole, but covered by no layer. That was
+> pillarbox bars — inside the cleared box, but covered by no layer. That was
 > see-through to the desktop for a video playing perfectly. The compositor now
 > pushes an opaque black layer over the **whole** viewport box under the frame's
 > own layer, so the bars come out black exactly as a browser paints them for
@@ -818,8 +951,9 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > `DropdownMenu`, `Select`'s popup, tooltips, a HUD, DevTools — was overwritten.
 > GPU has no such problem: its layers go down *first* and the Vello UI
 > alpha-blends on top, so an opaque drawer already covers the layer there. But a
-> layer under the UI shows only through the backgrounds of *clipping* ancestors
-> (where paint cuts its hole), and takes no ancestor's opacity or transform, so
+> layer under the UI showed only through the backgrounds of *clipping* ancestors
+> (where paint then cut its hole; since #1866 the viewport clears its own box),
+> and took no ancestor's opacity or transform, so
 > since #1768 video is drawn in the scene on the GPU as on software: an element
 > like any other. Cost, measured on an integrated GPU (Radeon 890M): a 4K
 > full-window video is about 25 ms a frame in the scene against 6 ms as a layer;
@@ -866,10 +1000,11 @@ if let Some(rect) = ctx.viewport_rect("main") {
 >   the active-viewport set and #186's filter reads "absent ⇒ do not punch". The
 >   node fills opaque black under the frame, and the `contain` fit plus that fill
 >   *are* #354's letterbox bars on this backend.
-> - **`GameViewport`** keeps its hole while it has a frame, as it always had: its
->   ancestors' backgrounds are cut away under it and no black is drawn, so where
->   the frame does not reach — a letterbox, or pixels the game left transparent —
->   is the hole, see-through on a transparent window.
+> - **`GameViewport`** keeps its hole while it has a frame: it is the base layer
+>   (above), so its box is cleared of everything painted beneath it and no black
+>   is drawn, and where the frame does not reach — a letterbox, or pixels the
+>   game left transparent — is the hole: see-through on a transparent window,
+>   black on an opaque one.
 >
 > The two are told apart by an explicit flag set at video's registration site,
 > **not** by the viewport's name — they share `create_render_surface_with_name`,
@@ -1018,7 +1153,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | Method | Description |
 |--------|-------------|
 | `new(device, w, h, format)` | Create from game's wgpu device |
-| `render(device, queue, scene) -> TextureView` | Render scene to texture |
+| `render(device, queue, &mut ctx) -> TextureView` | Render the context's UI to a texture, transparent inside each `GameViewport` (straight alpha). Call it in place of `ctx.scene()`. Before #1866 it took `ctx.scene()` |
 | `resize(device, w, h)` | Resize render target |
 | `texture()` | Get the underlying wgpu Texture |
 

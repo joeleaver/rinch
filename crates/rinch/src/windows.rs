@@ -472,6 +472,45 @@ pub fn current_window_size() -> Option<(f64, f64)> {
     crate::shell::window_geometry::published().and_then(|g| g.size)
 }
 
+/// How to bring the main window back as it is now, for an app that keeps
+/// it across runs: the position and size it has when it is neither maximized
+/// nor minimized (what an un-maximize returns to), and whether it is
+/// maximized. Give them back as `WindowProps::x`/`y`, `width`/`height` and
+/// `maximized`; a position out of reach on the monitors connected then (one
+/// since unplugged) is left to the system.
+///
+/// Separate from [`WindowState`], which is the programmatic-window API's
+/// *current* geometry per [`WindowHandle`]: this is the main window's
+/// *normal* geometry, and its position is `None` where the platform gives
+/// none (Wayland).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowRestore {
+    /// Outer top-left on the desktop, logical pixels; `None` on Wayland.
+    pub position: Option<(f64, f64)>,
+    /// Inner (content) size, logical pixels.
+    pub size: (f64, f64),
+    /// Whether the window is maximized.
+    pub maximized: bool,
+    /// The platform's name for the monitor `position` is on; give it back as
+    /// `WindowProps::monitor`. On a desktop whose monitors have different
+    /// scales a logical position can name a point on two of them, and this
+    /// says which. `None` with no position, or where the platform names no
+    /// monitor.
+    pub monitor: Option<String>,
+}
+
+/// What [`WindowRestore`] says of the current window, to read at exit and
+/// persist. `None` before the window first exists. Callable from any thread.
+pub fn current_window_restore() -> Option<WindowRestore> {
+    let g = crate::shell::window_geometry::published()?;
+    Some(WindowRestore {
+        position: g.normal_position,
+        size: g.normal_size.or(g.size)?,
+        maximized: g.maximized,
+        monitor: g.normal_monitor,
+    })
+}
+
 /// Move the current window's outer top-left to `(x, y)`, logical pixels on
 /// the desktop (issue #1546). While the window is hidden, this is where
 /// [`show_current_window`] puts it. Applied on the event loop's next turn, so

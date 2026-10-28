@@ -410,9 +410,10 @@ inside a region for a later PR:
   splitting stays off for 120 frames before it is tried again. The record's
   "until the style or structure generation changes" has nothing to key on:
   rinch has no such generation.
-- **While a `GameViewport` layer is under the UI the window does not split**
-  (and the surfaces it had split are repainted into the scene). See *Video,
-  and later GameViewport*.
+- **A `GameViewport` is split as a base slice** since #1866 (*As built
+  (#1866)* below). Only while its split is refused does a `GameViewport`
+  layer go under the UI, and then the window does not split that frame (and
+  the surfaces it had split are repainted into the scene).
 - **The memory cap (D6) as built (PR 5).** Counted: the scratch target at
   the size the kept slices need (it is dropped when larger) and each kept
   slice's coverage masks and above slices (R-sized each). Not counted: the
@@ -600,6 +601,40 @@ Nothing in below's encoding changes (no clip is closed or reopened), and the
 oracle is the same one, with the in-scene reference painting the viewport's
 box transparent. It is a `SurfaceDraw` with a `base: bool`; PR 3's
 `SplitFrame` and `SplitCompositor` are where it goes; until then a window with a `GameViewport` layer does not split.
+
+**As built (#1866, PR #1883).**
+
+- **Two coverages, not one.** A letterboxed frame covers less than the box,
+  so `own` stays the image's coverage (as for a surface) and a base slice
+  adds a `clear`, the box under its own radius (`BaseSlice`, `BaseDraw`):
+  `X = above_in ∘ (game · own ∘ black · clear + below · (1 − clear))`, where
+  `black` (opaque black under the image inside the clear) is set for a CPU
+  frame, fitted `contain`, which keeps the layered path's black bars (#354).
+  A GPU texture is stretched over the box (`fill`), as the layer was, so
+  there `own` is the clear. Texels are composited as they are (the layer
+  path's premultiplied reading).
+- **Paint** offers the viewport where it used to erase it, after its own
+  background and inset shadow (`offer_base_split`); taken, nothing is
+  cleared in the scene. The runtime names the viewports it may split
+  (`set_base_viewports`) and holds no layers then: the UI is rendered over the
+  window's base.
+- **A refused base split** (D3a, D4a, D7a, D6, D5a: the same refusals as a
+  surface's) is reported (`take_base_refused`), and the runtime paints the
+  frame again with nothing split and the games as layers under the UI, with
+  a plain in-scene `DestinationOut` erase (no clip closed or reopened), for
+  120 frames before it tries again (R1, Joe 2026-10-27). That erase leaves a
+  band of a clipping ancestor's background along the clip's edges near the
+  viewport, in the tiles its outline crosses; the group and transform cases
+  warn already.
+- **The embed overlay** splits too (Joe, 2026-10-27): `RinchOverlayRenderer::render`
+  takes `&mut RinchContext` (it took `ctx.scene()`), paints with every
+  viewport a base with no game (`set_bases_without_game`), and composites with
+  `composite_straight`, so its texture stays straight alpha. `RinchContext::scene()`
+  keeps the in-scene erase, for hosts with their own Vello. The split modules
+  moved from `shell` to the crate root so the `embed` build has them.
+- **The order** this record assumed (base layers first, below second, split
+  surfaces after) is now one pass: a base is a slice like the others, and two
+  regions never overlap (D7).
 
 ## Oracle
 
@@ -895,10 +930,13 @@ a split defect and nothing in the split path can remove it.
 
 ## Risks
 
-1. **Registered but undrawn images. Resolved: free.** Vello 0.7 builds its
+1. **Registered but undrawn images. Resolved: free.** Vello 0.7 built its
    atlas only from the images a scene draws (`Patch::Image` entries in
    `vello_encoding`'s resolver); the override table is consulted only for
-   those. Pinned in `shell/split_slices_1865_tests.rs`: a registered texture
+   those. Vello 0.9+ keeps images resident across renders but still copies an
+   override texture only for a scene that draws it, and with rinch's patched
+   `vello_encoding` (#1955) an undrawn image's atlas space goes to any image
+   the current render needs, so an undrawn registration still costs nothing. Pinned in `shell/split_slices_1865_tests.rs`: a registered texture
    that is then destroyed raises no error through renders whose scene does
    not draw it, and the control, a scene that does, raises one. RADV and
    lavapipe agree.

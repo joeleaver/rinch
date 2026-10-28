@@ -294,6 +294,20 @@ Chrome holds it for the run; and an animation with no fill that finishes keeps
 its last sample, and so stays a context (#783). The `HitStyleKey` keys
 `is_none`, not identity.
 
+**A `GameViewport` is the base layer at its place in paint order** (#1866). What paints
+before the viewport (ancestor backgrounds, an earlier or lower-`z-index` sibling) does not show
+inside its box; what paints after it (a later sibling, a higher `z-index`, a hoisted popup)
+covers it; the box is clipped by the viewport's own clip chain and moved by its transform. On
+the GPU window and the embed overlay paint splits the viewport out there as a base slice and the
+split compositor replaces what is beneath it; elsewhere (software, `RinchContext::scene()`, a
+refused split) paint erases the box in the scene. A group the viewport sits in breaks the rule —
+`opacity < 1`, `mask-image` or `filter` on an ancestor (or the viewport), whose layer is
+composited over what is beneath it — and on the GPU it refuses the split (the frame falls back
+to the layered path); a debug build says so once per viewport. In the layered fallback the
+compositor's hole mask (`viewport_rect_with_radius`, above) rounds the *layer* by a clipping
+ancestor's radius, and the viewport's own radius is the erase's.
+Detail: `paint-and-damage.md`, "Viewport holes".
+
 **An identity transform costs what any stacking context costs**, the same as
 `opacity: 0.99`: it is hoisted, and until #1719 neither the off-screen paint
 cull nor hit testing's flow-extent prune skipped one — 300 rows in a 400px

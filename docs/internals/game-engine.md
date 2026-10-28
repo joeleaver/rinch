@@ -278,7 +278,30 @@ the runtime's own steps against an in-scene window.
 | `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits })` | rinch creates the device (surface-compatible adapter) with your extra features/limits | You just need more capability — **recommended**, always presents correctly |
 | `App::new(component).external_gpu(ExternalGpu { instance, adapter, device, queue })` | You create the whole stack; rinch makes only the surface, validates present-support, composites onto your device | You must keep your exact `DeviceDescriptor` |
 
-Construct `wgpu` types from **`rinch::wgpu`** (rinch pins a patched fork — a separate `wgpu` dep won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
+Construct `wgpu` types from **`rinch::wgpu`** (wgpu 30; a separately pinned `wgpu` of another major won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
+
+**`GameViewport` is the base layer (#1866).** A `GameViewport`'s (and a
+`GpuTextureRegistrar` texture's) frame is a layer *under* the UI — the desktop GPU compositor's,
+or the embed host's under `RinchOverlayRenderer`'s texture — so the UI must be transparent over
+it. Paint erases the viewport's box (its own radius, its clip chain, its transform) when it
+reaches the node in paint order, so nothing painted before it shows there — ancestor
+backgrounds whether or not they clip, earlier siblings, the window base — and what paints after
+it (its border, later siblings, popups, a HUD) covers the game as usual. It replaced the hole
+cut into *clipping* ancestors' backgrounds (#974), under which a non-clipping ancestor with a
+background covered the game and the documented fix was `overflow: hidden` on it. A debug
+build warns once per viewport where the rule cannot hold: an ancestor (or the viewport) with
+`opacity < 1`, `mask-image` or a `filter`, whose group is composited over what is beneath it
+after the erase, and a rotate/scale/skew transform, whose erase is not the axis-aligned rect the
+layer is blitted at. The software window draws the frame in the scene right after the erase,
+under the same transform, so only the group warning applies there. The game fills the viewport's **border box** (its border and children paint over it, its
+padding shows it; `viewport_rect` reports that box), where a `RenderSurface` frame sits in its
+content box. On the GPU window and the embed overlay the viewport is not erased in the scene: it
+is split out as a **base** slice and the split compositor replaces what is beneath it inside its
+box (#1865's compositor with one term changed); a refused split falls back to the layered path
+with an in-scene erase, which is approximate inside clips. `RinchContext::scene()` erases in the
+scene too. Mechanism and pins:
+`paint-and-damage.md`, "Viewport holes". `RenderSurface` frames are drawn in the scene and erase
+nothing.
 
 **Web (canvas viewport, issue #91):** the **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`, but the model is inverted — the **browser** composites, so rinch only creates and manages a `<canvas>` "viewport hole"; the **app owns the GPU context**. rinch links **no wgpu** on web.
 
@@ -311,7 +334,7 @@ build with `"gpu"`.
 |------|---------|
 | `RinchContext` | Main handle — `new()`, `update()`, `scene()`. Multiple contexts can coexist on one thread (#134): each holds its own `subscribe_signal_change` guard, and bounds signals / editor registrations / focus requests are scoped per document via `DomDocument::doc_key()`. Stores/contexts are namespaced per context with a thread-global fallback (#136): `create_store` inside a context lands in that context's namespace (cleared on drop), its effects/handlers resolve it first, and lookups fall back to stores created outside any context. |
 | `RinchContextConfig` | Width, height, scale factor, optional theme |
-| `RinchOverlayRenderer` | Convenience Vello-to-texture renderer |
+| `RinchOverlayRenderer` | Renders a context's UI to a texture: `render(device, queue, &mut ctx)` (since #1866; it took `ctx.scene()` before). Its `GameViewport`s are cut out by the split compositor, exactly; a host rendering `ctx.scene()` with its own Vello gets an in-scene erase, approximate inside clips |
 | `GameViewport` | Component marking a transparent hole for game rendering. **Hittable by default** (#207): `wants_mouse` routes input by hit-testing the hole and walking up to `data-viewport`, so an unhittable hole makes the UI claim the mouse *everywhere*. `pointer-events: auto; background: transparent;` come from the UA stylesheet rule for `[data-viewport]` — not an inline style — so restyling the hole can't strip them, and a HUD root's inherited `pointer-events: none` can't reach it. Your own HUD controls under such a root still need `pointer-events: auto`. It also stamps **no** `data-viewport-ready`, and absence means ready, so its hole is unconditional (#186) — see the **Viewport holes** note under Rendering Backends. |
 | `LayoutRect` | `{x, y, width, height}` in logical pixels |
 
@@ -323,7 +346,7 @@ let mut overlay = RinchOverlayRenderer::new(&device, w, h, format);
 loop {
     let actions = ctx.update(&events);
     game.render();
-    let ui = overlay.render(&device, &queue, ctx.scene());
+    let ui = overlay.render(&device, &queue, &mut ctx);
     composite(game_texture, ui);
 }
 ```

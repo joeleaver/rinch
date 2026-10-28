@@ -141,11 +141,13 @@ mod gpu {
     const H: u32 = 64;
 
     fn render(scene: &vello::Scene) -> Vec<[u8; 4]> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .expect("a GPU adapter (these fixtures are #[ignore]d for hosts without one)");
         let (device, queue) =
@@ -219,7 +221,10 @@ mod gpu {
         queue.submit(Some(encoder.finish()));
         buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let data = buffer.slice(..).get_mapped_range();
+        let data = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("the buffer is mapped");
         (0..H)
             .flat_map(|y| {
                 let r = &data[(y * row) as usize..];
@@ -287,6 +292,7 @@ mod gpu {
                         width: img.width,
                         height: img.height,
                         decoded: None,
+                        frame: None,
                         opaque: false,
                     },
                     Affine::translate((x, y))

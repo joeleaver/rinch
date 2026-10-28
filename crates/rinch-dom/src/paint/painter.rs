@@ -139,6 +139,12 @@ pub enum BlendMode {
     /// such a layer inside the layer holding the element. Never elided at
     /// opacity 1.
     DestinationIn,
+    /// Erase what is beneath the layer where the layer is opaque, scaled by
+    /// its alpha (Porter-Duff `destination-out`): the layer is an eraser. A
+    /// `GameViewport` clears its box to transparent this way when paint
+    /// reaches it, so the compositor's layer under the UI shows there and
+    /// nothing painted before it does (#1866). Never elided at opacity 1.
+    DestinationOut,
 }
 
 // ── Image data ──────────────────────────────────────────────────────────────
@@ -155,6 +161,12 @@ pub struct PaintImage<'a> {
     /// premultiplied) can keep that form on the entry instead of converting
     /// on every draw. `None` for a live frame source.
     pub decoded: Option<&'a crate::image_cache::DecodedImage>,
+    /// The shared buffer `data` lives in, for a live frame source (a CPU
+    /// `RenderSurface` frame, a video frame). A painter that keeps images
+    /// (Vello) shares the buffer and keeps one identity per buffer, so a
+    /// frame repainted unchanged is not uploaded again (#1955). `None` for a
+    /// decoded image (it has `decoded`) and for pixels made for one draw.
+    pub frame: Option<&'a std::sync::Arc<Vec<u8>>>,
     /// Every pixel's alpha is 255, as the producer promises (a live frame
     /// source checks at submit, on its own thread). Opaque pixels are their
     /// own premultiplied form, so the software painter skips premultiplying
@@ -227,6 +239,24 @@ pub struct SurfaceSplit {
     /// shadows and outline, transformed): where the paint cull reaches it,
     /// so where damage makes the frame paint it, and split it, again.
     pub ink: Rect,
+    /// Set for a `GameViewport`, the **base** layer (#1866): inside `clear`
+    /// the game replaces what was painted before it, instead of going over
+    /// it (`docs/design/split-layer-gpu-surfaces.md`, *How `GameViewport`
+    /// fits on the split path*). `None` for a surface or a video.
+    pub base: Option<BaseSplit>,
+}
+
+/// What makes a [`SurfaceSplit`] a base layer (#1866).
+#[derive(Clone, Debug)]
+pub struct BaseSplit {
+    /// The viewport's box under its own `border-radius`, in the element's
+    /// space (drawn with `node_transform`): where nothing painted beneath it
+    /// shows. The image (`image_transform`, `extents`) may cover less of it,
+    /// letterboxed.
+    pub clear: PaintShape,
+    /// Opaque black under the frame inside `clear`, so a letterbox is black
+    /// (#354): a CPU frame's. A GPU texture is stretched over the box.
+    pub black_backdrop: bool,
 }
 
 /// What a painter did with a [`SurfaceSplit`].
@@ -355,6 +385,7 @@ pub trait Painter {
                 width,
                 height,
                 decoded: None,
+                frame: None,
                 opaque: false,
             },
             transform,
@@ -393,6 +424,7 @@ pub trait Painter {
             width: tile.width,
             height: tile.height,
             decoded: None,
+            frame: None,
             opaque: false,
         };
         // The shape's bounds in tile-grid space: which repetitions touch it.
@@ -409,6 +441,25 @@ pub trait Painter {
                 self.draw_image(&image, transform * tile.transform * at);
             }
         }
+        self.pop_layer();
+    }
+
+    /// Clear `shape` to transparent: erase what has been drawn there, as an
+    /// opaque fill composited `destination-out` would, through the open clips
+    /// and anti-aliased at its edges (#1866). Inside a layer it erases the
+    /// layer's own pixels.
+    ///
+    /// The default opens a [`BlendMode::DestinationOut`] layer over the
+    /// shape's bounding box and fills the shape in it (Vello has no per-draw
+    /// blend mode); the software painter erases in place, with no layer.
+    fn erase(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
+        self.push_layer(
+            BlendMode::DestinationOut,
+            1.0,
+            transform,
+            &PaintShape::Rect(shape.bounding_box()),
+        );
+        self.fill_color(fill, transform, AlphaColor::<Srgb>::BLACK, shape);
         self.pop_layer();
     }
 

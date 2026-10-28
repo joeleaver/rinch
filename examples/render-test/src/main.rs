@@ -2062,21 +2062,22 @@ fn render_to_png(
     height: u32,
 ) -> Vec<u8> {
     use rinch::app::RinchApp;
-    use rinch::embed::RinchOverlayRenderer;
     use rinch::shell::screenshot::capture_texture_rgba;
+    use rinch::vello;
     use wgpu::TextureFormat;
 
     // Create headless wgpu device
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
         flags: wgpu::InstanceFlags::from_build_config().with_env(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .expect("No suitable GPU adapter found");
 
@@ -2095,13 +2096,52 @@ fn render_to_png(
 
     let scene = app.build_scene(1.0, (width, height));
 
-    // Render scene to texture via Vello
+    // Render scene to texture via Vello. (Not `RinchOverlayRenderer`, which
+    // renders a `RinchContext`'s frame since #1866: this is a bare app.)
     let format = TextureFormat::Rgba8Unorm;
-    let mut overlay = RinchOverlayRenderer::new(&device, width, height, format);
-    let _view = overlay.render(&device, &queue, scene);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("render-test target"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let mut renderer = vello::Renderer::new(
+        &device,
+        vello::RendererOptions {
+            antialiasing_support: vello::AaSupport::all(),
+            use_cpu: false,
+            num_init_threads: None,
+            pipeline_cache: None,
+        },
+    )
+    .expect("Failed to create Vello renderer");
+    renderer
+        .render_to_texture(
+            &device,
+            &queue,
+            scene,
+            &texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            &vello::RenderParams {
+                base_color: vello::peniko::Color::TRANSPARENT,
+                width,
+                height,
+                antialiasing_method: vello::AaConfig::Msaa16,
+            },
+        )
+        .expect("Vello render_to_texture failed");
 
     // Read back pixels from the render texture
-    let rgba = capture_texture_rgba(&device, &queue, overlay.texture(), width, height, format)
+    let rgba = capture_texture_rgba(&device, &queue, &texture, width, height, format)
         .expect("Failed to capture texture");
 
     encode_png(&rgba, width, height)

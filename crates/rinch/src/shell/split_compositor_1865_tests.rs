@@ -289,7 +289,10 @@ fn read(device: &Device, queue: &Queue, texture: &Texture) -> Vec<[u8; 4]> {
     queue.submit(Some(encoder.finish()));
     buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    let data = buffer.slice(..).get_mapped_range();
+    let data = buffer
+        .slice(..)
+        .get_mapped_range()
+        .expect("the buffer is mapped");
     (0..h)
         .flat_map(|y| {
             let data = &data;
@@ -301,8 +304,9 @@ fn read(device: &Device, queue: &Queue, texture: &Texture) -> Vec<[u8; 4]> {
         .collect()
 }
 
-/// `vello_painter::centre_sampling`, the brush transform the in-scene fill
-/// carries (#1027), and the product Vello encodes from it.
+/// `vello_painter::centre_sampling` applied to `t`, as `slicing` hands it to
+/// the split compositor, whose `fs_surface` maps the pixel's corner (#1027,
+/// #1955).
 fn device_from_image(t: Affine) -> [f64; 6] {
     let brush = t.inverse() * Affine::translate((-0.5, -0.5)) * t;
     (t * brush).as_coeffs()
@@ -806,6 +810,7 @@ fn run(case: &Case, fault: Fault) -> (Vec<[u8; 4]>, Split) {
             region: case.r,
             above_in: above_in_view.as_ref().filter(|_| !no_above),
             above_out: above_out_view.as_ref().filter(|_| !no_above),
+            base: None,
         }],
     );
     queue.submit(Some(encoder.finish()));
@@ -1267,6 +1272,7 @@ fn split_composite_cost_probe() {
                     region: (x, y, s.0, s.1),
                     above_in: above,
                     above_out: None,
+                    base: None,
                 }
             }
             let empty = time(Box::new(|| {
@@ -1506,6 +1512,7 @@ fn split_multi_video_cost_probe() {
                     region: (x, y, s.0, s.1),
                     above_in: None,
                     above_out: None,
+                    base: None,
                 })
                 .collect();
             let mut e = device.create_command_encoder(&Default::default());

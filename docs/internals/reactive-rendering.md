@@ -449,7 +449,7 @@ Three things it deliberately does not do.
   a box-less inline's restyle dirties its IFC root's rect
   (`compute_dirty_region`), or the incremental frame would keep the old text.
   A hidden span on a line `text-overflow: ellipsis` cuts is hidden too: the
-  cut keeps the lines and their text ranges (#853, #1100). Known exceptions, each filed: a hidden `data-viewport` still cuts its hole (#854), a
+  cut keeps the lines and their text ranges (#853, #1100). Known exceptions, each filed: a hidden `data-viewport`'s layer is still composited (#854; paint stopped clearing its box in #1866), a
   ligature across a visibility boundary follows the wrong end (#852). A
   `visibility: visible` descendant is drawn, as in CSS — but desktop hit
   testing still skips the whole hidden subtree, so it is drawn and not

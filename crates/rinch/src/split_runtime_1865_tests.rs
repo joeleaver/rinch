@@ -81,7 +81,10 @@ fn read(t: &Texture) -> Vec<[u8; 4]> {
     gpu.device
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
-    let data = buffer.slice(..).get_mapped_range();
+    let data = buffer
+        .slice(..)
+        .get_mapped_range()
+        .expect("the buffer is mapped");
     (0..h)
         .flat_map(|y| {
             let data = &data;
@@ -1461,6 +1464,7 @@ fn split_runtime_scratch_cost_probe() {
                         (r.0 + r.2) as f64,
                         (r.1 + r.3) as f64,
                     ),
+                    base: None,
                 }],
             };
             let t = std::time::Instant::now();

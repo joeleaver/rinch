@@ -209,15 +209,104 @@ whole of #416, with no opt-in. Only the polarity follows the palette, so a
 `color: red` container does not get a red thumb; `color` is read rather than
 `background-color` because backgrounds are transparent by default.
 
-**Viewport holes.** A `data-viewport` node is a compositing hole: `find_viewport_rects`
-(`crates/rinch-dom/src/paint/mod.rs`) cuts its rect out of every clipping ancestor's
-background fill, `<body>` included (the UA sheet makes it `overflow-y: auto`), so the
-layer underneath shows through. Only the part of the rect inside the ancestor's
-(rounded) shape is cut (`BorderRadii::path_with_holes`, #1030), for its background and its
-inset shadow's clip alike: a hole reaching past a rounded corner or past the box used to
-fill that part under `EvenOdd`, painting outside the box. On a **transparent** window a hole nothing fills is
+**Viewport holes: a `GameViewport` is the base layer (#1866).** Nothing painted beneath a
+punching `data-viewport` node in paint order shows inside its box (its border box, rounded by
+its own `border-radius`); what paints after it (its border and children, later siblings, a
+higher `z-index`, popups) draws over it as usual. Where paint reaches the node (in the element
+arm of `crates/rinch-dom/src/paint/mod.rs`, after its own background and inset shadow, before
+its border), one of two things happens:
+
+- **The GPU window and the embed overlay split it** (`offer_base_split`): the node is offered to
+  the painter as a **base** surface (`SurfaceSplit::base`, `BaseSplit`), which #1865's slicing
+  takes out of the scene like a `RenderSurface` (region, `own` = the fitted image, `ancestors` =
+  the clips open around it, `above_in`/`above_out`) plus a `clear` coverage, the box under its
+  radius (`BaseSlice`). **Nothing is erased in the scene**: below keeps the viewport's own
+  background and everything beneath it, and the split compositor replaces it inside the clear
+  (`fs_surface`'s base term: `below · (1 − clear)`, black under a letterboxed CPU frame, #354, then
+  the game `· own` over that, then `above_in`, the ancestors' `mix`, `above_out`; *How
+  `GameViewport` fits on the split path* in `docs/design/split-layer-gpu-surfaces.md`). The
+  runtime hands paint the viewports it may split (`set_base_viewports`, name → id, frame size,
+  letterbox) and the GPU textures (`SplitFrame::set_base_views`) or uploaded CPU frames
+  (`upload_split_frames`) the compositor samples; the UI is then rendered over the window's own
+  base, not transparent. A new game frame is a recomposite from the kept slices, no repaint; a
+  frame of another size marks the node damaged. The embed overlay
+  (`RinchOverlayRenderer::render(device, queue, &mut ctx)`) paints with
+  `set_bases_without_game`: every punching viewport is a base with no texture, keyed
+  `BASE_WITHOUT_GAME_IDS + node id`, and `composite_straight` writes the overlay texture in
+  straight alpha. A tainted slice (grayscale over a viewport: D5a) repaints that frame with the
+  viewports cleared in the scene, as `scene()` does; with no game to keep out of the scene there
+  is nothing to suspend, and the next painted frame tries the split again.
+- **Otherwise it is erased in the scene** (`clear_viewport_box` → `Painter::erase`, an opaque fill
+  composited `destination-out`): the software painter always, `RinchContext::scene()` (a host
+  rendering the scene with its own Vello), and a GPU frame whose base split was **refused** (a
+  group effect around it, a rotation or skew, an overlap with an earlier split, the memory cap,
+  a taint). A refusal is reported (`take_base_refused`) and the runtime paints that frame again
+  with nothing split and the games composited as layers under the UI (`LayerCompositor`, the
+  pre-#1865 path), for `BASE_FALLBACK_FRAMES` (120) frames before it tries the split again (R1,
+  Joe 2026-10-27; `shell/base_fallback.rs`, which `paint_gpu` builds every frame through). The
+  second build is forced **full**: the first consumed the frame's damage, and left to it the
+  second was `Unchanged`, so a change on the retry frame was never rendered (#1883 review, D1;
+  `a_refused_base_split_rebuilds_the_frame_in_full_and_retries_after_the_fallback`). The first frame that names base viewports after one that did not (the fallback's end, the
+  window's first) is built in full as well: on a transparent window the UI texture's base is
+  transparent with layers and without, so the renderer asks no full frame there, and a partial
+  frame that missed the viewport neither split nor refused it while the layers were dropped, a
+  hole with no game (#1883 verification, D2;
+  `the_frame_that_ends_a_fallback_splits_the_viewport_on_a_transparent_window`,
+  `gpu_game_viewport_base_layer_survives_the_end_of_a_fallback_on_a_transparent_window`). A CPU
+  frame is uploaded only when it is new (`collect_surface_frames_shared`'s flag,
+  `gpu_game_viewport_base_layer_uploads_a_cpu_frame_only_when_new`). The retry is
+  on a fixed count, not on the refusal's cause: when a transient cause ends (an opacity animation
+  settles), the window stays layered, with the band below, until the count runs out, and the next
+  frame splits again (the band then goes at once). A refusal that persists (two overlapping
+  `GameViewport`s, D7a) keeps the window layered for good, video and `RenderSurface` splitting
+  included. A GPU `GameViewport` punches only once its texture source exists (before, it was
+  cleared with nothing behind it). On Vello the erase is a plain `BlendMode::DestinationOut` layer, and it is
+  **approximate inside a clip**: Vello renders a clip, in every 16px tile its outline crosses, as
+  a layer (backdrop saved, content drawn from transparent, composited back, `fine.wgsl`
+  `CMD_BEGIN_CLIP`/`END_CLIP`), so the erase clears only the clip's own content there and the
+  clipping box's background stays in a band along the clip's edges near the viewport (12,960 px
+  for a flush `overflow: hidden` panel; pinned on `scene()` by
+  `gpu_game_viewport_base_layer_under_clipping_ancestors_on_the_embed_overlay`'s control).
+  Closing the clips, erasing and reopening them (461d5e9e) removed that band but composited each
+  clip's content in two halves, a halo of up to 64/255 along every closed clip's whole ring and a
+  partial frame that differed from a full one (it culls the viewport, so it closes nothing); the
+  split replaced it. Pins: `gpu_game_viewport_base_layer_{no_halo_along_closed_clip_edges,
+  partial_frame_equals_full}` (both paths), `…_replaces_what_is_beneath`,
+  `…_under_clipping_ancestors_on_the_{desktop_window,embed_overlay}`
+  (square, rounded, part-scrolled scroller), and `game_viewport_base_split_1866_tests` (rinch-dom,
+  the painter's split and refusal, no GPU).
+
+The **software** painter blends the erase in place;
+a square box under no rotation, skew or clip mask where it lands is written `Source`
+transparent instead (the same pixels; 0.16 ms against 3.6–5.3 ms for a 1080p game frame),
+counted as `rect_erases`. On the **software window** a `GameViewport` with a frame no longer
+takes the inline arm (which drew the frame and nothing else, not its border or children —
+review D2): the element arm erases, draws the frame `contain`-fitted in the border box
+(`paint_viewport_frame`), then the border and children over it, as the GPU window composites
+its layer under them. **The game fills the border box** on every backend: a border covers its
+edge, the padding shows it (a `RenderSurface` frame sits in its content box instead, #1861).
+The letterbox is the erase: on an opaque software window it is
+presented black (softbuffer drops alpha; it was the window's white base before), the colour
+the GPU compositor's backdrop gives a `GameViewport` frame's bars (#354). A `visibility: hidden` viewport erases nothing (#854's paint half). Where it used to be
+a hole cut out of the backgrounds of **clipping** ancestors only (`find_viewport_rects`, #974,
+with `BorderRadii::path_with_holes` keeping the cut inside a rounded box, #1030): a
+non-clipping ancestor's background covered the game, the cut ignored the viewport's own
+radius, and it was cut at the untransformed rect outside every clip (#1386). An arc pixel of a
+rounded clipping ancestor keeps `c (1 - c)` of its background at coverage `c` (the two edges
+conflate; at most a quarter). **Where the rule cannot hold** a debug build warns once per
+viewport (`tracing::warn!`, and `paint::take_viewport_warnings` for tests), naming the viewport
+and the element: a **group effect** on the viewport or an ancestor (`opacity < 1`,
+`mask-image`, and the `filter` functions paint approximates; rinch parses no
+`mix-blend-mode`), where the erase clears only the group's own pixels and the group is then
+composited over what is beneath it; and, for a compositor layer only, a **transform other
+than a translation**, where the erase turns or scales while the layer is blitted axis-aligned.
+Pins: `crates/rinch-dom/tests/game_viewport_base_layer_1866_tests.rs` (software painter),
+`crates/rinch/src/app/game_viewport_base_layer_1866_tests.rs` (desktop GPU window, `#[ignore]`d
+`gpu_…`), `crates/rinch/tests/embed_game_viewport_base_layer_1866.rs` (`RinchOverlayRenderer`,
+`#[ignore]`d `gpu_…`), `game_viewport_inline_tests::a_game_letterbox_clears_a_non_clipping_ancestors_background`.
+On a **transparent** window a hole nothing fills is
 see-through to the desktop, so a viewport whose content can be absent opts out by
-stamping **`data-viewport-ready="false"`** — paint then leaves the backgrounds alone and
+stamping **`data-viewport-ready="false"`** — paint then erases nothing and
 the node paints its own `background` (a placeholder, poster, or error affordance). The
 attribute is an **opt-out and absence means ready**: `GameViewport` stamps nothing and
 punches unconditionally, unchanged. `VideoViewport` opts in — it stays `"false"` until
@@ -273,11 +362,10 @@ what that node draws with the node untouched. The shell hands every paint's sets
 (`ViewportPaintInputs`) and marks paint-dirty the viewport nodes whose membership in either
 set changed (every viewport node on a change between `None` and a set), plus
 `request_repaint`: the viewport's painted, clipped box on software, a re-encoded scene on
-GPU, and nothing at all on a frame whose sets are the last one's. **That box is the frame,
-and the hole only where the hole lies inside it**: `find_viewport_rects` cuts a hole without
-the node's clip chain or transform, so under a clipping ancestor the viewport is partly
-scrolled out of, or under a transform, hole pixels outside the damage outlive the surface
-until something else repaints them (#1386). Before, the cached pixmap
+GPU, and nothing at all on a frame whose sets are the last one's. **That box is the frame
+and the hole**: since #1866 the hole is the node's own erase, through its clip chain and
+transform (it used to be cut out of ancestor backgrounds at the untransformed rect, and hole
+pixels outside the damage outlived the surface, #1386). Before, the cached pixmap
 or scene kept the last frame and its hole until something unrelated repainted that area. A
 shell that calls `rinch_dom::paint::set_active_viewports` itself, around the app, gets none
 of this. `unregister_render_surface` also asks the window for a redraw when it removed a

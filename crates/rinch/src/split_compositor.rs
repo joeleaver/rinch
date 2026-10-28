@@ -75,8 +75,12 @@ struct Uniforms {
     region_origin: vec4<f32>,
     // (straight alpha, own mask bound, ancestor mask bound, unused)
     flags: vec4<f32>,
-    // (above_in bound, above_out bound, unused, unused)
+    // (above_in bound, above_out bound, output straight alpha, unused)
     above: vec4<f32>,
+    // A base layer (#1866): (base, black backdrop, clear mask bound, unused)
+    base: vec4<f32>,
+    // The clear's coverage when no clear mask is bound, as `own_rect`.
+    clear_rect: vec4<f32>,
 };
 
 @group(0) @binding(0) var below_tex: texture_2d<f32>;
@@ -86,6 +90,19 @@ struct Uniforms {
 @group(0) @binding(4) var above_in: texture_2d<f32>;
 @group(0) @binding(5) var above_out: texture_2d<f32>;
 @group(0) @binding(6) var<uniform> u: Uniforms;
+@group(0) @binding(7) var clear_mask: texture_2d<f32>;
+
+// The target's encoding: premultiplied (the window), or straight (the
+// embed overlay, which hosts blend as Vello's own output).
+fn store(c: vec4<f32>) -> vec4<f32> {
+    if u.above.z > 0.5 {
+        if c.a == 0.0 {
+            return vec4<f32>(0.0);
+        }
+        return vec4<f32>(c.rgb / c.a, c.a);
+    }
+    return c;
+}
 
 fn premul(c: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(c.rgb * c.a, c.a);
@@ -97,7 +114,11 @@ fn in_rect(p: vec2<f32>, r: vec4<f32>) -> bool {
 
 @fragment
 fn fs_below(in: VertexOutput) -> @location(0) vec4<f32> {
-    return premul(textureLoad(below_tex, vec2<i32>(in.position.xy), 0));
+    let c = textureLoad(below_tex, vec2<i32>(in.position.xy), 0);
+    if u.above.z > 0.5 {
+        return c;
+    }
+    return premul(c);
 }
 
 // `transform_inverse` (vello_shaders, shared/transform.wgsl), verbatim.
@@ -111,8 +132,26 @@ fn fs_surface(in: VertexOutput) -> @location(0) vec4<f32> {
     let px = vec2<i32>(in.position.xy);
     let below = premul(textureLoad(below_tex, px, 0));
     var rgba = below;
+    // A base layer (#1866) replaces below inside its clear, rather than
+    // going over it: below · (1 − clear), then black under the image there
+    // when the frame is letterboxed (#354), then the image over that.
+    if u.base.x > 0.5 {
+        var clear = 0.0;
+        if u.base.z > 0.5 {
+            clear = textureLoad(clear_mask, px - vec2<i32>(u.region_origin.xy), 0).a;
+        } else if in_rect(floor(in.position.xy), u.clear_rect) {
+            clear = 1.0;
+        }
+        rgba = below * (1.0 - clear);
+        if u.base.y > 0.5 {
+            rgba = rgba + vec4<f32>(0.0, 0.0, 0.0, clear);
+        }
+    }
 
-    // The pixel's top-left corner, as Vello's fine shader maps it.
+    // The pixel's top-left corner, as Vello 0.7's fine shader mapped it.
+    // (Vello 0.9+ maps the centre; `device_from_image` carries the half-pixel
+    // shift that makes this corner sample the centre, so the sample points
+    // match the in-scene draw's — #1955.)
     let my_xy = floor(in.position.xy);
     let local = px - vec2<i32>(u.region_origin.xy);
     var area = 0.0;
@@ -168,7 +207,7 @@ fn fs_surface(in: VertexOutput) -> @location(0) vec4<f32> {
         let over = premul(textureLoad(above_out, local, 0));
         rgba = rgba * (1.0 - over.a) + over;
     }
-    return rgba;
+    return store(rgba);
 }
 "#;
 
@@ -191,9 +230,10 @@ pub(crate) struct SurfaceDraw<'a> {
     pub extents: (u32, u32),
     /// Whether the texture holds straight alpha (Vello's `ImageAlphaType::Alpha`).
     pub straight_alpha: bool,
-    /// The image-to-device transform the in-scene fill would hand Vello: the
-    /// fill's transform times its brush transform (`centre_sampling`), kurbo
-    /// coefficients `[a, b, c, d, e, f]`.
+    /// The image-to-device transform with `centre_sampling`'s half-pixel
+    /// shift: `fs_surface` maps each pixel's corner through its inverse, which
+    /// lands on the image point under the pixel's centre, where Vello samples
+    /// the in-scene draw (#1027, #1955). Kurbo coefficients `[a, b, c, d, e, f]`.
     pub device_from_image: [f64; 6],
     /// The surface's own coverage: its image rect under its own clips (inner
     /// radius, `object-fit` clip), **not** the ancestors'.
@@ -207,6 +247,16 @@ pub(crate) struct SurfaceDraw<'a> {
     pub above_in: Option<&'a TextureView>,
     /// What is painted over it after they close, if anything.
     pub above_out: Option<&'a TextureView>,
+    /// Set for a `GameViewport`, the base layer (#1866).
+    pub base: Option<BaseDraw<'a>>,
+}
+
+/// A base layer's draw (#1866): below is replaced inside `clear`.
+pub(crate) struct BaseDraw<'a> {
+    /// The viewport's box under its own radius.
+    pub clear: Coverage<'a>,
+    /// Opaque black under the image inside `clear` (a letterboxed CPU frame).
+    pub black_backdrop: bool,
 }
 
 pub(crate) struct SplitCompositor {
@@ -226,6 +276,8 @@ struct Uniforms {
     region_origin: [f32; 4],
     flags: [f32; 4],
     above: [f32; 4],
+    base: [f32; 4],
+    clear_rect: [f32; 4],
 }
 
 /// `outer` minus every rect in `holes`, as disjoint rects (`(x, y, w, h)`).
@@ -293,6 +345,7 @@ impl SplitCompositor {
                 texture(3),
                 texture(4),
                 texture(5),
+                texture(7),
                 BindGroupLayoutEntry {
                     binding: 6,
                     visibility: ShaderStages::FRAGMENT,
@@ -307,8 +360,8 @@ impl SplitCompositor {
         });
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("split compositor"),
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
         });
         let pipeline = |entry: &str| {
             device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -334,7 +387,7 @@ impl SplitCompositor {
                 primitive: PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         };
@@ -364,7 +417,7 @@ impl SplitCompositor {
 
     /// Composite `below` (straight alpha, `size`) and `draws` into `target`
     /// (`size`), which ends up premultiplied, as
-    /// [`super::compositor::LayerCompositor`]'s target does. Draws overlap
+    /// `LayerCompositor`'s target does. Draws overlap
     /// nothing (D7), so their order does not matter. Each draw's region is
     /// clamped to the target.
     pub(crate) fn composite(
@@ -376,16 +429,45 @@ impl SplitCompositor {
         size: (u32, u32),
         draws: &[SurfaceDraw<'_>],
     ) {
+        self.composite_into(device, encoder, below, target, size, draws, false);
+    }
+
+    /// [`Self::composite`], with `target` left in **straight** alpha, as
+    /// Vello's own output is: the embed overlay's texture, which hosts blend
+    /// straight (#1866).
+    pub(crate) fn composite_straight(
+        &self,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        below: &TextureView,
+        target: &TextureView,
+        size: (u32, u32),
+        draws: &[SurfaceDraw<'_>],
+    ) {
+        self.composite_into(device, encoder, below, target, size, draws, true);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn composite_into(
+        &self,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        below: &TextureView,
+        target: &TextureView,
+        size: (u32, u32),
+        draws: &[SurfaceDraw<'_>],
+        straight: bool,
+    ) {
         let clamp = |(x, y, w, h): (u32, u32, u32, u32)| {
             let (x, y) = (x.min(size.0), y.min(size.1));
             (x, y, w.min(size.0 - x), h.min(size.1 - y))
         };
         let regions: Vec<_> = draws.iter().map(|d| clamp(d.region)).collect();
-        let groups: Vec<_> = std::iter::once(self.bind_group(device, below, None))
+        let groups: Vec<_> = std::iter::once(self.bind_group(device, below, None, straight))
             .chain(
                 draws
                     .iter()
-                    .map(|d| self.bind_group(device, below, Some(d))),
+                    .map(|d| self.bind_group(device, below, Some(d), straight)),
             )
             .collect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -402,6 +484,7 @@ impl SplitCompositor {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         // Below, around the regions: each pixel is written once.
         pass.set_pipeline(&self.below);
@@ -426,6 +509,7 @@ impl SplitCompositor {
         device: &Device,
         below: &TextureView,
         draw: Option<&SurfaceDraw<'_>>,
+        straight: bool,
     ) -> wgpu::BindGroup {
         let rect = |c: &Coverage<'_>| match c {
             Coverage::Rect(r) => (r.map(|v| v as f32), 0.0),
@@ -433,11 +517,16 @@ impl SplitCompositor {
         };
         let flag = |b: bool| if b { 1.0 } else { 0.0 };
         let uniforms = match draw {
-            None => Uniforms::zeroed(),
+            None => Uniforms {
+                above: [0.0, 0.0, flag(straight), 0.0],
+                ..Uniforms::zeroed()
+            },
             Some(d) => {
                 let m = d.device_from_image;
                 let (own_rect, own_mask) = rect(&d.own);
                 let (ancestors_rect, ancestors_mask) = rect(&d.ancestors);
+                let (clear_rect, clear_mask) =
+                    d.base.as_ref().map_or(([0.0; 4], 0.0), |b| rect(&b.clear));
                 Uniforms {
                     // As Vello encodes it: the f64 transform cast to f32.
                     matrx: [m[0] as f32, m[1] as f32, m[2] as f32, m[3] as f32],
@@ -454,9 +543,16 @@ impl SplitCompositor {
                     above: [
                         flag(d.above_in.is_some()),
                         flag(d.above_out.is_some()),
-                        0.0,
+                        flag(straight),
                         0.0,
                     ],
+                    base: [
+                        flag(d.base.is_some()),
+                        flag(d.base.as_ref().is_some_and(|b| b.black_backdrop)),
+                        clear_mask,
+                        0.0,
+                    ],
+                    clear_rect,
                 }
             }
         };
@@ -477,6 +573,7 @@ impl SplitCompositor {
             view(draw.and_then(|d| d.above_in)),
             view(draw.and_then(|d| d.above_out)),
         ];
+        let clear = mask(draw.and_then(|d| d.base.as_ref()).map(|b| &b.clear));
         let mut entries = vec![BindGroupEntry {
             binding: 0,
             resource: BindingResource::TextureView(below),
@@ -490,6 +587,10 @@ impl SplitCompositor {
         entries.push(BindGroupEntry {
             binding: 6,
             resource: buffer.as_entire_binding(),
+        });
+        entries.push(BindGroupEntry {
+            binding: 7,
+            resource: BindingResource::TextureView(&clear),
         });
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("split compositor"),

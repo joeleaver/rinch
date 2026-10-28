@@ -182,6 +182,8 @@ mod focus_registry_reissued_id_1490_tests;
 mod font_tests;
 #[cfg(test)]
 mod frozen_component_box_tests;
+#[cfg(all(test, feature = "gpu"))]
+mod game_viewport_base_layer_1866_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod game_viewport_inline_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
@@ -500,6 +502,8 @@ struct SplitPaint {
     /// Frames painted again for the cap, for the tests.
     #[cfg(test)]
     cap_repaints: u32,
+    /// The last frame built ([`RinchApp::last_gpu_frame`]).
+    last_kind: Option<GpuFrameKind>,
 }
 
 /// Frames splitting stays off after a slice is tainted (D5a): the frame is
@@ -543,6 +547,7 @@ fn subtract_px(r: (u32, u32, u32, u32), k: (u32, u32, u32, u32)) -> Vec<(u32, u3
 
 /// What [`RinchApp::build_gpu_frame`] painted, before it borrows the scene.
 #[cfg(all(feature = "gpu", software_shell))]
+#[derive(Clone)]
 enum GpuFrameKind {
     Unchanged,
     Full,
@@ -613,10 +618,10 @@ pub(crate) struct FileDrag {
     /// ([`event_dispatch::path_looks_like_an_image`]). The bytes cannot be read
     /// until the drop.
     pub(crate) picture: bool,
-    /// Whether the platform named the hovered paths (X11, Windows, macOS: a
-    /// `FileHoverEnter` per path). Wayland names none before the drop — the
-    /// winit fork reads the offer's `text/uri-list` only then, and starts the
-    /// hover only for an offer carrying one — so a path-less drag is claimed
+    /// Whether the hovered paths have been named (a `FileHoverEnter` per
+    /// path). The shell reads a drag's `text/uri-list` asynchronously
+    /// (`shell::os_file_drag`, #1962), so a drag hovers path-less until it
+    /// arrives, and for good when it cannot be read: such a drag is claimed
     /// on the editor's say alone, and a drop of no picture inserts nothing.
     pub(crate) paths_known: bool,
     /// Set by a pointer move heard while the drag was live: the caret is
@@ -851,6 +856,10 @@ pub struct RinchApp {
     /// pruned encoding (#1718): `build_scene` re-encodes when it does not.
     #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
     pub(crate) scene_is_full: bool,
+    /// Whether `painter` holds a frame painted for the split compositor
+    /// (the embed overlay, #1866) rather than a plain scene.
+    #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+    pub(crate) scene_sliced: bool,
     /// The split-layer path (#1865, `docs/design/split-layer-gpu-surfaces.md`):
     /// whether this window splits GPU surfaces out of the scene this frame
     /// (the runtime decides, [`Self::set_split_enabled`]); the surfaces it
@@ -1194,6 +1203,8 @@ impl RinchApp {
             painter: VelloPainter::new(),
             #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
             scene_is_full: false,
+            #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+            scene_sliced: false,
             #[cfg(all(feature = "gpu", software_shell))]
             split: SplitPaint::default(),
             #[cfg(software_shell)]
@@ -2192,51 +2203,101 @@ impl RinchApp {
     /// underlying `vello::Scene` is returned for the GPU renderer.
     #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
     pub fn build_scene(&mut self, scale: f64, size: (u32, u32)) -> &Scene {
+        self.build_scene_with(scale, size, false);
+        self.painter.scene()
+    }
+
+    /// [`Self::build_scene`], with `sliced` set by the embed overlay
+    /// (`RinchOverlayRenderer::render`, #1866): every `GameViewport` is offered
+    /// to the painter as a base layer with no game of its own, and the frame
+    /// is painted for the split compositor. Returns the frame's slices when
+    /// it painted, `None` when the scene was cached (of the same kind).
+    #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+    pub(crate) fn build_scene_with(
+        &mut self,
+        scale: f64,
+        size: (u32, u32),
+        sliced: bool,
+    ) -> Option<Vec<rinch_dom::paint::slicing::SurfaceSlice>> {
         use rinch_dom::perf::{Counter, FullRepaintReason};
-        if !self.scene_dirty && self.scene_is_full {
+        if !self.scene_dirty && self.scene_is_full && self.scene_sliced == sliced {
             self.perf_add(Counter::PaintCachedFrames, 1);
-            return self.painter.scene();
+            return None;
         }
 
         let paint_start = Instant::now();
-        self.painter.reset();
-        if let Some(doc) = &self.doc {
-            let mut d = doc.borrow_mut();
-            let d = &mut *d;
-            // No dirty region here, but the lists still have to be consumed:
-            // they only ever grew on a GPU build, and `prev_layout` must be
-            // advanced by the paint that draws the new boxes
-            // (`NodeTree::consume_paint_dirty`).
-            d.tree.consume_paint_dirty();
-            rinch_dom::paint::paint_document(
-                &d.tree,
-                &mut self.painter,
-                scale,
-                (size.0 as f32, size.1 as f32),
-                &mut d.font_cx,
-                &mut d.layout_cx,
-            );
-        }
-
-        // Render drag-and-drop snapshot overlay (if not suppressed by drop target)
-        if let Some(ref drag) = self.active_dnd {
-            if rinch_core::events::is_drag_ghost_visible() {
-                use peniko::kurbo::Affine;
-                // Logical anchor/cursor, device-pixel snapshot — see
-                // `ActiveDrag::ghost_translate` (#299).
-                let (tx, ty) = drag.ghost_translate(scale);
-                self.painter
-                    .scene_mut()
-                    .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
+        let requested = sliced;
+        let mut sliced = sliced;
+        let slices = loop {
+            self.painter.reset();
+            if sliced {
+                self.painter.begin_slicing(peniko::kurbo::Rect::new(
+                    0.0,
+                    0.0,
+                    (size.0 as f64 * scale).round(),
+                    (size.1 as f64 * scale).round(),
+                ));
             }
-        }
+            rinch_dom::paint::set_bases_without_game(sliced);
+            if let Some(doc) = &self.doc {
+                let mut d = doc.borrow_mut();
+                let d = &mut *d;
+                // No dirty region here, but the lists still have to be consumed:
+                // they only ever grew on a GPU build, and `prev_layout` must be
+                // advanced by the paint that draws the new boxes
+                // (`NodeTree::consume_paint_dirty`).
+                d.tree.consume_paint_dirty();
+                rinch_dom::paint::paint_document(
+                    &d.tree,
+                    &mut self.painter,
+                    scale,
+                    (size.0 as f32, size.1 as f32),
+                    &mut d.font_cx,
+                    &mut d.layout_cx,
+                );
+            }
 
-        // Paint inspect mode highlight overlay
-        if let Some((x, y, w, h)) = self.inspect_highlight {
-            Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w, h);
-        }
-        // The `title` tooltip (#1646), over everything else.
-        Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
+            // Render drag-and-drop snapshot overlay (if not suppressed by drop target)
+            if let Some(ref drag) = self.active_dnd {
+                if rinch_core::events::is_drag_ghost_visible() {
+                    use peniko::kurbo::Affine;
+                    // Logical anchor/cursor, device-pixel snapshot — see
+                    // `ActiveDrag::ghost_translate` (#299).
+                    let (tx, ty) = drag.ghost_translate(scale);
+                    if sliced {
+                        self.painter
+                            .append_scene(&drag.snapshot, Affine::translate((tx, ty)));
+                    } else {
+                        self.painter
+                            .scene_mut()
+                            .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
+                    }
+                }
+            }
+
+            // Paint inspect mode highlight overlay
+            if let Some((x, y, w, h)) = self.inspect_highlight {
+                Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w, h);
+            }
+            // The `title` tooltip (#1646), over everything else.
+            Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
+            rinch_dom::paint::set_bases_without_game(false);
+            let _ = rinch_dom::paint::take_base_refused();
+            let slices = self.painter.take_slices();
+            // Something over a viewport reads the backdrop it lands on
+            // (grayscale's saturation layer, D5a): in an above slice that
+            // backdrop holds no clear and none of what the viewport's corners
+            // keep, so the frame is painted again with the viewports cleared in
+            // the scene, as `scene()` does (approximate inside clips). The embed
+            // overlay has no game to keep out of the scene, so it needs no
+            // suspension as the desktop window's does: the next sliced paint
+            // tries again (#1883 review).
+            if sliced && slices.iter().any(|s| s.tainted) {
+                sliced = false;
+                continue;
+            }
+            break slices;
+        };
 
         // This path has no dirty region: every painted frame re-encodes the
         // whole scene (the desktop window uses `build_gpu_frame`, #1718).
@@ -2254,6 +2315,7 @@ impl RinchApp {
 
         self.scene_dirty = false;
         self.scene_is_full = true;
+        self.scene_sliced = requested;
         self.repaint_unattributed = false;
         // This frame consumed the dirty lists, so the software pixmap — if a
         // window ever presents with software again after presenting with the
@@ -2263,7 +2325,7 @@ impl RinchApp {
         {
             self.has_previous_frame = false;
         }
-        self.painter.scene()
+        Some(slices)
     }
 
     /// Paint the frame's scene: the document (under `rects`, a partial
@@ -2383,6 +2445,7 @@ impl RinchApp {
     ) -> (GpuFrame<'_>, Option<crate::shell::split_frame::SplitChange>) {
         let kind = self.gpu_frame_kind(scale, size, target);
         let change = self.split.change.take();
+        self.split.last_kind = Some(kind.clone());
         let scene = self.painter.scene();
         let frame = match kind {
             GpuFrameKind::Unchanged => GpuFrame::Unchanged,
@@ -2390,6 +2453,19 @@ impl RinchApp {
             GpuFrameKind::Partial { size, rects } => GpuFrame::Partial { scene, size, rects },
         };
         (frame, change)
+    }
+
+    /// The frame the last [`Self::build_gpu_frame_split`] built, again: the
+    /// runtime builds a frame twice when a `GameViewport` base split is
+    /// refused (#1866), and presents the second.
+    #[cfg(all(feature = "gpu", software_shell))]
+    pub fn last_gpu_frame(&mut self) -> GpuFrame<'_> {
+        let scene = self.painter.scene();
+        match self.split.last_kind.take() {
+            Some(GpuFrameKind::Full) => GpuFrame::Full(scene),
+            Some(GpuFrameKind::Partial { size, rects }) => GpuFrame::Partial { scene, size, rects },
+            Some(GpuFrameKind::Unchanged) | None => GpuFrame::Unchanged,
+        }
     }
 
     /// The work of [`Self::build_gpu_frame`], the frame named, not borrowed.
@@ -6277,12 +6353,11 @@ impl RinchApp {
     /// says so: a surface that unregisters while its node stays in the
     /// document is the plain case. What is marked is those nodes, so the
     /// frame stays a partial one, and the damage is each node's painted box,
-    /// clipped as any node's is. That covers the frame, and the hole where the
-    /// hole lies inside that box. It does not where the hole reaches further:
-    /// `find_viewport_rects` cuts it without the node's clip chain or
-    /// transform, so under a clipping ancestor the viewport is partly scrolled
-    /// out of, or under a transform, hole pixels outside the damage outlive
-    /// the surface until something else repaints them (#1386).
+    /// clipped as any node's is. That covers the frame and the hole alike:
+    /// since #1866 the hole is the node clearing its own box when paint
+    /// reaches it, through its clip chain and transform, so it lies inside
+    /// that box (it used to be cut out of ancestor backgrounds at the
+    /// untransformed rect, outside the damage, #1386).
     ///
     /// A change between `None` and a set marks every viewport node, whether or
     /// not its own hole changed. An unchanged set (every ordinary frame)

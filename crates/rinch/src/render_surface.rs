@@ -1538,6 +1538,57 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
     })
 }
 
+/// [`collect_surface_frames`]'s frames, shared rather than copied, each
+/// with its surface id and whether it is **new** since the last collection:
+/// `(id, viewport name, pixels, width, height, fresh)`. The GPU window's
+/// `GameViewport` base layers upload a frame only when it is new (#1866).
+#[cfg(feature = "desktop")]
+#[allow(clippy::type_complexity)]
+pub fn collect_surface_frames_shared() -> Vec<(usize, String, Arc<Vec<u8>>, u32, u32, bool)> {
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        let mut frames = Vec::new();
+        for surface in reg.iter() {
+            if !surface_takes_compositor_path(
+                is_inline_surface(surface),
+                surface.is_video,
+                has_gpu_compositor(),
+            ) {
+                continue;
+            }
+            #[cfg(feature = "gpu")]
+            if surface.texture_source.lock().unwrap().is_some() {
+                continue;
+            }
+            let fresh = surface.needs_redraw.swap(false, Ordering::AcqRel);
+            let buf = surface.buffer.lock().unwrap();
+            if !buf.pixels.is_empty() {
+                frames.push((
+                    surface.id,
+                    surface.viewport_name.clone(),
+                    Arc::clone(&buf.pixels),
+                    buf.width,
+                    buf.height,
+                    fresh,
+                ));
+            }
+        }
+        frames
+    })
+}
+
+/// The id of the surface registered under the `data-viewport` name `name`
+/// (a `GameViewport`'s, which the split path keys its base slice by, #1866).
+#[cfg(feature = "desktop")]
+pub fn surface_id_for_viewport(name: &str) -> Option<usize> {
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .find(|s| s.viewport_name == name)
+            .map(|s| s.id)
+    })
+}
+
 /// Collect surface pixel data keyed by surface ID for inline painting.
 ///
 /// Returns a HashMap suitable for passing to `rinch_dom::paint::set_surface_pixels()`.
@@ -1861,7 +1912,9 @@ pub fn readback_gpu_textures() {
             let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
 
             if rx.recv().ok().and_then(|r| r.ok()).is_some() {
-                let data = buffer_slice.get_mapped_range();
+                let data = buffer_slice
+                    .get_mapped_range()
+                    .expect("the buffer is mapped");
 
                 // Copy to the surface's CPU buffer, stripping row padding
                 let mut pixels = Vec::with_capacity((width * height * bytes_per_pixel) as usize);
@@ -3087,7 +3140,7 @@ fn setup_resize_observer(
 // ── #358: which surfaces reach the compositor, and which paint inline ────────
 
 #[cfg(all(test, feature = "desktop"))]
-mod compositor_routing_tests {
+pub(crate) mod compositor_routing_tests {
     use super::*;
 
     /// `renderer::GPU_PRESENTING` is process-global, and two tests below flip
@@ -3095,7 +3148,7 @@ mod compositor_routing_tests {
     /// whole body, or one reads the other's `true` halfway through.
     static PRESENTING: Mutex<()> = Mutex::new(());
 
-    pub(super) fn presenting_lock() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn presenting_lock() -> std::sync::MutexGuard<'static, ()> {
         PRESENTING.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -3144,7 +3197,9 @@ mod compositor_routing_tests {
     #[cfg(feature = "gpu")]
     pub(super) fn test_gpu() -> &'static crate::shell::desktop::GpuHandle {
         crate::shell::desktop::gpu_handle_for_tests(|| {
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
             let adapter = pollster::block_on(
                 instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
             )
@@ -3218,6 +3273,7 @@ mod compositor_routing_tests {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         f.queue.submit(Some(encoder.finish()));
     }
@@ -3311,7 +3367,10 @@ mod compositor_routing_tests {
         gpu.device
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
-        let data = buffer.slice(..).get_mapped_range();
+        let data = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("the buffer is mapped");
         at.iter()
             .map(|&(x, y)| {
                 let i = (y * row + x * 4) as usize;
@@ -3907,7 +3966,7 @@ mod compositor_routing_tests {
     fn a_later_window_presents_with_the_shared_device() {
         let gpu = test_gpu();
         crate::shell::desktop::publish_instance_for_tests(wgpu::Instance::new(
-            &wgpu::InstanceDescriptor::default(),
+            wgpu::InstanceDescriptor::new_without_display_handle(),
         ));
         let (_, adapter, device, queue) =
             crate::shell::desktop::shared_gpu_stack_for_tests().expect("a shared stack");

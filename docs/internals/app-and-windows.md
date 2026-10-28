@@ -243,7 +243,7 @@ and the visible target is the one the user is aiming at.
 - DX12 backend with DirectComposition (`WGPU_DX12_PRESENTATION_SYSTEM=DxgiFromVisual`)
 - `CompositeAlphaMode::PreMultiplied`
 - `WS_EX_NOREDIRECTIONBITMAP` window style
-- Patched wgpu for Rgba8Unorm storage textures (see wgpu fork below)
+- Rgba8Unorm storage textures for Vello: no longer a patched wgpu (see "wgpu Fork" below, removed in #1955); Vello writes rinch's Rgba8Unorm intermediate, never the surface
 
 ### BorderlessWindow Component
 
@@ -340,6 +340,8 @@ set_click_through_current_window(true);
 // Geometry, logical px, any thread (#1546); kept while hidden:
 let pos: Option<(f64, f64)> = current_window_position(); // None on Wayland
 let size: Option<(f64, f64)> = current_window_size();
+// What to persist and give back as WindowProps x/y, width/height, maximized:
+let restore: Option<WindowRestore> = current_window_restore();
 set_current_window_position(300.0, 200.0); // while hidden: where it comes back
 set_current_window_size(700.0, 200.0);
 ```
@@ -360,9 +362,91 @@ with them
 appearance only). The position is kept in desktop pixels (X11, Windows) or
 points (macOS), the size in logical pixels; a maximized window comes back
 maximized with its earlier normal geometry as the restore geometry. A
-recorded position on no connected monitor at show (`on_some_monitor`) is
-dropped. Wayland restores the size only; a position set while hidden there is
-dropped. **On
+recorded position out of reach at show is dropped (`begin_appearance`). Wayland
+restores the size only; a position set while hidden there is dropped.
+
+**Reachable positions** (`window_geometry::reachable`, #1884). A position —
+recorded at hide, or `WindowProps::x`/`y` — is kept only where a *grip* of the
+window's top is on the desktop: `GRIP` = 64 x 12 logical pixels (each capped at
+the window's width / height), anywhere in its top `GRIP_STRIP` = 24 (a
+Windows outer frame a few pixels above a monitor leaves the title bar below
+it). "On the desktop" is the union of the monitors (`grip_on_desktop`: x-slabs
+between monitor edges, a row band starting at the strip's top or a monitor's
+top edge), so a window across two adjacent monitors counts and a gap between
+monitors does not. The grip is sized in the scale of a monitor the strip
+overlaps. No monitors listed: kept.
+
+**`WindowProps::x`/`y` on a mixed-scale desktop** (`place_requested`). A
+logical desktop position is the outer position over the scale of the monitor
+the window is on (what the getters publish), but winit converts a
+`Position::Logical` with a guessed scale — X11 the monitor under the pointer
+(`winit-x11` `window.rs`, `guessed_monitor`), Windows the scale the new window
+starts with — so a position next to a scale-2 primary could be created at
+twice its coordinates, on no monitor. `place_requested` tries each monitor as
+the one the position is on (convert with its scale; the strip must overlap it
+and be reachable) and gives winit the resulting `Position::Physical`. Where
+two monitors both fit (a logical position is ambiguous on such a desktop) the
+first in winit's order wins, unless `WindowProps::monitor` names one: the
+monitors of that name are tried first (two of one name: the first on which the
+window is reachable), then all of them. The name is what winit's
+`MonitorHandle::name()` answers — `connected_monitors` stores it, and the
+published `monitor` / `normal_monitor` come from the window's
+`current_monitor()` at each reading (`monitor_name`; the monitor whose scale
+the window has, so its scale is the one the logical position was computed
+with), or from the monitor `place_requested` chose at a first appearance.
+X11 names an output (`DP-1`), Windows a device (`\\.\DISPLAY1`), macOS
+`Monitor #<model number>` (not unique for two of one model). A position the
+app sets while hidden, a layer surface's, and Wayland's absent one carry no
+name. macOS keeps
+the logical position: `connected_monitors` gives its monitors in points at
+scale 1, the unit AppKit positions in.
+
+**Each monitor's rectangle is the platform's own** (`native_monitor_rect`,
+#1884). winit gives a monitor's position and its current video mode, and on X11
+the mode is the RandR mode, unrotated (`winit-x11` `util/randr.rs`), so a
+1080x1920 portrait monitor read as 1920x1080 and a position in its lower half
+was refused. On X11 rinch reads the CRTC's rectangle over RandR
+(`overlay_window::x11_crtc_rect`; winit's `native_id` there is the CRTC id,
+the same CRTC winit builds the monitor from); on Windows `GetMonitorInfoW`'s
+`rcMonitor` (physical desktop pixels; winit's `native_id` is the
+`HMONITOR`); on macOS `CGDisplayBounds` (points; `native_id` is the
+`CGDirectDisplayID`), which follow the display's rotation. Where it cannot be
+read (an X error, Wayland) the video mode is used as before. Pinned by
+`a_portrait_monitor_takes_its_native_rectangle` and the `#[ignore]`d
+`overlay_window::live_crtc` test against a live X server.
+
+**First appearance and `current_window_restore`** (#1884). `begin_appearance`
+runs before both `create_window` (visible) and `show_window`: on the first
+appearance — a creation, or the first show after a hidden start —
+`publish_created` publishes the geometry the window is created with as the
+normal (restore) geometry, since a window created maximized has none to read.
+`current_window_restore()` answers `normal_position` / `normal_size` and
+`maximized` from the published geometry. **X11 maximizes late**: the window
+manager applies `with_maximized` after creation, a `SurfaceResized` can come
+while `is_maximized` (read off `_NET_WM_STATE`, which raises no winit event)
+still answers false, and that reading would make the full-screen size the
+normal geometry. `MaximizeWait` (set from the creation attributes; not for a
+non-resizable window, which winit gives equal minimum and maximum sizes and
+window managers refuse to maximize, nor a layer surface) takes not-maximized
+readings as maximized for `MAXIMIZE_GRACE` (2 s) after the creation, while
+the window is at its created size or at the first other size it reached (the
+maximize). It ends — every reading believed — at the first reading that says
+maximized, at the end of the grace, or at a reading at yet another size or
+back at the created one after that first other size (an un-maximize, to the
+created size or to a smaller one a window manager chose because the created
+size does not fit the screen; or a resize by the person). Readings come only
+with events (`Moved`, `SurfaceResized`, a scale change, creation, hide), so a
+window the window manager never maximizes (tiling, a WM rule, none), moved
+inside the grace and then left alone, would keep what the last reading in the
+grace said: maximized, at the creation position. So the shell reads the window
+once more when the grace ends — `MaximizeWait::deadline` is a timed wake in
+`tick_caret_blink`, beside the caret blink, the `title` tooltip and the file
+drop's — and at the main window's `CloseRequested`, before the app's
+`on_close_requested` reads the restore (`settle_maximize_wait`). That reading
+is believed and the wait is `Done`, which has no deadline, so the wake is not
+armed again. Residue: a maximize done in two resizes of different sizes before
+the property is set ends the wait at the second. Pins:
+`window_geometry::tests`, `rinch_runtime::window_restore_tests`. **On
 X11 the frame position is read by rinch** (`overlay_window::outer_position`:
 the client's root coordinates less `_NET_FRAME_EXTENTS`), because winit's
 `outer_position` subtracts extents cached before the window manager wrote
@@ -435,7 +519,10 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   `makeKeyAndOrderFront` whatever `active` says, which would make the panel
   key; only the creation-time show honours `with_active(false)`
   (`orderFront`). A tray re-show re-creates the window, so it takes the same
-  path.
+  path. A click on the inactive panel acts at once: winit 0.31.0-beta.3
+  removed `with_accepts_first_mouse` (which rinch set to `true`) and always
+  accepts the first mouse, tagging that press `is_macos_activation_click`,
+  which rinch does not filter (#1962).
 - **X11**: `WM_HINTS.input = False` and `_NET_WM_STATE_SKIP_TASKBAR` /
   `_SKIP_PAGER` written over a separate `x11rb` connection before the map,
   then a round trip; `always_on_top` is asked again after the map, since a
@@ -448,7 +535,7 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   through the winit fork's `WindowAttributesWayland::with_layer_shell`
   (`zwlr_layer_surface_v1` on the window's `wl_surface`; its configure goes
   through the window state's ordinary resize path, so both renderers and
-  input are unchanged). Layer `top`, keyboard none (on-demand when forced and
+  input are unchanged; see "winit Fork" below). Layer `top`, keyboard none (on-demand when forced and
   not non-activating), anchored top-left with the #1546 position as margins
   (output-relative logical px; no position = unanchored, compositor-centred),
   `WindowProps::output` / `set_current_window_output` by connector name. The
@@ -531,21 +618,161 @@ let window_props = WindowProps {
 };
 ```
 
+### winit Fork
+
+**winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
+`rinch-patch-beta4`, pinned by rev** (`34f153bd6e523de53f9da67c6db58bd1f8732542`,
+#1962). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+app on rinch copies no patch lines (and should delete any old winit, dpi or
+wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
+type; an app that drives winit itself (`examples/game-embed`, beside the embed
+API) declares its own dependency, and naming this git rev keeps one winit in
+its build. The rev is pinned so a push to the fork's branch
+never changes rinch; moving it is a commit here.
+
+The branch is upstream's `v0.31.0-beta.4` tag plus five commits: four in
+`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597), and one
+taking crates.io `dpi` (below):
+
+- `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
+  window a `zwlr_layer_surface_v1` (layer, keyboard interactivity, anchors,
+  margins, exclusive zone, output by `wl_output` name, namespace) when the
+  compositor has `zwlr_layer_shell_v1`, else an ordinary xdg-toplevel with a
+  warning; `WindowExtWayland::wayland_surface_role` says which.
+  `set_layer_shell_{margins,anchor,layer,keyboard_interactivity,exclusive_zone}`
+  change it at run time and commit at once (a move needs no new frame).
+  In beta.4's window state it is a third `WindowType` variant, `Layer`, beside
+  upstream's toplevel and popup, with its own configure (`configure_layer`:
+  only a size, no states, no decorations). A popup whose parent is a layer
+  surface gets it with `get_popup`.
+- Requests are sent only within the bound `zwlr_layer_shell_v1` version
+  (`set_layer` v2, on-demand keyboard interactivity v4, which falls back to
+  none): wayland-client does not check, and the compositor kills the
+  connection.
+- A margin change is confirmed by `WindowEvent::Moved` after a
+  `wl_display.sync`, so an app following the pointer with the surface knows
+  which origin each pointer position is relative to (#1597;
+  `shell::layer_shell`).
+
+The beta.2 branch (`rinch-patch`, kept for apps still on it) also carried
+Wayland drag and drop (SCTK's `DataDeviceManager`) and its fix to report DnD
+positions in physical pixels (#1656). Upstream beta.4 has its own Wayland DnD,
+through the data transfer API every platform now uses, and scales its
+positions to physical pixels as a pointer's, so neither is carried. rinch
+translates the data transfer events in `shell::os_file_drag` (see
+`pointer-drag-tooltips.md` "File Drop").
+
+**`dpi`: one crate, crates.io's.** Upstream's workspace takes its in-repo
+`dpi` by path (master's, not byte-identical to crates.io 0.1.2), while the
+published `winit` 0.31.0-beta.4 depends on crates.io `dpi ^0.1.2`, as muda
+does. The fork's commit `34f153bd` makes its workspace take crates.io
+`dpi = "0.1.2"` too, so the graph has one `dpi` and an app that names
+crates.io `dpi` itself never meets "expected `dpi::PhysicalSize`, found
+`dpi::PhysicalSize`". `cargo tree -d` shows no second `dpi`; keep it so on a
+bump.
+
+On a winit bump: rebase the five commits onto the new tag on a new branch
+(apps on the old one keep building), move the rev here, and read upstream's
+changelog for API breaks (beta.3 made most public enums `#[non_exhaustive]`;
+beta.3/4 replaced the path-carrying `DragEntered`/`DragMoved`/`DragDropped`
+with the data transfer API).
+
 ### wgpu Fork
 
-Transparent windows require a patched wgpu to enable Rgba8Unorm storage textures for Vello rendering on DX12. The patches are in `[patch.crates-io]` in `Cargo.toml`:
+**Removed in #1955** (wgpu 27 → 30, Vello 0.7 → 0.11). rinch builds against
+crates.io wgpu 30, and (since #1962) `Cargo.toml` has no `[patch.crates-io]` at all.
 
-- **Repository**: https://github.com/joeleaver/wgpu-fork
-- **Branch**: `rinch-patch`
-- **Upstream PR**: https://github.com/gfx-rs/wgpu/pull/8908
+The fork (`joeleaver/wgpu-fork`, branch `rinch-patch`, one commit `54b7ce08`
+touching `wgpu-core/src/instance.rs`) forced the `STORAGE` flags for
+Rgba8Unorm/Rgba8Snorm/Bgra8Unorm in `Adapter::get_texture_format_features`,
+for transparent Vello windows on DX12 + DirectComposition. Its upstream
+counterpart, gfx-rs/wgpu#8908, was closed unmerged on 2026-01-28. It was dead
+code for rinch: wgpu-core consults that function only for a device with
+`TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` or a downlevel one, and rinch asks
+for `Features::default()` (`shell::desktop`) on DX12, which is not downlevel.
+Otherwise wgpu applies the format's guaranteed features, and Rgba8Unorm always
+includes `STORAGE_BINDING` (WebGPU guarantees it). The only storage texture
+rinch binds is its own Rgba8Unorm intermediate (`WgpuRenderer::create_render_texture`);
+the window surface is configured `RENDER_ATTACHMENT | COPY_DST` and is only
+copied or drawn into. (wgpu-core 30's `present.rs` still gives a surface
+texture `RENDER_ATTACHMENT` alone, so Vello could not write the surface
+directly with or without the patch.)
 
-**The patch is one commit touching one file**: `wgpu-core/src/instance.rs`, forcing storage
-capabilities for Rgba8Unorm/Bgra8Unorm (16 added lines). Checked against the revision `Cargo.lock`
-actually pins — `54b7ce083ac9575b27884054ae74eb652cb541b3` — and against upstream PR #8908, which
-carries the same single file. This list used to name `device/resource.rs` and `present.rs` too;
-**neither is patched, in this fork or upstream**, so do not add them back.
+So downstream projects copy no wgpu patch any more; a wgpu upgrade is a
+version bump. The DX12 transparent-window case still wants a check on a
+Windows host after each upgrade.
 
-**Downstream projects** must copy the `[patch.crates-io]` section from the workspace `Cargo.toml` into their own `Cargo.toml` for transparent windows to work on Windows. This is required because Cargo patches are not transitive — they only apply to the workspace that declares them.
+**Apps that share rinch's `Device`** (`App::gpu_config`, `App::external_gpu`,
+`gpu_handle`, `GpuTextureRegistrar`, the embed API) must build their wgpu
+types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
+`rinch::vello`. The migration from wgpu 27:
+`docs/src/guide/game-engine.md#migrating-from-wgpu-27-to-30`.
+
+### Vello Fork
+
+**Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
+https://github.com/joeleaver/vello-fork, pinned by rev
+(`c6b2e61558962d0074a98f46d55a435c06901865`, branch `rinch-patch`): one commit
+on the vello `v0.11.0` tag, touching only
+`research/vello_encoding/src/{image_cache,resolve}.rs`. The fork's `vello` takes
+`vello_encoding` and `vello_shaders` by path, so all three come from the fork.
+It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
+with nothing to copy; apps build Vello types from `rinch::vello` (a second
+`vello` from crates.io would be an unpatched copy whose types do not match).
+Nothing in the graph may pull crates.io `vello`: `anyrender`/`anyrender_vello`
+did and were unused, so #1955 removed them. The rev is pinned so a push to the
+fork's branch never changes rinch; moving it is a commit here.
+
+Vello 0.9 made the image atlas persistent: an image stays resident across
+renders, keyed on its blob's id, and is uploaded again only when new or marked
+dirty. Two parts of that broke rinch, and neither has a cheap rinch-side fix:
+
+1. **A render of a scene with no late-bound resources wiped the atlas.**
+   `Resolver::resolve` returned `Images::default()` (size 0) for a scene with
+   no image, gradient or glyph run, so the renderer replaced the persistent
+   atlas texture with a 1x1 one, and the next render with images replaced
+   that with an empty full-size one, while the cache still held its images as
+   uploaded: every resident image drew transparent until marked dirty. A
+   solid-colour partial frame (a hover) was enough. The patch reports the
+   current atlas size with nothing to upload.
+2. **An image stayed resident for two renders after its last use**
+   (`EVICT_AFTER_GENERATIONS = 2`), with no call to free it, so the 8192x8192
+   atlas had to hold three scenes' images. Large or many images re-encoded per
+   paint, live frames, and a resized `RenderSurface`'s old texture beside its
+   new one (#1861 item 2) went undrawn. The patch sets it to 0: when an image
+   does not fit, any image the current render does not draw gives up its space.
+
+**Why 0 is safe.** A render's atlas writes are `Queue::write_texture` for CPU
+images and `copy_texture_to_texture` for override textures, recorded in that
+render's own command encoder ahead of its dispatches (`wgpu_engine.rs`,
+`Command::WriteImage`). wgpu documents that `write_texture`/`write_buffer`
+transfers "begin GPU execution only on the next call to `Queue::submit()`,
+just before the explicitly submitted commands" (`Queue::write_buffer` docs,
+wgpu 30), and a queue executes its submissions in order (WebGPU's queue
+timeline), with wgpu-core's resource tracking placing the barriers between a
+texture's uses. So the write for render N+1 runs after every command of
+render N, including render N's reads of the space being reused. The same
+ordering is what stock Vello 0.11 already relies on when it re-uploads a
+resident image marked dirty: that write lands on the very region the previous
+render read, recorded and submitted the same way. (Vello 0.7 is no precedent:
+it created a new atlas texture every render.)
+
+Pins: `compositor::gpu_alpha_tests::gpu_alpha_vello_image_survives_a_solid_only_render`
+(1), `gpu_alpha_vello_repaints_keep_every_large_image` and
+`render_surface::compositor_routing_tests::gpu_render_callback_atlas_share_holds_for_idle_surfaces`
+(2); each fails with stock `vello_encoding`. The fork carries two unit tests in
+`image_cache.rs`.
+
+rinch also hands Vello one blob per image (`DecodedImage::blob`, and
+`vello_painter::frame_blob` for a live frame's shared buffer), so an image
+repainted unchanged stays resident and is not uploaded again, and keeps a
+`RenderSurface` texture it draws into in place fresh with
+`mark_override_image_dirty` (`SurfaceImages::sync`).
+
+**Downstream apps copy nothing for Vello**, and delete the five wgpu-fork
+patch lines they used to copy. On a Vello bump, rebase the commit onto the new
+tag (or go back to crates.io if upstream behaves the same), move the pinned rev,
+and rerun the three pins.
 
 ### Bounds signals on the web (#1781)
 
