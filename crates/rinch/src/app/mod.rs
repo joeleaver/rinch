@@ -2226,61 +2226,78 @@ impl RinchApp {
         }
 
         let paint_start = Instant::now();
-        self.painter.reset();
-        if sliced {
-            self.painter.begin_slicing(peniko::kurbo::Rect::new(
-                0.0,
-                0.0,
-                (size.0 as f64 * scale).round(),
-                (size.1 as f64 * scale).round(),
-            ));
-        }
-        rinch_dom::paint::set_bases_without_game(sliced);
-        if let Some(doc) = &self.doc {
-            let mut d = doc.borrow_mut();
-            let d = &mut *d;
-            // No dirty region here, but the lists still have to be consumed:
-            // they only ever grew on a GPU build, and `prev_layout` must be
-            // advanced by the paint that draws the new boxes
-            // (`NodeTree::consume_paint_dirty`).
-            d.tree.consume_paint_dirty();
-            rinch_dom::paint::paint_document(
-                &d.tree,
-                &mut self.painter,
-                scale,
-                (size.0 as f32, size.1 as f32),
-                &mut d.font_cx,
-                &mut d.layout_cx,
-            );
-        }
+        let requested = sliced;
+        let mut sliced = sliced;
+        let slices = loop {
+            self.painter.reset();
+            if sliced {
+                self.painter.begin_slicing(peniko::kurbo::Rect::new(
+                    0.0,
+                    0.0,
+                    (size.0 as f64 * scale).round(),
+                    (size.1 as f64 * scale).round(),
+                ));
+            }
+            rinch_dom::paint::set_bases_without_game(sliced);
+            if let Some(doc) = &self.doc {
+                let mut d = doc.borrow_mut();
+                let d = &mut *d;
+                // No dirty region here, but the lists still have to be consumed:
+                // they only ever grew on a GPU build, and `prev_layout` must be
+                // advanced by the paint that draws the new boxes
+                // (`NodeTree::consume_paint_dirty`).
+                d.tree.consume_paint_dirty();
+                rinch_dom::paint::paint_document(
+                    &d.tree,
+                    &mut self.painter,
+                    scale,
+                    (size.0 as f32, size.1 as f32),
+                    &mut d.font_cx,
+                    &mut d.layout_cx,
+                );
+            }
 
-        // Render drag-and-drop snapshot overlay (if not suppressed by drop target)
-        if let Some(ref drag) = self.active_dnd {
-            if rinch_core::events::is_drag_ghost_visible() {
-                use peniko::kurbo::Affine;
-                // Logical anchor/cursor, device-pixel snapshot — see
-                // `ActiveDrag::ghost_translate` (#299).
-                let (tx, ty) = drag.ghost_translate(scale);
-                if sliced {
-                    self.painter
-                        .append_scene(&drag.snapshot, Affine::translate((tx, ty)));
-                } else {
-                    self.painter
-                        .scene_mut()
-                        .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
+            // Render drag-and-drop snapshot overlay (if not suppressed by drop target)
+            if let Some(ref drag) = self.active_dnd {
+                if rinch_core::events::is_drag_ghost_visible() {
+                    use peniko::kurbo::Affine;
+                    // Logical anchor/cursor, device-pixel snapshot — see
+                    // `ActiveDrag::ghost_translate` (#299).
+                    let (tx, ty) = drag.ghost_translate(scale);
+                    if sliced {
+                        self.painter
+                            .append_scene(&drag.snapshot, Affine::translate((tx, ty)));
+                    } else {
+                        self.painter
+                            .scene_mut()
+                            .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
+                    }
                 }
             }
-        }
 
-        // Paint inspect mode highlight overlay
-        if let Some((x, y, w, h)) = self.inspect_highlight {
-            Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w, h);
-        }
-        // The `title` tooltip (#1646), over everything else.
-        Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
-        rinch_dom::paint::set_bases_without_game(false);
-        let _ = rinch_dom::paint::take_base_refused();
-        let slices = self.painter.take_slices();
+            // Paint inspect mode highlight overlay
+            if let Some((x, y, w, h)) = self.inspect_highlight {
+                Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w, h);
+            }
+            // The `title` tooltip (#1646), over everything else.
+            Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
+            rinch_dom::paint::set_bases_without_game(false);
+            let _ = rinch_dom::paint::take_base_refused();
+            let slices = self.painter.take_slices();
+            // Something over a viewport reads the backdrop it lands on
+            // (grayscale's saturation layer, D5a): in an above slice that
+            // backdrop holds no clear and none of what the viewport's corners
+            // keep, so the frame is painted again with the viewports cleared in
+            // the scene, as `scene()` does (approximate inside clips). The embed
+            // overlay has no game to keep out of the scene, so it needs no
+            // suspension as the desktop window's does: the next sliced paint
+            // tries again (#1883 review).
+            if sliced && slices.iter().any(|s| s.tainted) {
+                sliced = false;
+                continue;
+            }
+            break slices;
+        };
 
         // This path has no dirty region: every painted frame re-encodes the
         // whole scene (the desktop window uses `build_gpu_frame`, #1718).
@@ -2298,7 +2315,7 @@ impl RinchApp {
 
         self.scene_dirty = false;
         self.scene_is_full = true;
-        self.scene_sliced = sliced;
+        self.scene_sliced = requested;
         self.repaint_unattributed = false;
         // This frame consumed the dirty lists, so the software pixmap — if a
         // window ever presents with software again after presenting with the

@@ -4,6 +4,9 @@
 pub mod activation;
 #[cfg(feature = "gpu")]
 pub(crate) mod compositor;
+// `GameViewport` base layers' frame and their fallback (#1866).
+#[cfg(feature = "gpu")]
+pub(crate) mod base_fallback;
 #[cfg(feature = "gpu")]
 pub mod desktop;
 pub mod devtools_css;

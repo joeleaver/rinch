@@ -1538,6 +1538,45 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
     })
 }
 
+/// [`collect_surface_frames`]'s frames, shared rather than copied, each
+/// with its surface id and whether it is **new** since the last collection:
+/// `(id, viewport name, pixels, width, height, fresh)`. The GPU window's
+/// `GameViewport` base layers upload a frame only when it is new (#1866).
+#[cfg(feature = "desktop")]
+#[allow(clippy::type_complexity)]
+pub fn collect_surface_frames_shared() -> Vec<(usize, String, Arc<Vec<u8>>, u32, u32, bool)> {
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        let mut frames = Vec::new();
+        for surface in reg.iter() {
+            if !surface_takes_compositor_path(
+                is_inline_surface(surface),
+                surface.is_video,
+                has_gpu_compositor(),
+            ) {
+                continue;
+            }
+            #[cfg(feature = "gpu")]
+            if surface.texture_source.lock().unwrap().is_some() {
+                continue;
+            }
+            let fresh = surface.needs_redraw.swap(false, Ordering::AcqRel);
+            let buf = surface.buffer.lock().unwrap();
+            if !buf.pixels.is_empty() {
+                frames.push((
+                    surface.id,
+                    surface.viewport_name.clone(),
+                    Arc::clone(&buf.pixels),
+                    buf.width,
+                    buf.height,
+                    fresh,
+                ));
+            }
+        }
+        frames
+    })
+}
+
 /// The id of the surface registered under the `data-viewport` name `name`
 /// (a `GameViewport`'s, which the split path keys its base slice by, #1866).
 #[cfg(feature = "desktop")]
