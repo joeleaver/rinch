@@ -49,11 +49,20 @@ pub struct AvSectionState {
 }
 
 pub fn init_av_state() {
-    // Enumerate real devices
-    let mics = audio_input_devices().unwrap_or_default();
-    let speakers = audio_output_devices().unwrap_or_default();
-    let cameras = camera_devices().unwrap_or_default();
+    // Enumerate real devices. Listing opens nothing.
+    init_av_state_with(
+        audio_input_devices().unwrap_or_default(),
+        audio_output_devices().unwrap_or_default(),
+        camera_devices().unwrap_or_default(),
+    );
+}
 
+/// [`init_av_state`] with the device lists given (tests list none).
+pub fn init_av_state_with(
+    mics: Vec<DeviceInfo>,
+    speakers: Vec<DeviceInfo>,
+    cameras: Vec<DeviceInfo>,
+) {
     // Deduplicate devices by name (nokhwa/cpal can return the same device multiple times)
     fn dedup_devices(devices: Vec<DeviceInfo>) -> Vec<DeviceInfo> {
         let mut seen = std::collections::HashSet::new();

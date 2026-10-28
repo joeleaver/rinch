@@ -27,6 +27,8 @@ pub mod audio;
 pub mod camera;
 
 pub mod stream;
+#[doc(hidden)]
+pub mod testing;
 pub mod track;
 
 // Platform backends

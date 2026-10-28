@@ -160,6 +160,7 @@ pub fn open_audio_output(
     config: AudioOutputConfig,
     fill: impl FnMut(&mut [f32]) + Send + 'static,
 ) -> Result<AudioOutputStream, AvError> {
+    crate::testing::gate("audio output")?;
     #[cfg(all(not(target_arch = "wasm32"), feature = "audio"))]
     {
         let device = crate::native::cpal_audio::default_output_device()?;
@@ -201,6 +202,7 @@ pub fn open_audio_output_on(
     config: AudioOutputConfig,
     fill: impl FnMut(&mut [f32]) + Send + 'static,
 ) -> Result<AudioOutputStream, AvError> {
+    crate::testing::gate("audio output")?;
     #[cfg(all(not(target_arch = "wasm32"), feature = "audio"))]
     {
         let dev = crate::native::cpal_audio::get_output_device(device)?;
