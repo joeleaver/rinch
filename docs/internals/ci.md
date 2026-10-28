@@ -8,7 +8,7 @@ Two kinds of pull request into `main`:
 
 | | Component PR (any head branch) | Batch PR (head branch `batch/…`) |
 |---|---|---|
-| `fmt`, `clippy`, `clippy-wasm`, `clippy-android`, `check-android` | run | run |
+| `fmt`, `clippy`, `clippy-wasm`, `clippy-android`, `check-android`, `check-macos` | run | run |
 | `test (unit)`, `test (integration-a-m)`, `test (integration-n-z)`, `test (feature-gated)`, `test-gpu (lavapipe)`, `test-wasm` | skipped | run |
 | Perf `instruction-counts` (and its `comment`) | skipped | run, against `main` |
 | Documentation `build` (rustdoc, mdBook, UI Zoo, Pages artifact) | skipped | run |

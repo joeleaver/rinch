@@ -435,7 +435,10 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   `makeKeyAndOrderFront` whatever `active` says, which would make the panel
   key; only the creation-time show honours `with_active(false)`
   (`orderFront`). A tray re-show re-creates the window, so it takes the same
-  path.
+  path. A click on the inactive panel acts at once: winit 0.31.0-beta.3
+  removed `with_accepts_first_mouse` (which rinch set to `true`) and always
+  accepts the first mouse, tagging that press `is_macos_activation_click`,
+  which rinch does not filter (#1962).
 - **X11**: `WM_HINTS.input = False` and `_NET_WM_STATE_SKIP_TASKBAR` /
   `_SKIP_PAGER` written over a separate `x11rb` connection before the map,
   then a round trip; `always_on_top` is asked again after the map, since a
@@ -448,7 +451,7 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   through the winit fork's `WindowAttributesWayland::with_layer_shell`
   (`zwlr_layer_surface_v1` on the window's `wl_surface`; its configure goes
   through the window state's ordinary resize path, so both renderers and
-  input are unchanged). Layer `top`, keyboard none (on-demand when forced and
+  input are unchanged; see "winit Fork" below). Layer `top`, keyboard none (on-demand when forced and
   not non-activating), anchored top-left with the #1546 position as margins
   (output-relative logical px; no position = unanchored, compositor-centred),
   `WindowProps::output` / `set_current_window_output` by connector name. The
@@ -531,10 +534,69 @@ let window_props = WindowProps {
 };
 ```
 
+### winit Fork
+
+**winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
+`rinch-patch-beta4`, pinned by rev** (`34f153bd6e523de53f9da67c6db58bd1f8732542`,
+#1962). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+app on rinch copies no patch lines (and should delete any old winit, dpi or
+wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
+type; an app that drives winit itself (`examples/game-embed`, beside the embed
+API) declares its own dependency, and naming this git rev keeps one winit in
+its build. The rev is pinned so a push to the fork's branch
+never changes rinch; moving it is a commit here.
+
+The branch is upstream's `v0.31.0-beta.4` tag plus five commits: four in
+`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597), and one
+taking crates.io `dpi` (below):
+
+- `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
+  window a `zwlr_layer_surface_v1` (layer, keyboard interactivity, anchors,
+  margins, exclusive zone, output by `wl_output` name, namespace) when the
+  compositor has `zwlr_layer_shell_v1`, else an ordinary xdg-toplevel with a
+  warning; `WindowExtWayland::wayland_surface_role` says which.
+  `set_layer_shell_{margins,anchor,layer,keyboard_interactivity,exclusive_zone}`
+  change it at run time and commit at once (a move needs no new frame).
+  In beta.4's window state it is a third `WindowType` variant, `Layer`, beside
+  upstream's toplevel and popup, with its own configure (`configure_layer`:
+  only a size, no states, no decorations). A popup whose parent is a layer
+  surface gets it with `get_popup`.
+- Requests are sent only within the bound `zwlr_layer_shell_v1` version
+  (`set_layer` v2, on-demand keyboard interactivity v4, which falls back to
+  none): wayland-client does not check, and the compositor kills the
+  connection.
+- A margin change is confirmed by `WindowEvent::Moved` after a
+  `wl_display.sync`, so an app following the pointer with the surface knows
+  which origin each pointer position is relative to (#1597;
+  `shell::layer_shell`).
+
+The beta.2 branch (`rinch-patch`, kept for apps still on it) also carried
+Wayland drag and drop (SCTK's `DataDeviceManager`) and its fix to report DnD
+positions in physical pixels (#1656). Upstream beta.4 has its own Wayland DnD,
+through the data transfer API every platform now uses, and scales its
+positions to physical pixels as a pointer's, so neither is carried. rinch
+translates the data transfer events in `shell::os_file_drag` (see
+`pointer-drag-tooltips.md` "File Drop").
+
+**`dpi`: one crate, crates.io's.** Upstream's workspace takes its in-repo
+`dpi` by path (master's, not byte-identical to crates.io 0.1.2), while the
+published `winit` 0.31.0-beta.4 depends on crates.io `dpi ^0.1.2`, as muda
+does. The fork's commit `34f153bd` makes its workspace take crates.io
+`dpi = "0.1.2"` too, so the graph has one `dpi` and an app that names
+crates.io `dpi` itself never meets "expected `dpi::PhysicalSize`, found
+`dpi::PhysicalSize`". `cargo tree -d` shows no second `dpi`; keep it so on a
+bump.
+
+On a winit bump: rebase the five commits onto the new tag on a new branch
+(apps on the old one keep building), move the rev here, and read upstream's
+changelog for API breaks (beta.3 made most public enums `#[non_exhaustive]`;
+beta.3/4 replaced the path-carrying `DragEntered`/`DragMoved`/`DragDropped`
+with the data transfer API).
+
 ### wgpu Fork
 
 **Removed in #1955** (wgpu 27 → 30, Vello 0.7 → 0.11). rinch builds against
-crates.io wgpu 30; `[patch.crates-io]` in `Cargo.toml` patches only winit.
+crates.io wgpu 30, and (since #1962) `Cargo.toml` has no `[patch.crates-io]` at all.
 
 The fork (`joeleaver/wgpu-fork`, branch `rinch-patch`, one commit `54b7ce08`
 touching `wgpu-core/src/instance.rs`) forced the `STORAGE` flags for

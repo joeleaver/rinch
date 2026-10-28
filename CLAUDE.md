@@ -10,7 +10,7 @@ A code comment or test that cites "CLAUDE.md" and a section name ("Keyboard Focu
 
 ## Project Overview
 
-Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom (an HTML/CSS DOM on Stylo, Taffy for layout, Parley for text) with two rendering backends: Vello on wgpu (GPU, `gpu` feature) and tiny-skia (software, always on desktop). Windowing is winit (a patched fork), presentation softbuffer or wgpu, native menus muda. A second backend, `rinch-web`, drives the browser's own DOM through web_sys.
+Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom (an HTML/CSS DOM on Stylo, Taffy for layout, Parley for text) with two rendering backends: Vello on wgpu (GPU, `gpu` feature) and tiny-skia (software, always on desktop). Windowing is winit (a pinned fork, below), presentation softbuffer or wgpu, native menus muda. A second backend, `rinch-web`, drives the browser's own DOM through web_sys.
 
 **Design philosophy:** declarative UI with fine-grained reactivity. A component function runs **once**; the `rsx!` macro generates DOM construction code, and `{|| expr}` closures become Effects that update single nodes. There are no re-renders.
 
@@ -19,6 +19,7 @@ Load-bearing dependency facts (detail and history in `docs/internals/dependencie
 - **parley 0.11.1** with `features = ["complex-scripts"]`, which must stay on (without it Thai/Lao/Khmer/Burmese text has no line breaks). `parley::Glyph::y` is Y-down.
 - **skrifa 0.44**, the version parley uses; move it with any parley bump.
 - **wgpu 30** (crates.io) and **Vello 0.11 from `joeleaver/vello-fork` at a pinned rev** (#1955, image-atlas fixes; a dependency, not a patch). Apps use `rinch::wgpu` and `rinch::vello`. See `docs/internals/app-and-windows.md` "Vello Fork".
+- **winit 0.31.0-beta.4 from `joeleaver/winit-fork` at a pinned rev** (#1962, the layer-shell role; a dependency, no `[patch]` lines anywhere). See `docs/internals/app-and-windows.md` "winit Fork".
 
 ## Where the detail lives
 
@@ -26,7 +27,7 @@ Load-bearing dependency facts (detail and history in `docs/internals/dependencie
 |---|---|
 | `dependencies.md` | Taffy/Parley/skrifa pins and traps, line breaking, white space, tabs, NBSP, justify, text-overflow |
 | `components.md` | the Tabler icon system, components' icon props, `List`/`Stepper`/`RadioGroup` container defaults, `on_child_inserted`/`on_child_removed` |
-| `app-and-windows.md` | the `App` builder, app-bundled fonts, Wayland `app_id`, transparent/borderless windows, resize handles, `BorderlessWindow`, window control, hide/show geometry, overlay windows, window levels, layer shell, the Vello fork (and the removed wgpu fork) |
+| `app-and-windows.md` | the `App` builder, app-bundled fonts, Wayland `app_id`, transparent/borderless windows, resize handles, `BorderlessWindow`, window control, hide/show geometry, overlay windows, window levels, layer shell, the winit fork, the Vello fork (and the removed wgpu fork) |
 | `state-and-threading.md` | Signal/Memo/stores/context, memo equality cut-off, event handlers as batches, effect flushing, `note_host_change`, cross-thread `send`, the main-callback queue |
 | `menus.md` | `Menu`/`MenuItem`, checkbox/radio items, callback lifetime, shortcut parsing and layout matching, the DOM menu bar, built-in shortcuts |
 | `editor.md` | the rich-text editor: model, steps, history, persistence, embeds, node views, paste fitting, the HTML reader, image input, links, popup hooks, margin anchors, read-only, caret affinity, scroll gate, focus/reveal, commands, input rules, collaboration (yrs) |
@@ -562,7 +563,7 @@ about 0.03%. Counts are comparable only between runs on one machine.
 ## CI: batched merges
 
 An ordinary PR into `main` (a **component** PR) runs only the fast jobs: `fmt`,
-the `clippy` jobs and `check-android`. The `test (…)` shards, `test-wasm`, Perf
+the `clippy` jobs, `check-android` and `check-macos`. The `test (…)` shards, `test-wasm`, Perf
 and the full Documentation build run on a PR whose head branch starts with
 `batch/`, and on every push to `main`. To land reviewed PRs, the lead merges
 their heads (`git merge --no-ff`) into `batch/YYYY-MM-DD-N` cut from `main`,

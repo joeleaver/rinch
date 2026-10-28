@@ -1132,6 +1132,8 @@ impl ApplicationHandler for App {
                 let scroll_y = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64 * 40.0,
                     winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y / self.scale_factor(),
+                    // Non-exhaustive since winit 0.31.0-beta.3.
+                    _ => return,
                 };
                 let (lx, ly) = self.logical_mouse();
                 let wants_ui = self

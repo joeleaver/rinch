@@ -49,6 +49,9 @@ tracing-subscriber = { workspace = true, optional = true }
 png = { version = "0.17", optional = true }
 base64 = { version = "0.22", optional = true }
 keyboard-types = { version = "0.7", optional = true }
+# A file drag's `file:` URIs to paths (#1962; winit 0.31.0-beta.4 hands over
+# URIs, not paths).
+url = { version = "2", optional = true }
 
 # Optional features
 rinch-clipboard = { workspace = true, optional = true }
@@ -199,7 +202,7 @@ desktop = [
     "dep:winit", "dep:muda",
     "dep:x11rb", "dep:objc2",
     "dep:tracing-subscriber",
-    "dep:png", "dep:base64", "dep:keyboard-types",
+    "dep:png", "dep:base64", "dep:keyboard-types", "dep:url",
     "dep:bytemuck",
     "dep:softbuffer", "rinch-dom/software-renderer",
     # The desktop shell implements + drives `PlatformRenderer` (over vello::Scene), so it
