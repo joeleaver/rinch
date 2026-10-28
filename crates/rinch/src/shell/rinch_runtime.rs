@@ -1203,6 +1203,34 @@ impl RinchRuntime {
     /// [`Self::note_geometry`] past the window: a reading of the live main
     /// window, through the wait for a maximize the platform has not reported
     /// yet.
+    /// End the maximize wait with one reading of the live main window,
+    /// believed: when its grace ends (a window the window manager never
+    /// maximized, moved inside the grace and then left alone, has had no
+    /// reading since) and at close (what `on_close_requested` reads).
+    fn settle_maximize_wait(&mut self) {
+        if self.maximize_wait == window_geometry::MaximizeWait::Done {
+            return;
+        }
+        let read = self.window.as_ref().filter(|_| self.shown_once).map(|w| {
+            (
+                window_geometry::WindowReading::of(w.raw()),
+                monitor_name(w.raw()),
+            )
+        });
+        self.settle_maximize_wait_with(read);
+    }
+
+    /// [`Self::settle_maximize_wait`] past the window.
+    fn settle_maximize_wait_with(
+        &mut self,
+        read: Option<(window_geometry::WindowReading, Option<String>)>,
+    ) {
+        self.maximize_wait = window_geometry::MaximizeWait::Done;
+        if let Some((reading, monitor)) = read {
+            self.take_reading(reading, monitor);
+        }
+    }
+
     fn take_reading(&mut self, reading: window_geometry::WindowReading, monitor: Option<String>) {
         let reading = self
             .maximize_wait
@@ -2897,7 +2925,11 @@ impl ApplicationHandler for RinchRuntime {
                 self.layer_surface_closed(event_loop);
                 return;
             }
-            WindowEvent::CloseRequested => PlatformEvent::CloseRequested,
+            WindowEvent::CloseRequested => {
+                // What the app reads in `on_close_requested` (#1884).
+                self.settle_maximize_wait();
+                PlatformEvent::CloseRequested
+            }
             WindowEvent::SurfaceResized(size) => {
                 // Also resize the renderer — it works in physical pixels.
                 #[cfg(feature = "gpu")]
@@ -3406,6 +3438,20 @@ impl RinchRuntime {
             self.run_file_drag_steps(expired, event_loop);
         }
         let wake = match (wake, self.os_file_drag.next_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        // A window created maximized is read once more when the maximize
+        // wait's grace ends (#1884): the fourth. Settled, the wait has no
+        // deadline, so it arms nothing after.
+        if self
+            .maximize_wait
+            .deadline()
+            .is_some_and(|d| std::time::Instant::now() >= d)
+        {
+            self.settle_maximize_wait();
+        }
+        let wake = match (wake, self.maximize_wait.deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
@@ -6082,41 +6128,127 @@ fn monitor_name(window: &dyn winit::window::Window) -> Option<String> {
 }
 
 /// The monitors connected now, in the unit windows are positioned in:
-/// desktop pixels, or points on macOS (each monitor's rect over its own
-/// scale, given scale 1).
+/// desktop pixels, or points on macOS (given scale 1). Each monitor's
+/// rectangle is the platform's own where rinch can read it
+/// ([`native_monitor_rect`]): winit gives only a position and the current
+/// video mode, whose size on X11 ignores rotation.
 fn connected_monitors(event_loop: &dyn ActiveEventLoop) -> Vec<window_geometry::MonitorRect> {
+    let backend = Backend::of(event_loop);
     event_loop
         .available_monitors()
         .filter_map(|m| {
-            let size = m.current_video_mode()?.size();
-            let position = m.position()?;
+            let mode = m.current_video_mode().map(|v| v.size());
+            let position = m.position();
             let scale = m.scale_factor();
             let name = m.name().map(|n| n.into_owned());
-            Some(if cfg!(target_os = "macos") {
-                let p = position.to_logical::<f64>(scale);
-                let s = size.to_logical::<f64>(scale);
-                window_geometry::MonitorRect {
-                    position: winit::dpi::PhysicalPosition::new(
-                        p.x.round() as i32,
-                        p.y.round() as i32,
-                    ),
-                    size: winit::dpi::PhysicalSize::new(
-                        s.width.round() as u32,
-                        s.height.round() as u32,
-                    ),
-                    scale: 1.0,
-                    name,
-                }
-            } else {
-                window_geometry::MonitorRect {
-                    position,
-                    size,
-                    scale,
-                    name,
-                }
-            })
+            let native = native_monitor_rect(&m, backend);
+            if cfg!(target_os = "macos") {
+                // Points, the unit AppKit positions windows in.
+                let (p, s) = match native {
+                    Some(rect) => rect,
+                    None => {
+                        let p = position?.to_logical::<f64>(scale);
+                        let s = mode?.to_logical::<f64>(scale);
+                        (
+                            winit::dpi::PhysicalPosition::new(
+                                p.x.round() as i32,
+                                p.y.round() as i32,
+                            ),
+                            winit::dpi::PhysicalSize::new(
+                                s.width.round() as u32,
+                                s.height.round() as u32,
+                            ),
+                        )
+                    }
+                };
+                return Some(window_geometry::MonitorRect::of(p, s, 1.0, name, None));
+            }
+            if native.is_none() && (position.is_none() || mode.is_none()) {
+                return None;
+            }
+            Some(window_geometry::MonitorRect::of(
+                position.unwrap_or_default(),
+                mode.unwrap_or_default(),
+                scale,
+                name,
+                native,
+            ))
         })
         .collect()
+}
+
+/// A monitor's rectangle on the desktop as the platform keeps it: the RandR
+/// CRTC on X11 (rotation included), `rcMonitor` on Windows (physical
+/// desktop pixels), `CGDisplayBounds` on macOS (points). `None` where it
+/// cannot be read, and on Wayland, which gives no desktop coordinates.
+#[allow(unused_variables)]
+fn native_monitor_rect(
+    m: &winit::monitor::MonitorHandle,
+    backend: Backend,
+) -> Option<(
+    winit::dpi::PhysicalPosition<i32>,
+    winit::dpi::PhysicalSize<u32>,
+)> {
+    use winit::dpi::{PhysicalPosition, PhysicalSize};
+    #[cfg(target_os = "linux")]
+    if backend == Backend::X11 {
+        let (x, y, w, h) = overlay_window::x11_crtc_rect(m.native_id() as u32)?;
+        return Some((PhysicalPosition::new(x, y), PhysicalSize::new(w, h)));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
+        // SAFETY: a zeroed MONITORINFO with its size set is what
+        // GetMonitorInfoW fills; the handle is winit's HMONITOR.
+        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        let ok = unsafe { GetMonitorInfoW(m.native_id() as usize as HMONITOR, &mut info) };
+        if ok == 0 {
+            return None;
+        }
+        let r = info.rcMonitor;
+        return Some((
+            PhysicalPosition::new(r.left, r.top),
+            PhysicalSize::new(
+                (r.right - r.left).max(0) as u32,
+                (r.bottom - r.top).max(0) as u32,
+            ),
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        #[repr(C)]
+        struct CGPoint {
+            x: f64,
+            y: f64,
+        }
+        #[repr(C)]
+        struct CGSize {
+            width: f64,
+            height: f64,
+        }
+        #[repr(C)]
+        struct CGRect {
+            origin: CGPoint,
+            size: CGSize,
+        }
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGDisplayBounds(display: u32) -> CGRect;
+        }
+        // SAFETY: CGDisplayBounds takes any display id (an unknown one gives
+        // an empty rect) and returns a plain struct.
+        let r = unsafe { CGDisplayBounds(m.native_id() as u32) };
+        if r.size.width <= 0.0 || r.size.height <= 0.0 {
+            return None;
+        }
+        return Some((
+            PhysicalPosition::new(r.origin.x.round() as i32, r.origin.y.round() as i32),
+            PhysicalSize::new(r.size.width.round() as u32, r.size.height.round() as u32),
+        ));
+    }
+    #[allow(unreachable_code)]
+    None
 }
 
 /// #1884: the runtime's half of bringing a window back — the requested
@@ -6368,5 +6500,43 @@ mod window_restore_tests {
         );
         window_geometry::publish_hidden(Some((300.0, 200.0)), None);
         assert_eq!(current_window_restore().unwrap().monitor, None);
+    }
+
+    /// #1884 re-review (D1): the window manager never maximizes a window
+    /// created maximized; it is dragged inside the grace and then left
+    /// alone, so no event reads it again. The reading taken when the grace
+    /// ends records the move and that it is not maximized; after it the
+    /// wait has no deadline, so no timed wake is armed for it again.
+    #[test]
+    fn the_reading_at_the_end_of_the_grace_records_a_refused_maximize() {
+        let _guard = published_test_guard();
+        let mut rt = runtime(WindowProps {
+            maximized: true,
+            x: Some(100),
+            y: Some(80),
+            ..Default::default()
+        });
+        assert!(rt.begin_appearance(one_monitor(), true));
+        let attrs = attributes(&mut rt, true);
+        rt.maximize_wait =
+            window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
+        rt.take_reading_unnamed(reading(false, (100, 80), (800, 600)));
+        rt.take_reading_unnamed(reading(false, (700, 400), (800, 600)));
+        let restore = current_window_restore().unwrap();
+        assert!(restore.maximized, "inside the grace: still waiting");
+        assert!(rt.maximize_wait.deadline().is_some(), "a wake is due");
+        rt.settle_maximize_wait_with(Some((reading(false, (700, 400), (800, 600)), None)));
+        let restore = current_window_restore().unwrap();
+        assert_eq!(
+            (restore.maximized, restore.position),
+            (false, Some((700.0, 400.0)))
+        );
+        assert_eq!(rt.maximize_wait.deadline(), None, "no wake after it");
+        // A window that is not shown (or none) still ends the wait.
+        rt.maximize_wait =
+            window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
+        rt.window = None;
+        rt.settle_maximize_wait();
+        assert_eq!(rt.maximize_wait.deadline(), None);
     }
 }

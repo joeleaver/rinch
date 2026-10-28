@@ -356,7 +356,7 @@ after creation, rinch keeps that answer for up to two seconds until the
 window says it is maximized, so the maximize itself is not mistaken for a
 resize; an un-maximize or a resize to another size within them is still
 taken. A window manager that refuses the maximize (a tiling one) has its
-geometry taken from the end of those two seconds.
+geometry read again at the end of those two seconds, and at close.
 It keeps answering while the window is hidden, and after a
 [hidden start](#starting-with-no-window-tray-only-apps) it answers from the
 first show.

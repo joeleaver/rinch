@@ -148,6 +148,29 @@ pub(crate) struct MonitorRect {
     pub name: Option<String>,
 }
 
+impl MonitorRect {
+    /// A monitor as winit lists it: at `position`, `mode` (its current video
+    /// mode's size) wide and tall, unless the platform gave its real desktop
+    /// rectangle (`native`, position and size), which wins. winit-x11's video
+    /// mode is the RandR mode, unrotated, so a portrait monitor's mode reads
+    /// landscape; the CRTC's rectangle is the real one.
+    pub(crate) fn of(
+        position: PhysicalPosition<i32>,
+        mode: PhysicalSize<u32>,
+        scale: f64,
+        name: Option<String>,
+        native: Option<(PhysicalPosition<i32>, PhysicalSize<u32>)>,
+    ) -> MonitorRect {
+        let (position, size) = native.unwrap_or((position, mode));
+        MonitorRect {
+            position,
+            size,
+            scale,
+            name,
+        }
+    }
+}
+
 /// The part of a window's top that must be on the desktop for the person to
 /// reach it (to grab its title bar and move it), logical pixels: this wide
 /// (or the whole width of a narrower window) and this tall (or the whole
@@ -382,10 +405,11 @@ pub(crate) const MAXIMIZE_GRACE: Duration = Duration::from_secs(2);
 /// or a resize by the person. Windows and macOS maximize at creation, so
 /// their first reading ends the wait.
 ///
-/// What it does not see through: a window manager that refuses the maximize
-/// (a tiling one, or none) leaves the window reported maximized until the
-/// first reading after the grace, so a move made in the first two seconds
-/// and never followed by another event is not recorded; and a maximize the
+/// A window manager that refuses the maximize (a tiling one, or none) leaves
+/// the window reported maximized for the grace; the shell reads the window
+/// once more when it ends ([`MaximizeWait::deadline`], a timed wake) and at
+/// close, so a move made inside it and followed by no event is still
+/// recorded. What it does not see through: a maximize the
 /// window manager makes in two resizes of different sizes, both before the
 /// property says so, ends the wait at the second. A window that cannot be
 /// maximized (not resizable: winit gives it equal minimum and maximum sizes;
@@ -423,6 +447,18 @@ impl MaximizeWait {
                 MaximizeWait::Created { size, since: now }
             }
             _ => MaximizeWait::Done,
+        }
+    }
+
+    /// When the grace ends while the wait is on: the shell takes one more
+    /// reading then ([`MaximizeWait`]: a window nothing re-reads would keep
+    /// what the last reading inside the grace left).
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        match *self {
+            MaximizeWait::Done => None,
+            MaximizeWait::Created { since, .. } | MaximizeWait::Resized { since, .. } => {
+                Some(since + MAXIMIZE_GRACE)
+            }
         }
     }
 
@@ -1228,5 +1264,74 @@ mod tests {
             true,
         );
         assert_eq!(g3.normal_monitor.as_deref(), Some("A"));
+    }
+
+    /// #1884 re-review: an X11 portrait monitor. winit-x11's video mode is
+    /// the RandR mode, 1920x1080 unrotated; the CRTC is 1080x1920. Built
+    /// from the CRTC's rectangle, a window in its lower half is reachable;
+    /// from the mode alone it was refused. Without a native rectangle the
+    /// mode is used, as before.
+    #[test]
+    fn a_portrait_monitor_takes_its_native_rectangle() {
+        let mode = PhysicalSize::new(1920, 1080);
+        let crtc = (PhysicalPosition::new(0, 0), PhysicalSize::new(1080, 1920));
+        let portrait = MonitorRect::of(
+            PhysicalPosition::new(0, 0),
+            mode,
+            1.0,
+            Some("DP-2".into()),
+            Some(crtc),
+        );
+        assert_eq!(portrait.size, PhysicalSize::new(1080, 1920));
+        let size = Size::Logical(LogicalSize::new(800.0, 400.0));
+        assert!(place_requested((100.0, 1400.0), size, Some("DP-2"), &[portrait]).is_some());
+        // Beside it, below its bottom: still out of reach.
+        let portrait = MonitorRect::of(PhysicalPosition::new(0, 0), mode, 1.0, None, Some(crtc));
+        assert!(place_requested((100.0, 1915.0), size, None, &[portrait]).is_none());
+        assert!(
+            place_requested(
+                (1200.0, 100.0),
+                size,
+                None,
+                &[MonitorRect::of(
+                    PhysicalPosition::new(0, 0),
+                    mode,
+                    1.0,
+                    None,
+                    Some(crtc)
+                )]
+            )
+            .is_none()
+        );
+        let unrotated = MonitorRect::of(PhysicalPosition::new(0, 0), mode, 1.0, None, None);
+        assert_eq!(unrotated.size, mode);
+        // A native rectangle moves the position too.
+        let moved = MonitorRect::of(
+            PhysicalPosition::new(0, 0),
+            mode,
+            1.0,
+            None,
+            Some((
+                PhysicalPosition::new(1920, 0),
+                PhysicalSize::new(1080, 1920),
+            )),
+        );
+        assert_eq!(moved.position, PhysicalPosition::new(1920, 0));
+    }
+
+    /// The wait's deadline is the end of the grace, and none once it is
+    /// over.
+    #[test]
+    fn the_wait_is_due_at_the_end_of_the_grace() {
+        let (mut wait, t) = waiting();
+        assert_eq!(wait.deadline(), Some(t(0) + MAXIMIZE_GRACE));
+        wait.filter(reading(1.0, (0, 0), (1920, 1050)), t(30));
+        assert_eq!(
+            wait.deadline(),
+            Some(t(0) + MAXIMIZE_GRACE),
+            "kept through the maximize"
+        );
+        wait.filter(maxed((1920, 1050)), t(40));
+        assert_eq!(wait.deadline(), None);
     }
 }

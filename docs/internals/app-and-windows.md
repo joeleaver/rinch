@@ -401,6 +401,20 @@ name. macOS keeps
 the logical position: `connected_monitors` gives its monitors in points at
 scale 1, the unit AppKit positions in.
 
+**Each monitor's rectangle is the platform's own** (`native_monitor_rect`,
+#1884). winit gives a monitor's position and its current video mode, and on X11
+the mode is the RandR mode, unrotated (`winit-x11` `util/randr.rs`), so a
+1080x1920 portrait monitor read as 1920x1080 and a position in its lower half
+was refused. On X11 rinch reads the CRTC's rectangle over RandR
+(`overlay_window::x11_crtc_rect`; winit's `native_id` there is the CRTC id,
+the same CRTC winit builds the monitor from); on Windows `GetMonitorInfoW`'s
+`rcMonitor` (physical desktop pixels; winit's `native_id` is the
+`HMONITOR`); on macOS `CGDisplayBounds` (points; `native_id` is the
+`CGDirectDisplayID`), which follow the display's rotation. Where it cannot be
+read (an X error, Wayland) the video mode is used as before. Pinned by
+`a_portrait_monitor_takes_its_native_rectangle` and the `#[ignore]`d
+`overlay_window::live_crtc` test against a live X server.
+
 **First appearance and `current_window_restore`** (#1884). `begin_appearance`
 runs before both `create_window` (visible) and `show_window`: on the first
 appearance — a creation, or the first show after a hidden start —
@@ -420,12 +434,18 @@ maximize). It ends — every reading believed — at the first reading that says
 maximized, at the end of the grace, or at a reading at yet another size or
 back at the created one after that first other size (an un-maximize, to the
 created size or to a smaller one a window manager chose because the created
-size does not fit the screen; or a resize by the person). Residue: a window
-manager that refuses the maximize (tiling, or none) leaves the window reported
-maximized until the first reading after the grace, so a move made within the
-grace and followed by no other event is not recorded; a maximize done in two
-resizes of different sizes before the property is set ends the wait at the
-second. Pins:
+size does not fit the screen; or a resize by the person). Readings come only
+with events (`Moved`, `SurfaceResized`, a scale change, creation, hide), so a
+window the window manager never maximizes (tiling, a WM rule, none), moved
+inside the grace and then left alone, would keep what the last reading in the
+grace said: maximized, at the creation position. So the shell reads the window
+once more when the grace ends — `MaximizeWait::deadline` is a timed wake in
+`tick_caret_blink`, beside the caret blink, the `title` tooltip and the file
+drop's — and at the main window's `CloseRequested`, before the app's
+`on_close_requested` reads the restore (`settle_maximize_wait`). That reading
+is believed and the wait is `Done`, which has no deadline, so the wake is not
+armed again. Residue: a maximize done in two resizes of different sizes before
+the property is set ends the wait at the second. Pins:
 `window_geometry::tests`, `rinch_runtime::window_restore_tests`. **On
 X11 the frame position is read by rinch** (`overlay_window::outer_position`:
 the client's root coordinates less `_NET_FRAME_EXTENTS`), because winit's
