@@ -262,9 +262,15 @@ fn call(codec: &str, p_ppm: u64, secs: u64) {
 }
 
 #[test]
+// One element without `media-vp8`.
+#[allow(clippy::single_element_loop)]
 fn wire_loss_is_repaired_by_retransmission() {
     init();
-    for codec in ["VP8", "H264"] {
+    for codec in [
+        #[cfg(feature = "media-vp8")]
+        "VP8",
+        "H264",
+    ] {
         testing::h264_only(codec == "H264");
         call(codec, 30_000, 8);
     }

@@ -99,6 +99,7 @@ fn noisy_call(codec: &str, cap: u32) {
 fn the_cap_holds_on_noise() {
     init();
     for cap in [300_000, 100_000] {
+        #[cfg(feature = "media-vp8")]
         noisy_call("VP8", cap);
         // Read as each peer's connection is built: on for the whole call.
         testing::prefer_h264(true);

@@ -164,7 +164,7 @@ pub fn webrtc_section(__scope: &mut RenderScope) -> NodeHandle {
                         "rsx! { MediaView { track: remote.clone(), style: \"width: 320px;\" } }"
                     }
                     Text { size: "sm", color: "dimmed",
-                        "Desktop: webrtc-rs with VP8, H.264 and Opus. Web: the browser's RTCPeerConnection. "
+                        "Desktop: webrtc-rs with H.264 and Opus (VP8 too with media-vp8). Web: the browser's RTCPeerConnection. "
                         "See the WebRTC guide, and examples/video-call for a call between two machines."
                     }
                 }

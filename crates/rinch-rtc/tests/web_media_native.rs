@@ -4,13 +4,16 @@
 //! the box must come back. Both directions of the codec interop are in this
 //! one loop.
 //!
-//! - `RINCH_RTC_MEDIA_URL`: a `media_echo` with both codecs. A browser
-//!   offers VP8 first, so this is **VP8** (libvpx on the native side). It
-//!   must pass in every browser, Firefox included: VP8 is why desktop video
-//!   works with a Firefox that has no OpenH264 plugin (M2, 2026-10-27).
-//! - `RINCH_RTC_MEDIA_H264_URL` (optional): a `media_echo --h264-only`, for
-//!   **H.264** (openh264 on the native side). It runs where the browser can
-//!   encode H.264. A browser that cannot (Firefox without Cisco's plugin)
+//! - `RINCH_RTC_MEDIA_URL`: a `media_echo` built with `media-vp8`, so with
+//!   both codecs. A browser offers VP8 first, so this is **VP8** (libvpx on
+//!   the native side). It must pass in every browser, Firefox included: VP8
+//!   is why desktop video works with a Firefox that has no OpenH264 plugin
+//!   (M2, 2026-10-27).
+//! - `RINCH_RTC_MEDIA_H264_URL` (optional): a `media_echo` built with
+//!   `media` alone (CI's: an app's default build), or one run with
+//!   `--h264-only`, for **H.264** (openh264 on the native side): the
+//!   browser's VP8-first offer answered in H.264. It runs where the browser
+//!   can encode H.264. A browser that cannot (Firefox without Cisco's plugin)
 //!   is named in the log and that half is not run: H.264 needs the plugin
 //!   there, by design.
 //!

@@ -27,15 +27,16 @@ const H: u32 = 240;
 #[test]
 fn losses_are_concealed_and_recovered() {
     init();
-    call("VP8");
+    #[cfg(feature = "media-vp8")]
+    call("VP8", true);
     // Read as each peer's connection is built: on for the whole call.
     testing::prefer_h264(true);
-    call("H264");
+    call("H264", !cfg!(feature = "media-vp8"));
     testing::prefer_h264(false);
 }
 
-/// One call: audio loss (in the VP8 call only), then five video outages.
-fn call(codec: &str) {
+/// One call: audio loss (in the first call only), then five video outages.
+fn call(codec: &str, audio_loss: bool) {
     let mixed = testing::capture_audio_output();
     let run = Arc::new(AtomicBool::new(true));
     let (audio, aw) = LocalTrack::audio_source(AudioSourceOptions {
@@ -72,7 +73,7 @@ fn call(codec: &str) {
     });
     pair.wait(2000);
 
-    if codec == "VP8" {
+    if audio_loss {
         // ---- audio
         let left_since = |mark: usize| -> Vec<f32> {
             let m = mixed.lock().unwrap();

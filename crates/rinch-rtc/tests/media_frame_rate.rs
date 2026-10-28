@@ -112,6 +112,7 @@ fn call(codec: &str) {
 #[test]
 fn camera_like_content_keeps_its_frame_rate() {
     init();
+    #[cfg(feature = "media-vp8")]
     call("VP8");
     // Read as each peer's connection is built: on for the whole call.
     testing::prefer_h264(true);
