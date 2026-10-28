@@ -287,6 +287,27 @@ press outside it is swallowed by the backdrop and does nothing. Pins:
 
 File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example. The drop handler reads the drop point and its element's painted box through `get_click_context()` (`dispatch_file_drop` sets it, #1650; logical window px, as a click's), and so do the files an editor hands back from a mixed drop. rinch-web dispatches no `data-onfiledrop` (a browser drop has no paths); its `ondropfiles` handler reads the same context (below).
 
+**From winit to the `File*` events (#1962, `shell/os_file_drag.rs`).** Since
+winit 0.31.0-beta.3/4 an OS drag is a data transfer on every platform:
+`DragEntered { id, position }` (X11 gives no position until the first
+`XdndPosition`), `DragPosition`, `DragDropped { id, .. }` (no position, no
+paths), `DragLeft`, and the data fetched asynchronously
+(`fetch_data_transfer` → `DataTransferReceived`). A drag is rejected unless
+the app accepts an action. `OsFileDrag` is the state machine, with no event
+loop in it: a drag counts only if it offers a URI list (`TypeHint::UriList`);
+it is accepted as a copy (`set_valid_dnd_actions(id, [Copy])`), its URI list
+is fetched once a position is known, every position is a `FileDragMoved`, the
+paths arrive as one `FileHoverEnter` each at the last position, a drop is one
+`FileDropped` at the last position (when the paths arrive, if they have not
+yet; fetched then if the hover's fetch failed), and a leave before the drop is
+`FileHoverCancelled`. `file:` URIs become paths with `url::Url::to_file_path`;
+other URIs are left out. Positions are winit's physical px, made logical
+before `OsFileDrag` sees them. So the app sees the beta.2 shape, except that
+the paths now follow the entry by a moment on every platform (on Wayland they
+used to come only with the drop), and a drag that hovers before they arrive
+is path-less, as Wayland's whole hover used to be (`FileDrag::paths_known`).
+Pins: `shell::os_file_drag::tests`.
+
 **`ondropfiles` (`data-ondropfiles`, #1771)** is the cross-platform form: the
 files as `rinch_core::file::LocalFile`s (`file.rs`: a name, a size, an optional
 path and an `Rc<dyn FileSource>` read on demand — a path on a spawned thread

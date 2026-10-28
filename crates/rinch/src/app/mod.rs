@@ -613,10 +613,10 @@ pub(crate) struct FileDrag {
     /// ([`event_dispatch::path_looks_like_an_image`]). The bytes cannot be read
     /// until the drop.
     pub(crate) picture: bool,
-    /// Whether the platform named the hovered paths (X11, Windows, macOS: a
-    /// `FileHoverEnter` per path). Wayland names none before the drop — the
-    /// winit fork reads the offer's `text/uri-list` only then, and starts the
-    /// hover only for an offer carrying one — so a path-less drag is claimed
+    /// Whether the hovered paths have been named (a `FileHoverEnter` per
+    /// path). The shell reads a drag's `text/uri-list` asynchronously
+    /// (`shell::os_file_drag`, #1962), so a drag hovers path-less until it
+    /// arrives, and for good when it cannot be read: such a drag is claimed
     /// on the editor's say alone, and a drop of no picture inserts nothing.
     pub(crate) paths_known: bool,
     /// Set by a pointer move heard while the drag was live: the caret is
