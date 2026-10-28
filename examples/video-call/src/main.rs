@@ -29,6 +29,9 @@ use rinch_rtc::{Description, IceCandidate, Peer, PeerState, RtcConfig, SdpKind, 
 use rinch_ws::{WsHandle, WsMessage};
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+mod tests;
+
 // ── Signalling ──────────────────────────────────────────────────────────────
 
 /// What travels over the relay. `peer-joined` and `bye` come from the relay
@@ -373,8 +376,9 @@ fn feed_pattern(writer: VideoSourceWriter) {
 
 // ── UI ──────────────────────────────────────────────────────────────────────
 
-#[component]
-fn app() -> NodeHandle {
+/// The call's state and the pattern it sends until the camera starts. Opens
+/// no device.
+fn new_call() -> Rc<Call> {
     let ui = Ui {
         server_url: Signal::new("ws://127.0.0.1:8080".into()),
         room: Signal::new("test-room".into()),
@@ -398,7 +402,7 @@ fn app() -> NodeHandle {
     .expect("a generated video track");
     feed_pattern(writer);
     ui.local.set(vec![Shown(pattern.clone().into())]);
-    let call = Rc::new(Call {
+    Rc::new(Call {
         ui,
         ws: RefCell::new(None),
         peer: RefCell::new(None),
@@ -408,7 +412,13 @@ fn app() -> NodeHandle {
         pattern,
         camera: RefCell::new(None),
         mic: RefCell::new(None),
-    });
+    })
+}
+
+#[component]
+fn app() -> NodeHandle {
+    let call = new_call();
+    let ui = call.ui;
 
     let cb = |f: fn(&Rc<Call>)| {
         let call = call.clone();

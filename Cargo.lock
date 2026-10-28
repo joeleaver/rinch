@@ -7755,6 +7755,7 @@ dependencies = [
  "rinch-core",
  "rinch-rtc",
  "rinch-ws",
+ "rtc-room-relay",
  "serde",
  "serde_json",
  "tracing",
