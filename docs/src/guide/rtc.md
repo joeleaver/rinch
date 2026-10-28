@@ -1,4 +1,4 @@
-# WebRTC Data Channels
+# WebRTC: Data Channels, Audio and Video
 
 `rinch-rtc` gives an app peer-to-peer (or client-to-server) links over UDP:
 WebRTC **data channels**, with the same shape as `rinch-ws`. Callbacks run on
@@ -445,6 +445,35 @@ the user has interacted with the page. Start a call from a click.
 - A remote track that pauses (its sender went inactive) and comes back is
   the same `RemoteTrack`: it mutes, then unmutes. `on_track` does not fire
   again.
+
+### A whole call: the examples
+
+Two examples show the API end to end, with synthetic sources until you ask
+for a device:
+
+- **ui-zoo's WebRTC page** (`examples/ui-zoo/src/sections/webrtc_call.rs`):
+  two peers in one window, desktop and web, with no server. One sends a
+  generated pattern (`video_source`) and a tone (`audio_source`), the other
+  a pattern back, and "Use camera" swaps the camera and microphone in with
+  `replace_track`.
+- **`examples/video-call`**: a call between two machines. Run
+  `cargo run -p rtc-room-relay` where both can reach it, then
+  `cargo run -p video-call` on each, and join the same room. Signalling is
+  JSON over a `rinch-ws` socket; `examples/rtc-room-relay` forwards it and
+  says when the other side arrives (`{"type":"peer-joined"}`, and the
+  waiting side then offers) or leaves (`{"type":"bye"}`).
+
+Both add every sender before the first offer: the video sender with a
+generated pattern, and in video-call an audio transceiver
+(`add_transceiver(MediaKind::Audio, Direction::SendRecv)`) that gets the
+microphone later. Every change after that (camera on, back to the pattern,
+mute, video off) is `replace_track` or `set_enabled`, and needs no new
+offer.
+
+**Ask for devices from a click.** Neither example opens a camera or a
+microphone until the user presses a button, and an app should do the same:
+the permission prompt then answers something the user did, and a page that
+turns the camera on because it was opened surprises people.
 
 ### Glare: both sides offer at once
 

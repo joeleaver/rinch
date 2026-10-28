@@ -157,6 +157,7 @@ fn open_camera_impl(
     config: CameraConfig,
     on_frame: impl FnMut(VideoFrame) + Send + 'static,
 ) -> Result<CameraCapture, AvError> {
+    crate::testing::gate("camera")?;
     let md = media_devices()?;
 
     // Build constraints

@@ -635,17 +635,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "audiopus_sys"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62314a1546a2064e033665d658e88c620a62904be945f8147e6b16c3db9f8651"
-dependencies = [
- "cmake",
- "log",
- "pkg-config",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2233,15 +2222,6 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
-]
-
-[[package]]
-name = "fxhash"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
-dependencies = [
- "byteorder",
 ]
 
 [[package]]
@@ -4289,15 +4269,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "openssl-src"
-version = "300.5.5+3.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f1787d533e03597a7934fd0a765f0d28e94ecc5fb7789f8053b1e699a56f709"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "openssl-sys"
 version = "0.9.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4305,7 +4276,6 @@ checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
 dependencies = [
  "cc",
  "libc",
- "openssl-src",
  "pkg-config",
  "vcpkg",
 ]
@@ -4315,15 +4285,6 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
-
-[[package]]
-name = "opus"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d3809943dff6fbad5f0484449ea26bdb9cb7d8efdf26ed50d3c7f227f69eb5c"
-dependencies = [
- "audiopus_sys",
-]
 
 [[package]]
 name = "opus"
@@ -5656,14 +5617,14 @@ dependencies = [
  "js-sys",
  "libc",
  "openh264",
- "opus 0.4.0",
+ "opus",
  "rinch-av",
  "rinch-core",
  "rinch-web",
  "rtc",
  "serde",
  "sha2",
- "str0m 0.24.1",
+ "str0m",
  "tokio",
  "tracing",
  "wasm-bindgen",
@@ -5686,32 +5647,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
-]
-
-[[package]]
-name = "rinch-signaling"
-version = "0.1.0"
-dependencies = [
- "js-sys",
- "rinch-webrtc",
- "serde",
- "serde_json",
- "tracing",
- "tungstenite",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
-name = "rinch-signaling-server"
-version = "0.1.0"
-dependencies = [
- "rinch-webrtc",
- "serde",
- "serde_json",
- "tracing",
- "tracing-subscriber",
- "tungstenite",
 ]
 
 [[package]]
@@ -5817,23 +5752,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
- "web-sys",
-]
-
-[[package]]
-name = "rinch-webrtc"
-version = "0.1.0"
-dependencies = [
- "js-sys",
- "opus 0.3.1",
- "rinch-av",
- "rinch-core",
- "serde",
- "serde_json",
- "str0m 0.7.0",
- "tracing",
- "wasm-bindgen",
- "wasm-bindgen-futures",
  "web-sys",
 ]
 
@@ -6103,6 +6021,15 @@ dependencies = [
  "rtc-rtp",
  "rtc-shared",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rtc-room-relay"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
+ "tungstenite",
 ]
 
 [[package]]
@@ -6397,21 +6324,6 @@ dependencies = [
 
 [[package]]
 name = "sctp-proto"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4dea4fe3384a24652f065296ac333c810dfd0c5b39b98a2214762c16aaadc3c"
-dependencies = [
- "bytes",
- "crc",
- "fxhash",
- "log",
- "rand 0.8.5",
- "slab",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "sctp-proto"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bba218fe5119005820ab5aa74ffae0f1267763ae242541f5787ef42427cff262"
@@ -6545,16 +6457,6 @@ dependencies = [
  "cfg-if 1.0.4",
  "cpufeatures 0.2.17",
  "digest",
- "sha1-asm",
-]
-
-[[package]]
-name = "sha1-asm"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "286acebaf8b67c1130aedffad26f594eff0c1292389158135327d2e23aed582b"
-dependencies = [
- "cc",
 ]
 
 [[package]]
@@ -6783,27 +6685,6 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "str0m"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b85058b6dca67818698a745d12e16884b17d5c31cc20377a4413bf492ca0142"
-dependencies = [
- "combine",
- "crc",
- "fastrand",
- "hmac",
- "libc",
- "once_cell",
- "openssl",
- "openssl-sys",
- "sctp-proto 0.3.0",
- "serde",
- "sha1",
- "thiserror 1.0.69",
- "tracing",
-]
-
-[[package]]
-name = "str0m"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e80c4a4ef148e4a9fd15b9525c7f376d97e86729f19880b591ad220f1288c0f"
@@ -6814,7 +6695,7 @@ dependencies = [
  "dimpl",
  "fastrand",
  "is",
- "sctp-proto 0.10.7",
+ "sctp-proto",
  "serde",
  "str0m-openssl",
  "str0m-proto",
@@ -7647,11 +7528,10 @@ dependencies = [
  "rinch-core",
  "rinch-macros",
  "rinch-platform",
+ "rinch-rtc",
  "rinch-screen-capture",
- "rinch-signaling",
  "rinch-tabler-icons",
  "rinch-video",
- "rinch-webrtc",
  "wasm-bindgen-futures",
  "wgpu",
 ]
@@ -7663,7 +7543,6 @@ dependencies = [
  "rinch",
  "rinch-core",
  "rinch-tabler-icons",
- "rinch-webrtc",
  "tokio",
  "tracing",
  "ui-zoo",
@@ -7885,13 +7764,12 @@ name = "video-call"
 version = "0.1.0"
 dependencies = [
  "rinch",
- "rinch-av",
  "rinch-core",
- "rinch-macros",
- "rinch-screen-capture",
- "rinch-signaling",
- "rinch-tabler-icons",
- "rinch-webrtc",
+ "rinch-rtc",
+ "rinch-ws",
+ "rtc-room-relay",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

@@ -3,7 +3,8 @@
 **Status:** Decided (issue #1916). Joe accepted M1–M12 as recommended,
 2026-10-26. For M3 that is option (c): openh264 built from source by
 default, an opt-in to load Cisco's binary at run time, and docs that say
-plainly what each covers. Implementation follows section 9.
+plainly what each covers. Implemented in the four steps of section 9; the
+last (the ports and the removal) is recorded in 5.4.
 **Context:** Joe decided #1916: rebuild the media call on `rinch-rtc`, then
 remove `rinch-webrtc`. `rinch-rtc` (data channels) is the design record
 `docs/design/webrtc-data-channels.md`, and is implemented on main
@@ -862,6 +863,48 @@ Rewritten on `rinch-rtc` (with `media`) and `rinch-ws`:
   PRs, so the tree never has two call implementations side by side, and
   never has none (M12).
 
+### 5.4 As built (step 4)
+
+Where the ports and the removal differ from 5.1–5.3, the code holds:
+
+- **The relay** (`examples/rtc-room-relay`) is about 290 lines, not 150:
+  it keeps the old server's hardening (one thread per connection owning
+  its socket, bounded per-peer queues, a full queue drops the peer, the
+  state lock read through poisoning) and its eight tests, ported. Its
+  only protocol is two notices of its own, `{"type":"peer-joined"}` to
+  the peer already waiting and `{"type":"bye"}` to the one left behind;
+  everything else is forwarded unread.
+- **video-call** negotiates once. Both senders exist before the first
+  offer: a generated pattern on the video sender, and an audio
+  transceiver (`SendRecv`) with no track until the microphone. The side
+  that was waiting offers on `peer-joined`. Screen sharing, which the old
+  demo had through rinch-screen-capture, is not carried over (M10).
+- **The ui-zoo section** sends a pattern back from peer B as well, so both
+  peers receive. B's received audio is not played until the user asks
+  (`set_playing`), so the page does not start a tone by itself. The call
+  starts when the section renders (synthetic sources only); "Use camera"
+  is the one device path.
+- **The av section** opened the camera and the microphone while
+  rendering, and never released them. Both now open from buttons and
+  close on stop and on unmount. `rinch_av::testing` (a counted, deniable
+  gate on every device open, behind rinch-av's `test-util` feature) is
+  what its test asserts on.
+- **CI does change** (5.3 said it would not): VP8 (M2) made `media` need
+  the system libvpx, and ui-zoo and video-call turn `media` on under
+  `--workspace`, so every `test` shard, the docs build and the visual
+  tests install `libvpx-dev` (and the shards nasm). The native media tests
+  also run in the integration-a-m shard now.
+- **Dependencies that left `Cargo.lock`:** str0m 0.7, `openssl-src` (str0m
+  0.7 built a vendored OpenSSL; `openssl-sys` now builds against the
+  system's, for rinch-rtc's tests only), `audiopus_sys` and `sctp-proto`
+  0.3 (0.10 stays, under str0m 0.24).
+  cpal and nokhwa stay, through rinch-av in ui-zoo and in rinch-rtc's
+  `media`.
+- **Found on the way:** a `LocalTrack` still held when its thread exits
+  (in a signal, at an app's exit) aborted the process: its drop reached
+  rinch-rtc's thread-local tables after they were destroyed. It now
+  tolerates that (`tests/media_drop_at_exit.rs`).
+
 ## 6. Tests
 
 None of these tests touches a real device; every source is synthetic.
@@ -950,7 +993,7 @@ agents' builds, so timings are indicative rather than benchmarks.
    playback, the sink hook (M6), the native loopback tests, and
    `media_echo` with its browser interop step in CI.
 4. **The ports and the removal** (5.1–5.3), with the user guide page and an
-   internals section.
+   internals section. Done; as built in 5.4.
 
 ## Decisions
 

@@ -12,7 +12,8 @@ rinch-core = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Synchronous WebSocket client; `tungstenite` is already in the tree (rinch-signaling).
+# Synchronous WebSocket client. examples/rtc-room-relay's server uses the same
+# tungstenite version (rinch-signaling, which used to share it, is gone, #1916).
 # `rustls-tls-webpki-roots` adds `wss://` support reusing the rustls stack that
 # `rinch-http`'s `ureq` already pulls in.
 tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }

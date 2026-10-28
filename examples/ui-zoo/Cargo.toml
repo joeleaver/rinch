@@ -21,11 +21,17 @@ rinch-platform = { workspace = true }
 rinch-tabler-icons.workspace = true
 rinch-video = { workspace = true }
 rinch-av = { workspace = true, features = ["audio", "camera"] }
-rinch-webrtc = { workspace = true }
-rinch-signaling = { workspace = true }
+# The WebRTC section: an in-page call (audio and video tracks, #1916).
+rinch-rtc = { workspace = true, features = ["media"] }
 rinch-screen-capture = { workspace = true }
 wgpu = { workspace = true, features = ["webgl"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
+
+[dev-dependencies]
+# The headless MockDomDocument the section tests render into.
+rinch-core = { workspace = true, features = ["test-util"] }
+# `rinch_av::testing` (av_opens_no_device.rs): count and deny device opens.
+rinch-av = { workspace = true, features = ["audio", "camera", "test-util"] }

@@ -159,7 +159,8 @@ There are no cargo features for the backends: the target picks one.
   rcgen's `aws_lc_rs`. Cargo unifies that into the rcgen webrtc-rs uses, so
   the tests would have made certificates with aws-lc instead of the ring
   that ships, and every workspace build would compile aws-lc-sys.
-  `openssl-sys` is already built for rinch-webrtc.
+  `openssl-sys` builds against the system OpenSSL (libssl-dev), for these
+  tests only (rinch-webrtc, whose str0m 0.7 built a vendored one, is gone).
 - **Web** (`tests/web_*.rs`, Chrome and Firefox in `test-wasm`):
   - `web_in_page` needs no server.
   - `web_live_lite` talks to `examples/lite_echo.rs`, which CI starts. It
@@ -396,6 +397,62 @@ code's gate is `media-core`, which both turn on.
     exposed.
   - The worklet-or-processor choice is not reported.
   - The gesture that unblocks autoplay is the app's job.
+
+## The call demos, and what they replaced (#1916, step 4)
+
+`rinch-webrtc` (a str0m 0.7 media crate that never carried media),
+`rinch-signaling` and `rinch-signaling-server` were removed in the same PR
+that ported their two users onto rinch-rtc, so the tree never had two call
+stacks or none (M12). Their workspace members went with them; str0m 0.7,
+its vendored OpenSSL build (`openssl-src`), `audiopus_sys` and
+`sctp-proto` 0.3 left `Cargo.lock`. str0m 0.24 stays, as rinch-rtc's
+test-only interop peer, and with it `sctp-proto` 0.10.
+
+- **`examples/video-call`** (two machines). JSON over a rinch-ws socket to
+  `examples/rtc-room-relay`, which forwards text between the two peers of
+  a room and adds `{"type":"peer-joined"}` (to the one already waiting)
+  and `{"type":"bye"}` (to the one left behind). The waiting side offers
+  on `peer-joined`; the newcomer is the polite one. Both senders exist
+  before the first offer (video: `add_track` of a generated pattern;
+  audio: `add_transceiver(Audio, SendRecv)` with no track), so "Start
+  camera", "send a test pattern instead", mute and video off are all
+  `replace_track` / `set_enabled`, never a renegotiation. The relay is a
+  library with a thin binary (`rtc_room_relay::run`), so video-call's
+  `src/tests.rs` starts one on an ephemeral port and runs two calls
+  through it with no window: who offers, the pattern arriving both ways,
+  "bye".
+- **ui-zoo's WebRTC section** (`sections/webrtc_call.rs` for the logic,
+  `webrtc.rs` for the rsx). Two peers in the window, signalling by direct
+  hand-off. A sends a pattern and a 440 Hz tone, B a pattern back;
+  `negotiate` offers A→B, then B→A only if B's transceiver found no m-line
+  in A's offer (so it does not depend on whether the backend reuses B's
+  `add_track` transceiver for A's m-line). The sources are fed by
+  `set_interval` on the UI thread, which works the same on desktop and
+  web. The call is made during the section's render: peers, timers and
+  callbacks are the section's, and `on_cleanup` closes it.
+  `tests/webrtc_in_page.rs` runs that logic with no window (the test
+  thread as main thread, as rinch-rtc's own tests do).
+- **Devices open only from a click.** video-call's "Start camera", the
+  WebRTC section's "Use camera", and the av section's "Start camera" /
+  "Start microphone" are the only paths to a camera or a microphone; the
+  av section used to open both while rendering. Other buttons reach other
+  devices: the av section's "Share screen" (screen capture) and the mic
+  test's "Play" (an audio output). `rinch_av::testing` (behind rinch-av's
+  `test-util` feature, off by default; ui-zoo's dev-dependency turns it
+  on) counts every device open in rinch-av and can deny them before they
+  reach hardware;
+  `examples/ui-zoo/tests/av_opens_no_device.rs` renders the av section
+  with devices denied and asserts zero opens, then clicks both buttons as
+  its positive control.
+- **A track held at thread exit.** A `LocalTrack` kept in a signal (or any
+  thread-local registered before rinch-rtc's tables) is dropped during
+  thread-local teardown, after `LOCALS` and `CAPTURES` are gone. Its drop
+  uses `try_with` for them: with `with` it panicked there, which aborts
+  the process (`tests/media_drop_at_exit.rs`).
+- **CI.** With ui-zoo and video-call in the workspace, every `--workspace`
+  build compiles `media` (openh264, libopus, VP8 on the system libvpx), so
+  every `test` shard, the docs build and the visual tests install
+  `libvpx-dev`.
 
 ## Known gaps
 

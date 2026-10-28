@@ -122,6 +122,7 @@ fn open_camera_with_index(
     config: CameraConfig,
     mut on_frame: impl FnMut(VideoFrame) + Send + 'static,
 ) -> Result<CameraCapture, AvError> {
+    crate::testing::gate("camera")?;
     let requested = build_requested_format(&config);
 
     // nokhwa::Camera is !Send, so we must create it on the capture thread.
