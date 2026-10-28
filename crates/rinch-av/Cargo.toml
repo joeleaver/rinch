@@ -8,12 +8,18 @@ description = "Cross-platform audio/video device access for rinch"
 [dependencies]
 # Always available
 rinch-core = { workspace = true }
+# The processor an output's audio thread runs (`audio::dsp`); dependency-free, so the same crate
+# compiles into the raw module an AudioWorklet instantiates.
+rinch-dsp = { workspace = true }
 tracing = { workspace = true }
 thiserror = "2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Audio (desktop)
 cpal = { version = "0.18", optional = true }
+# `audio::dsp`: the bounded, preallocated single-producer rings between the app and the output's
+# audio thread (no allocation or lock there). Zero dependencies.
+rtrb = { version = "0.3", optional = true }
 # Camera (desktop)
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 
@@ -55,11 +61,22 @@ web-sys = { version = "0.3", features = [
     "BaseAudioContext",
     "EventTarget",
     "AddEventListenerOptions",
+    # `audio::dsp` on the web: the processor runs in an AudioWorklet.
+    "AudioWorklet",
+    "AudioWorkletNode",
+    "AudioWorkletNodeOptions",
+    "Worklet",
+    "MessagePort",
+    "MessageEvent",
+    "Event",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
 ] }
 
 [features]
 default = []
-audio = ["dep:cpal"]
+audio = ["dep:cpal", "dep:rtrb"]
 camera = ["dep:nokhwa"]
 
 # Browser tests, synthetic sources only (an OscillatorNode, a canvas
@@ -85,4 +102,6 @@ web-sys = { version = "0.3", features = [
     "NodeList",
     "Node",
     "HtmlMediaElement",
+    # `audio::dsp`'s sample test renders through an offline context.
+    "OfflineAudioContext",
 ] }

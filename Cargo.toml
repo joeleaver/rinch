@@ -28,6 +28,7 @@ rinch = { path = "crates/rinch", default-features = false }
 rinch-core = { path = "crates/rinch-core" }
 rinch-http = { path = "crates/rinch-http" }
 rinch-ws = { path = "crates/rinch-ws" }
+rinch-dsp = { path = "crates/rinch-dsp" }
 rinch-rtc = { path = "crates/rinch-rtc" }
 rinch-macros = { path = "crates/rinch-macros" }
 rinch-renderer = { path = "crates/rinch-renderer" }

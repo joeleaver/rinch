@@ -5429,6 +5429,8 @@ dependencies = [
  "js-sys",
  "nokhwa",
  "rinch-core",
+ "rinch-dsp",
+ "rtrb",
  "thiserror 2.0.18",
  "tracing",
  "wasm-bindgen",
@@ -5537,6 +5539,10 @@ dependencies = [
  "web-time",
  "web_atoms",
 ]
+
+[[package]]
+name = "rinch-dsp"
+version = "0.1.0"
 
 [[package]]
 name = "rinch-editable"
@@ -6210,6 +6216,12 @@ dependencies = [
  "rtc-stun",
  "sansio",
 ]
+
+[[package]]
+name = "rtrb"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "342e1478a6e1c839e7405033eabfdc954d4d5dabd39f34e83420a43a95acfb04"
 
 [[package]]
 name = "rustc-hash"
