@@ -199,10 +199,10 @@ fn main() {
 fn run_external(app: fn(&mut RenderScope) -> NodeHandle, props: WindowProps) {
     use std::sync::Arc;
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::from_env()
             .unwrap_or(wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     // Headless adapter — no surface yet (rinch owns the window). On a single-GPU
     // system this is the same physical device that can present to that window.
@@ -210,6 +210,7 @@ fn run_external(app: fn(&mut RenderScope) -> NodeHandle, props: WindowProps) {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .expect("no GPU adapter");
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {

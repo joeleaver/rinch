@@ -18,7 +18,7 @@ Load-bearing dependency facts (detail and history in `docs/internals/dependencie
 - **Taffy 0.14** is pinned in one place, `crates/rinch-dom/Cargo.toml`; its `[dependencies]` and `[dev-dependencies]` lines must agree, features included (the five default features stay off).
 - **parley 0.11.1** with `features = ["complex-scripts"]`, which must stay on (without it Thai/Lao/Khmer/Burmese text has no line breaks). `parley::Glyph::y` is Y-down.
 - **skrifa 0.44**, the version parley uses; move it with any parley bump.
-- **wgpu** is a patched fork (`[patch.crates-io]`, see `docs/internals/app-and-windows.md` "wgpu Fork").
+- **wgpu 30** (crates.io) and **Vello 0.11 from `joeleaver/vello-fork` at a pinned rev** (#1955, image-atlas fixes; a dependency, not a patch). Apps use `rinch::wgpu` and `rinch::vello`. See `docs/internals/app-and-windows.md` "Vello Fork".
 
 ## Where the detail lives
 
@@ -26,7 +26,7 @@ Load-bearing dependency facts (detail and history in `docs/internals/dependencie
 |---|---|
 | `dependencies.md` | Taffy/Parley/skrifa pins and traps, line breaking, white space, tabs, NBSP, justify, text-overflow |
 | `components.md` | the Tabler icon system, components' icon props, `List`/`Stepper`/`RadioGroup` container defaults, `on_child_inserted`/`on_child_removed` |
-| `app-and-windows.md` | the `App` builder, app-bundled fonts, Wayland `app_id`, transparent/borderless windows, resize handles, `BorderlessWindow`, window control, hide/show geometry, overlay windows, window levels, layer shell, the wgpu fork |
+| `app-and-windows.md` | the `App` builder, app-bundled fonts, Wayland `app_id`, transparent/borderless windows, resize handles, `BorderlessWindow`, window control, hide/show geometry, overlay windows, window levels, layer shell, the Vello fork (and the removed wgpu fork) |
 | `state-and-threading.md` | Signal/Memo/stores/context, memo equality cut-off, event handlers as batches, effect flushing, `note_host_change`, cross-thread `send`, the main-callback queue |
 | `menus.md` | `Menu`/`MenuItem`, checkbox/radio items, callback lifetime, shortcut parsing and layout matching, the DOM menu bar, built-in shortcuts |
 | `editor.md` | the rich-text editor: model, steps, history, persistence, embeds, node views, paste fitting, the HTML reader, image input, links, popup hooks, margin anchors, read-only, caret affinity, scroll gate, focus/reveal, commands, input rules, collaboration (yrs) |

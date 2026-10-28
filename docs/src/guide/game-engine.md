@@ -191,7 +191,7 @@ registrar.notify_frame_ready();
 
 `gpu_handle()` returns `None` until the window's GPU renderer has started, and for the whole session when the window presents with the software renderer: `Renderer::Software` was chosen, a user set `RINCH_RENDERER=cpu`, or the GPU would not start and `Renderer::Auto` fell back (see [Rendering Backends](windows.md#rendering-backends)). An app that configures the device with `App::gpu_config` or `App::external_gpu` (below) is exempt: it always presents on the GPU, or panics at startup if the GPU will not start, so once its window is up the handle is there.
 
-> **Use `rinch::wgpu`.** rinch pins a patched `wgpu` fork. Construct every `wgpu` type you hand back to rinch (`TextureView`, config features/limits, …) from `rinch::wgpu::…`, not a separately-pinned `wgpu` dependency, or the types won't match.
+> **Use `rinch::wgpu` and `rinch::vello`.** rinch re-exports the exact crates it links: `rinch::wgpu` (**wgpu 30**, crates.io) and `rinch::vello` (**Vello 0.11** from `joeleaver/vello-fork` at a pinned rev, with `rinch::vello::peniko` and `rinch::vello::kurbo`). Construct every `wgpu` or Vello type you hand to rinch (`TextureView`, config features/limits, a `Scene`, colours, shapes, …) from these, instead of declaring your own `wgpu`/`vello` dependencies, so the versions can never drift. If you need an extra wgpu feature (e.g. `webgpu`), keep `wgpu = "30"` in your `Cargo.toml` with just that feature; Cargo unifies it with rinch's.
 
 ### Sharing a High-Capability GPU Device
 
@@ -231,6 +231,64 @@ App::new(app).external_gpu(gpu).run();
 ```
 
 The provided device is published through `gpu_handle()`. On a single-GPU machine a headless adapter (`compatible_surface: None`) usually presents fine; on multi-GPU systems create the adapter from a surface-compatible one, or prefer `App::gpu_config` (which guarantees compatibility). See the `gpu-device-config` example for both modes.
+
+### Migrating from wgpu 27 to 30
+
+rinch moved from wgpu 27 / Vello 0.7 to **wgpu 30 / Vello 0.11** (#1955), and
+dropped its patched wgpu fork: there is no wgpu `[patch.crates-io]` to copy any
+more. An app that shares rinch's `Device` (`App::gpu_config`,
+`App::external_gpu`, `gpu_handle()`, `GpuTextureRegistrar`, a GPU render
+callback, the embed API) uses the same wgpu, so its own wgpu code moves with
+it. The changes rinch's own code and examples needed:
+
+| wgpu 27 | wgpu 30 |
+|---|---|
+| `Instance::new(&InstanceDescriptor { .. })` | `Instance::new(InstanceDescriptor { .., display: None })` (by value) |
+| `InstanceDescriptor::default()` / `from_env_or_default()` | `new_without_display_handle()` / `new_without_display_handle_from_env()` (or the `with_display_handle` forms) |
+| `SurfaceTargetUnsafe::RawHandle { raw_display_handle: h, .. }` | `raw_display_handle: Some(h)` |
+| `RequestAdapterOptions { .. }` | add `apply_limit_buckets: false` (or `..Default::default()`) |
+| `SurfaceConfiguration { .. }` | add `color_space: SurfaceColorSpace::Auto` (the old behaviour) |
+| `surface.get_current_texture()` → `Result<SurfaceTexture, SurfaceError>` | → `CurrentSurfaceTexture::{Success, Suboptimal, Timeout, Occluded, Outdated, Lost, Validation}` |
+| `frame.present()` | `queue.present(frame)` |
+| `slice.get_mapped_range()` → `BufferView` | → `Result<BufferView, MapRangeError>` |
+| `device.push_error_scope(f); … device.pop_error_scope()` | `let g = device.push_error_scope(f); … g.pop()` |
+| `PipelineLayoutDescriptor { bind_group_layouts: &[&l], push_constant_ranges: &[] }` | `bind_group_layouts: &[Some(&l)], immediate_size: 0` |
+| `RenderPipelineDescriptor { multiview: None, .. }` | `multiview_mask: None` |
+| `RenderPassDescriptor { .. }` | add `multiview_mask: None` |
+| `VertexState { buffers: &[layout] }` | `buffers: &[Some(layout)]` |
+| `DepthStencilState { depth_write_enabled: true, depth_compare: Less, .. }` | `Some(true)`, `Some(CompareFunction::Less)` |
+
+Each row was checked against the wgpu 27.0.1 and 30.0.1 sources; wgpu's own
+changelog has the rest (v28.0.0, v29.0.0, v30.0.0 sections). A `RenderSurface`
+frame, a registered texture and a Vello scene from the embed API composite as
+before; Vello 0.9 began sampling images at pixel centres, and rinch's painter
+adjusted, so its images are drawn at the same pixels.
+
+**Use `rinch::vello`; no patch line is needed.** rinch depends on Vello 0.11
+from `joeleaver/vello-fork` at a pinned commit (#1955): stock Vello 0.11 makes
+every image already in its atlas draw transparent after any render of a scene
+with no image, gradient or text, and keeps an image in its atlas for two renders
+after its last use, so large or many images can go undrawn; the fork fixes both.
+An app on rinch gets it as an ordinary dependency. Build Vello types (a
+`Scene`, `peniko` colours, `kurbo` shapes, a `vello::Renderer` for the embed
+API's `scene()`) from `rinch::vello`, `rinch::vello::peniko` and
+`rinch::vello::kurbo`, not from a `vello` dependency of your own, which would
+be a second, unpatched copy whose types do not match rinch's. If you register your own textures with
+`Renderer::register_texture` and draw into them in place, call
+`Renderer::mark_override_image_dirty` before each render that should show the
+new contents (Vello 0.9+ copies an override texture into its atlas only when it
+is new or marked).
+
+**Migrating an app from the wgpu-27 rinch:**
+
+- Delete your wgpu-fork `[patch.crates-io]` lines (`wgpu`, `wgpu-core`,
+  `wgpu-hal`, `wgpu-types`, `naga`); rinch no longer uses a wgpu fork. Keep the
+  winit ones, and add nothing for Vello.
+- If you share rinch's GPU device or build Vello types, use `rinch::wgpu` and
+  `rinch::vello` instead of declaring your own `wgpu`/`vello` dependencies, so
+  the versions can never drift.
+- If you need an extra wgpu feature (e.g. `webgpu`), keep `wgpu = "30"` with
+  just that feature; Cargo unifies it with rinch's.
 
 ### Layout Size
 

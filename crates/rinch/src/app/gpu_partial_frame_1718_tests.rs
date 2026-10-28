@@ -226,7 +226,8 @@ fn build_scene_after_a_partial_frame_encodes_the_whole_document() {
 #[test]
 #[ignore]
 fn gpu_hover_probe() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .expect("adapter");
@@ -538,7 +539,10 @@ fn readback(
     queue.submit(Some(enc.finish()));
     buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    let data = buf.slice(..).get_mapped_range();
+    let data = buf
+        .slice(..)
+        .get_mapped_range()
+        .expect("the buffer is mapped");
     let mut out = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         out.extend_from_slice(&data[(y * bpr) as usize..(y * bpr + w * 4) as usize]);
@@ -552,7 +556,8 @@ fn readback(
 #[ignore]
 fn gpu_partial_frames_match_a_full_render() {
     use crate::shell::desktop::{PartialFrame, render_partial};
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .unwrap();

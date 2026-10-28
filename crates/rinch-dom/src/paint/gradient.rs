@@ -406,8 +406,9 @@ const PREMUL_STEPS: usize = 8;
 /// ramp CSS asks for, which is interpolated premultiplied (css-images-4
 /// §3.7; #1798): `transparent` to orange fades the orange out rather than
 /// through grey. Both painters need it: tiny-skia interpolates straight
-/// colour, and so does Vello 0.7's ramp builder (`make_ramp` lerps, then
-/// premultiplies), whatever the gradient's `interpolation_alpha_space` says. A stop of alpha 0 takes the colour of the
+/// colour, and so does Vello's ramp builder (`make_ramp` lerps, then
+/// premultiplies; Vello 0.7 to 0.11 for the default
+/// `InterpolationAlphaSpace::Premultiplied`, which rinch leaves set). A stop of alpha 0 takes the colour of the
 /// stop it meets on each side (exact); between two stops of other differing
 /// alphas, [`PREMUL_STEPS`] premultiplied samples are inserted.
 pub(super) fn premultiplied_ramp(
