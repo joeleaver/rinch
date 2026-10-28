@@ -268,8 +268,29 @@ impl InPageCall {
 
     /// Send the camera and microphone instead of the pattern and tone. This
     /// asks for both devices (a permission prompt on the web); the call goes
-    /// on with the pattern if either is refused.
+    /// on with the pattern if either is refused, or if the senders cannot
+    /// take them (the devices are released then).
     pub fn use_camera(&self) {
+        self.use_devices(async {
+            let camera = LocalTrack::camera(CameraOptions::default()).await?;
+            let mic = match LocalTrack::microphone(MicrophoneOptions::default()).await {
+                Ok(mic) => mic,
+                Err(e) => {
+                    camera.stop();
+                    return Err(e);
+                }
+            };
+            Ok((camera, mic))
+        });
+    }
+
+    /// [`use_camera`](Self::use_camera) with the video and audio tracks
+    /// `open` yields. A test passes synthetic tracks for the devices.
+    #[doc(hidden)]
+    pub fn use_devices<E: std::fmt::Display>(
+        &self,
+        open: impl Future<Output = Result<(LocalTrack, LocalTrack), E>> + 'static,
+    ) {
         let view = self.0.view;
         if view.source.get() != Source::Pattern {
             return;
@@ -277,23 +298,13 @@ impl InPageCall {
         view.source.set(Source::Requesting);
         let call = self.clone();
         spawn_local(async move {
-            let got = async {
-                let camera = LocalTrack::camera(CameraOptions::default()).await?;
-                let mic = match LocalTrack::microphone(MicrophoneOptions::default()).await {
-                    Ok(mic) => mic,
-                    Err(e) => {
-                        camera.stop();
-                        return Err(e);
-                    }
-                };
-                Ok((camera, mic))
-            }
-            .await;
-            match got {
-                Ok((camera, mic)) => {
-                    if call.swap(Some((camera, mic))).await.is_ok() {
-                        view.source.set(Source::Camera);
-                    }
+            match open.await {
+                Ok(devices) => {
+                    // A failed swap has released the devices and gone back
+                    // to the pattern.
+                    let ok = call.swap(Some(devices)).await.is_ok();
+                    view.source
+                        .set(if ok { Source::Camera } else { Source::Pattern });
                 }
                 Err(e) => {
                     view.error.set(format!("camera: {e}"));
@@ -310,38 +321,55 @@ impl InPageCall {
         }
         let call = self.clone();
         spawn_local(async move {
-            if call.swap(None).await.is_ok() {
-                call.0.view.source.set(Source::Pattern);
-            }
+            // Released whether or not the senders took the pattern.
+            let _ = call.swap(None).await;
+            call.0.view.source.set(Source::Pattern);
         });
     }
 
     /// Put `devices` (or the generated sources) on A's senders, without
     /// renegotiating, and release whatever devices they replace.
+    ///
+    /// On failure the error is shown, the pattern and tone go back on the
+    /// senders (as far as they can) and every device, `devices` and the
+    /// ones in use, is released: a camera the senders did not take would
+    /// otherwise stay open with no button left to release it.
     async fn swap(&self, devices: Option<(LocalTrack, LocalTrack)>) -> Result<(), RtcError> {
         let inner = &self.0;
         let (video, audio) = match &devices {
             Some((camera, mic)) => (camera.clone(), mic.clone()),
             None => (inner.pattern.clone(), inner.tone.clone()),
         };
-        // Mute and video-off carry over to the new tracks.
-        video.set_enabled(!inner.view.video_off.get());
-        audio.set_enabled(!inner.view.muted.get());
-        let result = async {
-            inner.video.replace_track(Some(&video)).await?;
-            inner.audio.replace_track(Some(&audio)).await
-        }
-        .await;
-        if let Err(e) = &result {
-            inner.view.error.set(format!("replace_track: {e}"));
-        }
-        let old = inner.camera.replace(devices);
+        let result = self.send(&video, &audio).await;
+        let (keep, shown) = match &result {
+            Ok(()) => (devices, video),
+            Err(e) => {
+                inner.view.error.set(format!("replace_track: {e}"));
+                if let Some((camera, mic)) = devices {
+                    camera.stop();
+                    mic.stop();
+                }
+                let _ = self.send(&inner.pattern, &inner.tone).await;
+                (None, inner.pattern.clone())
+            }
+        };
+        let old = inner.camera.replace(keep);
         if let Some((camera, mic)) = old {
             camera.stop();
             mic.stop();
         }
-        inner.view.local.set(vec![Shown(video.into())]);
+        inner.view.local.set(vec![Shown(shown.into())]);
         result
+    }
+
+    /// Put `video` and `audio` on A's senders. Mute and video-off carry
+    /// over to them.
+    async fn send(&self, video: &LocalTrack, audio: &LocalTrack) -> Result<(), RtcError> {
+        let inner = &self.0;
+        video.set_enabled(!inner.view.video_off.get());
+        audio.set_enabled(!inner.view.muted.get());
+        inner.video.replace_track(Some(video)).await?;
+        inner.audio.replace_track(Some(audio)).await
     }
 
     /// Mute A's audio: silence is sent, and B sees `on_mute`.
