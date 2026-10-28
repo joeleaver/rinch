@@ -1,0 +1,16 @@
+[package]
+name = "rtc-room-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "A room relay for WebRTC signalling: what examples/video-call talks to"
+
+# Signalling is the app's own (docs/design/rtc-media.md, M9): this is an
+# example of a relay, not a crate. It forwards text between the two peers in
+# a room and says when the other arrives or leaves. tungstenite 0.24 is the
+# version rinch-ws already uses.
+[dependencies]
+tungstenite = "0.24"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

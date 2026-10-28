@@ -6100,6 +6100,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtc-room-relay"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
+ "tungstenite",
+]
+
+[[package]]
 name = "rtc-rtcp"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
