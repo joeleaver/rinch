@@ -43,7 +43,7 @@ fit this issue, and patching it would not get there:
   [section 3](#3-native-backend)).
 
 `rinch-rtc` is therefore a new crate, as the issue asks. What happens to
-`rinch-webrtc` is D1.
+`rinch-webrtc` is D1. (Since removed: see D1's follow-up.)
 
 ## Summary
 
@@ -745,6 +745,12 @@ problems (section 0) go beyond missing data channels. Removing a media demo
 is a separate call from adding data channels. Until D1's follow-up, a
 workspace with both builds str0m 0.7 (only under `rinch-webrtc/native`) as
 well as webrtc-rs.
+
+**Follow-up (#1916):** that follow-up is `docs/design/rtc-media.md`. The media
+call was rebuilt on `rinch-rtc` (its `media` feature), `examples/video-call`
+and the ui-zoo WebRTC section were ported onto it, and `rinch-webrtc`,
+`rinch-signaling` and `rinch-signaling-server` were removed in the same PR as
+the ports (rtc-media.md M12, section 5). str0m 0.7 is no longer built.
 
 **D2. The native stack.**
 (a) webrtc-rs 0.21 (`webrtc` over `rtc`), `ring` crypto.

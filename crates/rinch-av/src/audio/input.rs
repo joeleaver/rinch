@@ -253,6 +253,7 @@ pub(crate) fn open_audio_input_with<F: FnMut(&[f32]) + Send + 'static>(
     config: AudioInputConfig,
     make: impl FnOnce(&AudioInputConfig) -> F,
 ) -> Result<AudioInputStream, AvError> {
+    crate::testing::gate("microphone")?;
     #[cfg(all(not(target_arch = "wasm32"), feature = "audio"))]
     {
         let dev = match device {

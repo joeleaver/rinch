@@ -293,7 +293,11 @@ pub(crate) struct LocalInner {
 impl Drop for LocalInner {
     fn drop(&mut self) {
         backend::stop_local(self.key);
-        let gone = LOCALS.with(|l| l.borrow_mut().remove(&self.key));
+        // `try_with`: see `stop_local` (a track dropped during thread exit).
+        let gone = LOCALS
+            .try_with(|l| l.borrow_mut().remove(&self.key))
+            .ok()
+            .flatten();
         if let Some(w) = gone.as_ref().and_then(|e| e.writer_ended.as_ref()) {
             w.store(true, Ordering::Release);
         }

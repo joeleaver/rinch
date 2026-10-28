@@ -27,6 +27,11 @@ pub mod audio;
 pub mod camera;
 
 pub mod stream;
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub mod testing;
+#[cfg(not(feature = "test-util"))]
+mod testing;
 pub mod track;
 
 // Platform backends

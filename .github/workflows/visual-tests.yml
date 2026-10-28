@@ -30,8 +30,10 @@ jobs:
 
       # The first line mirrors the `test` job in ci.yml — ui-zoo-desktop links
       # the same gtk/mpv stack, and the previous short list here was missing all
-      # of it. The second line is what this job needs on top: unlike ci.yml it
-      # has to actually *run* the app under a display server.
+      # of it (libvpx-dev: ui-zoo's WebRTC section builds rinch-rtc's `media`,
+      # VP8 on the system libvpx, #1916). The second line is what this job needs
+      # on top: unlike ci.yml it has to actually *run* the app under a display
+      # server.
       - name: Install dependencies
         # Cached .debs, and the Google Chrome apt source dropped first
         # (.github/actions/apt-install explains both, #1792).
@@ -39,7 +41,7 @@ jobs:
         with:
           packages: >-
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
-            libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev libmpv-dev
+            libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev libmpv-dev libvpx-dev
             xvfb x11-utils libxkbcommon-dev libwayland-dev libasound2-dev
 
       - name: Setup Node.js

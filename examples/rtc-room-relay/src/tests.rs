@@ -1,4 +1,5 @@
-//! Tests for the relay.
+//! Tests for the relay, ported from the removed `rinch-signaling-server`
+//! (#1916), plus the two notices this relay adds.
 //!
 //! The property under test is the one the design exists for: a peer that has
 //! gone quiet must not hold anything up. Every test that could otherwise wait
@@ -80,7 +81,7 @@ fn expect_text(socket: &mut Client, what: &str) -> String {
         match socket.read() {
             Ok(Message::Text(text)) => return text,
             Ok(_) => {}
-            Err(TungError::Io(e)) if is_would_block(&e) => {}
+            Err(WsError::Io(e)) if is_would_block(&e) => {}
             Err(e) => panic!("{what}: read failed: {e}"),
         }
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
@@ -113,6 +114,7 @@ fn an_idle_peer_does_not_block_a_join_or_a_message() {
     // B joins the same room while A sits there saying nothing.
     let mut caller = connect_peer(port, "call");
     wait_for_room(&state, "call", 2);
+    assert_eq!(expect_text(&mut idle, "the join notice"), PEER_JOINED);
 
     caller
         .send(Message::Text("offer".into()))
@@ -137,6 +139,7 @@ fn an_idle_peer_does_not_block_another_room() {
     let mut left = connect_peer(port, "busy");
     let mut right = connect_peer(port, "busy");
     wait_for_room(&state, "busy", 2);
+    assert_eq!(expect_text(&mut left, "the join notice"), PEER_JOINED);
 
     left.send(Message::Text("ping".into())).expect("send");
     assert_eq!(expect_text(&mut right, "ping"), "ping");
@@ -153,18 +156,22 @@ fn a_departing_peer_is_announced_and_frees_its_slot() {
     wait_for_room(&state, "call", 1);
     let mut stayer = connect_peer(port, "call");
     wait_for_room(&state, "call", 2);
+    assert_eq!(expect_text(&mut leaver, "the join notice"), PEER_JOINED);
 
     leaver.close(None).expect("close");
     let _ = leaver.flush();
     drop(leaver);
 
-    let bye = serde_json::to_string(&rinch_webrtc::SignalingMessage::Bye).expect("serialize Bye");
-    assert_eq!(expect_text(&mut stayer, "the Bye notification"), bye);
+    assert_eq!(expect_text(&mut stayer, "the bye notice"), BYE);
     wait_for_room(&state, "call", 1);
 
     // The freed slot is really free, and the new peer really is wired up.
     let mut replacement = connect_peer(port, "call");
     wait_for_room(&state, "call", 2);
+    assert_eq!(
+        expect_text(&mut stayer, "the replacement's join notice"),
+        PEER_JOINED
+    );
     replacement
         .send(Message::Text("hello".into()))
         .expect("send");
@@ -204,6 +211,7 @@ fn a_third_peer_is_rejected_without_disturbing_the_pair() {
     wait_for_room(&state, "call", 1);
     let mut second = connect_peer(port, "call");
     wait_for_room(&state, "call", 2);
+    assert_eq!(expect_text(&mut first, "the join notice"), PEER_JOINED);
 
     // The handshake succeeds (it runs before registration); the relay then drops
     // the connection, which the client sees as the stream ending.
@@ -212,7 +220,7 @@ fn a_third_peer_is_rejected_without_disturbing_the_pair() {
     loop {
         match third.read() {
             Ok(msg) => panic!("a rejected peer received {msg:?}"),
-            Err(TungError::Io(e)) if is_would_block(&e) => {}
+            Err(WsError::Io(e)) if is_would_block(&e) => {}
             Err(_) => break,
         }
         assert!(Instant::now() < deadline, "rejected peer was never closed");

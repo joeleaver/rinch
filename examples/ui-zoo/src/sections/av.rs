@@ -1,26 +1,47 @@
 //! AV section - Audio/Video device controls.
 //!
-//! Demonstrates rinch-av integration: real camera preview via RenderSurface,
-//! live microphone level, mic test (record & playback), and device selection.
+//! Demonstrates rinch-av integration: camera preview via RenderSurface, live
+//! microphone level, mic test (record & playback), and device selection.
+//!
+//! Opening the page opens no device: the camera and the microphone start
+//! from their buttons (#1916). `tests/av_opens_no_device.rs` pins that.
 
 use rinch::prelude::*;
 use rinch_av::DeviceInfo;
 use rinch_av::audio::{
-    AudioInputConfig, AudioOutputConfig, audio_input_devices, audio_output_devices,
-    open_audio_input, open_audio_output,
+    AudioInputConfig, AudioInputStream, AudioOutputConfig, audio_input_devices,
+    audio_output_devices, open_audio_input, open_audio_output,
 };
-use rinch_av::camera::{CameraConfig, camera_devices, open_camera};
+use rinch_av::camera::{CameraCapture, CameraConfig, camera_devices, open_camera, open_camera_on};
 use rinch_screen_capture::{CaptureConfig, ScreenCapture};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// The camera while it is open. `generation` moves on at every start and
+/// stop, so a capture that finishes opening after a stop (or after a newer
+/// start) is dropped, which closes it.
+#[derive(Clone, Default)]
+struct CameraSlot {
+    held: Arc<Mutex<Option<CameraCapture>>>,
+    generation: Arc<AtomicU64>,
+}
+
+impl CameraSlot {
+    fn close(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        let capture = self.held.lock().unwrap().take();
+        drop(capture);
+    }
+}
 
 /// State for the AV section.
 #[derive(Clone)]
 pub struct AvSectionState {
     // Toggles
     pub mic_muted: Signal<bool>,
-    pub camera_off: Signal<bool>,
 
     // Audio level (0.0 - 1.0) — updated from atomic on each frame
     pub audio_level: Signal<f32>,
@@ -49,11 +70,20 @@ pub struct AvSectionState {
 }
 
 pub fn init_av_state() {
-    // Enumerate real devices
-    let mics = audio_input_devices().unwrap_or_default();
-    let speakers = audio_output_devices().unwrap_or_default();
-    let cameras = camera_devices().unwrap_or_default();
+    // Enumerate real devices. Listing opens nothing.
+    init_av_state_with(
+        audio_input_devices().unwrap_or_default(),
+        audio_output_devices().unwrap_or_default(),
+        camera_devices().unwrap_or_default(),
+    );
+}
 
+/// [`init_av_state`] with the device lists given (tests list none).
+pub fn init_av_state_with(
+    mics: Vec<DeviceInfo>,
+    speakers: Vec<DeviceInfo>,
+    cameras: Vec<DeviceInfo>,
+) {
     // Deduplicate devices by name (nokhwa/cpal can return the same device multiple times)
     fn dedup_devices(devices: Vec<DeviceInfo>) -> Vec<DeviceInfo> {
         let mut seen = std::collections::HashSet::new();
@@ -89,7 +119,6 @@ pub fn init_av_state() {
 
     create_store(AvSectionState {
         mic_muted: Signal::new(false),
-        camera_off: Signal::new(true), // Start with camera off
         audio_level: Signal::new(0.0),
         mic_test_recording: Signal::new(false),
         mic_test_playing: Signal::new(false),
@@ -111,7 +140,6 @@ pub fn av_section() -> NodeHandle {
     let state = use_store::<AvSectionState>();
 
     let mic_muted = state.mic_muted;
-    let camera_off = state.camera_off;
     let audio_level = state.audio_level;
     let mic_test_recording = state.mic_test_recording;
     let mic_test_playing = state.mic_test_playing;
@@ -123,57 +151,96 @@ pub fn av_section() -> NodeHandle {
     let selected_camera = state.selected_camera;
     let error_msg = state.error_msg;
 
+    // Nothing here opens a device while the page renders (#1916): the camera
+    // opens from "Start camera" (or the toolbar's camera button) and the
+    // microphone from "Start microphone", and both close from the same
+    // buttons and when the section unmounts. Listing devices (init_av_state)
+    // opens nothing.
+
     // ── Camera preview via RenderSurface ──
     let camera_surface = create_render_surface();
-    let camera_writer = camera_surface.writer();
+    let camera_on = Signal::new(false);
+    let camera = CameraSlot::default();
 
-    // Find the default camera device ID for opening
-    let camera_list = state.camera_devices.get();
-    let default_camera_id = camera_list
-        .iter()
-        .find(|d| d.is_default)
-        .or(camera_list.first())
-        .map(|d| d.id.clone());
-
-    // Start camera capture on a background thread (open_camera blocks until init).
-    // The thread keeps the CameraCapture handle alive — dropping it stops capture.
-    std::thread::Builder::new()
-        .name("rinch-av-cam-init".into())
-        .spawn(move || {
-            let config = CameraConfig {
-                width: 640,
-                height: 480,
-                fps: 30,
-                format: None,
-            };
-            let result = if let Some(ref device_id) = default_camera_id {
-                rinch_av::camera::open_camera_on(device_id, config, move |frame| {
-                    camera_writer.submit_frame(&frame.data, frame.width, frame.height);
-                })
-            } else {
-                open_camera(config, move |frame| {
-                    camera_writer.submit_frame(&frame.data, frame.width, frame.height);
-                })
-            };
-            match result {
-                Ok(_capture) => {
-                    // Keep thread alive so CameraCapture stays alive (stops on drop)
-                    loop {
-                        std::thread::sleep(std::time::Duration::from_secs(60));
+    let start_camera = {
+        let camera = camera.clone();
+        let surface = camera_surface.clone();
+        let camera_devices = state.camera_devices;
+        Callback::new(move || {
+            let generation = camera.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            camera_on.set(true);
+            error_msg.set(String::new());
+            let wanted = selected_camera.get();
+            let device = camera_devices
+                .get()
+                .into_iter()
+                .find(|d| d.name == wanted)
+                .map(|d| d.id);
+            let writer = surface.writer();
+            let camera = camera.clone();
+            // open_camera blocks until the device is up, so on desktop it runs
+            // on a thread of its own; the web's returns at once.
+            let open = move || {
+                let config = CameraConfig {
+                    width: 640,
+                    height: 480,
+                    fps: 30,
+                    format: None,
+                };
+                let on_frame = move |frame: rinch_av::camera::VideoFrame| {
+                    writer.submit_frame(&frame.data, frame.width, frame.height);
+                };
+                let result = match device {
+                    Some(id) => open_camera_on(&id, config, on_frame),
+                    None => open_camera(config, on_frame),
+                };
+                let current = camera.generation.load(Ordering::SeqCst) == generation;
+                match result {
+                    // Stopped while it was opening: dropping it closes it.
+                    Ok(capture) if current => {
+                        *camera.held.lock().unwrap() = Some(capture);
                     }
+                    Ok(_) => {}
+                    Err(e) if current => {
+                        camera_on.send(false);
+                        error_msg.send(format!("Camera: {e}"));
+                    }
+                    Err(_) => {}
                 }
-                Err(e) => {
-                    eprintln!("Camera open failed: {}", e);
-                }
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let _ = std::thread::Builder::new()
+                    .name("rinch-av-cam-init".into())
+                    .spawn(open);
+            }
+            #[cfg(target_arch = "wasm32")]
+            open();
+        })
+    };
+    let stop_camera = {
+        let camera = camera.clone();
+        Callback::new(move || {
+            camera.close();
+            camera_on.set(false);
+        })
+    };
+    let toggle_camera = {
+        let (start, stop) = (start_camera.clone(), stop_camera.clone());
+        Callback::new(move || {
+            if camera_on.get() {
+                stop.invoke()
+            } else {
+                start.invoke()
             }
         })
-        .ok();
+    };
 
     // ── Microphone level via audio input ──
     // Use atomic for lock-free communication from audio thread to main thread
     let mic_level_atomic = Arc::new(AtomicU32::new(0));
-    let mic_level_writer = mic_level_atomic.clone();
-    let mic_active = Signal::new(false);
+    let mic_on = Signal::new(false);
+    let mic: Rc<RefCell<Option<AudioInputStream>>> = Rc::default();
 
     // Shared ring buffer for mic test recording (5 seconds at 48kHz mono)
     let max_samples = 48000 * 5;
@@ -181,57 +248,83 @@ pub fn av_section() -> NodeHandle {
         Arc::new(std::sync::Mutex::new(Vec::with_capacity(max_samples)));
     let recording_flag = Arc::new(AtomicBool::new(false));
 
-    // Open audio input — cpal runs its own audio thread, leak handle to keep alive
-    {
+    let start_mic = {
+        let mic = mic.clone();
+        let mic_level_writer = mic_level_atomic.clone();
         let recording_buf_writer = recording_buf.clone();
         let recording_flag_reader = recording_flag.clone();
-        let config = AudioInputConfig {
-            sample_rate: 48000,
-            channels: 1,
-            buffer_size: 1024,
-        };
-        match open_audio_input(config, move |samples: &[f32]| {
-            // Compute RMS level
-            let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
-            let level = (rms * 5.0).min(1.0);
-            mic_level_writer.store(level.to_bits(), Ordering::Relaxed);
+        Callback::new(move || {
+            let config = AudioInputConfig {
+                sample_rate: 48000,
+                channels: 1,
+                buffer_size: 1024,
+            };
+            let level = mic_level_writer.clone();
+            let buf = recording_buf_writer.clone();
+            let flag = recording_flag_reader.clone();
+            match open_audio_input(config, move |samples: &[f32]| {
+                // Compute RMS level
+                let rms =
+                    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+                level.store((rms * 5.0).min(1.0).to_bits(), Ordering::Relaxed);
 
-            // Record samples if mic test is active
-            if recording_flag_reader.load(Ordering::Relaxed)
-                && let Ok(mut buf) = recording_buf_writer.try_lock()
-            {
-                let remaining = max_samples.saturating_sub(buf.len());
-                if remaining > 0 {
-                    let take = remaining.min(samples.len());
-                    buf.extend_from_slice(&samples[..take]);
+                // Record samples if mic test is active
+                if flag.load(Ordering::Relaxed)
+                    && let Ok(mut buf) = buf.try_lock()
+                {
+                    let remaining = max_samples.saturating_sub(buf.len());
+                    if remaining > 0 {
+                        let take = remaining.min(samples.len());
+                        buf.extend_from_slice(&samples[..take]);
+                    }
                 }
+            }) {
+                Ok(stream) => {
+                    *mic.borrow_mut() = Some(stream);
+                    mic_on.set(true);
+                    error_msg.set(String::new());
+                }
+                Err(e) => error_msg.set(format!("Microphone: {e}")),
             }
-        }) {
-            Ok(stream) => {
-                mic_active.set(true);
-                std::mem::forget(stream);
-            }
-            Err(e) => {
-                eprintln!("Audio input open failed: {}", e);
-            }
+        })
+    };
+    let stop_mic = {
+        let mic = mic.clone();
+        let level = mic_level_atomic.clone();
+        Callback::new(move || {
+            mic.borrow_mut().take();
+            level.store(0, Ordering::Relaxed);
+            mic_on.set(false);
+        })
+    };
+    let toggle_mic = Callback::new(move || {
+        if mic_on.get() {
+            stop_mic.invoke()
+        } else {
+            start_mic.invoke()
         }
+    });
+
+    // Release both devices when the section goes away.
+    {
+        let (camera, mic) = (camera.clone(), mic.clone());
+        __scope.on_cleanup(move || {
+            camera.close();
+            mic.borrow_mut().take();
+        });
     }
 
-    // Poll the atomic audio level into the signal from a background thread.
-    // Signal::send() automatically dispatches to the main thread.
+    // Poll the atomic audio level into the signal, on the UI thread. Armed
+    // during the render, so it stops when the section unmounts.
     {
         let mic_level_reader = mic_level_atomic.clone();
-        std::thread::Builder::new()
-            .name("mic-level-poll".into())
-            .spawn(move || {
-                loop {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    let bits = mic_level_reader.load(Ordering::Relaxed);
-                    let level = f32::from_bits(bits);
-                    audio_level.send(level);
-                }
-            })
-            .ok();
+        let last = std::cell::Cell::new(u32::MAX);
+        set_interval(50, move || {
+            let bits = mic_level_reader.load(Ordering::Relaxed);
+            if bits != last.replace(bits) {
+                audio_level.set(f32::from_bits(bits));
+            }
+        });
     }
 
     // Mic test: start/stop recording, then play back
@@ -367,7 +460,7 @@ pub fn av_section() -> NodeHandle {
                         }
 
                         // Camera off overlay
-                        if camera_off.get() {
+                        if !camera_on.get() {
                             div { style: "position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--rinch-color-body); display: flex; align-items: center; justify-content: center;",
                                 div { style: "display: flex; flex-direction: column; align-items: center; gap: 12px;",
                                     div { style: "width: 80px; height: 80px; border-radius: 50%; background: var(--rinch-color-default); display: flex; align-items: center; justify-content: center;",
@@ -375,7 +468,7 @@ pub fn av_section() -> NodeHandle {
                                             {render_tabler_icon(__scope, TablerIcon::VideoOff, TablerIconStyle::Outline)}
                                         }
                                     }
-                                    Text { size: "sm", color: "dimmed", "Camera is off" }
+                                    Text { size: "sm", color: "dimmed", "Camera is off: Start camera below" }
                                 }
                             }
                         }
@@ -402,14 +495,14 @@ pub fn av_section() -> NodeHandle {
                             "red",
                         )}
 
-                        // Camera toggle
-                        {toolbar_button(
-                            __scope,
-                            TablerIcon::Video,
-                            TablerIcon::VideoOff,
-                            camera_off,
-                            "red",
-                        )}
+                        // Camera on/off: the only thing that opens the camera
+                        Button {
+                            variant: {|| if camera_on.get() { "light" } else { "filled" }},
+                            color: {|| if camera_on.get() { "red" } else { "blue" }},
+                            onclick: toggle_camera.clone(),
+                            {render_tabler_icon(__scope, TablerIcon::Video, TablerIconStyle::Outline)}
+                            {|| if camera_on.get() { " Stop camera" } else { " Start camera" }}
+                        }
 
                         // Divider
                         div { style: "width: 1px; background: var(--rinch-color-border); margin: 4px 4px;" }
@@ -443,10 +536,19 @@ pub fn av_section() -> NodeHandle {
                             Group { justify: "space-between",
                                 Text { weight: "600", "Microphone" }
                                 Badge {
-                                    color: {|| if mic_muted.get() { "red" } else if mic_active.get() { "green" } else { "gray" }},
+                                    color: {|| if mic_muted.get() { "red" } else if mic_on.get() { "green" } else { "gray" }},
                                     variant: "light",
-                                    {|| if mic_muted.get() { "Muted" } else if mic_active.get() { "Active" } else { "Unavailable" }}
+                                    {|| if mic_muted.get() { "Muted" } else if mic_on.get() { "Active" } else { "Off" }}
                                 }
+                            }
+
+                            // The only thing that opens the microphone
+                            Button {
+                                size: "xs",
+                                variant: {|| if mic_on.get() { "light" } else { "filled" }},
+                                color: {|| if mic_on.get() { "red" } else { "blue" }},
+                                onclick: toggle_mic.clone(),
+                                {|| if mic_on.get() { "Stop microphone" } else { "Start microphone" }}
                             }
 
                             // Level bar
@@ -457,9 +559,9 @@ pub fn av_section() -> NodeHandle {
                             // Mic test
                             Text { size: "sm", weight: "500", "Mic Test" }
                             Text { size: "xs", color: "dimmed",
-                                "Record a short clip, then play it back to check your mic."
+                                "Start the microphone, record a short clip, then play it back."
                             }
-                            {mic_test_controls(__scope, start_recording.clone(), stop_recording.clone(), play_recording.clone(), mic_test_recording, mic_test_playing, mic_test_has_clip)}
+                            {mic_test_controls(__scope, start_recording.clone(), stop_recording.clone(), play_recording.clone(), mic_on, mic_test_recording, mic_test_playing, mic_test_has_clip)}
                         }
                     }
 
@@ -517,9 +619,9 @@ pub fn av_section() -> NodeHandle {
                 Stack { gap: "md",
                     // Camera preview in settings
                     div { style: "height: 280px; border-radius: 8px; overflow: hidden; background: var(--rinch-color-dark-7, #1a1b1e);",
-                        if camera_off.get() {
+                        if !camera_on.get() {
                             div { style: "width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;",
-                                Text { color: "dimmed", "Camera is off — toggle camera to preview" }
+                                Text { color: "dimmed", "Camera is off: start it to preview" }
                             }
                         } else {
                             RenderSurface {
@@ -595,11 +697,13 @@ fn toolbar_button(
 // Extracted to its own function so Callback values are passed as owned args
 // (avoids FnOnce issues from reactive `if` blocks capturing non-Copy closures).
 
+#[allow(clippy::too_many_arguments)] // the signals it reads, each by name
 fn mic_test_controls(
     __scope: &mut RenderScope,
     start_recording: Callback,
     stop_recording: Callback,
     play_recording: Callback,
+    mic_on: Signal<bool>,
     recording: Signal<bool>,
     playing: Signal<bool>,
     has_clip: Signal<bool>,
@@ -618,7 +722,7 @@ fn mic_test_controls(
                 move || {
                     if recording.get() {
                         stop.invoke();
-                    } else {
+                    } else if mic_on.get() {
                         start.invoke();
                     }
                 }
@@ -630,7 +734,7 @@ fn mic_test_controls(
     // Reactive disabled state for record button
     let record_clone = record_btn.clone();
     __scope.create_effect(move || {
-        if playing.get() {
+        if playing.get() || !mic_on.get() {
             record_clone.set_attribute("data-disabled", "true");
         } else {
             record_clone.remove_attribute("data-disabled");

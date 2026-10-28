@@ -103,6 +103,14 @@ Add `"gpu"` for GPU rendering, or leave it off for software rendering (no GPU re
 
 No `[patch]` lines are needed at all: delete any old winit, dpi or wgpu-fork ones from your `[patch.crates-io]`. Use `rinch::wgpu` and `rinch::vello` instead of your own `wgpu`/`vello` dependencies; add `wgpu = "30"` only to turn on an extra feature.
 
+The showcase and `video-call` carry real-time audio and video (rinch-rtc's
+`media`), which needs more system packages than rinch itself. On Debian or
+Ubuntu: `libvpx-dev` (VP8), `libclang-dev` (bindgen, for the libvpx and
+camera bindings) and `libasound2-dev` (audio); `nasm` is optional (openh264's
+assembly). Inside this repository, rinch-rtc's tests and
+`cargo clippy --workspace --all-targets` also need `libssl-dev`: its test-only
+interop peer links the system OpenSSL.
+
 ```bash
 # Run the component showcase
 cargo run --release -p ui-zoo-desktop
@@ -380,7 +388,7 @@ If you want a GUI framework that's been blessed by a foundation and has a 200-pa
 | `markdown-editor` | Rich text editor with CRDT backing |
 | `drag-and-drop-demo` | Drag and drop between lists |
 | `game-embed` | Game engine integration demo |
-| `video-call` | WebRTC video calling |
+| `video-call` | A video call between two machines on rinch-rtc (with `rtc-room-relay`) |
 | `paint-desktop` | Drawing application |
 
 [**Live web demo**](https://joeleaver.github.io/rinch/ui-zoo/) (WASM, works in all modern browsers)

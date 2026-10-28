@@ -25,7 +25,7 @@
 - [Windows](./guide/windows.md)
 - [Menus](./guide/menus.md)
 - [Platform Features](./guide/platform.md)
-- [WebRTC Data Channels](./guide/rtc.md)
+- [WebRTC: Data Channels, Audio and Video](./guide/rtc.md)
 - [Audio DSP on the Audio Thread](./guide/audio-dsp.md)
 - [Game Engine Integration](./guide/game-engine.md)
 - [ContentEditable API](./guide/contenteditable.md)
