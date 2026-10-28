@@ -125,6 +125,17 @@ mod wasm;
 #[cfg(target_arch = "wasm32")]
 use wasm as backend;
 
+// `media-vp8` adds VP8 to an H.264 choice; `media-core` alone (the gate both
+// share) has no H.264 backend and does not build.
+#[cfg(all(
+    feature = "media-vp8",
+    not(any(feature = "media", feature = "media-cisco-openh264"))
+))]
+compile_error!(
+    "rinch-rtc: `media-vp8` adds VP8 to `media` or to `media-cisco-openh264`; turn one of them on \
+     too (`features = [\"media\", \"media-vp8\"]` or `[\"media-cisco-openh264\", \"media-vp8\"]`)"
+);
+
 #[cfg(feature = "media-core")]
 pub mod media;
 #[cfg(all(feature = "media-core", not(target_arch = "wasm32")))]

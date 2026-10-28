@@ -544,7 +544,9 @@ Where the native backend differs from 3.1–3.6, the code holds:
   2026-10-28: VP8 behind `media-vp8`).**
   - VP8 is libvpx through `env-libvpx-sys` 5.1.3 with its `generate`
     feature (bindgen at build time), on the system's libvpx (pkg-config),
-    only with the `media-vp8` feature (`["media", "dep:vpx-sys"]`). No
+    only with the `media-vp8` feature (`["media-core", "dep:vpx-sys"]`,
+    added to `media` or to `media-cisco-openh264`; alone a
+    `compile_error!`). No
     `vpx-encode`: `native_codec/vp8.rs` calls the encoder and decoder
     directly (CBR, `kf_mode` disabled so keyframes come only on request,
     `cpu-used` 8, error-resilient). Without the feature the
@@ -598,13 +600,21 @@ Where the native backend differs from 3.1–3.6, the code holds:
     absolute, reads the file once, checks its SHA-256 against Cisco's
     OpenH264 2.6.0 build for the platform, and loads that same file; a
     second call with another path is an error. Until it has loaded, peers
-    offer and accept no H.264 and, VP8 being `media-vp8`'s (which builds
-    on `media`), no video codec at all. (Before 2026-10-28 VP8 was in
-    `media-core` and so covered that wait.) A window remains between the hash and the
+    offer and accept no H.264; a build with `media-vp8` as well has VP8
+    meanwhile, one without it no video codec. (Before 2026-10-28 VP8 was
+    in `media-core` and so always covered that wait.) A window remains
+    between the hash and the
     loader opening the file again by path (it cannot load from memory);
     the guide says to keep the file where only the app's user can write.
   - Both turn on `media-core`, the code's gate. VP8 is in neither:
-    `media-vp8` adds it to `media`.
+    `media-vp8` (`["media-core", "dep:vpx-sys"]`) adds it to either one,
+    so a Cisco-binary app has VP8 without building H.264 from source
+    (#1975's review; an earlier draft built it on `media`). On its own it
+    is a `compile_error!`: `media-core` has no H.264 backend.
+  - A remote offer whose live video m-line has no codec in common (a
+    VP8-only offer to a build without `media-vp8`) is answered with that
+    m-line rejected, as before, and reported through `on_error` naming the
+    missing codec and its feature; webrtc-rs reports nothing.
 - **A sender keeps one webrtc-rs track for life,** a
   `TrackLocalStaticRTP` that the worker packetizes into itself (one
   packetizer per sender, built once the codec is known), not a
@@ -908,7 +918,8 @@ Where the ports and the removal differ from 5.1–5.3, the code holds:
   shard, the docs build and the visual tests installed `libvpx-dev`; since
   M2's amendment (2026-10-28) only the jobs that build `media-vp8` do: the
   `feature-gated` shard (`--features media,media-vp8`), the `clippy` job's
-  `media-vp8` line, and `test-wasm`'s VP8 `media_echo`.
+  `media-vp8` lines (with `media` and with `media-cisco-openh264`), and
+  `test-wasm`'s VP8 `media_echo`.
 - **Dependencies that left `Cargo.lock`:** str0m 0.7, `openssl-src` (str0m
   0.7 built a vendored OpenSSL; `openssl-sys` now builds against the
   system's, for rinch-rtc's tests only), `audiopus_sys` and `sctp-proto`
@@ -1028,7 +1039,8 @@ seam with little benefit.
 added, both codecs are negotiated, VP8 first (3.7).** The Firefox interop
 test showed the gap the recommendation below left open.
 **Amended by Joe, 2026-10-28: (c).** VP8 moves behind an opt-in
-`media-vp8` feature (`["media", "dep:vpx-sys"]`); `media` is H.264 and
+`media-vp8` feature (`["media-core", "dep:vpx-sys"]`, added to `media` or
+to `media-cisco-openh264`); `media` is H.264 and
 Opus alone, so that it needs no system package beyond a C compiler and
 cmake. With VP8 in `media`, the cost in the second bullet below (libvpx,
 and libclang for bindgen) reached every build of ui-zoo and video-call and

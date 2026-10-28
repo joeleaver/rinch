@@ -37,13 +37,15 @@ serde = ["dep:serde"]
 #     MPEG LA royalties when its conditions are met. See the user guide.
 media = ["media-core", "openh264?/source"]
 media-cisco-openh264 = ["media-core", "openh264?/libloading", "dep:sha2"]
-# VP8 on desktop as well (M2, amended 2026-10-28: opt-in). Builds on `media`.
+# VP8 on desktop as well (M2, amended 2026-10-28: opt-in). Add it to either
+# `media` or `media-cisco-openh264` (alone it is a compile error); with the
+# Cisco variant VP8 works before `load_openh264` and builds no H.264 code in.
 # Needed to send or receive video with a Firefox that has no OpenH264 plugin
 # (a browser offers VP8 first; without VP8 a desktop answers in H.264, which
 # such a Firefox lists but never sends). It links the system's libvpx and
 # needs its headers (`libvpx-dev`) and libclang at build time; `media` alone
 # needs neither. No effect on the web, where the browser has its own codecs.
-media-vp8 = ["media", "dep:vpx-sys"]
+media-vp8 = ["media-core", "dep:vpx-sys"]
 # What both share (the cfg gate in the code). Not for direct use.
 media-core = [
     "dep:openh264",

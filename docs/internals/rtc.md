@@ -175,7 +175,11 @@ There are no cargo features for the backends: the target picks one.
 
 Design record: `docs/design/rtc-media.md`. Features: `media` (openh264 from
 source) or `media-cisco-openh264` (Cisco's binary, loaded at run time); the
-code's gate is `media-core`, which both turn on.
+code's gate is `media-core`, which both turn on. `media-vp8` (VP8 on libvpx)
+is `["media-core", "dep:vpx-sys"]` and is added to either: alone it has no
+H.264 backend, and `lib.rs` stops it with a `compile_error!` naming the two
+valid combinations (without that, `media-core` alone fails with E0599 on
+`OpenH264API::from_source`).
 
 - **Layout.** `media/mod.rs` holds the API and the main-thread state:
   - local tracks in their own thread-local `LOCALS` (they belong to no
@@ -244,6 +248,16 @@ code's gate is `media-core`, which both turn on.
     `tests/media_codecs.rs` checks both builds: with VP8, the order and a
     VP8→H.264 renegotiation; without, that a VP8-first offer (a browser's,
     munged in) is answered with H.264 alone and flows both ways.
+  - **An offer with no video codec in common is reported.** After a remote
+    *offer* is applied, `PeerWorker::check_remote_offer` runs
+    `unanswerable_video` over it: a live (port not 0) video m-line listing
+    codecs, none of them in `video_codecs()`, gets one
+    `on_error(RtcError::Media(..))` naming both sides' codecs and the cure
+    (`media-vp8` for VP8, `load_openh264` for H.264 not yet loaded). The
+    answer still rejects that m-line (port 0) and the call goes on; webrtc-rs
+    itself says nothing, so before this a VP8-only offer to a build without
+    `media-vp8` lost its video silently (#1975's review;
+    `tests/media_vp8_only_offer.rs`).
   - **Trap: a sender track's codec label.** rtc uses it twice.
     `codec_preferences_from_encodings` makes it the transceiver's only
     codec preference (a labelled track offers that codec alone), and
@@ -462,7 +476,8 @@ test-only interop peer, and with it `sctp-proto` 0.10.
   in the workspace turns on `media-vp8` (VP8, on the system libvpx), so
   `libvpx-dev` is installed only where it is named: the `feature-gated`
   test shard (`cargo test -p rinch-rtc --features media,media-vp8`), the
-  `clippy` job's `--features media-vp8` line, and `test-wasm` (the VP8
+  `clippy` job's `media,media-vp8` and `media-cisco-openh264,media-vp8`
+  lines, and `test-wasm` (the VP8
   `media_echo`). The other shards, the docs build and the visual tests
   need no libvpx (until 2026-10-28 VP8 was part of `media` and they all
   installed it).

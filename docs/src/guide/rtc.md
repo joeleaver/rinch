@@ -308,7 +308,10 @@ rinch-rtc = { workspace = true, features = ["media"] }
   rinch-rtc = { workspace = true, features = ["media", "media-vp8"] }
   ```
 
-  It builds on `media` and needs libvpx with its headers
+  Add it to `media` or to `media-cisco-openh264` (on its own it is a
+  compile error naming the two). With `media-cisco-openh264` it builds no
+  H.264 code in, and gives video before `load_openh264` has run. It
+  needs libvpx with its headers
   (`apt install libvpx-dev`, `brew install libvpx`; found by pkg-config)
   and libclang, since the VP8 bindings are generated at build time. On the
   web it changes nothing.
@@ -318,7 +321,10 @@ rinch-rtc = { workspace = true, features = ["media"] }
   - Without `media-vp8` a desktop peer offers and accepts H.264 alone, so
     every call it makes or answers negotiates H.264: desktop↔desktop,
     desktop↔Chrome and desktop↔Safari. A browser's VP8-first offer is
-    answered with H.264, the codec both have.
+    answered with H.264, the codec both have. An offer whose video lists
+    VP8 alone has that video rejected: the call connects without it, and
+    the peer's `on_error` gets an `RtcError::Media` naming VP8 and
+    `media-vp8`.
   - With `media-vp8` a desktop peer offers VP8 first, then H.264. So
     desktop↔Chrome, desktop↔Firefox and desktop↔desktop calls use VP8, and
     H.264 is used where the other side offers it first, as Safari does.
@@ -366,14 +372,16 @@ covers the licensing:
   - The file is hashed, then the system loader opens it again by path, so
     whoever can replace it in that moment could have other code loaded.
     Keep it where only your app's user can write.
-  - Until it has loaded, desktop peers offer and accept no H.264, and so
-    no video codec at all (VP8 is `media-vp8`'s, which builds on `media`).
-    Peers made after the load offer H.264.
+  - Until it has loaded, desktop peers offer and accept no H.264. With
+    `media-vp8` as well they have VP8 meanwhile
+    (`features = ["media-cisco-openh264", "media-vp8"]`); without it they
+    have no video codec until then. Peers made after the load offer H.264.
 
   Cisco's binary licence covers the royalties when its conditions are
   met.
 
-Pick exactly one. VP8 and Opus are royalty-free either way. This is not
+Pick exactly one of the two; `media-vp8` goes with either. VP8 and Opus
+are royalty-free either way. This is not
 legal advice; ask your counsel which fits your distribution.
 
 The model is the browser's, simplified.

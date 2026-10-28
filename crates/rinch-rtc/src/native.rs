@@ -725,9 +725,20 @@ async fn peer_task(
                 );
             }
             PeerCmd::Remote { req, description } => {
+                #[cfg(feature = "media-core")]
+                let offer =
+                    matches!(description.kind, SdpKind::Offer).then(|| description.sdp.clone());
                 let result = apply_remote(&*pc, description).await;
                 #[cfg(feature = "media-core")]
-                media.refresh(&pc).await;
+                {
+                    media.refresh(&pc).await;
+                    // A video m-line the answer will reject: say so (#1975).
+                    if result.is_ok()
+                        && let Some(sdp) = offer
+                    {
+                        media.check_remote_offer(&sdp);
+                    }
+                }
                 emit(id, Event::Reply { req, result });
             }
             PeerCmd::Candidate(c) => {

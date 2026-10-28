@@ -34,7 +34,9 @@ pub enum RtcError {
     Internal(String),
     /// A media track could not be sent or played (the `media` feature):
     /// remote audio the browser's autoplay policy refused, a codec that
-    /// failed.
+    /// failed, or (desktop) a remote offer whose video has no codec in
+    /// common with this build, so that video is rejected (a VP8-only offer
+    /// without the `media-vp8` feature).
     Media(String),
 }
 

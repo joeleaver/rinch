@@ -120,9 +120,9 @@ static CISCO: std::sync::OnceLock<Cisco> = std::sync::OnceLock::new();
 ///   own user can write, as for any library the app loads.
 /// - Call it once. A second call with the same file is a no-op; with a
 ///   different one it is an error.
-/// - Until it has succeeded, desktop peers offer and accept no H.264. VP8
-///   is `media-vp8`'s, which builds on `media` (openh264 from source), so
-///   a build that waits for Cisco's binary has no video codec until then.
+/// - Until it has succeeded, desktop peers offer and accept no H.264. With
+///   `media-vp8` as well they have VP8 meanwhile; without it, no video
+///   codec until then.
 #[cfg(feature = "media-cisco-openh264")]
 pub fn load_openh264(path: impl AsRef<std::path::Path>) -> Result<(), MediaError> {
     let canon = std::fs::canonicalize(path.as_ref()).map_err(|e| {
@@ -2107,6 +2107,83 @@ pub(crate) mod worker {
             .collect()
     }
 
+    /// What to tell the app when a remote offer's video cannot be answered:
+    /// `Some(message)` when some video m-line (port not 0) lists codecs and
+    /// none of them is one this build offers, so the answer rejects it and
+    /// the call goes on without that video. webrtc-rs reports nothing then
+    /// (a VP8-only offer to a build without `media-vp8` connected on audio
+    /// alone, silently: #1975's review). The message names the codecs on
+    /// each side and, where it is the cause, the feature or call that adds
+    /// the missing one.
+    pub(crate) fn unanswerable_video(sdp: &str) -> Option<String> {
+        let ours: Vec<String> = video_codecs()
+            .iter()
+            .filter_map(|(c, _)| c.mime_type.rsplit('/').next().map(str::to_ascii_uppercase))
+            .collect();
+        let mut theirs: Vec<String> = Vec::new();
+        let mut rejected = false;
+        // One m-section at a time: (is live video, its payload types, names).
+        let mut flush = |live: bool, pts: &[&str], names: &HashMap<&str, &str>| {
+            if !live {
+                return;
+            }
+            let listed: Vec<String> = pts
+                .iter()
+                .filter_map(|p| names.get(p).map(|n| n.to_ascii_uppercase()))
+                .collect();
+            if listed.is_empty() || listed.iter().any(|n| ours.contains(n)) {
+                return;
+            }
+            rejected = true;
+            for n in listed {
+                if !theirs.contains(&n) {
+                    theirs.push(n);
+                }
+            }
+        };
+        let mut live = false;
+        let mut pts: Vec<&str> = Vec::new();
+        let mut names: HashMap<&str, &str> = HashMap::new();
+        for l in sdp.lines() {
+            if let Some(m) = l.strip_prefix("m=") {
+                flush(live, &pts, &names);
+                let f: Vec<&str> = m.split(' ').collect();
+                live = f.first() == Some(&"video") && f.get(1).is_some_and(|p| *p != "0");
+                pts = f.iter().skip(3).copied().collect();
+                names.clear();
+            } else if live
+                && let Some(r) = l.strip_prefix("a=rtpmap:")
+                && let Some((pt, rest)) = r.split_once(' ')
+            {
+                names.insert(pt, rest.split('/').next().unwrap_or(""));
+            }
+        }
+        flush(live, &pts, &names);
+        if !rejected {
+            return None;
+        }
+        let have = if ours.is_empty() {
+            "none".to_string()
+        } else {
+            ours.join(", ")
+        };
+        let mut msg = format!(
+            "the remote offer's video lists {} and this build offers {have}: \
+             no codec in common, so that video is rejected and the call goes on without it",
+            theirs.join(", ")
+        );
+        if cfg!(not(feature = "media-vp8")) && theirs.iter().any(|n| n == "VP8") {
+            msg.push_str(
+                ". VP8 needs rinch-rtc's `media-vp8` feature \
+                 (features = [\"media\", \"media-vp8\"])",
+            );
+        }
+        if theirs.iter().any(|n| n == "H264") && !super::h264_available() {
+            msg.push_str(". H.264 needs `rinch_rtc::media::load_openh264` first");
+        }
+        Some(msg)
+    }
+
     /// Give the transceiver carrying `rtp` our video codec preferences.
     async fn set_video_prefs(
         pc: &Arc<dyn PeerConnection>,
@@ -2445,6 +2522,15 @@ pub(crate) mod worker {
     }
 
     impl PeerWorker {
+        /// After a remote offer is applied: report through `on_error` a
+        /// video m-line the answer will reject for want of a codec
+        /// (`unanswerable_video`).
+        pub(crate) fn check_remote_offer(&self, sdp: &str) {
+            if let Some(msg) = unanswerable_video(sdp) {
+                emit(self.peer, Event::Error(RtcError::Media(msg)));
+            }
+        }
+
         pub(crate) fn new(peer: u64) -> Self {
             Self {
                 peer,
@@ -3475,6 +3561,48 @@ pub(crate) mod worker {
             let got = play(&p, &order);
             assert_eq!(got.len(), clean.len());
             assert!(error(&clean, &got, 10) < 1e-3 && error(&clean, &got, 19) < 1e-3);
+        }
+    }
+
+    #[cfg(all(test, feature = "media"))]
+    mod unanswerable_tests {
+        use super::unanswerable_video;
+
+        const AUDIO: &str = "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n";
+
+        fn video(port: &str, codecs: &[(&str, &str)]) -> String {
+            let pts: Vec<&str> = codecs.iter().map(|(p, _)| *p).collect();
+            let mut s = format!("m=video {port} UDP/TLS/RTP/SAVPF {}\r\n", pts.join(" "));
+            for (p, n) in codecs {
+                s.push_str(&format!("a=rtpmap:{p} {n}/90000\r\n"));
+            }
+            s
+        }
+
+        /// Only a live video m-line with no codec in common is reported, on
+        /// any m-line (not the first video one alone), naming what each side
+        /// has. Every `media` build has H.264 (`load_openh264` aside).
+        #[test]
+        fn only_a_live_video_line_with_no_common_codec_is_reported() {
+            let h264 = video("9", &[("102", "H264")]);
+            let vp9 = video("9", &[("98", "VP9"), ("99", "AV1")]);
+            assert_eq!(unanswerable_video(&format!("{AUDIO}{h264}")), None);
+            // Lower case is the same codec.
+            assert_eq!(unanswerable_video(&video("9", &[("102", "h264")])), None);
+            // A rejected (port 0) m-line is not ours to report.
+            assert_eq!(unanswerable_video(&video("0", &[("98", "VP9")])), None);
+            assert_eq!(unanswerable_video(AUDIO), None);
+            // The second video m-line, after a fine first one.
+            let m = unanswerable_video(&format!("{AUDIO}{h264}{vp9}")).expect("reported");
+            assert!(m.contains("VP9, AV1") && m.contains("H264"), "{m}");
+            assert!(!m.contains("media-vp8"), "no VP8 in the offer: {m}");
+            let m = unanswerable_video(&video("9", &[("96", "VP8")]));
+            if cfg!(feature = "media-vp8") {
+                assert_eq!(m, None);
+            } else {
+                let m = m.expect("reported");
+                assert!(m.contains("VP8") && m.contains("`media-vp8`"), "{m}");
+            }
         }
     }
 
