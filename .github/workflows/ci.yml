@@ -630,6 +630,17 @@ jobs:
     # Slow: batches, `main` and dispatches only (see the note under `on:`).
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
     runs-on: ubuntu-24.04
+    env:
+      # Per test binary, the whole run's budget (seconds). wasm-bindgen-test-runner
+      # 0.2.129 (wgpu 30 needs >= 0.2.127, #1955) spends it across every
+      # WebDriver poll of the page, and a poll waits for the page's main thread:
+      # a binary that keeps the thread busy longer than the budget is killed
+      # mid-run. 0.2.126 waited on a blocked poll without limit. The default 20 s
+      # is under what review_1449_caret_point takes in Firefox (40 s on main's
+      # CI, a grid of synchronous caret-from-point calls; killed at 20 s in batch
+      # 35), and review2_1592 and web_media take 19-20 s. Steps that set their own
+      # (rinch-rtc's 180) keep theirs.
+      WASM_BINDGEN_TEST_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
 
