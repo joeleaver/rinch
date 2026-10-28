@@ -1622,6 +1622,7 @@ fn paint_surface_frame(
                 image::paint_frame_data(
                     painter,
                     &pixels.data,
+                    &pixels.data,
                     pixels.width,
                     pixels.height,
                     pixels.opaque,
@@ -2627,6 +2628,7 @@ fn paint_viewport_frame(
         image::paint_frame_data(
             painter,
             &pixels.data[..bytes],
+            &pixels.data,
             pixels.width,
             pixels.height,
             pixels.opaque,

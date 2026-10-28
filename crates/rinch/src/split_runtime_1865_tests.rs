@@ -81,7 +81,10 @@ fn read(t: &Texture) -> Vec<[u8; 4]> {
     gpu.device
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
-    let data = buffer.slice(..).get_mapped_range();
+    let data = buffer
+        .slice(..)
+        .get_mapped_range()
+        .expect("the buffer is mapped");
     (0..h)
         .flat_map(|y| {
             let data = &data;

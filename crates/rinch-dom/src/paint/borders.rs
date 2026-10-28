@@ -1238,6 +1238,7 @@ pub(super) fn paint_inset_box_shadow(
                             width: image.width,
                             height: image.height,
                             decoded: None,
+                            frame: None,
                             opaque: false,
                         },
                         transform * Affine::translate(*origin),

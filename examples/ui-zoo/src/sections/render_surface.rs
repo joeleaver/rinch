@@ -279,7 +279,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[bind_group_layout],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
 
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -330,7 +330,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 bias: Default::default(),
             }),
             multisample: Default::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         })
     }
@@ -355,7 +355,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     impl GpuCube {
         pub async fn new(canvas: wgpu::web_sys::HtmlCanvasElement) -> Self {
             let instance = wgpu::util::new_instance_with_webgpu_detection(
-                &wgpu::InstanceDescriptor::default(),
+                wgpu::InstanceDescriptor::new_without_display_handle(),
             )
             .await;
 
@@ -471,6 +471,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                         present_mode: wgpu::PresentMode::AutoVsync,
                         alpha_mode: wgpu::CompositeAlphaMode::Auto,
                         view_formats: vec![],
+                        color_space: wgpu::SurfaceColorSpace::Auto,
                         desired_maximum_frame_latency: 2,
                     },
                 );
@@ -484,8 +485,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 .write_buffer(&self.uniform_buffer, 0, &uniform_bytes);
 
             let frame = match self.surface.get_current_texture() {
-                Ok(f) => f,
-                Err(_) => return,
+                wgpu::CurrentSurfaceTexture::Success(f)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+                _ => return,
             };
             let view = frame
                 .texture
@@ -506,7 +508,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             );
 
             self.queue.submit([encoder.finish()]);
-            frame.present();
+            self.queue.present(frame);
         }
     }
 

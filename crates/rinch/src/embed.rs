@@ -363,6 +363,14 @@ impl RinchContext {
     /// over the game. `RinchOverlayRenderer::render` cuts the viewports out
     /// after Vello instead, exactly.
     ///
+    /// **Use `rinch::vello`.** rinch depends on Vello 0.11 from
+    /// `joeleaver/vello-fork` at a pinned commit (#1955), which fixes two
+    /// image-atlas bugs of stock Vello 0.11. Build Vello types from `rinch::vello`
+    /// (and its `peniko`/`kurbo`), and wgpu types from `rinch::wgpu`, instead of
+    /// declaring your own `vello`/`wgpu` dependencies, so the versions can never
+    /// drift (for an extra wgpu feature, keep `wgpu = "30"` with just that feature;
+    /// Cargo unifies it). No `[patch]` line is needed.
+    ///
     /// This context's mounted `RenderSurface`s are driven here, as the desktop
     /// paint drives them: each is told its layout size, its render callback
     /// runs, and its latest frame is painted inline at its box. Call it once
@@ -874,6 +882,14 @@ impl RinchContext {
 /// premultiply in your shader first. `PREMULTIPLIED_ALPHA_BLENDING` on the
 /// raw texture adds the full colour of every translucent pixel. Where a
 /// [`GameViewport`] is, the texture is transparent (#1866).
+///
+/// **Use `rinch::vello`.** rinch depends on Vello 0.11 from
+/// `joeleaver/vello-fork` at a pinned commit (#1955), which fixes two
+/// image-atlas bugs of stock Vello 0.11. Build Vello types from `rinch::vello`
+/// (and its `peniko`/`kurbo`), and wgpu types from `rinch::wgpu`, instead of
+/// declaring your own `vello`/`wgpu` dependencies, so the versions can never
+/// drift (for an extra wgpu feature, keep `wgpu = "30"` with just that feature;
+/// Cargo unifies it). No `[patch]` line is needed.
 ///
 /// # Usage
 ///

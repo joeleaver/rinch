@@ -148,7 +148,10 @@ fn fs_surface(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // The pixel's top-left corner, as Vello's fine shader maps it.
+    // The pixel's top-left corner, as Vello 0.7's fine shader mapped it.
+    // (Vello 0.9+ maps the centre; `device_from_image` carries the half-pixel
+    // shift that makes this corner sample the centre, so the sample points
+    // match the in-scene draw's — #1955.)
     let my_xy = floor(in.position.xy);
     let local = px - vec2<i32>(u.region_origin.xy);
     var area = 0.0;
@@ -227,9 +230,10 @@ pub(crate) struct SurfaceDraw<'a> {
     pub extents: (u32, u32),
     /// Whether the texture holds straight alpha (Vello's `ImageAlphaType::Alpha`).
     pub straight_alpha: bool,
-    /// The image-to-device transform the in-scene fill would hand Vello: the
-    /// fill's transform times its brush transform (`centre_sampling`), kurbo
-    /// coefficients `[a, b, c, d, e, f]`.
+    /// The image-to-device transform with `centre_sampling`'s half-pixel
+    /// shift: `fs_surface` maps each pixel's corner through its inverse, which
+    /// lands on the image point under the pixel's centre, where Vello samples
+    /// the in-scene draw (#1027, #1955). Kurbo coefficients `[a, b, c, d, e, f]`.
     pub device_from_image: [f64; 6],
     /// The surface's own coverage: its image rect under its own clips (inner
     /// radius, `object-fit` clip), **not** the ancestors'.
@@ -356,8 +360,8 @@ impl SplitCompositor {
         });
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("split compositor"),
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
         });
         let pipeline = |entry: &str| {
             device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -383,7 +387,7 @@ impl SplitCompositor {
                 primitive: PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         };
@@ -480,6 +484,7 @@ impl SplitCompositor {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         // Below, around the regions: each pixel is written once.
         pass.set_pipeline(&self.below);

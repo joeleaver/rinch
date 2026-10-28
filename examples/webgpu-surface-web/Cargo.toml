@@ -13,11 +13,10 @@ rinch = { path = "../../crates/rinch", default-features = false, features = ["co
 rinch-core = { path = "../../crates/rinch-core", features = ["theme"] }
 rinch-web = { path = "../../crates/rinch-web" }
 
-# The app owns wgpu on web. This is crates.io wgpu 27 — the workspace's wgpu
-# fork/patch targets desktop DX12 storage textures and does NOT apply here (this
-# example is excluded from the workspace, so it resolves wgpu straight from
-# crates.io). `webgpu` is the primary backend; `webgl` is the fallback.
-wgpu = { version = "27", features = ["webgpu", "webgl"] }
+# The app owns wgpu on web. This is crates.io wgpu 30, the version the
+# workspace uses (this example is excluded from the workspace, so it resolves
+# wgpu itself). `webgpu` is the primary backend; `webgl` is the fallback.
+wgpu = { version = "30", features = ["webgpu", "webgl"] }
 
 # WASM bindings + async (wgpu's request_adapter/request_device are async on web).
 wasm-bindgen = "0.2"

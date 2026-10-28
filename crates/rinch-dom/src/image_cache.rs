@@ -23,6 +23,12 @@ pub struct DecodedImage {
     /// opaque, so the premultiplied pixels *are* `data` and no copy is kept.
     /// Never filled on the GPU path, which takes straight alpha.
     premultiplied: std::sync::OnceLock<Option<Vec<u8>>>,
+    /// The pixels as the one `peniko::Blob` every GPU paint of this image
+    /// hands Vello, made on the first. Vello keys its image atlas on the
+    /// blob's id: a blob made per paint was a new image every repaint, which
+    /// Vello 0.9+ keeps resident beside the earlier copies, and which was
+    /// uploaded again every frame (#1955). Never filled on the software path.
+    blob: std::sync::OnceLock<peniko::Blob<u8>>,
     /// Process-unique, never reused: what a cache of pixels derived from this
     /// image keys on (a data pointer can be reused by the next image).
     id: u64,
@@ -36,6 +42,7 @@ impl DecodedImage {
             width,
             height,
             premultiplied: std::sync::OnceLock::new(),
+            blob: std::sync::OnceLock::new(),
             id: {
                 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -46,6 +53,14 @@ impl DecodedImage {
     /// This image's process-unique identity.
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// The pixels as one shared `peniko::Blob` (straight alpha), the same
+    /// blob, and so the same Vello image, on every call.
+    pub fn blob(&self) -> peniko::Blob<u8> {
+        self.blob
+            .get_or_init(|| peniko::Blob::from(self.data.clone()))
+            .clone()
     }
 
     /// The pixels premultiplied, as the software painter draws them. Computed

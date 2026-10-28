@@ -930,10 +930,13 @@ a split defect and nothing in the split path can remove it.
 
 ## Risks
 
-1. **Registered but undrawn images. Resolved: free.** Vello 0.7 builds its
+1. **Registered but undrawn images. Resolved: free.** Vello 0.7 built its
    atlas only from the images a scene draws (`Patch::Image` entries in
    `vello_encoding`'s resolver); the override table is consulted only for
-   those. Pinned in `shell/split_slices_1865_tests.rs`: a registered texture
+   those. Vello 0.9+ keeps images resident across renders but still copies an
+   override texture only for a scene that draws it, and with rinch's patched
+   `vello_encoding` (#1955) an undrawn image's atlas space goes to any image
+   the current render needs, so an undrawn registration still costs nothing. Pinned in `shell/split_slices_1865_tests.rs`: a registered texture
    that is then destroyed raises no error through renders whose scene does
    not draw it, and the control, a scene that does, raises one. RADV and
    lavapipe agree.

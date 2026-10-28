@@ -1345,7 +1345,12 @@ pub(crate) fn build_native_menu_bar(menus: Vec<(&str, Menu)>) -> muda::Menu {
 /// Returns the token holding this build's ids alongside the menu; the caller
 /// keeps it for as long as the menu is live (see [`MenuRegistration`]).
 #[cfg(feature = "desktop")]
-#[cfg_attr(target_os = "linux", allow(dead_code))]
+// Its callers are the tray (`system-tray`, not on Linux, which uses ksni) and
+// the tests.
+#[cfg_attr(
+    any(target_os = "linux", not(feature = "system-tray")),
+    allow(dead_code)
+)]
 pub(crate) fn build_muda_menu(menu: Menu) -> (muda::Menu, MenuRegistration) {
     let mut registration = MenuRegistration::default();
     let muda_menu = muda::Menu::new();

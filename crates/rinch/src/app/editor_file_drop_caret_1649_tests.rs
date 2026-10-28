@@ -233,7 +233,7 @@ fn no_drop_caret_where_the_drop_would_not_be_the_editors() {
     p.hover(PathBuf::from("/nowhere/cat.png"), a);
     assert!(p.drop_caret().is_none(), "a read-only editor");
     send(&mut p.app, PlatformEvent::FileHoverCancelled);
-    // Read-only, with no path named (Wayland).
+    // Read-only, with no path named (yet, or ever: an unreadable URI list).
     p.drag_to(a);
     assert!(p.drop_caret().is_none(), "a read-only editor, path-less");
     send(&mut p.app, PlatformEvent::FileHoverCancelled);
@@ -443,7 +443,8 @@ fn a_drag_the_editor_would_not_take_does_not_scroll_it() {
     assert_eq!(p.scroll_top(), 0.0);
 }
 
-/// Wayland names no path before the drop (the fork starts the hover with an
+/// A drag hovers with no path named until its URI list is read (#1962; before
+/// it, Wayland named none before the drop: the fork started the hover with an
 /// empty list, and only for an offer carrying `text/uri-list`): the editor
 /// claims the hover on its own say, and the drop decides.
 #[test]
@@ -640,4 +641,88 @@ fn moving_between_two_editors_moves_the_caret() {
         Selection::cursor(Pos(1)),
         "the second did not"
     );
+}
+
+/// Feed `os_file_drag`'s steps to the app as the runtime does (#1962): each
+/// fetch answered with a fresh serial, recorded per transfer.
+fn feed(
+    p: &mut Page,
+    drag: &mut crate::shell::os_file_drag::OsFileDrag,
+    steps: Vec<crate::shell::os_file_drag::DragStep>,
+    serials: &mut Vec<(i64, winit::event_loop::AsyncRequestSerial)>,
+) {
+    use crate::shell::os_file_drag::DragStep;
+    let mut queue: std::collections::VecDeque<DragStep> = steps.into();
+    while let Some(step) = queue.pop_front() {
+        match step {
+            DragStep::Fetch(id) => {
+                let serial = winit::event_loop::AsyncRequestSerial::get();
+                serials.push((id.into_raw(), serial));
+                queue.extend(drag.fetch_started(id, Ok(serial)));
+            }
+            DragStep::Emit(event) => {
+                send(&mut p.app, event);
+            }
+            DragStep::Accept(_) | DragStep::Warn(_) => {}
+        }
+    }
+}
+
+/// A drag entering while an earlier drop still waits for its paths (#1962)
+/// starts with clean state, and the earlier drop's late paths neither land
+/// at the new drag's caret nor end it: the app holds one drag
+/// (`file_drag`), so the entry ends the waiting drop first.
+#[test]
+fn a_new_drag_after_a_pending_drop_starts_clean_and_keeps_its_state() {
+    use crate::shell::os_file_drag::OsFileDrag;
+    use winit::data_transfer::DataTransferId;
+    let (a_id, b_id) = (DataTransferId::from_raw(1), DataTransferId::from_raw(2));
+    let serial_of = |serials: &[(i64, _)], id: DataTransferId| {
+        serials
+            .iter()
+            .rev()
+            .find(|(i, _)| *i == id.into_raw())
+            .unwrap()
+            .1
+    };
+    let mut p = page();
+    let a = p.point_at(5);
+    let mut d = OsFileDrag::default();
+    let mut serials = Vec::new();
+
+    // Drag A hovers path-less over the editor, which claims it, and drops
+    // before its URI list comes.
+    let steps = d.entered(a_id, Some(a), true);
+    feed(&mut p, &mut d, steps, &mut serials);
+    assert_caret_at(&p, a, "drag A, path-less");
+    // Whatever state A left in the app's one drag slot (here its picture
+    // claim) must not reach B.
+    p.app.file_drag.as_mut().unwrap().picture = true;
+    let steps = d.dropped(a_id, std::time::Instant::now());
+    feed(&mut p, &mut d, steps, &mut serials);
+    assert!(p.app.file_drag.is_some(), "A's drop waits for its paths");
+
+    // Drag B enters and names a PDF: no picture, so no drop caret.
+    let steps = d.entered(b_id, Some(a), true);
+    feed(&mut p, &mut d, steps, &mut serials);
+    let steps = d.received(
+        b_id,
+        serial_of(&serials, b_id),
+        Some(vec!["file:///nowhere/notes.pdf".into()]),
+    );
+    feed(&mut p, &mut d, steps, &mut serials);
+    let drag = p.app.file_drag.as_ref().expect("B is live");
+    assert!(!drag.picture, "B inherited A's picture claim");
+    assert!(drag.paths_known);
+    assert!(p.drop_caret().is_none(), "a PDF shows no drop caret");
+
+    // A's paths come late: ignored. B is still live and path-named.
+    let steps = d.received(
+        a_id,
+        serial_of(&serials, a_id),
+        Some(vec!["file:///nowhere/cat.png".into()]),
+    );
+    assert!(steps.is_empty(), "{steps:?}");
+    let drag = p.app.file_drag.as_ref().expect("B is still live");
+    assert!(drag.paths_known);
 }

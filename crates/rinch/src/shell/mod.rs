@@ -16,6 +16,8 @@ pub mod html_parser;
 pub(crate) mod layer_shell;
 pub mod memory_profile;
 #[cfg(feature = "desktop")]
+pub(crate) mod os_file_drag;
+#[cfg(feature = "desktop")]
 pub(crate) mod overlay_window;
 #[cfg(feature = "desktop")]
 pub mod renderer;

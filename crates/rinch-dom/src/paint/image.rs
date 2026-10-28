@@ -27,6 +27,7 @@ pub fn paint_image(
         painter,
         &decoded.data,
         Some(decoded),
+        None,
         false,
         decoded.width,
         decoded.height,
@@ -58,6 +59,7 @@ pub fn paint_image_data(
         painter,
         data,
         None,
+        None,
         false,
         width,
         height,
@@ -72,10 +74,12 @@ pub fn paint_image_data(
 /// pixel is opaque ([`crate::paint::SurfacePixelData::opaque`]). An opaque
 /// frame skips the per-draw premultiply and, drawn onto whole pixels (at any
 /// positive scale, unrotated), is copied into the surface row by row (#361).
+/// `shared` is the buffer `data` comes from ([`PaintImage::frame`]).
 #[allow(clippy::too_many_arguments)]
 pub fn paint_frame_data(
     painter: &mut dyn Painter,
     data: &[u8],
+    shared: &std::sync::Arc<Vec<u8>>,
     width: u32,
     height: u32,
     opaque: bool,
@@ -88,6 +92,9 @@ pub fn paint_frame_data(
         painter,
         data,
         None,
+        // The buffer stands for the frame only when it holds exactly the
+        // frame's pixels.
+        (shared.len() == data.len()).then_some(shared),
         opaque,
         width,
         height,
@@ -103,6 +110,7 @@ fn paint_image_pixels(
     painter: &mut dyn Painter,
     data: &[u8],
     decoded: Option<&DecodedImage>,
+    frame: Option<&std::sync::Arc<Vec<u8>>>,
     opaque: bool,
     width: u32,
     height: u32,
@@ -138,6 +146,7 @@ fn paint_image_pixels(
         width,
         height,
         decoded,
+        frame,
         opaque,
     };
     painter.draw_image(&paint_image, img_transform);

@@ -53,13 +53,29 @@ rinch-screen-capture = { path = "crates/rinch-screen-capture" }
 rinch-android = { path = "crates/rinch-android" }
 
 # Rendering
-anyrender = "0.7"
-anyrender_vello = "0.7"
-vello = "0.7"
-wgpu = "27"
+# Vello from joeleaver/vello-fork, pinned to one commit (#1955): vello 0.11.0
+# plus one commit to `vello_encoding`'s image atlas, which the fork's `vello`
+# takes by path. It fixes two Vello 0.9+ atlas behaviours: a render of a scene
+# with no image, gradient or glyph run wiped the persistent atlas (every
+# resident image then drew transparent), and an image stayed resident for two
+# renders after its last use, so the atlas had to hold three scenes' images and
+# large or many images went undrawn. A dependency, not a [patch], so an app on
+# rinch gets it with nothing to copy; apps use `rinch::vello`. Pinned by rev
+# so a push to the fork's branch never changes rinch.
+vello = { git = "https://github.com/joeleaver/vello-fork", rev = "c6b2e61558962d0074a98f46d55a435c06901865" }
+wgpu = "30"
 
-# Windowing and input (using fork with Wayland DnD support)
-winit = "0.31.0-beta.2"
+# Windowing and input: winit 0.31.0-beta.4 from joeleaver/winit-fork, branch
+# rinch-patch-beta4, pinned to one commit (#1962). The fork is upstream's
+# v0.31.0-beta.4 tag plus the wlr-layer-shell window role
+# (WindowAttributesWayland::with_layer_shell, #1523; a layer surface's move is
+# confirmed by WindowEvent::Moved, #1597). Wayland drag and drop is upstream's
+# own since beta.4. A dependency, not a [patch], so an app on rinch needs no
+# patch lines (an app that uses winit itself can name this rev, for one winit
+# in its build). Pinned by rev so a push to the fork's branch never changes
+# rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
+# docs/internals/app-and-windows.md "winit Fork".
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "34f153bd6e523de53f9da67c6db58bd1f8732542" }
 
 # Menus
 muda = "0.15"
@@ -97,24 +113,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Hot reload
 notify = "7"
 
-# Patch wgpu to use our fork with fixes for Rgba8Unorm storage texture validation
-# Required for transparent windows with Vello on Windows (DX12 + DirectComposition)
-# See: https://github.com/gfx-rs/wgpu/pull/8908 (still open as of Jan 2026)
-# Fork rebased to wgpu v27.0.1 for Vello rendering
-[patch.crates-io]
-wgpu = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-core = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-hal = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-types = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-naga = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-# Patch winit to use our fork with Wayland DnD support
-# Upstream winit 0.31-beta.2 has no Wayland drag-and-drop implementation, and no
-# wlr-layer-shell window role (WindowAttributesWayland::with_layer_shell, #1523).
-# rinch-patch includes bf5d1870 (#1597): a layer surface's move is confirmed by
-# a WindowEvent::Moved after a wl_display.sync.
-winit = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
-winit-core = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
-winit-common = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
-winit-wayland = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
-winit-x11 = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
-dpi = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+# No [patch.crates-io]: the wgpu fork was removed (#1955; rinch renders to an
+# Rgba8Unorm intermediate, whose STORAGE_BINDING WebGPU guarantees), and winit
+# is the dependency above (#1962).
