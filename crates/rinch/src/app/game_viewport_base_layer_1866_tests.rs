@@ -204,6 +204,101 @@ fn an_opacity_ancestor_warns_on_the_desktop_scene_and_a_plain_one_does_not() {
     );
 }
 
+/// #1883 review, D1: the runtime's R1 sequence, through the
+/// `BaseFallback::build` that `RinchRuntime::paint_gpu` builds every frame
+/// with. A refused base split (the viewport in an `opacity: 0.5` group) falls
+/// back, and the frame is built again **in full**: the first build consumed
+/// its damage, and a second build left to it was `Unchanged`, so a UI change
+/// landing on the frame the fallback retries the split was never rendered.
+/// The window stays layered for exactly `BASE_FALLBACK_FRAMES` frames, and
+/// the frame after them tries the split again.
+#[test]
+fn a_refused_base_split_rebuilds_the_frame_in_full_and_retries_after_the_fallback() {
+    use crate::shell::base_fallback::{BASE_FALLBACK_FRAMES, BaseFallback};
+    use rinch_dom::paint::BaseViewport;
+    use rinch_dom::perf::FullRepaintReason;
+    let name = "r1-retry";
+    let html = format!(
+        "<div style=\"opacity: 0.5\">{}</div>\
+         <div id=\"t\" style=\"position: absolute; left: 0; top: 280px; width: 20px; \
+         height: 20px; background: rgb(0,0,255)\"></div>",
+        page(name)
+    );
+    let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let keep = handle.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_inner_html(&html);
+        *keep.borrow_mut() = root.query_selector("#t");
+        root
+    });
+    app.mount_component(W as f32, H as f32);
+    let names: std::collections::HashSet<String> = [name.to_string()].into_iter().collect();
+    let bases = || {
+        Some(
+            [(
+                name.to_string(),
+                BaseViewport {
+                    surface_id: 4242,
+                    extents: (W, H),
+                    letterbox: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        )
+    };
+    let kind = |app: &mut RinchApp| match app.last_gpu_frame() {
+        GpuFrame::Full(_) => "full",
+        GpuFrame::Partial { .. } => "partial",
+        GpuFrame::Unchanged => "unchanged",
+    };
+    let mut fallback = BaseFallback::default();
+    // One frame as paint_gpu builds it: `retry` is whether it tried the
+    // split; `target` the renderer's reason the UI texture is stale.
+    let mut frame = |app: &mut RinchApp, target: Option<FullRepaintReason>| {
+        let retry = fallback.try_split();
+        let mut fell_back = false;
+        app.install_viewport_holes(Some(names.clone()));
+        let _ = fallback.build(
+            app,
+            1.0,
+            (W, H),
+            if retry { bases() } else { None },
+            true,
+            target,
+            || fell_back = true,
+        );
+        rinch_dom::paint::set_active_viewports(None);
+        (retry, fell_back, kind(app))
+    };
+    // The first frame tries, is refused (positive control), and is full.
+    assert_eq!(
+        frame(&mut app, Some(FullRepaintReason::Invalidated)),
+        (true, true, "full")
+    );
+    // Layered for exactly BASE_FALLBACK_FRAMES frames, nothing to paint.
+    for i in 0..BASE_FALLBACK_FRAMES {
+        assert_eq!(frame(&mut app, None), (false, false, "unchanged"), "frame {i}");
+    }
+    // A UI change lands on the retry frame. Its first build (the UI texture's
+    // base becomes the window's: stale) consumes the damage and is refused;
+    // the frame presented must still draw the change.
+    handle.borrow().as_ref().expect("#t").set_attribute(
+        "style",
+        "position: absolute; left: 0; top: 280px; width: 20px; height: 20px; \
+         background: rgb(255,0,0)",
+    );
+    app.resolve_and_repaint(W as f32, H as f32);
+    assert_eq!(
+        frame(&mut app, Some(FullRepaintReason::Invalidated)),
+        (true, true, "full"),
+        "the retry frame's change must be rendered"
+    );
+    // And back to the fallback.
+    assert_eq!(frame(&mut app, None), (false, false, "unchanged"));
+}
+
 mod gpu {
     use super::*;
     use crate::shell::compositor::LayerCompositor;
@@ -671,6 +766,24 @@ mod gpu {
             ),
             ((200, 225), [0, 0, 0, 255], "the bottom bar"),
             ((200, 150), MAGENTA, "the frame"),
+        ] {
+            if !near(at(p.0, p.1), want) {
+                bad.push((what, p, at(p.0, p.1)));
+            }
+        }
+        // The same frame in a square box (no radius): the clear is a rect
+        // there, and it is the box, not the image's rect (#1883 review, M2).
+        let square = page("desk-letterbox-square").replace("; border-radius: 40px", "");
+        assert!(!square.contains("border-radius"), "positive control: square");
+        let mut app = app_with(square);
+        let px = Window::with_game(Mode::Split, [1.0, 0.0, 1.0, 1.0], (300, 100), true)
+            .frame(&mut app, "desk-letterbox-square");
+        let at = |x: u32, y: u32| px[(y * W + x) as usize];
+        for (p, want, what) in [
+            ((100, 75), [0, 0, 0, 255], "square: the top bar, over the red sibling"),
+            ((52, 52), [0, 0, 0, 255], "square: the top bar's corner"),
+            ((200, 225), [0, 0, 0, 255], "square: the bottom bar"),
+            ((200, 150), MAGENTA, "square: the frame"),
         ] {
             if !near(at(p.0, p.1), want) {
                 bad.push((what, p, at(p.0, p.1)));
