@@ -1,6 +1,6 @@
-# Images, debug/MCP, dialogs, clipboard, tray, notifications, hotkeys, theme
+# Images, debug/MCP, dialogs, clipboard, tray, notifications, hotkeys, theme, audio DSP
 
-Read this page when your task touches: image loading, DevTools, rinch-debug, clipboard, system tray, notifications, global hotkeys, theme system.
+Read this page when your task touches: image loading, DevTools, rinch-debug, clipboard, system tray, notifications, global hotkeys, theme system, `rinch-av`'s DSP output (`open_dsp_output`, `rinch-dsp`).
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
@@ -943,3 +943,40 @@ would break CSS semantics and make desktop diverge from rinch-web.
   (`native::restrict_dir`), which covers files not written since. Windows:
   nothing set, the parent's inherited ACL applies. Pin, its own binary because
   it sets the process umask to 0: `rinch-storage/tests/owner_only_1819.rs`.
+
+### Audio DSP output (#1963)
+
+`rinch_av::audio::open_dsp_output` (`crates/rinch-av/src/audio/dsp.rs`, web half `dsp_web.rs`) plays a
+`rinch_dsp::DspProcessor` on the audio thread. User guide: `docs/src/guide/audio-dsp.md`.
+
+- **`rinch-dsp` has zero dependencies** on purpose. On the web the processor is a raw `cdylib`
+  instantiated in an AudioWorklet with an empty import object, and anything that imports from the
+  page (wasm-bindgen glue) breaks it. `export_dsp!` gives the module its C ABI. The exports are
+  `unsafe extern "C"` over one `static Slot`. `Slot::host` is a private `unsafe fn`, so nothing safe
+  reaches the cell: the `unsafe impl Sync` holds only under the exports' one-thread contract (the
+  PR as opened had safe exports and a safe `host`, a data race natively).
+- **ABI version**: `rinch_dsp::ABI_VERSION`, exported as `rinch_dsp_abi`. The worklet script has
+  it substituted in (`{ABI}` in `dsp_web::PROCESSOR`) and refuses any other value. Bump it on any
+  change to the exports' signatures or meaning, and rebuild `crates/rinch-av/tests/fixtures/dsp_echo.wasm`
+  (the recipe is in the fixture crate's `src/lib.rs`).
+- **Native callback** (`native::callback`, device-free and unit-tested): byte rings from `rtrb`
+  carry length-framed messages and replies (`push_frame` checks room for header and bytes before
+  writing either, so the one consumer never sees half a frame). The audio side reads messages into
+  one buffer sized to the ring, and reserves the reply buffer to the reply ring's size. The planar
+  buffer is pre-sized from the requested `buffer_size` (4096 frames when the backend chooses). It
+  grows only if a device hands a longer buffer. A full reply ring drops and counts
+  (`Status::dropped_replies`). The processor's panic is caught (`catch_unwind`, so it does not
+  unwind into cpal) and recorded in `Status::error` (a `OnceLock`); the callback is silent after
+  that.
+- **Web port protocol**, worklet → page: a `Uint8Array` is a reply, `{applied: n}` returns `n`
+  bytes of message budget (`Shared::in_flight`), and `{error}` is a failure, sent once. The page
+  enforces both budgets: the worklet itself never drops a message. The page checks
+  `WebAssembly.Module.imports/exports` before creating the node. The worklet checks the ABI,
+  `try`/`catch`es `process`, and the node's `onprocessorerror` is a second route. Its views of
+  module memory are cached and re-made when `memory.buffer` changes identity (growth detaches the
+  old buffer) or the render pointer moves.
+- **Tests**: `dsp_web::tests` renders through an `OfflineAudioContext` (`open_dsp_output_in`, test
+  only) and reads samples per channel. `tests/dsp_web.rs` covers order, rate, quanta, every failure
+  route (with a hand-assembled module for the ABI-version check) and the queue bounds. These run
+  in CI's existing `cargo test -p rinch-av --features audio,camera --target wasm32-unknown-unknown`,
+  under the autoplay-allowing `webdriver.json`.
