@@ -8,7 +8,7 @@ This page lists every prop for every component in `rinch-components`. All compon
 
 **Float literals:** Float literals are auto-wrapped: `value: 30.0` becomes `Some(30.0)` for `Option<f32>` fields.
 
-**Universal props:** All components support `style:` and `class:` in RSX, which are applied to the component's root DOM element. These support reactive closures `{|| expr}`. So does any **hyphenated attribute** — `data-nofocus: ""`, `aria-label: "…"` — which is written on the root the way it would be on an HTML element; see [Attributes on a component](rsx-syntax.md#attributes-on-a-component).
+**Universal props:** All components support `style:` and `class:` in RSX, which are applied to the component's root DOM element. These support reactive closures `{|| expr}`. So does any **hyphenated attribute** — `data-nofocus: ""`, `aria-label: "…"` — and any **quoted** name — `"title": "…"`, `"id": "…"`, `"role": "…"` (#1653) — which are written on the root the way they would be on an HTML element; a bare `title:` is the component's own field (a heading on `Alert`, `Modal`, …). See [Attributes on a component](rsx-syntax.md#attributes-on-a-component).
 
 Both **merge** with what the component itself put on that root rather than replacing it: `class:` is added to the component's own classes, and `style:` is laid over the component's own inline declarations, last-wins per property. That matters because a component's inline style is not decoration — it is how a component publishes a prop to its own stylesheet, and every overlay's `z_index` is a custom property written there. `style:` used to write the whole attribute, which erased all of them ([issue #647](https://github.com/joeleaver/rinch/issues/647)).
 
@@ -141,6 +141,7 @@ Icon-only button. For text-based action buttons, use `Button` with compact styli
 | `radius` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `loading` | `bool` | `false` | |
+| `title` | `String` | `""` | The `title` attribute on the root `<button>`: its tooltip (on desktop too, #1646) and the accessible name an icon-only button otherwise lacks. Empty writes none. A reactive value re-renders the button; `"title": {|| …}` rewrites only the attribute (#1653) |
 | `onclick` | `Option<Callback>` | `None` | Click handler |
 
 ### CloseButton
@@ -155,6 +156,7 @@ and no stylesheet in the workspace matches that class.
 | `radius` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `icon_size` | `Option<u32>` | `None` | The X's edge length in px. Unset, it follows `size`: 12 / 14 / 16 / 20 / 24 for xs…xl |
+| `title` | `String` | `""` | The `title` attribute on the root `<button>` (its tooltip); empty writes none. The accessible name stays `aria-label="Close"`. A reactive value re-renders the button; `"title": {|| …}` rewrites only the attribute (#1653) |
 | `onclick` | `Option<Callback>` | `None` | Click handler |
 
 ---
