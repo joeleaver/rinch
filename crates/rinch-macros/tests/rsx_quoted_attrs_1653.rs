@@ -181,6 +181,12 @@ fn a_reactive_quoted_attribute_updates_without_a_re_render() {
     let first = find_tagged(&root).expect("rendered");
     assert_eq!(first.get_attribute("title").as_deref(), Some("Save"));
     assert_eq!(renders() - before, 1);
+    assert_eq!(
+        root.children().len(),
+        1,
+        "a reactive quoted attribute alone is the static path: the component's \
+         root is the only child, with no re-render marker beside it"
+    );
 
     tip.set("Saving…".to_string());
     let second = find_tagged(&root).expect("still rendered");
