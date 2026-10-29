@@ -413,6 +413,13 @@ to style. Decorations are recomputed from every new state, and the editor does
 **not** move a range for you when text is inserted before it — a plugin that
 caches ranges maps them through `tr.mapping()` in its `apply`.
 
+`decorations()` is called on every transaction, a caret move included, so build
+its set from ranges the plugin already holds rather than re-scanning the
+document there. The view's own pass is linear in the decorations: it walks the
+top-level blocks once beside the decorations sorted by position and descends
+only into a block a decoration reaches (or one that still shows a segment to
+take off), and a run whose decorations did not change is not rewritten (#848).
+
 Plugin code runs **untracked** (issue #943). `decorations`, `apply`,
 `init_state`, `handle_paste` and a plugin's commands run synchronously inside
 whatever app effect called the handle (a `set_selection`, a `command`, an
