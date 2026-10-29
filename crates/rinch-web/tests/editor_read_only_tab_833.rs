@@ -47,8 +47,9 @@ struct Fixture {
 enum Layout {
     /// `outer` · `before` · editor · `after`, no trap.
     Page,
-    /// `outer` · trap{ `before` · editor } · `after`: the editor is the trap's
-    /// last stop, so Tab wraps to `before` instead of reaching `after`.
+    /// `outer` · trap{ editor · `inside` } · `after`: the editor is the
+    /// trap's first stop, so Shift+Tab wraps to `inside` instead of reaching
+    /// `outer`.
     Trapped,
 }
 
@@ -90,9 +91,12 @@ impl Fixture {
                 let inner = scope.create_element("div");
                 if matches!(layout, Layout::Trapped) {
                     inner.set_attribute("data-trap-focus", "");
+                    inner.append_child(&mounted.mount(scope));
+                    inner.append_child(&button(scope, "inside"));
+                } else {
+                    inner.append_child(&button(scope, "before"));
+                    inner.append_child(&mounted.mount(scope));
                 }
-                inner.append_child(&button(scope, "before"));
-                inner.append_child(&mounted.mount(scope));
                 wrapper.append_child(&inner);
                 wrapper.append_child(&button(scope, "after"));
                 wrapper
@@ -208,10 +212,11 @@ fn tab_and_shift_tab_leave_a_read_only_editor_from_its_place_in_the_page() {
 }
 
 /// Inside a focus trap the move stays in the trap and wraps there, as every
-/// other Tab inside it does: forward from the trap's last stop is its first.
+/// other Tab inside it does: backward from the trap's first stop is its last,
+/// not the `outer` button before the trap in the page.
 #[wasm_bindgen_test]
 fn inside_a_trap_tab_from_a_read_only_editor_wraps_within_the_trap() {
-    for (shift, want) in [(false, "before"), (true, "before")] {
+    for (shift, want) in [(false, "inside"), (true, "inside")] {
         let f = Fixture::new(Layout::Trapped, true);
         assert!(tab(shift), "shift={shift}: consumed");
         assert!(
