@@ -266,8 +266,24 @@ valid combinations (without that, `media-core` alone fails with E0599 on
     negotiated codecs, so an unlabelled track is never bound and nothing
     is retransmitted. `video_label` picks the label (the remote offer's
     first supported codec, else ours) and the worker resets the
-    transceiver's preferences to all codecs, the label first. A label the
-    negotiation leaves out still sends, unbound.
+    transceiver's preferences to all codecs, the label first. rtc binds a
+    sender once, in `start_rtp_senders`, when the description that
+    completes its first negotiation is applied, so a label the
+    negotiation leaves out would send unbound (no retransmission, no SRs).
+    The worker relabels such a sender just before that binding (#1954):
+    after a remote offer is applied (the binding comes with our answer),
+    to the first codec in the sender's `get_parameters`; before a remote
+    answer is applied, to the first codec of that sender's m-section
+    (found by mid) that we have. `relabel` passes a fresh
+    `TrackLocalStaticRTP` (same track id, stream and SSRC) to the
+    sender's `replace_track`, which in webrtc-rs swaps only rtc's copy of
+    the track: the webrtc-rs track the forwarder writes to stays bound
+    and RTCP still reaches it by track id. Once a negotiation completes,
+    `check_labels` marks each newly negotiated video sender settled and
+    logs one `tracing` warning for one still unmatched; settled senders
+    are never relabelled. `tests/media_unlabelled_codec.rs` counts SRs in
+    a UDP relay for both shapes (answerer's track before an offer without
+    VP8, offerer's VP8 label left out of the answer).
   - **No RTX.** rtc's NACK generator records arrivals by SSRC before RTX
     is resolved, so an RTX repair never counted and the same packet was
     NACKed every 100 ms. Without RTX registered the responder resends the
