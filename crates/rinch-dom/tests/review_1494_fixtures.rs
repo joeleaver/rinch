@@ -204,6 +204,22 @@ fn a_box_shown_later_in_a_second_run_finds_its_place() {
 }
 
 const ROWS: &[Row] = &[
+    // A difference until parley 0.12 gave a `direction: rtl` block its
+    // direction (rinch: 39).
+    Row {
+        name: "ai_rtl",
+        c: r##"direction: rtl;"##,
+        html: r##"text<span data-m="abs" style="position: absolute; width: 40px; height: 30px;"></span>tail"##,
+        want: [377.953, 7.0],
+    },
+    // A difference until parley 0.12 gave a `direction: rtl` block its
+    // direction (rinch: 39).
+    Row {
+        name: "fi_rtl",
+        c: r##"direction: rtl;"##,
+        html: r##"text<span data-m="abs" style="position: fixed; width: 40px; height: 30px;"></span>tail"##,
+        want: [377.953, 7.0],
+    },
     Row {
         name: "a_after_block_margin",
         c: r##""##,
@@ -1056,20 +1072,12 @@ const KNOWN: &[Known] = &[
         rinch: [373.0, 17.0],
     },
     Known {
-        name: "ai_rtl",
-        why: "direction: rtl is not modelled",
-        c: r##"direction: rtl;"##,
-        html: r##"text<span data-m="abs" style="position: absolute; width: 40px; height: 30px;"></span>tail"##,
-        chrome: [377.953, 7.0],
-        rinch: [39.0, 7.0],
-    },
-    Known {
         name: "ai_rtl_first",
-        why: "direction: rtl is not modelled",
+        why: "direction: rtl: a box first on the line is at the line's right end, its own width short of Chrome's (11 until parley 0.12 gave the block its direction)",
         c: r##"direction: rtl;"##,
         html: r##"<span data-m="abs" style="position: absolute; width: 40px; height: 30px;"></span>tail"##,
         chrome: [360.0, 7.0],
-        rinch: [11.0, 7.0],
+        rinch: [378.0, 7.0],
     },
     Known {
         name: "f_li_first",
@@ -1184,20 +1192,12 @@ const KNOWN: &[Known] = &[
         rinch: [373.0, 17.0],
     },
     Known {
-        name: "fi_rtl",
-        why: "direction: rtl is not modelled",
-        c: r##"direction: rtl;"##,
-        html: r##"text<span data-m="abs" style="position: fixed; width: 40px; height: 30px;"></span>tail"##,
-        chrome: [377.953, 7.0],
-        rinch: [39.0, 7.0],
-    },
-    Known {
         name: "fi_rtl_first",
-        why: "direction: rtl is not modelled",
+        why: "direction: rtl: a box first on the line is at the line's right end, its own width short of Chrome's (11 until parley 0.12 gave the block its direction)",
         c: r##"direction: rtl;"##,
         html: r##"<span data-m="abs" style="position: fixed; width: 40px; height: 30px;"></span>tail"##,
         chrome: [360.0, 7.0],
-        rinch: [11.0, 7.0],
+        rinch: [378.0, 7.0],
     },
 ];
 
