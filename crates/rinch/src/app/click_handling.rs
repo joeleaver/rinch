@@ -12,16 +12,12 @@ pub(super) struct InputTextLayout {
     /// The field's real value (a password field's layout is over bullets).
     pub value: String,
     pub is_password: bool,
-    /// The text column's left edge in the border box
-    /// (`rinch_dom::form_control::text_column`): a single-line input's content
-    /// box, a textarea's left padding.
-    pub padding_left: f32,
-    pub padding_top: f32,
-    /// A single-line input's horizontal scroll (#1721), logical px; 0 for a
-    /// textarea.
-    pub scroll_x: f32,
-    /// The extra top offset a single-line `<input>` centres its line with.
-    pub vertical_offset: f32,
+    /// Where the layout's origin sits in the field's border box, logical px
+    /// (`rinch_dom::form_control::field_text_origin`): the text column, a
+    /// single-line input's centring, and the field's scroll — horizontal for
+    /// an `<input>` (#1721), vertical for a `<textarea>` (#827) — all in it.
+    pub origin_x: f32,
+    pub origin_y: f32,
 }
 
 impl RinchApp {
@@ -915,13 +911,11 @@ impl RinchApp {
         // `paint_inline_layout` a content-box origin.
         let (box_x, box_y) = pointer_in_node(tree, node_id, click_x, click_y);
 
-        // Local coordinates within the text area, the single-line centring
-        // taken off the y.
-        // A single-line field's scroll (#1721) is added back: the press lands
-        // on the character painted under it.
-        let local_x = (box_x - it.padding_left + it.scroll_x).max(0.0);
-        let local_y = (box_y - it.padding_top).max(0.0);
-        let adjusted_y = (local_y - it.vertical_offset).max(0.0);
+        // Into the layout's own space: the text origin paint draws at, the
+        // field's scroll in it (#1721, #827), so the press lands on the
+        // character painted under it.
+        let local_x = (box_x - it.origin_x).max(0.0);
+        let adjusted_y = (box_y - it.origin_y).max(0.0);
 
         // A caret never stands inside a grapheme cluster (#1684); a password
         // field's layout is over bullets, one per char, so it has none.
@@ -1007,10 +1001,10 @@ impl RinchApp {
         )
         .geometry(&it.layout, 0.0);
         let line_h = (geometry.y1 - geometry.y0).max(1.0) as f32;
-        // Into the border box (padding, and the single-line centring), then
+        // Into the border box (the text origin, scroll included), then
         // forward through the composed transform to the painted box (#203).
-        let bx = (it.padding_left - it.scroll_x + lx) as f64;
-        let by = (it.padding_top + it.vertical_offset + ly) as f64;
+        let bx = (it.origin_x + lx) as f64;
+        let by = (it.origin_y + ly) as f64;
         let (ax, ay) = rinch_dom::paint::point_from_painted_box(tree, node_id, 1.0, bx, by);
         let (_, ay2) =
             rinch_dom::paint::point_from_painted_box(tree, node_id, 1.0, bx, by + line_h as f64);
@@ -1047,8 +1041,8 @@ impl RinchApp {
             offset
         };
         let g = rinch_dom::text_query::glyph_bounds_for_offset_layout(&it.layout, display_offset)?;
-        let bx = (it.padding_left - it.scroll_x + g.x) as f64;
-        let by = (it.padding_top + it.vertical_offset + g.y) as f64;
+        let bx = (it.origin_x + g.x) as f64;
+        let by = (it.origin_y + g.y) as f64;
         let (x, y, w, h) = rinch_dom::paint::rect_from_painted_box(
             tree,
             node_id,
@@ -1077,14 +1071,6 @@ impl RinchApp {
             return None;
         }
 
-        // The text column's left edge: a single-line input's content box, a
-        // textarea's left padding (`form_control::text_column`).
-        let (padding_left, _) = rinch_dom::form_control::text_column(node);
-        let padding_top = node.computed_style.padding_top.to_px();
-
-        // Build a Parley layout matching paint_input_value's parameters
-        let font_size = node.computed_style.font_size;
-        let font_weight = node.computed_style.font_weight;
         // Password masking: the layout is built over bullet text
         let is_password = node.attributes.get("type").map(|s| s.as_str()) == Some("password");
         let password_display;
@@ -1095,52 +1081,32 @@ impl RinchApp {
         } else {
             value
         };
-        let font_family = rinch_dom::fonts::parley_text_family(
-            font_cx,
-            &node.computed_style.font_family,
-            display_text,
-        );
 
-        // Both contexts are the app's own, never fresh ones: a
+        // The builder paint draws with (`field_text_layout`, #827). Both
+        // contexts are the app's own, never fresh ones: a
         // `FontContext::new()` here would re-scan the system on every click and
         // would not have the app's own registered typefaces in it at all, so it
         // would measure the text against a face the painter never used — and a
         // `LayoutContext::new()` would throw away its shaping caches once per
         // click for no gain.
-        let mut builder = layout_cx.ranged_builder(font_cx, display_text, 1.0, true);
-        builder.push_default(parley::style::StyleProperty::FontSize(font_size));
-        font_family.push_to(&mut builder);
-        if (font_weight - 400.0).abs() > 1.0 {
-            builder.push_default(parley::style::StyleProperty::FontWeight(
-                parley::style::FontWeight::new(font_weight),
-            ));
-        }
-
-        let mut layout = builder.build(display_text);
-        // One unwrapped line for an `<input>` (#1721); a textarea wraps.
-        layout.break_all_lines(rinch_dom::form_control::wrap_width(node, 1.0));
-
-        // A single-line input centres its line vertically; a textarea starts
-        // at the top of its content box.
-        let is_textarea = node.tag() == Some("textarea");
-        let vertical_offset = if !is_textarea {
-            let text_height = layout.height();
-            let content_height = node.layout.height;
-            ((content_height - text_height) / 2.0 - padding_top).max(0.0)
-        } else {
-            0.0
-        };
-
-        let scroll_x = rinch_dom::form_control::input_scroll_x(tree, font_cx, layout_cx, node_id);
+        let layout = rinch_dom::form_control::field_text_layout(
+            node,
+            display_text,
+            1.0,
+            None,
+            font_cx,
+            layout_cx,
+        );
+        let scroll = rinch_dom::form_control::field_scroll(tree, font_cx, layout_cx, node_id);
+        let (origin_x, origin_y) =
+            rinch_dom::form_control::field_text_origin(node, layout.height(), scroll);
 
         Some(InputTextLayout {
-            scroll_x,
             layout,
             value: value.to_string(),
             is_password,
-            padding_left,
-            padding_top,
-            vertical_offset,
+            origin_x,
+            origin_y,
         })
     }
 

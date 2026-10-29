@@ -1009,26 +1009,30 @@ pub const CARET_WIDTH: f32 = 1.5;
 
 /// Whether `node` lays its text out as **one unwrapped line** scrolled
 /// horizontally to keep the caret in view (#1721): every `<input>`, as in
-/// Chrome 155. A `<textarea>` wraps at its content box instead.
+/// Chrome 155. A `<textarea>` wraps at its content box instead, and scrolls
+/// vertically (#827).
 pub fn is_single_line(node: &Node) -> bool {
     node.tag() == Some("input")
 }
 
 /// A text control's text column, `(left, width)` in logical px from its
-/// border-box left edge: where its text starts and how wide the run it shows
-/// is. A single-line `<input>` uses its content box (border and padding on
-/// each side, #1721); a `<textarea>` keeps the column it always had, its left
-/// padding in from the border box on both sides.
+/// border-box left edge: its **content box** — border and padding in on each
+/// side — for a single-line `<input>` (#1721) and a `<textarea>` (#827)
+/// alike, as Chrome lays out both.
 pub fn text_column(node: &Node) -> (f32, f32) {
     let style = &node.computed_style;
-    let padding_left = style.padding_left.to_px();
-    if is_single_line(node) {
-        let left = style.border_left_width.to_px() + padding_left;
-        let right = style.border_right_width.to_px() + style.padding_right.to_px();
-        (left, (node.layout.width - left - right).max(0.0))
-    } else {
-        (padding_left, node.layout.width - padding_left * 2.0)
-    }
+    let left = style.border_left_width.to_px() + style.padding_left.to_px();
+    let right = style.border_right_width.to_px() + style.padding_right.to_px();
+    (left, (node.layout.width - left - right).max(0.0))
+}
+
+/// A `<textarea>`'s content box height, in logical px: the height its text
+/// scrolls through (#827).
+fn content_height(node: &Node) -> f32 {
+    let style = &node.computed_style;
+    let top = style.border_top_width.to_px() + style.padding_top.to_px();
+    let bottom = style.border_bottom_width.to_px() + style.padding_bottom.to_px();
+    (node.layout.height - top - bottom).max(0.0)
 }
 
 /// The width a control's text is broken at: none for a single-line `<input>`
@@ -1038,11 +1042,151 @@ pub fn wrap_width(node: &Node, scale: f32) -> Option<f32> {
     (!is_single_line(node)).then(|| text_column(node).1 * scale)
 }
 
+/// The Parley layout of a text control's displayed `text` — **the one
+/// builder** every consumer of a field's text geometry shapes with (#827,
+/// Refs #320): paint (at the device `scale`, with the text's `brush`), the
+/// press → offset map and the caret and glyph rects
+/// (`RinchApp::input_text_layout`), [`painted_caret_rect`], and the cached
+/// caret and extent [`displayed_metrics`] keeps for the scroll. They used to
+/// be four hand-kept copies of one configuration, and a property one of them
+/// pushed and the others did not moved the painted text out from under the
+/// caret. The configuration is the font size, family and weight; moving it
+/// to `ComputedStyle::build_parley_layout` (line height, spacing, style) is
+/// #320, and is now a change to this function alone.
+pub fn field_text_layout(
+    node: &Node,
+    text: &str,
+    scale: f32,
+    brush: Option<peniko::Brush>,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+) -> parley::layout::Layout<peniko::Brush> {
+    use parley::style::StyleProperty;
+    let style = &node.computed_style;
+    let family = crate::fonts::parley_text_family(font_cx, &style.font_family, text);
+    let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
+    builder.push_default(StyleProperty::FontSize(style.font_size * scale));
+    if let Some(brush) = brush {
+        builder.push_default(StyleProperty::Brush(brush));
+    }
+    family.push_to(&mut builder);
+    if (style.font_weight - 400.0).abs() > 1.0 {
+        builder.push_default(StyleProperty::FontWeight(parley::style::FontWeight::new(
+            style.font_weight,
+        )));
+    }
+    let mut layout = builder.build(text);
+    // One unwrapped line for an `<input>` (#1721); a textarea wraps.
+    layout.break_all_lines(wrap_width(node, scale));
+    layout
+}
+
+/// Where a text control's layout starts, `(x, y)` in logical px from its
+/// border-box top-left, for a layout `text_height` tall (logical px) shown
+/// through the field's scroll `(scroll_x, scroll_y)` ([`field_scroll`]): the
+/// text column's left less the horizontal scroll; for a `<textarea>` the
+/// content box's top less the vertical scroll, for a single-line `<input>`
+/// its line centred in the border box. Paint, the press map, the caret rect
+/// and the IME area all place the text here (#827).
+pub fn field_text_origin(node: &Node, text_height: f32, scroll: (f32, f32)) -> (f32, f32) {
+    let (left, _) = text_column(node);
+    let style = &node.computed_style;
+    let y = if is_single_line(node) {
+        (node.layout.height - text_height) / 2.0
+    } else {
+        style.border_top_width.to_px() + style.padding_top.to_px() - scroll.1
+    };
+    (left - scroll.0, y)
+}
+
+/// How far a text control's text is scrolled, `(x, y)` in logical px: a
+/// single-line `<input>`'s horizontal scroll ([`input_scroll_x`]), or a
+/// `<textarea>`'s vertical one — its scroll container offset
+/// (`Node::scroll_offset`, which the wheel, a scrollbar drag, `scrollTop` and
+/// the caret reveal ([`reveal_caret`]) write), held inside the range its
+/// text has now ([`displayed_metrics`]) so a value that shrank since the last
+/// layout is not drawn scrolled past its end. Every consumer of the field's
+/// text geometry asks this (#827).
+pub fn field_scroll(
+    tree: &NodeTree,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    node_id: usize,
+) -> (f32, f32) {
+    let Some(node) = tree.get(node_id) else {
+        return (0.0, 0.0);
+    };
+    if is_single_line(node) {
+        return (input_scroll_x(tree, font_cx, layout_cx, node_id), 0.0);
+    }
+    if node.tag() != Some("textarea") {
+        return (0.0, 0.0);
+    }
+    // Shaped (and kept for the wheel's extent) even at no scroll: paint asks
+    // every frame, so a textarea the wheel has never moved still has one.
+    let height = textarea_text_height(tree, font_cx, layout_cx, node_id);
+    let max = (height - content_height(node)).max(0.0);
+    (0.0, (node.scroll_offset.1 as f32).clamp(0.0, max))
+}
+
+/// A `<textarea>`'s text height in logical px, as [`displayed_metrics`]
+/// shapes it (and keeps it, for [`textarea_scroll_extent`]). 0 for an empty
+/// one: a placeholder never scrolls.
+fn textarea_text_height(
+    tree: &NodeTree,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    node_id: usize,
+) -> f32 {
+    let Some(node) = tree.get(node_id) else {
+        return 0.0;
+    };
+    let value = control_value(&tree.nodes, node_id).unwrap_or_default();
+    let (text, caret) = displayed_text(node, &value);
+    match caret {
+        Some(caret) => displayed_metrics(node, &text, caret, font_cx, layout_cx, tree).3,
+        None => {
+            node.input_line_metrics.set(None);
+            0.0
+        }
+    }
+}
+
+/// A `<textarea>`'s scrollable text height in logical px — its content
+/// extent as a scroll container, which `paint::scrollbar::content_extents`
+/// (the wheel, the bars, `scroll_height`, layout's clamp) reads (#827). The
+/// height of the text as last shaped for its scroll — by paint, every caret
+/// move, and layout's clamp ([`refresh_textarea_extent`]); `None` for
+/// anything else, or a textarea not yet shaped.
+pub fn textarea_scroll_extent(node: &Node) -> Option<f32> {
+    if node.tag() != Some("textarea") {
+        return None;
+    }
+    node.input_line_metrics.get().map(|(_, m)| m.3)
+}
+
+/// Shape a `<textarea>`'s text for its scroll extent if what it is shaped
+/// from changed ([`displayed_metrics`]'s cache), so a reader of
+/// [`textarea_scroll_extent`] right after a layout sees this layout's width.
+pub fn refresh_textarea_extent(
+    tree: &NodeTree,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    node_id: usize,
+) {
+    if tree
+        .get(node_id)
+        .is_some_and(|n| n.tag() == Some("textarea"))
+    {
+        textarea_text_height(tree, font_cx, layout_cx, node_id);
+    }
+}
+
 /// The text a control paints and the byte its caret stands at in it: the
 /// value with an IME composition spliced in at the caret, password bullets,
 /// or the placeholder (`None` for the caret: a placeholder never scrolls).
 /// Paint's own rule ([`crate::paint`]'s `paint_input_value`), for
-/// [`input_scroll_x`].
+/// [`input_scroll_x`] and a textarea's caret reveal.
 fn displayed_text(node: &Node, value: &str) -> (String, Option<usize>) {
     let attr = |k: &str| node.attributes.get(k).map(String::as_str);
     let focused = attr("data-focused") == Some("true");
@@ -1070,67 +1214,94 @@ fn displayed_text(node: &Node, value: &str) -> (String, Option<usize>) {
     (value.to_string(), Some(cursor))
 }
 
-/// A single-line field's displayed line, `(caret x, full width, height)` in
-/// logical px: `text` shaped at scale 1 in the field's font, unwrapped, and the
-/// downstream caret at byte `caret` in it. Kept on the node
-/// ([`Node::input_line_metrics`]) under a hash of everything it is shaped
-/// from — the text, the caret, the font generation, family, size and weight —
-/// so the calls a frame or an event-loop pass makes at an unchanged state
-/// (paint, the IME poll, a click, the caret rect) shape nothing; each shape is
-/// counted as [`Counter::ShapeInputScroll`](crate::perf::Counter::ShapeInputScroll).
-fn displayed_line_metrics(
+/// A text control's displayed text, `(caret x, caret y, full width,
+/// height)` in logical px: `text` shaped at scale 1 by [`field_text_layout`]
+/// (one unwrapped line for an `<input>`, wrapped at the column for a
+/// `<textarea>`), and the downstream caret at byte `caret` in it — or, for a
+/// textarea, the caret with the field's own affinity, as paint draws it. Kept
+/// on the node ([`Node::input_line_metrics`]) under a hash of everything it is
+/// shaped from — the text, the caret, the wrap width, the font generation,
+/// family, size and weight — so the calls a frame or an event-loop pass makes
+/// at an unchanged state (paint, the IME poll, a click, the caret rect, the
+/// wheel's extent) shape nothing. A focused field also keeps the layout
+/// itself ([`Node::input_text_layout`]) under the same hash less the caret,
+/// so a caret move — an arrow, a click — reads the new caret off it and
+/// shapes nothing either. Each shape is counted as
+/// [`Counter::ShapeInputScroll`](crate::perf::Counter::ShapeInputScroll).
+fn displayed_metrics(
     node: &Node,
     text: &str,
     caret: usize,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
     tree: &NodeTree,
-) -> (f32, f32, f32) {
+) -> crate::node::InputLineMetrics {
     use std::hash::{Hash, Hasher};
     let style = &node.computed_style;
+    let wrap = wrap_width(node, 1.0);
+    let composing = node
+        .attributes
+        .get("data-preedit")
+        .is_some_and(|p| !p.is_empty());
+    let affinity = if is_single_line(node) || composing {
+        rinch_core::dom::CaretAffinity::Downstream
+    } else {
+        caret_affinity(node)
+    };
+    // What the text is shaped from, and then the caret on it.
     let mut h = std::collections::hash_map::DefaultHasher::new();
     tree.font_generation.hash(&mut h);
     text.hash(&mut h);
-    caret.hash(&mut h);
+    wrap.map(f32::to_bits).hash(&mut h);
     style.font_family.hash(&mut h);
     style.font_size.to_bits().hash(&mut h);
     style.font_weight.to_bits().hash(&mut h);
+    let text_key = h.finish();
+    caret.hash(&mut h);
+    (affinity == rinch_core::dom::CaretAffinity::Upstream).hash(&mut h);
     let key = h.finish();
     if let Some((k, m)) = node.input_line_metrics.get()
         && k == key
     {
         return m;
     }
-    tree.perf.bump(crate::perf::Counter::ShapeInputScroll);
-    let family = crate::fonts::parley_text_family(font_cx, &style.font_family, text);
-    let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
-    builder.push_default(parley::style::StyleProperty::FontSize(style.font_size));
-    family.push_to(&mut builder);
-    if (style.font_weight - 400.0).abs() > 1.0 {
-        builder.push_default(parley::style::StyleProperty::FontWeight(
-            parley::style::FontWeight::new(style.font_weight),
+    // A caret move in the focused field reuses the layout it was shaped into
+    // (`Node::input_text_layout`); anything else shapes.
+    let focused = node.attributes.get("data-focused").map(String::as_str) == Some("true");
+    let mut kept = node.input_text_layout.borrow_mut();
+    if !matches!(&*kept, Some((k, _)) if *k == text_key) {
+        tree.perf.bump(crate::perf::Counter::ShapeInputScroll);
+        *kept = Some((
+            text_key,
+            field_text_layout(node, text, 1.0, None, font_cx, layout_cx),
         ));
     }
-    let mut layout = builder.build(text);
-    layout.break_all_lines(None);
-    let caret_x = crate::text_query::caret_position_for_offset_layout_with_affinity(
-        &layout,
+    let layout = &kept.as_ref().expect("shaped above").1;
+    let (caret_x, caret_y) = crate::text_query::caret_position_for_offset_layout_with_affinity(
+        layout,
         caret.min(text.len()),
-        rinch_core::dom::CaretAffinity::Downstream,
-    )
-    .0;
-    let m = (caret_x, layout.full_width(), layout.height());
+        affinity,
+    );
+    let m = (caret_x, caret_y, layout.full_width(), layout.height());
+    if !focused {
+        *kept = None;
+    }
     node.input_line_metrics.set(Some((key, m)));
     m
 }
 
-/// Where a focused single-line `<input>`'s caret is painted, `(x, y, height)`
-/// in logical window px — the caret of the **displayed** text, so during an IME
-/// composition the end of the composition (paint's caret), through the field's
-/// horizontal scroll (#1721). The IME candidate box's anchor: it reads the
-/// cached line ([`displayed_line_metrics`]) and shapes nothing at an unchanged
+/// The height paint draws a text control's caret, in logical px.
+fn caret_height(node: &Node) -> f32 {
+    node.computed_style.font_size * 1.2
+}
+
+/// Where a focused text control's caret is painted, `(x, y, height)` in
+/// logical window px — the caret of the **displayed** text, so during an IME
+/// composition the end of the composition (paint's caret), through the
+/// field's scroll (#1721, #827). The IME candidate box's anchor: it reads the
+/// cached metrics ([`displayed_metrics`]) and shapes nothing at an unchanged
 /// state, so the per-pass IME poll costs no shaping. `None` for anything but
-/// a focused `<input>`.
+/// a focused `<input>` or `<textarea>`.
 pub fn input_displayed_caret_rect(
     tree: &NodeTree,
     font_cx: &mut parley::FontContext,
@@ -1138,27 +1309,27 @@ pub fn input_displayed_caret_rect(
     node_id: usize,
 ) -> Option<(f32, f32, f32)> {
     let node = tree.get(node_id)?;
-    if !is_single_line(node)
+    if !is_value_control(node)
         || node.attributes.get("data-focused").map(String::as_str) != Some("true")
     {
         return None;
     }
-    let scroll = input_scroll_x(tree, font_cx, layout_cx, node_id);
+    let scroll = field_scroll(tree, font_cx, layout_cx, node_id);
     let value = control_value(&tree.nodes, node_id).unwrap_or_default();
     let (text, caret) = displayed_text(node, &value);
-    let caret_h = node.computed_style.font_size * 1.2;
-    let (caret_x, line_h) = match caret {
+    let caret_h = caret_height(node);
+    let (caret_x, caret_y, text_h) = match caret {
         Some(caret) => {
-            let (x, _, height) =
-                displayed_line_metrics(node, &text, caret, font_cx, layout_cx, tree);
-            (x, height)
+            let (x, y, _, height) = displayed_metrics(node, &text, caret, font_cx, layout_cx, tree);
+            (x, y, height)
         }
-        // An empty field: the caret at the column's start, centred.
-        None => (0.0, caret_h),
+        // An empty field: the caret at the column's start, a single-line
+        // field's centred.
+        None => (0.0, 0.0, caret_h),
     };
-    let (column_left, _) = text_column(node);
-    let bx = (column_left - scroll + caret_x) as f64;
-    let by = ((node.layout.height - line_h) / 2.0) as f64;
+    let (ox, oy) = field_text_origin(node, text_h, scroll);
+    let bx = (ox + caret_x) as f64;
+    let by = (oy + caret_y) as f64;
     let (ax, ay) = crate::paint::point_from_painted_box(tree, node_id, 1.0, bx, by);
     let (_, ay2) =
         crate::paint::point_from_painted_box(tree, node_id, 1.0, bx, by + caret_h as f64);
@@ -1177,12 +1348,13 @@ pub fn input_displayed_caret_rect(
 /// edge, by one character's advance a step, and focus restores a caret 192px
 /// in at a scroll of 133.
 ///
-/// Every consumer of the field's text geometry asks this — paint (text,
-/// selection, caret, IME underline), the press → offset map, the caret rect,
-/// the IME cursor area — so they agree on one offset; each call is idempotent
-/// once the caret is in view. It shapes the displayed text at scale 1, with
-/// the font properties paint uses, only for a focused field, and only when
-/// that text or caret changed ([`displayed_line_metrics`]).
+/// Every consumer of the field's text geometry asks this, through
+/// [`field_scroll`] — paint (text, selection, caret, IME underline), the
+/// press → offset map, the caret rect, the IME cursor area — so they agree on
+/// one offset; each call is idempotent once the caret is in view. It shapes
+/// the displayed text at scale 1, with the font properties paint uses, only
+/// for a focused field, and only when that text or caret changed
+/// ([`displayed_metrics`]).
 pub fn input_scroll_x(
     tree: &NodeTree,
     font_cx: &mut parley::FontContext,
@@ -1205,8 +1377,8 @@ pub fn input_scroll_x(
         node.input_scroll_x.set(0.0);
         return 0.0;
     };
-    let (caret_x, full_width, _) =
-        displayed_line_metrics(node, &text, caret, font_cx, layout_cx, tree);
+    let (caret_x, _, full_width, _) =
+        displayed_metrics(node, &text, caret, font_cx, layout_cx, tree);
     let (_, visible) = text_column(node);
     let stored = node.input_scroll_x.get();
     let fresh = stored.is_nan();
@@ -1228,17 +1400,92 @@ pub fn input_scroll_x(
     scroll
 }
 
+/// Scroll a focused text control by the least that shows its caret, at the
+/// move that put the caret there: a single-line `<input>` horizontally
+/// ([`input_scroll_x`], #1721), a `<textarea>` vertically (#827). The shell
+/// calls it at every caret sync and composition write, so a run of keys
+/// between two frames scrolls as they would one frame apart.
+///
+/// A textarea's scroll is its scroll container offset, the one the wheel and
+/// `scrollTop` move: the caret (its painted height) is brought inside the
+/// field's **padding box**, its scrollport — up to its top when it is above,
+/// down to its bottom when it is below, as Chrome does for an arrow, Ctrl+End
+/// or a new line typed at the bottom, so a caret on the first or last line
+/// leaves that side's padding scrolled out of view — and the offset is held
+/// inside the text's range and put on the device grid. A move that leaves the caret in view
+/// scrolls nothing, so a field the wheel scrolled stays where the wheel put
+/// it until the caret moves out of view. A scroll it makes is queued for the
+/// field's `onscroll` like layout's clamp. Returns whether it scrolled.
+pub fn reveal_caret(
+    tree: &mut NodeTree,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    node_id: usize,
+) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    if is_single_line(node) {
+        input_scroll_x(tree, font_cx, layout_cx, node_id);
+        return false;
+    }
+    if node.tag() != Some("textarea")
+        || node.attributes.get("data-focused").map(String::as_str) != Some("true")
+    {
+        return false;
+    }
+    let value = control_value(&tree.nodes, node_id).unwrap_or_default();
+    let (text, caret) = displayed_text(node, &value);
+    let (caret_y, height) = match caret {
+        Some(caret) => {
+            let (_, y, _, height) = displayed_metrics(node, &text, caret, font_cx, layout_cx, tree);
+            (y, height)
+        }
+        None => (0.0, 0.0),
+    };
+    // In the scroll container's own coordinates, where the padding box is
+    // what shows: the text starts below the top padding, and the caret's box
+    // is brought inside the padding box — not the content box — as Chrome
+    // 155/156 reveals it. Measured in Chrome 156 on ten 20px lines in a
+    // 64px padding box with 5px vertical padding: Ctrl+End 141 of a 146
+    // range, Ctrl+Home from below 5, three ArrowDowns from the top 21.
+    let style = &node.computed_style;
+    let pad_top = style.padding_top.to_px();
+    let content = content_height(node);
+    let visible = content + pad_top + style.padding_bottom.to_px();
+    let mut scroll = node.scroll_offset.1 as f32;
+    // Held inside the text: the first line's caret starts a fraction above
+    // the text's top, which would otherwise show a pixel of the padding.
+    let caret_top = pad_top + caret_y.max(0.0);
+    let caret_bottom = pad_top + (caret_y + caret_height(node)).min(height.max(0.0));
+    if caret_top < scroll {
+        scroll = caret_top;
+    } else if caret_bottom > scroll + visible {
+        scroll = caret_bottom - visible;
+    }
+    let max = (height - content).max(0.0);
+    let scroll = tree.snap_scroll_offset(scroll.clamp(0.0, max) as f64);
+    if scroll == node.scroll_offset.1 {
+        return false;
+    }
+    if let Some(node) = tree.nodes.get_mut(node_id) {
+        node.scroll_offset.1 = scroll;
+    }
+    tree.mark_scrolled(node_id);
+    // `onscroll`, as for layout's clamp.
+    tree.queue_scroll_clamp(node_id, scroll);
+    true
+}
+
 /// Where a caret at byte `offset` of a text control's value is **painted**,
 /// `(x, y, height)` in logical window px (issue #1678).
 ///
-/// Built the way `paint_input_value` builds the text it draws — the value, or
-/// the placeholder when the value is empty (the caret then sits at the
-/// placeholder's start), password bullets, the same font size, family and
-/// weight, the same wrap width, a single-line field's vertical centring, and
-/// the caret height paint draws (1.2 × the font size) — at scale 1, then
-/// carried through the box's painted position and transform. A property added
-/// to one and not the other moves the answer off the drawn caret; both should
-/// move to one builder together (#320).
+/// The layout paint draws — the value, or the placeholder when the value is
+/// empty (the caret then sits at the placeholder's start), password bullets,
+/// shaped by [`field_text_layout`] at scale 1 — placed where paint places it
+/// ([`field_text_origin`], through [`field_scroll`]), with the caret height
+/// paint draws (1.2 × the font size), then carried through the box's painted
+/// position and transform.
 pub fn painted_caret_rect(
     tree: &NodeTree,
     font_cx: &mut parley::FontContext,
@@ -1274,36 +1521,17 @@ pub fn painted_caret_rect(
         (value, offset)
     };
 
-    let scroll = input_scroll_x(tree, font_cx, layout_cx, node_id);
-    let style = &node.computed_style;
-    let font_size = style.font_size;
-    let (column_left, _) = text_column(node);
-    let padding_top = style.padding_top.to_px();
-    let h = node.layout.height;
-    let family = crate::fonts::parley_text_family(font_cx, &style.font_family, text);
-    let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
-    builder.push_default(parley::style::StyleProperty::FontSize(font_size));
-    family.push_to(&mut builder);
-    if (style.font_weight - 400.0).abs() > 1.0 {
-        builder.push_default(parley::style::StyleProperty::FontWeight(
-            parley::style::FontWeight::new(style.font_weight),
-        ));
-    }
-    let mut layout = builder.build(text);
-    layout.break_all_lines(wrap_width(node, 1.0));
-    let text_y = if node.tag() == Some("textarea") {
-        padding_top
-    } else {
-        (h - layout.height()) / 2.0
-    };
+    let scroll = field_scroll(tree, font_cx, layout_cx, node_id);
+    let layout = field_text_layout(node, text, 1.0, None, font_cx, layout_cx);
+    let (ox, oy) = field_text_origin(node, layout.height(), scroll);
     let (cx, cy) = if text.is_empty() {
         (0.0, 0.0)
     } else {
         crate::text_query::caret_position_for_offset_layout_with_affinity(&layout, offset, affinity)
     };
-    let bx = (column_left - scroll + cx) as f64;
-    let by = (text_y + cy) as f64;
-    let caret_h = font_size as f64 * 1.2;
+    let bx = (ox + cx) as f64;
+    let by = (oy + cy) as f64;
+    let caret_h = caret_height(node) as f64;
     let (ax, ay) = crate::paint::point_from_painted_box(tree, node_id, 1.0, bx, by);
     let (_, ay2) = crate::paint::point_from_painted_box(tree, node_id, 1.0, bx, by + caret_h);
     Some((ax as f32, ay as f32, (ay2 - ay).abs() as f32))
