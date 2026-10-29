@@ -953,7 +953,7 @@ fn reference_hit_test_node(
         }
     }
 
-    if !point_in_bounds || hidden {
+    if !point_in_bounds || (hidden && !super::visible_text_at(tree, node, x - nx, y - ny)) {
         return None;
     }
 

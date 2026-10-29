@@ -1,5 +1,5 @@
 //! #843: `visibility` is inherited and a descendant may set it back to
-//! `visible`. Such a descendant is painted (#829), and Chrome 155's
+//! `visible`. Such a descendant is painted (#829), and Chrome 156's
 //! `elementFromPoint` answers it, so it is hit here too; the hidden boxes
 //! around it are not, and a point over them falls through to what is behind.
 //!
@@ -30,7 +30,7 @@ fn stacked(overlay_style: &str) -> (RinchDocument, NodeId, NodeId) {
     (doc, behind, overlay)
 }
 
-/// Chrome 155: the visible child at (100, 70) answers the child; the hidden
+/// Chrome 156: the visible child at (100, 70) answers the child; the hidden
 /// sibling at (100, 110) and the hidden overlay's own box at (250, 150)
 /// answer `behind`.
 ///
@@ -92,10 +92,10 @@ fn a_visible_grandchild_under_two_hidden_levels_is_hit() {
 
 /// `pointer-events` is inherited as well: a `visible` child of a hidden
 /// `pointer-events: none` overlay still takes no pointer events, and one that
-/// also sets `pointer-events: auto` does. Chrome 155 agrees on both.
+/// also sets `pointer-events: auto` does. Chrome 156 agrees on both.
 ///
-/// Mutant: testing `pointer-events` only for a visible node (or not at all for
-/// a node reached through a hidden ancestor) — (100, 110) answers `inert`.
+/// An interaction pin: the walk below a hidden node must still apply each
+/// box's own `pointer-events`.
 #[test]
 fn pointer_events_none_still_applies_under_a_hidden_ancestor() {
     let (mut doc, behind, overlay) = stacked("visibility: hidden; pointer-events: none");
@@ -186,10 +186,12 @@ fn toggling_an_ancestors_visibility_reaches_the_inheriting_child() {
 
 /// A scroller that is `visibility: visible` inside a hidden ancestor paints
 /// its bar (#829), so the bar is grabbed; a scroller that inherits `hidden`
-/// paints none, so none is offered.
+/// paints none, so none is offered — even with visible content of its own,
+/// which makes the walk enter it.
 ///
-/// Mutant: the pre-#843 early return in `find_scrollbar_hit_node` — the
-/// visible scroller's bar is not found.
+/// Mutants: the pre-#843 early return in `find_scrollbar_hit_node` (the
+/// visible scroller's bar is not found); dropping the hidden node's own-bar
+/// skip (the hidden scroller's bar is offered at (212, 177)).
 #[test]
 fn a_visible_scroller_under_a_hidden_ancestor_offers_its_bar_and_a_hidden_one_does_not() {
     let (mut doc, _behind, overlay) = stacked("visibility: hidden");
@@ -206,7 +208,7 @@ fn a_visible_scroller_under_a_hidden_ancestor_offers_its_bar_and_a_hidden_one_do
         overlay,
         "width: 200px; height: 100px; overflow: auto",
     );
-    div(&mut doc, hidden, "height: 1000px");
+    div(&mut doc, hidden, "visibility: visible; height: 1000px");
     doc.resolve_layout(800.0, 600.0);
 
     let hit = find_scrollbar_hit(&doc.tree, 212.0, 77.0).expect("the visible bar is grabbed");
@@ -218,16 +220,19 @@ fn a_visible_scroller_under_a_hidden_ancestor_offers_its_bar_and_a_hidden_one_do
 }
 
 /// The issue's own document: a `visibility: visible` inline `<span>` inside a
-/// hidden block, after a hidden block sibling. Chrome 153 answers the span's
-/// element at a point inside its text. Here an inline span's text is hit as
-/// its IFC root (`hit_test_node`'s "stretched IFC text" rule), and that root
-/// is the hidden block; so the visible text answers no element of its own
-/// here. What this fixture pins is the part that is the same: the hidden
-/// block sibling, and the hidden root's empty area, fall through.
+/// hidden block, after a hidden block sibling. Chrome 153 and 156 answer the span
+/// at a point inside its text. An IFC's text is hit as its IFC root here (the
+/// span has no box of its own to hit, visible root or not), so the visible
+/// span's text answers that root — the anonymous block around the span — and
+/// a click there reaches the span's ancestors. The hidden block sibling, the
+/// hidden root's line beside the text and its empty area fall through.
+///
+/// Mutant: not testing the hidden root's text (`visible_text_at` answering
+/// `false`) — the text falls through to `behind`.
 #[test]
-fn the_issues_document_hidden_block_and_empty_area_fall_through() {
+fn the_issues_document_visible_span_text_is_hit_and_the_rest_falls_through() {
     let (mut doc, behind, overlay) =
-        stacked("visibility: hidden; font-size: 16px; line-height: 20px");
+        stacked("visibility: hidden; font-size: 16px; line-height: 20px; font-family: sans-serif");
     div(
         &mut doc,
         overlay,
@@ -239,9 +244,52 @@ fn the_issues_document_hidden_block_and_empty_area_fall_through() {
     doc.append_child(span, text);
     doc.append_child(overlay, span);
     doc.resolve_layout(800.0, 600.0);
+    let root = doc
+        .tree
+        .get(text.0)
+        .unwrap()
+        .ifc_root
+        .expect("the span's text is laid out by an IFC");
 
+    // The text line is y 70..90 from x 20; "V" is well under 10px wide.
+    assert_eq!(hit_test(&doc.tree, 25.0, 80.0), Some(root));
+    // The same line far right of the text: the hidden root's own area.
+    assert_eq!(hit_test(&doc.tree, 250.0, 80.0), Some(behind.0));
     // The hidden blue block: x 20..120, y 30..70.
     assert_eq!(hit_test(&doc.tree, 70.0, 50.0), Some(behind.0));
-    // Below the text line (y 70..90): the hidden overlay's own empty area.
+    // Below the text line: the hidden overlay's own empty area.
     assert_eq!(hit_test(&doc.tree, 250.0, 150.0), Some(behind.0));
+}
+
+/// The text of a hidden element is hidden with it, and a text node takes its
+/// visibility from its parent: in a hidden flex container a text run is a
+/// flex item laid out as a box of its own (no IFC root), and computes no
+/// `visibility` of its own. Walked because a visible sibling makes the
+/// container's subtree worth entering, it still must not be hit.
+///
+/// Mutant: testing a text node's own computed `visibility` — the text node
+/// answers at (40, 40).
+#[test]
+fn a_hidden_flex_containers_text_falls_through_beside_a_visible_item() {
+    let (mut doc, behind, overlay) =
+        stacked("visibility: hidden; display: flex; font-size: 16px; line-height: 20px");
+    let text = doc.create_text("XXXXXXXX");
+    doc.append_child(overlay, text);
+    let shown = div(
+        &mut doc,
+        overlay,
+        "visibility: visible; width: 50px; height: 20px",
+    );
+    doc.resolve_layout(800.0, 600.0);
+    let t = doc.tree.get(text.0).unwrap();
+    assert!(
+        t.ifc_root.is_none() && t.layout.width > 30.0,
+        "positive control: the text is a flex item with a box of its own"
+    );
+    let shown_x = 20.0 + doc.tree.get(shown.0).unwrap().layout.x;
+
+    let hit = hit_test(&doc.tree, 40.0, 40.0);
+    assert_eq!(hit, Some(behind.0));
+    assert_ne!(hit, Some(text.0));
+    assert_eq!(hit_test(&doc.tree, shown_x + 25.0, 40.0), Some(shown.0));
 }

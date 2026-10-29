@@ -378,7 +378,7 @@ fn hit_test_node(
         }
     }
 
-    if !point_in_bounds || hidden {
+    if !point_in_bounds || (hidden && !visible_text_at(tree, node, x - nx, y - ny)) {
         return None;
     }
 
@@ -602,12 +602,41 @@ fn hides_own_hit(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node) -> bool {
     }
 }
 
+/// Whether the glyph under `(lx, ly)` — relative to `node`'s border-box
+/// origin — is text a `visibility: visible` element of `node`'s IFC draws.
+///
+/// An IFC's text is hit as its root (the stretched text nodes are skipped), so
+/// a hidden root still answers for the text of a visible inline element in it,
+/// which paint draws (#829's per-element mask) and Chrome hits (#843). Asked
+/// only of a hidden node under the point whose subtree shows something.
+fn visible_text_at(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node, lx: f32, ly: f32) -> bool {
+    let Some(inline) = node.text_layout.as_ref() else {
+        return false;
+    };
+    let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
+    let rel_x = lx - ox + node.scroll_offset.0 as f32;
+    let rel_y = ly - oy + node.scroll_offset.1 as f32;
+    let Some(cluster) = rinch_dom::text_query::cluster_range_at_point(&inline.layout, rel_x, rel_y)
+    else {
+        return false;
+    };
+    inline
+        .text_ranges
+        .iter()
+        .find(|r| !r.is_br && (r.flat_start..r.flat_end).contains(&cluster.start))
+        .and_then(|r| tree.get(r.node_id))
+        .and_then(|t| t.parent)
+        .and_then(|p| tree.get(p))
+        .is_some_and(|el| !hides_own_hit(tree, el))
+}
+
 /// Whether some element below `id` computes to `visibility: visible` (#843),
 /// i.e. whether a hidden `id`'s subtree can hold anything to hit.
 ///
-/// Walks the DOM children, a superset of every box either walk enters below
-/// `id` (box-tree children, stacking-sequence entries, hoisted descendants),
-/// so `false` is a proof. Text nodes are skipped: they take their parent's
+/// Walks the box-tree children — what both walks enumerate, an anonymous
+/// block's wrapped inline content included (an anonymous box has no DOM
+/// children); a stacking sequence's entries are box-tree descendants too — so
+/// `false` is a proof. Text nodes are skipped: they take their parent's
 /// visibility ([`hides_own_hit`]). Memoised in the hit cache, so a hidden
 /// subtree is walked once per generation, not once per probe.
 fn shows_below(tree: &rinch_dom::NodeTree, id: usize) -> bool {
@@ -615,11 +644,13 @@ fn shows_below(tree: &rinch_dom::NodeTree, id: usize) -> bool {
         return s;
     }
     let shows = tree.get(id).is_some_and(|node| {
-        node.children.iter().any(|&child_id| {
-            tree.get(child_id).is_some_and(|child| {
-                !child.is_text() && (!hides_own_hit(tree, child) || shows_below(tree, child_id))
+        rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
+            .iter()
+            .any(|&child_id| {
+                tree.get(child_id).is_some_and(|child| {
+                    !child.is_text() && (!hides_own_hit(tree, child) || shows_below(tree, child_id))
+                })
             })
-        })
     });
     tree.hit_cache.store_shows(id, shows);
     shows
