@@ -115,6 +115,8 @@ mod editor_file_drop_caret_1649_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_focus_and_reveal_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_generated_content_891_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_hanging_space_caret_1041_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_home_end_image_1116_tests;
