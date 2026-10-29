@@ -14,7 +14,8 @@
 //!
 //! What Stylo cannot bucket — a selector with no id/class/tag on either side
 //! (`*`, `:root`, a bare pseudo-class), a referenced `@keyframes`, `@property`,
-//! `@layer` — marks the whole document. That is a whole-document restyle, the
+//! an `@layer a, b;` statement — marks the whole document. (An `@layer x { … }`
+//! block is bucketed by the rules inside it, like any other.) That is a whole-document restyle, the
 //! one a `<style>` append always paid before (`full_restyle_stylesheet`).
 //!
 //! **`<style>` elements.** Their sheets apply while the element is connected,

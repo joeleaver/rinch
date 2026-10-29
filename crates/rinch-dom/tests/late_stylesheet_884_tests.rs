@@ -222,6 +222,25 @@ fn late_sheets_keep_cascade_order_and_the_theme_slot() {
     );
 }
 
+/// With no `load_css` sheet at all, the theme slot is still ahead of the
+/// `<style>` sheets: set after layout, the theme's rule loses to the
+/// `<style>`'s (review of PR #2041, probe p23).
+#[test]
+fn theme_set_with_only_style_element_sheets_stays_before_them() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let bx = doc.create_element("div");
+    doc.append_child(body, bx);
+    let style = style_element(&mut doc, "div { width: 45px; height: 10px; }");
+    doc.append_child(body, style);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(width_of(&doc, bx), 45.0, "the <style> applies");
+
+    doc.set_theme_css("div { width: 46px; }");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(width_of(&doc, bx), 45.0, "<style> cascades over the theme");
+}
+
 /// A `<style>` element inserted after layout applies; removed, its rules are
 /// gone; re-inserted, they are back.
 #[test]

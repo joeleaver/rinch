@@ -277,17 +277,22 @@ impl RinchDocument {
     ///   replace, and its next cascade would then read as a *change* — a
     ///   transition on a node that was only just inserted.
     pub(crate) fn resolve_inserted_subtree(&mut self, node_id: usize) -> bool {
+        // Flush pending sheet changes (a `<style>` this insertion connected, a
+        // `load_css` since the last resolve) first, so the subtree cascades
+        // against the rules the next resolve will use: otherwise that
+        // resolve's flush would invalidate the just-styled subtree, and its
+        // second cascade would read as a change (#884). What the flush queues
+        // needs no check of its own: a whole-document restyle sets
+        // `full_style_walk` (below), and a targeted one marks every element
+        // whose style changes with a restyle hint and its ancestors with
+        // `style_dirty_descendants`, which the ancestor walk below declines
+        // on. A sheet that restyles only elements elsewhere leaves this
+        // subtree's cascade correct, and those wait for the next resolve.
+        self.flush_stylist();
         if self.tree.full_style_walk {
             return false;
         }
         if self.depth_if_connected(node_id).is_none() {
-            return false;
-        }
-        // A sheet change that restyles part of the document (a `<style>` this
-        // insertion connected, a `load_css` since the last resolve) is
-        // resolved with everything else pending: the subtree would otherwise
-        // cascade against ancestor styles about to change (#884).
-        if self.flush_stylist() {
             return false;
         }
         let mut current = self.tree.nodes[node_id].parent;

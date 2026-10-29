@@ -225,19 +225,30 @@ went stale on class toggles, insertions and removals. Now:
   `StylesheetInvalidationSet` it collects (each selector's rightmost
   id/class/tag, or the outermost one left of a descendant combinator for a
   subtree). `flush_stylist` (both flush sites: `resolve_styles` and
-  `resolve_inserted_subtree`, which declines when it queued anything) passes
+  `resolve_inserted_subtree`, which flushes before cascading the inserted
+  subtree so a later flush never invalidates it; what the flush queues reaches
+  that function's existing declines — `full_style_walk`, or an ancestor with a
+  restyle hint or `style_dirty_descendants` — so it needs no check of its own)
+  passes
   `<html>` to `Stylist::flush` while `sheet_invalidations_pending` is set, so
   the matching elements get restyle hints and `<html>` is pushed as a style
   root for the walk to follow them. A rule matching nothing restyles nothing
   and does not relayout. A selector Stylo cannot bucket (`*`, `:root`, a bare
   pseudo-class), a `@keyframes` (the servo `Device` says every name may be
-  referenced), `@property` or `@layer` mark `<html>`'s subtree: that is the old
-  whole-document restyle (`full_restyle_stylesheet`). The viewport, DPR and
+  referenced), `@property` or an `@layer a, b;` statement mark `<html>`'s
+  subtree: that is the old whole-document restyle (`full_restyle_stylesheet`).
+  An `@layer x { … }` block is bucketed by its inner rules. The viewport, DPR and
   theme full restyles still force origins dirty and flush with no document
   element, so they never take this path. Forcing `Author` dirty in
   `load_stylo_css` is what made a `load_css` after the first layout restyle
   nothing: it emptied the invalidation set, and the flush had no element to
-  apply it to anyway.
+  apply it to anyway. **A targeted late sheet starts CSS transitions**, as in browsers:
+  the elements it restyles keep their old style data, so a changed
+  transitioned property animates (a late `.leaf { width: 300px }` under
+  `.leaf { transition: width 10s }` transitions). Before #884 a `<style>`
+  append cleared all style data, so nothing transitioned; a whole-document
+  late sheet (`:root`, `*`, …) still clears it and starts none. Theme switches still
+  go through `recompute_all_styles_full` with transitions off.
 - **`<style>` elements apply while connected, in tree order, after every
   `load_css` sheet** (which are the web's `<head>` sheets: `inject_style`).
   `create_element("style")` registers the id; `note_style_elements_moved`
