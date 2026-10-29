@@ -85,6 +85,16 @@ pub(super) fn paint_svg(
             continue;
         };
         let tag = el.tag.as_str();
+        // `display: none` (the property or the presentation attribute) on a
+        // group or a shape renders it and its content not at all.
+        if child.computed_style.display == crate::computed_style::DisplayValue::None
+            || child
+                .attributes
+                .get("display")
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("none"))
+        {
+            continue;
+        }
         if tag == "g" {
             // A hidden group still paints a child that sets `visibility`
             // back to `visible`, so only shapes ask.

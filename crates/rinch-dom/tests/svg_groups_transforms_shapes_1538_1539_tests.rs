@@ -379,3 +379,65 @@ fn a_rounded_rect_is_stroked_round() {
         &[(21, 21, NONE), (25, 25, INK), (50, 20, INK), (20, 50, INK)],
     );
 }
+
+/// From the #1994 review: a `<g>` hidden by the `display` attribute or the
+/// property paints none of its content (Chrome 156). Inkscape saves a hidden
+/// layer this way; before groups were walked nothing in one painted, after
+/// they were it all did.
+#[test]
+fn a_hidden_group_paints_nothing() {
+    let rect = r#"<rect x="20" y="20" width="60" height="60" fill="green"/>"#;
+    check(
+        &format!(r#"<g display="none">{rect}</g>"#),
+        &[(50, 50, NONE)],
+    );
+    check(
+        &format!(r#"<g style="display: none"><g>{rect}</g></g>"#),
+        &[(50, 50, NONE)],
+    );
+    // Control: the same group shown paints.
+    check(
+        &format!(r#"<g display="inline">{rect}</g>"#),
+        &[(50, 50, INK)],
+    );
+}
+
+/// `rx="100"` on a 40x80 rect: `rx` clamps to 20 (half the width) and the
+/// auto `ry` to 40 (half the height), so the rect is the inscribed ellipse
+/// centred on (30, 50). A clamp to the whole side (40x80) draws something
+/// else at the corner probes.
+#[test]
+fn radii_clamp_to_half_not_the_whole_side() {
+    check(
+        r#"<rect x="10" y="10" width="40" height="80" rx="100" fill="green"/>"#,
+        &[
+            (30, 50, INK),
+            (30, 13, INK),
+            (12, 12, NONE),
+            (13, 20, NONE),
+            (47, 86, NONE),
+        ],
+    );
+}
+
+/// `stroke-linejoin` is inherited from a group. Under a 20-wide stroke the
+/// apex of `20,80 50,20 80,80` is a miter (the default; ratio 2.24 is under
+/// the limit of 4) whose tip reaches y = -2.4, or a bevel whose edge is at
+/// y = 15.5. (50, 8) is inside the miter and outside the bevel.
+#[test]
+fn a_groups_stroke_linejoin_is_inherited() {
+    let line = r#"<polyline points="20,80 50,20 80,80"/>"#;
+    check(
+        &format!(
+            r#"<g stroke="green" stroke-width="20" fill="none" stroke-linejoin="bevel">{line}</g>"#
+        ),
+        &[(50, 8, NONE), (50, 20, INK)],
+    );
+    // Control: the probe sees a miter.
+    check(
+        &format!(
+            r#"<g stroke="green" stroke-width="20" fill="none" stroke-linejoin="miter">{line}</g>"#
+        ),
+        &[(50, 8, INK)],
+    );
+}
