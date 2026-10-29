@@ -30,8 +30,8 @@ thread_local! {
     static ON_WAKE: RefCell<Option<Closure<dyn FnMut()>>> = const { RefCell::new(None) };
 }
 
-/// Install the waker (from the first mount) and schedule a drain for any poll
-/// registered before it.
+/// Install the waker (from [`install_web_runtime`](super::install_web_runtime))
+/// and schedule a drain for any poll registered before it.
 pub(crate) fn install() {
     set_poll_waker(wake);
     wake();

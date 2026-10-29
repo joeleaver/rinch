@@ -161,6 +161,12 @@ web-sys = { version = "0.3", features = [
     "DedicatedWorkerGlobalScope", "BlobPropertyBag", "Url",
 ] }
 
+# Test-only: the browser tests under `tests/` that need `rinch` alone (no
+# `rinch-web`), e.g. `embed_web_runtime_1956.rs` (`--features embed`).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+wasm-bindgen-futures = "0.4"
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Test-only: the live X11 hotkey test types through XTEST (`hotkey::backend::x11`).
 x11rb = { version = "0.13", features = ["xinput", "xtest"] }
