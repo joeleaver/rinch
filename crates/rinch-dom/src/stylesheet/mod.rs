@@ -16,7 +16,7 @@ pub use var_resolution::{compute_merged_styles, compute_merged_styles_with_state
 
 use std::collections::HashMap;
 
-use cssparser::{Parser, ParserInput, StyleSheetParser};
+use cssparser::{Parser, StyleSheetParser};
 
 use selectors::context::{
     MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags, QuirksMode,
@@ -81,8 +81,7 @@ impl Stylesheet {
             return;
         }
 
-        let mut input = ParserInput::new(css);
-        let mut parser = Parser::new(&mut input);
+        let mut parser = Parser::new(css);
         let mut rule_parser = RinchRuleParser;
 
         for result in StyleSheetParser::new(&mut parser, &mut rule_parser) {
@@ -108,8 +107,7 @@ impl Stylesheet {
             // Try to parse selector with the selectors crate
             let selector_text = rule.selector_text.clone();
             let parsed = {
-                let mut sel_input = ParserInput::new(&selector_text);
-                let mut sel_parser = Parser::new(&mut sel_input);
+                let mut sel_parser = Parser::new(&selector_text);
                 SelectorList::parse(&RinchSelectorParser, &mut sel_parser, ParseRelative::No).ok()
             };
 
@@ -230,8 +228,7 @@ impl Stylesheet {
 
         self.variables.clear();
 
-        let mut input = ParserInput::new(css);
-        let mut parser = Parser::new(&mut input);
+        let mut parser = Parser::new(css);
         let mut rule_parser = RinchRuleParser;
 
         for result in StyleSheetParser::new(&mut parser, &mut rule_parser) {

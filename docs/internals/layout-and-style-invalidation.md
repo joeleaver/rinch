@@ -215,8 +215,12 @@ went stale on class toggles, insertions and removals. Now:
   (`stylo_impl::element_state`); `:disabled`/`:enabled`/`:link` are read from
   attributes, so `disabled` and `href` force self + subtree + later siblings.
   `style`, `rows` (textarea), `start` (ol), `value` (li) and any attribute on an
-  element with generated content (`content: attr()` now works) force what they
-  feed. `:nth-child(… of S)` needs nothing extra: Stylo's maps record the
+  element with generated content force what they feed. So does any attribute on
+  an element whose style or `::before`/`::after` substitutes `attr()`: since
+  stylo 0.21 `attr()` is a substitution function (in any property, not only
+  `content`) that the cascade resolves through `TElement::get_attr`, and that
+  call flags the element (`Node::content_reads_attrs`, cleared before each
+  cascade of the element). `:nth-child(… of S)` needs nothing extra: Stylo's maps record the
   selectors inside `of S`.
 - **Stylesheet changes use Stylo's stylesheet invalidation** (#884,
   `style_resolution/sheets.rs`). `load_css`, `set_theme_css` and a `<style>`

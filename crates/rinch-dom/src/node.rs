@@ -30,6 +30,69 @@ use crate::computed_style::ComputedStyle;
 /// takes [`crate::node_slab::slot_of`].
 pub type RawNodeId = u64;
 
+/// A node's Stylo `ElementData`, present or absent.
+///
+/// Stylo 0.22's `TElement::borrow_data`/`mutate_data`/`ensure_data` return
+/// `ElementDataRef`/`ElementDataMut`, which only an `ElementDataWrapper` can
+/// hand out (it replaced the `AtomicRefCell<ElementData>` of 0.11; its borrow
+/// checks run in debug builds only). The wrapper is kept for the node's whole
+/// life and `present` says whether it holds data, so "no data" reads as `None`
+/// exactly as the `Option<ElementData>` this replaces did; clearing resets the
+/// data to its default, dropping the styles it held.
+#[derive(Default)]
+pub struct StyloData {
+    data: style::data::ElementDataWrapper,
+    present: AtomicBool,
+}
+
+impl StyloData {
+    /// Whether the node has element data (it may still hold no primary style).
+    #[inline]
+    pub fn has_data(&self) -> bool {
+        self.present.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The node's element data, if it has any.
+    #[inline]
+    pub fn borrow(&self) -> Option<style::data::ElementDataRef<'_>> {
+        self.has_data().then(|| self.data.borrow())
+    }
+
+    /// The node's element data, mutably, if it has any.
+    #[inline]
+    pub fn borrow_mut(&self) -> Option<style::data::ElementDataMut<'_>> {
+        self.has_data().then(|| self.data.borrow_mut())
+    }
+
+    /// The node's element data, created (default) if it had none.
+    #[inline]
+    pub fn ensure(&self) -> style::data::ElementDataMut<'_> {
+        let mut data = self.data.borrow_mut();
+        if !self.has_data() {
+            *data = style::data::ElementData::default();
+            self.present
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        data
+    }
+
+    /// Replace the node's element data.
+    pub fn set(&self, value: style::data::ElementData) {
+        *self.data.borrow_mut() = value;
+        self.present
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Drop the node's element data (the next style pass recascades it).
+    pub fn clear(&self) {
+        if self.has_data() {
+            *self.data.borrow_mut() = style::data::ElementData::default();
+            self.present
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
 bitflags! {
     /// Tracks what needs updating for a node.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1401,7 +1464,7 @@ pub struct Node {
     // === Stylo CSS engine fields ===
     /// Stylo element data containing computed CSS values.
     /// This is the primary source of truth for CSS after Stylo migration.
-    pub stylo_element_data: AtomicRefCell<Option<style::data::ElementData>>,
+    pub stylo_element_data: StyloData,
     /// Selector flags set during CSS matching.
     pub selector_flags: AtomicRefCell<ElementSelectorFlags>,
     /// Whether this node has a snapshot for animation/transition.
@@ -1496,10 +1559,11 @@ pub struct Node {
     /// descendant it invalidated (`TElement::set_dirty_descendants`), and the
     /// one `resolve_styles` follows. Cleared as the resolve walks it.
     pub style_dirty_descendants: Cell<bool>,
-    /// This element's `::before` / `::after` content uses `attr()`: any
-    /// attribute write restyles it, whether or not a generated box exists
-    /// yet (`invalidation::note_attribute_change`). Set by the pseudo
-    /// resolution at each cascade of the element.
+    /// This element's style, or its `::before` / `::after` content, uses
+    /// `attr()`: any attribute write restyles it, whether or not a generated
+    /// box exists yet (`invalidation::note_attribute_change`). Cleared before
+    /// each cascade of the element and set when that cascade, or a pseudo
+    /// resolution after it, asks `TElement::get_attr` for an attribute.
     pub content_reads_attrs: Cell<bool>,
     /// A closed `<select>`'s widest option label width in CSS px, with the
     /// hash of what it was shaped from (the labels and the font) — so a
@@ -1772,7 +1836,7 @@ impl Node {
             has_been_styled: false,
             styled_unrendered: false,
             // Stylo fields
-            stylo_element_data: AtomicRefCell::new(None),
+            stylo_element_data: StyloData::default(),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
@@ -1854,7 +1918,7 @@ impl Node {
             has_been_styled: false,
             styled_unrendered: false,
             // Stylo fields
-            stylo_element_data: AtomicRefCell::new(None),
+            stylo_element_data: StyloData::default(),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
@@ -1935,7 +1999,7 @@ impl Node {
             has_been_styled: false,
             styled_unrendered: false,
             // Stylo fields
-            stylo_element_data: AtomicRefCell::new(None),
+            stylo_element_data: StyloData::default(),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
@@ -2014,7 +2078,7 @@ impl Node {
             has_been_styled: false,
             styled_unrendered: false,
             // Stylo fields
-            stylo_element_data: AtomicRefCell::new(None),
+            stylo_element_data: StyloData::default(),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),

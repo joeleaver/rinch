@@ -49,7 +49,7 @@ fn custom_property<R>(
     key.with(|name| {
         cv.custom_properties()
             .get(
-                style::properties_and_values::registry::PropertyRegistrationData::unregistered(),
+                style::properties_and_values::rule::Descriptors::unregistered(),
                 name,
             )
             .map(|v| f(v.to_variable_value().css.trim()))
@@ -94,7 +94,10 @@ impl ComputedStyle {
             inline_level_before_blockify: box_style.original_display.outside()
                 == style::values::specified::box_::DisplayOutside::Inline,
             position: position_from_stylo(&box_style.position),
-            vertical_align: vertical_align_from_stylo(&box_style.vertical_align),
+            vertical_align: vertical_align_from_stylo(
+                box_style.alignment_baseline,
+                &box_style.baseline_shift,
+            ),
             overflow_x: overflow_from_stylo(&box_style.overflow_x),
             overflow_y: overflow_from_stylo(&box_style.overflow_y),
             scrollbar_color: custom_property(cv, &SCROLLBAR_COLOR, ScrollbarColorValue::parse)
@@ -284,24 +287,17 @@ impl ComputedStyle {
                 &text.color,
             ),
             text_transform: text_transform_from_stylo(&text.text_transform),
-            // `text-underline-offset` is declared `engines="gecko"` at
-            // `stylo-0.11.0/properties/longhands/inherited_text.mako.rs:330`, and
-            // `build.rs` generates exactly one engine's property set — so the
-            // servo build emits no parser entry for it and Stylo discards the
-            // declaration as unknown before this function runs. Measured in a
-            // generated `properties.rs`: `text_underline_offset` 0 hits, the
-            // documented gecko-only `scrollbar_color` 0 hits, and
-            // `text_decoration_line` 52 hits as the positive control that the
-            // grep fires at all.
-            //
-            // There is nothing here to read it from, and **nothing anywhere else
-            // parses it either**: this line is the only place CSS could reach the
-            // field, and it writes `None` unconditionally (#580). The other two
-            // writers are not CSS paths — `Default`, and `for_anonymous_box`,
-            // which copies the parent's value because the property inherits.
-            // The witness is `crates/rinch-dom/tests/underline_offset_tests.rs`,
-            // whose header records what the consumers do once the field is made
-            // non-`None` by hand.
+            // `text-underline-offset` is not read (#580). With stylo 0.11 it
+            // was gecko-only and the servo build dropped the declaration at
+            // parse; since stylo 0.21 the servo build parses it (behind
+            // `layout.unimplemented`, which `set_stylo_prefs` turns on) and
+            // computes it into `get_inherited_text().text_underline_offset`,
+            // but this line still writes `None` unconditionally, and it is the
+            // only place CSS could reach the field. The other two writers are
+            // not CSS paths — `Default`, and `for_anonymous_box`, which copies
+            // the parent's value because the property inherits. The witness is
+            // `crates/rinch-dom/tests/underline_offset_tests.rs`, whose header
+            // records what the consumers do once the field is non-`None`.
             text_underline_offset: None,
             white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
             overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),

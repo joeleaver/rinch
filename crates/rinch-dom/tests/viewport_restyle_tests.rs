@@ -229,3 +229,43 @@ fn root_relative_units_in_a_node_inserted_after_a_resize() {
     fresh.resolve_layout(1000.0, 700.0);
     assert_twin(&doc, &fresh, "an rch/rex node inserted after a resize");
 }
+
+/// The media features stylo 0.22 evaluates from the Device rinch builds
+/// (`build_device`): a desktop has hover and a fine pointer, and `orientation`
+/// and `min-height` follow the viewport through a resize and back. Under 0.11
+/// none of these matched.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[test]
+fn media_features_answer_for_a_desktop_and_follow_the_viewport() {
+    // (query, matches at 800x600, matches at 600x800)
+    const QUERIES: &[(&str, bool, bool)] = &[
+        ("(hover: hover)", true, true),
+        ("(hover)", true, true),
+        ("(any-hover: hover)", true, true),
+        ("(hover: none)", false, false),
+        ("(pointer: fine)", true, true),
+        ("(pointer: coarse)", false, false),
+        ("(pointer: none)", false, false),
+        ("(orientation: landscape)", true, false),
+        ("(orientation: portrait)", false, true),
+        ("(min-height: 700px)", false, true),
+    ];
+    let mut doc = RinchDocument::new();
+    let mut css = String::from("div { height: 1px; width: 1px; }\n");
+    for (i, (q, _, _)) in QUERIES.iter().enumerate() {
+        css += &format!("@media {q} {{ .q{i} {{ width: 10px; }} }}\n");
+    }
+    doc.load_css(&css);
+    let body = doc.body();
+    let ids: Vec<NodeId> = (0..QUERIES.len())
+        .map(|i| el(&mut doc, body, &format!("q{i}")))
+        .collect();
+    for (w, h) in [(800.0, 600.0), (600.0, 800.0), (800.0, 600.0)] {
+        doc.resolve_layout(w, h);
+        for (i, (q, landscape, portrait)) in QUERIES.iter().enumerate() {
+            let want = if w > h { *landscape } else { *portrait };
+            let got = doc.tree.get(ids[i].0).unwrap().layout.width == 10.0;
+            assert_eq!(got, want, "@media {q} at {w}x{h}");
+        }
+    }
+}

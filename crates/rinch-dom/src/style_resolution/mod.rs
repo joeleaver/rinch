@@ -118,7 +118,7 @@ impl RinchDocument {
     fn install_device(&mut self, width: f32, height: f32) -> style::stylesheets::OriginSet {
         use style::shared_lock::StylesheetGuards;
 
-        self.viewport_units_used |= self.stylist.device().used_viewport_units();
+        self.viewport_units_used |= self.stylist.device().used_viewport_size();
         self.tree.viewport = crate::layout::Viewport { width, height };
         let device = crate::dom_impl::build_device(width, height, &self.device_params);
         let guard = self.tree.guard.read();
@@ -161,7 +161,7 @@ impl RinchDocument {
             self.tree
                 .note_full_restyle(crate::perf::FullRestyleReason::Viewport);
             for (node_id, _) in self.tree.nodes.iter() {
-                *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+                self.tree.nodes[node_id].stylo_element_data.clear();
             }
             self.tree.style_roots.clear(); // Force full tree walk
             self.tree.full_style_walk = true;
@@ -219,7 +219,7 @@ impl RinchDocument {
         if !self.tree.contains(node_id) {
             return;
         }
-        *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+        self.tree.nodes[node_id].stylo_element_data.clear();
         self.tree.style_roots.push(node_id);
         self.tree.styles_dirty = true;
         self.push_dirty_flags(node_id, DirtyFlags::STYLE | DirtyFlags::PAINT);
@@ -256,7 +256,7 @@ impl RinchDocument {
         self.tree
             .note_full_restyle(crate::perf::FullRestyleReason::Dpr);
         for (node_id, _) in self.tree.nodes.iter() {
-            *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+            self.tree.nodes[node_id].stylo_element_data.clear();
         }
         self.tree.style_roots.clear();
         self.tree.full_style_walk = true;
@@ -626,7 +626,7 @@ impl RinchDocument {
             // A generated box keeps its pseudo style: its originator's cascade
             // replaces it, and finds the box by it (#1023).
             if !self.tree.nodes[nid].is_generated_box() {
-                *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
+                self.tree.nodes[nid].stylo_element_data.clear();
             }
         }
         // Disable transitions during full restyle — theme changes should apply
@@ -704,7 +704,7 @@ impl RinchDocument {
 
         // Invalidate cached Stylo data for this node and its descendants
         fn invalidate_recursive(tree: &mut NodeTree, node_id: RawNodeId) {
-            *tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+            tree.nodes[node_id].stylo_element_data.clear();
             let children = tree.nodes[node_id].children.clone();
             for &child_id in &children {
                 invalidate_recursive(tree, child_id);

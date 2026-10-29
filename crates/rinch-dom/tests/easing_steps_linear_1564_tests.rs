@@ -387,14 +387,14 @@ fn jump_positions_follow_css_easing_2() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// Known difference, pinned (#1581): Stylo's servo build does not parse the `jump-*`
-/// keywords, so the whole `animation` shorthand is dropped and the box keeps
-/// its 10px. Chrome 155 animates it (60px here, as above).
+/// The `jump-*` keywords parse since stylo 0.21 (#1581): with stylo 0.11 the
+/// whole `animation` shorthand was dropped and the box kept its 10px. Chrome
+/// 155 animates it, 60px here, as `steps(4, jump-none)` at 0.3 above.
 #[test]
-fn a_jump_keyword_drops_the_declaration() {
+fn a_jump_keyword_animates_as_chrome_does() {
     check(&[(
         "k1564 1000ms steps(4, jump-none) -300ms forwards paused",
-        10.0,
+        60.0,
     )]);
 }
 

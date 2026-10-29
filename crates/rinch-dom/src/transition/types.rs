@@ -268,10 +268,9 @@ pub enum TimingFunction {
 
 /// Where a `steps()` function jumps (CSS Easing 2 §3.3).
 ///
-/// Stylo's servo build parses only `start` and `end` (its
-/// `step_position_jump_enabled` answers `false`), so a `jump-*` keyword drops
-/// its declaration before rinch sees it; the four are kept so the easing
-/// follows the spec wherever they do arrive.
+/// Stylo's servo build parses all six since stylo 0.21 (0.11 parsed only
+/// `start` and `end` and dropped a declaration naming a `jump-*` keyword,
+/// #1581).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepPosition {
     JumpStart,

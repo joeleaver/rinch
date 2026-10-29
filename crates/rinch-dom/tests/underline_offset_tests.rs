@@ -1,21 +1,17 @@
 //! #580 — `text-underline-offset`: the declaration does nothing, the plumbing
 //! behind it works. Both halves are measured here.
 //!
-//! # The declaration is dropped before rinch ever sees it
+//! # The declaration does not reach `ComputedStyle`
 //!
-//! `text-underline-offset` is declared `engines="gecko"` in
-//! `stylo-0.11.0/properties/longhands/inherited_text.mako.rs`, and stylo's
-//! `build.rs` generates exactly one engine's property set. So the servo build
-//! rinch uses emits **no parser entry for it at all** — `text_underline_offset`
-//! appears zero times in the generated `properties.rs`, the same as the
-//! documented gecko-only `scrollbar-color`, against 52 occurrences of
-//! `text_decoration_line` as a positive control. Stylo therefore discards
-//! `text-underline-offset: 6px` as an unknown declaration at parse time, and
-//! `ComputedStyle::from_stylo` has nothing to read.
+//! With stylo 0.11, `text-underline-offset` was declared `engines="gecko"`
+//! and the servo build rinch used emitted no parser entry for it, so stylo
+//! discarded `text-underline-offset: 6px` as an unknown declaration. Since
+//! stylo 0.21 the servo build parses and computes it (behind
+//! `layout.unimplemented`, which rinch turns on), but
+//! `ComputedStyle::from_stylo` still writes `None` for the field (#580).
 //!
-//! [`stylo_drops_the_declaration_so_the_computed_field_stays_none`] is the
-//! witness for that, because a grep of a build artefact is evidence that
-//! evaporates. When a parse route lands it fails and says so.
+//! [`the_declaration_does_not_reach_the_computed_field`] is the witness. When
+//! `from_stylo` reads the property it fails and says so.
 //!
 //! # The plumbing is live the moment the field is not `None`
 //!
@@ -96,10 +92,11 @@ fn txt(doc: &mut RinchDocument, parent: NodeId, s: &str) {
 // ---------------------------------------------------------------------------
 
 /// Every spelling of the declaration computes `None`, on a real inline box and
-/// on a boxless one alike (#574's pairing) — because Stylo's servo build does
-/// not parse the property, not because of anything about the host.
+/// on a boxless one alike (#574's pairing) — because `ComputedStyle::from_stylo`
+/// does not read the property (stylo parses it since 0.21), not because of
+/// anything about the host.
 ///
-/// **If this test fails, a parse route for `text-underline-offset` has landed.**
+/// **If this test fails, `from_stylo` reads `text-underline-offset` now.**
 /// That is the fix #580 asks for, and three doc comments assert the opposite and
 /// must be corrected with it: the `text_underline_offset` line in
 /// `computed_style/from_stylo/mod.rs`, the field's doc in
@@ -108,7 +105,7 @@ fn txt(doc: &mut RinchDocument, parent: NodeId, s: &str) {
 /// delta described in this file's header before the declaration means what CSS
 /// says it means.
 #[test]
-fn stylo_drops_the_declaration_so_the_computed_field_stays_none() {
+fn the_declaration_does_not_reach_the_computed_field() {
     for host in ["inline", "contents"] {
         for decl in [
             "auto", "6px", "0.5em", "50%",

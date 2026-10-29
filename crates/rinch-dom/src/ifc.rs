@@ -10274,14 +10274,8 @@ impl RinchDocument {
         // away from the text), parley's is baseline-up.
         //
         // **Always `None` in production, because no CSS path sets the field
-        // today.** `text-underline-offset` is declared `engines="gecko"` at
-        // `stylo-0.11.0/properties/longhands/inherited_text.mako.rs:330`, and
-        // stylo's `build.rs` generates exactly one engine's property set — so
-        // the servo build emits no parser entry and Stylo discards the
-        // declaration as unknown. Measured in a generated `properties.rs`:
-        // `text_underline_offset` 0 hits, the documented gecko-only
-        // `scrollbar_color` 0 hits, and `text_decoration_line` 52 hits as the
-        // positive control that the grep fires at all (#580).
+        // today**: stylo parses `text-underline-offset` since 0.21, but
+        // `ComputedStyle::from_stylo` does not read it (#580).
         if let Some(css_offset) = computed.text_underline_offset {
             props.push(parley::style::StyleProperty::UnderlineOffset(Some(
                 -css_offset,

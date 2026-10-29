@@ -51,7 +51,7 @@ pub(crate) fn absolute_from_peniko(color: peniko::Color) -> AbsoluteColor {
 pub(crate) fn color_from_specified(
     color: &style::values::specified::Color,
 ) -> Option<peniko::Color> {
-    color_from_stylo(&color.to_computed_color(None)?)
+    color_from_stylo(&color.to_computed_color(None).ok()?)
 }
 
 /// An absolute stylo colour as an 8-bit sRGB peniko Color.

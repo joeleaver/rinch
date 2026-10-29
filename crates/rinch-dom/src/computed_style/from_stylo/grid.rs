@@ -135,7 +135,7 @@ fn min_track_from_stylo(
         TrackBreadth::Breadth(lp) => {
             taffy::MinTrackSizingFunction::from(length_percentage_from_stylo_lp(lp))
         }
-        TrackBreadth::Fr(_) => taffy::MinTrackSizingFunction::auto(),
+        TrackBreadth::Flex(_) => taffy::MinTrackSizingFunction::auto(),
         TrackBreadth::Auto => taffy::MinTrackSizingFunction::auto(),
         TrackBreadth::MinContent => taffy::MinTrackSizingFunction::min_content(),
         TrackBreadth::MaxContent => taffy::MinTrackSizingFunction::max_content(),
@@ -149,7 +149,7 @@ fn max_track_from_stylo(
         TrackBreadth::Breadth(lp) => {
             taffy::MaxTrackSizingFunction::from(length_percentage_from_stylo_lp(lp))
         }
-        TrackBreadth::Fr(val) => taffy::MaxTrackSizingFunction::fr(*val),
+        TrackBreadth::Flex(val) => taffy::MaxTrackSizingFunction::fr(val.0),
         TrackBreadth::Auto => taffy::MaxTrackSizingFunction::auto(),
         TrackBreadth::MinContent => taffy::MaxTrackSizingFunction::min_content(),
         TrackBreadth::MaxContent => taffy::MaxTrackSizingFunction::max_content(),

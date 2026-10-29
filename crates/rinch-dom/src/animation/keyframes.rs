@@ -34,7 +34,7 @@ pub fn extract_keyframe_stops(
     let mut stops = Vec::new();
 
     for step in &animation.steps {
-        let percentage = step.start_percentage.0;
+        let percentage = step.start_offset.percentage.0;
 
         let (values, timing_function) = match &step.value {
             KeyframesStepValue::ComputedValues => {
@@ -407,19 +407,19 @@ enum StopLength {
 
 impl StopLength {
     fn resolve(lp: &SpecLengthPercentage, font_size: f32, root_font_size: f32) -> Option<Self> {
-        use style::values::specified::length::{FontRelativeLength, NoCalcLength};
+        use style::values::specified::length::LengthUnit;
         match lp {
-            SpecLengthPercentage::Length(NoCalcLength::Absolute(abs)) => {
-                let px = abs.to_px();
-                px.is_finite().then_some(Self::Px(px))
+            SpecLengthPercentage::Length(len) => {
+                let px = match len.length_unit() {
+                    LengthUnit::Em => len.unitless_value() * font_size,
+                    LengthUnit::Rem => len.unitless_value() * root_font_size,
+                    _ => len.to_px_if_absolute()?,
+                };
+                // `em`/`rem` were never finite-checked (an overflowing
+                // product reads as a length, as it did in 0.11).
+                (px.is_finite() || len.length_unit().is_font_relative()).then_some(Self::Px(px))
             }
-            SpecLengthPercentage::Length(NoCalcLength::FontRelative(FontRelativeLength::Em(v))) => {
-                Some(Self::Px(v * font_size))
-            }
-            SpecLengthPercentage::Length(NoCalcLength::FontRelative(FontRelativeLength::Rem(
-                v,
-            ))) => Some(Self::Px(v * root_font_size)),
-            SpecLengthPercentage::Percentage(pct) => Some(Self::Percent(pct.0)),
+            SpecLengthPercentage::Percentage(pct) => Some(Self::Percent(pct.get())),
             _ => None,
         }
     }
@@ -427,11 +427,8 @@ impl StopLength {
     /// `resolve` without the `em` arm, for a property whose `em` is relative to
     /// something the extractor does not have.
     fn resolve_no_em(lp: &SpecLengthPercentage, root_font_size: f32) -> Option<Self> {
-        use style::values::specified::length::{FontRelativeLength, NoCalcLength};
-        if matches!(
-            lp,
-            SpecLengthPercentage::Length(NoCalcLength::FontRelative(FontRelativeLength::Em(_)))
-        ) {
+        use style::values::specified::length::LengthUnit;
+        if matches!(lp, SpecLengthPercentage::Length(len) if len.length_unit() == LengthUnit::Em) {
             return None;
         }
         Self::resolve(lp, 0.0, root_font_size)
@@ -515,9 +512,9 @@ fn serialised_length_px(css: &str, font_size: f32, root_font_size: f32) -> Optio
 ///
 /// Percentage translates are why this is typed now: `translate(50%, 0)` used to
 /// be parsed by a `strip_suffix("px")` and dropped, taking the whole transform
-/// with it (#412). `calc(45deg)` came back the same way — stylo folds a
-/// `calc()` angle into `AngleDimension::Deg`, so `Angle::radians()` handles it
-/// where `strip_suffix("deg")` could not.
+/// with it (#412). `calc(45deg)` came back the same way — `Angle::degrees()`
+/// resolves a `calc()` angle with no context, where `strip_suffix("deg")`
+/// could not.
 ///
 /// The 3D functions map to the same [`TransformOp`]s `transform_from_stylo`
 /// builds (#405), so a keyframed `rotateX()` interpolates exactly as a
@@ -551,18 +548,13 @@ fn transform_ops(
     };
     // A `<length>` (a z, a perspective depth): the same units `split`
     // resolves, and no percentage.
-    let length = |l: &style::values::specified::Length| match l {
-        style::values::specified::Length::NoCalc(nc) => {
-            match StopLength::resolve(
-                &SpecLengthPercentage::Length(*nc),
-                font_size,
-                root_font_size,
-            )? {
-                StopLength::Px(px) => Some(px as f64),
-                StopLength::Percent(_) => None,
-            }
-        }
-        style::values::specified::Length::Calc(_) => None,
+    let length = |l: &style::values::specified::Length| match StopLength::resolve(
+        &SpecLengthPercentage::from(l.clone()),
+        font_size,
+        root_font_size,
+    )? {
+        StopLength::Px(px) => Some(px as f64),
+        StopLength::Percent(_) => None,
     };
 
     // `transform: none` is the empty list, which pads to identity functions of
@@ -573,41 +565,55 @@ fn transform_ops(
         .map(|op| {
             Some(match op {
                 Op::Matrix(mat) => TransformOp::Matrix(Affine::from_matrix([
-                    mat.a.get() as f64,
-                    mat.b.get() as f64,
-                    mat.c.get() as f64,
-                    mat.d.get() as f64,
-                    mat.e.get() as f64,
-                    mat.f.get() as f64,
+                    mat.a.resolve()? as f64,
+                    mat.b.resolve()? as f64,
+                    mat.c.resolve()? as f64,
+                    mat.d.resolve()? as f64,
+                    mat.e.resolve()? as f64,
+                    mat.f.resolve()? as f64,
                 ])),
-                Op::Matrix3D(m) => TransformOp::matrix3d(
-                    [
+                Op::Matrix3D(m) => {
+                    let mut v = [0.0f64; 16];
+                    for (out, n) in v.iter_mut().zip([
                         &m.m11, &m.m12, &m.m13, &m.m14, &m.m21, &m.m22, &m.m23, &m.m24, &m.m31,
                         &m.m32, &m.m33, &m.m34, &m.m41, &m.m42, &m.m43, &m.m44,
-                    ]
-                    .map(|n| n.get() as f64),
-                ),
+                    ]) {
+                        *out = n.resolve()? as f64;
+                    }
+                    TransformOp::matrix3d(v)
+                }
                 Op::Rotate(angle) | Op::RotateZ(angle) => {
-                    TransformOp::Rotate(angle.radians() as f64)
+                    TransformOp::Rotate(angle.degrees()?.to_radians() as f64)
                 }
-                Op::RotateX(angle) => TransformOp::rotate3d(1.0, 0.0, 0.0, angle.radians() as f64),
-                Op::RotateY(angle) => TransformOp::rotate3d(0.0, 1.0, 0.0, angle.radians() as f64),
+                Op::RotateX(angle) => {
+                    TransformOp::rotate3d(1.0, 0.0, 0.0, angle.degrees()?.to_radians() as f64)
+                }
+                Op::RotateY(angle) => {
+                    TransformOp::rotate3d(0.0, 1.0, 0.0, angle.degrees()?.to_radians() as f64)
+                }
                 Op::Rotate3D(x, y, z, angle) => TransformOp::rotate3d(
-                    x.get() as f64,
-                    y.get() as f64,
-                    z.get() as f64,
-                    angle.radians() as f64,
+                    x.resolve()? as f64,
+                    y.resolve()? as f64,
+                    z.resolve()? as f64,
+                    angle.degrees()?.to_radians() as f64,
                 ),
-                Op::Scale(sx, sy) => TransformOp::Scale(sx.get() as f64, sy.get() as f64, 1.0),
-                Op::ScaleX(sx) => TransformOp::Scale(sx.get() as f64, 1.0, 1.0),
-                Op::ScaleY(sy) => TransformOp::Scale(1.0, sy.get() as f64, 1.0),
-                Op::ScaleZ(sz) => TransformOp::Scale(1.0, 1.0, sz.get() as f64),
-                Op::Scale3D(sx, sy, sz) => {
-                    TransformOp::Scale(sx.get() as f64, sy.get() as f64, sz.get() as f64)
+                Op::Scale(sx, sy) => {
+                    TransformOp::Scale(sx.resolve()? as f64, sy.resolve()? as f64, 1.0)
                 }
-                Op::SkewX(angle) => TransformOp::SkewX(angle.radians() as f64),
-                Op::SkewY(angle) => TransformOp::SkewY(angle.radians() as f64),
-                Op::Skew(ax, ay) => TransformOp::Skew(ax.radians() as f64, ay.radians() as f64),
+                Op::ScaleX(sx) => TransformOp::Scale(sx.resolve()? as f64, 1.0, 1.0),
+                Op::ScaleY(sy) => TransformOp::Scale(1.0, sy.resolve()? as f64, 1.0),
+                Op::ScaleZ(sz) => TransformOp::Scale(1.0, 1.0, sz.resolve()? as f64),
+                Op::Scale3D(sx, sy, sz) => TransformOp::Scale(
+                    sx.resolve()? as f64,
+                    sy.resolve()? as f64,
+                    sz.resolve()? as f64,
+                ),
+                Op::SkewX(angle) => TransformOp::SkewX(angle.degrees()?.to_radians() as f64),
+                Op::SkewY(angle) => TransformOp::SkewY(angle.degrees()?.to_radians() as f64),
+                Op::Skew(ax, ay) => TransformOp::Skew(
+                    ax.degrees()?.to_radians() as f64,
+                    ay.degrees()?.to_radians() as f64,
+                ),
                 Op::TranslateX(tx) => translate(Some(tx), None, 0.0)?,
                 Op::TranslateY(ty) => translate(None, Some(ty), 0.0)?,
                 Op::Translate(tx, ty) => translate(Some(tx), Some(ty), 0.0)?,

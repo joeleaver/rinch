@@ -6,8 +6,9 @@ use servo_arc::Arc as ServoArc;
 // Stylo CSS engine imports
 use euclid::Scale;
 use style::context::QuirksMode;
+use style::device::Device;
 use style::font_metrics::FontMetrics;
-use style::media_queries::{Device, MediaType};
+use style::media_queries::MediaType;
 use style::properties::style_structs::Font as StyloFont;
 use style::properties::{ComputedValues, PropertyDeclarationBlock};
 use style::queries::values::PrefersColorScheme;
@@ -15,7 +16,6 @@ use style::stylist::Stylist;
 use style::values::computed::font::GenericFontFamily;
 use style::values::computed::{CSSPixelLength, Length};
 use style::values::specified::font::QueryFontMetricsFlags;
-use stylo_config as style_config;
 // CSSPixel and DevicePixel are used via euclid::Size2D type parameters
 
 use crate::node::RawNodeId;
@@ -28,7 +28,7 @@ mod dom_document_impl;
 #[derive(Debug)]
 pub(crate) struct SimpleFontMetricsProvider;
 
-impl style::servo::media_queries::FontMetricsProvider for SimpleFontMetricsProvider {
+impl style::device::servo::FontMetricsProvider for SimpleFontMetricsProvider {
     fn query_font_metrics(
         &self,
         _vertical: bool,
@@ -99,14 +99,21 @@ pub(crate) fn build_device(width: f32, height: f32, params: &DeviceParams) -> De
     let default_font = StyloFont::initial_values();
     let default_computed_values = ComputedValues::initial_values_with_font_override(default_font);
 
+    // The window is the screen a rinch document knows: `device-width` and
+    // `device-height` (media features stylo 0.21 added for servo) answer the
+    // viewport's size, as they do for a full-screen page.
+    let device_size = viewport_size * device_pixel_ratio;
     let device = Device::new(
         MediaType::screen(),
         QuirksMode::NoQuirks,
         viewport_size,
+        device_size,
         device_pixel_ratio,
         font_metrics_provider,
         default_computed_values,
         PrefersColorScheme::Light,
+        Default::default(),
+        Default::default(),
     );
     // A fresh Device starts at the 16px initial — restore the root element's
     // font-size so a rebuild doesn't erase the `rem` basis.
@@ -215,6 +222,33 @@ impl Drop for RinchDocument {
     }
 }
 
+/// Set the Stylo preferences rinch depends on. They are process-global
+/// atomics (`stylo_static_prefs`), read while CSS is parsed, so this runs
+/// before any parsing (every [`RinchDocument::new`]).
+///
+/// - `layout.grid.enabled` and `layout.unimplemented` turn on CSS Grid and the
+///   longhands Servo marks unimplemented (`text-overflow` among them).
+/// - The rest hold every preference at the value stylo 0.11 answered, so the
+///   0.11 → 0.22 upgrade changes no stylesheet's meaning (see
+///   `docs/internals/dependencies.md`, "Stylo"). 0.11 read `layout.threads`
+///   through `stylo_config`, which answered `0` (no style thread pool) unless
+///   set; 0.22 defaults it to `-1` (a pool of up to six threads).
+///   `@property` (`properties-and-values`) was off in 0.11's static table; the
+///   other five gate syntax 0.11 did not parse at all, and upstream turns them
+///   on by default. Turning any of them on is its own change.
+pub(crate) fn set_stylo_prefs() {
+    use stylo_static_prefs::set_pref;
+    set_pref!("layout.grid.enabled", true);
+    set_pref!("layout.unimplemented", true);
+    set_pref!("layout.threads", 0);
+    set_pref!("layout.css.properties-and-values.enabled", false);
+    set_pref!("layout.css.alpha-color-function.enabled", false);
+    set_pref!("layout.css.calc-typed-arithmetic.enabled", false);
+    set_pref!("layout.css.color-mix-multi-color.enabled", false);
+    set_pref!("layout.css.revert-rule.enabled", false);
+    set_pref!("layout.css.supports.at-rule.enabled", false);
+}
+
 impl RinchDocument {
     /// Process-unique document identity (see
     /// [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)) —
@@ -226,10 +260,7 @@ impl RinchDocument {
 
     /// Create a new document with root and body nodes.
     pub fn new() -> Self {
-        // Enable CSS Grid and text-overflow support in Stylo
-        // This must be called before any CSS parsing happens
-        style_config::set_bool("layout.grid.enabled", true);
-        style_config::set_bool("layout.unimplemented", true);
+        set_stylo_prefs();
 
         // Create the Stylo Device with default viewport and settings
         let device_params = DeviceParams::default();
@@ -975,7 +1006,7 @@ impl RinchDocument {
             if let Some(node) = self.tree.nodes.get_live_mut(child_id) {
                 // Drop the cached match result so the descendant re-resolves against
                 // the new ancestor state (class / attribute).
-                *node.stylo_element_data.borrow_mut() = None;
+                node.stylo_element_data.clear();
                 // …and mark it paint-dirty: a re-resolved style that isn't repainted
                 // leaves the software renderer's dirty-region cache showing the stale
                 // pixels (e.g. a dark-mode toggle re-colored the tree but only the
