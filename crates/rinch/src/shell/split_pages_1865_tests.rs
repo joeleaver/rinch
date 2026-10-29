@@ -10,7 +10,7 @@ use super::split_pages_1865_oracle::*;
 
 const BASE: &str = r#"<div style="position:absolute;left:0;top:0;width:200px;height:120px;background:rgb(60,70,90)"></div>"#;
 
-fn surf(id: u64, l: f64, t: f64, w: u32, h: u32, extra: &str) -> String {
+fn surf(id: usize, l: f64, t: f64, w: u32, h: u32, extra: &str) -> String {
     format!(
         r#"<div data-render-surface="{id}" style="position:absolute;left:{l}px;top:{t}px;width:{w}px;height:{h}px;{extra}"></div>"#
     )
@@ -403,7 +403,7 @@ impl N {
         }
         false
     }
-    fn surfaces(&self, out: &mut Vec<u64>) {
+    fn surfaces(&self, out: &mut Vec<usize>) {
         if let Some(id) = self.surface {
             out.push(id);
         }
@@ -415,7 +415,7 @@ impl N {
 
 struct Gen {
     rng: Rng,
-    next_id: u64,
+    next_id: usize,
     frames: Vec<Frame>,
 }
 

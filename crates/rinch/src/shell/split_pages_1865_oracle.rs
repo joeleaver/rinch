@@ -163,7 +163,7 @@ pub(crate) fn frame_pixels(w: u32, h: u32, translucent: bool, seed: u32) -> Vec<
 }
 
 pub(crate) struct Frame {
-    pub id: u64,
+    pub id: usize,
     pub w: u32,
     pub h: u32,
     pub px: Vec<u8>,
@@ -405,7 +405,7 @@ pub(crate) fn oracle(html: &str, frames: &[Frame]) -> Outcome {
         .map(|f| (f.id, f.px.chunks(4).any(|p| p[3] != 255)))
         .collect();
     let mut allow = vec![0; (W * H) as usize];
-    let kept_ids: Vec<u64> = frame.surface_ids().collect();
+    let kept_ids: Vec<usize> = frame.surface_ids().collect();
     for (((rx, ry, rw, rh), textures), id) in frame.slices().into_iter().zip(&kept_ids) {
         let read: Vec<Vec<[u8; 4]>> = textures
             .iter()
@@ -457,7 +457,7 @@ pub(crate) fn oracle(html: &str, frames: &[Frame]) -> Outcome {
     }
 }
 
-pub(crate) fn opaque(id: u64, w: u32, h: u32) -> Frame {
+pub(crate) fn opaque(id: usize, w: u32, h: u32) -> Frame {
     Frame {
         id,
         w,

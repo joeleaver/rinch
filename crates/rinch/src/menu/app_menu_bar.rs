@@ -794,7 +794,7 @@ mod tests {
 
     /// Run a node's `data-onenter` handler, as the hover dispatcher would.
     fn run_onenter_handler(doc: &Rc<RefCell<RinchDocument>>, node_id: u64) {
-        let id: u64 = doc
+        let id: usize = doc
             .borrow()
             .tree
             .get(node_id)
