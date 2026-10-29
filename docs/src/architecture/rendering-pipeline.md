@@ -1009,7 +1009,7 @@ on an `ifc_dirty` pass instead of returning early.
 A finished animation with `animation-fill-mode: forwards` or `both` is the same
 shape (issue **#782**): its fill is as constant as a paused sample. The tick that
 finishes it writes the fill and marks the node dirty — that frame shows the end —
-and records it in `ActiveAnimation::fill_settled`; later ticks re-apply it
+and records it in `ActiveAnimation::settled`; later ticks re-apply it
 without dirtying anything, and neither `tick_animations` nor
 `has_running_animations()` counts it. A zero-duration infinite animation
 (`0s infinite forwards`) is one of these: its active duration is `0 × ∞ = 0`, so

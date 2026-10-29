@@ -3100,10 +3100,25 @@ pub struct NodeTree {
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
     /// Active CSS animations per node — **paused and filling ones included**,
     /// because their constant samples are still written into `computed_style`
-    /// on every cascade. So "is this map non-empty" is not "does anything need
-    /// another frame"; that is [`NodeTree::has_running_animations`] (#763,
-    /// #782).
+    /// on every cascade, and **finished ones without a fill** too, as markers
+    /// that keep the cascade from starting them again (#783). So "is this map
+    /// non-empty" is not "does anything need another frame"; that is
+    /// [`NodeTree::has_running_animations`] (#763, #782).
     pub active_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
+    /// Nodes on which a tick has just **finished** an animation that does not
+    /// fill forwards (`animation-fill-mode: none` / `backwards`, #783).
+    ///
+    /// `animation::tick_animations` pushes the node and keeps the entry as a
+    /// finished marker ([`ActiveAnimation::settled`]); `computed_style` still
+    /// holds the last sample, and only a cascade knows the values underneath
+    /// it. `RinchDocument::tick_animations` restyles each node pushed here (its
+    /// originator, for a generated box), and that cascade reads the list for
+    /// one more thing: the change from the last sample back to the cascaded
+    /// value is not a style change a `transition` starts from —
+    /// css-transitions-1's before-change style is the one *updated to the
+    /// current time*, at which the animation has no effect. The cascade
+    /// clears the list when it is done.
+    pub ended_animations: Vec<RawNodeId>,
     /// Whether transitions are armed (false until the first layout completes).
     ///
     /// **Transitions only** (issue #762). `@keyframes` animations do not read
@@ -3552,6 +3567,7 @@ impl NodeTree {
             ifc_measure_leaves: HashMap::new(),
             active_transitions: HashMap::new(),
             active_animations: HashMap::new(),
+            ended_animations: Vec::new(),
             transitions_enabled: false,
             refreshing_animations: false,
             image_cache: ImageCache::new(),
@@ -3702,7 +3718,7 @@ impl NodeTree {
     /// because a tick has nothing left to move for either: a **paused**
     /// animation, whose elapsed time is frozen (#763), and a **finished
     /// `forwards`/`both`** animation whose fill a tick has already written
-    /// ([`crate::animation::ActiveAnimation::fill_settled`], #782). A finished
+    /// ([`crate::animation::ActiveAnimation::settled`], #782). A finished
     /// animation *is* counted until that tick runs, which is what lets the
     /// frame that shows its end be presented.
     ///
@@ -3714,7 +3730,7 @@ impl NodeTree {
         self.active_animations
             .values()
             .flatten()
-            .any(|anim| !anim.is_paused() && !anim.fill_settled)
+            .any(|anim| !anim.is_paused() && !anim.settled)
     }
 
     /// Record a whole-document restyle: count it under `reason`, and mark the

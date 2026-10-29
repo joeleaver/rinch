@@ -1180,7 +1180,23 @@ impl RinchDocument {
                 && !self.tree.nodes[node_id].styled_unrendered;
             if self.tree.transitions_enabled && node_has_been_styled && !specs.is_empty() {
                 let old_style = &self.tree.nodes[node_id].computed_style;
-                let diffs = diff_animatable(old_style, &new_style);
+                let mut diffs = diff_animatable(old_style, &new_style);
+
+                // The restyle a finished no-fill animation asked for (#783):
+                // `old_style` still holds its last sample, but the
+                // before-change style css-transitions-1 compares against is
+                // updated to the current time, when the animation has no
+                // effect. So the way back to the cascaded value is not a
+                // change, and starts no transition.
+                if self.tree.ended_animations.contains(&node_id)
+                    && let Some(anims) = self.tree.active_animations.get(&node_id)
+                {
+                    diffs.retain(|d| {
+                        !anims.iter().any(|a| {
+                            a.settled && !a.is_filling(current_time_ms) && a.animates(d.property)
+                        })
+                    });
+                }
 
                 // css-transitions-1 §3 defines the before-change style only for
                 // an element that is **being rendered**, so no transition
@@ -1775,6 +1791,9 @@ impl RinchDocument {
                 propagate_inherited_visibility(&mut self.tree, id, current_time_ms);
             }
         }
+
+        // The restyles the last tick asked for have run (#783).
+        self.tree.ended_animations.clear();
 
         if !resync_absolutes.is_empty() {
             // Their containing block changed, so they move — whether or not

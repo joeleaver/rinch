@@ -28,10 +28,10 @@
 //! | a filling entry is counted (but settled) | 6: every fixture here, and the shell |
 //! | the finishing tick does not dirty the node | 5: the four fixtures that go through `finished`, and the shell |
 //! | `has_running_animations` counts a settled fill | 3: `a_finished_forwards_animation_asks_for_no_frames`, `a_restyle_keeps_showing_the_fill`, the shell |
-//! | a restyle never clears `fill_settled` (a latch) | `a_restyle_that_extends_a_finished_animation_runs_it_again`, **alone** |
-//! | a restyle always clears `fill_settled` | `a_restyle_keeps_showing_the_fill`, **alone** |
+//! | a restyle never clears `settled` (a latch) | `a_restyle_that_extends_a_finished_animation_runs_it_again`, **alone** |
+//! | a restyle always clears `settled` | `a_restyle_keeps_showing_the_fill`, **alone** |
 //! | the text-measure pre-pass re-measures a settled fill | `a_finished_font_size_fill_owes_no_layout`, **alone** |
-//! | `fill_settled` is recomputed **before** #771's refresh block (the naive rebase) | `a_theme_change_that_lengthens_a_finished_animation_runs_it_again`, **alone** |
+//! | `settled` is recomputed **before** #771's refresh block (the naive rebase) | `a_theme_change_that_lengthens_a_finished_animation_runs_it_again`, **alone** |
 
 #![cfg(feature = "software-renderer")]
 
@@ -226,7 +226,7 @@ fn a_finished_font_size_fill_owes_no_layout() {
 }
 
 /// A **full restyle** — a theme change — that lengthens a finished animation
-/// makes it run again, and `fill_settled` has to be recomputed against the
+/// makes it run again, and `settled` has to be recomputed against the
 /// timing that restyle just gave it.
 ///
 /// #771 refreshes a kept animation's keyframes, duration and delay inside
@@ -254,7 +254,7 @@ fn a_theme_change_that_lengthens_a_finished_animation_runs_it_again() {
     assert!(
         doc.tree.has_running_animations(),
         "it is running again, so the frame clock has to run again — this is \
-         what a stale `fill_settled` gets wrong"
+         what a stale `settled` gets wrong"
     );
     hand_off(&mut doc, node);
     assert!(doc.tick_animations(), "and the tick advances it");

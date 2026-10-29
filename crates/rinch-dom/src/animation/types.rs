@@ -82,18 +82,26 @@ pub struct ActiveAnimation {
     pub start_time_ms: f64,
     /// When paused, stores the elapsed time at the moment of pause.
     pub paused_elapsed_ms: Option<f64>,
-    /// Whether the fill of a **finished** `forwards`/`both` animation has been
-    /// written by a tick (#782).
+    /// Whether a tick has written the end of this **finished** animation
+    /// (#782, #783).
     ///
-    /// The tick that finishes such an animation writes its fill and marks the
-    /// node dirty — that frame changes what the box looks like — and sets this.
-    /// From then on its sample is constant, like a paused one's: later ticks
-    /// re-apply it without dirtying anything and do not count it, and
+    /// For a `forwards`/`both` animation that end is its fill: the tick that
+    /// finishes it writes the fill and marks the node dirty, and from then on
+    /// its sample is constant, like a paused one's. For a `none`/`backwards`
+    /// one it is *no* effect: the tick that finishes it asks for a restyle of
+    /// the node, so the cascaded values replace the last sample
+    /// ([`crate::node::NodeTree::ended_animations`]), and the entry is kept as
+    /// a finished marker — a later cascade finds it by name and does not mint
+    /// the still-declared animation again from t=0, which is what a browser
+    /// does (a finished CSS animation stays finished until its
+    /// `animation-name` changes or its element is rendered again).
+    ///
+    /// Either way later ticks do not dirty anything and do not count it, and
     /// [`crate::node::NodeTree::has_running_animations`] does not count it.
     /// `start_animations` clears it again when a restyle leaves the animation
-    /// no longer filling (more iterations, say), so it describes the timing the
-    /// animation has now rather than a latch set once.
-    pub fill_settled: bool,
+    /// no longer finished (more iterations, say), so it describes the timing
+    /// the animation has now rather than a latch set once.
+    pub settled: bool,
 }
 
 /// Result of computing animation values at a given time.
