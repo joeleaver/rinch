@@ -1130,14 +1130,17 @@ impl NodeHandle {
     /// Request that this element be scrolled into view — the minimal
     /// ("nearest") scroll: an element already in view does not move.
     ///
-    /// The backends differ in when and how far:
+    /// Both backends move **every** scroll container the element is in,
+    /// innermost first and the page last, on both axes, each just far enough to
+    /// bring the element (as the scrollers inside it have placed it) into its
+    /// padding box; nothing outside a `position: fixed` ancestor moves. They
+    /// differ in when:
     /// - **desktop** (`rinch-dom`) defers the scroll until after the next layout
     ///   pass, since the element's position must be known relative to its scroll
-    ///   container, and scrolls only the **nearest** scroll container (issue #842).
+    ///   containers (#842 made it move every one, as the web does).
     /// - **web** (`rinch-web`) scrolls immediately, with the browser's
-    ///   `scrollIntoView({block: "nearest", inline: "nearest"})`, which scrolls
-    ///   **every** scrollable ancestor, the page included. Until the editor's
-    ///   caret scroll (#837) it was a silent no-op there.
+    ///   `scrollIntoView({block: "nearest", inline: "nearest"})`. Until the
+    ///   editor's caret scroll (#837) it was a silent no-op there.
     /// - the test `MockDomDocument` only queues the request.
     pub fn scroll_into_view(&self) {
         if let Some(doc) = self.accessed_doc() {
@@ -1152,12 +1155,12 @@ impl NodeHandle {
     /// near the top of the content stays near the top. It moves even an element
     /// already in view.
     ///
-    /// - **desktop** (`rinch-dom`) defers it until after the next layout pass
-    ///   and moves the **nearest** scroll container only, vertically, as
-    ///   [`Self::scroll_into_view`] does.
-    /// - **web** (`rinch-web`) sets the nearest scroll container's `scrollTop`
-    ///   at once (the page's, when no ancestor scrolls), then brings the element
-    ///   into the page's view the way [`Self::scroll_into_view`] does.
+    /// The place is in the nearest **vertical** scroll container (the page's, when
+    /// no ancestor scrolls); every scroller further out, and the other axis, then
+    /// bring the element into view the way [`Self::scroll_into_view`] does.
+    /// - **desktop** (`rinch-dom`) defers it until after the next layout pass.
+    /// - **web** (`rinch-web`) sets that scroller's `scrollTop` at once, then
+    ///   calls the browser's `scrollIntoView` for the rest.
     /// - the test `MockDomDocument` only queues the request.
     pub fn scroll_to_fraction(&self, fraction: f32, margin: f32) {
         let fraction = if fraction.is_nan() {
