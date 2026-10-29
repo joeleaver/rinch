@@ -209,7 +209,13 @@ fn expected_blocks(bands: &[Option<(f64, f64)>], y: f64) -> Vec<usize> {
         if (t..bt).contains(&y) {
             return vec![i];
         }
-        if bt <= y && bands.get(i + 1).copied().flatten().is_some_and(|(nt, _)| y < nt) {
+        if bt <= y
+            && bands
+                .get(i + 1)
+                .copied()
+                .flatten()
+                .is_some_and(|(nt, _)| y < nt)
+        {
             out = vec![i, i + 1];
         }
     }
@@ -365,15 +371,16 @@ fn on_macos_page_down_scrolls_and_option_page_down_moves() {
     start(&mut r);
     let before = r.handle.selection();
     press(&mut r.app, KeyCode::PageDown, NONE);
-    assert_eq!(r.handle.selection(), before, "plain Page Down: the caret stays");
+    assert_eq!(
+        r.handle.selection(),
+        before,
+        "plain Page Down: the caret stays"
+    );
     let scrolled = scroll_of(&r.app, r.scroller);
     assert!((scrolled - STEP).abs() <= 1.0, "...and a page scrolls");
     press(&mut r.app, KeyCode::PageUp, NONE);
     assert_eq!(scroll_of(&r.app, r.scroller), 0.0);
-    let option = Modifiers {
-        alt: true,
-        ..NONE
-    };
+    let option = Modifiers { alt: true, ..NONE };
     press(&mut r.app, KeyCode::PageDown, option);
     assert!(r.handle.selection().is_empty());
     assert!(
@@ -440,7 +447,10 @@ fn page_down_in_a_virtualized_editor_lands_in_blocks_never_laid_out() {
         );
         (last, y0) = (got, y);
     }
-    assert!(last > 100, "control: the pages went well past the first 40 ({last})");
+    assert!(
+        last > 100,
+        "control: the pages went well past the first 40 ({last})"
+    );
 }
 
 /// A page that lands on the document's last line goes to the document's end
@@ -506,7 +516,10 @@ fn the_goal_column_survives_a_short_line() {
         let (x, _, _) = caret(&r);
         if block % 4 == 3 {
             short = true;
-            assert!(x < x0 - 20.0, "control: a short line ends left of the column");
+            assert!(
+                x < x0 - 20.0,
+                "control: a short line ends left of the column"
+            );
         } else {
             long_after_short |= short;
             assert!(

@@ -290,7 +290,10 @@ mod tests {
         assert_eq!(std(KeyCode::PageDown, ctrl), None);
         assert_eq!(std(KeyCode::PageUp, opt), None);
 
-        assert_eq!(mac(KeyCode::PageDown, NONE), Some(ScrollPage { down: true }));
+        assert_eq!(
+            mac(KeyCode::PageDown, NONE),
+            Some(ScrollPage { down: true })
+        );
         assert_eq!(mac(KeyCode::PageUp, NONE), Some(ScrollPage { down: false }));
         assert_eq!(mac(KeyCode::PageDown, opt), mv(PageDown, false));
         assert_eq!(mac(KeyCode::PageUp, opt), mv(PageUp, false));

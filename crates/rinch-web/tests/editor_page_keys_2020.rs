@@ -90,7 +90,11 @@ impl Fixture {
         // The runner's page has its log above: the fixture at the top.
         host.scroll_into_view();
         let f = Self { root, host, handle };
-        assert_eq!(f.scroller().client_height() as f64, PAGE_BOX, "control: the page box");
+        assert_eq!(
+            f.scroller().client_height() as f64,
+            PAGE_BOX,
+            "control: the page box"
+        );
         f
     }
 
@@ -232,10 +236,17 @@ fn page_down_moves_the_caret_a_page_and_the_scroller_with_it() {
     );
     assert!(f.handle.selection().is_empty());
     let sc = f.scroller();
-    assert_eq!(f64::from(sc.scroll_top()), STEP, "the scroller moved a page");
+    assert_eq!(
+        f64::from(sc.scroll_top()),
+        STEP,
+        "the scroller moved a page"
+    );
     let (nx, ny, _) = f.caret();
     assert!((nx - cx).abs() < 8.0, "the column held: x {cx} -> {nx}");
-    assert!((ny - cy).abs() < 30.0, "the caret kept its place: y {cy} -> {ny}");
+    assert!(
+        (ny - cy).abs() < 30.0,
+        "the caret kept its place: y {cy} -> {ny}"
+    );
 
     assert!(key("PageUp", false), "rinch took Page Up");
     assert_eq!(sc.scroll_top(), 0, "Page Up scrolled back");
@@ -251,7 +262,11 @@ fn page_down_at_the_end_goes_to_the_document_end_and_page_up_to_its_start() {
     for _ in 0..12 {
         key("PageDown", false);
     }
-    assert_eq!(f.handle.selection().head(), end, "Page Down ends at the end");
+    assert_eq!(
+        f.handle.selection().head(),
+        end,
+        "Page Down ends at the end"
+    );
     let sc = f.scroller();
     assert_eq!(
         sc.scroll_top(),
@@ -261,7 +276,11 @@ fn page_down_at_the_end_goes_to_the_document_end_and_page_up_to_its_start() {
     for _ in 0..12 {
         key("PageUp", false);
     }
-    assert_eq!(f.handle.selection().head(), Pos(1), "Page Up ends at the start");
+    assert_eq!(
+        f.handle.selection().head(),
+        Pos(1),
+        "Page Up ends at the start"
+    );
     assert_eq!(sc.scroll_top(), 0);
     f.teardown();
 }
@@ -293,7 +312,11 @@ fn a_read_only_editor_scrolls_a_page_and_keeps_the_caret() {
     let before = f.handle.selection();
     assert!(key("PageDown", false), "rinch took Page Down");
     assert_eq!(f.handle.selection(), before, "the caret stays");
-    assert_eq!(f64::from(f.scroller().scroll_top()), STEP, "a page of scroll");
+    assert_eq!(
+        f64::from(f.scroller().scroll_top()),
+        STEP,
+        "a page of scroll"
+    );
     f.teardown();
 }
 
@@ -397,8 +420,7 @@ fn a_page_landing_below_the_window_finds_its_line() {
             let (_, cy, ch) = f.caret();
             let target = cy + ch * 0.5 + STEP;
             let want = expected_blocks(&bands, target);
-            if target - f64::from(short) > view + 5.0 && !want.is_empty() && !want.contains(&last)
-            {
+            if target - f64::from(short) > view + 5.0 && !want.is_empty() && !want.contains(&last) {
                 found = Some((short, want));
                 break 'search;
             }
@@ -406,7 +428,11 @@ fn a_page_landing_below_the_window_finds_its_line() {
     }
     let (short, want) = found.expect("control: a caret whose page lands below the window");
     assert!(key("PageDown", false));
-    assert_eq!(sc.scroll_top(), max, "the scroller went to its end ({short}px)");
+    assert_eq!(
+        sc.scroll_top(),
+        max,
+        "the scroller went to its end ({short}px)"
+    );
     let got = block_of(&f.handle, f.handle.selection().head());
     assert!(
         want.contains(&got),

@@ -2590,7 +2590,10 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
     let alt = event.alt_key();
 
     // The goal column survives a run of Up / Down and Page Up / Down.
-    if !matches!(key.as_str(), "ArrowUp" | "ArrowDown" | "PageUp" | "PageDown") {
+    if !matches!(
+        key.as_str(),
+        "ArrowUp" | "ArrowDown" | "PageUp" | "PageDown"
+    ) {
         set_goal_x(None);
     }
 
@@ -2658,24 +2661,17 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         // scrolls a page and leaves the caret, Option moves it and Shift
         // extends; elsewhere the key moves and Shift extends. Ctrl (Cmd) and
         // Alt there are the browser's.
-        "PageUp" | "PageDown" if is_mac() && !event.meta_key() && !event.ctrl_key() => {
-            page_step(
-                &handle,
-                container_nid,
-                doc,
-                key == "PageDown",
-                shift,
-                !alt && !shift,
-            )
-        }
-        "PageUp" | "PageDown" if !is_mac() && !ctrl && !alt => page_step(
+        "PageUp" | "PageDown" if is_mac() && !event.meta_key() && !event.ctrl_key() => page_step(
             &handle,
             container_nid,
             doc,
             key == "PageDown",
             shift,
-            false,
+            !alt && !shift,
         ),
+        "PageUp" | "PageDown" if !is_mac() && !ctrl && !alt => {
+            page_step(&handle, container_nid, doc, key == "PageDown", shift, false)
+        }
         "Home" if ctrl => handle.move_cursor(CursorMotion::DocStart, shift),
         "End" if ctrl => handle.move_cursor(CursorMotion::DocEnd, shift),
         // The visual line's edges, as on desktop (#301).
