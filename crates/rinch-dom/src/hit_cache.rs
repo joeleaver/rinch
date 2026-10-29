@@ -141,6 +141,7 @@ struct State {
     filled_at: u64,
     extents: Vec<Option<Extent>>,
     hoists: Vec<Option<bool>>,
+    shows: Vec<Option<bool>>,
     orders: HashMap<OrderKey, Rc<PaintOrder>>,
 }
 
@@ -187,6 +188,7 @@ impl HitCache {
             s.filled_at = self.generation.get();
             s.extents.clear();
             s.hoists.clear();
+            s.shows.clear();
             s.orders.clear();
         }
         s
@@ -263,6 +265,23 @@ impl HitCache {
             s.hoists.resize(id + 1, None);
         }
         s.hoists[id] = Some(hoists);
+    }
+
+    /// Whether some element below `id` computes to `visibility: visible`
+    /// (#843), stored for the current generation. The hit tester asks it only
+    /// of a hidden node, to know whether its subtree can hold a hit at all.
+    #[inline]
+    pub fn shows(&self, id: usize) -> Option<bool> {
+        self.state().shows.get(id).copied().flatten()
+    }
+
+    /// Store `id`'s "something visible below" bit for the current generation.
+    pub fn store_shows(&self, id: usize, shows: bool) {
+        let mut s = self.state();
+        if s.shows.len() <= id {
+            s.shows.resize(id + 1, None);
+        }
+        s.shows[id] = Some(shows);
     }
 
     /// Store `id`'s extent for the current generation.

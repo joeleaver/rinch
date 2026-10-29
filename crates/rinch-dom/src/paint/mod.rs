@@ -1928,7 +1928,7 @@ pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
 /// model (#319), so its laid-out and painted geometry coincide — the parent's
 /// padding is applied once, by Taffy, when it places the anonymous box inside
 /// the parent's content box, and never again here.
-pub(crate) fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
+pub fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
     let cs = &root.computed_style;
     (
         cs.padding_left.to_px() + cs.border_left_width.to_px(),
