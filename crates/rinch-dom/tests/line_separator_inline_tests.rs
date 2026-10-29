@@ -164,18 +164,16 @@ fn each_is_a_break_opportunity_and_form_feed_is_not() {
 /// No break before a line separator, and one after each, and `nowrap`
 /// keeps it on one line.
 ///
-/// **Two in a row are pinned at rinch's answer, not Chrome's (#1282).** At
-/// 30px Chrome 153 makes three lines (`xxx` and its separator overflow by
-/// 0.7px, the second separator is a line of its own): 75px. rinch keeps both
-/// on the first line, 50px: the pair is `~Z~Z` and the NBSP-glue re-break
-/// takes the second NBSP in past the ZWSP. A fix moves this to 75 — and must
-/// keep `nbsp_glue_property_tests` green: the first attempt broke lines
-/// inside an NBSP's glue elsewhere.
+/// Two in a row: at 30px Chrome 153 makes three lines (`xxx` and its
+/// separator overflow by 0.7px, the second separator is a line of its own):
+/// 75px. Until parley 0.12 rinch kept both on the first line, 50px (#1282):
+/// the pair is `~Z~Z`, and parley hung the overflowing NBSP, which the
+/// NBSP-glue re-break then took in past the ZWSP. An NBSP no longer hangs.
 #[test]
 fn two_separators_wrap_after_each_and_nowrap_does_not_wrap() {
     for (ws, text, h) in [
-        ("normal", "xxx\u{2028}\u{2028}xxx", 50.0),
-        ("pre-wrap", "xxx\u{2028}\u{2028}xxx", 50.0),
+        ("normal", "xxx\u{2028}\u{2028}xxx", 75.0),
+        ("pre-wrap", "xxx\u{2028}\u{2028}xxx", 75.0),
         ("normal", "xxx\u{2028}xxx", 50.0),
         ("pre-wrap", "xxx\u{2028}xxx", 50.0),
         ("nowrap", "xxx\u{2028}xxx", 25.0),

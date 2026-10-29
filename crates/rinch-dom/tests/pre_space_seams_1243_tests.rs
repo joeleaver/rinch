@@ -205,9 +205,18 @@ fn a_run_across_two_text_nodes_breaks_after_an_overflow() {
     assert_lines(&l, &[("hhhhhhh", 0.0), ("dd", 21.41)]);
 }
 
-/// A collapsible space then `break-spaces` spaces break between them: the
-/// first hangs, the `break-spaces` run starts the next line (a paragraph
-/// that holds `pre` spaces, so it takes the seams path).
+/// A collapsible space then `break-spaces` spaces break between them in
+/// Chrome 153: the first hangs, the `break-spaces` run starts the next line
+/// (a paragraph that holds `pre` spaces, so it takes the seams path):
+/// `("", 65.5), ("gggcccc", 4.0), ("b", 1.70), ("", 65.5)`, the third line
+/// starting with all eight `break-spaces` spaces.
+///
+/// **Not Chrome's since parley 0.12, pinned.** parley now lays `break-spaces`
+/// out itself (`WhiteSpaceCollapse::BreakSpaces`): it breaks after the first
+/// `break-spaces` space, not before it, so that space and the collapsible one
+/// before it stay on the second line, which overflows (75px, start-aligned),
+/// and the third line fits the rest. The seams pass agrees with parley there:
+/// the line is the same without it.
 #[test]
 fn a_wrapping_space_then_break_spaces_break_between_them() {
     let l = lines(
@@ -215,8 +224,8 @@ fn a_wrapping_space_then_break_spaces_break_between_them() {
         " ggg<span style=\"white-space:normal\">cccc  </span>        \
          <span style=\"white-space:pre\">b   </span>   ",
     );
-    assert_lines(&l, &[("", 65.5), ("gggcccc", 4.0), ("b", 1.70), ("", 65.5)]);
-    assert!(l[2].0.starts_with("        b"), "{l:?}");
+    assert_lines(&l, &[("", 65.5), ("gggcccc", 0.0), ("b", 1.70)]);
+    assert!(l[2].0.starts_with("       b"), "{l:?}");
 }
 
 /// A word in a plain `<span>`, then its parent's collapsible space, then
