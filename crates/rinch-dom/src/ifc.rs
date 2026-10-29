@@ -104,6 +104,21 @@ pub(crate) fn line_ascent(m: &parley::LineMetrics) -> f32 {
     m.baseline - m.content_block_min_coord
 }
 
+/// The top of what a line covers: its line box's (`block_min_coord`), or its
+/// content area's when that reaches higher — under a negative half-leading,
+/// where the glyphs stand out of a line box shorter than they are. That is
+/// what parley 0.11.1 reported as `block_min_coord`; 0.12 reports the two
+/// apart (`content_block_min_coord`). Chrome highlights and hit-tests the
+/// content area there.
+pub(crate) fn line_top(m: &parley::LineMetrics) -> f32 {
+    m.block_min_coord.min(m.content_block_min_coord)
+}
+
+/// [`line_top`]'s counterpart at the bottom.
+pub(crate) fn line_bottom(m: &parley::LineMetrics) -> f32 {
+    m.block_max_coord.max(m.content_block_max_coord)
+}
+
 /// [`line_ascent`]'s counterpart below the baseline (`LineMetrics::descent`
 /// before parley 0.12).
 pub(crate) fn line_descent(m: &parley::LineMetrics) -> f32 {
@@ -672,7 +687,10 @@ pub(crate) fn atomic_inline_baseline(tree: &crate::node::NodeTree, id: usize) ->
     }
     let r = taffy_baseline(tree, taffy_id, first, 0);
     if std::env::var_os("ZZ_PROBE_BASELINE").is_some() {
-        eprintln!("ZZ atomic_inline_baseline({id}) = {r:?} lines={:?}", tree.atomic_line_baselines);
+        eprintln!(
+            "ZZ atomic_inline_baseline({id}) = {r:?} lines={:?}",
+            tree.atomic_line_baselines
+        );
     }
     r
 }
@@ -2168,7 +2186,10 @@ fn fold_after_overflowing_box(
     // The table's cursor can sit on the zero-width newline that ended the
     // line before; a newline is never the first unit of a line.
     let first = cursor + units[cursor..end].iter().take_while(|u| u.newline).count();
-    let n = units[first..take].iter().map(|u| u.counted as usize).sum::<usize>();
+    let n = units[first..take]
+        .iter()
+        .map(|u| u.counted as usize)
+        .sum::<usize>();
     breaker.revert_to(line_start.clone());
     breaker
         .break_next_with_length(u32::try_from(n).map_err(|_| ())?)
@@ -2478,7 +2499,10 @@ fn break_overflowing_spaces(
             }
         }
     };
-    let n = units[first..through].iter().map(|u| u.counted as usize).sum::<usize>();
+    let n = units[first..through]
+        .iter()
+        .map(|u| u.counted as usize)
+        .sum::<usize>();
     breaker.revert_to(line_start.clone());
     breaker.break_next_with_length(u32::try_from(n).ok()?)?;
     breaker.set_prior_line_width(max);
@@ -3262,7 +3286,10 @@ fn commit_css_line(
 ) -> Option<(parley::layout::BreakReason, f32)> {
     use parley::layout::BreakReason;
     let first = cursor + units[cursor..].iter().take_while(|u| u.newline).count();
-    let n = units[first..e].iter().map(|u| u.counted as usize).sum::<usize>();
+    let n = units[first..e]
+        .iter()
+        .map(|u| u.counted as usize)
+        .sum::<usize>();
     breaker.revert_to(line_start.clone());
     breaker.break_next_with_length(u32::try_from(n).ok()?)?;
     breaker.set_prior_line_width(max);
@@ -3481,7 +3508,9 @@ fn logical_units(
                                 .get(range.clone())
                                 .is_some_and(|t| t.starts_with('\u{a0}')),
                         space: c.is_space_or_nbsp(),
-                        counted: text.get(range.clone()).map_or(1, |t| t.chars().count() as u32),
+                        counted: text
+                            .get(range.clone())
+                            .map_or(1, |t| t.chars().count() as u32),
                         inline_box: false,
                         breaks_before_glue: text
                             .get(range.clone())
@@ -10460,7 +10489,11 @@ impl RinchDocument {
                             crate::computed_style::DisplayValue::InlineFlex
                                 | crate::computed_style::DisplayValue::InlineGrid
                         );
-                        if first { b } else { b + (height - child.layout.height) }
+                        if first {
+                            b
+                        } else {
+                            b + (height - child.layout.height)
+                        }
                     });
                     builder.push_inline_box(parley::InlineBox {
                         id: child_id as u64,

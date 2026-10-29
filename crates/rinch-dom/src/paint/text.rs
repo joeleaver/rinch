@@ -1164,12 +1164,14 @@ impl<'a> TextFragment<'a> {
                     let decorated = (cluster.glyphs().next().is_some()
                         && styles
                             .get(usize::from(cluster.style_index()))
-                            .is_some_and(|st| st.underline.is_some() || st.strikethrough.is_some()))
+                            .is_some_and(|st| {
+                                st.underline.is_some() || st.strikethrough.is_some()
+                            }))
                         || (wavy
-                        && inline_layout
-                            .decoration_spans
-                            .iter()
-                            .any(|d| d.start <= byte && byte < d.end));
+                            && inline_layout
+                                .decoration_spans
+                                .iter()
+                                .any(|d| d.start <= byte && byte < d.end));
                     let inked = !cluster.is_space_or_nbsp() || decorated;
                     let k = line_pieces.partition_point(|p| p.end <= byte);
                     if inked
@@ -1609,8 +1611,11 @@ impl GlyphCursor {
             self.glyphs.clear();
             for cluster in shown_clusters(run, self.limit) {
                 let hidden = mask.hidden_at(cluster.text_range().start);
-                self.glyphs
-                    .extend(cluster.glyphs().map(|_| (usize::from(cluster.style_index()), hidden)));
+                self.glyphs.extend(
+                    cluster
+                        .glyphs()
+                        .map(|_| (usize::from(cluster.style_index()), hidden)),
+                );
             }
         }
         let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
@@ -1656,8 +1661,11 @@ impl ValignCursor {
             self.glyphs.clear();
             for cluster in run.visual_clusters() {
                 let shift = inline_layout.vertical_align_shift_at(cluster.text_range().start);
-                self.glyphs
-                    .extend(cluster.glyphs().map(|_| (usize::from(cluster.style_index()), shift)));
+                self.glyphs.extend(
+                    cluster
+                        .glyphs()
+                        .map(|_| (usize::from(cluster.style_index()), shift)),
+                );
             }
         }
         let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
@@ -1835,8 +1843,11 @@ impl ColourCursor {
             self.glyphs.clear();
             for cluster in run.visual_clusters() {
                 let recolour = live.at(cluster.text_range().start);
-                self.glyphs
-                    .extend(cluster.glyphs().map(|_| (usize::from(cluster.style_index()), recolour)));
+                self.glyphs.extend(
+                    cluster
+                        .glyphs()
+                        .map(|_| (usize::from(cluster.style_index()), recolour)),
+                );
             }
         }
         let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
@@ -2037,7 +2048,9 @@ impl<'a> PaintLine<'a> {
                     }
                     let rest = run_glyphs.get(next..).unwrap_or(&[]);
                     let count = rest.first().map_or(0, |&(first, _)| {
-                        rest.iter().take_while(|&&(style, _)| style == first).count()
+                        rest.iter()
+                            .take_while(|&&(style, _)| style == first)
+                            .count()
                     });
                     self.glyphs.extend(rest[..count].iter().map(|&(_, g)| g));
                     next += count;

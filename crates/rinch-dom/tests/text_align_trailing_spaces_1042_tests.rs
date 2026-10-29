@@ -307,7 +307,11 @@ fn a_right_to_left_line_centres_its_trailing_spaces() {
     let n = d.tree.get(c.0).unwrap();
     let il = n.text_layout.as_ref().unwrap();
     let m = *il.layout.lines().next().unwrap().metrics();
-    assert!(m.advance > 30.0, "the spaces are on the line: {}", m.advance);
+    assert!(
+        m.advance > 30.0,
+        "the spaces are on the line: {}",
+        m.advance
+    );
     assert_eq!(m.hanging_advance, 0.0, "and they fit, so none hangs");
     near(m.offset, (200.0 - m.advance) / 2.0);
 }
