@@ -38,7 +38,8 @@ thread_local! {
     /// `click` that belongs to a gesture whose press acted (`GESTURE_ACTED`,
     /// issue #272) is a duplicate: the browser's own
     /// click after the press, the deferred touch click, and the trusted,
-    /// `detail == 0` click a `<label>` fires at its control.
+    /// `detail == 0` click a `<label>` fires at its control — unless that one
+    /// reaches a handler the press did not run (issue #2033, `GESTURE_RAN`).
     ///
     /// The flag is scoped to the gesture, never latched: assistive technology
     /// activates through a *trusted* click with no pointer or key event of its
