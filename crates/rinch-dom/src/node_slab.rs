@@ -189,16 +189,24 @@ impl Index<RawNodeId> for NodeSlab {
     ///
     /// # Panics
     ///
-    /// If `id` names no live node — its slot is vacant, or holds a node of
-    /// another generation. Use [`NodeSlab::get`] for an id from outside the
-    /// tree (an app's handle, an event target, a side table).
+    /// If `id`'s slot is vacant. A **debug** build also panics when the slot
+    /// holds a node of another generation; a release build indexes by slot
+    /// alone, because this is the path of the ids the tree hands itself
+    /// (`parent`, `children`, a layout walk), which are live by construction,
+    /// and the compare cost several percent on the layout and paint benches
+    /// (#723). An id from outside the tree — an app's handle, an event target,
+    /// a side table kept across frames — goes through [`NodeSlab::get`], which
+    /// checks the generation in every build.
     #[inline]
     #[track_caller]
     fn index(&self, id: RawNodeId) -> &Node {
+        #[cfg(debug_assertions)]
         match self.slab.get(slot_of(id)) {
             Some(n) if n.id == id => n,
             other => stale(id, other.map(|n| n.id)),
         }
+        #[cfg(not(debug_assertions))]
+        &self.slab[slot_of(id)]
     }
 }
 
@@ -206,6 +214,7 @@ impl IndexMut<RawNodeId> for NodeSlab {
     #[inline]
     #[track_caller]
     fn index_mut(&mut self, id: RawNodeId) -> &mut Node {
+        #[cfg(debug_assertions)]
         match self.slab.get_mut(slot_of(id)) {
             Some(n) => {
                 if n.id != id {
@@ -215,6 +224,8 @@ impl IndexMut<RawNodeId> for NodeSlab {
             }
             None => stale(id, None),
         }
+        #[cfg(not(debug_assertions))]
+        &mut self.slab[slot_of(id)]
     }
 }
 
