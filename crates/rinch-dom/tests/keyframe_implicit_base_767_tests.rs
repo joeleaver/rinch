@@ -5,7 +5,7 @@
 //! css-animations-1 §4: "If a 0% or from keyframe is not specified, then the
 //! user agent constructs a 0% keyframe using the computed values of the
 //! properties being animated." Stylo hands that implicit stop over as
-//! `KeyframesStepValue::ComputedValues`, and `extract_base_style_values` fills
+//! `KeyframesStepValue::ComputedValues`, and `base_style_value` fills
 //! it from the element's `ComputedStyle`. It used to carry only opacity, the
 //! colours, the background position and the transform, so a to-only
 //! `width: 200px` on a 100px box had nothing to interpolate from and wrote the
@@ -31,6 +31,7 @@
 //! | `padding-left: 10px` | `to { padding-left: 40px }` | 17.5 | 25 | 32.5 |
 //! | `margin-left: 10px` | `to { margin-left: 40px }` | 17.5 | 25 | 32.5 |
 //! | `margin-left: auto` (300) | `to { margin-left: 40px }` | 300 | 40 | 40 |
+//! | `margin-left: 10%` (40) | `to { margin-left: 100px }` | 55 | 70 | 85 |
 //! | `border-left-width: 10px` | `to { border-left-width: 40px }` | 17 | 25 | 32 |
 //! | `font-size: 10px` | `to { font-size: 30px }` | 15 | 20 | 25 |
 //! | `border-left-color: rgb(255,0,0)` | `to { … rgb(0,0,255) }` | (191,0,64) | (128,0,128) | (64,0,191) |
@@ -333,9 +334,8 @@ fn a_transform_only_animation_carries_no_layout_property() {
 /// Chrome re-reads the base on every style change: `width: 100px` set to `0`
 /// at 500ms under `to { width: 200px }` gives 100px at once and 150px at
 /// 750ms, the same animation object, clock kept. A targeted restyle keeping
-/// the implicit stop it was minted with is #781's.
+/// the implicit stop it was minted with was #781.
 #[test]
-#[ignore = "#781: a targeted restyle does not refresh a running animation's implicit stop"]
 fn a_base_width_changed_mid_animation_is_re_read() {
     let (mut doc, div) = animated("width: 100px", "to { width: 200px; }");
     close(layout_at(&mut doc, div, 500.0).0, 150.0, "width at 500ms");
@@ -345,5 +345,38 @@ fn a_base_width_changed_mid_animation_is_re_read() {
         layout_at(&mut doc, div, 750.0).0,
         150.0,
         "width at 750ms, base 0",
+    );
+}
+
+/// A percentage margin base against a length stop interpolates as a `calc()`
+/// (the `LengthPercentageAuto` mixed arm): `margin-left: 10%` of the 400px
+/// container (40px) to `100px`. Chrome 156: x = 55 / 70 / 85 at 250 / 500 /
+/// 750ms. Without the arm the pair snaps, and the box sits at 100.
+#[test]
+fn a_percentage_base_margin_interpolates_against_a_length_stop() {
+    let (mut doc, div) = animated(
+        "width: 100px; margin-left: 10%",
+        "to { margin-left: 100px; }",
+    );
+    for (ms, want) in [(250.0, 55.0), (500.0, 70.0), (750.0, 85.0)] {
+        layout_at(&mut doc, div, ms);
+        let x = doc.tree.get(div.0).unwrap().layout.x;
+        close(x, want, &format!("the box's x at {ms}ms"));
+    }
+}
+
+/// A restyle that does not touch `width` re-reads the implicit `from` from the
+/// *base* style, not the animated one: 175px at 750ms, as in Chrome. Feeding
+/// the 150px sample back in as the base would give 187.5.
+#[test]
+fn an_unrelated_restyle_does_not_feed_the_animated_width_back_in() {
+    let (mut doc, div) = animated("width: 100px", "to { width: 200px; }");
+    close(layout_at(&mut doc, div, 500.0).0, 150.0, "width at 500ms");
+    doc.set_attribute(div, "class", "b x");
+    doc.resolve_layout(800.0, 600.0);
+    close(
+        layout_at(&mut doc, div, 750.0).0,
+        175.0,
+        "width at 750ms after a class change",
     );
 }

@@ -37,8 +37,8 @@
 //! was wrong: the theme sheet is replaceable and can carry `@keyframes`
 //! (`generate_theme_css_string` already puts component keyframes in it), so a
 //! new theme can drop one. Keeping the entry whole left that animation running;
-//! Chrome 153 cancels it. Outside the full restyle — a plain class change — an
-//! edited `@keyframes` body still never reaches a running animation (#766).
+//! Chrome 153 cancels it. Every other cascade now does the same (#766,
+//! `animation_restyle_refresh_tests.rs`).
 //!
 //! # Which fixture kills which mutant
 //!
@@ -415,8 +415,8 @@ fn a_transition_declared_before_the_first_layout_does_not_run() {
 ///
 /// `has_been_styled` only suppresses a node's *first* cascade. A tree is
 /// cascaded more than once before its first layout: appending a `<style>`
-/// element re-resolves the whole document there and then
-/// (`maybe_load_style_css`), so a component that appends its own stylesheet
+/// element to the document restyles every element its rules reach there and
+/// then (`flush_stylist`, #884), so a component that appends its own stylesheet
 /// after building its markup leaves every node already styled, and the very
 /// next rule it loads is a *change* on an already-styled node. Without the
 /// flag that is a transition running on page load, which is the thing the flag

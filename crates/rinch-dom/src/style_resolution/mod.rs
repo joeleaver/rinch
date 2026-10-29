@@ -3,7 +3,10 @@
 mod invalidation;
 mod pseudo;
 mod resolve;
+mod sheets;
 mod state_tracking;
+
+pub(crate) use sheets::StyleElementSheet;
 
 use servo_arc::Arc as ServoArc;
 
@@ -18,8 +21,10 @@ use crate::node::{DirtyFlags, DisplayMode, NodeKind, NodeTree};
 impl RinchDocument {
     /// Load CSS into the document's stylesheet.
     ///
-    /// Parses the CSS string and merges rules/variables into the existing stylesheet.
-    /// Call this at startup to load theme and component CSS.
+    /// Parses the CSS string and adds it after every sheet loaded before it.
+    /// It may be called at any time: after the document has been styled, the
+    /// next `resolve_styles` restyles the elements its rules can reach and no
+    /// others (#884; see `style_resolution/sheets.rs`).
     pub fn load_css(&mut self, css: &str) {
         self.load_stylo_css(css);
     }
@@ -62,43 +67,11 @@ impl RinchDocument {
         }
     }
 
-    /// If the given node is a `<style>` element, extract its text children's content
-    /// and load it into the stylesheet.
+    /// If the given node is a `<style>` element, its text may have changed:
+    /// its sheet is brought up to date at the next style resolve (#884,
+    /// `sheets.rs`).
     pub(crate) fn maybe_load_style_css(&mut self, node_id: usize) {
-        let is_style = self
-            .tree
-            .nodes
-            .get(node_id)
-            .and_then(|n| n.tag())
-            .map(|t| t == "style")
-            .unwrap_or(false);
-        if !is_style {
-            return;
-        }
-
-        // Collect text content from children
-        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
-        let mut css = String::new();
-        for child_id in children {
-            if let Some(text) = self.tree.nodes.get(child_id).and_then(|n| n.text_content()) {
-                css.push_str(text);
-            }
-        }
-        if !css.is_empty() {
-            self.load_stylo_css(&css);
-            // New CSS rules may affect any existing node — invalidate all caches
-            // and clear style_roots to force a full tree walk.
-            self.tree
-                .note_full_restyle(crate::perf::FullRestyleReason::Stylesheet);
-            for (nid, _) in self.tree.nodes.iter() {
-                *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
-            }
-            self.tree.style_roots.clear();
-            self.tree.full_style_walk = true;
-            self.tree.styles_dirty = true;
-            self.resolve_styles();
-            self.apply_stylo_styles_to_taffy();
-        }
+        self.note_style_text_changed(node_id);
     }
 
     /// Set viewport dimensions for resolving vh/vw CSS units.
@@ -315,27 +288,36 @@ impl RinchDocument {
 
     /// Load CSS into Stylo's stylesheet system.
     ///
-    /// Parses the CSS string and appends it to the Stylist for CSS cascade.
-    /// Appended sheets cascade after everything loaded before them, matching
-    /// document source order.
+    /// Parses the CSS string and adds it to the Stylist for CSS cascade. It
+    /// cascades after everything loaded before it, matching document source
+    /// order, and before every `<style>` element's sheet (those are body
+    /// sheets; these are the web's `<head>` ones).
+    ///
+    /// The Stylist records which elements the new rules can reach; the next
+    /// `resolve_styles` restyles those (#884). Forcing the origin dirty
+    /// instead, as this used to, threw that set away and marked nothing.
     pub fn load_stylo_css(&mut self, css: &str) {
-        use style::stylesheets::Origin;
-
         let doc_stylesheet = self.parse_author_stylesheet(css);
 
-        // Add the stylesheet to the stylist
+        let before = self.first_style_element_sheet();
         let guard = self.tree.guard.read();
-        self.stylist
-            .append_stylesheet(doc_stylesheet.clone(), &guard);
+        match before {
+            Some(before) => {
+                self.stylist
+                    .insert_stylesheet_before(doc_stylesheet.clone(), before, &guard);
+            }
+            None => self
+                .stylist
+                .append_stylesheet(doc_stylesheet.clone(), &guard),
+        }
         drop(guard);
 
         // Track app author sheets in insertion order so the theme sheet can be
         // re-inserted ahead of them (see `set_theme_css`).
         self.author_stylesheets.push(doc_stylesheet);
 
-        // Mark stylesheets as changed so they'll be flushed on next style computation
-        self.stylist
-            .force_stylesheet_origins_dirty(Origin::Author.into());
+        self.sheet_invalidations_pending = true;
+        self.tree.styles_dirty = true;
 
         self.recompute_bare_focus_rules();
     }
@@ -352,6 +334,11 @@ impl RinchDocument {
             .theme_stylesheet
             .iter()
             .chain(self.author_stylesheets.iter())
+            .chain(
+                self.style_element_sheets
+                    .iter()
+                    .filter_map(|e| e.sheet.as_ref()),
+            )
             .cloned()
             .collect();
         let guard = self.tree.guard.read();
@@ -452,8 +439,6 @@ impl RinchDocument {
     /// app's `<style>` rules, letting theme `:root` custom properties silently
     /// win over an app's `:root` overrides of the same variable.
     pub fn set_theme_css(&mut self, css: &str) {
-        use style::stylesheets::Origin;
-
         let new_sheet = self.parse_author_stylesheet(css);
 
         let guard = self.tree.guard.read();
@@ -465,10 +450,15 @@ impl RinchDocument {
 
         // Re-insert ahead of the first app sheet so app CSS keeps overriding the
         // theme. With no app sheets yet, appending puts it first anyway.
-        match self.author_stylesheets.first() {
+        let first_app = self
+            .author_stylesheets
+            .first()
+            .cloned()
+            .or_else(|| self.first_style_element_sheet());
+        match first_app {
             Some(first_app) => {
                 self.stylist
-                    .insert_stylesheet_before(new_sheet.clone(), first_app.clone(), &guard);
+                    .insert_stylesheet_before(new_sheet.clone(), first_app, &guard);
             }
             None => {
                 self.stylist.append_stylesheet(new_sheet.clone(), &guard);
@@ -478,8 +468,11 @@ impl RinchDocument {
 
         self.theme_stylesheet = Some(new_sheet);
 
-        self.stylist
-            .force_stylesheet_origins_dirty(Origin::Author.into());
+        // The old sheet's and the new sheet's rules are both invalidations
+        // (#884): replacing the theme restyles what either can reach, with no
+        // `recompute_all_styles_full` needed.
+        self.sheet_invalidations_pending = true;
+        self.tree.styles_dirty = true;
 
         self.recompute_bare_focus_rules();
     }
@@ -494,7 +487,10 @@ impl RinchDocument {
     }
 
     /// Update theme CSS variables without duplicating non-`:root` rules.
-    /// After calling this, call `recompute_all_styles_full()` to apply the new variables.
+    ///
+    /// The next `resolve_styles` applies the new sheet by itself (#884). The
+    /// shell still follows it with `recompute_all_styles_full()`, which
+    /// re-cascades with transitions off so a theme switch lands instantly.
     ///
     /// Replaces the theme sheet in its stable pre-app slot; see [`Self::set_theme_css`].
     pub fn update_theme_variables(&mut self, css: &str) {
@@ -656,18 +652,18 @@ impl RinchDocument {
         // every spinner in the window would jump back to 0° on a dark-mode
         // toggle.
         //
-        // What the re-cascade keeps is the **clock**, and only the clock. A
-        // kept animation's keyframes, stops and timing were taken from the old
-        // sheet and the old base style, so while this pass runs
+        // What the re-cascade keeps is the **clock**, and only the clock: as on
+        // every cascade of an animated node (#766, #780, #781),
         // `start_animations` looks the rule up again (dropping the animation if
         // the new sheet no longer defines it — Chrome cancels it), re-extracts
-        // the stops from the new base style, and takes the new
-        // `animation-duration` / `animation-delay`. Chrome 153, measured under
-        // a seeked `currentTime`: a redefined `@keyframes` body plays at once on
-        // the kept clock, a 10s → 20s duration keeps `currentTime` and halves
-        // the progress, and an `em` stop follows the new font-size.
+        // the stops when the rule or their base-style inputs changed, and takes
+        // the new `animation-duration` / `animation-delay`. Chrome 153,
+        // measured under a seeked `currentTime`: a redefined `@keyframes` body
+        // plays at once on the kept clock, a 10s → 20s duration keeps
+        // `currentTime` and halves the progress, and an `em` stop follows the
+        // new font-size.
         //
-        // This also repairs what #747's restart walk does on this pass. The
+        // That also repairs what #747's restart walk does on this pass. The
         // walk runs on a shown panel's cascade, before its descendants', and
         // mints their entries from their pre-restyle `computed_style`; each
         // descendant's own cascade comes after it here — every node is
@@ -677,10 +673,8 @@ impl RinchDocument {
         self.tree.full_style_walk = true;
         // Resolve styles using Stylo
         self.tree.styles_dirty = true;
-        self.tree.refreshing_animations = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
-        self.tree.refreshing_animations = false;
         self.tree.transitions_enabled = transitions_were_enabled;
         // Run the whole-document IFC setup pass: the new sheet can change any
         // element's `display` or `position`, which moves the formatting
@@ -2228,24 +2222,15 @@ impl RinchDocument {
     /// before children — so every descendant it visits is still carrying the
     /// `computed_style` it had *before* this pass. `start_animations` extracts
     /// keyframe stops from that, so an `em`, `rem` or `currentcolor` in a
-    /// keyframe resolves against the stale basis, and — **outside
-    /// `recompute_all_styles_full`** — the find-by-name in `start_animations`
-    /// then keeps those stops when the descendant's own cascade runs a moment
-    /// later. Measured with `width: 1em` keyframes on a box whose `font-size`
-    /// goes 10px → 40px in the same class write that un-hides its wrapper: stops
-    /// come out `10..100` where `40..400` is right.
-    ///
-    /// It is not a regression — `main` was equally stale, by never dropping the
-    /// entry at all — but this walk does foreclose the correct answer the
-    /// per-node path would have reached on the `set_attribute` route. The root
-    /// cause is that `start_animations` does not re-extract stops for a name it
-    /// already knows, which is older and wider than this function. The one
-    /// exception is the full restyle: there `NodeTree::refreshing_animations`
-    /// makes the descendant's own cascade, which follows this walk on that pass,
-    /// re-extract them from its new style, so a theme that un-hides a panel and
-    /// changes its font-size gets the right basis
-    /// (`full_restyle_animation_refresh_tests`). The `<style>`-append and
-    /// viewport-change passes do not set that flag.
+    /// keyframe resolves against the stale basis. When the descendant's own
+    /// cascade runs later on the same pass — a class write that un-hides its
+    /// wrapper and also changes its font-size, or any full restyle — that
+    /// cascade re-extracts the stops from its new style (`start_animations`
+    /// refreshes a kept animation whenever its stops' inputs moved, #766), so
+    /// the basis comes out right: `width: 1em` keyframes on a box whose
+    /// `font-size` goes 10px → 40px give `40..400`. A descendant whose own
+    /// cascade does not run keeps the basis the walk saw, which is its current
+    /// style unless something else changed it in the same pass.
     ///
     /// # Cost
     ///

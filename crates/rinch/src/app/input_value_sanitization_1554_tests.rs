@@ -138,8 +138,15 @@ fn an_inputs_line_breaks_are_not_painted_below_its_box() {
     assert_eq!(below, 0, "nothing below the field's box");
 
     // Positive control for the oracle: a textarea keeps its line breaks, and
-    // its second and third lines are below 30px.
-    let (mut app, _id, _log) = page("textarea", "ab\ncd\nef");
+    // given room below 30px its second and third lines are painted there. (In
+    // its 30px box they are clipped to it and scrolled to, #827.)
+    let (mut app, id, _log) = page("textarea", "ab\ncd\nef");
+    rinch_core::dom::DomDocument::set_attribute(
+        &mut *app.doc.as_ref().unwrap().borrow_mut(),
+        rinch_core::dom::NodeId(id),
+        "style",
+        &format!("{FIELD_STYLE}; height: 80px"),
+    );
     assert!(painted(&mut app).1 > 0, "a textarea's lines do reach below");
 }
 

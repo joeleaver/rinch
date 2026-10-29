@@ -181,12 +181,12 @@ pub(super) fn paint_input_value(
     scale: f64,
     x: f64,
     y: f64,
-    _w: f64,
+    w: f64,
     h: f64,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
     transform: Affine,
-    scroll_x: f32,
+    scroll: (f32, f32),
 ) {
     // `value` is `form_control::control_value`: the `value` attribute, else a
     // textarea's text children (#1159), which nothing else draws.
@@ -263,11 +263,7 @@ pub(super) fn paint_input_value(
         (text, cursor_pos, selection_start)
     };
 
-    // Get font properties from computed style
     let font_size = node.computed_style.font_size;
-    let font_weight = node.computed_style.font_weight;
-    let font_family =
-        crate::fonts::parley_text_family(font_cx, &node.computed_style.font_family, text);
 
     // Get text color from computed style - dimmed for placeholder
     let base_color = node
@@ -282,67 +278,67 @@ pub(super) fn paint_input_value(
         base_color
     };
 
-    // The text column: a single-line `<input>`'s content box, a textarea's
-    // left padding in on both sides (`form_control::text_column`), and the
-    // input's horizontal scroll (#1721), all shared with the hit-test and
-    // caret-rect builders.
+    let is_textarea = node.tag() == Some("textarea");
+    let scaled_font_size = font_size * scale as f32;
+
+    // The one builder and the one origin the hit-test, caret-rect and IME
+    // paths use (`form_control::field_text_layout` / `field_text_origin`,
+    // #827): built at the scaled font size, so its geometry is device px.
+    perf.bump(crate::perf::Counter::ShapePaint);
+    let text_layout = crate::form_control::field_text_layout(
+        node,
+        text,
+        scale as f32,
+        Some(Brush::Solid(color)),
+        font_cx,
+        layout_cx,
+    );
+    let (origin_x, origin_y) =
+        crate::form_control::field_text_origin(node, text_layout.height() / scale as f32, scroll);
+    let text_x = x + origin_x as f64 * scale;
+    let text_y = y + origin_y as f64 * scale;
+
+    // A text control's text, selection, caret and composition underline are
+    // clipped as Chrome's inner editor clips them, whenever they could reach
+    // past it. A single-line field: to its content box horizontally (its
+    // padding box vertically) once its line overflows the column or is
+    // scrolled (#1721). A textarea, a scroll container: to its padding box
+    // once its text is taller than the content box or scrolled (#827). Text
+    // that fits needs no clip.
+    let style = &node.computed_style;
     let (column_left, column_width) = crate::form_control::text_column(node);
     let column_left = column_left as f64 * scale;
     let column_width = column_width as f64 * scale;
-    let padding_top = node.computed_style.padding_top.to_px() as f64 * scale;
-    let scroll = scroll_x as f64 * scale;
-
-    // Check if this is a textarea (multi-line) or input (single-line)
-    let is_textarea = node.tag() == Some("textarea");
-
-    // Build text layout
-    let scaled_font_size = font_size * scale as f32;
-    // Kept glyph-for-glyph in step with `RinchApp::compute_input_cursor_from_click`
-    // (crates/rinch/src/app/click_handling.rs) — a property added here and not
-    // there moves the painted text out from under the caret. Both should move to
-    // `ComputedStyle::build_parley_layout` together (#320).
-    perf.bump(crate::perf::Counter::ShapePaint);
-    let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
-    builder.push_default(parley::style::StyleProperty::FontSize(scaled_font_size));
-    builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-    font_family.push_to(&mut builder);
-    if (font_weight - 400.0).abs() > 1.0 {
-        builder.push_default(parley::style::StyleProperty::FontWeight(
-            parley::style::FontWeight::new(font_weight),
-        ));
-    }
-
-    let mut text_layout = builder.build(text);
-    // A single-line `<input>` is one unwrapped line (#1721); a textarea wraps.
-    text_layout.break_all_lines(crate::form_control::wrap_width(node, scale as f32));
-
-    // For textarea, align to top with padding; for input, center vertically
-    let text_height = text_layout.height() as f64;
-    let text_y = if is_textarea {
-        y + padding_top
+    let top = style.border_top_width.to_px() as f64 * scale;
+    let bottom = style.border_bottom_width.to_px() as f64 * scale;
+    let clip = if is_textarea {
+        let left = style.border_left_width.to_px() as f64 * scale;
+        let right = style.border_right_width.to_px() as f64 * scale;
+        let pad_top = style.padding_top.to_px() as f64 * scale;
+        let pad_bottom = style.padding_bottom.to_px() as f64 * scale;
+        let content_h = h - top - bottom - pad_top - pad_bottom;
+        (scroll.1 > 0.0 || text_layout.height() as f64 > content_h).then(|| {
+            Rect::new(
+                x + left,
+                y + top,
+                (x + w - right).max(x + left),
+                (y + h - bottom).max(y + top),
+            )
+        })
     } else {
-        y + (h - text_height) / 2.0
-    };
-    let text_x = x + column_left - scroll;
-
-    // A single-line field's text, selection, caret and composition underline
-    // are clipped to its content box horizontally (and its padding box
-    // vertically) whenever its line overflows the column or is scrolled, as
-    // Chrome's inner editor clips them. A line that fits needs no clip.
-    let clipped = !is_textarea
-        && (scroll > 0.0
+        (scroll.0 > 0.0
             || text_layout.full_width() as f64 + crate::form_control::CARET_WIDTH as f64 * scale
-                > column_width);
-    if clipped {
-        let style = &node.computed_style;
-        let top = style.border_top_width.to_px() as f64 * scale;
-        let bottom = style.border_bottom_width.to_px() as f64 * scale;
-        let clip = Rect::new(
-            x + column_left,
-            y + top,
-            x + column_left + column_width,
-            (y + h - bottom).max(y + top),
-        );
+                > column_width)
+            .then(|| {
+                Rect::new(
+                    x + column_left,
+                    y + top,
+                    x + column_left + column_width,
+                    (y + h - bottom).max(y + top),
+                )
+            })
+    };
+    if let Some(clip) = clip {
         painter.push_clip(Fill::NonZero, transform, &clip.into());
     }
 
@@ -436,7 +432,7 @@ pub(super) fn paint_input_value(
         painter.fill_color(Fill::NonZero, transform, base_color, &ul_rect.into());
     }
 
-    if clipped {
+    if clip.is_some() {
         painter.pop_layer();
     }
 }

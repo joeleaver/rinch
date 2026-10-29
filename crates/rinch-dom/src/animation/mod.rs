@@ -22,24 +22,37 @@ use crate::transition::apply_value_to_style;
 
 /// Start or update animations for a node based on its current animation specs.
 ///
-/// Compares new specs against existing active animations, **by name**:
+/// Compares new specs against existing animations **by name**, repeated names
+/// by position counted from the end of the list (css-animations-2; #780):
 /// - New animation name: create and start
 /// - Same name: keep running (don't restart)
 /// - Removed name: cancel
 /// - Play state change: pause/resume
 ///
-/// A kept animation normally keeps everything it had except the fields the new
-/// spec restates in place (direction, fill, iteration count, timing function):
-/// its keyframe stops and its `duration_ms` / `delay_ms` stay as they were
-/// minted. **During `recompute_all_styles_full`** (`tree.refreshing_animations`)
-/// it keeps only its clock — `start_time_ms`, `paused_elapsed_ms` and
-/// `play_state` — and takes the rest afresh: the `@keyframes` rule is looked up
-/// again and the animation dropped if it is gone, the stops are re-extracted
-/// from `base_style`, and the duration and delay come from the spec. A re-timed
-/// paused animation keeps `paused_elapsed_ms` as elapsed *time*, so its
-/// progress moves and its `currentTime` does not, as in Chrome. Outside that
-/// pass an edited `@keyframes` body, a changed duration, and a stop derived from
-/// the base style all stay stale (#766, #780, #781).
+/// A kept animation keeps its **clock** — `start_time_ms`,
+/// `paused_elapsed_ms` and `play_state` — and nothing else, on every cascade of
+/// its node, whatever caused it (a class change, a `<style>` added, a theme, a
+/// viewport change; #766, #780, #781). CSS Animations 1 §3: a changed
+/// `animation-*` longhand applies to the running animation, and a changed
+/// `@keyframes` rule takes effect at once. So:
+/// - the timing (duration, delay, direction, fill, iteration count, timing
+///   function) comes from the spec. A re-timed paused animation keeps
+///   `paused_elapsed_ms` as elapsed *time*, so its progress moves and its
+///   `currentTime` does not, as in Chrome;
+/// - the `@keyframes` rule is looked up again, and the animation dropped if it
+///   is gone (Chrome cancels it);
+/// - the stops are re-extracted when the rule's blocks changed, or a
+///   base-style input an authored stop **read** at extraction moved
+///   ([`StopInputs`]: the element's `font-size` for an `em`, its `color` for a
+///   `currentcolor`, the parent's `color` for `color: currentcolor`), and
+///   otherwise kept with only their implicit (base) values re-read
+///   ([`keyframes::refresh_implicit_values`]).
+///
+/// So a node cascaded while it animates pays, per animation, one keyframes
+/// lookup, a pointer compare per keyframe, and a re-read of its implicit
+/// 0%/100% values from the base style; a hover that moves `color` under a
+/// `transform` spin re-extracts nothing. A node with no animation never gets
+/// here.
 #[allow(clippy::too_many_arguments)]
 pub fn start_animations(
     active_animations: &mut HashMap<RawNodeId, Vec<ActiveAnimation>>,
@@ -64,40 +77,57 @@ pub fn start_animations(
         return;
     }
 
-    let element = RinchNode::new(node_id, tree);
+    // Back in declaration order, so repeated names match by position.
+    existing.sort_by_key(|a| a.position);
 
-    // The keyframe stops for `name` against this node's current base style, or
-    // `None` when no `@keyframes` rule of that name exists (or it yields no
-    // stops).
-    let extract_stops = |name: &str| -> Option<Vec<KeyframeStop>> {
-        let atom = Atom::from(name);
-        let kf_anim = stylist.lookup_keyframes(&atom, element)?;
-        // A `color: currentcolor` stop inherits the parent's colour.
-        let parent_color = tree
-            .get(node_id)
-            .and_then(|n| n.parent)
-            .and_then(|parent| tree.get(parent))
-            .and_then(|parent| parent.computed_style.color);
-        // `rem` in a keyframe stop resolves against the root's font
-        // size, the same base the cascade uses.
-        let root_font_size = tree
-            .get(tree.root_id)
-            .map_or(16.0, |root| root.computed_style.font_size);
-        let stops = keyframes::extract_keyframe_stops(
-            kf_anim,
-            base_style,
-            parent_color,
-            root_font_size,
-            guard,
-        );
-        (!stops.is_empty()).then_some(stops)
+    let element = RinchNode::new(node_id, tree);
+    // A `color: currentcolor` stop inherits the parent's colour.
+    let parent_color = tree
+        .get(node_id)
+        .and_then(|n| n.parent)
+        .and_then(|parent| tree.get(parent))
+        .and_then(|parent| parent.computed_style.color);
+    // `rem` in a keyframe stop resolves against this. `tree.root_id` is the
+    // document node, whose `font-size` is always the initial 16px, not the
+    // `<html>` element's, so a `rem` stop ignores `html { font-size }` (#2058).
+    let root_font_size = tree
+        .get(tree.root_id)
+        .map_or(16.0, |root| root.computed_style.font_size);
+
+    // What the stops of a rule resolve against on this node now.
+    let basis = keyframes::StopBasis::new(base_style, parent_color, root_font_size);
+    // The stops of a rule against that basis, with the inputs they read.
+    let extract = |kf_anim: &style::stylesheets::keyframes_rule::KeyframesAnimation| {
+        let basis = basis.clone();
+        let stops = keyframes::extract_keyframe_stops_against(kf_anim, base_style, &basis, guard);
+        (!stops.is_empty()).then(|| (stops, StopInputs::new(kf_anim, basis)))
     };
+
+    // Match from the end: the last spec of a name takes the last entry of that
+    // name, and no entry is taken twice. Matching every spec to the *first*
+    // entry of its name turned `k 10s, k 20s` into two copies of the first.
+    let mut existing: Vec<Option<ActiveAnimation>> = existing.into_iter().map(Some).collect();
+    let mut matched: Vec<Option<ActiveAnimation>> = vec![None; specs.len()];
+    for (i, spec) in specs.iter().enumerate().rev() {
+        if let Some(j) = existing
+            .iter()
+            .rposition(|a| a.as_ref().is_some_and(|a| a.name == spec.name))
+        {
+            matched[i] = existing[j].take();
+        }
+    }
 
     let mut new_active = Vec::new();
 
-    for spec in specs {
-        // Look for an existing animation with the same name
-        if let Some(mut existing_anim) = existing.iter().find(|a| a.name == spec.name).cloned() {
+    for (position, (spec, kept)) in specs.iter().zip(matched).enumerate() {
+        let Some(kf_anim) = stylist.lookup_keyframes(&Atom::from(spec.name.as_str()), element)
+        else {
+            // No such rule: nothing starts, and a kept animation whose rule is
+            // gone is cancelled, as in Chrome.
+            continue;
+        };
+
+        if let Some(mut existing_anim) = kept {
             // Update play state
             match (existing_anim.play_state, spec.play_state) {
                 (AnimationPlayState::Running, AnimationPlayState::Paused) => {
@@ -117,29 +147,30 @@ pub fn start_animations(
                 _ => {}
             }
 
-            // Update mutable properties (direction, fill, iteration count)
+            // The timing comes from the spec; the clock (`start_time_ms`,
+            // `paused_elapsed_ms`) is not written here.
             existing_anim.direction = spec.direction;
             existing_anim.fill_mode = spec.fill_mode;
             existing_anim.iteration_count = spec.iteration_count;
             existing_anim.default_timing = spec.timing.clone();
+            existing_anim.duration_ms = spec.duration_ms;
+            existing_anim.delay_ms = spec.delay_ms;
+            existing_anim.position = position;
 
-            // The full restyle keeps the clock and nothing else (see the doc
-            // above). Neither `start_time_ms` nor `paused_elapsed_ms` nor
-            // `play_state` is written here.
-            if tree.refreshing_animations {
-                let Some(stops) = extract_stops(&spec.name) else {
-                    // The rule is gone: cancelled, as in Chrome.
+            if !existing_anim.stop_inputs.hold_for(kf_anim, &basis) {
+                let Some((stops, inputs)) = extract(kf_anim) else {
                     continue;
                 };
                 existing_anim.keyframe_stops = stops;
-                existing_anim.duration_ms = spec.duration_ms;
-                existing_anim.delay_ms = spec.delay_ms;
+                existing_anim.stop_inputs = inputs;
+            } else {
+                keyframes::refresh_implicit_values(&mut existing_anim.keyframe_stops, base_style);
             }
 
             // A restyle can leave a finished animation running again (#782,
             // #783), so ask whether it is *still* finished — **after** the
-            // refresh block above, or the question is asked against the timing
-            // the animation had before this restyle. A full restyle that
+            // timing above is taken, or the question is asked against the
+            // timing the animation had before this restyle. A restyle that
             // lengthens a finished animation is exactly that case: it runs
             // again, and a stale `settled` would leave
             // `has_running_animations()` answering `false` for it and the tick
@@ -156,28 +187,28 @@ pub fn start_animations(
                 existing_anim.settled && existing_anim.has_ended(current_time_ms);
 
             new_active.push(existing_anim);
-        } else {
-            // New animation — look up keyframes and create
-            if let Some(stops) = extract_stops(&spec.name) {
-                new_active.push(ActiveAnimation {
-                    name: spec.name.clone(),
-                    keyframe_stops: stops,
-                    default_timing: spec.timing.clone(),
-                    duration_ms: spec.duration_ms,
-                    delay_ms: spec.delay_ms,
-                    direction: spec.direction,
-                    iteration_count: spec.iteration_count,
-                    fill_mode: spec.fill_mode,
-                    play_state: spec.play_state,
-                    start_time_ms: current_time_ms,
-                    paused_elapsed_ms: if spec.play_state == AnimationPlayState::Paused {
-                        Some(0.0)
-                    } else {
-                        None
-                    },
-                    settled: false,
-                });
-            }
+        } else if let Some((stops, stop_inputs)) = extract(kf_anim) {
+            // New animation
+            new_active.push(ActiveAnimation {
+                name: spec.name.clone(),
+                keyframe_stops: stops,
+                default_timing: spec.timing.clone(),
+                duration_ms: spec.duration_ms,
+                delay_ms: spec.delay_ms,
+                direction: spec.direction,
+                iteration_count: spec.iteration_count,
+                fill_mode: spec.fill_mode,
+                play_state: spec.play_state,
+                start_time_ms: current_time_ms,
+                paused_elapsed_ms: if spec.play_state == AnimationPlayState::Paused {
+                    Some(0.0)
+                } else {
+                    None
+                },
+                settled: false,
+                stop_inputs,
+                position,
+            });
         }
     }
 

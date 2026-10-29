@@ -140,8 +140,12 @@ impl ListFixture {
 }
 
 fn build_list() -> ListFixture {
+    build_list_with(LIST_CSS)
+}
+
+fn build_list_with(css: &str) -> ListFixture {
     let mut doc = new_document();
-    doc.load_css(LIST_CSS);
+    doc.load_css(css);
     let body = doc.body();
     let list = doc.create_element("div");
     doc.set_attribute(list, "class", "list");
@@ -197,6 +201,38 @@ pub fn setup_hover() -> ListFixture {
 pub fn op_hover(mut f: ListFixture) -> ListFixture {
     let r = f.rows[10];
     f.hover(Some(r));
+    f.layout();
+    f
+}
+
+/// The list with every row running an infinite `transform` spin, and a class
+/// on the list that changes the colour every row inherits.
+const ANIMATED_LIST_CSS: &str = "
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .row { animation: spin 1s linear infinite; }
+    .list.alt { color: rgb(0, 0, 200); }
+";
+
+/// The list with all 500 rows animated, and its colour class toggled on and
+/// off once.
+pub fn setup_animated_list_color() -> ListFixture {
+    let mut f = build_list_with(&format!("{LIST_CSS}{ANIMATED_LIST_CSS}"));
+    let list = f.list;
+    f.doc.set_attribute(list, "class", "list alt");
+    f.layout();
+    f.doc.set_attribute(list, "class", "list");
+    f.layout();
+    f
+}
+
+/// A colour change on the list, which every row inherits while it runs a
+/// `to { transform: … }` animation, then layout: 500 cascades of an animated
+/// node. The spin's stops read neither `color` nor `font-size`, so none of
+/// those cascades extracts its keyframe stops again (review of #2049: before
+/// the stops were keyed on what they read, each one did).
+pub fn op_animated_list_color(mut f: ListFixture) -> ListFixture {
+    let list = f.list;
+    f.doc.set_attribute(list, "class", "list alt");
     f.layout();
     f
 }
@@ -961,8 +997,11 @@ pub fn setup_text_shadow_paint_cold() -> PaintFixture {
     let mut f = text_shadow_page("4");
     f.doc
         .load_css("p { text-shadow: 0 1px 4.01px rgba(0, 0, 0, 0.4); }");
-    // `load_css` queues no restyle: without this the paragraphs keep their
-    // 4px blur and every mask is a cache hit (review of #1020, round 3, F1).
+    // The restyle is forced here so the setup, not the measured paint, pays
+    // it. Before #884 `load_css` queued no restyle at all, and without this
+    // the paragraphs kept their 4px blur and every mask was a cache hit
+    // (review of #1020, round 3, F1); a Perf base older than #884 still
+    // needs it.
     f.doc.recompute_all_styles_full();
     f.doc.resolve_layout(VP.0, VP.1);
     f

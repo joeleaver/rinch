@@ -321,12 +321,16 @@ fn every_rinch_dom_counter_fires_somewhere() {
     doc.resolve_layout(VP.0, VP.1);
     doc.resolve_layout(VP.0, VP.1);
     // Whole-document restyles by each reason rinch-dom can be asked for.
-    doc.recompute_all_styles_full();
-    doc.set_device_pixel_ratio(2.0);
+    // A `<style>` whose rule Stylo cannot bucket by id/class/tag (`:root`) is
+    // one (a `.class` rule matching nothing restyles nothing since #884). It
+    // goes first: after the device-pixel-ratio change below a whole-document
+    // walk is already pending, and the sheet adds nothing to it.
     let style = doc.create_element("style");
-    let css = doc.create_text(".late { color: blue; }");
+    let css = doc.create_text(":root { --late: blue; }");
     doc.append_child(style, css);
     doc.append_child(body, style);
+    doc.recompute_all_styles_full();
+    doc.set_device_pixel_ratio(2.0);
     doc.load_css("html { font-size: 20px; }");
     // 800 -> 801 flips the `min-width: 801px` query: a full restyle.
     doc.resolve_layout(VP.0 + 1.0, VP.1);
@@ -1036,6 +1040,39 @@ fn transform_animation_tick_beside_finished_one_shots() {
     });
     expect(
         "transform animation tick beside finished one-shots",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 50),
+            (StackingOrderBuilds, 2),
+        ],
+    );
+}
+
+/// A `to`-only spinner (an implicit `from`) on a box with a width, height,
+/// margin, padding and font-size ticks exactly as `transform_animation_tick`
+/// does: the implicit stop carries `transform` alone, never the layout
+/// properties the base style also holds (#767), so the tick stays paint-only.
+#[test]
+fn to_only_transform_animation_tick() {
+    let mut f = build_with(
+        ROWS,
+        false,
+        "@keyframes k767 { to { transform: rotate(360deg); } }
+         .k767 { width: 30px; height: 10px; margin-left: 3px; padding: 2px; font-size: 12px; animation: k767 1000s linear infinite; }",
+    );
+    let chip = f.chips[ROWS / 2];
+    f.doc.set_attribute(chip, "class", "chip k767");
+    f.doc.resolve_layout(VP.0, VP.1);
+    paint(&mut f);
+    f.doc.tree.perf.reset();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let s = frame(&mut f, |f| {
+        f.doc.tick_animations();
+    });
+    expect(
+        "to-only transform animation tick",
         &s,
         &[
             (LayoutResolves, 1),
