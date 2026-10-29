@@ -10,7 +10,8 @@
 //! padding when nothing needed to move (#1367).
 //!
 //! Every expected offset is **Chrome 156's** (`google-chrome --headless=new
-//! --window-size=800,600`, `* { scrollbar-width: none }` so a classic bar does
+//! --window-size=800,743`, which gives an 800x600 viewport; `* { scrollbar-width:
+//! none }` so a classic bar does
 //! not narrow Chrome's scrollport where rinch's overlay bar does not), read off
 //! `scrollLeft`/`scrollTop` after `t.scrollIntoView({block: "nearest", inline:
 //! "nearest"})`. The page's offsets are Chrome's `document.scrollingElement`'s;
