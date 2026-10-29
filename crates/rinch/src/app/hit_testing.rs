@@ -1205,6 +1205,10 @@ mod prune_tests;
 mod hidden_ancestor_hit_843_tests;
 
 #[cfg(test)]
+#[path = "fixed_escape_hit_549_tests.rs"]
+mod fixed_escape_hit_549_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{flow_extent, hit_test};
     use rinch_core::dom::{DomDocument, NodeId};

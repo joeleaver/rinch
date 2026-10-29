@@ -938,3 +938,62 @@ fn an_escaping_absolute_overlapping_its_scroller_paints_and_hits_after_scrolls()
         }
     }
 }
+
+/// **#549: a fixed box escapes the clipper above the stacking context that
+/// owns it**, so its damage is not clipped there either. `clipper > owner
+/// (z-index) > fixed`, the fixed box wholly outside the clipper: it is drawn
+/// there, and a move and a recolour each repaint it there.
+///
+/// Kills: paint keeping the clipper's chain around the fixed box (the
+/// positive control: nothing is drawn outside the clipper), and the damage
+/// walk clipping a fixed box by a clipper above its context (the move ghosts,
+/// the recolour is not drawn).
+#[test]
+fn a_fixed_box_under_a_context_inside_a_clipper_is_damaged_outside_it() {
+    let (mut app, h) = mount_with(Box::new(|s, o| {
+        let c = el(s, o, "width: 200px; height: 100px; overflow: hidden;");
+        let owner = el(
+            s,
+            &c,
+            "position: relative; z-index: 1; width: 50px; height: 50px;",
+        );
+        let f = el(
+            s,
+            &owner,
+            "position: fixed; left: 300px; top: 200px; width: 40px; height: 40px; \
+             background: rgb(0, 0, 200);",
+        );
+        vec![c, owner, f]
+    }));
+    let before = full_frame(&mut app);
+    let old = (300, 200, 340, 240);
+    assert_eq!(ink_in(&before, old), 1600, "positive control: drawn outside");
+
+    h[2].set_style("top", "300px");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    assert_eq!(
+        ink_in(&full, (300, 300, 340, 340)),
+        1600,
+        "positive control"
+    );
+    assert_eq!(ink_in(&inc, old), 0, "the moved box ghosts");
+    assert_eq!(
+        diff_in(&inc, &full, WHOLE),
+        0,
+        "incremental frame != full frame"
+    );
+
+    h[2].set_style("background", "rgb(200, 0, 0)");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    assert_eq!(
+        diff_in(&inc, &full, WHOLE),
+        0,
+        "recoloured: incremental frame != full frame"
+    );
+}
