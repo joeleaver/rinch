@@ -311,16 +311,9 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
             cs.padding_bottom.to_px() as f64,
         ),
         content_box: visible_extents(tree, node_id),
-    };
-    extend_with_children(
-        tree,
-        node_id,
-        node_id,
         inline_measured,
-        &frame,
-        &mut right,
-        &mut bottom,
-    );
+    };
+    extend_with_children(tree, node_id, node_id, &frame, &mut right, &mut bottom);
     (
         (right - content_left).max(0.0),
         (bottom - content_top).max(0.0),
@@ -357,14 +350,13 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
 /// nothing, so a wrapper never stands between a flattened absolute and the
 /// container.
 ///
-/// With `inline_measured`, the container's own inline layout has already been
+/// With `frame.inline_measured`, the container's own inline layout has already been
 /// measured, so a text node it lays out is skipped rather than read through
 /// the proxy box `write_inline_positions` gives a direct one.
 fn extend_with_children(
     tree: &NodeTree,
     container_id: usize,
     parent_id: usize,
-    inline_measured: bool,
     frame: &ContainerFrame,
     right: &mut f64,
     bottom: &mut f64,
@@ -393,39 +385,14 @@ fn extend_with_children(
                 || child.hosts_hoisted_out_of_flow
                 || child.hoisted_out_of_flow_to.is_some()
             {
-                extend_with_box_tree_children(
-                    tree,
-                    container_id,
-                    parent_id,
-                    inline_measured,
-                    frame,
-                    right,
-                    bottom,
-                );
+                extend_with_box_tree_children(tree, container_id, parent_id, frame, right, bottom);
                 return;
             }
-            extend_with_child(
-                tree,
-                container_id,
-                child_id,
-                child,
-                inline_measured,
-                frame,
-                right,
-                bottom,
-            );
+            extend_with_child(tree, container_id, child_id, child, frame, right, bottom);
         }
         return;
     }
-    extend_with_box_tree_children(
-        tree,
-        container_id,
-        parent_id,
-        inline_measured,
-        frame,
-        right,
-        bottom,
-    );
+    extend_with_box_tree_children(tree, container_id, parent_id, frame, right, bottom);
 }
 
 /// [`extend_with_children`] over `parent_id`'s box-tree children.
@@ -433,7 +400,6 @@ fn extend_with_box_tree_children(
     tree: &NodeTree,
     container_id: usize,
     parent_id: usize,
-    inline_measured: bool,
     frame: &ContainerFrame,
     right: &mut f64,
     bottom: &mut f64,
@@ -442,16 +408,7 @@ fn extend_with_box_tree_children(
         let Some(child) = tree.get(child_id) else {
             continue;
         };
-        extend_with_child(
-            tree,
-            container_id,
-            child_id,
-            child,
-            inline_measured,
-            frame,
-            right,
-            bottom,
-        );
+        extend_with_child(tree, container_id, child_id, child, frame, right, bottom);
     }
 }
 
@@ -464,6 +421,9 @@ struct ContainerFrame {
     /// Its content box `(width, height)` — the containing block a child's
     /// percentage margins and `relative` offsets resolve against.
     content_box: (f64, f64),
+    /// Whether the container's own inline layout is already measured, so a
+    /// text node it lays out is skipped (see [`extend_with_children`]).
+    inline_measured: bool,
 }
 
 /// Grow `right`/`bottom` by one box-tree child of the walk — by how it
@@ -473,24 +433,15 @@ fn extend_with_child(
     container_id: usize,
     child_id: usize,
     child: &crate::node::Node,
-    inline_measured: bool,
     frame: &ContainerFrame,
     right: &mut f64,
     bottom: &mut f64,
 ) {
     if child.taffy_style_owned_by_contents_splice() {
-        extend_with_children(
-            tree,
-            container_id,
-            child_id,
-            inline_measured,
-            frame,
-            right,
-            bottom,
-        );
+        extend_with_children(tree, container_id, child_id, frame, right, bottom);
         return;
     }
-    if inline_measured && child.is_text() && child.ifc_root == Some(container_id) {
+    if frame.inline_measured && child.is_text() && child.ifc_root == Some(container_id) {
         return;
     }
     if !crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, child) {
