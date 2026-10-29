@@ -377,6 +377,17 @@ the offered protocols, where a browser opens; pinned in
 `rinch-ws/tests/subprotocols_1773.rs`. Web pins: `web_subprotocols_1773.rs`,
 whose live half runs only when built with `RINCH_WS_TEST_URL` (CI sets none).
 
+`WsHandle::drop` unregisters the connection's callbacks from the thread-local
+`HANDLERS` table with `try_with`, and drops them after the borrow ends (#1952).
+A handle kept in an app's own `thread_local!`, or captured by another
+connection's callback (which `HANDLERS` itself drops as it is destroyed), is
+dropped during thread-local teardown with the table already gone; `with`
+panicked there, and a panic in a TLS destructor aborts the process on exit.
+Dropping the callbacks inside the borrow made the second shape panic outside
+exit too: the captured handle's own drop re-borrowed the table. Pins:
+`rinch-ws/tests/drop_at_exit_1952.rs` (the app-local shape, the forced
+table-teardown shape, and the ordinary nested drop).
+
 ## Background workers (`rinch::worker`, #1772)
 
 Feature `worker` (off by default). `crates/rinch/src/worker/`: `mod.rs` is the
