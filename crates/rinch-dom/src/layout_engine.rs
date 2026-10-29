@@ -1406,6 +1406,16 @@ impl RinchDocument {
                         .placed_absolutes
                         .push((node_id, crate::out_of_flow::OutOfFlowKind::Fixed));
                     self.tree.perf.bump(crate::perf::Counter::AbsBoxesVisited);
+                    // Shrunk to fit in the room its static position leaves
+                    // in the viewport, looked at again once the lines say
+                    // where that is (#893, as #1404 does for absolute).
+                    if crate::out_of_flow::fits_from_static_position(
+                        &self.tree.nodes[node_id].computed_style,
+                    ) {
+                        self.tree
+                            .abs_static_fits
+                            .push((node_id, Some(crate::out_of_flow::OutOfFlowKind::Fixed)));
+                    }
                 }
                 let node = &self.tree.nodes[node_id];
                 if is_fixed {
@@ -1420,18 +1430,11 @@ impl RinchDocument {
                     let left = style.left.resolve(vw);
                     // `auto` and `stretch` fill between paired insets; a
                     // content keyword keeps the width Taffy measured (#691).
+                    // Anything else is Taffy's answer, which the pre-layout
+                    // bake (`out_of_flow::apply_out_of_flow_size_overrides`)
+                    // shrank to fit in the viewport (#893).
                     let width_auto = style.width.fills_between_insets();
                     let height_auto = style.height.fills_between_insets();
-                    // A single inset leaves the height to the content —
-                    // except `stretch`, whose height the pre-layout bake
-                    // already took from the viewport (`out_of_flow`).
-                    let height_from_content = style.height.is_auto_or_keyword()
-                        && !matches!(
-                            style.height,
-                            crate::computed_style::DimensionValue::Intrinsic(
-                                crate::computed_style::IntrinsicSize::Stretch
-                            )
-                        );
 
                     // Horizontal positioning
                     if let (Some(l), Some(r)) = (left, right) {
@@ -1455,19 +1458,7 @@ impl RinchDocument {
                         }
                     } else if let Some(t) = top {
                         new_layout.y = t;
-                        // Taffy may compute wrong height for fixed elements
-                        // (their Taffy parent differs from the CSS containing
-                        // block which should be the viewport).  Re-derive
-                        // content height from children.
-                        if height_from_content {
-                            let _ = node;
-                            new_layout.height = self.compute_content_height(node_id, &new_layout);
-                        }
                     } else if let Some(b) = bottom {
-                        if height_from_content {
-                            let _ = node;
-                            new_layout.height = self.compute_content_height(node_id, &new_layout);
-                        }
                         new_layout.y = (vh - new_layout.height - b).max(0.0);
                     } else {
                         new_layout.y = static_y.unwrap_or(0.0);
@@ -1610,75 +1601,6 @@ impl RinchDocument {
         for child_id in children {
             self.read_layout_results(child_id);
         }
-    }
-
-    /// Compute the intrinsic content height of a node from its children's
-    /// Taffy-computed sizes. Used for position:fixed elements where Taffy's
-    /// parent-relative sizing gives the wrong result.
-    fn compute_content_height(&self, node_id: usize, _parent_layout: &LayoutResult) -> f32 {
-        let node = &self.tree.nodes[node_id];
-        let pad_top = node.computed_style.padding_top.to_px();
-        let pad_bottom = node.computed_style.padding_bottom.to_px();
-        let border_top = node.computed_style.border_top_width.to_px();
-        let border_bottom = node.computed_style.border_bottom_width.to_px();
-        let gap = node.computed_style.gap_row.to_px();
-        // Children stack vertically (heights sum) when the container is a block
-        // box or a flex column; a flex row lays them side by side (take the max).
-        // Without the `Block` case a `position: fixed` block with auto height —
-        // e.g. a popup/menu appended to <body> — collapses to one child's height.
-        let is_column = matches!(
-            node.computed_style.display,
-            crate::computed_style::DisplayValue::Block
-                | crate::computed_style::DisplayValue::ListItem
-        ) || matches!(
-            node.computed_style.flex_direction,
-            crate::computed_style::FlexDirectionValue::Column
-                | crate::computed_style::FlexDirectionValue::ColumnReverse
-        );
-
-        let mut content_h: f32 = 0.0;
-        let child_count = node.children.len();
-
-        for (i, &child_id) in node.children.iter().enumerate() {
-            if let Some(child_taffy) = self.tree.nodes.get(child_id).and_then(|c| c.taffy_id) {
-                if let Ok(child_layout) = self.tree.taffy.layout(child_taffy) {
-                    let ch = child_layout.size.height;
-                    if is_column {
-                        content_h += ch;
-                        if i > 0 && i < child_count {
-                            content_h += gap;
-                        }
-                    } else {
-                        content_h = content_h.max(ch);
-                    }
-                }
-            }
-        }
-
-        let mut h = content_h + pad_top + pad_bottom + border_top + border_bottom;
-
-        // Respect the element's own min/max-height (border-box, like the rest of
-        // the box model here) so a fixed scroll container clamps and scrolls its
-        // overflow instead of growing past its cap.
-        use crate::computed_style::DimensionValue;
-        let vh = self.tree.viewport.height;
-        let resolve = |d: &DimensionValue| -> Option<f32> {
-            match d {
-                DimensionValue::Length(v) => Some(*v),
-                DimensionValue::Percent(p) => Some(p * vh),
-                DimensionValue::Calc { px, pct } => Some(px + pct * vh),
-                // A min/max keyword lays out as `auto` (#1275), so it
-                // constrains nothing here either.
-                DimensionValue::Auto | DimensionValue::Intrinsic(_) => None,
-            }
-        };
-        if let Some(max_h) = resolve(&node.computed_style.max_height) {
-            h = h.min(max_h);
-        }
-        if let Some(min_h) = resolve(&node.computed_style.min_height) {
-            h = h.max(min_h);
-        }
-        h
     }
 
     /// Handle display:contents nodes by reparenting their taffy children

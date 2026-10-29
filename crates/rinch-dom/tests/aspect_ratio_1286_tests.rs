@@ -224,6 +224,54 @@ fn an_absolute_box_takes_the_ratio() {
     );
 }
 
+/// A fixed box with one vertical inset (or none) keeps the height Taffy
+/// gave it from the ratio or the replaced measure. It used to be replaced by
+/// a sum of the children's heights after the compute — 0 for every row here
+/// (#1569, gone with #893). Chrome 155's numbers, from #1569.
+#[test]
+fn a_fixed_box_takes_the_ratio() {
+    for (tag, attrs, style, want) in [
+        (
+            "div",
+            &[][..],
+            "position: fixed; top: 0; left: 0; width: 100px; aspect-ratio: 2",
+            (100.0, 50.0),
+        ),
+        (
+            "div",
+            &[],
+            "position: fixed; bottom: 16px; right: 16px; width: 320px; aspect-ratio: 16/9",
+            (320.0, 180.0),
+        ),
+        (
+            "video",
+            &[],
+            "position: fixed; bottom: 16px; right: 16px; width: 320px; aspect-ratio: 16/9",
+            (320.0, 180.0),
+        ),
+        (
+            "div",
+            &[],
+            "position: fixed; left: 0; right: 0; top: 0; aspect-ratio: 4",
+            (800.0, 200.0),
+        ),
+        (
+            "img",
+            &[("src", FORTY_BY_THIRTY)],
+            "position: fixed; top: 0; left: 0; width: 80px",
+            (80.0, 60.0),
+        ),
+        (
+            "video",
+            &[],
+            "position: fixed; top: 0; left: 0; width: 320px",
+            (320.0, 150.0),
+        ),
+    ] {
+        check_in("", tag, attrs, style, want);
+    }
+}
+
 #[test]
 fn a_video_with_no_natural_ratio_takes_the_declared_one() {
     // The responsive embed.
@@ -480,24 +528,6 @@ fn known_differences_from_chrome() {
             (120.0, 40.0),
             (120.0, 57.0),
             1278,
-        ),
-        // A fixed box with one vertical inset and an auto height is given
-        // its content height after Taffy laid it out, which drops the ratio
-        // (pre-existing: a fixed `<img>`/`<video>` with `top: 0` is 0 tall
-        // too). #1569.
-        (
-            "position: fixed; top: 0; left: 0; width: 100px; aspect-ratio: 2",
-            "",
-            (100.0, 0.0),
-            (100.0, 50.0),
-            1569,
-        ),
-        (
-            "position: fixed; bottom: 16px; right: 16px; width: 320px; aspect-ratio: 16/9",
-            "",
-            (320.0, 0.0),
-            (320.0, 180.0),
-            1569,
         ),
         // A flex item grown from a 0 basis does not take its cross size
         // from the ratio. #1571.
