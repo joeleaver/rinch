@@ -179,9 +179,11 @@ define_counters! {
     /// `<input>`'s displayed text, unwrapped, for the caret's x and the line's
     /// width (#1721), and a `<textarea>`'s, wrapped, for the caret's line and
     /// the text's height — its scroll extent (#827). One per change of that
-    /// text, its caret, its wrap width or its font; paint, the IME poll, a
-    /// click, the wheel and the caret rect at an unchanged state reuse it
-    /// (`form_control::displayed_metrics`).
+    /// text, its wrap width or its font; paint, the IME poll, a click, the
+    /// wheel and the caret rect at an unchanged state reuse it, and a caret
+    /// move in the focused field reads the caret off its kept layout
+    /// (`form_control::displayed_metrics`). An unfocused field keeps no layout,
+    /// so a caret write to one shapes.
     ShapeInputScroll = "shape_input_scroll",
     /// IFC measures served from `ifc_measure_cache` without shaping.
     IfcMeasureCacheHits = "ifc_measure_cache_hits",

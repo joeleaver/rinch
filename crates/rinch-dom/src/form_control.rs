@@ -1223,7 +1223,10 @@ fn displayed_text(node: &Node, value: &str) -> (String, Option<usize>) {
 /// shaped from — the text, the caret, the wrap width, the font generation,
 /// family, size and weight — so the calls a frame or an event-loop pass makes
 /// at an unchanged state (paint, the IME poll, a click, the caret rect, the
-/// wheel's extent) shape nothing; each shape is counted as
+/// wheel's extent) shape nothing. A focused field also keeps the layout
+/// itself ([`Node::input_text_layout`]) under the same hash less the caret,
+/// so a caret move — an arrow, a click — reads the new caret off it and
+/// shapes nothing either. Each shape is counted as
 /// [`Counter::ShapeInputScroll`](crate::perf::Counter::ShapeInputScroll).
 fn displayed_metrics(
     node: &Node,
@@ -1245,29 +1248,44 @@ fn displayed_metrics(
     } else {
         caret_affinity(node)
     };
+    // What the text is shaped from, and then the caret on it.
     let mut h = std::collections::hash_map::DefaultHasher::new();
     tree.font_generation.hash(&mut h);
     text.hash(&mut h);
-    caret.hash(&mut h);
     wrap.map(f32::to_bits).hash(&mut h);
-    (affinity == rinch_core::dom::CaretAffinity::Upstream).hash(&mut h);
     style.font_family.hash(&mut h);
     style.font_size.to_bits().hash(&mut h);
     style.font_weight.to_bits().hash(&mut h);
+    let text_key = h.finish();
+    caret.hash(&mut h);
+    (affinity == rinch_core::dom::CaretAffinity::Upstream).hash(&mut h);
     let key = h.finish();
     if let Some((k, m)) = node.input_line_metrics.get()
         && k == key
     {
         return m;
     }
-    tree.perf.bump(crate::perf::Counter::ShapeInputScroll);
-    let layout = field_text_layout(node, text, 1.0, None, font_cx, layout_cx);
+    // A caret move in the focused field reuses the layout it was shaped into
+    // (`Node::input_text_layout`); anything else shapes.
+    let focused = node.attributes.get("data-focused").map(String::as_str) == Some("true");
+    let mut kept = node.input_text_layout.borrow_mut();
+    if !matches!(&*kept, Some((k, _)) if *k == text_key) {
+        tree.perf.bump(crate::perf::Counter::ShapeInputScroll);
+        *kept = Some((
+            text_key,
+            field_text_layout(node, text, 1.0, None, font_cx, layout_cx),
+        ));
+    }
+    let layout = &kept.as_ref().expect("shaped above").1;
     let (caret_x, caret_y) = crate::text_query::caret_position_for_offset_layout_with_affinity(
-        &layout,
+        layout,
         caret.min(text.len()),
         affinity,
     );
     let m = (caret_x, caret_y, layout.full_width(), layout.height());
+    if !focused {
+        *kept = None;
+    }
     node.input_line_metrics.set(Some((key, m)));
     m
 }
@@ -1389,11 +1407,12 @@ pub fn input_scroll_x(
 /// between two frames scrolls as they would one frame apart.
 ///
 /// A textarea's scroll is its scroll container offset, the one the wheel and
-/// `scrollTop` move: the caret's line box (its painted height) is brought
-/// inside the content box — up to its top when it is above, down to its
-/// bottom when it is below, as Chrome 155 does for an arrow, Ctrl+End or a
-/// new line typed at the bottom — and the offset is held inside the text's
-/// range and put on the device grid. A move that leaves the caret in view
+/// `scrollTop` move: the caret (its painted height) is brought inside the
+/// field's **padding box**, its scrollport — up to its top when it is above,
+/// down to its bottom when it is below, as Chrome does for an arrow, Ctrl+End
+/// or a new line typed at the bottom, so a caret on the first or last line
+/// leaves that side's padding scrolled out of view — and the offset is held
+/// inside the text's range and put on the device grid. A move that leaves the caret in view
 /// scrolls nothing, so a field the wheel scrolled stays where the wheel put
 /// it until the caret moves out of view. A scroll it makes is queued for the
 /// field's `onscroll` like layout's clamp. Returns whether it scrolled.
@@ -1424,16 +1443,27 @@ pub fn reveal_caret(
         }
         None => (0.0, 0.0),
     };
-    let visible = content_height(node);
-    let current = node.scroll_offset.1 as f32;
-    let mut scroll = current;
-    let caret_bottom = caret_y + caret_height(node);
-    if caret_y < scroll {
-        scroll = caret_y;
+    // In the scroll container's own coordinates, where the padding box is
+    // what shows: the text starts below the top padding, and the caret's box
+    // is brought inside the padding box — not the content box — as Chrome
+    // 155/156 reveals it. Measured in Chrome 156 on ten 20px lines in a
+    // 64px padding box with 5px vertical padding: Ctrl+End 141 of a 146
+    // range, Ctrl+Home from below 5, three ArrowDowns from the top 21.
+    let style = &node.computed_style;
+    let pad_top = style.padding_top.to_px();
+    let content = content_height(node);
+    let visible = content + pad_top + style.padding_bottom.to_px();
+    let mut scroll = node.scroll_offset.1 as f32;
+    // Held inside the text: the first line's caret starts a fraction above
+    // the text's top, which would otherwise show a pixel of the padding.
+    let caret_top = pad_top + caret_y.max(0.0);
+    let caret_bottom = pad_top + (caret_y + caret_height(node)).min(height.max(0.0));
+    if caret_top < scroll {
+        scroll = caret_top;
     } else if caret_bottom > scroll + visible {
         scroll = caret_bottom - visible;
     }
-    let max = (height - visible).max(0.0);
+    let max = (height - content).max(0.0);
     let scroll = tree.snap_scroll_offset(scroll.clamp(0.0, max) as f64);
     if scroll == node.scroll_offset.1 {
         return false;
@@ -1442,16 +1472,8 @@ pub fn reveal_caret(
         node.scroll_offset.1 = scroll;
     }
     tree.mark_scrolled(node_id);
-    // `onscroll`, as for layout's clamp (one entry per node, last wins).
-    if let Some(pending) = tree
-        .pending_scroll_clamps
-        .iter_mut()
-        .find(|(id, _)| *id == node_id)
-    {
-        pending.1 = scroll;
-    } else {
-        tree.pending_scroll_clamps.push((node_id, scroll));
-    }
+    // `onscroll`, as for layout's clamp.
+    tree.queue_scroll_clamp(node_id, scroll);
     true
 }
 

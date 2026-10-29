@@ -241,9 +241,13 @@ fn an_overflowing_textarea_paints_inside_its_padding_box() {
     assert_eq!(outside, 0, "no ink outside the padding box");
 }
 
-/// Ctrl+End scrolls the last line into view at the bottom of the content box;
-/// Ctrl+Home scrolls back to the top; a blur keeps the scroll (a textarea is
-/// a scroll container and keeps `scrollTop`, Chrome 155).
+/// The caret is revealed to the field's **padding box**, its scrollport, as
+/// Chrome does: Ctrl+End puts the last line at the padding box's bottom
+/// (Chrome 156: 141 of a 146 range, the bottom padding scrolled out),
+/// Ctrl+Home from below puts the first line at its top (Chrome: 5, the top
+/// padding scrolled out), and three ArrowDowns from there scroll by the least
+/// that shows the fourth line (Chrome: 21 with its 20px lines). A blur keeps
+/// the scroll (a textarea is a scroll container and keeps `scrollTop`).
 #[test]
 fn the_caret_stays_in_view_vertically() {
     let (mut app, id, field) = area(TEN);
@@ -259,9 +263,16 @@ fn the_caret_stays_in_view_vertically() {
     assert_eq!(caret_pos(&app, id), TEN.len());
     let (_, y, h) = caret_rect(&field);
     assert!(
-        y >= CONTENT_TOP && y + h <= CONTENT_BOTTOM + 1.0 && y + h > CONTENT_BOTTOM - 4.0,
-        "Ctrl+End: the caret at the content box's bottom, got y {y}..{}",
+        (y + h - PAD.3).abs() <= 1.0,
+        "Ctrl+End: the caret at the padding box's bottom {}, got y {y}..{}",
+        PAD.3,
         y + h
+    );
+    let (height, client) = heights(&app, id);
+    let short = height - client - scroll_top(&app, id);
+    assert!(
+        (4.0..=7.0).contains(&short),
+        "Ctrl+End: the bottom padding (5px) short of the range's end, got {short}"
     );
     assert_eq!(
         ink(&mut app).1,
@@ -291,13 +302,19 @@ fn the_caret_stays_in_view_vertically() {
     assert_eq!(caret_pos(&app, id), 0);
     let (_, y, _) = caret_rect(&field);
     assert!(
-        (y - top0).abs() < 0.5,
-        "Ctrl+Home: the caret at the content box's top {top0}, got {y}"
+        (y - (top0 - 5.0)).abs() < 0.5,
+        "Ctrl+Home: the caret at the padding box's top {}, got {y} (top0 {top0}, scroll {})",
+        top0 - 5.0,
+        scroll_top(&app, id)
     );
-    assert_eq!(scroll_top(&app, id), 0.0);
+    assert_eq!(
+        scroll_top(&app, id),
+        5.0,
+        "Chrome: 5, the top padding hidden"
+    );
 
     // ArrowDown past the bottom, off the text's end: the least scroll puts
-    // the caret's line at the content box's bottom, not its top (the end of
+    // the caret's line at the padding box's bottom, not its top (the end of
     // the text would clamp either answer to the same place).
     for _ in 0..3 {
         key(&mut app, KeyCode::ArrowDown);
@@ -305,14 +322,16 @@ fn the_caret_stays_in_view_vertically() {
     repaint(&mut app);
     let (_, y, h) = caret_rect(&field);
     assert!(
-        y + h <= CONTENT_BOTTOM + 1.0 && y + h > CONTENT_BOTTOM - 4.0,
-        "ArrowDown: the caret's line at the bottom, got y {y}..{}",
+        (y + h - PAD.3).abs() <= 1.0,
+        "ArrowDown: the caret's line at the padding box's bottom, got y {y}..{}",
         y + h
     );
+    // Four lines down to the padding box's bottom: 5 + 3 × 19.36 + 19.2 − 64
+    // with rinch's 19.36px lines (#320), on the grid — Chrome's 21 at 20px.
     let s = scroll_top(&app, id);
     assert!(
-        s > 5.0 && s < 40.0,
-        "scrolled by less than a line and a half: {s}"
+        (17.0..=19.0).contains(&s),
+        "ArrowDown: scrollTop 18, got {s}"
     );
 }
 
@@ -385,7 +404,11 @@ fn typing_past_the_bottom_scrolls_by_a_line() {
         "one line further: {before} → {after}"
     );
     let (_, y, h) = caret_rect(&field);
-    assert!(y + h <= CONTENT_BOTTOM + 1.0 && y + h > CONTENT_BOTTOM - 4.0);
+    assert!(
+        (y + h - PAD.3).abs() <= 1.0,
+        "the new line at the padding box's bottom, got y {y}..{}",
+        y + h
+    );
     assert_eq!(ink(&mut app).1, 0);
 }
 
@@ -604,4 +627,236 @@ fn an_unchanged_textarea_shapes_nothing_for_its_scroll() {
     let _ = ink(&mut app);
     assert_eq!(shapes(&app) - before, 1, "a typed character shapes once");
     let _ = id;
+}
+
+// ---- Review of #2023 ----
+
+fn wheel_to_end(app: &mut RinchApp, x: f32) {
+    for _ in 0..20 {
+        ev(
+            app,
+            PlatformEvent::MouseWheel {
+                x,
+                y: 30.0,
+                delta_x: 0.0,
+                delta_y: -100.0,
+            },
+        );
+    }
+    repaint(app);
+}
+
+/// `(scroll_height, client_height)` as the DOM API answers them.
+fn heights(app: &RinchApp, id: usize) -> (f64, f64) {
+    let d = app.doc.as_ref().unwrap().borrow();
+    let nid = rinch_core::dom::NodeId(id);
+    (
+        rinch_core::dom::DomDocument::scroll_height(&*d, nid),
+        rinch_core::dom::DomDocument::client_height(&*d, nid),
+    )
+}
+
+/// A value write runs no layout, and a textarea's scroll range is its text:
+/// the resolve after the write holds the offset in the new value's range.
+/// Chrome 156 (`scrollTop = 1000; value = 'a\nb'; value = TEN`): 146, 0, 0 —
+/// a value that fits scrolls back to 0 and fires `onscroll`, and the long
+/// value set again is drawn from the top. rinch kept 139 and drew the regrown
+/// text scrolled.
+#[test]
+fn a_value_that_fits_resets_the_scroll() {
+    use rinch_core::events::{ScrollCallback, ScrollEvent, register_scroll_handler};
+    let fired = Rc::new(RefCell::new(Vec::new()));
+    let fired_in = fired.clone();
+    let handler = register_scroll_handler(ScrollCallback::from(move |e: ScrollEvent| {
+        fired_in.borrow_mut().push(e.scroll_top);
+    }));
+    let (mut app, id, field) = area(TEN);
+    field.set_attribute("data-onscroll", &handler.0.to_string());
+    wheel_to_end(&mut app, 100.0);
+    assert!(scroll_top(&app, id) > 100.0, "positive control: scrolled");
+    fired.borrow_mut().clear();
+
+    field.set_attribute("value", "a\nb");
+    repaint(&mut app);
+    assert_eq!(scroll_top(&app, id), 0.0, "a value that fits: scrollTop 0");
+    assert_eq!(*fired.borrow(), vec![0.0], "the clamp fires onscroll once");
+    let (inside, outside) = ink(&mut app);
+    assert!(inside > 10, "the short value is drawn ({inside})");
+    assert_eq!(outside, 0);
+
+    field.set_attribute("value", TEN);
+    repaint(&mut app);
+    assert_eq!(scroll_top(&app, id), 0.0, "a value that grew keeps 0");
+    let y0 = field.caret_rect_at(0).unwrap().y;
+    assert!(
+        (y0 - CONTENT_TOP).abs() < 1.5,
+        "regrown: drawn from the top, first line at {y0}"
+    );
+    assert_eq!(fired.borrow().len(), 1, "growing scrolls nothing");
+}
+
+/// A value that shrinks but still overflows is clamped to its new end, not
+/// to 0.
+#[test]
+fn a_shorter_value_clamps_to_its_own_end() {
+    let (mut app, id, field) = area(TEN);
+    wheel_to_end(&mut app, 100.0);
+    let before = scroll_top(&app, id);
+    field.set_attribute("value", "one\ntwo\nthree\nfour\nfive");
+    repaint(&mut app);
+    let (h, c) = heights(&app, id);
+    let after = scroll_top(&app, id);
+    assert!(
+        h - c > 20.0 && h - c < before - 50.0,
+        "positive control: still overflows, by less ({before} → {})",
+        h - c
+    );
+    assert!(
+        (after - (h - c)).abs() <= 1.0,
+        "clamped to the new end {}, got {after}",
+        h - c
+    );
+}
+
+/// `scroll_height` right after a value write and a resolve is the new
+/// value's, as a div's is after its content changes — "write, then scroll to
+/// `scroll_height`" lands at the end. It answered the old one-line height
+/// until the next paint.
+#[test]
+fn scroll_height_follows_a_value_write_at_the_resolve() {
+    let (app, id, field) = area("a");
+    let (h0, c) = heights(&app, id);
+    assert!(h0 <= c, "positive control: one line fits ({h0} ≤ {c})");
+    field.set_attribute("value", TEN);
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .resolve_layout(VP.0 as f32, VP.1 as f32);
+    let (h, _) = heights(&app, id);
+    assert!(
+        h > 150.0,
+        "scroll_height after the write and a resolve: {h}"
+    );
+}
+
+/// A narrower textarea rewraps: its range grows with the extra lines and the
+/// wheel reaches the new end (the metrics' key holds the wrap width).
+#[test]
+fn a_width_change_rewraps_the_scroll_range() {
+    let (mut app, id, _field) = area(TEN);
+    let (h0, _) = heights(&app, id);
+    rinch_core::dom::DomDocument::set_attribute(
+        &mut *app.doc.as_ref().unwrap().borrow_mut(),
+        rinch_core::dom::NodeId(id),
+        "style",
+        &format!("{AREA_STYLE}; width: 60px"),
+    );
+    repaint(&mut app);
+    let (h1, c) = heights(&app, id);
+    assert!(h1 > h0 + 50.0, "rewrapped: {h0} → {h1}");
+    wheel_to_end(&mut app, 30.0);
+    assert!(
+        (scroll_top(&app, id) - (h1 - c)).abs() <= 1.0,
+        "the wheel reaches the new end {}, got {}",
+        h1 - c,
+        scroll_top(&app, id)
+    );
+}
+
+/// An IME composition reveals itself across a wheel scroll: a preedit at
+/// caret 0 with the field wheeled to the end scrolls back to the top, and a
+/// long one at the end that wraps scrolls on by its new line, with the
+/// candidate box inside the field.
+#[test]
+fn an_ime_preedit_reveals_across_a_wheel_scroll() {
+    let (mut app, id, field) = area(TEN);
+    focus(&mut app, &field, id);
+    ctrl(&mut app, KeyCode::Home);
+    repaint(&mut app);
+    wheel_to_end(&mut app, 100.0);
+    assert!(scroll_top(&app, id) > 100.0, "positive control: wheeled");
+    assert_eq!(caret_pos(&app, id), 0);
+    let ime = |app: &mut RinchApp, text: &str| {
+        app.handle_event(
+            PlatformEvent::Ime(ImeEvent::Preedit {
+                text: text.into(),
+                cursor: None,
+            }),
+            VP,
+            1.0,
+        );
+        repaint(app);
+    };
+    app.handle_event(PlatformEvent::Ime(ImeEvent::Enabled), VP, 1.0);
+    ime(&mut app, "ab");
+    // The caret's line at the top of the padding box: its top padding
+    // scrolled out, as Chrome reveals.
+    let s1 = scroll_top(&app, id);
+    assert!(s1 < 10.0, "the preedit at 0 is revealed: {s1}");
+
+    ime(&mut app, "");
+    ctrl(&mut app, KeyCode::End);
+    repaint(&mut app);
+    let s2 = scroll_top(&app, id);
+    ime(&mut app, "日本語日本語日本語日本語日本語日本語日本語");
+    let s3 = scroll_top(&app, id);
+    assert!(
+        s3 > s2 + 10.0,
+        "the wrapped composition scrolled: {s2} → {s3}"
+    );
+    let area = app.ime_state().cursor_tuple().expect("an IME area");
+    assert!(
+        area.1 >= PAD.1 - 1.0 && area.1 + area.3 <= PAD.3 + 1.0,
+        "the IME area in the padding box: {area:?}"
+    );
+}
+
+/// The cost: a caret move reads the caret off the focused field's kept
+/// layout. Ten ArrowDowns in a 15 KB textarea, each painted, shape its text
+/// for the scroll zero times (they shaped it ten times: the metrics' key holds
+/// the caret, and a miss shaped the whole text).
+#[test]
+fn caret_moves_in_a_big_textarea_shape_nothing_for_the_scroll() {
+    use rinch_dom::perf::Counter::ShapeInputScroll;
+    let big: &'static str = Box::leak(
+        (0..400)
+            .map(|i| format!("line number {i} with some words in it"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into_boxed_str(),
+    );
+    assert!(big.len() > 15_000);
+    let (mut app, id, field) = area(big);
+    focus(&mut app, &field, id);
+    ctrl(&mut app, KeyCode::Home);
+    let _ = ink(&mut app);
+    let shapes = |app: &RinchApp| {
+        app.doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .perf
+            .total()
+            .get(ShapeInputScroll)
+    };
+    let before = shapes(&app);
+    for _ in 0..10 {
+        key(&mut app, KeyCode::ArrowDown);
+        let _ = ink(&mut app);
+    }
+    // Ten visual lines: each of these wraps once at 206px.
+    assert_eq!(
+        caret_pos(&app, id),
+        big.match_indices('\n').nth(4).unwrap().0 + 1
+    );
+    assert!(
+        scroll_top(&app, id) > 100.0,
+        "positive control: it scrolled"
+    );
+    assert_eq!(shapes(&app) - before, 0, "ten arrows shape nothing");
+    typed(&mut app, "Z");
+    let _ = ink(&mut app);
+    assert_eq!(shapes(&app) - before, 1, "an edit shapes once");
 }

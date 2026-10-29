@@ -1,6 +1,6 @@
 //! Node tree data structures for rinch-dom.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -1519,6 +1519,14 @@ pub struct Node {
     /// line for its horizontal scroll (#1721), a `<textarea>`'s text for its
     /// caret reveal and its scroll extent (#827).
     pub(crate) input_line_metrics: Cell<Option<(u64, InputLineMetrics)>>,
+    /// A **focused** text control's displayed text as shaped for
+    /// [`Self::input_line_metrics`], under the hash of everything it is
+    /// shaped from except the caret, so a caret move reads its new position
+    /// off this layout instead of shaping the whole text again (review of
+    /// #2023: ten arrows in a 15 KB textarea shaped it ten times). Dropped
+    /// when the control is shaped unfocused, so only the field being edited
+    /// keeps one.
+    pub(crate) input_text_layout: RefCell<Option<(u64, parley::layout::Layout<Brush>)>>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of
     /// measuring via Parley. Used by contenteditable block virtualization to
@@ -1780,6 +1788,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -1861,6 +1870,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -1941,6 +1951,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -2019,6 +2030,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -3371,6 +3383,14 @@ pub struct NodeTree {
     /// here — coalesced per node, last value wins, since layout may resolve
     /// more than once per frame — for the facade to drain after layout.
     pub pending_scroll_clamps: Vec<(RawNodeId, f64)>,
+    /// `<textarea>`s whose value may have changed since the last resolve —
+    /// a `value` write, or a write to one of its text children — noted by
+    /// [`Self::push_dirty`] (review of #2023). A textarea's scroll range is
+    /// its text's height, which no layout measures, so a value change runs
+    /// no layout: the resolve that skips layout refreshes these ones' extent
+    /// and clamps their scroll, as `clamp_scroll_offsets` does for every
+    /// scroll container when layout runs.
+    pub(crate) textarea_extent_dirty: Vec<RawNodeId>,
     /// The device pixels per CSS px this document is painted at — the
     /// display scale, set with the Stylo device pixel ratio
     /// (`RinchDocument::set_device_pixel_ratio`). A scroll offset is kept on
@@ -3586,6 +3606,7 @@ impl NodeTree {
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
+            textarea_extent_dirty: Vec::new(),
             device_scale: 1.0,
             text_scale: 1.0,
             taffy_attach_faults: 0,
@@ -3742,6 +3763,45 @@ impl NodeTree {
         self.hit_cache.invalidate();
         self.dirty_nodes.insert(id);
         self.paint_dirty_nodes.push(id);
+        self.note_textarea_extent_dirty(id);
+    }
+
+    /// Queue `id`'s `onscroll` for an offset the engine wrote itself — a
+    /// clamp, a caret reveal — in [`Self::pending_scroll_clamps`], coalesced
+    /// per node (last value wins): layout can resolve more than once per
+    /// frame, and a consumer must see one event per drain (#144).
+    pub(crate) fn queue_scroll_clamp(&mut self, id: RawNodeId, offset: f64) {
+        if let Some(pending) = self
+            .pending_scroll_clamps
+            .iter_mut()
+            .find(|(n, _)| *n == id)
+        {
+            pending.1 = offset;
+        } else {
+            self.pending_scroll_clamps.push((id, offset));
+        }
+    }
+
+    /// If `id` is a `<textarea>` or one of its text children, queue the
+    /// textarea for the extent refresh and scroll clamp the next resolve owes
+    /// it ([`Self::textarea_extent_dirty`]).
+    fn note_textarea_extent_dirty(&mut self, id: RawNodeId) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        let textarea = if node.tag() == Some("textarea") {
+            id
+        } else if node.is_text()
+            && let Some(parent) = node.parent
+            && self.nodes.get(parent).and_then(Node::tag) == Some("textarea")
+        {
+            parent
+        } else {
+            return;
+        };
+        if !self.textarea_extent_dirty.contains(&textarea) {
+            self.textarea_extent_dirty.push(textarea);
+        }
     }
 
     /// `v`, a scroll offset in CSS px, on this document's device pixel grid
