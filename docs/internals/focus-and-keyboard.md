@@ -83,8 +83,10 @@ programmatic or Tab focus shows exactly this selection (`try_focus_input`);
 a posted request is cancelled by such a value write; `None` for a non-text control and, as Chrome, for
 `email`/`number`/date types). The caret rect (`DomDocument::text_caret_rect`,
 `None` unless rendered) is width 0 in logical window px on desktop
-(`form_control::painted_caret_rect`, built as `paint_input_value` builds the
-text, caret height 1.2 × font-size) and client px on the web (a hidden mirror
+(`form_control::painted_caret_rect`, shaped by the builder paint draws with,
+`form_control::field_text_layout`, at the origin paint uses,
+`form_control::field_text_origin`, through the field's scroll, #827; caret
+height 1.2 × font-size) and client px on the web (a hidden mirror
 `<div>` with the control's computed text styles at `clientWidth` less padding,
 its in-box offset scaled by painted/layout size for a transform; pinned
 against `caretPositionFromPoint`; height is the font's content area).
