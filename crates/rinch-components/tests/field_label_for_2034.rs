@@ -214,8 +214,18 @@ fn ids_never_repeat_across_kinds() {
 fn an_app_id_is_the_fields_id() {
     for k in KINDS {
         let m = (k.render)("Email", "Your work address", "Required", "email");
-        assert_eq!(attr(&m.part(k.field), "id").as_deref(), Some("email"), "{}", k.name);
-        assert_eq!(attr(&m.part(k.label), "for").as_deref(), Some("email"), "{}", k.name);
+        assert_eq!(
+            attr(&m.part(k.field), "id").as_deref(),
+            Some("email"),
+            "{}",
+            k.name
+        );
+        assert_eq!(
+            attr(&m.part(k.label), "for").as_deref(),
+            Some("email"),
+            "{}",
+            k.name
+        );
         assert_eq!(
             attr(&m.part(k.label), "id").as_deref(),
             Some("email-label"),
@@ -228,7 +238,12 @@ fn an_app_id_is_the_fields_id() {
             "{}",
             k.name
         );
-        assert_eq!(attr(&m.part(k.error), "id").as_deref(), Some("email-error"), "{}", k.name);
+        assert_eq!(
+            attr(&m.part(k.error), "id").as_deref(),
+            Some("email-error"),
+            "{}",
+            k.name
+        );
     }
 }
 
@@ -245,14 +260,24 @@ fn the_field_is_described_by_its_error_then_its_description() {
             "{}",
             k.name
         );
-        assert_eq!(attr(&m.part(k.error), "id"), Some(format!("{id}-error")), "{}", k.name);
+        assert_eq!(
+            attr(&m.part(k.error), "id"),
+            Some(format!("{id}-error")),
+            "{}",
+            k.name
+        );
         assert_eq!(
             attr(&m.part(k.description), "id"),
             Some(format!("{id}-description")),
             "{}",
             k.name
         );
-        assert_eq!(attr(&field, "aria-invalid").as_deref(), Some("true"), "{}", k.name);
+        assert_eq!(
+            attr(&field, "aria-invalid").as_deref(),
+            Some("true"),
+            "{}",
+            k.name
+        );
 
         // Description only.
         let m = (k.render)("L", "Help", "", "");
@@ -279,7 +304,12 @@ fn the_field_is_described_by_its_error_then_its_description() {
 
         // Neither: no dangling reference.
         let m = (k.render)("L", "", "", "");
-        assert_eq!(attr(&m.part(k.field), "aria-describedby"), None, "{}", k.name);
+        assert_eq!(
+            attr(&m.part(k.field), "aria-describedby"),
+            None,
+            "{}",
+            k.name
+        );
     }
 }
 
@@ -289,7 +319,12 @@ fn an_unlabelled_field_still_gets_an_app_id() {
     // own `<label for="email">` elsewhere on the page must find it.
     for k in KINDS {
         let m = (k.render)("", "", "", "email");
-        assert_eq!(attr(&m.part(k.field), "id").as_deref(), Some("email"), "{}", k.name);
+        assert_eq!(
+            attr(&m.part(k.field), "id").as_deref(),
+            Some("email"),
+            "{}",
+            k.name
+        );
     }
 }
 
@@ -327,7 +362,10 @@ fn select_trigger_is_labelled_by_its_label() {
     assert_eq!(attr(&trigger, "aria-invalid").as_deref(), Some("true"));
 
     let app = select("fruit", false);
-    assert_eq!(attr(&app.part(SELECT_TRIGGER), "id").as_deref(), Some("fruit"));
+    assert_eq!(
+        attr(&app.part(SELECT_TRIGGER), "id").as_deref(),
+        Some("fruit")
+    );
     assert_eq!(
         attr(&app.part(SELECT_TRIGGER), "aria-labelledby").as_deref(),
         Some("fruit-label")
