@@ -1760,6 +1760,7 @@ impl RinchApp {
                                     ctrl,
                                     alt,
                                     modifiers,
+                                    (vp_w, vp_h),
                                 );
                             }
                             // Position the caret against the current layout (dirtying
@@ -4034,6 +4035,7 @@ impl RinchApp {
         ctrl: bool,
         alt: bool,
         modifiers: Modifiers,
+        viewport: (f32, f32),
     ) -> bool {
         // 1. Cursor movement / selection extension — geometry-dependent (visual lines,
         //    goal column), so it stays view-owned and never touches the keymap. Which
@@ -4047,14 +4049,33 @@ impl RinchApp {
                 self.editor_goal_x = None;
                 return false;
             }
+            // macOS Page Up / Down: a page of scroll, the caret left (#2020).
+            Some(TextKeyAction::ScrollPage { down }) => {
+                self.page_editor(handle, down, false, true, viewport);
+                return false;
+            }
             _ => None,
         };
-        // The vertical "goal column" survives only a run of Up/Down — any other key
-        // (typing, horizontal arrows, Home/End, edits) abandons it.
-        if !matches!(motion, Some((TextMotion::LineUp | TextMotion::LineDown, _))) {
+        // The vertical "goal column" survives only a run of Up/Down and Page
+        // Up/Down — any other key (typing, horizontal arrows, Home/End, edits)
+        // abandons it.
+        if !matches!(
+            motion,
+            Some((
+                TextMotion::LineUp
+                    | TextMotion::LineDown
+                    | TextMotion::PageUp
+                    | TextMotion::PageDown,
+                _
+            ))
+        ) {
             self.editor_goal_x = None;
         }
         if let Some((motion, extend)) = motion {
+            if let TextMotion::PageUp | TextMotion::PageDown = motion {
+                let down = motion == TextMotion::PageDown;
+                return self.page_editor(handle, down, extend, false, viewport);
+            }
             let motion = match motion {
                 TextMotion::CharLeft => Motion::CharLeft,
                 TextMotion::CharRight => Motion::CharRight,
@@ -4066,6 +4087,7 @@ impl RinchApp {
                 TextMotion::LineDown => Motion::LineDown,
                 TextMotion::DocStart => Motion::DocStart,
                 TextMotion::DocEnd => Motion::DocEnd,
+                TextMotion::PageUp | TextMotion::PageDown => unreachable!("paged above"),
             };
             return self.move_editor(handle, motion, extend);
         }
@@ -4249,6 +4271,189 @@ impl RinchApp {
             }
             None => false,
         }
+    }
+
+    /// Page Up (`down = false`) or Page Down in the focused editor (#2020).
+    ///
+    /// The page is Chrome's: 0.875 of the scrollport's height
+    /// (`ScrollableArea::MinFractionToStepWhenPaging`), the scrollport being
+    /// the editor's nearest scroll container's padding box — the editor's own
+    /// when it scrolls — at most the viewport, or the viewport when nothing
+    /// scrolls. Chrome measures the focused editable element instead; for an
+    /// editor inside a taller scroller that pages past what is on screen, and
+    /// Firefox (like this) measures the scroller.
+    ///
+    /// The scroller is [`page_scroller`]'s: one a `lock_scroll` overlay
+    /// leaves alone is skipped, and the walk stops at a `position: fixed` box
+    /// (a modal), whose place no scroller outside it changes.
+    ///
+    /// The scroller moves a page first and is laid out — so a virtualized
+    /// editor materializes the blocks the page lands in — and the caret goes
+    /// to the point a page below (above) where it is now, measured after the
+    /// scroll, at the goal column Up/Down keep: with the caret in view it
+    /// keeps its place on screen, as in Firefox and native text views. The
+    /// target is a page from the caret, not from the view: when the user has
+    /// scrolled away from the caret (the wheel), the point a page from it is
+    /// outside the scrollport, and the scroller is moved again to bring that
+    /// point in before it is hit-tested — Chrome 155 and Firefox 155 both
+    /// move the caret a page from where it is, wherever the view is, and the
+    /// caret's reveal then shows it. Only a page that reaches the document's
+    /// last (first) line, or runs past the editor, puts the caret at the
+    /// document's end (start), as Chrome does. `extend` (Shift) keeps the
+    /// anchor.
+    ///
+    /// `scroll_only` (macOS's plain Page Up / Down), a read-only editor (as
+    /// Chrome's read-only `<textarea>`) and a caret with no geometry scroll a
+    /// page and leave the selection. Returns whether the selection changed.
+    fn page_editor(
+        &mut self,
+        handle: &crate::editor::EditorHandle,
+        down: bool,
+        extend: bool,
+        scroll_only: bool,
+        (vp_w, vp_h): (f32, f32),
+    ) -> bool {
+        use rinch_core::dom::NodeId;
+        use rinch_editor_core::{CursorMotion, Selection};
+        let FocusTarget::Editor(container) = self.focus_target else {
+            return false;
+        };
+        let Some(doc) = self.doc.clone() else {
+            return false;
+        };
+        // The scroller, its scrollport's height (the page is 0.875 of it) and
+        // the scrollport's band in window space, inside the viewport: where a
+        // point must be for the hit test to find what is there.
+        let (scroller, page, band) = {
+            let d = doc.borrow();
+            let scroller = page_scroller(&d.tree, container);
+            let view = (0.0, vp_h);
+            let (port, band) = scroller.map_or((f64::from(vp_h), view), |s| {
+                let cs = &d.tree.nodes[s].computed_style;
+                let port = d.client_height(NodeId(s))
+                    + f64::from(cs.padding_top.to_px())
+                    + f64::from(cs.padding_bottom.to_px());
+                if s == d.tree.body_id {
+                    return (port, view);
+                }
+                let (_, top, _, _) = painted_element_box(&d.tree, s);
+                let top = top + cs.border_top_width.to_px();
+                (port, (top.max(0.0), (top + port as f32).min(vp_h)))
+            });
+            (scroller, (port.min(f64::from(vp_h)) * 0.875).max(1.0), band)
+        };
+        let step = if down { page } else { -page };
+        let head = handle.selection().head();
+        let from = if scroll_only || handle.refuses_edits() {
+            None
+        } else {
+            self.editor_caret_point(handle, head)
+        };
+        // A page of scroll, with the scroller's `onscroll`, as the wheel.
+        let scrolled = scroller.map_or(0.0, |s| self.page_scroll_by(&doc, s, step));
+        let Some((cx, cy, ch)) = from else {
+            return false;
+        };
+        // Lay the scrolled content out: the hit test below reads it, and a
+        // virtualized editor materializes the blocks now on screen.
+        self.resolve_and_repaint(vp_w, vp_h);
+        let goal_x = self.editor_goal_x.unwrap_or(cx);
+        self.editor_goal_x = Some(goal_x);
+        // A page from the caret's middle, where the caret is drawn now —
+        // measured, so a scroller that did not carry the editor moves nothing.
+        let now_y = self
+            .editor_caret_point(handle, head)
+            .map_or(f64::from(cy) - scrolled, |(_, y, _)| f64::from(y));
+        let mut ty = (now_y + f64::from(ch * 0.5) + step) as f32;
+        // The caret scrolled out of view (#2028 review F1): the point a page
+        // from it is outside the scrollport too, where the hit test finds
+        // nothing. Bring the point inside first — half a caret in from the
+        // edge it is past — and lay out again.
+        let (lo, hi) = (band.0 + ch * 0.5, band.1 - ch * 0.5);
+        let over = if ty < lo {
+            ty - lo
+        } else if ty > hi {
+            ty - hi
+        } else {
+            0.0
+        };
+        if over != 0.0
+            && lo <= hi
+            && let Some(s) = scroller
+        {
+            let moved = self.page_scroll_by(&doc, s, f64::from(over));
+            if moved != 0.0 {
+                self.resolve_and_repaint(vp_w, vp_h);
+                ty -= moved as f32;
+            }
+        }
+        let edge = || {
+            let doc = handle.doc();
+            if down {
+                Selection::at_end(&doc).head()
+            } else {
+                Selection::at_start(&doc).head()
+            }
+        };
+        // What is there: the hit test first. A point the hit test does not
+        // find in this editor — off screen where no scroller could bring it
+        // in (past the window's edge, on a locked page), under a box that
+        // covers it, or past the editor's end (start), where a neighbouring
+        // editor or a modal's backdrop is — is resolved from the layout;
+        // past the end (start) that is the last (first) line, which the rule
+        // below turns into the end (start).
+        let target = self
+            .editor_point(goal_x, ty)
+            .filter(|hit| hit.container == container)
+            .or_else(|| self.editor_point_by_geometry(container, goal_x, ty))
+            .and_then(|hit| hit.pos(handle))
+            .map(|p| {
+                let (affinity, rect) = self.editor_hit_affinity(handle, p, ty);
+                (p, affinity, rect)
+            })
+            // On the document's last (first) line: Chrome goes to its end.
+            .filter(|&(_, _, rect)| {
+                let end = self.editor_caret_point(handle, edge());
+                !matches!((rect, end), (Some((_, py, ph)), Some((_, ey, _)))
+                    if (py - ey).abs() < ph * 0.5)
+            });
+        let Some((p, affinity, _)) = target else {
+            let motion = if down {
+                CursorMotion::DocEnd
+            } else {
+                CursorMotion::DocStart
+            };
+            return handle.move_cursor(motion, extend);
+        };
+        let sel = if extend {
+            Selection::text(handle.selection().anchor(), p)
+        } else {
+            Selection::cursor(p)
+        };
+        handle.set_selection_with_affinity(sel, affinity);
+        true
+    }
+
+    /// Scroll `s` by `dy` for a page key and fire its `onscroll`, as the wheel
+    /// does. Returns how far it actually moved.
+    fn page_scroll_by(&mut self, doc: &Rc<RefCell<RinchDocument>>, s: u64, dy: f64) -> f64 {
+        use rinch_core::dom::NodeId;
+        let (scrolled, fired) = {
+            let mut d = doc.borrow_mut();
+            let before = d.scroll_top(NodeId(s));
+            let (moved, handler) = Self::scroll_vertically_by(&mut d, s, dy);
+            if moved {
+                self.scene_dirty = true;
+            }
+            (
+                d.scroll_top(NodeId(s)) - before,
+                handler.map(|h| (h, Self::scroll_event_for(&d.tree, s))),
+            )
+        };
+        if let Some((h, event)) = fired {
+            rinch_core::events::dispatch_scroll_event(rinch_core::events::EventHandlerId(h), event);
+        }
+        scrolled
     }
 
     // ── IME (input method editor) ──────────────────────────────────────
@@ -5038,6 +5243,30 @@ impl RinchApp {
             None if allow_nearest => Self::nearest_textblock_in(&d.tree, cont, x, y)?,
             None => return None,
         };
+        Self::point_in_textblock(&d, cont, tb, x, y)
+    }
+
+    /// Resolve window point `(x, y)` in `container`'s editor by geometry
+    /// alone — the textblock whose painted band holds `y`, else the nearest
+    /// ([`Self::nearest_textblock_in`]), with no hit test — so a point that
+    /// is laid out but not on screen (scrolled past the window's edge, or
+    /// under a box that covers it) still resolves. A point below (above) the
+    /// editor resolves on its last (first) line.
+    fn editor_point_by_geometry(&self, container: u64, x: f32, y: f32) -> Option<EditorPoint> {
+        let doc = self.doc.clone()?;
+        let d = doc.borrow();
+        let tb = Self::nearest_textblock_in(&d.tree, container, x, y)?;
+        Self::point_in_textblock(&d, container, tb, x, y)
+    }
+
+    /// Window point `(x, y)` resolved inside textblock `tb` of editor `cont`.
+    fn point_in_textblock(
+        d: &RinchDocument,
+        cont: u64,
+        tb: u64,
+        x: f32,
+        y: f32,
+    ) -> Option<EditorPoint> {
         let node = d.tree.get(tb)?;
         // An empty textblock has no inline content and so no Parley layout — the
         // only cursor position in it is offset 0.
