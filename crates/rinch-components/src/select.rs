@@ -130,6 +130,11 @@ impl SelectOption {
 pub struct Select {
     /// Label displayed above the select.
     pub label: String,
+    /// The trigger's `id` (Mantine's `id`): the trigger names its label
+    /// (`{id}-label`) in `aria-labelledby`, and the description and error are
+    /// `{id}-description` / `{id}-error`. Empty generates a unique one per
+    /// render (issue #2034).
+    pub id: String,
     /// Description displayed below the select.
     pub description: String,
     /// Error message to display.
@@ -156,6 +161,7 @@ impl std::fmt::Debug for Select {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Select")
             .field("label", &self.label)
+            .field("id", &self.id)
             .field("placeholder", &self.placeholder)
             .field("size", &self.size)
             .field("disabled", &self.disabled)
@@ -249,6 +255,8 @@ impl Component for Select {
         container.set_attribute("class", &wrapper_class);
 
         // Label
+        let ids = crate::field_ids::FieldIds::new(&self.id);
+        let mut label_node = None;
         if !self.label.is_empty() {
             let label = __scope.create_element("label");
             label.set_attribute("class", "rinch-select__label");
@@ -262,6 +270,7 @@ impl Component for Select {
                 label.append_child(&star);
             }
             container.append_child(&label);
+            label_node = Some(label);
         }
 
         // Trigger wrapper (position: relative for dropdown positioning)
@@ -577,21 +586,44 @@ impl Component for Select {
         container.append_child(&trigger_wrapper);
 
         // Description
+        let mut desc_node = None;
         if !self.description.is_empty() {
             let desc_div = __scope.create_element("div");
             desc_div.set_attribute("class", "rinch-select__description");
             let desc_text = __scope.create_text(&self.description);
             desc_div.append_child(&desc_text);
             container.append_child(&desc_div);
+            desc_node = Some(desc_div);
         }
 
         // Error
+        let mut err_node = None;
         if !self.error.is_empty() {
             let err_div = __scope.create_element("div");
             err_div.set_attribute("class", "rinch-select__error");
             let err_text = __scope.create_text(&self.error);
             err_div.append_child(&err_text);
             container.append_child(&err_div);
+            err_node = Some(err_div);
+        }
+
+        // The label names the trigger (#2034). The trigger is a `div`, which
+        // is not a labelable element, so a `for` would reach it on neither
+        // backend: the trigger names the label in `aria-labelledby`, and the
+        // label forwards its own press to the trigger's focus.
+        ids.wire(
+            &trigger,
+            false,
+            label_node.as_ref(),
+            desc_node.as_ref(),
+            err_node.as_ref(),
+        );
+        if let Some(label) = &label_node
+            && !self.disabled
+        {
+            let target = trigger.clone();
+            let handler_id = __scope.register_handler(move || target.focus());
+            label.set_attribute("data-rid", &handler_id.0.to_string());
         }
 
         container
