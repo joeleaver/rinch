@@ -933,7 +933,10 @@ pub(crate) fn attach(id: u64, pc: &RtcPeerConnection) {
 /// remote audio elements.
 pub(crate) fn detach(id: u64) {
     // `try_with`: see `wasm::close` (a peer dropped at thread-local teardown).
-    let peer = PEERS.try_with(|p| p.borrow_mut().remove(&id)).ok().flatten();
+    let peer = PEERS
+        .try_with(|p| p.borrow_mut().remove(&id))
+        .ok()
+        .flatten();
     let Some(peer) = peer else { return };
     peer.pc.set_ontrack(None);
     peer.pc.set_onnegotiationneeded(None);

@@ -538,7 +538,10 @@ pub(crate) fn close(id: u64, notify: bool) {
     // `try_with`: reached from `PeerInner::drop`, which may run while the
     // thread's locals are torn down; the table is gone then, and so is the
     // peer (#1952).
-    let peer = PEERS.try_with(|p| p.borrow_mut().remove(&id)).ok().flatten();
+    let peer = PEERS
+        .try_with(|p| p.borrow_mut().remove(&id))
+        .ok()
+        .flatten();
     let Some(peer) = peer else {
         return;
     };
