@@ -3285,7 +3285,7 @@ impl DomDocument for WebDocument {
             .get(&node.0)
             .and_then(|n| n.dyn_ref::<web_sys::Element>())
         {
-            crate::bounds::watch(self.doc_key, node.0 as u64, el);
+            crate::bounds::watch(self.doc_key, node.0, el);
         }
     }
 

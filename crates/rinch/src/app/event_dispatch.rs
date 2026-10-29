@@ -4381,7 +4381,7 @@ impl RinchApp {
         let d = doc.borrow();
         let node = d.tree.get(node_id)?;
         let (pad_l, _) = rinch_dom::form_control::text_column(node);
-        let (_, _, _, h) = d.query_node_layout(node_id as u64)?;
+        let (_, _, _, h) = d.query_node_layout(node_id)?;
         // The candidate box goes where the field is *painted*, so the text
         // origin is pushed forward through the composed transform rather than
         // added to an untransformed parent-chain sum (#203).
@@ -5046,8 +5046,7 @@ impl RinchApp {
         );
         // Parley steps over an inline box to the byte after it, which is the
         // byte of both of the box's sides: name the box and the half instead.
-        let inline_box = rinch_dom::text_query::inline_box_at_point(&layout.layout, rel_x, rel_y)
-            .map(|(id, after)| (id, after));
+        let inline_box = rinch_dom::text_query::inline_box_at_point(&layout.layout, rel_x, rel_y);
         Some(point(ifc_byte, inline_box))
     }
 
@@ -5367,7 +5366,7 @@ impl RinchApp {
             let leaf = handle
                 .caret_inline_box(pos, aff)
                 .filter(|&(leaf_tb, _, _)| leaf_tb == tb)
-                .map(|(_, leaf, _)| leaf as u64);
+                .map(|(_, leaf, _)| leaf);
             let d = doc.borrow();
             let layout = &d.tree.get(tb)?.text_layout.as_ref()?.layout;
             leaf.and_then(|leaf| line_index_of(layout, LineOf::InlineBox(leaf)))
@@ -5423,7 +5422,7 @@ impl RinchApp {
             use rinch_dom::text_query::{LineOf, visual_line_edges_for_node};
             let doc = self.doc.clone()?;
             let d = doc.borrow();
-            let id = tb as u64;
+            let id = tb;
             // The line the caret is DRAWN on: beside an image that is the
             // image's line, which the byte query cannot tell (between two
             // images a soft wrap separates, the byte's caret is on the upper
@@ -5433,7 +5432,7 @@ impl RinchApp {
                 .caret_inline_box(head, affinity)
                 .filter(|&(leaf_tb, _, _)| leaf_tb == tb)
                 .and_then(|(_, leaf, _)| {
-                    visual_line_edges_for_node(&d, id, LineOf::InlineBox(leaf as u64))
+                    visual_line_edges_for_node(&d, id, LineOf::InlineBox(leaf))
                 })
                 .or_else(|| visual_line_edges_for_node(&d, id, LineOf::Caret(flat, affinity)))?
         };

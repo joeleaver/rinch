@@ -61,7 +61,7 @@ fn paragraph(face: &'static [u8]) -> (RinchDocument, u64) {
     let t = doc.create_text(TEXT);
     doc.append_child(p, t);
     doc.resolve_layout(400.0, 600.0);
-    (doc, p.0 as u64)
+    (doc, p.0)
 }
 
 fn assert_on_line_boxes(face: &'static [u8], name: &str) {
@@ -152,7 +152,7 @@ fn inter_paragraph(style: &str) -> (RinchDocument, u64) {
     let t = doc.create_text(TEXT);
     doc.append_child(p, t);
     doc.resolve_layout(400.0, 600.0);
-    (doc, p.0 as u64)
+    (doc, p.0)
 }
 
 #[test]
@@ -344,7 +344,7 @@ fn hard_break_paragraph(parts: &[&str]) -> (RinchDocument, u64) {
         }
     }
     doc.resolve_layout(400.0, 600.0);
-    (doc, p.0 as u64)
+    (doc, p.0)
 }
 
 #[test]

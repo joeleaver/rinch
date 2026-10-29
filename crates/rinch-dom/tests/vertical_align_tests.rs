@@ -191,9 +191,9 @@ fn sub_and_super_shift_the_glyph_bounds_by_the_calibrated_amount() {
     let mut d = doc();
     let line = sub_sup_line(&mut d);
 
-    let base = glyph_bounds_for_offset(&d, line.0 as u64, 1).unwrap(); // B
-    let sub = glyph_bounds_for_offset(&d, line.0 as u64, 3).unwrap(); // D
-    let sup = glyph_bounds_for_offset(&d, line.0 as u64, 5).unwrap(); // F
+    let base = glyph_bounds_for_offset(&d, line.0, 1).unwrap(); // B
+    let sub = glyph_bounds_for_offset(&d, line.0, 3).unwrap(); // D
+    let sup = glyph_bounds_for_offset(&d, line.0, 5).unwrap(); // F
 
     let sub_shift = sub.y - base.y;
     let sup_shift = sup.y - base.y;
@@ -224,12 +224,12 @@ fn the_caret_and_the_glyph_bounds_agree_on_the_sub_shift() {
     let mut d = doc();
     let line = sub_sup_line(&mut d);
 
-    let caret_plain = caret_position_for_offset(&d, line.0 as u64, 2).unwrap().1; // before C
-    let caret_sub = caret_position_for_offset(&d, line.0 as u64, 3).unwrap().1; // before D
+    let caret_plain = caret_position_for_offset(&d, line.0, 2).unwrap().1; // before C
+    let caret_sub = caret_position_for_offset(&d, line.0, 3).unwrap().1; // before D
     let caret_delta = caret_sub - caret_plain;
 
-    let base = glyph_bounds_for_offset(&d, line.0 as u64, 1).unwrap();
-    let sub = glyph_bounds_for_offset(&d, line.0 as u64, 3).unwrap();
+    let base = glyph_bounds_for_offset(&d, line.0, 1).unwrap();
+    let sub = glyph_bounds_for_offset(&d, line.0, 3).unwrap();
     let bounds_delta = sub.y - base.y;
 
     assert!(

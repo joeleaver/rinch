@@ -63,8 +63,7 @@ fn size(d: &RinchDocument, id: NodeId) -> (f32, f32) {
 
 /// Asserts the caret before byte `offset` of `root`'s text is at `(x, y)`.
 fn caret_at(d: &RinchDocument, root: NodeId, offset: usize, (x, y): (f32, f32)) {
-    let (cx, cy) =
-        caret_position_for_offset(d, root.0 as u64, offset).expect("an IFC root has a layout");
+    let (cx, cy) = caret_position_for_offset(d, root.0, offset).expect("an IFC root has a layout");
     assert!(
         (cx - x).abs() < 0.1 && cy == y,
         "caret at {offset}: ({cx}, {cy}), Chrome ({x}, {y})"

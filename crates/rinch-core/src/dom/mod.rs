@@ -1318,7 +1318,7 @@ impl NodeHandle {
     pub fn query_caret_position(&self, byte_offset: usize) -> Option<(f32, f32)> {
         let doc = self.accessed_doc()?;
         doc.borrow()
-            .query_caret_position(self.node_id.0 as u64, byte_offset)
+            .query_caret_position(self.node_id.0, byte_offset)
     }
 
     /// Query the bounding box of a glyph cluster at the given byte offset.
@@ -1330,8 +1330,7 @@ impl NodeHandle {
     /// Some(GlyphBounds) if the node has text layout and the offset is valid, None otherwise
     pub fn query_glyph_bounds(&self, byte_offset: usize) -> Option<GlyphBounds> {
         let doc = self.accessed_doc()?;
-        doc.borrow()
-            .query_glyph_bounds(self.node_id.0 as u64, byte_offset)
+        doc.borrow().query_glyph_bounds(self.node_id.0, byte_offset)
     }
 
     /// Get the layout bounds of this node relative to its parent.
@@ -1340,7 +1339,7 @@ impl NodeHandle {
     /// For where the node is on screen, use [`Self::bounding_rect`].
     pub fn get_layout_bounds(&self) -> Option<(f32, f32, f32, f32)> {
         let doc = self.accessed_doc()?;
-        doc.borrow().query_node_layout(self.node_id.0 as u64)
+        doc.borrow().query_node_layout(self.node_id.0)
     }
 
     /// Where this element is **now**: the box it is painted in, in
@@ -1438,7 +1437,7 @@ impl NodeHandle {
         // across documents (issue #134). A handle whose document is already
         // gone registers under key 0 (matches no live document), yielding a
         // signal that simply keeps its zero rect.
-        let signal = crate::reactive::register_bounds_signal(self.doc_key(), self.node_id.0 as u64);
+        let signal = crate::reactive::register_bounds_signal(self.doc_key(), self.node_id.0);
         // Asked on every call, not only for a new entry: a call made while the
         // document is borrowed cannot reach the backend, and the next one must
         // still start the watch (a backend ignores a node it already watches).

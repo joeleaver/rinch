@@ -1097,7 +1097,7 @@ fn a_text_node_that_stops_being_a_leaf_answers_no_stale_caret_970() {
     };
     let last_text = |d: &RinchDocument, w: NodeId| {
         let p = d.tree.get(w.0).unwrap().children[0];
-        *d.tree.get(p).unwrap().children.last().unwrap() as u64
+        *d.tree.get(p).unwrap().children.last().unwrap()
     };
     let (mut d, w) = make(true);
     let t = last_text(&d, w);

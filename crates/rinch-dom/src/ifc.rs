@@ -10752,7 +10752,7 @@ impl RinchDocument {
                         None => (child.layout.width, child.layout.height),
                     };
                     builder.push_inline_box(parley::InlineBox {
-                        id: child_id as u64,
+                        id: child_id,
                         index: 0, // will be set by builder
                         width: width * scale,
                         height: height * scale,

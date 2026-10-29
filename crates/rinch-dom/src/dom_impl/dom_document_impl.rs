@@ -2552,7 +2552,7 @@ impl RinchDocument {
         box_id: RawNodeId,
         after: bool,
     ) -> Option<(f32, f32, f32)> {
-        let (x, y, h) = self.query_inline_box_caret(node_id as u64, box_id as u64, after)?;
+        let (x, y, h) = self.query_inline_box_caret(node_id, box_id, after)?;
         self.caret_to_window(node_id, x, y, h)
     }
 
@@ -2565,9 +2565,9 @@ impl RinchDocument {
         affinity: CaretAffinity,
     ) -> Option<(f32, f32, f32)> {
         let (local_x, local_y) =
-            self.query_caret_position_with_affinity(node_id as u64, byte_offset, affinity)?;
+            self.query_caret_position_with_affinity(node_id, byte_offset, affinity)?;
         let height = self
-            .query_glyph_bounds(node_id as u64, byte_offset)
+            .query_glyph_bounds(node_id, byte_offset)
             .map(|g| g.height)
             .unwrap_or(18.0);
         self.caret_to_window(node_id, local_x, local_y, height)
@@ -2586,7 +2586,7 @@ impl RinchDocument {
         node_id: RawNodeId,
         byte_offset: usize,
     ) -> Option<(f32, f32, f32, f32)> {
-        let g = self.query_glyph_bounds(node_id as u64, byte_offset)?;
+        let g = self.query_glyph_bounds(node_id, byte_offset)?;
         let (x, y, w, h) = crate::paint::rect_from_painted_box(
             &self.tree,
             node_id,

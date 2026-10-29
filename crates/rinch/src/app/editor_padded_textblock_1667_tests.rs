@@ -260,7 +260,7 @@ fn the_caret_in_a_padded_bordered_paragraph_sits_on_its_text() {
         let doc = p.app.doc.as_ref().unwrap().borrow();
         let img = doc.query_selector_all("img")[0].0;
         let layout = &doc.tree.nodes[block].text_layout.as_ref().unwrap().layout;
-        let (x, y, _) = rinch_dom::text_query::inline_box_caret(layout, img as u64, true)
+        let (x, y, _) = rinch_dom::text_query::inline_box_caret(layout, img, true)
             .expect("the image is an inline box of the paragraph");
         (cx + x, cy + y)
     };

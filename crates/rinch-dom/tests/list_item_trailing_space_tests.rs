@@ -79,7 +79,7 @@ fn boxof(doc: &RinchDocument, id: NodeId) -> (f32, f32, f32, f32) {
 }
 
 fn caret(doc: &RinchDocument, id: NodeId, offset: usize) -> (f32, f32) {
-    caret_position_for_offset(doc, id.0 as u64, offset).expect("an IFC root has a text layout")
+    caret_position_for_offset(doc, id.0, offset).expect("an IFC root has a text layout")
 }
 
 /// The editor's list item, reduced: `li { display: flex; flex-wrap: wrap;

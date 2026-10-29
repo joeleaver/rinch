@@ -1827,7 +1827,7 @@ impl EditorView for RinchDomEditorView {
         let geometry = {
             let d = doc.borrow();
             if self.preedit.is_some() {
-                preedit_font = d.node_font(block_id as u64);
+                preedit_font = d.node_font(block_id);
             }
             self.caret_geometry(
                 &*d,
@@ -2082,7 +2082,7 @@ impl RinchDomEditorView {
                 .filter(|s| s.is_mounted())
                 .filter_map(|s| {
                     let id = s.host().node_id().0;
-                    let (x, y, w, h) = d.query_node_layout(id as u64)?;
+                    let (x, y, w, h) = d.query_node_layout(id)?;
                     Some((
                         id,
                         (
@@ -2167,22 +2167,20 @@ impl RinchDomEditorView {
         // A soft borrow: an app may ask from a callback while a runtime holds
         // the document; that answers "no geometry" rather than panicking.
         let host = host.try_borrow().ok()?;
-        let block_id = block.node_id().0 as u64;
+        let block_id = block.node_id().0;
         for (leaf, after) in self
             .inline_boxes_beside(doc, pos, affinity)
             .into_iter()
             .flatten()
         {
-            if let Some(rect) = host.query_inline_box_caret_rect(block_id, leaf as u64, after) {
+            if let Some(rect) = host.query_inline_box_caret_rect(block_id, leaf, after) {
                 return Some(rect);
             }
         }
         let shift = self.shared_exit_width(&*host, doc, pos, block_id, stored);
         let shifted = |(x, y, h): (f32, f32, f32)| (x + shift, y, h);
         for (element, end, after) in self.mark_edges_beside(doc, pos, stored, affinity) {
-            if let Some(rect) =
-                host.query_inline_edge_caret_rect(block_id, element as u64, end, after)
-            {
+            if let Some(rect) = host.query_inline_edge_caret_rect(block_id, element, end, after) {
                 return Some(shifted(rect));
             }
         }
@@ -2439,8 +2437,8 @@ impl RinchDomEditorView {
         self.shared_wrappers_left(doc, pos, stored)
             .into_iter()
             .filter_map(|w| {
-                let lead = d.query_inline_edge_caret(block_id, w as u64, true, false)?;
-                let trail = d.query_inline_edge_caret(block_id, w as u64, true, true)?;
+                let lead = d.query_inline_edge_caret(block_id, w, true, false)?;
+                let trail = d.query_inline_edge_caret(block_id, w, true, true)?;
                 Some(trail.0 - lead.0)
             })
             .sum()
@@ -2541,7 +2539,7 @@ impl RinchDomEditorView {
             if id == container_id {
                 break;
             }
-            if let Some((nx, ny, _, _)) = d.query_node_layout(id as u64) {
+            if let Some((nx, ny, _, _)) = d.query_node_layout(id) {
                 x += nx;
                 y += ny;
             }
@@ -2551,7 +2549,7 @@ impl RinchDomEditorView {
         // anchor to its *padding* box; the summed offsets are border-box-relative.
         // Subtract the container's border inset once so caret/selection land on glyphs
         // (both renderers report it).
-        let (ix, iy) = d.content_origin_inset(container_id as u64);
+        let (ix, iy) = d.content_origin_inset(container_id);
         (x - ix, y - iy)
     }
 
@@ -2575,7 +2573,7 @@ impl RinchDomEditorView {
     ///
     /// [`CARET_WIDTH`]: rinch_core::dom::CARET_WIDTH
     fn keep_caret_in_block(&self, d: &dyn DomDocument, block_id: u64, x: f32) -> f32 {
-        let Some((_, _, w, _)) = d.query_node_layout(block_id as u64) else {
+        let Some((_, _, w, _)) = d.query_node_layout(block_id) else {
             return x;
         };
         if w <= 0.0 {
@@ -2615,30 +2613,26 @@ impl RinchDomEditorView {
             .into_iter()
             .flatten()
         {
-            if let Some((x, y, height)) =
-                d.query_inline_box_caret(block_id as u64, leaf as u64, after)
-            {
+            if let Some((x, y, height)) = d.query_inline_box_caret(block_id, leaf, after) {
                 let (ox, oy) = self.block_offset_in_container(d, block_id);
                 return Some((ox + x, oy + y, height));
             }
         }
         // #1833: past the end edges of the shared wrappers a typed
         // character would leave.
-        let shift = self.shared_exit_width(d, doc, pos, block_id as u64, stored);
+        let shift = self.shared_exit_width(d, doc, pos, block_id, stored);
         // #1426: past a mark wrapper's padding, on the side its marks say.
         for (element, end, after) in self.mark_edges_beside(doc, pos, stored, affinity) {
-            if let Some((x, y, height)) =
-                d.query_inline_edge_caret(block_id as u64, element as u64, end, after)
-            {
+            if let Some((x, y, height)) = d.query_inline_edge_caret(block_id, element, end, after) {
                 let (ox, oy) = self.block_offset_in_container(d, block_id);
                 return Some((ox + x + shift, oy + y, height));
             }
         }
         let from_parley = d
-            .query_caret_position_with_affinity(block_id as u64, flat_byte, affinity)
+            .query_caret_position_with_affinity(block_id, flat_byte, affinity)
             .map(|(local_x, local_y)| {
                 let height = d
-                    .query_glyph_bounds(block_id as u64, flat_byte)
+                    .query_glyph_bounds(block_id, flat_byte)
                     .map(|g| g.height)
                     .unwrap_or(18.0);
                 let (ox, oy) = self.block_offset_in_container(d, block_id);
@@ -2695,7 +2689,7 @@ impl RinchDomEditorView {
                 .last()
                 .and_then(|last| {
                     let id = last.dom.node_id().0;
-                    let (_, _, _, h) = d.query_node_layout(id as u64)?;
+                    let (_, _, _, h) = d.query_node_layout(id)?;
                     let (_, y) = self.block_offset_in_container(&*d, id);
                     Some(y + h)
                 })
@@ -2821,12 +2815,12 @@ impl RinchDomEditorView {
         for id in ids {
             id.hash(&mut h);
             let (x, y) = self.block_offset_in_container(d, id);
-            let (_, _, w, bh) = d.query_node_layout(id as u64).unwrap_or_default();
-            let (l, t, r, b) = d.content_box_inset(id as u64);
+            let (_, _, w, bh) = d.query_node_layout(id).unwrap_or_default();
+            let (l, t, r, b) = d.content_box_inset(id);
             for v in [x, y, w, bh, l, t, r, b] {
                 v.to_bits().hash(&mut h);
             }
-            d.text_layout_generation(id as u64).hash(&mut h);
+            d.text_layout_generation(id).hash(&mut h);
         }
         Some(h.finish())
     }
@@ -2872,7 +2866,7 @@ impl RinchDomEditorView {
                     by_block.entry(block).or_default().push((i, byte, at));
                 }
                 Some(MarginTarget::Leaf(id)) => {
-                    if let Some((_, _, w, h)) = d.query_node_layout(id as u64)
+                    if let Some((_, _, w, h)) = d.query_node_layout(id)
                         && (w != 0.0 || h != 0.0)
                     {
                         let (_, oy) = self.block_offset_in_container(d, id);
@@ -2888,7 +2882,7 @@ impl RinchDomEditorView {
                 .iter()
                 .map(|&(_, byte, _)| (byte, CaretAffinity::Downstream))
                 .collect();
-            let boxes = d.query_line_boxes(block as u64, &asked);
+            let boxes = d.query_line_boxes(block, &asked);
             let mut line_height: Option<Option<f32>> = None;
             for (&(i, byte, at), line) in carets.iter().zip(boxes) {
                 let geometry = match line {
@@ -2896,8 +2890,7 @@ impl RinchDomEditorView {
                     None => self
                         .caret_geometry(d, doc, at, block, byte, CaretAffinity::Downstream, None)
                         .map(|(_, y, h)| {
-                            let lh =
-                                *line_height.get_or_insert_with(|| d.line_box_height(block as u64));
+                            let lh = *line_height.get_or_insert_with(|| d.line_box_height(block));
                             match lh {
                                 Some(lh) if lh > h => (y - (lh - h) / 2.0, lh),
                                 _ => (y, h),
@@ -2928,7 +2921,7 @@ impl RinchDomEditorView {
         }
         let right = self.root.children.iter().find_map(|c| {
             let id = c.dom.node_id().0;
-            let (_, _, w, h) = d.query_node_layout(id as u64)?;
+            let (_, _, w, h) = d.query_node_layout(id)?;
             if w == 0.0 && h == 0.0 {
                 return None;
             }
@@ -3028,19 +3021,19 @@ impl RinchDomEditorView {
         if r.parent().content().size() != 0 {
             return None;
         }
-        let (_, _, bw, bh) = d.query_node_layout(block_id as u64)?;
+        let (_, _, bw, bh) = d.query_node_layout(block_id)?;
         if bw == 0.0 && bh == 0.0 {
             return None;
         }
         let (ox, oy) = self.block_offset_in_container(d, block_id);
         // Its content box, not its border box: an empty code block is padded,
         // and its caret goes where its text would start (#1667).
-        let (l, t, _, b) = d.content_box_inset(block_id as u64);
+        let (l, t, _, b) = d.content_box_inset(block_id);
         // One line box tall: the block's line height, else its content height
         // (its box need not be one line plus its padding: desktop sizes
         // `min-height: 1lh` as a border box, #1278); clamp to a sane range and
         // fall back to a default when it has collapsed to zero.
-        let ch = d.line_box_height(block_id as u64).unwrap_or(bh - t - b);
+        let ch = d.line_box_height(block_id).unwrap_or(bh - t - b);
         let h = if (4.0..=80.0).contains(&ch) { ch } else { 18.0 };
         Some((ox + l, oy + t, h))
     }
@@ -3103,7 +3096,7 @@ impl RinchDomEditorView {
             for (block_id, byte_a, byte_b, boxes) in targets {
                 let (ox, oy) = self.block_offset_in_container(&*d, block_id);
                 for (rx, ry, rw, rh) in
-                    d.query_selection_rects_with_boxes(block_id as u64, byte_a, byte_b, &boxes)
+                    d.query_selection_rects_with_boxes(block_id, byte_a, byte_b, &boxes)
                 {
                     out.push((ox + rx, oy + ry, rw, rh));
                 }
@@ -3188,7 +3181,7 @@ impl RinchDomEditorView {
                 && leaf_flat_bytes(child, self.flat) == 0
                 && let Some(c) = desc.children.get(i)
             {
-                out.push(c.dom.node_id().0 as u64);
+                out.push(c.dom.node_id().0);
             }
             at += child.node_size();
         }
@@ -3296,7 +3289,7 @@ impl RinchDomEditorView {
                 .into_iter()
                 .filter_map(|cell_pos| {
                     let node_id = self.node_host_at(&state.doc, Pos(cell_pos))?;
-                    let (_, _, w, h) = d.query_node_layout(node_id as u64)?;
+                    let (_, _, w, h) = d.query_node_layout(node_id)?;
                     let (ox, oy) = self.block_offset_in_container(&*d, node_id);
                     Some((cell_pos == head_cell, (ox, oy, w, h)))
                 })
@@ -3336,7 +3329,7 @@ impl RinchDomEditorView {
         };
         let geometry = {
             let d = doc.borrow();
-            d.query_node_layout(node_id as u64).map(|(_, _, w, h)| {
+            d.query_node_layout(node_id).map(|(_, _, w, h)| {
                 let (ox, oy) = self.block_offset_in_container(&*d, node_id);
                 (ox, oy, w, h)
             })
