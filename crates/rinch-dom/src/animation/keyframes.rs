@@ -611,10 +611,8 @@ fn serialised_length_px(css: &str, basis: &StopBasis) -> Option<f32> {
         (num, 1.0)
     } else if let Some(num) = css.strip_suffix("rem") {
         (num, basis.rem())
-    } else if let Some(num) = css.strip_suffix("em") {
-        (num, basis.em())
     } else {
-        return None;
+        (css.strip_suffix("em")?, basis.em())
     };
     let v: f32 = num.trim().parse().ok()?;
     (v * scale).is_finite().then_some(v * scale)
