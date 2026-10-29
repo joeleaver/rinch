@@ -28,14 +28,23 @@
 //!
 //! # Mutants, and what kills each
 //!
+//! Each applied to the committed source, then this file,
+//! `review2_1409_tests` and `filled_animation_frame_tests` run (#782's pins
+//! survive all eight).
+//!
 //! | mutant | killed by |
 //! |---|---|
-//! | `main`: the completing tick drops the entry and restyles nothing | every `finished_*` fixture below except the two controls |
-//! | the entry is kept as finished, but the completing tick does not restyle the node | `a_finished_animation_without_fill_returns_to_its_base_value`, `…_backwards_…`, `…_transform_…` |
-//! | the completing tick restyles, but drops the entry (no finished marker) | `an_unrelated_restyle_does_not_replay_…`, `pausing_…`, `a_theme_change_…`, `…does_not_start_a_transition…` |
-//! | a finished entry is latched (a restyle never runs it again) | `a_restyle_that_extends_a_finished_animation_runs_it_again`, alone |
-//! | a finished entry is counted by `has_running_animations` | `a_finished_animation_without_fill_returns_to_its_base_value`, `an_unrelated_restyle_…` |
-//! | the cascade's transition diff counts the sample it is restoring | `a_finished_animation_does_not_start_a_transition_on_its_way_back`, alone |
+//! | M1 `main`: the completing tick drops the entry and restyles nothing | 9 here, and `review2_1409_tests::b4_animation_ending_without_fill` |
+//! | M2 the entry is kept as finished, but the tick asks for no restyle | the five "returns to its base" / containing-block / transition fixtures, and `b4` |
+//! | M3 the tick asks for the restyle, but drops the entry (no marker) | 8 here (every replay fixture, and the base-value ones: the replay re-mints it), and `b4` |
+//! | M4 a settled entry is latched (a restyle never clears it) | `a_restyle_that_extends_a_finished_animation_runs_it_again`, alone |
+//! | M5 `settled` is kept only while *filling* (#782's old rule) | 6 here: it never stays settled, so `has_running_animations` counts it |
+//! | M6 `has_running_animations` counts a settled no-fill entry | the same 6 |
+//! | M7 the cascade's transition diff keeps the way back | `a_finished_animation_does_not_start_a_transition_on_its_way_back`, alone |
+//! | M8 a generated box's own node is marked, not its originator | `a_finished_animation_on_a_before_box_returns_to_its_base_value`, alone |
+//!
+//! Red at 49586231 (before the fix): 8 of the first 11 fixtures; the
+//! forwards/both control, the rename and the re-display fixtures pass there.
 
 #![cfg(feature = "software-renderer")]
 

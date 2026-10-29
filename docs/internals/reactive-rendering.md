@@ -546,7 +546,24 @@ Three things it deliberately does not do.
   (`ActiveAnimation::settled`), and after that it is kept, re-applied and
   not counted. That includes a zero-duration **infinite** one
   (`0s infinite forwards`): its active duration is `0 × ∞ = 0`, so it is
-  finished at its delay's end, as in Chrome 155 (#786). **The component library declares the pause itself** (#912):
+  finished at its delay's end, as in Chrome 155 (#786). A finished animation
+  **without** a forwards fill (`none`/`backwards`) is kept too (**#783**), as a
+  settled marker with no sample, and for a different reason: it is what stops
+  the next cascade — an unrelated class, a pause, a theme toggle — from finding
+  no entry of that name and starting the still-declared animation again from
+  t=0, which Chrome does not do. Its finishing tick cannot restore the cascaded
+  values (`computed_style` holds only the last sample), so it pushes the node
+  onto `NodeTree::ended_animations` and `RinchDocument::tick_animations` calls
+  `mark_restyle` on it — on the **originator** for a generated box, which
+  `mark_restyle` refuses and whose cascade styles the box (#1023). That cascade
+  drops the marker's properties from its transition diff, so the way back is
+  not a transition start (the before-change style is the one updated to the
+  current time), and clears the list. `start_animations` keeps `settled` only
+  while `is_complete` holds, so more iterations run it again; a new
+  `animation-name`, or `display: none` and back (#747, which drops the marker),
+  starts a new one. `tests/finished_animation_no_fill_783_tests.rs` is the pin.
+  A caller of `animation::tick_animations` alone (several tests do) gets the
+  marker but owns the restyle. **The component library declares the pause itself** (#912):
   `.rinch-drawer__root--hidden *`, a closed `.rinch-popover__dropdown`'s
   subtree and an unhovered `.rinch-hover-card__dropdown`'s subtree all carry
   `animation-play-state: paused !important` — every descendant rather than a
@@ -685,11 +702,10 @@ leaves the running animation on its old one (tracked on **#781**). On those two
 passes and on every targeted restyle, an edited `@keyframes` body (**#766**), a
 changed duration or delay (**#780**) and a stop derived from the base style
 (**#781**) still stay stale, because a refresh per animated node per cascade is
-a cost a hover should not pay. And one divergence the theme path now reaches,
-not fixed: **a finished one-shot animation replays on a theme toggle** — its
-entry was dropped when it completed, so the full restyle mints it again from
-t=0. Chrome does not, and neither did `main` (its map was cleared with the
-animation block gated off, right by accident). That is **#783**'s mechanism.
+a cost a hover should not pay. One divergence the theme path reached, now
+fixed (**#783**): **a finished one-shot animation replayed on a theme toggle**
+— its entry was dropped when it completed, so the full restyle minted it again
+from t=0. Chrome does not. The entry is now kept as a settled marker (below).
 #747's restart walk — the one that gives a subtree shown by an inline `display`
 write its animations back — reads no flag either; it shipped behind this one, so
 a panel shown by such a write on a cascade before the first layout completed
