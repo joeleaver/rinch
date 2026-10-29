@@ -12477,6 +12477,8 @@ mod editor_scroll_gate_tests;
 #[cfg(test)]
 mod editor_table_span_1182_tests;
 #[cfg(test)]
+mod editor_virtualized_caret_scroll_845_tests;
+#[cfg(test)]
 mod grapheme_hit_1684_tests;
 #[cfg(test)]
 mod review_1687_tests;
