@@ -169,9 +169,9 @@ through `paint::scrollbar::overflows` — the same move #400 made for
 half: that removes the bar, not the scrolling (as `scrollbar-width: none` does
 in Chrome). The body fallback now also asks `scrolls_y()`/`scrolls_x()`, so an
 `overflow: hidden` body is no fallback wheel target (CSS-correct). Still open
-beside it: `apply_scroll_into_view`'s nearest branch mixes a border-box origin
-with the content-box height (**#1367**), and `clamp_scroll_offsets` never
-clamps the x offset (**#1368**). A **positioned** child — `absolute`, or `relative`
+beside it: `clamp_scroll_offsets` never clamps the x offset (**#1368**).
+(`apply_scroll_into_view` measured a scroller's band from its border-box top
+against its content-box height until #842 made it the padding box, #1367.) A **positioned** child — `absolute`, or `relative`
 with an offset — is measured differently from Chrome. The paddings of rinch's
 content-box frame and Chrome's padding-box frame cancel for a **non-positioned**
 child only. An `absolute` child's overflow is over-reported by **up to** the
