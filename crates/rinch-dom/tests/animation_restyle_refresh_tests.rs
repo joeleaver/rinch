@@ -30,18 +30,24 @@
 //!
 //! # Which fixture kills which mutant
 //!
-//! See the PR body for the run; each mutant is applied to the committed source.
+//! Every row was run: each mutant applied to the committed source, then this
+//! file, `full_restyle_animation_refresh_tests`, `background_tiling_tests`,
+//! `animation_start_gating_tests`, `finished_animation_no_fill_783_tests`,
+//! `filled_animation_frame_tests` and `paused_animation_frame_tests`. The
+//! source before the fix fails all eleven fixtures here.
 //!
 //! | Mutant | Killed by |
 //! |---|---|
-//! | **M1** a kept animation's stops are never re-extracted when the rule's blocks change | `a_style_appended_after_layout_redefines_a_running_keyframes_body`, `a_media_query_that_swaps_the_keyframes_rule_plays_the_new_body` |
-//! | **M2** the font-size / colour inputs are left out of the re-extraction key | `an_em_stop_follows_a_font_size_class_change` |
-//! | **M3** duration and delay are not copied from the spec | `a_class_change_re_times_a_running_animation_around_its_clock`, `a_class_change_that_adds_a_delay_applies_it_to_the_running_animation` |
-//! | **M4** a repeated name matches the first entry (`find`) | `two_animations_of_one_name_keep_their_own_durations_and_clocks` |
-//! | **M5** the implicit stop takes the fixed property list (no filter) | `a_colour_class_change_reaches_a_spinner_with_a_to_only_rule` |
-//! | **M6** implicit values are not refreshed when the inputs key is unchanged | `an_implicit_from_stop_follows_the_base_value_it_stands_for` |
-//! | **M7** a property missing from an explicit `from`/`to` is not filled from the base | `a_property_missing_from_an_explicit_from_starts_at_the_base_value` |
-//! | **M8** a kept animation whose rule is gone is kept | `a_media_query_that_drops_the_keyframes_rule_cancels_the_animation` |
+//! | **M1** a kept animation's stops are never re-extracted | `a_style_appended_after_layout_…`, `a_media_query_that_swaps_…`, `an_em_stop_follows_…`, and the theme file's body and em-basis fixtures |
+//! | **M2** `font-size` left out of the `StopInputs` comparison | `an_em_stop_follows_a_font_size_class_change`, the theme file's em-basis fixture |
+//! | **M3** the duration is not copied from the spec | `a_class_change_re_times_…`, three theme/fill fixtures |
+//! | **M3b** the delay is not copied from the spec | `a_class_change_that_adds_a_delay_…`, alone |
+//! | **M4** repeated names matched from the front | `two_animations_of_one_name_…`, `a_finished_and_a_running_animation_of_one_name_…` |
+//! | **M5** a generated stop takes the whole fixed property list | `a_colour_class_change_reaches_…`, `an_implicit_from_stop_follows_…`, `background_tiling_tests` r8 and r9 |
+//! | **M6** implicit values are not re-read when the inputs are unchanged | `an_implicit_from_stop_follows_the_base_value_it_stands_for`, alone |
+//! | **M7** only a generated stop is filled, not an authored one that omits a property | `a_property_missing_from_an_explicit_from_…`, alone |
+//! | **M8** a kept animation whose rule is gone is kept | `a_media_query_that_drops_…`, the theme file's dropped-rule fixture |
+//! | **M9** entries are not put back in declaration order before matching | `a_finished_and_a_running_animation_of_one_name_…`, alone |
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
