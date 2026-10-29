@@ -97,6 +97,8 @@ pub struct HitStyleKey {
     overflow_x: OverflowValue,
     overflow_y: OverflowValue,
     translucent: bool,
+    // Paint's escaping-fixed bit ignores a fixed box at `opacity: 0` (#549).
+    transparent: bool,
     visibility: VisibilityValue,
     transformed: bool,
     z_index: Option<i32>,
@@ -116,6 +118,7 @@ impl HitStyleKey {
             overflow_x: cs.overflow_x,
             overflow_y: cs.overflow_y,
             translucent: cs.opacity < 1.0,
+            transparent: cs.opacity <= 0.0,
             visibility: cs.visibility,
             transformed: !cs.transform.is_none,
             z_index: cs.z_index,
@@ -143,6 +146,8 @@ struct State {
     extents: Vec<Option<Extent>>,
     hoists: Vec<Option<bool>>,
     shows: Vec<Option<bool>>,
+    escaping_fixed: Vec<Option<bool>>,
+    escaping_fixed_paints: Vec<Option<bool>>,
     orders: HashMap<OrderKey, Rc<PaintOrder>>,
 }
 
@@ -190,6 +195,8 @@ impl HitCache {
             s.extents.clear();
             s.hoists.clear();
             s.shows.clear();
+            s.escaping_fixed.clear();
+            s.escaping_fixed_paints.clear();
             s.orders.clear();
         }
         s
@@ -297,6 +304,54 @@ impl HitCache {
             s.shows.resize(id + 1, None);
         }
         s.shows[id] = Some(shows);
+    }
+
+    /// Whether a `position: fixed` box under `id` escapes the clips above
+    /// `id` (#549), stored for the current generation. The hit tester asks it
+    /// only of a stacking context whose box a probe is clipped away from, to
+    /// know whether anything under it can still be hit there. It reads no scroll
+    /// offset, so a scroll keeps it (`invalidate_scroll` drops only the sequences).
+    #[inline]
+    pub fn escaping_fixed(&self, id: RawNodeId) -> Option<bool> {
+        self.state()
+            .escaping_fixed
+            .get(crate::node_slab::slot_of(id))
+            .copied()
+            .flatten()
+    }
+
+    /// Store `id`'s "a fixed box below escapes" bit for the current generation.
+    pub fn store_escaping_fixed(&self, id: RawNodeId, escapes: bool) {
+        let mut s = self.state();
+        let id = crate::node_slab::slot_of(id);
+        if s.escaping_fixed.len() <= id {
+            s.escaping_fixed.resize(id + 1, None);
+        }
+        s.escaping_fixed[id] = Some(escapes);
+    }
+
+    /// [`Self::escaping_fixed`] counting only a fixed box that can draw a
+    /// pixel, which is what paint asks before it opens a stacking context's
+    /// group layer under the clips such a box escapes (#549). Reads no scroll
+    /// offset either.
+    #[inline]
+    pub fn escaping_fixed_paints(&self, id: RawNodeId) -> Option<bool> {
+        self.state()
+            .escaping_fixed_paints
+            .get(crate::node_slab::slot_of(id))
+            .copied()
+            .flatten()
+    }
+
+    /// Store `id`'s "a fixed box below that draws escapes" bit for the current
+    /// generation.
+    pub fn store_escaping_fixed_paints(&self, id: RawNodeId, escapes: bool) {
+        let mut s = self.state();
+        let id = crate::node_slab::slot_of(id);
+        if s.escaping_fixed_paints.len() <= id {
+            s.escaping_fixed_paints.resize(id + 1, None);
+        }
+        s.escaping_fixed_paints[id] = Some(escapes);
     }
 
     /// Store `id`'s extent for the current generation.

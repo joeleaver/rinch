@@ -106,10 +106,10 @@
 //!
 //! A fixed box is viewport-**positioned**, not viewport-**stacked**. Its
 //! `layout.x`/`layout.y` are already viewport coordinates, so its entry takes
-//! zeroed offsets and (per the rule above) an empty clip chain — which is **not**
-//! the same as escaping every clip, and the difference is #549; the third
-//! consequence below is the whole of it, so read that before relying on this
-//! sentence. It is hoisted only as far as its **nearest ancestor stacking
+//! zeroed offsets and (per the rule above) an empty clip chain. The empty chain
+//! is **not** what makes it escape the clips above the context that owns it —
+//! paint's lift is; the second consequence below is the whole of it (#549). It
+//! is hoisted only as far as its **nearest ancestor stacking
 //! context**, exactly like any other box that creates one, because that is what
 //! CSS 2.1 Appendix E says and what a browser does.
 //!
@@ -130,24 +130,29 @@
 //!   inside an `overflow: hidden; z-index: 1` panel would be clipped away, which
 //!   [is not what a browser does](https://drafts.csswg.org/css-position/#fixed-pos).
 //!   That is #324 stage B's documented "Known gap", which this made live.
-//! - **Clips *above* the collecting root still do apply — #549.** This is the
-//!   limit of the bullet above and the thing not to misread: "a fixed entry
-//!   takes an empty clip chain" is **not** "a fixed box escapes every clip". Its
-//!   own chain is empty, but the chain on the *root's* entry, in whatever
-//!   sequence hoisted the root, is pushed around the root's whole subtree — the
-//!   fixed box with it. So under `plain clipper > stacking context > fixed` the
-//!   box is clipped away, where a browser paints it and where rinch itself did
-//!   before #545. Paint and hit testing agree on it, so it is a consistent
-//!   deviation rather than drift, and the honest fix is architectural: the
-//!   collecting root's clip has to move off the paint-time bracket and into
-//!   every entry's chain. Pinned by
-//!   `stacking_tests::a_fixed_box_does_not_escape_clips_above_the_context_that_owns_it`.
+//! - **Nor does any clip above the collecting root — #549.** "A fixed entry
+//!   takes an empty clip chain" is not enough for that on its own: the chain on
+//!   the *root's* entry, in whatever sequence hoisted the root, is pushed around
+//!   the root's whole subtree, the fixed box with it, so lifting the root's
+//!   bracket alone left `plain clipper > stacking context > fixed` cut to the
+//!   clipper, where a browser paints it. Paint lifts every clip it has open
+//!   down to the nearest ancestor that *contains* fixed descendants (a
+//!   `transform`, a `filter`, a `mask-image`, or the viewport — a transformed
+//!   or filtered one's own clip included, it being the containing block) and
+//!   puts them back after the entry (`paint::LiftedClips`); a translucent
+//!   context holding such a box opens its layer under those clips, so the
+//!   lift does not split its group (`paint::GroupLayer`). Hit testing carries
+//!   "the probe is outside such a clip" down the walk and lets only a fixed
+//!   entry clear it. Pinned by
+//!   `stacking_tests::a_fixed_box_escapes_clips_above_the_context_that_owns_it`
+//!   and `fixed_escape_549_tests`.
 //! - **The collecting root's own transform does not apply to it either.** A
 //!   fixed entry is painted under the *body's* transform, which is where its
 //!   coordinates live and what `paint::compute_absolute_position_and_transform`
 //!   reports for it. (A transformed ancestor should really *contain* a fixed box
-//!   — position, clip and transform together — and rinch models none of that;
-//!   `out_of_flow.rs` answers "the viewport" for every fixed box. Keeping the
+//!   — position, clip and transform together — and rinch models only the
+//!   clips, its own and above it (#549); `out_of_flow.rs` answers "the
+//!   viewport" for every fixed box, #1372. Keeping the
 //!   body's transform here leaves that case exactly as wrong as it already was,
 //!   rather than letting paint and hit testing disagree about it.)
 //!
@@ -394,7 +399,8 @@ pub struct PaintOrderKey {
     /// whole subtree: descendants that sort away from 0 are trapped or
     /// released, group opacity starts or stops compositing everything under
     /// it, and the clip chain pushed around a context's entry starts or stops
-    /// applying to descendants that otherwise escape it (#549).
+    /// applying to absolute descendants that otherwise escape it (a fixed one
+    /// escapes it either way, #549).
     pub context: bool,
 }
 

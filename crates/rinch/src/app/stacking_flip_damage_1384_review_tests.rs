@@ -164,8 +164,7 @@ fn a_positioned_box_crossing_opacity_one_with_overflowing_abs_child() {
 }
 
 /// B: clipper > relative z-auto <-> z:0 > fixed child outside the clipper
-/// (#549: a fixed box under a stacking context under a plain clipper is
-/// clipped away).
+/// (since #549 the fixed box escapes the clipper in both states).
 #[test]
 fn a_context_only_flip_over_a_fixed_descendant_under_a_clipper() {
     for (from, to) in [("", "z-index: 0;"), ("z-index: 0;", "")] {

@@ -1060,29 +1060,23 @@ mod painted_fixed {
         );
     }
 
-    /// **Known deviation (#549), pinned so it is a decision and not a surprise:**
-    /// a fixed box escapes the clip of the stacking context that owns it, but
-    /// **not** the clips that context was itself hoisted past.
+    /// **A fixed box escapes the clips above the stacking context that owns it,
+    /// too (#549)** — not only that context's own clip (#545).
     ///
     /// `plain clipper > SC > fixed`. The fixed box is hoisted to the SC and its
     /// own entry chain is empty — but the *SC's* entry carries the clipper as a
     /// chain link, and paint pushes that chain around the SC's whole subtree.
-    /// The lift in `paint_children_with_stacking` removes one clip, the
-    /// collecting root's own bracket, and nothing above it; unwinding the rest
-    /// would mean tracking every open layer up to the body, which paint does not
-    /// do.
+    /// Before #549 the lift in `paint_children_with_stacking` removed one clip,
+    /// the collecting root's own bracket, and nothing above it, so the box was
+    /// drawn nowhere and tapped nowhere. Chromium paints it (measured, Chrome
+    /// 155), and so did rinch before #545. The lift now unwinds every clip the
+    /// painter has open down to the fixed box's containing block (the
+    /// viewport here) and puts them back after it.
     ///
-    /// So the box is drawn nowhere and tapped nowhere. **Chromium paints it**
-    /// (measured), and so did rinch before #545 — a fixed box that reached the
-    /// body escaped every clip on the way. Paint and hit testing agree here, so
-    /// this is a consistent deviation and not the drift #324 exists to end, and
-    /// nothing in-tree has the shape. It is still a regression, and the fix is
-    /// architectural: tracked in #549 with #1372.
-    ///
-    /// If this test starts failing because the box is painted, that is #549
-    /// being fixed — invert it, do not delete it.
+    /// The two chain lengths below are still the mechanism: the empty chain is
+    /// not what makes the box escape, the lift is.
     #[test]
-    fn a_fixed_box_does_not_escape_clips_above_the_context_that_owns_it() {
+    fn a_fixed_box_escapes_clips_above_the_context_that_owns_it() {
         let mut doc = RinchDocument::new();
         let body = doc.body();
 
@@ -1140,9 +1134,9 @@ mod painted_fixed {
 
         assert_eq!(
             painted_fixed::pixel_at(&painted_fixed::paint(&mut doc), 400, 400),
-            [0, 0, 0, 0],
-            "today the clipper the owner was hoisted past still cuts the box \
-             away — Chromium paints it here (#549)"
+            MODAL,
+            "the clipper the owner was hoisted past does not cut the box away — \
+             Chromium paints it here (#549)"
         );
     }
 }

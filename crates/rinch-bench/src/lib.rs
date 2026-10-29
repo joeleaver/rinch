@@ -803,6 +803,87 @@ pub fn setup_shadow_paint() -> PaintFixture {
     f
 }
 
+/// 20 cards, each under four nested `overflow: hidden; border-radius: 3px`
+/// scrollers and faded to `opacity: 0.9`, each holding a `position: fixed`
+/// box: `none` (no fixed box), `open` (one drawn just below its card, a
+/// dropdown under its trigger), `open_far` (one drawn along the window's top
+/// edge, far from its card) or `closed` (one at `opacity: 0; visibility:
+/// hidden`, a closed `Popover`) (#549). A fixed box escapes the four clips:
+/// paint lifts them off around it and opens the card's layer under them, and
+/// on the software painter every rounded clip pushed again is a mask
+/// rasterised again — which a closed popover must not pay. The fixed box is
+/// composited with its card as one group, so the layer covers both: `open_far`
+/// is what a group whose content is spread out costs.
+pub fn setup_fixed_under_clips(fixed: &str) -> PaintFixture {
+    let mut doc = new_document();
+    let mut html = String::new();
+    for s in 0..20 {
+        for _ in 0..4 {
+            html.push_str(
+                "<div style=\"overflow: hidden; border-radius: 3px; padding: 1px; width: 300px\">",
+            );
+        }
+        html.push_str("<div style=\"opacity: 0.9; height: 10px; background: rgb(200, 0, 0)\">");
+        match fixed {
+            // Each stack is 18px tall (10px and four 1px paddings a side), the
+            // card 4px into it.
+            "open" => html.push_str(&format!(
+                "<div style=\"position: fixed; left: {}px; top: {}px; width: 10px; height: 10px; \
+                 background: rgb(0, 200, 0)\"></div>",
+                20 + s * 12,
+                s * 18 + 14
+            )),
+            "open_far" => html.push_str(&format!(
+                "<div style=\"position: fixed; left: {}px; top: 5px; width: 10px; height: 10px; \
+                 background: rgb(0, 200, 0)\"></div>",
+                s * 12
+            )),
+            "closed" => html.push_str(&format!(
+                "<div style=\"position: fixed; left: {}px; top: 5px; width: 10px; height: 10px; \
+                 background: rgb(0, 200, 0); opacity: 0; visibility: hidden\"></div>",
+                s * 12
+            )),
+            _ => {}
+        }
+        html.push_str("</div>");
+        for _ in 0..4 {
+            html.push_str("</div>");
+        }
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// [`setup_fixed_under_clips`] with no fixed box: the baseline the other two
+/// are read against.
+pub fn setup_fixed_under_clips_none() -> PaintFixture {
+    setup_fixed_under_clips("none")
+}
+
+/// [`setup_fixed_under_clips`] with a drawn fixed box in every card.
+pub fn setup_fixed_under_clips_open() -> PaintFixture {
+    setup_fixed_under_clips("open")
+}
+
+/// [`setup_fixed_under_clips`] with a drawn fixed box in every card, along the
+/// window's top edge.
+pub fn setup_fixed_under_clips_open_far() -> PaintFixture {
+    setup_fixed_under_clips("open_far")
+}
+
+/// [`setup_fixed_under_clips`] with a closed popover in every card.
+pub fn setup_fixed_under_clips_closed() -> PaintFixture {
+    setup_fixed_under_clips("closed")
+}
+
 /// Paint the 40 fields with the software painter.
 pub fn op_shadow_paint(mut f: PaintFixture) -> PaintFixture {
     f.paint();

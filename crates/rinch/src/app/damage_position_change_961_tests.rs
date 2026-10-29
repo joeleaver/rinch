@@ -266,7 +266,10 @@ fn a_box_under_a_transform_that_becomes_fixed_clears_its_in_flow_pixels() {
     check(&mut app, "static -> fixed under a transform", old, true);
 }
 
-/// fixed → static under a transformed clipper.
+/// fixed → static under a transformed clipper. The fixed box sits inside the
+/// clipper's box (`80..280` x `0..100`): a transformed box is its fixed
+/// descendants' containing block, so its own clip cuts one (#549), and one
+/// placed out at `(400, 300)` would paint nothing to clear.
 #[test]
 fn a_box_under_a_transform_that_stops_being_fixed_clears_its_viewport_pixels() {
     let (mut app, h) = mount(Box::new(|s, o| {
@@ -278,11 +281,11 @@ fn a_box_under_a_transform_that_stops_being_fixed_clears_its_viewport_pixels() {
         let r = el(
             s,
             &c,
-            &format!("{BLUE} position: fixed; left: 400px; top: 300px;"),
+            &format!("{BLUE} position: fixed; left: 200px; top: 50px;"),
         );
         vec![c, r]
     }));
-    let old = (400, 300, 440, 340);
+    let old = (200, 50, 240, 90);
     let before = full_frame(&mut app);
     assert!(ink_in(&before, old) > 1000, "positive control");
     h[1].set_style("position", "static");

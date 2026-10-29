@@ -12,7 +12,7 @@ use rinch_dom::stacking::{PaintOrder, paints_at_stacking_root, stacking_hit_orde
 /// transformed subtree is hit where it is *painted* (#199).
 pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<u64> {
     tree.perf.bump(rinch_dom::perf::Counter::HitTests);
-    hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
+    hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y, false)
 }
 
 /// Map `(px, py)` — a point in the coordinate space the node's layout box lives
@@ -156,6 +156,14 @@ fn descend(
 /// probe point in viewport space, kept for `position: fixed` subtrees, which
 /// paint places with zeroed offsets and the body's transform however deep the
 /// stacking context that owns them (#545).
+///
+/// `clipped` says the probe point is outside a clip on the way here that a
+/// `position: fixed` descendant escapes (#549): a clip between this node and
+/// the nearest ancestor that contains fixed descendants
+/// ([`rinch_dom::paint::contains_fixed_descendants`]), or the viewport. Paint
+/// lifts exactly those clips around a fixed entry, so the walk goes on looking
+/// for one — through stacking contexts that hold one, and nowhere else — and
+/// hits nothing else on the way.
 #[allow(clippy::too_many_arguments)]
 fn hit_test_node(
     tree: &rinch_dom::NodeTree,
@@ -166,6 +174,7 @@ fn hit_test_node(
     y: f32,
     vx: f32,
     vy: f32,
+    clipped: bool,
 ) -> Option<u64> {
     tree.perf
         .bump(rinch_dom::perf::Counter::HitTestNodesVisited);
@@ -182,6 +191,13 @@ fn hit_test_node(
         vx,
         vy,
     } = descend(tree, node, node_id, offset_x, offset_y, x, y, vx, vy)?;
+
+    // A box that contains its fixed descendants keeps every clip above it
+    // around them, as paint does (#549): a probe already clipped away from it
+    // reaches nothing under it.
+    if clipped && rinch_dom::paint::contains_fixed_descendants(node) {
+        return None;
+    }
 
     // A stacking context whose subtree hoists nothing paints exactly its flow
     // walk, so a point outside its flow extent hits nothing in it: answered
@@ -279,6 +295,11 @@ fn hit_test_node(
         {
             // No sequence to build for a stacking context with nothing in its
             // box tree: there is nothing below it to probe (#1719).
+        } else if !check_children && rinch_dom::paint::clips_fixed_descendants(node) {
+            // A transformed or filtered root is the containing block of its
+            // fixed descendants, so its own clip is the one none of them
+            // escapes (#549): paint takes the fixed floor after this root's
+            // bracket. A probe outside it hits nothing in its sequence.
         } else if node_id == tree.body_id || node.creates_stacking_context() {
             // A stacking-context root probes exactly the sequence paint draws,
             // read backwards — the last box painted is the first one tapped.
@@ -315,33 +336,42 @@ fn hit_test_node(
                 {
                     continue;
                 }
-                // This root's own bounds gate. A `position: fixed` entry is
-                // exempt: this root is not its containing block, so its clip
-                // does not apply — paint lifts the same bracket around it
-                // (`paint_children_with_stacking`, #545). Without the exemption
-                // a fixed modal inside an `overflow: hidden; z-index: 1` panel
-                // would be painted and never tappable.
-                let escapes_root_clip = child.computed_style.position
-                    == rinch_dom::computed_style::PositionValue::Fixed;
-                if !check_children && !escapes_root_clip {
-                    continue;
-                }
                 if is_stretched_ifc_text(child) {
                     continue;
                 }
-                // The clipping ancestors this entry was hoisted past. Since
-                // #324 an `overflow` box is not a stacking context, so the
-                // walk went straight through them and the `check_children`
-                // gate below never saw them — the chain is what keeps a
-                // hoisted box unreachable exactly where it is unpainted.
+                // This root's own bounds gate, and the clipping ancestors this
+                // entry was hoisted past. Since #324 an `overflow` box is not
+                // a stacking context, so the walk went straight through them
+                // and the `check_children` gate never saw them — the chain is
+                // what keeps a hoisted box unreachable exactly where it is
+                // unpainted.
                 //
                 // The clips are in this root's own space, which is the space
                 // `x`/`y` are in here, and at scale 1.0 because that is what
                 // this walk asked `stacking_paint_order` for.
-                if !order
-                    .clips_for(entry)
-                    .iter()
-                    .all(|c| c.contains(x as f64, y as f64))
+                let inside_clips = check_children
+                    && order
+                        .clips_for(entry)
+                        .iter()
+                        .all(|c| c.contains(x as f64, y as f64));
+                // A `position: fixed` entry escapes all of those, and every
+                // clip `clipped` stands for: its containing block is the
+                // viewport, and paint lifts each of them around it
+                // (`paint_sequence_entry`, #545, #549). Without that a fixed
+                // modal inside an `overflow: hidden; z-index: 1` panel — or
+                // under one inside a plain `overflow: hidden` shell — would be
+                // painted and never tappable.
+                let escapes_clips = child.computed_style.position
+                    == rinch_dom::computed_style::PositionValue::Fixed;
+                let child_clipped = !escapes_clips && (clipped || !inside_clips);
+                // Clipped away, the entry can still hold a fixed box that is
+                // not: only a stacking context can (one that is not hoists
+                // its fixed descendants into this sequence), and only one with
+                // such a box under it — a cached bit, so a probe outside a
+                // scroller full of stacking-context rows walks none of them.
+                if child_clipped
+                    && !(entry.kind == rinch_dom::stacking::PaintKind::StackingContext
+                        && rinch_dom::paint::holds_escaping_fixed(tree, entry.node_id))
                 {
                     continue;
                 }
@@ -354,11 +384,12 @@ fn hit_test_node(
                     y,
                     vx,
                     vy,
+                    child_clipped,
                 ) {
                     return Some(hit);
                 }
             }
-        } else if check_children {
+        } else if check_children && !clipped {
             // Not a stacking-context root — test only the children that were
             // not hoisted to an ancestor's sequence, in reverse tree order.
             // Nothing here can be a fixed box: one creates a stacking context
@@ -378,14 +409,16 @@ fn hit_test_node(
                 if !flow_subtree_may_contain(tree, child, nx - sx, ny - sy, x, y) {
                     continue;
                 }
-                if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy) {
+                if let Some(hit) =
+                    hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy, false)
+                {
                     return Some(hit);
                 }
             }
         }
     }
 
-    if !point_in_bounds || (hidden && !visible_text_at(tree, node, x - nx, y - ny)) {
+    if clipped || !point_in_bounds || (hidden && !visible_text_at(tree, node, x - nx, y - ny)) {
         return None;
     }
 
@@ -1241,6 +1274,10 @@ mod prune_tests;
 #[cfg(test)]
 #[path = "hidden_ancestor_hit_843_tests.rs"]
 mod hidden_ancestor_hit_843_tests;
+
+#[cfg(test)]
+#[path = "fixed_escape_hit_549_tests.rs"]
+mod fixed_escape_hit_549_tests;
 
 #[cfg(test)]
 mod tests {

@@ -269,8 +269,8 @@ fn compute_damage_impl(
         // descendant that is absolute against a box above this one escapes
         // the clippers in between (and stops escaping them when this box
         // becomes a stacking context, whose entry's chain is pushed around
-        // everything under it — #549). Clippers above that containing block
-        // clip either way.
+        // everything under it but a fixed box — #549). Clippers above that
+        // containing block clip either way.
         let mut escapes = false;
         if (moved_layer || reordered) && w > 0.0 && h > 0.0 {
             let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
@@ -699,8 +699,9 @@ fn subtree_has_partially_escaping_absolute(
 /// stale pixels:
 ///
 /// - a `position: fixed` box, or anything inside one, is clipped by nothing
-///   above the fixed box (paint can clip one more than that, #549 — never
-///   less);
+///   above the fixed box (paint still clips one by the clips above a
+///   transformed, filtered or masked ancestor, and a transformed or filtered
+///   one's own, #549 — never less);
 /// - an `absolute` box escapes every clipper below its containing block; the
 ///   block's own clip applies, as it does in `Collector::span`;
 /// - a clipper with no box (`display: contents`, a degenerate axis) is not
@@ -1265,6 +1266,319 @@ thread_local! {
     /// only by [`ClipTrackingPainter`], which is what makes it the painter's
     /// own clip stack rather than a second account of it (#910).
     static CLIP_CULL: RefCell<Vec<Option<Rect>>> = const { RefCell::new(Vec::new()) };
+
+    /// The layers the painter has open right now, bottom first, exactly as
+    /// [`ClipTrackingPainter`] forwarded them — so a `position: fixed` entry can
+    /// take every clip it escapes off the painter and put each back after it
+    /// (#549). Kept beside [`CLIP_CULL`] and by the same wrapper, for the same
+    /// reason: it is the painter's own stack, not a second account of it.
+    static OPEN_LAYERS: RefCell<Vec<OpenLayer>> = const { RefCell::new(Vec::new()) };
+
+    /// How many of [`OPEN_LAYERS`] a `position: fixed` box painted now does
+    /// **not** escape: the layers open when paint entered the nearest ancestor
+    /// that contains such a box (a `transform`, a `filter`, a `mask-image`) —
+    /// or `0`, the viewport, when there is none. See [`FixedFloor`].
+    static FIXED_FLOOR: Cell<usize> = const { Cell::new(0) };
+}
+
+/// One layer a painter has open: what [`ClipTrackingPainter`] was asked to
+/// push, kept so that it can be pushed again (#549).
+#[derive(Clone)]
+enum OpenLayer {
+    Clip {
+        fill: Fill,
+        transform: Affine,
+        shape: PaintShape,
+    },
+    Layer {
+        blend: BlendMode,
+        opacity: f32,
+        transform: Affine,
+        bounds: PaintShape,
+    },
+    Isolated {
+        opacity: f32,
+        transform: Affine,
+        bounds: PaintShape,
+    },
+}
+
+impl OpenLayer {
+    fn is_clip(&self) -> bool {
+        matches!(self, OpenLayer::Clip { .. })
+    }
+
+    fn push(&self, painter: &mut dyn Painter) {
+        match self {
+            OpenLayer::Clip {
+                fill,
+                transform,
+                shape,
+            } => painter.push_clip(*fill, *transform, shape),
+            OpenLayer::Layer {
+                blend,
+                opacity,
+                transform,
+                bounds,
+            } => painter.push_layer(*blend, *opacity, *transform, bounds),
+            OpenLayer::Isolated {
+                opacity,
+                transform,
+                bounds,
+            } => painter.push_isolated_layer(*opacity, *transform, bounds),
+        }
+    }
+}
+
+/// Whether `node` contains a `position: fixed` descendant's paint, so that
+/// the clips open around it apply to such a descendant (#549): CSS makes a box
+/// with a `transform` or a `filter` the containing block of a fixed
+/// descendant, and a `mask-image` cuts everything under it to its border box.
+/// Every other clip between a fixed box and the viewport is escaped.
+///
+/// rinch still *places* a fixed box against the viewport under a transformed
+/// or filtered ancestor (#1372); what this keeps is the clipping above that
+/// ancestor, which Chrome applies. Whether the box's **own** `overflow` clip
+/// applies as well is [`clips_fixed_descendants`].
+pub fn contains_fixed_descendants(node: &Node) -> bool {
+    node.computed_style.display != DisplayValue::Contents
+        && (clips_fixed_descendants(node) || !node.computed_style.mask_image.is_empty())
+}
+
+/// Whether `node`'s own `overflow` clip applies to a `position: fixed`
+/// descendant (#549): it is that descendant's containing block, which a
+/// `transform` or a `filter` makes it. A `mask-image` does not (Chrome 155
+/// places a fixed box under one against the viewport and draws it over the
+/// masked box's border, outside its padding box): the mask cuts the fixed box
+/// to the border box, and the box's own `overflow` is escaped like any other.
+pub fn clips_fixed_descendants(node: &Node) -> bool {
+    node.computed_style.display != DisplayValue::Contents
+        && (node.has_transform() || node.has_non_identity_filter())
+}
+
+/// Whether a `position: fixed` box under `id` escapes the clips above `id`
+/// (#549): one that no box between the two contains
+/// ([`contains_fixed_descendants`]). Memoised per node in the tree's hit cache,
+/// so the subtree is walked once per generation however many probes or paints
+/// ask. Hit testing asks it of a stacking context a probe is clipped away from;
+/// paint asks it of a group layer opened under a clip such a box escapes.
+pub fn holds_escaping_fixed(tree: &NodeTree, id: crate::node::RawNodeId) -> bool {
+    if let Some(e) = tree.hit_cache.escaping_fixed(id) {
+        return e;
+    }
+    let escapes = tree.get_live(id).is_some_and(|node| {
+        node.children.iter().any(|&c| {
+            tree.get_live(c).is_some_and(|child| {
+                child.computed_style.display != DisplayValue::None
+                    && (child.box_position() == PositionValue::Fixed
+                        || (!contains_fixed_descendants(child) && holds_escaping_fixed(tree, c)))
+            })
+        })
+    });
+    tree.hit_cache.store_escaping_fixed(id, escapes);
+    escapes
+}
+
+/// [`holds_escaping_fixed`], counting only a fixed box that can draw a
+/// pixel: one at `opacity: 0` (a closed `Popover`) or a `visibility: hidden`
+/// leaf draws none, and paint neither lifts a clip for it
+/// ([`fixed_box_draws_nothing`]) nor sinks a group layer under the clips
+/// for it ([`GroupLayer`]). The two must agree, or a group is split for a box
+/// that draws nothing. Memoised beside the hit tester's bit.
+fn holds_painted_escaping_fixed(tree: &NodeTree, id: RawNodeId) -> bool {
+    if let Some(e) = tree.hit_cache.escaping_fixed_paints(id) {
+        return e;
+    }
+    let escapes = tree.get_live(id).is_some_and(|node| {
+        node.children.iter().any(|&c| {
+            tree.get_live(c).is_some_and(|child| {
+                child.computed_style.display != DisplayValue::None
+                    && if child.box_position() == PositionValue::Fixed {
+                        !fixed_box_draws_nothing(child)
+                    } else {
+                        !contains_fixed_descendants(child) && holds_painted_escaping_fixed(tree, c)
+                    }
+            })
+        })
+    });
+    tree.hit_cache.store_escaping_fixed_paints(id, escapes);
+    escapes
+}
+
+/// Whether a `position: fixed` box draws nothing whatever its position: it is
+/// fully transparent, or hidden with no children that could be shown. Read
+/// off its own style only, so it is as cheap as the walks that ask it.
+fn fixed_box_draws_nothing(node: &Node) -> bool {
+    node.computed_style.opacity <= 0.0
+        || (node.children.is_empty()
+            && matches!(
+                node.computed_style.visibility,
+                VisibilityValue::Hidden | VisibilityValue::Collapse
+            ))
+}
+
+/// Sets [`FIXED_FLOOR`] at the layers open now, for as long as it lives: a
+/// fixed box painted meanwhile keeps every clip already open (#549). Taken for
+/// a box [`contains_fixed_descendants`] answers for: by
+/// [`paint_children_with_stacking`] for a transformed or filtered box, after
+/// the box's own clip bracket is pushed, because it is the containing block
+/// and its own `overflow` clips the fixed box too; and by [`paint_node`] for a
+/// masked one, before it, because a mask is not (the bracket is lifted as
+/// before, #545).
+struct FixedFloor(usize);
+
+impl FixedFloor {
+    fn here() -> Self {
+        let depth = OPEN_LAYERS.with(|l| l.borrow().len());
+        FixedFloor(FIXED_FLOOR.with(|f| f.replace(depth)))
+    }
+}
+
+impl Drop for FixedFloor {
+    fn drop(&mut self) {
+        FIXED_FLOOR.with(|f| f.set(self.0));
+    }
+}
+
+/// The clips a `position: fixed` entry escapes, taken off the painter for the
+/// length of the entry (#549).
+///
+/// Everything from the lowest clip above [`FIXED_FLOOR`] to the top of the
+/// stack is popped; the layers among them that are not clips — an ancestor
+/// stacking context's `opacity`, a translucent context's layer — are pushed
+/// again, in order, because they do apply to a fixed descendant. The clips are
+/// not. [`Self::restore`] pops those and pushes back exactly what was popped.
+///
+/// The common case pops one clip and pushes nothing back: the collecting
+/// root's own bracket on top of the stack, which is all #545 lifted. A
+/// non-clip layer is normally *below* every clip this pops, because the
+/// stacking context that opened it sank it under them when it held a fixed
+/// box that draws ([`GroupLayer`]); so the group stays whole and the fixed box
+/// is composited into it, as CSS does. Only a layer opened some other way can
+/// sit above a lifted clip, and that one is popped and re-pushed: everything
+/// drawn into it before the fixed box, the fixed box, and everything after it
+/// are then three groups composited one after the other.
+struct LiftedClips {
+    popped: Vec<OpenLayer>,
+    repushed: usize,
+}
+
+impl LiftedClips {
+    fn lift(painter: &mut dyn Painter) -> Self {
+        let floor = FIXED_FLOOR.with(Cell::get);
+        let popped: Vec<OpenLayer> = OPEN_LAYERS.with(|l| {
+            let l = l.borrow();
+            l.get(floor..)
+                .and_then(|above| above.iter().position(OpenLayer::is_clip))
+                .map(|first| l[floor + first..].to_vec())
+                .unwrap_or_default()
+        });
+        for _ in &popped {
+            painter.pop_layer();
+        }
+        let mut repushed = 0;
+        for layer in popped.iter().filter(|l| !l.is_clip()) {
+            layer.push(painter);
+            repushed += 1;
+        }
+        LiftedClips { popped, repushed }
+    }
+
+    fn restore(self, painter: &mut dyn Painter) {
+        for _ in 0..self.repushed {
+            painter.pop_layer();
+        }
+        for layer in &self.popped {
+            layer.push(painter);
+        }
+    }
+}
+
+/// A stacking context's `opacity` layer, opened **under** the clips a
+/// `position: fixed` descendant of the context escapes rather than over them
+/// (#549).
+///
+/// Paint opens the context's clip ancestors first and the context's layer
+/// inside them, and [`LiftedClips`] cannot take a clip off the painter
+/// without first popping every layer above it. Popping the group layer
+/// composites it: the context's content then reaches the screen as separate
+/// groups — before the fixed box, the fixed box, after it — and wherever two of
+/// them overlap the `opacity` is applied twice (#2057's review: `(113,63,163)`
+/// where Chrome draws `(128,128,228)`, nowhere near the fixed box).
+///
+/// So when the context holds a fixed box that can draw
+/// ([`holds_painted_escaping_fixed`]) and the clips such a box escapes are on
+/// top of the stack, the context takes those clips off, pushes its layer and
+/// puts the same clips back on top of it. The context's own content is still
+/// clipped by them, the fixed entry's lift now pops only clips, and the group
+/// is composited once, the fixed box in it. A clip's coverage scales what it
+/// clips, and compositing a group is linear in its content's coverage for every
+/// blend mode, so clipping inside the group or outside it is the same picture;
+/// what can move is the anti-aliased edge of a clip that was split into two
+/// clip layers on Vello, a quantisation difference only.
+///
+/// A context with no such clip open, or none that draws, opens its layer the
+/// ordinary way, and pays one length check.
+struct GroupLayer {
+    sunk: Vec<OpenLayer>,
+}
+
+impl GroupLayer {
+    #[allow(clippy::too_many_arguments)]
+    fn push(
+        tree: &NodeTree,
+        node_id: RawNodeId,
+        node: &Node,
+        painter: &mut dyn Painter,
+        opacity: f32,
+        transform: Affine,
+        bounds: &PaintShape,
+    ) -> Self {
+        let first = escaped_clips_on_top();
+        let sunk: Vec<OpenLayer> = match first {
+            Some(first)
+                if !contains_fixed_descendants(node)
+                    && holds_painted_escaping_fixed(tree, node_id) =>
+            {
+                OPEN_LAYERS.with(|l| l.borrow()[first..].to_vec())
+            }
+            _ => Vec::new(),
+        };
+        for _ in &sunk {
+            painter.pop_layer();
+        }
+        painter.push_layer(BlendMode::Normal, opacity, transform, bounds);
+        for clip in &sunk {
+            clip.push(painter);
+        }
+        GroupLayer { sunk }
+    }
+
+    fn pop(self, painter: &mut dyn Painter) {
+        for _ in &self.sunk {
+            painter.pop_layer();
+        }
+        painter.pop_layer();
+        for clip in &self.sunk {
+            clip.push(painter);
+        }
+    }
+}
+
+/// Where the run of clips a `position: fixed` box painted now would escape
+/// starts, when it is on top of the painter's stack: the clips above
+/// [`FIXED_FLOOR`] and above every non-clip layer. `None` when there is none.
+fn escaped_clips_on_top() -> Option<usize> {
+    let floor = FIXED_FLOOR.with(Cell::get);
+    OPEN_LAYERS.with(|l| {
+        let l = l.borrow();
+        let above = l.get(floor..)?;
+        let first = above
+            .iter()
+            .rposition(|layer| !layer.is_clip())
+            .map_or(0, |i| i + 1);
+        (first < above.len()).then_some(floor + first)
+    })
 }
 
 /// The rect nothing drawn right now can reach past: the intersection of every
@@ -1337,12 +1651,16 @@ impl ClipTrackingPainter<'_> {
     ) -> R {
         text_shadow::begin_paint();
         let saved = CLIP_CULL.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        let saved_layers = OPEN_LAYERS.with(|l| std::mem::take(&mut *l.borrow_mut()));
+        let saved_floor = FIXED_FLOOR.with(|f| f.replace(0));
         let mut tracking = ClipTrackingPainter {
             inner: painter,
             ink_margin: INK_MARGIN_CSS_PX * scale,
         };
         let out = f(&mut tracking);
         CLIP_CULL.with(|c| *c.borrow_mut() = saved);
+        OPEN_LAYERS.with(|l| *l.borrow_mut() = saved_layers);
+        FIXED_FLOOR.with(|f| f.set(saved_floor));
         perf.add(
             crate::perf::Counter::TextShadowMasksRasterised,
             text_shadow::end_paint(),
@@ -1354,6 +1672,8 @@ impl ClipTrackingPainter<'_> {
 impl Painter for ClipTrackingPainter<'_> {
     fn reset(&mut self) {
         CLIP_CULL.with(|c| c.borrow_mut().clear());
+        OPEN_LAYERS.with(|l| l.borrow_mut().clear());
+        FIXED_FLOOR.with(|f| f.set(0));
         self.inner.reset();
     }
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
@@ -1449,6 +1769,13 @@ impl Painter for ClipTrackingPainter<'_> {
             };
             c.push(Some(next));
         });
+        OPEN_LAYERS.with(|l| {
+            l.borrow_mut().push(OpenLayer::Clip {
+                fill,
+                transform,
+                shape: shape.clone(),
+            })
+        });
         self.inner.push_clip(fill, transform, shape);
     }
     fn push_layer(
@@ -1463,6 +1790,14 @@ impl Painter for ClipTrackingPainter<'_> {
             let open = c.last().copied().flatten();
             c.push(open);
         });
+        OPEN_LAYERS.with(|l| {
+            l.borrow_mut().push(OpenLayer::Layer {
+                blend,
+                opacity,
+                transform,
+                bounds: bounds.clone(),
+            })
+        });
         self.inner.push_layer(blend, opacity, transform, bounds);
     }
     fn push_isolated_layer(&mut self, opacity: f32, transform: Affine, bounds: &PaintShape) {
@@ -1471,11 +1806,21 @@ impl Painter for ClipTrackingPainter<'_> {
             let open = c.last().copied().flatten();
             c.push(open);
         });
+        OPEN_LAYERS.with(|l| {
+            l.borrow_mut().push(OpenLayer::Isolated {
+                opacity,
+                transform,
+                bounds: bounds.clone(),
+            })
+        });
         self.inner.push_isolated_layer(opacity, transform, bounds);
     }
     fn pop_layer(&mut self) {
         CLIP_CULL.with(|c| {
             c.borrow_mut().pop();
+        });
+        OPEN_LAYERS.with(|l| {
+            l.borrow_mut().pop();
         });
         self.inner.pop_layer();
     }
@@ -1820,6 +2165,21 @@ pub(super) fn visible_device_rect() -> Option<Rect> {
 /// touch the dirty region (always, on a full repaint), the window's cull rect,
 /// and the cull rect of the clips the painter has open ([`CLIP_CULL`], #910).
 fn intersects_dirty_region(x: f64, y: f64, w: f64, h: f64) -> bool {
+    if !intersects_dirty_region_unclipped(x, y, w, h) {
+        return false;
+    }
+    // …and against every clip the painter has open (#910). A scroller's rows
+    // below its viewport are on the window and, often, inside the dirty rect —
+    // and are clipped away all the same, so drawing them is work with no
+    // output. See [`ClipTrackingPainter`].
+    open_clip_cull()
+        .is_none_or(|clip| x < clip.x1 && x + w > clip.x0 && y < clip.y1 && y + h > clip.y0)
+}
+
+/// [`intersects_dirty_region`] without the open clips: the bounds of a
+/// partial repaint's damage and the render target only. Asked of a
+/// `position: fixed` entry before the clips it escapes are popped (#549).
+fn intersects_dirty_region_unclipped(x: f64, y: f64, w: f64, h: f64) -> bool {
     let inside_dirty = DIRTY_REGION.with(|v| {
         let guard = v.borrow();
         match guard.as_ref() {
@@ -1830,16 +2190,6 @@ fn intersects_dirty_region(x: f64, y: f64, w: f64, h: f64) -> bool {
         }
     });
     if !inside_dirty {
-        return false;
-    }
-
-    // …and against every clip the painter has open (#910). A scroller's rows
-    // below its viewport are on the window and, often, inside the dirty rect —
-    // and are clipped away all the same, so drawing them is work with no
-    // output. See [`ClipTrackingPainter`].
-    if let Some(clip) = open_clip_cull()
-        && !(x < clip.x1 && x + w > clip.x0 && y < clip.y1 && y + h > clip.y0)
-    {
         return false;
     }
 
@@ -3164,54 +3514,15 @@ fn paint_children_with_stacking(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
     node_transform: Affine,
-    root_clip: Option<&PaintShape>,
-    // This node clips, and `paint_node` decided the bracket would remove
-    // nothing and did not open one (card K43). A truthful `None` for a reason
-    // the `clips_overflow()` proxy below cannot see.
-    clip_elided: bool,
 ) {
     let Some(node) = tree.get(node_id) else {
         return;
     };
 
-    // `root_clip` is a *declaration*, not a hint, and this is what makes a wrong
-    // one loud. Getting it wrong is silent otherwise: a `None` passed while a
-    // bracket is open reads exactly like a `None` passed with none open, the
-    // fixed-entry lift below simply does not happen, and the only symptom is a
-    // `position: fixed` box that stops being drawn. #540 arrived at that state
-    // by *clean* three-way merge — it was written before #545 added this
-    // parameter, `git` auto-merged its new bracket beside the `None` that used
-    // to be true, and nothing in a 620-test suite noticed.
-    //
-    // A node that clips has a bracket on the painter's stack: both arms of
-    // `paint_node` that push one derive it from the same `clip_shape` call this
-    // predicate asks about. There are two exceptions, and neither is a
-    // counter-example:
-    //
-    // - `display: contents` generates no box, so there is nothing to clip and
-    //   no bracket is pushed for it however its `overflow` computes;
-    // - a clip card K43 proved removes no drawn pixel is not pushed at all, and
-    //   `clip_elided` is how the caller says so. Without it this assertion fires
-    //   on **every document**, because rinch's own body clips (the UA sheet's
-    //   `overflow-y: auto`) and its box is the window, which is the purest case
-    //   of the covers-the-target elision. That is what makes `clips_overflow()`
-    //   a *proxy* for "a bracket is open" rather than the fact itself: it was
-    //   exact until layers could be elided, and a proxy that has gone stale is
-    //   indistinguishable from the bug this assertion exists to catch.
-    //
-    // Both exceptions are truthful `None`s: no bracket is open, so a hoisted
-    // `position: fixed` entry has nothing to be lifted out of, and the lift
-    // correctly does not happen.
-    debug_assert!(
-        root_clip.is_some()
-            || clip_elided
-            || !node.clips_overflow()
-            || node.computed_style.display == DisplayValue::Contents,
-        "`root_clip` must name the bracket `paint_node` opened around this \
-         sequence: this node clips, so a bracket is on the painter's stack, and \
-         a `position: fixed` entry hoisted to this root would be swallowed by it \
-         instead of lifted out of it (#545)"
-    );
+    // A transformed or filtered box is the containing block of its fixed
+    // descendants: every clip open now — its own bracket, pushed by the caller
+    // before this, and everything above it — stays on around them (#549).
+    let _floor = clips_fixed_descendants(node).then(FixedFloor::here);
 
     // Content already drawn as inline boxes, via `paint_inline_layout`:
     // painting it again as a box would double it. See `drawn_by_its_ifc`.
@@ -3241,7 +3552,6 @@ fn paint_children_with_stacking(
                 font_cx,
                 layout_cx,
                 node_transform,
-                root_clip,
             );
             // The bars of the scrollers whose last contained entry this was,
             // under the clips the scroller itself is drawn under (#1717).
@@ -3321,8 +3631,8 @@ fn paint_children_with_stacking(
 }
 
 /// Paint one entry of a stacking-context sequence: switch the clip chain to
-/// the entry's, lift the root's bracket around a `position: fixed` entry, cull,
-/// and descend.
+/// the entry's, lift the clips a `position: fixed` entry escapes, cull, and
+/// descend.
 #[allow(clippy::too_many_arguments)]
 fn paint_sequence_entry(
     tree: &NodeTree,
@@ -3334,7 +3644,6 @@ fn paint_sequence_entry(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
     node_transform: Affine,
-    root_clip: Option<&PaintShape>,
 ) {
     let child = tree.get(entry.node_id);
     if let Some(child) = child
@@ -3345,29 +3654,38 @@ fn paint_sequence_entry(
     switch_clip_chain(order, entry.clips, open, painter, node_transform);
 
     // A `position: fixed` entry is hoisted no further than this root
-    // (#545), but this root is not its containing block: neither the
-    // bracket `paint_node` opened around this sequence nor this root's
-    // transform applies to it. Lift the bracket for the length of the
-    // entry and put back the very same shape; and paint it under the
-    // body's transform, which is the space its `layout` coordinates and
+    // (#545), but its containing block is the viewport, not this root: no clip
+    // between the two applies to it — neither the bracket `paint_node` opened
+    // around this sequence (#545) nor the chains and brackets of every
+    // stacking context this root was itself hoisted through (#549). Take them
+    // all off the painter for the length of the entry and put the very same
+    // layers back after it ([`LiftedClips`]); what stays is everything open
+    // when paint entered a box that *does* contain a fixed descendant
+    // ([`FIXED_FLOOR`]). And paint it under the body's transform, which is the
+    // space its `layout` coordinates and
     // `compute_absolute_position_and_transform` both already use.
     //
     // `open` is necessarily `EMPTY` here — a fixed entry's own chain is
-    // empty (`Collector::span`), so the branch above has just popped
-    // whatever the previous entry left open — which is what makes the
-    // root's bracket the top of the clip stack and safe to pop.
+    // empty (`Collector::span`), so the switch above has just popped
+    // whatever the previous entry left open.
     let escapes_root = child.is_some_and(|c| c.computed_style.position == PositionValue::Fixed);
     let (entry_transform, lifted) = if escapes_root {
         debug_assert!(
             open.is_empty(),
             "a fixed entry's clip chain is empty, so nothing may be open over the root's bracket"
         );
-        if let Some(shape) = root_clip {
-            painter.pop_layer();
-            (body_paint_transform(tree, scale), Some(shape))
-        } else {
-            (body_paint_transform(tree, scale), None)
+        let body_transform = body_paint_transform(tree, scale);
+        // Culled before the lift, which re-pushes every clip it pops — a
+        // rounded clip's mask on the software painter — and so cost a closed
+        // `Popover` (`opacity: 0`) under a few rounded scrollers a quarter of
+        // the frame (#2057's review). The cull ignores the clips the lift would
+        // pop, which is the side it may err on.
+        if child.is_some_and(fixed_box_draws_nothing)
+            || fixed_entry_is_outside(tree, entry, scale, body_transform)
+        {
+            return;
         }
+        (body_transform, Some(LiftedClips::lift(painter)))
     } else {
         (node_transform, None)
     };
@@ -3402,9 +3720,31 @@ fn paint_sequence_entry(
         entry_transform,
     );
 
-    if let Some(shape) = lifted {
-        painter.push_clip(Fill::NonZero, node_transform, shape);
+    if let Some(lifted) = lifted {
+        lifted.restore(painter);
     }
+}
+
+/// Whether nothing a `position: fixed` entry paints reaches the dirty region
+/// or the render target: [`paints_nothing_without_visit`] for the one entry
+/// it answers `false` for, asked before [`LiftedClips::lift`] and so against
+/// the region alone — not the clips the lift is about to pop, which the
+/// fixed box escapes.
+fn fixed_entry_is_outside(
+    tree: &NodeTree,
+    entry: &crate::stacking::PaintEntry,
+    scale: f64,
+    body_transform: Affine,
+) -> bool {
+    let Some(node) = tree.get(entry.node_id) else {
+        return false;
+    };
+    let x = entry.offset_x + node.layout.x as f64 * scale;
+    let y = entry.offset_y + node.layout.y as f64 * scale;
+    let node_transform = compose_node_transform(node, x, y, scale, body_transform);
+    subtree_is_entirely_outside(tree, entry.node_id, scale, x, y, node_transform, |r| {
+        intersects_dirty_region_unclipped(r.x0, r.y0, r.width(), r.height())
+    })
 }
 
 /// Make `span` the clip chain open on `painter`, `open` being the one open now.
@@ -3809,17 +4149,25 @@ fn paint_node(
     let shape = PaintShape::Rect(area);
     painter.push_clip(Fill::NonZero, node_transform, &shape);
     painter.push_isolated_layer(1.0, node_transform, &shape);
-    paint_node_unmasked(
-        tree,
-        node_id,
-        painter,
-        scale,
-        offset_x,
-        offset_y,
-        font_cx,
-        layout_cx,
-        parent_transform,
-    );
+    {
+        // The mask cuts a fixed descendant too, so its clip and layer — and
+        // every clip open beneath them — stay on around one (#549). Its own
+        // `overflow` bracket, pushed inside, does not: a mask is not a fixed
+        // box's containing block (Chrome 155), unless a transform or a filter
+        // on the same box makes it one ([`paint_children_with_stacking`]).
+        let _floor = FixedFloor::here();
+        paint_node_unmasked(
+            tree,
+            node_id,
+            painter,
+            scale,
+            offset_x,
+            offset_y,
+            font_cx,
+            layout_cx,
+            parent_transform,
+        );
+    }
     painter.push_layer(BlendMode::DestinationIn, 1.0, node_transform, &shape);
     for layer in mask.iter().rev() {
         gradient::fill(
@@ -3994,10 +4342,6 @@ fn paint_node_unmasked(
                 font_cx,
                 layout_cx,
                 parent_transform,
-                // No bracket is open: this branch returns before the node's own
-                // clip is pushed.
-                None,
-                false,
             );
         } else if (layout.width == 0.0) != (layout.height == 0.0) || zero_box_paints_children(node)
         {
@@ -4031,17 +4375,25 @@ fn paint_node_unmasked(
             let node_transform = compose_node_transform(node, x, y, scale, parent_transform);
 
             let opacity = node.computed_style.opacity;
-            let has_opacity = opacity < 1.0;
-            if has_opacity {
-                // The element's own rect is zero-area and Vello clips a layer
-                // to its bounds shape, which would blank the subtree. The
-                // subtree's own extent is the right answer here as it is
-                // everywhere else, and [`opacity_layer_bounds`] falls back to
-                // the conservative `UNBOUNDED` rect this branch used to pass
-                // whenever it cannot work one out (card K36).
+            // The element's own rect is zero-area and Vello clips a layer
+            // to its bounds shape, which would blank the subtree. The
+            // subtree's own extent is the right answer here as it is
+            // everywhere else, and [`opacity_layer_bounds`] falls back to
+            // the conservative `UNBOUNDED` rect this branch used to pass
+            // whenever it cannot work one out (card K36). Opened under the
+            // clips a fixed descendant escapes ([`GroupLayer`], #549).
+            let group = (opacity < 1.0).then(|| {
                 let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
-                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
-            }
+                GroupLayer::push(
+                    tree,
+                    node_id,
+                    node,
+                    painter,
+                    opacity,
+                    node_transform,
+                    &bounds,
+                )
+            });
 
             // Card K51. #142's fix (above) answers "does this node still need
             // to paint its children" and never asks what its `overflow` is —
@@ -4084,15 +4436,10 @@ fn paint_node_unmasked(
             // a `border-width` still gets the same zero-area clip this branch
             // has always pushed.
             //
-            // Built once and handed down, exactly like the full-size bracket's
-            // `root_clip` below, because opening a bracket and telling
-            // `paint_children_with_stacking` that none is open are the same
-            // mistake spelled two ways: it *pops* this bracket around a
-            // `position: fixed` entry and puts it back (#545), so a `None` here
-            // means the pop never happens and every fixed box hoisted to this
-            // root is swallowed by a clip that is not its containing block's.
-            // The `debug_assert!` at the top of that function is what makes the
-            // omission loud rather than a wrong render.
+            // A `position: fixed` entry of this root's sequence lifts this
+            // bracket off the painter and puts it back (#545, #549); it finds
+            // it on the stack `ClipTrackingPainter` mirrors, so nothing here
+            // has to hand the shape down.
             let root_clip: Option<PaintShape> =
                 clip_shape(node, scale, x, y).map(|(clip_rect, _radii)| clip_rect.into());
             if let Some(shape) = &root_clip {
@@ -4137,16 +4484,14 @@ fn paint_node_unmasked(
                 font_cx,
                 layout_cx,
                 node_transform,
-                root_clip.as_ref(),
-                false,
             );
 
             if root_clip.is_some() {
                 painter.pop_layer();
             }
 
-            if has_opacity {
-                painter.pop_layer();
+            if let Some(group) = group {
+                group.pop(painter);
             }
         }
         return;
@@ -4310,8 +4655,6 @@ fn paint_node_unmasked(
             font_cx,
             layout_cx,
             node_transform,
-            root_clip.as_ref(),
-            false,
         );
         if root_clip.is_some() {
             painter.pop_layer();
@@ -4513,12 +4856,22 @@ fn paint_node_unmasked(
             // does not clip its descendants, so a box shadow or an overflowing
             // child used to be drawn by one painter and thrown away by the
             // other (card K36).
+            //
+            // Opened under the clips a fixed descendant escapes, when it holds
+            // one ([`GroupLayer`], #549).
             let opacity = node.computed_style.opacity;
-            let has_opacity = opacity < 1.0;
-            if has_opacity {
+            let group = (opacity < 1.0).then(|| {
                 let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
-                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
-            }
+                GroupLayer::push(
+                    tree,
+                    node_id,
+                    node,
+                    painter,
+                    opacity,
+                    node_transform,
+                    &bounds,
+                )
+            });
 
             // Handle overflow clipping. (The scrollbar
             // overlays at the bottom ask a different question — is this a
@@ -4829,10 +5182,9 @@ fn paint_node_unmasked(
                 }
             }
 
-            // Built once and kept, because `paint_children_with_stacking` has
-            // to *lift* this exact bracket around a `position: fixed` entry
-            // (#545) and put it back afterwards. Re-deriving the shape there
-            // would be a second derivation to drift out of step with this one.
+            // A `position: fixed` entry of this root's sequence lifts this
+            // bracket and puts the same layer back (#545, #549), read off the
+            // stack `ClipTrackingPainter` mirrors.
             let root_clip: Option<PaintShape> =
                 clip.map(|(clip_rect, clip_radii)| clip_radii.shape(clip_rect));
             if let Some(shape) = &root_clip {
@@ -4891,8 +5243,6 @@ fn paint_node_unmasked(
                     font_cx,
                     layout_cx,
                     node_transform,
-                    root_clip.as_ref(),
-                    useless,
                 );
             } else {
                 // Normal paint path: recurse into all children
@@ -4908,8 +5258,6 @@ fn paint_node_unmasked(
                     font_cx,
                     layout_cx,
                     node_transform,
-                    root_clip.as_ref(),
-                    useless,
                 );
             }
 
@@ -4986,8 +5334,8 @@ fn paint_node_unmasked(
                 }
             }
 
-            if has_opacity {
-                painter.pop_layer();
+            if let Some(group) = group {
+                group.pop(painter);
             }
         }
 
