@@ -117,6 +117,12 @@ pub mod image_loader;
 mod logging;
 pub use logging::{init_logging, init_logging_with_filter};
 
+/// The browser's timer backend, task scheduler and poll drain (issue #1956).
+#[cfg(target_arch = "wasm32")]
+mod web_runtime;
+#[cfg(target_arch = "wasm32")]
+pub use web_runtime::install_web_runtime;
+
 /// Image loading: the [`ImageLoader`](image::ImageLoader) an app implements to
 /// answer for its own URL schemes ([`register_image_scheme`](image::register_image_scheme),
 /// or [`App::image_scheme`](crate::App::image_scheme) on the builder), and
