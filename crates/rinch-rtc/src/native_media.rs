@@ -2045,9 +2045,10 @@ pub(crate) mod worker {
     /// nothing was retransmitted (#1947's third review). So the label is
     /// the codec negotiation will most likely pick: the far side's first
     /// one we support when its offer is already here, our first otherwise.
-    /// A negotiation that leaves the label out still sends, unbound: no
-    /// retransmission or sender reports (rtc gives a sender's track no
-    /// codec at negotiation, as it does a receiver's).
+    /// A negotiation that leaves the label out would send unbound (no
+    /// retransmission or sender reports), so the worker relabels the
+    /// sender to a negotiated codec before the binding runs (#1954); a
+    /// sender still unmatched afterwards gets one warning.
     async fn video_label(
         pc: &Arc<dyn PeerConnection>,
     ) -> (RTCRtpCodec, Vec<RTCRtpCodecParameters>) {
@@ -2332,6 +2333,13 @@ pub(crate) mod worker {
         kind: MediaKind,
         source: Option<Arc<LocalSource>>,
         forward: Option<tokio::task::JoinHandle<()>>,
+        /// The mime type `track` is labelled with as rtc sees it (empty:
+        /// audio, or no track yet). `relabel` changes it until the sender
+        /// is bound (#1954).
+        label: String,
+        /// A negotiation has completed with this sender in it: rtc bound
+        /// it to the interceptors then, or never will (`check_labels`).
+        settled: bool,
     }
 
     pub(crate) struct PeerWorker {
@@ -2381,6 +2389,57 @@ pub(crate) mod worker {
                 ..Default::default()
             }],
         )))
+    }
+
+    /// The mime type a track of `kind` labelled `video` carries as a
+    /// video label (`SenderState::label`); empty for audio.
+    fn video_mime(kind: MediaKind, video: &RTCRtpCodec) -> String {
+        match kind {
+            MediaKind::Video => video.mime_type.clone(),
+            MediaKind::Audio => String::new(),
+        }
+    }
+
+    /// Whether a label (a mime type) is among `codecs`, as rtc's binding
+    /// looks for it (`codec_parameters_fuzzy_search` falls back to the mime
+    /// type alone, case-insensitively).
+    fn label_among(label: &str, codecs: &[RTCRtpCodecParameters]) -> bool {
+        codecs
+            .iter()
+            .any(|c| c.rtp_codec.mime_type.eq_ignore_ascii_case(label))
+    }
+
+    /// The encoding names of the m-section whose `a=mid` is `mid`, in its
+    /// order; empty when there is none or it is rejected (port 0).
+    fn sdp_section_codecs(sdp: &str, mid: &str) -> Vec<String> {
+        let mut sections: Vec<Vec<&str>> = Vec::new();
+        for l in sdp.lines() {
+            if l.starts_with("m=") {
+                sections.push(vec![l]);
+            } else if let Some(s) = sections.last_mut() {
+                s.push(l);
+            }
+        }
+        let Some(section) = sections
+            .iter()
+            .find(|s| s.iter().any(|l| l.strip_prefix("a=mid:") == Some(mid)))
+        else {
+            return Vec::new();
+        };
+        let m: Vec<&str> = section[0].split(' ').collect();
+        if m.get(1) == Some(&"0") {
+            return Vec::new();
+        }
+        let names: HashMap<&str, &str> = section
+            .iter()
+            .filter_map(|l| l.strip_prefix("a=rtpmap:"))
+            .filter_map(|r| r.split_once(' '))
+            .map(|(pt, rest)| (pt, rest.split('/').next().unwrap_or("")))
+            .collect();
+        m.iter()
+            .skip(3)
+            .filter_map(|p| names.get(p).map(|n| n.to_string()))
+            .collect()
     }
 
     /// One sender's lasting state.
@@ -2531,6 +2590,123 @@ pub(crate) mod worker {
             }
         }
 
+        /// Label a sender's track `codec` for rtc, keeping its id, stream
+        /// and SSRC (#1954). rtc's `replace_track` swaps only rtc's copy of
+        /// the track: webrtc-rs leaves the track it bound in place, so the
+        /// forwarder writes to it as before. Done before negotiation
+        /// completes, the sender is then bound with the new label.
+        async fn relabel(st: &mut SenderState, stream_id: &str, codec: RTCRtpCodec) {
+            let Some(track) = &st.track else { return };
+            let id = track.track().await.track_id().to_owned();
+            let t = track_for(st.kind, &id, stream_id, st.shared.ssrc, &codec);
+            match st.rtp.replace_track(t as Arc<dyn TrackLocal>).await {
+                Ok(()) => st.label = codec.mime_type,
+                Err(e) => tracing::warn!("rinch-rtc: relabelling a video sender: {e}"),
+            }
+        }
+
+        /// After a remote offer is applied, before our answer: a video
+        /// sender whose label the offer left out (its track was added
+        /// before the offer came) is labelled with the codec the answer
+        /// will use, the first one the offer and we share. rtc binds the
+        /// sender when our answer is set, with that label (#1954).
+        pub(crate) async fn relabel_for_offer(&mut self) {
+            for st in self.senders.values_mut() {
+                if st.settled || st.track.is_none() || st.kind != MediaKind::Video {
+                    continue;
+                }
+                let Ok(p) = st.rtp.get_parameters().await else {
+                    continue;
+                };
+                let codecs = &p.rtp_parameters.codecs;
+                if let Some(first) = codecs.first()
+                    && !label_among(&st.label, codecs)
+                {
+                    let codec = first.rtp_codec.clone();
+                    Self::relabel(st, &self.stream_id, codec).await;
+                }
+            }
+        }
+
+        /// Before a remote answer is applied (rtc binds our senders while
+        /// applying it): a video sender whose label the answer's m-section
+        /// leaves out is labelled with the answer's first codec we have
+        /// (#1954). Our offer listed every codec, so an answer without our
+        /// first one is an ordinary answer from a peer that lacks it.
+        pub(crate) async fn relabel_for_answer(&mut self, pc: &Arc<dyn PeerConnection>, sdp: &str) {
+            let ours = video_codecs();
+            for t in pc.get_transceivers().await {
+                let Some(&(_, key)) = self.tx_keys.get(&t.id()) else {
+                    continue;
+                };
+                let Some(st) = self.senders.get_mut(&key) else {
+                    continue;
+                };
+                if st.settled || st.track.is_none() || st.kind != MediaKind::Video {
+                    continue;
+                }
+                let Ok(Some(mid)) = t.mid().await else {
+                    continue;
+                };
+                let names = sdp_section_codecs(sdp, &mid);
+                let named = |mime: &str, n: &str| {
+                    mime.rsplit('/')
+                        .next()
+                        .is_some_and(|m| m.eq_ignore_ascii_case(n))
+                };
+                if names.is_empty() || names.iter().any(|n| named(&st.label, n)) {
+                    continue;
+                }
+                if let Some((codec, _)) = names
+                    .iter()
+                    .find_map(|n| ours.iter().find(|(c, _)| named(&c.mime_type, n)))
+                {
+                    Self::relabel(st, &self.stream_id, codec.clone()).await;
+                }
+            }
+        }
+
+        /// After a negotiation completes: each video sender negotiated for
+        /// the first time is now bound to the interceptors, or never will
+        /// be (rtc binds a sender once). Warn once for one whose label is
+        /// still not among the negotiated codecs: it sends, but nothing it
+        /// sends is retransmitted and it sends no sender reports.
+        pub(crate) async fn check_labels(&mut self, pc: &Arc<dyn PeerConnection>) {
+            for t in pc.get_transceivers().await {
+                let Some(&(_, key)) = self.tx_keys.get(&t.id()) else {
+                    continue;
+                };
+                let Some(st) = self.senders.get_mut(&key) else {
+                    continue;
+                };
+                if st.settled || st.track.is_none() || st.kind != MediaKind::Video {
+                    continue;
+                }
+                if !matches!(t.mid().await, Ok(Some(_))) {
+                    continue;
+                }
+                let Ok(p) = st.rtp.get_parameters().await else {
+                    continue;
+                };
+                let codecs = &p.rtp_parameters.codecs;
+                if codecs.is_empty() {
+                    continue;
+                }
+                st.settled = true;
+                if !label_among(&st.label, codecs) {
+                    let negotiated: Vec<&str> = codecs
+                        .iter()
+                        .map(|c| c.rtp_codec.mime_type.as_str())
+                        .collect();
+                    tracing::warn!(
+                        "rinch-rtc: a video sender labelled {:?} was negotiated {negotiated:?}: \
+                         it sends, but without retransmission or sender reports",
+                        st.label
+                    );
+                }
+            }
+        }
+
         pub(crate) fn new(peer: u64) -> Self {
             Self {
                 peer,
@@ -2590,6 +2766,8 @@ pub(crate) mod worker {
                                     kind,
                                     source: Some(source),
                                     forward: Some(forward),
+                                    label: video_mime(kind, &label),
+                                    settled: false,
                                 },
                             );
                         }
@@ -2641,6 +2819,8 @@ pub(crate) mod worker {
                                         kind,
                                         source: None,
                                         forward: None,
+                                        label: video_mime(kind, &label),
+                                        settled: false,
                                     },
                                 );
                             }
@@ -2724,6 +2904,7 @@ pub(crate) mod worker {
                         .await
                         .map_err(|e| RtcError::InvalidState(format!("replace_track: {e}")))?;
                     st.track = Some(t.clone());
+                    st.label = video_mime(st.kind, &label);
                     t
                 }
             };
@@ -2800,6 +2981,8 @@ pub(crate) mod worker {
                             kind,
                             source: None,
                             forward: None,
+                            label: String::new(),
+                            settled: false,
                         },
                     );
                 }
