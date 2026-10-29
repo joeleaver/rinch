@@ -220,7 +220,8 @@ fn note_gesture_ran(rid: events::EventHandlerId) {
 /// An acted gesture's trailing click on `target` is being suppressed. If it is
 /// a click on a `<label>` (or on content inside one) that the label will
 /// forward to a control, remember that control for the rest of this task (see
-/// `GESTURE_LABEL_CONTROL`). A click on the control itself is not forwarded.
+/// `GESTURE_LABEL_CONTROL`). A click on the control itself is not forwarded,
+/// and no click follows to consume its record.
 fn note_gesture_label_forward(target: &web_sys::Element) {
     let Some(label) = target.closest("label").ok().flatten() else {
         return;
@@ -231,9 +232,6 @@ fn note_gesture_label_forward(target: &web_sys::Element) {
     else {
         return;
     };
-    if control.is_same_node(Some(target)) {
-        return;
-    }
     GESTURE_LABEL_CONTROL.with(|c| *c.borrow_mut() = Some(control));
     after_task(0, || {
         GESTURE_LABEL_CONTROL.with(|c| c.borrow_mut().take());
