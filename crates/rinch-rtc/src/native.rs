@@ -715,7 +715,12 @@ async fn peer_task(
             PeerCmd::Answer { req } => {
                 let result = describe(&*pc, &gathered, trickle, SdpKind::Answer).await;
                 #[cfg(feature = "media-core")]
-                media.refresh(&pc).await;
+                {
+                    media.refresh(&pc).await;
+                    if result.is_ok() {
+                        media.check_labels(&pc).await;
+                    }
+                }
                 emit(
                     id,
                     Event::Reply {
@@ -728,15 +733,29 @@ async fn peer_task(
                 #[cfg(feature = "media-core")]
                 let offer =
                     matches!(description.kind, SdpKind::Offer).then(|| description.sdp.clone());
+                #[cfg(feature = "media-core")]
+                let answer = matches!(description.kind, SdpKind::Answer);
+                // rtc binds our senders to the interceptors while it applies
+                // an answer, by their tracks' codec labels: label them with
+                // what the answer chose first (#1954).
+                #[cfg(feature = "media-core")]
+                if answer {
+                    media.relabel_for_answer(&pc, &description.sdp).await;
+                }
                 let result = apply_remote(&*pc, description).await;
                 #[cfg(feature = "media-core")]
                 {
                     media.refresh(&pc).await;
-                    // A video m-line the answer will reject: say so (#1975).
                     if result.is_ok()
                         && let Some(sdp) = offer
                     {
+                        // A video m-line the answer will reject: say so (#1975).
                         media.check_remote_offer(&sdp);
+                        // Senders the offer's codecs leave unlabelled, before
+                        // our answer binds them (#1954).
+                        media.relabel_for_offer().await;
+                    } else if result.is_ok() && answer {
+                        media.check_labels(&pc).await;
                     }
                 }
                 emit(id, Event::Reply { req, result });
