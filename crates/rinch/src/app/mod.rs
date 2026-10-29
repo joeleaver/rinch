@@ -173,6 +173,8 @@ mod editor_wrapped_selection_tests;
 mod element_key_1678_tests;
 mod event_dispatch;
 #[cfg(test)]
+mod field_label_2034_tests;
+#[cfg(test)]
 mod file_drop_click_context_1650_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod files_drop_1771_tests;
