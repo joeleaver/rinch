@@ -121,6 +121,18 @@ const CHROME: &[(&str, &str, &str)] = &[
         r##"<div style="margin-left:100px"><div data-m="o" style="position:fixed;left:300px;top:0;width:400px"><div data-m="a" style="position:fixed"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
         "o=300,0,400,0 a=300,0,500,40 t=300,0,500,40",
     ),
+    // From the #1996 review: percentage limits resolve against the viewport,
+    // each against its own axis (10% of 600 tall; 50% of 800 wide).
+    (
+        "f19_max_height_pct",
+        r##"<div data-m="a" style="position:fixed;left:0;top:0;width:100px;max-height:10%;overflow:hidden"><div style="height:200px"></div></div>"##,
+        "a=0,0,100,60",
+    ),
+    (
+        "f20_min_width_pct",
+        r##"<div data-m="a" style="position:fixed;left:20px;top:30px;min-width:50%;height:10px"></div>"##,
+        "a=20,30,400,10",
+    ),
 ];
 
 /// (name, rinch's answer, why) — rows of `CHROME` that are not Chrome's yet,
