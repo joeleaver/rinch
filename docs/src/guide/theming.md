@@ -589,21 +589,24 @@ one holding text — a reactive `{|| text}` included — whether it is the
 container's only content or sits beside block children, as a log panel's
 footer line sits after its rows.
 
+A child counts as a browser counts it (#776, #775): an in-flow child by its
+**margin box**, so a last child's `margin-bottom` (and a flex item's
+end margins) is room to scroll to — except a plain `display: inline` element
+such as a `<span>`, whose vertical margins a browser ignores too; a `transform`ed child also where it is
+drawn; an `absolute` child by its border box alone, so a `position: absolute;
+inset: 0` overlay such as `LoadingOverlay` in a padded panel adds no scrollbar;
+and a `position: relative` child with an offset both where it is drawn and
+where it would have been.
+
 Where desktop still differs from a browser:
 
-- **An `absolute` child of a padded scroll container** can add up to the
-  container's right and bottom padding to its scroll range, which a browser
-  does not. A `position: absolute; inset: 0` overlay — a `LoadingOverlay`, say —
-  inside a `padding: 20px; overflow: auto; position: relative` panel gives the
-  panel 20px of scroll travel on each axis and two scrollbars, where a browser
-  shows none.
-- **A `position: relative` child with an offset** counts only where the offset
-  puts it, while a browser also counts where it would have been. Shifted toward
-  the end of a padded container, it can add up to the container's right or
-  bottom padding; shifted toward the start, it can take away up to the offset,
-  padded container or not — a 240px-wide child at `left: -40px` in a 200px-wide
-  `overflow: auto` box gets no scrollbar, where a browser gives 40px of travel.
-  A `relative` child with no offset is measured like any other.
+- **A grid item's margins** count nothing here: a browser counts the grid's
+  tracks, so a last row whose `auto` track a margin grows is room to scroll
+  to in a browser and not here.
+
+- **A margin that collapses through a child's end** — the last child of a
+  `height: auto` child carrying `margin-bottom` — is not counted; a browser
+  counts it.
 - **An absolute whose containing block is further up than its parent** is
   laid out in that containing block (#386) but counted by no scroll container
   at all; a browser counts it in that ancestor (#770).
@@ -614,8 +617,6 @@ Where desktop still differs from a browser:
   counts when the scroll container is the block holding the span's line,
   placed against the span's text (#1049, #631); with another block between
   them it is counted nowhere (#770).
-- **A child's `transform` and its end margins** do not extend the scroll range;
-  a browser's scroll range includes both.
 
 ### Why not `scrollbar-color` / `scrollbar-width`?
 
