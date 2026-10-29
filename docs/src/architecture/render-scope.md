@@ -141,7 +141,7 @@ The runtime uses event delegation (a single document-level listener) that dispat
 
 `NodeHandle` is a stable reference to a DOM node. It remains valid even as the document changes around it. Internally it holds a `NodeId` and a `Weak<RefCell<dyn DomDocument>>`.
 
-A `NodeId` is a `u64` on every target: a 32-bit slot index and a 32-bit generation (`NodeId::new`, `index()`, `generation()`, `NodeId::from_index` for a `usize` slot). Every id is issued at generation 0 today, so `NodeId(4)` is slot 4 and prints as `NodeId(4)`; the generation exists so that a backend which reuses a slot can tell an old id from the new occupant's, and an operation through an id that names no live node does nothing (issue #723; mechanism in `docs/internals/reactive-rendering.md`).
+A `NodeId` is a `u64` on every target: a 32-bit slot index and a 32-bit generation (`NodeId::new`, `index()`, `generation()`, `NodeId::from_index` for a `usize` slot). A slot's first id is generation 0, so `NodeId(4)` is slot 4 and prints as `NodeId(4)`; `rinch-dom` reuses a slot freed by `discard()` or `set_inner_html` under the next generation (`NodeId(4@g1)`), so it can tell an old id from the new occupant's, and an operation through an id that names no live node does nothing (issue #723; mechanism in `docs/internals/reactive-rendering.md`).
 
 **Migrating from `usize` ids.** `NodeId` wrapped a `usize` before #723, and the public APIs that carried a bare `usize` node id (selection and focus requests, `TextHitInfo`, `InputContext`, the editor-view registry, the debug protocol) take a `u64` now. Write `NodeId::from_index(i)` for a `usize` slot and `id.index()` to get one back; never use `.0` as an index, since it holds the packed bits. A generation-0 id prints as before (`NodeId(4)`, and `4` on the debug wire). The full list is in the guide's [Writing Components](../guide/writing-components.md#migrating-from-usize-ids) page.
 
@@ -347,15 +347,15 @@ item1.replace_with(&new_item);
 > a subtree: a node attached to nothing is reached by no walk, which is what
 > `rinch_core::dom::release_scratch_container` exists for.
 >
-> **`remove()`'s post-condition is the same on both backends; `discard()`'s is
-> not.** `rinch-web` holds a strong `web_sys::Node` in two page-global maps, so a
-> `discard()` is what releases the browser node against GC (issue #184).
-> `rinch-dom` reclaims nothing: a discarded node there still re-inserts, still
-> keeps its subtree and still takes writes, because its slab is per-document and
-> freeing the slot would recycle the id (issue #304) — so the desktop slab only
-> grows, which is issue #723. The contract is therefore one-sided: a `discard()`
-> is *at least* a `remove()` and may be much more, and you may not rely on it
-> being less.
+> **`discard()` releases the subtree on both backends.** `rinch-web` holds a
+> strong `web_sys::Node` in two page-global maps, so a `discard()` is what
+> releases the browser node against GC (issue #184). `rinch-dom` frees the
+> subtree's slab slots, Taffy nodes and side-table entries, and reuses each slot
+> under the next id **generation**, so a discarded node does not re-insert and a
+> stale handle names nothing (issue #723; until then it reclaimed nothing, and
+> its slab only grew). The contract is still one-sided: a `discard()` is *at
+> least* a `remove()` and may be much more, and you may not rely on it being
+> less.
 
 ### Focus
 

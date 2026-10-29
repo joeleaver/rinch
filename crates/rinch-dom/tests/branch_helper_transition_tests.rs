@@ -432,30 +432,23 @@ fn a_match_branch_switched_twice_can_still_transition() {
 /// Kills the "restore the inline write in the `Remove` arm" mutant, and it is
 /// the only fixture that does.
 ///
-/// # This shape does not work on `rinch-web`, and this fixture cannot see that
+/// # Built through a cache scope (#723)
 ///
-/// The view below **builds through the row's own `RenderScope`** on the first
-/// call and caches afterwards. Since #719 that makes the row the row scope's to
-/// discard, and a discarded node is retired on `rinch-web` — so there the key
-/// coming back appends nothing and the row is silently lost. It passes here
-/// because `rinch-dom` still takes the trait default for `discard_node` and
-/// reclaims nothing (#723): a fixed point where the correct and the broken code
-/// agree, which is the repo's own recurring test failure.
-///
-/// That is issue **#733**. It is not a regression — `rinch-web` pruned every
-/// removed subtree before #719 too — and the transition property this fixture
-/// is actually about is unaffected either way. On `rinch-web` and the mock the
-/// helper now warns when the retired row is handed back; `rinch-dom` cannot
-/// tell and says nothing here. The memoisation that works on every backend
-/// builds through `RenderScope::cache_scope` and keeps that scope with the row
-/// (`rinch_core::reinsertion_tests::lazy_memo_733`), or builds outside the
-/// `for` and only hands the node back (`a_memoised_for_row_survives_leaving_
-/// the_list`, same file).
+/// The view builds each row once through `RenderScope::cache_scope` and keeps
+/// that scope with the row, the memoisation that works on every backend
+/// (`rinch_core::reinsertion_tests::lazy_memo_733`): the row's own scope did
+/// not mint it, so leaving the list only detaches it. Until #723 this fixture
+/// built through the row's own scope, which made the row the row scope's to
+/// discard; that passed here only because `rinch-dom` reclaimed nothing on a
+/// discard — a fixed point where the correct and the broken code agreed (#733).
+/// `rinch-dom` frees a discarded row now, as `rinch-web` does, so that shape
+/// loses the row on both.
 #[test]
 fn a_for_row_reinserted_under_the_same_key_can_still_transition() {
     let (doc, mut scope, wrap) = harness();
 
     let cache: Rc<RefCell<HashMap<u32, NodeHandle>>> = Rc::new(RefCell::new(HashMap::new()));
+    let scopes: Rc<RefCell<Vec<RenderScope>>> = Rc::new(RefCell::new(Vec::new()));
     let rows = Signal::new(vec![1u32]);
 
     let view_cache = cache.clone();
@@ -467,7 +460,9 @@ fn a_for_row_reinserted_under_the_same_key_can_still_transition() {
         move |id: u32, s: &mut RenderScope| {
             let cached = view_cache.borrow().get(&id).cloned();
             cached.unwrap_or_else(|| {
-                let panel = build_panel(s);
+                let mut keep = s.cache_scope();
+                let panel = keep.build(build_panel);
+                scopes.borrow_mut().push(keep);
                 view_cache.borrow_mut().insert(id, panel.clone());
                 panel
             })

@@ -20,14 +20,14 @@
 //!
 //! When unsure, use the checked lookup.
 //!
-//! **Every id is generation 0 today.** Slots freed by `NodeTree::remove_subtree`
-//! (`set_inner_html`, pseudo-element pruning) and by the IFC passes' anonymous
-//! boxes are still reused at generation 0, exactly as before this type existed,
-//! so nothing a test or an app observes changed. Bumping the generation on a
-//! free, and freeing on `discard_node`, is the second half of #723: it needs the
-//! side tables keyed by a raw id cleared first (`dirty_nodes`,
-//! `paint_dirty_nodes`, `taffy_map`, …), or a stale entry would index a freed
-//! slot and panic.
+//! **Freeing bumps the generation** (#723 PR 2). [`NodeSlab::remove`] leaves
+//! the slot remembering the generation its next occupant gets, so a node
+//! minted into a freed slot carries a new id and every id issued for the
+//! slot's earlier occupants names nothing. `NodeTree::remove_subtree` is the
+//! route that frees DOM nodes (`discard_node`, `set_inner_html`, pseudo
+//! pruning) and clears the tree's side tables of the freed ids; the IFC passes
+//! free their anonymous boxes directly. A slot is retired after
+//! [`MAX_GENERATION`] (see there).
 
 use std::ops::{Index, IndexMut};
 

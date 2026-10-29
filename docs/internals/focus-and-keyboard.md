@@ -128,12 +128,10 @@ any stash for that node too, not only consult-and-clear it — otherwise a
 stale pre-click stash reappears on the *next* programmatic/Tab focus
 (review of #1325, finding 1). A stash entry for a node that is removed
 before ever being focused is pruned by connectivity
-(`DomDocument::is_connected`, not slab presence — `discard()`/`remove()`
-are both a detach on desktop today, #723) on every drain, which does not
-close the #304 recycled-slab-id hazard for a node-keyed registry: a freed
-id handed to an unrelated new node before the next prune would inherit a
-stale entry, accepted as the same pre-existing hazard class every other
-node-keyed registry here carries. `rinch-web` calls the element's own
+(`DomDocument::is_connected`, not slab presence — a `remove()` is a detach)
+on every drain. A freed id is never handed to a new node (its slot is reused
+under the next generation, #723), so a stale entry can only name nothing
+until it is pruned. `rinch-web` calls the element's own
 `setSelectionRange` directly — already UTF-16 units, so nothing to
 convert, and the browser's own refusal on a non-text control (a thrown,
 caught `Err`) stands in for desktop's explicit drop.

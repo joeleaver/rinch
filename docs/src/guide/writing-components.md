@@ -238,7 +238,10 @@ A `NodeId` is a `u64` on every target, wasm32 included: a 32-bit **slot index**
 in the low half and a 32-bit **generation** in the high half. The generation is
 what lets a backend that reuses a freed slot tell an old id from the slot's new
 occupant: an operation through an id that names no live node does nothing, and a
-read answers `None` or empty.
+read answers `None` or empty. The desktop backend reuses the slots of discarded
+nodes this way (a slot is retired after 2^21 − 1 generations, so an id stays
+below 2^53 and survives a JSON number exactly); a `NodeHandle` kept past a
+`discard()` names nothing, never the node minted into its slot.
 
 ```rust
 let id = NodeId::from_index(4);      // slot 4, generation 0

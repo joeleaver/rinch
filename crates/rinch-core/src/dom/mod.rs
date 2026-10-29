@@ -713,13 +713,13 @@ impl NodeHandle {
     ///
     /// Treat this handle, and every handle into the subtree, as **dead**: do not
     /// re-attach it, build a fresh node instead. A backend that retires makes
-    /// every operation on it a silent no-op — `rinch-web` and
-    /// [`MockDomDocument`](mock::MockDomDocument) both do, so the mistake fails
-    /// `cargo test` as well as a browser.
+    /// every operation on it a silent no-op — `rinch-dom` (since issue #723),
+    /// `rinch-web` and [`MockDomDocument`](mock::MockDomDocument) all do, so
+    /// the mistake fails `cargo test` as well as the app.
     ///
     /// What a discard actually reclaims differs by backend and is **not**
-    /// guaranteed: on `rinch-dom` today it is exactly [`remove`](Self::remove)
-    /// and the node still re-inserts (issue #723). See
+    /// guaranteed. `rinch-dom` frees the subtree and reuses its slots under a
+    /// new id generation, so a stale handle names nothing. See
     /// [`DomDocument::discard_node`] for the full contract.
     pub fn discard(&self) {
         // Before the backend lets go: a discarded id may be handed to the next
@@ -1586,17 +1586,18 @@ const RETIRED_WARNINGS: usize = 32;
 /// What this does **not** do:
 ///
 /// - **Show anything by itself.** It is a `tracing::warn!`, seen only where a
-///   subscriber is installed. The desktop shell installs one, where
-///   `is_retired` is always `false`; `rinch-web` installs none (issue #1455)
-///   and neither does a `cargo test` run.
+///   subscriber is installed. The desktop shell installs one (where
+///   `is_retired` answers since #723); `rinch-web` installs none (issue
+///   #1455) and neither does a `cargo test` run.
 /// - **Look inside the returned node.** A retired node nested in markup the
 ///   closure built fresh is inserted (a no-op) by the closure's own
 ///   `append_child`, not by a helper, and is neither counted nor warned about
 ///   (issue #1456).
-/// - **Fire on `rinch-dom`.** Only a backend that reclaims can tell
-///   ([`DomDocument::is_retired`]): `rinch-web` and the mock. On `rinch-dom`
-///   the node still re-inserts (issue #723), so there is no loss to report —
-///   and no sign that the same code loses the row in a browser.
+/// - **Fire on a backend that reclaims nothing.** Only a backend that
+///   reclaims can tell ([`DomDocument::is_retired`]): `rinch-dom` (since
+///   issue #723), `rinch-web` and the mock. Before #723 a desktop node still
+///   re-inserted, so there was no loss to report there — and no sign that the
+///   same code lost the row in a browser.
 pub(crate) fn warn_if_retired(node: &NodeHandle, helper: &'static str) {
     let Some(doc) = node.doc.upgrade() else {
         return;

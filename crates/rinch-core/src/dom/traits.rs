@@ -309,50 +309,43 @@ pub trait DomDocument {
     ///
     /// | backend | `remove_node` | `discard_node` |
     /// |---|---|---|
-    /// | `rinch-dom` (desktop) | detach; the slab entry stays | **the same** — the default below, which reclaims nothing. A discarded node there still re-inserts, still keeps its subtree, still takes writes |
+    /// | `rinch-dom` (desktop) | detach; the slab entry stays | frees the node and every descendant (issue #723): their slab slots, Taffy nodes and every side table entry under their ids. The slot is reused for a later node under the next **generation**, so the old id names nothing |
     /// | `rinch-web` | detach; both node maps keep the node | drops the node and every descendant from the document map **and** the page-global registry (issue #184), releasing the `web_sys` node it was pinning against GC |
     /// | `MockDomDocument` | detach | retires, like the browser |
     ///
-    /// **`remove_node`'s post-condition is identical on both; `discard_node`'s
-    /// is not.** Desktop's is strictly weaker — measured, not argued: after
-    /// `discard_node(panel)` on a `RinchDocument`, `append_child` puts the panel
-    /// back with its children and `set_attribute` writes through. Its slab is
-    /// per-document and dies with the document, and freeing the entry would
-    /// recycle the id (issue #304); that the slab therefore only grows is
-    /// **issue #723**.
-    ///
-    /// So the contract above is deliberately one-sided, and this is the same
-    /// shape as issue #719 one verb along: a rule asserted once, honoured by one
-    /// backend, failing in the direction "works on desktop, dies on web". What
-    /// keeps that from being a trap is [`MockDomDocument`](super::mock), which
-    /// retires like the browser, so a caller that re-attaches a discarded handle
-    /// fails `cargo test` on the host rather than only in a browser.
+    /// **`remove_node`'s post-condition is identical on every backend, and
+    /// since #723 so is `discard_node`'s**: a discarded node does not
+    /// re-insert, and a write through its id does nothing. Until #723 desktop
+    /// took the default below and reclaimed nothing, so its slab only grew and
+    /// a discarded node still re-inserted — the weak end of a contract that
+    /// was one-sided on purpose, with [`MockDomDocument`](super::mock) retiring
+    /// like the browser so that a caller re-attaching a discarded handle failed
+    /// `cargo test` rather than only a browser. The contract stays one-sided
+    /// (a backend may reclaim nothing), so the mock is still the guard.
     ///
     /// # A retired id is never re-issued
     ///
-    /// No backend hands a **discarded** id to a later node: `rinch-web`'s
-    /// counter is a monotonic `fetch_add` with no free list, and `rinch-dom`
-    /// frees nothing on this route yet. So a stale *discard* handle can only
-    /// ever name nothing, never somebody else, and registries keyed by node id
-    /// (focus, the mounted-editor registry) cannot be aimed at the wrong node by
-    /// a discard.
+    /// No backend hands a **discarded** id to a later node. `rinch-web`'s ids
+    /// are a monotonic `fetch_add` with no free list. `rinch-dom` re-issues
+    /// the freed **slot**, but under the next generation (a [`NodeId`] is a
+    /// slot and a generation), and its node storage checks the generation on
+    /// every lookup of an id from outside the tree, so every `DomDocument`
+    /// verb is a no-op for an id that names no live node. The slot is
+    /// re-issued; the id is not. So a stale handle can only ever name nothing,
+    /// never somebody else, and registries keyed by node id (focus, the
+    /// mounted-editor registry) cannot be aimed at the wrong node — on this
+    /// route or on `set_inner_html` and pseudo-element pruning, which free the
+    /// same way. Before #723 those two reused the id itself at generation 0
+    /// (#304's recycled-slot hazard, measured: `NodeId(4)` handed to a second
+    /// node).
     ///
-    /// That is a claim about **this route only**. `rinch-dom` does free slab
-    /// keys elsewhere — `set_inner_html` and pseudo-element pruning on restyle
-    /// both reach `NodeTree::remove_subtree` — and the slab has a free list, so
-    /// a slot freed *that* way is handed to a different node (measured:
-    /// `NodeId(4)`), still at generation 0. #304's recycled-slot hazard is live
-    /// on desktop today, independently of this method.
-    ///
-    /// What will keep the promise once `rinch-dom` frees on discard (#723,
-    /// PR 2) is the [`NodeId`] **generation**: a freed slot is reused under a
-    /// higher generation, so the old id still names nothing — `rinch-dom`'s
-    /// node storage checks the generation on every lookup of an id from
-    /// outside the tree, and its `DomDocument` verbs are no-ops for an id that
-    /// names no live node. The slot is re-issued; the id is not.
+    /// A slot whose occupant at the last generation (2^21 − 1) is freed is
+    /// retired for good rather than wrapped, so no id is ever issued twice and
+    /// none reaches 2^53 — every id survives a JSON number exactly.
     ///
     /// The default is `remove_node`: correct but reclaiming nothing, which is
-    /// what a backend whose bookkeeping dies with the document wants.
+    /// what a backend whose bookkeeping dies with the document wants
+    /// (`rinch-dom` took it until #723).
     fn discard_node(&mut self, node: NodeId) {
         self.remove_node(node);
     }
@@ -363,11 +356,11 @@ pub trait DomDocument {
     ///
     /// This is a diagnostic, not part of the removal contract: the reactive
     /// helpers ask it of the node a view hands them, to warn about a cache
-    /// returning a subtree that was discarded under it. `rinch-web` and
-    /// `MockDomDocument` answer from their node tables. The default is
-    /// `false`, which is all a backend whose `discard_node` reclaims nothing
-    /// can say — `rinch-dom` today (issue #723), where such a node still
-    /// re-inserts and nothing is lost to warn about.
+    /// returning a subtree that was discarded under it. `rinch-web`,
+    /// `rinch-dom` (since #723) and `MockDomDocument` answer from their node
+    /// tables. The default is `false`, which is all a backend whose
+    /// `discard_node` reclaims nothing can say: such a node still re-inserts,
+    /// and nothing is lost to warn about.
     ///
     /// An id the document never issued also answers `true` where the backend
     /// can tell; no caller hands one in.

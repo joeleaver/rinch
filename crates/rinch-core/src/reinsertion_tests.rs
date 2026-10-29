@@ -141,11 +141,13 @@ fn a_removed_node_can_still_be_written_to() {
 /// every operation on a discarded id does nothing: never a panic, and never a
 /// write aimed at somebody else, since no backend re-issues an id it retired.
 ///
-/// Scoped to a retiring backend deliberately. `rinch-dom` reclaims nothing on
-/// this route (#723), so a discarded node there still re-inserts and still takes
-/// writes — which is exactly why this fixture matters: the mock retires like the
-/// browser, so re-attaching a discarded handle fails on the host instead of only
-/// in Chrome.
+/// Scoped to a retiring backend deliberately. Until #723 `rinch-dom` reclaimed
+/// nothing on this route, so a discarded node there still re-inserted and still
+/// took writes — which is why this fixture exists: the mock retires like the
+/// browser, so re-attaching a discarded handle fails on the host instead of
+/// only in Chrome. `rinch-dom` retires too now
+/// (`crates/rinch-dom/tests/reinsertion_handle_tests.rs`), but the contract
+/// still allows a backend that does not.
 #[test]
 fn a_discarded_node_is_a_silent_no_op_on_a_retiring_backend() {
     let doc = doc();
@@ -534,10 +536,10 @@ fn a_churning_for_does_not_grow_the_document() {
 /// back. A view that builds **lazily through the row's own scope** and caches
 /// afterwards owns its row by this rule and loses it on the first removal
 /// (issue #733); a view that has to build lazily builds through
-/// [`RenderScope::cache_scope`] instead, which `lazy_memo_733` below pins.
-/// `rinch-dom`'s
+/// [`RenderScope::cache_scope`] instead, which `lazy_memo_733` below pins
+/// (and `rinch-dom`'s
 /// `branch_helper_transition_tests::a_for_row_reinserted_under_the_same_key_can_still_transition`
-/// models the losing shape and cannot see the loss.
+/// uses, since #723 made the losing shape lose the row on desktop too).
 #[test]
 fn a_memoised_for_row_survives_leaving_the_list() {
     let doc = doc();

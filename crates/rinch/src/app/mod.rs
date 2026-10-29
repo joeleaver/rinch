@@ -5281,20 +5281,15 @@ impl RinchApp {
     /// **connected** to the document (`DomDocument::is_connected`) — review
     /// of #1325, finding 3 — so a node that is stashed and then removed
     /// before ever being focused does not hold its entry forever. Checked by
-    /// connectivity rather than slab presence: `remove()`/`discard()` are
-    /// both a detach on desktop today (#723 — `discard` does not actually
-    /// free the slot), so a slab-presence check would never fire. Cheap and
-    /// called on every drain (`pending_text_selection` holds only nodes a
+    /// connectivity rather than slab presence: a `remove()` is a detach, and
+    /// a removed node is as unfocusable as a freed one. Cheap and called on
+    /// every drain (`pending_text_selection` holds only nodes a
     /// `set_selection_range` named and that have not yet been focused, which
     /// is small in practice).
     ///
-    /// **Does not close the #304 recycled-slab-id hazard** CLAUDE.md
-    /// documents for every node-keyed registry: a removed node's id can be
-    /// handed to an unrelated new node before this prune next runs, and that
-    /// node would then inherit the stale request. Accepted as a pre-existing,
-    /// project-wide hazard class (shared with `active_element`,
-    /// `register_focus_target`'s registry, …) rather than one this map
-    /// introduces or could close alone.
+    /// A freed node's id is never handed to another node — its slot is
+    /// reused under the next generation (#723) — so an entry this has not
+    /// pruned yet names nothing, never a node minted since.
     fn prune_stale_text_selection_stash(&mut self) {
         if self.pending_text_selection.is_empty() {
             return;
