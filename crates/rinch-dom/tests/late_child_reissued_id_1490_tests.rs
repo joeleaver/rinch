@@ -1,8 +1,9 @@
 //! A late-child observer is released by its own registration, not by the node
 //! id it was registered under (issue #1490).
 //!
-//! `rinch-dom` frees slab keys (`set_inner_html`, pseudo-element pruning) and
-//! hands a freed key to the next node it mints. A container registered inside
+//! `rinch-dom` frees slab keys (`set_inner_html`, pseudo-element pruning,
+//! and since #723 `discard`) and hands a freed slot to the next node it mints
+//! — until #723 under the same id, since then under the next generation. A container registered inside
 //! a scope used to leave that scope a cleanup that forgot "whatever is
 //! registered at `(doc, id)`", so once the id was re-issued the old scope's
 //! disposal dropped the observers of the container that now holds it. The
@@ -51,14 +52,17 @@ fn a_new_container_on_a_reissued_id_keeps_its_observers_when_the_old_scope_is_di
         on_child_inserted(&old, move |_| b.set(b.get() + 1));
     });
 
-    // Frees `old`; the next node minted is handed its id.
+    // Frees `old`; the next node minted is handed its slot — under the next
+    // generation since #723, so no longer its id. The fixture keeps the shape
+    // (the same slot) that re-issued the id before then.
     host.set_inner_html("");
     let fresh = el(&doc, "article");
     assert_eq!(
-        fresh.node_id(),
-        old.node_id(),
-        "precondition: the freed id was re-issued"
+        fresh.node_id().index(),
+        old.node_id().index(),
+        "precondition: the freed slot was re-issued"
     );
+    assert_ne!(fresh.node_id(), old.node_id(), "#723: under a new id");
     host.append_child(&fresh);
     let removed = Rc::new(Cell::new(0usize));
     let inserted = Rc::new(Cell::new(0usize));

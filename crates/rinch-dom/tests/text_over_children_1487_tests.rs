@@ -77,8 +77,10 @@ fn an_elements_lone_text_child_written_in_place_keeps_its_record() {
 /// An orphan whose id was freed and handed to another node before its scope
 /// goes is not that orphan any more: the scope's end leaves the newcomer
 /// alone. Only reachable when the orphan was put back without a `NodeHandle`
-/// insertion verb, which would have unfiled it. `rinch-dom` frees an id through `set_inner_html` and re-issues it to
-/// the next node minted.
+/// insertion verb, which would have unfiled it. `rinch-dom` frees an id through `set_inner_html` and re-issued it to
+/// the next node minted until #723; since then it re-issues the slot under
+/// the next generation, so the newcomer's id differs and this holds by
+/// construction — the fixture keeps the shape.
 #[test]
 fn a_reissued_orphan_id_is_not_discarded_with_the_old_scope() {
     let (doc, body, _table) = mounted();
@@ -102,16 +104,18 @@ fn a_reissued_orphan_id_is_not_discarded_with_the_old_scope() {
     let mut other = RenderScope::new(doc.clone(), body.node_id());
     let mut newcomer = other.create_element("p");
     for _ in 0..64 {
-        if newcomer.node_id() == child.node_id() {
+        // The slot: since #723 it is re-issued under the next generation.
+        if newcomer.node_id().index() == child.node_id().index() {
             break;
         }
         newcomer = other.create_element("p");
     }
     assert_eq!(
-        newcomer.node_id(),
-        child.node_id(),
-        "precondition: the freed id was re-issued"
+        newcomer.node_id().index(),
+        child.node_id().index(),
+        "precondition: the freed slot was re-issued"
     );
+    assert_ne!(newcomer.node_id(), child.node_id(), "#723: under a new id");
     assert_eq!(doc.borrow().parent_node(newcomer.node_id()), None);
 
     let before = __minted_by_len();

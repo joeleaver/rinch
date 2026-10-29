@@ -2564,7 +2564,10 @@ fn offer_base_split(
         BASES_WITHOUT_GAME
             .with(|b| b.get())
             .then_some(BaseViewport {
-                surface_id: BASE_WITHOUT_GAME_IDS + crate::node_slab::slot_of(node_id),
+                // The whole id (slot and generation, below 2^53) where it
+                // fits, so a node minted into a freed slot does not take over
+                // the slices of its slot's earlier occupant (#723).
+                surface_id: BASE_WITHOUT_GAME_IDS.wrapping_add(node_id as usize),
                 // No texture: the compositor draws no image, only the clear.
                 extents: (1, 1),
                 letterbox: false,
