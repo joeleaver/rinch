@@ -452,8 +452,8 @@ was pressed while the button was held. A press that dispatched nothing has
 nothing to duplicate, so its clicks are not suppressed: a `<label for="x">`
 **outside** every handler, whose `<input id="x">` sits inside a clickable
 wrapper, activates that wrapper once by mouse as it does by keyboard (issue
-#272, web only — the desktop backend does not follow `for`, so there the
-press does nothing). The same rule lets a click through when something else
+#272; desktop runs the same label activation itself, #866 — see
+[Labels](#labels) below). The same rule lets a click through when something else
 swallowed the press: a third-party widget (a map, a chart) inside a clickable
 card that stops its own `pointerdown` from propagating now activates the card
 on release, as a browser's own `click` would — stop `click` too if the widget
@@ -473,6 +473,32 @@ browser — so a clicked `tabindex` element owns Enter/Space straight away,
 without having to be reached by Tab first. A component that wants the keys for
 itself (a code editor, a keyboard-driven grid) registers for them; see
 [Keyboard Focus](./focus.md).
+
+### Labels
+
+A press on a `<label>` activates the control it labels, on both backends, as a
+browser does: the control is **focused** and then **clicked**. The control is
+the element the label's `for` names (`label { "for": "email", "Email" }`, then
+`input { id: "email" }`), or, with no `for`, the first labelable element inside
+the label (`button`, `input` other than `hidden`, `meter`, `output`,
+`progress`, `select`, `textarea`). A `for` naming nothing labelable labels
+nothing — it does not fall back to a descendant. Focusing a text field puts the
+caret where `focus()` would; a `<select>` is focused closed. "Clicked" means
+the nearest `onclick` above the control runs, after the label's own, so
+`label { "for": "c" }` beside `div { onclick: …, input { r#type: "checkbox",
+id: "c" } }` runs that `onclick` once per press. (On the web, a label with an
+`onclick` of its own currently suppresses the control's — issue #2033.)
+
+Not activated: a press on interactive content inside the label (a `button`,
+a link, the control itself — that press is the element's own), a right or
+middle press, and a disabled control (its own `disabled`, or a
+`<fieldset disabled>` around it). A handler the press already ran is not run
+again by the label's click: `Checkbox`, `Radio` and `Switch` put their
+`onchange` on the `<label>` that wraps their `<input>`, and one press toggles
+them once. A browser runs such a handler twice; rinch-web suppresses the
+second as the gesture's duplicate (#272) and desktop never raises it (#866).
+`TextInput`'s and `Textarea`'s labels are not yet associated with their field,
+so a press on them focuses nothing on either backend (#2034).
 
 ### Enter in a `<textarea>`
 
