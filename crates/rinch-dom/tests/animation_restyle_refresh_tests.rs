@@ -25,6 +25,8 @@
 //! | G | `to { background-color: rgb(0, 255, 0) }` over a red base, a class makes the base blue, at 3000ms | `rgb(0, 77, 179)`: the implicit `from` is the **new** base |
 //! | H | `from { width: 1em } to { width: 11em }`, `font-size` 10px → 40px, at 1000ms | `80px` |
 //! | I | `from { opacity: 0.2 } to { opacity: 0.8; background-color: rgb(0, 255, 0) }` over a red base, at 3000ms | `rgb(179, 77, 0)`: the `from` keyframe has no `background-color`, so its value there is the base |
+//! | K | an iframe 800 → 1000px wide, where `@media (min-width: 900px)` holds a later `@keyframes k` | same `currentTime` 3000, `rgb(77, 77, 77)` |
+//! | L | the same resize, where `@media (max-width: 850px)` holds the only `@keyframes gone` | `getAnimations()` 0, the base `rgb(0, 0, 255)` |
 //!
 //! # Which fixture kills which mutant
 //!
