@@ -446,14 +446,11 @@ fn component_points(app: &RinchApp, text_class: &str, box_class: &str) -> [(f32,
     [find(text_class), find(box_class)]
 }
 
+type Render = Box<dyn Fn(&mut RenderScope, Callback) -> NodeHandle>;
+
 #[test]
 fn checkbox_radio_and_switch_toggle_once_per_press_on_their_label() {
-    let cases: Vec<(
-        &str,
-        &str,
-        &str,
-        Box<dyn Fn(&mut RenderScope, Callback) -> NodeHandle>,
-    )> = vec![
+    let cases: Vec<(&str, &str, &str, Render)> = vec![
         (
             "Checkbox",
             "rinch-checkbox__label",
