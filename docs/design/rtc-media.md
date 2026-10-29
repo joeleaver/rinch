@@ -757,8 +757,9 @@ Where the native backend differs from 3.1–3.6, the code holds:
   instead: Rust's (a counting global allocator) and malloc's (glibc's
   `mallinfo2`, which sees the C codecs too), after the call's threads and
   the test's source threads have exited. Over ten calls Rust's heap grows
-  at most 128 B and malloc's 40 kB; the bound is 1 MB per ten calls, for
-  each window.
+  at most about 8 kB and malloc's 52 kB; the bounds are 64 kB (Rust) and
+  256 kB (malloc) per ten calls, for each window, so a leak of about 6 kB
+  (Rust) or 26 kB (malloc) a call fails.
 - **No audio device** (a CI runner) is reported once through `on_error`
   as `RtcError::Media`; decoding goes on. Tests read the mix through
   `testing::capture_audio_output`.

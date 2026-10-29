@@ -234,19 +234,26 @@ fn thirty_calls_leave_nothing_behind() {
     }
     // A leak grows every ten calls. Both counts are exact (no allocator
     // step, no freed memory kept), so each ten-call growth is checked, not
-    // the smaller of two. Measured on a loaded host (#2009): Rust's heap
-    // grew 0 to 128 B over ten calls, malloc's 9 to 31 kB. 1 MB is 30
-    // times that; the 0.3 MB a call the old RSS bound allowed fails by 3x.
-    const BOUND: i64 = 1_000_000;
+    // the smaller of two. Measured on a loaded host (#2009 and its review):
+    // Rust's heap grew 0 to 7.7 kB over ten calls, malloc's 6 to 52 kB
+    // (its first window still settling, about twice its second). The
+    // bounds are 8x and 5x those, so a leak of about 6.4 kB a call (Rust)
+    // or 26 kB a call (malloc, the C codecs included) fails; a planted
+    // 50 kB-a-call leak reads about 500 kB a window.
+    const RUST_BOUND: i64 = 64 * 1024;
+    const MALLOC_BOUND: i64 = 256 * 1024;
+    if !cfg!(all(target_os = "linux", target_env = "gnu")) {
+        eprintln!("malloc's heap is not counted on this target (glibc only)");
+    }
     if let [a, b, c] = heap.as_slice() {
-        for (name, x, y, z) in [
-            ("Rust's heap", a.0, b.0, c.0),
-            ("the malloc heap", a.1, b.1, c.1),
+        for (name, bound, x, y, z) in [
+            ("Rust's heap", RUST_BOUND, a.0, b.0, c.0),
+            ("the malloc heap", MALLOC_BOUND, a.1, b.1, c.1),
         ] {
             let (g1, g2) = (y as i64 - x as i64, z as i64 - y as i64);
             assert!(
-                g1 < BOUND && g2 < BOUND,
-                "{name} grew {g1} B over calls 10-20 and {g2} B over calls 20-30: a leak"
+                g1 < bound && g2 < bound,
+                "{name} grew {g1} B over calls 10-20 and {g2} B over calls 20-30 (bound {bound} B): a leak"
             );
         }
     }
