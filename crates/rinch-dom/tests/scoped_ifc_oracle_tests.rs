@@ -1046,7 +1046,7 @@ impl Rng {
         self.0 = x;
         x.wrapping_mul(0x2545_f491_4f6c_dd1d)
     }
-    fn below(&mut self, n: u64) -> usize {
+    fn below(&mut self, n: usize) -> usize {
         (self.next() % n as u64) as usize
     }
     fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
@@ -1473,16 +1473,16 @@ fn run_random(seeds: std::ops::Range<u64>, steps: usize) -> Result<RandomStats, 
 #[derive(Debug, Default)]
 struct RandomStats {
     /// Steps compared with the twins agreeing and matching a fresh layout.
-    steps_compared: u64,
+    steps_compared: usize,
     /// Seeds stopped because both twins agreed and both differed from a
     /// fresh layout: a pre-existing defect.
-    fresh_divergent: u64,
+    fresh_divergent: usize,
     /// Seeds whose whole-document twin panicked (a Taffy `set_children` panic
     /// reproduced on `main`).
-    control_broken: u64,
+    control_broken: usize,
     /// Seeds where the twins differed and the scoped one matched a fresh layout
     /// — the whole-document pass was the one wrong.
-    scoped_better: u64,
+    scoped_better: usize,
     /// Which seeds those were, to replay with `SCOPED_ORACLE_SEED`.
     scoped_better_seeds: Vec<u64>,
 }

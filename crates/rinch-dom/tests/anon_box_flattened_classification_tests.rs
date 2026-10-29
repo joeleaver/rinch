@@ -166,12 +166,12 @@ fn dom_children(doc: &RinchDocument, id: NodeId) -> Vec<String> {
 // what the fixtures that used to read DOM parentage ask instead.
 
 /// The anonymous box a node is a run member of — the member's own back-pointer.
-fn run_box(doc: &RinchDocument, id: NodeId) -> Option<usize> {
+fn run_box(doc: &RinchDocument, id: NodeId) -> Option<u64> {
     doc.tree.get(id.0).unwrap().run_box
 }
 
 /// A box's run, in the order the box recorded it.
-fn run_members(doc: &RinchDocument, bx: usize) -> Vec<u64> {
+fn run_members(doc: &RinchDocument, bx: u64) -> Vec<u64> {
     doc.tree.get(bx).unwrap().run_members.clone()
 }
 
@@ -182,7 +182,7 @@ fn run_boxes(doc: &RinchDocument, id: NodeId) -> Vec<u64> {
 }
 
 /// The container an anonymous box hangs off.
-fn box_parent(doc: &RinchDocument, bx: usize) -> Option<u64> {
+fn box_parent(doc: &RinchDocument, bx: u64) -> Option<u64> {
     doc.tree.get(bx).unwrap().parent
 }
 
@@ -1601,7 +1601,7 @@ mod painted {
 
     /// Count of pixels that are not the white background, per horizontal band
     /// of `LINE` pixels — one entry per line of the container.
-    fn ink_per_band(doc: &mut RinchDocument, bands: usize) -> Vec<u64> {
+    fn ink_per_band(doc: &mut RinchDocument, bands: usize) -> Vec<usize> {
         let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
         let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
         rinch_dom::paint::paint_document(

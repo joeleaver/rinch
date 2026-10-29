@@ -5216,7 +5216,7 @@ mod tests {
     /// no transform and no IFC content-box offset. This is what every walk in
     /// the codebase used to do, and it is the box the assertions below must
     /// *not* return.
-    fn untransformed_origin(doc: &RinchDocument, node_id: RawNodeId) -> (f32, f32) {
+    fn untransformed_origin(doc: &RinchDocument, node_id: crate::node::RawNodeId) -> (f32, f32) {
         let (mut x, mut y) = (0.0_f32, 0.0_f32);
         let mut cur = Some(node_id);
         while let Some(id) = cur {

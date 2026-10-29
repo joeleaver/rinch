@@ -1247,7 +1247,7 @@ mod painted {
     }
 
     /// Ink per 20px band, six bands deep, at `scale`.
-    fn band_profile(doc: &mut RinchDocument, scale: f32) -> Vec<u64> {
+    fn band_profile(doc: &mut RinchDocument, scale: f32) -> Vec<usize> {
         let px = pixels_at(doc, scale);
         let w = (VW * scale) as usize;
         let band_h = (LINE * scale) as usize;

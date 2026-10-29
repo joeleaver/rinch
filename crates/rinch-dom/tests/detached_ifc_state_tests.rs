@@ -100,7 +100,7 @@ fn set_text_content_clears_its_orphans_ifc_marks_as_remove_child_does() {
         );
         assert_eq!(
             marked_in(&doc, p),
-            Vec::<usize>::new(),
+            Vec::<u64>::new(),
             "{how:?}: a subtree out of the document carries no IFC marks"
         );
         // And the next layout leaves it that way: the scoped pass the detach
@@ -108,7 +108,7 @@ fn set_text_content_clears_its_orphans_ifc_marks_as_remove_child_does() {
         doc.resolve_layout(VW - 7.0, VH);
         assert_eq!(
             marked_in(&doc, p),
-            Vec::<usize>::new(),
+            Vec::<u64>::new(),
             "{how:?}: …after a layout too"
         );
     }

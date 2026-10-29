@@ -1668,7 +1668,7 @@ fn test_block_content_behind_display_contents_still_paints() {
     /// Builds `<div width:400px><!--for--> [wrapper] <div 100x40 red></div>`,
     /// with the red block either behind a `display:contents` wrapper or a
     /// direct child, and returns (draw op count, wrapper's `ifc_root`).
-    fn build(wrapped: bool) -> (usize, Option<usize>) {
+    fn build(wrapped: bool) -> (usize, Option<u64>) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
 
@@ -1745,7 +1745,7 @@ fn test_block_appended_into_a_marked_contents_wrapper_still_paints() {
     /// `<div width:400px><!--show--><div display:contents/></div>`, laid out
     /// once while the wrapper is empty, then given a 100x40 block child.
     /// Returns (draw op count after the second pass, wrapper's `ifc_root`).
-    fn build(wrapped: bool) -> (usize, Option<usize>) {
+    fn build(wrapped: bool) -> (usize, Option<u64>) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
 
@@ -1892,7 +1892,7 @@ fn test_inline_after_a_block_wrapper_is_not_orphaned() {
 fn test_a_display_none_child_does_not_push_a_contents_wrapper_out_of_the_ifc() {
     /// `<div width:400px><!--show--><span display:contents>VISIBLE[hidden?]</span></div>`.
     /// Returns (the wrapper's `ifc_root`, the container IFC's laid-out text).
-    fn build(with_hidden_child: bool) -> (Option<usize>, String) {
+    fn build(with_hidden_child: bool) -> (Option<u64>, String) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
 
@@ -3322,7 +3322,7 @@ mod opacity_layer_bounds {
 
     /// `layer > clipper > [n plain fillers…, fixed]` — the fixed box **last**,
     /// behind enough siblings to exhaust `MAX_VISITS`.
-    fn clipper_over_fillers_then_fixed(n: u64) -> (RinchDocument, u64, u64) {
+    fn clipper_over_fillers_then_fixed(n: usize) -> (RinchDocument, u64, u64) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
 
@@ -3363,7 +3363,7 @@ mod opacity_layer_bounds {
     /// `layer > clipper > (depth nested divs) > fixed` — deeper than
     /// `MAX_DEPTH`, so the walk gives up on depth rather than on the budget.
     /// No wide node anywhere, which is what makes this a separate route.
-    fn clipper_over_deep_nest_then_fixed(depth: u64) -> (RinchDocument, u64, u64) {
+    fn clipper_over_deep_nest_then_fixed(depth: usize) -> (RinchDocument, u64, u64) {
         let (mut doc, layer, clipper) = layer_and_clipper();
         let mut cursor = clipper;
         for _ in 0..depth {
@@ -3386,7 +3386,7 @@ mod opacity_layer_bounds {
     /// `layer > clipper > p(lots of text, then an inline-block > fixed)` — the
     /// inline-block is on a line the line budget never reaches.
     fn clipper_over_long_text_then_inline_fixed(
-        words: u64,
+        words: usize,
         display: &str,
     ) -> (RinchDocument, u64, u64) {
         let (mut doc, layer, clipper) = layer_and_clipper();

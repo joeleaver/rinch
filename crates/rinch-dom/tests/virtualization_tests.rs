@@ -17,7 +17,7 @@ use rinch_dom::RinchDocument;
 /// to wrap onto several lines in a narrow (150px) column. Mirrors the editor's
 /// `<div data-pm-type="doc">` container with `<p data-pm-type="paragraph">`
 /// children. Returns `(container_id, block_ids)` (raw node ids).
-fn build_editor_like_doc(doc: &mut RinchDocument, n: u64) -> (usize, Vec<u64>) {
+fn build_editor_like_doc(doc: &mut RinchDocument, n: usize) -> (u64, Vec<u64>) {
     let body = doc.body();
     let container = doc.create_element("div");
     doc.set_attribute(container, "data-pm-type", "doc");

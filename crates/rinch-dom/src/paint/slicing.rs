@@ -614,7 +614,7 @@ mod tests {
     use super::*;
     use peniko::kurbo::{ParamCurveArea, PathEl};
 
-    fn split_at(slicing: &mut Slicing, below: &mut Scene, id: RawNodeId, content: Rect) {
+    fn split_at(slicing: &mut Slicing, below: &mut Scene, id: usize, content: Rect) {
         let verdict = slicing.split(
             below,
             &SurfaceSplit {

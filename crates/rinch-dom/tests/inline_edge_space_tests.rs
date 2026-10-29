@@ -235,7 +235,7 @@ fn a_space_at_a_lines_start_or_end_is_still_removed() {
 }
 
 /// The x of the first glyph run on `line` of `#root`'s IFC.
-fn first_glyph_x(d: &RinchDocument, root: u64, line: u64) -> f32 {
+fn first_glyph_x(d: &RinchDocument, root: u64, line: usize) -> f32 {
     let il = d.tree.get(root).unwrap().text_layout.as_ref().expect("IFC");
     let line = il.layout.get(line).expect("line");
     for item in line.items() {
@@ -247,7 +247,7 @@ fn first_glyph_x(d: &RinchDocument, root: u64, line: u64) -> f32 {
 }
 
 /// The x of the glyph run whose text starts with `word` on line `line`.
-fn word_x(d: &RinchDocument, root: u64, line: u64, word: &str) -> f32 {
+fn word_x(d: &RinchDocument, root: u64, line: usize, word: &str) -> f32 {
     let il = d.tree.get(root).unwrap().text_layout.as_ref().expect("IFC");
     let l = il.layout.get(line).expect("line");
     for item in l.items() {

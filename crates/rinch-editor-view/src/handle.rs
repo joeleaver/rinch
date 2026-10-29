@@ -5037,7 +5037,7 @@ mod tests {
     fn caret_top(h: &Harness) -> Option<String> {
         let d = h.mock.borrow();
         (0..d.__node_count())
-            .map(NodeId)
+            .map(NodeId::from_index)
             .find(|id| d.get_attribute(*id, "data-pm-caret").is_some())
             .and_then(|id| d.get_attribute(id, "style"))
     }
@@ -8335,7 +8335,7 @@ mod tests {
                     self.0 = x;
                     x
                 }
-                fn below(&mut self, n: u64) -> usize {
+                fn below(&mut self, n: usize) -> usize {
                     if n == 0 {
                         0
                     } else {
@@ -8365,7 +8365,7 @@ mod tests {
                 let mut seen = [0usize, 0usize];
                 let mut rng = Rng::new(seed);
 
-                let deliver = |p: u64, seen: &mut [usize; 2]| {
+                let deliver = |p: usize, seen: &mut [usize; 2]| {
                     let delta = {
                         let q = inbox[p].borrow();
                         (seen[p] < q.len()).then(|| q[seen[p]].clone())
@@ -9044,7 +9044,7 @@ mod tests {
         }
 
         /// A caret that moves on every call: `a`, `b`, `a`, `b`, …
-        fn alternating(a: u64, b: u64) -> impl Fn() -> Selection {
+        fn alternating(a: usize, b: usize) -> impl Fn() -> Selection {
             let flip = Cell::new(false);
             move || {
                 flip.set(!flip.get());
@@ -9535,7 +9535,7 @@ mod tests {
         }
 
         /// A caret that moves on every call.
-        fn alternating(a: u64, b: u64) -> impl Fn() -> Selection {
+        fn alternating(a: usize, b: usize) -> impl Fn() -> Selection {
             let flip = Cell::new(false);
             move || {
                 flip.set(!flip.get());

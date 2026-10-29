@@ -1120,7 +1120,7 @@ fn a_text_node_that_stops_being_a_leaf_answers_no_stale_caret_970() {
         glyph_bounds_for_offset(&f, t2, 8).map(|g| (g.x, g.y, g.width, g.height)),
         "glyph bounds on an IFC member that used to be a leaf"
     );
-    assert!(d.tree.get(t as usize).unwrap().cached_text_parley.is_none());
+    assert!(d.tree.get(t).unwrap().cached_text_parley.is_none());
 }
 
 // ── Width alone ──────────────────────────────────────────────────────────────

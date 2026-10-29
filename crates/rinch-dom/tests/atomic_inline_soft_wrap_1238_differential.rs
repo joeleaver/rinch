@@ -68,7 +68,7 @@ fn lines_of(style: &str, inner: &str) -> String {
                 }
                 PositionedLayoutItem::InlineBox(ib) => {
                     last_run = None;
-                    if let Some(id) = d.get_attribute(NodeId(ib.id as usize), "id") {
+                    if let Some(id) = d.get_attribute(NodeId(ib.id), "id") {
                         s.push_str(&format!("[{id}]"));
                     }
                 }
