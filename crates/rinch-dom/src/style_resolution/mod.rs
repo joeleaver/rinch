@@ -2183,7 +2183,9 @@ impl RinchDocument {
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
             self.tree.active_animations.remove(&id);
-            self.tree.finished_animations.remove(&id);
+            if !self.tree.finished_animations.is_empty() {
+                self.tree.finished_animations.remove(&id);
+            }
             if let Some(node) = self.tree.nodes.get(id) {
                 stack.extend(node.children.iter().copied());
             }
