@@ -233,7 +233,7 @@ its border), one of two things happens:
   (`RinchOverlayRenderer::render(device, queue, &mut ctx)`) paints with
   `set_bases_without_game`: every punching viewport is a base with no texture, keyed
   `BASE_WITHOUT_GAME_IDS + node id`, and `composite_straight` writes the overlay texture in
-  straight alpha. A tainted slice (grayscale over a viewport: D5a) repaints that frame with the
+  straight alpha. A renderer that does not hold the context's last sliced frame (a new one after a device loss, or after another renderer's or context's turn) has the frame painted again (frame stamps, #1976: `docs/internals/game-engine.md`). A tainted slice (grayscale over a viewport: D5a) repaints that frame with the
   viewports cleared in the scene, as `scene()` does; with no game to keep out of the scene there
   is nothing to suspend, and the next painted frame tries the split again.
 - **Otherwise it is erased in the scene** (`clear_viewport_box` → `Painter::erase`, an opaque fill

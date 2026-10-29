@@ -334,7 +334,7 @@ build with `"gpu"`.
 |------|---------|
 | `RinchContext` | Main handle — `new()`, `update()`, `scene()`. Multiple contexts can coexist on one thread (#134): each holds its own `subscribe_signal_change` guard, and bounds signals / editor registrations / focus requests are scoped per document via `DomDocument::doc_key()`. Stores/contexts are namespaced per context with a thread-global fallback (#136): `create_store` inside a context lands in that context's namespace (cleared on drop), its effects/handlers resolve it first, and lookups fall back to stores created outside any context. |
 | `RinchContextConfig` | Width, height, scale factor, optional theme |
-| `RinchOverlayRenderer` | Renders a context's UI to a texture: `render(device, queue, &mut ctx)` (since #1866; it took `ctx.scene()` before). Its `GameViewport`s are cut out by the split compositor, exactly; a host rendering `ctx.scene()` with its own Vello gets an in-scene erase, approximate inside clips |
+| `RinchOverlayRenderer` | Renders a context's UI to a texture: `render(device, queue, &mut ctx)` (since #1866; it took `ctx.scene()` before). Its `GameViewport`s are cut out by the split compositor, exactly; a host rendering `ctx.scene()` with its own Vello gets an in-scene erase, approximate inside clips. A renderer that does not hold the context's last sliced frame (new after a device loss, or another renderer or context took a turn) has the frame painted again: the stamp check below (#1976) |
 | `GameViewport` | Component marking a transparent hole for game rendering. **Hittable by default** (#207): `wants_mouse` routes input by hit-testing the hole and walking up to `data-viewport`, so an unhittable hole makes the UI claim the mouse *everywhere*. `pointer-events: auto; background: transparent;` come from the UA stylesheet rule for `[data-viewport]` — not an inline style — so restyling the hole can't strip them, and a HUD root's inherited `pointer-events: none` can't reach it. Your own HUD controls under such a root still need `pointer-events: auto`. It also stamps **no** `data-viewport-ready`, and absence means ready, so its hole is unconditional (#186) — see the **Viewport holes** note under Rendering Backends. |
 | `LayoutRect` | `{x, y, width, height}` in logical pixels |
 
@@ -350,6 +350,21 @@ loop {
     composite(game_texture, ui);
 }
 ```
+
+**Overlay renderer ↔ context frame stamps (#1976).** The overlay's slices live in the renderer
+(`SplitFrame`), the scene in the context, and `RinchContext::sliced_frame` paints only when the
+scene is dirty, so a renderer that missed the context's last sliced frame would draw the cached
+scene with nothing it split out: everything painted after a `GameViewport` missing. Each sliced
+frame a context paints takes a stamp from one process-wide counter (`NEXT_SLICED_STAMP`, so a
+stamp names one frame of one context; `0` is "none"); the renderer keeps the stamp of the slices
+it holds (`fed`) and passes it in, and a mismatch calls `request_repaint` first. That covers a new
+renderer (Playweft's device loss: it used to call `mark_scene_dirty` itself), two renderers taking
+turns on one context, and one renderer on several contexts. A failed `SplitFrame::apply` clears
+the split and resets `fed`, so the next frame asks again. Pins:
+`gpu_a_new_overlay_renderer_on_an_existing_context_draws_the_hud_1976` and
+`gpu_overlay_renderers_taking_turns_draw_their_contexts_current_frame_1976` in
+`crates/rinch/tests/embed_game_viewport_base_layer_1866.rs` (the second kills "repaint only a
+never-fed renderer" and "a per-context counter").
 
 **`update()` runs the desktop loop's per-frame housekeeping** (#172, #141, #331):
 the cross-thread queue, `drain_polls`, the deferred-work inbox, the events, the

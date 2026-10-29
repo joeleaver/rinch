@@ -56,7 +56,7 @@
 //! ```
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use peniko::Color;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer as VelloRenderer, RendererOptions, Scene};
@@ -112,6 +112,11 @@ pub struct RinchContextConfig {
 
 // ── RinchContext ──────────────────────────────────────────────────────────────
 
+/// The next [`RinchContext::sliced_frame`] stamp, shared by every context so
+/// that a stamp names one frame of one context (#1976). Starts at 1: `0` is
+/// "no frame".
+static NEXT_SLICED_STAMP: AtomicU64 = AtomicU64::new(1);
+
 /// Handle to an embedded rinch UI.
 ///
 /// Created once during game initialization. The game loop calls [`update`]
@@ -138,6 +143,11 @@ pub struct RinchContext {
     /// How many `scene()` calls ran the surface pass — see
     /// [`RinchContext::surface_pass_count`].
     surface_passes: u64,
+    /// The stamp of the last frame [`sliced_frame`](Self::sliced_frame)
+    /// painted, `0` before the first: unique across every context, so a
+    /// [`RinchOverlayRenderer`] that holds a different one holds another
+    /// frame's slices, or none (#1976).
+    sliced_stamp: u64,
     /// This context's signal-change subscription. Multi-subscriber: several
     /// concurrent contexts (plus a mounted shell/web root) each hold their own,
     /// and dropping this context detaches only its own callback — creating or
@@ -246,6 +256,7 @@ impl RinchContext {
             ime_reported: ImeState::default(),
             surface_ids: Vec::new(),
             surface_passes: 0,
+            sliced_stamp: 0,
             _signal_change_sub: signal_change_sub,
         }
     }
@@ -403,10 +414,24 @@ impl RinchContext {
 
     /// [`Self::scene`] painted for [`RinchOverlayRenderer::render`] (#1866):
     /// each `GameViewport` split out of the scene as a base layer with no
-    /// game, for the split compositor to cut exactly. The frame's slices when
-    /// it was painted, `None` when the last one is still current; the scene
-    /// is `self.app.painter`'s.
-    fn sliced_frame(&mut self) -> Option<Vec<rinch_dom::paint::slicing::SurfaceSlice>> {
+    /// game, for the split compositor to cut exactly. The frame's slices and
+    /// its stamp when it was painted, `None` when the last one is still
+    /// current; the scene is `self.app.painter`'s.
+    ///
+    /// `fed` is the stamp of the frame whose slices the calling renderer
+    /// holds (`0`: none). Unless it is this context's last sliced frame, the
+    /// frame is painted whether or not anything changed (#1976): a new
+    /// renderer (the host's step after a device loss), a renderer that
+    /// another one took a turn from, or one that last drew another context
+    /// holds no slices of the scene it is about to render, and the cached
+    /// scene alone has nothing painted after its viewports.
+    fn sliced_frame(
+        &mut self,
+        fed: u64,
+    ) -> Option<(u64, Vec<rinch_dom::paint::slicing::SurfaceSlice>)> {
+        if fed == 0 || fed != self.sliced_stamp {
+            self.app.request_repaint();
+        }
         let (lw, lh) = self.logical_size();
         let surface_pixels = self.prepare_render_surfaces();
         let installed = !surface_pixels.is_empty();
@@ -419,7 +444,9 @@ impl RinchContext {
         if installed {
             rinch_dom::paint::set_surface_pixels(None);
         }
-        slices
+        let slices = slices?;
+        self.sliced_stamp = NEXT_SLICED_STAMP.fetch_add(1, Ordering::Relaxed);
+        Some((self.sliced_stamp, slices))
     }
 
     /// Drive this context's mounted `RenderSurface`s for this frame and return their
@@ -909,6 +936,10 @@ pub struct RinchOverlayRenderer {
     /// The `GameViewport`s split out of the last painted frame (#1866).
     split: crate::split_frame::SplitFrame,
     compositor: Option<crate::split_compositor::SplitCompositor>,
+    /// The stamp of the context frame whose slices `split` holds, `0` for
+    /// none: a context asked by a renderer holding another stamp paints the
+    /// frame again for it (#1976).
+    fed: u64,
     /// Where Vello renders the UI while a viewport is split: the split
     /// compositor then writes `render_texture` from it.
     below: Option<Texture>,
@@ -944,6 +975,7 @@ impl RinchOverlayRenderer {
             format,
             split: Default::default(),
             compositor: None,
+            fed: 0,
             below: None,
         }
     }
@@ -966,13 +998,21 @@ impl RinchOverlayRenderer {
     ///
     /// Call it once per frame, in place of `ctx.scene()`: it drives the
     /// context's `RenderSurface`s as `scene()` does.
+    ///
+    /// A renderer may be replaced (after a device loss: the renderer is
+    /// bound to its device, the context is not), and several may take turns
+    /// on one context or one on several contexts: a renderer that does not
+    /// hold the context's last painted frame has it painted again, so its
+    /// first `render` is complete with nothing changed in the document
+    /// (#1976). Nothing needs marking dirty.
     pub fn render(
         &mut self,
         device: &Device,
         queue: &Queue,
         ctx: &mut RinchContext,
     ) -> TextureView {
-        if let Some(slices) = ctx.sliced_frame() {
+        if let Some((stamp, slices)) = ctx.sliced_frame(self.fed) {
+            self.fed = stamp;
             if let Err(e) = self.split.apply(
                 device,
                 queue,
@@ -985,6 +1025,8 @@ impl RinchOverlayRenderer {
             ) {
                 tracing::error!("rinch: overlay split slices: {e}");
                 self.split.clear();
+                // Holding none of the frame's slices: ask for it again.
+                self.fed = 0;
             }
         }
         let scene = ctx.app.painter.scene();
