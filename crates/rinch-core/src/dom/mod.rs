@@ -1840,6 +1840,26 @@ mod tests {
     use super::*;
     use mock::MockDomDocument;
 
+    /// `NodeId` packs a 32-bit slot and a 32-bit generation into one `u64` on
+    /// every target (#723), sampled off the fixed point: a generation of 0
+    /// would let a packing that drops the high half pass.
+    #[test]
+    fn a_node_id_packs_slot_and_generation_into_64_bits() {
+        let id = NodeId::new(0xABCD_1234, 0x0000_0007);
+        assert_eq!(id.index(), 0xABCD_1234);
+        assert_eq!(id.generation(), 7);
+        assert_eq!(id.to_raw(), (7u64 << 32) | 0xABCD_1234);
+        assert_eq!(NodeId::from_raw(id.to_raw()), id);
+        assert_eq!(std::mem::size_of::<NodeId>(), 8);
+        // A generation-0 id is just its slot: what every test literal means
+        // and what the debug server's wire ids still print.
+        assert_eq!(NodeId::from_index(4), NodeId(4));
+        assert_eq!(NodeId::new(4, 0).to_raw(), 4);
+        assert_ne!(NodeId::new(4, 1), NodeId(4), "the generation is identity");
+        assert_eq!(format!("{:?}", NodeId(4)), "NodeId(4)");
+        assert_eq!(format!("{:?}", NodeId::new(4, 3)), "NodeId(4@g3)");
+    }
+
     /// `a.insert_after(b)` with `b` already `a`'s next sibling leaves `b` where
     /// it is (issue #356) — the DOM's `insertBefore` rule. Handed to the mock as
     /// `insert_before(parent, b, b)` it unlinked `b` and then could not find the

@@ -226,4 +226,52 @@ mod tests {
         let public = rinch_core::dom::NodeId::new(7, 3);
         assert_eq!(public.0, id, "the same packing as the public NodeId");
     }
+
+    /// The tree's own `<body>`, and the same slot one generation on: what a
+    /// handle kept from before the slot was freed and reused would hold.
+    fn body_and_stale() -> (crate::node::NodeTree, RawNodeId, RawNodeId) {
+        let tree = crate::node::NodeTree::new();
+        let body = tree.body_id;
+        assert_eq!(generation_of(body), 0, "every id is issued at generation 0");
+        (tree, body, pack(slot_of(body), 1))
+    }
+
+    #[test]
+    fn a_stale_generation_names_nothing() {
+        let (mut tree, body, stale) = body_and_stale();
+        assert!(tree.nodes.get(body).is_some());
+        assert!(tree.nodes.contains(body));
+        assert!(tree.nodes.get(stale).is_none(), "the slot is live, the id is not");
+        assert!(!tree.nodes.contains(stale));
+        assert!(tree.nodes.get_mut(stale).is_none());
+        // A vacant slot answers the same.
+        let vacant = pack(tree.nodes.slot_bound() + 10, 0);
+        assert!(tree.nodes.get(vacant).is_none());
+        // Iteration hands back each node's own id.
+        assert!(tree.nodes.iter().any(|(id, n)| id == body && n.id == body));
+    }
+
+    #[test]
+    #[should_panic(expected = "stale node id: slot 2 generation 1 is now held by generation 0")]
+    fn indexing_with_a_stale_generation_panics_with_the_slot_and_both_generations() {
+        let (tree, body, stale) = body_and_stale();
+        assert_eq!(slot_of(body), 2, "root, html, body");
+        let _ = &tree.nodes[stale];
+    }
+
+    #[test]
+    #[should_panic(expected = "stale node id")]
+    fn indexing_mutably_with_a_stale_generation_panics() {
+        let (mut tree, _, stale) = body_and_stale();
+        tree.nodes[stale].scroll_offset = (1.0, 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "a node must be inserted under the id vacant_key() gave it")]
+    fn a_node_carrying_another_id_is_refused() {
+        let mut tree = crate::node::NodeTree::new();
+        let wrong = pack(tree.nodes.slot_bound() + 5, 0);
+        let node = crate::node::Node::comment(wrong, "x", tree.guard.clone());
+        tree.nodes.insert(node);
+    }
 }
