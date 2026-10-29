@@ -38,12 +38,12 @@
 //! document: a `<style>` append and a viewport change do too, set no flag, and
 //! keep the same staleness (#781).
 //!
-//! Not fixed here, and not pinned: **a finished one-shot animation replays on a
-//! theme toggle.** `tick_animations` drops a completed animation that has no
-//! `forwards` fill, so the full restyle finds no entry of that name and mints a
-//! new one from t=0. Chrome does not replay it; neither did `main`, whose full
-//! restyle started nothing at all. That is #783's mechanism, reached through
-//! this path.
+//! Not fixed here: **a finished one-shot animation replayed on a theme
+//! toggle.** `tick_animations` dropped a completed animation that has no
+//! `forwards` fill, so the full restyle found no entry of that name and minted
+//! a new one from t=0. Chrome does not replay it. #783 keeps the finished entry
+//! as a settled marker; `finished_animation_no_fill_783_tests::
+//! a_theme_change_does_not_replay_a_finished_animation` pins this path.
 //!
 //! # Which fixture kills which mutant
 //!

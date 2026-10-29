@@ -10606,8 +10606,10 @@ mod android_frame_clock_tests {
     ///
     /// `fill-mode` is left at its default `none` on purpose. That is what makes
     /// the last tick a *completing* tick: `Animation::is_filling` is false, so
-    /// the animation is dropped rather than kept, and `tick_animations` reports
-    /// `any_active = false` for the very tick that ended it.
+    /// the animation stops counting as running — it moves to
+    /// `finished_animations` as a settled marker (#783) — and
+    /// `tick_animations` reports `any_active = false` for the very tick that
+    /// ended it.
     const RISE_CSS: &str = r#"
         @keyframes k24-rise {
             from { opacity: 0.1; }
@@ -10654,10 +10656,17 @@ mod android_frame_clock_tests {
         Riser { app, trigger }
     }
 
+    /// Animations a tick can still move. Not the map's length: a finished
+    /// one is kept there as a settled marker (#783), and a paused one too.
     fn running_animations(app: &RinchApp) -> usize {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
-        d.tree.active_animations.len()
+        d.tree
+            .active_animations
+            .values()
+            .flatten()
+            .filter(|a| !a.is_paused() && !a.settled)
+            .count()
     }
 
     /// The same fault as `the_tick_that_finishes_the_slide_asks_to_be_presented`,

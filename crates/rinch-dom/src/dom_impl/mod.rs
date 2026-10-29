@@ -1264,8 +1264,10 @@ impl RinchDocument {
 
     /// Advance all active CSS animations by one frame.
     /// Returns true if any **running** animation is still active (caller should
-    /// keep polling). A paused one, and a finished one that fills, is kept but
-    /// not counted (#763, #782) — see [`crate::animation::tick_animations`].
+    /// keep polling). A paused one, and a finished one, is kept but not
+    /// counted (#763, #782, #783) — see [`crate::animation::tick_animations`].
+    /// The node of one that finishes on this tick without a forwards fill is
+    /// restyled at the next resolve, which puts its cascaded values back.
     pub fn tick_animations(&mut self) -> bool {
         use web_time::SystemTime;
         let current_time_ms = SystemTime::now()
@@ -1301,7 +1303,7 @@ impl RinchDocument {
                     .is_some_and(|n| n.display_mode == crate::node::DisplayMode::Inline);
                 anims.iter().any(|a| {
                     !a.is_paused()
-                        && !a.fill_settled
+                        && !a.settled
                         && (a.changes_text_measure() || (inline && a.changes_inline_edge()))
                 })
             })
@@ -1313,7 +1315,7 @@ impl RinchDocument {
         let moving_colour = |anims: &[crate::animation::ActiveAnimation]| {
             anims.iter().any(|a| {
                 !a.is_paused()
-                    && !a.fill_settled
+                    && !a.settled
                     && a.animates(crate::transition::TransitionProperty::Color)
             })
         };
@@ -1327,6 +1329,26 @@ impl RinchDocument {
         let bare_inlines = self.inlines_without_background(self.tree.active_animations.keys());
 
         let any_active = crate::animation::tick_animations(&mut self.tree, current_time_ms);
+
+        // An animation without a forwards fill that finished on this tick left
+        // its last sample in `computed_style` (#783): restyle its node, so the
+        // cascaded values come back in the frame that shows the end. A
+        // generated `::before`/`::after` box is styled by its originator's
+        // cascade, so that is the one marked. The cascade clears the list.
+        for i in 0..self.tree.ended_animations.len() {
+            let id = self.tree.ended_animations[i];
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            let target = if node.is_pseudo_element {
+                node.parent
+            } else {
+                Some(id)
+            };
+            if let Some(target) = target {
+                self.mark_restyle(target, false);
+            }
+        }
 
         let colour_done: Vec<RawNodeId> = colour_nodes
             .into_iter()

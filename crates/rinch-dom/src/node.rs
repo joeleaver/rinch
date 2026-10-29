@@ -3106,8 +3106,42 @@ pub struct NodeTree {
     /// because their constant samples are still written into `computed_style`
     /// on every cascade. So "is this map non-empty" is not "does anything need
     /// another frame"; that is [`NodeTree::has_running_animations`] (#763,
-    /// #782).
+    /// #782). A finished animation **without** a fill is not here: it is in
+    /// [`NodeTree::finished_animations`].
     pub active_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
+    /// Finished `@keyframes` animations that do not fill forwards
+    /// (`animation-fill-mode: none` / `backwards`, #783), kept per node as
+    /// markers with no effect.
+    ///
+    /// The cascade looks an animation up by name in both maps
+    /// ([`crate::animation::start_animations`]), so finding one here keeps a
+    /// still-declared animation from starting again from t=0 — a browser does
+    /// not replay it on an unrelated restyle, a pause or a theme change. A
+    /// restyle that gives it more iterations moves it back to
+    /// [`NodeTree::active_animations`]; one that drops its name drops it.
+    ///
+    /// **Its own map, so that a tick never walks it** (review of #2000): a
+    /// list of rows with a one-shot entrance animation leaves one marker per
+    /// row for the rows' lives, and when they sat in `active_animations` every
+    /// frame of an unrelated spinner cloned all of them (2000 rows: 0.003 ms →
+    /// ~5 ms per tick, debug). Nothing here writes a sample, so nothing reads
+    /// it but the cascade.
+    pub finished_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
+    /// Nodes on which a tick has just **finished** an animation that does not
+    /// fill forwards (`animation-fill-mode: none` / `backwards`, #783).
+    ///
+    /// `animation::tick_animations` pushes the node and moves the entry to
+    /// [`NodeTree::finished_animations`] as a finished marker
+    /// ([`ActiveAnimation::settled`]); `computed_style` still
+    /// holds the last sample, and only a cascade knows the values underneath
+    /// it. `RinchDocument::tick_animations` restyles each node pushed here (its
+    /// originator, for a generated box), and that cascade reads the list for
+    /// one more thing: the change from the last sample back to the cascaded
+    /// value is not a style change a `transition` starts from —
+    /// css-transitions-1's before-change style is the one *updated to the
+    /// current time*, at which the animation has no effect. The cascade
+    /// clears the list when it is done.
+    pub ended_animations: Vec<RawNodeId>,
     /// Whether transitions are armed (false until the first layout completes).
     ///
     /// **Transitions only** (issue #762). `@keyframes` animations do not read
@@ -3556,6 +3590,8 @@ impl NodeTree {
             ifc_measure_leaves: HashMap::new(),
             active_transitions: HashMap::new(),
             active_animations: HashMap::new(),
+            finished_animations: HashMap::new(),
+            ended_animations: Vec::new(),
             transitions_enabled: false,
             refreshing_animations: false,
             image_cache: ImageCache::new(),
@@ -3716,7 +3752,7 @@ impl NodeTree {
     /// because a tick has nothing left to move for either: a **paused**
     /// animation, whose elapsed time is frozen (#763), and a **finished
     /// `forwards`/`both`** animation whose fill a tick has already written
-    /// ([`crate::animation::ActiveAnimation::fill_settled`], #782). A finished
+    /// ([`crate::animation::ActiveAnimation::settled`], #782). A finished
     /// animation *is* counted until that tick runs, which is what lets the
     /// frame that shows its end be presented.
     ///
@@ -3728,7 +3764,7 @@ impl NodeTree {
         self.active_animations
             .values()
             .flatten()
-            .any(|anim| !anim.is_paused() && !anim.fill_settled)
+            .any(|anim| !anim.is_paused() && !anim.settled)
     }
 
     /// Record a whole-document restyle: count it under `reason`, and mark the
@@ -4002,6 +4038,10 @@ impl NodeTree {
         for node_id in &to_remove {
             self.active_transitions.remove(node_id);
             self.active_animations.remove(node_id);
+            // Guarded: `remove` hashes the key even on an empty map (#783).
+            if !self.finished_animations.is_empty() {
+                self.finished_animations.remove(node_id);
+            }
             // The slab recycles ids: a node created later may be handed this
             // one, and must not inherit this node's measured sizes.
             self.ifc_measure_cache.remove(node_id);

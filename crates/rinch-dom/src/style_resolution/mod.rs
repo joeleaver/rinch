@@ -1191,7 +1191,31 @@ impl RinchDocument {
                 && !self.tree.nodes[node_id].styled_unrendered;
             if self.tree.transitions_enabled && node_has_been_styled && !specs.is_empty() {
                 let old_style = &self.tree.nodes[node_id].computed_style;
-                let diffs = diff_animatable(old_style, &new_style);
+                let mut diffs = diff_animatable(old_style, &new_style);
+
+                // The restyle a finished no-fill animation asked for (#783):
+                // `old_style` still holds its last sample, but the
+                // before-change style css-transitions-1 compares against is
+                // updated to the current time, when the animation has no
+                // effect. So the way back to the cascaded value is not a
+                // change, and starts no transition.
+                //
+                // Known gap (review of #2000, F3): a *real* change of the same
+                // property in the same frame as the end — a class moving
+                // `width` 10px → 20px on the tick that finishes a `width`
+                // animation — is dropped with it, so it starts no transition
+                // and the box jumps to 20px. css-transitions-1 would start
+                // 10px → 20px from the previous cascaded value, and that value
+                // is not kept anywhere: `old_style` holds the last sample and
+                // Stylo's previous style is already replaced.
+                // `finished_animation_no_fill_783_tests::
+                // an_end_and_a_real_change_in_one_frame_start_no_transition`
+                // pins it.
+                if self.tree.ended_animations.contains(&node_id)
+                    && let Some(anims) = self.tree.finished_animations.get(&node_id)
+                {
+                    diffs.retain(|d| !anims.iter().any(|a| a.animates(d.property)));
+                }
 
                 // css-transitions-1 §3 defines the before-change style only for
                 // an element that is **being rendered**, so no transition
@@ -1298,7 +1322,8 @@ impl RinchDocument {
                 // and only for a node that either declares an `animation` or
                 // has one running: a node with neither never walks its
                 // ancestor chain. See [`Self::animation_is_rendered`].
-                let has_active = self.tree.active_animations.contains_key(&node_id);
+                let has_active = self.tree.active_animations.contains_key(&node_id)
+                    || self.tree.finished_animations.contains_key(&node_id);
                 if !self.tree.nodes[node_id].animation_specs.is_empty() || has_active {
                     if Self::animation_is_rendered(&self.tree, node_id, new_style.display) {
                         let anim_specs = self.tree.nodes[node_id].animation_specs.clone();
@@ -1308,8 +1333,11 @@ impl RinchDocument {
                         // Extract active_animations temporarily to avoid borrow conflict
                         let mut active_animations =
                             std::mem::take(&mut self.tree.active_animations);
+                        let mut finished_animations =
+                            std::mem::take(&mut self.tree.finished_animations);
                         crate::animation::start_animations(
                             &mut active_animations,
+                            &mut finished_animations,
                             node_id,
                             &anim_specs,
                             &base_style,
@@ -1319,9 +1347,15 @@ impl RinchDocument {
                             current_time_ms,
                         );
                         self.tree.active_animations = active_animations;
+                        self.tree.finished_animations = finished_animations;
                         drop(guard);
 
-                        // Apply current animation values on top of computed_style
+                        // Apply current animation values on top of computed_style.
+                        // A finished animation without a fill is not in this
+                        // map (it writes nothing), so it does not count as one
+                        // that changes the text measure either (review of
+                        // #2000, F2: a finished `font-size` one-shot made every
+                        // later restyle of its node re-measure and lay out).
                         if let Some(animations) = self.tree.active_animations.get(&node_id) {
                             animated_text_measure =
                                 animations.iter().any(|a| a.changes_text_measure());
@@ -1344,6 +1378,7 @@ impl RinchDocument {
                         // was already running stops. The subtree walk below
                         // catches descendants whose own cascade does not run.
                         self.tree.active_animations.remove(&node_id);
+                        self.tree.finished_animations.remove(&node_id);
                     }
                 }
             }
@@ -1363,7 +1398,9 @@ impl RinchDocument {
                 if !self.tree.active_transitions.is_empty() {
                     self.cancel_transitions_in_subtree(node_id);
                 }
-                if !self.tree.active_animations.is_empty() {
+                if !self.tree.active_animations.is_empty()
+                    || !self.tree.finished_animations.is_empty()
+                {
                     self.cancel_animations_in_subtree(node_id);
                 }
             }
@@ -1787,6 +1824,9 @@ impl RinchDocument {
             }
         }
 
+        // The restyles the last tick asked for have run (#783).
+        self.tree.ended_animations.clear();
+
         if !resync_absolutes.is_empty() {
             // Their containing block changed, so they move — whether or not
             // the re-sync below changes a Taffy style. A box whose size does
@@ -2162,6 +2202,9 @@ impl RinchDocument {
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
             self.tree.active_animations.remove(&id);
+            if !self.tree.finished_animations.is_empty() {
+                self.tree.finished_animations.remove(&id);
+            }
             if let Some(node) = self.tree.nodes.get(id) {
                 stack.extend(node.children.iter().copied());
             }
@@ -2238,6 +2281,7 @@ impl RinchDocument {
             None => return,
         };
         let mut active_animations = std::mem::take(&mut self.tree.active_animations);
+        let mut finished_animations = std::mem::take(&mut self.tree.finished_animations);
         // Nodes whose restarted sample can change their text measure. The
         // cascade of a node shown by an ancestor need not run, so its own
         // `animated_text_measure` check does not either (#763).
@@ -2273,6 +2317,7 @@ impl RinchDocument {
                 let guard = self.tree.guard.read();
                 crate::animation::start_animations(
                     &mut active_animations,
+                    &mut finished_animations,
                     id,
                     &specs,
                     &base_style,
@@ -2307,6 +2352,7 @@ impl RinchDocument {
         }
 
         self.tree.active_animations = active_animations;
+        self.tree.finished_animations = finished_animations;
         for id in remeasure {
             self.invalidate_text_measure_for_node(id);
             self.tree.layout_dirty = true;
