@@ -278,3 +278,22 @@ fn rv6_a_load_while_frozen_is_refused() {
     assert!(guest.doc().same_ref(&before));
     assert!(to_host.borrow().is_empty());
 }
+
+/// Review of #2015: a collaboration freeze answers can_run like read-only.
+#[test]
+fn review2015_frozen_can_run() {
+    let (_host, guest, _to_host, _to_guest) = setup(true);
+    guest.set_selection(Selection::cursor(end_of(&guest, "tail")));
+    assert!(guest.can_run("toggleBold"), "control: editable");
+    assert!(guest.can_run("enter"));
+    let update = grown(&guest.collab_snapshot().unwrap());
+    assert!(guest.collab_receive(&update));
+    assert!(guest.refuses_edits());
+    assert!(!guest.is_read_only());
+    assert!(!guest.can_run("toggleBold"), "frozen: bold greyed");
+    assert!(!guest.can_run("enter"), "frozen: enter greyed");
+    assert!(guest.can_run("selectAll"), "frozen: selectAll available");
+    let id = guest.collab_oversized_tables()[0].id.clone();
+    assert_eq!(guest.collab_delete_oversized_table(&id), Ok(true));
+    assert!(guest.can_run("toggleBold"), "cured: available again");
+}

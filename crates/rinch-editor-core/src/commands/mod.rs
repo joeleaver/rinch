@@ -1680,6 +1680,10 @@ impl Plugin for BaseCommandsPlugin {
         cmds
     }
 
+    fn selection_commands(&self) -> Vec<&'static str> {
+        vec!["selectAll"]
+    }
+
     fn keymap(&self) -> Vec<(KeyBinding, &'static str)> {
         [
             // NOTE: never bind a clipboard key (Mod-c/x/v) here — the web keydown
