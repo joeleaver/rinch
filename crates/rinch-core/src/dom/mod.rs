@@ -214,9 +214,83 @@ pub fn has_render_scope() -> bool {
 // NodeId and NodeHandle
 // ============================================================================
 
-/// Unique identifier for a DOM node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NodeId(pub usize);
+/// Unique identifier for a DOM node: a slot **index** and a **generation**,
+/// packed into one `u64` on every target (issue #723).
+///
+/// The low 32 bits are the slot the backend stores the node in, the high 32
+/// bits the generation of that slot. A backend that reuses a slot after
+/// freeing it gives the new node a higher generation, so an id held from
+/// before the free names *nothing* rather than the slot's new occupant:
+/// `rinch-dom`'s checked node storage answers `None` for it, as the browser
+/// backend does for an id it has retired.
+///
+/// The field is public and holds the packed bits. An id of generation 0 is
+/// just its index, so `NodeId(4)` is slot 4, generation 0, and prints as
+/// `NodeId(4)` everywhere it printed before (`Debug`, the debug server's
+/// wire ids, DevTools). A non-zero generation prints as `NodeId(4@g1)`.
+/// Build an id from parts with [`NodeId::new`] or [`NodeId::from_index`], and
+/// read them back with [`NodeId::index`] and [`NodeId::generation`]; do not
+/// treat [`NodeId::to_raw`] as an index.
+///
+/// The order (`Ord`) is that of the packed bits: generation first, then index.
+/// It is a total order fit for sorted containers, not document order.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NodeId(pub u64);
+
+impl NodeId {
+    /// The id of slot `index` at `generation`.
+    #[inline]
+    pub const fn new(index: u32, generation: u32) -> Self {
+        NodeId(((generation as u64) << 32) | index as u64)
+    }
+
+    /// The id of slot `index` at generation 0 — what a backend that has not
+    /// reused the slot hands out, and what a test literal means.
+    ///
+    /// # Panics
+    ///
+    /// If `index` does not fit in 32 bits.
+    #[inline]
+    pub fn from_index(index: usize) -> Self {
+        let index = u32::try_from(index).expect("NodeId index exceeds 32 bits");
+        NodeId::new(index, 0)
+    }
+
+    /// The id whose packed bits are `raw` (the inverse of [`NodeId::to_raw`]).
+    #[inline]
+    pub const fn from_raw(raw: u64) -> Self {
+        NodeId(raw)
+    }
+
+    /// The packed bits: generation in the high 32, index in the low 32. Stable
+    /// across a process, so fit for a wire id or a map key.
+    #[inline]
+    pub const fn to_raw(self) -> u64 {
+        self.0
+    }
+
+    /// The slot index.
+    #[inline]
+    pub const fn index(self) -> usize {
+        (self.0 & 0xFFFF_FFFF) as usize
+    }
+
+    /// The generation of the slot this id was issued for.
+    #[inline]
+    pub const fn generation(self) -> u32 {
+        (self.0 >> 32) as u32
+    }
+}
+
+impl std::fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.generation() == 0 {
+            write!(f, "NodeId({})", self.index())
+        } else {
+            write!(f, "NodeId({}@g{})", self.index(), self.generation())
+        }
+    }
+}
 
 /// Whether writing or removing the attribute `name` on the **focused** element
 /// can make a browser blur it inside the write (issue #1478): `hidden`,
