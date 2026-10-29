@@ -354,8 +354,16 @@ button { title: "Delete the selected rows", "Delete" }
 div { title: {|| format!("{} unread", unread.get())}, "Inbox" }
 ```
 
-(`title` is an HTML attribute: a component declares no `title` prop, so put it
-on an element of yours, or on one the component renders.)
+On a component, quote the name — `Button { "title": "Delete the selected
+rows", "Delete" }` — and it is written on the component's root element (#1653);
+a bare `title:` there is the component's own prop, which on `Alert`, `Modal`,
+`Drawer` and others is a heading. `ActionIcon` and `CloseButton` take a bare
+`title` prop that is the tooltip:
+
+```rust
+ActionIcon { icon: TablerIcon::Trash, title: "Delete", onclick: … }
+Alert { title: "Heads up", "title": "Shown on hover", "Body" }
+```
 
 On `rinch-web` the browser shows it. On desktop (and in an embedded
 `RinchContext`) rinch draws it (#1646):

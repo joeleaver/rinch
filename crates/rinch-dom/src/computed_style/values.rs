@@ -94,7 +94,7 @@ pub enum DisplayValue {
     ///
     /// It lays out as [`Self::Block`] does, and every layout site that asks
     /// for `Block` must ask for this too (`to_taffy` → `taffy::Display::Block`,
-    /// `DisplayMode::Block`, `compute_content_height`'s stacking). The marker
+    /// `DisplayMode::Block`). The marker
     /// itself does not read this value: `resolve_list_marker` reads Stylo's
     /// `is_list_item()`.
     ListItem,
@@ -622,6 +622,47 @@ impl AlignSelfValue {
             Self::Center => taffy::AlignSelf::CENTER,
             Self::Baseline => taffy::AlignSelf::BASELINE,
             Self::Stretch => taffy::AlignSelf::STRETCH,
+        }
+    }
+}
+
+/// Where `justify-items` / `justify-self` puts a grid item (or an absolute
+/// box's static position in a grid) on the inline axis (#1511). The
+/// direction-relative keywords are already resolved: rinch lays out left to
+/// right, so `left`, `self-start` and `flex-start` are `Start`, `right`,
+/// `self-end` and `flex-end` are `End` (Chrome 156 answers the same).
+/// `baseline` has no inline-axis meaning for a horizontal item and falls back
+/// to `safe start` (`last baseline` to `safe end`), as css-align-3 §9.3 says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum JustifyKeyword {
+    Start,
+    End,
+    Center,
+    Stretch,
+}
+
+/// A `justify-items` or `justify-self` value: a [`JustifyKeyword`] and the
+/// `safe` overflow modifier (an item that overflows its area is then placed
+/// at the start, not centred or end-aligned past the area's start edge).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct JustifyValue {
+    pub keyword: JustifyKeyword,
+    pub safe: bool,
+}
+
+impl JustifyValue {
+    /// Convert to Taffy's `JustifyItems` / `JustifySelf` (one type).
+    pub fn to_taffy(&self) -> taffy::JustifyItems {
+        use taffy::JustifyItems as J;
+        match (self.keyword, self.safe) {
+            (JustifyKeyword::Start, false) => J::START,
+            (JustifyKeyword::Start, true) => J::SAFE_START,
+            (JustifyKeyword::End, false) => J::END,
+            (JustifyKeyword::End, true) => J::SAFE_END,
+            (JustifyKeyword::Center, false) => J::CENTER,
+            (JustifyKeyword::Center, true) => J::SAFE_CENTER,
+            // `safe stretch` is not valid CSS; stretch never overflows.
+            (JustifyKeyword::Stretch, _) => J::STRETCH,
         }
     }
 }

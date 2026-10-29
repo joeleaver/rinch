@@ -117,6 +117,20 @@ pub mod image_loader;
 mod logging;
 pub use logging::{init_logging, init_logging_with_filter};
 
+/// The browser's timer backend, task scheduler and poll drain (issue #1956).
+#[cfg(target_arch = "wasm32")]
+mod web_runtime;
+#[cfg(target_arch = "wasm32")]
+pub use web_runtime::install_web_runtime;
+
+/// Install the browser's runtime (timers, tasks, poll drain) for a page that
+/// mounts no rinch DOM. On native targets there is nothing to install — the
+/// timer thread, the main-thread queue and the host's per-frame poll drain are
+/// built in — so this is a no-op, there so a cross-platform app can call it at
+/// startup with no `#[cfg(target_arch = "wasm32")]` of its own.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn install_web_runtime() {}
+
 /// Image loading: the [`ImageLoader`](image::ImageLoader) an app implements to
 /// answer for its own URL schemes ([`register_image_scheme`](image::register_image_scheme),
 /// or [`App::image_scheme`](crate::App::image_scheme) on the builder), and

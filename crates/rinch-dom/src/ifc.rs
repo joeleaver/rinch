@@ -4525,7 +4525,9 @@ impl RinchDocument {
                         };
                         let Some(p) = anon.parent else { return true };
                         scope.rootable.contains(&p)
-                            || nodes.get_live(p).is_none_or(|pn| !pn.run_boxes.contains(&b))
+                            || nodes
+                                .get_live(p)
+                                .is_none_or(|pn| !pn.run_boxes.contains(&b))
                     });
                 self.tree.anonymous_block_boxes = keep;
                 go

@@ -307,6 +307,74 @@ pub(super) fn align_self_from_stylo(
     }
 }
 
+/// `justify-items` (#1511). `legacy center` places items as `center` does:
+/// the `legacy` bit only matters for inheritance. A bare `legacy` (the
+/// initial value) computes to `normal` here — it should take the parent's
+/// `legacy <kw>`, but Stylo does that in a gecko-only style adjuster
+/// (#1987). `normal` is `None`, which Taffy's grid treats as `normal`.
+pub(super) fn justify_items_from_stylo(
+    justify: &style::values::computed::JustifyItems,
+) -> Option<JustifyValue> {
+    justify_from_flags(justify.computed.0.0, None)
+}
+
+/// `justify-self` (#1511): `auto` is `None` (the parent's `justify-items`);
+/// `normal` is `stretch`, which Taffy's grid places at the start for an item
+/// with a width of its own — not `None`, which would take the parent's
+/// `justify-items` (Chrome 156: `justify-self: normal` under
+/// `justify-items: center` starts a 40px item).
+pub(super) fn justify_self_from_stylo(
+    justify: &style::values::computed::SelfAlignment,
+) -> Option<JustifyValue> {
+    use style::values::specified::align::AlignFlags;
+    if justify.0.value() == AlignFlags::AUTO {
+        return None;
+    }
+    justify_from_flags(
+        justify.0,
+        Some(JustifyValue {
+            keyword: JustifyKeyword::Stretch,
+            safe: false,
+        }),
+    )
+}
+
+/// The position keyword of a `justify-items` / `justify-self` value, its
+/// `safe` modifier kept (`unsafe` is the default). `normal` answers `normal`.
+fn justify_from_flags(
+    flags: style::values::specified::align::AlignFlags,
+    normal: Option<JustifyValue>,
+) -> Option<JustifyValue> {
+    use style::values::specified::align::AlignFlags as F;
+    let safe = flags.contains(F::SAFE);
+    let at = |keyword| Some(JustifyValue { keyword, safe });
+    let v = flags.value();
+    if v == F::START || v == F::SELF_START || v == F::FLEX_START || v == F::LEFT {
+        at(JustifyKeyword::Start)
+    } else if v == F::END || v == F::SELF_END || v == F::FLEX_END || v == F::RIGHT {
+        at(JustifyKeyword::End)
+    } else if v == F::CENTER || v == F::ANCHOR_CENTER {
+        // `anchor-center` with no anchor is `center` (css-anchor-position-1).
+        at(JustifyKeyword::Center)
+    } else if v == F::STRETCH {
+        at(JustifyKeyword::Stretch)
+    } else if v == F::BASELINE {
+        Some(JustifyValue {
+            keyword: JustifyKeyword::Start,
+            safe: true,
+        })
+    } else if v == F::LAST_BASELINE {
+        Some(JustifyValue {
+            keyword: JustifyKeyword::End,
+            safe: true,
+        })
+    } else {
+        // `normal`, and `auto` / bare `legacy`, which a computed
+        // `justify-items` does not hold.
+        normal
+    }
+}
+
 pub(super) fn justify_content_from_stylo(
     justify: &style::values::computed::ContentDistribution,
 ) -> Option<JustifyContentValue> {

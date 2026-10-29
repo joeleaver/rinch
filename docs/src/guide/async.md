@@ -135,6 +135,11 @@ on a worker, the timer thread — asks for one poll on the UI thread: on the web
 in a microtask, elsewhere through the same main-thread queue `Signal::send`
 uses, which the desktop and Android loops wake for and an embedded
 `RinchContext` drains at the top of `update()`. No thread is started for it.
+The web's microtask scheduler comes with a `rinch-web` mount, with a
+`RinchContext` created on wasm32, or, on a page with neither, from
+`rinch_web::install_runtime()` (see
+[Running on WASM](wasm.md#a-page-with-no-rinch-root)); without one, a task on
+the web is never polled.
 
 A task polls under the document and the context root it was spawned in, as a
 timer fires in them, so `use_store` inside a task spawned by an embedded

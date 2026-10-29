@@ -64,7 +64,7 @@ impl std::str::FromStr for CloseButtonSize {
 /// ```ignore
 /// rsx! {
 ///     CloseButton {}
-///     CloseButton { size: "lg" }
+///     CloseButton { size: "lg", title: "Dismiss" }
 /// }
 /// ```
 #[derive(Default)]
@@ -77,6 +77,11 @@ pub struct CloseButton {
     pub disabled: bool,
     /// Custom icon size in pixels.
     pub icon_size: Option<u32>,
+    /// The button's `title` attribute — its tooltip. Empty (the default)
+    /// writes none (issue #1653); the accessible name stays `aria-label`'s
+    /// "Close". A reactive value re-renders the button; for a surgical update
+    /// write the attribute itself, `"title": {|| …}`.
+    pub title: String,
     /// Click handler.
     pub onclick: Option<Callback>,
 }
@@ -88,6 +93,7 @@ impl std::fmt::Debug for CloseButton {
             .field("radius", &self.radius)
             .field("disabled", &self.disabled)
             .field("icon_size", &self.icon_size)
+            .field("title", &self.title)
             .field("onclick", &self.onclick.as_ref().map(|_| "<callback>"))
             .finish()
     }
@@ -156,6 +162,10 @@ impl Component for CloseButton {
 
         if self.disabled {
             container.set_attribute("disabled", "");
+        }
+
+        if !self.title.is_empty() {
+            container.set_attribute("title", &self.title);
         }
 
         container.append_child(&icon_span);

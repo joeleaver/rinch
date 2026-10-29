@@ -2399,12 +2399,23 @@ pub(crate) fn element_is_visible(el: &web_sys::Element) -> bool {
 /// — see that function for why nesting resolves innermost-first and why a
 /// fallback picks the *last* trap rather than the first.
 fn trap_root(browser_doc: &web_sys::Document) -> Option<web_sys::Element> {
+    trap_root_from(browser_doc, browser_doc.active_element())
+}
+
+/// [`trap_root`] for a Tab that starts at `start` rather than at the
+/// browser's focused element — a read-only editor's container, whose
+/// keyboard the hidden capture textarea holds from the end of `<body>`
+/// (#833).
+fn trap_root_from(
+    browser_doc: &web_sys::Document,
+    start: Option<web_sys::Element>,
+) -> Option<web_sys::Element> {
     // 1. The nearest visible trap the focus sits inside. The loop is what makes
     //    "nearest *visible*" true: `closest` answers with the nearest match
     //    whether or not it is showing, so a hidden one is stepped over rather
     //    than accepted, which is how an outer trap takes back over the moment a
     //    nested one closes.
-    let mut probe = browser_doc.active_element();
+    let mut probe = start;
     while let Some(el) = probe {
         let Some(hit) = el.closest(TRAP_SELECTOR).ok().flatten() else {
             break;
@@ -2523,10 +2534,62 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
     let Some(root) = trap_root(browser_doc) else {
         return false;
     };
-    let tree = trap_focusables(&root);
+    move_tab(
+        browser_doc,
+        &root,
+        browser_doc.active_element(),
+        shift,
+        true,
+    )
+}
+
+/// Tab or Shift+Tab out of a read-only rich-text editor (#833), from the
+/// editor's `container` — its place in the page — not from the hidden capture
+/// textarea that holds the browser's focus at the end of `<body>`, where the
+/// browser's own Tab would leave the page and its Shift+Tab land on the page's
+/// last control. Returns whether the key was consumed.
+///
+/// Inside a live focus trap this is the trap's Tab, wrapping within it. With
+/// none, the walk is over the whole document and does **not** wrap: past the
+/// last stop (or before the first) nothing is moved and this answers `false`.
+/// Forward, the caller leaves the key to the browser, whose own Tab from the
+/// capture textarea then leaves the page as from a last control — native.
+/// Backward it must not: the browser's Shift+Tab from the capture textarea
+/// goes to the page's *last* control, a wrap, where a native
+/// `<textarea readonly>` that is the first stop sends the focus to the
+/// document (measured with trusted keys in Chrome 155). So the caller blurs the
+/// capture textarea and consumes the key instead (`editor_input`'s Tab arm).
+pub(crate) fn tab_from_editor(
+    browser_doc: &web_sys::Document,
+    container: &web_sys::Element,
+    shift: bool,
+) -> bool {
+    let start = Some(container.clone());
+    if let Some(root) = trap_root_from(browser_doc, start.clone()) {
+        return move_tab(browser_doc, &root, start, shift, true);
+    }
+    let Some(root) = browser_doc.document_element() else {
+        return false;
+    };
+    move_tab(browser_doc, &root, start, shift, false)
+}
+
+/// Move the focus one Tab stop on from `start` within `root`: the arithmetic
+/// of desktop's `handle_tab`, with the browser verifying each move (see
+/// [`handle_trapped_tab`]). `wrap` is a trap's: round the ring, and the key
+/// consumed even when nothing takes the focus. Without it the walk stops at
+/// either end and answers `false` there, leaving the key to the browser.
+fn move_tab(
+    browser_doc: &web_sys::Document,
+    root: &web_sys::Element,
+    start: Option<web_sys::Element>,
+    shift: bool,
+    wrap: bool,
+) -> bool {
+    let tree = trap_focusables(root);
     let n = tree.len();
     if n == 0 {
-        return true;
+        return wrap;
     }
     // The Tab sequence (issue #435): positive `tabindex` ascending, then `0`,
     // ties in tree order — a stable sort of the tree-ordered set. The browser
@@ -2541,7 +2604,7 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
     });
     let seq_pos = |el: &web_sys::HtmlElement| items.iter().position(|i| i.is_same_node(Some(el)));
 
-    let active = browser_doc.active_element();
+    let active = start;
     let current = active.as_ref().and_then(|a| {
         items
             .iter()
@@ -2566,21 +2629,33 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
     // Identical arithmetic to desktop's `handle_tab`, including where focus
     // starts outside the trap: Tab enters at the first stop, Shift+Tab at the
     // last.
+    // `None` is "past the end" — reachable only without `wrap`.
     let first = match (current, shift) {
-        (Some(i), false) => (i + 1) % n,
-        (Some(i), true) => i.checked_sub(1).unwrap_or(n - 1),
+        (Some(i), false) if i + 1 < n => Some(i + 1),
+        (Some(_), false) => wrap.then_some(0),
+        (Some(i), true) => i.checked_sub(1).or(wrap.then_some(n - 1)),
         (None, false) => match rank {
-            Some(r) if r < n => seq_pos(&tree[r]).unwrap_or(0),
-            Some(_) => items.iter().position(|el| el.tab_index() <= 0).unwrap_or(0),
-            None => 0,
+            Some(r) if r < n => Some(seq_pos(&tree[r]).unwrap_or(0)),
+            Some(_) => wrap.then(|| items.iter().position(|el| el.tab_index() <= 0).unwrap_or(0)),
+            None => Some(0),
         },
         (None, true) => match rank {
-            Some(r) if r > 0 => seq_pos(&tree[r - 1]).unwrap_or(n - 1),
-            _ => n - 1,
+            Some(r) if r > 0 => Some(seq_pos(&tree[r - 1]).unwrap_or(n - 1)),
+            Some(_) if !wrap => None,
+            _ => Some(n - 1),
         },
     };
+    let Some(first) = first else {
+        return false;
+    };
+    // Round the ring with `wrap`; otherwise only up to the end it walks to.
+    let steps = match (wrap, shift) {
+        (true, _) => n,
+        (false, true) => first + 1,
+        (false, false) => n - first,
+    };
 
-    for step in 0..n {
+    for step in 0..steps {
         // Forward walks up the ring, Shift+Tab down it. `n - step` keeps the
         // subtraction non-negative without a signed cast; `step < n`, so this
         // never wraps twice.
@@ -2598,8 +2673,9 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
         }
     }
     // Nothing in the trap would take focus. Same answer as the empty trap:
-    // consume the key rather than let Tab out of the overlay.
-    true
+    // consume the key rather than let Tab out of the overlay. Without a trap,
+    // nothing ahead took it: the browser's Tab is left to run.
+    wrap
 }
 
 /// Set up global event listeners that delegate to rinch's event handler registry.
@@ -3376,8 +3452,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // browser would otherwise walk straight out of the dialog and into
             // the page behind it, so the move is made here and its own default
             // suppressed. With no live trap this is false and the browser's Tab
-            // is left entirely alone — rinch does not otherwise manage web
-            // focus order.
+            // is left alone here. The one other place rinch moves web focus on
+            // Tab is a read-only rich-text editor (#833, `tab_from_editor`),
+            // which the editor's own keydown handles from its place in the page
+            // before this listener sees the key.
             //
             // After the interceptor, so a document-level `set_keyboard_interceptor`
             // still sees Tab first, and before the activation branch, which only

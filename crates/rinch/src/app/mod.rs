@@ -153,6 +153,8 @@ mod editor_popup_hooks_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_programmatic_selection_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_read_only_tab_833_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_read_only_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_selection_seam_tests;
@@ -4660,6 +4662,11 @@ impl RinchApp {
             // invariant degrades to the same answer rather than anchoring Tab
             // on a stale input).
             FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
+            // A read-only editor lets Tab go (#833): it starts from the
+            // editor's container, a stop only if the app gave it a `tabindex`
+            // and otherwise placed in tree order like any non-stop start.
+            #[cfg(feature = "desktop")]
+            FocusTarget::Editor(id) => Some(id),
             _ => self.focused_input_node_id,
         };
 

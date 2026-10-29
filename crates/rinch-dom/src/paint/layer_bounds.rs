@@ -1000,7 +1000,10 @@ impl Walk<'_> {
                 y + cached.height() as f64 * self.scale,
             );
             // Text shadows on a text node come from its parent's style.
-            let styled = node.parent.and_then(|p| self.tree.get_live(p)).unwrap_or(node);
+            let styled = node
+                .parent
+                .and_then(|p| self.tree.get_live(p))
+                .unwrap_or(node);
             extent = extent.union(Extent::Within(transform.transform_rect_bbox(
                 text_shadow_reach(text, &styled.computed_style.text_shadow, self.scale),
             )));
