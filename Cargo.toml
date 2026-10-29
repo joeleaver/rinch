@@ -97,12 +97,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 parley = { version = "0.11.1", features = ["complex-scripts"] }
 
 # CSS engine (Stylo from Firefox/Servo)
-stylo = "0.11"
-stylo_traits = "0.11"
-stylo_dom = "0.11"
-stylo_atoms = "0.11"
-stylo_config = "0.11"
-servo_arc = "0.4"
+stylo = "0.22"
+stylo_traits = "0.22"
+stylo_dom = "0.22"
+stylo_atoms = "0.22"
+stylo_static_prefs = "0.22"
+servo_arc = "0.5"
 
 # Utilities
 thiserror = "1"

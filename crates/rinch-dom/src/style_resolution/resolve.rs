@@ -75,7 +75,7 @@ pub(crate) fn child_cascade(old: Option<&ComputedValues>, new: &ComputedValues) 
         && same(old.get_inherited_table(), new.get_inherited_table())
         && same(old.get_inherited_ui(), new.get_inherited_ui())
         && same(old.get_list(), new.get_list())
-        && old.custom_properties_equal(new)
+        && old.custom_properties() == new.custom_properties()
         && old.clone_display() == new.clone_display();
     if !inherited_same {
         return ChildCascade::Cascade;
@@ -120,14 +120,13 @@ impl RinchDocument {
     }
 
     fn resolve_styles_inner(&mut self) {
-        use crate::stylo_impl::RinchNode;
         use style::shared_lock::StylesheetGuards;
 
         // Flush any pending stylesheet changes
         {
             let guard = self.tree.guard.read();
             let guards = StylesheetGuards::same(&guard);
-            self.stylist.flush::<RinchNode>(&guards, None, None);
+            self.stylist.flush(&guards);
         }
         self.refresh_pseudo_rule_presence();
         // Attribute and state changes since the last resolve: Stylo's
@@ -283,7 +282,6 @@ impl RinchDocument {
     ///   replace, and its next cascade would then read as a *change* — a
     ///   transition on a node that was only just inserted.
     pub(crate) fn resolve_inserted_subtree(&mut self, node_id: usize) -> bool {
-        use crate::stylo_impl::RinchNode;
         use style::shared_lock::StylesheetGuards;
 
         if self.tree.full_style_walk {
@@ -314,7 +312,7 @@ impl RinchDocument {
         {
             let guard = self.tree.guard.read();
             let guards = StylesheetGuards::same(&guard);
-            self.stylist.flush::<RinchNode>(&guards, None, None);
+            self.stylist.flush(&guards);
         }
         self.refresh_pseudo_rule_presence();
         let parent_style = self.find_parent_computed_style(node_id);
@@ -578,12 +576,11 @@ impl RinchDocument {
         visit_all: bool,
     ) {
         use selectors::matching::{
-            IncludeStartingStyle, MatchingContext, MatchingForInvalidation, MatchingMode,
-            NeedsSelectorFlags, SelectorCaches, VisitedHandlingMode,
+            MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags,
+            SelectorCaches, VisitedHandlingMode,
         };
         use style::applicable_declarations::ApplicableDeclarationList;
         use style::context::CascadeInputs;
-        use style::data::ElementData;
         use style::properties::FirstLineReparenting;
         use style::rule_cache::RuleCacheConditions;
         use style::shared_lock::StylesheetGuards;
@@ -743,7 +740,6 @@ impl RinchDocument {
                 Some(&*self.style_bloom),
                 &mut selector_caches,
                 VisitedHandlingMode::AllLinksUnvisited,
-                IncludeStartingStyle::No,
                 self.stylist.quirks_mode(),
                 NeedsSelectorFlags::Yes,
                 MatchingForInvalidation::No,
@@ -776,6 +772,10 @@ impl RinchDocument {
                 .rule_tree()
                 .compute_rule_node(&mut applicable_declarations, &guards);
 
+            // Re-derived by this cascade and the pseudo passes below: each
+            // `attr()` they substitute sets it (`TElement::get_attr`).
+            self.tree.nodes[node_id].content_reads_attrs.set(false);
+
             // Cascade to compute final styles
             let parent_style_ref = parent_style.as_deref();
             let layout_parent_style_ref = layout_parent_style.as_deref();
@@ -784,10 +784,13 @@ impl RinchDocument {
             let computed = self.stylist.cascade_style_and_visited(
                 Some(rinch_node),
                 None, // pseudo
-                CascadeInputs {
+                &CascadeInputs {
                     rules: Some(rule_node),
                     visited_rules: None,
                     flags: matching_context.extra_data.cascade_input_flags,
+                    // Not `STARTING_STYLE`: `@starting-style` rules stay out,
+                    // as `IncludeStartingStyle::No` kept them before.
+                    included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
                 },
                 &guards,
                 parent_style_ref,        // parent_style
@@ -796,17 +799,13 @@ impl RinchDocument {
                 &Default::default(), // try_tactic (PositionTryFallbacksTryTactic)
                 None,                // rule_cache
                 &mut rule_cache_conditions,
+                &mut Default::default(), // tree_counting_caches
             );
 
             // Store the computed style in the node's ElementData
             {
-                let mut stylo_data = self.tree.nodes[node_id].stylo_element_data.borrow_mut();
-                if stylo_data.is_none() {
-                    *stylo_data = Some(ElementData::default());
-                }
-                if let Some(ref mut data) = *stylo_data {
-                    data.styles.primary = Some(computed.clone());
-                }
+                let mut data = self.tree.nodes[node_id].stylo_element_data.ensure();
+                data.styles.primary = Some(computed.clone());
             }
 
             // Mark this node as needing Taffy sync (style was recomputed)
@@ -834,9 +833,6 @@ impl RinchDocument {
                 .flags
                 .intersects(style::computed_value_flags::ComputedValueFlags::USES_VIEWPORT_UNITS),
         );
-
-        // Re-derived by the pseudo passes below.
-        self.tree.nodes[node_id].content_reads_attrs.set(false);
 
         // Check for ::before and ::after pseudo-elements — only when some
         // stylesheet has a rule for that pseudo at all. The UA sheet has none,
@@ -962,7 +958,7 @@ impl RinchDocument {
             if node_id == html_id || self.tree.nodes[node_id].is_generated_box() {
                 continue;
             }
-            *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+            self.tree.nodes[node_id].stylo_element_data.clear();
         }
         // A recascaded `rem` length is a Taffy style change; make sure the
         // relayout isn't skipped when nothing else marked layout dirty.

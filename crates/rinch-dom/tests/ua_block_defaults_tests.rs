@@ -596,6 +596,11 @@ fn a_bare_pre_preserves_its_whitespace() {
 /// The tolerance is deliberately 0.005px. The audit suggested `0.83em`, which
 /// gives 13.28 rather than 13.3333 and 11.0224 rather than 11.1111 — inside a
 /// 0.01 tolerance at neither level, but inside a 0.1 one at the first.
+///
+/// The values asserted are Chrome's as stylo stores them: stylo 0.21 and later
+/// round every computed `font-size` to 11 significant bits
+/// (`specified::FontSize::quantize_font_size`, Gecko's rule, no pref), so
+/// 13.3333 is 13.328125, 11.1111 is 11.109375 and 16.6667 is 16.65625.
 #[test]
 fn small_sub_and_sup_take_the_smaller_keyword() {
     let mut doc = RinchDocument::new();
@@ -614,19 +619,19 @@ fn small_sub_and_sup_take_the_smaller_keyword() {
     for (id, tag) in [(s16, "small"), (sub16, "sub"), (sup16, "sup")] {
         let got = font_size(&doc, id);
         assert!(
-            tight(got, 13.3333),
-            "<{tag}> from a 16px parent is Chrome's 13.3333px, got {got}"
+            tight(got, 13.328125),
+            "<{tag}> from a 16px parent is Chrome's 13.3333px (13.328125 quantized), got {got}"
         );
     }
     let got = font_size(&doc, nested);
     assert!(
-        tight(got, 11.1111),
-        "`smaller` compounds: <small> in <small> is 11.1111px in Chrome, got {got}"
+        tight(got, 11.109375),
+        "`smaller` compounds: <small> in <small> is 11.1111px in Chrome (11.109375 quantized), got {got}"
     );
     let got = font_size(&doc, s20);
     assert!(
-        tight(got, 16.6667),
-        "<small> from a 20px parent is Chrome's 16.6667px, got {got}"
+        tight(got, 16.65625),
+        "<small> from a 20px parent is Chrome's 16.6667px (16.65625 quantized), got {got}"
     );
     let got = font_size(&doc, authored);
     assert!(

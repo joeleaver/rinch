@@ -25,34 +25,43 @@ pub(super) fn length_percentage_from_stylo(
     lp_value_from_stylo(&lp.0)
 }
 
-/// `vertical-align` (#724). Stylo's computed value is either one of eight
-/// keywords or a `<length-percentage>`; the catch-all arm is what keeps this
-/// compiling if a gecko-only keyword (`-moz-middle-with-baseline`) ever
-/// becomes reachable in a servo build — it isn't today, so nothing exercises
-/// that arm, and it folds to `Baseline` like the five keywords this crate
-/// does not yet lay out.
+/// `vertical-align` (#724). Since stylo 0.21 it is a shorthand
+/// (css-inline-3) of `alignment-baseline`, `baseline-shift` and
+/// `baseline-source`, so the value is read back from the first two: the eight
+/// keywords and a `<length-percentage>` stylo 0.11 computed land as they did
+/// (`baseline`, `middle`, `text-top` and `text-bottom` in `alignment-baseline`;
+/// `sub`, `super`, `top`, `bottom` and a length in `baseline-shift`).
+///
+/// Two inputs that 0.11 rejected now parse: `center` (a `baseline-shift`
+/// keyword), which folds to `Baseline`, the value an invalid declaration left
+/// before; and a combination such as `middle 4px`, where the
+/// `alignment-baseline` keyword wins, a combination 0.11 could not express.
+/// `vertical-align: 0` is now `baseline-shift: 0`, the initial value, and
+/// reads as `Baseline`, which lays out the same as a zero length.
 pub(super) fn vertical_align_from_stylo(
-    va: &style::values::computed::box_::VerticalAlign,
+    alignment: style::values::computed::AlignmentBaseline,
+    shift: &style::values::computed::BaselineShift,
 ) -> VerticalAlignValue {
-    use style::values::generics::box_::{GenericVerticalAlign, VerticalAlignKeyword};
-    match va {
-        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Baseline) => {
+    use style::values::computed::AlignmentBaseline;
+    use style::values::generics::box_::{BaselineShiftKeyword, GenericBaselineShift};
+    match alignment {
+        AlignmentBaseline::Middle => return VerticalAlignValue::Middle,
+        AlignmentBaseline::TextTop => return VerticalAlignValue::TextTop,
+        AlignmentBaseline::TextBottom => return VerticalAlignValue::TextBottom,
+        _ => {}
+    }
+    match shift {
+        GenericBaselineShift::Keyword(BaselineShiftKeyword::Sub) => VerticalAlignValue::Sub,
+        GenericBaselineShift::Keyword(BaselineShiftKeyword::Super) => VerticalAlignValue::Super,
+        GenericBaselineShift::Keyword(BaselineShiftKeyword::Top) => VerticalAlignValue::Top,
+        GenericBaselineShift::Keyword(BaselineShiftKeyword::Bottom) => VerticalAlignValue::Bottom,
+        GenericBaselineShift::Keyword(BaselineShiftKeyword::Center) => VerticalAlignValue::Baseline,
+        GenericBaselineShift::Length(lp) if style::Zero::is_zero(lp) => {
             VerticalAlignValue::Baseline
         }
-        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Sub) => VerticalAlignValue::Sub,
-        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Super) => VerticalAlignValue::Super,
-        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Top) => VerticalAlignValue::Top,
-        GenericVerticalAlign::Keyword(VerticalAlignKeyword::TextTop) => VerticalAlignValue::TextTop,
-        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Middle) => VerticalAlignValue::Middle,
-        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Bottom) => VerticalAlignValue::Bottom,
-        GenericVerticalAlign::Keyword(VerticalAlignKeyword::TextBottom) => {
-            VerticalAlignValue::TextBottom
-        }
-        GenericVerticalAlign::Length(lp) => {
+        GenericBaselineShift::Length(lp) => {
             VerticalAlignValue::LengthPercentage(lp_value_from_stylo(lp))
         }
-        #[allow(unreachable_patterns)]
-        _ => VerticalAlignValue::Baseline,
     }
 }
 

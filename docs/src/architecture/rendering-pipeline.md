@@ -523,10 +523,8 @@ a reversal taken there is shortened by that output. An iteration's start and end
 first interval at distance 0, the last at distance 1), not snapped to the
 keyframe there: `steps(4, start)` begins a step in and `linear(0, 0.5)` ends
 half way. A reversal's shortening reads the stepped output, so reversing
-`steps(4, end)` at 600ms takes half the duration. Not Chrome's: the `jump-*`
-step positions do not parse in Stylo's servo build, so a declaration naming
-one is dropped like any invalid one (an `animation` shorthand with
-`steps(4, jump-none)` starts no animation; #1581).
+`steps(4, end)` at 600ms takes half the duration. The `jump-*` step positions
+parse since stylo 0.21 (#1581; with 0.11 a declaration naming one was dropped).
 
 **A `transform` is interpolated as a function list, not matrix entry by entry**
 (#414). A computed transform keeps the list it was composed from

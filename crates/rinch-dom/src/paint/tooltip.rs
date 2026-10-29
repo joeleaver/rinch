@@ -270,7 +270,7 @@ fn custom_property(tree: &NodeTree, node: RawNodeId, name: &str) -> Option<Strin
     primary
         .custom_properties()
         .get(
-            style::properties_and_values::registry::PropertyRegistrationData::unregistered(),
+            style::properties_and_values::rule::Descriptors::unregistered(),
             &atom,
         )
         .map(|v| v.to_variable_value().css.trim().to_string())

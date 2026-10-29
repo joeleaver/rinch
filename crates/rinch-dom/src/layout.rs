@@ -66,7 +66,7 @@ pub(crate) static BLANK_URL_DATA: std::sync::LazyLock<style::stylesheets::UrlExt
 /// `currentcolor`, by design: it depends on the element, so a caller that has
 /// one calls [`parse_color_with_current`] instead.
 pub fn parse_color(value: &str) -> Option<peniko::Color> {
-    use cssparser::{Parser, ParserInput};
+    use cssparser::Parser;
     use style::context::QuirksMode;
     use style::parser::ParserContext;
     use style::stylesheets::{CssRuleType, Origin};
@@ -84,12 +84,12 @@ pub fn parse_color(value: &str) -> Option<peniko::Color> {
         /* namespaces = */ Default::default(),
         None,
         None,
+        Default::default(),
     );
-    let mut input = ParserInput::new(value.trim());
-    let mut parser = Parser::new(&mut input);
+    let mut parser = Parser::new(value.trim());
     // `parse_and_compute` parses the whole input (junk rejects) and computes
     // without a device, which leaves `currentcolor` & co. non-absolute.
-    let computed = Color::parse_and_compute(&context, &mut parser, None)?;
+    let computed = Color::parse_and_compute(&context, &mut parser, None).ok()?;
     crate::computed_style::color_from_stylo(&computed)
 }
 
@@ -107,7 +107,7 @@ pub fn parse_color(value: &str) -> Option<peniko::Color> {
 /// `parse_color` is deliberately left as it is — a bare-value parser with no
 /// element context must keep declining, and `paint_tests` pins that.
 pub fn parse_color_with_current(value: &str, current: peniko::Color) -> Option<peniko::Color> {
-    use cssparser::{Parser, ParserInput};
+    use cssparser::Parser;
     use style::context::QuirksMode;
     use style::parser::ParserContext;
     use style::stylesheets::{CssRuleType, Origin};
@@ -123,10 +123,10 @@ pub fn parse_color_with_current(value: &str, current: peniko::Color) -> Option<p
         /* namespaces = */ Default::default(),
         None,
         None,
+        Default::default(),
     );
-    let mut input = ParserInput::new(value.trim());
-    let mut parser = Parser::new(&mut input);
-    let computed = Color::parse_and_compute(&context, &mut parser, None)?;
+    let mut parser = Parser::new(value.trim());
+    let computed = Color::parse_and_compute(&context, &mut parser, None).ok()?;
     crate::computed_style::color_from_computed(
         &computed,
         &crate::computed_style::absolute_from_peniko(current),

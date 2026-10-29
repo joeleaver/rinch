@@ -1,6 +1,6 @@
-# Dependencies: Taffy, Parley, skrifa (pins and their traps)
+# Dependencies: Taffy, Parley, skrifa, Stylo (pins and their traps)
 
-Read this page when your task touches: a Taffy, Parley, skrifa, wgpu or Vello bump, text shaping/line breaking, white space, tabs, NBSP, justify.
+Read this page when your task touches: a Taffy, Parley, skrifa, Stylo, wgpu or Vello bump, text shaping/line breaking, white space, tabs, NBSP, justify.
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
@@ -236,6 +236,48 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     content back). A split inline (#513) gets no edge boxes.
     `tests/inline_edge_room_1426_tests.rs` is the pin.
 - **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.11.1 depends on — and Vello 0.11 too (`vello`/`vello_encoding` ^0.44; the Vello 0.7 rinch had before #1955 built a second skrifa, 0.40). parley does not re-export it, so a parley (or Vello) bump that moves skrifa silently builds a second copy unless this pin moves with it. (swash 0.2, the software painter's glyph rasteriser, still brings its own skrifa 0.37.)
+- **stylo** - the CSS engine, at **0.22** (crates.io `stylo`, servo feature), with the family at the
+  versions it builds with: `stylo_traits`, `stylo_dom`, `stylo_atoms`, `stylo_static_prefs` 0.22,
+  `servo_arc` 0.5, and in `crates/rinch-dom/Cargo.toml` `cssparser` 0.38, `selectors` 0.41,
+  `web_atoms` 0.3. Move them together: a second `cssparser` or `selectors` is a second copy of every
+  type that crosses the boundary. Upgraded from 0.11 (with selectors 0.35, cssparser 0.36) for
+  `:has()` (#680), as a dependency-only change. What a bump has to know:
+  - **Preferences are process-global atomics** (`stylo_static_prefs::set_pref!`, defaults in that
+    crate's `preferences.toml`); 0.11 split them between a compile-time macro and the `stylo_config`
+    store, which 0.21 dropped. `dom_impl::set_stylo_prefs`, run by every `RinchDocument::new` before
+    any parsing, turns on `layout.grid.enabled` and `layout.unimplemented`, and holds the rest at
+    0.11's answers: `layout.threads` 0 (0.22 defaults to −1, a style thread pool of up to six), and
+    off `@property` (`properties-and-values`, off in 0.11) and five gates of syntax 0.11 did not
+    parse that upstream turns on (`alpha()`, typed `calc()` arithmetic, multi-colour `color-mix()`,
+    `revert-rule`, `@supports at-rule()`). Turning any on is its own change. **`:has()` is
+    `layout.css.has-selector.enabled`**, off; the follow-up to #680 sets it there.
+  - **Every computed `font-size` is rounded to 11 significant bits**
+    (`specified::FontSize::quantize_font_size`, Gecko's rule, no pref): the form controls' and
+    `smaller`'s 13.3333px is 13.328125, 16.6667 is 16.65625, 19.2 is 19.1875 (at most 2⁻¹¹ of the
+    size; an integer size up to 2048px is exact). Chrome does not round. The four
+    `ua_*_defaults` pins assert the rounded values and name Chrome's.
+  - **`attr()` is a substitution function** (css-values-5), in any property, resolved in the
+    cascade through `TElement::get_attr`; `ContentItem::Attr` is gone, and the value reaches
+    `content` as a string. `get_attr` sets `Node::content_reads_attrs`, which
+    `note_attribute_change` reads.
+  - `vertical-align` is a shorthand of `alignment-baseline`, `baseline-shift` and
+    `baseline-source` (`from_stylo::box_model::vertical_align_from_stylo` reads the first two);
+    `list-style-type` is a `<counter-style>` (a name, not a keyword enum); `flex-wrap` is a bitflag
+    set (with `balance`, behind `layout.flexbox.balance`, off); a specified `Number`, `Angle` or
+    `Length` can hold an unresolved `calc()` (`resolve()`/`degrees()` answer `None` for one);
+    `NoCalcLength` is a unit and a value, not an enum of enums.
+  - `TElement::borrow_data`/`mutate_data` return `ElementDataRef`/`ElementDataMut`, which only an
+    `ElementDataWrapper` hands out, so `Node::stylo_element_data` is a `node::StyloData` (the
+    wrapper plus a present flag) where it was `AtomicRefCell<Option<ElementData>>`. The wrapper's
+    borrow checks run in debug builds only.
+  - Newly parsed, and laid out by nothing in rinch: `text-underline-offset` and `scrollbar-color`
+    (servo-enabled behind `layout.unimplemented`; rinch does not read either, #580). Newly
+    evaluated media features: `height`, `aspect-ratio`, `orientation`, `device-width`/`-height`
+    (the window's size, `build_device`), `hover`/`any-hover`, `pointer`/`any-pointer` (stylo's
+    default: fine with hover on desktop, coarse on Android); with 0.11 a query on any of them never
+    matched. The `jump-*` step positions parse (#1581).
+  - The `cssparser` API lost its lifetimes: `Parser::new(&str)` replaces `ParserInput`, and
+    `ParseError<E>` carries no location (`ParseError::custom(e)`).
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`). **Vello 0.11 on wgpu 30** (#1955; workspace `[workspace.dependencies]`, every crate takes `workspace = true`), no wgpu patch (`app-and-windows.md` "wgpu Fork"). Vello pins wgpu's major (0.8 → 28, 0.9/0.10 → 29, 0.11 → 30), so the two move together; peniko stays 0.6 (kurbo 0.13). Check `cargo tree -d` for a second wgpu/vello/skrifa after a bump. wgpu 30 needs wasm-bindgen ≥ 0.2.127 (CI's `wasm-bindgen-test-runner` follows `Cargo.lock`). Rendering changes met in 0.7 → 0.11: images are sampled at the pixel centre since Vello 0.9 (rinch dropped its own half-pixel shift for images; `platform.md` item 6); `ImageQuality::High` became bicubic (rinch uses Low/Medium only); gradients are still evaluated at the pixel corner and the ramp is unchanged for the default `InterpolationAlphaSpace::Premultiplied`. `anyrender`/`anyrender_vello` were removed in #1955: no rinch code used them, and they pulled a second (crates.io) Vello. **Vello comes from `joeleaver/vello-fork` at a pinned rev** (workspace `vello = { git, rev }`; its `vello` takes the patched `vello_encoding` by path): Vello 0.9+ keeps its image atlas across renders, and the fork fixes the atlas being wiped by a render with no images, gradients or glyphs and images staying resident two renders after their last use (`app-and-windows.md` "Vello Fork"). A dependency, not a `[patch]`, so apps get it with nothing to copy; they use `rinch::vello`. Nothing else may pull crates.io `vello` (check `cargo tree -d`), or the graph has two Vellos. Images reach Vello as one blob per image (`DecodedImage::blob`, `frame_blob`), so a repainted image stays resident.
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)
 - **softbuffer** - Software window presentation (default mode)
