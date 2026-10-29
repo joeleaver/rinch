@@ -1042,11 +1042,13 @@ where they are:
 - an editor that is not focused: its caret is not drawn, so a programmatic
   `set_selection` on it scrolls when it is next focused, not before.
 
-Not covered: the moving end of a text **range** (Shift+arrow) is not revealed, and
-moving the caret into a block of a virtualized editor that has never been laid out
-(Ctrl+End from the top of a very long document) does not scroll to it until the
-block is on screen (issue #845). An app that wants either on screen asks for it with
-`scroll_into_view`, below.
+Moving the caret into a part of a long, virtualized desktop editor that has not
+been laid out yet (Ctrl+End from the top, `set_selection` far below) lays out the
+caret's paragraph and scrolls to it; as the paragraphs around it are measured over
+the next frame or two, the scroll follows the caret, so it ends in view.
+
+Not covered: the moving end of a text **range** (Shift+arrow) is not revealed. An
+app that wants it on screen asks for it with `scroll_into_view`, below.
 
 ### Setting the selection from code
 
