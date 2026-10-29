@@ -111,10 +111,20 @@ impl Pair {
     }
 }
 
+/// The synthetic sources' threads are named `synth-*`, so a test can wait
+/// for them to exit (media_lifetime counts the heap after each call, and a
+/// source thread still running holds its frame).
+fn spawn_source(name: &str, f: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(f)
+        .unwrap();
+}
+
 /// A white `side`-pixel box moving over black, `w`×`h`, pushed at 30 fps
 /// (deadline-paced) until `run` clears.
 pub fn moving_box(writer: VideoSourceWriter, w: u32, h: u32, side: u32, run: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
+    spawn_source("synth-box", move || {
         let start = Instant::now();
         let mut k = 0u32;
         while run.load(Ordering::Relaxed) && !writer.is_ended() {
@@ -142,7 +152,7 @@ pub fn moving_box(writer: VideoSourceWriter, w: u32, h: u32, side: u32, run: Arc
 
 /// Full-frame noise (incompressible), pushed at 30 fps until `run` clears.
 pub fn noise(writer: VideoSourceWriter, w: u32, h: u32, run: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
+    spawn_source("synth-noise", move || {
         let start = Instant::now();
         let mut k = 0u32;
         let mut x = 0x1234_5678u32;
@@ -165,7 +175,7 @@ pub fn noise(writer: VideoSourceWriter, w: u32, h: u32, run: Arc<AtomicBool>) {
 /// A 440 Hz tone at `rate`, 10 ms at a time, deadline-paced, until `run`
 /// clears.
 pub fn tone(writer: AudioSourceWriter, rate: u32, run: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
+    spawn_source("synth-tone", move || {
         let start = Instant::now();
         let mut phase = 0f64;
         let mut pushed = 0u64;
