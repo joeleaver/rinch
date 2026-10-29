@@ -2836,6 +2836,7 @@ impl RinchDocument {
             stack.extend(node.children.iter().copied());
             self.tree.active_transitions.remove(&id);
             self.tree.active_animations.remove(&id);
+            self.tree.finished_animations.remove(&id);
         }
     }
 

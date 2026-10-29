@@ -147,7 +147,7 @@ fn a_negative_delay_settles_at_once() {
     assert_settles("box negdelay", 100.0);
 }
 
-/// `none` has no effect once finished: the entry goes, the box keeps its own
+/// `none` has no effect once finished: the entry stays as a marker (#783), the box keeps its own
 /// width, and nothing is asked for.
 #[test]
 fn a_zero_duration_infinite_animation_without_fill_has_no_effect() {
@@ -156,7 +156,18 @@ fn a_zero_duration_infinite_animation_without_fill_has_no_effect() {
     assert!(!doc.tick_animations(), "no frame");
     assert!(!doc.tree.has_running_animations());
     assert_eq!(width_px(&doc, node), Some(10.0), "the box's own width");
-    assert_eq!(animations(&doc, node), 0, "the entry is dropped");
+    // Kept as a settled marker, not dropped (#783): a later restyle of the
+    // box must find it by name rather than start it again.
+    assert_eq!(
+        doc.tree.finished_animations[&node.0].len(),
+        1,
+        "the entry is kept, finished"
+    );
+    assert!(
+        doc.tree.finished_animations[&node.0][0].settled,
+        "and settled, so nothing counts it"
+    );
+    assert_eq!(animations(&doc, node), 0, "and no tick walks it");
 }
 
 /// A positive delay keeps it running — it has a delay to wait out, with the

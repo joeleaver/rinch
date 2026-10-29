@@ -290,8 +290,10 @@ re-syncs the absolute descendants it stopped containing
 (`tests/identity_transform_tests.rs`, each fixture against Chrome 153). Two
 ends are **not** Chrome's: `rotate(0deg)` → `none` under a declared transition
 starts no run in rinch (`lists_equivalent`), so the context goes at once where
-Chrome holds it for the run; and an animation with no fill that finishes keeps
-its last sample, and so stays a context (#783). The `HitStyleKey` keys
+Chrome holds it for the run. (An animation with no fill that finishes used to
+keep its last sample, and so stay a context; since #783 its finishing tick
+restyles the node, and the cascade's own flip re-sync releases the absolute
+descendants.) The `HitStyleKey` keys
 `is_none`, not identity.
 
 **A `GameViewport` is the base layer at its place in paint order** (#1866). What paints

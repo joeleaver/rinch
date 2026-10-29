@@ -43,6 +43,7 @@ use crate::transition::apply_value_to_style;
 #[allow(clippy::too_many_arguments)]
 pub fn start_animations(
     active_animations: &mut HashMap<RawNodeId, Vec<ActiveAnimation>>,
+    finished_animations: &mut HashMap<RawNodeId, Vec<ActiveAnimation>>,
     node_id: RawNodeId,
     specs: &[AnimationSpec],
     base_style: &ComputedStyle,
@@ -51,7 +52,12 @@ pub fn start_animations(
     tree: &NodeTree,
     current_time_ms: f64,
 ) {
-    let existing = active_animations.remove(&node_id).unwrap_or_default();
+    // Both maps: a finished animation without a fill is kept in
+    // `finished_animations` (#783), and is found by name the same way.
+    let mut existing = active_animations.remove(&node_id).unwrap_or_default();
+    if let Some(finished) = finished_animations.remove(&node_id) {
+        existing.extend(finished);
+    }
 
     if specs.is_empty() {
         // No animations — remove all
@@ -130,17 +136,24 @@ pub fn start_animations(
                 existing_anim.delay_ms = spec.delay_ms;
             }
 
-            // A restyle can leave a finished animation running again (#782), so
-            // ask whether it is *still* filling — **after** the refresh block
-            // above, or the question is asked against the timing the animation
-            // had before this restyle. A full restyle that lengthens a finished
-            // animation is exactly that case: it runs again, and a stale
-            // `fill_settled` would leave `has_running_animations()` answering
-            // `false` for it and the tick that finishes it a second time not
-            // dirtying its node (measured: the box keeps the last running
-            // sample instead of the fill).
-            existing_anim.fill_settled =
-                existing_anim.fill_settled && existing_anim.is_filling(current_time_ms);
+            // A restyle can leave a finished animation running again (#782,
+            // #783), so ask whether it is *still* finished — **after** the
+            // refresh block above, or the question is asked against the timing
+            // the animation had before this restyle. A full restyle that
+            // lengthens a finished animation is exactly that case: it runs
+            // again, and a stale `settled` would leave
+            // `has_running_animations()` answering `false` for it and the tick
+            // that finishes it a second time not dirtying its node (measured:
+            // the box keeps the last running sample instead of the fill).
+            // `has_ended`, not `is_filling`: a finished animation without a
+            // fill is settled too, and stays so across a restyle that changes
+            // nothing about its timing — that is what keeps it from replaying.
+            // And not `is_complete`, which answers `false` for a paused
+            // animation: pausing a finished one would clear `settled`, and the
+            // resume would then count it as running for one frame and restyle
+            // its node once more (review of #2000, F4).
+            existing_anim.settled =
+                existing_anim.settled && existing_anim.has_ended(current_time_ms);
 
             new_active.push(existing_anim);
         } else {
@@ -162,14 +175,23 @@ pub fn start_animations(
                     } else {
                         None
                     },
-                    fill_settled: false,
+                    settled: false,
                 });
             }
         }
     }
 
-    if !new_active.is_empty() {
-        active_animations.insert(node_id, new_active);
+    // A settled animation that holds no fill writes nothing, on a tick or in a
+    // cascade, so it goes back to `finished_animations`, where no tick walks
+    // it (review of #2000, F1).
+    let (finished, running): (Vec<_>, Vec<_>) = new_active
+        .into_iter()
+        .partition(|a| a.settled && !a.fills_forwards());
+    if !running.is_empty() {
+        active_animations.insert(node_id, running);
+    }
+    if !finished.is_empty() {
+        finished_animations.insert(node_id, finished);
     }
 }
 
@@ -180,7 +202,7 @@ pub fn start_animations(
 /// 1. Compute interpolated values
 /// 2. Write to node's computed_style
 /// 3. Mark node dirty (PAINT, and LAYOUT if layout-affecting)
-/// 4. Remove completed animations (unless filling)
+/// 4. Keep completed animations as settled entries (see below)
 ///
 /// **A paused animation is kept, and is not counted and not marked dirty**
 /// (#763). Its elapsed time is frozen, so its sample is the one the cascade
@@ -196,7 +218,13 @@ pub fn start_animations(
 /// **A finished `forwards`/`both` animation is the same shape once its fill is
 /// written** (#782): the tick that finishes it writes the fill and dirties the
 /// node, and every later tick re-applies it the same quiet way — see
-/// [`ActiveAnimation::fill_settled`].
+/// [`ActiveAnimation::settled`]. **A finished one without a fill is kept too**
+/// (#783), as a settled marker with no sample: the tick that finishes it
+/// pushes its node onto [`NodeTree::ended_animations`], which
+/// `RinchDocument::tick_animations` turns into a restyle of the node so its
+/// cascaded values replace the last sample, and moves the entry to
+/// [`NodeTree::finished_animations`], which no tick walks. A caller of this
+/// function alone owns that restyle.
 pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
     let node_ids: Vec<RawNodeId> = tree.active_animations.keys().copied().collect();
     let mut any_active = false;
@@ -214,6 +242,7 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
 
         let mut needs_layout = false;
         let mut needs_paint = false;
+        let mut ended = Vec::new();
         let mut kept_animations = Vec::new();
         let hit_key = crate::hit_cache::HitStyleKey::of(&tree.nodes[node_id].computed_style);
 
@@ -235,7 +264,7 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
             // finishing tick is presented through K23's "was there anything to
             // tick" guard, as a finishing animation without a fill is.
             if anim.is_filling(current_time_ms) {
-                let newly_finished = !anim.fill_settled;
+                let newly_finished = !anim.settled;
                 if let AnimationResult::Values(values) = anim.values_at(current_time_ms) {
                     for (prop, value) in &values {
                         apply_value_to_style(&mut tree.nodes[node_id].computed_style, *prop, value);
@@ -248,7 +277,7 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
                     }
                 }
                 let mut settled = anim.clone();
-                settled.fill_settled = true;
+                settled.settled = true;
                 kept_animations.push(settled);
                 continue;
             }
@@ -278,8 +307,28 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
                     any_active = true;
                 }
                 AnimationResult::Complete => {
-                    // Completed with no fill — drop it
+                    // Finished with no fill to hold (#783). The entry is kept,
+                    // settled, as a marker in `finished_animations`: the next
+                    // cascade of the node finds it by name, applies nothing
+                    // and does not start the still-declared animation again
+                    // from t=0. The tick that finishes it cannot put the
+                    // cascaded values back itself — `computed_style` holds the
+                    // last sample and nothing under it — so it asks for a
+                    // restyle of the node. Later ticks never see it.
+                    let mut settled = anim.clone();
+                    settled.settled = true;
+                    ended.push(settled);
                 }
+            }
+        }
+
+        if !ended.is_empty() {
+            tree.finished_animations
+                .entry(node_id)
+                .or_default()
+                .extend(ended);
+            if !tree.ended_animations.contains(&node_id) {
+                tree.ended_animations.push(node_id);
             }
         }
 
