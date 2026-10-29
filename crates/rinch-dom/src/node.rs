@@ -121,7 +121,7 @@ pub enum NodeContext {
     /// `debug_assertions` validator
     /// ([`crate::RinchDocument::ifc_leaf_invariant_violations`]) checks the
     /// invariant after every setup pass.
-    InlineRoot(usize), // stores the RawNodeId of the IFC root
+    InlineRoot(RawNodeId), // stores the RawNodeId of the IFC root
     /// A text-entry form control — `<textarea>`, or an `<input>` of a
     /// text-like type — whose value is an attribute rather than a child, so
     /// nothing in the tree gives it a content size (#297). The measure

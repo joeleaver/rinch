@@ -78,7 +78,7 @@ impl RinchDocument {
         }
 
         // Collect text content from children
-        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
+        let children: Vec<RawNodeId> = self.tree.nodes[node_id].children.clone();
         let mut css = String::new();
         for child_id in children {
             if let Some(text) = self.tree.nodes.get(child_id).and_then(|n| n.text_content()) {
@@ -194,7 +194,7 @@ impl RinchDocument {
             self.tree.full_style_walk = true;
             self.tree.styles_dirty = true;
         } else if self.viewport_units_used {
-            let users: Vec<usize> = self
+            let users: Vec<RawNodeId> = self
                 .tree
                 .nodes
                 .iter()
@@ -212,7 +212,7 @@ impl RinchDocument {
         // is the initial one, has the viewport's size baked into its Taffy
         // style (`out_of_flow::apply_out_of_flow_size_overrides`), so its style
         // is re-synced — the cascade itself has nothing to redo for it.
-        let out_of_flow: Vec<usize> = self
+        let out_of_flow: Vec<RawNodeId> = self
             .tree
             .nodes
             .iter()
@@ -538,7 +538,7 @@ impl RinchDocument {
     /// *resolution* changed.
     pub fn note_fonts_registered(&mut self) {
         self.tree.font_generation += 1;
-        let controls: Vec<usize> = self
+        let controls: Vec<RawNodeId> = self
             .tree
             .nodes
             .iter()
@@ -564,7 +564,7 @@ impl RinchDocument {
         // anonymous block box around text beside a block sibling) keeps its
         // `text_layout` and cached measure sizes until something drops them;
         // force that regardless of whether its content signature moved.
-        let ifc_roots: Vec<usize> = self.tree.ifc_root_registry.iter().copied().collect();
+        let ifc_roots: Vec<RawNodeId> = self.tree.ifc_root_registry.iter().copied().collect();
         for root_id in ifc_roots {
             self.invalidate_ifc_root(root_id);
         }
@@ -576,7 +576,7 @@ impl RinchDocument {
         // the next layout takes (full, scoped, or neither) drains through
         // `remeasure_dirty_atomic_inlines` — the same path a `set_text_content`
         // or restyle already relies on.
-        let atomic_inlines: Vec<usize> = self.tree.atomic_inline_registry.iter().copied().collect();
+        let atomic_inlines: Vec<RawNodeId> = self.tree.atomic_inline_registry.iter().copied().collect();
         for id in atomic_inlines {
             self.mark_atomic_inline_dirty(id);
         }
@@ -624,7 +624,7 @@ impl RinchDocument {
         // every paragraph in the window. Generated `::before`/`::after`
         // content that is minted or freed still invalidates its root
         // regardless, in the cascade; a box that still generates is kept.
-        let node_ids: Vec<usize> = self.tree.nodes.iter().map(|(id, _)| id).collect();
+        let node_ids: Vec<RawNodeId> = self.tree.nodes.iter().map(|(id, _)| id).collect();
         for &nid in &node_ids {
             // A generated box keeps its pseudo style: its originator's cascade
             // replaces it, and finds the box by it (#1023).
@@ -860,14 +860,14 @@ impl RinchDocument {
 
         // Nodes whose `display` was `none` when this cascade started. See the
         // push site below and [`Self::is_rendered_for_transition`] (#703).
-        let mut was_hidden: Vec<usize> = Vec::new();
+        let mut was_hidden: Vec<RawNodeId> = Vec::new();
         // Absolute descendants of a node that stopped or started being their
         // containing block; re-synced after this pass.
-        let mut resync_absolutes: Vec<usize> = Vec::new();
+        let mut resync_absolutes: Vec<RawNodeId> = Vec::new();
         // Nodes that ran, started or lost a `visibility` transition on this
         // pass: each hands its value down to the descendants that inherit it
         // once the loop is done (#759). Empty unless one is involved.
-        let mut visibility_roots: Vec<usize> = Vec::new();
+        let mut visibility_roots: Vec<RawNodeId> = Vec::new();
 
         for node_id in dirty_node_ids {
             // Skip root and html nodes - their Taffy styles are manually set
@@ -1790,7 +1790,7 @@ impl RinchDocument {
     }
 
     /// Every `position: absolute` element under `node_id` (not the node).
-    pub(crate) fn collect_absolute_descendants(&self, node_id: RawNodeId, out: &mut Vec<usize>) {
+    pub(crate) fn collect_absolute_descendants(&self, node_id: RawNodeId, out: &mut Vec<RawNodeId>) {
         for &c in &self.tree.nodes[node_id].children {
             let child = &self.tree.nodes[c];
             if matches!(
@@ -1853,7 +1853,7 @@ impl RinchDocument {
     pub(crate) fn table_container_of(
         tree: &crate::node::NodeTree,
         node_id: RawNodeId,
-    ) -> Option<usize> {
+    ) -> Option<RawNodeId> {
         let mut id = node_id;
         loop {
             let node = tree.nodes.get(id)?;
@@ -2038,7 +2038,7 @@ impl RinchDocument {
         node_id: RawNodeId,
         old_display: crate::computed_style::DisplayValue,
         new_display: crate::computed_style::DisplayValue,
-        was_hidden: &[usize],
+        was_hidden: &[RawNodeId],
     ) -> bool {
         use crate::computed_style::DisplayValue;
         if matches!(old_display, DisplayValue::None) || matches!(new_display, DisplayValue::None) {
@@ -2064,7 +2064,7 @@ impl RinchDocument {
     /// *now*", which the ancestors' post-cascade `display` answers on its own —
     /// pass `&[]`, or an ancestor that has just been shown would refuse the
     /// animation it is meant to be restarting.
-    fn ancestors_are_rendered(tree: &NodeTree, node_id: RawNodeId, was_hidden: &[usize]) -> bool {
+    fn ancestors_are_rendered(tree: &NodeTree, node_id: RawNodeId, was_hidden: &[RawNodeId]) -> bool {
         use crate::computed_style::DisplayValue;
         let mut current = tree.nodes.get(node_id).and_then(|n| n.parent);
         while let Some(id) = current {
@@ -2215,7 +2215,7 @@ impl RinchDocument {
     fn restart_animations_in_subtree(&mut self, node_id: RawNodeId, current_time_ms: f64) {
         use crate::computed_style::DisplayValue;
 
-        let mut stack: Vec<usize> = match self.tree.nodes.get(node_id) {
+        let mut stack: Vec<RawNodeId> = match self.tree.nodes.get(node_id) {
             Some(node) => node.children.to_vec(),
             None => return,
         };

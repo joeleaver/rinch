@@ -134,7 +134,7 @@ pub type Extent = [f32; 4];
 
 /// Key of a cached stacking sequence: the root's id and the exact bits of the
 /// base offsets it was built at.
-type OrderKey = (usize, u64, u64);
+type OrderKey = (RawNodeId, u64, u64);
 
 #[derive(Default)]
 struct State {
@@ -247,19 +247,20 @@ impl HitCache {
     /// The extent stored for `id` in the current generation.
     #[inline]
     pub fn extent(&self, id: RawNodeId) -> Option<Extent> {
-        self.state().extents.get(id).copied().flatten()
+        self.state().extents.get(crate::node_slab::slot_of(id)).copied().flatten()
     }
 
     /// Whether the flow walk under `id` passes over a box painted at a
     /// stacking root (#1719), stored for the current generation.
     #[inline]
     pub fn hoists(&self, id: RawNodeId) -> Option<bool> {
-        self.state().hoists.get(id).copied().flatten()
+        self.state().hoists.get(crate::node_slab::slot_of(id)).copied().flatten()
     }
 
     /// Store `id`'s hoisting bit for the current generation.
     pub fn store_hoists(&self, id: RawNodeId, hoists: bool) {
         let mut s = self.state();
+        let id = crate::node_slab::slot_of(id);
         if s.hoists.len() <= id {
             s.hoists.resize(id + 1, None);
         }
@@ -269,6 +270,7 @@ impl HitCache {
     /// Store `id`'s extent for the current generation.
     pub fn store_extent(&self, id: RawNodeId, extent: Extent) {
         let mut s = self.state();
+        let id = crate::node_slab::slot_of(id);
         if s.extents.len() <= id {
             s.extents.resize(id + 1, None);
         }

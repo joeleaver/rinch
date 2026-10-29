@@ -1,5 +1,6 @@
 //! Text rendering functions.
 
+use crate::node::RawNodeId;
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, Rect, Stroke, Vec2};
 use peniko::{Brush, Fill};
@@ -1742,7 +1743,7 @@ impl LiveColours {
         } else {
             root.id
         };
-        let recolour = |from: usize, color: AlphaColor<Srgb>| {
+        let recolour = |from: RawNodeId, color: AlphaColor<Srgb>| {
             let (underline, strikethrough) = decorations_follow_color(tree, from, stop);
             Recolour {
                 color: Some(color),
@@ -1791,7 +1792,7 @@ impl LiveColours {
 /// Parley falls back to the text brush where none was pushed. So a decoration
 /// is `currentcolor` exactly when no element from `from` up to `stop` — the
 /// last one whose style the layout was built from — declares one.
-fn decorations_follow_color(tree: &NodeTree, from: usize, stop: usize) -> (bool, bool) {
+fn decorations_follow_color(tree: &NodeTree, from: RawNodeId, stop: RawNodeId) -> (bool, bool) {
     let (mut underline, mut strikethrough) = (true, true);
     let mut cur = Some(from);
     while let Some(node) = cur.and_then(|id| tree.get(id)) {

@@ -12,7 +12,7 @@ impl RinchDocument {
     /// state). The `hovered_changed` out-parameter is set when the hovered node
     /// identity changed (used by the caller to dispatch `data-onenter`
     /// regardless of whether repaint is needed).
-    pub fn update_hover(&mut self, new_hovered: Option<usize>, hovered_changed: &mut bool) -> bool {
+    pub fn update_hover(&mut self, new_hovered: Option<RawNodeId>, hovered_changed: &mut bool) -> bool {
         let old_hovered = self.tree.hovered_node;
         *hovered_changed = old_hovered != new_hovered;
         if !*hovered_changed {
@@ -119,7 +119,7 @@ impl RinchDocument {
     /// focus-sensitive during selector matching.
     ///
     /// Returns `true` if a repaint is needed.
-    pub fn update_focus(&mut self, new_focused: Option<usize>) -> bool {
+    pub fn update_focus(&mut self, new_focused: Option<RawNodeId>) -> bool {
         let old_focused = self.tree.focused_node;
         if old_focused == new_focused {
             return false;
@@ -185,7 +185,7 @@ impl RinchDocument {
     /// nodes that Stylo flagged as active-sensitive during selector matching.
     ///
     /// Returns `true` if a repaint is needed.
-    pub fn update_active(&mut self, new_active: Option<usize>) -> bool {
+    pub fn update_active(&mut self, new_active: Option<RawNodeId>) -> bool {
         let old_active = self.tree.active_node;
         if old_active == new_active {
             return false;

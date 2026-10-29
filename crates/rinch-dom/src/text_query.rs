@@ -46,7 +46,7 @@ pub fn caret_position_for_offset_with_affinity(
     byte_offset: usize,
     affinity: CaretAffinity,
 ) -> Option<(f32, f32)> {
-    let node = doc.tree.nodes.get(node_id as usize)?;
+    let node = doc.tree.nodes.get(node_id)?;
     let at = |layout: &parley::layout::Layout<Brush>| {
         caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity)
     };
@@ -96,7 +96,7 @@ pub fn glyph_bounds_for_offset(
     node_id: u64,
     byte_offset: usize,
 ) -> Option<GlyphBounds> {
-    let node = doc.tree.nodes.get(node_id as usize)?;
+    let node = doc.tree.nodes.get(node_id)?;
 
     // Check inline layout first (IFC root). Shifted the same way
     // `caret_position_for_offset_with_affinity` is, and for the same reason
@@ -201,7 +201,7 @@ pub fn visual_line_range_for_node(
     byte_offset: usize,
     affinity: CaretAffinity,
 ) -> Option<std::ops::Range<usize>> {
-    let node = doc.tree.nodes.get(node_id as usize)?;
+    let node = doc.tree.nodes.get(node_id)?;
     if let Some(ref inline_layout) = node.text_layout {
         return visual_line_range(&inline_layout.layout, byte_offset, affinity);
     }
@@ -275,7 +275,7 @@ pub fn visual_line_edges_for_node(
     node_id: u64,
     at: LineOf,
 ) -> Option<VisualLineEdges> {
-    let node = doc.tree.nodes.get(node_id as usize)?;
+    let node = doc.tree.nodes.get(node_id)?;
     if let Some(ref inline_layout) = node.text_layout {
         return visual_line_edges(&inline_layout.layout, at);
     }
@@ -946,7 +946,7 @@ pub fn ifc_offset_to_dom_cursor(
     ranges: &[crate::node::IfcTextRange],
     ifc_offset: usize,
     allow_br: bool,
-) -> Option<(usize, usize)> {
+) -> Option<(RawNodeId, usize)> {
     if ranges.is_empty() {
         return None;
     }

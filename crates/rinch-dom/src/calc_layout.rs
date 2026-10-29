@@ -165,7 +165,7 @@ impl RinchDocument {
     /// The rinch node whose Taffy node is `node_id`'s Taffy parent: the
     /// nearest ancestor that owns a Taffy node (`display: contents` ancestors
     /// generate none and their children are reparented in Taffy).
-    fn taffy_parent_rinch(&self, node_id: RawNodeId) -> Option<usize> {
+    fn taffy_parent_rinch(&self, node_id: RawNodeId) -> Option<RawNodeId> {
         let mut current = self.tree.get(node_id)?.parent?;
         loop {
             let node = self.tree.get(current)?;
@@ -269,7 +269,7 @@ impl RinchDocument {
     /// Returns whether anything changed — the caller re-runs the compute
     /// until this answers `false` (see `resolve_layout`).
     pub(crate) fn resolve_layout_calcs(&mut self) -> bool {
-        let mut targets: Vec<(usize, taffy::NodeId)> = Vec::new();
+        let mut targets: Vec<(RawNodeId, taffy::NodeId)> = Vec::new();
         for (id, node) in &self.tree.nodes {
             if let Some(taffy_id) = node.taffy_id
                 && node.computed_style.has_layout_calc()

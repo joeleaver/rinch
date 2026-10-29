@@ -684,7 +684,7 @@ fn measure_span_fragments(
     // The lines: every cluster's extent, every atomic inline's, each line's
     // baseline and start.
     let mut clusters: Vec<ClusterBox> = Vec::new();
-    let mut box_at: HashMap<usize, (usize, f32, f32)> = HashMap::new();
+    let mut box_at: HashMap<RawNodeId, (usize, f32, f32)> = HashMap::new();
     let mut lines: Vec<(f32, f32)> = Vec::new();
     for (index, line) in layout.lines().enumerate() {
         let metrics = line.metrics();

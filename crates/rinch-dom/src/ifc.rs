@@ -89,10 +89,10 @@ pub(crate) fn has_inline_background(cs: &crate::computed_style::ComputedStyle) -
 /// and its inline-end ones on its last, is an `InlineBox` of that width and
 /// no height pushed before and after its content
 /// ([`IfcText::push_edge_box`]). Such a box holds no node: its id is this bit,
-/// [`EDGE_BOX_END`] for the end box, and the owner's node id, all inside 32
-/// bits so that `id as usize` cannot name a real node on a 32-bit target
-/// either. Every walker of a layout's inline boxes that maps a box to a node
-/// asks [`is_edge_box`] first.
+/// [`EDGE_BOX_END`] for the end box, and the owner's node id (a
+/// [`RawNodeId`]: its generation in the high 32 bits, its slot below these two
+/// bits), so that the id cannot name a real node. Every walker of a layout's
+/// inline boxes that maps a box to a node asks [`is_edge_box`] first.
 pub const EDGE_BOX: u64 = 1 << 31;
 /// Set with [`EDGE_BOX`] on an element's inline-end box.
 pub const EDGE_BOX_END: u64 = 1 << 30;
@@ -104,14 +104,14 @@ pub fn is_edge_box(id: u64) -> bool {
 }
 
 /// The owner of an edge box and whether it is the inline-end one.
-pub(crate) fn edge_box_owner(id: u64) -> Option<(usize, bool)> {
-    is_edge_box(id).then_some(((id & (EDGE_BOX_END - 1)) as usize, id & EDGE_BOX_END != 0))
+pub(crate) fn edge_box_owner(id: u64) -> Option<(RawNodeId, bool)> {
+    is_edge_box(id).then_some((id & !(EDGE_BOX | EDGE_BOX_END), id & EDGE_BOX_END != 0))
 }
 
 /// An edge box's id ([`EDGE_BOX`]).
 pub(crate) fn edge_box_id(owner: RawNodeId, end: bool) -> u64 {
-    debug_assert!((owner as u64) < EDGE_BOX_END);
-    EDGE_BOX | if end { EDGE_BOX_END } else { 0 } | (owner as u64 & (EDGE_BOX_END - 1))
+    debug_assert!(crate::node_slab::slot_of(owner) < EDGE_BOX_END as usize);
+    EDGE_BOX | if end { EDGE_BOX_END } else { 0 } | owner
 }
 
 /// The room a `display: inline` element takes before its content on its
@@ -604,12 +604,12 @@ pub(crate) struct AtomicContributions<'a> {
     /// `Some(0.0)` for min-content.
     pub wrap_width: Option<f32>,
     /// `NodeTree::atomic_min_content`.
-    pub min_content: &'a HashMap<usize, f32>,
+    pub min_content: &'a HashMap<RawNodeId, f32>,
     /// `NodeTree::keyword_inline_cb_width`: the containing-block width each
     /// resolved box was last resolved against.
-    pub resolved_at: &'a HashMap<usize, f32>,
+    pub resolved_at: &'a HashMap<RawNodeId, f32>,
     /// `NodeTree::atomic_min_requests`.
-    pub requests: &'a std::cell::RefCell<Vec<usize>>,
+    pub requests: &'a std::cell::RefCell<Vec<RawNodeId>>,
 }
 
 impl AtomicContributions<'_> {
@@ -1047,7 +1047,7 @@ pub(crate) struct IfcText<'a> {
     /// ascending.
     dropped: Vec<usize>,
     /// The last atomic inline pushed and the flat offset it was pushed at.
-    last_box: Option<(usize, usize)>,
+    last_box: Option<(RawNodeId, usize)>,
     /// The out-of-flow boxes met ([`Self::note_out_of_flow`]), their offsets
     /// in [`Self::len`]'s terms and no position yet.
     out_of_flow: Vec<crate::node::OutOfFlowMark>,
@@ -1302,7 +1302,7 @@ impl<'a> IfcText<'a> {
     }
 
     /// The node ids of the in-flow atomic inlines pushed, in order (#1238).
-    pub(crate) fn atomic_box_ids(&self) -> impl Iterator<Item = usize> + '_ {
+    pub(crate) fn atomic_box_ids(&self) -> impl Iterator<Item = RawNodeId> + '_ {
         self.ops.iter().filter_map(|op| match op {
             IfcOp::InlineBox(b)
                 if !is_edge_box(b.id) && b.kind == parley::InlineBoxKind::InFlow =>
@@ -1665,7 +1665,7 @@ pub(crate) fn resolve_out_of_flow_marks(
             .map(|(id, _)| id)
     };
     // The atomic inlines some box stands right after: line and right edge.
-    let mut boxes: HashMap<usize, (usize, f32)> = HashMap::new();
+    let mut boxes: HashMap<RawNodeId, (usize, f32)> = HashMap::new();
     if marks.iter().any(|m| after_box(m).is_some()) {
         for (index, line) in layout.lines().enumerate() {
             for item in line.items() {
@@ -2577,7 +2577,7 @@ impl WrapSeams {
     ) -> Self {
         // Every leaf in logical order: (flat byte, 0 = box / 1 = text, its
         // index), its node. A box at byte `i` comes before the text at `i`.
-        let mut leaves: Vec<((usize, u8, usize), usize)> = text_ranges
+        let mut leaves: Vec<((usize, u8, usize), RawNodeId)> = text_ranges
             .iter()
             .enumerate()
             .filter(|(_, r)| r.flat_end > r.flat_start)
@@ -2632,7 +2632,7 @@ impl WrapSeams {
 
 /// Whether `next`'s parent element contains `leaf`, and some element from
 /// `leaf`'s parent up to (not including) it wraps ([`Seam::closes_into_wrap`]).
-fn closes_into_wrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: usize) -> bool {
+fn closes_into_wrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: RawNodeId) -> bool {
     let Some(target) = nodes.get(next).and_then(|n| n.parent) else {
         return false;
     };
@@ -2657,7 +2657,7 @@ fn closes_into_wrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf
 
 /// Whether `next`'s parent element is a proper ancestor of `leaf`'s: elements
 /// close between them and none opens ([`Seam::closes`]).
-fn only_closes(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: usize) -> bool {
+fn only_closes(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: RawNodeId) -> bool {
     let Some(target) = nodes.get(next).and_then(|n| n.parent) else {
         return false;
     };
@@ -2681,7 +2681,7 @@ fn only_closes(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: Raw
 /// `leaf`'s parent up to, not including, the nearest that also contains
 /// `next` — closes into one that does not wrap
 /// ([`Seam::closes_into_nowrap`]).
-fn closes_into_nowrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: usize) -> bool {
+fn closes_into_nowrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: RawNodeId) -> bool {
     let contains_next = |el: RawNodeId| {
         std::iter::successors(Some(next), |&id| {
             (id != root_id)
@@ -2712,7 +2712,7 @@ fn closes_into_nowrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, le
 
 /// Whether some element from `leaf`'s parent up to the nearest one that also
 /// contains `next` — the IFC root at the most — wraps ([`WrapSeams`]).
-fn wraps_between(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: usize) -> bool {
+fn wraps_between(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: RawNodeId) -> bool {
     let contains_next = |el: RawNodeId| {
         let mut n = Some(next);
         while let Some(id) = n {
@@ -2766,7 +2766,7 @@ impl UnhungSpaces {
 pub(crate) struct RetiredAnonBox {
     id: RawNodeId,
     parent: RawNodeId,
-    run_members: Vec<usize>,
+    run_members: Vec<RawNodeId>,
 }
 
 /// The boxes one pass retired, found by the first member of their run — a
@@ -2776,8 +2776,8 @@ pub(crate) struct RetiredAnonBox {
 /// nothing and waits in `unmatched` to be freed.
 #[derive(Default)]
 pub(crate) struct RetiredAnonBoxes {
-    by_first_member: HashMap<usize, RetiredAnonBox>,
-    unmatched: Vec<usize>,
+    by_first_member: HashMap<RawNodeId, RetiredAnonBox>,
+    unmatched: Vec<RawNodeId>,
 }
 
 impl RetiredAnonBoxes {
@@ -2793,7 +2793,7 @@ impl RetiredAnonBoxes {
     }
 
     /// The box retired from `parent` for exactly `run`, if there is one.
-    fn take(&mut self, parent: RawNodeId, run: &[usize]) -> Option<RetiredAnonBox> {
+    fn take(&mut self, parent: RawNodeId, run: &[RawNodeId]) -> Option<RetiredAnonBox> {
         let first = *run.first()?;
         let r = self.by_first_member.get(&first)?;
         if r.parent != parent || r.run_members != run {
@@ -2802,7 +2802,7 @@ impl RetiredAnonBoxes {
         self.by_first_member.remove(&first)
     }
 
-    fn into_ids(self) -> impl Iterator<Item = usize> {
+    fn into_ids(self) -> impl Iterator<Item = RawNodeId> {
         self.by_first_member
             .into_values()
             .map(|r| r.id)
@@ -3922,8 +3922,8 @@ impl RinchDocument {
         // always applied to every slab node — decides which still are, in the
         // same ascending order. An entry that fails it is dropped; a node only
         // becomes a root again through a structural pass, which re-registers it.
-        let mut ifc_roots: Vec<usize> = Vec::new();
-        let mut stale: Vec<usize> = Vec::new();
+        let mut ifc_roots: Vec<RawNodeId> = Vec::new();
+        let mut stale: Vec<RawNodeId> = Vec::new();
         for &id in &self.tree.ifc_root_registry {
             let Some(node) = self.tree.nodes.get(id) else {
                 stale.push(id);
@@ -4213,7 +4213,7 @@ impl RinchDocument {
         // The out-of-flow boxes whose static position these lines hold
         // (#632). Each is placed again from them: it was read back before
         // they existed.
-        let marked: Vec<usize> = inline_layout.out_of_flow.iter().map(|m| m.id).collect();
+        let marked: Vec<RawNodeId> = inline_layout.out_of_flow.iter().map(|m| m.id).collect();
 
         self.tree.nodes[root_id].text_layout = Some(Box::new(inline_layout));
         self.tree.text_layout_epoch += 1;
@@ -4286,7 +4286,7 @@ impl RinchDocument {
     /// container must re-shape it: `invalidate_text_measure_for_node` drops
     /// every box in the container's `run_boxes`
     /// (`ellipsis_anonymous_box_tests.rs`).
-    fn ellipsis_style_owner(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId) -> usize {
+    fn ellipsis_style_owner(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId) -> RawNodeId {
         let root = &nodes[root_id];
         match root.parent {
             Some(parent) if root.is_anonymous_block_box => parent,
@@ -4307,16 +4307,16 @@ impl RinchDocument {
     /// (`ellipsis_route_tests.rs`). This site had its own rebuild until #982.
     pub(crate) fn copy_cached_text_layouts(
         &mut self,
-        cache: HashMap<(usize, u32), parley::layout::Layout<Brush>>,
+        cache: HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>>,
     ) {
         // First collect node IDs and their layouts to apply. Only a node the
         // compute measured can have an entry, so walk the cache's nodes rather
         // than the slab (layout audit F12): a node absent from the cache was
         // skipped by every arm below anyway. Ascending, as the slab walk was.
-        let mut measured: Vec<usize> = cache.keys().map(|&(id, _)| id).collect();
+        let mut measured: Vec<RawNodeId> = cache.keys().map(|&(id, _)| id).collect();
         measured.sort_unstable();
         measured.dedup();
-        let updates: Vec<(usize, parley::layout::Layout<Brush>)> = measured
+        let updates: Vec<(RawNodeId, parley::layout::Layout<Brush>)> = measured
             .into_iter()
             .filter_map(|id| self.tree.nodes.get(id).map(|node| (id, node)))
             .filter_map(|(id, node)| {
@@ -4439,7 +4439,7 @@ impl RinchDocument {
         // wrapper or an inline span gets no box here at all, and a skipped
         // root never rewrites this one (#873).
         let ifc_content_height = inline_layout.layout.height();
-        let children: Vec<usize> = self.tree.nodes[root_id].children.clone();
+        let children: Vec<RawNodeId> = self.tree.nodes[root_id].children.clone();
         for child_id in children {
             if let Some(child) = self.tree.nodes.get(child_id)
                 && child.is_text()
@@ -4491,7 +4491,7 @@ impl RinchDocument {
             None => all,
             Some(scope) => {
                 let nodes = &self.tree.nodes;
-                let (go, keep): (Vec<usize>, Vec<usize>) = all.into_iter().partition(|&b| {
+                let (go, keep): (Vec<RawNodeId>, Vec<RawNodeId>) = all.into_iter().partition(|&b| {
                     let Some(anon) = nodes.get(b) else {
                         return true;
                     };
@@ -4511,7 +4511,7 @@ impl RinchDocument {
         // The containers whose Taffy child lists held these boxes — read from
         // the box's own `parent`, which it keeps (see
         // `create_anonymous_block_boxes`).
-        let mut parents_affected: Vec<usize> = Vec::new();
+        let mut parents_affected: Vec<RawNodeId> = Vec::new();
         for &anon_id in &anon_ids {
             let Some(anon) = self.tree.nodes.get(anon_id) else {
                 continue;
@@ -4634,13 +4634,13 @@ impl RinchDocument {
     /// With a `scope`, only the leaves of roots in it — and of roots that have
     /// left the slab — are removed.
     fn cleanup_ifc_measure_leaves(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
-        let leaves: Vec<(usize, taffy::NodeId)> = match scope {
+        let leaves: Vec<(RawNodeId, taffy::NodeId)> = match scope {
             None => std::mem::take(&mut self.tree.ifc_measure_leaves)
                 .into_iter()
                 .collect(),
             Some(scope) => {
                 let nodes = &self.tree.nodes;
-                let go: Vec<usize> = self
+                let go: Vec<RawNodeId> = self
                     .tree
                     .ifc_measure_leaves
                     .keys()
@@ -4734,7 +4734,7 @@ impl RinchDocument {
     pub(crate) fn collect_run_units(
         nodes: &crate::node_slab::NodeSlab,
         node_id: RawNodeId,
-        out: &mut Vec<usize>,
+        out: &mut Vec<RawNodeId>,
     ) {
         Self::collect_run_units_for(nodes, node_id, node_id, out);
     }
@@ -4748,7 +4748,7 @@ impl RinchDocument {
         nodes: &crate::node_slab::NodeSlab,
         node_id: RawNodeId,
         owner: RawNodeId,
-        out: &mut Vec<usize>,
+        out: &mut Vec<RawNodeId>,
     ) {
         let Some(node) = nodes.get(node_id) else {
             return;
@@ -4812,7 +4812,7 @@ impl RinchDocument {
         nodes: &crate::node_slab::NodeSlab,
         inline_id: RawNodeId,
         owner: RawNodeId,
-        out: &mut Vec<usize>,
+        out: &mut Vec<RawNodeId>,
     ) {
         let Some(node) = nodes.get(inline_id) else {
             return;
@@ -4845,15 +4845,15 @@ impl RinchDocument {
         // Phase 1: Detect mixed-content block containers
         // Each run with the out-of-flow boxes standing inside it
         // (`Node::run_out_of_flow`).
-        type Run = (Vec<usize>, Vec<(usize, usize)>);
-        let mut containers: Vec<(usize, Vec<Run>)> = Vec::new();
+        type Run = (Vec<RawNodeId>, Vec<(usize, RawNodeId)>);
+        let mut containers: Vec<(RawNodeId, Vec<Run>)> = Vec::new();
         // Reused across containers so the per-node walk allocates once.
-        let mut effective: Vec<usize> = Vec::new();
+        let mut effective: Vec<RawNodeId> = Vec::new();
 
         // A scoped pass looks only at its own containers: a box is minted for
         // a block container's run, and every block container that could need
         // one differently from last pass is a container of the scope.
-        let candidates: Vec<usize> = match scope {
+        let candidates: Vec<RawNodeId> = match scope {
             None => self.tree.nodes.iter().map(|(id, _)| id).collect(),
             Some(scope) => scope.containers.clone(),
         };
@@ -4886,7 +4886,7 @@ impl RinchDocument {
             effective.clear();
             Self::collect_run_units(&self.tree.nodes, id, &mut effective);
 
-            let role_of = |c: usize| {
+            let role_of = |c: RawNodeId| {
                 self.tree
                     .nodes
                     .get(c)
@@ -4940,8 +4940,8 @@ impl RinchDocument {
 
             // Group consecutive inline children into runs
             let mut runs: Vec<Run> = Vec::new();
-            let mut current_run: Vec<usize> = Vec::new();
-            let mut current_out_of_flow: Vec<(usize, usize)> = Vec::new();
+            let mut current_run: Vec<RawNodeId> = Vec::new();
+            let mut current_out_of_flow: Vec<(usize, RawNodeId)> = Vec::new();
 
             for &child_id in &effective {
                 match role_of(child_id) {
@@ -5163,7 +5163,7 @@ impl RinchDocument {
             // list: the boxes whose parent is this container are exactly the
             // ones it lists, in the order they were minted, so the filter below
             // selects the same ones — without an O(every box) scan per container.
-            let new_boxes: Vec<usize> = self.tree.nodes[parent_id]
+            let new_boxes: Vec<RawNodeId> = self.tree.nodes[parent_id]
                 .run_boxes
                 .iter()
                 .copied()
@@ -5232,7 +5232,7 @@ impl RinchDocument {
     fn recompute_contributes_in_flow_block(
         &mut self,
         scope: Option<&crate::ifc_scope::IfcScope>,
-    ) -> Vec<(usize, Option<usize>, Option<usize>)> {
+    ) -> Vec<(RawNodeId, Option<RawNodeId>, Option<RawNodeId>)> {
         if let Some(scope) = scope {
             return self.recompute_contributes_in_flow_block_scoped(scope);
         }
@@ -5263,7 +5263,7 @@ impl RinchDocument {
         // the walk, so the clear is what turns its `Some(host)` into `None`, and
         // the change list below is what then takes it out of the host's Taffy
         // list. Snapshot first so the change can be seen.
-        let mut previous: Vec<(usize, Option<usize>)> = Vec::new();
+        let mut previous: Vec<(RawNodeId, Option<RawNodeId>)> = Vec::new();
         for (id, node) in self.tree.nodes.iter_mut() {
             node.contributes_in_flow_block = false;
             if node.hoisted_out_of_flow_to.is_some() {
@@ -5296,10 +5296,10 @@ impl RinchDocument {
         // `box_tree_parent` and the list owner agree. (`is_split_inline` cannot
         // be consulted on the way down anyway — `contributes_in_flow_block` is
         // folded on the way up.)
-        let mut ctx: std::collections::HashMap<usize, (Option<usize>, bool)> =
+        let mut ctx: std::collections::HashMap<RawNodeId, (Option<RawNodeId>, bool)> =
             std::collections::HashMap::new();
         ctx.insert(self.tree.root_id, (Some(self.tree.root_id), false));
-        let mut stack: Vec<(usize, bool)> = vec![(self.tree.root_id, false)];
+        let mut stack: Vec<(RawNodeId, bool)> = vec![(self.tree.root_id, false)];
         while let Some((id, folded)) = stack.pop() {
             if !folded {
                 stack.push((id, true));
@@ -5327,7 +5327,7 @@ impl RinchDocument {
                     (Some(id), false)
                 };
                 ctx.insert(id, child_ctx);
-                let children: Vec<usize> = node.children.clone();
+                let children: Vec<RawNodeId> = node.children.clone();
                 self.tree.nodes[id].hoisted_out_of_flow_to = hoisted_to;
                 for &child_id in children.iter() {
                     stack.push((child_id, false));
@@ -5374,8 +5374,8 @@ impl RinchDocument {
         // The hosts that changed, for `rehome_hoisted_out_of_flow`: every box
         // that was hoisted last pass and is hoisted elsewhere or not at all now,
         // and every box hoisted for the first time.
-        let mut changes: Vec<(usize, Option<usize>, Option<usize>)> = Vec::new();
-        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut changes: Vec<(RawNodeId, Option<RawNodeId>, Option<RawNodeId>)> = Vec::new();
+        let mut seen: std::collections::HashSet<RawNodeId> = std::collections::HashSet::new();
         for (id, old) in previous {
             seen.insert(id);
             let new = self
@@ -5419,9 +5419,9 @@ impl RinchDocument {
     fn recompute_contributes_in_flow_block_scoped(
         &mut self,
         scope: &crate::ifc_scope::IfcScope,
-    ) -> Vec<(usize, Option<usize>, Option<usize>)> {
+    ) -> Vec<(RawNodeId, Option<RawNodeId>, Option<RawNodeId>)> {
         use crate::ifc_scope::is_inline_transparent;
-        let mut changes: Vec<(usize, Option<usize>, Option<usize>)> = Vec::new();
+        let mut changes: Vec<(RawNodeId, Option<RawNodeId>, Option<RawNodeId>)> = Vec::new();
         let hosts_of = |nodes: &crate::node_slab::NodeSlab, id: RawNodeId| -> bool {
             nodes[id].children.iter().any(|&c| {
                 nodes.get(c).is_some_and(|child| {
@@ -5435,7 +5435,7 @@ impl RinchDocument {
         };
         for &container in &scope.containers {
             // (node, folded, host, crossed)
-            let mut stack: Vec<(usize, bool, Option<usize>, bool)> = self.tree.nodes[container]
+            let mut stack: Vec<(RawNodeId, bool, Option<RawNodeId>, bool)> = self.tree.nodes[container]
                 .children
                 .iter()
                 .map(|&c| (c, false, Some(container), false))
@@ -5519,8 +5519,8 @@ impl RinchDocument {
     /// inline element left the document has no new host and no live owner; its
     /// edge was already cut at mutation time by `taffy_detach_contribution`,
     /// and the old host's rebuild here is the second lock on the same door.
-    fn rehome_hoisted_out_of_flow(&mut self, changes: Vec<(usize, Option<usize>, Option<usize>)>) {
-        let mut owners: Vec<usize> = Vec::new();
+    fn rehome_hoisted_out_of_flow(&mut self, changes: Vec<(RawNodeId, Option<RawNodeId>, Option<RawNodeId>)>) {
+        let mut owners: Vec<RawNodeId> = Vec::new();
         for (id, old, new) in changes {
             for host in [old, new].into_iter().flatten() {
                 if self.tree.nodes.contains(host) && !owners.contains(&host) {
@@ -5579,7 +5579,7 @@ impl RinchDocument {
     /// gate would have to answer "will this pass split it again", and the pass
     /// that follows answers that anyway by re-splitting; a wrong gate here is
     /// the class of bug this function exists to fix.
-    fn restore_split_inlines(&mut self, was_split: Vec<usize>) {
+    fn restore_split_inlines(&mut self, was_split: Vec<RawNodeId>) {
         for id in was_split {
             if !self.tree.nodes.contains(id) {
                 continue;
@@ -5620,7 +5620,7 @@ impl RinchDocument {
     /// `setup_inline_formatting_contexts` left in the list after taking the
     /// in-scope ones out to restore).
     fn split_inline_boxes(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
-        let split: Vec<usize> = match scope {
+        let split: Vec<RawNodeId> = match scope {
             None => self
                 .tree
                 .nodes
@@ -5633,7 +5633,7 @@ impl RinchDocument {
                 .filter(|&id| self.tree.nodes.get(id).is_some_and(|n| n.is_split_inline()))
                 .collect(),
         };
-        let kept: Vec<usize> = match scope {
+        let kept: Vec<RawNodeId> = match scope {
             None => Vec::new(),
             Some(_) => std::mem::take(&mut self.tree.split_inlines),
         };
@@ -5642,7 +5642,7 @@ impl RinchDocument {
             return;
         }
 
-        let mut owners: Vec<usize> = Vec::new();
+        let mut owners: Vec<RawNodeId> = Vec::new();
         for &id in &split {
             if let Some(owner) = Self::effective_taffy_owner(&self.tree.nodes, id)
                 && !owners.contains(&owner)
@@ -5719,7 +5719,7 @@ impl RinchDocument {
                 // Restore the in-scope entries (and any that left the slab);
                 // keep the rest, which `split_inline_boxes` appends to.
                 let nodes = &self.tree.nodes;
-                let (go, keep): (Vec<usize>, Vec<usize>) =
+                let (go, keep): (Vec<RawNodeId>, Vec<RawNodeId>) =
                     std::mem::take(&mut self.tree.split_inlines)
                         .into_iter()
                         .partition(|&id| scope.nodes.contains(&id) || !nodes.contains(id));
@@ -5756,7 +5756,7 @@ impl RinchDocument {
         // container's own: that one belongs to the region *above* it. The two
         // registries lose the same entries, and the marking below puts back
         // the ones that still hold.
-        let candidates: Vec<usize> = match scope {
+        let candidates: Vec<RawNodeId> = match scope {
             None => {
                 for (_id, node) in self.tree.nodes.iter_mut() {
                     node.ifc_root = None;
@@ -5775,7 +5775,7 @@ impl RinchDocument {
                         self.tree.ifc_root_registry.remove(&id);
                     }
                 }
-                let mut c: Vec<usize> = Vec::new();
+                let mut c: Vec<RawNodeId> = Vec::new();
                 for &container in &scope.containers {
                     self.tree.ifc_root_registry.remove(&container);
                     c.push(container);
@@ -5793,7 +5793,7 @@ impl RinchDocument {
             }
         }
 
-        let mut ifc_roots: Vec<usize> = Vec::new();
+        let mut ifc_roots: Vec<RawNodeId> = Vec::new();
         for id in candidates {
             let Some(node) = self.tree.nodes.get(id) else {
                 continue;
@@ -5894,8 +5894,8 @@ impl RinchDocument {
             // An anonymous box still classifies over its **run**: its
             // `children` are empty because it is not in the element tree
             // (#566), and its units would be empty for the same reason.
-            let mut unit_buf: Vec<usize> = Vec::new();
-            let own_children: &[usize] = if node.is_anonymous_block_box {
+            let mut unit_buf: Vec<RawNodeId> = Vec::new();
+            let own_children: &[RawNodeId] = if node.is_anonymous_block_box {
                 &node.run_members
             } else {
                 Self::collect_run_units(&self.tree.nodes, id, &mut unit_buf);
@@ -6059,7 +6059,7 @@ impl RinchDocument {
             // makes the container (the CSS containing block) rather than the
             // anonymous box the Taffy parent it resolves its insets against.
             // For an anonymous box root this is its run, verbatim (#566).
-            let root_scan: Vec<usize> = Self::box_tree_children(&self.tree.nodes, root_id).to_vec();
+            let root_scan: Vec<RawNodeId> = Self::box_tree_children(&self.tree.nodes, root_id).to_vec();
             for &child_id in &root_scan {
                 let Some(child) = self.tree.nodes.get(child_id) else {
                     continue;
@@ -6233,11 +6233,11 @@ impl RinchDocument {
         // A scoped pass sweeps its own nodes: only a container of the scope can
         // have stopped being a root (its units are what changed), or a region
         // node whose own display changed — and that puts it in the scope too.
-        let roots_this_pass: std::collections::HashSet<usize> = ifc_roots.iter().copied().collect();
-        let sweep: Vec<usize> = match scope {
+        let roots_this_pass: std::collections::HashSet<RawNodeId> = ifc_roots.iter().copied().collect();
+        let sweep: Vec<RawNodeId> = match scope {
             None => self.tree.nodes.iter().map(|(id, _)| id).collect(),
             Some(scope) => {
-                let mut v: Vec<usize> = scope.rootable.iter().copied().collect();
+                let mut v: Vec<RawNodeId> = scope.rootable.iter().copied().collect();
                 v.sort_unstable();
                 v
             }
@@ -6319,7 +6319,7 @@ impl RinchDocument {
     /// future change hands the context to yet another kind of carrier, that
     /// carrier must be added to this walk. A measure-leaf violation is
     /// reported under its IFC root's DOM id.
-    pub fn ifc_leaf_invariant_violations(&self) -> Vec<usize> {
+    pub fn ifc_leaf_invariant_violations(&self) -> Vec<RawNodeId> {
         let mut violations = Vec::new();
         for (id, node) in &self.tree.nodes {
             let Some(taffy_id) = node.taffy_id else {
@@ -6380,7 +6380,7 @@ impl RinchDocument {
     /// and it is stated rather than silently skipped.
     pub fn dom_tree_violations(&self) -> Vec<String> {
         let mut out = Vec::new();
-        let mut seen_child: std::collections::HashMap<usize, usize> =
+        let mut seen_child: std::collections::HashMap<RawNodeId, RawNodeId> =
             std::collections::HashMap::new();
 
         for (id, node) in &self.tree.nodes {
@@ -6605,7 +6605,7 @@ impl RinchDocument {
             }
             // The container's unit list, from the very function the
             // classification grouped this run out of.
-            let mut units: Vec<usize> = Vec::new();
+            let mut units: Vec<RawNodeId> = Vec::new();
             if let Some(container) = node.parent {
                 Self::collect_run_units(&self.tree.nodes, container, &mut units);
             }
@@ -7336,16 +7336,16 @@ impl RinchDocument {
     /// dirtied on a pass where nothing crossed.
     fn reattach_departed_ifc_children(
         &mut self,
-        ifc_roots: &[usize],
+        ifc_roots: &[RawNodeId],
         scope: Option<&crate::ifc_scope::IfcScope>,
     ) {
-        let mut departed: Vec<usize> = Vec::new();
-        let roots: std::collections::HashSet<usize> = ifc_roots.iter().copied().collect();
-        let mut owners: Vec<usize> = Vec::new();
+        let mut departed: Vec<RawNodeId> = Vec::new();
+        let roots: std::collections::HashSet<RawNodeId> = ifc_roots.iter().copied().collect();
+        let mut owners: Vec<RawNodeId> = Vec::new();
         // A node can only stop being inline content of its IFC through a
         // change to itself or to the container holding it, and either one puts
         // it in the scope of a scoped pass.
-        let candidates: Vec<usize> = match scope {
+        let candidates: Vec<RawNodeId> = match scope {
             None => self.tree.nodes.iter().map(|(id, _)| id).collect(),
             Some(scope) => scope.region.iter().map(|r| r.0).collect(),
         };
@@ -7451,7 +7451,7 @@ impl RinchDocument {
         // An anonymous block box reaches its run through `run_members`, not
         // `children` — it has none, and is not in the element tree at all
         // (#566). Every other node walks its children as before.
-        let children: Vec<usize> = self.tree.nodes[node_id].ifc_children().to_vec();
+        let children: Vec<RawNodeId> = self.tree.nodes[node_id].ifc_children().to_vec();
         for child_id in children {
             let (role, is_inline_element, child_taffy) = match self.tree.nodes.get(child_id) {
                 Some(c) => (
@@ -7773,7 +7773,7 @@ impl RinchDocument {
         for &c in &scope.containers {
             self.mark_atomic_inline_dirty(c);
         }
-        let mut targets: Vec<(usize, usize, taffy::NodeId)> = Vec::new();
+        let mut targets: Vec<(usize, RawNodeId, taffy::NodeId)> = Vec::new();
         for &(id, _, stop) in &scope.region {
             if !stop {
                 continue;
@@ -7984,7 +7984,7 @@ impl RinchDocument {
         // for a box whose content changed before the detach with no layout in
         // between, with and without a change while it was out, under a scoped
         // and a whole-document pass.
-        let mut pending: std::collections::BTreeSet<(usize, usize)> = dirty
+        let mut pending: std::collections::BTreeSet<(usize, RawNodeId)> = dirty
             .into_iter()
             .filter_map(|id| self.depth_if_connected(id).map(|depth| (depth, id)))
             .collect();
@@ -8106,7 +8106,7 @@ impl RinchDocument {
         );
         // The layouts this compute's text leaves are measured with, kept for
         // paint (#904) — see `NodeTree::atomic_leaf_layouts`.
-        let mut leaf_layouts: HashMap<(usize, u32), parley::layout::Layout<Brush>> = HashMap::new();
+        let mut leaf_layouts: HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>> = HashMap::new();
         perf.bump(crate::perf::Counter::InlineBlockComputes);
         let _ = tree.taffy.compute_layout_with_measure(
             taffy_id,
@@ -8699,7 +8699,7 @@ impl RinchDocument {
     pub(crate) fn resolve_percentage_inline_blocks(&mut self) -> bool {
         // The boxes to resolve, keyed (depth, id): popped outermost first,
         // one at a time (see the two phases below).
-        let mut pending: std::collections::BTreeSet<(usize, usize)> =
+        let mut pending: std::collections::BTreeSet<(usize, RawNodeId)> =
             std::collections::BTreeSet::new();
 
         // The registry, not the slab (layout audit F8/F12): this runs after
@@ -8805,7 +8805,7 @@ impl RinchDocument {
         // be such a box: usually there is none, and it costs a walk up from
         // each.
         if any_percent || any_keyword {
-            let mut holds_resolved: std::collections::HashSet<usize> =
+            let mut holds_resolved: std::collections::HashSet<RawNodeId> =
                 std::collections::HashSet::new();
             {
                 let nodes = &self.tree.nodes;
@@ -8873,7 +8873,7 @@ impl RinchDocument {
         //    scoped and whole-document passes disagreed (#1327).
         // 2. Lay the boxes **around** a box that changed size out again,
         //    innermost first, at the width each already has (see below).
-        let mut around: std::collections::BTreeSet<(usize, usize)> =
+        let mut around: std::collections::BTreeSet<(usize, RawNodeId)> =
             std::collections::BTreeSet::new();
         let mut changed = false;
         // A measure that lined a box up at a stand-in size (#1476, see the
@@ -8882,7 +8882,7 @@ impl RinchDocument {
         // served it — the min-content width of a box around the asked one
         // came out as wide as the stand-in — so those answers go first; the
         // measures that replace them ask again, and are answered there.
-        let asked: Vec<usize> = self.tree.atomic_min_requests.borrow().clone();
+        let asked: Vec<RawNodeId> = self.tree.atomic_min_requests.borrow().clone();
         for id in asked {
             if self.tree.atomic_min_content.contains_key(&id) {
                 continue;
@@ -8984,12 +8984,12 @@ impl RinchDocument {
     /// ([`AtomicContributions`]).
     fn reset_resolved_atomic_inlines_inside(
         &mut self,
-        outer: usize,
+        outer: RawNodeId,
         outer_depth: usize,
         plain: bool,
-    ) -> Vec<(usize, usize)> {
-        let mut found: Vec<(usize, usize)> = Vec::new();
-        let mut stack: Vec<(usize, usize)> = self
+    ) -> Vec<(usize, RawNodeId)> {
+        let mut found: Vec<(usize, RawNodeId)> = Vec::new();
+        let mut stack: Vec<(RawNodeId, usize)> = self
             .tree
             .nodes
             .get(outer)
@@ -9082,7 +9082,7 @@ impl RinchDocument {
     /// each of them, in a detached compute the root compute does not reach.
     /// Not from inside the measure of one of those boxes
     /// (`resolve_root_width_keyword`), which is laying it out anyway.
-    fn measure_atomic_min_contents(&mut self, ids: Vec<usize>, around: bool) -> bool {
+    fn measure_atomic_min_contents(&mut self, ids: Vec<RawNodeId>, around: bool) -> bool {
         let mut stack = ids;
         let mut changed = false;
         // Every round measures a box or puts strictly deeper ones ahead of
@@ -9114,9 +9114,9 @@ impl RinchDocument {
             // come first: Taffy holds answers made with their stand-ins (a
             // flex item's min-content size, from any compute of this box),
             // and the compute below would be served them and ask nothing.
-            let inside: Vec<usize> = {
+            let inside: Vec<RawNodeId> = {
                 let asked = self.tree.atomic_min_requests.borrow();
-                let mut inside: Vec<usize> = stack
+                let mut inside: Vec<RawNodeId> = stack
                     .iter()
                     .chain(asked.iter())
                     .copied()
@@ -9164,7 +9164,7 @@ impl RinchDocument {
             // The boxes inside that it asked for first, then this one
             // again. Only the ones that will be measured: one that cannot
             // be would be asked for again by every compute of this box.
-            let inner: Vec<usize> = inner
+            let inner: Vec<RawNodeId> = inner
                 .into_iter()
                 .filter(|&r| r != id && self.wants_min_content(r) && self.is_inside(r, id))
                 .collect();
@@ -9233,7 +9233,7 @@ impl RinchDocument {
     fn queue_atomic_inlines_around(
         &self,
         id: RawNodeId,
-        around: &mut std::collections::BTreeSet<(usize, usize)>,
+        around: &mut std::collections::BTreeSet<(usize, RawNodeId)>,
     ) {
         let mut cur = self.tree.nodes.get(id).and_then(|n| n.parent);
         while let Some(a) = cur {
@@ -9494,7 +9494,7 @@ impl RinchDocument {
         // wrapping root, or a `normal`/`pre-wrap`/`pre-line` element inside a
         // `nowrap`/`pre` root (#1212) — is broken at the available width, and
         // the per-cluster `TextWrapMode` keeps the rest of it on its lines.
-        let boxes: Vec<usize> = ifc_text.atomic_box_ids().collect();
+        let boxes: Vec<RawNodeId> = ifc_text.atomic_box_ids().collect();
         let effective_max_width = if Self::wraps_anywhere(nodes, root_id, &text_ranges, &boxes) {
             max_width
         } else {
@@ -9690,7 +9690,7 @@ impl RinchDocument {
         nodes: &crate::node_slab::NodeSlab,
         root_id: RawNodeId,
         text_ranges: &[crate::node::IfcTextRange],
-        boxes: &[usize],
+        boxes: &[RawNodeId],
     ) -> bool {
         let wraps = |id: RawNodeId| {
             nodes.get(id).is_some_and(|n| {
@@ -9782,7 +9782,7 @@ impl RinchDocument {
         nodes: &crate::node_slab::NodeSlab,
         root_id: RawNodeId,
         text_ranges: &[crate::node::IfcTextRange],
-        boxes: &[usize],
+        boxes: &[RawNodeId],
     ) -> bool {
         let nowrap = |id: RawNodeId| {
             nodes.get(id).is_some_and(|n| {
@@ -9804,7 +9804,7 @@ impl RinchDocument {
         nodes: &crate::node_slab::NodeSlab,
         root_id: RawNodeId,
         node: RawNodeId,
-    ) -> impl Iterator<Item = usize> + '_ {
+    ) -> impl Iterator<Item = RawNodeId> + '_ {
         std::iter::successors(nodes.get(node).and_then(|n| n.parent), |&id| {
             nodes.get(id).and_then(|n| n.parent)
         })
@@ -9873,7 +9873,7 @@ impl RinchDocument {
         enum Item {
             Cluster(Vec<std::ops::Range<usize>>, bool),
             Edge,
-            Atomic(usize),
+            Atomic(RawNodeId),
         }
         let mut items: Vec<(f32, f32, Item)> = Vec::new();
         // `(range, x0, x1, space, starts a unit)` per cluster of a line.
@@ -10385,8 +10385,8 @@ impl RinchDocument {
     fn split_inline_ancestors(
         nodes: &crate::node_slab::NodeSlab,
         node_id: RawNodeId,
-        stop_at: Option<usize>,
-    ) -> Vec<usize> {
+        stop_at: Option<RawNodeId>,
+    ) -> Vec<RawNodeId> {
         let mut chain = Vec::new();
         let mut cur = nodes.get(node_id).and_then(|n| n.parent);
         let cap = nodes.len() + 1;
@@ -10412,7 +10412,7 @@ impl RinchDocument {
         nodes: &'a crate::node_slab::NodeSlab,
         parent_id: RawNodeId,
         builder: &mut IfcText<'a>,
-        child_positions: &mut Vec<(usize, LayoutResult)>,
+        child_positions: &mut Vec<(RawNodeId, LayoutResult)>,
         text_ranges: &mut Vec<crate::node::IfcTextRange>,
         background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
         decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
@@ -10427,7 +10427,7 @@ impl RinchDocument {
         // recorded run, not its (empty) `children` (#566). The two must walk
         // exactly the same set — that is [`Node::inline_flow_role`]'s contract
         // (#366) and it now includes where the set comes from.
-        let children: Vec<usize> = nodes[parent_id].ifc_children().to_vec();
+        let children: Vec<RawNodeId> = nodes[parent_id].ifc_children().to_vec();
 
         // **A split inline's own background has to be reached from its members**
         // (#513). The element is flattened out of the box tree, so the arm below
@@ -10449,12 +10449,12 @@ impl RinchDocument {
         // *borders* are still unimplemented. See `paint::drawn_by_its_ifc`.
         let container = nodes[parent_id].parent;
         let bridging = nodes[parent_id].is_anonymous_block_box;
-        let mut open: Vec<(usize, usize)> = Vec::new();
+        let mut open: Vec<(RawNodeId, usize)> = Vec::new();
         // An out-of-flow box that is a child of the container itself joins
         // no run (#406), so an anonymous box's member list does not hold it.
         // The ones standing inside this run are met here, each before the
         // member it precedes (`Node::run_out_of_flow`, #632).
-        let between: &[(usize, usize)] = if bridging {
+        let between: &[(usize, RawNodeId)] = if bridging {
             &nodes[parent_id].run_out_of_flow
         } else {
             &[]
@@ -10954,11 +10954,11 @@ impl RinchDocument {
     pub(crate) fn ifc_signatures(
         &self,
         scope: Option<&crate::ifc_scope::IfcScope>,
-    ) -> HashMap<usize, u64> {
+    ) -> HashMap<RawNodeId, u64> {
         use std::hash::{Hash, Hasher};
         let nodes = &self.tree.nodes;
-        let mut sigs: HashMap<usize, u64> = HashMap::new();
-        let (parents, roots): (Vec<usize>, Option<std::collections::HashSet<usize>>) = match scope {
+        let mut sigs: HashMap<RawNodeId, u64> = HashMap::new();
+        let (parents, roots): (Vec<RawNodeId>, Option<std::collections::HashSet<RawNodeId>>) = match scope {
             None => (nodes.iter().map(|(id, _)| id).collect(), None),
             Some(scope) => {
                 let mut roots = std::collections::HashSet::new();
@@ -10982,8 +10982,8 @@ impl RinchDocument {
             let children = parent.ifc_children();
             // The root of the nearest member before the child at hand, and
             // (found once, when asked) of the first member at all.
-            let mut near: Option<usize> = None;
-            let mut first: Option<Option<usize>> = None;
+            let mut near: Option<RawNodeId> = None;
+            let mut first: Option<Option<RawNodeId>> = None;
             for (index, &child_id) in children.iter().enumerate() {
                 let Some(child) = nodes.get(child_id) else {
                     continue;
@@ -11086,7 +11086,7 @@ impl RinchDocument {
         // a block whose only span moved to another parent held no layout by
         // now, and its glyphs stayed on screen (#1064). The signature is what
         // survives every invalidation until this pass.
-        let mut unrooted: Vec<usize> = Vec::new();
+        let mut unrooted: Vec<RawNodeId> = Vec::new();
         match scope {
             None => self.tree.ifc_measure_cache.retain(|root, entry| {
                 let keep = sigs.contains_key(root);

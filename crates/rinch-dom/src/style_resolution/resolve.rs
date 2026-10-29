@@ -237,7 +237,7 @@ impl RinchDocument {
         // a root an earlier walk already reached — every node a walk cascades
         // has its hint and dirty-descendants bit cleared — is skipped as
         // having nothing left to do.
-        let mut sorted: Vec<(usize, usize)> = roots
+        let mut sorted: Vec<(RawNodeId, usize)> = roots
             .into_iter()
             .filter_map(|id| Some((id, self.depth_if_connected(id)?)))
             .collect();
@@ -418,7 +418,7 @@ impl RinchDocument {
         cascade: ChildCascade,
         visit_all: bool,
     ) {
-        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
+        let children: Vec<RawNodeId> = self.tree.nodes[node_id].children.clone();
         let mut pushed = false;
         for child_id in children {
             let visit = visit_all
@@ -501,7 +501,7 @@ impl RinchDocument {
     /// not `display: contents`.
     pub(crate) fn nearest_non_contents_style(
         &self,
-        start: Option<usize>,
+        start: Option<RawNodeId>,
     ) -> Option<ServoArc<ComputedValues>> {
         let mut current = start;
         while let Some(id) = current {
@@ -672,7 +672,7 @@ impl RinchDocument {
         let mut kept_before = None;
         let mut kept_after = None;
         {
-            let mut markers: Vec<usize> = Vec::new();
+            let mut markers: Vec<RawNodeId> = Vec::new();
             let had_pseudo = self.tree.nodes[node_id].children.iter().any(|&cid| {
                 self.tree
                     .nodes

@@ -1241,7 +1241,7 @@ impl DomDocument for RinchDocument {
         byte_offset: usize,
         affinity: CaretAffinity,
     ) -> Option<(f32, f32)> {
-        let node = self.tree.nodes.get(node_id as usize)?;
+        let node = self.tree.nodes.get(node_id)?;
         let layout = node
             .text_layout
             .as_ref()
@@ -1254,7 +1254,7 @@ impl DomDocument for RinchDocument {
                     .find_map(|c| c.cached_text_parley.as_deref())
             })?;
         let (top, height) = crate::text_query::line_box_for_offset(layout, byte_offset, affinity)?;
-        let (_, oy) = self.text_layout_origin(node_id as usize);
+        let (_, oy) = self.text_layout_origin(node_id);
         Some((oy + top, height))
     }
 
@@ -1265,7 +1265,7 @@ impl DomDocument for RinchDocument {
     /// The stamp of the text layout [`Self::query_line_box`] would read for
     /// `node_id` (its own, else a text child's), `0` with none.
     fn text_layout_generation(&self, node_id: u64) -> Option<u64> {
-        let id = node_id as usize;
+        let id = node_id;
         let node = self.tree.nodes.get(id)?;
         let holder = if node.text_layout.is_some() || node.cached_text_parley.is_some() {
             Some(id)
@@ -1303,7 +1303,7 @@ impl DomDocument for RinchDocument {
             byte_offset,
             affinity,
         )?;
-        let (ox, oy) = self.text_layout_origin(node_id as usize);
+        let (ox, oy) = self.text_layout_origin(node_id);
         Some((ox + x, oy + y))
     }
 
@@ -1318,12 +1318,12 @@ impl DomDocument for RinchDocument {
         let layout = &self
             .tree
             .nodes
-            .get(node_id as usize)?
+            .get(node_id)?
             .text_layout
             .as_ref()?
             .layout;
         let (x, y, h) = crate::text_query::inline_box_caret(layout, box_id, after)?;
-        let (ox, oy) = self.text_layout_origin(node_id as usize);
+        let (ox, oy) = self.text_layout_origin(node_id);
         Some((ox + x, oy + y, h))
     }
 
@@ -1333,7 +1333,7 @@ impl DomDocument for RinchDocument {
         box_id: u64,
         after: bool,
     ) -> Option<(f32, f32, f32)> {
-        self.inline_box_caret_window_rect(node_id as usize, box_id as usize, after)
+        self.inline_box_caret_window_rect(node_id, box_id, after)
     }
 
     /// The element's edge box (`ifc::EDGE_BOX`, #1426), answered as an
@@ -1347,7 +1347,7 @@ impl DomDocument for RinchDocument {
     ) -> Option<(f32, f32, f32)> {
         self.query_inline_box_caret(
             node_id,
-            crate::ifc::edge_box_id(element as usize, end),
+            crate::ifc::edge_box_id(element, end),
             after,
         )
     }
@@ -1360,7 +1360,7 @@ impl DomDocument for RinchDocument {
         after: bool,
     ) -> Option<(f32, f32, f32)> {
         let (x, y, h) = self.query_inline_edge_caret(node_id, element, end, after)?;
-        self.caret_to_window(node_id as usize, x, y, h)
+        self.caret_to_window(node_id, x, y, h)
     }
 
     fn query_caret_rect_with_affinity(
@@ -1369,7 +1369,7 @@ impl DomDocument for RinchDocument {
         byte_offset: usize,
         affinity: CaretAffinity,
     ) -> Option<(f32, f32, f32)> {
-        let id = node_id as usize;
+        let id = node_id;
         if let Some(rect) = self.text_caret_window_rect_with_affinity(id, byte_offset, affinity) {
             return Some(rect);
         }
@@ -1409,7 +1409,7 @@ impl DomDocument for RinchDocument {
         byte_a: usize,
         byte_b: usize,
     ) -> Vec<(f32, f32, f32, f32)> {
-        let Some(node) = self.tree.nodes.get(node_id as usize) else {
+        let Some(node) = self.tree.nodes.get(node_id) else {
             return Vec::new();
         };
         let layout = match (&node.text_layout, &node.cached_text_parley) {
@@ -1417,7 +1417,7 @@ impl DomDocument for RinchDocument {
             (None, Some(layout)) => layout,
             (None, None) => return Vec::new(),
         };
-        let (ox, oy) = self.text_layout_origin(node_id as usize);
+        let (ox, oy) = self.text_layout_origin(node_id);
         crate::text_query::selection_rects_for_layout(layout, byte_a, byte_b)
             .into_iter()
             .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
@@ -1431,7 +1431,7 @@ impl DomDocument for RinchDocument {
         byte_b: usize,
         selected_boxes: &[u64],
     ) -> Vec<(f32, f32, f32, f32)> {
-        let Some(node) = self.tree.nodes.get(node_id as usize) else {
+        let Some(node) = self.tree.nodes.get(node_id) else {
             return Vec::new();
         };
         let layout = match (&node.text_layout, &node.cached_text_parley) {
@@ -1439,7 +1439,7 @@ impl DomDocument for RinchDocument {
             (None, Some(layout)) => layout,
             (None, None) => return Vec::new(),
         };
-        let (ox, oy) = self.text_layout_origin(node_id as usize);
+        let (ox, oy) = self.text_layout_origin(node_id);
         crate::text_query::selection_rects_with_boxes(layout, byte_a, byte_b, selected_boxes)
             .into_iter()
             .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
@@ -1453,7 +1453,7 @@ impl DomDocument for RinchDocument {
     ) -> Option<rinch_core::dom::GlyphBounds> {
         use crate::text_query::glyph_bounds_for_offset;
         let bounds = glyph_bounds_for_offset(self, node_id, byte_offset)?;
-        let (ox, oy) = self.text_layout_origin(node_id as usize);
+        let (ox, oy) = self.text_layout_origin(node_id);
         Some(rinch_core::dom::GlyphBounds {
             x: ox + bounds.x,
             y: oy + bounds.y,
@@ -1730,7 +1730,7 @@ impl DomDocument for RinchDocument {
     }
 
     fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
-        let node = self.tree.nodes.get(node_id as usize)?;
+        let node = self.tree.nodes.get(node_id)?;
         Some((
             node.layout.x,
             node.layout.y,
@@ -1795,7 +1795,7 @@ impl DomDocument for RinchDocument {
     /// origins, so without this they were drawn one border width right of and
     /// below the glyphs (1px in the default editor style).
     fn content_origin_inset(&self, node_id: u64) -> (f32, f32) {
-        let Some(node) = self.tree.nodes.get(node_id as usize) else {
+        let Some(node) = self.tree.nodes.get(node_id) else {
             return (0.0, 0.0);
         };
         let cs = &node.computed_style;
@@ -1808,14 +1808,14 @@ impl DomDocument for RinchDocument {
     /// The computed `line-height` against the node's `font-size` (`normal`
     /// is rinch's 1.2, `ComputedStyle::line_height_px`).
     fn line_box_height(&self, node_id: u64) -> Option<f32> {
-        let node = self.tree.nodes.get(node_id as usize)?;
+        let node = self.tree.nodes.get(node_id)?;
         Some(node.computed_style.line_height_px())
     }
 
     /// Padding plus border from the computed style, as Taffy laid the box
     /// out with them.
     fn content_box_inset(&self, node_id: u64) -> (f32, f32, f32, f32) {
-        let Some(node) = self.tree.nodes.get(node_id as usize) else {
+        let Some(node) = self.tree.nodes.get(node_id) else {
             return (0.0, 0.0, 0.0, 0.0);
         };
         let cs = &node.computed_style;

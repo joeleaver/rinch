@@ -172,7 +172,7 @@ pub struct RinchDocument {
     /// (`style_resolution::invalidation`).
     pub(crate) snapshots: style::selector_parser::SnapshotMap,
     /// The elements in `snapshots`, in the order they were first changed.
-    pub(crate) snapshot_ids: Vec<usize>,
+    pub(crate) snapshot_ids: Vec<RawNodeId>,
     /// The ancestor bloom filter the style walk matches descendant
     /// combinators against. Boxed: it is a few kilobytes.
     pub(crate) style_bloom: Box<selectors::bloom::BloomFilter>,
@@ -940,7 +940,7 @@ impl RinchDocument {
     /// re-resolved against the updated ancestor.
     pub(crate) fn invalidate_descendant_styles(&mut self, node_id: RawNodeId) {
         // Collect children first to avoid borrow issues
-        let children: Vec<usize> = self
+        let children: Vec<RawNodeId> = self
             .tree
             .nodes
             .get(node_id)
@@ -976,7 +976,7 @@ impl RinchDocument {
     /// Those of `nodes` that are `display: inline` elements with no
     /// background to draw — the ones a tick could give one
     /// ([`Self::settle_ticked_text`]).
-    fn inlines_without_background<'a>(&self, nodes: impl Iterator<Item = &'a usize>) -> Vec<usize> {
+    fn inlines_without_background<'a>(&self, nodes: impl Iterator<Item = &'a RawNodeId>) -> Vec<RawNodeId> {
         nodes
             .copied()
             .filter(|&id| {
@@ -1008,7 +1008,7 @@ impl RinchDocument {
     ///   their own brushes.
     ///
     /// Neither sets `layout_dirty`: a rebuilt paint layout moves no box.
-    fn settle_ticked_text(&mut self, colour_done: Vec<usize>, bare_inlines: Vec<usize>) {
+    fn settle_ticked_text(&mut self, colour_done: Vec<RawNodeId>, bare_inlines: Vec<RawNodeId>) {
         for id in bare_inlines {
             if self
                 .tree
@@ -1052,7 +1052,7 @@ impl RinchDocument {
         // transition_reaches_the_inline_layout` was green. With the repair and
         // without this pre-pass, the same fixture comes back 30px tall around
         // 40px text.
-        let text_measure_nodes: Vec<usize> = self
+        let text_measure_nodes: Vec<RawNodeId> = self
             .tree
             .active_transitions
             .iter()
@@ -1071,7 +1071,7 @@ impl RinchDocument {
         // descendants have the box they resolve against baked into their Taffy
         // style — the cascade re-syncs them when a restyle flips the answer,
         // and a tick writes `computed_style` with no cascade.
-        let transform_nodes: Vec<(usize, bool)> = self
+        let transform_nodes: Vec<(RawNodeId, bool)> = self
             .tree
             .active_transitions
             .iter()
@@ -1083,7 +1083,7 @@ impl RinchDocument {
 
         // What the tick owes text it does not re-measure (#679): see
         // `settle_ticked_text`. Read before the tick, like the rest.
-        let colour_nodes: Vec<usize> = self
+        let colour_nodes: Vec<RawNodeId> = self
             .tree
             .active_transitions
             .iter()
@@ -1094,7 +1094,7 @@ impl RinchDocument {
 
         let any_active = crate::transition::tick_transitions(&mut self.tree, current_time_ms);
 
-        let colour_done: Vec<usize> = colour_nodes
+        let colour_done: Vec<RawNodeId> = colour_nodes
             .into_iter()
             .filter(|id| {
                 self.tree.active_transitions.get(id).is_none_or(|props| {
@@ -1130,7 +1130,7 @@ impl RinchDocument {
         // For layout-affecting transitions, we need to re-sync Taffy styles
         // from the updated computed_style values.
         // Collect nodes that had LAYOUT dirty set by tick_transitions.
-        let layout_dirty: Vec<usize> = self
+        let layout_dirty: Vec<RawNodeId> = self
             .tree
             .active_transitions
             .keys()
@@ -1274,7 +1274,7 @@ impl RinchDocument {
         // which the desktop wake and the Android loop both read as a frame owed.
         // A filling animation that has *not* settled is still asked: the tick
         // below is the one that writes its fill.
-        let text_measure_nodes: Vec<usize> = self
+        let text_measure_nodes: Vec<RawNodeId> = self
             .tree
             .active_animations
             .iter()
@@ -1298,7 +1298,7 @@ impl RinchDocument {
                     && a.animates(crate::transition::TransitionProperty::Color)
             })
         };
-        let colour_nodes: Vec<usize> = self
+        let colour_nodes: Vec<RawNodeId> = self
             .tree
             .active_animations
             .iter()
@@ -1309,7 +1309,7 @@ impl RinchDocument {
 
         let any_active = crate::animation::tick_animations(&mut self.tree, current_time_ms);
 
-        let colour_done: Vec<usize> = colour_nodes
+        let colour_done: Vec<RawNodeId> = colour_nodes
             .into_iter()
             .filter(|id| {
                 self.tree
@@ -1326,7 +1326,7 @@ impl RinchDocument {
         }
 
         // For layout-affecting animations, re-sync Taffy styles.
-        let layout_dirty: Vec<usize> = self
+        let layout_dirty: Vec<RawNodeId> = self
             .tree
             .active_animations
             .keys()
@@ -1565,7 +1565,7 @@ impl RinchDocument {
             // `background-image: url(src)` users: no intrinsic size feeds
             // layout, but their pixels changed, so they must be in the dirty
             // region the next paint clears and redraws.
-            let bg_ids: Vec<usize> = self
+            let bg_ids: Vec<RawNodeId> = self
                 .tree
                 .nodes
                 .iter()
@@ -1586,7 +1586,7 @@ impl RinchDocument {
             };
 
             // Scan all nodes for img elements with matching src
-            let node_ids: Vec<usize> = self
+            let node_ids: Vec<RawNodeId> = self
                 .tree
                 .nodes
                 .iter()

@@ -300,7 +300,7 @@ impl RinchDocument {
         if self.ensure_snapshot(node) {
             let snapshot = self
                 .snapshots
-                .get_mut(&style::dom::OpaqueNode(node))
+                .get_mut(&style::dom::OpaqueNode(node as usize))
                 .expect("ensure_snapshot made one");
             if snapshot.attrs.is_none() {
                 snapshot.attrs = Some(snapshot_attrs(&self.tree.nodes[node]));
@@ -333,7 +333,7 @@ impl RinchDocument {
     /// could reach among its later siblings is restyled instead, since no
     /// invalidation will run for it.
     fn ensure_snapshot(&mut self, node: RawNodeId) -> bool {
-        let opaque = style::dom::OpaqueNode(node);
+        let opaque = style::dom::OpaqueNode(node as usize);
         if self.snapshots.contains_key(&opaque) {
             if self.tree.nodes[node].has_snapshot {
                 return true;
@@ -390,7 +390,7 @@ impl RinchDocument {
             };
             if node.has_snapshot {
                 node.has_snapshot = false;
-                self.snapshots.remove(&style::dom::OpaqueNode(id));
+                self.snapshots.remove(&style::dom::OpaqueNode(id as usize));
                 forgot = true;
             }
             stack.extend(self.tree.nodes[id].children.iter().copied());
@@ -411,12 +411,12 @@ impl RinchDocument {
             return;
         }
         let ids = std::mem::take(&mut self.snapshot_ids);
-        let mut outcomes: Vec<(usize, bool, bool, bool)> = Vec::with_capacity(ids.len());
+        let mut outcomes: Vec<(RawNodeId, bool, bool, bool)> = Vec::with_capacity(ids.len());
         // Snapshotted elements whose style was dropped before this resolve —
         // a resize restyling a viewport-unit user, a re-insertion. Stylo
         // cannot compare them; they re-cascade from scratch, and whatever a
         // sibling selector ties to them is restyled wholesale.
-        let mut lost: Vec<usize> = Vec::new();
+        let mut lost: Vec<RawNodeId> = Vec::new();
         {
             let guard = self.tree.guard.read();
             let guards = StylesheetGuards::same(&guard);
@@ -529,7 +529,7 @@ impl RinchDocument {
         let Some(parent) = self.tree.nodes.get(node).and_then(|n| n.parent) else {
             return;
         };
-        let siblings: Vec<usize> = self.tree.nodes[parent]
+        let siblings: Vec<RawNodeId> = self.tree.nodes[parent]
             .children
             .iter()
             .copied()
@@ -609,7 +609,7 @@ impl RinchDocument {
             }
         }
         if flags.contains(ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR) {
-            let is_el = |tree: &crate::node::NodeTree, c: usize| {
+            let is_el = |tree: &crate::node::NodeTree, c: RawNodeId| {
                 tree.nodes[c].is_element() && !tree.nodes[c].is_pseudo_element
             };
             let before = children[..at.min(children.len())]
@@ -710,7 +710,7 @@ impl RinchDocument {
     /// only (#1629, #1630).
     pub(crate) fn own_children_range(&self, parent: RawNodeId) -> (usize, usize) {
         let children = &self.tree.nodes[parent].children;
-        let generated = |i: Option<&usize>, after: bool| {
+        let generated = |i: Option<&RawNodeId>, after: bool| {
             i.and_then(|&c| self.tree.nodes.get(c))
                 .is_some_and(|n| n.is_pseudo_element && n.is_generated_after == after)
         };

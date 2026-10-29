@@ -36,7 +36,7 @@ impl RinchDocument {
         parent_id: RawNodeId,
         parent_style: &ServoArc<ComputedValues>,
         pseudo: style::selector_parser::PseudoElement,
-        existing: Option<usize>,
+        existing: Option<RawNodeId>,
     ) -> bool {
         use selectors::matching::{
             IncludeStartingStyle, MatchingContext, MatchingForInvalidation, MatchingMode,
@@ -311,7 +311,7 @@ impl RinchDocument {
     /// child was replaced.
     fn update_generated_box(
         &mut self,
-        span_raw: usize,
+        span_raw: RawNodeId,
         pseudo_computed: ServoArc<ComputedValues>,
         text: &str,
         layout_parent_is_flex_or_grid: bool,

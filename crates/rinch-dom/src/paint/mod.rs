@@ -2551,7 +2551,7 @@ fn offer_base_split(
         BASES_WITHOUT_GAME
             .with(|b| b.get())
             .then_some(BaseViewport {
-                surface_id: BASE_WITHOUT_GAME_IDS + node_id,
+                surface_id: BASE_WITHOUT_GAME_IDS + crate::node_slab::slot_of(node_id),
                 // No texture: the compositor draws no image, only the clear.
                 extents: (1, 1),
                 letterbox: false,

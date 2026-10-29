@@ -80,7 +80,7 @@ pub(super) fn paint_svg(
         .unwrap_or(Join::Miter);
 
     // Paint each child SVG element
-    let child_ids: Vec<usize> = node.children.to_vec();
+    let child_ids: Vec<crate::node::RawNodeId> = node.children.to_vec();
     for child_id in child_ids {
         let Some(child) = tree.get(child_id) else {
             continue;
