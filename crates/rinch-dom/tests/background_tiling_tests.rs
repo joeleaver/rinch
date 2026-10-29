@@ -24,8 +24,9 @@
 //!   kills a mutant the first round's fixtures let survive (content-box
 //!   padding ignored; cover/contain swapped; end-side offset sign; ratio
 //!   inverted; `center` read as 0).
-//! - `r8`, `r9` — an unrelated animation pins `background-position` /
-//!   `opacity`: #781, pre-existing, `#[ignore]`d here.
+//! - `r8`, `r9` — an unrelated animation must not pin `background-position` /
+//!   `opacity`. They were `#[ignore]`d on #781 until its implicit keyframes
+//!   covered only the properties the rule animates.
 //! - `r7` — a timing probe, `#[ignore]`d (run with `--ignored --nocapture`).
 #![cfg(feature = "software-renderer")]
 
@@ -460,7 +461,6 @@ fn f4_keyframe_center() {
 /// background-position a later class change sets. Chrome 153: the class's
 /// position applies — the animation does not name background-position.
 #[test]
-#[ignore = "#781: an animation's auto-generated stop pins every base property"]
 fn r8_an_unrelated_animation_does_not_pin_background_position() {
     let mut doc = RinchDocument::new();
     doc.load_css(
@@ -489,11 +489,10 @@ fn r8_an_unrelated_animation_does_not_pin_background_position() {
     assert_eq!(row_of(&p, 10, &[15, 40, 60, 85]), "WRBW");
 }
 
-/// Control for r8: is the same pin pre-existing for `opacity` (a property
-/// `extract_base_style_values` already carried before #1143)?
+/// Control for r8: the same for `opacity`, a property the implicit stop
+/// carried before #1143 too.
 #[test]
-#[ignore = "#781 (control for r8)"]
-fn r9_control_opacity_is_pinned_the_same_way() {
+fn r9_control_an_unrelated_animation_does_not_pin_opacity() {
     let mut doc = RinchDocument::new();
     doc.load_css(
         "html, body { margin: 0; }

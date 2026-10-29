@@ -37,8 +37,8 @@
 //! was wrong: the theme sheet is replaceable and can carry `@keyframes`
 //! (`generate_theme_css_string` already puts component keyframes in it), so a
 //! new theme can drop one. Keeping the entry whole left that animation running;
-//! Chrome 153 cancels it. Outside the full restyle — a plain class change — an
-//! edited `@keyframes` body still never reaches a running animation (#766).
+//! Chrome 153 cancels it. Every other cascade now does the same (#766,
+//! `animation_restyle_refresh_tests.rs`).
 //!
 //! # Which fixture kills which mutant
 //!

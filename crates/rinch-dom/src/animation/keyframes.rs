@@ -12,15 +12,20 @@ use crate::computed_style::{
 use crate::transition::transform::{Affine, TransformOp};
 use crate::transition::types::{AnimatableTransform, AnimatableValue, TransitionProperty};
 
-use super::types::KeyframeStop;
+use std::cell::Cell;
+
+use super::types::{KeyframeStop, StopDeps};
 use crate::transition::types::{TimingFunction, convert_timing_function};
 
 /// Extract KeyframeStops from a Stylo KeyframesAnimation.
 ///
-/// For `ComputedValues` steps (auto-generated 0%/100%), we use `base_style`
-/// values. For `Declarations` steps the stop's *typed* specified value is
-/// matched directly — the same discipline `plain_inset` uses on the inset fast
-/// path — rather than serialised to CSS text and re-parsed.
+/// For `Declarations` steps the stop's *typed* specified value is matched
+/// directly — the same discipline `plain_inset` uses on the inset fast path —
+/// rather than serialised to CSS text and re-parsed. A `ComputedValues` step
+/// (the 0%/100% Stylo generates for a missing `from`/`to`) and any property an
+/// authored 0%/100% stop leaves out take the element's base value, for the
+/// properties the rule animates and no others ([`refresh_implicit_values`],
+/// #781).
 ///
 /// `parent_color` is what a `color: currentcolor` stop inherits;
 /// `root_font_size` is what a `rem` stop resolves against.
@@ -31,21 +36,29 @@ pub fn extract_keyframe_stops(
     root_font_size: f32,
     guard: &SharedRwLockReadGuard,
 ) -> Vec<KeyframeStop> {
+    let basis = StopBasis::new(base_style, parent_color, root_font_size);
+    extract_keyframe_stops_against(animation, base_style, &basis, guard)
+}
+
+/// [`extract_keyframe_stops`] against a [`StopBasis`], which records which of
+/// its inputs the authored stops read ([`StopBasis::read`]).
+pub(crate) fn extract_keyframe_stops_against(
+    animation: &KeyframesAnimation,
+    base_style: &ComputedStyle,
+    basis: &StopBasis,
+    guard: &SharedRwLockReadGuard,
+) -> Vec<KeyframeStop> {
     let mut stops = Vec::new();
 
     for step in &animation.steps {
         let percentage = step.start_percentage.0;
 
         let (values, timing_function) = match &step.value {
-            KeyframesStepValue::ComputedValues => {
-                // Auto-generated step: use current element style as values
-                let values = extract_base_style_values(base_style);
-                (values, None)
-            }
+            // Auto-generated step: filled with base values below.
+            KeyframesStepValue::ComputedValues => (Vec::new(), None),
             KeyframesStepValue::Declarations { block } => {
                 let block = block.read_with(guard);
-                let values =
-                    extract_declaration_values(block, base_style, parent_color, root_font_size);
+                let values = extract_declaration_values(block, basis);
 
                 // Extract per-keyframe timing function if declared
                 let tf = if step.declared_timing_function {
@@ -63,25 +76,218 @@ pub fn extract_keyframe_stops(
             percentage,
             values,
             timing_function,
+            implicit: Vec::new(),
         });
     }
 
+    // Which properties each 0%/100% stop takes from the base style depends on
+    // the authored stops alone, so it is settled here, once.
+    let mut animated: Vec<TransitionProperty> = Vec::new();
+    for stop in &stops {
+        for (p, _) in &stop.values {
+            if !animated.contains(p) {
+                animated.push(*p);
+            }
+        }
+    }
+    for stop in &mut stops {
+        if stop.percentage == 0.0 || stop.percentage == 1.0 {
+            stop.implicit = animated
+                .iter()
+                .copied()
+                .filter(|p| !stop.values.iter().any(|(q, _)| q == p))
+                .collect();
+        }
+    }
+
+    refresh_implicit_values(&mut stops, base_style);
     stops
+}
+
+/// What an authored keyframe stop resolves against — the element's
+/// `font-size` (`em`), the root font size (`rem`), the element's `color` and
+/// its parent's (`currentcolor`) — and which of them the stops actually read.
+///
+/// The reads are recorded so a cascade of a running animation re-extracts its
+/// stops only when an input they read moved (#766): a `to { transform: … }`
+/// spin reads none of them, so a hover that changes the element's `color`
+/// costs it nothing.
+#[derive(Clone)]
+pub(crate) struct StopBasis {
+    font_size: f32,
+    root_font_size: f32,
+    color: Option<peniko::Color>,
+    parent_color: Option<peniko::Color>,
+    read: Cell<StopDeps>,
+}
+
+impl StopBasis {
+    pub(crate) fn new(
+        base_style: &ComputedStyle,
+        parent_color: Option<peniko::Color>,
+        root_font_size: f32,
+    ) -> Self {
+        Self {
+            font_size: base_style.font_size,
+            root_font_size,
+            color: base_style.color,
+            parent_color,
+            read: Cell::new(StopDeps::default()),
+        }
+    }
+
+    /// The inputs read so far.
+    pub(crate) fn read(&self) -> StopDeps {
+        self.read.get()
+    }
+
+    /// Whether every input `deps` names has the same value here as in
+    /// `other`.
+    pub(crate) fn agrees_on(&self, other: &StopBasis, deps: StopDeps) -> bool {
+        (!deps.em || self.font_size == other.font_size)
+            && (!deps.rem || self.root_font_size == other.root_font_size)
+            && (!deps.color || self.color == other.color)
+            && (!deps.parent_color || self.parent_color == other.parent_color)
+    }
+
+    fn note(&self, f: impl FnOnce(&mut StopDeps)) {
+        let mut d = self.read.get();
+        f(&mut d);
+        self.read.set(d);
+    }
+
+    fn em(&self) -> f32 {
+        self.note(|d| d.em = true);
+        self.font_size
+    }
+
+    fn rem(&self) -> f32 {
+        self.note(|d| d.rem = true);
+        self.root_font_size
+    }
+
+    fn color(&self) -> Option<peniko::Color> {
+        self.note(|d| d.color = true);
+        self.color
+    }
+
+    fn parent_color(&self) -> Option<peniko::Color> {
+        self.note(|d| d.parent_color = true);
+        self.parent_color
+    }
+}
+
+/// Re-read every 0% and 100% stop's implicit values — the properties the rule
+/// animates and that stop does not author ([`KeyframeStop::implicit`], set at
+/// extraction) — from the element's **current** base style: Web Animations'
+/// neutral keyframe (#781).
+///
+/// "Animates" is the set of properties the authored stops set, so a `to`-only
+/// `transform` spin carries `transform` in its implicit `from` and nothing
+/// else: it does not pin the element's `color` or `opacity` at the values they
+/// had when it started. Run at extraction and again on every cascade of a node
+/// whose animation keeps its stops, so the implicit values follow the base
+/// style (a `to { background-color: … }` fade starts from the background the
+/// element has now). Only the implicit properties are read from the base
+/// style, and a rule with none costs a scan of its stops.
+pub(crate) fn refresh_implicit_values(stops: &mut [KeyframeStop], base_style: &ComputedStyle) {
+    for stop in stops.iter_mut() {
+        if stop.implicit.is_empty() {
+            continue;
+        }
+        let KeyframeStop {
+            values, implicit, ..
+        } = stop;
+        // Drop the old base values, so what is left is what the rule authors.
+        values.retain(|(p, _)| !implicit.contains(p));
+        values.extend(
+            implicit
+                .iter()
+                .filter_map(|&p| Some((p, base_style_value(base_style, p)?))),
+        );
+    }
+}
+
+/// The element's base value for one animatable property, for an implicit
+/// keyframe stop. `None` for a property the base style does not carry here
+/// (a background that is not a plain colour, an unset `color` or border
+/// colour), which the stop then leaves out.
+fn base_style_value(
+    style: &ComputedStyle,
+    property: TransitionProperty,
+) -> Option<AnimatableValue> {
+    use crate::computed_style::BackgroundValue;
+
+    Some(match property {
+        TransitionProperty::Opacity => AnimatableValue::Float(style.opacity),
+        TransitionProperty::BackgroundColor => match &style.background {
+            BackgroundValue::Color(c) => AnimatableValue::Color(*c),
+            _ => return None,
+        },
+        TransitionProperty::Color => AnimatableValue::Color(style.color?),
+        TransitionProperty::BorderTopColor => AnimatableValue::Color(style.border_top_color?),
+        TransitionProperty::BorderRightColor => AnimatableValue::Color(style.border_right_color?),
+        TransitionProperty::BorderBottomColor => AnimatableValue::Color(style.border_bottom_color?),
+        TransitionProperty::BorderLeftColor => AnimatableValue::Color(style.border_left_color?),
+        // The layout properties (#767). Without them a `to`-only `width` stop
+        // had nothing to start from and snapped to its end value on the first
+        // frame. An `auto` base is carried as `auto`: it does not interpolate
+        // with a length, so the animation flips at the midpoint, as in Chrome.
+        TransitionProperty::Width => AnimatableValue::Dimension(style.width),
+        TransitionProperty::Height => AnimatableValue::Dimension(style.height),
+        TransitionProperty::PaddingTop => AnimatableValue::LengthPercentage(style.padding_top),
+        TransitionProperty::PaddingRight => AnimatableValue::LengthPercentage(style.padding_right),
+        TransitionProperty::PaddingBottom => {
+            AnimatableValue::LengthPercentage(style.padding_bottom)
+        }
+        TransitionProperty::PaddingLeft => AnimatableValue::LengthPercentage(style.padding_left),
+        TransitionProperty::BorderTopWidth => {
+            AnimatableValue::LengthPercentage(style.border_top_width)
+        }
+        TransitionProperty::BorderRightWidth => {
+            AnimatableValue::LengthPercentage(style.border_right_width)
+        }
+        TransitionProperty::BorderBottomWidth => {
+            AnimatableValue::LengthPercentage(style.border_bottom_width)
+        }
+        TransitionProperty::BorderLeftWidth => {
+            AnimatableValue::LengthPercentage(style.border_left_width)
+        }
+        TransitionProperty::MarginTop => AnimatableValue::LengthPercentageAuto(style.margin_top),
+        TransitionProperty::MarginRight => {
+            AnimatableValue::LengthPercentageAuto(style.margin_right)
+        }
+        TransitionProperty::MarginBottom => {
+            AnimatableValue::LengthPercentageAuto(style.margin_bottom)
+        }
+        TransitionProperty::MarginLeft => AnimatableValue::LengthPercentageAuto(style.margin_left),
+        TransitionProperty::FontSize => AnimatableValue::Float(style.font_size),
+        TransitionProperty::BackgroundPositionX => {
+            AnimatableValue::LengthPercentage(style.background_position_x)
+        }
+        TransitionProperty::BackgroundPositionY => {
+            AnimatableValue::LengthPercentage(style.background_position_y)
+        }
+        // The whole function list, percentage translates included — carrying
+        // only the matrix dropped those for the whole animation (#403), and
+        // carrying it as one `matrix()` would make it decompose against every
+        // authored stop rather than pair with it (#414).
+        TransitionProperty::Transform => {
+            AnimatableValue::Transform(AnimatableTransform::from_style(&style.transform))
+        }
+        _ => return None,
+    })
 }
 
 /// Extract animatable values from a PropertyDeclarationBlock.
 fn extract_declaration_values(
     block: &style::properties::PropertyDeclarationBlock,
-    base_style: &ComputedStyle,
-    parent_color: Option<peniko::Color>,
-    root_font_size: f32,
+    basis: &StopBasis,
 ) -> Vec<(TransitionProperty, AnimatableValue)> {
     let mut values = Vec::new();
 
     for declaration in block.normal_declaration_iter() {
-        if let Some((prop, val)) =
-            convert_declaration(declaration, base_style, parent_color, root_font_size)
-        {
+        if let Some((prop, val)) = convert_declaration(declaration, basis) {
             values.push((prop, val));
         }
     }
@@ -104,26 +310,23 @@ fn extract_declaration_values(
 /// crate. See `border_width_px`.
 fn convert_declaration(
     declaration: &PropertyDeclaration,
-    base_style: &ComputedStyle,
-    parent_color: Option<peniko::Color>,
-    root_font_size: f32,
+    basis: &StopBasis,
 ) -> Option<(TransitionProperty, AnimatableValue)> {
     if let Some((property, color)) = color_declaration(declaration) {
         let color = match color {
             // On `color` itself, `currentcolor` means `inherit` (CSS Color 4
             // §7.1): the parent's colour, not the element's own.
             SpecifiedColor::CurrentColor if property == TransitionProperty::Color => {
-                parent_color.or(base_style.color)?
+                basis.parent_color().or_else(|| basis.color())?
             }
             // The element's own colour, as for every other `currentcolor`.
-            SpecifiedColor::CurrentColor => base_style.color?,
+            SpecifiedColor::CurrentColor => basis.color()?,
             other => color_from_specified(other)?,
         };
         return Some((property, AnimatableValue::Color(color)));
     }
 
-    let fs = base_style.font_size;
-    let len = |lp: &SpecLengthPercentage| StopLength::resolve(lp, fs, root_font_size);
+    let len = |lp: &SpecLengthPercentage| StopLength::resolve(lp, basis);
 
     match declaration {
         // `Opacity` is the second stylo newtype with a private field (see
@@ -142,11 +345,11 @@ fn convert_declaration(
 
         PropertyDeclaration::Width(w) => Some((
             TransitionProperty::Width,
-            AnimatableValue::Dimension(size(w, fs, root_font_size)?),
+            AnimatableValue::Dimension(size(w, basis)?),
         )),
         PropertyDeclaration::Height(h) => Some((
             TransitionProperty::Height,
-            AnimatableValue::Dimension(size(h, fs, root_font_size)?),
+            AnimatableValue::Dimension(size(h, basis)?),
         )),
 
         PropertyDeclaration::PaddingTop(p) => Some((
@@ -168,36 +371,36 @@ fn convert_declaration(
 
         PropertyDeclaration::MarginTop(m) => Some((
             TransitionProperty::MarginTop,
-            AnimatableValue::LengthPercentageAuto(margin(m, fs, root_font_size)?),
+            AnimatableValue::LengthPercentageAuto(margin(m, basis)?),
         )),
         PropertyDeclaration::MarginRight(m) => Some((
             TransitionProperty::MarginRight,
-            AnimatableValue::LengthPercentageAuto(margin(m, fs, root_font_size)?),
+            AnimatableValue::LengthPercentageAuto(margin(m, basis)?),
         )),
         PropertyDeclaration::MarginBottom(m) => Some((
             TransitionProperty::MarginBottom,
-            AnimatableValue::LengthPercentageAuto(margin(m, fs, root_font_size)?),
+            AnimatableValue::LengthPercentageAuto(margin(m, basis)?),
         )),
         PropertyDeclaration::MarginLeft(m) => Some((
             TransitionProperty::MarginLeft,
-            AnimatableValue::LengthPercentageAuto(margin(m, fs, root_font_size)?),
+            AnimatableValue::LengthPercentageAuto(margin(m, basis)?),
         )),
 
         PropertyDeclaration::BorderTopWidth(_) => Some((
             TransitionProperty::BorderTopWidth,
-            AnimatableValue::LengthPercentage(border_width(declaration, fs, root_font_size)?),
+            AnimatableValue::LengthPercentage(border_width(declaration, basis)?),
         )),
         PropertyDeclaration::BorderRightWidth(_) => Some((
             TransitionProperty::BorderRightWidth,
-            AnimatableValue::LengthPercentage(border_width(declaration, fs, root_font_size)?),
+            AnimatableValue::LengthPercentage(border_width(declaration, basis)?),
         )),
         PropertyDeclaration::BorderBottomWidth(_) => Some((
             TransitionProperty::BorderBottomWidth,
-            AnimatableValue::LengthPercentage(border_width(declaration, fs, root_font_size)?),
+            AnimatableValue::LengthPercentage(border_width(declaration, basis)?),
         )),
         PropertyDeclaration::BorderLeftWidth(_) => Some((
             TransitionProperty::BorderLeftWidth,
-            AnimatableValue::LengthPercentage(border_width(declaration, fs, root_font_size)?),
+            AnimatableValue::LengthPercentage(border_width(declaration, basis)?),
         )),
 
         // `font-size` resolves against the *parent's* font size, which the
@@ -207,7 +410,7 @@ fn convert_declaration(
         PropertyDeclaration::FontSize(f) => {
             use style::values::specified::FontSize;
             let px = match f {
-                FontSize::Length(lp) => match StopLength::resolve_no_em(lp, root_font_size)? {
+                FontSize::Length(lp) => match StopLength::resolve_no_em(lp, basis)? {
                     StopLength::Px(px) => px,
                     StopLength::Percent(_) => return None,
                 },
@@ -219,7 +422,7 @@ fn convert_declaration(
         PropertyDeclaration::Transform(t) => Some((
             TransitionProperty::Transform,
             AnimatableValue::Transform(AnimatableTransform {
-                functions: transform_ops(t, fs, root_font_size)?,
+                functions: transform_ops(t, basis)?,
             }),
         )),
 
@@ -227,19 +430,11 @@ fn convert_declaration(
         // The `background-position` shorthand in a stop arrives as these two.
         PropertyDeclaration::BackgroundPositionX(list) => Some((
             TransitionProperty::BackgroundPositionX,
-            AnimatableValue::LengthPercentage(position_component(
-                list.0.first()?,
-                fs,
-                root_font_size,
-            )?),
+            AnimatableValue::LengthPercentage(position_component(list.0.first()?, basis)?),
         )),
         PropertyDeclaration::BackgroundPositionY(list) => Some((
             TransitionProperty::BackgroundPositionY,
-            AnimatableValue::LengthPercentage(position_component(
-                list.0.first()?,
-                fs,
-                root_font_size,
-            )?),
+            AnimatableValue::LengthPercentage(position_component(list.0.first()?, basis)?),
         )),
 
         _ => None, // Unsupported property — silently skip
@@ -253,8 +448,7 @@ fn convert_declaration(
 /// against nothing and snaps — the same as every other mixed pair.
 fn position_component<S: style::values::specified::position::Side>(
     c: &style::values::specified::position::PositionComponent<S>,
-    font_size: f32,
-    root_font_size: f32,
+    basis: &StopBasis,
 ) -> Option<LengthPercentageValue> {
     use style::values::specified::position::PositionComponent;
     Some(match c {
@@ -267,30 +461,24 @@ fn position_component<S: style::values::specified::position::Side>(
             }
         }
         PositionComponent::Side(side, Some(lp)) if !side.is_start() => {
-            match StopLength::resolve(lp, font_size, root_font_size)? {
+            match StopLength::resolve(lp, basis)? {
                 StopLength::Px(px) => LengthPercentageValue::Calc { px: -px, pct: 1.0 },
                 StopLength::Percent(p) => LengthPercentageValue::Percent(1.0 - p),
             }
         }
         PositionComponent::Side(_, Some(lp)) | PositionComponent::Length(lp) => {
-            StopLength::resolve(lp, font_size, root_font_size)?.length_percentage()
+            StopLength::resolve(lp, basis)?.length_percentage()
         }
     })
 }
 
 /// `width`/`height`: `auto`, a length or a percentage. `min-content` and its
 /// siblings are `#[animation(error)]` in stylo and are declined here too.
-fn size(
-    s: &style::values::specified::Size,
-    font_size: f32,
-    root_font_size: f32,
-) -> Option<DimensionValue> {
+fn size(s: &style::values::specified::Size, basis: &StopBasis) -> Option<DimensionValue> {
     use style::values::generics::length::GenericSize;
     match s {
         GenericSize::Auto => Some(DimensionValue::Auto),
-        GenericSize::LengthPercentage(lp) => {
-            Some(StopLength::resolve(&lp.0, font_size, root_font_size)?.dimension())
-        }
+        GenericSize::LengthPercentage(lp) => Some(StopLength::resolve(&lp.0, basis)?.dimension()),
         _ => None,
     }
 }
@@ -299,60 +487,16 @@ fn size(
 /// variants need an anchor element and are declined.
 fn margin(
     m: &style::values::specified::length::Margin,
-    font_size: f32,
-    root_font_size: f32,
+    basis: &StopBasis,
 ) -> Option<LengthPercentageAutoValue> {
     use style::values::generics::length::GenericMargin;
     match m {
         GenericMargin::Auto => Some(LengthPercentageAutoValue::Auto),
         GenericMargin::LengthPercentage(lp) => {
-            Some(StopLength::resolve(lp, font_size, root_font_size)?.length_percentage_auto())
+            Some(StopLength::resolve(lp, basis)?.length_percentage_auto())
         }
         _ => None,
     }
-}
-
-/// Extract all animatable values from a ComputedStyle (for auto-generated keyframes).
-fn extract_base_style_values(style: &ComputedStyle) -> Vec<(TransitionProperty, AnimatableValue)> {
-    use crate::computed_style::BackgroundValue;
-
-    let mut values = Vec::new();
-
-    values.push((
-        TransitionProperty::Opacity,
-        AnimatableValue::Float(style.opacity),
-    ));
-
-    if let BackgroundValue::Color(c) = &style.background {
-        values.push((
-            TransitionProperty::BackgroundColor,
-            AnimatableValue::Color(*c),
-        ));
-    }
-
-    if let Some(c) = style.color {
-        values.push((TransitionProperty::Color, AnimatableValue::Color(c)));
-    }
-
-    values.push((
-        TransitionProperty::BackgroundPositionX,
-        AnimatableValue::LengthPercentage(style.background_position_x),
-    ));
-    values.push((
-        TransitionProperty::BackgroundPositionY,
-        AnimatableValue::LengthPercentage(style.background_position_y),
-    ));
-
-    // The whole function list, percentage translates included — carrying only
-    // the matrix dropped those for the whole animation (#403), and carrying it
-    // as one `matrix()` would make it decompose against every authored stop
-    // rather than pair with it (#414).
-    values.push((
-        TransitionProperty::Transform,
-        AnimatableValue::Transform(AnimatableTransform::from_style(&style.transform)),
-    ));
-
-    values
 }
 
 /// The animatable colour longhands, with their typed specified value.
@@ -406,7 +550,7 @@ enum StopLength {
 }
 
 impl StopLength {
-    fn resolve(lp: &SpecLengthPercentage, font_size: f32, root_font_size: f32) -> Option<Self> {
+    fn resolve(lp: &SpecLengthPercentage, basis: &StopBasis) -> Option<Self> {
         use style::values::specified::length::{FontRelativeLength, NoCalcLength};
         match lp {
             SpecLengthPercentage::Length(NoCalcLength::Absolute(abs)) => {
@@ -414,11 +558,11 @@ impl StopLength {
                 px.is_finite().then_some(Self::Px(px))
             }
             SpecLengthPercentage::Length(NoCalcLength::FontRelative(FontRelativeLength::Em(v))) => {
-                Some(Self::Px(v * font_size))
+                Some(Self::Px(v * basis.em()))
             }
             SpecLengthPercentage::Length(NoCalcLength::FontRelative(FontRelativeLength::Rem(
                 v,
-            ))) => Some(Self::Px(v * root_font_size)),
+            ))) => Some(Self::Px(v * basis.rem())),
             SpecLengthPercentage::Percentage(pct) => Some(Self::Percent(pct.0)),
             _ => None,
         }
@@ -426,7 +570,7 @@ impl StopLength {
 
     /// `resolve` without the `em` arm, for a property whose `em` is relative to
     /// something the extractor does not have.
-    fn resolve_no_em(lp: &SpecLengthPercentage, root_font_size: f32) -> Option<Self> {
+    fn resolve_no_em(lp: &SpecLengthPercentage, basis: &StopBasis) -> Option<Self> {
         use style::values::specified::length::{FontRelativeLength, NoCalcLength};
         if matches!(
             lp,
@@ -434,7 +578,7 @@ impl StopLength {
         ) {
             return None;
         }
-        Self::resolve(lp, 0.0, root_font_size)
+        Self::resolve(lp, basis)
     }
 
     fn dimension(self) -> DimensionValue {
@@ -475,8 +619,7 @@ impl StopLength {
 /// grammar this has to cover is just `thin | medium | thick | <length>`.
 fn border_width(
     declaration: &PropertyDeclaration,
-    font_size: f32,
-    root_font_size: f32,
+    basis: &StopBasis,
 ) -> Option<LengthPercentageValue> {
     let mut css = String::new();
     declaration.to_css(&mut css).ok()?;
@@ -486,7 +629,7 @@ fn border_width(
         "thin" => 1.0,
         "medium" => 3.0,
         "thick" => 5.0,
-        _ => serialised_length_px(css, font_size, root_font_size)?,
+        _ => serialised_length_px(css, basis)?,
     };
     Some(LengthPercentageValue::Length(px))
 }
@@ -494,18 +637,21 @@ fn border_width(
 /// A length from stylo's own serialisation: `10px`, `1.5em`, `0.5rem`, `0`.
 /// Anything else — a `calc()`, a viewport unit, a container unit — is declined,
 /// same as [`StopLength::resolve`].
-fn serialised_length_px(css: &str, font_size: f32, root_font_size: f32) -> Option<f32> {
+fn serialised_length_px(css: &str, basis: &StopBasis) -> Option<f32> {
     let css = css.trim();
     if css == "0" {
         return Some(0.0);
     }
-    for (suffix, scale) in [("px", 1.0), ("rem", root_font_size), ("em", font_size)] {
-        if let Some(num) = css.strip_suffix(suffix) {
-            let v: f32 = num.trim().parse().ok()?;
-            return (v * scale).is_finite().then_some(v * scale);
-        }
-    }
-    None
+    // `rem` before `em`: it ends in "em" too.
+    let (num, scale) = if let Some(num) = css.strip_suffix("px") {
+        (num, 1.0)
+    } else if let Some(num) = css.strip_suffix("rem") {
+        (num, basis.rem())
+    } else {
+        (css.strip_suffix("em")?, basis.em())
+    };
+    let v: f32 = num.trim().parse().ok()?;
+    (v * scale).is_finite().then_some(v * scale)
 }
 
 /// A specified `transform` list as the function list the cascade would compute
@@ -526,8 +672,7 @@ fn serialised_length_px(css: &str, font_size: f32, root_font_size: f32) -> Optio
 /// as an unresolvable translate always has.
 fn transform_ops(
     transform: &style::values::specified::Transform,
-    font_size: f32,
-    root_font_size: f32,
+    basis: &StopBasis,
 ) -> Option<Vec<TransformOp>> {
     use style::values::generics::transform::GenericTransformOperation as Op;
 
@@ -535,7 +680,7 @@ fn transform_ops(
     // axis is `(0, 0)`.
     let split = |lp: Option<&SpecLengthPercentage>| match lp {
         None => Some((0.0, 0.0)),
-        Some(lp) => match StopLength::resolve(lp, font_size, root_font_size)? {
+        Some(lp) => match StopLength::resolve(lp, basis)? {
             StopLength::Px(px) => Some((px as f64, 0.0)),
             StopLength::Percent(p) => Some((0.0, p as f64)),
         },
@@ -553,11 +698,7 @@ fn transform_ops(
     // resolves, and no percentage.
     let length = |l: &style::values::specified::Length| match l {
         style::values::specified::Length::NoCalc(nc) => {
-            match StopLength::resolve(
-                &SpecLengthPercentage::Length(*nc),
-                font_size,
-                root_font_size,
-            )? {
+            match StopLength::resolve(&SpecLengthPercentage::Length(*nc), basis)? {
                 StopLength::Px(px) => Some(px as f64),
                 StopLength::Percent(_) => None,
             }
