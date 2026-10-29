@@ -10,13 +10,13 @@
 //! padding when nothing needed to move (#1367).
 //!
 //! Every expected offset is **Chrome 156's** (`google-chrome --headless=new
-//! --window-size=800,743`, which gives an 800x600 viewport; `* { scrollbar-width:
-//! none }` so a classic bar does
-//! not narrow Chrome's scrollport where rinch's overlay bar does not), read off
+//! --window-size=800,743`, which gives an 800x600 viewport; `* {
+//! scrollbar-width: none }` so a classic bar does not narrow Chrome's
+//! scrollport where rinch's overlay bar does not), read off
 //! `scrollLeft`/`scrollTop` after `t.scrollIntoView({block: "nearest", inline:
 //! "nearest"})`. The page's offsets are Chrome's `document.scrollingElement`'s;
-//! rinch's page scroller is `<body>` (the UA sheet's `overflow-y: auto`). Each fixture's HTML
-//! is in the test's doc, with `margin: 0` on `<body>` and `box-sizing:
+//! rinch's page scroller is `<body>` (the UA sheet's `overflow-y: auto`). Each
+//! fixture's HTML is in the test's doc, with `margin: 0` on `<body>` and `box-sizing:
 //! border-box` on every `div`: rinch sizes every box as `border-box` (#1278),
 //! so the scrollers say so too.
 //!
@@ -334,4 +334,36 @@ fn a_row_below_a_padded_scrollport_lands_at_its_bottom_edge() {
     let mut r = Rig::new(padded_rows(2));
     r.request(None);
     assert_eq!(r.scroll("s1"), (0.0, 100.0), "Chrome: s1 (0, 100)");
+}
+
+/// A target taller than its scroller's scrollport: the scroller aligns its
+/// **top** (a box larger than the scrollport sticking out past the end), and
+/// the page then brings what the scroller shows of it — the target **clipped**
+/// to the scrollport, 1000..1100 — into the window. Unclipped, the 300px
+/// target (1000..1300) would have taken the page to 700.
+///
+/// ```html
+/// <div style="width:800px;height:2400px;padding-top:1000px">
+///  <div id=s1 style="width:200px;height:100px;overflow:auto">
+///   <div style="height:1000px;padding-top:400px">
+///    <div id=t style="width:40px;height:300px"></div></div></div></div>
+/// ```
+#[test]
+fn the_page_brings_the_part_of_the_target_its_scroller_shows() {
+    let mut r = Rig::new(N(
+        "root",
+        "width: 800px; height: 2400px; padding-top: 1000px; box-sizing: border-box",
+        vec![N(
+            "s1",
+            "width: 200px; height: 100px; overflow: auto; box-sizing: border-box",
+            vec![N(
+                "",
+                "height: 1000px; padding-top: 400px; box-sizing: border-box",
+                vec![N("t", "width: 40px; height: 300px", vec![])],
+            )],
+        )],
+    ));
+    r.request(None);
+    assert_eq!(r.scroll("s1"), (0.0, 400.0), "Chrome: s1 (0, 400)");
+    assert_eq!(r.scroll("page"), (0.0, 500.0), "Chrome: page (0, 500)");
 }
