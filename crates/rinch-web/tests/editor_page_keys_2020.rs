@@ -209,35 +209,48 @@ fn expected_blocks(bands: &[(f64, f64)], y: f64) -> Vec<usize> {
     out
 }
 
+/// `scrollTop` as the browser answers it, unrounded: Firefox 158's scroll
+/// positions are fractional, and web-sys's `scroll_top()` truncates them.
+fn scroll_top(sc: &web_sys::Element) -> f64 {
+    js_sys::Reflect::get(sc, &"scrollTop".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .expect("control: scrollTop is a number")
+}
+
+/// Set `scrollTop` unrounded (web-sys's `set_scroll_top` takes an `i32`).
+fn set_scroll_top(sc: &web_sys::Element, top: f64) {
+    js_sys::Reflect::set(sc, &"scrollTop".into(), &top.into()).unwrap();
+}
+
 /// The scroller's end: the largest `scrollTop` the browser lets it take, asked
-/// of the browser (set past the end, read back, put back). Not
-/// `scrollHeight - clientHeight` in every engine: Firefox 158 (CI's) answered
-/// 1463 for this fixture's end where `scrollHeight - clientHeight` is 1464
-/// (both tests that page to the end, batch #2042; presumably `scrollHeight`
-/// rounds the scrollable overflow up where the scroll range does not), while
-/// Firefox 155 answers the two alike, as Chrome does. Each
-/// engine's own answer is pinned: Chrome's end is `scrollHeight -
-/// clientHeight` (155 and 156), Firefox's is its `scrollTopMax`, at most a
-/// pixel short of that.
-fn scroll_end(sc: &web_sys::Element) -> i32 {
-    let was = sc.scroll_top();
+/// of the browser (set past the end, read back unrounded, put back). Not
+/// `scrollHeight - clientHeight` in every engine. Chrome's end is
+/// `scrollHeight - clientHeight` (155 and 156). Firefox's is its
+/// `scrollTopMax`, and in Firefox 158 (CI's, batch #2042) both are
+/// fractional: 1463.6 here where `scrollHeight - clientHeight` is 1464, and
+/// 1409.6 for the last-line test's scroller (Firefox 155 answered whole
+/// pixels, as Chrome does). `scrollTopMax` came back as 1463.5999755859375, a
+/// float's precision, so it is compared to within one app unit (1/60px).
+fn scroll_end(sc: &web_sys::Element) -> f64 {
+    let was = scroll_top(sc);
     sc.set_scroll_top(i32::MAX);
-    let end = sc.scroll_top();
-    sc.set_scroll_top(was);
-    let span = sc.scroll_height() - sc.client_height();
+    let end = scroll_top(sc);
+    set_scroll_top(sc, was);
+    let span = f64::from(sc.scroll_height() - sc.client_height());
     if engine::is_gecko() {
         let top_max = js_sys::Reflect::get(sc, &"scrollTopMax".into())
             .ok()
-            .and_then(|v| v.as_f64());
-        assert_eq!(
-            top_max,
-            Some(f64::from(end)),
-            "control: Firefox's scrollTopMax is the end"
+            .and_then(|v| v.as_f64())
+            .expect("control: Firefox has scrollTopMax");
+        assert!(
+            (top_max - end).abs() <= 1.0 / 60.0,
+            "control: Firefox's scrollTopMax ({top_max}) is the end ({end})"
         );
         assert!(
-            span - end == 0 || span - end == 1,
+            (0.0..1.0).contains(&(span - end)),
             "control: Firefox's end {end} is scrollHeight - clientHeight ({span}) \
-             or a pixel short of it"
+             or less than a pixel short of it"
         );
     } else {
         assert_eq!(
@@ -330,7 +343,7 @@ fn page_down_at_the_end_goes_to_the_document_end_and_page_up_to_its_start() {
     );
     let sc = f.scroller();
     assert_eq!(
-        sc.scroll_top(),
+        scroll_top(&sc),
         scroll_end(&sc),
         "the scroller is at its end"
     );
@@ -410,14 +423,14 @@ fn a_page_that_lands_on_the_last_line_goes_to_the_end() {
     // Block `k` at the scroller's top, the last line in view below it.
     let k_top = f.bands()[k].0 - sc.get_bounding_client_rect().top() - 13.0;
     sc.set_scroll_top(k_top.round() as i32);
-    let before = sc.scroll_top();
+    let before = scroll_top(&sc);
     let (_, cy, ch) = f.caret();
     let (lt, lb) = f.bands()[n - 1];
     let page = (f64::from(sc.client_height()) * 0.875).round();
     let max = scroll_end(&sc);
     // How far the page's own scroll will get (the rest of the page is the
     // caret's move on screen).
-    let scrolled = f64::from((before + page as i32).min(max) - before);
+    let scrolled = (before + page).min(max) - before;
     let target = cy + ch * 0.5 + page;
     assert!(
         target > lt + 2.0 && target < lb - 2.0,
@@ -469,7 +482,7 @@ fn a_page_landing_below_the_window_finds_its_line() {
     let last = f.bands().len() - 1;
     let mut found = None;
     'search: for short in (30..=160).step_by(10) {
-        sc.set_scroll_top(max - short);
+        set_scroll_top(&sc, max - f64::from(short));
         let sc_top = sc.get_bounding_client_rect().top();
         let bands = f.bands();
         for (i, &(t, b)) in bands.iter().enumerate() {
@@ -490,7 +503,7 @@ fn a_page_landing_below_the_window_finds_its_line() {
     let (short, want) = found.expect("control: a caret whose page lands below the window");
     assert!(key("PageDown", false));
     assert_eq!(
-        sc.scroll_top(),
+        scroll_top(&sc),
         max,
         "the scroller went to its end ({short}px)"
     );
