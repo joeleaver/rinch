@@ -812,16 +812,22 @@ fn reference_hit_test_node(
     let nw = node.layout.width;
     let nh = node.layout.height;
 
-    // Skip entire subtree when visibility: hidden — per CSS spec, hidden elements
-    // and their descendants don't receive pointer events. This also guards against
-    // Stylo not cascading visibility to children when a parent's class changes.
-    if matches!(
-        node.computed_style.visibility,
-        rinch_dom::computed_style::VisibilityValue::Hidden
-            | rinch_dom::computed_style::VisibilityValue::Collapse
-    ) {
-        return None;
-    }
+    // A hidden box is not hit itself, but its subtree is always walked: a
+    // descendant may set `visibility: visible` again (#843). No "anything
+    // visible below" prune here — that is one of the optimisations under test.
+    // A text node is drawn with its parent's visibility.
+    let is_hidden = |n: &rinch_dom::Node| {
+        matches!(
+            n.computed_style.visibility,
+            rinch_dom::computed_style::VisibilityValue::Hidden
+                | rinch_dom::computed_style::VisibilityValue::Collapse
+        )
+    };
+    let hidden = if node.is_text() {
+        node.parent.and_then(|p| tree.get(p)).is_some_and(is_hidden)
+    } else {
+        is_hidden(node)
+    };
 
     let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
 
@@ -945,7 +951,7 @@ fn reference_hit_test_node(
         }
     }
 
-    if !point_in_bounds {
+    if !point_in_bounds || (hidden && !super::visible_text_at(tree, node, x - nx, y - ny)) {
         return None;
     }
 

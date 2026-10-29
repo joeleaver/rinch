@@ -195,14 +195,14 @@ fn hit_test_node(
     let nw = node.layout.width;
     let nh = node.layout.height;
 
-    // Skip entire subtree when visibility: hidden — per CSS spec, hidden elements
-    // and their descendants don't receive pointer events. This also guards against
-    // Stylo not cascading visibility to children when a parent's class changes.
-    if matches!(
-        node.computed_style.visibility,
-        rinch_dom::computed_style::VisibilityValue::Hidden
-            | rinch_dom::computed_style::VisibilityValue::Collapse
-    ) {
+    // A hidden box is not hit itself, but `visibility` is inherited and a
+    // descendant may set it back to `visible`: that descendant is painted
+    // (#829) and hit, as in Chrome (#843). So a hidden node's subtree is
+    // skipped only when nothing below it is visible — the common case, which
+    // keeps the old whole-subtree skip — and otherwise walked for the visible
+    // boxes alone.
+    let hidden = hides_own_hit(tree, node);
+    if hidden && !shows_below(tree, node_id) {
         return None;
     }
 
@@ -381,7 +381,7 @@ fn hit_test_node(
         }
     }
 
-    if !point_in_bounds {
+    if !point_in_bounds || (hidden && !visible_text_at(tree, node, x - nx, y - ny)) {
         return None;
     }
 
@@ -582,6 +582,79 @@ fn flow_hoists(tree: &rinch_dom::NodeTree, id: u64) -> bool {
     };
     tree.hit_cache.store_hoists(id, hoists);
     hoists
+}
+
+/// Whether `node` computes to `visibility: hidden`/`collapse`, so that it is
+/// not hit itself (#843). A text node is drawn with its parent element's
+/// visibility (paint reads the parent's), so it is answered from there.
+#[inline]
+fn hides_own_hit(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node) -> bool {
+    let hidden = |n: &rinch_dom::Node| {
+        matches!(
+            n.computed_style.visibility,
+            rinch_dom::computed_style::VisibilityValue::Hidden
+                | rinch_dom::computed_style::VisibilityValue::Collapse
+        )
+    };
+    if node.is_text() {
+        node.parent.and_then(|p| tree.get(p)).is_some_and(hidden)
+    } else {
+        hidden(node)
+    }
+}
+
+/// Whether the glyph under `(lx, ly)` — relative to `node`'s border-box
+/// origin — is text a `visibility: visible` element of `node`'s IFC draws.
+///
+/// An IFC's text is hit as its root (the stretched text nodes are skipped), so
+/// a hidden root still answers for the text of a visible inline element in it,
+/// which paint draws (#829's per-element mask) and Chrome hits (#843). Asked
+/// only of a hidden node under the point whose subtree shows something.
+fn visible_text_at(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node, lx: f32, ly: f32) -> bool {
+    let Some(inline) = node.text_layout.as_ref() else {
+        return false;
+    };
+    let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
+    let rel_x = lx - ox + node.scroll_offset.0 as f32;
+    let rel_y = ly - oy + node.scroll_offset.1 as f32;
+    let Some(cluster) = rinch_dom::text_query::cluster_range_at_point(&inline.layout, rel_x, rel_y)
+    else {
+        return false;
+    };
+    inline
+        .text_ranges
+        .iter()
+        .find(|r| !r.is_br && (r.flat_start..r.flat_end).contains(&cluster.start))
+        .and_then(|r| tree.get(r.node_id))
+        .and_then(|t| t.parent)
+        .and_then(|p| tree.get(p))
+        .is_some_and(|el| !hides_own_hit(tree, el))
+}
+
+/// Whether some element below `id` computes to `visibility: visible` (#843),
+/// i.e. whether a hidden `id`'s subtree can hold anything to hit.
+///
+/// Walks the box-tree children — what both walks enumerate, an anonymous
+/// block's wrapped inline content included (an anonymous box has no DOM
+/// children); a stacking sequence's entries are box-tree descendants too — so
+/// `false` is a proof. Text nodes are skipped: they take their parent's
+/// visibility ([`hides_own_hit`]). Memoised in the hit cache, so a hidden
+/// subtree is walked once per generation, not once per probe.
+fn shows_below(tree: &rinch_dom::NodeTree, id: rinch_dom::node::RawNodeId) -> bool {
+    if let Some(s) = tree.hit_cache.shows(id) {
+        return s;
+    }
+    let shows = tree.get_live(id).is_some_and(|node| {
+        rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
+            .iter()
+            .any(|&child_id| {
+                tree.get_live(child_id).is_some_and(|child| {
+                    !child.is_text() && (!hides_own_hit(tree, child) || shows_below(tree, child_id))
+                })
+            })
+    });
+    tree.hit_cache.store_shows(id, shows);
+    shows
 }
 
 /// The box a node is *painted* in, in layout pixels, shaped as the four
@@ -1056,12 +1129,10 @@ fn find_scrollbar_hit_node(
 ) -> Option<ScrollbarHit> {
     let node = tree.get_live(node_id)?;
 
-    // Skip hidden subtrees
-    if matches!(
-        node.computed_style.visibility,
-        rinch_dom::computed_style::VisibilityValue::Hidden
-            | rinch_dom::computed_style::VisibilityValue::Collapse
-    ) {
+    // A hidden scroller paints no bar (#829) and offers none, but a visible
+    // descendant's bar is painted and grabbed (#843), as in `hit_test_node`.
+    let hidden = hides_own_hit(tree, node);
+    if hidden && !shows_below(tree, node_id) {
         return None;
     }
 
@@ -1089,6 +1160,10 @@ fn find_scrollbar_hit_node(
         if let Some(hit) = find_scrollbar_hit_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy) {
             return Some(hit);
         }
+    }
+
+    if hidden {
+        return None;
     }
 
     // Which bars exist, and where they are: the paint pass's own computation,
@@ -1127,6 +1202,10 @@ fn find_scrollbar_hit_node(
 #[cfg(test)]
 #[path = "hit_test_prune_tests.rs"]
 mod prune_tests;
+
+#[cfg(test)]
+#[path = "hidden_ancestor_hit_843_tests.rs"]
+mod hidden_ancestor_hit_843_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3214,3 +3293,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "hidden_ancestor_hit_review_2008_tests.rs"]
+mod review_2008_probe_tests;

@@ -34,9 +34,10 @@
 //! what paint's `x`/`y` and Taffy's layout rect both use.
 
 use crate::NodeTree;
-use crate::computed_style::ScrollbarWidthValue;
-use crate::node::RawNodeId;
+use crate::computed_style::{PositionValue, ScrollbarWidthValue};
+use crate::node::{DisplayMode, RawNodeId};
 use peniko::color::{AlphaColor, Srgb};
+use peniko::kurbo;
 
 /// How thick a thumb is drawn, in logical pixels.
 pub const THICKNESS: f64 = 6.0;
@@ -238,47 +239,41 @@ impl Scrollbars {
 /// Taffy's `child.layout.{x,y}` are relative to the **parent's border box**, so
 /// they include the leading padding and border; subtracting that offset is what
 /// keeps a padded container from deciding it overflows when it does not.
-/// Measured against Chrome (issue #480, which is what pinned it): rinch works
-/// in the container's *content*-box frame where Chrome's
-/// `scrollWidth`/`clientWidth` work in its *padding*-box frame. For a
-/// **non-positioned** (`static`) child the frame difference changes neither the
-/// existence nor the size of the overflow, because Chrome extends that child's
-/// contribution by the container's end padding and the pair of paddings on each
-/// side of the subtraction cancels.
+/// rinch works in the container's *content*-box frame where Chrome's
+/// `scrollWidth`/`clientWidth` work in its *padding*-box frame (issue #480).
 ///
-/// A **positioned** child is measured differently from Chrome — `absolute`, or
-/// `relative` with an offset (every number below measured in Chrome 153):
+/// **How each box contributes (issues #776 and #775),** css-overflow-3 §2.2 as
+/// Chrome 156 measures it (`tests/scroll_range_margin_transform_776_tests.rs`
+/// has the rows):
 ///
-/// * **`absolute`.** Chrome extends nothing: the scrollable area is the union
-///   of the container's padding box and the box's own border box. rinch adds
-///   the end padding anyway, so it over-reports by **up to** the container's
-///   end padding on each axis (not its border, which both frames exclude). In
-///   a `width: 200px; height: 100px; padding: 20px; overflow: auto; position:
-///   relative` container, a 210x50 static child gives 50px of horizontal travel
-///   in both; the same box at `absolute; left: 0` gives Chrome 10px and rinch
-///   30px; a 190x50 one gives Chrome none and rinch 10px; and an `absolute;
-///   inset: 0` child gives Chrome none and rinch 20px on each axis, so rinch
-///   paints two bars Chrome does not. With a 5px border and `padding: 20px 30px
-///   20px 10px` the `inset: 0` child gives rinch 30x20 — the right and bottom
-///   paddings — against Chrome's none.
-/// * **`relative` with an offset.** Chrome counts the box at its *static*
-///   position extended by the end padding, and at its *offset* position
-///   without it; rinch's layout rect is the offset one, and rinch extends it.
-///   Before clamping, rinch's answer is Chrome's plus the smaller of the offset
-///   and the end padding, per axis. An offset toward the end over-reports by
-///   up to the end padding: in the padded container above, a 210x50 child at
-///   `left: 10px` gives Chrome 50 and rinch 60, and at `left: 40px` Chrome 70
-///   and rinch 90. An offset toward the **start** *under*-reports by up to the
-///   offset's size, and needs no padding at all to do it: in a plain `width:
-///   200px; height: 100px; overflow: auto` container, a 240x50 child at
-///   `left: -40px` gives Chrome 40px of
-///   travel and rinch no bar, so content Chrome can scroll to is unreachable.
-///   A `relative` child with no offset is measured exactly like a `static` one.
+/// * **In flow** (anything but `absolute`): its **margin box** at its *static*
+///   position — the layout rect less a `relative` offset, grown by the end
+///   margins as declared (a percentage against the container's content width,
+///   `auto` as 0, a negative one never shrinking the border box; an
+///   over-constrained block's *used* `margin-right` is negative, and Chrome
+///   counts the declared one). Chrome extends this in-flow area by the
+///   container's end padding, and the pair of paddings on each side of the
+///   frame difference cancel, so it is measured as is. Two exceptions: a
+///   non-replaced `display: inline` box counts its border box alone (its
+///   block-axis margins do nothing, its inline-axis ones are in its line),
+///   and a grid item counts its border box alone, since Chrome counts the
+///   grid's tracks, which layout does not keep (see `extend_with_child`).
+/// * **Where it is drawn:** an `absolute` box's border box, an in-flow box's
+///   border box at its `relative` offset, and either one's **transformed**
+///   bounding box — no margins, and *not* extended by the end padding, so
+///   each is measured less the container's end padding. An `absolute` box
+///   counts only here: one translated back inside the padding box overflows
+///   nothing, whatever its untransformed size.
 ///
-/// Both are older than the containing-block filter above and not fixed by it.
-/// The cure needs this function to know how each child contributes: the
-/// padding box alone for an `absolute`, and for a `relative` the larger of the
-/// padded static rect and the unpadded offset rect.
+/// Before #776/#775 every box counted its untransformed border box extended by
+/// the end padding: end margins and transforms added nothing, an `absolute;
+/// inset: 0` child of a padded scroller painted two bars, and a `relative`
+/// box offset toward the start lost the range its static box needs.
+///
+/// Not counted yet: a margin that collapses through a child's end (a
+/// child of `height: auto` whose last child has `margin-bottom: 80px` scrolls
+/// 30 in Chrome and 0 here) and a descendant's overflow below the first box
+/// (#770).
 ///
 /// In logical pixels — this is layout's own unit, and every caller either wants
 /// it that way or scales the result itself.
@@ -315,14 +310,20 @@ pub fn content_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
     } else {
         false
     };
-    extend_with_children(
-        tree,
-        node_id,
-        node_id,
+    let frame = ContainerFrame {
+        end_padding: (
+            cs.padding_right.to_px() as f64,
+            cs.padding_bottom.to_px() as f64,
+        ),
+        content_box: visible_extents(tree, node_id),
         inline_measured,
-        &mut right,
-        &mut bottom,
-    );
+        grid: matches!(
+            cs.display,
+            crate::computed_style::DisplayValue::Grid
+                | crate::computed_style::DisplayValue::InlineGrid
+        ),
+    };
+    extend_with_children(tree, node_id, node_id, &frame, &mut right, &mut bottom);
     (
         (right - content_left).max(0.0),
         (bottom - content_top).max(0.0),
@@ -359,14 +360,14 @@ pub fn content_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
 /// nothing, so a wrapper never stands between a flattened absolute and the
 /// container.
 ///
-/// With `inline_measured`, the container's own inline layout has already been
+/// With `frame.inline_measured`, the container's own inline layout has already been
 /// measured, so a text node it lays out is skipped rather than read through
 /// the proxy box `write_inline_positions` gives a direct one.
 fn extend_with_children(
     tree: &NodeTree,
     container_id: RawNodeId,
     parent_id: RawNodeId,
-    inline_measured: bool,
+    frame: &ContainerFrame,
     right: &mut f64,
     bottom: &mut f64,
 ) {
@@ -394,36 +395,14 @@ fn extend_with_children(
                 || child.hosts_hoisted_out_of_flow
                 || child.hoisted_out_of_flow_to.is_some()
             {
-                extend_with_box_tree_children(
-                    tree,
-                    container_id,
-                    parent_id,
-                    inline_measured,
-                    right,
-                    bottom,
-                );
+                extend_with_box_tree_children(tree, container_id, parent_id, frame, right, bottom);
                 return;
             }
-            extend_with_child(
-                tree,
-                container_id,
-                child_id,
-                child,
-                inline_measured,
-                right,
-                bottom,
-            );
+            extend_with_child(tree, container_id, child_id, child, frame, right, bottom);
         }
         return;
     }
-    extend_with_box_tree_children(
-        tree,
-        container_id,
-        parent_id,
-        inline_measured,
-        right,
-        bottom,
-    );
+    extend_with_box_tree_children(tree, container_id, parent_id, frame, right, bottom);
 }
 
 /// [`extend_with_children`] over `parent_id`'s box-tree children.
@@ -431,7 +410,7 @@ fn extend_with_box_tree_children(
     tree: &NodeTree,
     container_id: RawNodeId,
     parent_id: RawNodeId,
-    inline_measured: bool,
+    frame: &ContainerFrame,
     right: &mut f64,
     bottom: &mut f64,
 ) {
@@ -439,40 +418,124 @@ fn extend_with_box_tree_children(
         let Some(child) = tree.get_live(child_id) else {
             continue;
         };
-        extend_with_child(
-            tree,
-            container_id,
-            child_id,
-            child,
-            inline_measured,
-            right,
-            bottom,
-        );
+        extend_with_child(tree, container_id, child_id, child, frame, right, bottom);
     }
 }
 
-/// Grow `right`/`bottom` by one box-tree child of the walk.
+/// What [`extend_with_child`] needs of the scroll container itself.
+struct ContainerFrame {
+    /// Its `(padding-right, padding-bottom)`: what Chrome extends the in-flow
+    /// area by and nothing else, so a box measured where it is drawn gives it
+    /// back.
+    end_padding: (f64, f64),
+    /// Its content box `(width, height)` — the containing block a child's
+    /// percentage margins and `relative` offsets resolve against.
+    content_box: (f64, f64),
+    /// Whether the container's own inline layout is already measured, so a
+    /// text node it lays out is skipped (see [`extend_with_children`]).
+    inline_measured: bool,
+    /// Whether it is a grid container, whose items count their border box
+    /// alone: Chrome counts the grid's tracks, which layout does not keep
+    /// (see [`extend_with_child`]).
+    grid: bool,
+}
+
+/// Grow `right`/`bottom` by one box-tree child of the walk — by how it
+/// contributes, which [`content_extents`] spells out.
 fn extend_with_child(
     tree: &NodeTree,
     container_id: RawNodeId,
     child_id: RawNodeId,
     child: &crate::node::Node,
-    inline_measured: bool,
+    frame: &ContainerFrame,
     right: &mut f64,
     bottom: &mut f64,
 ) {
     if child.taffy_style_owned_by_contents_splice() {
-        extend_with_children(tree, container_id, child_id, inline_measured, right, bottom);
+        extend_with_children(tree, container_id, child_id, frame, right, bottom);
         return;
     }
-    if inline_measured && child.is_text() && child.ifc_root == Some(container_id) {
+    if frame.inline_measured && child.is_text() && child.ifc_root == Some(container_id) {
         return;
     }
     if !crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, child) {
         return;
     }
-    *right = right.max((child.layout.x + child.layout.width) as f64);
-    *bottom = bottom.max((child.layout.y + child.layout.height) as f64);
+    let l = &child.layout;
+    let (x, y, w, h) = (l.x as f64, l.y as f64, l.width as f64, l.height as f64);
+    let cs = &child.computed_style;
+    let (cb_w, cb_h) = (frame.content_box.0 as f32, frame.content_box.1 as f32);
+    // In flow: the margin box at the static position, which the container's
+    // end padding extends — and the frame difference cancels (see
+    // `content_extents`). Not for an `absolute` box: it has no in-flow area.
+    let mut offset = (0.0, 0.0);
+    if cs.position != PositionValue::Absolute {
+        if matches!(cs.position, PositionValue::Relative | PositionValue::Sticky) {
+            // Taffy lays a `relative` (and a `sticky`, which it is handed as
+            // one) box out at its offset position; `left` wins over `right`
+            // and `top` over `bottom`, percentages of the content box.
+            let dx = cs
+                .left
+                .resolve(cb_w)
+                .or_else(|| cs.right.resolve(cb_w).map(|r| -r))
+                .unwrap_or(0.0);
+            let dy = cs
+                .top
+                .resolve(cb_h)
+                .or_else(|| cs.bottom.resolve(cb_h).map(|b| -b))
+                .unwrap_or(0.0);
+            // Rounded as Taffy rounds the layout rect it applied the offset
+            // to: a `top: -10%` of 74px is placed 7px up, and taking 7.4 off
+            // it left the static box 0.4px low.
+            offset = (dx.round() as f64, dy.round() as f64);
+        }
+        // A percentage margin, on either axis, resolves against the
+        // containing block's width; `auto` counts as 0, and a negative margin
+        // never pulls the end inside the border box.
+        //
+        // A grid item counts its border box alone, as before #776: Chrome
+        // counts the grid's *tracks* rather than an item's margin box, and
+        // layout does not keep them. A margin box overshoots where a margin
+        // overflows its area (`margin-right: 300px` on a 50px item in a 100px
+        // column: Chrome 0, a margin box 150; `margin-right: 100%` resolves
+        // against the area, not the container: Chrome 0, a margin box 50),
+        // and the border box under-counts where a margin grows an auto track
+        // (`margin-bottom: 200%` in an auto row: Chrome 120, here 0).
+        //
+        // A non-replaced `display: inline` box's block-axis margins do
+        // nothing (CSS 2.1 §10.6.1) and its inline-axis ones are already in
+        // the line the container's inline layout measured, so it counts its
+        // border box alone: `<span style="margin-bottom: 200px">` scrolls 0
+        // in Chrome. A replaced element at `display: inline` is
+        // `DisplayMode::InlineBlock` (#1089) and keeps its margins, as an
+        // `inline-block`, `inline-flex` and `inline-grid` box does.
+        let (margin_right, margin_bottom) =
+            if frame.grid || child.display_mode == DisplayMode::Inline {
+                (0.0, 0.0)
+            } else {
+                (
+                    cs.margin_right.resolve(cb_w).unwrap_or(0.0).max(0.0) as f64,
+                    cs.margin_bottom.resolve(cb_w).unwrap_or(0.0).max(0.0) as f64,
+                )
+            };
+        *right = right.max(x - offset.0 + w + margin_right);
+        *bottom = bottom.max(y - offset.1 + h + margin_bottom);
+    }
+    // Where it is drawn: an `absolute` box, an offset `relative` one and a
+    // transformed one count their border box, transformed, with no end
+    // padding — so it comes off here.
+    let transformed = child.has_applied_transform();
+    if cs.position == PositionValue::Absolute || transformed || offset != (0.0, 0.0) {
+        let drawn = kurbo::Rect::new(x, y, x + w, y + h);
+        let drawn = if transformed {
+            super::compose_node_transform(child, x, y, 1.0, kurbo::Affine::IDENTITY)
+                .transform_rect_bbox(drawn)
+        } else {
+            drawn
+        };
+        *right = right.max(drawn.x1 - frame.end_padding.0);
+        *bottom = bottom.max(drawn.y1 - frame.end_padding.1);
+    }
     // An anonymous box's lines are the container's own text, so they are
     // measured as an IFC-root container's are: a `nowrap` line wider than
     // the box (which is the container's content width) is overflow the box

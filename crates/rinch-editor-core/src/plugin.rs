@@ -83,6 +83,27 @@ pub trait Plugin {
         Vec::new()
     }
 
+    /// The names of this plugin's [`commands`](Self::commands) that change
+    /// **only the selection** — never the document, never the stored marks
+    /// (`selectAll` is the built-in one).
+    ///
+    /// The declaration is how a read-only editor (`EditorHandle::set_read_only`
+    /// in `rinch-editor-view`) answers `can_run` without
+    /// running the command: there a declared command reports whether it applies
+    /// (its `dispatch = None` branch) and every other command reports `false`.
+    /// So an undeclared selection-only command greys out on a read-only toolbar —
+    /// the safe direction — and declaring is needed only for a command a reader
+    /// should keep. It changes no refusal: *running* any command on a read-only
+    /// editor is still judged on the states it would produce, so a declared
+    /// command that does edit is refused all the same.
+    ///
+    /// A name this plugin does not itself contribute is ignored, and a later
+    /// plugin that replaces a command by name replaces its declaration with its
+    /// own.
+    fn selection_commands(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+
     /// Key bindings this plugin contributes, as `(binding, command name)` pairs.
     fn keymap(&self) -> Vec<(KeyBinding, &'static str)> {
         Vec::new()

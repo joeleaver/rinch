@@ -2136,31 +2136,26 @@ impl EditorHandle {
 
     /// Whether the named command currently applies (toolbar enablement).
     ///
-    /// In a [read-only](Self::set_read_only) editor that means "applies **and**
-    /// would not be refused": `can_run("toggleBold")` is `false`, `can_run(
-    /// "selectAll")` still `true`, so a toolbar that greys its buttons from here
-    /// goes inert with the switch.
+    /// A query: it asks the command's applicability branch (`cmd(state, None)`,
+    /// the [`Command`](rinch_editor_core::Command) contract's "would it apply")
+    /// and never runs its dispatch branch, so nothing is built, applied or folded
+    /// through a plugin, and an app's command whose dispatch branch does something
+    /// of its own never sees it fire from a toolbar asking (#834).
     ///
-    /// Answered by running the command against the state and asking the same rule
-    /// the gate asks, because whether a command changes the document is not knowable
-    /// without computing what it would do. Nothing is committed — the resulting
-    /// state is discarded — but this is **not** the cheap `Command`-with-`None`
-    /// applicability query the editable path uses: the command's dispatch branch
-    /// runs, building the transaction and folding every plugin (the history plugin
-    /// inverts every step). So a read-only toolbar that re-queries twenty buttons on
-    /// every caret move pays twenty transaction builds; ask
-    /// [`is_read_only`](Self::is_read_only) once instead and grey them all. It also
-    /// means an app-supplied command whose dispatch branch has a side effect of its
-    /// own would see it fire from a query — no command in `rinch-editor-core` has
-    /// one. Tracked for a cheaper answer.
+    /// In a [read-only](Self::set_read_only) editor that means "applies **and**
+    /// changes only the selection": `can_run("toggleBold")` is `false`, `can_run(
+    /// "selectAll")` still `true`, so a toolbar that greys its buttons from here
+    /// goes inert with the switch. Whether a command changes only the selection is
+    /// what its plugin declares ([`Plugin::selection_commands`]); an undeclared
+    /// command answers `false` there. That is the answer for a toolbar, not the
+    /// gate: [`command`](Self::command) on a read-only editor is still judged on
+    /// what the command would do.
     pub fn can_run(&self, name: &str) -> bool {
         let core = self.core();
-        if !core.locked() {
-            return core.state.can_run(name);
+        if core.locked() && !core.state.is_selection_command(name) {
+            return false;
         }
-        core.state
-            .run_mapped(name)
-            .is_some_and(|(next, _)| !core.refuses(&core.state, &next, false))
+        core.state.can_run(name)
     }
 
     /// Look up `binding` in the editor's aggregated keymap and run the bound command.
@@ -6780,7 +6775,7 @@ mod tests {
         );
         assert!(
             h.handle.doc().same_ref(&doc) && h.handle.selection() == selection,
-            "asking ran nothing: the answer comes from a dry run"
+            "asking ran nothing: the answer never runs a dispatch branch"
         );
         h.handle.set_read_only(false);
         for name in editing {
@@ -9497,6 +9492,10 @@ mod tests {
                     }),
                 )]
             }
+            /// So a read-only editor's `can_run` asks it too.
+            fn selection_commands(&self) -> Vec<&'static str> {
+                vec!["test.reads943"]
+            }
             fn init_state(&self, _doc: &Node) -> Option<Rc<dyn Any>> {
                 self.at(Site::Init);
                 None
@@ -9637,14 +9636,26 @@ mod tests {
         }
 
         /// `can_run` is a query (the immutable borrow), and still runs the
-        /// command: a toolbar's `{|| h.can_run(..)}` must not subscribe to what
-        /// the command reads.
+        /// command's applicability branch: a toolbar's `{|| h.can_run(..)}`
+        /// must not subscribe to what the command reads.
         #[test]
         fn a_plugin_command_queried_from_an_effect_subscribes_nobody() {
             let h = two_paragraphs();
             let driven = h.clone();
             assert_plugin_untracked(&h, Site::Command, move || {
                 driven.can_run("test.reads943");
+            });
+        }
+
+        /// The same on a read-only editor (#834), where a declared selection
+        /// command is asked the same way.
+        #[test]
+        fn a_plugin_command_queried_read_only_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs();
+            h.set_read_only(true);
+            let driven = h.clone();
+            assert_plugin_untracked(&h, Site::Command, move || {
+                assert!(driven.can_run("test.reads943"));
             });
         }
 
