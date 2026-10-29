@@ -4091,6 +4091,13 @@ impl NodeTree {
         &mut self.atomic_min_dropped
     }
 
+    /// Test access to the boxes the out-of-flow read-back placed
+    /// ([`Self::placed_absolutes`]): the free path must drop a freed one (#723).
+    #[doc(hidden)]
+    pub fn placed_absolutes_for_tests(&self) -> Vec<RawNodeId> {
+        self.placed_absolutes.iter().map(|&(id, _)| id).collect()
+    }
+
     /// Test access: have the next layout run the whole-document IFC pass.
     #[doc(hidden)]
     pub fn request_full_ifc_for_tests(&mut self) {

@@ -108,15 +108,21 @@ fn key(app: &mut RinchApp, k: KeyCode) {
 fn s1_reminted_claim_dropped_without_on_focus_lost() {
     let (mut app, log, host, w) = app_with_focused_widget(false, true);
     let first = free(&mut app, host, r#"<div tabindex="0">n</div>"#);
-    assert_eq!(first, w, "precondition: the markup re-minted the id");
+    // The slot: since #723 it comes back under the next generation.
+    assert_eq!(
+        first & 0xFFFF_FFFF,
+        w & 0xFFFF_FFFF,
+        "precondition: the markup re-minted the slot"
+    );
     key(&mut app, KeyCode::Enter);
     let l = log.borrow().clone();
     assert!(!l.iter().any(|e| e.starts_with("key:")), "{l:?}");
     assert_ne!(
         app.focus_target,
-        FocusTarget::Node(w),
+        FocusTarget::Node(first),
         "claim handed to the re-minted node: {l:?}"
     );
+    assert_ne!(app.focus_target, FocusTarget::Node(w), "{l:?}");
 }
 
 /// S2: no input ever comes. The next `AboutToWait` releases the freed claim,
@@ -232,18 +238,23 @@ fn s6_an_unfocused_freed_target_is_not_parked() {
         host,
         r#"<div tabindex="0" style="width: 200px; height: 40px">n</div>"#,
     );
-    assert_eq!(first, w, "precondition: the markup re-minted the id");
-    click_node(&mut app, w);
+    // The slot: since #723 it comes back under the next generation.
+    assert_eq!(
+        first & 0xFFFF_FFFF,
+        w & 0xFFFF_FFFF,
+        "precondition: the markup re-minted the slot"
+    );
+    click_node(&mut app, first);
     assert_eq!(
         app.focus_target,
-        FocusTarget::Node(w),
+        FocusTarget::Node(first),
         "precondition: new node focused"
     );
     let _ = app.handle_event(PlatformEvent::AboutToWait, (800, 600), 1.0);
     key(&mut app, KeyCode::Enter);
     assert_eq!(
         app.focus_target,
-        FocusTarget::Node(w),
+        FocusTarget::Node(first),
         "the new node's claim was dropped"
     );
     assert!(log.borrow().is_empty(), "{:?}", log.borrow());

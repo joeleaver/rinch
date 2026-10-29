@@ -191,9 +191,11 @@ fn r3a_a_freed_focused_target_whose_component_is_disposed_is_silent() {
 #[test]
 fn r3b_a_freed_focused_target_reminted_by_the_markup() {
     let (log, target, w, first) = focused_target_freed(r#"<div tabindex="0">n</div>"#, false);
+    // The slot: since #723 it comes back under the next generation.
     assert_eq!(
-        first, w,
-        "precondition: the markup re-minted the focused id"
+        first & 0xFFFF_FFFF,
+        w & 0xFFFF_FFFF,
+        "precondition: the markup re-minted the focused slot"
     );
     assert!(
         !log.iter().any(|e| e.starts_with("key:")),

@@ -241,3 +241,112 @@ fn the_node_minted_into_a_freed_slot_inherits_no_state() {
     assert!(changed);
     doc.resolve_layout(801.0, 600.0);
 }
+
+/// The same through `NodeHandle`, the app's view: a handle kept past its
+/// `discard()` reaches nothing through any verb, and in particular not the node
+/// another part of the app has since minted into its slot.
+#[test]
+fn a_discarded_node_handle_never_reaches_its_slots_next_node() {
+    use rinch_core::dom::NodeHandle;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(RinchDocument::new()));
+    let weak = Rc::downgrade(&doc);
+    let handle = |id: NodeId| NodeHandle::new(id, weak.clone());
+    let body = handle(doc.borrow().body());
+    let list = handle(doc.borrow_mut().create_element("div"));
+    body.append_child(&list);
+
+    let old = handle(doc.borrow_mut().create_element("p"));
+    old.set_attribute("tabindex", "0");
+    list.append_child(&old);
+    doc.borrow_mut().resolve_layout(800.0, 600.0);
+    old.discard();
+
+    let new = handle(doc.borrow_mut().create_element("p"));
+    new.set_attribute("class", "fresh");
+    list.append_child(&new);
+    assert_eq!(
+        new.node_id().index(),
+        old.node_id().index(),
+        "precondition: the slot is reused"
+    );
+    doc.borrow_mut().resolve_layout(801.0, 600.0);
+
+    old.set_attribute("class", "stale");
+    old.set_style("color", "red");
+    old.set_text("stale");
+    old.set_scroll_top(5.0);
+    old.scroll_into_view();
+    old.scroll_to_fraction(0.5, 0.0);
+    old.focus();
+    old.set_inner_html("<b>stale</b>");
+    old.append_child(&new);
+    old.remove();
+    old.discard();
+    list.append_child(&old);
+
+    assert_eq!(new.get_attribute("class").as_deref(), Some("fresh"));
+    assert_eq!(new.get_attribute("style"), None);
+    assert!(new.children().is_empty(), "no write reached the new node");
+    assert_eq!(
+        list.children()
+            .iter()
+            .map(|c| c.node_id())
+            .collect::<Vec<_>>(),
+        vec![new.node_id()],
+        "the new node stayed put, and the old one did not come back"
+    );
+    doc.borrow_mut().resolve_layout(802.0, 600.0);
+    assert!(doc.borrow().is_retired(old.node_id()));
+    assert!(!doc.borrow().is_retired(new.node_id()));
+}
+
+/// The out-of-flow pass keeps the boxes it placed (`placed_absolutes`) from one
+/// layout to the next, and a scroll write between layouts walks them unchecked
+/// (`out_of_flow::replace_after_scroll`). A freed box must leave that list, or
+/// the scroll reads the node minted into its slot (a debug build panics on the
+/// stale generation; a release build would re-place an unrelated node).
+#[test]
+fn a_scroll_after_a_discard_does_not_re_place_a_freed_absolute_box() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(
+        "#cb { position: relative; height: 200px; }
+         #scroller { overflow: auto; height: 50px; }
+         .content { height: 300px; }
+         .abs { position: absolute; top: 5px; left: 5px; width: 10px; height: 10px; }",
+    );
+    let body = doc.body();
+    let cb = doc.create_element("div");
+    doc.set_attribute(cb, "id", "cb");
+    let scroller = doc.create_element("div");
+    doc.set_attribute(scroller, "id", "scroller");
+    let content = doc.create_element("div");
+    doc.set_attribute(content, "class", "content");
+    let abs = doc.create_element("div");
+    doc.set_attribute(abs, "class", "abs");
+    doc.append_child(content, abs);
+    doc.append_child(scroller, content);
+    doc.append_child(cb, scroller);
+    doc.append_child(body, cb);
+    doc.resolve_layout(800.0, 600.0);
+    assert!(
+        doc.tree.placed_absolutes_for_tests().contains(&abs.0),
+        "precondition: the box is placed past its layout parent"
+    );
+
+    doc.discard_node(content);
+    // Mint into the freed slots (the content's, then the box's).
+    let minted: Vec<NodeId> = (0..2).map(|_| doc.create_element("span")).collect();
+    assert!(
+        minted.iter().any(|m| m.index() == abs.index()),
+        "precondition: the box's slot is reused"
+    );
+    assert!(
+        !doc.tree.placed_absolutes_for_tests().contains(&abs.0),
+        "the freed box left the list"
+    );
+    doc.set_scroll_top(scroller, 10.0);
+    doc.resolve_layout(801.0, 600.0);
+}
