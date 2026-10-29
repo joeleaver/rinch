@@ -293,3 +293,31 @@ fn a_hidden_flex_containers_text_falls_through_beside_a_visible_item() {
     assert_ne!(hit, Some(text.0));
     assert_eq!(hit_test(&doc.tree, shown_x + 25.0, 40.0), Some(shown.0));
 }
+
+/// The other half of the issue's document: the hidden root's **own** text,
+/// beside a visible span in the same line, is not hit. Chrome 156 answers
+/// `behind` over it.
+///
+/// Mutant: answering any text under the point of a hidden root, whatever its
+/// element's visibility — (25, 40) answers the root.
+#[test]
+fn a_hidden_roots_own_text_beside_a_visible_span_falls_through() {
+    let (mut doc, behind, overlay) =
+        stacked("visibility: hidden; font-size: 16px; line-height: 20px; font-family: sans-serif");
+    let own = doc.create_text("HIDDEN HIDDEN ");
+    doc.append_child(overlay, own);
+    let span = doc.create_element("span");
+    doc.set_attribute(span, "style", "visibility: visible");
+    let text = doc.create_text("VIS");
+    doc.append_child(span, text);
+    doc.append_child(overlay, span);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        doc.tree.get(own.0).unwrap().ifc_root,
+        Some(overlay.0),
+        "positive control: the overlay is the IFC root of both texts"
+    );
+
+    // The line is y 30..50 from x 20; (25, 40) is on the first "H".
+    assert_eq!(hit_test(&doc.tree, 25.0, 40.0), Some(behind.0));
+}
