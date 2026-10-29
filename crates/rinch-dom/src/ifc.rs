@@ -110,6 +110,16 @@ pub(crate) fn line_descent(m: &parley::LineMetrics) -> f32 {
     m.content_block_max_coord - m.baseline
 }
 
+/// The id of the zero-size out-of-flow box an IFC with no content at all
+/// (no text, no inline box) is handed: parley 0.12 gives a layout with no
+/// items one line holding the root's strut, kept for a caret, where CSS 2.1
+/// §9.4.2 makes such a line box zero-height (Chrome 153: a block holding only
+/// collapsible spaces, a comment, an empty `<span>` or an out-of-flow box is
+/// 0 tall). With one item that is no content parley makes the line invisible.
+/// It reads as an edge box ([`is_edge_box`]) of an owner no node has, so
+/// every walker skips it.
+pub const EMPTY_IFC_BOX: u64 = EDGE_BOX | EDGE_BOX_END | (EDGE_BOX_END - 1);
+
 /// Whether an inline box id is an edge box ([`EDGE_BOX`]) rather than an
 /// atomic inline's node id.
 pub fn is_edge_box(id: u64) -> bool {
@@ -749,10 +759,18 @@ pub(crate) fn atomic_inline_baseline(tree: &crate::node::NodeTree, id: usize) ->
         DisplayValue::InlineFlex | DisplayValue::InlineGrid
     );
     let clips = |o: OverflowValue| !matches!(o, OverflowValue::Visible | OverflowValue::Clip);
+    if let Some(NodeContext::FormControl { .. }) = tree.taffy.get_node_context(taffy_id) {
+        let height = tree.taffy.unrounded_layout(taffy_id).size.height;
+        return crate::form_control::input_baseline(node, height);
+    }
     if !first && (clips(style.overflow_x) || clips(style.overflow_y)) {
         return None;
     }
-    taffy_baseline(tree, taffy_id, first, 0)
+    let r = taffy_baseline(tree, taffy_id, first, 0);
+    if std::env::var_os("ZZ_PROBE_BASELINE").is_some() {
+        eprintln!("ZZ atomic_inline_baseline({id}) = {r:?} lines={:?}", tree.atomic_line_baselines);
+    }
+    r
 }
 
 /// [`atomic_inline_baseline`]'s walk over the Taffy subtree at `taffy_id`:
@@ -782,12 +800,15 @@ fn taffy_baseline(
             - layout.padding.right
             - layout.border.left
             - layout.border.right;
+        // The measure at the width it has; the closest one when Taffy clamped
+        // the measured width (a box `380` wide whose line measured 380.86),
+        // the newest of equally close ones.
         let entry = tree
             .atomic_line_baselines
             .get(&leaf)?
             .iter()
             .rev()
-            .find(|e| (e.0 - width).abs() <= 0.5)?;
+            .min_by(|a, b| (a.0 - width).abs().total_cmp(&(b.0 - width).abs()))?;
         return if first { entry.1 } else { entry.2 }.map(|b| top + b);
     }
     let count = taffy::TraversePartialTree::child_count(taffy, taffy_id);
@@ -1696,6 +1717,22 @@ impl<'a> IfcText<'a> {
                 }
                 IfcOp::InlineBox(b) => builder.push_inline_box(b.clone()),
             }
+        }
+        let has_content = self.ops.iter().any(|op| match op {
+            IfcOp::Text(text) => !text.is_empty(),
+            IfcOp::InlineBox(_) => true,
+            _ => false,
+        });
+        if !has_content {
+            builder.push_inline_box(parley::InlineBox {
+                id: EMPTY_IFC_BOX,
+                index: 0,
+                width: 0.0,
+                height: 0.0,
+                kind: parley::InlineBoxKind::OutOfFlow,
+                baseline: None,
+                vertical_align: parley::style::VerticalAlign::BASELINE,
+            });
         }
     }
 

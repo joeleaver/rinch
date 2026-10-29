@@ -82,6 +82,11 @@ pub(crate) struct CharMetrics {
     /// Whether `avg_em` is the OS/2 average (`true`) or the `0` fallback.
     /// Chrome rounds only the former (`max(avg, round(avg))`).
     pub(crate) from_os2: bool,
+    /// The primary font's ascent and descent, per em (0 when unknown): where
+    /// an `<input>`'s centred line puts its baseline, which lines it up in
+    /// the line around it (#663, [`input_baseline`]).
+    pub(crate) ascent_em: f32,
+    pub(crate) descent_em: f32,
 }
 
 /// The largest `xAvgCharWidth`, as a multiple of the face's `0` advance,
@@ -883,6 +888,8 @@ pub(crate) fn char_metrics(
         avg_em: 0.0,
         max_em: 0.0,
         from_os2: false,
+        ascent_em: 0.0,
+        descent_em: 0.0,
     };
     let family = crate::fonts::parley_text_family(font_cx, &style.font_family, PROBE);
     let mut builder = layout_cx.ranged_builder(font_cx, PROBE, 1.0, true);
@@ -909,6 +916,10 @@ pub(crate) fn char_metrics(
     let Some(run) = run else {
         return UNKNOWN;
     };
+    let (ascent_em, descent_em) = {
+        let m = run.run().font_metrics();
+        (m.ascent / 16.0, m.descent / 16.0)
+    };
     let font = run.run().font();
     let Ok(face) = skrifa::FontRef::from_index(font.data.as_ref(), font.index) else {
         return UNKNOWN;
@@ -932,6 +943,8 @@ pub(crate) fn char_metrics(
         avg_em: zero / upem,
         max_em: 0.0,
         from_os2: false,
+        ascent_em,
+        descent_em,
     };
     let avg = f32::from(face.os2().ok().map_or(0, |t| t.x_avg_char_width()));
     if avg <= 0.0 || (zero > 0.0 && avg > MAX_TRUSTED_AVG_PER_ZERO * zero) {
@@ -941,6 +954,8 @@ pub(crate) fn char_metrics(
         avg_em: avg / upem,
         max_em: (f32::from(head.x_max()) - f32::from(head.x_min())).max(0.0) / upem,
         from_os2: true,
+        ascent_em,
+        descent_em,
     }
 }
 
@@ -1011,6 +1026,24 @@ pub const CARET_WIDTH: f32 = 1.5;
 /// horizontally to keep the caret in view (#1721): every `<input>`, as in
 /// Chrome 155. A `<textarea>` wraps at its content box instead, and scrolls
 /// vertically (#827).
+/// A single-line `<input>`'s baseline from its border-box top, `height`
+/// tall: its one line is centred in the box ([`field_text_origin`]), and its
+/// baseline is the primary font's ascent below that line's top (#663: what
+/// lines the control up with the text around it, as in Chrome). `None` until
+/// its font metrics are known ([`cached_char_metrics`]).
+pub(crate) fn input_baseline(node: &Node, height: f32) -> Option<f32> {
+    if !is_single_line(node) {
+        return None;
+    }
+    let (_, m) = node.form_char_metrics.get()?;
+    if m.ascent_em <= 0.0 {
+        return None;
+    }
+    let size = node.computed_style.font_size;
+    let (ascent, descent) = (m.ascent_em * size, m.descent_em * size);
+    Some((height - (ascent + descent)) / 2.0 + ascent)
+}
+
 pub fn is_single_line(node: &Node) -> bool {
     node.tag() == Some("input")
 }
