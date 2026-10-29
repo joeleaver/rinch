@@ -79,6 +79,23 @@ const CHROME: &[(&str, &str, &str)] = &[
         r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;display:grid;grid-template-columns:100px 150px;justify-items:safe end"><div data-m="a" style="width:40px;height:20px;"></div><div data-m="b" style="width:50px;height:20px"></div></div>"##,
         "a=71,7,40,20 b=211,7,50,20",
     ),
+    // From the #1989 review: an item wider than its track, so `safe` matters.
+    (
+        "g_safe_end_overflow",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;display:grid;grid-template-columns:100px 150px;justify-items:safe end"><div data-m="a" style="width:140px;height:20px"></div></div>"##,
+        "a=11,7,140,20",
+    ),
+    (
+        "g_js_last_baseline",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;display:grid;grid-template-columns:100px 150px;justify-items:end"><div data-m="a" style="width:40px;height:20px;justify-self:last baseline"></div></div>"##,
+        "a=71,7,40,20",
+    ),
+    // An auto-width item, so a dropped `flex-start` (stretch) shows.
+    (
+        "g_auto_width_flex_start",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;display:grid;grid-template-columns:100px 150px;justify-items:flex-start"><div data-m="a" style="height:20px"><div style="width:30px;height:10px"></div></div></div>"##,
+        "a=11,7,30,20",
+    ),
     (
         "g_ji_unsafe_end",
         r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;display:grid;grid-template-columns:100px 150px;justify-items:unsafe end"><div data-m="a" style="width:40px;height:20px;"></div><div data-m="b" style="width:50px;height:20px"></div></div>"##,
