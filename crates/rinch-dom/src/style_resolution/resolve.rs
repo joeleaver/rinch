@@ -121,15 +121,9 @@ impl RinchDocument {
     }
 
     fn resolve_styles_inner(&mut self) {
-        use crate::stylo_impl::RinchNode;
-        use style::shared_lock::StylesheetGuards;
-
-        // Flush any pending stylesheet changes
-        {
-            let guard = self.tree.guard.read();
-            let guards = StylesheetGuards::same(&guard);
-            self.stylist.flush::<RinchNode>(&guards, None, None);
-        }
+        // Flush any pending stylesheet changes, restyling what they reach
+        // (#884, `sheets.rs`).
+        self.flush_stylist();
         self.refresh_pseudo_rule_presence();
         // Attribute and state changes since the last resolve: Stylo's
         // invalidator turns their snapshots into restyle hints and style
@@ -284,9 +278,18 @@ impl RinchDocument {
     ///   replace, and its next cascade would then read as a *change* — a
     ///   transition on a node that was only just inserted.
     pub(crate) fn resolve_inserted_subtree(&mut self, node_id: RawNodeId) -> bool {
-        use crate::stylo_impl::RinchNode;
-        use style::shared_lock::StylesheetGuards;
-
+        // Flush pending sheet changes (a `<style>` this insertion connected, a
+        // `load_css` since the last resolve) first, so the subtree cascades
+        // against the rules the next resolve will use: otherwise that
+        // resolve's flush would invalidate the just-styled subtree, and its
+        // second cascade would read as a change (#884). What the flush queues
+        // needs no check of its own: a whole-document restyle sets
+        // `full_style_walk` (below), and a targeted one marks every element
+        // whose style changes with a restyle hint and its ancestors with
+        // `style_dirty_descendants`, which the ancestor walk below declines
+        // on. A sheet that restyles only elements elsewhere leaves this
+        // subtree's cascade correct, and those wait for the next resolve.
+        self.flush_stylist();
         if self.tree.full_style_walk {
             return false;
         }
@@ -312,11 +315,6 @@ impl RinchDocument {
         self.tree.hit_cache.invalidate();
         let t = web_time::Instant::now();
         self.tree.perf.bump(crate::perf::Counter::StyleResolves);
-        {
-            let guard = self.tree.guard.read();
-            let guards = StylesheetGuards::same(&guard);
-            self.stylist.flush::<RinchNode>(&guards, None, None);
-        }
         self.refresh_pseudo_rule_presence();
         let parent_style = self.find_parent_computed_style(node_id);
         self.fill_style_bloom_for(node_id);

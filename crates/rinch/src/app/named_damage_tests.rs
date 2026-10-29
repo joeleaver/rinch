@@ -528,9 +528,11 @@ fn two_distant_changes_repaint_their_sum_not_their_span() {
 
 // ── What still repaints in full, and why ───────────────────────────────────
 
-/// A stylesheet added after mount restyles the whole document without naming
-/// a node: that is a full repaint, counted as `repaint_full_restyle`, and the
-/// frame shows the new rule everywhere.
+/// A stylesheet added after mount whose rule Stylo cannot bucket by id, class
+/// or tag (`:root`) restyles the whole document without naming a node: that is
+/// a full repaint, counted as `repaint_full_restyle`, and the frame shows the
+/// new rule everywhere. (A sheet of `.a` rules alone restyles `.a` and is
+/// repainted where it is — the next test, #884.)
 #[test]
 fn a_stylesheet_append_repaints_in_full() {
     let (mut app, ids) = mount();
@@ -540,13 +542,34 @@ fn a_stylesheet_append_repaints_in_full() {
         let doc = app.doc.clone().unwrap();
         let mut d = doc.borrow_mut();
         let style = d.create_element("style");
-        let css = d.create_text(".a { background: rgb(0, 200, 0) !important; }");
+        let css = d.create_text(
+            ":root { --late: rgb(0, 200, 0); } .a { background: var(--late) !important; }",
+        );
         d.append_child(style, css);
         let body = d.body();
         d.append_child(body, style);
     }
     let (after, stats) = frame(&mut app);
     assert_eq!(stats.get(Counter::RepaintFullRestyle), 1, "{stats:?}");
+    assert!(diff_in(&before, &after, a) > 0, "the new rule is drawn");
+    assert_eq!(diff_in(&after, &full_frame(&mut app), whole()), 0);
+}
+
+/// A stylesheet loaded after mount whose rules Stylo can bucket (`.a`)
+/// restyles the elements they match and nothing else (#884), so it is a
+/// partial repaint of those elements, and the frame is the full frame.
+#[test]
+fn a_targeted_stylesheet_repaints_what_it_restyles() {
+    let (mut app, ids) = mount();
+    let a = rect_around(&app, ids.a, 0);
+    let (before, _) = frame(&mut app);
+    app.doc
+        .clone()
+        .unwrap()
+        .borrow_mut()
+        .load_css(".a { background: rgb(0, 200, 0) !important; }");
+    let (after, stats) = frame(&mut app);
+    assert_partial_and_small(&stats);
     assert!(diff_in(&before, &after, a) > 0, "the new rule is drawn");
     assert_eq!(diff_in(&after, &full_frame(&mut app), whole()), 0);
 }

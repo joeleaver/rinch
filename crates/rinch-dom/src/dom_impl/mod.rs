@@ -142,8 +142,24 @@ pub struct RinchDocument {
     /// The theme stylesheet, held in a stable slot before every app sheet so app
     /// CSS always cascades over it. Managed by `set_theme_css`.
     pub(crate) theme_stylesheet: Option<style::stylesheets::DocumentStyleSheet>,
-    /// App author stylesheets, in insertion (source) order.
+    /// App author stylesheets (`load_css`), in insertion (source) order. They
+    /// are the web's `<head>` sheets: after the theme slot, before every
+    /// `<style>` element's sheet.
     pub(crate) author_stylesheets: Vec<style::stylesheets::DocumentStyleSheet>,
+    /// Every `<style>` element created in this document (#884), so the sheets
+    /// can follow them in and out of it. May hold ids since freed or reused;
+    /// [`Self::sync_style_element_sheets`] drops those.
+    pub(crate) style_elements: Vec<RawNodeId>,
+    /// The sheets of the connected `<style>` elements, in tree order, each
+    /// with the element and the CSS text it was parsed from. They cascade
+    /// after `author_stylesheets`.
+    pub(crate) style_element_sheets: Vec<crate::style_resolution::StyleElementSheet>,
+    /// A `<style>` element may have entered or left the document, or its text
+    /// changed, since `style_element_sheets` was last brought up to date.
+    pub(crate) style_elements_stale: bool,
+    /// A sheet was added, replaced or removed since the last stylist flush,
+    /// and its invalidations are to be applied to the styled document (#884).
+    pub(crate) sheet_invalidations_pending: bool,
     /// Whether any loaded stylesheet has a rule whose rightmost compound is a
     /// bare focus pseudo-class (`:focus` / `:focus-visible` / `:focus-within`
     /// with no tag/class/id/attribute anchor) — e.g. the theme's
@@ -230,6 +246,10 @@ impl RinchDocument {
             device_params,
             theme_stylesheet: None,
             author_stylesheets: Vec::new(),
+            style_elements: Vec::new(),
+            style_element_sheets: Vec::new(),
+            style_elements_stale: false,
+            sheet_invalidations_pending: false,
             has_bare_focus_rules: false,
             viewport_units_used: false,
             has_before_rules: true,

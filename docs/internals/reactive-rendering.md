@@ -800,7 +800,8 @@ theme sheet can carry `@keyframes` — re-extract its stops from the new base
 style, and take the new duration and delay. A paused animation keeps its frozen
 elapsed *time* across a re-timing, as Chrome keeps `currentTime`. That is
 `recompute_all_styles_full` **only**, and it is not the only pass that
-re-cascades the whole document: a `<style>` append (`maybe_load_style_css`) and
+re-cascades the whole document: a stylesheet change Stylo cannot target — a
+`<style>` carrying a `@keyframes` rule is one (`flush_stylist`, #884) — and
 a viewport change that flips a media query do too, and set no flag — measured, a
 `<style>` appended after the first layout with a redefined `@keyframes` body
 leaves the running animation on its old one (tracked on **#781**). On those two

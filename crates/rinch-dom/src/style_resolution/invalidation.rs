@@ -587,6 +587,7 @@ impl RinchDocument {
         empty_may_flip: bool,
     ) {
         self.note_table_children_changed(parent);
+        self.note_style_elements_moved(parent);
         let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };
@@ -758,6 +759,7 @@ impl RinchDocument {
         // Before the structural-selector gate: a row moved in keeps its
         // table part, so no cascade of its own tells the table (#1083).
         self.note_table_children_changed(parent);
+        self.note_style_elements_moved(parent);
         let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };
