@@ -1200,7 +1200,7 @@ pub(crate) fn note_kind_at_read(
 /// flags. Called before `read_layout_results` walks the document.
 pub(crate) fn begin_read(tree: &mut NodeTree) {
     tree.placed_absolutes.clear();
-    tree.overflow_absolutes.clear();
+    tree.overflow_absolutes.listed.clear();
     tree.abs_static_fits.clear();
     tree.abs_late_moves = false;
     tree.abs_inline_cb_seen = false;

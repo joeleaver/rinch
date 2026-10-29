@@ -244,7 +244,7 @@ impl Scrollbars {
 /// `<body>`'s). The layout read-back lists them
 /// (`NodeTree::overflow_absolutes`), and [`extend_with_overflow_absolutes`]
 /// measures this container's through every box between them, once per
-/// geometry (`OverflowAbsExtents`).
+/// geometry (`OverflowAbsolutes`).
 ///
 /// Taffy's `child.layout.{x,y}` are relative to the **parent's border box**, so
 /// they include the leading padding and border; subtracting that offset is what
@@ -467,7 +467,7 @@ fn extend_with_box_tree_children(
 /// between them.
 ///
 /// The layout read-back lists the absolute boxes
-/// (`NodeTree::overflow_absolutes`), and [`OverflowAbsExtents`] measures them
+/// (`NodeTree::overflow_absolutes`), and [`OverflowAbsolutes`] measures them
 /// once per geometry: so this is one binary search, plus a walk for each box
 /// with a transform on its way, and a document with none pays an `is_empty`.
 fn extend_with_overflow_absolutes(
@@ -477,10 +477,10 @@ fn extend_with_overflow_absolutes(
     right: &mut f64,
     bottom: &mut f64,
 ) {
-    if tree.overflow_absolutes.is_empty() {
+    if tree.overflow_absolutes.listed.is_empty() {
         return;
     }
-    let state = tree.overflow_extents.current(tree);
+    let state = tree.overflow_absolutes.current(tree);
     let measured = &state.measured;
     if let Ok(i) = measured.binary_search_by_key(&container_id, |m| m.0) {
         let (_, x1, y1) = measured[i];
@@ -512,11 +512,12 @@ fn extend_with_overflow_absolutes(
     }
 }
 
-/// The absolute boxes of `NodeTree::overflow_absolutes` (#770), each
-/// assigned to the scroll container whose range it is
-/// (`out_of_flow::overflow_scroller`) and measured in that container's
-/// border-box frame — a memo, filled by the first scroll range asked for
-/// after the geometry changed and kept until it changes again.
+/// `NodeTree::overflow_absolutes`: every `absolute` box the layout read back
+/// (`listed`, #770), and a memo of them, each assigned to the scroll
+/// container whose range it is (`out_of_flow::overflow_scroller`) and
+/// measured in that container's border-box frame — filled by the first scroll
+/// range asked for after the geometry changed and kept until it changes
+/// again.
 ///
 /// **Keyed on `HitCache::shape_generation`**, which everything that can move
 /// a box moves: a layout, a mutation, a restyle, a tick that changes a
@@ -535,7 +536,10 @@ fn extend_with_overflow_absolutes(
 /// between it and its containing block's chain), measured as
 /// `out_of_flow::overflow_scroller` and [`border_box_in`] say.
 #[derive(Debug, Default)]
-pub(crate) struct OverflowAbsExtents {
+pub(crate) struct OverflowAbsolutes {
+    /// `(absolute box, its out_of_flow_kind)`, in read order. Cleared by
+    /// `out_of_flow::begin_read`.
+    pub(crate) listed: Vec<(usize, Option<crate::out_of_flow::OutOfFlowKind>)>,
     state: std::cell::RefCell<OverflowAbsState>,
 }
 
@@ -552,7 +556,7 @@ pub(crate) struct OverflowAbsState {
     live: Vec<(usize, usize)>,
 }
 
-impl OverflowAbsExtents {
+impl OverflowAbsolutes {
     /// The memo, filled for `tree`'s current geometry.
     fn current<'a>(&'a self, tree: &NodeTree) -> std::cell::Ref<'a, OverflowAbsState> {
         let generation = tree.hit_cache.shape_generation();
@@ -587,7 +591,7 @@ impl OverflowAbsState {
             (clip_x || clip_y) && crate::out_of_flow::is_scroll_container(body)
         });
         let mut sorted = true;
-        for &(abs_id, kind) in &tree.overflow_absolutes {
+        for &(abs_id, kind) in &tree.overflow_absolutes.listed {
             match place_listed(tree, abs_id, kind, body_scrolls) {
                 Placed::Nowhere => {}
                 Placed::Measured(scroller, x1, y1) => match self.measured.last_mut() {
@@ -876,13 +880,6 @@ fn extend_with_child(
     let l = &child.layout;
     let (x, y, w, h) = (l.x as f64, l.y as f64, l.width as f64, l.height as f64);
     let cs = &child.computed_style;
-    // An `absolute` box with no area counts nothing, wherever it is: Chrome
-    // 156 gives a 200x100 scroller no range for a `0x500` one, a `10x0` one
-    // at `top: 300px` or a `0x50` one at `left: 300px`
-    // (`tests/abs_scroll_range_770_tests.rs`).
-    if cs.position == PositionValue::Absolute && is_empty_box(child) {
-        return;
-    }
     let (cb_w, cb_h) = (frame.content_box.0 as f32, frame.content_box.1 as f32);
     // In flow: the margin box at the static position, which the container's
     // end padding extends — and the frame difference cancels (see
@@ -939,6 +936,12 @@ fn extend_with_child(
             };
         *right = right.max(x - offset.0 + w + margin_right);
         *bottom = bottom.max(y - offset.1 + h + margin_bottom);
+    } else if is_empty_box(child) {
+        // An `absolute` box with no area counts nothing, wherever it is:
+        // Chrome 156 gives a 200x100 scroller no range for a `0x500` one, a
+        // `10x0` one at `top: 300px` or a `0x50` one at `left: 300px`
+        // (`tests/abs_scroll_range_770_tests.rs`).
+        return;
     }
     // Where it is drawn: an `absolute` box, an offset `relative` one and a
     // transformed one count their border box, transformed, with no end

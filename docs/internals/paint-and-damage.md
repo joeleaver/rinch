@@ -166,7 +166,7 @@ its scroll carries an ICB box, `chain_to_containing_block`), and the `<html>`
 box's when the body does not scroll or does not hold the box. A box its layout
 parent already measures (`contributes_to_scrollable_overflow`) is left out.
 `content_extents` ends with `extend_with_overflow_absolutes`, which reads a
-**memo**, `paint::scrollbar::OverflowAbsExtents` (`NodeTree::overflow_extents`):
+**memo**, `paint::scrollbar::OverflowAbsolutes` (beside the list):
 the first range asked for after the geometry changed walks each listed box up
 once (`place_listed`: it finds the container as `overflow_scroller` does and
 sums the offsets on the way — each box's layout offset less its scroll, since

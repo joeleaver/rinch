@@ -1570,18 +1570,11 @@ impl RinchDocument {
                 crate::out_of_flow::note_kind_at_read(&mut self.tree, node_id, kind);
                 // Listed for the scroll range it belongs to (#770): which
                 // container that is, and where the box is in it, is worked out
-                // when a range is first asked for (`paint::scrollbar`'s
-                // `OverflowAbsExtents`), from the final layout.
-                if self.tree.nodes[node_id].box_position()
-                    == crate::computed_style::PositionValue::Absolute
-                    && crate::out_of_flow::is_laid_out(
-                        &self.tree,
-                        node_id,
-                        (new_layout.width, new_layout.height),
-                    )
-                {
-                    self.tree.overflow_absolutes.push((node_id, kind));
-                }
+                // from the final layout when a range is first asked for
+                // (`paint::scrollbar::OverflowAbsolutes`), which also passes
+                // over a box with no area, as a box in a `display: none`
+                // subtree is — so nothing is asked here.
+                self.tree.overflow_absolutes.listed.push((node_id, kind));
                 if crate::out_of_flow::has_inline_containing_block(&self.tree, kind) {
                     self.tree.abs_inline_cb_seen = true;
                 }

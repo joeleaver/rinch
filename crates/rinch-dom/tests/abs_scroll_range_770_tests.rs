@@ -338,7 +338,7 @@ fn above_its_block_the_overflow_follows_the_containing_block_chain() {
 /// Two scroll containers each take their own box, whatever order the boxes
 /// come in: the first box in the document is the inner scroller's, the
 /// second the outer's (c6b's inner shape, then c6's box after it). The
-/// measured list is by container (`OverflowAbsExtents`), and one in document
+/// measured list is by container (`OverflowAbsolutes`), and one in document
 /// order would hand the outer container's search the inner one's entry first. Chrome
 /// 156: `i` 50x100, `o` 0x100.
 #[test]
