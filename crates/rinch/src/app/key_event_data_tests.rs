@@ -276,7 +276,7 @@ fn a_chord_on_a_non_qwerty_layout_names_the_keycap() {
 fn a_registered_focus_target_sees_the_meta_modifier() {
     let seen: Rc<RefCell<Vec<KeyEventData>>> = Rc::new(RefCell::new(Vec::new()));
     let sink = seen.clone();
-    let id: Rc<std::cell::Cell<usize>> = Rc::new(std::cell::Cell::new(0));
+    let id: Rc<std::cell::Cell<u64>> = Rc::new(std::cell::Cell::new(0));
     let id_in = id.clone();
 
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -430,7 +430,7 @@ fn without_a_logical_key_both_phases_use_the_physical_table() {
 /// in the middle keeps it honest.
 #[test]
 fn a_consuming_interceptor_does_not_strand_the_activation_latch() {
-    let id: Rc<std::cell::Cell<usize>> = Rc::new(std::cell::Cell::new(0));
+    let id: Rc<std::cell::Cell<u64>> = Rc::new(std::cell::Cell::new(0));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -474,7 +474,7 @@ fn a_consuming_interceptor_does_not_strand_the_activation_latch() {
 fn a_release_reaches_the_focused_node() {
     let seen: Rc<RefCell<Vec<KeyEventData>>> = Rc::new(RefCell::new(Vec::new()));
     let sink = seen.clone();
-    let id: Rc<std::cell::Cell<usize>> = Rc::new(std::cell::Cell::new(0));
+    let id: Rc<std::cell::Cell<u64>> = Rc::new(std::cell::Cell::new(0));
     let id_in = id.clone();
 
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -754,7 +754,7 @@ fn the_spacebar_is_spelled_like_the_browser_and_its_release_pairs() {
 fn the_spacebar_reaches_a_focused_node_and_surface_as_the_character() {
     let seen: Rc<RefCell<Vec<KeyEventData>>> = Rc::new(RefCell::new(Vec::new()));
     let sink = seen.clone();
-    let id: Rc<std::cell::Cell<usize>> = Rc::new(std::cell::Cell::new(0));
+    let id: Rc<std::cell::Cell<u64>> = Rc::new(std::cell::Cell::new(0));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

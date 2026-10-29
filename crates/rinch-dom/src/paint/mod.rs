@@ -240,7 +240,7 @@ fn compute_damage_impl(
         let h = node.layout.height as f64 * scale;
 
         let mut ink = Outsets::from_css(
-            ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get(id)),
+            ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get_live(id)),
             scale,
         );
         // A positioned box that moved carries its whole painted subtree with
@@ -383,7 +383,7 @@ fn compute_damage_impl(
             // among them (#1048): where they are now, and — from the ink the
             // root was last painted with — where they were.
             let root_ink = Outsets::from_css(
-                ink_outsets_in(root, tree.inline_text_shadows, |id| tree.get(id)),
+                ink_outsets_in(root, tree.inline_text_shadows, |id| tree.get_live(id)),
                 scale,
             );
             if rw > 0.0
@@ -468,7 +468,7 @@ fn compute_damage_impl(
                 let ow = owner_node.layout.width as f64 * scale;
                 let oh = owner_node.layout.height as f64 * scale;
                 let ink = Outsets::from_css(
-                    ink_outsets_in(owner_node, tree.inline_text_shadows, |id| tree.get(id)),
+                    ink_outsets_in(owner_node, tree.inline_text_shadows, |id| tree.get_live(id)),
                     scale,
                 );
                 if add(
@@ -568,7 +568,7 @@ fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId) -> bool {
         return false;
     };
     for &child_id in &node.children {
-        let Some(child) = tree.get(child_id) else {
+        let Some(child) = tree.get_live(child_id) else {
             continue;
         };
         if matches!(child.computed_style.display, DisplayValue::None) {
@@ -620,7 +620,7 @@ fn hoists_negative_z(tree: &NodeTree, node_id: RawNodeId) -> bool {
             );
             return true;
         }
-        let Some(child) = tree.get(id) else {
+        let Some(child) = tree.get_live(id) else {
             continue;
         };
         if matches!(child.computed_style.display, DisplayValue::None) {
@@ -667,7 +667,7 @@ fn subtree_has_partially_escaping_absolute(
         return false;
     };
     for &child_id in &node.children {
-        let Some(child) = tree.get(child_id) else {
+        let Some(child) = tree.get_live(child_id) else {
             continue;
         };
         if matches!(child.computed_style.display, DisplayValue::None) {
@@ -780,7 +780,7 @@ fn clip_chain_walk(
         }
         let Some(id) = current else { break };
         *steps += 1;
-        let ancestor = tree.get(id)?;
+        let ancestor = tree.get_live(id)?;
         let a = style(ancestor)?;
         // The containing block ends the escape, and its own clip applies: a
         // `position: relative; overflow: hidden` box clips its absolute
@@ -901,7 +901,7 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
             connected = true;
             break;
         }
-        cur = tree.get(id).and_then(|n| n.parent);
+        cur = tree.get_live(id).and_then(|n| n.parent);
     }
     if !connected {
         return None;
@@ -916,7 +916,7 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
     };
     let mut cur = tree.get(node_id)?.parent;
     while let Some(id) = cur {
-        let n = tree.get(id)?;
+        let n = tree.get_live(id)?;
         if n.tag() == Some("select") {
             return Some(id);
         }
@@ -958,7 +958,7 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
         return r;
     }
     Outsets::from_css(
-        ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get(id)),
+        ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get_live(id)),
         scale,
     )
     .grow(r)
@@ -1345,6 +1345,29 @@ pub fn contains_fixed_descendants(node: &Node) -> bool {
             || !node.computed_style.mask_image.is_empty())
 }
 
+/// Whether a `position: fixed` box under `id` escapes the clips above `id`
+/// (#549): one that no box between the two contains
+/// ([`contains_fixed_descendants`]). Memoised per node in the tree's hit cache,
+/// so the subtree is walked once per generation however many probes or paints
+/// ask. Hit testing asks it of a stacking context a probe is clipped away from;
+/// paint asks it of a group layer opened under a clip such a box escapes.
+pub fn holds_escaping_fixed(tree: &NodeTree, id: crate::node::RawNodeId) -> bool {
+    if let Some(e) = tree.hit_cache.escaping_fixed(id) {
+        return e;
+    }
+    let escapes = tree.get_live(id).is_some_and(|node| {
+        node.children.iter().any(|&c| {
+            tree.get_live(c).is_some_and(|child| {
+                child.computed_style.display != DisplayValue::None
+                    && (child.box_position() == PositionValue::Fixed
+                        || (!contains_fixed_descendants(child) && holds_escaping_fixed(tree, c)))
+            })
+        })
+    });
+    tree.hit_cache.store_escaping_fixed(id, escapes);
+    escapes
+}
+
 /// Sets [`FIXED_FLOOR`] at the layers open now, for as long as it lives: a
 /// fixed box painted meanwhile keeps every clip already open (#549). Taken by
 /// [`paint_node`] for a box [`contains_fixed_descendants`] answers for, so the
@@ -1662,7 +1685,7 @@ impl Painter for ClipTrackingPainter<'_> {
     fn split_surface(&mut self, split: &painter::SurfaceSplit) -> painter::SplitVerdict {
         self.inner.split_surface(split)
     }
-    fn note_node_start(&mut self, node: usize) {
+    fn note_node_start(&mut self, node: RawNodeId) {
         self.inner.note_node_start(node)
     }
 }
@@ -2086,7 +2109,7 @@ pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
     if !node.display_mode.is_atomic_inline() {
         return (0.0, 0.0);
     }
-    let Some(root) = node.ifc_root.and_then(|id| tree.get(id)) else {
+    let Some(root) = node.ifc_root.and_then(|id| tree.get_live(id)) else {
         return (0.0, 0.0);
     };
     ifc_root_content_origin(root)
@@ -2461,11 +2484,20 @@ fn painted_origin_step(
 ///
 /// The common untransformed case takes an allocation-free fast path and returns
 /// `Affine::IDENTITY`.
+///
+/// `node_id` is the caller's, so it is looked up **checked** (#723): an id that
+/// names no live node — a vacant slot, or a slot reused since the id was taken
+/// (a stale generation) — answers `(0.0, 0.0, Affine::IDENTITY)`, never the
+/// position of whatever node holds the slot now. The ancestor steps are the
+/// tree's own links and stay unchecked.
 pub fn compute_absolute_position_and_transform(
     tree: &NodeTree,
     node_id: RawNodeId,
     scale: f64,
 ) -> (f64, f64, Affine) {
+    if tree.get(node_id).is_none() {
+        return (0.0, 0.0, Affine::IDENTITY);
+    }
     position_and_transform_in(tree, node_id, scale, Frame::Current)
 }
 
@@ -2481,7 +2513,7 @@ fn position_and_transform_in(
     let mut hoisted_fixed = false;
     let mut current = Some(node_id);
     while let Some(id) = current {
-        let Some(node) = tree.get(id) else { break };
+        let Some(node) = tree.get_live(id) else { break };
         any_transform |= !frame.is_identity(node);
         if frame.position(node) == PositionValue::Fixed {
             hoisted_fixed = true;
@@ -2503,7 +2535,7 @@ fn position_and_transform_in(
         let (mut x, mut y) = (0.0_f64, 0.0_f64);
         let mut current = Some(node_id);
         while let Some(id) = current {
-            let Some(node) = tree.get(id) else { break };
+            let Some(node) = tree.get_live(id) else { break };
             let (nx, ny) = painted_origin_step(tree, node, x, y, scale, frame);
             x = nx;
             y = ny;
@@ -2515,7 +2547,7 @@ fn position_and_transform_in(
             // of this sum. Stepping to `parent` here lands every run after the
             // first at its container's origin.
             let up = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
-            if let Some(parent) = up.and_then(|pid| tree.get(pid)) {
+            if let Some(parent) = up.and_then(|pid| tree.get_live(pid)) {
                 x -= parent.scroll_offset.0 * scale;
                 y -= parent.scroll_offset.1 * scale;
             }
@@ -2530,7 +2562,7 @@ fn position_and_transform_in(
     let mut chain: Vec<RawNodeId> = Vec::new();
     let mut current = Some(node_id);
     while let Some(id) = current {
-        let Some(node) = tree.get(id) else { break };
+        let Some(node) = tree.get_live(id) else { break };
         chain.push(id);
         if frame.position(node) == PositionValue::Fixed || id == tree.body_id {
             break;
@@ -2550,7 +2582,7 @@ fn position_and_transform_in(
     };
     let (mut x, mut y) = (0.0_f64, 0.0_f64);
     for &id in chain.iter().rev() {
-        let Some(node) = tree.get(id) else { break };
+        let Some(node) = tree.get_live(id) else { break };
         let (nx, ny) = painted_origin_step(tree, node, off_x, off_y, scale, frame);
         x = nx;
         y = ny;
@@ -2599,6 +2631,9 @@ pub fn painted_border_box(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Re
 /// corresponds to anything inside it. `hit_test`'s `local_point` takes the same
 /// exit for the same reason.
 ///
+/// Also `None` when `node_id` names no live node (a vacant slot or a stale
+/// generation, #723).
+///
 /// `scale` is the DPI scale factor `px`/`py` are expressed in — pass `1.0` to
 /// work in layout pixels.
 pub fn point_in_painted_box(
@@ -2608,7 +2643,8 @@ pub fn point_in_painted_box(
     px: f64,
     py: f64,
 ) -> Option<(f64, f64)> {
-    let (x, y, transform) = compute_absolute_position_and_transform(tree, node_id, scale);
+    tree.get(node_id)?;
+    let (x, y, transform) = position_and_transform_in(tree, node_id, scale, Frame::Current);
     if transform == Affine::IDENTITY {
         return Some((px - x, py - y));
     }
@@ -2731,7 +2767,7 @@ fn offer_base_split(
         BASES_WITHOUT_GAME
             .with(|b| b.get())
             .then_some(BaseViewport {
-                surface_id: BASE_WITHOUT_GAME_IDS + node_id,
+                surface_id: BASE_WITHOUT_GAME_IDS + crate::node_slab::slot_of(node_id),
                 // No texture: the compositor draws no image, only the clear.
                 extents: (1, 1),
                 letterbox: false,
@@ -2931,7 +2967,7 @@ fn warn_where_the_viewport_cannot_be_the_base(
     let ancestors = || {
         std::iter::successors(Some((node_id, node)), |(_, n)| {
             let p = n.parent?;
-            Some((p, tree.get(p)?))
+            Some((p, tree.get_live(p)?))
         })
     };
     let mut warnings: Vec<(&'static str, String)> = Vec::new();
@@ -3411,7 +3447,7 @@ fn paint_children_with_stacking(
         // `children`. Walking `children` here paints nothing for the run at all
         // — the line is drawn from `text_layout` on the box itself.
         for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node_id).iter() {
-            let Some(child) = tree.get(child_id) else {
+            let Some(child) = tree.get_live(child_id) else {
                 continue;
             };
             if paints_at_stacking_root(child) || already_drawn_inline(child, PaintKind::InFlow) {
@@ -3592,7 +3628,7 @@ fn subtree_has_fixed(tree: &NodeTree, node_id: RawNodeId) -> bool {
         return false;
     };
     node.children.iter().any(|&c| {
-        tree.get(c).is_some_and(|child| {
+        tree.get_live(c).is_some_and(|child| {
             child.computed_style.display != DisplayValue::None
                 && (child.box_position() == PositionValue::Fixed || subtree_has_fixed(tree, c))
         })
@@ -3728,7 +3764,7 @@ fn paints_nothing_within(
     crate::RinchDocument::box_tree_children(&tree.nodes, node_id)
         .iter()
         .all(|&child_id| {
-            let Some(child) = tree.get(child_id) else {
+            let Some(child) = tree.get_live(child_id) else {
                 return true;
             };
             paints_at_stacking_root(child)
@@ -3808,7 +3844,7 @@ fn zero_box_paints_nothing_within(
         return crate::RinchDocument::box_tree_children(&tree.nodes, node_id)
             .iter()
             .all(|&child_id| {
-                let Some(child) = tree.get(child_id) else {
+                let Some(child) = tree.get_live(child_id) else {
                     return true;
                 };
                 paints_at_stacking_root(child)
@@ -5111,7 +5147,7 @@ fn paint_node_unmasked(
             // Check visibility (inherited from parent)
             let parent_visibility = node
                 .parent
-                .and_then(|p| tree.get(p))
+                .and_then(|p| tree.get_live(p))
                 .map(|p| &p.computed_style.visibility);
             if matches!(
                 parent_visibility,
@@ -5125,7 +5161,7 @@ fn paint_node_unmasked(
                 // Layout is already aligned during caching, use it directly
                 let text_shadows = node
                     .parent
-                    .and_then(|p| tree.get(p))
+                    .and_then(|p| tree.get_live(p))
                     .map(|p| p.computed_style.text_shadow.as_slice())
                     .unwrap_or(&[]);
                 // Painted in the parent's **current** colour, not the brush
@@ -5135,7 +5171,7 @@ fn paint_node_unmasked(
                 // without one. The same default as the fallback below.
                 let color = node
                     .parent
-                    .and_then(|p| tree.get(p))
+                    .and_then(|p| tree.get_live(p))
                     .and_then(|p| p.computed_style.color)
                     .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
                 render_text_with_shadow(
@@ -5154,7 +5190,7 @@ fn paint_node_unmasked(
             }
 
             // Fallback: build layout on demand (should not happen with caching)
-            let parent_node = node.parent.and_then(|p| tree.get(p));
+            let parent_node = node.parent.and_then(|p| tree.get_live(p));
             let parent_computed = parent_node.map(|p| &p.computed_style);
 
             let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
@@ -5283,7 +5319,7 @@ mod tests {
     // unhardened walk produced. A positive assertion alone survives most of
     // these regressions, because the two boxes overlap.
 
-    fn child_of(doc: &mut RinchDocument, parent: rinch_core::dom::NodeId, style: &str) -> usize {
+    fn child_of(doc: &mut RinchDocument, parent: rinch_core::dom::NodeId, style: &str) -> u64 {
         let el = doc.create_element("div");
         doc.set_attribute(el, "style", style);
         doc.append_child(parent, el);
@@ -5341,14 +5377,14 @@ mod tests {
     /// no transform and no IFC content-box offset. This is what every walk in
     /// the codebase used to do, and it is the box the assertions below must
     /// *not* return.
-    fn untransformed_origin(doc: &RinchDocument, node_id: usize) -> (f32, f32) {
+    fn untransformed_origin(doc: &RinchDocument, node_id: crate::node::RawNodeId) -> (f32, f32) {
         let (mut x, mut y) = (0.0_f32, 0.0_f32);
         let mut cur = Some(node_id);
         while let Some(id) = cur {
             let Some(n) = doc.tree.get(id) else { break };
             x += n.layout.x;
             y += n.layout.y;
-            if let Some(p) = n.parent.and_then(|pid| doc.tree.get(pid)) {
+            if let Some(p) = n.parent.and_then(|pid| doc.tree.get_live(pid)) {
                 x -= p.scroll_offset.0 as f32;
                 y -= p.scroll_offset.1 as f32;
             }

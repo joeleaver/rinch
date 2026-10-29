@@ -1068,7 +1068,7 @@ mod tests {
     /// region computed from it alone cannot reach the scroller.
     ///
     /// Returns `(scroller, bystander)`.
-    fn app_with_scroller(ids: Rc<Cell<Option<(usize, usize)>>>) -> RinchApp {
+    fn app_with_scroller(ids: Rc<Cell<Option<(u64, u64)>>>) -> RinchApp {
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
             root.set_attribute("style", "position: relative; width: 800px; height: 600px");
@@ -1113,7 +1113,7 @@ mod tests {
         );
     }
 
-    fn offsets(app: &RinchApp, id: usize) -> (f64, f64) {
+    fn offsets(app: &RinchApp, id: u64) -> (f64, f64) {
         app.doc.as_ref().unwrap().borrow().tree.nodes[id].scroll_offset
     }
 
@@ -1130,7 +1130,7 @@ mod tests {
     /// nothing else is dirty.)
     #[test]
     fn an_mcp_scroll_pushes_the_container_paint_dirty() {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let mut app = app_with_scroller(ids.clone());
         let (sc, _bystander) = ids.get().expect("the node ids");
 
@@ -1167,7 +1167,7 @@ mod tests {
     /// empty damage repaints nothing, so the entry is needed either way.)
     #[test]
     fn an_mcp_scroll_widens_a_dirty_region_that_already_has_other_nodes_in_it() {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let mut app = app_with_scroller(ids.clone());
         let (_sc, bystander) = ids.get().expect("the node ids");
 
@@ -1215,7 +1215,7 @@ mod tests {
     /// hand-written arm ignored `delta_x` for document scrolling entirely.
     #[test]
     fn an_mcp_scroll_moves_both_axes_in_the_documented_direction() {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let mut app = app_with_scroller(ids.clone());
         let (sc, _bystander) = ids.get().expect("the node ids");
         assert_eq!(offsets(&app, sc), (0.0, 0.0));
@@ -1238,7 +1238,7 @@ mod tests {
     /// name, and `reset: true` zeroes them after the read.
     #[test]
     fn perf_stats_reports_and_resets_the_counters() {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let mut app = app_with_scroller(ids);
         app.end_perf_frame();
         let mut actions = Vec::new();
@@ -1767,7 +1767,7 @@ mod text_geometry_units_tests {
     use std::cell::Cell;
 
     /// `(input, textarea, paragraph)` node ids.
-    type Ids = Rc<Cell<Option<(usize, usize, usize)>>>;
+    type Ids = Rc<Cell<Option<(u64, u64, u64)>>>;
 
     /// An `<input>` and a `<textarea>` with off-zero paddings, placed off the
     /// origin, and a `<p>` holding IFC text. Fonts and line heights are
@@ -1830,7 +1830,7 @@ mod text_geometry_units_tests {
         }
     }
 
-    fn caret(app: &mut RinchApp, node_id: usize, byte_offset: usize, scale: f64) -> (f64, f64) {
+    fn caret(app: &mut RinchApp, node_id: u64, byte_offset: usize, scale: f64) -> (f64, f64) {
         let v = query(
             app,
             DebugCommandKind::GetCaretPosition {
@@ -1842,7 +1842,7 @@ mod text_geometry_units_tests {
         (v["x"].as_f64().unwrap(), v["y"].as_f64().unwrap())
     }
 
-    fn glyph(app: &mut RinchApp, node_id: usize, byte_offset: usize, scale: f64) -> [f64; 4] {
+    fn glyph(app: &mut RinchApp, node_id: u64, byte_offset: usize, scale: f64) -> [f64; 4] {
         let v = query(
             app,
             DebugCommandKind::GetGlyphBounds {
@@ -1863,7 +1863,7 @@ mod text_geometry_units_tests {
     /// the field marked focused with its caret at `byte`, and the caret found as the dark ink in the column the engine's
     /// caret rect names (only the caret is drawn there: its x is at a glyph
     /// edge, and an empty field draws no glyph at all).
-    fn painted_caret_top_left(app: &mut RinchApp, input: usize, byte: usize) -> (f64, f64) {
+    fn painted_caret_top_left(app: &mut RinchApp, input: u64, byte: usize) -> (f64, f64) {
         let (_, by, _, bh) = {
             let d = app.doc.as_ref().unwrap().borrow();
             crate::app::hit_testing::painted_element_box(&d.tree, input)
@@ -2027,7 +2027,7 @@ mod text_geometry_units_tests {
     /// branch unpinned by the fixtures above.
     #[test]
     fn an_empty_input_caret_is_logical_at_scale_two() {
-        let id: Rc<Cell<usize>> = Rc::default();
+        let id: Rc<Cell<u64>> = Rc::default();
         let id2 = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -2172,7 +2172,7 @@ mod key_press_menu_shortcut_533_tests {
     fn a_debug_key_press_with_no_matching_chord_still_dispatches_a_keydown() {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
-        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -2207,7 +2207,7 @@ mod key_press_menu_shortcut_533_tests {
     #[test]
     fn a_debug_key_press_yields_a_bare_chord_to_a_focused_text_input() {
         let (fired, _chords) = counting_menu("N");
-        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -2266,10 +2266,10 @@ mod key_release_485_tests {
     /// A focused, focusable `<div>` that counts how many times it is
     /// activated (Enter/Space through `FocusTarget::Node`), plus the node's
     /// id for the caller to focus it.
-    fn activation_counting_app() -> (RinchApp, Rc<Cell<usize>>, usize) {
+    fn activation_counting_app() -> (RinchApp, Rc<Cell<usize>>, u64) {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
-        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -2346,7 +2346,7 @@ mod key_release_485_tests {
     fn key_recording_app() -> (RinchApp, Rc<RefCell<Vec<KeyEventData>>>) {
         let seen: Rc<RefCell<Vec<KeyEventData>>> = Rc::new(RefCell::new(Vec::new()));
         let sink = seen.clone();
-        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let id_in = id.clone();
 
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {

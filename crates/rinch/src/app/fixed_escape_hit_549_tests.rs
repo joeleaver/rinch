@@ -42,7 +42,7 @@ fn chain(styles: &[&str]) -> (RinchDocument, NodeId) {
     (doc, fixed)
 }
 
-fn hit(doc: &RinchDocument, (x, y): (f32, f32)) -> Option<usize> {
+fn hit(doc: &RinchDocument, (x, y): (f32, f32)) -> Option<u64> {
     hit_test(&doc.tree, x, y)
 }
 

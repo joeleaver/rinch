@@ -379,7 +379,7 @@ impl RinchMcpServer {
     ) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::DomTree {
             max_depth: params.0.max_depth,
-            root_id: params.0.root_id.map(|id| id as usize),
+            root_id: params.0.root_id,
             verbose: params.0.verbose.unwrap_or(false),
         })
         .await
@@ -402,10 +402,8 @@ impl RinchMcpServer {
         description = "Get detailed information about a specific DOM node by ID (computed styles, display mode, geometry). Geometry is reported as `layout` (parent-relative box, == the node's own layout) and `absolute` (on-screen box). Pass `absolute.x`/`absolute.y` to click()/mouse_* — `layout` x/y are NOT screen coordinates."
     )]
     async fn get_node(&self, params: Parameters<NodeIdParams>) -> Result<CallToolResult, McpError> {
-        self.forward_json_command(DebugCommandKind::GetNode {
-            id: params.0.id as usize,
-        })
-        .await
+        self.forward_json_command(DebugCommandKind::GetNode { id: params.0.id })
+            .await
     }
 
     #[tool(description = "Get all text content within a DOM node subtree.")]
@@ -413,10 +411,8 @@ impl RinchMcpServer {
         &self,
         params: Parameters<NodeIdParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.forward_json_command(DebugCommandKind::GetTextContent {
-            id: params.0.id as usize,
-        })
-        .await
+        self.forward_json_command(DebugCommandKind::GetTextContent { id: params.0.id })
+            .await
     }
 
     #[tool(
@@ -641,10 +637,8 @@ impl RinchMcpServer {
         &self,
         params: Parameters<NodeIdParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.forward_json_command(DebugCommandKind::GetComputedStyles {
-            id: params.0.id as usize,
-        })
-        .await
+        self.forward_json_command(DebugCommandKind::GetComputedStyles { id: params.0.id })
+            .await
     }
 
     #[tool(
@@ -903,7 +897,7 @@ impl RinchMcpServer {
         params: Parameters<CaretPositionParams>,
     ) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::GetCaretPosition {
-            node_id: params.0.node_id as usize,
+            node_id: params.0.node_id,
             byte_offset: params.0.byte_offset as usize,
         })
         .await
@@ -917,7 +911,7 @@ impl RinchMcpServer {
         params: Parameters<GlyphBoundsParams>,
     ) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::GetGlyphBounds {
-            node_id: params.0.node_id as usize,
+            node_id: params.0.node_id,
             byte_offset: params.0.byte_offset as usize,
         })
         .await

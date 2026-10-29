@@ -29,12 +29,12 @@ struct Page {
     app: RinchApp,
     a: crate::editor::EditorHandle,
     b: crate::editor::EditorHandle,
-    a_id: usize,
-    b_id: usize,
-    input: usize,
+    a_id: u64,
+    b_id: u64,
+    input: u64,
     /// A plain `div` with a click handler and no `tabindex`: a toolbar
     /// button, whose press leaves the keyboard where it is.
-    button: usize,
+    button: u64,
     on_click: OnClick,
 }
 
@@ -52,7 +52,7 @@ fn page() -> Page {
     let b = editor_with(3);
     let on_click: OnClick = Rc::default();
     let oninput = register_input_handler(InputCallback::new(|_| {}));
-    let ids: Rc<Cell<(usize, usize, usize, usize)>> = Rc::default();
+    let ids: Rc<Cell<(u64, u64, u64, u64)>> = Rc::default();
     let (a_in, b_in, click_in, ids_in) = (a.clone(), b.clone(), on_click.clone(), ids.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -140,7 +140,7 @@ fn type_char(app: &mut RinchApp, key: KeyCode, text: &str) {
     );
 }
 
-fn click_node(app: &mut RinchApp, id: usize) {
+fn click_node(app: &mut RinchApp, id: u64) {
     let (x, y) = {
         let d = app.doc.as_ref().unwrap().borrow();
         let (x, y, w, h) = painted_element_box(&d.tree, id);

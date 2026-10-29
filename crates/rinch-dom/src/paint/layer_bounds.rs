@@ -1001,7 +1001,10 @@ impl Walk<'_> {
                 y + cached.height() as f64 * self.scale,
             );
             // Text shadows on a text node come from its parent's style.
-            let styled = node.parent.and_then(|p| self.tree.get(p)).unwrap_or(node);
+            let styled = node
+                .parent
+                .and_then(|p| self.tree.get_live(p))
+                .unwrap_or(node);
             extent = extent.union(Extent::Within(transform.transform_rect_bbox(
                 text_shadow_reach(text, &styled.computed_style.text_shadow, self.scale),
             )));
@@ -1101,7 +1104,7 @@ impl Walk<'_> {
 
         // The box tree, not the element tree (#566).
         for &child_id in crate::RinchDocument::box_tree_children(&self.tree.nodes, node.id).iter() {
-            let Some(child) = self.tree.get(child_id) else {
+            let Some(child) = self.tree.get_live(child_id) else {
                 continue;
             };
             if ifc_root && child.ifc_root == Some(node.id) && !child.creates_stacking_context() {

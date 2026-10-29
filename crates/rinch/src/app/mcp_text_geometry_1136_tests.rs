@@ -27,8 +27,8 @@ fn page(
     ty: Option<&'static str>,
     style: impl Into<String>,
     value: &'static str,
-) -> (RinchApp, usize) {
-    let id: Rc<Cell<usize>> = Rc::default();
+) -> (RinchApp, u64) {
+    let id: Rc<Cell<u64>> = Rc::default();
     let id_in = id.clone();
     let style: String = style.into();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -67,7 +67,7 @@ fn query(app: &mut RinchApp, kind: DebugCommandKind, scale: f64) -> serde_json::
     }
 }
 
-fn mcp_caret(app: &mut RinchApp, node_id: usize, byte_offset: usize, scale: f64) -> (f64, f64) {
+fn mcp_caret(app: &mut RinchApp, node_id: u64, byte_offset: usize, scale: f64) -> (f64, f64) {
     let v = query(
         app,
         DebugCommandKind::GetCaretPosition {
@@ -79,7 +79,7 @@ fn mcp_caret(app: &mut RinchApp, node_id: usize, byte_offset: usize, scale: f64)
     (v["x"].as_f64().unwrap(), v["y"].as_f64().unwrap())
 }
 
-fn mcp_glyph(app: &mut RinchApp, node_id: usize, byte_offset: usize, scale: f64) -> [f64; 4] {
+fn mcp_glyph(app: &mut RinchApp, node_id: u64, byte_offset: usize, scale: f64) -> [f64; 4] {
     let v = query(
         app,
         DebugCommandKind::GetGlyphBounds {
@@ -107,7 +107,7 @@ fn alpha(px: &[u8], w: usize, x: usize, y: usize) -> f64 {
 /// The painted caret's top-left in logical px, with field `id` marked focused
 /// and its caret at `byte` (the attributes the runtime's caret sync writes,
 /// which paint reads), from a frame at `scale`.
-fn painted_caret(app: &mut RinchApp, id: usize, byte: usize, scale: f64) -> (f64, f64) {
+fn painted_caret(app: &mut RinchApp, id: u64, byte: usize, scale: f64) -> (f64, f64) {
     {
         let doc = app.doc.clone().unwrap();
         let mut d = doc.borrow_mut();
@@ -201,7 +201,7 @@ fn ink_box(app: &mut RinchApp, scale: f64) -> (f64, f64, f64, f64) {
 
 /// MCP's caret at `byte` is the painted caret, at paint scales 1 and 2 (and
 /// MCP asked at both).
-fn assert_caret_is_painted(app: &mut RinchApp, id: usize, byte: usize, what: &str) {
+fn assert_caret_is_painted(app: &mut RinchApp, id: u64, byte: usize, what: &str) {
     for scale in [1.0, 2.0] {
         let painted = painted_caret(app, id, byte, scale);
         let mcp = mcp_caret(app, id, byte, scale);
@@ -214,13 +214,7 @@ fn assert_caret_is_painted(app: &mut RinchApp, id: usize, byte: usize, what: &st
 
 /// A glyph box at `byte` runs from the caret before it to the caret after it,
 /// on the caret's line.
-fn assert_glyph_between_carets(
-    app: &mut RinchApp,
-    id: usize,
-    byte: usize,
-    next: usize,
-    what: &str,
-) {
+fn assert_glyph_between_carets(app: &mut RinchApp, id: u64, byte: usize, next: usize, what: &str) {
     let g = mcp_glyph(app, id, byte, 1.0);
     let a = mcp_caret(app, id, byte, 1.0);
     let b = mcp_caret(app, id, next, 1.0);
@@ -358,8 +352,8 @@ fn an_unpadded_paragraph_answers_its_painted_glyph() {
 
 fn page_html(
     build: impl Fn(&mut RenderScope) -> (NodeHandle, NodeHandle) + 'static,
-) -> (RinchApp, usize) {
-    let id: Rc<Cell<usize>> = Rc::default();
+) -> (RinchApp, u64) {
+    let id: Rc<Cell<u64>> = Rc::default();
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let (root, target) = build(scope);
@@ -372,7 +366,7 @@ fn page_html(
     (app, id.get())
 }
 
-fn glyph_result(app: &mut RinchApp, node_id: usize, byte_offset: usize) -> DebugResult {
+fn glyph_result(app: &mut RinchApp, node_id: u64, byte_offset: usize) -> DebugResult {
     let mut actions = Vec::new();
     app.execute_debug_command(
         DebugCommandKind::GetGlyphBounds {

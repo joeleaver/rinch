@@ -18,10 +18,10 @@ use rinch_core::Component;
 use rinch_core::events::InputCallback;
 
 /// Find the one node whose `class` attribute contains `class` exactly.
-fn find_by_class(app: &RinchApp, class: &str) -> usize {
+fn find_by_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -44,7 +44,7 @@ fn find_by_class(app: &RinchApp, class: &str) -> usize {
 /// Mount a bare uncontrolled `NumberInput` (default_value 5, step 1, no
 /// min/max) recording every `oninput`/`onchange` call. Returns the app, the
 /// `<input>` node id, the up-stepper button id, and the log.
-fn mount_fixture() -> (RinchApp, usize, usize, Rc<RefCell<Vec<String>>>) {
+fn mount_fixture() -> (RinchApp, u64, u64, Rc<RefCell<Vec<String>>>) {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let record = |tag: &'static str, log: &Rc<RefCell<Vec<String>>>| {
         let log = log.clone();
@@ -120,7 +120,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn click_center(app: &mut RinchApp, id: usize) {
+fn click_center(app: &mut RinchApp, id: u64) {
     let (cx, cy) = {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();

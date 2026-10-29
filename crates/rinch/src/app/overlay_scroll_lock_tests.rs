@@ -71,8 +71,8 @@ const AIM: (f32, f32) = (400.0, 450.0);
 /// The page scroller behind the overlay, and the overlay's own scroller.
 struct Fixture {
     app: RinchApp,
-    page: usize,
-    inner: usize,
+    page: u64,
+    inner: u64,
 }
 
 /// A page that scrolls, with `build`'s overlay on top of it.
@@ -83,8 +83,8 @@ struct Fixture {
 fn mount_with_overlay(
     build: impl FnOnce(&mut RenderScope, &[NodeHandle]) -> NodeHandle + 'static,
 ) -> Fixture {
-    let page: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
-    let inner: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let page: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+    let inner: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let page_in = page.clone();
     let inner_in = inner.clone();
 
@@ -140,7 +140,7 @@ fn modal_over_page(open: Signal<bool>, lock_scroll: bool) -> Fixture {
 
 /// The centre of a node's painted box, which is where a pointer event aimed at
 /// it has to go in.
-fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, node_id: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let n = d.tree.get(node_id).expect("node still in the tree");
@@ -153,11 +153,11 @@ fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
     (x + w / 2.0, y + h / 2.0)
 }
 
-fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+fn scroll_top(app: &RinchApp, id: u64) -> f64 {
     offsets(app, id).1
 }
 
-fn scroll_left(app: &RinchApp, id: usize) -> f64 {
+fn scroll_left(app: &RinchApp, id: u64) -> f64 {
     offsets(app, id).0
 }
 
@@ -355,13 +355,13 @@ fn a_drawer_locks_the_page_too_and_honours_its_own_off_switch() {
 struct Nested {
     f: Fixture,
     inner_scope: Rc<RefCell<Option<RenderScope>>>,
-    inner_modal_root: Rc<Cell<Option<usize>>>,
+    inner_modal_root: Rc<Cell<Option<u64>>>,
 }
 
 impl Nested {
     fn mount(outer_open: Signal<bool>, inner_open: Signal<bool>) -> Self {
         let inner_scope: Rc<RefCell<Option<RenderScope>>> = Rc::new(RefCell::new(None));
-        let inner_modal_root: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let inner_modal_root: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let scope_in = inner_scope.clone();
         let root_in = inner_modal_root.clone();
 
@@ -715,9 +715,9 @@ fn a_scrollbar_drag_already_in_flight_ends_when_the_lock_arrives() {
 #[test]
 fn a_select_popup_inside_a_locking_modal_still_scrolls() {
     let open = Signal::new(true);
-    let select_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let select_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let sel_in = select_id.clone();
-    let page: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let page: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let page_in = page.clone();
 
     let mut app = mount(move |scope: &mut RenderScope| {
@@ -808,7 +808,7 @@ fn a_select_popup_inside_a_locking_modal_still_scrolls() {
 #[test]
 fn closing_the_select_popup_releases_its_exemption() {
     let open = Signal::new(true);
-    let select_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let select_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let sel_in = select_id.clone();
 
     let mut app = mount(move |scope: &mut RenderScope| {
@@ -889,8 +889,8 @@ fn long_menu() -> Menu {
 /// the File menu open.
 ///
 /// Returns the app and the page scroller.
-fn menu_over_modal(open: Signal<bool>, layout: BarLayout, file: Menu) -> (RinchApp, usize) {
-    let page: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+fn menu_over_modal(open: Signal<bool>, layout: BarLayout, file: Menu) -> (RinchApp, u64) {
+    let page: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let page_in = page.clone();
 
     let mut app = mount(move |scope: &mut RenderScope| {
@@ -977,7 +977,7 @@ fn click(app: &mut RinchApp, at: (f32, f32)) {
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
 }
 
-fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
+fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<u64> {
     let d = app.doc.as_ref().unwrap().borrow();
     let mut out = Vec::new();
     let mut stack = vec![d.tree.body_id];
@@ -999,7 +999,7 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
 
 /// The scroller must have more room than the gesture uses, or an assertion
 /// would sit on the clamp, where a moved and an unmoved container agree.
-fn assert_room(app: &RinchApp, scroller: usize) {
+fn assert_room(app: &RinchApp, scroller: u64) {
     let d = app.doc.as_ref().unwrap().borrow();
     let nid = rinch_core::dom::NodeId(scroller);
     let max_scroll = d.scroll_height(nid) - d.client_height(nid);
@@ -1010,7 +1010,7 @@ fn assert_room(app: &RinchApp, scroller: usize) {
 }
 
 /// Whether the topmost box at `at` is `ancestor` or inside it.
-fn hit_is_inside(app: &RinchApp, at: (f32, f32), ancestor: usize) -> bool {
+fn hit_is_inside(app: &RinchApp, at: (f32, f32), ancestor: u64) -> bool {
     let d = app.doc.as_ref().unwrap().borrow();
     let mut cur = hit_test(&d.tree, at.0, at.1);
     while let Some(id) = cur {
@@ -1025,7 +1025,7 @@ fn hit_is_inside(app: &RinchApp, at: (f32, f32), ancestor: usize) -> bool {
 /// What every menu fixture below asserts of the open scroller: its wheel is
 /// its own, and the page behind is still locked. (Its thumb is not asserted:
 /// see `a_long_menu_bar_dropdown_scrolls_when_nothing_is_locked`.)
-fn assert_scrolls_over_the_lock(app: &mut RinchApp, scroller: usize, page: usize) {
+fn assert_scrolls_over_the_lock(app: &mut RinchApp, scroller: u64, page: u64) {
     assert_room(app, scroller);
     let inside = centre(app, scroller);
     assert!(
@@ -1125,8 +1125,8 @@ fn a_long_inline_menu_dropdown_scrolls_over_a_locking_modal() {
 fn locked_page_with_side_panel(
     attr: Option<&'static str>,
     on_wrapper: bool,
-) -> (RinchApp, usize, usize) {
-    let ids: Rc<Cell<(usize, usize, usize)>> = Rc::new(Cell::new((0, 0, 0)));
+) -> (RinchApp, u64, u64) {
+    let ids: Rc<Cell<(u64, u64, u64)>> = Rc::new(Cell::new((0, 0, 0)));
     let ids_in = ids.clone();
 
     let app = mount(move |scope: &mut RenderScope| {
@@ -1256,17 +1256,17 @@ enum Mark {
 
 struct Scene {
     app: RinchApp,
-    page: usize,
-    panel: usize,
-    holder: usize,
-    inside: usize,
+    page: u64,
+    panel: u64,
+    holder: u64,
+    inside: u64,
     panel_handle: NodeHandle,
 }
 
 /// Page scroller (both axes), a side panel scroller (both axes) outside the
 /// lock holder, a tiny lock holder. `lock` takes the lock at once.
 fn scene(mark: Mark, lock: bool) -> Scene {
-    let ids: Rc<Cell<(usize, usize, usize, usize)>> = Rc::new(Cell::new((0, 0, 0, 0)));
+    let ids: Rc<Cell<(u64, u64, u64, u64)>> = Rc::new(Cell::new((0, 0, 0, 0)));
     let ids_in = ids.clone();
     let handle: Rc<std::cell::RefCell<Option<NodeHandle>>> = Rc::new(std::cell::RefCell::new(None));
     let handle_in = handle.clone();
@@ -1507,7 +1507,7 @@ fn a_falsey_write_removes_the_exemption() {
 #[test]
 fn a_marked_panel_behind_the_backdrop_still_scrolls() {
     for marked in [false, true] {
-        let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+        let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
         let ids_in = ids.clone();
         let open = Signal::new(true);
         let mut app = mount(move |scope: &mut RenderScope| {
@@ -1567,7 +1567,7 @@ fn a_marked_panel_behind_the_backdrop_still_scrolls() {
 #[test]
 fn a_long_standalone_menu_dropdown_scrolls_over_a_locking_modal() {
     for locked in [false, true] {
-        let page: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let page: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let page_in = page.clone();
         let open = Signal::new(locked);
         let file = long_menu();

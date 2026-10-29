@@ -17,7 +17,7 @@ const VP: (f32, f32) = (800.0, 600.0);
 /// Open the popup for `select > option*` and return each row's border-box
 /// height, in option order.
 fn row_heights(labels: &[&'static str]) -> Vec<f32> {
-    let sid: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sid: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let s2 = sid.clone();
     let labels: Vec<&'static str> = labels.to_vec();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -93,7 +93,7 @@ fn mount(
     select_style: &'static str,
     opts: &[(&'static str, &'static str, bool)],
 ) -> Mounted {
-    let sel: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sel: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let s2 = sel.clone();
     let picks: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let p2 = picks.clone();

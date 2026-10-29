@@ -42,6 +42,7 @@ use crate::computed_style::{
     ComputedStyle, DisplayValue, LengthPercentageValue, OverflowValue, PointerEventsValue,
     PositionValue, VisibilityValue,
 };
+use crate::node::RawNodeId;
 use crate::stacking::PaintOrder;
 
 /// Every `computed_style` input hit testing reads, and nothing else — so a
@@ -133,7 +134,7 @@ pub type Extent = [f32; 4];
 
 /// Key of a cached stacking sequence: the root's id and the exact bits of the
 /// base offsets it was built at.
-type OrderKey = (usize, u64, u64);
+type OrderKey = (RawNodeId, u64, u64);
 
 #[derive(Default)]
 struct State {
@@ -249,20 +250,29 @@ impl HitCache {
 
     /// The extent stored for `id` in the current generation.
     #[inline]
-    pub fn extent(&self, id: usize) -> Option<Extent> {
-        self.state().extents.get(id).copied().flatten()
+    pub fn extent(&self, id: RawNodeId) -> Option<Extent> {
+        self.state()
+            .extents
+            .get(crate::node_slab::slot_of(id))
+            .copied()
+            .flatten()
     }
 
     /// Whether the flow walk under `id` passes over a box painted at a
     /// stacking root (#1719), stored for the current generation.
     #[inline]
-    pub fn hoists(&self, id: usize) -> Option<bool> {
-        self.state().hoists.get(id).copied().flatten()
+    pub fn hoists(&self, id: RawNodeId) -> Option<bool> {
+        self.state()
+            .hoists
+            .get(crate::node_slab::slot_of(id))
+            .copied()
+            .flatten()
     }
 
     /// Store `id`'s hoisting bit for the current generation.
-    pub fn store_hoists(&self, id: usize, hoists: bool) {
+    pub fn store_hoists(&self, id: RawNodeId, hoists: bool) {
         let mut s = self.state();
+        let id = crate::node_slab::slot_of(id);
         if s.hoists.len() <= id {
             s.hoists.resize(id + 1, None);
         }
@@ -273,13 +283,18 @@ impl HitCache {
     /// (#843), stored for the current generation. The hit tester asks it only
     /// of a hidden node, to know whether its subtree can hold a hit at all.
     #[inline]
-    pub fn shows(&self, id: usize) -> Option<bool> {
-        self.state().shows.get(id).copied().flatten()
+    pub fn shows(&self, id: RawNodeId) -> Option<bool> {
+        self.state()
+            .shows
+            .get(crate::node_slab::slot_of(id))
+            .copied()
+            .flatten()
     }
 
     /// Store `id`'s "something visible below" bit for the current generation.
-    pub fn store_shows(&self, id: usize, shows: bool) {
+    pub fn store_shows(&self, id: RawNodeId, shows: bool) {
         let mut s = self.state();
+        let id = crate::node_slab::slot_of(id);
         if s.shows.len() <= id {
             s.shows.resize(id + 1, None);
         }
@@ -292,13 +307,18 @@ impl HitCache {
     /// know whether anything under it can still be hit there. It reads no scroll
     /// offset, so a scroll keeps it (`invalidate_scroll` drops only the sequences).
     #[inline]
-    pub fn escaping_fixed(&self, id: usize) -> Option<bool> {
-        self.state().escaping_fixed.get(id).copied().flatten()
+    pub fn escaping_fixed(&self, id: RawNodeId) -> Option<bool> {
+        self.state()
+            .escaping_fixed
+            .get(crate::node_slab::slot_of(id))
+            .copied()
+            .flatten()
     }
 
     /// Store `id`'s "a fixed box below escapes" bit for the current generation.
-    pub fn store_escaping_fixed(&self, id: usize, escapes: bool) {
+    pub fn store_escaping_fixed(&self, id: RawNodeId, escapes: bool) {
         let mut s = self.state();
+        let id = crate::node_slab::slot_of(id);
         if s.escaping_fixed.len() <= id {
             s.escaping_fixed.resize(id + 1, None);
         }
@@ -306,8 +326,9 @@ impl HitCache {
     }
 
     /// Store `id`'s extent for the current generation.
-    pub fn store_extent(&self, id: usize, extent: Extent) {
+    pub fn store_extent(&self, id: RawNodeId, extent: Extent) {
         let mut s = self.state();
+        let id = crate::node_slab::slot_of(id);
         if s.extents.len() <= id {
             s.extents.resize(id + 1, None);
         }
@@ -315,7 +336,7 @@ impl HitCache {
     }
 
     /// The stacking sequence cached for `root` at base `(ox, oy)`.
-    pub fn order(&self, root: usize, ox: f64, oy: f64) -> Option<Rc<PaintOrder>> {
+    pub fn order(&self, root: RawNodeId, ox: f64, oy: f64) -> Option<Rc<PaintOrder>> {
         self.state()
             .orders
             .get(&(root, ox.to_bits(), oy.to_bits()))
@@ -323,7 +344,7 @@ impl HitCache {
     }
 
     /// Cache `order` for `root` at base `(ox, oy)`.
-    pub fn store_order(&self, root: usize, ox: f64, oy: f64, order: Rc<PaintOrder>) {
+    pub fn store_order(&self, root: RawNodeId, ox: f64, oy: f64, order: Rc<PaintOrder>) {
         self.state()
             .orders
             .insert((root, ox.to_bits(), oy.to_bits()), order);
