@@ -44,11 +44,11 @@ fn count(px: &[u8], (x0, x1, y0, y1): (u32, u32, u32, u32), rgb: [u8; 3]) -> usi
     n
 }
 
-fn id(app: &RinchApp, sel: &str) -> usize {
+fn id(app: &RinchApp, sel: &str) -> u64 {
     app.doc.as_ref().unwrap().borrow().query_selector_all(sel)[0].0
 }
 
-fn hit(app: &RinchApp, x: f32, y: f32) -> Option<usize> {
+fn hit(app: &RinchApp, x: f32, y: f32) -> Option<u64> {
     let doc = app.doc.as_ref().unwrap().borrow();
     hit_test(&doc.tree, x, y)
 }

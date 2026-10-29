@@ -67,10 +67,10 @@ impl Page {
         self.handle.set_selection(Selection::cursor(Pos(pos)));
         idle(&mut self.app);
     }
-    fn block(&self, pos: usize) -> usize {
+    fn block(&self, pos: usize) -> u64 {
         self.handle.caret_address(Pos(pos)).unwrap().0
     }
-    fn content_origin(&self, block: usize) -> (f32, f32) {
+    fn content_origin(&self, block: u64) -> (f32, f32) {
         let doc = self.app.doc.as_ref().unwrap().borrow();
         let (bx, by, _, _) = painted_element_box(&doc.tree, block);
         let cs = &doc.tree.nodes[block].computed_style;
@@ -79,7 +79,7 @@ impl Page {
             by + self.scale * (cs.padding_top.to_px() + cs.border_top_width.to_px()),
         )
     }
-    fn expected_caret(&self, block: usize, byte: usize) -> (f32, f32) {
+    fn expected_caret(&self, block: u64, byte: usize) -> (f32, f32) {
         let (cx, cy) = self.content_origin(block);
         let doc = self.app.doc.as_ref().unwrap().borrow();
         let layout = &doc.tree.nodes[block].text_layout.as_ref().unwrap().layout;

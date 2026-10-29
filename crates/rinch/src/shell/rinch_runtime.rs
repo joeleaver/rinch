@@ -614,7 +614,7 @@ pub struct RinchRuntime {
     /// DevTools keyboard modifier state.
     devtools_modifiers: winit::keyboard::ModifiersState,
     /// Previous hovered node ID (for detecting changes).
-    devtools_prev_hovered: Option<usize>,
+    devtools_prev_hovered: Option<u64>,
     /// Timestamp of the last paint (for FPS calculation).
     last_paint_time: Option<std::time::Instant>,
     /// Recent frame times in ms (ring buffer for FPS averaging).
@@ -3222,9 +3222,15 @@ impl ApplicationHandler for RinchRuntime {
             }
             // A trackpad pinch (macOS, iOS, Wayland): a `Pinch` for a
             // surface with pointer events under the cursor.
+            // A pinch no surface takes is an `onwheel` with Ctrl held, as a
+            // browser reports it.
             WindowEvent::PinchGesture { delta, .. } => {
-                if delta.is_finite() {
-                    self.app.surface_pinch_gesture(delta as f32);
+                if delta.is_finite()
+                    && !self.app.surface_pinch_gesture(delta as f32)
+                    && self.app.pinch_as_wheel(delta as f32)
+                    && let Some(w) = &self.window
+                {
+                    w.window.request_redraw();
                 }
                 return;
             }

@@ -70,6 +70,7 @@ use style::{Atom, LocalName, Namespace};
 
 use crate::RinchDocument;
 use crate::node::DirtyFlags;
+use crate::node::RawNodeId;
 use crate::stylo_impl::RinchNode;
 
 /// The parent flags [`RinchDocument::note_child_list_changed_with`] acts on.
@@ -198,7 +199,7 @@ fn no_namespace() -> Namespace {
 impl RinchDocument {
     /// Record that `name` is about to change on `node`. Call it **before** the
     /// write: the snapshot holds the attributes as they were.
-    pub(crate) fn note_attribute_change(&mut self, node: usize, name: &str) {
+    pub(crate) fn note_attribute_change(&mut self, node: RawNodeId, name: &str) {
         if !self.tree.nodes.get(node).is_some_and(|n| n.is_element()) {
             return;
         }
@@ -276,7 +277,7 @@ impl RinchDocument {
     /// some rule names the `style` attribute (`[style*=…]`), snapshot it so
     /// Stylo's invalidator sees the write; otherwise do nothing at all, so a
     /// drag's per-frame `set_style` still costs no style resolve.
-    pub(crate) fn note_inset_style_write(&mut self, node: usize) {
+    pub(crate) fn note_inset_style_write(&mut self, node: RawNodeId) {
         let ln = local_name("style");
         let selected = self.tree.nodes.get(node).is_some_and(|n| n.is_element())
             && self
@@ -291,7 +292,7 @@ impl RinchDocument {
 
     /// The snapshot half of [`Self::note_attribute_change`] alone: Stylo's
     /// invalidator learns that `name` changed, and nothing is forced.
-    pub(crate) fn snapshot_attribute_change(&mut self, node: usize, name: &str) {
+    pub(crate) fn snapshot_attribute_change(&mut self, node: RawNodeId, name: &str) {
         if !self.tree.nodes.get(node).is_some_and(|n| n.is_element()) {
             return;
         }
@@ -299,7 +300,7 @@ impl RinchDocument {
         if self.ensure_snapshot(node) {
             let snapshot = self
                 .snapshots
-                .get_mut(&style::dom::OpaqueNode(node))
+                .get_mut(&style::dom::OpaqueNode(node as usize))
                 .expect("ensure_snapshot made one");
             if snapshot.attrs.is_none() {
                 snapshot.attrs = Some(snapshot_attrs(&self.tree.nodes[node]));
@@ -318,7 +319,7 @@ impl RinchDocument {
 
     /// Record that `node`'s interaction state (hover, focus, focus ring,
     /// active) is about to change. Call it **before** the change.
-    pub(crate) fn note_state_change(&mut self, node: usize) {
+    pub(crate) fn note_state_change(&mut self, node: RawNodeId) {
         if !self.tree.nodes.get(node).is_some_and(|n| n.is_element()) {
             return;
         }
@@ -331,8 +332,8 @@ impl RinchDocument {
     /// it will be matched from scratch anyway — but anything a change of it
     /// could reach among its later siblings is restyled instead, since no
     /// invalidation will run for it.
-    fn ensure_snapshot(&mut self, node: usize) -> bool {
-        let opaque = style::dom::OpaqueNode(node);
+    fn ensure_snapshot(&mut self, node: RawNodeId) -> bool {
+        let opaque = style::dom::OpaqueNode(node as usize);
         if self.snapshots.contains_key(&opaque) {
             if self.tree.nodes[node].has_snapshot {
                 return true;
@@ -380,7 +381,7 @@ impl RinchDocument {
     /// next change takes a fresh snapshot of the state the cascade saw. What
     /// the earlier changes reached outside the subtree is the insertion's and
     /// the removal's to restyle (`note_child_list_changed`).
-    pub(crate) fn forget_snapshots_in(&mut self, root: usize) {
+    pub(crate) fn forget_snapshots_in(&mut self, root: RawNodeId) {
         let mut stack = vec![root];
         let mut forgot = false;
         while let Some(id) = stack.pop() {
@@ -389,7 +390,7 @@ impl RinchDocument {
             };
             if node.has_snapshot {
                 node.has_snapshot = false;
-                self.snapshots.remove(&style::dom::OpaqueNode(id));
+                self.snapshots.remove(&style::dom::OpaqueNode(id as usize));
                 forgot = true;
             }
             stack.extend(self.tree.nodes[id].children.iter().copied());
@@ -410,12 +411,12 @@ impl RinchDocument {
             return;
         }
         let ids = std::mem::take(&mut self.snapshot_ids);
-        let mut outcomes: Vec<(usize, bool, bool, bool)> = Vec::with_capacity(ids.len());
+        let mut outcomes: Vec<(RawNodeId, bool, bool, bool)> = Vec::with_capacity(ids.len());
         // Snapshotted elements whose style was dropped before this resolve —
         // a resize restyling a viewport-unit user, a re-insertion. Stylo
         // cannot compare them; they re-cascade from scratch, and whatever a
         // sibling selector ties to them is restyled wholesale.
-        let mut lost: Vec<usize> = Vec::new();
+        let mut lost: Vec<RawNodeId> = Vec::new();
         {
             let guard = self.tree.guard.read();
             let guards = StylesheetGuards::same(&guard);
@@ -497,7 +498,7 @@ impl RinchDocument {
     /// Restyle `node` at the next resolve, and with `subtree` every element
     /// under it too. Keeps its current style as the "before" the cascade
     /// compares against to decide whether its children must follow.
-    pub(crate) fn mark_restyle(&mut self, node: usize, subtree: bool) {
+    pub(crate) fn mark_restyle(&mut self, node: RawNodeId, subtree: bool) {
         let Some(n) = self.tree.nodes.get(node) else {
             return;
         };
@@ -524,11 +525,11 @@ impl RinchDocument {
     }
 
     /// [`Self::mark_restyle`] for every element sibling after `node`.
-    fn mark_later_siblings(&mut self, node: usize, subtree: bool) {
+    fn mark_later_siblings(&mut self, node: RawNodeId, subtree: bool) {
         let Some(parent) = self.tree.nodes.get(node).and_then(|n| n.parent) else {
             return;
         };
-        let siblings: Vec<usize> = self.tree.nodes[parent]
+        let siblings: Vec<RawNodeId> = self.tree.nodes[parent]
             .children
             .iter()
             .copied()
@@ -541,7 +542,7 @@ impl RinchDocument {
     }
 
     /// [`Self::mark_restyle`] for every element child of `parent`.
-    fn mark_element_children(&mut self, parent: usize, subtree: bool) {
+    fn mark_element_children(&mut self, parent: RawNodeId, subtree: bool) {
         let children = self.tree.nodes[parent].children.clone();
         for c in children {
             self.mark_restyle(c, subtree);
@@ -572,7 +573,7 @@ impl RinchDocument {
     /// Each restyled child takes its subtree along (`:nth-child(2) .x`). A
     /// `parent` never matched against anything — being built, or detached —
     /// carries no flags and costs nothing.
-    pub(crate) fn note_child_list_changed(&mut self, parent: usize, at: usize) {
+    pub(crate) fn note_child_list_changed(&mut self, parent: RawNodeId, at: usize) {
         self.note_child_list_changed_with(parent, at, true);
     }
 
@@ -581,13 +582,13 @@ impl RinchDocument {
     /// `parent`'s `:empty` cannot have flipped.
     pub(crate) fn note_child_list_changed_with(
         &mut self,
-        parent: usize,
+        parent: RawNodeId,
         at: usize,
         empty_may_flip: bool,
     ) {
         self.note_table_children_changed(parent);
         self.note_style_elements_moved(parent);
-        let Some(p) = self.tree.nodes.get(parent) else {
+        let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };
         if !p.is_element() {
@@ -609,7 +610,7 @@ impl RinchDocument {
             }
         }
         if flags.contains(ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR) {
-            let is_el = |tree: &crate::node::NodeTree, c: usize| {
+            let is_el = |tree: &crate::node::NodeTree, c: RawNodeId| {
                 tree.nodes[c].is_element() && !tree.nodes[c].is_pseudo_element
             };
             let before = children[..at.min(children.len())]
@@ -656,8 +657,8 @@ impl RinchDocument {
     /// if no other child already keeps `parent` non-empty. A text edit that
     /// keeps a node non-empty — every keystroke in an editor paragraph under
     /// `p:empty` — costs nothing.
-    pub(crate) fn note_text_emptiness_changed(&mut self, parent: usize, child: usize) {
-        let Some(p) = self.tree.nodes.get(parent) else {
+    pub(crate) fn note_text_emptiness_changed(&mut self, parent: RawNodeId, child: RawNodeId) {
+        let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };
         if p.selector_flags
@@ -674,7 +675,7 @@ impl RinchDocument {
     /// (`:empty + p` flags `parent`'s own parent). The editor's
     /// `p:empty { min-height: 1lh }` names no sibling, so emptying one
     /// paragraph restyles that paragraph, not every one after it.
-    fn note_empty_flipped(&mut self, parent: usize) {
+    fn note_empty_flipped(&mut self, parent: RawNodeId) {
         self.mark_restyle(parent, true);
         let siblings_selected = self.tree.nodes[parent].parent.is_some_and(|g| {
             self.tree.nodes[g]
@@ -696,7 +697,12 @@ impl RinchDocument {
     /// else would put them back. Reads the first and last child only: O(1),
     /// and an element with no generated box answers `pos`. A generated box
     /// itself is placed by `resolve_pseudo_element`, never through this.
-    pub(crate) fn clamp_between_generated(&self, parent: usize, child: usize, pos: usize) -> usize {
+    pub(crate) fn clamp_between_generated(
+        &self,
+        parent: RawNodeId,
+        child: RawNodeId,
+        pos: usize,
+    ) -> usize {
         if self.tree.nodes[child].is_pseudo_element {
             return pos;
         }
@@ -708,10 +714,10 @@ impl RinchDocument {
     /// everything but a generated box at the start (a `::before`, a list
     /// marker) and an `::after` at the end. Reads the first and last child
     /// only (#1629, #1630).
-    pub(crate) fn own_children_range(&self, parent: usize) -> (usize, usize) {
+    pub(crate) fn own_children_range(&self, parent: RawNodeId) -> (usize, usize) {
         let children = &self.tree.nodes[parent].children;
-        let generated = |i: Option<&usize>, after: bool| {
-            i.and_then(|&c| self.tree.nodes.get(c))
+        let generated = |i: Option<&RawNodeId>, after: bool| {
+            i.and_then(|&c| self.tree.nodes.get_live(c))
                 .is_some_and(|n| n.is_pseudo_element && n.is_generated_after == after)
         };
         let len = children.len();
@@ -729,7 +735,7 @@ impl RinchDocument {
     /// held (the list's length if it was not there), for
     /// [`Self::note_child_list_changed`]. One scan, where finding the index
     /// and then `retain`ing the rest was two.
-    pub(crate) fn remove_from_children(&mut self, parent: usize, child: usize) -> usize {
+    pub(crate) fn remove_from_children(&mut self, parent: RawNodeId, child: RawNodeId) -> usize {
         let children = &mut self.tree.nodes[parent].children;
         match children.iter().position(|&c| c == child) {
             Some(i) => {
@@ -746,15 +752,15 @@ impl RinchDocument {
     /// scan of its children.
     pub(crate) fn note_child_inserted(
         &mut self,
-        parent: usize,
-        child: usize,
+        parent: RawNodeId,
+        child: RawNodeId,
         empty_may_flip: bool,
     ) {
         // Before the structural-selector gate: a row moved in keeps its
         // table part, so no cascade of its own tells the table (#1083).
         self.note_table_children_changed(parent);
         self.note_style_elements_moved(parent);
-        let Some(p) = self.tree.nodes.get(parent) else {
+        let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };
         if !p.is_element()
@@ -768,7 +774,7 @@ impl RinchDocument {
 
     /// The index `child` occupies in its parent's child list, for
     /// [`Self::note_child_list_changed`].
-    pub(crate) fn child_index(&self, parent: usize, child: usize) -> usize {
+    pub(crate) fn child_index(&self, parent: RawNodeId, child: RawNodeId) -> usize {
         self.tree.nodes[parent]
             .children
             .iter()

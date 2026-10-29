@@ -71,7 +71,7 @@ fn page(html: &str) -> Page {
 }
 
 impl Page {
-    fn block(&self) -> usize {
+    fn block(&self) -> u64 {
         self.handle.caret_address(Pos(1)).unwrap().0
     }
     /// The block's painted origin.
@@ -84,9 +84,7 @@ impl Page {
     fn local_x(&self, i: usize) -> f32 {
         let (block, byte) = self.handle.caret_address(Pos(i + 1)).unwrap();
         let doc = self.app.doc.as_ref().unwrap().borrow();
-        doc.query_caret_position(block as u64, byte)
-            .expect("laid out")
-            .0
+        doc.query_caret_position(block, byte).expect("laid out").0
     }
     /// The window point at fraction `frac` across char `i`'s advance.
     fn across(&self, i: usize, frac: f32) -> (f32, f32) {

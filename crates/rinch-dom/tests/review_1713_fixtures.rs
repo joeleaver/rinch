@@ -41,7 +41,7 @@ fn doc_parts(parts: &[Option<&str>]) -> (RinchDocument, u64) {
         }
     }
     doc.resolve_layout(600.0, 600.0);
-    (doc, p.0 as u64)
+    (doc, p.0)
 }
 
 /// `x[box]abc RLO def PDF`, selected from the box (flat byte 1, the box's index) to

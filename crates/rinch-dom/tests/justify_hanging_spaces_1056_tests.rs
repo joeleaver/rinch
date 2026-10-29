@@ -73,7 +73,7 @@ fn block(width: &str, white_space: &str, parts: &[(&str, &str)]) -> (RinchDocume
 
 /// The caret at byte `offset` of the block's flat text: `(x, line)`.
 fn at(d: &RinchDocument, b: NodeId, offset: usize) -> (f32, f32) {
-    let (x, y) = caret_position_for_offset(d, b.0 as u64, offset).expect("a text layout");
+    let (x, y) = caret_position_for_offset(d, b.0, offset).expect("a text layout");
     (x, y / LINE)
 }
 

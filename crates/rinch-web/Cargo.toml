@@ -53,6 +53,9 @@ web-sys = { version = "0.3", features = [
     # the pointerdown/click/keydown sequences the delegation gates on (#240).
     "EventInit", "MouseEventInit", "KeyboardEventInit", "PointerEventInit",
     "WheelEvent", "WheelEventInit",
+    # A non-passive document `wheel` listener, so a consumed `onwheel` can
+    # cancel the scroll.
+    "AddEventListenerOptions",
     "EventTarget", "FocusOptions", "FocusEvent",
     "Range",
     "ResizeObserver",

@@ -262,7 +262,7 @@ fn a_right_press_leaves_a_live_dom_drag_alone() {
 
 /// A 200x200 `overflow-y: auto` box at (0,200) holding 1000px of content, and
 /// a plain button beside it.
-pub(super) fn mount_scroller() -> (RinchApp, usize) {
+pub(super) fn mount_scroller() -> (RinchApp, u64) {
     let mut app = RinchApp::new(|scope: &mut RenderScope| {
         let root = scope.create_element("div");
         root.set_attribute("style", "position: relative; width: 800px; height: 600px");
@@ -293,14 +293,14 @@ pub(super) fn mount_scroller() -> (RinchApp, usize) {
     (app, id)
 }
 
-pub(super) fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+pub(super) fn scroll_top(app: &RinchApp, id: u64) -> f64 {
     app.doc.as_ref().unwrap().borrow().tree.nodes[id]
         .scroll_offset
         .1
 }
 
 /// Press the thumb, drag it, lose the release.
-pub(super) fn strand_a_scrollbar_drag(app: &mut RinchApp, id: usize) -> f64 {
+pub(super) fn strand_a_scrollbar_drag(app: &mut RinchApp, id: u64) -> f64 {
     press(app, (195.0, 213.0));
     assert!(app.scrollbar_drag.is_some(), "precondition: thumb pressed");
     let before = scroll_top(app, id);

@@ -26,6 +26,7 @@ pub mod image_cache;
 pub mod layout;
 mod layout_engine;
 pub mod node;
+pub mod node_slab;
 mod out_of_flow;
 pub mod paint;
 pub mod perf;

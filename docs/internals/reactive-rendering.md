@@ -60,6 +60,95 @@ keys through `set_inner_html` and pseudo-element pruning on restyle, and
 `slab::Slab` recycles them (measured: `NodeId(4)` handed to a second node), so
 #304's recycled-slot hazard is live on desktop today, independently of this API.
 
+### Node ids: a slot and a generation (#723)
+
+`NodeId` is a `u64` on every target, wasm32 included: the **slot index** in the
+low 32 bits and the slot's **generation** in the high 32 (`NodeId::new(index,
+generation)`, `NodeId::index()`, `NodeId::generation()`). The tuple field stays
+public and holds the packed bits, so `NodeId(4)` is slot 4 at generation 0 —
+which is what every id is today, and why test literals, the debug server's wire
+ids, DevTools and `Debug` (`NodeId(4)`) read exactly as they did when the field
+was a `usize`. A non-zero generation prints as `NodeId(4@g1)`. Build an id from
+a `usize` slot with `NodeId::from_index`; never use `.0` as an index.
+
+Inside `rinch-dom` a `RawNodeId` is the same `u64` (`NodeId(raw)` and `id.0`
+convert for free), and `NodeTree::nodes` is a `node_slab::NodeSlab`, not a bare
+`slab::Slab`. It has **two lookups, and each site says which it is using**:
+
+- **Checked** — `get` / `get_mut` / `contains` (and `NodeTree::get`): compares
+  the id against the stored node's own `Node::id` and answers `None`/`false` for
+  a vacant slot **or a slot holding another generation**. Every id that comes
+  from **outside the tree** uses it: a `DomDocument` or `NodeHandle` argument, an
+  app-held handle, an event target, a side table or cache keyed by node id that
+  can outlive a node (`dirty_nodes`, the scroll-lock roots, the hover/focus
+  state, `abs_chain_marked`, …).
+- **Internal** — `get_live` / `get_live_mut` and indexing (`nodes[id]`): for ids
+  the tree handed itself during a walk — a node's `children`/`parent`, a layout,
+  paint or hit-test traversal, a list rebuilt by this pass. A release build looks
+  only at the slot; a debug build asserts the generation (indexing panics with a
+  message naming the slot and both generations), so a misuse fails the tests.
+  The compare is why: checked everywhere, it cost 4–7% on the hit-test and
+  relayout benchmarks.
+
+When unsure, a site keeps the checked lookup. A `pub(crate)` helper reached only
+from walks and from verbs that already checked their argument takes the
+internal one; a public helper an app can call with its own id (the paint and
+scrollbar queries, `RinchDocument::box_tree_*` are the walk helpers excepted)
+stays checked. The paint geometry queries
+(`paint::compute_absolute_position_and_transform` and the `painted_border_box`
+/ `point_in_painted_box` / `point_from_painted_box` / `rect_from_painted_box`
+family) check the caller's id once at the entry and walk the ancestors
+unchecked: a stale id answers the origin with the identity transform (an empty
+box, `None` from `point_in_painted_box`), never the slot's live node — pinned by
+`crates/rinch-dom/tests/stale_node_id_paint_tests.rs`. The debug assert in
+`get_live`/`get_live_mut` is pinned by `node_slab`'s
+`get_live_*_with_a_stale_generation_panics_in_debug` tests. A table indexed by slot (the hit-test cache's extents) takes
+`node_slab::slot_of(id)`. The browser backend's ids are its monotonic counter
+in the same `u64`.
+
+The `DomDocument` verbs on `RinchDocument` resolve the id they are handed with
+the fallible lookup before touching the tree, so an id that names no node is a
+no-op (a read answers `None`/empty), as it is on `rinch-web` and
+`MockDomDocument` — before #723 a vacant slot panicked in the slab's `Index`.
+Ids the tree hands itself (a node's `parent`/`children`, a layout walk) are
+indexed directly: they are live by construction.
+
+**What is not done yet (PR 2 of #723).** Nothing bumps a generation: a slot
+freed by `NodeTree::remove_subtree` (`set_inner_html`, pseudo-element pruning)
+or by the IFC passes' anonymous boxes is reused at generation 0, exactly as
+before, so the recycled-slot hazard above is unchanged and the slab still only
+grows on the `discard` route. PR 2 frees on `discard_node` and in
+`remove_subtree` (with `taffy.remove`), bumps the slot's generation, and clears
+the side tables still keyed by a raw id (`dirty_nodes`, `paint_dirty_nodes`,
+`taffy_map`, the style-snapshot map — keyed by Stylo's `OpaqueNode`, which
+carries only the slot on a 32-bit target — and the others the survey on #723
+lists). Until then a stale entry in such a table cannot name a freed slot,
+because none is freed on the routes that leave entries behind.
+
+What PR 2 must keep true, because PR 1's unchecked readers lean on it (found in
+review of #2017):
+
+- **Every free drops the hit cache.** `hit_testing`'s stacking-root probe reads
+  the cached paint order's ids with `get_live` (per entry, per probe — too hot
+  to check). `NodeTree::remove_subtree` calls `hit_cache.invalidate()`; a new
+  free route (free-on-discard) must go through it or do the same.
+- **Every free drops the node's `active_transitions`/`active_animations`
+  entries** (`remove_subtree` does). The tick's readers of those keys are now
+  checked, so a miss there costs a skipped node, not a wrong one, but the
+  entries would otherwise tick a node that is gone.
+- **`taffy.remove` prunes `taffy_map`.** The atomic-inline fit-content measure
+  filters the id `taffy_map` hands back through `contains` before indexing; any
+  new reader of `taffy_map` must do the same until the map is pruned.
+- **Wire ids past 2^53.** The debug protocol and the MCP server carry ids as
+  JSON integers; serde writes a `u64` exactly, but a JavaScript client (the MCP
+  host among them) rounds an integer above 2^53, which a packed id reaches once
+  one slot's generation passes 2^21. A rounded id fails closed (the lookup is
+  checked: "no node"), but PR 2 must decide before generations grow: cap or
+  wrap the generation at 21 bits (ids stay plain numbers, a slot reused 2^21
+  times aliases an old id again), or put ids on the wire as `"slot@gen"`
+  strings (exact, a protocol change for every client). PR 1 changes nothing
+  here: every id is generation 0. Recorded on #723.
+
 ### Who picks the verb: **scope ownership**, not a judgement call
 
 The four marker-based reactive helpers — `show_dom`, `match_dom`,

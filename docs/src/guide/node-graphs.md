@@ -140,6 +140,8 @@ takes the press, so it does not start a node drag.
 | Drop a wire on empty canvas | calls `CanvasOptions::on_connect_to_empty(port, point)` (offer a menu of nodes there) |
 | Click near a wire | selects it |
 | Drag the background | pans; a click without dragging clears the selection |
+| Wheel or two-finger trackpad scroll | pans (Shift turns a vertical wheel sideways) |
+| Ctrl/Cmd+wheel, trackpad pinch | zooms around the pointer |
 | Shift+drag the background | box selection |
 | Delete / Backspace | removes the selection |
 | Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y | undo, redo |
@@ -151,9 +153,10 @@ takes the press, so it does not start a node drag.
 The canvas takes keys while it (or something in it without its own key
 handling) has focus; pressing anywhere on it focuses it.
 
-Zooming is by the controls, the keys and `view.zoom_by`/`zoom_around`/
-`fit_view`/`set_viewport`. Rinch has no element wheel event yet, so there is no
-wheel or pinch zoom.
+Zooming is by Ctrl/Cmd+wheel and pinch (around the pointer), the controls, the
+keys and `view.zoom_by`/`zoom_around`/`fit_view`/`set_viewport`. The canvas
+consumes every wheel over it (its `onwheel`), so the page around it neither
+scrolls nor zooms while the pointer is on the canvas.
 
 ### Settings
 

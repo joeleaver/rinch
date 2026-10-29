@@ -32,7 +32,7 @@ fn a_hidden_caret_paints_nothing_on_a_full_or_an_incremental_frame() {
     let handle = crate::editor::create_editor();
     assert!(handle.load_html("<p>hello world</p>"));
     let h = handle.clone();
-    let ed = Rc::new(std::cell::Cell::new(0usize));
+    let ed = Rc::new(std::cell::Cell::new(0u64));
     let ed_in = ed.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

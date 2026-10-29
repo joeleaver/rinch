@@ -7,7 +7,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::event_delegation::{
     FOCUS_VALUE_PROP, get_expando_string, set_expando, utf16_offset_to_utf8_bytes,
@@ -20,7 +20,7 @@ use wasm_bindgen::prelude::*;
 /// Process-global NodeId counter. Shared across all `WebDocument`s so that
 /// multiple coexisting roots (islands) never reuse a NodeId — keeping each
 /// node's `__nid` unambiguous even when several documents share the page.
-static NEXT_NODE_ID: AtomicUsize = AtomicUsize::new(0);
+static NEXT_NODE_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A `DomDocument` backed by real browser DOM elements.
 ///
@@ -33,7 +33,7 @@ pub struct WebDocument {
     /// The browser's document object.
     browser_doc: web_sys::Document,
     /// Map from rinch NodeId to browser DOM node.
-    nodes: HashMap<usize, web_sys::Node>,
+    nodes: HashMap<u64, web_sys::Node>,
     /// The root wrapper element (`<div id="rinch-root">`), or the adopted host
     /// element for an island mount (see [`WebDocument::new_into`]).
     root_id: NodeId,
@@ -86,7 +86,7 @@ thread_local! {
     ///
     /// [`node_by_nid`] additionally returns `None` for a node that is present but
     /// detached, so its callers cannot tell a pruned id from a detached one.
-    static NODE_REGISTRY: std::cell::RefCell<HashMap<usize, web_sys::Node>> =
+    static NODE_REGISTRY: std::cell::RefCell<HashMap<u64, web_sys::Node>> =
         std::cell::RefCell::new(HashMap::new());
 
     /// The page's scroll lock (#474): how many overlays hold one, and what
@@ -130,7 +130,7 @@ struct ScrollLock {
     /// drag's auto-scroll may still scroll while the page is locked
     /// ([`scroll_locked_out`]). The browser's own gestures are not gated by
     /// them; only rinch's programmatic scroll asks.
-    roots: Vec<(usize, web_sys::Element)>,
+    roots: Vec<(u64, web_sys::Element)>,
 }
 
 /// `<html>` as an `HtmlElement`, the element the page's scroll lock acts on.
@@ -152,7 +152,7 @@ fn document_element_style() -> Option<web_sys::CssStyleDeclaration> {
 /// scrollbar as well as its scrolling, so a page with a classic (non-overlay)
 /// scrollbar shifts horizontally when an overlay opens. Desktop's scrollbars are
 /// overlays with no gutter and it gates the gesture instead, so it does not.
-fn set_page_scroll_locked(locked: bool, root: usize, root_el: Option<web_sys::Element>) {
+fn set_page_scroll_locked(locked: bool, root: u64, root_el: Option<web_sys::Element>) {
     SCROLL_LOCK.with(|cell| {
         let mut lock = cell.borrow_mut();
         if locked {
@@ -265,14 +265,14 @@ pub fn __scroll_lock_depth() -> u32 {
 
 /// Resolve a rinch `NodeId.0` to its live browser node — the editor glue uses this to
 /// read caret/selection geometry for a model position. `None` if unknown or detached.
-pub(crate) fn node_by_nid(nid: usize) -> Option<web_sys::Node> {
+pub(crate) fn node_by_nid(nid: u64) -> Option<web_sys::Node> {
     NODE_REGISTRY
         .with(|m| m.borrow().get(&nid).cloned())
         .filter(|n| n.is_connected())
 }
 
 /// The browser node rinch registered under `nid`, attached or not.
-pub(crate) fn registered_node(nid: usize) -> Option<web_sys::Node> {
+pub(crate) fn registered_node(nid: u64) -> Option<web_sys::Node> {
     NODE_REGISTRY.with(|m| m.borrow().get(&nid).cloned())
 }
 
@@ -309,7 +309,7 @@ fn set_nid(node: &web_sys::Node, id: NodeId) {
 /// parent/child bookkeeping of its own, so the browser is the only structural
 /// source of truth. This is the exact inverse of
 /// [`WebDocument::register_subtree`].
-fn forget_subtree(nodes: &mut HashMap<usize, web_sys::Node>, node: &web_sys::Node) {
+fn forget_subtree(nodes: &mut HashMap<u64, web_sys::Node>, node: &web_sys::Node) {
     // One borrow for the whole recursion. Nothing inside it may call `set_nid`,
     // which borrows the registry mutably.
     NODE_REGISTRY.with(|m| {
@@ -320,7 +320,7 @@ fn forget_subtree(nodes: &mut HashMap<usize, web_sys::Node>, node: &web_sys::Nod
 
 /// [`forget_subtree`] for every child of `parent`, under a **single** registry
 /// borrow — what `set_inner_html` needs, since it discards all of them at once.
-fn forget_children(nodes: &mut HashMap<usize, web_sys::Node>, parent: &web_sys::Node) {
+fn forget_children(nodes: &mut HashMap<u64, web_sys::Node>, parent: &web_sys::Node) {
     NODE_REGISTRY.with(|m| {
         let mut reg = m.borrow_mut();
         let mut child = parent.first_child();
@@ -333,8 +333,8 @@ fn forget_children(nodes: &mut HashMap<usize, web_sys::Node>, parent: &web_sys::
 }
 
 fn forget_recursive(
-    nodes: &mut HashMap<usize, web_sys::Node>,
-    reg: &mut HashMap<usize, web_sys::Node>,
+    nodes: &mut HashMap<u64, web_sys::Node>,
+    reg: &mut HashMap<u64, web_sys::Node>,
     node: &web_sys::Node,
 ) {
     // `first_child`/`next_sibling`, not `child_nodes()[i]`: this now runs on the
@@ -374,7 +374,7 @@ pub fn __node_registry_len() -> usize {
 /// Raw membership, unlike [`node_by_nid`], which additionally filters on
 /// `is_connected()` — a leak test has to tell "pruned" from "merely detached".
 #[doc(hidden)]
-pub fn __node_registry_contains(nid: usize) -> bool {
+pub fn __node_registry_contains(nid: u64) -> bool {
     NODE_REGISTRY.with(|m| m.borrow().contains_key(&nid))
 }
 
@@ -862,7 +862,7 @@ pub(crate) fn get_nid(node: &web_sys::Node) -> Option<NodeId> {
     js_sys::Reflect::get(node, &"__nid".into())
         .ok()
         .and_then(|v| v.as_f64())
-        .map(|n| NodeId(n as usize))
+        .map(|n| NodeId(n as u64))
 }
 
 /// Marker attribute identifying the one page-global theme `<style>` element.
@@ -1098,8 +1098,8 @@ impl WebDocument {
         br_id: u64,
         after: bool,
     ) -> Option<(f32, f32, f32)> {
-        let block = self.nodes.get(&(block_id as usize))?;
-        let br = self.nodes.get(&(br_id as usize))?;
+        let block = self.nodes.get(&block_id)?;
+        let br = self.nodes.get(&br_id)?;
         let el = br.dyn_ref::<web_sys::Element>()?;
         if !block.contains(Some(br)) {
             return None;
@@ -1284,7 +1284,7 @@ impl WebDocument {
 
     /// **Test-only.** Whether this document still maps `nid` (#184).
     #[doc(hidden)]
-    pub fn __contains(&self, nid: usize) -> bool {
+    pub fn __contains(&self, nid: u64) -> bool {
         self.nodes.contains_key(&nid)
     }
 }
@@ -2382,7 +2382,7 @@ impl DomDocument for WebDocument {
         after: bool,
     ) -> Option<(f32, f32, f32)> {
         let (x, y, h) = self.br_caret_viewport_rect(node_id, box_id, after)?;
-        let block = self.nodes.get(&(node_id as usize))?;
+        let block = self.nodes.get(&node_id)?;
         let r = block
             .dyn_ref::<web_sys::Element>()?
             .get_bounding_client_rect();
@@ -2410,7 +2410,7 @@ impl DomDocument for WebDocument {
         byte_offset: usize,
         affinity: CaretAffinity,
     ) -> Option<(f32, f32)> {
-        let n = self.nodes.get(&(node_id as usize))?;
+        let n = self.nodes.get(&node_id)?;
         let (x, y, _) = self.text_caret_viewport_rect(n, byte_offset, affinity)?;
         let el: web_sys::Element = n.clone().dyn_into().ok()?;
         let block_rect = el.get_bounding_client_rect();
@@ -2453,7 +2453,7 @@ impl DomDocument for WebDocument {
         carets: &[(usize, CaretAffinity)],
     ) -> Vec<Option<(f32, f32)>> {
         let none = || vec![None; carets.len()];
-        let Some(block) = self.nodes.get(&(node_id as usize)) else {
+        let Some(block) = self.nodes.get(&node_id) else {
             return none();
         };
         let Some(el) = block.dyn_ref::<web_sys::Element>() else {
@@ -2629,7 +2629,7 @@ impl DomDocument for WebDocument {
         byte_offset: usize,
         affinity: CaretAffinity,
     ) -> Option<(f32, f32, f32)> {
-        let block = self.nodes.get(&(node_id as usize))?;
+        let block = self.nodes.get(&node_id)?;
         if let Some(rect) = self.text_caret_viewport_rect(block, byte_offset, affinity) {
             return Some(rect);
         }
@@ -2652,7 +2652,7 @@ impl DomDocument for WebDocument {
     }
 
     fn query_glyph_bounds(&self, node_id: u64, byte_offset: usize) -> Option<GlyphBounds> {
-        let n = self.nodes.get(&(node_id as usize))?;
+        let n = self.nodes.get(&node_id)?;
         let (text_node, utf16_offset) = find_text_node_at_byte_offset(n, byte_offset)?;
         let text_content = text_node.text_content().unwrap_or_default();
         let text_utf16_len: usize = text_content.encode_utf16().count();
@@ -3285,7 +3285,7 @@ impl DomDocument for WebDocument {
             .get(&node.0)
             .and_then(|n| n.dyn_ref::<web_sys::Element>())
         {
-            crate::bounds::watch(self.doc_key, node.0 as u64, el);
+            crate::bounds::watch(self.doc_key, node.0, el);
         }
     }
 
@@ -3316,7 +3316,7 @@ impl DomDocument for WebDocument {
     }
 
     fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
-        let n = self.nodes.get(&(node_id as usize))?;
+        let n = self.nodes.get(&node_id)?;
         let el: web_sys::Element = n.clone().dyn_into().ok()?;
         let rect = el.get_bounding_client_rect();
         // The trait contract is **immediate-parent-relative** `(x, y)` (the desktop
@@ -3345,7 +3345,7 @@ impl DomDocument for WebDocument {
         // container is position:relative with a border, so an absolutely-positioned
         // overlay anchors to its padding box; the block offset (computed from border-box
         // getBoundingClientRect differences) must subtract this to land on the glyphs.
-        let Some(n) = self.nodes.get(&(node_id as usize)) else {
+        let Some(n) = self.nodes.get(&node_id) else {
             return (0.0, 0.0);
         };
         // Less its own scroll: an absolute child of a scrolled box is placed
@@ -3366,7 +3366,7 @@ impl DomDocument for WebDocument {
     fn line_box_height(&self, node_id: u64) -> Option<f32> {
         let el = self
             .nodes
-            .get(&(node_id as usize))?
+            .get(&node_id)?
             .clone()
             .dyn_into::<web_sys::Element>()
             .ok()?;
@@ -3384,7 +3384,7 @@ impl DomDocument for WebDocument {
         let zero = (0.0, 0.0, 0.0, 0.0);
         let Some(el) = self
             .nodes
-            .get(&(node_id as usize))
+            .get(&node_id)
             .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
         else {
             return zero;
@@ -3408,12 +3408,7 @@ impl DomDocument for WebDocument {
         // `getComputedStyle` so the IME preedit overlay (an absolutely-positioned span
         // in the editor container, which inherits only the container's default font)
         // can match the block it composes into — e.g. a 32px heading, not 16px body.
-        let el: web_sys::Element = self
-            .nodes
-            .get(&(node_id as usize))?
-            .clone()
-            .dyn_into()
-            .ok()?;
+        let el: web_sys::Element = self.nodes.get(&node_id)?.clone().dyn_into().ok()?;
         let cs = web_sys::window()?.get_computed_style(&el).ok().flatten()?;
         let get = |p: &str| cs.get_property_value(p).unwrap_or_default();
         Some(rinch_core::dom::NodeFont {
@@ -3441,12 +3436,12 @@ impl DomDocument for WebDocument {
         if byte_a >= byte_b && selected_boxes.is_empty() {
             return Vec::new();
         }
-        let Some(n) = self.nodes.get(&(node_id as usize)) else {
+        let Some(n) = self.nodes.get(&node_id) else {
             return Vec::new();
         };
         let boxes: Vec<&web_sys::Node> = selected_boxes
             .iter()
-            .filter_map(|id| self.nodes.get(&(*id as usize)))
+            .filter_map(|id| self.nodes.get(id))
             .collect();
         let precedes = |a: &web_sys::Node, b: &web_sys::Node| {
             b.compare_document_position(a) & web_sys::Node::DOCUMENT_POSITION_PRECEDING != 0
@@ -3498,7 +3493,7 @@ impl DomDocument for WebDocument {
         if byte_a >= byte_b {
             return Vec::new();
         }
-        let Some(n) = self.nodes.get(&(node_id as usize)) else {
+        let Some(n) = self.nodes.get(&node_id) else {
             return Vec::new();
         };
         let resolve = || -> Option<web_sys::DomRectList> {

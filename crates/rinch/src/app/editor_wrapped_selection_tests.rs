@@ -153,7 +153,7 @@ fn shift_word(p: &mut Page, key: KeyCode) {
 type Rect = (f32, f32, f32, f32);
 
 impl Page {
-    fn block(&self) -> usize {
+    fn block(&self) -> u64 {
         self.handle.caret_address(Pos(1)).unwrap().0
     }
 
@@ -164,7 +164,7 @@ impl Page {
     /// Layout-local caret `(x, y)` at char offset `i` on `affinity`'s side.
     fn local(&self, i: u32, affinity: CaretAffinity) -> (f32, f32) {
         let doc = self.app.doc.as_ref().unwrap().borrow();
-        doc.query_caret_position_with_affinity(self.block() as u64, i as usize, affinity)
+        doc.query_caret_position_with_affinity(self.block(), i as usize, affinity)
             .expect("laid out")
     }
 
