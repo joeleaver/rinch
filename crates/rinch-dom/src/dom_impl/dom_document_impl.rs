@@ -138,6 +138,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn append_child(&mut self, parent: NodeId, child: NodeId) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(parent.0) || !self.tree.nodes.contains(child.0) {
+            return;
+        }
         // Anything this can move invalidates the hit tester's memo.
         self.tree.hit_cache.invalidate();
         let p = parent.0;
@@ -222,6 +226,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn remove_child(&mut self, parent: NodeId, child: NodeId) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(parent.0) || !self.tree.nodes.contains(child.0) {
+            return;
+        }
         // Anything this can move invalidates the hit tester's memo.
         self.tree.hit_cache.invalidate();
         let p = parent.0;
@@ -254,6 +262,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: NodeId) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(parent.0) || !self.tree.nodes.contains(child.0) || !self.tree.nodes.contains(reference.0) {
+            return;
+        }
         // Anything this can move invalidates the hit tester's memo.
         self.tree.hit_cache.invalidate();
         let p = parent.0;
@@ -341,6 +353,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(old.0) || !self.tree.nodes.contains(new.0) {
+            return;
+        }
         // Anything this can move invalidates the hit tester's memo.
         self.tree.hit_cache.invalidate();
         // Replacing a node with itself is a no-op the browser accepts (the DOM
@@ -445,6 +461,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn remove_node(&mut self, node: NodeId) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
         // Anything this can move invalidates the hit tester's memo.
         self.tree.hit_cache.invalidate();
         // Mark the removed subtree as paint-dirty so the dirty region
@@ -508,6 +528,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
         let n = node.0;
 
         // Fast path: skip if content is already identical.
@@ -705,6 +729,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
         // #688: in HTML content the name is ASCII case-insensitive, so it is
         // stored folded — every reader below and in `stylo_impl` looks an
         // attribute up by a lowercase literal (`"style"`, `"class"`, `"id"`,
@@ -837,6 +865,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
         // Folded exactly as the write was (#688) — `NodeHandle::write_attribute`
         // turns a falsey boolean attribute into a `remove_attribute` with the
         // caller's own spelling, so a fold on one side and not the other could
@@ -959,6 +991,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_styles(&mut self, node: NodeId, properties: &[(&str, &str)]) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
         // Anything this can move invalidates the hit tester's memo.
         self.tree.hit_cache.invalidate();
         // Merge into the inline style attribute and parse it once; both paths
@@ -993,6 +1029,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn mark_dirty(&mut self, node: NodeId) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
         self.push_dirty(node.0);
     }
 
@@ -1046,6 +1086,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn insert_child(&mut self, parent: NodeId, child: NodeId, index: usize) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(parent.0) || !self.tree.nodes.contains(child.0) {
+            return;
+        }
         // Anything this can move invalidates the hit tester's memo.
         self.tree.hit_cache.invalidate();
         let p = parent.0;
@@ -1134,6 +1178,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_scroll_top(&mut self, node: NodeId, scroll_top: f64) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
         if let Some(n) = self.tree.nodes.get_mut(node.0) {
             n.scroll_offset.1 = scroll_top;
         }
@@ -1143,6 +1191,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
         // Anything this can move invalidates the hit tester's memo.
         self.tree.hit_cache.invalidate();
         use crate::html_parser::parse_html_string;
@@ -1878,6 +1930,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_scroll_left(&mut self, node: NodeId, scroll_left: f64) {
+        // #723: an id that names no live node is a no-op, as on the web.
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
         if let Some(n) = self.tree.nodes.get_mut(node.0) {
             n.scroll_offset.0 = scroll_left;
         }

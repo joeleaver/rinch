@@ -60,6 +60,45 @@ keys through `set_inner_html` and pseudo-element pruning on restyle, and
 `slab::Slab` recycles them (measured: `NodeId(4)` handed to a second node), so
 #304's recycled-slot hazard is live on desktop today, independently of this API.
 
+### Node ids: a slot and a generation (#723)
+
+`NodeId` is a `u64` on every target, wasm32 included: the **slot index** in the
+low 32 bits and the slot's **generation** in the high 32 (`NodeId::new(index,
+generation)`, `NodeId::index()`, `NodeId::generation()`). The tuple field stays
+public and holds the packed bits, so `NodeId(4)` is slot 4 at generation 0 —
+which is what every id is today, and why test literals, the debug server's wire
+ids, DevTools and `Debug` (`NodeId(4)`) read exactly as they did when the field
+was a `usize`. A non-zero generation prints as `NodeId(4@g1)`. Build an id from
+a `usize` slot with `NodeId::from_index`; never use `.0` as an index.
+
+Inside `rinch-dom` a `RawNodeId` is the same `u64` (`NodeId(raw)` and `id.0`
+convert for free), and `NodeTree::nodes` is a `node_slab::NodeSlab`, not a bare
+`slab::Slab`. Every lookup compares the id against the stored node's own
+`Node::id`: `get`/`get_mut`/`contains` answer `None`/`false` for an id whose slot
+is vacant **or holds another generation**, and indexing panics with a message
+naming the slot and both generations. A table indexed by slot (the hit-test
+cache's extents) takes `node_slab::slot_of(id)`. The browser backend's ids are
+its monotonic counter in the same `u64`.
+
+The `DomDocument` verbs on `RinchDocument` resolve the id they are handed with
+the fallible lookup before touching the tree, so an id that names no node is a
+no-op (a read answers `None`/empty), as it is on `rinch-web` and
+`MockDomDocument` — before #723 a vacant slot panicked in the slab's `Index`.
+Ids the tree hands itself (a node's `parent`/`children`, a layout walk) are
+indexed directly: they are live by construction.
+
+**What is not done yet (PR 2 of #723).** Nothing bumps a generation: a slot
+freed by `NodeTree::remove_subtree` (`set_inner_html`, pseudo-element pruning)
+or by the IFC passes' anonymous boxes is reused at generation 0, exactly as
+before, so the recycled-slot hazard above is unchanged and the slab still only
+grows on the `discard` route. PR 2 frees on `discard_node` and in
+`remove_subtree` (with `taffy.remove`), bumps the slot's generation, and clears
+the side tables still keyed by a raw id (`dirty_nodes`, `paint_dirty_nodes`,
+`taffy_map`, the style-snapshot map — keyed by Stylo's `OpaqueNode`, which
+carries only the slot on a 32-bit target — and the others the survey on #723
+lists). Until then a stale entry in such a table cannot name a freed slot,
+because none is freed on the routes that leave entries behind.
+
 ### Who picks the verb: **scope ownership**, not a judgement call
 
 The four marker-based reactive helpers — `show_dom`, `match_dom`,

@@ -122,8 +122,13 @@ impl CeVirtualWindow {
         }
 
         // Use previous frame's layout positions (still valid) to find visible range
-        let scroll_y = doc.tree.nodes[self.ce_node_id].scroll_offset.1 as f32;
-        let viewport_h = doc.tree.nodes[self.ce_node_id].layout.height;
+        // The container id is held across frames, so it is looked up, not
+        // indexed (#723): a container that is gone reports nothing to do.
+        let Some(ce) = doc.tree.nodes.get(self.ce_node_id) else {
+            return false;
+        };
+        let scroll_y = ce.scroll_offset.1 as f32;
+        let viewport_h = ce.layout.height;
         if viewport_h <= 0.0 {
             return false;
         }
@@ -389,7 +394,10 @@ impl CeVirtualWindow {
 /// selection / outline / placeholder overlays are container siblings with no
 /// `data-pm-type`).
 fn block_children_of(doc: &RinchDocument, ce_node_id: u64, filter_blocks: bool) -> Vec<u64> {
-    let children = &doc.tree.nodes[ce_node_id].children;
+    let Some(ce) = doc.tree.nodes.get(ce_node_id) else {
+        return Vec::new();
+    };
+    let children = &ce.children;
     if !filter_blocks {
         return children.clone();
     }
