@@ -752,11 +752,17 @@ fn taffy_baseline(
                 };
                 off(a).total_cmp(&off(b))
             })?;
-        // A last line keeps its distance from the content bottom when the
-        // nearest measure was of another height (Taffy answered the layout
-        // from a cache the records no longer match exactly).
+        // Measured at the width the box has, the line is where that measure
+        // put it — a box whose declared height its lines overflow included
+        // (its baseline is its last line's, below its bottom). Measured at
+        // another width (Taffy answered the layout from a cache the records
+        // no longer match exactly), a last line keeps its distance from the
+        // content bottom.
+        let same_width = (entry.0 - width).abs() <= 0.5;
         return if first {
             entry.2
+        } else if same_width {
+            entry.3
         } else {
             entry.3.map(|b| height - (entry.1 - b))
         }
