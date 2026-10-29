@@ -257,8 +257,9 @@ above. They are in `rinch`, not `rinch-web`, because `rinch-web` depends on
 `rinch` and an embed-on-web app depends on `rinch` alone. Three callers:
 
 - `rinch::install_web_runtime()` installs all three, idempotently (per-thread
-  flags), with no DOM work; `rinch_web::install_runtime()` is the same call
-  (a no-op on a host build of `rinch-web`).
+  flags), with no DOM work; `rinch_web::install_runtime()` is the same call.
+  Off wasm32 both exist as no-ops (native supplies all three itself), so a
+  cross-platform app calls them with no cfg of its own.
 - `rinch-web`'s `ensure_global_init` (every `mount*`) calls it, then does the
   mount-only page work: clearing stale handlers and contexts, the theme
   `<style>` hook. One install path for mounts and root-less pages.
@@ -426,10 +427,13 @@ re-runs in every instance and would otherwise spawn itself recursively. A
 worker thread and a worker instance call `rinch_core::task::__enter_worker_context`
 (desktop: at thread start; web: in `__rinch_worker_run`), after which
 `spawn_local`, `set_timeout` and `set_interval` panic (`refuse_in_worker`) — nothing drives
-tasks or timers there (on the web no `install_web_runtime` runs in the
-instance; on the desktop the task table and timer queue are the UI thread's).
+tasks or timers there (on the desktop the task table and timer queue are the
+UI thread's; a web worker instance has no `window`, so even an
+`install_web_runtime` the app's start function re-runs there schedules
+nothing).
 A startup failure on the web is reported from a `queueMicrotask`, not a rinch
-task: before the first mount no task scheduler is installed. Ending unlists the id first, so a reply already on its way is
+task: before the web runtime is installed (the first mount, a
+`RinchContext`, or `install_web_runtime`) no task scheduler is installed. Ending unlists the id first, so a reply already on its way is
 dropped on the UI side whatever the backend does.
 
 **Desktop**: one thread per worker (`rinch-worker-<id>`), an `mpsc` channel in,

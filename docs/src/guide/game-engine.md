@@ -646,7 +646,9 @@ installs the timer backend (`window.setTimeout`) and the task scheduler
 `update()` needed to start them (issue #1956). `update()` still drains polled
 signals once a frame. Work that arms a timer **before** the first context is
 created needs the runtime first: call `rinch::install_web_runtime()` at
-startup (idempotent; it also installs a between-frames poll drain). See
+startup (idempotent; it also installs a between-frames poll drain). It is a
+no-op on native targets, so a cross-platform app needs no
+`#[cfg(target_arch = "wasm32")]` around the call. See
 [Running on WASM](wasm.md#a-page-with-no-rinch-root).
 
 **Timed work: the caret blink.** A focused rich-text `Editor`'s caret toggles

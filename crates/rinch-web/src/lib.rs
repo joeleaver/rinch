@@ -266,9 +266,8 @@ impl RootHandle {
 /// depends on `rinch` alone. An embedded `rinch::embed::RinchContext` installs
 /// the timer backend and task scheduler itself on wasm32.
 pub fn install_runtime() {
-    // Host builds of this crate (the workspace's clippy and check) have no
-    // browser to schedule on, and `rinch` builds the runtime for wasm32 only.
-    #[cfg(target_arch = "wasm32")]
+    // A no-op on host builds of this crate (the workspace's clippy and check):
+    // `rinch::install_web_runtime` installs nothing off wasm32.
     rinch::install_web_runtime();
 }
 
