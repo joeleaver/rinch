@@ -64,7 +64,10 @@ impl Fixture {
         let clicks = Rc::new(RefCell::new(Vec::new()));
         let log = clicks.clone();
         let listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
-            let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) else {
+            let Some(el) = e
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            else {
                 return;
             };
             let name = if el.id().is_empty() {
@@ -122,6 +125,9 @@ impl Fixture {
         self.host.remove();
     }
 }
+
+/// The counters of two handlers, A and B.
+type Pair = (Rc<Cell<u32>>, Rc<Cell<u32>>);
 
 fn counter(scope: &mut RenderScope) -> (EventHandlerId, Rc<Cell<u32>>) {
     let count = Rc::new(Cell::new(0u32));
@@ -186,7 +192,7 @@ fn checked(el: &web_sys::HtmlElement) -> bool {
 async fn a_label_onclick_and_a_different_onclick_above_its_control_both_run_once() {
     // The issue's markup. Desktop pin:
     // `a_clickable_label_and_its_controls_clickable_both_run_once`.
-    let counts: Rc<RefCell<Option<(Rc<Cell<u32>>, Rc<Cell<u32>>)>>> = Rc::default();
+    let counts: Rc<RefCell<Option<Pair>>> = Rc::default();
     let out = counts.clone();
     let f = Fixture::mount(move |scope| {
         let (a, ca) = counter(scope);
@@ -217,7 +223,11 @@ async fn a_label_onclick_and_a_different_onclick_above_its_control_both_run_once
         "positive control: the label forwarded a click to its control (Chrome 156's sequence)"
     );
     assert!(checked(&f.el("c")), "and the control toggled");
-    assert_eq!(a.get(), 1, "the label's own onclick runs once, on the press");
+    assert_eq!(
+        a.get(),
+        1,
+        "the label's own onclick runs once, on the press"
+    );
     assert_eq!(
         b.get(),
         1,
@@ -234,7 +244,7 @@ fn a_label_onclick_wrapping_a_different_onclick_around_the_control_runs_each_onc
     // `label { onclick: A, div { onclick: B, input } }`. Chrome runs A, B, A
     // (the forward bubbles back through the label); desktop runs the nearest
     // `onclick` above the control unless the press already ran it: A, B.
-    let counts: Rc<RefCell<Option<(Rc<Cell<u32>>, Rc<Cell<u32>>)>>> = Rc::default();
+    let counts: Rc<RefCell<Option<Pair>>> = Rc::default();
     let out = counts.clone();
     let f = Fixture::mount(move |scope| {
         let (a, ca) = counter(scope);
@@ -327,7 +337,7 @@ fn a_trailing_click_outside_any_label_after_an_acted_press_stays_suppressed() {
     // The different-handler exception is for a label's forward only: a press
     // on an inner clickable whose trailing click lands on an outer one (a
     // press dragged off the inner) still runs the inner alone, as on desktop.
-    let counts: Rc<RefCell<Option<(Rc<Cell<u32>>, Rc<Cell<u32>>)>>> = Rc::default();
+    let counts: Rc<RefCell<Option<Pair>>> = Rc::default();
     let out = counts.clone();
     let f = Fixture::mount(move |scope| {
         let (a, ca) = counter(scope);
@@ -349,6 +359,68 @@ fn a_trailing_click_outside_any_label_after_an_acted_press_stays_suppressed() {
     f.el("outer").click();
     assert_eq!(f.clicks(), ["click@outer"]);
     assert_eq!((a.get(), b.get()), (1, 0));
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn a_drag_out_of_a_label_does_not_click_the_labelled_controls_handler() {
+    // A draggable inside a label: the press only *arms* a drag and runs no
+    // handler, so after the drag activates and drops, the trailing click on
+    // the label — and the click the label forwards to its control — are both
+    // the drag's, and run nothing.
+    let count: Rc<RefCell<Option<Rc<Cell<u32>>>>> = Rc::default();
+    let out = count.clone();
+    let f = Fixture::mount(move |scope| {
+        let (b, cb) = counter(scope);
+        *out.borrow_mut() = Some(cb);
+        let root = scope.create_element("div");
+        let label = scope.create_element("label");
+        label.set_attribute("for", "c");
+        let src = scope.create_element("span");
+        src.set_attribute("id", "src");
+        src.set_attribute("draggable", "true");
+        src.set_attribute(
+            "style",
+            "display: inline-block; width: 100px; height: 40px;",
+        );
+        src.append_child(&scope.create_text("drag me"));
+        label.append_child(&src);
+        root.append_child(&label);
+        let wrap = scope.create_element("div");
+        with_rid(&wrap, b);
+        let input = scope.create_element("input");
+        input.set_attribute("type", "checkbox");
+        input.set_attribute("id", "c");
+        wrap.append_child(&input);
+        root.append_child(&wrap);
+        root
+    });
+    let b = count.borrow().clone().unwrap();
+    let src = f.el("src");
+    let r = src.get_bounding_client_rect();
+    let (x, y) = ((r.x() + 10.0) as i32, (r.y() + 10.0) as i32);
+    for (name, dx, buttons) in [
+        ("pointerdown", 0, 1),
+        ("pointermove", 30, 1),
+        ("pointerup", 30, 0),
+    ] {
+        let init = web_sys::PointerEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_pointer_id(1);
+        init.set_is_primary(true);
+        init.set_pointer_type("mouse");
+        init.set_button(if name == "pointermove" { -1 } else { 0 });
+        init.set_buttons(buttons);
+        init.set_client_x(x + dx);
+        init.set_client_y(y);
+        let ev = web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap();
+        src.dispatch_event(&ev).unwrap();
+    }
+    assert_eq!(b.get(), 0, "an activated drag runs no click");
+    src.click();
+    assert_eq!(f.clicks(), ["click@src", "click@c"], "positive control");
+    assert_eq!(b.get(), 0, "the label's forward after a drag is the drag's");
     f.teardown();
 }
 
