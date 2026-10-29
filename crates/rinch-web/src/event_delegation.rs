@@ -88,9 +88,14 @@ thread_local! {
 
     /// The control a `<label>` is about to forward its click to: recorded when
     /// an acted gesture's trailing click on (or inside) the label is
-    /// suppressed, and consumed by the forwarded click, which the browser
+    /// suppressed and not `preventDefault`ed (a prevented label forwards
+    /// nothing), and consumed by the forwarded click, which the browser
     /// dispatches synchronously after that click's listeners, still inside
-    /// the same task. Cleared at the end of the task.
+    /// the same task. An unconsumed record is cleared by a `setTimeout(0)`
+    /// scheduled with it — one task later, not at the end of this one: on a
+    /// real click a microtask checkpoint runs after each listener, before the
+    /// label's forward, so a microtask clear would come too early. The next
+    /// `pointerdown` also clears it.
     static GESTURE_LABEL_CONTROL: std::cell::RefCell<Option<web_sys::Element>> =
         const { std::cell::RefCell::new(None) };
 
@@ -220,8 +225,9 @@ fn note_gesture_ran(rid: events::EventHandlerId) {
 
 /// An acted gesture's trailing click on `target` is being suppressed. If it is
 /// a click on a `<label>` (or on content inside one) that the label will
-/// forward to a control, remember that control for the rest of this task (see
-/// `GESTURE_LABEL_CONTROL`). A click on the control itself is not forwarded,
+/// forward to a control, remember that control until the next task
+/// (`setTimeout(0)`; see `GESTURE_LABEL_CONTROL`). The caller skips a click
+/// whose default was prevented: its label forwards nothing. A click on the control itself is not forwarded,
 /// and no click follows to consume its record.
 fn note_gesture_label_forward(target: &web_sys::Element) {
     let Some(label) = target.closest("label").ok().flatten() else {
@@ -3332,7 +3338,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // at the control) is dispatched synchronously inside this task and
             // is still suppressed when it reaches a handler the press already
             // ran; an assistive-technology click after it is not.
-            if let Some(el) = &target_el {
+            // A prevented click's label forwards nothing (the listener is on
+            // the document's bubble phase, after the label's own listeners).
+            if let Some(el) = &target_el
+                && !event.default_prevented()
+            {
                 note_gesture_label_forward(el);
             }
             schedule_gesture_end(0);

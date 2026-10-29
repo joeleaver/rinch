@@ -306,8 +306,12 @@ rinch runs it once, as rinch-web's #272 duplicate rule does. A press that
 claims `data-drag-window` activates no label. rinch-web applies the same rule
 (#2033): a gesture records the `data-rid`s its press ran (`GESTURE_RAN`, in
 `dispatch_click_at`) and, when it suppresses the trailing click on or inside a
-`<label>`, that label's `control` (`GESTURE_LABEL_CONTROL`, for the rest of the
-task). The forwarded click at that control dispatches its nearest live
+`<label>`, that label's `control` (`GESTURE_LABEL_CONTROL`; not when that
+click was `preventDefault`ed, since the label then forwards nothing). The record
+is consumed by the forward, which the browser dispatches synchronously in the
+same task; an unconsumed one is cleared by a `setTimeout(0)`, one task later
+(on a real click a microtask checkpoint runs after each listener, before the
+forward, so a microtask clear would be too early). The forwarded click at that control dispatches its nearest live
 `data-rid` if the press did not run it, and is suppressed if it did or if the
 press ran nothing (an activated drag); a trailing click outside any label stays
 suppressed. Web pins: `crates/rinch-web/tests/label_onclick_2033.rs`. Desktop
