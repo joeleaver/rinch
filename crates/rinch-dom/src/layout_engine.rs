@@ -2446,7 +2446,18 @@ impl RinchDocument {
         // text child of this node, which a run inside a split `<span>` (#513)
         // is not — the span holds the text, and does not re-cascade when this
         // node's non-inherited properties change.
+        // And they inherit from it: a box keeps the style it was minted with
+        // until the next structural pass, and since parley 0.12 its line
+        // boxes start from that style's strut (font size, line height), so a
+        // `font-size` change of the container laid its text out against the
+        // old strut (#663: 22px lines where a fresh layout made 20).
         for b in self.tree.nodes[node_id].run_boxes.clone() {
+            if self.tree.nodes.contains(b) {
+                let style = crate::computed_style::ComputedStyle::for_anonymous_box(
+                    &self.tree.nodes[node_id].computed_style,
+                );
+                self.tree.nodes[b].computed_style = style;
+            }
             self.invalidate_ifc_root(b);
         }
     }

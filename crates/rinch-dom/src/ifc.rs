@@ -843,6 +843,31 @@ fn taffy_baseline(
     }
 }
 
+/// An atomic inline's `vertical-align` as parley 0.12 lines a box up by it
+/// (CSS 2.1 §10.8.1; #663): every keyword, and a length or percentage (of the
+/// box's own `line-height`) raising it. Before 0.12 an atomic inline sat on
+/// the baseline whatever it declared. A text span's `vertical-align` is still
+/// rinch's own glyph shift ([`RinchDocument::vertical_align_shift_px`]).
+pub(crate) fn atomic_vertical_align(
+    style: &crate::computed_style::ComputedStyle,
+    scale: f32,
+) -> parley::style::VerticalAlign {
+    use parley::style::VerticalAlign as V;
+    match style.vertical_align {
+        VerticalAlignValue::Baseline => V::BASELINE,
+        VerticalAlignValue::Sub => V::SUB,
+        VerticalAlignValue::Super => V::SUPER,
+        VerticalAlignValue::Top => V::TOP,
+        VerticalAlignValue::Bottom => V::BOTTOM,
+        VerticalAlignValue::Middle => V::MIDDLE,
+        VerticalAlignValue::TextTop => V::TEXT_TOP,
+        VerticalAlignValue::TextBottom => V::TEXT_BOTTOM,
+        VerticalAlignValue::LengthPercentage(lp) => {
+            V::length(lp.resolve(style.line_height_px()) * scale)
+        }
+    }
+}
+
 /// A measure's `LayoutOutput` with its first baseline (#1013).
 ///
 /// `compute_leaf_layout` reports `Baselines::NONE` whatever the measure did, so
@@ -10914,7 +10939,7 @@ impl RinchDocument {
                         height: height * scale,
                         kind: parley::InlineBoxKind::InFlow,
                         baseline: baseline.map(|b| b * scale),
-                        vertical_align: parley::style::VerticalAlign::BASELINE,
+                        vertical_align: atomic_vertical_align(&child.computed_style, scale),
                     });
                     child_positions.push((child_id, LayoutResult::default()));
                 }
