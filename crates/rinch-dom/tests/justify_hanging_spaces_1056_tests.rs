@@ -96,18 +96,10 @@ fn three_hanging_spaces_take_no_share() {
     assert_at(&d, b, 13, 50.0, 1.0, "`dd` ends");
     // A line that keeps one hanging space was right before: the control.
     assert_at(&d, b, 21, 50.0, 2.0, "`ff` ends");
-    // Not Chrome's: the hanging spaces after the first take the shares parley
-    // counts beyond CSS's (two here, of 7.94 each), so a caret between them
-    // is that much right of Chrome's 54.5 and 59. They are past the box's
-    // edge; nothing is drawn there.
-    assert_at(
-        &d,
-        b,
-        6,
-        62.44,
-        0.0,
-        "the first hanging space ends (Chrome: 54.5)",
-    );
+    // The hanging spaces take no share, so a caret between them is at Chrome's
+    // 54.5, past the box's edge. Before parley 0.12 those after the first took
+    // the shares parley counted beyond CSS's (two, of 7.94 each): 62.44.
+    assert_at(&d, b, 6, 54.5, 0.0, "the first hanging space ends");
 }
 
 /// Two hanging spaces, two word gaps. Chrome: each gap 16.05 wide, `c` ends at
@@ -161,18 +153,16 @@ fn a_hung_space_takes_no_word_gap_away() {
 /// to 9.2 and the second keeps its 4.5, ending at the box's edge. On `main`
 /// both were widened, as content that hangs, and `c` ended at 48.46.
 ///
-/// Not Chrome's: parley gives its shares to the first spaces of the line, as
-/// many as it counts, and it counts one more than CSS here (the hanging space
-/// after the NBSPs). The surplus share lands on the second NBSP, which ends at
-/// 64.69 where Chrome's ends at 60. It is white space: only a caret after it
-/// shows it.
+/// Before parley 0.12 rinch counted one opportunity more than CSS here (the
+/// hanging space after the NBSPs), and the surplus share landed on the second
+/// NBSP, which ended at 64.69.
 #[test]
 fn trailing_nbsps_are_content_and_the_last_takes_no_share() {
     let (d, b) = block("60px", "pre-wrap", &[("", "a b c\u{a0}\u{a0} dd")]);
     assert_at(&d, b, 2, 18.19, 0.0, "`b` starts");
     assert_at(&d, b, 5, 46.31, 0.0, "`c` ends");
     assert_at(&d, b, 7, 55.5, 0.0, "the first NBSP ends");
-    assert_at(&d, b, 9, 64.69, 0.0, "the second NBSP ends (Chrome: 60)");
+    assert_at(&d, b, 9, 60.0, 0.0, "the second NBSP ends");
 }
 
 /// The hanging spaces are a run of their own (a larger font): they still take
