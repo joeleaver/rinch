@@ -596,11 +596,18 @@ as in Chrome without `transform-style: preserve-3d` (#997).
 
 One thing rinch does **not** implement from §3: the **transitionability**
 precondition, which appears in item 1 and again in item 4.2: a pair of values
-that cannot be interpolated — a length against a percentage, which needs a
-`calc()` that `ComputedStyle` cannot hold — still gets an `ActiveTransition`,
-which then idles for its whole duration because `AnimatableValue::interpolate`
-answers `None` for it. The property snaps either way; cancelling instead would
-only save the idle ticks.
+that cannot be interpolated — `auto` against a length, or a sizing keyword —
+still gets an `ActiveTransition`, which then idles for its whole duration
+because `AnimatableValue::interpolate` answers `None` for it. The property snaps
+either way; cancelling instead would only save the idle ticks. A length against
+a percentage **is** interpolable, as a `calc()` whose length and percentage
+parts each go their own way (#767; `ComputedStyle` holds that `Calc` for sizes,
+margins and length-percentages alike). Whether a transition *starts* for such a
+pair is the differ's call (`transition/diff.rs`): `background-position`
+compares the computed values (`diff_lp_exact`), `padding-*` compares pixels with
+a percentage read as 0 (`diff_lp`), and `width`, `height` and `margin-*` start
+one only between two lengths (`diff_dimension`, `diff_lpa`), so a
+length-to-percentage change there applies at once.
 
 **Item 3** is implemented (issue #693): a running transition whose property has
 stopped matching `transition-property` is cancelled on the next cascade of its

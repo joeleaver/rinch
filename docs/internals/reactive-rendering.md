@@ -736,6 +736,26 @@ stops.
 `full_restyle_animation_refresh_tests.rs` are the pins, with the Chrome
 measurements and mutant-by-fixture tables in their module docs.
 
+**A `@keyframes` rule without a `from` or `to` stop starts (or ends) at the
+element's own computed value, layout properties included** (#767). Stylo hands
+the missing stop over as `KeyframesStepValue::ComputedValues`, and
+`animation::keyframes::extract_base_style_values` fills it from `ComputedStyle`:
+opacity, the background, text and border colours, background position,
+transform, `width`, `height`, `padding-*`, `margin-*`, `border-*-width` and
+`font-size`. `extract_keyframe_stops` then keeps only the properties the rule's
+declared stops animate (css-animations-1 §4, "the properties being animated"),
+so a transform-only spinner writes no width or margin on its ticks and costs no
+layout. Before, the implicit stop had no `width`, and `to { width: 200px }` on a
+100px box sat at 200 from the first frame (Chrome: 150 at 50%). A percentage
+base against a length stop interpolates as a `calc()`
+(`AnimatableValue::interpolate`, the mixed arms); an `auto` base or margin, or a
+sizing keyword, does not interpolate and flips at the midpoint, which is
+Chrome 156's answer with `interpolate-size` at its default. Pins:
+`crates/rinch-dom/tests/keyframe_implicit_base_767_tests.rs` (Chrome 156 table
+in its module doc). The implicit stop is still read once, when the animation is
+minted: a base that changes mid-animation stays stale outside a full restyle
+(#781; the fixture for it is in that file, ignored).
+
 **A `transform` transitions and animates by function list, not matrix entry by
 entry** (#414). `TransformValue` keeps the list it was composed from
 (`functions`; paint, hit testing and layout still read only the composed
