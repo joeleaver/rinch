@@ -11,8 +11,9 @@
 //! so no item's start, centre and end coincide. No text is laid out.
 //!
 //! Keyword mapping, as Chrome answers it: `left` / `right` are `start` /
-//! `end` (rinch lays out left to right), `legacy <kw>` is `<kw>` and is
-//! inherited by a descendant's `legacy`, `self-*` / `flex-*` are `start` /
+//! `end` (rinch lays out left to right), `legacy <kw>` is `<kw>` (and is
+//! inherited by a descendant's `legacy`, which rinch does not do yet:
+//! `KNOWN`), `self-*` / `flex-*` are `start` /
 //! `end`, `safe` falls back to `start` when the item overflows its area,
 //! `justify-self: normal` / `stretch` is `start` for a sized item. A flex
 //! container ignores both properties.
@@ -227,7 +228,38 @@ const CHROME: &[(&str, &str, &str)] = &[
 
 /// (name, rinch's answer, why) — rows of `CHROME` that are not Chrome's yet,
 /// each for a reason that is not this issue's.
-const KNOWN: &[(&str, &str, &str)] = &[];
+const KNOWN: &[(&str, &str, &str)] = &[
+    (
+        "b_ji_center",
+        "a=11,7,40,20 b=11,27,50,20",
+        "Taffy's block layout reads neither property; Chrome aligns block-level boxes (#1985)",
+    ),
+    (
+        "b_js_end",
+        "a=11,7,40,20 b=11,27,50,20",
+        "as b_ji_center (#1985)",
+    ),
+    (
+        "g_legacy_inherit",
+        "a=11,7,90,40 n=11,7,20,10",
+        "`a` is a block-level box (#1985), and `legacy` is not inherited (#1987)",
+    ),
+    (
+        "g_legacy_grid_inherit",
+        "a=16,7,90,40 n=16,7,20,10 b=161,7,50,20",
+        "Stylo's servo build does not inherit `legacy` into a descendant's `legacy` (#1987)",
+    ),
+    (
+        "g_js_anchor_center",
+        "a=11,7,40,20 b=111,7,50,20",
+        "Stylo drops `anchor-center` at parse: its anchor-positioning pref is off (#1987)",
+    ),
+    (
+        "abs_anc_ji_center",
+        "p=9,9,400,80 a=189,9,40,30",
+        "an unpositioned grid's static position is its padding box, Chrome's its content box (#1986)",
+    ),
+];
 
 fn lay_out(html: &str, height: f32) -> RinchDocument {
     let mut doc = RinchDocument::new();
