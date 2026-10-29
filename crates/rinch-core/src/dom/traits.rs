@@ -1234,6 +1234,11 @@ pub trait DomDocument {
     /// no room at that edge or is not in `node_id`'s inline layout; the
     /// caller then asks by byte. Default `None`: the browser backend draws
     /// its own caret, and the mock has no geometry.
+    ///
+    /// rinch-dom counts the element's own generated text on that edge (its
+    /// `::after` at the end, its `::before` at the start) as part of it
+    /// (#891): the inner side is the caret on the element's side of that
+    /// text, the outer side past it and past any padding.
     fn query_inline_edge_caret(
         &self,
         _node_id: u64,

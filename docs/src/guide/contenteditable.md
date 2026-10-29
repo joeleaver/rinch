@@ -1290,6 +1290,20 @@ claim, the table above decides.
 > `click.link.href` yourself (for example on `click.primary`, the Ctrl/Cmd+click
 > convention). Desktop never navigates: there is no browser to follow the link.
 
+**Decorating links with CSS generated content.** A stylesheet rule may add text
+around a mark, for example a small "opens outside" arrow after web links:
+
+```css
+[data-pm-editor] a[href^="http"]::after { content: "\2197"; font-size: 0.7em; }
+```
+
+That text is not in the document, and the caret and a press step over it: a
+caret after the link is drawn after the arrow (a link does not continue past its
+end, so that is where typed text goes), and a press on the arrow puts the caret
+there. `::before` works the same, on a mark or on a block. On desktop the
+selection highlight leaves the generated text out; in the browser the highlight
+is drawn from the browser's own `Range` rectangles.
+
 ### Autocomplete popups: keys, selection and caret geometry
 
 Four handle methods are what an app needs to run a popup off the editor, like a
