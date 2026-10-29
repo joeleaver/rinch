@@ -457,7 +457,7 @@ fn mount_list() -> (RinchApp, Signal<Vec<Item>>) {
 fn row_count(app: &RinchApp) -> usize {
     use rinch_core::dom::{DomDocument, NodeId};
     let d = app.doc.as_ref().unwrap().borrow();
-    let ids: Vec<usize> = d.tree.nodes.iter().map(|(id, _)| id).collect();
+    let ids: Vec<u64> = d.tree.nodes.iter().map(|(id, _)| id).collect();
     ids.into_iter()
         .filter(|&id| d.get_attribute(NodeId(id), "class").as_deref() == Some("row"))
         .filter(|&id| {

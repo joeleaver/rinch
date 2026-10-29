@@ -745,7 +745,7 @@ mod tests {
     }
 
     /// Every node carrying `class` exactly, in tree order.
-    fn nodes_with_class(doc: &RinchDocument, class: &str) -> Vec<usize> {
+    fn nodes_with_class(doc: &RinchDocument, class: &str) -> Vec<u64> {
         let mut out = Vec::new();
         let mut stack = vec![doc.tree.body_id];
         while let Some(id) = stack.pop() {
@@ -764,7 +764,7 @@ mod tests {
         out
     }
 
-    fn rid_of(doc: &RinchDocument, node_id: usize) -> String {
+    fn rid_of(doc: &RinchDocument, node_id: u64) -> String {
         doc.tree
             .get(node_id)
             .and_then(|n| n.attributes.get("data-rid"))
@@ -787,13 +787,13 @@ mod tests {
     }
 
     /// Run a node's own `data-rid` handler, as the click dispatcher would.
-    fn run_rid_handler(doc: &Rc<RefCell<RinchDocument>>, node_id: usize) {
+    fn run_rid_handler(doc: &Rc<RefCell<RinchDocument>>, node_id: u64) {
         let rid: usize = rid_of(&doc.borrow(), node_id).parse().unwrap();
         rinch_core::events::dispatch_event(rinch_core::events::EventHandlerId(rid));
     }
 
     /// Run a node's `data-onenter` handler, as the hover dispatcher would.
-    fn run_onenter_handler(doc: &Rc<RefCell<RinchDocument>>, node_id: usize) {
+    fn run_onenter_handler(doc: &Rc<RefCell<RinchDocument>>, node_id: u64) {
         let id: usize = doc
             .borrow()
             .tree
@@ -805,12 +805,12 @@ mod tests {
         rinch_core::events::dispatch_event(rinch_core::events::EventHandlerId(id));
     }
 
-    fn center(doc: &RinchDocument, id: usize) -> (f32, f32) {
+    fn center(doc: &RinchDocument, id: u64) -> (f32, f32) {
         let r = rinch_dom::paint::painted_border_box(&doc.tree, id, 1.0);
         (r.center().x as f32, r.center().y as f32)
     }
 
-    fn is_displayed(doc: &RinchDocument, id: usize) -> bool {
+    fn is_displayed(doc: &RinchDocument, id: u64) -> bool {
         doc.tree.get(id).unwrap().computed_style.display
             != rinch_dom::computed_style::DisplayValue::None
     }
@@ -820,7 +820,7 @@ mod tests {
     /// Returns the document plus the ids of the dismiss overlay, the open menu's
     /// single entry, and the *other* top-level label — the hover-to-switch
     /// target, which the same defect made unreachable.
-    fn open_inline_menu() -> (Rc<RefCell<RinchDocument>>, usize, usize, usize) {
+    fn open_inline_menu() -> (Rc<RefCell<RinchDocument>>, u64, u64, u64) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
         let body = doc.borrow().body();
         load_stylesheets(&doc, body);
@@ -983,7 +983,7 @@ mod tests {
 
     /// `BorderlessWindow`'s BelowTitlebar tree — the other Linux layout, whose
     /// bar renders under the title bar rather than inside it — menu 0 open.
-    fn open_below_titlebar_menu() -> (Rc<RefCell<RinchDocument>>, usize, usize) {
+    fn open_below_titlebar_menu() -> (Rc<RefCell<RinchDocument>>, u64, u64) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
         let body = doc.borrow().body();
         load_stylesheets(&doc, body);
@@ -1074,7 +1074,7 @@ mod tests {
     /// The third layout: a *non*-borderless window, where `render_with_menu_bar`
     /// wraps the app's content itself and there is no `BorderlessWindow`
     /// container. Menu 0 open. Returns the overlay's and the entry's ids.
-    fn open_wrapped_menu() -> (Rc<RefCell<RinchDocument>>, usize, usize) {
+    fn open_wrapped_menu() -> (Rc<RefCell<RinchDocument>>, u64, u64) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
         let body = doc.borrow().body();
         load_stylesheets(&doc, body);
@@ -1202,7 +1202,7 @@ mod tests {
         assert_eq!(flyouts.len(), 2, "two flyout panels");
 
         /// Which flyouts are showing, as a `[bool; 2]`.
-        fn shown(doc: &Rc<RefCell<RinchDocument>>, flyouts: &[usize]) -> Vec<bool> {
+        fn shown(doc: &Rc<RefCell<RinchDocument>>, flyouts: &[u64]) -> Vec<bool> {
             let d = doc.borrow();
             flyouts.iter().map(|&f| is_displayed(&d, f)).collect()
         }

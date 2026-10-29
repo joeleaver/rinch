@@ -41,20 +41,20 @@ struct N(&'static str, &'static str, Vec<N>);
 
 struct Rig {
     app: RinchApp,
-    ids: HashMap<&'static str, usize>,
-    body: usize,
+    ids: HashMap<&'static str, u64>,
+    body: u64,
 }
 
 impl Rig {
     fn new(tree: N) -> Rig {
-        let ids: Rc<RefCell<HashMap<&'static str, usize>>> = Rc::default();
+        let ids: Rc<RefCell<HashMap<&'static str, u64>>> = Rc::default();
         let ids_in = ids.clone();
         let tree = Rc::new(tree);
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             fn build(
                 scope: &mut RenderScope,
                 n: &N,
-                ids: &RefCell<HashMap<&'static str, usize>>,
+                ids: &RefCell<HashMap<&'static str, u64>>,
             ) -> NodeHandle {
                 let el = scope.create_element("div");
                 el.set_attribute("style", n.1);
@@ -87,7 +87,7 @@ impl Rig {
         Rig { app, ids, body }
     }
 
-    fn id(&self, name: &str) -> usize {
+    fn id(&self, name: &str) -> u64 {
         if name == "page" {
             self.body
         } else {

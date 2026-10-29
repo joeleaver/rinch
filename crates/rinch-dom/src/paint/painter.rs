@@ -504,7 +504,7 @@ pub trait Painter {
     /// Paint is starting `node`, one the runtime asked to place in paint
     /// order against the surfaces split so far (#1865 S4,
     /// `set_paint_order_watch`). The default ignores it.
-    fn note_node_start(&mut self, node: usize) {
+    fn note_node_start(&mut self, node: crate::node::RawNodeId) {
         let _ = node;
     }
 

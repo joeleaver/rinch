@@ -32,7 +32,7 @@ fn text_in(doc: &mut RinchDocument, parent: NodeId, text: &str) -> NodeId {
     t
 }
 
-fn ifc_root_of(doc: &RinchDocument, node: NodeId) -> Option<usize> {
+fn ifc_root_of(doc: &RinchDocument, node: NodeId) -> Option<u64> {
     doc.tree.get(node.0).unwrap().ifc_root
 }
 

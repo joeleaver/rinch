@@ -19,9 +19,9 @@ const VP: (u32, u32) = (800, 600);
 
 struct Page {
     app: RinchApp,
-    container: usize,
-    before: usize,
-    after: usize,
+    container: u64,
+    before: u64,
+    after: u64,
     handle: crate::editor::EditorHandle,
 }
 
@@ -37,7 +37,7 @@ fn page(read_only: bool) -> Page {
 /// false, by `EditorHandle::focus` — which leaves the DOM's focused node
 /// unset, so Tab can start only from the arbiter's claim.
 fn page_focused(read_only: bool, by_press: bool) -> Page {
-    type Ids = (usize, usize, usize, crate::editor::EditorHandle);
+    type Ids = (u64, u64, u64, crate::editor::EditorHandle);
     let slot: Rc<RefCell<Option<Ids>>> = Rc::new(RefCell::new(None));
     let slot_in = slot.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

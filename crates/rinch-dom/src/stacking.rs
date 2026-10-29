@@ -499,7 +499,7 @@ fn build_order<const BARS: bool>(
     // Nothing was hoisted past anything to reach here, so the chain is empty by
     // construction — the root's own bracket is all that applies.
     entries.extend(box_children.iter().filter_map(|&child_id| {
-        let child = tree.get(child_id)?;
+        let child = tree.get_live(child_id)?;
         (!paints_at_stacking_root(child)).then_some(PaintEntry {
             node_id: child_id,
             kind: PaintKind::InFlow,
@@ -664,7 +664,7 @@ impl<const BARS: bool> Collector<'_, BARS> {
         parent_offset_y: f64,
     ) {
         for &child_id in children {
-            let Some(child) = self.tree.get(child_id) else {
+            let Some(child) = self.tree.get_live(child_id) else {
                 continue;
             };
             let dom_order = self.order;

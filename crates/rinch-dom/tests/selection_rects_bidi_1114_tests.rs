@@ -47,7 +47,7 @@ fn doc_with(text: &str, style: &str) -> (RinchDocument, u64) {
     let t = doc.create_text(text);
     doc.append_child(p, t);
     doc.resolve_layout(600.0, 600.0);
-    (doc, p.0 as u64)
+    (doc, p.0)
 }
 
 /// Byte offset of the `n`th char of `text`.

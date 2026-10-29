@@ -95,7 +95,7 @@ fn mount(build: impl Fn(&mut RenderScope) -> NodeHandle + 'static) -> RinchApp {
 }
 
 /// Every node's computed style, by raw id.
-fn snapshot(app: &RinchApp) -> HashMap<usize, ComputedStyle> {
+fn snapshot(app: &RinchApp) -> HashMap<u64, ComputedStyle> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -106,7 +106,7 @@ fn snapshot(app: &RinchApp) -> HashMap<usize, ComputedStyle> {
 }
 
 /// A node's `class` attribute, for a readable failure message.
-fn class_of(app: &RinchApp, node: usize) -> String {
+fn class_of(app: &RinchApp, node: u64) -> String {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -115,7 +115,7 @@ fn class_of(app: &RinchApp, node: usize) -> String {
         .unwrap_or_else(|| format!("<node {node}, no class>"))
 }
 
-fn running(app: &RinchApp, node: usize) -> usize {
+fn running(app: &RinchApp, node: u64) -> usize {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -126,7 +126,7 @@ fn running(app: &RinchApp, node: usize) -> usize {
 }
 
 /// The one node carrying `class` exactly. Panics unless exactly one does.
-fn node_with_class(app: &RinchApp, class: &str) -> usize {
+fn node_with_class(app: &RinchApp, class: &str) -> u64 {
     let found = nodes_with_class(app, class);
     assert_eq!(
         found.len(),
@@ -137,10 +137,10 @@ fn node_with_class(app: &RinchApp, class: &str) -> usize {
     found[0]
 }
 
-fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
+fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<u64> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let mut found: Vec<usize> = d
+    let mut found: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -157,7 +157,7 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
 
 /// Fire the handler behind a node's `attr` (`data-rid`, `data-onenter`, …), the
 /// way the click and hover paths do.
-fn fire(app: &RinchApp, node: usize, attr: &str) {
+fn fire(app: &RinchApp, node: u64, attr: &str) {
     let rid = {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
@@ -180,7 +180,7 @@ fn fire(app: &RinchApp, node: usize, attr: &str) {
 /// The vacuity guard for every entry below: a fixture whose overlay never
 /// un-hid measured nothing at all, and its "refused nothing" verdict would be
 /// about an idle restyle.
-fn revealed(app: &RinchApp, before: &HashMap<usize, ComputedStyle>) -> usize {
+fn revealed(app: &RinchApp, before: &HashMap<u64, ComputedStyle>) -> usize {
     use rinch_dom::computed_style::{DisplayValue, VisibilityValue};
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
@@ -212,7 +212,7 @@ fn revealed(app: &RinchApp, before: &HashMap<usize, ComputedStyle>) -> usize {
 #[must_use]
 fn assert_nothing_was_refused(
     app: &RinchApp,
-    before: &HashMap<usize, ComputedStyle>,
+    before: &HashMap<u64, ComputedStyle>,
     what: &str,
 ) -> usize {
     let mut declaring = 0usize;
@@ -490,7 +490,7 @@ fn popover_fades_its_dropdown_out() {
     });
     let panel = node_with_class(&app, "rinch-popover__dropdown");
     let content = node_with_class(&app, "fixture-popover-content");
-    let vis = |app: &RinchApp, n: usize| {
+    let vis = |app: &RinchApp, n: u64| {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
         d.tree.get(n).unwrap().computed_style.visibility
@@ -784,7 +784,7 @@ fn stepper_refuses_nothing_when_a_step_changes_state() {
     }
 }
 
-fn display_of(app: &RinchApp, node: usize) -> rinch_dom::computed_style::DisplayValue {
+fn display_of(app: &RinchApp, node: u64) -> rinch_dom::computed_style::DisplayValue {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.display

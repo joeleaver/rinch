@@ -151,10 +151,10 @@ fn mount(labels: &'static [&'static str], title: &'static str) -> RinchApp {
 }
 
 /// The one node carrying `class` exactly.
-fn node_of(app: &RinchApp, class: &str) -> usize {
+fn node_of(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()

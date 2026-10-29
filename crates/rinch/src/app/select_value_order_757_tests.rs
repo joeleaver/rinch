@@ -19,12 +19,12 @@ const VP: (f32, f32) = (800.0, 600.0);
 
 struct Fixture {
     app: RinchApp,
-    select: usize,
-    options: [usize; 3],
+    select: u64,
+    options: [u64; 3],
 }
 
 /// The select's node id plus its three options', captured at mount.
-type MountedIds = (usize, [usize; 3]);
+type MountedIds = (u64, [u64; 3]);
 
 /// A `<select>` with three plain options (values `va`/`vb`/`vc`), no
 /// `selected` attribute in the markup — the default option (index 0) starts
@@ -34,7 +34,7 @@ fn mount() -> Fixture {
     let ids2 = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let select = scope.create_element("select");
-        let mut opts = [0usize; 3];
+        let mut opts = [0u64; 3];
         for (i, v) in ["va", "vb", "vc"].iter().enumerate() {
             let o = scope.create_element("option");
             o.set_attribute("value", v);
@@ -70,7 +70,7 @@ fn key(app: &mut RinchApp, key: KeyCode) {
     );
 }
 
-fn resolved_index(app: &RinchApp, select: usize) -> Option<usize> {
+fn resolved_index(app: &RinchApp, select: u64) -> Option<usize> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     rinch_dom::select::resolve_select_model(&d.tree, select).selected_index

@@ -192,7 +192,7 @@ fn the_container_is_let_go_when_the_anchors_are_cleared() {
     thread_local! {
         static WATCHED: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
     }
-    fn listen(_: u64, _: usize, _: &NodeHandle, mounted: bool) {
+    fn listen(_: u64, _: u64, _: &NodeHandle, mounted: bool) {
         WATCHED.with(|w| w.borrow_mut().push(mounted));
     }
     crate::registry::set_node_view_host_listener(listen);
