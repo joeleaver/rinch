@@ -25,11 +25,14 @@ impl Parse for RsxElement {
 
         while !content.is_empty() {
             // Try to parse as a prop (name: value). `ref` is a keyword, which
-            // `peek(Ident)` does not see; `ref:` binds a node ref (#1779).
+            // `peek(Ident)` does not see; `ref:` binds a node ref (#1779). A
+            // string literal followed by `:` is a quoted attribute name
+            // (#1653); a text child is never followed by `:`, so nothing that
+            // parsed before changes meaning.
             if (content.peek(Ident)
                 && (content.peek2(Token![:]) && !content.peek2(Token![::])
                     || content.peek2(Token![-])))
-                || (content.peek(Token![ref])
+                || ((content.peek(Token![ref]) || content.peek(syn::LitStr))
                     && content.peek2(Token![:])
                     && !content.peek2(Token![::]))
             {
@@ -407,5 +410,81 @@ mod tests {
         assert_eq!(el.props[0].name, "class");
         assert_eq!(el.props[1].name, "data-id");
         assert_eq!(el.props[2].name, "style");
+    }
+
+    // ── Quoted attribute names (issue #1653) ─────────────────────
+
+    #[test]
+    fn parse_quoted_attribute_names() {
+        let el: RsxElement = parse_str(
+            r#"Button { "title": "Save", variant: "filled", "data-2x": {|| x()}, "Label" }"#,
+        )
+        .unwrap();
+        assert_eq!(el.props.len(), 3);
+        assert_eq!(el.props[0].name, "title");
+        assert!(el.props[0].quoted);
+        assert_eq!(el.props[1].name, "variant");
+        assert!(!el.props[1].quoted);
+        assert_eq!(el.props[2].name, "data-2x");
+        assert!(el.props[2].quoted);
+        assert_eq!(
+            el.children.len(),
+            1,
+            "a literal not followed by `:` is text"
+        );
+    }
+
+    #[test]
+    fn a_text_child_followed_by_a_path_is_not_a_quoted_name() {
+        // `"a"` then `::` is not `name:`; it stays a child and fails as one.
+        assert!(parse_str::<RsxElement>(r#"div { "a"::b }"#).is_err());
+    }
+
+    /// The message a bad quoted name is refused with.
+    fn quoted_error(src: &str) -> String {
+        match parse_str::<RsxElement>(src) {
+            Ok(_) => panic!("`{src}` must not parse"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn quoted_names_rsx_owns_are_refused() {
+        for (src, needle) in [
+            (r#"Button { "style": "x" }"#, "write `style:` unquoted"),
+            (r#"div { "class": "x" }"#, "write `class:` unquoted"),
+            (r#"div { "key": "x" }"#, "write `key:` unquoted"),
+            (r#"div { "ref": r }"#, "write `ref:` unquoted"),
+            (r#"Button { "onclick": "x" }"#, "event handler"),
+            (r#"div { "OnClick": "x" }"#, "event handler"),
+        ] {
+            let msg = quoted_error(src);
+            assert!(msg.contains(needle), "`{src}`: {msg}");
+        }
+    }
+
+    #[test]
+    fn quoted_names_that_are_not_attribute_names_are_refused() {
+        for src in [
+            r#"div { "": "x" }"#,
+            r#"div { "two words": "x" }"#,
+            r#"div { "a=b": "x" }"#,
+            r#"div { "1st": "x" }"#,
+            r#"div { "-x": "x" }"#,
+            r#"div { "tit\"le": "x" }"#,
+            r#"div { "títle": "x" }"#,
+        ] {
+            let msg = quoted_error(src);
+            assert!(msg.contains("not an attribute name"), "`{src}`: {msg}");
+        }
+    }
+
+    #[test]
+    fn quoted_names_html_allows_are_accepted() {
+        for name in ["title", "xml:lang", "data-2x", "_x", "x.y", "ID"] {
+            let src = format!(r#"div {{ "{name}": "v" }}"#);
+            let el: RsxElement = parse_str(&src).unwrap();
+            assert_eq!(el.props[0].name, name);
+        }
     }
 }

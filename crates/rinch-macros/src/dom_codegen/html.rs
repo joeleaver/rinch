@@ -65,7 +65,12 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
 
     for prop in &element.props {
         let name_str = prop.name.to_string();
-        if name_str == "key" {
+        if prop.quoted {
+            // A quoted name is the attribute of that name (issue #1653): never
+            // an event, a style shorthand or `style:`'s merge — the parser
+            // refuses the names those would need (`"style"`, `"on…"`).
+            attr_props.push(prop);
+        } else if name_str == "key" {
             // Skip key prop — used by for-loop reconciliation, not a DOM attribute
             continue;
         } else if name_str == "ref" {
@@ -98,7 +103,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
         }
     }
     for prop in &attr_props {
-        if !prop.name.contains('-') && prop.name.ends_with("_fn") {
+        if !prop.quoted && !prop.name.contains('-') && prop.name.ends_with("_fn") {
             push_error(crate::events::fn_prop_error(&prop.name, prop.name_span()));
         }
     }
