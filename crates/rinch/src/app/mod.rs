@@ -346,6 +346,8 @@ mod textarea_home_end_tests;
 mod textarea_max_rows_tests;
 #[cfg(test)]
 mod textarea_newline_tests;
+#[cfg(all(test, software_shell))]
+mod textarea_scroll_827_tests;
 #[cfg(test)]
 mod textarea_text_child_tests;
 #[cfg(test)]
