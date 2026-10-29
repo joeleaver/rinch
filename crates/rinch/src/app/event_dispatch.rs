@@ -1733,7 +1733,24 @@ impl RinchApp {
                                     alt,
                                     repeat: repeat == KeyRepeat::Repeat,
                                 });
-                            if !offered.is_some_and(|k| handle.offer_key(&k)) {
+                            if offered.is_some_and(|k| handle.offer_key(&k)) {
+                                // The app's `on_key` took it.
+                            } else if key == KeyCode::Tab
+                                && !ctrl
+                                && !alt
+                                && !modifiers.meta
+                                && handle.refuses_edits()
+                            {
+                                // #833: a read-only editor is a `readonly` field
+                                // to Tab. Its keymap's `Tab` / `Shift-Tab`
+                                // (sink / lift a list item) are refused, and a
+                                // matched binding is consumed even so, which
+                                // left a keyboard user who came in with no way
+                                // out. Tab and Shift+Tab go to the next and the
+                                // previous Tab stop instead, from the editor's
+                                // place in the document (`handle_tab`).
+                                self.handle_tab(shift);
+                            } else {
                                 self.dispatch_new_editor_key(
                                     &handle,
                                     key,
@@ -4057,7 +4074,8 @@ impl RinchApp {
         }
         // 2. Tab: navigate table cells when in a table (shared handle method); otherwise
         //    fall through to the keymap, which binds `Tab`→sinkListItem /
-        //    `Shift-Tab`→liftListItem. Consumed either way — no editor focus traversal.
+        //    `Shift-Tab`→liftListItem. Consumed either way — no editor focus traversal
+        //    (a read-only editor's Tab never gets here: its caller moves the focus, #833).
         if matches!(key, KeyCode::Tab) && handle.tab_cell(shift) {
             return true;
         }
