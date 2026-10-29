@@ -3755,6 +3755,22 @@ fn find_node_by_host(
     None
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only (#848): how many (decoration, child) range comparisons the
+    /// decoration pass made — the work that used to be blocks × decorations.
+    pub(crate) static DECO_RANGE_TESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_deco_range_tests(n: usize) {
+    DECO_RANGE_TESTS.with(|c| c.set(c.get() + n));
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn count_deco_range_tests(_: usize) {}
+
 /// Re-project the inline decorations over `desc`'s subtree. `content_start` is the
 /// model position just inside `desc`'s content (0 for the root/doc). Returns
 /// whether any decoration segment is projected in this subtree — the caller's
@@ -3774,7 +3790,10 @@ fn sync_inline_decos(
     let mut pos = content_start; // the position just before the current child
     for child in &mut desc.children {
         let size = child.node.node_size();
-        let overlaps = decos.iter().any(|d| d.from < pos + size && d.to > pos);
+        let overlaps = decos.iter().any(|d| {
+            count_deco_range_tests(1);
+            d.from < pos + size && d.to > pos
+        });
         // `has_deco` is what makes the skip sound in the other direction: a subtree
         // no decoration reaches any more still has to be visited to *take its
         // segments off*.
@@ -6953,3 +6972,7 @@ mod incremental_fresh_1833_prop_tests;
 #[cfg(test)]
 #[path = "inline_doc_1833_tests.rs"]
 mod inline_doc_1833_tests;
+
+#[cfg(test)]
+#[path = "inline_deco_848_tests.rs"]
+mod inline_deco_848_tests;
