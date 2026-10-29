@@ -40,6 +40,9 @@ impl DomDocument for RinchDocument {
         if tag == "option" {
             self.tree.option_elements += 1;
         }
+        if tag == "textarea" {
+            self.tree.textarea_elements += 1;
+        }
         let mut node = Node::element(id, tag, self.tree.guard.clone());
         // Use CSS-standard defaults based on element type:
         // Block elements (div, p, h1, etc.): flex-column (emulates block stacking)

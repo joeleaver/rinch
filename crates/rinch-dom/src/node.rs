@@ -3232,6 +3232,13 @@ pub struct NodeTree {
     /// `note_select_content_changed` (which walks a mutated node's ancestors
     /// looking for one) returns at once (#1128).
     pub option_elements: usize,
+    /// How many `<textarea>` elements this document has ever created. Never
+    /// decremented, so `0` proves no node is a textarea, and the textarea
+    /// extent refresh (`clamp_scroll_offsets`' scan of every node, #827) and
+    /// [`Self::push_dirty`]'s textarea check are skipped — the scan cost
+    /// every layout of a document without one ~3% (`inset_move.list_500`,
+    /// review of batch #2031).
+    pub textarea_elements: usize,
     /// Text nodes whose Taffy measure context (`NodeContext::Text`) no longer
     /// matches the typography their parent now computes (issue #678).
     ///
@@ -3592,6 +3599,7 @@ impl NodeTree {
             mousemove_handlers: 0,
             title_sources: 0,
             option_elements: 0,
+            textarea_elements: 0,
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),
@@ -3786,6 +3794,9 @@ impl NodeTree {
     /// textarea for the extent refresh and scroll clamp the next resolve owes
     /// it ([`Self::textarea_extent_dirty`]).
     fn note_textarea_extent_dirty(&mut self, id: RawNodeId) {
+        if self.textarea_elements == 0 {
+            return;
+        }
         let Some(node) = self.nodes.get(id) else {
             return;
         };

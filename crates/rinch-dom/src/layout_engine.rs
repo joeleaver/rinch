@@ -1163,20 +1163,18 @@ impl RinchDocument {
         // before it is read — below, and by the wheel, the bars and
         // `scroll_height` until the next layout. Shaped only when its text,
         // caret, width or font changed (`form_control::displayed_metrics`).
-        let textareas: Vec<usize> = self
-            .tree
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.tag() == Some("textarea"))
-            .map(|(id, _)| id)
-            .collect();
-        for id in textareas {
-            crate::form_control::refresh_textarea_extent(
-                &self.tree,
-                &mut self.font_cx,
-                &mut self.layout_cx,
-                id,
-            );
+        // A document that never made a textarea scans nothing.
+        if self.tree.textarea_elements > 0 {
+            for (id, node) in self.tree.nodes.iter() {
+                if node.tag() == Some("textarea") {
+                    crate::form_control::refresh_textarea_extent(
+                        &self.tree,
+                        &mut self.font_cx,
+                        &mut self.layout_cx,
+                        id,
+                    );
+                }
+            }
         }
         // Collect (node_id, max_scroll) for nodes that need clamping
         let mut clamps: Vec<(usize, f64)> = Vec::new();
