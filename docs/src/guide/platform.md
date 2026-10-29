@@ -83,6 +83,22 @@ a block-level one with only a `viewBox` fills its container's width. An
 inline one with only a `viewBox` is 300 wide on desktop, where a browser
 fills the containing block's width: give it a size.
 
+On desktop rinch draws the shapes itself: `path`, `rect` (with `rx`/`ry`
+rounded corners, SVG 2's rules: one radius alone sets both, each is clamped
+to half its side, unequal radii give elliptical corners), `circle`,
+`ellipse`, `line`, `polyline` and `polygon`, at any depth inside `<g>`
+groups. A group's `fill`, `stroke`, `stroke-width`, `stroke-linecap` and
+`stroke-linejoin` are inherited by its content (a child's own value wins, and
+an inherited `currentColor` takes each shape's own `color`), and a
+`transform` attribute (`matrix`, `translate`, `scale`, `rotate` with an
+optional centre, `skewX`, `skewY`, as a list) moves a group or a shape; a
+stroke is scaled with it, as in a browser. Exported logos usually need
+exactly this. Not drawn: `<text>`, `<use>`, `<image>`, gradients and other
+`url()` paint (a `url(#id) fallback` paints the fallback), clip paths, masks,
+filters, `opacity`/`fill-opacity`/`stroke-opacity` on a shape or group,
+`fill-rule`, and dashes. Content outside the `<svg>` box is not clipped as a
+browser clips it (#1990).
+
 ### Background layers
 
 A background image — a `url(...)` or a `linear-gradient`/`radial-gradient` —
