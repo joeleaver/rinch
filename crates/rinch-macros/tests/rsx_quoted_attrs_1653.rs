@@ -109,7 +109,11 @@ fn quoted_names_land_on_a_component_root() {
         "a quoted hyphenated name is the same attribute as the unquoted one"
     );
     assert_eq!(root.get_attribute("dir").as_deref(), Some("ltr"));
-    assert_eq!(text_of(&root), "Toolbar", "the struct prop still reached the struct");
+    assert_eq!(
+        text_of(&root),
+        "Toolbar",
+        "the struct prop still reached the struct"
+    );
 }
 
 // ── 2. a hand-written `impl Component` whose `title` is a heading ───────────
@@ -223,7 +227,11 @@ fn a_re_rendered_component_gets_its_quoted_attributes_back() {
     let third = find_tagged(&root).expect("still rendered");
     assert_eq!(third.get_attribute("title").as_deref(), Some("b"));
     assert_eq!(third.node_id(), second.node_id());
-    assert_eq!(renders(), after_label, "the attribute alone re-renders nothing");
+    assert_eq!(
+        renders(),
+        after_label,
+        "the attribute alone re-renders nothing"
+    );
 }
 
 // ── 4. on an HTML element ───────────────────────────────────────────────────
@@ -244,7 +252,11 @@ fn a_quoted_name_on_an_element_is_the_literal_attribute() {
     let (_doc, _scope, root) = mount(quoted_on_element);
     assert_eq!(root.get_attribute("title").as_deref(), Some("Tip"));
     assert_eq!(root.get_attribute("p").as_deref(), Some("literal"));
-    assert_eq!(root.get_attribute("style"), None, "not the padding shorthand");
+    assert_eq!(
+        root.get_attribute("style"),
+        None,
+        "not the padding shorthand"
+    );
     assert_eq!(root.get_attribute("data-2x").as_deref(), Some("yes"));
     assert_eq!(root.get_attribute("aria-label").as_deref(), Some("Box"));
 }

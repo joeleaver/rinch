@@ -25,11 +25,14 @@ impl Parse for RsxElement {
 
         while !content.is_empty() {
             // Try to parse as a prop (name: value). `ref` is a keyword, which
-            // `peek(Ident)` does not see; `ref:` binds a node ref (#1779).
+            // `peek(Ident)` does not see; `ref:` binds a node ref (#1779). A
+            // string literal followed by `:` is a quoted attribute name
+            // (#1653); a text child is never followed by `:`, so nothing that
+            // parsed before changes meaning.
             if (content.peek(Ident)
                 && (content.peek2(Token![:]) && !content.peek2(Token![::])
                     || content.peek2(Token![-])))
-                || (content.peek(Token![ref])
+                || ((content.peek(Token![ref]) || content.peek(syn::LitStr))
                     && content.peek2(Token![:])
                     && !content.peek2(Token![::]))
             {
@@ -424,7 +427,11 @@ mod tests {
         assert!(!el.props[1].quoted);
         assert_eq!(el.props[2].name, "data-2x");
         assert!(el.props[2].quoted);
-        assert_eq!(el.children.len(), 1, "a literal not followed by `:` is text");
+        assert_eq!(
+            el.children.len(),
+            1,
+            "a literal not followed by `:` is text"
+        );
     }
 
     #[test]
