@@ -13,9 +13,11 @@
 //! --window-size=800,600`, `* { scrollbar-width: none }` so a classic bar does
 //! not narrow Chrome's scrollport where rinch's overlay bar does not), read off
 //! `scrollLeft`/`scrollTop` after `t.scrollIntoView({block: "nearest", inline:
-//! "nearest"})`. The page's offsets are Chrome's `document.scrollingElement`,
-//! which is `<body>` here (the UA sheet's page scroller). Each fixture's HTML
-//! is the test's `TREE`, with `margin: 0` on `<body>`.
+//! "nearest"})`. The page's offsets are Chrome's `document.scrollingElement`'s;
+//! rinch's page scroller is `<body>` (the UA sheet's `overflow-y: auto`). Each fixture's HTML
+//! is in the test's doc, with `margin: 0` on `<body>` and `box-sizing:
+//! border-box` on every `div`: rinch sizes every box as `border-box` (#1278),
+//! so the scrollers say so too.
 //!
 //! None of the boxes holds text: the geometry is the CSS alone, on any host.
 use super::*;
@@ -25,11 +27,11 @@ const VP: (f32, f32) = (800.0, 600.0);
 
 /// The two scrollers of the 2- and 3-level fixtures: every padding and border
 /// side different, so a frame mixed up on either axis moves an answer.
-const S1: &str = "width: 300px; height: 200px; overflow: auto; \
+const S1: &str = "width: 300px; height: 200px; overflow: auto; box-sizing: border-box; \
     padding: 13px 7px 11px 9px; border: solid black; border-width: 5px 3px 4px 6px";
-const S1_OUTER: &str = "width: 400px; height: 300px; overflow: auto; \
+const S1_OUTER: &str = "width: 400px; height: 300px; overflow: auto; box-sizing: border-box; \
     padding: 17px 5px 9px 12px; border: solid black; border-width: 3px 7px 2px 4px";
-const S2_INNER: &str = "width: 250px; height: 150px; overflow: auto; \
+const S2_INNER: &str = "width: 250px; height: 150px; overflow: auto; box-sizing: border-box; \
     padding: 6px 11px 14px 8px; border: solid black; border-width: 2px 4px 6px 3px";
 
 /// A node of a fixture tree: `(name, style, children)`. The name is how the
@@ -154,10 +156,10 @@ fn two_levels() -> N {
 fn two_levels_the_page_follows_the_scroller() {
     let mut r = Rig::new(two_levels());
     r.request(None);
-    // s1's scrollport is its padding box, 316x224: the target's far edges sit
+    // s1's scrollport is its padding box, 291x191: the target's far edges sit
     // at 9+500+40 = 549 and 13+450+30 = 493 in it.
-    assert_eq!(r.scroll("s1"), (233.0, 269.0), "Chrome: s1 (233, 269)");
-    assert_eq!(r.scroll("page"), (522.0, 729.0), "Chrome: page (522, 729)");
+    assert_eq!(r.scroll("s1"), (258.0, 302.0), "Chrome: s1 (258, 302)");
+    assert_eq!(r.scroll("page"), (497.0, 696.0), "Chrome: page (497, 696)");
 }
 
 /// Three levels: s2 inside s1 inside the page, each off screen in the one
@@ -191,29 +193,29 @@ fn three_levels() -> N {
 fn three_levels_every_scroller_moves() {
     let mut r = Rig::new(three_levels());
     r.request(None);
-    assert_eq!(r.scroll("s2"), (229.0, 466.0), "Chrome: s2 (229, 466)");
-    assert_eq!(r.scroll("s1"), (567.0, 663.0), "Chrome: s1 (567, 663)");
-    assert_eq!(r.scroll("page"), (621.0, 829.0), "Chrome: page (621, 829)");
+    assert_eq!(r.scroll("s2"), (255.0, 494.0), "Chrome: s2 (255, 494)");
+    assert_eq!(r.scroll("s1"), (569.0, 666.0), "Chrome: s1 (569, 666)");
+    assert_eq!(r.scroll("page"), (593.0, 798.0), "Chrome: page (593, 798)");
 }
 
 /// The target placed (`NodeHandle::scroll_to_fraction(0.5, 16)`, what
 /// `EditorHandle::scroll_into_view_aligned` uses) in its own scroller, and
 /// brought into view of every scroller further out, as the web backend's
 /// `request_scroll_to_fraction` does: s2's `scrollTop` put so the target's top
-/// is half way down its 170px scrollport, then a `nearest` `scrollIntoView`.
+/// is half way down its 142px scrollport, then a `nearest` `scrollIntoView`.
 /// Chrome's numbers are that code run over the three-level page.
 #[test]
 fn a_placed_target_is_brought_into_view_of_the_outer_scrollers() {
     let mut r = Rig::new(three_levels());
     r.request(Some(0.5));
-    assert_eq!(r.scroll("s2"), (229.0, 521.0), "Chrome: s2 (229, 521)");
-    assert_eq!(r.scroll("s1"), (567.0, 608.0), "Chrome: s1 (567, 608)");
-    assert_eq!(r.scroll("page"), (621.0, 829.0), "Chrome: page (621, 829)");
+    assert_eq!(r.scroll("s2"), (255.0, 535.0), "Chrome: s2 (255, 535)");
+    assert_eq!(r.scroll("s1"), (569.0, 625.0), "Chrome: s1 (569, 625)");
+    assert_eq!(r.scroll("page"), (593.0, 798.0), "Chrome: page (593, 798)");
 }
 
 /// A scroller taller than the window. What the page brings into view is the
 /// **target** (clipped to the scrollers it is in), not the scroller around it:
-/// the scroller's own box (1100..2128) is taller than the window and its top
+/// the scroller's own box (1100..2100) is taller than the window and its top
 /// would be aligned (scrollTop 1100), leaving the target 1,000px below.
 ///
 /// ```html
@@ -229,7 +231,7 @@ fn a_scroller_taller_than_the_window_brings_the_target_not_its_own_top() {
         "width: 800px; height: 3000px; padding-top: 1100px; box-sizing: border-box",
         vec![N(
             "s1",
-            "width: 300px; height: 1000px; overflow: auto; padding: 10px; \
+            "width: 300px; height: 1000px; overflow: auto; box-sizing: border-box; padding: 10px; \
              border: 4px solid black",
             vec![N(
                 "",
@@ -239,8 +241,8 @@ fn a_scroller_taller_than_the_window_brings_the_target_not_its_own_top() {
         )],
     ));
     r.request(None);
-    assert_eq!(r.scroll("s1"), (0.0, 1020.0), "Chrome: s1 (0, 1020)");
-    assert_eq!(r.scroll("page"), (0.0, 1524.0), "Chrome: page (0, 1524)");
+    assert_eq!(r.scroll("s1"), (0.0, 1048.0), "Chrome: s1 (0, 1048)");
+    assert_eq!(r.scroll("page"), (0.0, 1496.0), "Chrome: page (0, 1496)");
 }
 
 /// A target already in view of every scroller, each of them scrolled off its
@@ -270,7 +272,7 @@ fn a_target_already_in_view_moves_nothing() {
 /// A `position: fixed` box is where the walk stops: the scrollers inside it
 /// move, the page under it does not — scrolling the page cannot move a box the
 /// viewport holds. The panel sits below the window (top: 700px); without the
-/// stop the page would scroll 219px for nothing.
+/// stop the page would scroll 197px for nothing.
 #[test]
 fn the_walk_stops_at_a_fixed_box() {
     let mut r = Rig::new(N(
@@ -281,7 +283,7 @@ fn the_walk_stops_at_a_fixed_box() {
             "position: fixed; left: 100px; top: 700px; width: 300px; height: 250px",
             vec![N(
                 "s1",
-                "width: 200px; height: 100px; overflow: auto; padding: 8px; \
+                "width: 200px; height: 100px; overflow: auto; box-sizing: border-box; padding: 8px; \
                  border: 3px solid black",
                 vec![N(
                     "",
@@ -292,7 +294,7 @@ fn the_walk_stops_at_a_fixed_box() {
         )],
     ));
     r.request(None);
-    assert_eq!(r.scroll("s1"), (0.0, 222.0), "Chrome: s1 (0, 222)");
+    assert_eq!(r.scroll("s1"), (0.0, 244.0), "Chrome: s1 (0, 244)");
     assert_eq!(r.scroll("page"), (0.0, 0.0), "Chrome: page (0, 0)");
 }
 
