@@ -1,5 +1,8 @@
 //! Animation types: AnimationSpec, ActiveAnimation, KeyframeStop.
 
+use style::stylesheets::keyframes_rule::{KeyframesAnimation, KeyframesStepValue};
+
+use super::keyframes::StopBasis;
 use crate::transition::types::{AnimatableValue, TimingFunction, TransitionProperty};
 
 // =============================================================================
@@ -136,40 +139,59 @@ pub struct ActiveAnimation {
 /// keyframe's declaration block between the `@keyframes` rule and every
 /// cascade data rebuilt from it, so a sheet flush that leaves the rule alone
 /// leaves these equal, and a redefined, removed or newly winning rule does not.
-#[derive(Clone, Default)]
+///
+/// Of the base-style inputs, only the ones the authored stops **read** at
+/// extraction count ([`StopDeps`]): a `to { transform: rotate(…) }` spin reads
+/// none, so a hover that moves the element's `color` or `font-size` keeps its
+/// stops, and a `from { background-color: currentcolor }` reads the colour, so
+/// the same hover re-extracts them. The implicit (base) values of a 0%/100%
+/// stop are not inputs: they are re-read on every cascade anyway
+/// ([`super::keyframes::refresh_implicit_values`]).
+#[derive(Clone)]
 pub(crate) struct StopInputs {
     /// One per keyframe step; `None` for a step Stylo generated.
-    pub(crate) blocks: Vec<
+    blocks: Vec<
         Option<
             servo_arc::Arc<style::shared_lock::Locked<style::properties::PropertyDeclarationBlock>>,
         >,
     >,
-    /// The element's `font-size` (`em`).
-    pub(crate) font_size: f32,
-    /// The root's `font-size` (`rem`).
-    pub(crate) root_font_size: f32,
-    /// The element's `color` (`currentcolor`).
-    pub(crate) color: Option<peniko::Color>,
-    /// The parent's `color` (`currentcolor` on `color`).
-    pub(crate) parent_color: Option<peniko::Color>,
+    /// The values the stops resolved against, and which of them they read.
+    basis: StopBasis,
 }
 
-impl PartialEq for StopInputs {
-    fn eq(&self, other: &Self) -> bool {
-        self.font_size == other.font_size
-            && self.root_font_size == other.root_font_size
-            && self.color == other.color
-            && self.parent_color == other.parent_color
-            && self.blocks.len() == other.blocks.len()
+impl StopInputs {
+    /// The inputs of stops just extracted from `animation` against `basis`.
+    pub(crate) fn new(animation: &KeyframesAnimation, basis: StopBasis) -> Self {
+        Self {
+            blocks: animation
+                .steps
+                .iter()
+                .map(|step| match &step.value {
+                    KeyframesStepValue::Declarations { block } => Some(block.clone()),
+                    KeyframesStepValue::ComputedValues => None,
+                })
+                .collect(),
+            basis,
+        }
+    }
+
+    /// Whether stops extracted from `animation` against `basis` would come out
+    /// as the ones these inputs produced: the same declaration blocks, and the
+    /// same value for every base-style input those blocks read.
+    pub(crate) fn hold_for(&self, animation: &KeyframesAnimation, basis: &StopBasis) -> bool {
+        self.blocks.len() == animation.steps.len()
             && self
                 .blocks
                 .iter()
-                .zip(&other.blocks)
-                .all(|(a, b)| match (a, b) {
-                    (Some(a), Some(b)) => servo_arc::Arc::ptr_eq(a, b),
-                    (None, None) => true,
+                .zip(&animation.steps)
+                .all(|(held, step)| match (held, &step.value) {
+                    (Some(a), KeyframesStepValue::Declarations { block }) => {
+                        servo_arc::Arc::ptr_eq(a, block)
+                    }
+                    (None, KeyframesStepValue::ComputedValues) => true,
                     _ => false,
                 })
+            && self.basis.agrees_on(basis, self.basis.read())
     }
 }
 
@@ -177,12 +199,23 @@ impl std::fmt::Debug for StopInputs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StopInputs")
             .field("steps", &self.blocks.len())
-            .field("font_size", &self.font_size)
-            .field("root_font_size", &self.root_font_size)
-            .field("color", &self.color)
-            .field("parent_color", &self.parent_color)
+            .field("read", &self.basis.read())
             .finish()
     }
+}
+
+/// Which base-style inputs a rule's authored keyframe stops read when they
+/// were extracted ([`StopInputs`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StopDeps {
+    /// An `em` length: the element's `font-size`.
+    pub(crate) em: bool,
+    /// A `rem` length: the root font size.
+    pub(crate) rem: bool,
+    /// A `currentcolor`: the element's `color`.
+    pub(crate) color: bool,
+    /// `color: currentcolor`: the parent's `color`.
+    pub(crate) parent_color: bool,
 }
 
 /// Result of computing animation values at a given time.

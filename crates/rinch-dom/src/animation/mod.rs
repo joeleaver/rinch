@@ -41,14 +41,17 @@ use crate::transition::apply_value_to_style;
 ///   `currentTime` does not, as in Chrome;
 /// - the `@keyframes` rule is looked up again, and the animation dropped if it
 ///   is gone (Chrome cancels it);
-/// - the stops are re-extracted when the rule's blocks or the base-style
-///   inputs an authored stop resolves against ([`StopInputs`]) changed, and
+/// - the stops are re-extracted when the rule's blocks changed, or a
+///   base-style input an authored stop **read** at extraction moved
+///   ([`StopInputs`]: the element's `font-size` for an `em`, its `color` for a
+///   `currentcolor`, the parent's `color` for `color: currentcolor`), and
 ///   otherwise kept with only their implicit (base) values re-read
 ///   ([`keyframes::refresh_implicit_values`]).
 ///
-/// That costs a node that is cascaded while it animates one keyframes lookup
-/// and a comparison of a few values per animation; the extraction itself runs
-/// only when something it reads moved. A node with no animation never gets
+/// So a node cascaded while it animates pays, per animation, one keyframes
+/// lookup, a pointer compare per keyframe, and a re-read of its implicit
+/// 0%/100% values from the base style; a hover that moves `color` under a
+/// `transform` spin re-extracts nothing. A node with no animation never gets
 /// here.
 #[allow(clippy::too_many_arguments)]
 pub fn start_animations(
@@ -84,38 +87,20 @@ pub fn start_animations(
         .and_then(|n| n.parent)
         .and_then(|parent| tree.get(parent))
         .and_then(|parent| parent.computed_style.color);
-    // `rem` in a keyframe stop resolves against the root's font size, the same
-    // base the cascade uses.
+    // `rem` in a keyframe stop resolves against this. `tree.root_id` is the
+    // document node, whose `font-size` is always the initial 16px, not the
+    // `<html>` element's, so a `rem` stop ignores `html { font-size }` (#2058).
     let root_font_size = tree
         .get(tree.root_id)
         .map_or(16.0, |root| root.computed_style.font_size);
 
-    // What the stops of a rule extract from against this node's base style.
-    let inputs_of = |kf_anim: &style::stylesheets::keyframes_rule::KeyframesAnimation| StopInputs {
-        blocks: kf_anim
-            .steps
-            .iter()
-            .map(|step| match &step.value {
-                style::stylesheets::keyframes_rule::KeyframesStepValue::Declarations { block } => {
-                    Some(block.clone())
-                }
-                style::stylesheets::keyframes_rule::KeyframesStepValue::ComputedValues => None,
-            })
-            .collect(),
-        font_size: base_style.font_size,
-        root_font_size,
-        color: base_style.color,
-        parent_color,
-    };
+    // What the stops of a rule resolve against on this node now.
+    let basis = keyframes::StopBasis::new(base_style, parent_color, root_font_size);
+    // The stops of a rule against that basis, with the inputs they read.
     let extract = |kf_anim: &style::stylesheets::keyframes_rule::KeyframesAnimation| {
-        let stops = keyframes::extract_keyframe_stops(
-            kf_anim,
-            base_style,
-            parent_color,
-            root_font_size,
-            guard,
-        );
-        (!stops.is_empty()).then_some(stops)
+        let basis = basis.clone();
+        let stops = keyframes::extract_keyframe_stops_against(kf_anim, base_style, &basis, guard);
+        (!stops.is_empty()).then(|| (stops, StopInputs::new(kf_anim, basis)))
     };
 
     // Match from the end: the last spec of a name takes the last entry of that
@@ -172,9 +157,8 @@ pub fn start_animations(
             existing_anim.delay_ms = spec.delay_ms;
             existing_anim.position = position;
 
-            let inputs = inputs_of(kf_anim);
-            if inputs != existing_anim.stop_inputs {
-                let Some(stops) = extract(kf_anim) else {
+            if !existing_anim.stop_inputs.hold_for(kf_anim, &basis) {
+                let Some((stops, inputs)) = extract(kf_anim) else {
                     continue;
                 };
                 existing_anim.keyframe_stops = stops;
@@ -203,7 +187,7 @@ pub fn start_animations(
                 existing_anim.settled && existing_anim.has_ended(current_time_ms);
 
             new_active.push(existing_anim);
-        } else if let Some(stops) = extract(kf_anim) {
+        } else if let Some((stops, stop_inputs)) = extract(kf_anim) {
             // New animation
             new_active.push(ActiveAnimation {
                 name: spec.name.clone(),
@@ -222,7 +206,7 @@ pub fn start_animations(
                     None
                 },
                 settled: false,
-                stop_inputs: inputs_of(kf_anim),
+                stop_inputs,
                 position,
             });
         }

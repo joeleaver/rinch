@@ -448,3 +448,122 @@ fn a_finished_and_a_running_animation_of_one_name_keep_their_own_entries() {
         "`k 1s` stays finished"
     );
 }
+
+// ── What re-extracts the stops, and what fills an implicit stop (review of #2049) ──
+
+/// The `color` sample of `n`'s first animation, `elapsed_ms` into it.
+fn color_at(doc: &RinchDocument, n: NodeId, elapsed_ms: f64) -> (u8, u8, u8) {
+    rgb(&sample(doc, n, 0, elapsed_ms, TransitionProperty::Color))
+}
+
+/// A `currentcolor` stop reads the element's `color`, so a class that moves
+/// the colour re-extracts the stops even though the rule did not change.
+/// Chrome 156: `from { background-color: currentcolor }`, colour red → blue at
+/// 3000ms of 10s gives `rgb(0, 77, 179)`.
+#[test]
+fn a_currentcolor_stop_follows_a_colour_class_change() {
+    let mut doc = document(
+        "@keyframes cc { from { background-color: currentcolor; } \
+                         to { background-color: rgb(0, 255, 0); } } \
+         div.x.q { color: rgb(255, 0, 0); animation: cc 10s linear infinite; } \
+         div.x.q.b { color: rgb(0, 0, 255); }",
+    );
+    let t = running(&mut doc, "q", &[3000.0]);
+    assert_eq!(
+        bg_at(&doc, t, 3000.0),
+        (179, 77, 0),
+        "precondition: from red"
+    );
+
+    restyle_class(&mut doc, t, "q b");
+
+    assert_eq!(
+        bg_at(&doc, t, 3000.0),
+        (0, 77, 179),
+        "from the new colour, as in Chrome 156"
+    );
+}
+
+/// `color: currentcolor` inherits: it reads the **parent's** colour, so a
+/// restyle of the parent that the animated node only inherits re-extracts the
+/// stops. Chrome 156: the parent red → blue gives `rgb(0, 77, 179)` at 3000ms.
+#[test]
+fn a_currentcolor_stop_on_color_follows_the_parent() {
+    let mut doc = document(
+        "@keyframes pc { from { color: currentcolor; } to { color: rgb(0, 255, 0); } } \
+         div.par { color: rgb(255, 0, 0); } div.par.b { color: rgb(0, 0, 255); } \
+         div.x.q { color: rgb(10, 20, 30); animation: pc 10s linear infinite; }",
+    );
+    let body = doc.body();
+    let parent = doc.create_element("div");
+    doc.set_attribute(parent, "class", "par");
+    doc.append_child(body, parent);
+    let t = doc.create_element("div");
+    doc.set_attribute(t, "class", "x q");
+    doc.append_child(parent, t);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.active_animations.get_mut(&t.0).expect("running")[0].start_time_ms -= 3000.0;
+    assert_eq!(
+        color_at(&doc, t, 3000.0),
+        (179, 77, 0),
+        "precondition: from the parent's red"
+    );
+
+    doc.set_attribute(parent, "class", "par b");
+    doc.resolve_layout(VP.0, VP.1);
+
+    assert_eq!(
+        color_at(&doc, t, 3000.0),
+        (0, 77, 179),
+        "from the parent's new colour, as in Chrome 156"
+    );
+}
+
+/// A `from`-only rule: the 100% stop is the implicit one, and it runs to the
+/// base. Chrome 156: `from { red }` over a blue base at 3000ms of 10s gives
+/// `rgb(179, 0, 77)`, before and after an unrelated restyle.
+#[test]
+fn a_from_only_rule_runs_to_the_base() {
+    let mut doc = document(
+        "@keyframes fo { from { background-color: rgb(255, 0, 0); } } \
+         div.x.q { animation: fo 10s linear infinite; } div.x.q.o { opacity: 0.9; }",
+    );
+    let t = running(&mut doc, "q", &[3000.0]);
+    assert_eq!(bg_at(&doc, t, 3000.0), (179, 0, 77));
+
+    restyle_class(&mut doc, t, "q o");
+
+    assert_eq!(bg_at(&doc, t, 3000.0), (179, 0, 77), "as in Chrome 156");
+}
+
+/// A kept animation's position is updated to its index in the new list.
+/// `k 20s` runs alone (position 0); a class prepends `k 1s`, which takes
+/// position 0 and finishes; an unrelated restyle must still hand `k 20s`'s spec
+/// its own running entry and clock, not the finished one. Left at its old
+/// position, `k 20s` ties with `k 1s` and the finished entry can come back as
+/// `k 20s`.
+#[test]
+fn a_kept_animation_takes_its_new_position_when_a_name_is_prepended() {
+    let mut doc = document(&format!(
+        "{RED_GREEN} .q {{ animation: k 20s linear infinite; }} \
+         .q.two {{ animation: k 1s linear, k 20s linear infinite; }} \
+         .q.two.o {{ opacity: 0.9; }}"
+    ));
+    let t = running(&mut doc, "q", &[5000.0]);
+    let start20 = start_times(&doc, t)[0];
+
+    restyle_class(&mut doc, t, "q two");
+    // The new `k 1s` is over.
+    for a in doc.tree.active_animations.get_mut(&t.0).unwrap() {
+        if a.duration_ms == 1000.0 {
+            a.start_time_ms -= 3000.0;
+        }
+    }
+    doc.tick_animations();
+    restyle_class(&mut doc, t, "q two o");
+
+    let active = &doc.tree.active_animations[&t.0];
+    assert_eq!(active.len(), 1, "only `k 20s` runs");
+    assert_eq!(active[0].duration_ms, 20_000.0);
+    assert_eq!(active[0].start_time_ms, start20, "`k 20s` keeps its clock");
+}
