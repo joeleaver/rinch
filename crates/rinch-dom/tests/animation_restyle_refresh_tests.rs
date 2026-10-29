@@ -157,7 +157,11 @@ fn a_style_appended_after_layout_redefines_a_running_keyframes_body() {
     ));
     let t = running(&mut doc, "t", &[3000.0]);
     let start = start_times(&doc, t);
-    assert_eq!(bg_at(&doc, t, 3000.0), (179, 77, 0), "precondition: old body");
+    assert_eq!(
+        bg_at(&doc, t, 3000.0),
+        (179, 77, 0),
+        "precondition: old body"
+    );
 
     append_style(
         &mut doc,
@@ -191,13 +195,20 @@ fn a_media_query_that_swaps_the_keyframes_rule_plays_the_new_body() {
     ));
     let t = running(&mut doc, "t", &[3000.0]);
     let start = start_times(&doc, t);
-    assert_eq!(bg_at(&doc, t, 3000.0), (179, 77, 0), "precondition: old body");
+    assert_eq!(
+        bg_at(&doc, t, 3000.0),
+        (179, 77, 0),
+        "precondition: old body"
+    );
 
-    doc.set_viewport(1000.0, VP.1);
     doc.resolve_layout(1000.0, VP.1);
 
     assert_eq!(start_times(&doc, t), start, "the clock is kept");
-    assert_eq!(bg_at(&doc, t, 3000.0), (77, 77, 77), "the @media body plays");
+    assert_eq!(
+        bg_at(&doc, t, 3000.0),
+        (77, 77, 77),
+        "the @media body plays"
+    );
 }
 
 /// Chrome cancels an animation whose `@keyframes` rule is gone while its
@@ -213,7 +224,6 @@ fn a_media_query_that_drops_the_keyframes_rule_cancels_the_animation() {
     );
     let t = running(&mut doc, "t", &[3000.0]);
 
-    doc.set_viewport(1000.0, VP.1);
     doc.resolve_layout(1000.0, VP.1);
 
     assert_eq!(
@@ -243,7 +253,11 @@ fn a_class_change_re_times_a_running_animation_around_its_clock() {
 
     assert_eq!(start_times(&doc, t), start, "the clock is kept");
     assert_eq!(doc.tree.active_animations[&t.0][0].duration_ms, 20_000.0);
-    assert_eq!(bg_at(&doc, t, 3000.0), (217, 38, 0), "15% along red → green");
+    assert_eq!(
+        bg_at(&doc, t, 3000.0),
+        (217, 38, 0),
+        "15% along red → green"
+    );
 }
 
 /// Row D: a class adds `animation-delay: 1s`. Chrome: progress 0.2 at 3000ms.
@@ -260,7 +274,11 @@ fn a_class_change_that_adds_a_delay_applies_it_to_the_running_animation() {
 
     assert_eq!(start_times(&doc, t), start, "the clock is kept");
     assert_eq!(doc.tree.active_animations[&t.0][0].delay_ms, 1000.0);
-    assert_eq!(bg_at(&doc, t, 3000.0), (204, 51, 0), "20% along red → green");
+    assert_eq!(
+        bg_at(&doc, t, 3000.0),
+        (204, 51, 0),
+        "20% along red → green"
+    );
 }
 
 /// Row E: two animations of one name are matched by position, so a restyle
@@ -326,11 +344,19 @@ fn an_implicit_from_stop_follows_the_base_value_it_stands_for() {
          @keyframes fade { to { background-color: rgb(0, 255, 0); } }",
     );
     let t = running(&mut doc, "fd", &[3000.0]);
-    assert_eq!(bg_at(&doc, t, 3000.0), (179, 77, 0), "precondition: red base");
+    assert_eq!(
+        bg_at(&doc, t, 3000.0),
+        (179, 77, 0),
+        "precondition: red base"
+    );
 
     restyle_class(&mut doc, t, "fd blue");
 
-    assert_eq!(bg_at(&doc, t, 3000.0), (0, 77, 179), "from the new blue base");
+    assert_eq!(
+        bg_at(&doc, t, 3000.0),
+        (0, 77, 179),
+        "from the new blue base"
+    );
 }
 
 /// Row H: an `em` stop follows the element's font size on a class change.
@@ -342,8 +368,7 @@ fn an_em_stop_follows_a_font_size_class_change() {
          @keyframes grow { from { width: 1em; } to { width: 11em; } }",
     );
     let t = running(&mut doc, "gr", &[1000.0]);
-    let width = |doc: &RinchDocument| match sample(doc, t, 0, 1000.0, TransitionProperty::Width)
-    {
+    let width = |doc: &RinchDocument| match sample(doc, t, 0, 1000.0, TransitionProperty::Width) {
         AnimatableValue::Dimension(rinch_dom::computed_style::DimensionValue::Length(px)) => px,
         other => panic!("not a px length: {other:?}"),
     };
@@ -367,5 +392,9 @@ fn a_property_missing_from_an_explicit_from_starts_at_the_base_value() {
     );
     let t = running(&mut doc, "part", &[3000.0]);
 
-    assert_eq!(bg_at(&doc, t, 3000.0), (179, 77, 0), "30% along red → green");
+    assert_eq!(
+        bg_at(&doc, t, 3000.0),
+        (179, 77, 0),
+        "30% along red → green"
+    );
 }
