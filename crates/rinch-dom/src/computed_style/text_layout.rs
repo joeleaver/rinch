@@ -140,14 +140,14 @@ impl ComputedStyle {
     /// anyone could see. They are now on every row that shapes text, which is
     /// what makes their presence in this list mean something.
     ///
-    /// Four producers are **not** on this list and must not be added to it:
-    /// `paint::contenteditable`'s text, `paint::select`'s label, and the two
-    /// input hit-test builders in `crates/rinch/src/app/`. Those are the
-    /// form-control text engine, which shapes an `<input>`/`<textarea>`/
-    /// `<select>`'s own value rather than an inline formatting context, keeps
-    /// no `InlineLayout` for this predicate to invalidate, and must move as one
-    /// piece because paint and hit testing have to agree glyph for glyph.
-    /// Unifying it onto `build_parley_layout` is #320.
+    /// Two producers are **not** on this list and must not be added to it:
+    /// `form_control::field_text_layout`, the one builder an `<input>`/
+    /// `<textarea>`'s text is shaped with for paint, hit testing, the caret
+    /// rects and the scroll (#827), and `select::select_label_layout`. Those
+    /// are the form-control text engine, which shapes a control's own value
+    /// rather than an inline formatting context and keeps no `InlineLayout`
+    /// for this predicate to invalidate. Unifying it onto
+    /// `build_parley_layout` is #320.
     ///
     /// Plus `text_transform`, which `walk_inline_children` applies to the text
     /// before it is pushed.

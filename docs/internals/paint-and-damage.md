@@ -169,9 +169,9 @@ through `paint::scrollbar::overflows` — the same move #400 made for
 half: that removes the bar, not the scrolling (as `scrollbar-width: none` does
 in Chrome). The body fallback now also asks `scrolls_y()`/`scrolls_x()`, so an
 `overflow: hidden` body is no fallback wheel target (CSS-correct). Still open
-beside it: `apply_scroll_into_view`'s nearest branch mixes a border-box origin
-with the content-box height (**#1367**), and `clamp_scroll_offsets` never
-clamps the x offset (**#1368**).
+beside it: `clamp_scroll_offsets` never clamps the x offset (**#1368**).
+(`apply_scroll_into_view` measured a scroller's band from its border-box top
+against its content-box height until #842 made it the padding box, #1367.)
 
 **How each box counts (#776, #775).** `extend_with_child` gives every box two
 contributions, as Chrome 156 measures them. An **in-flow** box (anything but

@@ -44,6 +44,9 @@ impl DomDocument for RinchDocument {
             // Its sheet follows it in and out of the document (#884).
             self.style_elements.push(id);
         }
+        if tag == "textarea" {
+            self.tree.textarea_elements += 1;
+        }
         let mut node = Node::element(id, tag, self.tree.guard.clone());
         // Use CSS-standard defaults based on element type:
         // Block elements (div, p, h1, etc.): flex-column (emulates block stacking)
@@ -1229,6 +1232,48 @@ impl DomDocument for RinchDocument {
         &crate::ifc::PRESERVED_SUBSTITUTE_FLAT_BYTES
     }
 
+    /// The text ranges of `node_id`'s inline layout whose text node is a
+    /// pseudo-element's (#891): a `::before`/`::after` box's only child is
+    /// its text (`style_resolution/pseudo.rs`). A list marker is such a box
+    /// too, and counts as a `::before`.
+    fn generated_flat_ranges(&self, node_id: u64) -> Vec<rinch_core::dom::GeneratedFlatRange> {
+        let Some(il) = self
+            .tree
+            .nodes
+            .get(node_id as usize)
+            .and_then(|n| n.text_layout.as_ref())
+        else {
+            return Vec::new();
+        };
+        let mut out: Vec<rinch_core::dom::GeneratedFlatRange> = Vec::new();
+        for r in il.text_ranges.iter().filter(|r| !r.is_br) {
+            let Some(pseudo) = self
+                .tree
+                .nodes
+                .get(r.node_id)
+                .and_then(|t| t.parent)
+                .and_then(|p| self.tree.nodes.get(p))
+                .filter(|p| p.is_pseudo_element)
+            else {
+                continue;
+            };
+            let after = pseudo.is_generated_after;
+            // One text node split over several style spans is several
+            // ranges, end to end.
+            match out.last_mut() {
+                Some(last) if last.end == r.flat_start && last.after == after => {
+                    last.end = r.flat_end;
+                }
+                _ => out.push(rinch_core::dom::GeneratedFlatRange {
+                    start: r.flat_start,
+                    end: r.flat_end,
+                    after,
+                }),
+            }
+        }
+        out
+    }
+
     /// Relative to the node's border box, as the trait says: Parley's
     /// layout-local caret moved by where that layout is drawn
     /// ([`Self::text_layout_origin`], #1667).
@@ -1345,7 +1390,19 @@ impl DomDocument for RinchDocument {
     }
 
     /// The element's edge box (`ifc::EDGE_BOX`, #1426), answered as an
-    /// atomic inline's box is.
+    /// atomic inline's box is — and its generated content on that edge
+    /// (#891): an `::after`'s text is laid out inside the element, before its
+    /// end edge box, and a `::before`'s after its start edge box, so the
+    /// element's own content stops at the generated text, and the edge runs
+    /// from there out past the box. Its inner side (inside the element at its
+    /// end, or at its start) is the caret at the generated text's inner end.
+    /// Its outer side is the box's; with no box, the end edge's outer side
+    /// is the inner caret — before the `::after` text, as Chrome draws the
+    /// caret after a link with an arrow (#2035's review, F2) — and the start
+    /// edge's is before the `::before` text. An end box on another line than
+    /// the inner caret (the `::after` text wrapped) also answers the inner
+    /// caret, so the caret for "after the link" stays on the link's line, as
+    /// Chrome's does (F1).
     fn query_inline_edge_caret(
         &self,
         node_id: u64,
@@ -1353,11 +1410,39 @@ impl DomDocument for RinchDocument {
         end: bool,
         after: bool,
     ) -> Option<(f32, f32, f32)> {
-        self.query_inline_box_caret(
-            node_id,
-            crate::ifc::edge_box_id(element as usize, end),
-            after,
-        )
+        let boxed = || {
+            self.query_inline_box_caret(
+                node_id,
+                crate::ifc::edge_box_id(element as usize, end),
+                after,
+            )
+        };
+        let Some((start, stop)) = self.generated_edge_range(node_id, element as usize, end) else {
+            return boxed();
+        };
+        // The inner side: the leading side of the end edge, the trailing
+        // side of the start edge.
+        let inner = end != after;
+        let caret_at = |byte: usize, affinity: CaretAffinity| {
+            let (x, _) = self.query_caret_position_with_affinity(node_id, byte, affinity)?;
+            let (top, height) = self.query_line_box(node_id, byte, affinity)?;
+            Some((x, top, height))
+        };
+        match (inner, end) {
+            // Inside at the end: after the element's own last character,
+            // on its line.
+            (true, true) => caret_at(start, CaretAffinity::Upstream),
+            (true, false) => caret_at(stop, CaretAffinity::Downstream),
+            (false, true) => {
+                let inside = caret_at(start, CaretAffinity::Upstream);
+                match (boxed(), inside) {
+                    (Some(b), Some(i)) if (b.1 - i.1).abs() < 0.5 => Some(b),
+                    (b, None) => b,
+                    (_, i) => i,
+                }
+            }
+            (false, false) => boxed().or_else(|| caret_at(start, CaretAffinity::Downstream)),
+        }
     }
 
     fn query_inline_edge_caret_rect(
@@ -1426,10 +1511,13 @@ impl DomDocument for RinchDocument {
             (None, None) => return Vec::new(),
         };
         let (ox, oy) = self.text_layout_origin(node_id as usize);
-        crate::text_query::selection_rects_for_layout(layout, byte_a, byte_b)
-            .into_iter()
-            .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
-            .collect()
+        let rects = crate::text_query::selection_rects_for_layout(layout, byte_a, byte_b);
+        self.cut_generated(node_id, byte_a, byte_b, rects, |s, e| {
+            crate::text_query::selection_rects_for_layout(layout, s, e)
+        })
+        .into_iter()
+        .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
+        .collect()
     }
 
     fn query_selection_rects_with_boxes(
@@ -1448,10 +1536,14 @@ impl DomDocument for RinchDocument {
             (None, None) => return Vec::new(),
         };
         let (ox, oy) = self.text_layout_origin(node_id as usize);
-        crate::text_query::selection_rects_with_boxes(layout, byte_a, byte_b, selected_boxes)
-            .into_iter()
-            .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
-            .collect()
+        let rects =
+            crate::text_query::selection_rects_with_boxes(layout, byte_a, byte_b, selected_boxes);
+        self.cut_generated(node_id, byte_a, byte_b, rects, |s, e| {
+            crate::text_query::selection_rects_for_layout(layout, s, e)
+        })
+        .into_iter()
+        .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
+        .collect()
     }
 
     fn query_glyph_bounds(
@@ -2572,6 +2664,75 @@ impl RinchDocument {
         let (cx, cy) = fwd(local_x, local_y);
         let (_, cy2) = fwd(local_x, local_y + height);
         Some((cx as f32, cy as f32, (cy2 - cy).abs() as f32))
+    }
+
+    /// The flat bytes `start..end` of `element`'s generated text on its end
+    /// edge (its `::after`) or its start edge (its `::before`) in the inline
+    /// layout of `node_id` (#891). `None` when it has none there.
+    fn generated_edge_range(
+        &self,
+        node_id: u64,
+        element: usize,
+        end: bool,
+    ) -> Option<(usize, usize)> {
+        let el = self.tree.nodes.get(element)?;
+        let pseudo = el.children.iter().copied().find(|&c| {
+            self.tree
+                .nodes
+                .get(c)
+                .is_some_and(|n| n.is_pseudo_element && n.is_generated_after == end)
+        })?;
+        let text = *self.tree.nodes.get(pseudo)?.children.first()?;
+        let il = self
+            .tree
+            .nodes
+            .get(node_id as usize)?
+            .text_layout
+            .as_ref()?;
+        let mut ranges = il.text_ranges.iter().filter(|r| r.node_id == text);
+        let first = ranges.next()?;
+        let stop = ranges.next_back().map_or(first.flat_end, |r| r.flat_end);
+        Some((first.flat_start, stop))
+    }
+
+    /// `rects` (selection rects of `node_id` over `byte_a..byte_b`) less the
+    /// generated text in that range (#891): a browser leaves a pseudo-
+    /// element's text out of a selection's highlight. `holes` gives the
+    /// rects of one generated stretch; each is cut out of the rects on its
+    /// line.
+    fn cut_generated(
+        &self,
+        node_id: u64,
+        byte_a: usize,
+        byte_b: usize,
+        mut rects: Vec<(f32, f32, f32, f32)>,
+        holes: impl Fn(usize, usize) -> Vec<(f32, f32, f32, f32)>,
+    ) -> Vec<(f32, f32, f32, f32)> {
+        let (a, b) = (byte_a.min(byte_b), byte_a.max(byte_b));
+        for g in self.generated_flat_ranges(node_id) {
+            let (s, e) = (g.start.max(a), g.end.min(b));
+            if s >= e {
+                continue;
+            }
+            for (hx, hy, hw, _) in holes(s, e) {
+                let (hl, hr) = (hx, hx + hw);
+                rects = rects
+                    .into_iter()
+                    .flat_map(|(x, y, w, h)| {
+                        let (l, r) = (x, x + w);
+                        if (y - hy).abs() > 0.01 || hr <= l || r <= hl {
+                            return vec![(x, y, w, h)];
+                        }
+                        [(l, hl.min(r)), (hr.max(l), r)]
+                            .into_iter()
+                            .filter(|(l, r)| r - l > 0.01)
+                            .map(|(l, r)| (l, y, r - l, h))
+                            .collect()
+                    })
+                    .collect();
+            }
+        }
+        rects
     }
 
     /// Where the text layout the `DomDocument` text queries read for

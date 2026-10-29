@@ -7,7 +7,7 @@ use std::rc::{Rc, Weak};
 
 use crate::handle::ScrollAlign;
 use crate::node_views::{Kept, Registry, Slot, Work};
-use rinch_core::dom::{CaretAffinity, DomDocument, NodeFont, NodeHandle};
+use rinch_core::dom::{CaretAffinity, DomDocument, GeneratedFlatRange, NodeFont, NodeHandle};
 use rinch_editor_core::decoration::DecorationSet;
 use rinch_editor_core::serialize::{mark_dom_tag, node_dom_tag};
 use rinch_editor_core::transform::Mapping;
@@ -258,26 +258,39 @@ fn inline_decos(set: &DecorationSet) -> Vec<InlineDeco> {
 /// stretch per distinct sub-range carrying **both** classes, so a stretch is never
 /// wrapped twice; abutting stretches with an identical class list are merged back
 /// into one, so the projected DOM is the minimum that expresses the decorations.
-fn run_decos(decos: &[InlineDeco], run_from: usize, len: usize) -> Vec<RunDeco> {
+fn run_decos<'a>(
+    decos: impl IntoIterator<Item = &'a InlineDeco>,
+    run_from: usize,
+    len: usize,
+) -> Vec<RunDeco> {
     let run_to = run_from + len;
-    let clipped: Vec<(usize, usize, &str)> = decos
-        .iter()
-        .filter_map(|d| {
-            let a = d.from.max(run_from);
-            let b = d.to.min(run_to);
-            (a < b).then(|| (a - run_from, b - run_from, &*d.class))
-        })
-        .collect();
-    if clipped.is_empty() {
+    let mut clipped = decos.into_iter().filter_map(|d| {
+        let a = d.from.max(run_from);
+        let b = d.to.min(run_to);
+        (a < b).then(|| (a - run_from, b - run_from, &d.class))
+    });
+    // One decoration over the run — a spellchecker's every squiggle — is its
+    // own stretch and shares the decoration's class string (#848: this runs for
+    // every decorated run on every transaction).
+    let Some(first) = clipped.next() else {
         return Vec::new();
-    }
+    };
+    let Some(second) = clipped.next() else {
+        return vec![RunDeco {
+            start: first.0,
+            end: first.1,
+            class: first.2.clone(),
+        }];
+    };
+    let clipped: Vec<(usize, usize, &Rc<str>)> =
+        [first, second].into_iter().chain(clipped).collect();
     let mut bounds: Vec<usize> = clipped.iter().flat_map(|(a, b, _)| [*a, *b]).collect();
     bounds.sort_unstable();
     bounds.dedup();
     let mut out: Vec<RunDeco> = Vec::new();
     for w in bounds.windows(2) {
         let (a, b) = (w[0], w[1]);
-        let mut classes: Vec<&str> = clipped
+        let mut classes: Vec<&Rc<str>> = clipped
             .iter()
             .filter(|(x, y, _)| *x <= a && *y >= b)
             .map(|(_, _, c)| *c)
@@ -286,7 +299,16 @@ fn run_decos(decos: &[InlineDeco], run_from: usize, len: usize) -> Vec<RunDeco> 
             continue;
         }
         classes.dedup();
-        let class: Rc<str> = Rc::from(classes.join(" "));
+        let class: Rc<str> = match classes[..] {
+            [one] => one.clone(),
+            _ => Rc::from(
+                classes
+                    .iter()
+                    .map(|c| &***c)
+                    .collect::<Vec<&str>>()
+                    .join(" "),
+            ),
+        };
         match out.last_mut() {
             Some(last) if last.end == a && last.class == class => last.end = b,
             _ => out.push(RunDeco {
@@ -1489,6 +1511,9 @@ pub struct RinchDomEditorView {
     last_preedit: Option<(i32, i32, String)>,
     /// The decoration set currently projected, for the next diff.
     decorations: DecorationSet,
+    /// The inline decorations of [`Self::decorations`], flattened once per
+    /// change of the set rather than once per transaction (#848).
+    inline: Vec<InlineDeco>,
     /// Set whenever the post-layout pass writes an overlay's geometry (caret,
     /// selection rect, or node outline). The runtime reads it via
     /// [`Self::take_overlay_dirty`] to re-resolve layout and schedule a repaint,
@@ -1652,6 +1677,7 @@ impl RinchDomEditorView {
             preedit: None,
             last_preedit: None,
             decorations: DecorationSet::empty(),
+            inline: Vec::new(),
             overlay_dirty: false,
             reveal_probes: Vec::new(),
             drop_caret: None,
@@ -1678,18 +1704,19 @@ impl RinchDomEditorView {
         let next = state.decorations();
         if next != self.decorations {
             self.sync_widget_decorations(&next);
+            self.inline = inline_decos(&next);
+            self.decorations = next;
         }
         // Inline decorations are re-applied whenever any are present *or* any were
         // last time, even when the set itself compares equal. The document diff
         // runs first and may have rebuilt a decorated run — a fresh text node
         // carries no segments — so "the decorations did not change" does not imply
-        // "what projects them is still there". The `has_deco` prune below keeps
-        // that re-check to one range test per undecorated top-level block.
-        let inline = inline_decos(&next);
-        if !inline.is_empty() || self.root.has_deco {
-            self.root.has_deco = sync_inline_decos(&mut self.root, &inline, 0, &self.doc);
+        // "what projects them is still there". The `has_deco` prune and the sorted
+        // cursor keep that re-check to one test per top-level block plus one per
+        // decoration it reaches (#848), and an unchanged run writes nothing.
+        if !self.inline.is_empty() || self.root.has_deco {
+            self.root.has_deco = sync_inline_decos(&mut self.root, &self.inline, 0, &self.doc);
         }
-        self.decorations = next;
     }
 
     /// The widget half of [`Self::sync_decorations`]: today the empty-editor
@@ -2478,7 +2505,23 @@ impl RinchDomEditorView {
             desc = desc.children.get(r.index(d))?;
         }
         let flat_byte = textblock_flat_byte(&desc.node, r.parent_offset(), self.flat);
-        Some((desc.dom.clone(), flat_byte))
+        let generated = self.generated_ranges(desc.dom.node_id().0);
+        Some((desc.dom.clone(), host_flat_byte(&generated, flat_byte)))
+    }
+
+    /// The stretches of textblock `block_id`'s host flat bytes that hold CSS
+    /// generated content ([`DomDocument::generated_flat_ranges`], #891), which
+    /// the model's text does not: [`host_flat_byte`] steps over them. None
+    /// when the host is gone or busy (a document being written answers no
+    /// geometry either).
+    fn generated_ranges(&self, block_id: usize) -> Vec<GeneratedFlatRange> {
+        let Some(host) = self.doc.upgrade() else {
+            return Vec::new();
+        };
+        let Ok(d) = host.try_borrow() else {
+            return Vec::new();
+        };
+        d.generated_flat_ranges(block_id as u64)
     }
 
     /// Map a host caret address — `(textblock element id, flat UTF-8 byte offset)`,
@@ -2487,6 +2530,8 @@ impl RinchDomEditorView {
     /// textblock in this view.
     pub(crate) fn pos_at(&self, textblock_dom_id: usize, ifc_byte: usize) -> Option<Pos> {
         let (content_start, block) = find_block(&self.root, textblock_dom_id, 0)?;
+        let generated = self.generated_ranges(textblock_dom_id);
+        let ifc_byte = model_flat_byte(&generated, ifc_byte);
         Some(Pos(
             content_start + ifc_byte_to_char(block, ifc_byte, self.flat)
         ))
@@ -3135,10 +3180,16 @@ impl RinchDomEditorView {
                 if a < b
                     && let Some((block_id, _)) = self.caret_address(doc, Pos(content_start))
                 {
+                    // The host's bytes, past its generated content (#891),
+                    // which the host leaves out of the highlight.
+                    let generated = self.generated_ranges(block_id);
+                    let host = |off: usize| {
+                        host_flat_byte(&generated, textblock_flat_byte(node, off, self.flat))
+                    };
                     targets.push((
                         block_id,
-                        textblock_flat_byte(node, a - content_start, self.flat),
-                        textblock_flat_byte(node, b - content_start, self.flat),
+                        host(a - content_start),
+                        host(b - content_start),
                         self.selected_zero_byte_leaves(
                             doc,
                             content_start,
@@ -3755,6 +3806,22 @@ fn find_node_by_host(
     None
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only (#848): how many (decoration, child) range comparisons the
+    /// decoration pass made — the work that used to be blocks × decorations.
+    pub(crate) static DECO_RANGE_TESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_deco_range_tests(n: usize) {
+    DECO_RANGE_TESTS.with(|c| c.set(c.get() + n));
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn count_deco_range_tests(_: usize) {}
+
 /// Re-project the inline decorations over `desc`'s subtree. `content_start` is the
 /// model position just inside `desc`'s content (0 for the root/doc). Returns
 /// whether any decoration segment is projected in this subtree — the caller's
@@ -3764,31 +3831,76 @@ fn find_node_by_host(
 /// run on every transaction: the per-run comparison is against
 /// [`ViewDesc::decos`], and a subtree that neither holds a segment nor overlaps a
 /// decoration is not even descended into.
+///
+/// The list is sorted by `from` once per pass and walked with a cursor beside
+/// the children, which are in position order, so each level costs one check per
+/// child plus one per decoration that reaches it — not children × decorations
+/// (#848: a spellchecker's thousand squiggles on a long document made every
+/// keystroke pay blocks × decorations range tests).
 fn sync_inline_decos(
     desc: &mut ViewDesc,
     decos: &[InlineDeco],
     content_start: usize,
     doc: &DocRef,
 ) -> bool {
+    // Stable, so equal starts keep draw order; each entry also keeps its
+    // draw-order index, which is the order a run's class list is written in.
+    let mut sorted: Vec<(usize, &InlineDeco)> = decos.iter().enumerate().collect();
+    sorted.sort_by_key(|(_, d)| d.from);
+    sync_sorted_inline_decos(desc, &sorted, content_start, doc)
+}
+
+/// [`sync_inline_decos`] over `decos` sorted by `from`, each with its draw-order
+/// index. Only the decorations that can reach `desc`'s content are passed down.
+fn sync_sorted_inline_decos(
+    desc: &mut ViewDesc,
+    decos: &[(usize, &InlineDeco)],
+    content_start: usize,
+    doc: &DocRef,
+) -> bool {
     let mut any = false;
     let mut pos = content_start; // the position just before the current child
+    // `decos[next..]` start at or after the end of every child visited so far;
+    // `live` holds, in `from` order, those started earlier that still reach
+    // `pos` — together, exactly the decorations overlapping the current child.
+    let mut next = 0;
+    let mut live: Vec<(usize, &InlineDeco)> = Vec::new();
     for child in &mut desc.children {
         let size = child.node.node_size();
-        let overlaps = decos.iter().any(|d| d.from < pos + size && d.to > pos);
+        let end = pos + size;
+        count_deco_range_tests(live.len());
+        live.retain(|(_, d)| d.to > pos);
+        while let Some(&(i, d)) = decos.get(next) {
+            count_deco_range_tests(1);
+            if d.from >= end {
+                break;
+            }
+            if d.to > pos {
+                live.push((i, d));
+            }
+            next += 1;
+        }
         // `has_deco` is what makes the skip sound in the other direction: a subtree
         // no decoration reaches any more still has to be visited to *take its
         // segments off*.
-        if overlaps || child.has_deco {
+        if !live.is_empty() || child.has_deco {
             if child.is_text {
                 let len = child.node.text().map_or(0, |t| t.chars().count());
-                apply_run_decos(child, run_decos(decos, pos, len), doc);
+                let run = if live.len() < 2 {
+                    run_decos(live.iter().map(|(_, d)| *d), pos, len)
+                } else {
+                    let mut drawn = live.clone();
+                    drawn.sort_unstable_by_key(|(i, _)| *i);
+                    run_decos(drawn.into_iter().map(|(_, d)| d), pos, len)
+                };
+                apply_run_decos(child, run, doc);
                 child.has_deco = !child.decos.is_empty();
             } else {
-                child.has_deco = sync_inline_decos(child, decos, pos + 1, doc);
+                child.has_deco = sync_sorted_inline_decos(child, &live, pos + 1, doc);
             }
         }
         any |= child.has_deco;
-        pos += size;
+        pos = end;
     }
     any
 }
@@ -3919,6 +4031,42 @@ fn ifc_byte_to_char(block: &Node, ifc_byte: usize, flat: FlatWidths) -> usize {
         }
     }
     chars
+}
+
+/// The host's flat byte for the model's flat byte `model` of a textblock whose
+/// host lays out CSS generated content in `generated` (#891): the model's
+/// bytes with every generated stretch before them added. A stretch that starts
+/// exactly there is passed when it is a `::before`'s, which belongs to the
+/// content after it, and not when it is an `::after`'s, which belongs to the
+/// content before it — so a caret at the start of a paragraph with a
+/// `p::before` is drawn after that, and one at a link's end before the link's
+/// `::after`. (Which side of an element's own generated text a caret at its
+/// edge is on is the marks' call: [`RinchDomEditorView::mark_edges_beside`]
+/// asks the host's edge carets, which count it.)
+fn host_flat_byte(generated: &[GeneratedFlatRange], model: usize) -> usize {
+    let mut host = model;
+    for g in generated {
+        if g.start < host || (g.start == host && !g.after) {
+            host += g.end - g.start;
+        } else {
+            break;
+        }
+    }
+    host
+}
+
+/// The inverse of [`host_flat_byte`]: the model's flat byte for the host's
+/// `host` — less every generated stretch before it; a byte inside one is the
+/// byte where it starts, the position its text stands at in the model.
+fn model_flat_byte(generated: &[GeneratedFlatRange], host: usize) -> usize {
+    let mut skipped = 0;
+    for g in generated {
+        if g.start >= host {
+            break;
+        }
+        skipped += g.end.min(host) - g.start;
+    }
+    host - skipped
 }
 
 /// The flat bytes an inline leaf occupies in the host's offsets: the host's
@@ -5593,6 +5741,38 @@ mod tests {
         assert_eq!(text(&h, block).as_deref(), Some("helo"));
     }
 
+    /// #891: the host's generated text is stepped over both ways. `ab` + an
+    /// `::after`'s "XYZ" (host 2..5, at model 2) + `cd` + a `::before`'s "Q"
+    /// (host 7..8, at model 4) + `ef`, laid out `abXYZcdQef`.
+    #[test]
+    fn generated_flat_ranges_are_stepped_over_both_ways() {
+        let g = [
+            GeneratedFlatRange {
+                start: 2,
+                end: 5,
+                after: true,
+            },
+            GeneratedFlatRange {
+                start: 7,
+                end: 8,
+                after: false,
+            },
+        ];
+        // Model 2 is at the `::after`'s start: before it. Model 4 is at the
+        // `::before`'s start: past it.
+        let host: Vec<usize> = (0..=6).map(|m| host_flat_byte(&g, m)).collect();
+        assert_eq!(host, vec![0, 1, 2, 6, 8, 9, 10]);
+        // Every host byte inside generated text is the model byte it stands at.
+        let model: Vec<usize> = (0..=10).map(|h| model_flat_byte(&g, h)).collect();
+        assert_eq!(model, vec![0, 1, 2, 2, 2, 2, 3, 4, 4, 5, 6]);
+        for m in 0..=6 {
+            assert_eq!(model_flat_byte(&g, host_flat_byte(&g, m)), m);
+        }
+        // None: the identity.
+        assert_eq!(host_flat_byte(&[], 7), 7);
+        assert_eq!(model_flat_byte(&[], 7), 7);
+    }
+
     /// rinch-dom's flat offsets as they were until #1122: a `<br>` is
     /// `"\n"`, a tab four spaces. Kept as the case of a host whose tab is
     /// several bytes.
@@ -6953,3 +7133,7 @@ mod incremental_fresh_1833_prop_tests;
 #[cfg(test)]
 #[path = "inline_doc_1833_tests.rs"]
 mod inline_doc_1833_tests;
+
+#[cfg(test)]
+#[path = "inline_deco_848_tests.rs"]
+mod inline_deco_848_tests;
