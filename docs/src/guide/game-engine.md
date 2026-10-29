@@ -637,6 +637,18 @@ touches is still repainted by its own `update()`.
 > If you pinned an older rinch and wrapped your worker writes to avoid it, you
 > can drop the workaround.
 
+**In a browser (wasm32).** A page whose only rinch host is a `RinchContext` —
+a game that owns the canvas and composites rinch's scene, with no `rinch-web`
+root — gets the browser's scheduling from the context: `RinchContext::new`
+installs the timer backend (`window.setTimeout`) and the task scheduler
+(microtasks) on wasm32, so `set_timeout`, `set_interval`, `sleep`,
+`spawn_local` and the timers inside `rinch-ws` / `rinch-rtc` run with no
+`update()` needed to start them (issue #1956). `update()` still drains polled
+signals once a frame. Work that arms a timer **before** the first context is
+created needs the runtime first: call `rinch::install_web_runtime()` at
+startup (idempotent; it also installs a between-frames poll drain). See
+[Running on WASM](wasm.md#a-page-with-no-rinch-root).
+
 **Timed work: the caret blink.** A focused rich-text `Editor`'s caret toggles
 every 530 ms, and `update()` ticks that clock just as the desktop runtime does
 after each event-loop turn (issue #331). A host that calls `update()` every
