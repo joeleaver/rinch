@@ -113,7 +113,7 @@ impl std::str::FromStr for ActionIconSize {
 /// ```ignore
 /// rsx! {
 ///     ActionIcon { icon: TablerIcon::Menu2, variant: "subtle", onclick: || toggle_menu() }
-///     ActionIcon { icon: TablerIcon::X, size: "lg", variant: "outline" }
+///     ActionIcon { icon: TablerIcon::X, size: "lg", variant: "outline", title: "Close" }
 /// }
 /// ```
 #[derive(Debug, Default)]
@@ -132,6 +132,11 @@ pub struct ActionIcon {
     pub disabled: bool,
     /// Whether to show loading state.
     pub loading: bool,
+    /// The button's `title` attribute — its tooltip, and the accessible name
+    /// an icon-only button otherwise lacks. Empty (the default) writes none
+    /// (issue #1653). A reactive value re-renders the button; for a surgical
+    /// update write the attribute itself, `"title": {|| …}`.
+    pub title: String,
     /// Click handler.
     pub onclick: Option<Callback>,
 }
@@ -192,6 +197,10 @@ impl Component for ActionIcon {
 
         if self.disabled {
             container.set_attribute("disabled", "");
+        }
+
+        if !self.title.is_empty() {
+            container.set_attribute("title", &self.title);
         }
 
         // Register click handler
