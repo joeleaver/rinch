@@ -378,8 +378,33 @@ keep a stale frame. Pins: `crates/rinch/src/app/viewport_inputs_349_tests.rs` an
 unchanged set costs nothing. The GPU shell's own call site
 (`paint` in `shell/rinch_runtime.rs`) has no fixture: it needs a window and a device.
 
-**SVG paint.** `paint/svg.rs` draws an `<svg>`'s direct children (`path`,
-`rect`, `circle`, `line`, `polyline`, `polygon`) itself. rinch's Stylo build
+**SVG paint.** `paint/svg.rs` draws an `<svg>`'s shapes (`path`, `rect`,
+`circle`, `ellipse`, `line`, `polyline`, `polygon`) itself, walking `<g>`
+groups to any depth (#1539) iteratively, in document order. Each element
+derives an `SvgInherited` from its parent's: `fill`/`stroke`
+(`InheritedPaint`; `currentcolor` stays symbolic, as CSS inherits the
+keyword, and resolves against each shape's own `color`), `stroke-width`,
+`stroke-linecap`, `stroke-linejoin` (a usable declaration replaces the
+inherited value; the `<svg>` starts from black / none / 2 / butt / miter), and
+the transform: the parent's times the element's own `transform` attribute
+(`parse_svg_transform`, SVG's grammar — `translate(10-5)` is two numbers —
+and an unparsable list is ignored whole, as Chrome does; the `<svg>`'s own
+`transform` attribute and a CSS `transform` on a shape are not read). The
+painters stroke in the transform's space, so a `scale` scales the stroke, as
+in a browser. `<rect rx/ry>` and `<ellipse rx/ry>` follow SVG 2's `auto`
+rule (an absent, `auto` or negative radius takes the other; one that is no
+number is `0`, as in Chrome 156, which also reads the attribute keyword
+`auto` as `0` where rinch keeps SVG 2's `auto`; #1538); a rect's
+radii are clamped to half its width and height separately, equal radii are a
+`RoundedRect` and unequal ones a path of quarter ellipses
+(`elliptical_rounded_rect`); a zero-size rect, circle or ellipse draws
+nothing, stroke included. The `<svg>` box is what culls and damages its
+content: a transform that moves a shape outside it paints unclipped where a
+browser clips (`overflow: hidden` on a non-root `<svg>`) and is not damaged
+there, as for coordinates outside the `viewBox` before (#1990). Pins:
+`crates/rinch-dom/tests/svg_groups_transforms_shapes_1538_1539_tests.rs`
+(Chrome 156 `elementFromPoint` answers), the parser's unit tests in
+`paint/svg.rs`. rinch's Stylo build
 has no `fill`/`stroke` property (Gecko-only in Stylo), so `declared_paint`
 reads each shape's own: its inline `style` declaration, which beats the
 presentation attribute, else the attribute, with every `var()` substituted
