@@ -27,9 +27,9 @@ struct Fixture {
     app: RinchApp,
     list: u64,
     /// The row index each `data-ondragover` fired on, in order.
-    over: Rc<RefCell<Vec<u64>>>,
+    over: Rc<RefCell<Vec<usize>>>,
     /// The row index each `data-ondragenter` fired on, in order.
-    entered: Rc<RefCell<Vec<u64>>>,
+    entered: Rc<RefCell<Vec<usize>>>,
     /// `data-onscroll` on the list.
     scrolls: Rc<Cell<u32>>,
 }
@@ -38,8 +38,8 @@ struct Fixture {
 /// drop target, and a draggable source at (500,40)-(600,80) outside it.
 /// `list_style` is appended to the list's own style.
 fn fixture_with(list_style: &str, page_height: Option<f32>) -> Fixture {
-    let over: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
-    let entered: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    let over: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    let entered: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
     let scrolls = Rc::new(Cell::new(0u32));
     let (over_sink, enter_sink, scroll_sink) = (over.clone(), entered.clone(), scrolls.clone());
     let list_style = list_style.to_string();

@@ -540,7 +540,7 @@ fn game_viewport_inline_bench() {
 // does and compares it with the same scene repainted in full in reference mode
 // (no copy, no pooling shortcuts), byte for byte.
 
-thread_local! { static CARD_ID: Cell<usize> = const { Cell::new(0) }; }
+thread_local! { static CARD_ID: Cell<u64> = const { Cell::new(0) }; }
 
 /// A spacer above a card (optionally rounded, optionally inside an opacity
 /// wrapper) holding the game viewport, and an overlay over the viewport.

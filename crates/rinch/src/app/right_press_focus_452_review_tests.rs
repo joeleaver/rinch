@@ -28,12 +28,12 @@ fn center(app: &RinchApp, id: u64) -> (f32, f32) {
     let (ax, ay, w, h) = painted_element_box(&d.tree, id);
     (ax + w / 2.0, ay + h / 2.0)
 }
-fn dom_focus(app: &RinchApp) -> Option<usize> {
+fn dom_focus(app: &RinchApp) -> Option<u64> {
     app.doc.as_ref().unwrap().borrow().tree.focused_node
 }
 
 #[cfg(feature = "desktop")]
-type Slot = Option<(usize, crate::editor::EditorHandle)>;
+type Slot = Option<(u64, crate::editor::EditorHandle)>;
 
 #[cfg(feature = "desktop")]
 /// An editor, optionally inside a registered `tabindex="0"` card.
@@ -41,7 +41,7 @@ fn editor_app(
     wrapped: bool,
 ) -> (
     RinchApp,
-    usize,
+    u64,
     crate::editor::EditorHandle,
     Rc<RefCell<Vec<String>>>,
 ) {
@@ -296,7 +296,7 @@ fn s5_right_press_on_a_disabled_child() {
 }
 
 /// S6: a render surface inside a focusable wrapper; right vs left announce.
-fn surface_app() -> (RinchApp, u64, Rc<RefCell<Vec<String>>>) {
+fn surface_app() -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
     use crate::render_surface::create_render_surface;
     let surface = create_render_surface();
     let sid = surface.id();

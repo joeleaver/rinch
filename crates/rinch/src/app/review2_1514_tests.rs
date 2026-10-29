@@ -74,7 +74,7 @@ fn click_node(app: &mut RinchApp, id: u64) {
     }
 }
 
-fn free(app: &mut RinchApp, host_id: u64, markup: &str) -> usize {
+fn free(app: &mut RinchApp, host_id: u64, markup: &str) -> u64 {
     let doc: Rc<RefCell<RinchDocument>> = app.doc.clone().unwrap();
     let dyn_doc: Rc<RefCell<dyn DomDocument>> = doc;
     let host = NodeHandle::new(rinch_core::dom::NodeId(host_id), Rc::downgrade(&dyn_doc));

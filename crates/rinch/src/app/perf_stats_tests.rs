@@ -717,7 +717,7 @@ fn transition_into_a_stacking_context(property: &str, from: &str, to: &str) -> (
     (app, id)
 }
 
-fn hit_at(app: &RinchApp, x: f32, y: f32) -> Option<usize> {
+fn hit_at(app: &RinchApp, x: f32, y: f32) -> Option<u64> {
     let d = app.doc.as_ref().unwrap().borrow();
     super::hit_testing::hit_test(&d.tree, x, y)
 }

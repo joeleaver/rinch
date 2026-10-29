@@ -217,8 +217,8 @@ fn assert_caret_is_painted(app: &mut RinchApp, id: u64, byte: usize, what: &str)
 fn assert_glyph_between_carets(
     app: &mut RinchApp,
     id: u64,
-    byte: u64,
-    next: u64,
+    byte: usize,
+    next: usize,
     what: &str,
 ) {
     let g = mcp_glyph(app, id, byte, 1.0);

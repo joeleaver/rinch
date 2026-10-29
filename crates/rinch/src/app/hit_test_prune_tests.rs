@@ -23,7 +23,7 @@ use rinch_dom::RinchDocument;
 use rinch_dom::stacking::{paints_at_stacking_root, stacking_paint_order};
 
 /// The oracle: `hit_test` as it was before the prune and the cache.
-fn reference_hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<usize> {
+fn reference_hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<u64> {
     reference_hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
 }
 
@@ -147,7 +147,7 @@ fn build(
     doc: &mut RinchDocument,
     r: &mut Rng,
     parent: NodeId,
-    depth: u64,
+    depth: usize,
     all: &mut Vec<NodeId>,
 ) {
     let kids = if depth >= 5 { 0 } else { 1 + r.below(4) };
@@ -653,7 +653,7 @@ fn tick_at(doc: &mut RinchDocument, start: f64, fraction: f64) {
 }
 
 /// The oracle's answers over the probe grid, to show a tick changed some.
-fn oracle_grid(doc: &RinchDocument) -> Vec<Option<usize>> {
+fn oracle_grid(doc: &RinchDocument) -> Vec<Option<u64>> {
     let mut out = Vec::new();
     for y in (0..600).step_by(7) {
         for x in (0..800).step_by(7) {
@@ -792,7 +792,7 @@ fn reference_hit_test_node(
     y: f32,
     vx: f32,
     vy: f32,
-) -> Option<usize> {
+) -> Option<u64> {
     tree.perf
         .bump(rinch_dom::perf::Counter::HitTestNodesVisited);
     let node = tree.get(node_id)?;

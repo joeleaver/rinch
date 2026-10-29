@@ -26,7 +26,7 @@ struct Page {
 /// in the first paragraph, then switched to `read_only`. "hello world" is
 /// 1..12, "second" is 14..20.
 fn page(read_only: bool) -> Page {
-    let slot: Rc<RefCell<Option<(usize, crate::editor::EditorHandle)>>> =
+    let slot: Rc<RefCell<Option<(u64, crate::editor::EditorHandle)>>> =
         Rc::new(RefCell::new(None));
     let slot_in = slot.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

@@ -102,7 +102,7 @@ fn focused(app: &RinchApp) -> Option<u64> {
 }
 
 /// Tab `n` times, recording where the arbiter lands each time.
-fn tab_tour(app: &mut RinchApp, n: u64) -> Vec<Option<usize>> {
+fn tab_tour(app: &mut RinchApp, n: u64) -> Vec<Option<u64>> {
     (0..n)
         .map(|_| {
             tab(app);

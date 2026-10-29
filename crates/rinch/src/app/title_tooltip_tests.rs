@@ -35,8 +35,8 @@ const ON_CORNER: (f32, f32) = (781.0, 589.0);
 
 #[derive(Default)]
 struct Ids {
-    save: Cell<usize>,
-    outer: Cell<usize>,
+    save: Cell<u64>,
+    outer: Cell<u64>,
 }
 
 fn mount() -> (RinchApp, Rc<Ids>) {

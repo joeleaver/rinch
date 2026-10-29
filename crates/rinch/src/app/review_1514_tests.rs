@@ -69,7 +69,7 @@ fn r2_the_node_whose_children_are_replaced_stays_registered() {
 /// Records whether `on_focus_lost` fires. With `dispose`, the target is
 /// registered in a scope of its own that is disposed after the free and
 /// before the key.
-fn focused_target_freed(markup: &str, dispose: bool) -> (Vec<String>, FocusTarget, usize, usize) {
+fn focused_target_freed(markup: &str, dispose: bool) -> (Vec<String>, FocusTarget, u64, u64) {
     let own: Rc<RefCell<Option<Scope>>> = Rc::new(RefCell::new(None));
     let own_in = own.clone();
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));

@@ -65,7 +65,7 @@ fn screen_box(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     (x as f32, y as f32, n.layout.width, n.layout.height)
 }
 
-fn hit(app: &RinchApp, x: f32, y: f32) -> Option<usize> {
+fn hit(app: &RinchApp, x: f32, y: f32) -> Option<u64> {
     let doc = app.doc().unwrap().borrow();
     super::hit_testing::hit_test(&doc.tree, x, y)
 }

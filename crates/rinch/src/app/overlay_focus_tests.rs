@@ -356,7 +356,7 @@ fn closing_does_not_release_a_claim_outside_the_overlay() {
 fn unmounting_an_open_modal_restores_the_opener() {
     let inner_scope: Rc<RefCell<Option<RenderScope>>> = Rc::new(RefCell::new(None));
     let ids: Rc<Cell<Ids>> = Rc::new(Cell::new(Ids::default()));
-    let modal_root: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let modal_root: Rc<Cell<u64>> = Rc::new(Cell::new(0));
     let open = Signal::new(false);
 
     let scope_out = inner_scope.clone();

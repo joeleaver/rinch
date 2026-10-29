@@ -416,7 +416,7 @@ fn painted_caret_rows(app: &mut RinchApp, id: u64) -> std::ops::RangeInclusive<u
     let (on, w) = frame(app, id, "true");
     let (off, _) = frame(app, id, "false");
     let w = w as usize;
-    let rows: Vec<u64> = on
+    let rows: Vec<usize> = on
         .as_chunks::<4>()
         .0
         .iter()

@@ -366,7 +366,7 @@ mod removed_cursor_row {
         f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
     }
 
-    fn run(delete: bool) -> (bool, Option<usize>, Option<usize>) {
+    fn run(delete: bool) -> (bool, Option<u64>, Option<u64>) {
         let _guard = crate::app::timer_backend_lock();
         rinch_core::set_timer_backend(manual);
         let rows: Rc<RefCell<Option<Signal<Vec<TreeNodeData>>>>> = Rc::default();

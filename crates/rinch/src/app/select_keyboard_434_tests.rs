@@ -90,7 +90,7 @@ fn attr(app: &RinchApp, node: u64, name: &str) -> Option<String> {
 }
 
 impl Fixture {
-    fn trigger(&self) -> usize {
+    fn trigger(&self) -> u64 {
         find_all(&self.app, "rinch-select__input")[0]
     }
 

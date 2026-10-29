@@ -588,7 +588,7 @@ fn a_drag_in_progress_still_takes_escape_before_the_dismiss_stack() {
 // ── 4b. A native <select> inside an overlay ──────────────────────────────────
 
 /// A `Modal` holding a native `<select>`, with the select's node id.
-fn mount_select_in_modal(open: Signal<bool>) -> (RinchApp, u64, Rc<Cell<u64>>) {
+fn mount_select_in_modal(open: Signal<bool>) -> (RinchApp, u64, Rc<Cell<usize>>) {
     let (closes, onclose) = recorder();
     let sel: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let sel_in = sel.clone();

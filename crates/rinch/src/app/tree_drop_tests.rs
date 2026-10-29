@@ -151,10 +151,10 @@ fn in_tree(d: &RinchDocument, mut id: u64) -> bool {
 
 /// The row drawing the drop on offer, and its classes, when one does. Only
 /// ever one.
-fn indicator(app: &RinchApp) -> Option<(usize, String)> {
+fn indicator(app: &RinchApp) -> Option<(u64, String)> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let drawing: Vec<(usize, String)> = d
+    let drawing: Vec<(u64, String)> = d
         .tree
         .nodes
         .iter()

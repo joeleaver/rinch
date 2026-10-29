@@ -7878,7 +7878,7 @@ mod tab_focus_tests {
 
     /// Mount an `<input>` followed by a `tabindex="0"` div carrying a live
     /// click handler. Returns the app, both node ids, and the click counter.
-    fn mount_input_and_div() -> (RinchApp, u64, u64, Rc<Cell<u64>>) {
+    fn mount_input_and_div() -> (RinchApp, u64, u64, Rc<Cell<usize>>) {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
         let oninput_id = register_input_handler(InputCallback::new(|_| {}));
@@ -9163,7 +9163,7 @@ mod pointer_cancel_tests {
     /// rather than clicking, and it is `MouseUp` that later decides between
     /// "the threshold was never crossed, so this was a click" and "this was a
     /// drag". A cancel has to reach in between those two.
-    fn mount_draggable() -> (RinchApp, (f32, f32), Rc<Cell<u64>>) {
+    fn mount_draggable() -> (RinchApp, (f32, f32), Rc<Cell<usize>>) {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
         let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
@@ -10240,7 +10240,7 @@ mod android_frame_clock_tests {
     fn by_class(app: &RinchApp, class: &str) -> u64 {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
-        (0..d.tree.nodes.len())
+        d.tree.nodes.iter().map(|(id, _)| id)
             .find(|&id| {
                 d.tree
                     .get(id)
@@ -12311,7 +12311,7 @@ mod scroll_into_view_tests {
     fn caret_is_visible(app: &RinchApp, scroller_id: u64) -> bool {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
-        let caret = (0..d.tree.nodes.len())
+        let caret = d.tree.nodes.iter().map(|(id, _)| id)
             .find(|&id| {
                 d.tree
                     .nodes

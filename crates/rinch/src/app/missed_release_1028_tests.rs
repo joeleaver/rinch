@@ -375,7 +375,7 @@ pub(super) fn mount_text() -> RinchApp {
     app
 }
 
-pub(super) fn focus_offset(app: &RinchApp) -> u64 {
+pub(super) fn focus_offset(app: &RinchApp) -> usize {
     app.text_selection
         .as_ref()
         .expect("a selection")
@@ -383,7 +383,7 @@ pub(super) fn focus_offset(app: &RinchApp) -> u64 {
 }
 
 /// Press in the text, drag across some of it, lose the release.
-pub(super) fn strand_a_text_selection(app: &mut RinchApp) -> u64 {
+pub(super) fn strand_a_text_selection(app: &mut RinchApp) -> usize {
     press(app, (23.0, 9.0));
     assert!(app.text_selecting, "precondition: selecting");
     let anchor = focus_offset(app);

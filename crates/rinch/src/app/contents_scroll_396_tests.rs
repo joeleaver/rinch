@@ -99,7 +99,7 @@ fn assert_scrolls(app: &mut RinchApp) {
 fn a_for_loop_in_an_if_in_a_scroll_region_scrolls_with_the_wheel() {
     let mut app = mount(|__scope: &mut RenderScope| {
         let loaded = Signal::new(true);
-        let rows = Signal::new((0..ROWS).collect::<Vec<u64>>());
+        let rows = Signal::new((0..ROWS).collect::<Vec<usize>>());
         rsx! {
             div { class: "scroller", style: "width: 200px; height: 300px; overflow-y: auto;",
                 if loaded.get() {
@@ -119,7 +119,7 @@ fn a_for_loop_in_an_if_in_a_scroll_region_scrolls_with_the_wheel() {
 #[test]
 fn a_rows_component_in_a_scroll_region_scrolls_with_the_wheel() {
     fn rows(__scope: &mut RenderScope) -> NodeHandle {
-        let rows = Signal::new((0..ROWS).collect::<Vec<u64>>());
+        let rows = Signal::new((0..ROWS).collect::<Vec<usize>>());
         rsx! {
             for i in rows.get() {
                 div { key: i, class: "row", style: "height: 27px;" }

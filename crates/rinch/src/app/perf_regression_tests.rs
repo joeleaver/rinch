@@ -300,7 +300,7 @@ fn mount_loader(in_closed_drawer: bool) -> RinchApp {
 
 /// Idle turns with time passing, so a running animation has something to
 /// advance. Returns each turn's frame.
-fn ticking_turns(app: &mut RinchApp, n: u64) -> Vec<(bool, FrameStats)> {
+fn ticking_turns(app: &mut RinchApp, n: usize) -> Vec<(bool, FrameStats)> {
     (0..n)
         .map(|_| {
             std::thread::sleep(std::time::Duration::from_millis(3));
@@ -420,7 +420,7 @@ const LIST_ROWS: usize = 200;
 
 #[derive(Clone, PartialEq, Debug)]
 struct Item {
-    id: u64,
+    id: usize,
     label: String,
 }
 
@@ -2056,10 +2056,10 @@ fn hovering_an_outer_shadowed_card_costs_one_shadow_clip() {
 /// `branch` children per open folder, `depth` levels, every folder open, every
 /// node with an icon (`li > content > icon > svg > path`).
 fn open_tree(
-    level: u64,
+    level: usize,
     prefix: &str,
-    branch: u64,
-    depth: u64,
+    branch: usize,
+    depth: usize,
     open: &mut std::collections::HashSet<String>,
 ) -> Vec<rinch_components::TreeNodeData> {
     use rinch_components::TreeNodeData;

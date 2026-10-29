@@ -164,7 +164,7 @@ impl Page {
     /// Layout-local caret `(x, y)` at char offset `i` on `affinity`'s side.
     fn local(&self, i: u32, affinity: CaretAffinity) -> (f32, f32) {
         let doc = self.app.doc.as_ref().unwrap().borrow();
-        doc.query_caret_position_with_affinity(self.block() as u64, i as usize, affinity)
+        doc.query_caret_position_with_affinity(self.block(), i as usize, affinity)
             .expect("laid out")
     }
 
@@ -183,7 +183,7 @@ impl Page {
     }
 
     /// The visual line holding char offset `i` on `affinity`'s side.
-    fn line_of(&self, i: u32, affinity: CaretAffinity) -> u64 {
+    fn line_of(&self, i: u32, affinity: CaretAffinity) -> usize {
         let lines = self.starts.len() - 1;
         (0..lines)
             .rev()

@@ -95,7 +95,7 @@ fn mount(build: impl Fn(&mut RenderScope) -> NodeHandle + 'static) -> RinchApp {
 }
 
 /// Every node's computed style, by raw id.
-fn snapshot(app: &RinchApp) -> HashMap<usize, ComputedStyle> {
+fn snapshot(app: &RinchApp) -> HashMap<u64, ComputedStyle> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -180,7 +180,7 @@ fn fire(app: &RinchApp, node: u64, attr: &str) {
 /// The vacuity guard for every entry below: a fixture whose overlay never
 /// un-hid measured nothing at all, and its "refused nothing" verdict would be
 /// about an idle restyle.
-fn revealed(app: &RinchApp, before: &HashMap<usize, ComputedStyle>) -> usize {
+fn revealed(app: &RinchApp, before: &HashMap<u64, ComputedStyle>) -> usize {
     use rinch_dom::computed_style::{DisplayValue, VisibilityValue};
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
@@ -212,7 +212,7 @@ fn revealed(app: &RinchApp, before: &HashMap<usize, ComputedStyle>) -> usize {
 #[must_use]
 fn assert_nothing_was_refused(
     app: &RinchApp,
-    before: &HashMap<usize, ComputedStyle>,
+    before: &HashMap<u64, ComputedStyle>,
     what: &str,
 ) -> usize {
     let mut declaring = 0usize;

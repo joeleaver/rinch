@@ -146,7 +146,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
 }
 
 /// Wheel the pane down (100px notches) until it is at `target` or further.
-fn wheel_to(app: &mut RinchApp, pane: usize, target: f64) {
+fn wheel_to(app: &mut RinchApp, pane: u64, target: f64) {
     for _ in 0..400 {
         if scroll_of(app, pane) >= target {
             return;

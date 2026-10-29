@@ -2007,7 +2007,7 @@ mod editor {
     }
 
     fn editor_page(html: &'static str) -> EditorPage {
-        let slot: Rc<RefCell<Option<(usize, crate::editor::EditorHandle, usize)>>> =
+        let slot: Rc<RefCell<Option<(u64, crate::editor::EditorHandle, u64)>>> =
             Rc::new(RefCell::new(None));
         let slot_in = slot.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -2282,7 +2282,7 @@ mod bench {
                 .collect::<String>()
                 .into_boxed_str(),
         );
-        let slot: Rc<RefCell<Option<(usize, crate::editor::EditorHandle)>>> =
+        let slot: Rc<RefCell<Option<(u64, crate::editor::EditorHandle)>>> =
             Rc::new(RefCell::new(None));
         let slot_in = slot.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {

@@ -130,7 +130,7 @@ fn review_1687_read_only_selection_lands_on_a_cluster_edge() {
         ));
         x += 0.5;
     }
-    let inside: Vec<u64> = got
+    let inside: Vec<usize> = got
         .iter()
         .copied()
         .filter(|&o| !rinch_words::is_grapheme_boundary(VALUE, o))
@@ -215,7 +215,7 @@ fn review_1687_textarea_arrow_down_lands_on_a_cluster_edge() {
         );
         app.resolve_and_repaint(800.0, 600.0);
         let d = app.doc.as_ref().unwrap().borrow();
-        let c: u64 = d
+        let c: usize = d
             .tree
             .get(id.get())
             .unwrap()
@@ -227,7 +227,7 @@ fn review_1687_textarea_arrow_down_lands_on_a_cluster_edge() {
         landed.push(c);
     }
     let _ = bx;
-    let inside: Vec<u64> = landed
+    let inside: Vec<usize> = landed
         .iter()
         .copied()
         .filter(|&o| !rinch_words::is_grapheme_boundary(&value, o))

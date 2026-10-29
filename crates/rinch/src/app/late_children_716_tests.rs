@@ -80,8 +80,8 @@ fn display_of(app: &RinchApp, id: u64) -> DisplayValue {
 }
 
 /// The `<svg>` inside `id`'s subtree, if there is one.
-fn svg_under(app: &RinchApp, id: u64) -> Option<usize> {
-    fn walk(d: &RinchDocument, id: u64, out: &mut Option<usize>) {
+fn svg_under(app: &RinchApp, id: u64) -> Option<u64> {
+    fn walk(d: &RinchDocument, id: u64, out: &mut Option<u64>) {
         if out.is_some() {
             return;
         }

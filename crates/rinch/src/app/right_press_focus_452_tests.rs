@@ -62,14 +62,14 @@ struct Fixture {
     outside: u64,
     log: Rc<RefCell<Vec<String>>>,
     /// `document.activeElement` when the item's `data-oncontextmenu` ran.
-    focus_at_contextmenu: Rc<Cell<Option<Option<usize>>>>,
+    focus_at_contextmenu: Rc<Cell<Option<Option<u64>>>>,
 }
 
 /// The issue's shape. Every box sits off the origin and off an even spacing,
 /// so a press resolved against the wrong box lands on something else.
 fn mount(item_contextmenu: bool) -> Fixture {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let focus_at_contextmenu: Rc<Cell<Option<Option<usize>>>> = Rc::new(Cell::new(None));
+    let focus_at_contextmenu: Rc<Cell<Option<Option<u64>>>> = Rc::new(Cell::new(None));
     let ids: Rc<Cell<Option<[u64; 5]>>> = Rc::new(Cell::new(None));
     let (log_in, ids_in) = (log.clone(), ids.clone());
     let at_ctx_in = focus_at_contextmenu.clone();
@@ -163,7 +163,7 @@ fn mount(item_contextmenu: bool) -> Fixture {
     }
 }
 
-fn dom_focus(app: &RinchApp) -> Option<usize> {
+fn dom_focus(app: &RinchApp) -> Option<u64> {
     app.doc.as_ref().unwrap().borrow().tree.focused_node
 }
 
@@ -316,7 +316,7 @@ fn a_right_press_does_not_set_active() {
 #[test]
 fn a_right_press_in_an_editor_inside_a_focusable_leaves_the_wrapper_alone() {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    type Slot = Option<(usize, crate::editor::EditorHandle)>;
+    type Slot = Option<(u64, crate::editor::EditorHandle)>;
     let slot: Rc<RefCell<Slot>> = Rc::new(RefCell::new(None));
     let (log_in, slot_in) = (log.clone(), slot.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

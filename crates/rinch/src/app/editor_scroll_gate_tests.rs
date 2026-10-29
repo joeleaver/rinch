@@ -25,7 +25,7 @@ struct Rig {
 /// `editor_is_scroller`: the editor container itself is the `overflow-y: auto`
 /// box (which is what turns on block virtualization at >= 60 blocks).
 fn rig(
-    blocks: u64,
+    blocks: usize,
     root_style: &'static str,
     scroller_style: &'static str,
     editor_is_scroller: bool,
@@ -76,7 +76,7 @@ fn scroll_of(app: &RinchApp, id: u64) -> f64 {
 fn caret_top(app: &RinchApp) -> Option<String> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    (0..d.tree.nodes.len())
+    d.tree.nodes.iter().map(|(id, _)| id)
         .find(|&id| {
             d.tree
                 .nodes
@@ -434,7 +434,7 @@ fn r846_a_focusing_checkbox_click_does_not_yank_to_the_old_caret() {
     let (bx, by) = {
         let doc = r.app.doc.as_ref().unwrap();
         let d = doc.borrow();
-        let item = (0..d.tree.nodes.len())
+        let item = d.tree.nodes.iter().map(|(id, _)| id)
             .find(|&id| {
                 d.tree.get(id).is_some_and(|n| {
                     n.attributes.get("data-pm-type").map(String::as_str) == Some("task_item")

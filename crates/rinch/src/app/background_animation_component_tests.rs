@@ -150,7 +150,7 @@ fn an_animated_striped_progress_bar_moves_its_stripes() {
             .filter(|&x| px(&later, x, y) != px(&first, x + shift, y))
             .count()
     };
-    let by_shift: Vec<u64> = (0..16).map(mismatches).collect();
+    let by_shift: Vec<usize> = (0..16).map(mismatches).collect();
     let best = (0..16).min_by_key(|&s| by_shift[s as usize]).unwrap();
     assert_eq!(
         best, 4,
