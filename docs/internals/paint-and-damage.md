@@ -150,9 +150,10 @@ further up — was in no box's range (before #765, in the wrong box's: the
 phantom bar). css-overflow-3 gives it to the **nearest scroll container at or
 above its containing block** (Chrome 156: a scroller between the box and its
 containing block gets nothing, one above the first gets nothing, a
-non-scrolling box between passes it up transformed). So the layout read-back
-names that container for every absolute box it reads
-(`out_of_flow::overflow_scroller`, from `note_overflow_scroller`): from the
+non-scrolling box between passes it up transformed). The layout read-back
+lists every laid-out absolute box with its kind (`NodeTree::overflow_absolutes`,
+one push), and the container each belongs to is `out_of_flow::overflow_scroller`'s:
+from the
 containing block — the layout parent, an ancestor further up, or for a
 positioned span the block holding its line (`chain_end`) — up the
 **containing-block chain** (an in-flow box to its parent, an `absolute` box on
@@ -163,21 +164,32 @@ an `overflow: clip` box drops it (it clips what overflows it; not modelled:
 scroll is the page's, which in rinch is the `<body>`'s (UA `overflow-y: auto`;
 its scroll carries an ICB box, `chain_to_containing_block`), and the `<html>`
 box's when the body does not scroll or does not hold the box. A box its layout
-parent already measures (`contributes_to_scrollable_overflow`) is not listed.
-The list, `NodeTree::overflow_absolutes`, is `(container, box)` sorted by
-container and rebuilt by every read-back, and `content_extents` ends with
-`extend_with_overflow_absolutes`: one binary search for the container's
-entries, then each box's border box through every box between them
-(`border_box_in`: the layout offsets less each one's scroll, since
+parent already measures (`contributes_to_scrollable_overflow`) is left out.
+`content_extents` ends with `extend_with_overflow_absolutes`, which reads a
+**memo**, `paint::scrollbar::OverflowAbsExtents` (`NodeTree::overflow_extents`):
+the first range asked for after the geometry changed walks each listed box up
+once (`place_listed`: it finds the container as `overflow_scroller` does and
+sums the offsets on the way — each box's layout offset less its scroll, since
 `replace_after_scroll` writes an escaped scroller's scroll into the box's
-`layout`; transforms composed as paint composes them), less the container's
-end padding as an `absolute` child counts. **Cost:** a document with no such
-box pays an `is_empty` per call, and each listed box is measured only by
-its own container's call, one walk up to that container (each box is in one
-container's list, so measuring every scroller once walks each box once:
-no scroller-by-box product). The read-back adds one walk per absolute
-box from its containing block to the first box that clips, per layout, not
-per frame. An absolute box with no area counts nothing, here and as a child (Chrome
+`layout`), and keeps one `(container, right, bottom)` per container; every
+later call is one binary search. It is keyed on `HitCache::shape_generation`,
+which every invalidation moves — a layout, a mutation, a restyle, a tick that
+changes a `HitStyleKey`, and `out_of_flow::replace_all` (it moves boxes after
+the clamp below measured them) — and a scroll moves only when it reaches an
+extent (a box that does not clip on both axes): a scroll of a clipping box
+leaves every listed box's measure where it was. A box with a **transform** on
+its way (its own or any box's to the container, identity included) is listed
+`live` instead and measured by every call (`border_box_in`, transforms composed
+as paint composes them), because a tick writes a transform's value without an
+invalidation; so is a box whose way up the walk does not follow (an `absolute`
+box between its containing block and the container). Either way, less the
+container's end padding, as an `absolute` child counts. **Cost:** a document
+with no absolute box pays an `is_empty` per call; with 500 badges a warm call
+is a binary search (`abs_badge_extents`), and the read-back pays one push per
+box. Layout's clamp first asks `content_extents_in_flow` — the range without
+the listed boxes, which only add to it — and measures them only for an offset
+past that, so a relayout of a long list scrolled anywhere but its end measures
+none of them (`abs_badge_relayout`). An absolute box with no area counts nothing, here and as a child (Chrome
 156: `0x500`, `10x0`, `0x0` boxes scroll nothing). Rows:
 `tests/abs_scroll_range_770_tests.rs`. Still not counted: an **in-flow**
 descendant's overflow below the first box (#2054), so a box that

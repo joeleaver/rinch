@@ -534,35 +534,10 @@ fn overflow_continues_at(
 
 /// `overflow` `hidden`, `scroll` or `auto` on either axis — a scroll
 /// container, asked of a box [`Node::clip_axes`] says clips.
-fn is_scroll_container(node: &Node) -> bool {
+pub(crate) fn is_scroll_container(node: &Node) -> bool {
     use crate::computed_style::OverflowValue as O;
     let scrolls = |v: O| matches!(v, O::Hidden | O::Scroll | O::Auto);
     scrolls(node.computed_style.overflow_x) || scrolls(node.computed_style.overflow_y)
-}
-
-/// Record the laid-out absolute box `node_id` in
-/// `NodeTree::overflow_absolutes` when its scrollable overflow belongs to a
-/// scroll container ([`overflow_scroller`]) that does not already measure it
-/// — one that is not the box it is laid out in, or that is (an absolute child
-/// of the `<body>` resolves against the initial containing block, whose
-/// scroll is the body's) but that [`contributes_to_scrollable_overflow`]
-/// leaves it out of. A box its layout parent counts is not recorded: that
-/// one's walk of its child boxes measures it. Called by the layout read-back
-/// for every absolute box it reads; one walk up the box's ancestors, to the
-/// first box that clips.
-pub(crate) fn note_overflow_scroller(
-    tree: &mut NodeTree,
-    node_id: RawNodeId,
-    kind: Option<OutOfFlowKind>,
-) {
-    let Some(scroller) = overflow_scroller(tree, node_id, kind) else {
-        return;
-    };
-    let measured_by_its_walk = layout_parent(tree, node_id) == Some(scroller)
-        && contributes_to_scrollable_overflow(tree, scroller, &tree.nodes[node_id]);
-    if !measured_by_its_walk {
-        tree.overflow_absolutes.push((scroller, node_id));
-    }
 }
 
 /// A containing block's padding box, and where it starts inside the border
@@ -629,7 +604,7 @@ pub(crate) fn has_inline_containing_block(tree: &NodeTree, kind: Option<OutOfFlo
 /// at the block container whose lines hold the span ([`inline_host`]). The
 /// span's fragments are that block's content, so its own scroll carries the
 /// box and every box below it must not.
-fn chain_end(tree: &NodeTree, cb: RawNodeId) -> Option<RawNodeId> {
+pub(crate) fn chain_end(tree: &NodeTree, cb: RawNodeId) -> Option<RawNodeId> {
     let node = tree.get(cb)?;
     if generates_layout_box(node) {
         Some(cb)
@@ -1891,7 +1866,7 @@ pub(crate) fn static_axes(style: &ComputedStyle) -> (bool, bool) {
 /// The nearest ancestor of `node_id` in the box tree that generates a box:
 /// the one its `layout` is relative to. (A `display: contents` wrapper is in
 /// the chain and has none.)
-fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
+pub(crate) fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
     let mut current = RinchDocument::box_tree_parent(&tree.nodes, node_id)?;
     loop {
         let node = tree.get(current)?;
@@ -2155,6 +2130,9 @@ pub(crate) fn replace_all(tree: &mut NodeTree) {
     if !std::mem::take(&mut tree.abs_late_moves) || tree.placed_absolutes.is_empty() {
         return;
     }
+    // It moves boxes after the scroll ranges may have been measured (the
+    // layout's clamp asks for them first), so what those measured goes.
+    tree.hit_cache.invalidate();
     let placed = std::mem::take(&mut tree.placed_absolutes);
     tree.perf
         .add(crate::perf::Counter::AbsBoxesVisited, placed.len() as u64);

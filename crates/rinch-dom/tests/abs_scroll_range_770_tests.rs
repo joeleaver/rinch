@@ -338,8 +338,8 @@ fn above_its_block_the_overflow_follows_the_containing_block_chain() {
 /// Two scroll containers each take their own box, whatever order the boxes
 /// come in: the first box in the document is the inner scroller's, the
 /// second the outer's (c6b's inner shape, then c6's box after it). The
-/// layout read-back lists them by container, and a list in document order
-/// would hand the outer container's search the inner one's entry first. Chrome
+/// measured list is by container (`OverflowAbsExtents`), and one in document
+/// order would hand the outer container's search the inner one's entry first. Chrome
 /// 156: `i` 50x100, `o` 0x100.
 #[test]
 fn each_container_finds_its_own_boxes() {
@@ -348,4 +348,97 @@ fn each_container_finds_its_own_boxes() {
     );
     assert_range(ranges(&doc, by_id(&doc, "i")), (50.0, 100.0));
     assert_range(ranges(&doc, by_id(&doc, "o")), (0.0, 100.0));
+}
+
+/// c2s through a transformed box: the escaped scroller's scroll does not move
+/// the range on the transformed path either (a box with a transform on its
+/// way is measured on every call, composed as paint composes it). The
+/// `translate` makes the div the containing block, so the box sits at
+/// (10, 300) inside it, moved by (3, 5): the content reaches 253x355,
+/// whatever `s1` is scrolled to. Review of PR #2055, probe P7.
+#[test]
+fn the_range_does_not_move_with_a_scroll_on_the_transformed_path() {
+    for (tf, want) in [
+        ("", (250.0, 350.0)),
+        ("transform:translate(0px,0px);", (250.0, 350.0)),
+        ("transform:translate(3px,5px);", (253.0, 355.0)),
+    ] {
+        let mut doc = doc_of(&format!(
+            r#"<div id="r" style="position:relative;width:300px;height:200px;overflow:auto;"><div style="{tf}width:250px;height:150px;"><div id="s1" style="width:200px;height:100px;overflow:auto;"><div style="height:300px"></div><div style="position:absolute;left:10px;top:300px;width:50px;height:50px;"></div></div></div></div>"#
+        ));
+        let (r, s1) = (by_id(&doc, "r"), by_id(&doc, "s1"));
+        assert_eq!(content_extents(&doc.tree, r.0), want, "{tf:?} unscrolled");
+        doc.set_scroll_top(s1, 40.0);
+        assert_eq!(content_extents(&doc.tree, r.0), want, "{tf:?} s1 at 40");
+        // Measured afresh with `s1` scrolled.
+        doc.resolve_layout(801.0, 600.0);
+        assert_eq!(content_extents(&doc.tree, r.0), want, "{tf:?} relaid out");
+    }
+}
+
+/// A listed box that is a scroller itself: its own scroll moves what is in
+/// it, not its border box, so it is not taken off the box's place — on the
+/// untransformed path and on the transformed one (an identity `translate`
+/// on the wrapper, which also makes it the containing block, at the same
+/// place). The box ends at (50, 350) in `r`. Review of PR #2055, probe P8.
+#[test]
+fn a_listed_box_scrolling_itself_does_not_move_its_range() {
+    for tf in ["", "transform:translate(0px,0px);"] {
+        let mut doc = doc_of(&format!(
+            r#"<div id="r" style="position:relative;width:300px;height:200px;overflow:auto;"><div style="{tf}"><div id="a" style="position:absolute;left:0;top:300px;width:50px;height:50px;overflow:auto;"><div style="height:500px"></div></div></div></div>"#
+        ));
+        let (r, a) = (by_id(&doc, "r"), by_id(&doc, "a"));
+        assert_eq!(content_extents(&doc.tree, r.0), (300.0, 350.0), "{tf:?}");
+        doc.set_scroll_top(a, 100.0);
+        assert_eq!(
+            content_extents(&doc.tree, r.0),
+            (300.0, 350.0),
+            "{tf:?} a at 100"
+        );
+        // Measured afresh with the box scrolled.
+        doc.resolve_layout(801.0, 600.0);
+        assert_eq!(
+            content_extents(&doc.tree, r.0),
+            (300.0, 350.0),
+            "{tf:?} relaid out"
+        );
+    }
+}
+
+/// The measure is a memo of the geometry, so a change that moves the box with
+/// no layout to move it must drop it: a `transform` set on the box between
+/// the containing block and the scroller, which restyles and lays nothing
+/// out. Unscaled, c5's box ends at (185, 150); `scale(2)` takes it to
+/// (360, 300), c5's own numbers (Chrome 156: a 60x100 range of the 300x200
+/// scroller). A tick that changes the scale is measured on every call
+/// instead, since the path then has a transform.
+#[test]
+fn a_transform_set_with_no_layout_moves_the_range() {
+    let mut doc = doc_of(
+        r#"<div id="s" style="width:300px;height:200px;overflow:auto;"><div id="t" style="transform-origin:0 0;width:100px;height:50px;margin-left:10px;"><div style="position:relative;left:5px;"><div style="position:absolute;left:20px;top:30px;width:150px;height:120px;"></div></div></div></div>"#,
+    );
+    let (s, t) = (by_id(&doc, "s"), by_id(&doc, "t"));
+    assert_eq!(content_extents(&doc.tree, s.0), (185.0, 150.0));
+    doc.set_style(t, "transform", "scale(2)");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(content_extents(&doc.tree, s.0), (360.0, 300.0));
+    assert_range(ranges(&doc, s), (60.0, 100.0));
+    doc.set_style(t, "transform", "scale(3)");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(content_extents(&doc.tree, s.0), (535.0, 450.0));
+}
+
+/// Removing a listed box takes it out of the range at the next layout, and a
+/// layout runs before the next frame reads a range; until then it is
+/// measured where it was.
+#[test]
+fn a_removed_box_leaves_the_range_with_the_layout() {
+    let mut doc = doc_of(
+        r#"<div id="s" style="position:relative;width:300px;height:200px;overflow:auto;"><div id="w"><div id="a" style="position:absolute;left:0;top:300px;width:30px;height:30px;"></div></div></div>"#,
+    );
+    let (s, w, a) = (by_id(&doc, "s"), by_id(&doc, "w"), by_id(&doc, "a"));
+    assert_range(ranges(&doc, s), (0.0, 130.0));
+    doc.remove_child(w, a);
+    doc.resolve_layout(800.0, 600.0);
+    assert_range(ranges(&doc, s), (0.0, 0.0));
 }

@@ -2953,17 +2953,20 @@ pub struct NodeTree {
     /// `replace_after_scroll` iterate. Rebuilt by every layout
     /// (`out_of_flow::begin_read`).
     pub(crate) placed_absolutes: Vec<(RawNodeId, crate::out_of_flow::OutOfFlowKind)>,
-    /// `(scroll container, absolute box)` for every laid-out absolute box
-    /// whose **scrollable overflow** belongs to a scroll container that is
-    /// not the box it is laid out in (#770): the nearest scroll container at
-    /// or above its containing block (`out_of_flow::overflow_scroller`),
-    /// when that is not the box's own layout parent — which measures it
-    /// itself (`paint::scrollbar::content_extents`' walk of its child boxes).
-    /// Sorted by scroll container, so `content_extents` finds a container's
-    /// entries with one binary search. Rebuilt by every layout read-back
-    /// (`out_of_flow::begin_read`) and empty in a document whose absolute
-    /// boxes are all children of their own scroll container.
-    pub(crate) overflow_absolutes: Vec<(RawNodeId, RawNodeId)>,
+    /// Every laid-out `absolute` box the layout read back, with its
+    /// [`crate::out_of_flow::out_of_flow_kind`]: the boxes whose
+    /// **scrollable overflow** may belong to a scroll container that is not
+    /// the box they are laid out in (#770) — the nearest scroll container at or
+    /// above the containing block (`out_of_flow::overflow_scroller`).
+    /// Rebuilt by every layout read-back (`out_of_flow::begin_read`), and only
+    /// listed there: which container each box belongs to, and where it is in
+    /// that container's frame, is worked out once per geometry, by the first
+    /// scroll range asked for after it changed ([`Self::overflow_extents`]).
+    pub(crate) overflow_absolutes: Vec<(RawNodeId, Option<crate::out_of_flow::OutOfFlowKind>)>,
+    /// The boxes of [`Self::overflow_absolutes`] measured, by scroll
+    /// container: `paint::scrollbar::content_extents`' memo, keyed on
+    /// `hit_cache.shape_generation()` (#770).
+    pub(crate) overflow_extents: crate::paint::scrollbar::OverflowAbsExtents,
     /// The placed boxes among those that are **shrunk to fit from their
     /// static position** (#1404): an `auto` (or `fit-content`) width and both
     /// inline insets `auto`. What
@@ -3605,6 +3608,7 @@ impl NodeTree {
             ancestor_absolutes: BTreeSet::new(),
             placed_absolutes: Vec::new(),
             overflow_absolutes: Vec::new(),
+            overflow_extents: Default::default(),
             abs_static_fits: Vec::new(),
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
