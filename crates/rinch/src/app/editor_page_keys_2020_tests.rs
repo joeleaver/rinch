@@ -409,7 +409,7 @@ fn page_down_in_a_virtualized_editor_lands_in_blocks_never_laid_out() {
         .set_selection(Selection::cursor(pos_in_block(&r.handle, last_in_view, 6)));
     idle(&mut r.app);
     let mut last = last_in_view;
-    let (_, mut y0, _) = caret(&r);
+    let (x0, mut y0, _) = caret(&r);
     for press_no in 1..=8 {
         let before = block_bands(&r);
         press(&mut r.app, KeyCode::PageDown, NONE);
@@ -424,7 +424,12 @@ fn page_down_in_a_virtualized_editor_lands_in_blocks_never_laid_out() {
             "press {press_no}: moved {} blocks ({last} -> {got})",
             got - last
         );
-        let (_, y, h) = caret(&r);
+        let (x, y, h) = caret(&r);
+        // Resolved against the block's own text, so laid out by then.
+        assert!(
+            (x - x0).abs() < 6.0,
+            "press {press_no}: the caret kept its column (x {x0} -> {x})"
+        );
         assert!(
             f64::from(y) >= view.0 && f64::from(y + h) <= view.1,
             "press {press_no}: the caret ({y}) is inside the view {view:?}"
