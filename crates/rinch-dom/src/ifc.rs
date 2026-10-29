@@ -803,13 +803,23 @@ fn taffy_baseline(
         // The measure at the width it has; the closest one when Taffy clamped
         // the measured width (a box `380` wide whose line measured 380.86),
         // the newest of equally close ones.
+        let height = layout.size.height
+            - layout.padding.top
+            - layout.padding.bottom
+            - layout.border.top
+            - layout.border.bottom;
         let entry = tree
             .atomic_line_baselines
             .get(&leaf)?
             .iter()
             .rev()
-            .min_by(|a, b| (a.0 - width).abs().total_cmp(&(b.0 - width).abs()))?;
-        return if first { entry.1 } else { entry.2 }.map(|b| top + b);
+            .min_by(|a, b| {
+                let off = |e: &(f32, f32, Option<f32>, Option<f32>)| {
+                    (e.0 - width).abs() + (e.1 - height).abs()
+                };
+                off(a).total_cmp(&off(b))
+            })?;
+        return if first { entry.2 } else { entry.3 }.map(|b| top + b);
     }
     let count = taffy::TraversePartialTree::child_count(taffy, taffy_id);
     let in_flow = |child: taffy::NodeId| {
@@ -7932,7 +7942,9 @@ impl RinchDocument {
             if !node.display_mode.is_atomic_inline() {
                 continue;
             }
-            if !self.tree.taffy.dirty(taffy_id).unwrap_or(true) {
+            // Not dirty: measured already — unless it never was as an atomic
+            // inline, and so has no baseline to line it up by (#663).
+            if node.atomic_baseline_known && !self.tree.taffy.dirty(taffy_id).unwrap_or(true) {
                 continue;
             }
             let mut depth = 0usize;
@@ -8254,7 +8266,7 @@ impl RinchDocument {
         let mut leaf_layouts: HashMap<(usize, u32), parley::layout::Layout<Brush>> = HashMap::new();
         // Each IFC root's and text leaf's line baselines, by the content
         // width it was measured at (#663): `NodeTree::atomic_line_baselines`.
-        let mut baselines: Vec<(usize, f32, Option<f32>, Option<f32>)> = Vec::new();
+        let mut baselines: Vec<(usize, f32, f32, Option<f32>, Option<f32>)> = Vec::new();
         perf.bump(crate::perf::Counter::InlineBlockComputes);
         let _ = tree.taffy.compute_layout_with_measure(
             taffy_id,
@@ -8312,18 +8324,16 @@ impl RinchDocument {
                                 first_baseline = first_line_baseline(&inline_layout.layout);
                                 let width =
                                     known_dims.width.unwrap_or(inline_layout.measured_width());
+                                let height =
+                                    known_dims.height.unwrap_or(inline_layout.layout.height());
                                 baselines.push((
                                     root_id,
                                     width,
+                                    height,
                                     first_baseline,
                                     last_line_baseline(&inline_layout.layout),
                                 ));
-                                taffy::Size {
-                                    width,
-                                    height: known_dims
-                                        .height
-                                        .unwrap_or(inline_layout.layout.height()),
-                                }
+                                taffy::Size { width, height }
                             }
                             Some(NodeContext::Text(text)) => {
                                 if text.content.is_empty() {
@@ -8349,7 +8359,13 @@ impl RinchDocument {
                                     width: known_dims.width.unwrap_or(leaf.width),
                                     height: known_dims.height.unwrap_or(leaf.height),
                                 };
-                                baselines.push((text.node_id, size.width, first_baseline, last));
+                                baselines.push((
+                                    text.node_id,
+                                    size.width,
+                                    size.height,
+                                    first_baseline,
+                                    last,
+                                ));
                                 // Keyed exactly as the root compute keys its own text
                                 // leaves, so `copy_cached_text_layouts` picks between
                                 // them by the same rule.
@@ -8409,13 +8425,13 @@ impl RinchDocument {
             },
         );
         tree.atomic_leaf_layouts.extend(leaf_layouts);
-        for (id, width, first, last) in baselines {
+        for (id, width, height, first, last) in baselines {
             let entry = tree.atomic_line_baselines.entry(id).or_default();
-            entry.retain(|e| (e.0 - width).abs() > 0.01);
+            entry.retain(|e| (e.0 - width).abs() > 0.01 || (e.1 - height).abs() > 0.01);
             if entry.len() >= 8 {
                 entry.remove(0);
             }
-            entry.push((width, first, last));
+            entry.push((width, height, first, last));
         }
     }
 
@@ -8586,6 +8602,7 @@ impl RinchDocument {
                     node.layout.width = layout_size.width;
                     node.layout.height = layout_size.height;
                     node.atomic_baseline = baseline;
+                    node.atomic_baseline_known = true;
                 }
             }
 
