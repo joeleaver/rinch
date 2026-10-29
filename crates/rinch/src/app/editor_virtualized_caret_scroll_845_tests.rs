@@ -193,7 +193,10 @@ fn caret_drawn(r: &Rig) -> bool {
 fn assert_caret_in_view(r: &Rig, what: &str) {
     let head = r.handle.selection().head();
     let block = block_of(r, head);
-    assert!(is_laid_out(r, block), "{what}: the caret's block is laid out");
+    assert!(
+        is_laid_out(r, block),
+        "{what}: the caret's block is laid out"
+    );
     assert!(caret_drawn(r), "{what}: a caret is drawn");
     let (top, bottom) = {
         let doc = r.app.doc.as_ref().unwrap();
@@ -254,8 +257,9 @@ fn a_programmatic_caret_far_below_is_scrolled_to() {
         !is_laid_out(&r, block_of(&r, target)),
         "control: block 200 was never laid out"
     );
+    // From app code (a timer, an effect, a deep link): the selection change
+    // owes an overlay pass, which is what wakes the frame.
     r.handle.set_selection(Selection::cursor(target));
-    r.app.refresh_editor_overlays();
     let n = settle(&mut r);
     assert!(n <= SETTLE_FRAMES, "settled in {n} frames");
     assert_caret_in_view(&r, "set_selection");
@@ -273,7 +277,9 @@ fn ctrl_home_after_ctrl_end_comes_back_to_the_top() {
     press(&mut r, KeyCode::Home, ctrl());
     let n = settle(&mut r);
     assert!(n <= SETTLE_FRAMES, "settled in {n} frames");
-    assert_eq!(scroll_of(&r), 0.0, "back at the top");
+    // `nearest`: the caret line at the scroller's top edge, which is the
+    // editor's padding and the first paragraph's margin below 0.
+    assert!(scroll_of(&r) < 40.0, "back at the top ({})", scroll_of(&r));
     assert_caret_in_view(&r, "Ctrl+Home");
 }
 

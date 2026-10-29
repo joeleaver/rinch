@@ -27,8 +27,29 @@ thread_local! {
     /// virtualized. Keyed per document: container ids are per-document slab
     /// indices, so two documents on one thread would otherwise share (and stomp)
     /// a window at a colliding id (issue #134).
-    static WINDOWS: RefCell<Vec<((u64, usize), CeVirtualWindow)>> =
+    static WINDOWS: RefCell<Vec<((u64, usize), CeVirtualWindow, Option<CaretSettle>)>> =
         const { RefCell::new(Vec::new()) };
+}
+
+/// How many frames a caret scroll may keep following the caret after the
+/// window laid out its block by estimated heights (#845), so a settle that
+/// never stops moving cannot scroll forever. Each frame measures the blocks the
+/// last scroll reached, so it converges in two or three.
+const CARET_SETTLE_FRAMES: u8 = 8;
+
+/// A caret scroll fulfilled on a block [`pre_layout`] laid out for it, at a
+/// position computed from the estimated heights of the blocks above it. While
+/// it lasts, a frame whose window moved — measuring blocks, which moves the
+/// caret — owes the caret its scroll again.
+#[derive(Clone, Copy, Debug)]
+struct CaretSettle {
+    /// The caret the scroll is for; the settle ends when it moves.
+    pos: rinch_editor_core::Pos,
+    frames_left: u8,
+    /// The caret scroll was still owed when this frame began.
+    owed_at_start: bool,
+    /// The window moved this frame.
+    moved: bool,
 }
 
 /// Phase 1 (before layout): for every mounted editor that is a scroll container,
@@ -56,25 +77,26 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
         let mut windows = w.borrow_mut();
         // Drop THIS document's windows whose editor unmounted; other documents'
         // windows are managed by their own pass.
-        windows.retain(|((dk, id), _)| *dk != doc_key || editors.iter().any(|(eid, _)| eid == id));
+        windows
+            .retain(|((dk, id), _, _)| *dk != doc_key || editors.iter().any(|(eid, _)| eid == id));
         for (container, handle) in &editors {
             let container = *container;
             if container == 0 {
                 continue;
             }
             let key = (doc_key, container);
-            let idx = match windows.iter().position(|(k, _)| *k == key) {
+            let idx = match windows.iter().position(|(k, _, _)| *k == key) {
                 Some(i) => i,
                 None => {
                     if !is_scroll_container(doc, container) {
                         continue;
                     }
                     let vw = CeVirtualWindow::new_filtered(container, doc, true);
-                    windows.push((key, vw));
+                    windows.push((key, vw, None));
                     windows.len() - 1
                 }
             };
-            let vw = &mut windows[idx].1;
+            let (_, vw, settle) = &mut windows[idx];
             // Re-sync only on a block-count change (insert/delete) — doing it every
             // frame would stomp measured heights with the default estimate.
             if block_count(doc, container) != vw.block_count() {
@@ -83,8 +105,45 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
             if !vw.is_active() {
                 continue;
             }
+            // A caret settle older than this frame: keep it only while the
+            // caret stays where it was scrolled to and the editor focused.
+            let head = handle.selection().head();
+            let owed = Some(container) == focused && handle.caret_scroll_owed();
+            if let Some(s) = settle
+                && (s.pos != head || Some(container) != focused || s.frames_left == 0)
+            {
+                *settle = None;
+            }
+            if let Some(s) = settle {
+                s.frames_left -= 1;
+                s.owed_at_start = owed;
+                s.moved = false;
+            }
             let protected = protected_block(doc, handle, container, focused);
-            vw.pre_layout_update(doc, &protected);
+            let moved = vw.pre_layout_update(doc, &protected);
+            if let Some(s) = settle {
+                s.moved |= moved;
+            }
+            // A caret move that owes a scroll needs the block holding the
+            // caret laid out, wherever the window is (#845): Ctrl+End or a
+            // `set_selection` far below lands in a collapsed block, which has
+            // no caret to scroll to, and the window — which follows the
+            // scroll position — would never reach it. Only the focused
+            // editor's caret pass fulfils that scroll, so only its caret. The
+            // scroll then lands where the block is by the estimated heights
+            // above it; `post_layout` follows it while the blocks it reaches
+            // are measured (`CaretSettle`).
+            if owed
+                && let Some(block) = block_at(doc, handle, head, container)
+                && vw.materialize(doc, block)
+            {
+                *settle = Some(CaretSettle {
+                    pos: head,
+                    frames_left: CARET_SETTLE_FRAMES,
+                    owed_at_start: true,
+                    moved: false,
+                });
+            }
             // A pending `scroll_into_view` needs the blocks holding its start
             // and its end laid out, wherever the window is: the reveal is what
             // moves the window there. Both, because a range whose end block
@@ -92,10 +151,7 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
             // the view reveals the start alone if the end still has none.
             if let Some((from, to)) = handle.pending_reveal_range() {
                 for pos in [from, to] {
-                    if let Some(block) = handle
-                        .caret_address(pos)
-                        .and_then(|(textblock, _)| top_block(doc, textblock, container))
-                    {
+                    if let Some(block) = block_at(doc, handle, pos, container) {
                         vw.materialize(doc, block);
                     }
                 }
@@ -120,19 +176,35 @@ pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<usize>, vw_w:
         for (container, handle) in &editors {
             let container = *container;
             let key = (doc_key, container);
-            let Some(idx) = windows.iter().position(|(k, _)| *k == key) else {
+            let Some(idx) = windows.iter().position(|(k, _, _)| *k == key) else {
                 continue;
             };
-            let vw = &mut windows[idx].1;
+            let (_, vw, settle) = &mut windows[idx];
             if !vw.is_active() {
                 continue;
             }
             vw.post_layout_cache(doc);
             let protected = protected_block(doc, handle, container, focused);
-            if vw.pre_layout_update(doc, &protected) {
+            let moved = vw.pre_layout_update(doc, &protected);
+            if moved {
                 let _ = doc.take_dirty_nodes();
                 doc.resolve_layout(vw_w, vw_h);
                 vw.post_layout_cache(doc);
+            }
+            // A caret scrolled to by estimated heights (#845): the scroll moved
+            // the window, the blocks it reached were measured, and their real
+            // heights moved the caret — owe its scroll again, and the caret
+            // pass right after this follows it. Settled once a frame neither
+            // owed a caret scroll at its start nor moved the window.
+            if let Some(s) = settle {
+                s.moved |= moved;
+                if s.moved {
+                    if !handle.caret_scroll_owed() {
+                        handle.owe_caret_scroll();
+                    }
+                } else if !s.owed_at_start {
+                    *settle = None;
+                }
             }
         }
     });
@@ -165,6 +237,17 @@ fn protected_block(
         protect(to);
     }
     out
+}
+
+/// The direct child of `container` holding the model position `pos`.
+fn block_at(
+    doc: &RinchDocument,
+    handle: &EditorHandle,
+    pos: rinch_editor_core::Pos,
+    container: usize,
+) -> Option<usize> {
+    let (textblock, _) = handle.caret_address(pos)?;
+    top_block(doc, textblock, container)
 }
 
 /// Walk up from `id` to the direct child of `container`.
