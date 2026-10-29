@@ -269,16 +269,18 @@ fn a_press_right_of_the_arrow_puts_the_caret_after_the_link() {
         (painted - arrow_right).abs() <= 1.0,
         "the caret is drawn past the arrow, at {arrow_right}: {painted}"
     );
-    // A press on the arrow's right half is the same position.
-    p.press(arrow.0 + arrow.2 * 0.75, arrow.1 + arrow.3 / 2.0);
-    assert_eq!(p.handle.selection(), Selection::cursor(after_link));
-    // And a press further on lands on its own character.
+    // A press further on lands on its own character.
     let m = p.glyph(p.flat_of("more"));
     p.press(m.0 + m.2 * 0.75, m.1 + m.3 / 2.0);
     assert_eq!(
         p.handle.selection(),
         Selection::cursor(Pos(p.pos_of("more").0 + 1))
     );
+    // A press on the arrow's right half is the position after the link.
+    // (Not right after the press on the dot: two presses that close are a
+    // double click.)
+    p.press(arrow.0 + arrow.2 * 0.75, arrow.1 + arrow.3 / 2.0);
+    assert_eq!(p.handle.selection(), Selection::cursor(after_link));
 }
 
 /// A selection over the link runs from the first selected character to the
@@ -355,10 +357,17 @@ fn a_before_on_a_mark_shifts_nothing_either() {
     }
     let (end, flat) = (p.end(), p.laid_out().len());
     p.assert_caret(end, flat, "end");
-    // The first character of the link: inside it the caret is past the
-    // generated text, before `h`.
-    let (pos, flat) = (p.pos_of("https"), p.flat_of("https"));
-    p.assert_caret(pos, flat, "the link's first character");
+    // Before the link's first character a typed character goes before the
+    // (non-inclusive) link, so the caret is drawn before its `::before`
+    // text, where that character lands; one character on it is inside.
+    let (pos, flat) = (p.pos_of("https"), p.flat_of("\u{2192}"));
+    p.assert_caret(pos, flat, "the link's start");
+    let (pos, flat) = (Pos(pos.0 + 1), p.flat_of("ttps"));
+    p.assert_caret(pos, flat, "after the link's first character");
+    // A press on the left half of `h` is the link's start too.
+    let h = p.glyph(p.flat_of("https"));
+    p.press(h.0 + 1.0, h.1 + h.3 / 2.0);
+    assert_eq!(p.handle.selection(), Selection::cursor(p.pos_of("https")));
 }
 
 /// Generated content on the textblock itself: a `::before` at its start, an
