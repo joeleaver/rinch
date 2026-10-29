@@ -1,0 +1,17 @@
+[package]
+name = "rinch-graph-view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Canvas for node-and-wire editors on rinch: pan and zoom, node dragging, wire drawing with connection rules, SVG edges, selection, undo. App code renders node bodies. Renderer-agnostic (desktop and web)."
+
+[dependencies]
+rinch-core = { workspace = true }
+rinch-macros = { workspace = true }
+rinch-graph-core = { workspace = true }
+
+[features]
+serde = ["rinch-graph-core/serde"]
+
+[dev-dependencies]
+rinch-core = { workspace = true, features = ["test-util"] }
