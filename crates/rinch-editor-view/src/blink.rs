@@ -33,7 +33,7 @@ struct Clock {
     /// The container id of the editor being blinked in this document, so a
     /// focus change can restore the previously-blinked caret to solid (never
     /// leave a blurred editor frozen mid-blink with a hidden caret).
-    target: usize,
+    target: u64,
     /// The instant the caret phase last reset to "solid". `None` until the
     /// first [`tick`] anchors it.
     anchor: Option<Instant>,
@@ -65,13 +65,13 @@ pub(crate) fn reset(doc_key: u64) {
 }
 
 /// The container id of the editor `doc_key` is blinking, if any.
-pub(crate) fn target(doc_key: u64) -> Option<usize> {
+pub(crate) fn target(doc_key: u64) -> Option<u64> {
     with_clock(doc_key, |c| c.map(|c| c.target))
 }
 
 /// Record which editor `doc_key` is blinking (`None` = none), with its phase
 /// restarted at "solid".
-pub(crate) fn set_target(doc_key: u64, target: Option<usize>) {
+pub(crate) fn set_target(doc_key: u64, target: Option<u64>) {
     CLOCKS.with(|c| {
         let mut c = c.borrow_mut();
         c.retain(|c| c.doc_key != doc_key);
@@ -87,7 +87,7 @@ pub(crate) fn set_target(doc_key: u64, target: Option<usize>) {
 
 /// Drop `doc_key`'s clock if it is blinking `container_id` — the editor
 /// unmounted, so nothing is left to blink or restore.
-pub(crate) fn forget(doc_key: u64, container_id: usize) {
+pub(crate) fn forget(doc_key: u64, container_id: u64) {
     CLOCKS.with(|c| {
         c.borrow_mut()
             .retain(|c| !(c.doc_key == doc_key && c.target == container_id));

@@ -38,7 +38,7 @@ fn page(x_style: &str, child_style: Option<&str>) -> (RinchDocument, NodeId) {
 
 /// Restyle `x` and attribute the frame's damage: the node `x`'s change was
 /// placed at.
-fn restyle(d: &mut RinchDocument, x: NodeId, style: &str) -> Option<Option<usize>> {
+fn restyle(d: &mut RinchDocument, x: NodeId, style: &str) -> Option<Option<u64>> {
     d.set_attribute(x, "style", style);
     d.resolve_layout(VP.0, VP.1);
     let (_, by_node) =

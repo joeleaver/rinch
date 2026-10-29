@@ -21,18 +21,18 @@ use std::cell::Cell;
 
 #[derive(Clone, Copy)]
 struct Ids {
-    button: usize,
-    disabled_button: usize,
-    stepper: usize,
-    link: usize,
-    bare_anchor: usize,
-    select: usize,
-    bare_select: usize,
-    hidden_checkbox: usize,
-    checkbox_label: usize,
-    text_input: usize,
-    summary: usize,
-    plain_div: usize,
+    button: u64,
+    disabled_button: u64,
+    stepper: u64,
+    link: u64,
+    bare_anchor: u64,
+    select: u64,
+    bare_select: u64,
+    hidden_checkbox: u64,
+    checkbox_label: u64,
+    text_input: u64,
+    summary: u64,
+    plain_div: u64,
 }
 
 /// One document holding the whole tag set, plus the two shapes that must stay
@@ -257,7 +257,7 @@ fn the_tab_order_follows_the_dom() {
         ids.hidden_checkbox,
         ids.text_input,
     ];
-    let filtered: Vec<usize> = order
+    let filtered: Vec<u64> = order
         .iter()
         .copied()
         .filter(|id| expected.contains(id))
@@ -433,7 +433,7 @@ fn a_press_on_a_select_goes_straight_to_the_popup() {
 fn an_explicit_tabindex_always_wins_over_the_tag() {
     let (app, ids, _log) = mount_fixture();
     let d = app.doc.as_ref().unwrap().borrow();
-    let of = |id: usize| RinchApp::effective_tabindex(d.tree.get(id).unwrap());
+    let of = |id: u64| RinchApp::effective_tabindex(d.tree.get(id).unwrap());
 
     assert_eq!(of(ids.stepper), Some(-1), "explicit -1 beats the implied 0");
     assert_eq!(of(ids.button), Some(0));
@@ -552,7 +552,7 @@ fn the_mouse_route_still_anchors_tab() {
 /// to a disabled control, undoing #315 through the one door #437 opens.
 #[test]
 fn a_commit_handler_that_disables_the_select_does_not_get_focus_back() {
-    let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+    let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

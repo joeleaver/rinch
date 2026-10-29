@@ -12,7 +12,7 @@ use std::cell::Cell;
 /// A single focusable control of tag `tag`, with `data-oninput` recording
 /// every value it is given and `data-onsubmit` present only if `with_submit`.
 /// Returns the app, the control's node id, and the shared log.
-fn mount(tag: &'static str, with_submit: bool) -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
+fn mount(tag: &'static str, with_submit: bool) -> (RinchApp, u64, Rc<RefCell<Vec<String>>>) {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let input_id = register_input_handler(InputCallback::new({
         let log = log.clone();
@@ -23,7 +23,7 @@ fn mount(tag: &'static str, with_submit: bool) -> (RinchApp, usize, Rc<RefCell<V
         move || log.borrow_mut().push("submit".to_string())
     }));
 
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -89,7 +89,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn focus(app: &mut RinchApp, id: usize) {
+fn focus(app: &mut RinchApp, id: u64) {
     let (cx, cy) = {
         let d = app.doc.as_ref().unwrap().borrow();
         let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, id);
@@ -100,7 +100,7 @@ fn focus(app: &mut RinchApp, id: usize) {
 
 /// The control's live `value` attribute — what it displays, and what the paint
 /// layer reads.
-fn value(app: &RinchApp, id: usize) -> String {
+fn value(app: &RinchApp, id: u64) -> String {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -109,7 +109,7 @@ fn value(app: &RinchApp, id: usize) -> String {
 }
 
 /// The caret's byte offset, as written to the DOM for the paint layer.
-fn caret(app: &RinchApp, id: usize) -> usize {
+fn caret(app: &RinchApp, id: u64) -> usize {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -329,7 +329,7 @@ fn an_ancestor_submit_handler_wins_over_the_break() {
         move || log.borrow_mut().push("submit".to_string())
     }));
 
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

@@ -20,7 +20,7 @@ fn doc_of(html: &str) -> RinchDocument {
     doc
 }
 
-fn id_of(doc: &RinchDocument, class: &str) -> usize {
+fn id_of(doc: &RinchDocument, class: &str) -> u64 {
     doc.query_selector(&format!(".{class}"))
         .expect("fixture element")
         .0

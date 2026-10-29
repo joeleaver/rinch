@@ -614,7 +614,7 @@ pub struct RinchRuntime {
     /// DevTools keyboard modifier state.
     devtools_modifiers: winit::keyboard::ModifiersState,
     /// Previous hovered node ID (for detecting changes).
-    devtools_prev_hovered: Option<usize>,
+    devtools_prev_hovered: Option<u64>,
     /// Timestamp of the last paint (for FPS calculation).
     last_paint_time: Option<std::time::Instant>,
     /// Recent frame times in ms (ring buffer for FPS averaging).

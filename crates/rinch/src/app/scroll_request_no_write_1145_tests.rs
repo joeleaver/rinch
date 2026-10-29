@@ -21,7 +21,7 @@ const W: f32 = 800.0;
 const H: f32 = 600.0;
 
 /// Mount the scroller; answer the app, the scroller's id and the target's handle.
-fn mount() -> (RinchApp, usize, NodeHandle) {
+fn mount() -> (RinchApp, u64, NodeHandle) {
     let held: Rc<RefCell<Option<(NodeHandle, NodeHandle)>>> = Rc::new(RefCell::new(None));
     let h = held.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -46,7 +46,7 @@ fn mount() -> (RinchApp, usize, NodeHandle) {
     (app, root.node_id().0, target)
 }
 
-fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+fn scroll_top(app: &RinchApp, id: u64) -> f64 {
     let doc = app.doc.as_ref().expect("mounted");
     doc.borrow().scroll_top(rinch_core::dom::NodeId(id))
 }

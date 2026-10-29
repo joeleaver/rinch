@@ -147,7 +147,7 @@ fn a_right_press_on_a_titlebar_button_does_not_drag_the_window() {
 #[test]
 fn a_right_press_on_a_field_in_a_clickable_container_opens_the_menu_only() {
     let clicks = Rc::new(Cell::new(0u32));
-    let node: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let node: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let (clicks_in, node_in) = (clicks.clone(), node.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
