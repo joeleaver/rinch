@@ -90,10 +90,10 @@ const PHYSICAL: (u32, u32) = (804, 600);
 /// The spinning element: the oval inside the `Loader`.
 const OVAL: &str = "rinch-loader__oval";
 
-fn node_with_class(app: &RinchApp, class: &str) -> usize {
+fn node_with_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -114,7 +114,7 @@ fn node_with_class(app: &RinchApp, class: &str) -> usize {
 }
 
 /// How many animations are registered on a node.
-fn animations(app: &RinchApp, node: usize) -> usize {
+fn animations(app: &RinchApp, node: u64) -> usize {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -125,7 +125,7 @@ fn animations(app: &RinchApp, node: usize) -> usize {
 }
 
 /// Whether the node's one animation is paused.
-fn is_paused(app: &RinchApp, node: usize) -> bool {
+fn is_paused(app: &RinchApp, node: u64) -> bool {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let running = d
@@ -140,7 +140,7 @@ fn is_paused(app: &RinchApp, node: usize) -> bool {
 /// A node's box origin in window coordinates: its parent-relative `layout`
 /// summed up the parent chain (nothing in these fixtures is scrolled or
 /// transformed).
-fn window_origin(app: &RinchApp, node: usize) -> (f32, f32) {
+fn window_origin(app: &RinchApp, node: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let (mut x, mut y) = (0.0, 0.0);
@@ -157,13 +157,13 @@ fn window_origin(app: &RinchApp, node: usize) -> (f32, f32) {
 /// How many `animation` declarations the cascade found on the node. Zero would
 /// mean this file is measuring a component that declares no animation at all,
 /// which is the fixed point every "0 animations" assertion has to be kept off.
-fn animation_specs(app: &RinchApp, node: usize) -> usize {
+fn animation_specs(app: &RinchApp, node: u64) -> usize {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().animation_specs.len()
 }
 
-fn display_of(app: &RinchApp, node: usize) -> rinch_dom::computed_style::DisplayValue {
+fn display_of(app: &RinchApp, node: u64) -> rinch_dom::computed_style::DisplayValue {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.display
@@ -259,7 +259,7 @@ fn mount_loader_in_panel(open_at_start: bool) -> (RinchApp, Signal<bool>) {
 /// Pump the frame clock `n` times, the way the desktop event loop does when
 /// nothing else is happening, and report how many of those frames asked the
 /// shell to redraw.
-fn idle_frames_requesting_redraw(app: &mut RinchApp, n: usize) -> usize {
+fn idle_frames_requesting_redraw(app: &mut RinchApp, n: u64) -> u64 {
     let mut asked = 0;
     for _ in 0..n {
         let actions = app.handle_event(PlatformEvent::AboutToWait, PHYSICAL, 1.0);

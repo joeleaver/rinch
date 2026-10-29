@@ -20,8 +20,8 @@ const VP: (u32, u32) = (800, 600);
 
 struct Fixture {
     app: RinchApp,
-    button: usize,
-    editor: usize,
+    button: u64,
+    editor: u64,
     clicks: Rc<Cell<u32>>,
 }
 
@@ -29,7 +29,7 @@ struct Fixture {
 /// editor. `nofocus` says whether the caller writes `data-nofocus` on the Group.
 fn mount(nofocus: bool) -> Fixture {
     let clicks = Rc::new(Cell::new(0u32));
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let (clicks_in, ids_in) = (clicks.clone(), ids.clone());
     let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
         let clicks = clicks_in.clone();
@@ -77,7 +77,7 @@ fn mount(nofocus: bool) -> Fixture {
     }
 }
 
-fn press(app: &mut RinchApp, id: usize) {
+fn press(app: &mut RinchApp, id: u64) {
     let (x, y, w, h) = {
         let d = app.doc.as_ref().unwrap().borrow();
         painted_element_box(&d.tree, id)

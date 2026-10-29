@@ -27,7 +27,7 @@ fn popup_rows_styled(
     font: &'static str,
     select_style: &'static str,
 ) -> (Vec<(f32, f32)>, f32, f32) {
-    let sid: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sid: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let s2 = sid.clone();
     let labels: Vec<&'static str> = labels.to_vec();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -134,7 +134,7 @@ fn probe(
     body_style: &'static str,
     vp: (f32, f32),
 ) -> Placed {
-    let sid: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sid: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let s2 = sid.clone();
     let labels: Vec<&'static str> = labels.to_vec();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -334,7 +334,7 @@ fn popup_rows_take_the_selects_text_transform_1130() {
 /// `white-space: pre`) and fits.
 #[test]
 fn a_label_attributes_spaces_reach_the_popup_row_1130() {
-    let sid: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sid: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let s2 = sid.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -418,7 +418,7 @@ fn review1744_eszett_row() {
 /// Type-ahead labels: a label attribute's leading spaces do not hide it.
 #[test]
 fn review1744_typeahead_labels_are_collapsed() {
-    let sid: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sid: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let s2 = sid.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

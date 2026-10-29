@@ -19,9 +19,9 @@ use std::cell::Cell;
 /// widgets' `on_key` should consume.
 struct Fixture {
     app: RinchApp,
-    input_id: usize,
-    a_id: usize,
-    b_id: usize,
+    input_id: u64,
+    a_id: u64,
+    b_id: u64,
     log: Rc<RefCell<Vec<String>>>,
     consume: Rc<RefCell<Vec<String>>>,
 }
@@ -74,7 +74,7 @@ fn mount_fixture() -> Fixture {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let consume: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let oninput_id = register_input_handler(InputCallback::new(|_| {}));
-    let ids: Rc<Cell<Option<(usize, usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64, u64)>>> = Rc::new(Cell::new(None));
 
     let (log_in, consume_in, ids_in) = (log.clone(), consume.clone(), ids.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -130,7 +130,7 @@ fn tab(app: &mut RinchApp) {
     key(app, KeyCode::Tab, None);
 }
 
-fn abs_center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn abs_center(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, id);
     (ax + ax_w / 2.0, ay + ay_h / 2.0)
@@ -157,7 +157,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn click_node(app: &mut RinchApp, id: usize) {
+fn click_node(app: &mut RinchApp, id: u64) {
     let (x, y) = abs_center(app, id);
     click(app, x, y);
 }
@@ -256,7 +256,7 @@ fn a_click_on_a_registered_node_claims_the_keyboard() {
 fn a_click_on_a_child_claims_the_focusable_ancestor() {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let consume: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let (log_in, consume_in, ids_in) = (log.clone(), consume.clone(), ids.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -331,7 +331,7 @@ fn two_registered_widgets_blur_each_other() {
 fn an_unmounted_registered_target_releases_focus_without_calling_back() {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let consume: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let visible = rinch_core::Signal::new(true);
 
     let (log_in, consume_in, id_in) = (log.clone(), consume.clone(), id.clone());

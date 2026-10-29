@@ -53,7 +53,7 @@ fn lay_out(container_style: &str, html: &str) -> (RinchDocument, NodeId) {
     (d, c)
 }
 
-fn find(d: &RinchDocument, id: usize, want: &str) -> Option<usize> {
+fn find(d: &RinchDocument, id: u64, want: &str) -> Option<u64> {
     let n = d.tree.get(id)?;
     if n.attributes.get("id").map(String::as_str) == Some(want) {
         return Some(id);
@@ -235,7 +235,7 @@ fn a_space_at_a_lines_start_or_end_is_still_removed() {
 }
 
 /// The x of the first glyph run on `line` of `#root`'s IFC.
-fn first_glyph_x(d: &RinchDocument, root: usize, line: usize) -> f32 {
+fn first_glyph_x(d: &RinchDocument, root: u64, line: usize) -> f32 {
     let il = d.tree.get(root).unwrap().text_layout.as_ref().expect("IFC");
     let line = il.layout.get(line).expect("line");
     for item in line.items() {
@@ -247,7 +247,7 @@ fn first_glyph_x(d: &RinchDocument, root: usize, line: usize) -> f32 {
 }
 
 /// The x of the glyph run whose text starts with `word` on line `line`.
-fn word_x(d: &RinchDocument, root: usize, line: usize, word: &str) -> f32 {
+fn word_x(d: &RinchDocument, root: u64, line: usize, word: &str) -> f32 {
     let il = d.tree.get(root).unwrap().text_layout.as_ref().expect("IFC");
     let l = il.layout.get(line).expect("line");
     for item in l.items() {

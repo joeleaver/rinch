@@ -314,7 +314,7 @@ fn generates_layout_box(node: &Node) -> bool {
 /// The walk is only entered for a box that is actually out of flow, so the
 /// overwhelmingly common node costs one enum compare.
 pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<OutOfFlowKind> {
-    let node = tree.get(node_id)?;
+    let node = tree.get_live(node_id)?;
     if matches!(node.computed_style.display, DisplayValue::None) {
         return None;
     }
@@ -335,7 +335,7 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
                 if current == tree.html_id || current == tree.root_id {
                     return Some(OutOfFlowKind::IcbAbsolute);
                 }
-                let ancestor = tree.get(current)?;
+                let ancestor = tree.get_live(current)?;
                 if ancestor.establishes_abs_containing_block() {
                     // The layout parent establishing it is Taffy's own answer,
                     // so there is nothing to correct. Anything else is an
@@ -430,7 +430,7 @@ pub(crate) fn contributes_to_scrollable_overflow(
                             .get(id)
                             .is_some_and(Node::establishes_abs_containing_block);
                 }
-                let Some(ancestor) = tree.get(id) else {
+                let Some(ancestor) = tree.get_live(id) else {
                     return false;
                 };
                 if ancestor.establishes_abs_containing_block() {
@@ -566,7 +566,7 @@ impl ContainingBox {
     /// lines **last built** for it ([`inline_fragments_box`]), measured from
     /// the border box of the block that holds those lines.
     fn of_ancestor(tree: &NodeTree, cb: RawNodeId) -> Option<Self> {
-        let node = tree.get(cb)?;
+        let node = tree.get_live(cb)?;
         if !generates_layout_box(node) {
             return inline_fragments_box(tree, cb);
         }
@@ -596,7 +596,7 @@ impl ContainingBox {
 /// this kind was read back (`NodeTree::abs_inline_cb_seen`).
 pub(crate) fn has_inline_containing_block(tree: &NodeTree, kind: Option<OutOfFlowKind>) -> bool {
     matches!(kind, Some(OutOfFlowKind::AncestorAbsolute(cb))
-        if tree.get(cb).is_some_and(|n| !generates_layout_box(n)))
+        if tree.get_live(cb).is_some_and(|n| !generates_layout_box(n)))
 }
 
 /// Where the chain of boxes from an absolute box to its containing block
@@ -605,7 +605,7 @@ pub(crate) fn has_inline_containing_block(tree: &NodeTree, kind: Option<OutOfFlo
 /// span's fragments are that block's content, so its own scroll carries the
 /// box and every box below it must not.
 pub(crate) fn chain_end(tree: &NodeTree, cb: RawNodeId) -> Option<RawNodeId> {
-    let node = tree.get(cb)?;
+    let node = tree.get_live(cb)?;
     if generates_layout_box(node) {
         Some(cb)
     } else {
@@ -779,7 +779,7 @@ fn measure_span_fragments(
     // The lines: every cluster's extent, every atomic inline's, each line's
     // baseline and start.
     let mut clusters: Vec<ClusterBox> = Vec::new();
-    let mut box_at: HashMap<usize, (usize, f32, f32)> = HashMap::new();
+    let mut box_at: HashMap<RawNodeId, (usize, f32, f32)> = HashMap::new();
     let mut lines: Vec<(f32, f32)> = Vec::new();
     for (index, line) in layout.lines().enumerate() {
         let metrics = line.metrics();
@@ -816,7 +816,7 @@ fn measure_span_fragments(
                     if crate::ifc::is_edge_box(b.id) {
                         continue;
                     }
-                    box_at.insert(b.id as usize, (index, b.x, b.x + b.width));
+                    box_at.insert(b.id as RawNodeId, (index, b.x, b.x + b.width));
                 }
             }
         }
@@ -857,7 +857,9 @@ fn measure_span_fragments(
     let mut before = Before::Nothing;
     for &(id, _) in &inline.child_positions {
         *steps += 1;
-        let Some(node) = tree.get(id) else { continue };
+        let Some(node) = tree.get_live(id) else {
+            continue;
+        };
         if let Some(own) = content.get_mut(&id) {
             own.seen = true;
             own.before = before;
@@ -889,7 +891,7 @@ fn measure_span_fragments(
                     span.boxes.push(b);
                 }
             }
-            above = tree.get(p).and_then(|n| n.parent);
+            above = tree.get_live(p).and_then(|n| n.parent);
         }
     }
 
@@ -915,7 +917,7 @@ fn measure_span_fragments(
                     break;
                 }
                 *steps += 1;
-                let Some(el) = tree.get(id) else { break };
+                let Some(el) = tree.get_live(id) else { break };
                 if !(el.is_element() && el.display_mode == crate::node::DisplayMode::Inline) {
                     break;
                 }
@@ -924,7 +926,7 @@ fn measure_span_fragments(
                 {
                     let parent_size = el
                         .parent
-                        .and_then(|p| tree.get(p))
+                        .and_then(|p| tree.get_live(p))
                         .map_or(el.computed_style.font_size, |p| p.computed_style.font_size);
                     shift = RinchDocument::vertical_align_shift_px(&el.computed_style, parent_size);
                     if shift != 0.0 {
@@ -1096,7 +1098,7 @@ pub(crate) fn bake_at_style_site(
     node_id: RawNodeId,
     taffy_style: &mut taffy::Style,
 ) {
-    let Some(node) = tree.nodes.get(node_id) else {
+    let Some(node) = tree.nodes.get_live(node_id) else {
         return;
     };
     let mut ancestor = false;
@@ -1137,7 +1139,7 @@ pub(crate) fn rebake_after_inset_write(
     node_id: RawNodeId,
     taffy_style: &mut taffy::Style,
 ) {
-    let Some(node) = tree.nodes.get(node_id) else {
+    let Some(node) = tree.nodes.get_live(node_id) else {
         return;
     };
     let kind = match out_of_flow_kind(tree, node_id) {
@@ -1430,7 +1432,7 @@ fn takes_room(v: LengthPercentageAutoValue) -> bool {
 fn layout_parent_box(tree: &NodeTree, node: &Node) -> Option<RawNodeId> {
     let mut current = node.parent;
     while let Some(id) = current {
-        let ancestor = tree.get(id)?;
+        let ancestor = tree.get_live(id)?;
         if generates_layout_box(ancestor) {
             return Some(id);
         }
@@ -1522,7 +1524,7 @@ fn fit_in_layout_parent(tree: &NodeTree, node: &Node, taffy_style: &mut taffy::S
 /// the lines: shrunk to fit from its static position, or in a grid container
 /// with an inset or margin that takes room. Any other box costs a few reads.
 pub(crate) fn fits_in_layout_parent_later(tree: &NodeTree, node_id: RawNodeId) -> bool {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return false;
     };
     let cs = &node.computed_style;
@@ -1720,7 +1722,7 @@ fn chain_to_containing_block(
             }
             break;
         };
-        let node = tree.get(id)?;
+        let node = tree.get_live(id)?;
         // Mirrors `paint`'s origin step: an atomic inline's `layout` is
         // relative to its IFC root's content box.
         let (dx, dy) = crate::paint::ifc_content_box_offset(tree, node);
@@ -1775,7 +1777,7 @@ pub(crate) fn place_absolute(
     // flag).
     let ((ox, oy), (sx, sy)) = chain_to_containing_block(tree, node_id, end, mark)?;
     let cb = ContainingBox::of(tree, kind)?;
-    let style = &tree.get(node_id)?.computed_style;
+    let style = &tree.get_live(node_id)?.computed_style;
     // Percentage margins resolve against the containing block's *width* on
     // both axes, per CSS.
     let x = axis_start(
@@ -1836,9 +1838,9 @@ pub(crate) fn is_laid_out(tree: &NodeTree, node_id: RawNodeId, size: (f32, f32))
     if size.0 > 0.0 || size.1 > 0.0 {
         return true;
     }
-    let mut current = tree.get(node_id).and_then(|n| n.parent);
+    let mut current = tree.get_live(node_id).and_then(|n| n.parent);
     while let Some(id) = current {
-        let Some(node) = tree.get(id) else {
+        let Some(node) = tree.get_live(id) else {
             return false;
         };
         if node.computed_style.display == DisplayValue::None {
@@ -1869,7 +1871,7 @@ pub(crate) fn static_axes(style: &ComputedStyle) -> (bool, bool) {
 pub(crate) fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
     let mut current = RinchDocument::box_tree_parent(&tree.nodes, node_id)?;
     loop {
-        let node = tree.get(current)?;
+        let node = tree.get_live(current)?;
         if node.computed_style.display != DisplayValue::Contents {
             return Some(current);
         }
@@ -1893,7 +1895,7 @@ pub(crate) fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNo
 /// left.) The lines' host is the box's layout parent — the block container
 /// an out-of-flow box among inline content is laid out in ([`inline_host`]).
 fn inline_static_position(tree: &NodeTree, node_id: RawNodeId) -> Option<(f32, f32)> {
-    let node = tree.get(node_id)?;
+    let node = tree.get_live(node_id)?;
     let (root_id, index) = node.static_ifc_root?;
     let inline = tree.get(root_id)?.text_layout.as_ref()?;
     // By index, not by search: a paragraph of N such boxes is looked at N
@@ -1928,7 +1930,7 @@ pub(crate) fn static_location(
 ) -> (f32, f32) {
     if tree
         .nodes
-        .get(node_id)
+        .get_live(node_id)
         .is_none_or(|n| n.static_ifc_root.is_none())
     {
         return taffy_location;
@@ -1978,7 +1980,7 @@ fn unscrolled_parent_origin(tree: &mut NodeTree, node_id: RawNodeId) -> (f32, f3
     let (mut x, mut y) = (0.0_f32, 0.0_f32);
     let mut current = RinchDocument::box_tree_parent(&tree.nodes, node_id);
     while let Some(id) = current {
-        let Some(node) = tree.get(id) else { break };
+        let Some(node) = tree.get_live(id) else { break };
         let (dx, dy) = crate::paint::ifc_content_box_offset(tree, node);
         x += node.layout.x + dx;
         y += node.layout.y + dy;
@@ -2015,7 +2017,7 @@ pub(crate) fn place_fixed_static(
     node_id: RawNodeId,
     taffy_location: (f32, f32),
 ) -> (Option<f32>, Option<f32>) {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return (None, None);
     };
     let (horizontal, vertical) = static_axes(&node.computed_style);
@@ -2035,7 +2037,7 @@ pub(crate) fn place_fixed_static(
 /// — an absolute box whose layout parent is its containing block, Taffy's
 /// own answer — is in no list, and is written here.
 pub(crate) fn place_static_after_lines(tree: &mut NodeTree, node_id: RawNodeId) {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return;
     };
     let (horizontal, vertical) = static_axes(&node.computed_style);
@@ -2074,7 +2076,7 @@ pub(crate) fn place_static_after_lines(tree: &mut NodeTree, node_id: RawNodeId) 
 /// already been read back, from Taffy's last answer, the lines and the chain
 /// as they stand. Returns whether it moved.
 fn replace(tree: &mut NodeTree, node_id: RawNodeId, kind: OutOfFlowKind) -> bool {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return false;
     };
     let size = (node.layout.width, node.layout.height);
@@ -2223,14 +2225,14 @@ fn static_anchor(
     };
     // The parent's border-box start, in the containing block's padding box.
     let origin = ox - cb.border_left;
-    let parent = tree.get(parent_id)?;
+    let parent = tree.get_live(parent_id)?;
     let parent_layout = *tree.taffy.layout(parent.taffy_id?).ok()?;
     let anchor = match parent.computed_style.display {
         DisplayValue::Flex | DisplayValue::InlineFlex => {
             let l = &parent_layout;
             let start = origin + l.border.left + l.padding.left;
             let end = origin + l.size.width - l.border.right - l.padding.right;
-            let node = tree.get(node_id)?;
+            let node = tree.get_live(node_id)?;
             match flex_inline_alignment(tree, parent, node) {
                 Align::Start => StaticAnchor::Start(start),
                 Align::End => StaticAnchor::End(end),
@@ -2241,7 +2243,7 @@ fn static_anchor(
             StaticAnchor::Start(origin + parent_layout.border.left)
         }
         _ => {
-            let node = tree.get(node_id)?;
+            let node = tree.get_live(node_id)?;
             let x = match inline_static_position(tree, node_id) {
                 Some((x, _)) => x,
                 None => {
@@ -2400,7 +2402,7 @@ impl RinchDocument {
         let mut wanted: Vec<(RawNodeId, RawNodeId)> = Vec::new();
         let mut want = |kind: Option<OutOfFlowKind>| {
             if let Some(OutOfFlowKind::AncestorAbsolute(cb)) = kind
-                && let Some(span) = tree.get(cb)
+                && let Some(span) = tree.get_live(cb)
                 && !generates_layout_box(span)
                 && let Some(root) = span.ifc_root
             {

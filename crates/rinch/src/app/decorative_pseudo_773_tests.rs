@@ -54,10 +54,10 @@ fn mount(build: impl Fn(&mut RenderScope) -> NodeHandle + 'static) -> RinchApp {
     app
 }
 
-fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
+fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<u64> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let mut found: Vec<usize> = d
+    let mut found: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -72,17 +72,17 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
     found
 }
 
-fn node_with_class(app: &RinchApp, class: &str) -> usize {
+fn node_with_class(app: &RinchApp, class: &str) -> u64 {
     let found = nodes_with_class(app, class);
     assert_eq!(found.len(), 1, "expected one `{class}`, found {found:?}");
     found[0]
 }
 
 /// The one pseudo-element child of `owner`.
-fn pseudo_child(app: &RinchApp, owner: usize) -> usize {
+fn pseudo_child(app: &RinchApp, owner: u64) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let found: Vec<usize> = d
+    let found: Vec<u64> = d
         .tree
         .get(owner)
         .unwrap()
@@ -99,26 +99,26 @@ fn pseudo_child(app: &RinchApp, owner: usize) -> usize {
     found[0]
 }
 
-fn layout_of(app: &RinchApp, node: usize) -> (f32, f32) {
+fn layout_of(app: &RinchApp, node: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let l = d.tree.get(node).unwrap().layout;
     (l.width, l.height)
 }
 
-fn display_of(app: &RinchApp, node: usize) -> DisplayValue {
+fn display_of(app: &RinchApp, node: u64) -> DisplayValue {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.display
 }
 
-fn background_of(app: &RinchApp, node: usize) -> Option<peniko::Color> {
+fn background_of(app: &RinchApp, node: u64) -> Option<peniko::Color> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.background_color()
 }
 
-fn border_widths(app: &RinchApp, node: usize) -> (f32, f32, f32, f32) {
+fn border_widths(app: &RinchApp, node: u64) -> (f32, f32, f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let s = &d.tree.get(node).unwrap().computed_style;
@@ -130,7 +130,7 @@ fn border_widths(app: &RinchApp, node: usize) -> (f32, f32, f32, f32) {
     )
 }
 
-fn border_top_color(app: &RinchApp, node: usize) -> Option<peniko::Color> {
+fn border_top_color(app: &RinchApp, node: u64) -> Option<peniko::Color> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.border_top_color
@@ -239,7 +239,7 @@ fn a_divider_with_a_label_gets_two_flex_strokes() {
     });
     let root = node_with_class(&app, "rinch-divider");
     let doc = app.doc.as_ref().unwrap();
-    let pseudo_children: Vec<usize> = {
+    let pseudo_children: Vec<u64> = {
         let d = doc.borrow();
         d.tree
             .get(root)

@@ -477,6 +477,16 @@ Measured on the desktop engine:
 Reach for a class where the table says a selector does not match — that is the
 one spelling with no gap on either backend.
 
+### Stylesheets added after the first frame (desktop)
+
+CSS loaded with `load_css`, a theme replaced with `set_theme_css`, or a
+`<style>` element inserted, removed or edited after the document is on screen
+restyles the elements its rules reach, as in a browser (#884). A `<style>`
+applies only while it is in the document. Because those elements keep their
+previous style, **a late sheet starts CSS transitions** on what it changes,
+also as in a browser: a late `.leaf { width: 300px }` animates a `.leaf` that
+has `transition: width 10s`.
+
 ## Text decoration (desktop)
 
 `text-decoration-line`, `-color` and `-style` all reach the desktop painter.

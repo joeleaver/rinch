@@ -35,7 +35,7 @@
 
 use crate::NodeTree;
 use crate::computed_style::{PositionValue, ScrollbarWidthValue};
-use crate::node::DisplayMode;
+use crate::node::{DisplayMode, RawNodeId};
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo;
 
@@ -295,7 +295,7 @@ impl Scrollbars {
 /// this one measures a scroll container's own scrollable overflow, and a
 /// scroll container is never an anonymous box (an anonymous box's style
 /// carries no `overflow`).
-pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
+pub fn content_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
     content_extents_with(tree, node_id, true)
 }
 
@@ -304,11 +304,11 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
 /// to it, so a scroll offset inside this range is inside that one: the
 /// layout's clamp asks this first, and measures them only for an offset past
 /// it.
-pub(crate) fn content_extents_in_flow(tree: &NodeTree, node_id: usize) -> (f64, f64) {
+pub(crate) fn content_extents_in_flow(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
     content_extents_with(tree, node_id, false)
 }
 
-fn content_extents_with(tree: &NodeTree, node_id: usize, listed: bool) -> (f64, f64) {
+fn content_extents_with(tree: &NodeTree, node_id: RawNodeId, listed: bool) -> (f64, f64) {
     let Some(node) = tree.get(node_id) else {
         return (0.0, 0.0);
     };
@@ -399,13 +399,13 @@ fn content_extents_with(tree: &NodeTree, node_id: usize, listed: bool) -> (f64, 
 /// the proxy box `write_inline_positions` gives a direct one.
 fn extend_with_children(
     tree: &NodeTree,
-    container_id: usize,
-    parent_id: usize,
+    container_id: RawNodeId,
+    parent_id: RawNodeId,
     frame: &ContainerFrame,
     right: &mut f64,
     bottom: &mut f64,
 ) {
-    let Some(parent) = tree.get(parent_id) else {
+    let Some(parent) = tree.get_live(parent_id) else {
         return;
     };
     // **The common case walks `children` once.** Where `parent` holds no
@@ -422,7 +422,7 @@ fn extend_with_children(
         && !parent.is_anonymous_block_box
     {
         for &child_id in &parent.children {
-            let Some(child) = tree.get(child_id) else {
+            let Some(child) = tree.get_live(child_id) else {
                 continue;
             };
             if child.is_split_inline()
@@ -442,14 +442,14 @@ fn extend_with_children(
 /// [`extend_with_children`] over `parent_id`'s box-tree children.
 fn extend_with_box_tree_children(
     tree: &NodeTree,
-    container_id: usize,
-    parent_id: usize,
+    container_id: RawNodeId,
+    parent_id: RawNodeId,
     frame: &ContainerFrame,
     right: &mut f64,
     bottom: &mut f64,
 ) {
     for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, parent_id).iter() {
-        let Some(child) = tree.get(child_id) else {
+        let Some(child) = tree.get_live(child_id) else {
             continue;
         };
         extend_with_child(tree, container_id, child_id, child, frame, right, bottom);
@@ -472,7 +472,7 @@ fn extend_with_box_tree_children(
 /// with a transform on its way, and a document with none pays an `is_empty`.
 fn extend_with_overflow_absolutes(
     tree: &NodeTree,
-    container_id: usize,
+    container_id: RawNodeId,
     frame: &ContainerFrame,
     right: &mut f64,
     bottom: &mut f64,
@@ -539,7 +539,7 @@ fn extend_with_overflow_absolutes(
 pub(crate) struct OverflowAbsolutes {
     /// `(absolute box, its out_of_flow_kind)`, in read order. Cleared by
     /// `out_of_flow::begin_read`.
-    pub(crate) listed: Vec<(usize, Option<crate::out_of_flow::OutOfFlowKind>)>,
+    pub(crate) listed: Vec<(RawNodeId, Option<crate::out_of_flow::OutOfFlowKind>)>,
     state: std::cell::RefCell<OverflowAbsState>,
 }
 
@@ -550,10 +550,10 @@ pub(crate) struct OverflowAbsState {
     /// `(scroll container, right, bottom)`: the furthest border-box edges of
     /// its listed boxes with nothing transformed on their way, in its
     /// border-box frame. One per container, sorted by container.
-    measured: Vec<(usize, f64, f64)>,
+    measured: Vec<(RawNodeId, f64, f64)>,
     /// `(scroll container, absolute box)` for the boxes measured per call,
     /// sorted by container.
-    live: Vec<(usize, usize)>,
+    live: Vec<(RawNodeId, RawNodeId)>,
 }
 
 impl OverflowAbsolutes {
@@ -577,9 +577,9 @@ enum Placed {
     Nowhere,
     /// Its container, and its border box's far edges there, with nothing
     /// transformed on the way.
-    Measured(usize, f64, f64),
+    Measured(RawNodeId, f64, f64),
     /// Measured per call, in this container.
-    Live(usize),
+    Live(RawNodeId),
 }
 
 impl OverflowAbsState {
@@ -638,7 +638,7 @@ impl OverflowAbsState {
 /// call ([`Placed::Live`]).
 fn place_listed(
     tree: &NodeTree,
-    abs_id: usize,
+    abs_id: RawNodeId,
     kind: Option<crate::out_of_flow::OutOfFlowKind>,
     body_scrolls: bool,
 ) -> Placed {
@@ -654,7 +654,7 @@ fn place_listed(
     // parent is its containing block, so it climbs from the first box).
     enum Seek {
         Climb,
-        Block(usize),
+        Block(RawNodeId),
         Page,
     }
     let mut seek = match kind {
@@ -689,7 +689,7 @@ fn place_listed(
         if id == tree.root_id {
             return general(tree, abs_id, kind);
         }
-        let Some(n) = tree.get(id) else {
+        let Some(n) = tree.get_live(id) else {
             return Placed::Nowhere;
         };
         let climbing = match seek {
@@ -752,7 +752,7 @@ fn place_listed(
 /// `out_of_flow::overflow_scroller`'s container, measured per call.
 fn general(
     tree: &NodeTree,
-    abs_id: usize,
+    abs_id: RawNodeId,
     kind: Option<crate::out_of_flow::OutOfFlowKind>,
 ) -> Placed {
     let Some(scroller) = crate::out_of_flow::overflow_scroller(tree, abs_id, kind) else {
@@ -787,7 +787,11 @@ fn is_empty_box(node: &crate::node::Node) -> bool {
 /// scroller does not move with it: `out_of_flow::replace_after_scroll` writes
 /// that scroll into the box's `layout`, so the sum less the scrolls is where
 /// it is drawn, whatever any scroller between them is scrolled to.
-fn border_box_in(tree: &NodeTree, node_id: usize, ancestor_id: usize) -> Option<kurbo::Rect> {
+fn border_box_in(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    ancestor_id: RawNodeId,
+) -> Option<kurbo::Rect> {
     let node = tree.get(node_id)?;
     // The common case: nothing on the way is transformed, so the offsets add.
     let (mut x, mut y) = (0.0_f64, 0.0_f64);
@@ -798,7 +802,7 @@ fn border_box_in(tree: &NodeTree, node_id: usize, ancestor_id: usize) -> Option<
         if id == ancestor_id {
             break;
         }
-        let n = tree.get(id)?;
+        let n = tree.get_live(id)?;
         transformed |= n.has_applied_transform();
         let (dx, dy) = super::ifc_content_box_offset(tree, n);
         x += (n.layout.x + dx) as f64;
@@ -827,7 +831,7 @@ fn border_box_in(tree: &NodeTree, node_id: usize, ancestor_id: usize) -> Option<
     let (mut x, mut y) = (0.0_f64, 0.0_f64);
     let mut transform = kurbo::Affine::IDENTITY;
     for &id in chain.iter().rev() {
-        let n = tree.get(id)?;
+        let n = tree.get_live(id)?;
         let (dx, dy) = super::ifc_content_box_offset(tree, n);
         x = off_x + (n.layout.x + dx) as f64;
         y = off_y + (n.layout.y + dy) as f64;
@@ -860,8 +864,8 @@ struct ContainerFrame {
 /// contributes, which [`content_extents`] spells out.
 fn extend_with_child(
     tree: &NodeTree,
-    container_id: usize,
-    child_id: usize,
+    container_id: RawNodeId,
+    child_id: RawNodeId,
     child: &crate::node::Node,
     frame: &ContainerFrame,
     right: &mut f64,
@@ -1024,7 +1028,7 @@ fn auto_thumb_color(color: Option<peniko::Color>) -> AlphaColor<Srgb> {
 /// bordered scroll regions. `DomDocument::client_height`/`client_width` and
 /// layout's `clamp_scroll_offsets` read it too. Prefer [`overflows`] when
 /// only the yes/no answer is wanted.
-pub fn visible_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
+pub fn visible_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
     let Some(node) = tree.get(node_id) else {
         return (0.0, 0.0);
     };
@@ -1054,7 +1058,7 @@ pub fn visible_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
 /// scrolling — a browser's `scrollbar-width: none` box still takes the wheel
 /// (measured in Chrome 153). Pinned by
 /// `a_barless_padded_container_still_takes_the_wheel`.
-pub fn overflows(tree: &NodeTree, node_id: usize, axis: ScrollbarAxis) -> bool {
+pub fn overflows(tree: &NodeTree, node_id: RawNodeId, axis: ScrollbarAxis) -> bool {
     let Some(node) = tree.get(node_id) else {
         return false;
     };
@@ -1085,7 +1089,7 @@ pub fn overflows(tree: &NodeTree, node_id: usize, axis: ScrollbarAxis) -> bool {
 ///
 /// Cheap for the overwhelming majority of nodes: a node scrollable on neither
 /// axis pays two enum checks and returns without walking its children.
-pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
+pub fn scrollbars(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Scrollbars {
     let Some(node) = tree.get(node_id) else {
         return Scrollbars {
             vertical: None,

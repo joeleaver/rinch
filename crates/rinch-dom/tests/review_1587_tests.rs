@@ -28,7 +28,7 @@ fn doc() -> RinchDocument {
     d
 }
 
-fn text_nodes(d: &RinchDocument, id: usize, out: &mut Vec<usize>) {
+fn text_nodes(d: &RinchDocument, id: u64, out: &mut Vec<u64>) {
     let n = d.tree.get(id).unwrap();
     if matches!(n.kind, rinch_dom::node::NodeKind::Text(_)) {
         out.push(id);
@@ -79,7 +79,7 @@ fn carets_of(d: &RinchDocument, c: NodeId) -> Vec<(f32, f32)> {
             let Some(flat) = dom_cursor_to_ifc_offset(&il.text_ranges, t, b) else {
                 continue;
             };
-            out.push(d.query_caret_position(c.0 as u64, flat).unwrap());
+            out.push(d.query_caret_position(c.0, flat).unwrap());
             o += 1;
         }
         let _ = o;
@@ -88,7 +88,7 @@ fn carets_of(d: &RinchDocument, c: NodeId) -> Vec<(f32, f32)> {
 }
 
 /// `yyy\tzz` pairs separated by spaces, word lengths from a fixed LCG.
-fn pairs(n: usize, seed: u64) -> String {
+fn pairs(n: u64, seed: u64) -> String {
     let mut s = seed;
     let mut next = |k: u64| {
         s = s
@@ -119,7 +119,7 @@ fn off_stop_tabs(text: &str, style: &str) -> (usize, usize, u64) {
         }
         tabs += 1;
         let flat = dom_cursor_to_ifc_offset(&il.text_ranges, t, i + 1).unwrap();
-        let (x, _) = d.query_caret_position(c.0 as u64, flat).unwrap();
+        let (x, _) = d.query_caret_position(c.0, flat).unwrap();
         let r = x.rem_euclid(36.0);
         // A tab whose end is the start of the next line (hung) reads 0.
         if r > 0.05 && 36.0 - r > 0.05 {

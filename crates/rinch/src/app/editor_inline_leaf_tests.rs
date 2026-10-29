@@ -72,7 +72,7 @@ fn page(html: &str) -> Page {
 }
 
 impl Page {
-    fn block(&self) -> usize {
+    fn block(&self) -> u64 {
         self.handle.caret_address(Pos(1)).unwrap().0
     }
     fn block_box(&self) -> (f32, f32, f32, f32) {
@@ -96,8 +96,7 @@ impl Page {
     fn local(&self, i: usize) -> (f32, f32) {
         let (block, byte) = self.handle.caret_address(Pos(i + 1)).unwrap();
         let doc = self.app.doc.as_ref().unwrap().borrow();
-        doc.query_caret_position(block as u64, byte)
-            .expect("laid out")
+        doc.query_caret_position(block, byte).expect("laid out")
     }
 
     /// [`Self::local`] from the block's content box, not its border box
@@ -106,7 +105,7 @@ impl Page {
         let (block, _) = self.handle.caret_address(Pos(i + 1)).unwrap();
         let (l, t, _, _) = {
             let doc = self.app.doc.as_ref().unwrap().borrow();
-            doc.content_box_inset(block as u64)
+            doc.content_box_inset(block)
         };
         let (x, y) = self.local(i);
         (x - l, y - t)

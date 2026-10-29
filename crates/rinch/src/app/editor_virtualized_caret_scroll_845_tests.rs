@@ -37,7 +37,7 @@ const SETTLE_FRAMES: usize = 6;
 struct Rig {
     app: RinchApp,
     handle: crate::editor::EditorHandle,
-    editor: usize,
+    editor: u64,
 }
 
 /// `BLOCKS` paragraphs; the editor is the 400x300 scroller, focused, caret at
@@ -158,7 +158,7 @@ fn ctrl() -> Modifiers {
 }
 
 /// The editor's direct child holding `pos`.
-fn block_of(r: &Rig, pos: Pos) -> usize {
+fn block_of(r: &Rig, pos: Pos) -> u64 {
     let (mut id, _) = r.handle.caret_address(pos).expect("a caret address");
     let doc = r.app.doc.as_ref().unwrap();
     let d = doc.borrow();
@@ -171,7 +171,7 @@ fn block_of(r: &Rig, pos: Pos) -> usize {
     panic!("{pos:?} is not in the editor");
 }
 
-fn is_laid_out(r: &Rig, block: usize) -> bool {
+fn is_laid_out(r: &Rig, block: u64) -> bool {
     r.app.doc.as_ref().unwrap().borrow().tree.nodes[block]
         .estimated_height
         .is_none()

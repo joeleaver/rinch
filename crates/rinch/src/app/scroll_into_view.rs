@@ -42,12 +42,12 @@ const EDGE_SLOP: f64 = 1e-3;
 /// Bring `target` into view of every scroller it is in. `placement` is
 /// `Some((fraction, margin))` for a placed request. Returns whether any
 /// scroller moved.
-pub(super) fn reveal(d: &mut RinchDocument, target: usize, placement: Option<(f32, f32)>) -> bool {
+pub(super) fn reveal(d: &mut RinchDocument, target: u64, placement: Option<(f32, f32)>) -> bool {
     let mut moved = false;
     let mut placement = placement;
     // The scrollers already adjusted: their scrollports clip what the next one
     // out brings into view.
-    let mut passed: Vec<usize> = Vec::new();
+    let mut passed: Vec<u64> = Vec::new();
     let mut below = target;
     while let Some(node) = d.tree.nodes.get(below) {
         // Nothing outside a fixed box can move it.
@@ -83,7 +83,7 @@ pub(super) fn reveal(d: &mut RinchDocument, target: usize, placement: Option<(f3
 
 /// `scroller`'s scrollport — its padding box — where it is painted, in window
 /// space.
-fn scrollport_in_window(d: &RinchDocument, scroller: usize) -> Rect {
+fn scrollport_in_window(d: &RinchDocument, scroller: u64) -> Rect {
     let (left, top, width, height) = scrollport(d, scroller);
     let (x, y, w, h) =
         rinch_dom::paint::rect_from_painted_box(&d.tree, scroller, 1.0, (left, top, width, height));
@@ -92,7 +92,7 @@ fn scrollport_in_window(d: &RinchDocument, scroller: usize) -> Rect {
 
 /// `scroller`'s padding box in its own border-box space: `(left, top, width,
 /// height)`.
-fn scrollport(d: &RinchDocument, scroller: usize) -> (f64, f64, f64, f64) {
+fn scrollport(d: &RinchDocument, scroller: u64) -> (f64, f64, f64, f64) {
     let cs = &d.tree.nodes[scroller].computed_style;
     let id = NodeId(scroller);
     (
@@ -112,7 +112,7 @@ fn scrollport(d: &RinchDocument, scroller: usize) -> (f64, f64, f64, f64) {
 /// its offset changed.
 fn scroll_one(
     d: &mut RinchDocument,
-    scroller: usize,
+    scroller: u64,
     rect: Rect,
     (on_x, on_y): (bool, bool),
     placement: Option<(f32, f32)>,

@@ -981,8 +981,11 @@ pub fn setup_text_shadow_paint_cold() -> PaintFixture {
     let mut f = text_shadow_page("4");
     f.doc
         .load_css("p { text-shadow: 0 1px 4.01px rgba(0, 0, 0, 0.4); }");
-    // `load_css` queues no restyle: without this the paragraphs keep their
-    // 4px blur and every mask is a cache hit (review of #1020, round 3, F1).
+    // The restyle is forced here so the setup, not the measured paint, pays
+    // it. Before #884 `load_css` queued no restyle at all, and without this
+    // the paragraphs kept their 4px blur and every mask was a cache hit
+    // (review of #1020, round 3, F1); a Perf base older than #884 still
+    // needs it.
     f.doc.recompute_all_styles_full();
     f.doc.resolve_layout(VP.0, VP.1);
     f
