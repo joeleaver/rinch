@@ -550,3 +550,402 @@ fn the_control_is_resolved_after_the_labels_own_click() {
     );
     assert_eq!(focused(&app), None, "nor focused");
 }
+
+// ── review-2036 probes ──────────────────────────────────────────────────────
+
+fn down(app: &mut RinchApp, (x, y): (f32, f32)) {
+    app.handle_event(
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+        VP,
+        1.0,
+    );
+}
+fn up(app: &mut RinchApp, (x, y): (f32, f32)) {
+    app.handle_event(
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+        VP,
+        1.0,
+    );
+}
+fn mv(app: &mut RinchApp, (x, y): (f32, f32)) {
+    app.handle_event(PlatformEvent::MouseMove { x, y }, VP, 1.0);
+}
+
+#[test]
+fn review_probe_press_only() {
+    let mut f = mount();
+    let p = point_in(&f.app, "l1");
+    down(&mut f.app, p);
+    eprintln!(
+        "PROBE press-only: log={:?} focus={:?}",
+        f.take(),
+        focused(&f.app)
+    );
+    let far = point_in(&f.app, "l12");
+    mv(&mut f.app, (far.0 + 300.0, far.1 + 200.0));
+    up(&mut f.app, (far.0 + 300.0, far.1 + 200.0));
+    eprintln!("PROBE drag-off release: log={:?}", f.take());
+}
+
+#[test]
+fn review_probe_drag_select_in_label() {
+    let mut f = mount();
+    let (x, y) = point_in(&f.app, "l1");
+    down(&mut f.app, (x - 2.0, y));
+    eprintln!(
+        "PROBE after down: log={:?} focus={:?} sel={:?} selecting={}",
+        f.take(),
+        focused(&f.app),
+        f.app
+            .text_selection
+            .as_ref()
+            .map(|s| (s.ifc_node_id, s.anchor_offset, s.focus_offset)),
+        f.app.text_selecting
+    );
+    for dx in [10.0, 20.0, 30.0] {
+        mv(&mut f.app, (x + dx, y));
+    }
+    up(&mut f.app, (x + 30.0, y));
+    eprintln!(
+        "PROBE drag-select l1: log={:?} focus={:?} sel={:?}",
+        f.take(),
+        focused(&f.app),
+        f.app
+            .text_selection
+            .as_ref()
+            .map(|s| (s.ifc_node_id, s.anchor_offset, s.focus_offset))
+    );
+
+    // A wrapping label around a text field: drag across "Two".
+    let (x, y) = point_in(&f.app, "l2");
+    down(&mut f.app, (x - 2.0, y));
+    eprintln!(
+        "PROBE l2 after down: focus_target={:?} sel={:?} selecting={}",
+        f.app.focus_target,
+        f.app
+            .text_selection
+            .as_ref()
+            .map(|s| (s.ifc_node_id, s.anchor_offset, s.focus_offset)),
+        f.app.text_selecting
+    );
+    for dx in [10.0, 20.0, 28.0] {
+        mv(&mut f.app, (x + dx, y));
+    }
+    up(&mut f.app, (x + 28.0, y));
+    eprintln!(
+        "PROBE drag-select l2: focus_target={:?} sel={:?} input_sel={:?}",
+        f.app.focus_target,
+        f.app
+            .text_selection
+            .as_ref()
+            .map(|s| (s.ifc_node_id, s.anchor_offset, s.focus_offset)),
+        f.app
+            .focused_input_state
+            .as_ref()
+            .map(|s| s.selection.clone())
+    );
+}
+
+#[test]
+fn review_probe_double_click() {
+    let mut f = mount();
+    let p = point_in(&f.app, "l1");
+    press(&mut f.app, p, MouseButton::Left);
+    press(&mut f.app, p, MouseButton::Left);
+    eprintln!("PROBE dblclick l1: log={:?}", f.take());
+    let (mut app, count) = mount_component(|s, cb| {
+        Checkbox {
+            label: "Accept".into(),
+            onchange: Some(cb),
+            ..Default::default()
+        }
+        .render(s, &[])
+    });
+    let [on_text, _] = component_points(&app, "rinch-checkbox__label", "rinch-checkbox__box");
+    press(&mut app, on_text, MouseButton::Left);
+    press(&mut app, on_text, MouseButton::Left);
+    eprintln!(
+        "PROBE dblclick Checkbox: count={} focus={:?}",
+        count.get(),
+        app.focus_target
+    );
+}
+
+#[test]
+fn review_probe_keyboard_on_focused_label() {
+    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let l = log.clone();
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                style: "font-size: 16px; line-height: 20px",
+                label { id: "kl", tabindex: "0", "for": "kb", style: "display: inline-block; width: 120px; height: 24px", "K" }
+                button { id: "kb", onclick: logger(&l, "kb"), "B" }
+            }
+        }
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let kl = node_by_id(&app, "kl");
+    app.try_focus_input(kl);
+    eprintln!("PROBE focus kl: {:?} (kl={kl})", app.focus_target);
+    for k in [KeyCode::Enter, KeyCode::Space] {
+        app.handle_event(
+            PlatformEvent::KeyDown {
+                key: k,
+                logical_key: None,
+                text: None,
+                modifiers: Modifiers::default(),
+                repeat: KeyRepeat::Unknown,
+            },
+            VP,
+            1.0,
+        );
+        app.handle_event(
+            PlatformEvent::KeyUp {
+                key: k,
+                logical_key: None,
+                modifiers: Modifiers::default(),
+            },
+            VP,
+            1.0,
+        );
+    }
+    eprintln!("PROBE keyboard on focused label: log={:?}", log.borrow());
+}
+
+#[test]
+fn review_probe_drag_select_user_select_text() {
+    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let l = log.clone();
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                style: "font-size: 16px; line-height: 20px; font-family: sans-serif; user-select: text",
+                div { style: "height: 30px",
+                    label { id: "sa", "for": "sc", style: "display: inline-block; width: 300px; height: 24px; user-select: text", "Selectable label text here" }
+                    div { style: "display: inline-block", onclick: logger(&l, "sw"), input { r#type: "checkbox", id: "sc" } }
+                }
+                div { style: "height: 30px",
+                    label { id: "sb", style: "display: inline-block; width: 300px; height: 24px; user-select: text", "Plain label text here" }
+                }
+                div { style: "height: 30px",
+                    label { id: "st", style: "display: inline-block; width: 500px; height: 24px; user-select: text", "Wrapping label text ", input { id: "sti", value: "hello", oninput: |_v: String| {} } }
+                }
+            }
+        }
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let sel = |app: &RinchApp| {
+        app.text_selection
+            .as_ref()
+            .map(|s| (s.ifc_node_id, s.anchor_offset, s.focus_offset))
+    };
+    for id in ["sb", "sa", "st"] {
+        let (x, y) = point_in(&app, id);
+        down(&mut app, (x - 2.0, y));
+        let after_down = (sel(&app), app.text_selecting, app.focus_target);
+        for dx in [20.0, 40.0, 70.0] {
+            mv(&mut app, (x + dx, y));
+        }
+        up(&mut app, (x + 70.0, y));
+        eprintln!(
+            "PROBE sel-drag #{id}: after_down={after_down:?} final sel={:?} focus={:?} log={:?}",
+            sel(&app),
+            app.focus_target,
+            std::mem::take(&mut *log.borrow_mut())
+        );
+    }
+}
+
+#[test]
+fn review_probe_refocus_keeps_selection() {
+    let mut f = mount();
+    let t2 = node_by_id(&f.app, "t2");
+    f.app.try_focus_input(t2);
+    // select "ell" by keys: Home, Right, Shift+Right x3
+    let key = |app: &mut RinchApp, k: KeyCode, shift: bool| {
+        let modifiers = Modifiers {
+            shift,
+            ..Modifiers::default()
+        };
+        app.handle_event(
+            PlatformEvent::KeyDown {
+                key: k,
+                logical_key: None,
+                text: None,
+                modifiers,
+                repeat: KeyRepeat::Unknown,
+            },
+            VP,
+            1.0,
+        );
+    };
+    key(&mut f.app, KeyCode::Home, false);
+    key(&mut f.app, KeyCode::ArrowRight, false);
+    for _ in 0..3 {
+        key(&mut f.app, KeyCode::ArrowRight, true);
+    }
+    eprintln!(
+        "PROBE before label press: {:?} sel={:?}",
+        f.app.focus_target,
+        f.app
+            .focused_input_state
+            .as_ref()
+            .map(|s| s.selection.clone())
+    );
+    click(&mut f.app, "l2");
+    eprintln!(
+        "PROBE after label press: {:?} sel={:?}",
+        f.app.focus_target,
+        f.app
+            .focused_input_state
+            .as_ref()
+            .map(|s| s.selection.clone())
+    );
+}
+
+// ── review-2036: fixtures for the HTML rules no test above pins ─────────────
+
+fn mount_rules() -> Fixture {
+    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let l = log.clone();
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                style: "font-size: 16px; line-height: 20px; font-family: sans-serif",
+                // R1. `for` across branches (a form laid out in two columns):
+                //     the label and its control share no parent.
+                div {
+                    style: "height: 30px; display: flex",
+                    div { label { id: "r1", "for": "rc1", style: "display: inline-block; width: 120px; height: 24px", "Col label" } }
+                    div { span { onclick: logger(&l, "rw1"), input { r#type: "checkbox", id: "rc1" } } }
+                }
+                // R2. A link inside a label is interactive content.
+                div {
+                    style: "height: 30px",
+                    label {
+                        id: "r2",
+                        "for": "rc2",
+                        style: "display: inline-block; width: 300px; height: 24px",
+                        a { id: "ra2", href: "#", style: "display: inline-block; width: 60px; height: 20px", onclick: logger(&l, "link2"), "terms" }
+                        " Agree"
+                    }
+                    span { onclick: logger(&l, "rw2"), input { r#type: "checkbox", id: "rc2" } }
+                }
+                // R3. A hidden input is not labelable: the checkbox after it is.
+                div {
+                    style: "height: 30px",
+                    label {
+                        id: "r3",
+                        style: "display: inline-block; width: 300px; height: 24px",
+                        "Three "
+                        input { r#type: "hidden", id: "rh3" }
+                        span { onclick: logger(&l, "rw3"), input { r#type: "checkbox", id: "rc3" } }
+                    }
+                }
+                // R4. Tree order is depth-first: the checkbox nested in the
+                //     first child comes before the button after it.
+                div {
+                    style: "height: 30px",
+                    label {
+                        id: "r4",
+                        style: "display: inline-block; width: 300px; height: 24px",
+                        "Four "
+                        span {
+                            span { onclick: logger(&l, "rw4"), input { r#type: "checkbox", id: "rc4" } }
+                            button { id: "rb4", onclick: logger(&l, "rb4"), "b" }
+                        }
+                    }
+                }
+                // R5. A label whose text sits in an anonymous block box (#566).
+                div {
+                    style: "height: 60px",
+                    label {
+                        id: "r5",
+                        "for": "rc5",
+                        style: "display: block; width: 300px",
+                        "Five text"
+                        div { style: "height: 20px", "block" }
+                    }
+                    span { onclick: logger(&l, "rw5"), input { r#type: "checkbox", id: "rc5" } }
+                }
+            }
+        }
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    Fixture { app, log }
+}
+
+#[test]
+fn review_for_reaches_a_control_in_another_branch() {
+    let mut f = mount_rules();
+    click(&mut f.app, "r1");
+    assert_eq!(f.take(), vec!["rw1"]);
+    assert_eq!(focused(&f.app), Some(node_by_id(&f.app, "rc1")));
+}
+
+#[test]
+fn review_a_link_inside_a_label_is_its_own() {
+    let mut f = mount_rules();
+    click(&mut f.app, "ra2");
+    assert_eq!(f.take(), vec!["link2"]);
+    // Positive control: the label's own text forwards.
+    let (x, y) = point_in(&f.app, "r2");
+    let w = {
+        let d = f.app.doc.as_ref().unwrap().borrow();
+        painted_element_box(&d.tree, node_by_id(&f.app, "r2")).2
+    };
+    press(&mut f.app, (x + w - 12.0, y), MouseButton::Left);
+    assert_eq!(f.take(), vec!["rw2"]);
+}
+
+#[test]
+fn review_a_hidden_input_is_not_labelable() {
+    let mut f = mount_rules();
+    click(&mut f.app, "r3");
+    assert_eq!(f.take(), vec!["rw3"]);
+    assert_eq!(focused(&f.app), Some(node_by_id(&f.app, "rc3")));
+}
+
+#[test]
+fn review_the_first_labelable_is_depth_first() {
+    let mut f = mount_rules();
+    click(&mut f.app, "r4");
+    assert_eq!(f.take(), vec!["rw4"]);
+}
+
+#[test]
+fn review_a_press_on_an_anonymous_box_reaches_its_label() {
+    let mut f = mount_rules();
+    let hit = {
+        let d = f.app.doc.as_ref().unwrap().borrow();
+        let (x, y, _, _) = painted_element_box(&d.tree, node_by_id(&f.app, "r5"));
+        let p = (x + 4.0, y + 8.0);
+        let h = f.app.shared_hit(&d, p.0, p.1);
+        h.map(|h| {
+            (
+                h,
+                d.tree.get(h).and_then(|n| n.tag().map(str::to_owned)),
+                d.tree.get(h).and_then(|n| n.parent),
+            )
+        })
+    };
+    eprintln!("PROBE r5 hit = {hit:?}");
+    let (x, y, _, _) = {
+        let d = f.app.doc.as_ref().unwrap().borrow();
+        painted_element_box(&d.tree, node_by_id(&f.app, "r5"))
+    };
+    press(&mut f.app, (x + 4.0, y + 8.0), MouseButton::Left);
+    assert_eq!(f.take(), vec!["rw5"]);
+}

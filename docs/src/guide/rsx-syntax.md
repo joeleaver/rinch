@@ -488,6 +488,12 @@ the nearest `onclick` above the control runs, after the label's own, so
 `label { "for": "c" }` beside `div { onclick: …, input { r#type: "checkbox",
 id: "c" } }` runs that `onclick` once per press. (On the web, a label with an
 `onclick` of its own currently suppresses the control's — issue #2033.)
+On desktop the activation runs on the **press**, as every desktop `onclick`
+does, where a browser waits for the click (press and release on the label): a
+press that is dragged off the label, or that starts a text selection in a
+`user-select: text` label, still activates the control on desktop. Only the
+nearest `onclick` above the control runs; a browser's forwarded click bubbles
+through all of the control's ancestors.
 
 Not activated: a press on interactive content inside the label (a `button`,
 a link, the control itself — that press is the element's own), a right or
