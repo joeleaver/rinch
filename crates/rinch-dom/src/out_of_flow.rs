@@ -311,7 +311,7 @@ fn generates_layout_box(node: &Node) -> bool {
 /// The walk is only entered for a box that is actually out of flow, so the
 /// overwhelmingly common node costs one enum compare.
 pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<OutOfFlowKind> {
-    let node = tree.get(node_id)?;
+    let node = tree.get_live(node_id)?;
     if matches!(node.computed_style.display, DisplayValue::None) {
         return None;
     }
@@ -1001,7 +1001,7 @@ pub(crate) fn bake_at_style_site(
     node_id: RawNodeId,
     taffy_style: &mut taffy::Style,
 ) {
-    let Some(node) = tree.nodes.get(node_id) else {
+    let Some(node) = tree.nodes.get_live(node_id) else {
         return;
     };
     let mut ancestor = false;
@@ -1042,7 +1042,7 @@ pub(crate) fn rebake_after_inset_write(
     node_id: RawNodeId,
     taffy_style: &mut taffy::Style,
 ) {
-    let Some(node) = tree.nodes.get(node_id) else {
+    let Some(node) = tree.nodes.get_live(node_id) else {
         return;
     };
     let kind = match out_of_flow_kind(tree, node_id) {
@@ -1424,7 +1424,7 @@ fn fit_in_layout_parent(tree: &NodeTree, node: &Node, taffy_style: &mut taffy::S
 /// the lines: shrunk to fit from its static position, or in a grid container
 /// with an inset or margin that takes room. Any other box costs a few reads.
 pub(crate) fn fits_in_layout_parent_later(tree: &NodeTree, node_id: RawNodeId) -> bool {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return false;
     };
     let cs = &node.computed_style;
@@ -1677,7 +1677,7 @@ pub(crate) fn place_absolute(
     // flag).
     let ((ox, oy), (sx, sy)) = chain_to_containing_block(tree, node_id, end, mark)?;
     let cb = ContainingBox::of(tree, kind)?;
-    let style = &tree.get(node_id)?.computed_style;
+    let style = &tree.get_live(node_id)?.computed_style;
     // Percentage margins resolve against the containing block's *width* on
     // both axes, per CSS.
     let x = axis_start(
@@ -1738,7 +1738,7 @@ pub(crate) fn is_laid_out(tree: &NodeTree, node_id: RawNodeId, size: (f32, f32))
     if size.0 > 0.0 || size.1 > 0.0 {
         return true;
     }
-    let mut current = tree.get(node_id).and_then(|n| n.parent);
+    let mut current = tree.get_live(node_id).and_then(|n| n.parent);
     while let Some(id) = current {
         let Some(node) = tree.get_live(id) else {
             return false;
@@ -1795,7 +1795,7 @@ fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
 /// left.) The lines' host is the box's layout parent — the block container
 /// an out-of-flow box among inline content is laid out in ([`inline_host`]).
 fn inline_static_position(tree: &NodeTree, node_id: RawNodeId) -> Option<(f32, f32)> {
-    let node = tree.get(node_id)?;
+    let node = tree.get_live(node_id)?;
     let (root_id, index) = node.static_ifc_root?;
     let inline = tree.get(root_id)?.text_layout.as_ref()?;
     // By index, not by search: a paragraph of N such boxes is looked at N
@@ -1917,7 +1917,7 @@ pub(crate) fn place_fixed_static(
     node_id: RawNodeId,
     taffy_location: (f32, f32),
 ) -> (Option<f32>, Option<f32>) {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return (None, None);
     };
     let (horizontal, vertical) = static_axes(&node.computed_style);
@@ -1937,7 +1937,7 @@ pub(crate) fn place_fixed_static(
 /// — an absolute box whose layout parent is its containing block, Taffy's
 /// own answer — is in no list, and is written here.
 pub(crate) fn place_static_after_lines(tree: &mut NodeTree, node_id: RawNodeId) {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return;
     };
     let (horizontal, vertical) = static_axes(&node.computed_style);
@@ -1976,7 +1976,7 @@ pub(crate) fn place_static_after_lines(tree: &mut NodeTree, node_id: RawNodeId) 
 /// already been read back, from Taffy's last answer, the lines and the chain
 /// as they stand. Returns whether it moved.
 fn replace(tree: &mut NodeTree, node_id: RawNodeId, kind: OutOfFlowKind) -> bool {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return false;
     };
     let size = (node.layout.width, node.layout.height);
@@ -2123,7 +2123,7 @@ fn static_anchor(
             let l = &parent_layout;
             let start = origin + l.border.left + l.padding.left;
             let end = origin + l.size.width - l.border.right - l.padding.right;
-            let node = tree.get(node_id)?;
+            let node = tree.get_live(node_id)?;
             match flex_inline_alignment(tree, parent, node) {
                 Align::Start => StaticAnchor::Start(start),
                 Align::End => StaticAnchor::End(end),
@@ -2134,7 +2134,7 @@ fn static_anchor(
             StaticAnchor::Start(origin + parent_layout.border.left)
         }
         _ => {
-            let node = tree.get(node_id)?;
+            let node = tree.get_live(node_id)?;
             let x = match inline_static_position(tree, node_id) {
                 Some((x, _)) => x,
                 None => {

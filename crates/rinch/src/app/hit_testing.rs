@@ -286,7 +286,10 @@ fn hit_test_node(
             // drift apart the way two hand-written phase walks did.
             let order = cached_paint_order(tree, node_id, (nx - sx) as f64, (ny - sy) as f64);
             for entry in order.iter().rev() {
-                let Some(child) = tree.get(entry.node_id) else {
+                // The cached order is dropped by every mutation that can move or
+                // free a node (`hit_cache.invalidate()`), so its ids are as live
+                // as the walk that built it (#723).
+                let Some(child) = tree.get_live(entry.node_id) else {
                     continue;
                 };
                 // A box entered as an ordinary node — in flow, or positioned
