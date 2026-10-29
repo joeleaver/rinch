@@ -17,9 +17,8 @@
 //! quantity compared against `ScrollbarTrack::max_scroll`; Chrome measures both
 //! in the container's **padding**-box frame and rinch in its **content**-box
 //! frame, which cancels for a **non-positioned** child — every padded row below
-//! is a `static` one. A positioned child (`absolute`, or `relative` with an
-//! offset) is measured differently from Chrome; `content_extents`' own doc has
-//! the rule and the numbers, and nothing here pins that case.
+//! is a `static` one. A positioned, transformed or margined child is pinned in
+//! `scroll_range_margin_transform_776_tests.rs` (#776, #775).
 //!
 //! The Chrome numbers, for whoever re-derives these:
 //!

@@ -4018,7 +4018,10 @@ impl NodeTree {
         for node_id in &to_remove {
             self.active_transitions.remove(node_id);
             self.active_animations.remove(node_id);
-            self.finished_animations.remove(node_id);
+            // Guarded: `remove` hashes the key even on an empty map (#783).
+            if !self.finished_animations.is_empty() {
+                self.finished_animations.remove(node_id);
+            }
             // The slab recycles ids: a node created later may be handed this
             // one, and must not inherit this node's measured sizes.
             self.ifc_measure_cache.remove(node_id);
