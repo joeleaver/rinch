@@ -7405,7 +7405,7 @@ mod video_inline_dirty_region_tests {
     /// produces a *small* dirty region with the video outside it.
     ///
     /// Returns the app and the label's node id.
-    fn mount() -> (RinchApp, usize) {
+    fn mount() -> (RinchApp, u64) {
         let label_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let captured = label_id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -7577,7 +7577,7 @@ mod viewport_relayout_tests {
     /// Mount a full-viewport element and hand back the app plus its node id.
     /// A `width/height: 100%` box resolves against the viewport, so its layout
     /// box *is* the viewport the document currently believes in.
-    fn mount_at_logical() -> (RinchApp, usize) {
+    fn mount_at_logical() -> (RinchApp, u64) {
         let captured: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let captured_in = captured.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -7878,7 +7878,7 @@ mod tab_focus_tests {
 
     /// Mount an `<input>` followed by a `tabindex="0"` div carrying a live
     /// click handler. Returns the app, both node ids, and the click counter.
-    fn mount_input_and_div() -> (RinchApp, usize, usize, Rc<Cell<usize>>) {
+    fn mount_input_and_div() -> (RinchApp, u64, u64, Rc<Cell<u64>>) {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
         let oninput_id = register_input_handler(InputCallback::new(|_| {}));
@@ -9061,7 +9061,7 @@ mod popup_backdrop_hit_tests {
     /// (which is internal, not a prop) is driven through the real click path.
     ///
     /// Returns the app and the shell's id.
-    fn mount_select(shell_style: &'static str) -> (RinchApp, usize) {
+    fn mount_select(shell_style: &'static str) -> (RinchApp, u64) {
         use rinch_components::{Select, SelectOption};
 
         let shell_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
@@ -9163,7 +9163,7 @@ mod pointer_cancel_tests {
     /// rather than clicking, and it is `MouseUp` that later decides between
     /// "the threshold was never crossed, so this was a click" and "this was a
     /// drag". A cancel has to reach in between those two.
-    fn mount_draggable() -> (RinchApp, (f32, f32), Rc<Cell<usize>>) {
+    fn mount_draggable() -> (RinchApp, (f32, f32), Rc<Cell<u64>>) {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
         let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
@@ -9951,7 +9951,7 @@ mod input_caret_hit_tests {
     /// The app screen this was found on: a padded scrolling column with a note,
     /// the field, and room under it. The padding is what the field's painted
     /// origin picks up and a plain parent-chain sum does not.
-    fn mount_field() -> (RinchApp, usize) {
+    fn mount_field() -> (RinchApp, u64) {
         let oninput_id = register_input_handler(InputCallback::new(|_| {}));
         let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
@@ -12308,7 +12308,7 @@ mod scroll_into_view_tests {
     /// Whether the focused editor's caret overlay paints inside `scroller`'s
     /// visible band — the same question `apply_scroll_into_view` asks, read back.
     #[cfg(feature = "desktop")]
-    fn caret_is_visible(app: &RinchApp, scroller_id: usize) -> bool {
+    fn caret_is_visible(app: &RinchApp, scroller_id: u64) -> bool {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
         let caret = (0..d.tree.nodes.len())

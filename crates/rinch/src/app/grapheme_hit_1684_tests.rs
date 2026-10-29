@@ -16,7 +16,7 @@ const STYLE: &str =
     "display: block; width: 700px; font: 32px/40px sans-serif; padding: 0; border: 0";
 
 fn page(tag: &'static str) -> (RinchApp, u64) {
-    let id = Rc::new(Cell::new(0usize));
+    let id = Rc::new(Cell::new(0u64));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -122,7 +122,7 @@ fn the_snap_takes_the_nearer_edge_1684() {
 #[cfg(feature = "desktop")]
 #[test]
 fn a_press_in_the_editor_lands_on_a_cluster_edge_1684() {
-    let slot: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let slot: Rc<Cell<u64>> = Rc::new(Cell::new(0));
     let slot_in = slot.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

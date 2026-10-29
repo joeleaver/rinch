@@ -103,7 +103,7 @@ fn has_class(n: &rinch_dom::Node, class: &str) -> bool {
         .is_some_and(|c| c.split_whitespace().any(|one| one == class))
 }
 
-fn find(app: &RinchApp, pred: impl Fn(&rinch_dom::Node) -> bool) -> usize {
+fn find(app: &RinchApp, pred: impl Fn(&rinch_dom::Node) -> bool) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -115,7 +115,7 @@ fn find(app: &RinchApp, pred: impl Fn(&rinch_dom::Node) -> bool) -> usize {
 }
 
 /// The content box (the row) of `value`.
-fn row(app: &RinchApp, value: &str) -> usize {
+fn row(app: &RinchApp, value: &str) -> u64 {
     let li = find(app, |n| {
         n.attributes.get("data-value").map(String::as_str) == Some(value)
     });

@@ -820,7 +820,7 @@ mod tests {
     /// Returns the document plus the ids of the dismiss overlay, the open menu's
     /// single entry, and the *other* top-level label — the hover-to-switch
     /// target, which the same defect made unreachable.
-    fn open_inline_menu() -> (Rc<RefCell<RinchDocument>>, usize, usize, usize) {
+    fn open_inline_menu() -> (Rc<RefCell<RinchDocument>>, u64, u64, u64) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
         let body = doc.borrow().body();
         load_stylesheets(&doc, body);
@@ -983,7 +983,7 @@ mod tests {
 
     /// `BorderlessWindow`'s BelowTitlebar tree — the other Linux layout, whose
     /// bar renders under the title bar rather than inside it — menu 0 open.
-    fn open_below_titlebar_menu() -> (Rc<RefCell<RinchDocument>>, usize, usize) {
+    fn open_below_titlebar_menu() -> (Rc<RefCell<RinchDocument>>, u64, u64) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
         let body = doc.borrow().body();
         load_stylesheets(&doc, body);
@@ -1074,7 +1074,7 @@ mod tests {
     /// The third layout: a *non*-borderless window, where `render_with_menu_bar`
     /// wraps the app's content itself and there is no `BorderlessWindow`
     /// container. Menu 0 open. Returns the overlay's and the entry's ids.
-    fn open_wrapped_menu() -> (Rc<RefCell<RinchDocument>>, usize, usize) {
+    fn open_wrapped_menu() -> (Rc<RefCell<RinchDocument>>, u64, u64) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
         let body = doc.borrow().body();
         load_stylesheets(&doc, body);

@@ -90,7 +90,7 @@ fn page(tag: &'static str, value: &'static str) -> (RinchApp, u64, Log) {
     let h = register_input_handler(InputCallback::new(move |v: String| {
         l.borrow_mut().push(v);
     }));
-    let id = Rc::new(Cell::new(0usize));
+    let id = Rc::new(Cell::new(0u64));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

@@ -96,7 +96,7 @@ fn mount_stops(
     stops: &'static [(&'static str, &'static str, Option<&'static str>)],
     trap: bool,
 ) -> (RinchApp, Rc<std::collections::HashMap<&'static str, u64>>) {
-    let ids: Rc<RefCell<std::collections::HashMap<&'static str, usize>>> =
+    let ids: Rc<RefCell<std::collections::HashMap<&'static str, u64>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -139,11 +139,11 @@ fn mount_stops(
 /// Names the arbiter lands on, one per press.
 fn tour(
     app: &mut RinchApp,
-    ids: &std::collections::HashMap<&'static str, usize>,
+    ids: &std::collections::HashMap<&'static str, u64>,
     presses: u64,
     shift: bool,
 ) -> Vec<&'static str> {
-    let by_id: std::collections::HashMap<usize, &'static str> =
+    let by_id: std::collections::HashMap<u64, &'static str> =
         ids.iter().map(|(&k, &v)| (v, k)).collect();
     (0..presses)
         .map(|_| {
@@ -321,7 +321,7 @@ type Nested = (
 fn mount_nested(
     markup: &'static [Nested],
 ) -> (RinchApp, std::collections::HashMap<&'static str, u64>) {
-    let ids: Rc<RefCell<std::collections::HashMap<&'static str, usize>>> =
+    let ids: Rc<RefCell<std::collections::HashMap<&'static str, u64>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

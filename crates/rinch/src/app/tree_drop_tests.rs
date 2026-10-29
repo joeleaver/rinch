@@ -103,7 +103,7 @@ fn has_class(n: &rinch_dom::Node, class: &str) -> bool {
 }
 
 /// The content box (the row) of the tree item whose value is `value`.
-fn row(app: &RinchApp, value: &str) -> usize {
+fn row(app: &RinchApp, value: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let li = d

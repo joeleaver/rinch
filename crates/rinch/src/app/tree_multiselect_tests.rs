@@ -129,7 +129,7 @@ fn has_class(n: &rinch_dom::Node, class: &str) -> bool {
 }
 
 /// The connected content box of `value`.
-fn row(app: &RinchApp, value: &str) -> usize {
+fn row(app: &RinchApp, value: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let li = d

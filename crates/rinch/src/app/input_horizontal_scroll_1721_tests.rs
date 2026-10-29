@@ -92,7 +92,7 @@ fn caret_pos(app: &RinchApp, id: u64) -> usize {
 /// away. Returns the app, the field and its handle.
 fn page(ty: &'static str, value: &'static str) -> (RinchApp, u64, NodeHandle) {
     let h = register_input_handler(InputCallback::new(|_| {}));
-    let id = Rc::new(Cell::new(0usize));
+    let id = Rc::new(Cell::new(0u64));
     let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let (id_in, handle_in) = (id.clone(), handle.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

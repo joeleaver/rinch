@@ -2263,7 +2263,7 @@ mod key_release_485_tests {
     /// A focused, focusable `<div>` that counts how many times it is
     /// activated (Enter/Space through `FocusTarget::Node`), plus the node's
     /// id for the caller to focus it.
-    fn activation_counting_app() -> (RinchApp, Rc<Cell<usize>>, usize) {
+    fn activation_counting_app() -> (RinchApp, Rc<Cell<u64>>, u64) {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
         let id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
