@@ -189,8 +189,8 @@ fn apply_mark_attrs(dom: &NodeHandle, mark: &Mark) {
 /// generated itself) are stepped over, not touched.
 fn place_children(host: &NodeHandle, want: &[NodeHandle]) {
     let actual = host.children();
-    let wanted: HashSet<usize> = want.iter().map(|n| n.node_id().0).collect();
-    let mut placed: HashSet<usize> = HashSet::with_capacity(want.len());
+    let wanted: HashSet<u64> = want.iter().map(|n| n.node_id().0).collect();
+    let mut placed: HashSet<u64> = HashSet::with_capacity(want.len());
     let mut i = 0usize;
     for node in want {
         while actual
@@ -826,8 +826,8 @@ impl ViewDesc {
             vec![(self.dom.clone(), Vec::with_capacity(self.children.len()))];
         // The open wrappers, outermost first: (mark, host, container index).
         let mut stack: Vec<(Mark, NodeHandle, usize)> = Vec::new();
-        let mut used: HashSet<usize> = HashSet::new();
-        let mut reused_ids: HashSet<usize> = HashSet::new();
+        let mut used: HashSet<u64> = HashSet::new();
+        let mut reused_ids: HashSet<u64> = HashSet::new();
         for child in &mut self.children {
             let marks: Vec<&Mark> = child
                 .node
@@ -1543,15 +1543,15 @@ pub struct RinchDomEditorView {
     /// Each mounted view's host box as the last caret pass saw it, so a view
     /// that grew or shrank re-runs the selection overlay
     /// ([`Self::node_view_hosts_moved`]).
-    view_boxes: Vec<(usize, (i32, i32, i32, i32))>,
+    view_boxes: Vec<(u64, (i32, i32, i32, i32))>,
 }
 
 /// What a margin anchor is measured on ([`RinchDomEditorView::margin_target`]).
 enum MarginTarget {
     /// A caret: its textblock's host id, its flat byte, its position.
-    Text(usize, usize, Pos),
+    Text(u64, usize, Pos),
     /// A leaf block's host id.
-    Leaf(usize),
+    Leaf(u64),
 }
 
 /// How far above and below a revealed range [`RinchDomEditorView::position_reveal`]
@@ -2025,7 +2025,7 @@ impl RinchDomEditorView {
     }
 
     /// The slot whose host is the element `host_id`.
-    pub(crate) fn slot_by_host(&self, host_id: usize) -> Option<Rc<Slot>> {
+    pub(crate) fn slot_by_host(&self, host_id: u64) -> Option<Rc<Slot>> {
         self.slots
             .iter()
             .find(|s| s.host().node_id().0 == host_id)
@@ -2075,7 +2075,7 @@ impl RinchDomEditorView {
         let Some(doc) = self.doc.upgrade() else {
             return false;
         };
-        let boxes: Vec<(usize, (i32, i32, i32, i32))> = {
+        let boxes: Vec<(u64, (i32, i32, i32, i32))> = {
             let d = doc.borrow();
             self.slots
                 .iter()
@@ -2101,7 +2101,7 @@ impl RinchDomEditorView {
     }
 
     /// The host id of the editor container (the `doc` node's element).
-    pub(crate) fn container_id(&self) -> usize {
+    pub(crate) fn container_id(&self) -> u64 {
         self.root.dom.node_id().0
     }
 
@@ -2141,7 +2141,7 @@ impl RinchDomEditorView {
     /// Resolve a model [`Pos`] to its host caret address `(textblock element id,
     /// flat UTF-8 byte offset)` — the address app-side geometry (caret point,
     /// vertical movement) queries Parley with. `None` if `pos` isn't in a textblock.
-    pub(crate) fn caret_address(&self, doc: &Node, pos: Pos) -> Option<(usize, usize)> {
+    pub(crate) fn caret_address(&self, doc: &Node, pos: Pos) -> Option<(u64, usize)> {
         self.caret_target(doc, pos)
             .map(|(dom, byte)| (dom.node_id().0, byte))
     }
@@ -2216,7 +2216,7 @@ impl RinchDomEditorView {
         doc: &Node,
         pos: Pos,
         affinity: CaretAffinity,
-    ) -> [Option<(usize, bool)>; 2] {
+    ) -> [Option<(u64, bool)>; 2] {
         let none = [None, None];
         let Ok(r) = doc.resolve(pos) else {
             return none;
@@ -2301,7 +2301,7 @@ impl RinchDomEditorView {
         pos: Pos,
         stored: Option<&[Mark]>,
         affinity: CaretAffinity,
-    ) -> Vec<(usize, bool, bool)> {
+    ) -> Vec<(u64, bool, bool)> {
         let Some((desc, before, next, marks_here)) = self.seam(doc, pos) else {
             return Vec::new();
         };
@@ -2313,7 +2313,7 @@ impl RinchDomEditorView {
             i.and_then(|i| desc.children.get(i))
                 .map_or(&[], |c| c.wraps.as_slice())
         };
-        let wrappers = |i: Option<usize>, other: Option<usize>| -> Vec<usize> {
+        let wrappers = |i: Option<usize>, other: Option<usize>| -> Vec<u64> {
             let shared = wraps_of(other);
             wraps_of(i)
                 .iter()
@@ -2408,7 +2408,7 @@ impl RinchDomEditorView {
         doc: &Node,
         pos: Pos,
         stored: Option<&[Mark]>,
-    ) -> Vec<usize> {
+    ) -> Vec<u64> {
         let Some((desc, Some(before), Some(next), marks_here)) = self.seam(doc, pos) else {
             return Vec::new();
         };
@@ -2453,7 +2453,7 @@ impl RinchDomEditorView {
         doc: &Node,
         pos: Pos,
         affinity: CaretAffinity,
-    ) -> Option<(usize, bool)> {
+    ) -> Option<(u64, bool)> {
         self.inline_boxes_beside(doc, pos, affinity)[0]
     }
 
@@ -2485,7 +2485,7 @@ impl RinchDomEditorView {
     /// as produced by a pointer hit-test — back to a model [`Pos`] (the inverse of
     /// [`Self::caret_target`]). `None` if `textblock_dom_id` isn't a known
     /// textblock in this view.
-    pub(crate) fn pos_at(&self, textblock_dom_id: usize, ifc_byte: usize) -> Option<Pos> {
+    pub(crate) fn pos_at(&self, textblock_dom_id: u64, ifc_byte: usize) -> Option<Pos> {
         let (content_start, block) = find_block(&self.root, textblock_dom_id, 0)?;
         Some(Pos(
             content_start + ifc_byte_to_char(block, ifc_byte, self.flat)
@@ -2495,7 +2495,7 @@ impl RinchDomEditorView {
     /// The inverse of [`Self::pos_in_textblock`]: the textblock holding `pos` (its
     /// host element id) and `pos`'s offset into that block's content, a leaf
     /// counting one. `None` when `pos` is not inside a textblock.
-    pub(crate) fn textblock_offset(&self, doc: &Node, pos: Pos) -> Option<(usize, usize)> {
+    pub(crate) fn textblock_offset(&self, doc: &Node, pos: Pos) -> Option<(u64, usize)> {
         let r = doc.resolve(pos).ok()?;
         if !r.parent().is_textblock() {
             return None;
@@ -2512,7 +2512,7 @@ impl RinchDomEditorView {
     /// if that element is not an inline leaf in this view. What a pointer hit
     /// on an image's half resolves to (#1104), since the flat byte offset of
     /// [`Self::pos_at`] is the same number on both of its sides.
-    pub(crate) fn pos_beside_inline_leaf(&self, leaf_dom_id: usize, after: bool) -> Option<Pos> {
+    pub(crate) fn pos_beside_inline_leaf(&self, leaf_dom_id: u64, after: bool) -> Option<Pos> {
         let (pos, node) = self.node_pos_for_host(leaf_dom_id)?;
         (node.is_inline() && node.node_type().is_leaf()).then_some(Pos(pos + usize::from(after)))
     }
@@ -2526,14 +2526,14 @@ impl RinchDomEditorView {
     /// a leaf is one position wide and, in the browser (and for an image on
     /// rinch-dom), zero text bytes wide, so the byte offset just before it and
     /// the one just after it are the same number (#1025).
-    pub(crate) fn pos_in_textblock(&self, textblock_dom_id: usize, offset: usize) -> Option<Pos> {
+    pub(crate) fn pos_in_textblock(&self, textblock_dom_id: u64, offset: usize) -> Option<Pos> {
         let (content_start, block) = find_block(&self.root, textblock_dom_id, 0)?;
         Some(Pos(content_start + offset.min(block.content().size())))
     }
 
     /// The textblock's offset in container coordinates — the sum of parent-relative
     /// layouts from the block up to (excluding) the container.
-    fn block_offset_in_container(&self, d: &dyn DomDocument, block_id: usize) -> (f32, f32) {
+    fn block_offset_in_container(&self, d: &dyn DomDocument, block_id: u64) -> (f32, f32) {
         let container_id = self.root.dom.node_id().0;
         let (mut x, mut y) = (0.0f32, 0.0f32);
         let mut cur = Some(block_id);
@@ -2574,7 +2574,7 @@ impl RinchDomEditorView {
     /// either, in Chrome or here.
     ///
     /// [`CARET_WIDTH`]: rinch_core::dom::CARET_WIDTH
-    fn keep_caret_in_block(&self, d: &dyn DomDocument, block_id: usize, x: f32) -> f32 {
+    fn keep_caret_in_block(&self, d: &dyn DomDocument, block_id: u64, x: f32) -> f32 {
         let Some((_, _, w, _)) = d.query_node_layout(block_id as u64) else {
             return x;
         };
@@ -2605,7 +2605,7 @@ impl RinchDomEditorView {
         d: &dyn DomDocument,
         doc: &Node,
         pos: Pos,
-        block_id: usize,
+        block_id: u64,
         flat_byte: usize,
         affinity: CaretAffinity,
         stored: Option<&[Mark]>,
@@ -2806,7 +2806,7 @@ impl RinchDomEditorView {
         let host = self.doc.upgrade()?;
         let d = host.try_borrow().ok()?;
         let d: &dyn DomDocument = &*d;
-        let mut ids: Vec<usize> = positions
+        let mut ids: Vec<u64> = positions
             .iter()
             .filter_map(|&p| match self.margin_target(doc, p)? {
                 MarginTarget::Text(id, _, _) | MarginTarget::Leaf(id) => Some(id),
@@ -2863,9 +2863,9 @@ impl RinchDomEditorView {
         };
         let d: &dyn DomDocument = &*d;
         // (index, block id, top, height), merged per block below.
-        let mut found: Vec<(usize, usize, f32, f32)> = Vec::with_capacity(positions.len());
+        let mut found: Vec<(usize, u64, f32, f32)> = Vec::with_capacity(positions.len());
         // The carets, grouped by their textblock.
-        let mut by_block: HashMap<usize, Vec<(usize, usize, Pos)>> = HashMap::new();
+        let mut by_block: HashMap<u64, Vec<(usize, usize, Pos)>> = HashMap::new();
         for (i, &pos) in positions.iter().enumerate() {
             match self.margin_target(doc, pos) {
                 Some(MarginTarget::Text(block, byte, at)) => {
@@ -3022,7 +3022,7 @@ impl RinchDomEditorView {
         d: &dyn DomDocument,
         doc: &Node,
         pos: Pos,
-        block_id: usize,
+        block_id: u64,
     ) -> Option<(f32, f32, f32)> {
         let r = doc.resolve(pos).ok()?;
         if r.parent().content().size() != 0 {
@@ -3124,7 +3124,7 @@ impl RinchDomEditorView {
         doc: &Node,
         from: Pos,
         to: Pos,
-    ) -> Vec<(usize, usize, usize, Vec<u64>)> {
+    ) -> Vec<(u64, usize, usize, Vec<u64>)> {
         let mut targets = Vec::new();
         doc.nodes_between(from.0, to.0, &mut |node, pos, _parent| {
             if node.is_textblock() {
@@ -3421,7 +3421,7 @@ impl RinchDomEditorView {
     /// path. `None` if `pos` doesn't sit immediately before a child node.
     ///
     /// [`Selection::Node`]: rinch_editor_core::Selection::Node
-    fn node_host_at(&self, doc: &Node, pos: Pos) -> Option<usize> {
+    fn node_host_at(&self, doc: &Node, pos: Pos) -> Option<u64> {
         let r = doc.resolve(pos).ok()?;
         let mut desc = &self.root;
         for d in 0..r.depth() {
@@ -3440,7 +3440,7 @@ impl RinchDomEditorView {
     /// the node's inner element (`dom`) or one of its mark wrappers (`wraps`), so a
     /// hit on a marked inline image still resolves. `None` if `target` isn't a placed
     /// node in this view.
-    pub(crate) fn node_pos_for_host(&self, target: usize) -> Option<(usize, Node)> {
+    pub(crate) fn node_pos_for_host(&self, target: u64) -> Option<(usize, Node)> {
         find_node_by_host(&self.root, target, 0).map(|(pos, node)| (pos, node.clone()))
     }
 
@@ -3710,7 +3710,7 @@ fn overlay_size(x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
 /// Walk the descriptor tree for the block whose host node is `target`, returning
 /// its model **content-start** position and its model node. `content_start` is the
 /// position passed in for `desc`'s own content (0 for the root/doc).
-fn find_block(desc: &ViewDesc, target: usize, content_start: usize) -> Option<(usize, &Node)> {
+fn find_block(desc: &ViewDesc, target: u64, content_start: usize) -> Option<(usize, &Node)> {
     let mut pos = content_start; // the position just before the current child
     for child in &desc.children {
         if child.dom.node_id().0 == target {
@@ -3733,7 +3733,7 @@ fn find_block(desc: &ViewDesc, target: usize, content_start: usize) -> Option<(u
 /// to [`find_block`] for *node* (not text-cursor) addressing.
 fn find_node_by_host(
     desc: &ViewDesc,
-    target: usize,
+    target: u64,
     content_start: usize,
 ) -> Option<(usize, &Node)> {
     let mut pos = content_start; // the position just before the current child

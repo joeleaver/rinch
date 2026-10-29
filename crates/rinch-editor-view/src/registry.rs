@@ -32,7 +32,7 @@ thread_local! {
     /// document: container node ids are per-document slab indices, so two
     /// documents on one thread (two embedded `RinchContext`s, or two desktop
     /// windows) can both hold an editor at the same container id (issue #134).
-    static EDITORS: RefCell<Vec<(u64, usize, EditorHandle)>> = const { RefCell::new(Vec::new()) };
+    static EDITORS: RefCell<Vec<(u64, u64, EditorHandle)>> = const { RefCell::new(Vec::new()) };
     /// In-progress pointer drag-selects as `(doc, container id, anchor
     /// position)` — **at most one per document**, exactly as [`EDITORS`] holds
     /// at most one handle per `(doc, container)`.
@@ -44,7 +44,7 @@ thread_local! {
     /// still contend for it, so B's mousedown would wipe the anchor A is still
     /// dragging from, and A's mouseup could then no longer clear the entry it no
     /// longer owns.
-    static DRAG: RefCell<Vec<(Option<u64>, usize, usize)>> = const { RefCell::new(Vec::new()) };
+    static DRAG: RefCell<Vec<(Option<u64>, u64, usize)>> = const { RefCell::new(Vec::new()) };
     /// See [`set_overlay_refresher`].
     static OVERLAY_REFRESHER: Cell<Option<fn()>> = const { Cell::new(None) };
     /// How many live editors on this thread have an
@@ -62,9 +62,9 @@ thread_local! {
     static IMAGE_HOVER: RefCell<Vec<(Option<u64>, EditorHandle, ImageHover)>> =
         const { RefCell::new(Vec::new()) };
     /// See [`set_focus_handler`].
-    static FOCUS_HANDLER: Cell<Option<fn(usize)>> = const { Cell::new(None) };
+    static FOCUS_HANDLER: Cell<Option<fn(u64)>> = const { Cell::new(None) };
     /// See [`set_blur_handler`].
-    static BLUR_HANDLER: Cell<Option<fn(usize)>> = const { Cell::new(None) };
+    static BLUR_HANDLER: Cell<Option<fn(u64)>> = const { Cell::new(None) };
     /// See [`set_unregister_listener`].
     static UNREGISTER_LISTENER: Cell<Option<UnregisterListener>> = const { Cell::new(None) };
     /// The `doc_key`s of documents with an editor that is owed an overlay pass
@@ -79,7 +79,7 @@ thread_local! {
 
 /// What [`set_node_view_host_listener`] takes: `(doc_key, container id, the
 /// view's host element, mounted)`.
-pub type NodeViewHostListener = fn(u64, usize, &rinch_core::dom::NodeHandle, bool);
+pub type NodeViewHostListener = fn(u64, u64, &rinch_core::dom::NodeHandle, bool);
 
 /// Tell the node-view code whom to notify when an editor's node view is mounted
 /// (`true`) or unmounted (`false`) on a host element — after the fact, with no
@@ -101,7 +101,7 @@ pub fn set_node_view_host_listener(listener: NodeViewHostListener) {
 /// Tell the [`set_node_view_host_listener`] listener about a host.
 pub(crate) fn notify_node_view_host(
     doc_key: u64,
-    container: usize,
+    container: u64,
     host: &rinch_core::dom::NodeHandle,
     mounted: bool,
 ) {
@@ -124,7 +124,7 @@ pub fn owe_overlay_pass_for(doc_key: u64) {
 /// through its focus arbiter.
 ///
 /// Per thread, like the rest of this registry; setting it again replaces it.
-pub fn set_focus_handler(focus: fn(usize)) {
+pub fn set_focus_handler(focus: fn(u64)) {
     FOCUS_HANDLER.with(|slot| slot.set(Some(focus)));
 }
 
@@ -136,12 +136,12 @@ pub fn set_focus_handler(focus: fn(usize)) {
 /// focus arbiter, in order with any focus request.
 ///
 /// Per thread, like the rest of this registry; setting it again replaces it.
-pub fn set_blur_handler(blur: fn(usize)) {
+pub fn set_blur_handler(blur: fn(u64)) {
     BLUR_HANDLER.with(|slot| slot.set(Some(blur)));
 }
 
 /// What [`set_unregister_listener`] takes: `(doc_key, container id)`.
-pub type UnregisterListener = fn(u64, usize);
+pub type UnregisterListener = fn(u64, u64);
 
 /// Tell [`unregister_editor`] whom to notify once an editor has left the
 /// registry — `(doc_key, container id)`, after the entry and its link-hover
@@ -156,12 +156,12 @@ pub fn set_unregister_listener(listener: UnregisterListener) {
 }
 
 /// The registered [`set_focus_handler`], if any.
-pub(crate) fn focus_handler() -> Option<fn(usize)> {
+pub(crate) fn focus_handler() -> Option<fn(u64)> {
     FOCUS_HANDLER.with(|slot| slot.get())
 }
 
 /// The registered [`set_blur_handler`], if any.
-pub(crate) fn blur_handler() -> Option<fn(usize)> {
+pub(crate) fn blur_handler() -> Option<fn(u64)> {
     BLUR_HANDLER.with(|slot| slot.get())
 }
 
@@ -275,7 +275,7 @@ pub(crate) fn request_overlay_refresh() {
 /// Replaces `doc`'s own in-progress drag-select, and only that one: a second
 /// document's anchor is left in place, because the gesture it belongs to is
 /// still being made.
-pub fn begin_drag(doc: Option<u64>, container: usize, anchor: usize) {
+pub fn begin_drag(doc: Option<u64>, container: u64, anchor: usize) {
     DRAG.with(|d| {
         let mut drags = d.borrow_mut();
         drags.retain(|(owner, _, _)| !same_doc(*owner, doc));
@@ -289,7 +289,7 @@ pub fn begin_drag(doc: Option<u64>, container: usize, anchor: usize) {
 /// Answers `None` for a drag-select armed by a *different* document, so a second
 /// `RinchApp` on the same thread (a DevTools window, a second embedded context)
 /// neither extends nor reads the first one's selection.
-pub fn drag_anchor(doc: Option<u64>) -> Option<(usize, usize)> {
+pub fn drag_anchor(doc: Option<u64>) -> Option<(u64, usize)> {
     DRAG.with(|d| {
         d.borrow()
             .iter()
@@ -426,7 +426,7 @@ pub fn set_image_hover(doc: Option<u64>, hovered: Option<(EditorHandle, ImageHov
 /// Register `handle` under its document's `doc_key` and `container_id`
 /// (replacing any prior registration **for that same document + container** —
 /// another document's editor at a colliding container id is left registered).
-pub fn register_editor(doc_key: u64, container_id: usize, handle: EditorHandle) {
+pub fn register_editor(doc_key: u64, container_id: u64, handle: EditorHandle) {
     EDITORS.with(|e| {
         let mut e = e.borrow_mut();
         e.retain(|(dk, id, _)| !(*dk == doc_key && *id == container_id));
@@ -450,7 +450,7 @@ pub fn register_editor(doc_key: u64, container_id: usize, handle: EditorHandle) 
 /// entry held a strong handle.
 ///
 /// Last, it tells the [`set_unregister_listener`], if one is registered.
-pub fn unregister_editor(doc_key: u64, container_id: usize) {
+pub fn unregister_editor(doc_key: u64, container_id: u64) {
     // Its document's blink clock goes with it (#1149): nothing is left to blink
     // or restore, and the clock would otherwise outlive a dropped context.
     crate::blink::forget(doc_key, container_id);
@@ -509,7 +509,7 @@ pub fn unregister_editor(doc_key: u64, container_id: usize) {
 /// Every mounted editor as `(doc_key, container id, handle)`. The desktop
 /// virtualization driver sweeps these each layout — filtered to its own
 /// document — to maintain a per-editor block window.
-pub fn all_editors() -> Vec<(u64, usize, EditorHandle)> {
+pub fn all_editors() -> Vec<(u64, u64, EditorHandle)> {
     EDITORS.with(|e| {
         e.borrow()
             .iter()
@@ -522,7 +522,7 @@ pub fn all_editors() -> Vec<(u64, usize, EditorHandle)> {
 /// `doc_key`**. Runtimes that resolved `container_id` from their own document
 /// (hit-testing, `FocusTarget::Editor`) must use this form — container ids
 /// collide across documents on one thread (issue #134).
-pub fn editor_for_doc(doc_key: u64, container_id: usize) -> Option<EditorHandle> {
+pub fn editor_for_doc(doc_key: u64, container_id: u64) -> Option<EditorHandle> {
     EDITORS.with(|e| {
         e.borrow()
             .iter()
@@ -538,7 +538,7 @@ pub fn editor_for_doc(doc_key: u64, container_id: usize) -> Option<EditorHandle>
 /// the common single-document case; with several documents a collision resolves
 /// to the earliest registration. Prefer [`editor_for_doc`] where the document
 /// is known.
-pub fn editor_for(container_id: usize) -> Option<EditorHandle> {
+pub fn editor_for(container_id: u64) -> Option<EditorHandle> {
     EDITORS.with(|e| {
         e.borrow()
             .iter()
@@ -570,7 +570,7 @@ pub fn editor_for(container_id: usize) -> Option<EditorHandle> {
 /// and reports a change to its
 /// [`on_margin_layout`](EditorHandle::on_margin_layout) callback; `true` is
 /// returned when one ran, since the app may have moved what it draws.
-pub fn update_all_carets(doc_key: Option<u64>, focused: Option<usize>) -> bool {
+pub fn update_all_carets(doc_key: Option<u64>, focused: Option<u64>) -> bool {
     OVERLAY_PASSES_OWED.with(|r| {
         let mut r = r.borrow_mut();
         if !r.is_empty() {
@@ -607,7 +607,7 @@ pub fn update_all_carets(doc_key: Option<u64>, focused: Option<usize>) -> bool {
 /// `Send`-safe `post_remote_delta` that marshals a transport-thread delta onto the
 /// main thread and calls this. Returns whether the editor's document changed.
 #[cfg(feature = "collaboration")]
-pub fn collab_receive_for(container_id: usize, delta: &[u8]) -> bool {
+pub fn collab_receive_for(container_id: u64, delta: &[u8]) -> bool {
     match editor_for(container_id) {
         Some(handle) => handle.collab_receive(delta),
         None => false,

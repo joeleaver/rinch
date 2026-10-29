@@ -536,7 +536,7 @@ pub(crate) enum Work {
 /// ([`crate::registry::set_node_view_host_listener`]).
 pub(crate) struct HostCx {
     pub(crate) doc_key: u64,
-    pub(crate) container: usize,
+    pub(crate) container: u64,
 }
 
 /// Run queued node-view work for `editor`, with no editor borrow held: dispose
