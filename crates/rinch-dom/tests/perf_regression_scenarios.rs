@@ -29,13 +29,13 @@
 //! | `inset_shadow_mask_px` | `paint/borders.rs`, blurred inset shadow (full repaint: cropped to the window) | [`a_blurred_inset_shadow_builds_its_visible_area`] |
 //! | `inset_shadow_mask_px` | the same, partial repaint (cropped to the damage) | [`a_partial_repaint_builds_only_the_damaged_part_of_an_inset_shadow`] |
 //! | `text_shadow_masks_rasterised` | `paint/text_shadow.rs`, a blurred text-shadow's first paint | [`a_blurred_text_shadow_is_rasterised_once`] |
-//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass`] — 40 lines from each site |
-//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_hangs_its_spaces_in_one_pass`] |
+//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_padded_span_at_a_soft_wrap_pays_one_pass_per_layout`] — 1 from each site; [`a_double_spaced_pre_wrap_paragraph_pays_no_pass`] (0 since parley 0.12, 40 lines from each site before) |
+//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_with_a_padded_span_at_a_soft_wrap_pays_one_pass`]; [`an_inline_block_wrapping_at_double_spaces_pays_no_pass`] (0 since parley 0.12) |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, a paragraph with seams (atomic inlines and an element that does not wrap, #1238) | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`] |
 //! | `ifc_hang_passes`, `ifc_css_line_scans` | `ifc.rs`, a paragraph with a `pre` element's spaces (#1243) | [`a_pre_wrap_paragraph_with_pre_spaces_scans_only_lines_near_them`], [`pre_spaces_nothing_wrapping_touches_pay_no_pass`] (0) |
 //! | `ifc_css_line_scans` | `ifc.rs` `hang_pass`, a paragraph with seams or edge boxes | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`], [`a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once`] |
-//! | `ifc_unglue_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure (an IFC root) | [`an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks`] |
-//! | `ifc_unglue_rebreaks` | `ifc.rs` `NodeContext::Text` and `layout_engine.rs`'s leaf measure (`shape_text_leaf`) | [`an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way`] |
+//! | `ifc_unglue_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure (an IFC root) | [`an_nbsp_glued_chain_pays_no_rebreak`] (0): since parley 0.12 an NBSP does not hang, and no shape in the suite reaches the site (an instrumented run over the NBSP, line-separator and #1238 suites never did) |
+//! | `ifc_unglue_rebreaks` | `ifc.rs` `NodeContext::Text` and `layout_engine.rs`'s leaf measure (`shape_text_leaf`) | [`an_nbsp_glued_chain_in_a_flex_items_own_text_pays_no_rebreak`] (0, as above) |
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
 //! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
 //! | `ifc_tab_rebuilds` | `ifc.rs` `build_inline_layout` (the paint layout and the root compute's measure) | [`a_pre_paragraph_of_tabs_is_set_in_one_rebuild`] (1 per layout), [`a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds`] (2 per layout) |
@@ -1773,7 +1773,7 @@ fn a_justified_paragraph_with_single_spaces_pays_no_pass() {
 }
 
 /// The start-aligned twin of
-/// `a_right_aligned_paragraph_ending_in_spaces_pays_one_pass`: no hang pass.
+/// `a_right_aligned_paragraph_ending_in_spaces_pays_no_pass`: no hang pass.
 #[test]
 fn a_start_aligned_paragraph_ending_in_spaces_pays_no_pass() {
     let mut doc = doc_with(".p { width: 200px; white-space: pre-wrap; }");
@@ -1996,6 +1996,93 @@ fn an_inline_block_wrapping_at_double_spaces_pays_no_pass() {
             (ShapeAtomicInline, 2),
             (IfcMeasureInvalidations, 3),
             (IfcSignatureChanges, 2),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (InlineBlockComputes, 2),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// The hang pass at its IFC-root sites since parley 0.12 — the paint layout
+/// (`build_ifc_layouts`) and the root compute's measure: a soft wrap right
+/// before a padded span's start edge box (#1426), which parley allows and CSS
+/// does not, so the paragraph is broken once more per layout built and the
+/// line committed again where CSS ends it.
+#[test]
+fn a_padded_span_at_a_soft_wrap_pays_one_pass_per_layout() {
+    let mut doc = doc_with(".p { width: 60px; } .pad { padding: 0 6px; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    doc.set_inner_html(p, "aa <span class=\"pad\">bbbb</span> cc dd");
+    let s = cold_frame(&mut doc);
+    expect(
+        "padded span at a soft wrap",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 4),
+            (StyleNodesVisited, 4),
+            (FullStyleWalks, 1),
+            (TaffyStyleSyncs, 4),
+            (TaffyStyleChanges, 3),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 6),
+            (IfcSignatureChanges, 1),
+            (IfcHangPasses, 2),
+            (IfcHangLines, 2),
+            (IfcCssLineScans, 2),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// The same at the atomic-inline site (`NodeContext::InlineRoot`): the
+/// padded span wraps inside an `inline-block`.
+#[test]
+fn an_inline_block_with_a_padded_span_at_a_soft_wrap_pays_one_pass() {
+    let mut doc =
+        doc_with(".chip { display: inline-block; max-width: 60px; } .pad { padding: 0 6px; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "p", "");
+    let chip = el(&mut doc, p, "span", "chip");
+    doc.set_inner_html(chip, "aa <span class=\"pad\">bbbb</span> cc dd");
+    let s = cold_frame(&mut doc);
+    expect(
+        "inline-block, padded span at a soft wrap",
+        &s,
+        &[
+            (StyleResolves, 4),
+            (ElementsCascaded, 5),
+            (StyleNodesVisited, 5),
+            (FullStyleWalks, 1),
+            (TaffyStyleSyncs, 5),
+            (TaffyStyleChanges, 4),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 2),
+            (ShapeAtomicInline, 2),
+            (IfcMeasureInvalidations, 7),
+            (IfcSignatureChanges, 2),
+            (IfcHangPasses, 2),
+            (IfcHangLines, 2),
+            (IfcCssLineScans, 2),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
