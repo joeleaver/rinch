@@ -388,8 +388,8 @@ fn a_transform_transition_arriving_at_none_repaints_the_released_descendant() {
 }
 
 /// An animation that fills forwards at `opacity: 1`: a context while it runs,
-/// none once its finishing tick writes the fill. (One with no fill keeps its
-/// last sample when it ends — #783's neighbourhood — so nothing flips there.)
+/// none once its finishing tick writes the fill. (One with no fill flips on
+/// the restyle its finishing tick asks for, #783 — the cascade's route.)
 #[test]
 fn an_animation_that_starts_and_one_that_fills_at_one_repaint_the_descendant() {
     let (mut app, p) = mount(

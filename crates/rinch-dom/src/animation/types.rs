@@ -82,18 +82,29 @@ pub struct ActiveAnimation {
     pub start_time_ms: f64,
     /// When paused, stores the elapsed time at the moment of pause.
     pub paused_elapsed_ms: Option<f64>,
-    /// Whether the fill of a **finished** `forwards`/`both` animation has been
-    /// written by a tick (#782).
+    /// Whether a tick has written the end of this **finished** animation
+    /// (#782, #783).
     ///
-    /// The tick that finishes such an animation writes its fill and marks the
-    /// node dirty — that frame changes what the box looks like — and sets this.
-    /// From then on its sample is constant, like a paused one's: later ticks
-    /// re-apply it without dirtying anything and do not count it, and
+    /// For a `forwards`/`both` animation that end is its fill: the tick that
+    /// finishes it writes the fill and marks the node dirty, and from then on
+    /// its sample is constant, like a paused one's. For a `none`/`backwards`
+    /// one it is *no* effect: the tick that finishes it asks for a restyle of
+    /// the node, so the cascaded values replace the last sample
+    /// ([`crate::node::NodeTree::ended_animations`]), and the entry is kept as
+    /// a finished marker in [`crate::node::NodeTree::finished_animations`],
+    /// which no tick walks — a later cascade finds it by name and does not mint
+    /// the still-declared animation again from t=0, which is what a browser
+    /// does (a finished CSS animation stays finished until its
+    /// `animation-name` changes or its element is rendered again).
+    ///
+    /// Either way later ticks do not dirty anything and do not count it, and
     /// [`crate::node::NodeTree::has_running_animations`] does not count it.
     /// `start_animations` clears it again when a restyle leaves the animation
-    /// no longer filling (more iterations, say), so it describes the timing the
-    /// animation has now rather than a latch set once.
-    pub fill_settled: bool,
+    /// no longer finished (more iterations, say), so it describes the timing
+    /// the animation has now rather than a latch set once. Pausing it does not
+    /// clear it ([`Self::has_ended`]): a paused finished animation is still
+    /// finished, and resuming it costs no frame.
+    pub settled: bool,
 }
 
 /// Result of computing animation values at a given time.
@@ -216,15 +227,34 @@ impl ActiveAnimation {
         current_time_ms - self.start_time_ms >= self.delay_ms + active_duration
     }
 
-    /// Whether this animation is filling (complete but fill-mode keeps it active).
-    pub fn is_filling(&self, current_time_ms: f64) -> bool {
-        if !self.is_complete(current_time_ms) {
-            return false;
-        }
+    /// Whether the active duration has passed on this animation's own clock —
+    /// [`Self::is_complete`], except that a **paused** animation is asked at
+    /// its frozen elapsed time instead of answering `false`. Pausing a
+    /// finished animation does not un-finish it.
+    pub fn has_ended(&self, current_time_ms: f64) -> bool {
+        let elapsed = self
+            .paused_elapsed_ms
+            .unwrap_or(current_time_ms - self.start_time_ms);
+        let active_duration = match self.iteration_count {
+            IterationCount::Finite(n) => self.duration_ms * n,
+            IterationCount::Infinite if self.duration_ms <= 0.0 => 0.0,
+            IterationCount::Infinite => return false,
+        };
+        elapsed >= self.delay_ms + active_duration
+    }
+
+    /// Whether `animation-fill-mode` holds the end value once the animation
+    /// has finished (`forwards` / `both`).
+    pub fn fills_forwards(&self) -> bool {
         matches!(
             self.fill_mode,
             AnimationFillMode::Forwards | AnimationFillMode::Both
         )
+    }
+
+    /// Whether this animation is filling (complete but fill-mode keeps it active).
+    pub fn is_filling(&self, current_time_ms: f64) -> bool {
+        self.is_complete(current_time_ms) && self.fills_forwards()
     }
 
     fn start_progress(&self) -> f32 {
