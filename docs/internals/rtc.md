@@ -471,6 +471,13 @@ test-only interop peer, and with it `sctp-proto` 0.10.
   thread-local teardown, after `LOCALS` and `CAPTURES` are gone. Its drop
   uses `try_with` for them: with `with` it panicked there, which aborts
   the process (`tests/media_drop_at_exit.rs`).
+- **A peer held at thread exit.** `PeerInner::drop` reaches the registry
+  (`registry::remove_peer`), `native_media::SENDING` and, on the web,
+  `wasm::PEERS` and `wasm_media::PEERS`, all with `try_with` (#1916, #1952).
+  `tests/review_peer_drop_at_exit.rs` is the order-dependent shape (a peer in
+  an app's thread-local); `tests/peer_drop_in_registry_teardown_1952.rs` the
+  forced one, a peer owned by another peer's callback and so dropped by the
+  registry as it is destroyed.
 - **CI.** With ui-zoo and video-call in the workspace, every `--workspace`
   build compiles `media` (openh264 and libopus, both from source). Nothing
   in the workspace turns on `media-vp8` (VP8, on the system libvpx), so
