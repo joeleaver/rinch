@@ -531,7 +531,12 @@ keep the caret in view. Moving the caret or typing past an edge scrolls by the
 least that shows it, focusing a field whose caret is out of view centres it,
 and losing focus scrolls back to the start (Chrome 155's behaviour). Clicks,
 the selection highlight, the caret, `NodeHandle::caret_rect` and the IME
-candidate box all follow the scroll. A `<textarea>` wraps at its width.
+candidate box all follow the scroll. A `<textarea>` wraps at its content
+width and scrolls vertically (#827): its text is clipped to the field, a caret
+moved or typed past the top or bottom scrolls by the least that shows it, the
+mouse wheel and the overlay scrollbar scroll it when its text is taller than
+the box, and it keeps its scroll position when it loses focus, as in a
+browser.
 
 `onsubmit` is read the way `onchange` is: from the control, then up its
 ancestors, so an `onsubmit` on the wrapper around a field submits that field.
