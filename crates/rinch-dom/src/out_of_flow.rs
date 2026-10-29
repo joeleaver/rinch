@@ -1830,7 +1830,7 @@ pub(crate) fn static_location(
 ) -> (f32, f32) {
     if tree
         .nodes
-        .get(node_id)
+        .get_live(node_id)
         .is_none_or(|n| n.static_ifc_root.is_none())
     {
         return taffy_location;

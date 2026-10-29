@@ -1164,7 +1164,7 @@ impl RinchDocument {
     /// Its run's members are reached by the ordinary walk, through their real
     /// parent, so this deliberately does **not** recurse.
     fn read_layout_results_for_box(&mut self, anon_id: RawNodeId) {
-        let Some(taffy_id) = self.tree.nodes.get(anon_id).and_then(|n| n.taffy_id) else {
+        let Some(taffy_id) = self.tree.nodes.get_live(anon_id).and_then(|n| n.taffy_id) else {
             return;
         };
         let Ok(taffy_layout) = self.tree.taffy.layout(taffy_id) else {
@@ -2038,7 +2038,7 @@ impl RinchDocument {
         // panics on the duplicate in `set_children`.
         let mut last_box: Option<RawNodeId> = None;
         for unit in units {
-            match nodes.get(unit).and_then(|c| c.run_box) {
+            match nodes.get_live(unit).and_then(|c| c.run_box) {
                 Some(b) => {
                     if last_box != Some(b) {
                         out.push(b);

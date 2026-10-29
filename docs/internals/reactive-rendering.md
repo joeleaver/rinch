@@ -73,12 +73,30 @@ a `usize` slot with `NodeId::from_index`; never use `.0` as an index.
 
 Inside `rinch-dom` a `RawNodeId` is the same `u64` (`NodeId(raw)` and `id.0`
 convert for free), and `NodeTree::nodes` is a `node_slab::NodeSlab`, not a bare
-`slab::Slab`. Every lookup compares the id against the stored node's own
-`Node::id`: `get`/`get_mut`/`contains` answer `None`/`false` for an id whose slot
-is vacant **or holds another generation**, and indexing panics with a message
-naming the slot and both generations. A table indexed by slot (the hit-test
-cache's extents) takes `node_slab::slot_of(id)`. The browser backend's ids are
-its monotonic counter in the same `u64`.
+`slab::Slab`. It has **two lookups, and each site says which it is using**:
+
+- **Checked** — `get` / `get_mut` / `contains` (and `NodeTree::get`): compares
+  the id against the stored node's own `Node::id` and answers `None`/`false` for
+  a vacant slot **or a slot holding another generation**. Every id that comes
+  from **outside the tree** uses it: a `DomDocument` or `NodeHandle` argument, an
+  app-held handle, an event target, a side table or cache keyed by node id that
+  can outlive a node (`dirty_nodes`, the scroll-lock roots, the hover/focus
+  state, `abs_chain_marked`, …).
+- **Internal** — `get_live` / `get_live_mut` and indexing (`nodes[id]`): for ids
+  the tree handed itself during a walk — a node's `children`/`parent`, a layout,
+  paint or hit-test traversal, a list rebuilt by this pass. A release build looks
+  only at the slot; a debug build asserts the generation (indexing panics with a
+  message naming the slot and both generations), so a misuse fails the tests.
+  The compare is why: checked everywhere, it cost 4–7% on the hit-test and
+  relayout benchmarks.
+
+When unsure, a site keeps the checked lookup. A `pub(crate)` helper reached only
+from walks and from verbs that already checked their argument takes the
+internal one; a public helper an app can call with its own id (the paint and
+scrollbar queries, `RinchDocument::box_tree_*` are the walk helpers excepted)
+stays checked. A table indexed by slot (the hit-test cache's extents) takes
+`node_slab::slot_of(id)`. The browser backend's ids are its monotonic counter
+in the same `u64`.
 
 The `DomDocument` verbs on `RinchDocument` resolve the id they are handed with
 the fallible lookup before touching the tree, so an id that names no node is a

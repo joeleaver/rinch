@@ -1906,7 +1906,7 @@ pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
     if !node.display_mode.is_atomic_inline() {
         return (0.0, 0.0);
     }
-    let Some(root) = node.ifc_root.and_then(|id| tree.get(id)) else {
+    let Some(root) = node.ifc_root.and_then(|id| tree.get_live(id)) else {
         return (0.0, 0.0);
     };
     ifc_root_content_origin(root)
