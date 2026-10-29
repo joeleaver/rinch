@@ -1,5 +1,6 @@
 //! Interaction state tracking: hover, focus, active state changes and style recomputation.
 
+use crate::node::RawNodeId;
 use crate::RinchDocument;
 
 impl RinchDocument {
@@ -82,21 +83,21 @@ impl RinchDocument {
         needs_repaint
     }
 
-    fn node_is_hover_sensitive(&self, id: usize) -> bool {
+    fn node_is_hover_sensitive(&self, id: RawNodeId) -> bool {
         self.tree
             .nodes
             .get(id)
             .is_some_and(|n| n.hover_sensitive.get())
     }
 
-    fn node_is_active_sensitive(&self, id: usize) -> bool {
+    fn node_is_active_sensitive(&self, id: RawNodeId) -> bool {
         self.tree
             .nodes
             .get(id)
             .is_some_and(|n| n.active_sensitive.get())
     }
 
-    fn node_is_focus_sensitive(&self, id: usize) -> bool {
+    fn node_is_focus_sensitive(&self, id: RawNodeId) -> bool {
         // The per-node flag is set by Stylo *matching* a focus pseudo-class
         // against the node — but a rule whose rightmost compound is a bare
         // focus pseudo (the theme's `:focus-visible { outline }`) lives in
@@ -166,7 +167,7 @@ impl RinchDocument {
     /// CSS rule depends on this node's focus state.
     ///
     /// Returns `true` if a repaint is needed.
-    pub fn set_focus_visible(&mut self, node_id: usize, visible: bool) -> bool {
+    pub fn set_focus_visible(&mut self, node_id: RawNodeId, visible: bool) -> bool {
         match self.tree.nodes.get(node_id) {
             Some(node) if node.is_focus_visible != visible => {}
             _ => return false,

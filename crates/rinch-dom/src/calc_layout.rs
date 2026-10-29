@@ -66,6 +66,7 @@
 //!   `LengthPercentageAutoValue::resolve`, which resolves a `Calc` against
 //!   the real containing block exactly.
 
+use crate::node::RawNodeId;
 use crate::RinchDocument;
 use crate::computed_style::{
     ComputedStyle, DimensionValue, LengthPercentageAutoValue, LengthPercentageValue, PositionValue,
@@ -164,7 +165,7 @@ impl RinchDocument {
     /// The rinch node whose Taffy node is `node_id`'s Taffy parent: the
     /// nearest ancestor that owns a Taffy node (`display: contents` ancestors
     /// generate none and their children are reparented in Taffy).
-    fn taffy_parent_rinch(&self, node_id: usize) -> Option<usize> {
+    fn taffy_parent_rinch(&self, node_id: RawNodeId) -> Option<usize> {
         let mut current = self.tree.get(node_id)?.parent?;
         loop {
             let node = self.tree.get(current)?;
@@ -183,7 +184,7 @@ impl RinchDocument {
     /// than the flexbox spec's full definiteness rules (a definite-flex-basis
     /// main axis, an inset-derived absolute size and grid axes all answer
     /// "indefinite" here).
-    fn calc_axis_definite(&self, node_id: usize, axis: Axis, depth: u32) -> bool {
+    fn calc_axis_definite(&self, node_id: RawNodeId, axis: Axis, depth: u32) -> bool {
         if depth > 64 {
             return false;
         }

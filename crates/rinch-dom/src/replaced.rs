@@ -426,7 +426,7 @@ pub fn replaced_context(node: &Node) -> Option<NodeContext> {
 /// `height` write asks for, and whatever moves the element's computed
 /// `aspect-ratio` (#1286). For an `<img>` it keeps the context's `aspect`
 /// current instead.
-pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool {
+pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: crate::node::RawNodeId) -> bool {
     let Some(node) = tree.nodes.get(node_id) else {
         return false;
     };

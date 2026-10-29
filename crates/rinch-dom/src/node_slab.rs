@@ -165,6 +165,18 @@ impl NodeSlab {
     }
 }
 
+impl<'a> IntoIterator for &'a NodeSlab {
+    type Item = (RawNodeId, &'a Node);
+    type IntoIter = std::iter::Map<slab::Iter<'a, Node>, fn((usize, &'a Node)) -> Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        fn with_id(entry: (usize, &Node)) -> (RawNodeId, &Node) {
+            (entry.1.id, entry.1)
+        }
+        self.slab.iter().map(with_id as fn((usize, &'a Node)) -> Self::Item)
+    }
+}
+
 impl Index<RawNodeId> for NodeSlab {
     type Output = Node;
 

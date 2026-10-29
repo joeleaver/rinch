@@ -33,6 +33,7 @@
 //! Offsets are measured from the container's **border-box** origin, which is
 //! what paint's `x`/`y` and Taffy's layout rect both use.
 
+use crate::node::RawNodeId;
 use crate::NodeTree;
 use crate::computed_style::ScrollbarWidthValue;
 use peniko::color::{AlphaColor, Srgb};
@@ -288,7 +289,7 @@ impl Scrollbars {
 /// this one measures a scroll container's own scrollable overflow, and a
 /// scroll container is never an anonymous box (an anonymous box's style
 /// carries no `overflow`).
-pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
+pub fn content_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
     let Some(node) = tree.get(node_id) else {
         return (0.0, 0.0);
     };
@@ -363,8 +364,8 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
 /// the proxy box `write_inline_positions` gives a direct one.
 fn extend_with_children(
     tree: &NodeTree,
-    container_id: usize,
-    parent_id: usize,
+    container_id: RawNodeId,
+    parent_id: RawNodeId,
     inline_measured: bool,
     right: &mut f64,
     bottom: &mut f64,
@@ -428,8 +429,8 @@ fn extend_with_children(
 /// [`extend_with_children`] over `parent_id`'s box-tree children.
 fn extend_with_box_tree_children(
     tree: &NodeTree,
-    container_id: usize,
-    parent_id: usize,
+    container_id: RawNodeId,
+    parent_id: RawNodeId,
     inline_measured: bool,
     right: &mut f64,
     bottom: &mut f64,
@@ -453,8 +454,8 @@ fn extend_with_box_tree_children(
 /// Grow `right`/`bottom` by one box-tree child of the walk.
 fn extend_with_child(
     tree: &NodeTree,
-    container_id: usize,
-    child_id: usize,
+    container_id: RawNodeId,
+    child_id: RawNodeId,
     child: &crate::node::Node,
     inline_measured: bool,
     right: &mut f64,
@@ -538,7 +539,7 @@ fn auto_thumb_color(color: Option<peniko::Color>) -> AlphaColor<Srgb> {
 /// bordered scroll regions. `DomDocument::client_height`/`client_width` and
 /// layout's `clamp_scroll_offsets` read it too. Prefer [`overflows`] when
 /// only the yes/no answer is wanted.
-pub fn visible_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
+pub fn visible_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
     let Some(node) = tree.get(node_id) else {
         return (0.0, 0.0);
     };
@@ -568,7 +569,7 @@ pub fn visible_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
 /// scrolling — a browser's `scrollbar-width: none` box still takes the wheel
 /// (measured in Chrome 153). Pinned by
 /// `a_barless_padded_container_still_takes_the_wheel`.
-pub fn overflows(tree: &NodeTree, node_id: usize, axis: ScrollbarAxis) -> bool {
+pub fn overflows(tree: &NodeTree, node_id: RawNodeId, axis: ScrollbarAxis) -> bool {
     let Some(node) = tree.get(node_id) else {
         return false;
     };
@@ -599,7 +600,7 @@ pub fn overflows(tree: &NodeTree, node_id: usize, axis: ScrollbarAxis) -> bool {
 ///
 /// Cheap for the overwhelming majority of nodes: a node scrollable on neither
 /// axis pays two enum checks and returns without walking its children.
-pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
+pub fn scrollbars(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Scrollbars {
     let Some(node) = tree.get(node_id) else {
         return Scrollbars {
             vertical: None,

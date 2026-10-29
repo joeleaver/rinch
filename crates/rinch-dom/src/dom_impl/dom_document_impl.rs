@@ -13,6 +13,7 @@ use style::properties::{
 use style::values::generics::position::GenericInset;
 use style::values::specified::{LengthPercentage, NoCalcLength};
 
+use crate::node::RawNodeId;
 use crate::computed_style::{LengthPercentageAutoValue, PositionValue};
 use crate::ifc_scope::IfcSeed;
 use crate::node::{DirtyFlags, DisplayMode, Node, NodeContext, NodeKind, TextMeasure};
@@ -2040,8 +2041,8 @@ impl RinchDocument {
         parent_taffy: taffy::NodeId,
         index: usize,
         child_taffy: taffy::NodeId,
-        parent_id: usize,
-        child_id: usize,
+        parent_id: RawNodeId,
+        child_id: RawNodeId,
     ) {
         debug_assert!(
             self.tree.taffy.parent(child_taffy).is_none(),
@@ -2169,7 +2170,7 @@ impl RinchDocument {
     /// supplies its one new value — so every existing occurrence of that name
     /// collapses to a single slot (the last one, matching the position rule
     /// above) and any earlier duplicates of it are dropped.
-    fn merged_inline_style(&self, node_id: usize, properties: &[(&str, &str)]) -> String {
+    fn merged_inline_style(&self, node_id: RawNodeId, properties: &[(&str, &str)]) -> String {
         let mut decls: Vec<(String, String)> = self.tree.nodes[node_id]
             .attributes
             .get("style")
@@ -2236,7 +2237,7 @@ impl RinchDocument {
     /// span (#1128). Past the option, only `<optgroup>` may stand between it
     /// and the select. In a document that has never created an `<option>`
     /// this returns at once; otherwise it walks the node's ancestors.
-    fn note_select_content_changed(&mut self, node: usize) {
+    fn note_select_content_changed(&mut self, node: RawNodeId) {
         if self.tree.option_elements == 0 {
             return;
         }
@@ -2272,7 +2273,7 @@ impl RinchDocument {
     /// they differ, so a `left`/`width`/`background` write — the per-frame
     /// shape of a drag or an animation driven through `set_style` — no longer
     /// re-shapes the text inside the node it moves.
-    fn invalidate_inline_style(&mut self, node_id: usize) {
+    fn invalidate_inline_style(&mut self, node_id: RawNodeId) {
         // Restyle this element (the snapshot above told the invalidator about
         // the attribute), keeping its old style for the cascade to compare
         // against: its children follow only if something they inherit moved.
@@ -2318,7 +2319,7 @@ impl RinchDocument {
     ///   instead of jumping.
     fn inset_fast_path_values(
         &self,
-        node_id: usize,
+        node_id: RawNodeId,
         properties: &[(&str, &str)],
         pdb: &PropertyDeclarationBlock,
     ) -> Option<InsetBatch> {
@@ -2384,7 +2385,7 @@ impl RinchDocument {
     /// change since then is already queued for a restyle that recomputes the
     /// inset from the full block, so a stale answer either way costs at most
     /// the fast path, never the result.
-    fn important_rule_declares_inset(&self, node_id: usize, id: LonghandId) -> bool {
+    fn important_rule_declares_inset(&self, node_id: RawNodeId, id: LonghandId) -> bool {
         let data = self.tree.nodes[node_id].stylo_element_data.borrow();
         let Some(rules) = data
             .as_ref()
@@ -2428,7 +2429,7 @@ impl RinchDocument {
     /// and the rounding. Taffy's `set_style` clears this node's cache but not
     /// its children's, so the recompute repositions the node and reuses
     /// everything below it. Writing the position by hand is how #236 happened.
-    fn apply_inset_fast_path(&mut self, node_id: usize, insets: &InsetBatch) {
+    fn apply_inset_fast_path(&mut self, node_id: RawNodeId, insets: &InsetBatch) {
         let computed = &mut self.tree.nodes[node_id].computed_style;
         let [left, top, right, bottom] = *insets;
         if let Some(v) = left {
@@ -2487,7 +2488,7 @@ impl RinchDocument {
     /// or text changed since the last layout.
     pub fn text_caret_window_rect(
         &self,
-        node_id: usize,
+        node_id: RawNodeId,
         byte_offset: usize,
     ) -> Option<(f32, f32, f32)> {
         self.text_caret_window_rect_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
@@ -2498,8 +2499,8 @@ impl RinchDocument {
     /// its right when `after` ([`DomDocument::query_inline_box_caret`], #1104).
     pub fn inline_box_caret_window_rect(
         &self,
-        node_id: usize,
-        box_id: usize,
+        node_id: RawNodeId,
+        box_id: RawNodeId,
         after: bool,
     ) -> Option<(f32, f32, f32)> {
         let (x, y, h) = self.query_inline_box_caret(node_id as u64, box_id as u64, after)?;
@@ -2510,7 +2511,7 @@ impl RinchDocument {
     /// wrap (#301): an `Upstream` caret there is at the end of the upper line.
     pub fn text_caret_window_rect_with_affinity(
         &self,
-        node_id: usize,
+        node_id: RawNodeId,
         byte_offset: usize,
         affinity: CaretAffinity,
     ) -> Option<(f32, f32, f32)> {
@@ -2533,7 +2534,7 @@ impl RinchDocument {
     /// `None` (no text layout, an offset past the text).
     pub fn text_glyph_window_rect(
         &self,
-        node_id: usize,
+        node_id: RawNodeId,
         byte_offset: usize,
     ) -> Option<(f32, f32, f32, f32)> {
         let g = self.query_glyph_bounds(node_id as u64, byte_offset)?;
@@ -2551,7 +2552,7 @@ impl RinchDocument {
     /// transform of its ancestors into logical window pixels.
     fn caret_to_window(
         &self,
-        node_id: usize,
+        node_id: RawNodeId,
         local_x: f32,
         local_y: f32,
         height: f32,
@@ -2578,7 +2579,7 @@ impl RinchDocument {
     /// - a text node's own measured layout at its own origin;
     /// - an element whose text is a measured child text node at that child's
     ///   box.
-    fn text_layout_origin(&self, node_id: usize) -> (f32, f32) {
+    fn text_layout_origin(&self, node_id: RawNodeId) -> (f32, f32) {
         let Some(node) = self.tree.nodes.get(node_id) else {
             return (0.0, 0.0);
         };

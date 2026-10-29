@@ -23,8 +23,12 @@ use style::shared_lock::{Locked, SharedRwLock};
 
 use crate::computed_style::ComputedStyle;
 
-/// Raw node ID (index into slab).
-pub type RawNodeId = usize;
+/// A node id inside `rinch-dom`: the packed bits of `rinch_core::dom::NodeId`
+/// (slot index in the low 32 bits, generation in the high 32; issue #723).
+/// `NodeId(raw)` and `id.0` convert between the two for free. Index the node
+/// storage with it ([`crate::node_slab::NodeSlab`]); a table indexed by slot
+/// takes [`crate::node_slab::slot_of`].
+pub type RawNodeId = u64;
 
 bitflags! {
     /// Tracks what needs updating for a node.
@@ -170,7 +174,7 @@ pub struct TextMeasure {
     /// Empty means use font metrics default.
     pub line_height_css: String,
     /// DOM node ID for caching the layout after measurement.
-    pub node_id: usize,
+    pub node_id: RawNodeId,
     /// Text color (inherited from parent).
     pub color: AlphaColor<Srgb>,
     /// Whether text wrapping is disabled (white-space: nowrap/pre).
@@ -449,7 +453,7 @@ pub struct IfcTextRange {
     /// Byte range end (exclusive) in the IFC `text_content`.
     pub flat_end: usize,
     /// DOM node ID: text node for text, `<br>` element for `<br>`.
-    pub node_id: usize,
+    pub node_id: RawNodeId,
     /// Byte offset within the text node (0 for most; nonzero when a node
     /// is split across multiple style spans).
     pub node_offset: usize,
@@ -2820,7 +2824,7 @@ impl IfcRootMeasures {
 /// The node tree, stored in a slab for stable IDs.
 pub struct NodeTree {
     /// All nodes, indexed by RawNodeId.
-    pub nodes: slab::Slab<Node>,
+    pub nodes: crate::node_slab::NodeSlab,
     /// The root document node ID.
     pub root_id: RawNodeId,
     /// The html element node ID.
@@ -3438,7 +3442,7 @@ impl NodeTree {
 
     /// Create a new node tree with root and body nodes.
     pub fn new() -> Self {
-        let mut nodes = slab::Slab::new();
+        let mut nodes = crate::node_slab::NodeSlab::new();
         let mut taffy = taffy::TaffyTree::new();
         let mut taffy_map = HashMap::new();
 
@@ -3851,7 +3855,7 @@ impl NodeTree {
         let nodes = &mut self.nodes;
         // Each state is read with the slab borrowed shared (an IFC root's ink
         // reads its inline elements' styles, #1048), then written.
-        let refresh = |nodes: &mut slab::Slab<Node>, id: RawNodeId, layout: bool| {
+        let refresh = |nodes: &mut crate::node_slab::NodeSlab, id: RawNodeId, layout: bool| {
             let Some(node) = nodes.get(id) else {
                 return;
             };

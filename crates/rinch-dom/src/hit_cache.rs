@@ -38,6 +38,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
+use crate::node::RawNodeId;
 use crate::computed_style::{
     ComputedStyle, DisplayValue, LengthPercentageValue, OverflowValue, PointerEventsValue,
     PositionValue, VisibilityValue,
@@ -245,19 +246,19 @@ impl HitCache {
 
     /// The extent stored for `id` in the current generation.
     #[inline]
-    pub fn extent(&self, id: usize) -> Option<Extent> {
+    pub fn extent(&self, id: RawNodeId) -> Option<Extent> {
         self.state().extents.get(id).copied().flatten()
     }
 
     /// Whether the flow walk under `id` passes over a box painted at a
     /// stacking root (#1719), stored for the current generation.
     #[inline]
-    pub fn hoists(&self, id: usize) -> Option<bool> {
+    pub fn hoists(&self, id: RawNodeId) -> Option<bool> {
         self.state().hoists.get(id).copied().flatten()
     }
 
     /// Store `id`'s hoisting bit for the current generation.
-    pub fn store_hoists(&self, id: usize, hoists: bool) {
+    pub fn store_hoists(&self, id: RawNodeId, hoists: bool) {
         let mut s = self.state();
         if s.hoists.len() <= id {
             s.hoists.resize(id + 1, None);
@@ -266,7 +267,7 @@ impl HitCache {
     }
 
     /// Store `id`'s extent for the current generation.
-    pub fn store_extent(&self, id: usize, extent: Extent) {
+    pub fn store_extent(&self, id: RawNodeId, extent: Extent) {
         let mut s = self.state();
         if s.extents.len() <= id {
             s.extents.resize(id + 1, None);
@@ -275,7 +276,7 @@ impl HitCache {
     }
 
     /// The stacking sequence cached for `root` at base `(ox, oy)`.
-    pub fn order(&self, root: usize, ox: f64, oy: f64) -> Option<Rc<PaintOrder>> {
+    pub fn order(&self, root: RawNodeId, ox: f64, oy: f64) -> Option<Rc<PaintOrder>> {
         self.state()
             .orders
             .get(&(root, ox.to_bits(), oy.to_bits()))
@@ -283,7 +284,7 @@ impl HitCache {
     }
 
     /// Cache `order` for `root` at base `(ox, oy)`.
-    pub fn store_order(&self, root: usize, ox: f64, oy: f64, order: Rc<PaintOrder>) {
+    pub fn store_order(&self, root: RawNodeId, ox: f64, oy: f64, order: Rc<PaintOrder>) {
         self.state()
             .orders
             .insert((root, ox.to_bits(), oy.to_bits()), order);

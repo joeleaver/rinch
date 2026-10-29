@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use peniko::Brush;
 
+use crate::node::RawNodeId;
 use crate::RinchDocument;
 use crate::computed_style::VerticalAlignValue;
 use crate::layout;
@@ -54,7 +55,7 @@ pub(crate) fn root_text_color(cs: &crate::computed_style::ComputedStyle) -> peni
 /// anonymous box, so in every case the brush a run gets is its text node's DOM
 /// parent's colour — which is what this answers, at the build (recorded as
 /// [`crate::node::IfcTextRange::color`]) and again at every paint (#679).
-pub(crate) fn text_color(nodes: &slab::Slab<Node>, text_node: usize) -> peniko::Color {
+pub(crate) fn text_color(nodes: &crate::node_slab::NodeSlab, text_node: RawNodeId) -> peniko::Color {
     let mut cur = nodes.get(text_node).and_then(|t| t.parent);
     while let Some(node) = cur.and_then(|id| nodes.get(id)) {
         if let Some(color) = node.computed_style.color {
@@ -108,7 +109,7 @@ pub(crate) fn edge_box_owner(id: u64) -> Option<(usize, bool)> {
 }
 
 /// An edge box's id ([`EDGE_BOX`]).
-pub(crate) fn edge_box_id(owner: usize, end: bool) -> u64 {
+pub(crate) fn edge_box_id(owner: RawNodeId, end: bool) -> u64 {
     debug_assert!((owner as u64) < EDGE_BOX_END);
     EDGE_BOX | if end { EDGE_BOX_END } else { 0 } | (owner as u64 & (EDGE_BOX_END - 1))
 }
@@ -613,7 +614,7 @@ pub(crate) struct AtomicContributions<'a> {
 
 impl AtomicContributions<'_> {
     /// The size to line atomic inline `id` up at.
-    fn size(&self, id: usize, node: &Node) -> (f32, f32) {
+    fn size(&self, id: RawNodeId, node: &Node) -> (f32, f32) {
         let layout = (node.layout.width, node.layout.height);
         // Where the box was last resolved, if it has been since it was last
         // measured as `auto`. Only then can it have another size than its
@@ -1220,7 +1221,7 @@ impl<'a> IfcText<'a> {
         self.pending = None;
         self.line_start = false;
         self.prev_space = false;
-        self.last_box = Some((inline_box.id as usize, self.len));
+        self.last_box = Some((inline_box.id as RawNodeId, self.len));
         self.ops.push(IfcOp::InlineBox(inline_box));
     }
 
@@ -1237,7 +1238,7 @@ impl<'a> IfcText<'a> {
     /// before that break: the element's last fragment is the line the break
     /// ends, and what follows starts the next line at its edge, as in Chrome
     /// 155 (review of #1823).
-    pub(crate) fn push_edge_box(&mut self, owner: usize, end: bool, width: f32) {
+    pub(crate) fn push_edge_box(&mut self, owner: RawNodeId, end: bool, width: f32) {
         let edge = IfcOp::InlineBox(parley::InlineBox {
             id: edge_box_id(owner, end),
             index: 0,
@@ -1306,7 +1307,7 @@ impl<'a> IfcText<'a> {
             IfcOp::InlineBox(b)
                 if !is_edge_box(b.id) && b.kind == parley::InlineBoxKind::InFlow =>
             {
-                Some(b.id as usize)
+                Some(b.id as RawNodeId)
             }
             _ => None,
         })
@@ -1316,7 +1317,7 @@ impl<'a> IfcText<'a> {
     /// held space before it is neither confirmed nor dropped, and it takes
     /// no room — but its static position is where it would have been
     /// (#632): remember the place.
-    pub(crate) fn note_out_of_flow(&mut self, id: usize) {
+    pub(crate) fn note_out_of_flow(&mut self, id: RawNodeId) {
         self.out_of_flow.push(crate::node::OutOfFlowMark {
             id,
             flat: self.len,
@@ -1669,7 +1670,7 @@ pub(crate) fn resolve_out_of_flow_marks(
         for (index, line) in layout.lines().enumerate() {
             for item in line.items() {
                 if let PositionedLayoutItem::InlineBox(b) = item {
-                    boxes.insert(b.id as usize, (index, b.x + b.width));
+                    boxes.insert(b.id as RawNodeId, (index, b.x + b.width));
                 }
             }
         }
@@ -2569,8 +2570,8 @@ impl WrapSeams {
     /// The seams of an IFC whose text runs are `text_ranges` and whose
     /// inline boxes are `layout`'s.
     pub(crate) fn of(
-        nodes: &slab::Slab<Node>,
-        root_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        root_id: RawNodeId,
         text_ranges: &[crate::node::IfcTextRange],
         layout: &parley::Layout<Brush>,
     ) -> Self {
@@ -2584,7 +2585,7 @@ impl WrapSeams {
             .collect();
         for (i, b) in layout.inline_boxes().iter().enumerate() {
             if !is_edge_box(b.id) && b.kind == parley::InlineBoxKind::InFlow {
-                leaves.push(((b.index, 0, i), b.id as usize));
+                leaves.push(((b.index, 0, i), b.id as RawNodeId));
             }
         }
         leaves.sort_unstable_by_key(|(k, _)| *k);
@@ -2631,7 +2632,7 @@ impl WrapSeams {
 
 /// Whether `next`'s parent element contains `leaf`, and some element from
 /// `leaf`'s parent up to (not including) it wraps ([`Seam::closes_into_wrap`]).
-fn closes_into_wrap(nodes: &slab::Slab<Node>, root_id: usize, leaf: usize, next: usize) -> bool {
+fn closes_into_wrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: usize) -> bool {
     let Some(target) = nodes.get(next).and_then(|n| n.parent) else {
         return false;
     };
@@ -2656,7 +2657,7 @@ fn closes_into_wrap(nodes: &slab::Slab<Node>, root_id: usize, leaf: usize, next:
 
 /// Whether `next`'s parent element is a proper ancestor of `leaf`'s: elements
 /// close between them and none opens ([`Seam::closes`]).
-fn only_closes(nodes: &slab::Slab<Node>, root_id: usize, leaf: usize, next: usize) -> bool {
+fn only_closes(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: usize) -> bool {
     let Some(target) = nodes.get(next).and_then(|n| n.parent) else {
         return false;
     };
@@ -2680,8 +2681,8 @@ fn only_closes(nodes: &slab::Slab<Node>, root_id: usize, leaf: usize, next: usiz
 /// `leaf`'s parent up to, not including, the nearest that also contains
 /// `next` — closes into one that does not wrap
 /// ([`Seam::closes_into_nowrap`]).
-fn closes_into_nowrap(nodes: &slab::Slab<Node>, root_id: usize, leaf: usize, next: usize) -> bool {
-    let contains_next = |el: usize| {
+fn closes_into_nowrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: usize) -> bool {
+    let contains_next = |el: RawNodeId| {
         std::iter::successors(Some(next), |&id| {
             (id != root_id)
                 .then(|| nodes.get(id).and_then(|n| n.parent))
@@ -2711,8 +2712,8 @@ fn closes_into_nowrap(nodes: &slab::Slab<Node>, root_id: usize, leaf: usize, nex
 
 /// Whether some element from `leaf`'s parent up to the nearest one that also
 /// contains `next` — the IFC root at the most — wraps ([`WrapSeams`]).
-fn wraps_between(nodes: &slab::Slab<Node>, root_id: usize, leaf: usize, next: usize) -> bool {
-    let contains_next = |el: usize| {
+fn wraps_between(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: usize) -> bool {
+    let contains_next = |el: RawNodeId| {
         let mut n = Some(next);
         while let Some(id) = n {
             if id == el {
@@ -2763,8 +2764,8 @@ impl UnhungSpaces {
 /// container but kept in the slab, with the run it was minted for (#964).
 /// `create_anonymous_block_boxes` mints that run's box into it, or frees it.
 pub(crate) struct RetiredAnonBox {
-    id: usize,
-    parent: usize,
+    id: RawNodeId,
+    parent: RawNodeId,
     run_members: Vec<usize>,
 }
 
@@ -2792,7 +2793,7 @@ impl RetiredAnonBoxes {
     }
 
     /// The box retired from `parent` for exactly `run`, if there is one.
-    fn take(&mut self, parent: usize, run: &[usize]) -> Option<RetiredAnonBox> {
+    fn take(&mut self, parent: RawNodeId, run: &[usize]) -> Option<RetiredAnonBox> {
         let first = *run.first()?;
         let r = self.by_first_member.get(&first)?;
         if r.parent != parent || r.run_members != run {
@@ -3613,7 +3614,7 @@ fn any_miscounted_justified_line(layout: &parley::Layout<Brush>, text: &str, max
 /// Whether `node`'s computed CSS `direction` is `ltr`: read from the nearest
 /// node at or above it with a Stylo style (an anonymous block box has none
 /// and inherits its container's). `ltr` when nothing has one.
-fn css_direction_is_ltr(nodes: &slab::Slab<Node>, node: usize) -> bool {
+fn css_direction_is_ltr(nodes: &crate::node_slab::NodeSlab, node: RawNodeId) -> bool {
     let mut at = Some(node);
     while let Some(id) = at {
         let Some(n) = nodes.get(id) else { break };
@@ -4085,7 +4086,7 @@ impl RinchDocument {
     }
 
     /// An IFC root's content-box width, `None` when it is not positive.
-    fn ifc_content_width(&self, root_id: usize) -> Option<f32> {
+    fn ifc_content_width(&self, root_id: RawNodeId) -> Option<f32> {
         let node = &self.tree.nodes[root_id];
         let cs = &node.computed_style;
         let padding_h = cs.padding_left.to_px() + cs.padding_right.to_px();
@@ -4097,7 +4098,7 @@ impl RinchDocument {
     /// The width an IFC root's paint layout is broken at: its content-box
     /// width, with the auto-width slack below. `None` for a root with no
     /// positive content width (unconstrained).
-    fn ifc_paint_max_width(&self, root_id: usize) -> Option<f32> {
+    fn ifc_paint_max_width(&self, root_id: RawNodeId) -> Option<f32> {
         // Use content-box width (subtract padding+border) for line breaking.
         // For auto-width elements, don't re-constrain text to measured width
         // as floating-point precision can cause unwanted line breaks.
@@ -4136,7 +4137,7 @@ impl RinchDocument {
     /// rebuild half of [`Self::build_ifc_layouts`], which decides *whether*.
     fn shape_ifc_root_paint_layout(
         &mut self,
-        root_id: usize,
+        root_id: RawNodeId,
         max_width: Option<f32>,
         paint_layout_cx: &mut parley::LayoutContext<Brush>,
     ) {
@@ -4285,7 +4286,7 @@ impl RinchDocument {
     /// container must re-shape it: `invalidate_text_measure_for_node` drops
     /// every box in the container's `run_boxes`
     /// (`ellipsis_anonymous_box_tests.rs`).
-    fn ellipsis_style_owner(nodes: &slab::Slab<Node>, root_id: usize) -> usize {
+    fn ellipsis_style_owner(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId) -> usize {
         let root = &nodes[root_id];
         match root.parent {
             Some(parent) if root.is_anonymous_block_box => parent,
@@ -4388,7 +4389,7 @@ impl RinchDocument {
     }
 
     /// Write computed positions from an InlineLayout back into child node layout fields.
-    pub(crate) fn write_inline_positions(&mut self, root_id: usize, inline_layout: &InlineLayout) {
+    pub(crate) fn write_inline_positions(&mut self, root_id: RawNodeId, inline_layout: &InlineLayout) {
         let root_layout = self.tree.nodes[root_id].layout;
 
         // Walk Parley layout lines to find positioned items
@@ -4402,7 +4403,7 @@ impl RinchDocument {
                         if is_edge_box(positioned_box.id) {
                             continue;
                         }
-                        let child_id = positioned_box.id as usize;
+                        let child_id = positioned_box.id as RawNodeId;
                         if let Some(child) = self.tree.nodes.get_mut(child_id) {
                             // A move is a move, whoever makes it: push the box
                             // paint-dirty like any other layout change, so the
@@ -4610,7 +4611,7 @@ impl RinchDocument {
     ///
     /// See [`Self::collect_effective_taffy_children`] (the order) and
     /// [`Self::taffy_child_list_owners`] (whose list, and why bottom-up).
-    fn rebuild_effective_taffy_children(&mut self, node_id: usize) {
+    fn rebuild_effective_taffy_children(&mut self, node_id: RawNodeId) {
         for owner in Self::taffy_child_list_owners(&self.tree.nodes, node_id) {
             let Some(owner_taffy) = self.tree.nodes.get(owner).and_then(|n| n.taffy_id) else {
                 continue;
@@ -4674,7 +4675,7 @@ impl RinchDocument {
     /// re-measure must call this beside it. (Marking the leaf also dirties the
     /// root — propagation is upward — but the sites keep their own root mark:
     /// most roots have no leaf.)
-    pub(crate) fn mark_ifc_measure_dirty(&mut self, root_id: usize) {
+    pub(crate) fn mark_ifc_measure_dirty(&mut self, root_id: RawNodeId) {
         if let Some(&leaf) = self.tree.ifc_measure_leaves.get(&root_id) {
             let _ = self.tree.taffy.mark_dirty(leaf);
         }
@@ -4731,8 +4732,8 @@ impl RinchDocument {
     /// member is still a unit of it. Change what a unit is and all three move
     /// together — the third exists to say so out loud if they ever do not.
     pub(crate) fn collect_run_units(
-        nodes: &slab::Slab<Node>,
-        node_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
         out: &mut Vec<usize>,
     ) {
         Self::collect_run_units_for(nodes, node_id, node_id, out);
@@ -4744,9 +4745,9 @@ impl RinchDocument {
     /// of, because a hoisted out-of-flow box (#591) is a unit of exactly one
     /// owner and is recognised by comparing `hoisted_out_of_flow_to` with it.
     fn collect_run_units_for(
-        nodes: &slab::Slab<Node>,
-        node_id: usize,
-        owner: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
+        owner: RawNodeId,
         out: &mut Vec<usize>,
     ) {
         let Some(node) = nodes.get(node_id) else {
@@ -4808,9 +4809,9 @@ impl RinchDocument {
     /// nested non-atomic inlines and `display: contents` wrappers, and only
     /// where `hosts_hoisted_out_of_flow` says there is something to find.
     fn collect_hoisted_out_of_flow(
-        nodes: &slab::Slab<Node>,
-        inline_id: usize,
-        owner: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        inline_id: RawNodeId,
+        owner: RawNodeId,
         out: &mut Vec<usize>,
     ) {
         let Some(node) = nodes.get(inline_id) else {
@@ -5421,7 +5422,7 @@ impl RinchDocument {
     ) -> Vec<(usize, Option<usize>, Option<usize>)> {
         use crate::ifc_scope::is_inline_transparent;
         let mut changes: Vec<(usize, Option<usize>, Option<usize>)> = Vec::new();
-        let hosts_of = |nodes: &slab::Slab<Node>, id: usize| -> bool {
+        let hosts_of = |nodes: &crate::node_slab::NodeSlab, id: RawNodeId| -> bool {
             nodes[id].children.iter().any(|&c| {
                 nodes.get(c).is_some_and(|child| {
                     child.hoisted_out_of_flow_to.is_some()
@@ -5670,7 +5671,7 @@ impl RinchDocument {
     /// `style_resolution` and additionally understands the restyle pass's
     /// "was hidden before this cascade" list, which has no analogue here —
     /// a layout pass only ever asks about the *current* tree.
-    fn has_display_none_ancestor(nodes: &slab::Slab<Node>, id: usize) -> bool {
+    fn has_display_none_ancestor(nodes: &crate::node_slab::NodeSlab, id: RawNodeId) -> bool {
         use crate::computed_style::values::DisplayValue;
         let mut current = nodes.get(id).and_then(|n| n.parent);
         while let Some(pid) = current {
@@ -7164,7 +7165,7 @@ impl RinchDocument {
     /// wrapper for every `if`/`match`/`for`). **Deleting it is a behaviour change
     /// in a direction no test can see**, which is the #585 standard for keeping
     /// it.
-    fn contents_is_inline_transparent(nodes: &slab::Slab<Node>, node_id: usize) -> bool {
+    fn contents_is_inline_transparent(nodes: &crate::node_slab::NodeSlab, node_id: RawNodeId) -> bool {
         nodes
             .get(node_id)
             .is_none_or(|node| !node.contributes_in_flow_block)
@@ -7190,8 +7191,8 @@ impl RinchDocument {
     /// the wrapper was judged transparent, which the scan answers only when no
     /// such box exists at any depth.
     fn collect_contents_out_of_flow(
-        nodes: &slab::Slab<Node>,
-        wrapper_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        wrapper_id: RawNodeId,
         out: &mut Vec<taffy::NodeId>,
     ) {
         for &child_id in &nodes[wrapper_id].children {
@@ -7439,8 +7440,8 @@ impl RinchDocument {
     /// Taffy, on its own.
     fn mark_inline_descendants(
         &mut self,
-        root_id: usize,
-        node_id: usize,
+        root_id: RawNodeId,
+        node_id: RawNodeId,
         root_taffy: taffy::NodeId,
     ) {
         // Read the root's Taffy children once. Taffy hands back an owned `Vec`,
@@ -7891,7 +7892,7 @@ impl RinchDocument {
     /// first build and buy nothing. Only a pending **whole-document** pass
     /// (`ifc_dirty`) takes the other arm below, since that pass sizes every
     /// atomic inline anyway.
-    pub(crate) fn mark_atomic_inline_dirty(&mut self, node_id: usize) {
+    pub(crate) fn mark_atomic_inline_dirty(&mut self, node_id: RawNodeId) {
         self.mark_atomic_inline_dirty_for(node_id, true);
     }
 
@@ -7901,7 +7902,7 @@ impl RinchDocument {
     /// again (its interior's glyphs are new) but its min-content width
     /// stands (#1476): dropping it sent a colour-only hover on a chip in a
     /// flex item through the min-content compute and a second root compute.
-    pub(crate) fn mark_atomic_inline_dirty_for(&mut self, node_id: usize, sizes: bool) {
+    pub(crate) fn mark_atomic_inline_dirty_for(&mut self, node_id: RawNodeId, sizes: bool) {
         // On an `ifc_dirty` pass there is nothing to accumulate — that pass
         // measures every atomic inline in the document — but **measuring is not
         // re-measuring** (#784). `measure_inline_blocks` asks Taffy, and an
@@ -9027,7 +9028,7 @@ impl RinchDocument {
     /// Whether the atomic inline `id` came out at another size than
     /// `before`; if so, the IFC `root_id` it is laid out in, which line-broke
     /// against the stale box, is invalidated.
-    fn atomic_inline_resized(&mut self, id: usize, root_id: usize, before: (f32, f32)) -> bool {
+    fn atomic_inline_resized(&mut self, id: RawNodeId, root_id: RawNodeId, before: (f32, f32)) -> bool {
         let now = {
             let n = &self.tree.nodes[id];
             (n.layout.width, n.layout.height)
@@ -9041,7 +9042,7 @@ impl RinchDocument {
 
     /// Have IFC `root_id` measured and line-broken again: an atomic inline
     /// on its lines changed size, or what it contributes to a measure did.
-    fn invalidate_ifc_of_atomic_inline(&mut self, root_id: usize) {
+    fn invalidate_ifc_of_atomic_inline(&mut self, root_id: RawNodeId) {
         if let Some(root) = self.tree.nodes.get_mut(root_id) {
             root.text_layout = None;
         }
@@ -9202,7 +9203,7 @@ impl RinchDocument {
     /// Whether `id` is a box [`Self::measure_atomic_min_contents`] measures
     /// and has not measured yet: a connected atomic inline in an IFC whose
     /// width is plain shrink-to-fit.
-    fn wants_min_content(&self, id: usize) -> bool {
+    fn wants_min_content(&self, id: RawNodeId) -> bool {
         !self.tree.atomic_min_content.contains_key(&id)
             && self.tree.nodes.get(id).is_some_and(|n| {
                 n.ifc_root.is_some()
@@ -9214,7 +9215,7 @@ impl RinchDocument {
     }
 
     /// Whether `node` is a descendant of `ancestor`.
-    fn is_inside(&self, node: usize, ancestor: usize) -> bool {
+    fn is_inside(&self, node: RawNodeId, ancestor: RawNodeId) -> bool {
         let mut cur = self.tree.nodes.get(node).and_then(|n| n.parent);
         while let Some(p) = cur {
             if p == ancestor {
@@ -9231,7 +9232,7 @@ impl RinchDocument {
     /// detached root of its own).
     fn queue_atomic_inlines_around(
         &self,
-        id: usize,
+        id: RawNodeId,
         around: &mut std::collections::BTreeSet<(usize, usize)>,
     ) {
         let mut cur = self.tree.nodes.get(id).and_then(|n| n.parent);
@@ -9268,7 +9269,7 @@ impl RinchDocument {
     /// `root_id`'s IFC is laid out in, from the last root compute. The IFC
     /// root is that box's containing block by construction: an IFC root is a
     /// block container, which no inline-level box and no flex container is.
-    fn containing_block_inner_width(&self, root_id: usize) -> Option<f32> {
+    fn containing_block_inner_width(&self, root_id: RawNodeId) -> Option<f32> {
         let cb_taffy = self.tree.nodes.get(root_id)?.taffy_id?;
         // Unrounded: a box whose max-content width is its containing
         // block's (an `inline-block` around one other) would be capped at a
@@ -9293,8 +9294,8 @@ impl RinchDocument {
     /// [`break_lines_hanging_spaces`]).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build_inline_layout(
-        nodes: &slab::Slab<Node>,
-        root_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        root_id: RawNodeId,
         max_width: Option<f32>,
         align_width: Option<AlignWidth>,
         scale: f32,
@@ -9686,12 +9687,12 @@ impl RinchDocument {
     /// two boxes lends them its opportunity, [`WrapSeams`]). `false` only for
     /// a `nowrap`/`pre` root none of whose content is in a wrapping element.
     pub(crate) fn wraps_anywhere(
-        nodes: &slab::Slab<Node>,
-        root_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        root_id: RawNodeId,
         text_ranges: &[crate::node::IfcTextRange],
         boxes: &[usize],
     ) -> bool {
-        let wraps = |id: usize| {
+        let wraps = |id: RawNodeId| {
             nodes.get(id).is_some_and(|n| {
                 Self::text_wrap_mode(&n.computed_style) == parley::style::TextWrapMode::Wrap
             })
@@ -9716,11 +9717,11 @@ impl RinchDocument {
     /// element that opens there (`dd <span> </span><span pre>`), or after a
     /// comment. Sorted flat bytes.
     fn collapsed_after_close(
-        nodes: &slab::Slab<Node>,
-        root_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        root_id: RawNodeId,
         text_ranges: &[crate::node::IfcTextRange],
     ) -> Vec<usize> {
-        let parent = |id: usize| nodes.get(id).and_then(|n| n.parent);
+        let parent = |id: RawNodeId| nodes.get(id).and_then(|n| n.parent);
         let mut out = Vec::new();
         let mut prev: Option<&crate::node::IfcTextRange> = None;
         for r in text_ranges.iter().filter(|r| !r.is_br) {
@@ -9758,7 +9759,7 @@ impl RinchDocument {
     /// Whether some text of a `pre` element (`pre`, the `white-space` ranges
     /// of [`UnhungSpaces::pre`]) holds a space or tab (#1243).
     fn any_pre_space(
-        nodes: &slab::Slab<Node>,
+        nodes: &crate::node_slab::NodeSlab,
         text_ranges: &[crate::node::IfcTextRange],
         pre: &[std::ops::Range<usize>],
     ) -> bool {
@@ -9778,12 +9779,12 @@ impl RinchDocument {
     /// element of a text run, or an element holding one of its atomic
     /// inlines (`boxes`) — does not wrap (#1238).
     fn any_nowrap_element(
-        nodes: &slab::Slab<Node>,
-        root_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        root_id: RawNodeId,
         text_ranges: &[crate::node::IfcTextRange],
         boxes: &[usize],
     ) -> bool {
-        let nowrap = |id: usize| {
+        let nowrap = |id: RawNodeId| {
             nodes.get(id).is_some_and(|n| {
                 Self::text_wrap_mode(&n.computed_style) != parley::style::TextWrapMode::Wrap
             })
@@ -9800,9 +9801,9 @@ impl RinchDocument {
 
     /// The elements from `node`'s parent up to, not including, the IFC root.
     fn ancestors_in_ifc(
-        nodes: &slab::Slab<Node>,
-        root_id: usize,
-        node: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        root_id: RawNodeId,
+        node: RawNodeId,
     ) -> impl Iterator<Item = usize> + '_ {
         std::iter::successors(nodes.get(node).and_then(|n| n.parent), |&id| {
             nodes.get(id).and_then(|n| n.parent)
@@ -9831,8 +9832,8 @@ impl RinchDocument {
     /// Nothing but the "…" is shaped: the lines are the ones laid out, and
     /// paint draws the cut ([`crate::node::EllipsisCut`]).
     fn ellipsis_cut(
-        nodes: &slab::Slab<Node>,
-        root_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        root_id: RawNodeId,
         il: &InlineLayout,
         container_width: f32,
         font_cx: &mut parley::FontContext,
@@ -9917,7 +9918,7 @@ impl RinchDocument {
                     let what = if is_edge_box(b.id) {
                         Item::Edge
                     } else {
-                        Item::Atomic(b.id as usize)
+                        Item::Atomic(b.id as RawNodeId)
                     };
                     items.push((b.x, b.x + b.width, what));
                 }
@@ -10319,7 +10320,7 @@ impl RinchDocument {
     /// padding, radius, or which elements get a squiggle.
     #[allow(clippy::too_many_arguments)]
     fn push_inline_spans(
-        nodes: &slab::Slab<Node>,
+        nodes: &crate::node_slab::NodeSlab,
         owner: &Node,
         start: usize,
         end: usize,
@@ -10382,8 +10383,8 @@ impl RinchDocument {
     /// walked — which is why anything it would have contributed to the line has to
     /// be reached from its descendants instead.
     fn split_inline_ancestors(
-        nodes: &slab::Slab<Node>,
-        node_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
         stop_at: Option<usize>,
     ) -> Vec<usize> {
         let mut chain = Vec::new();
@@ -10408,8 +10409,8 @@ impl RinchDocument {
     /// Recursively walk inline children, pushing text and style spans into the TreeBuilder.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn walk_inline_children<'a>(
-        nodes: &'a slab::Slab<Node>,
-        parent_id: usize,
+        nodes: &'a crate::node_slab::NodeSlab,
+        parent_id: RawNodeId,
         builder: &mut IfcText<'a>,
         child_positions: &mut Vec<(usize, LayoutResult)>,
         text_ranges: &mut Vec<crate::node::IfcTextRange>,

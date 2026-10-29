@@ -81,7 +81,7 @@ pub struct TextHitInfo {
     /// Byte offset within the block's text content.
     pub byte_offset: usize,
     /// The DOM node ID of the inline root element.
-    pub inline_root_node_id: usize,
+    pub inline_root_node_id: u64,
     /// Whether this hit info is valid (was actually resolved from layout).
     pub valid: bool,
 }

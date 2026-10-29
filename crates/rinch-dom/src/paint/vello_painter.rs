@@ -648,7 +648,7 @@ impl Painter for VelloPainter {
         verdict
     }
 
-    fn note_node_start(&mut self, node: usize) {
+    fn note_node_start(&mut self, node: crate::node::RawNodeId) {
         if let Some(slicing) = &mut self.slicing {
             // The first start is the earliest: the count only grows.
             let n = slicing.slices.len();

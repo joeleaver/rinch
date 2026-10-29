@@ -18,6 +18,7 @@ use style::values::specified::font::QueryFontMetricsFlags;
 use stylo_config as style_config;
 // CSSPixel and DevicePixel are used via euclid::Size2D type parameters
 
+use crate::node::RawNodeId;
 use crate::node::{DirtyFlags, NodeTree};
 
 mod dom_document_impl;
@@ -755,7 +756,7 @@ impl RinchDocument {
     }
 
     /// Mark a node and its ancestors as needing layout.
-    fn mark_dirty_up(&mut self, node_id: usize, flags: DirtyFlags) {
+    fn mark_dirty_up(&mut self, node_id: RawNodeId, flags: DirtyFlags) {
         let mut current = Some(node_id);
         while let Some(id) = current {
             if let Some(node) = self.tree.nodes.get_mut(id) {
@@ -768,12 +769,12 @@ impl RinchDocument {
     }
 
     /// Push a node to the dirty list with layout+paint flags.
-    fn push_dirty(&mut self, node_id: usize) {
+    fn push_dirty(&mut self, node_id: RawNodeId) {
         self.push_dirty_flags(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
     }
 
     /// Push a node to the dirty list with specific flags.
-    pub(crate) fn push_dirty_flags(&mut self, node_id: usize, flags: DirtyFlags) {
+    pub(crate) fn push_dirty_flags(&mut self, node_id: RawNodeId, flags: DirtyFlags) {
         if self.tree.contains(node_id) {
             self.tree.nodes[node_id].dirty.insert(flags);
             self.tree.push_dirty(node_id);
@@ -791,7 +792,7 @@ impl RinchDocument {
     /// removal of attribute `name`; a no-op for any attribute or element HTML
     /// maps nothing for. The restyle that re-reads them is
     /// `note_attribute_change`'s.
-    pub(crate) fn sync_presentational_hints(&mut self, node_id: usize, name: &str) {
+    pub(crate) fn sync_presentational_hints(&mut self, node_id: RawNodeId, name: &str) {
         if !matches!(name, "width" | "height") {
             return;
         }
@@ -809,7 +810,7 @@ impl RinchDocument {
 
     /// Cache a parsed inline `style` block on the node for Stylo's next
     /// cascade of it. Pair with [`parse_inline_style`].
-    pub(crate) fn cache_inline_style(&mut self, node_id: usize, pdb: PropertyDeclarationBlock) {
+    pub(crate) fn cache_inline_style(&mut self, node_id: RawNodeId, pdb: PropertyDeclarationBlock) {
         self.tree.nodes[node_id].style_attribute_cache =
             Some(ServoArc::new(self.tree.guard.wrap(pdb)));
     }
@@ -820,7 +821,7 @@ impl RinchDocument {
     /// positions, ensuring borders, backgrounds, and other visuals are cleared.
     /// Saves the absolute rect of each node because the nodes will be deleted
     /// from the tree before `compute_dirty_region` runs.
-    pub(crate) fn mark_subtree_paint_dirty(&mut self, node_id: usize) {
+    pub(crate) fn mark_subtree_paint_dirty(&mut self, node_id: RawNodeId) {
         if self.tree.contains(node_id) {
             // Save the rect the node's pixels are in before it leaves the
             // tree: compute_dirty_region won't be able to reach it after.
@@ -907,7 +908,7 @@ impl RinchDocument {
     /// the moves — records its pixels and forgets its painted state
     /// (`mark_subtree_paint_dirty`, #966), so an unpainted root has nothing
     /// painted below it.
-    pub(crate) fn record_pixels_left_by_move(&mut self, child: usize, new_parent: usize) -> bool {
+    pub(crate) fn record_pixels_left_by_move(&mut self, child: RawNodeId, new_parent: RawNodeId) -> bool {
         let Some(node) = self.tree.nodes.get(child) else {
             return false;
         };
@@ -923,7 +924,7 @@ impl RinchDocument {
     /// Adds node IDs to `paint_dirty_nodes` so `compute_dirty_region` can
     /// read their rects after layout. Unlike `mark_subtree_paint_dirty`,
     /// this doesn't save absolute rects (the nodes haven't been laid out yet).
-    pub(crate) fn mark_subtree_paint_dirty_ids(&mut self, node_id: usize) {
+    pub(crate) fn mark_subtree_paint_dirty_ids(&mut self, node_id: RawNodeId) {
         if self.tree.contains(node_id) {
             self.tree.paint_dirty_nodes.push(node_id);
             let children = self.tree.nodes[node_id].children.clone();
@@ -937,7 +938,7 @@ impl RinchDocument {
     /// Used when a parent's class or interaction state changes, since descendant
     /// selectors (e.g. `.parent--active .child`) require descendants to be
     /// re-resolved against the updated ancestor.
-    pub(crate) fn invalidate_descendant_styles(&mut self, node_id: usize) {
+    pub(crate) fn invalidate_descendant_styles(&mut self, node_id: RawNodeId) {
         // Collect children first to avoid borrow issues
         let children: Vec<usize> = self
             .tree
@@ -1409,7 +1410,7 @@ impl RinchDocument {
     ///
     /// If the image is already decoded in the cache, updates intrinsic dimensions
     /// immediately. Otherwise kicks off an async load on a background thread.
-    pub(crate) fn request_image_load_for_node(&mut self, node_id: usize, src: &str) {
+    pub(crate) fn request_image_load_for_node(&mut self, node_id: RawNodeId, src: &str) {
         if src.is_empty() {
             return;
         }
@@ -1646,7 +1647,7 @@ impl RinchDocument {
     }
 
     /// Recursively collect text content from a node and its descendants.
-    pub(crate) fn collect_text_content(&self, node_id: usize, result: &mut String) {
+    pub(crate) fn collect_text_content(&self, node_id: RawNodeId, result: &mut String) {
         let Some(node) = self.tree.nodes.get(node_id) else {
             return;
         };

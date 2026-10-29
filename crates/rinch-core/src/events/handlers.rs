@@ -339,7 +339,7 @@ pub struct InputContext {
     /// The current value of the input field.
     pub value: String,
     /// The node ID of the input element.
-    pub node_id: usize,
+    pub node_id: u64,
 }
 
 /// Registry that maps event handler IDs to callbacks.

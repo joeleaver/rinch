@@ -4,6 +4,7 @@ use servo_arc::Arc as ServoArc;
 
 use style::properties::ComputedValues;
 
+use crate::node::RawNodeId;
 use crate::RinchDocument;
 use crate::computed_style::ComputedStyle;
 
@@ -32,7 +33,7 @@ impl RinchDocument {
     /// removed, or a kept box's text child replaced.
     pub(crate) fn resolve_pseudo_element(
         &mut self,
-        parent_id: usize,
+        parent_id: RawNodeId,
         parent_style: &ServoArc<ComputedValues>,
         pseudo: style::selector_parser::PseudoElement,
         existing: Option<usize>,
@@ -369,7 +370,7 @@ impl RinchDocument {
 
     /// Take the generated box (or list marker) `cid` out of `parent_id` and
     /// free it. Answers `true` (the child list changed).
-    pub(crate) fn remove_generated_box(&mut self, parent_id: usize, cid: usize) -> bool {
+    pub(crate) fn remove_generated_box(&mut self, parent_id: RawNodeId, cid: RawNodeId) -> bool {
         // The IFC the generated box was laid out in names it; the caller's
         // structural seed re-sets the region up.
         if let Some(root) = self.tree.nodes[cid].ifc_root {
@@ -458,7 +459,7 @@ impl RinchDocument {
     /// `list-item` counter set to the appropriate value.
     pub(crate) fn compute_list_item_counters(
         &self,
-        node_id: usize,
+        node_id: RawNodeId,
     ) -> std::collections::HashMap<String, i32> {
         let mut counters = std::collections::HashMap::new();
 
@@ -555,7 +556,7 @@ impl RinchDocument {
     /// support) rather than landed here.
     ///
     /// Answers whether a marker was generated.
-    pub(crate) fn resolve_list_marker(&mut self, node_id: usize) -> bool {
+    pub(crate) fn resolve_list_marker(&mut self, node_id: RawNodeId) -> bool {
         let node = match self.tree.nodes.get(node_id) {
             Some(n) => n,
             None => return false,

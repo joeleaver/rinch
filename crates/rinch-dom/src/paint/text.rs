@@ -209,7 +209,7 @@ pub(super) fn paint_inline_layout(
                 if crate::ifc::is_edge_box(positioned_box.id) {
                     continue;
                 }
-                let child_id = positioned_box.id as usize;
+                let child_id = positioned_box.id as RawNodeId;
                 // An atomic inline past an ellipsis cut is hidden whole.
                 if hidden_boxes.contains(&child_id) {
                     continue;

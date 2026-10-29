@@ -3,6 +3,7 @@
 //! This module provides utilities for converting between byte offsets and
 //! screen coordinates in text layouts, as well as querying glyph bounds.
 
+use crate::node::RawNodeId;
 use parley::Cursor;
 use parley::layout::Affinity;
 use peniko::Brush;
@@ -996,7 +997,7 @@ pub fn ifc_offset_to_dom_cursor(
 /// Returns `None` if no range maps the given `node_id`.
 pub fn dom_cursor_to_ifc_offset(
     ranges: &[crate::node::IfcTextRange],
-    node_id: usize,
+    node_id: RawNodeId,
     node_offset: usize,
 ) -> Option<usize> {
     for r in ranges {

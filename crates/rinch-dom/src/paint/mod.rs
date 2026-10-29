@@ -1482,7 +1482,7 @@ impl Painter for ClipTrackingPainter<'_> {
     fn split_surface(&mut self, split: &painter::SurfaceSplit) -> painter::SplitVerdict {
         self.inner.split_surface(split)
     }
-    fn note_node_start(&mut self, node: usize) {
+    fn note_node_start(&mut self, node: RawNodeId) {
         self.inner.note_node_start(node)
     }
 }
@@ -5216,7 +5216,7 @@ mod tests {
     /// no transform and no IFC content-box offset. This is what every walk in
     /// the codebase used to do, and it is the box the assertions below must
     /// *not* return.
-    fn untransformed_origin(doc: &RinchDocument, node_id: usize) -> (f32, f32) {
+    fn untransformed_origin(doc: &RinchDocument, node_id: RawNodeId) -> (f32, f32) {
         let (mut x, mut y) = (0.0_f32, 0.0_f32);
         let mut cur = Some(node_id);
         while let Some(id) = cur {
