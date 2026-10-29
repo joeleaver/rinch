@@ -43,7 +43,7 @@
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
-use rinch_dom::animation::{AnimationResult, tick_animations};
+use rinch_dom::animation::AnimationResult;
 use rinch_dom::transition::{AnimatableValue, TransitionProperty};
 
 /// A `div` with inline style `base` and `animation: k 1000ms linear`, under
@@ -74,12 +74,23 @@ fn animated(base: &str, keyframes: &str) -> (RinchDocument, NodeId) {
     (doc, div)
 }
 
-/// Tick the div's animation to `ms` after its start and lay out again; the
-/// box's laid-out `(width, height)`.
+/// Tick the div's animation to `ms` after its start the way a frame does —
+/// `RinchDocument::tick_animations`, which also re-syncs the Taffy style — and
+/// lay out again; the box's laid-out `(width, height)`.
+///
+/// That tick reads the wall clock, so the animation's start is moved to `ms`
+/// before now; the microseconds between the two reads are far below the
+/// half-pixel tolerance at these rates (100px/s).
 fn layout_at(doc: &mut RinchDocument, div: NodeId, ms: f64) -> (f32, f32) {
-    let t0 = doc.tree.active_animations[&div.0][0].start_time_ms;
-    tick_animations(&mut doc.tree, t0 + ms);
-    doc.tree.layout_dirty = true;
+    let now = web_time::SystemTime::now()
+        .duration_since(web_time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        * 1000.0;
+    for anim in doc.tree.active_animations.get_mut(&div.0).unwrap() {
+        anim.start_time_ms = now - ms;
+    }
+    doc.tick_animations();
     doc.resolve_layout(800.0, 600.0);
     let n = doc.tree.get(div.0).expect("the div is live");
     (n.layout.width, n.layout.height)
@@ -316,5 +327,23 @@ fn a_transform_only_animation_carries_no_layout_property() {
         props,
         vec![TransitionProperty::Transform],
         "a transform-only rule animates transform alone"
+    );
+}
+
+/// Chrome re-reads the base on every style change: `width: 100px` set to `0`
+/// at 500ms under `to { width: 200px }` gives 100px at once and 150px at
+/// 750ms, the same animation object, clock kept. A targeted restyle keeping
+/// the implicit stop it was minted with is #781's.
+#[test]
+#[ignore = "#781: a targeted restyle does not refresh a running animation's implicit stop"]
+fn a_base_width_changed_mid_animation_is_re_read() {
+    let (mut doc, div) = animated("width: 100px", "to { width: 200px; }");
+    close(layout_at(&mut doc, div, 500.0).0, 150.0, "width at 500ms");
+    doc.set_attribute(div, "style", "width: 0px; animation: k 1000ms linear");
+    doc.resolve_layout(800.0, 600.0);
+    close(
+        layout_at(&mut doc, div, 750.0).0,
+        150.0,
+        "width at 750ms, base 0",
     );
 }
