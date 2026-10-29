@@ -751,10 +751,14 @@ Where the native backend differs from 3.1–3.6, the code holds:
   was the tests' audio capture (`testing::capture_audio_output` keeps every
   sample). With it cleared, RSS is flat over 60 calls under
   `MALLOC_ARENA_MAX=1`, and levels off with glibc's default arenas
-  (`tests/media_lifetime.rs`). On a loaded host the allocator sometimes
-  keeps one step (14 MB once in about fifteen runs, flat before and after),
-  so the test fails on the smaller of two ten-call growths, which a leak
-  raises and a step does not.
+  (`tests/media_lifetime.rs`). RSS still moved in allocator steps (over
+  3 MB in one ten-call window with no leak), and it missed a planted leak
+  of 0.3 MB a call, so since #2009 the test counts the heap in use
+  instead: Rust's (a counting global allocator) and malloc's (glibc's
+  `mallinfo2`, which sees the C codecs too), after the call's threads and
+  the test's source threads have exited. Over ten calls Rust's heap grows
+  at most 128 B and malloc's 40 kB; the bound is 1 MB per ten calls, for
+  each window.
 - **No audio device** (a CI runner) is reported once through `on_error`
   as `RtcError::Media`; decoding goes on. Tests read the mix through
   `testing::capture_audio_output`.
