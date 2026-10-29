@@ -720,6 +720,98 @@ pub(crate) fn first_line_baseline(layout: &parley::layout::Layout<Brush>) -> Opt
     layout.lines().next().map(|line| line.metrics().baseline)
 }
 
+/// Its last line's baseline, from the layout's top (`None` when it has no
+/// line): an `inline-block`'s baseline is its last line box's (CSS 2.1
+/// §10.8.1, #663).
+pub(crate) fn last_line_baseline(layout: &parley::layout::Layout<Brush>) -> Option<f32> {
+    layout.lines().last().map(|line| line.metrics().baseline)
+}
+
+/// Atomic inline `id`'s baseline from its border-box top, read from the
+/// Taffy layout its detached compute just made (#663): what parley 0.12 lines
+/// the box up by (`InlineBox::baseline`) against the line's strut.
+///
+/// - an `inline-flex` / `inline-grid` takes its **first** baseline, the first
+///   in-flow item's (css-flexbox-1 §8.5, css-grid-1 §11.8; approximated: no
+///   baseline alignment groups, no reordering);
+/// - any other atomic inline (an `inline-block`, a `<button>`) its **last**
+///   line box's, found through its last in-flow block child that has one, or
+///   none — lined up by its bottom edge — when it has no line box or its
+///   `overflow` is neither `visible` nor `clip` (CSS 2.1 §10.8.1);
+/// - a replaced element and a form control with no line of its own, none.
+pub(crate) fn atomic_inline_baseline(tree: &crate::node::NodeTree, id: usize) -> Option<f32> {
+    use crate::computed_style::{DisplayValue, OverflowValue};
+    let node = tree.nodes.get(id)?;
+    let taffy_id = node.taffy_id?;
+    let style = &node.computed_style;
+    let first = matches!(
+        style.display,
+        DisplayValue::InlineFlex | DisplayValue::InlineGrid
+    );
+    let clips = |o: OverflowValue| !matches!(o, OverflowValue::Visible | OverflowValue::Clip);
+    if !first && (clips(style.overflow_x) || clips(style.overflow_y)) {
+        return None;
+    }
+    taffy_baseline(tree, taffy_id, first, 0)
+}
+
+/// [`atomic_inline_baseline`]'s walk over the Taffy subtree at `taffy_id`:
+/// its first (`first`) or last line's baseline, from its border-box top.
+fn taffy_baseline(
+    tree: &crate::node::NodeTree,
+    taffy_id: taffy::NodeId,
+    first: bool,
+    depth: usize,
+) -> Option<f32> {
+    // Deep enough for any real tree; a cycle cannot happen, a pathological
+    // nesting just lines the box up by its bottom.
+    if depth > 256 {
+        return None;
+    }
+    let taffy = &tree.taffy;
+    let layout = taffy.unrounded_layout(taffy_id);
+    let top = layout.padding.top + layout.border.top;
+    let leaf = match taffy.get_node_context(taffy_id) {
+        Some(NodeContext::InlineRoot(root)) => Some(*root),
+        Some(NodeContext::Text(text)) => Some(text.node_id),
+        _ => None,
+    };
+    if let Some(leaf) = leaf {
+        let width = layout.size.width
+            - layout.padding.left
+            - layout.padding.right
+            - layout.border.left
+            - layout.border.right;
+        let entry = tree
+            .atomic_line_baselines
+            .get(&leaf)?
+            .iter()
+            .rev()
+            .find(|e| (e.0 - width).abs() <= 0.5)?;
+        return if first { entry.1 } else { entry.2 }.map(|b| top + b);
+    }
+    let count = taffy::TraversePartialTree::child_count(taffy, taffy_id);
+    let in_flow = |child: taffy::NodeId| {
+        let style = taffy.style(child).ok();
+        style.is_some_and(|s| {
+            s.display != taffy::Display::None && s.position != taffy::Position::Absolute
+        })
+    };
+    let at = |i: usize| -> Option<f32> {
+        let child = taffy.child_at_index(taffy_id, i).ok()?;
+        if !in_flow(child) {
+            return None;
+        }
+        let y = taffy.unrounded_layout(child).location.y;
+        taffy_baseline(tree, child, first, depth + 1).map(|b| y + b)
+    };
+    if first {
+        (0..count).find_map(at)
+    } else {
+        (0..count).rev().find_map(at)
+    }
+}
+
 /// A measure's `LayoutOutput` with its first baseline (#1013).
 ///
 /// `compute_leaf_layout` reports `Baselines::NONE` whatever the measure did, so
@@ -8123,6 +8215,9 @@ impl RinchDocument {
         // The layouts this compute's text leaves are measured with, kept for
         // paint (#904) — see `NodeTree::atomic_leaf_layouts`.
         let mut leaf_layouts: HashMap<(usize, u32), parley::layout::Layout<Brush>> = HashMap::new();
+        // Each IFC root's and text leaf's line baselines, by the content
+        // width it was measured at (#663): `NodeTree::atomic_line_baselines`.
+        let mut baselines: Vec<(usize, f32, Option<f32>, Option<f32>)> = Vec::new();
         perf.bump(crate::perf::Counter::InlineBlockComputes);
         let _ = tree.taffy.compute_layout_with_measure(
             taffy_id,
@@ -8178,10 +8273,16 @@ impl RinchDocument {
                                 );
                                 inline_layout.hang.record(perf);
                                 first_baseline = first_line_baseline(&inline_layout.layout);
+                                let width =
+                                    known_dims.width.unwrap_or(inline_layout.measured_width());
+                                baselines.push((
+                                    root_id,
+                                    width,
+                                    first_baseline,
+                                    last_line_baseline(&inline_layout.layout),
+                                ));
                                 taffy::Size {
-                                    width: known_dims
-                                        .width
-                                        .unwrap_or(inline_layout.measured_width()),
+                                    width,
                                     height: known_dims
                                         .height
                                         .unwrap_or(inline_layout.layout.height()),
@@ -8201,11 +8302,17 @@ impl RinchDocument {
                                 let leaf = shape_text_leaf(font_cx, layout_cx, text, wrap_width);
                                 leaf.hang.record(perf);
                                 first_baseline = leaf.first_baseline();
+                                let last = if leaf.blank {
+                                    None
+                                } else {
+                                    last_line_baseline(&leaf.layout)
+                                };
                                 let layout = leaf.layout;
                                 let size = taffy::Size {
                                     width: known_dims.width.unwrap_or(leaf.width),
                                     height: known_dims.height.unwrap_or(leaf.height),
                                 };
+                                baselines.push((text.node_id, size.width, first_baseline, last));
                                 // Keyed exactly as the root compute keys its own text
                                 // leaves, so `copy_cached_text_layouts` picks between
                                 // them by the same rule.
@@ -8265,6 +8372,14 @@ impl RinchDocument {
             },
         );
         tree.atomic_leaf_layouts.extend(leaf_layouts);
+        for (id, width, first, last) in baselines {
+            let entry = tree.atomic_line_baselines.entry(id).or_default();
+            entry.retain(|e| (e.0 - width).abs() > 0.01);
+            if entry.len() >= 8 {
+                entry.remove(0);
+            }
+            entry.push((width, first, last));
+        }
     }
 
     /// Measure a set of detached atomic inlines (`inline-block`, `inline-flex`,
@@ -8427,11 +8542,13 @@ impl RinchDocument {
             if let Ok(taffy_layout) = self.tree.taffy.layout(taffy_id) {
                 let layout_size = taffy_layout.size;
                 let node_id = self.tree.taffy_map.get(&taffy_id).copied();
+                let baseline = node_id.and_then(|nid| atomic_inline_baseline(&self.tree, nid));
                 if let Some(nid) = node_id
                     && let Some(node) = self.tree.nodes.get_mut(nid)
                 {
                     node.layout.width = layout_size.width;
                     node.layout.height = layout_size.height;
+                    node.atomic_baseline = baseline;
                 }
             }
 
@@ -10724,13 +10841,25 @@ impl RinchDocument {
                         Some(atomic) => atomic.size(child_id, child),
                         None => (child.layout.width, child.layout.height),
                     };
+                    // Its baseline (#663), as its compute last laid it out.
+                    // Lined up at another height than that one (a measure's
+                    // contribution), a last-line baseline keeps its distance
+                    // from the bottom and a first-line one from the top.
+                    let baseline = child.atomic_baseline.map(|b| {
+                        let first = matches!(
+                            child.computed_style.display,
+                            crate::computed_style::DisplayValue::InlineFlex
+                                | crate::computed_style::DisplayValue::InlineGrid
+                        );
+                        if first { b } else { b + (height - child.layout.height) }
+                    });
                     builder.push_inline_box(parley::InlineBox {
                         id: child_id as u64,
                         index: 0, // will be set by builder
                         width: width * scale,
                         height: height * scale,
                         kind: parley::InlineBoxKind::InFlow,
-                        baseline: None,
+                        baseline: baseline.map(|b| b * scale),
                         vertical_align: parley::style::VerticalAlign::BASELINE,
                     });
                     child_positions.push((child_id, LayoutResult::default()));
