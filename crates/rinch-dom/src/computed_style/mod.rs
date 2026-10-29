@@ -61,6 +61,11 @@ pub struct ComputedStyle {
     pub align_items: Option<AlignItemsValue>,
     pub align_self: Option<AlignSelfValue>,
     pub justify_content: Option<JustifyContentValue>,
+    /// `justify-items`; `None` is `normal` (Taffy then stretches an
+    /// auto-width grid item and starts a sized one).
+    pub justify_items: Option<JustifyValue>,
+    /// `justify-self`; `None` is `auto` (the parent's `justify-items`).
+    pub justify_self: Option<JustifyValue>,
 
     // Spacing - padding
     pub padding_top: LengthPercentageValue,
@@ -311,6 +316,8 @@ impl Default for ComputedStyle {
             align_items: None,
             align_self: None,
             justify_content: None,
+            justify_items: None,
+            justify_self: None,
 
             padding_top: LengthPercentageValue::Zero,
             padding_right: LengthPercentageValue::Zero,

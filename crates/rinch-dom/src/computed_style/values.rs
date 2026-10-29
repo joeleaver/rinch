@@ -626,6 +626,47 @@ impl AlignSelfValue {
     }
 }
 
+/// Where `justify-items` / `justify-self` puts a grid item (or an absolute
+/// box's static position in a grid) on the inline axis (#1511). The
+/// direction-relative keywords are already resolved: rinch lays out left to
+/// right, so `left`, `self-start` and `flex-start` are `Start`, `right`,
+/// `self-end` and `flex-end` are `End` (Chrome 156 answers the same).
+/// `baseline` has no inline-axis meaning for a horizontal item and falls back
+/// to `safe start` (`last baseline` to `safe end`), as css-align-3 §9.3 says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum JustifyKeyword {
+    Start,
+    End,
+    Center,
+    Stretch,
+}
+
+/// A `justify-items` or `justify-self` value: a [`JustifyKeyword`] and the
+/// `safe` overflow modifier (an item that overflows its area is then placed
+/// at the start, not centred or end-aligned past the area's start edge).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct JustifyValue {
+    pub keyword: JustifyKeyword,
+    pub safe: bool,
+}
+
+impl JustifyValue {
+    /// Convert to Taffy's `JustifyItems` / `JustifySelf` (one type).
+    pub fn to_taffy(&self) -> taffy::JustifyItems {
+        use taffy::JustifyItems as J;
+        match (self.keyword, self.safe) {
+            (JustifyKeyword::Start, false) => J::START,
+            (JustifyKeyword::Start, true) => J::SAFE_START,
+            (JustifyKeyword::End, false) => J::END,
+            (JustifyKeyword::End, true) => J::SAFE_END,
+            (JustifyKeyword::Center, false) => J::CENTER,
+            (JustifyKeyword::Center, true) => J::SAFE_CENTER,
+            // `safe stretch` is not valid CSS; stretch never overflows.
+            (JustifyKeyword::Stretch, _) => J::STRETCH,
+        }
+    }
+}
+
 /// CSS justify-content property values.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum JustifyContentValue {

@@ -200,7 +200,13 @@ the static position is the box as its sole flex item: `justify-content` on the
 main axis and `align-self`, else `align-items`, on the cross (`stretch` as the
 start; #1492 — `to_taffy_style` used to force `align-self: flex-start` on every
 out-of-flow box, so the cross axis ignored `align-items`; pins:
-`static_position_flex_1492_tests.rs`, Chrome 153). Not Chrome's, each pinned in
+`static_position_flex_1492_tests.rs`, Chrome 153). In a **grid** container
+that is its containing block, Taffy aligns the box in the container's padding
+box by its own `justify-self`/`align-self`, else the container's
+`justify-items`/`align-items` (#1511 carried the `justify-*` pair, which used to
+be dropped; pins: `justify_items_1511_tests.rs`, Chrome 156). Under an
+unpositioned grid Chrome aligns it in the grid's content box and rinch in its
+padding box (#1986). Not Chrome's, each pinned in
 `known_differences_from_chrome`: the static position
 follows rinch's line boxes, so below a line holding a 26px `inline-block` and
 text it is 4px high (rinch's line is 26px, Chrome's 30 — #663); a fixed box with no

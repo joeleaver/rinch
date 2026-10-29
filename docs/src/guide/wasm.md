@@ -206,6 +206,33 @@ listeners once — so any number can coexist without interfering. Dropping a
 `RootHandle` keeps the root mounted; only `unmount()` tears it down. See
 `examples/islands-web` for a runnable demo.
 
+## A page with no rinch root
+
+Every `mount*` also installs rinch's runtime for the page: the timer backend
+that `set_timeout`, `set_interval` and `sleep` run on (`window.setTimeout`), the
+scheduler that polls `spawn_local` tasks (a microtask each), and the drain that
+samples `poll_signal`s. A page that runs rinch code but mounts no root — a game
+that owns the canvas, or `rinch-ws` / `rinch-rtc` code with no UI of its own —
+installs it with one call at startup:
+
+```rust
+#[wasm_bindgen(start)]
+pub fn start() {
+    rinch_web::install_runtime(); // or `rinch::install_web_runtime()` without rinch-web
+    // ... set_timeout / spawn_local / rinch-ws from here on
+}
+```
+
+It is idempotent, page-global and builds no DOM: no root, no event delegation,
+no theme `<style>`. A later mount is unaffected. Without it a `set_timeout`
+never fires (rinch logs `set_timeout: no timer backend installed`), and a
+`spawn_local` task is never polled. Install it before the first timer: a
+timeout armed earlier is lost, while a task spawned earlier is picked up.
+
+An app on `rinch::embed::RinchContext` gets the timer and task halves from
+`RinchContext::new` (see the [game-engine guide](game-engine.md#rinchcontext)),
+so it needs the call only for timers armed before its first context.
+
 ## Mounting with a menu bar
 
 Browsers have no window menu to attach a native menu bar to. Rinch renders one
@@ -498,7 +525,6 @@ position (the element's centre) and no modifier held.
 ## What Doesn't (Yet)
 
 - **Custom painting** — Vello and tiny-skia don't run in the browser. The browser paints for you instead.
-- **Game engine embedding** — `RenderSurface` and `RinchContext` are desktop-only.
 - **Native menus** — There is no OS menu bar to attach one to. Rinch renders its
   own DOM menu bar instead, from the same `Menu`/`MenuItem` declarations the
   desktop uses — see [Mounting with a menu bar](#mounting-with-a-menu-bar).
