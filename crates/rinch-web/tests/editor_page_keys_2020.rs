@@ -21,6 +21,9 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[path = "support/engine.rs"]
+mod engine;
+
 fn document() -> web_sys::Document {
     web_sys::window().unwrap().document().unwrap()
 }
@@ -206,6 +209,45 @@ fn expected_blocks(bands: &[(f64, f64)], y: f64) -> Vec<usize> {
     out
 }
 
+/// The scroller's end: the largest `scrollTop` the browser lets it take, asked
+/// of the browser (set past the end, read back, put back). Not
+/// `scrollHeight - clientHeight` in every engine: Firefox 158 (CI's) answered
+/// 1463 for this fixture's end where `scrollHeight - clientHeight` is 1464
+/// (both tests that page to the end, batch #2042; presumably `scrollHeight`
+/// rounds the scrollable overflow up where the scroll range does not), while
+/// Firefox 155 answers the two alike, as Chrome does. Each
+/// engine's own answer is pinned: Chrome's end is `scrollHeight -
+/// clientHeight` (155 and 156), Firefox's is its `scrollTopMax`, at most a
+/// pixel short of that.
+fn scroll_end(sc: &web_sys::Element) -> i32 {
+    let was = sc.scroll_top();
+    sc.set_scroll_top(i32::MAX);
+    let end = sc.scroll_top();
+    sc.set_scroll_top(was);
+    let span = sc.scroll_height() - sc.client_height();
+    if engine::is_gecko() {
+        let top_max = js_sys::Reflect::get(sc, &"scrollTopMax".into())
+            .ok()
+            .and_then(|v| v.as_f64());
+        assert_eq!(
+            top_max,
+            Some(f64::from(end)),
+            "control: Firefox's scrollTopMax is the end"
+        );
+        assert!(
+            span - end == 0 || span - end == 1,
+            "control: Firefox's end {end} is scrollHeight - clientHeight ({span}) \
+             or a pixel short of it"
+        );
+    } else {
+        assert_eq!(
+            end, span,
+            "control: Chrome's end is scrollHeight - clientHeight"
+        );
+    }
+    end
+}
+
 fn mouse(name: &str, x: f32, y: f32) {
     let target = document()
         .element_from_point(x, y)
@@ -289,7 +331,7 @@ fn page_down_at_the_end_goes_to_the_document_end_and_page_up_to_its_start() {
     let sc = f.scroller();
     assert_eq!(
         sc.scroll_top(),
-        sc.scroll_height() - sc.client_height(),
+        scroll_end(&sc),
         "the scroller is at its end"
     );
     for _ in 0..12 {
@@ -372,7 +414,7 @@ fn a_page_that_lands_on_the_last_line_goes_to_the_end() {
     let (_, cy, ch) = f.caret();
     let (lt, lb) = f.bands()[n - 1];
     let page = (f64::from(sc.client_height()) * 0.875).round();
-    let max = sc.scroll_height() - sc.client_height();
+    let max = scroll_end(&sc);
     // How far the page's own scroll will get (the rest of the page is the
     // caret's move on screen).
     let scrolled = f64::from((before + page as i32).min(max) - before);
@@ -423,7 +465,7 @@ fn a_page_landing_below_the_window_finds_its_line() {
     // Short of the scroller's end by `short` px, so the page's scroll stops
     // after `short`, with the caret on a block on screen whose page lands
     // below the window and before the last line.
-    let max = sc.scroll_height() - sc.client_height();
+    let max = scroll_end(&sc);
     let last = f.bands().len() - 1;
     let mut found = None;
     'search: for short in (30..=160).step_by(10) {
