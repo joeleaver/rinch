@@ -3885,6 +3885,27 @@ impl EditorHandle {
         self.inner.borrow().reveal.map(|(from, _, _)| from)
     }
 
+    /// Whether the caret owes a scroll into view that no caret pass has
+    /// fulfilled yet (the [`ScrollGate`] is armed) — a caret move whose block
+    /// has no geometry to scroll to. Desktop block virtualization lays out the
+    /// block holding the caret then (#845): the window follows the scroll
+    /// position, so it would never reach a block the caret moved to.
+    #[doc(hidden)]
+    pub fn caret_scroll_owed(&self) -> bool {
+        self.inner.borrow().scroll.pending
+    }
+
+    /// Owe the caret a scroll into view again, as a caret move does: the next
+    /// caret pass of the focused editor scrolls it into view if it is not.
+    /// Desktop block virtualization calls it while the blocks around a caret
+    /// it scrolled to by their *estimated* heights are being measured (#845):
+    /// their real heights move the caret, and the scroll that was fulfilled on
+    /// the estimate has to follow it.
+    #[doc(hidden)]
+    pub fn owe_caret_scroll(&self) {
+        self.inner.borrow_mut().scroll.arm();
+    }
+
     /// Both ends of a pending [`Self::scroll_into_view`] range, `from <= to`.
     /// Desktop block virtualization keeps the blocks holding both laid out.
     #[doc(hidden)]
