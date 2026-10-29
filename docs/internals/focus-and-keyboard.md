@@ -451,6 +451,42 @@ neighbour (next stop after it for Tab, previous for Shift+Tab; with nothing
 after it, the first stop at `0`), all measured in Chrome 153 and pinned by
 `app/tab_order_tests.rs` and the #435 fixtures in `rinch-web/tests/trap_focus.rs`.
 
+**Scroll into view moves every scroll container, the page last** (#842).
+Tab focus, the editor's caret and reveal probes, `<select>`'s and `Tree`'s
+keyboard highlight and any app all go through `NodeHandle::scroll_into_view`
+(and `scroll_to_fraction`); the web answers with the browser's
+`scrollIntoView({block: "nearest", inline: "nearest"})`, desktop queues the
+request and `RinchApp::apply_scroll_into_view` applies it after the layout
+through `app/scroll_into_view.rs`, which does what CSSOM View and Chrome do.
+It walks the target's DOM ancestors, and each one that `scrolls_x()` or
+`scrolls_y()` (so not a `display: contents` box, #1038, and not
+`overflow: hidden` — Chrome does scroll a hidden one, rinch does not, #2013) brings the
+target's **painted** box into its scrollport, the **padding** box
+(`clientTop`/`clientHeight`), each axis `nearest`: inside or covering it moves
+nothing, otherwise the near edge is aligned (the start edge for a box larger
+than the scrollport sticking out past the end). Each scroller further out
+brings the target *as the inner ones have just placed it*, **clipped to their
+scrollports** (Chrome's `ScrollRectToVisible` intersects as it climbs): not
+the scroller around it, which can be taller than the window — measured,
+Chrome scrolls the page to the target there, not to the scroller's top. The
+page scroller is `<body>` (the UA sheet's `overflow-y: auto`). The walk stops
+above a `position: fixed` box (`box_position()`): nothing outside it moves it.
+A placed request (`scroll_to_fraction`) is placed in the first ancestor that
+scrolls vertically and is `nearest` everywhere else, as the web backend's
+`request_scroll_to_fraction` does. A scroller is marked scrolled (paint-dirty,
+hit cache) only when its offset changed. Until #842 desktop moved the nearest
+`overflow-y` scroller only, vertically only, from its border-box top against
+its content-box height (#1367): a caret in a scroller below the fold of a
+scrolling page was scrolled into its scroller and left off screen. Not
+modelled: the containing-block chain (an `absolute` box is walked through its
+DOM ancestors, so a scroller between it and its containing block is moved
+although it cannot move the box), and smooth scrolling (neither backend
+animates it). Pins: `app/scroll_into_view_nested_842_tests.rs` (Chrome 156,
+two and three levels of padded, bordered scrollers in a scrolling page, both
+axes, a placed target, a scroller taller than the window, a fixed boundary,
+#1367's padded rows), `app/mod.rs` `scroll_into_view_tests` (transforms), and
+`editor_scroll_gate_tests::nested_scrollers_the_outer_one_follows_too`.
+
 **`data-nofocus` takes the click without the keyboard** (issue #312) — the
 `preventDefault()`-on-mousedown mechanism browsers converged on, which an editor
 toolbar needs so Bold does not blur the editor it acts on. Same boolean rule as

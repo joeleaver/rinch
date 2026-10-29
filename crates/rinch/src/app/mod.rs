@@ -33,6 +33,7 @@ mod dropdown_viewport_1764_tests;
 mod review_1589_tests;
 #[cfg(test)]
 mod review_1601_tests;
+mod scroll_into_view;
 #[cfg(test)]
 mod tree_drop_tests;
 #[cfg(test)]
@@ -2029,8 +2030,9 @@ impl RinchApp {
     /// Apply deferred scroll-into-view requests.
     ///
     /// Must be called AFTER `resolve_layout` so node positions are valid.
-    /// Walks ancestors to find the nearest scroll container and adjusts its
-    /// scroll offset to make the target element visible.
+    /// Each request moves every scroller the target is in, innermost first and
+    /// the page last, on both axes — the browser's `scrollIntoView` (#842; see
+    /// `scroll_into_view.rs`).
     fn apply_scroll_into_view(&mut self) {
         let Some(doc) = &self.doc else { return };
         let (nearest, placed) = {
@@ -2051,131 +2053,11 @@ impl RinchApp {
             .map(|n| (n, None))
             .chain(placed.into_iter().map(|(n, f, m)| (n, Some((f, m)))));
 
-        for (target_nid, placement) in requests {
+        for (target, placement) in requests {
             let mut d = doc.borrow_mut();
-
-            // Walk ancestors to find nearest scroll container
-            let target_id = target_nid.0;
-            let scroll_container = {
-                let mut current = d.tree.nodes.get(target_id).and_then(|n| n.parent);
-                let mut found = None;
-                while let Some(ancestor_id) = current {
-                    if let Some(ancestor) = d.tree.nodes.get(ancestor_id) {
-                        // `scrolls_y`, not `overflow_y`: a `display: contents`
-                        // ancestor has no box to scroll (#1038).
-                        if ancestor.scrolls_y() {
-                            found = Some(ancestor_id);
-                            break;
-                        }
-                        current = ancestor.parent;
-                    } else {
-                        break;
-                    }
-                }
-                found
-            };
-
-            let Some(container_id) = scroll_container else {
-                continue;
-            };
-
-            // Where the target is *painted*, in the scroll container's own
-            // coordinate space — the space `scroll_offset` moves content in.
-            // Measured against the container's border-box origin at the
-            // *current* scroll, so the two branches below read the adjustment
-            // straight off it.
-            //
-            // Two things about this are worth stating, because neither is
-            // obvious and the parent-chain sum it replaces got the first wrong
-            // while implicitly relying on the second (#203):
-            //
-            // - What "visible" means is where the box is **drawn**, not where
-            //   Taffy laid it out. The old walk summed `layout.y`, so any
-            //   transform between the container and the target scrolled to a
-            //   position the element is not at — including the common case of
-            //   a `translate`d panel inside a scroller, where Tab could land on
-            //   a control and scroll it off screen.
-            //
-            // - The adjustment is nevertheless **1:1** with the scroll, even
-            //   under a `scale()` between the two. `paint_node` composes a
-            //   descendant's transform about that descendant's *own* origin,
-            //   and the scroll moves that origin along with the box, so the
-            //   linear part cancels: a scroll of N moves the painted box by N
-            //   in the container's space, at any scale. Dividing by a composed
-            //   scale here would be wrong, which is what
-            //   `a_scaled_subtree_scrolls_by_the_painted_distance` pins.
-            //
-            // For a *rotated* ancestor this is the bounding box, the same
-            // approximation `painted_border_box` makes everywhere else.
-            let painted = rinch_dom::paint::painted_border_box(&d.tree, target_id, 1.0);
-            let local = |y: f64| {
-                rinch_dom::paint::point_in_painted_box(&d.tree, container_id, 1.0, painted.x0, y)
-                    .map(|(_, ly)| ly)
-            };
-            let (Some(elem_top), Some(elem_bottom)) = (local(painted.y0), local(painted.y1)) else {
-                // A non-invertible transform on the chain: the subtree paints
-                // to zero area, so no scroll position makes it visible.
-                continue;
-            };
-
-            let container_nid = rinch_core::dom::NodeId(container_id);
-            let visible_height = d.client_height(container_nid);
-            let current_scroll = d.scroll_top(container_nid);
-            let content_height = d.scroll_height(container_nid);
-            let max_scroll = (content_height - visible_height).max(0.0);
-
-            let new_scroll = if let Some((fraction, margin)) = placement {
-                // Placed: the element's top at `fraction` of the visible
-                // height, at least `margin` inside either edge (the top edge
-                // wins when the element is too tall for both).
-                //
-                // "Visible" is the container's **padding** box, from the
-                // inside of its top border — what a browser scrolls content
-                // through (`clientTop` / `clientHeight`), and so what the web
-                // backend measures against. `elem_top` is from the border
-                // box's top and `client_height` is the content box here, so
-                // both are corrected; the nearest branch below keeps its
-                // pre-existing reading, which mixes that
-                // border-box origin with the content-box height (#1367).
-                let cs = &d.tree.nodes[container_id].computed_style;
-                let border_top = f64::from(cs.border_top_width.to_px());
-                let padding_box = visible_height
-                    + f64::from(cs.padding_top.to_px())
-                    + f64::from(cs.padding_bottom.to_px());
-                let (fraction, margin) = (f64::from(fraction), f64::from(margin));
-                let height = elem_bottom - elem_top;
-                let at = (fraction * padding_box)
-                    .min(padding_box - margin - height)
-                    .max(margin);
-                current_scroll + elem_top - border_top - at
-            } else if elem_top < 0.0 {
-                // Element is above the visible area — scroll up
-                current_scroll + elem_top
-            } else if elem_bottom > visible_height {
-                // Element is below the visible area — scroll down
-                current_scroll + (elem_bottom - visible_height)
-            } else {
-                continue; // already visible
-            };
-
-            let mut clamped = new_scroll.clamp(0.0, max_scroll);
-            // `mark_scrolled` floors the offset to the device pixel grid
-            // (#1543). Scrolling down to reveal a box, a floor would stop up to
-            // a device pixel short of its bottom edge, so round that one up —
-            // as far as the range allows, where the floor takes over again.
-            if clamped > current_scroll {
-                let s = d.tree.device_scale;
-                if s.is_finite() && s > 0.0 {
-                    clamped = ((clamped * s - 1e-6).ceil() / s).clamp(clamped, max_scroll);
-                }
+            if scroll_into_view::reveal(&mut d, target.0, placement) {
+                self.scene_dirty = true;
             }
-            if let Some(node) = d.tree.nodes.get_mut(container_id) {
-                node.scroll_offset.1 = clamped;
-            }
-            // A scroll moves every box inside the container: repaint the
-            // container, as the wheel does (which also tells the hit cache).
-            d.tree.mark_scrolled(container_id);
-            self.scene_dirty = true;
         }
     }
 
@@ -12491,6 +12373,10 @@ mod editor_virtualized_caret_scroll_845_tests;
 mod grapheme_hit_1684_tests;
 #[cfg(test)]
 mod review_1687_tests;
+#[cfg(test)]
+mod scroll_into_view_nested_842_tests;
+#[cfg(test)]
+mod scroll_into_view_review_2014_tests;
 #[cfg(test)]
 mod window_facts_1770_tests;
 
