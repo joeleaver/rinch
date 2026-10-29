@@ -97,7 +97,7 @@ const CONTAINER: &str = "width: 400px; padding: 10px 20px 30px 40px; \
                          line-height: 20px";
 
 /// The anonymous IFC root that owns `child`, asserted to exist.
-fn anon_root_of(doc: &RinchDocument, child: NodeId) -> usize {
+fn anon_root_of(doc: &RinchDocument, child: NodeId) -> u64 {
     let root = doc
         .tree
         .get(child.0)

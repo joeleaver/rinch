@@ -44,9 +44,9 @@ fn is(p: [u8; 4], rgb: [u8; 3]) -> bool {
 /// and a small label far below standing in for anything that ticks.
 ///
 /// Returns the app, the label's node id, and the game's surface.
-fn mount() -> (RinchApp, usize, RenderSurfaceHandle) {
+fn mount() -> (RinchApp, u64, RenderSurfaceHandle) {
     let game = create_render_surface_with_name("game-361");
-    let label_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let label_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let captured = label_id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -104,7 +104,7 @@ fn paint(app: &mut RinchApp) -> FrameStats {
 }
 
 /// Mark `label` paint-dirty, the way a hover or a ticking clock does.
-fn dirty(app: &mut RinchApp, label: usize) {
+fn dirty(app: &mut RinchApp, label: u64) {
     app.doc
         .as_ref()
         .unwrap()
@@ -540,7 +540,7 @@ fn game_viewport_inline_bench() {
 // does and compares it with the same scene repainted in full in reference mode
 // (no copy, no pooling shortcuts), byte for byte.
 
-thread_local! { static CARD_ID: Cell<usize> = const { Cell::new(0) }; }
+thread_local! { static CARD_ID: Cell<u64> = const { Cell::new(0) }; }
 
 /// A spacer above a card (optionally rounded, optionally inside an opacity
 /// wrapper) holding the game viewport, and an overlay over the viewport.
@@ -549,9 +549,9 @@ fn oracle_mount(
     name: &'static str,
     card_extra: &'static str,
     wrapper_extra: &'static str,
-) -> (RinchApp, usize, usize, RenderSurfaceHandle) {
+) -> (RinchApp, u64, u64, RenderSurfaceHandle) {
     let game = create_render_surface_with_name(name);
-    let ids: Rc<Cell<(usize, usize, usize)>> = Rc::new(Cell::new((0, 0, 0)));
+    let ids: Rc<Cell<(u64, u64, u64)>> = Rc::new(Cell::new((0, 0, 0)));
     let captured = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -636,7 +636,7 @@ fn first_diff(a: &[u8], b: &[u8], w: u32) -> Option<(u32, u32, [u8; 4], [u8; 4])
         })
 }
 
-fn set_style(app: &RinchApp, id: usize, k: &str, v: &str) {
+fn set_style(app: &RinchApp, id: u64, k: &str, v: &str) {
     app.doc
         .as_ref()
         .unwrap()

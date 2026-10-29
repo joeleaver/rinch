@@ -28,13 +28,13 @@ const VH: f32 = 200.0;
 const BEFORE: &str = ".w::before { content: \"x\"; color: rgb(255, 0, 0); width: 33px; \
                       display: inline-block; font-size: 16px; line-height: 20px }";
 
-fn hex(doc: &RinchDocument, n: usize) -> String {
+fn hex(doc: &RinchDocument, n: u64) -> String {
     let c = doc.tree.get(n).unwrap().computed_style.color;
     let rgba = c.expect("color should resolve").to_rgba8();
     format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b)
 }
 
-fn generated(doc: &RinchDocument, owner: NodeId) -> usize {
+fn generated(doc: &RinchDocument, owner: NodeId) -> u64 {
     doc.tree
         .get(owner.0)
         .unwrap()

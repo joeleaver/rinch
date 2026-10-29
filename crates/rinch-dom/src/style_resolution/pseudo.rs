@@ -6,6 +6,7 @@ use style::properties::ComputedValues;
 
 use crate::RinchDocument;
 use crate::computed_style::ComputedStyle;
+use crate::node::RawNodeId;
 
 use super::resolve::style_is_flex_or_grid_container;
 
@@ -32,10 +33,10 @@ impl RinchDocument {
     /// removed, or a kept box's text child replaced.
     pub(crate) fn resolve_pseudo_element(
         &mut self,
-        parent_id: usize,
+        parent_id: RawNodeId,
         parent_style: &ServoArc<ComputedValues>,
         pseudo: style::selector_parser::PseudoElement,
-        existing: Option<usize>,
+        existing: Option<RawNodeId>,
     ) -> bool {
         use selectors::matching::{
             MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags,
@@ -299,7 +300,7 @@ impl RinchDocument {
     /// child was replaced.
     fn update_generated_box(
         &mut self,
-        span_raw: usize,
+        span_raw: RawNodeId,
         pseudo_computed: ServoArc<ComputedValues>,
         text: &str,
         layout_parent_is_flex_or_grid: bool,
@@ -358,7 +359,7 @@ impl RinchDocument {
 
     /// Take the generated box (or list marker) `cid` out of `parent_id` and
     /// free it. Answers `true` (the child list changed).
-    pub(crate) fn remove_generated_box(&mut self, parent_id: usize, cid: usize) -> bool {
+    pub(crate) fn remove_generated_box(&mut self, parent_id: RawNodeId, cid: RawNodeId) -> bool {
         // The IFC the generated box was laid out in names it; the caller's
         // structural seed re-sets the region up.
         if let Some(root) = self.tree.nodes[cid].ifc_root {
@@ -440,7 +441,7 @@ impl RinchDocument {
     /// `list-item` counter set to the appropriate value.
     pub(crate) fn compute_list_item_counters(
         &self,
-        node_id: usize,
+        node_id: RawNodeId,
     ) -> std::collections::HashMap<String, i32> {
         let mut counters = std::collections::HashMap::new();
 
@@ -459,7 +460,7 @@ impl RinchDocument {
             None => return counters,
         };
 
-        let parent = match self.tree.nodes.get(parent_id) {
+        let parent = match self.tree.nodes.get_live(parent_id) {
             Some(n) => n,
             None => return counters,
         };
@@ -481,7 +482,7 @@ impl RinchDocument {
             if sibling_id == node_id {
                 break;
             }
-            if let Some(sibling) = self.tree.nodes.get(sibling_id) {
+            if let Some(sibling) = self.tree.nodes.get_live(sibling_id) {
                 if sibling.tag() == Some("li") {
                     // Check for value attribute override
                     if let Some(val) = sibling.attributes.get("value") {
@@ -537,7 +538,7 @@ impl RinchDocument {
     /// support) rather than landed here.
     ///
     /// Answers whether a marker was generated.
-    pub(crate) fn resolve_list_marker(&mut self, node_id: usize) -> bool {
+    pub(crate) fn resolve_list_marker(&mut self, node_id: RawNodeId) -> bool {
         let node = match self.tree.nodes.get(node_id) {
             Some(n) => n,
             None => return false,

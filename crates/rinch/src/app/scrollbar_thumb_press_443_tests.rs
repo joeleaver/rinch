@@ -15,11 +15,11 @@ const SIZE: (u32, u32) = (800, 600);
 
 /// A 200x100 scroller at the document origin whose content overflows on
 /// `axis` only, scrolled by `wheel` px along it.
-fn mount(vertical: bool, wheel: f64) -> (RinchApp, usize) {
+fn mount(vertical: bool, wheel: f64) -> (RinchApp, u64) {
     mount_with(vertical, wheel, None)
 }
 
-fn mount_with(vertical: bool, wheel: f64, onscroll: Option<String>) -> (RinchApp, usize) {
+fn mount_with(vertical: bool, wheel: f64, onscroll: Option<String>) -> (RinchApp, u64) {
     let (overflow, content) = if vertical {
         ("overflow-y: auto", "width: 40px; height: 400px")
     } else {
@@ -73,12 +73,12 @@ fn mount_with(vertical: bool, wheel: f64, onscroll: Option<String>) -> (RinchApp
     (app, id)
 }
 
-fn scroll(app: &RinchApp, id: usize, vertical: bool) -> f64 {
+fn scroll(app: &RinchApp, id: u64, vertical: bool) -> f64 {
     let o = app.doc.as_ref().unwrap().borrow().tree.nodes[id].scroll_offset;
     if vertical { o.1 } else { o.0 }
 }
 
-fn track(app: &RinchApp, id: usize, vertical: bool) -> rinch_dom::paint::scrollbar::ScrollbarTrack {
+fn track(app: &RinchApp, id: u64, vertical: bool) -> rinch_dom::paint::scrollbar::ScrollbarTrack {
     let d = app.doc.as_ref().unwrap().borrow();
     let bars = rinch_dom::paint::scrollbar::scrollbars(&d.tree, id, 1.0);
     if vertical {

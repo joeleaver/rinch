@@ -681,7 +681,7 @@ fn a_content_sized_box_keeps_its_one_pixel_wrap_tolerance() {
         // inline on its line), and its own width is declared, so it is
         // *correctly* given no tolerance and would mask the one being measured.
         let mut stack = vec![t.0];
-        let mut roots: Vec<(usize, f32, f32)> = Vec::new();
+        let mut roots: Vec<(u64, f32, f32)> = Vec::new();
         while let Some(id) = stack.pop() {
             let n = &doc.tree.nodes[id];
             if let Some(tl) = n.text_layout.as_ref() {

@@ -287,7 +287,7 @@ fn another_documents_press_or_blur_leaves_this_documents_drag_alone() {
 mod editor_drag_select {
     use super::*;
 
-    const CONTAINER: usize = 987_654;
+    const CONTAINER: u64 = 987_654;
 
     /// The key `RinchApp::input_doc` hands the editor registry.
     fn doc(app: &RinchApp) -> Option<u64> {

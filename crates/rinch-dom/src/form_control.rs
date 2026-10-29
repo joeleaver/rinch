@@ -54,6 +54,7 @@
 //! intrinsic sizes (13x13, 16, 27, the image's) stay unmodelled.
 
 use crate::computed_style::{ComputedStyle, OverflowValue};
+use crate::node::RawNodeId;
 use crate::node::{Node, NodeContext, NodeTree};
 
 /// The scrollbar gutter Chrome 153 reserves in a `<textarea>`'s intrinsic
@@ -167,7 +168,7 @@ pub(crate) fn sync_form_control_measure(
     tree: &mut NodeTree,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-    node_id: usize,
+    node_id: RawNodeId,
 ) -> bool {
     let Some(node) = tree.nodes.get(node_id) else {
         return false;
@@ -270,8 +271,8 @@ pub fn is_value_control(node: &Node) -> bool {
 /// attribute, **sanitized** for its type ([`input_value`], #1554). `None` for
 /// any other element.
 pub fn control_value(
-    nodes: &slab::Slab<Node>,
-    node_id: usize,
+    nodes: &crate::node_slab::NodeSlab,
+    node_id: RawNodeId,
 ) -> Option<std::borrow::Cow<'_, str>> {
     let node = nodes.get(node_id)?;
     if node.tag() == Some("input") {
@@ -378,12 +379,15 @@ pub fn is_pristine_textarea(node: &Node) -> bool {
 
 /// A `<textarea>`'s child text content: its direct `Text` children,
 /// concatenated.
-fn textarea_child_text<'a>(nodes: &'a slab::Slab<Node>, node: &Node) -> std::borrow::Cow<'a, str> {
+fn textarea_child_text<'a>(
+    nodes: &'a crate::node_slab::NodeSlab,
+    node: &Node,
+) -> std::borrow::Cow<'a, str> {
     use std::borrow::Cow;
     let mut texts = node
         .children
         .iter()
-        .filter_map(|&c| nodes.get(c))
+        .filter_map(|&c| nodes.get_live(c))
         .filter_map(|c| c.text_content());
     let Some(first) = texts.next() else {
         return Cow::Borrowed("");
@@ -1111,7 +1115,7 @@ pub fn field_scroll(
     tree: &NodeTree,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-    node_id: usize,
+    node_id: RawNodeId,
 ) -> (f32, f32) {
     let Some(node) = tree.get(node_id) else {
         return (0.0, 0.0);
@@ -1136,7 +1140,7 @@ fn textarea_text_height(
     tree: &NodeTree,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-    node_id: usize,
+    node_id: RawNodeId,
 ) -> f32 {
     let Some(node) = tree.get(node_id) else {
         return 0.0;
@@ -1172,7 +1176,7 @@ pub fn refresh_textarea_extent(
     tree: &NodeTree,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-    node_id: usize,
+    node_id: RawNodeId,
 ) {
     if tree
         .get(node_id)
@@ -1306,7 +1310,7 @@ pub fn input_displayed_caret_rect(
     tree: &NodeTree,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-    node_id: usize,
+    node_id: RawNodeId,
 ) -> Option<(f32, f32, f32)> {
     let node = tree.get(node_id)?;
     if !is_value_control(node)
@@ -1359,7 +1363,7 @@ pub fn input_scroll_x(
     tree: &NodeTree,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-    node_id: usize,
+    node_id: RawNodeId,
 ) -> f32 {
     let Some(node) = tree.get(node_id) else {
         return 0.0;
@@ -1420,7 +1424,7 @@ pub fn reveal_caret(
     tree: &mut NodeTree,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-    node_id: usize,
+    node_id: RawNodeId,
 ) -> bool {
     let Some(node) = tree.get(node_id) else {
         return false;
@@ -1490,7 +1494,7 @@ pub fn painted_caret_rect(
     tree: &NodeTree,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-    node_id: usize,
+    node_id: RawNodeId,
     offset: usize,
     affinity: rinch_core::dom::CaretAffinity,
 ) -> Option<(f32, f32, f32)> {

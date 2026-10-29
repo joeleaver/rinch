@@ -19,7 +19,7 @@ const VIEWPORT: (f32, f32) = (800.0, 600.0);
 
 struct Fixture {
     app: RinchApp,
-    select: usize,
+    select: u64,
     /// Every value the select's `oninput` reported.
     picks: Rc<RefCell<Vec<String>>>,
 }
@@ -27,7 +27,7 @@ struct Fixture {
 /// A 200x30 `<select>` with three options, starting on `one`, at a known place
 /// in the window, with a sibling block below it to press on "outside".
 fn mount() -> Fixture {
-    let sel: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sel: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let sel_in = sel.clone();
     let picks: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let picks_in = picks.clone();
@@ -63,7 +63,7 @@ fn press(app: &mut RinchApp, x: f32, y: f32, button: MouseButton) {
     app.handle_event(PlatformEvent::MouseUp { x, y, button }, (800, 600), 1.0);
 }
 
-fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, node_id: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let (x, y, w, h) = painted_element_box(&d.tree, node_id);

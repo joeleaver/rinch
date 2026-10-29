@@ -671,13 +671,13 @@ fn the_dom_tree_invariants_all_fail_on_a_corrupt_box() {
 
     // C — `run_boxes` must name live slab entries, the same as `children`. This
     // is what catches a cleanup that removes the boxes and forgets the list.
-    doc.tree.nodes[c.0].run_boxes.push(usize::MAX);
+    doc.tree.nodes[c.0].run_boxes.push(u64::MAX);
     let v = doc.dom_tree_violations();
     assert!(
         v.iter().any(|s| s.starts_with("C freed run box")),
         "a freed run-box entry must be reported, got {v:?}"
     );
-    doc.tree.nodes[c.0].run_boxes.retain(|&x| x != usize::MAX);
+    doc.tree.nodes[c.0].run_boxes.retain(|&x| x != u64::MAX);
 
     // B — one parent per node, counted across both lists.
     doc.tree.nodes[body.0].run_boxes.push(box_id);

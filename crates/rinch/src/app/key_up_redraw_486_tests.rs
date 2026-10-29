@@ -72,7 +72,7 @@ fn a_keyup_interceptor_requests_a_redraw() {
 /// Same gap, the `on_key` leg: a registered focus target's release handler.
 #[test]
 fn a_registered_focus_targets_on_key_requests_a_redraw_on_release() {
-    let id: std::rc::Rc<std::cell::Cell<usize>> = std::rc::Rc::new(std::cell::Cell::new(0));
+    let id: std::rc::Rc<std::cell::Cell<u64>> = std::rc::Rc::new(std::cell::Cell::new(0));
     let id_in = id.clone();
 
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

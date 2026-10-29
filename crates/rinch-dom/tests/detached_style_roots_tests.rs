@@ -443,8 +443,8 @@ fn a_detached_node_is_still_readable() {
         "a detached node's computed styles must still be reportable"
     );
     // The `query_node_layout` path, on the node and on its text child.
-    assert!(doc.query_node_layout(panel.0 as u64).is_some());
-    let _ = doc.query_node_layout(t.0 as u64);
+    assert!(doc.query_node_layout(panel.0).is_some());
+    let _ = doc.query_node_layout(t.0);
 
     // **Scoping is what decides whether a debug tool reaches a detached node,
     // not the tool.** `query_selector` and an unscoped `dom_tree` both start at

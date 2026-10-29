@@ -19,7 +19,7 @@ fn document() -> RinchDocument {
     doc
 }
 
-fn build(css: &str, text: &str, label: Option<&str>) -> (RinchDocument, usize) {
+fn build(css: &str, text: &str, label: Option<&str>) -> (RinchDocument, u64) {
     let mut doc = document();
     let body = doc.body();
     let sel = doc.create_element("select");

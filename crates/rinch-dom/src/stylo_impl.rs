@@ -99,7 +99,7 @@ impl PartialEq for RinchNode<'_> {
 
 impl std::hash::Hash for RinchNode<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_usize(self.id);
+        state.write_u64(self.id);
     }
 }
 
@@ -203,11 +203,14 @@ impl<'a> TNode for RinchNode<'a> {
     }
 
     fn opaque(&self) -> OpaqueNode {
-        OpaqueNode(self.id)
+        // The whole packed id on a 64-bit target; the slot alone on a 32-bit one
+        // (Stylo identifies a node by it within one restyle, during which no
+        // slot is freed).
+        OpaqueNode(self.id as usize)
     }
 
     fn debug_id(self) -> usize {
-        self.id
+        self.id as usize
     }
 
     fn as_element(&self) -> Option<Self::ConcreteElement> {

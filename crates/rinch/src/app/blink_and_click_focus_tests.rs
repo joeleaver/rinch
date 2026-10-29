@@ -98,9 +98,8 @@ mod blink {
 
 /// A focusable outer node with a focusable *inner* node inside it, plus a
 /// plain child of the outer. Returns (app, outer, inner, plain_child).
-fn nested_fixture() -> (RinchApp, usize, usize, usize) {
-    let ids: Rc<std::cell::Cell<Option<(usize, usize, usize)>>> =
-        Rc::new(std::cell::Cell::new(None));
+fn nested_fixture() -> (RinchApp, u64, u64, u64) {
+    let ids: Rc<std::cell::Cell<Option<(u64, u64, u64)>>> = Rc::new(std::cell::Cell::new(None));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -128,13 +127,13 @@ fn nested_fixture() -> (RinchApp, usize, usize, usize) {
     (app, outer, inner, plain)
 }
 
-fn abs_center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn abs_center(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (ax, ay, w, h) = painted_element_box(&d.tree, id);
     (ax + w / 2.0, ay + h / 2.0)
 }
 
-fn press(app: &mut RinchApp, id: usize, button: MouseButton) {
+fn press(app: &mut RinchApp, id: u64, button: MouseButton) {
     let (x, y) = abs_center(app, id);
     app.handle_event(PlatformEvent::MouseDown { x, y, button }, (800, 600), 1.0);
     app.handle_event(PlatformEvent::MouseUp { x, y, button }, (800, 600), 1.0);

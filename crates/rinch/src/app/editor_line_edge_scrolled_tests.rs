@@ -111,12 +111,12 @@ fn key(app: &mut RinchApp, key: KeyCode, shift: bool) {
 
 impl Page {
     /// The first paragraph's host id.
-    fn block(&self) -> usize {
+    fn block(&self) -> u64 {
         self.handle.caret_address(Pos(1)).unwrap().0
     }
 
     /// The editor container's host id.
-    fn container(&self) -> usize {
+    fn container(&self) -> u64 {
         let doc = self.app.doc.as_ref().unwrap().borrow();
         doc.query_selector_all("[data-pm-editor]")[0].0
     }
@@ -127,8 +127,7 @@ impl Page {
     fn local(&self, i: u32) -> (f32, f32) {
         let (block, byte) = self.handle.caret_address(Pos(i as usize + 1)).unwrap();
         let doc = self.app.doc.as_ref().unwrap().borrow();
-        doc.query_caret_position(block as u64, byte)
-            .expect("laid out")
+        doc.query_caret_position(block, byte).expect("laid out")
     }
 
     /// The char offsets each visual line of a text-only first paragraph of
@@ -275,8 +274,7 @@ fn a_hard_break_bounds_a_scrolled_away_line() {
 fn upstream_after_a_hard_break_stays_on_the_far_line() {
     let p = page("alpha bravo<br>charlie");
     let doc = p.app.doc.as_ref().unwrap().borrow();
-    let line =
-        |b, a| rinch_dom::text_query::visual_line_range_for_node(&doc, p.block() as u64, b, a);
+    let line = |b, a| rinch_dom::text_query::visual_line_range_for_node(&doc, p.block(), b, a);
     // "alpha bravo" is bytes 0..11, the break byte 11, "charlie" 12..19.
     assert_eq!(line(12, CaretAffinity::Downstream), Some(12..19), "control");
     assert_eq!(line(12, CaretAffinity::Upstream), Some(12..19));

@@ -227,3 +227,52 @@ rsx! {
 ```
 
 Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch-spacing-{value})`.
+
+## Node Ids (`NodeId`)
+
+Most components never see a node id: they hold `NodeHandle`s. Code that does — a
+custom `DomDocument`, an editor integration, a debug client, a hand-written
+`Component` that keeps ids in a side table — should know what a `NodeId` is.
+
+A `NodeId` is a `u64` on every target, wasm32 included: a 32-bit **slot index**
+in the low half and a 32-bit **generation** in the high half. The generation is
+what lets a backend that reuses a freed slot tell an old id from the slot's new
+occupant: an operation through an id that names no live node does nothing, and a
+read answers `None` or empty.
+
+```rust
+let id = NodeId::from_index(4);      // slot 4, generation 0
+assert_eq!(id.index(), 4);           // the slot, as a usize
+assert_eq!(id.generation(), 0);
+let again = NodeId::new(4, 1);       // the same slot, one generation later
+assert_ne!(id, again);
+```
+
+### Migrating from `usize` ids
+
+Before issue #723, `NodeId` wrapped a `usize`, and about 57 public signatures
+carried a bare `usize` node id. They are `u64` now:
+
+- **`rinch-core`:** `NodeId(pub u64)`; `TextHitInfo::inline_root_node_id`;
+  `InputContext::node_id`; the selection callbacks and
+  `dispatch_selection` / `get_saved_selection` / `query_selection_ranges`;
+  `request_focus`, `post_release_request`, `cancel_pending_text_selection_request`.
+- **`rinch-editor-view`:** `container_id`, `editor_for` / `all_editors`,
+  `begin_drag` / `drag_anchor`, `collab_receive_for`, `caret_address`,
+  `caret_inline_box`, `caret_blink_tick`, and the focus, blur and node-view-host
+  handler types.
+- **`rinch-debug`:** the protocol's node id fields (the MCP server's too).
+
+What to change:
+
+- `NodeId(i)` with `i: usize` becomes `NodeId::from_index(i)`. A literal
+  `NodeId(4)` still compiles and still means slot 4 at generation 0.
+- Never use `.0` as an index: it holds the packed bits. Use `id.index()` for the
+  slot. Keep a whole `NodeId` (or its `.0` as a `u64`) as a map key, not the
+  slot, so an old id and the slot's next occupant stay different keys.
+- A `usize` id you stored or passed to one of the APIs above becomes a `u64`
+  (`id.0`), or better, the `NodeId` itself.
+
+Every id is still issued at generation 0, so a generation-0 id prints exactly as
+before: `Debug` gives `NodeId(4)`, and the debug server, the MCP tools and
+DevTools show `4`. A non-zero generation prints as `NodeId(4@g1)`.

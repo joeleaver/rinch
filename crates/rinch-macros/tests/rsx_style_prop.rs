@@ -639,7 +639,7 @@ fn the_issues_own_repro_still_computes_the_level_it_asked_for() {
     doc.borrow_mut().resolve_layout(800.0, 600.0);
 
     let d = doc.borrow();
-    let overlay: Vec<usize> = d
+    let overlay: Vec<u64> = d
         .tree
         .nodes
         .iter()

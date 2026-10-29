@@ -90,24 +90,24 @@ fn shift() -> Modifiers {
     }
 }
 
-fn abs_box(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn abs_box(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     painted_element_box(&d.tree, id)
 }
 
-fn abs_center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn abs_center(app: &RinchApp, id: u64) -> (f32, f32) {
     let (x, y, w, h) = abs_box(app, id);
     (x + w / 2.0, y + h / 2.0)
 }
 
-fn attr(app: &RinchApp, id: usize, name: &str) -> Option<String> {
+fn attr(app: &RinchApp, id: u64, name: &str) -> Option<String> {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree.get(id).and_then(|n| n.attributes.get(name).cloned())
 }
 
 /// The field's `(value, selection start, cursor)` as the DOM carries them —
 /// what paint reads, so what the user sees.
-fn field_state(app: &RinchApp, id: usize) -> (String, String, String) {
+fn field_state(app: &RinchApp, id: u64) -> (String, String, String) {
     (
         attr(app, id, "value").unwrap_or_default(),
         attr(app, id, "data-selection-start").unwrap_or_default(),
@@ -141,7 +141,7 @@ fn highlighted(app: &RinchApp) -> Option<TextEditAction> {
 /// The smallest window x at which a press in `input` places the caret at
 /// byte `offset` — found with the runtime's own click-to-offset map, so the
 /// fixture presses exactly where the user would have to.
-fn x_for_offset(app: &mut RinchApp, input: usize, offset: usize) -> f32 {
+fn x_for_offset(app: &mut RinchApp, input: u64, offset: usize) -> f32 {
     let (bx, by, bw, bh) = abs_box(app, input);
     let y = by + bh / 2.0;
     let doc = app.doc.clone().unwrap();
@@ -180,14 +180,14 @@ const FIELD_STYLE: &str = "width: 300px; height: 30px; padding: 0; margin: 0; \
 
 #[derive(Clone, Copy)]
 struct Ids {
-    input: usize,
-    textarea: usize,
-    checkbox: usize,
-    plain: usize,
+    input: u64,
+    textarea: u64,
+    checkbox: u64,
+    plain: u64,
     /// An input under a `div` carrying a live `data-oncontextmenu`.
-    guarded_input: usize,
+    guarded_input: u64,
     /// A `<div tabindex>` beside the fields, for a press that lands elsewhere.
-    other: usize,
+    other: u64,
 }
 
 type Log = Rc<RefCell<Vec<String>>>;
@@ -280,7 +280,7 @@ fn page(
 }
 
 /// Focus `input` with a left press at its left edge and select `2..5`.
-fn focus_and_select(app: &mut RinchApp, input: usize) {
+fn focus_and_select(app: &mut RinchApp, input: u64) {
     let (bx, by, _, bh) = abs_box(app, input);
     left_press(app, bx + 1.0, by + bh / 2.0);
     assert_eq!(app.focus_target, FocusTarget::Input(input));
@@ -391,7 +391,7 @@ fn a_disabled_field_takes_no_focus_and_opens_nothing() {
 
 // ── Enabled states ───────────────────────────────────────────────────────────
 
-fn state_after_right_press(app: &mut RinchApp, input: usize) -> TextEditState {
+fn state_after_right_press(app: &mut RinchApp, input: u64) -> TextEditState {
     let (x, y) = abs_center(app, input);
     right_press(app, x, y);
     app.text_edit_state()
@@ -1271,7 +1271,7 @@ fn two_hundred_cycles_add_no_nodes_and_the_panel_is_as_tall_as_its_rows() {
 }
 
 /// The panel's node ids and every node under it.
-fn panel_subtree(app: &RinchApp) -> Vec<usize> {
+fn panel_subtree(app: &RinchApp) -> Vec<u64> {
     let Some(panel) = app.text_menu_panel.as_ref().map(|p| p.panel_id) else {
         return Vec::new();
     };
@@ -1442,9 +1442,9 @@ mod anchor {
     const OFFSET_FIELD: &str = "width: 300px; height: 80px; padding: 0; margin: 0; \
          font-size: 16px; line-height: 20px; font-family: sans-serif";
 
-    fn field_app(tag: &'static str, value: &'static str, style: &'static str) -> (RinchApp, usize) {
+    fn field_app(tag: &'static str, value: &'static str, style: &'static str) -> (RinchApp, u64) {
         let h = register_input_handler(InputCallback::new(|_| {}));
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -1471,7 +1471,7 @@ mod anchor {
     /// The x at which the caret for `offset` is drawn, bracketed by the press
     /// map: pressing just left of it still lands on `offset`, pressing at the
     /// first x that maps to `offset + 1` does not.
-    fn assert_caret_x(app: &mut RinchApp, input: usize, x: f32, offset: usize) {
+    fn assert_caret_x(app: &mut RinchApp, input: u64, x: f32, offset: usize) {
         let lo = x_for_offset(app, input, offset);
         let hi = x_for_offset(app, input, offset + 1);
         assert!(
@@ -1661,7 +1661,7 @@ mod unadopted_write {
     /// writes the field's `value` — during the press itself. (It was a
     /// `data-rid` until #1093: a right press no longer clicks, and a press's
     /// own `data-onmousedown` is what still runs user code on every button.)
-    fn mousedown_writing_page(new_value: &'static str) -> (RinchApp, usize, Rc<Cell<u32>>) {
+    fn mousedown_writing_page(new_value: &'static str) -> (RinchApp, u64, Rc<Cell<u32>>) {
         let node: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
         let fired = Rc::new(Cell::new(0u32));
         let h = register_input_handler(InputCallback::new(|_| {}));
@@ -1829,7 +1829,7 @@ mod anchor_against_paint {
         app.sync_input_cursor_to_dom();
     }
 
-    pub(super) fn caret_visible(app: &RinchApp, id: usize, visible: bool) {
+    pub(super) fn caret_visible(app: &RinchApp, id: u64, visible: bool) {
         app.doc
             .as_ref()
             .unwrap()
@@ -1842,7 +1842,7 @@ mod anchor_against_paint {
     }
 
     /// The box paint draws the collapsed caret at `offset` in.
-    fn painted_caret(app: &mut RinchApp, id: usize, offset: usize) -> (f32, f32, f32, f32) {
+    fn painted_caret(app: &mut RinchApp, id: u64, offset: usize) -> (f32, f32, f32, f32) {
         set_selection(app, offset, offset);
         caret_visible(app, id, true);
         let (on, w, h) = frame(app);
@@ -1856,9 +1856,9 @@ mod anchor_against_paint {
         tag: &'static str,
         value: &'static str,
         style: &'static str,
-    ) -> (RinchApp, usize) {
+    ) -> (RinchApp, u64) {
         let h = register_input_handler(InputCallback::new(|_| {}));
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -2001,13 +2001,13 @@ mod editor {
 
     struct EditorPage {
         app: RinchApp,
-        container: usize,
+        container: u64,
         handle: crate::editor::EditorHandle,
-        other: usize,
+        other: u64,
     }
 
     fn editor_page(html: &'static str) -> EditorPage {
-        let slot: Rc<RefCell<Option<(usize, crate::editor::EditorHandle, usize)>>> =
+        let slot: Rc<RefCell<Option<(u64, crate::editor::EditorHandle, u64)>>> =
             Rc::new(RefCell::new(None));
         let slot_in = slot.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -2183,10 +2183,10 @@ mod in_a_modal {
 
     /// A `Modal` with `lock_scroll` (its default) holding one text field, under
     /// the real theme and component sheets, opened from the start.
-    fn modal_page() -> (RinchApp, usize) {
+    fn modal_page() -> (RinchApp, u64) {
         let opened = Signal::new(true);
         let input_h = register_input_handler(InputCallback::new(|_| {}));
-        let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let input = scope.create_element("input");
@@ -2282,7 +2282,7 @@ mod bench {
                 .collect::<String>()
                 .into_boxed_str(),
         );
-        let slot: Rc<RefCell<Option<(usize, crate::editor::EditorHandle)>>> =
+        let slot: Rc<RefCell<Option<(u64, crate::editor::EditorHandle)>>> =
             Rc::new(RefCell::new(None));
         let slot_in = slot.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
