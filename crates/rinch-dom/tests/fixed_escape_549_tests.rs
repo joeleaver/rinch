@@ -13,7 +13,13 @@
 //! ancestor with a `transform` (or a `filter`) contains it, so clips at and
 //! above that ancestor still apply. rinch places such a box against the
 //! viewport all the same (#1372); the fixture that pins the clip uses an
-//! identity `translate(0, 0)`, where the two placements coincide.
+//! identity `translate(0, 0)`, where the two placements coincide. A
+//! `mask-image` ancestor cuts it to its border box but is not its containing
+//! block, so the masked box's own `overflow` does not clip it.
+//!
+//! An ancestor context's `opacity` applies to the fixed box, composited into
+//! the one group with the rest of the context, as Chrome does; the second
+//! round's fixtures pin that against Chrome's pixels.
 //!
 //! Every assertion reads the software painter. Off the fixed points: the
 //! fixed box overlaps its clipper's edge rather than sitting wholly outside
@@ -298,4 +304,362 @@ fn a_fixed_box_under_a_context_scrolled_out_of_its_clipper_is_drawn() {
     let p = paint(&mut doc, 1.0);
     assert_eq!(px(&p, IN, 1.0), GREEN);
     assert_eq!(px(&p, OUT, 1.0), GREEN);
+}
+
+/// The pixel at `at` composited over white, the page Chrome screenshots:
+/// premultiplied `c + 255 - a`, per channel.
+fn over_white(p: &TinySkiaPainter, at: (u32, u32)) -> [u8; 3] {
+    let [r, g, b, a] = px(p, at, 1.0);
+    [r, g, b].map(|c| c.saturating_add(255 - a))
+}
+
+/// Within 1 of Chrome's pixel, per channel: Skia and tiny-skia round an
+/// `opacity` composite differently by at most one.
+#[track_caller]
+fn assert_near(got: [u8; 3], chrome: [u8; 3], what: &str) {
+    let off = got
+        .iter()
+        .zip(chrome)
+        .map(|(&g, c)| g.abs_diff(c))
+        .max()
+        .unwrap();
+    assert!(off <= 1, "{what}: rinch {got:?}, Chrome 155 {chrome:?}");
+}
+
+/// **A transformed or filtered box's own `overflow` clips a fixed descendant**
+/// — it is the descendant's containing block — whether the box owns the fixed
+/// box's stacking context or an ancestor of it does. Chrome 155 (headless
+/// screenshot): `OUT` white in all four.
+///
+/// Kills: taking the fixed floor before the box's own clip bracket is pushed
+/// (`OUT` drawn — what #2057's first round did for the owner-deeper shapes, and
+/// what `main` did for the direct one, #545's lift).
+#[test]
+fn a_transformed_or_filtered_box_clips_a_fixed_descendant_to_its_own_overflow() {
+    for own in [
+        "transform: translate(0px, 0px); overflow: hidden; width: 200px; height: 200px",
+        "filter: brightness(0.9); overflow: hidden; width: 200px; height: 200px",
+    ] {
+        for shape in [&[own, OWNER][..], &[own][..]] {
+            let (mut doc, _) = chain(shape);
+            let p = paint(&mut doc, 1.0);
+            assert_ne!(px(&p, IN, 1.0), NOTHING, "positive control, {shape:?}");
+            assert_eq!(px(&p, OUT, 1.0), NOTHING, "clipped to {shape:?}");
+        }
+    }
+}
+
+/// **A masked box's own `overflow` does not clip a fixed descendant**: a mask
+/// is not a containing block. Chrome 155 draws the fixed box over the masked
+/// box's 30px border, outside its padding box (`(185, 185)` green, in both
+/// shapes), and still cuts it at the border box (`OUT` white). The fixed box
+/// is placed against the viewport too (`(140, 130)` green, which a padding-box
+/// containing block would have moved 30px away).
+///
+/// Kills: treating a mask like a transform (the floor after the box's own
+/// bracket: `(185, 185)` blue).
+#[test]
+fn a_masked_box_does_not_clip_a_fixed_descendant_to_its_own_overflow() {
+    let masked = "mask-image: linear-gradient(#000, #000); overflow: hidden; width: 200px; \
+                  height: 200px; border: 30px solid rgb(0, 0, 200); box-sizing: border-box";
+    for shape in [&[masked, OWNER][..], &[masked][..]] {
+        let (mut doc, _) = chain(shape);
+        let p = paint(&mut doc, 1.0);
+        assert_eq!(
+            px(&p, (10, 10), 1.0),
+            BLUE,
+            "positive control: the border, {shape:?}"
+        );
+        assert_eq!(px(&p, (185, 185), 1.0), GREEN, "over the border, {shape:?}");
+        assert_eq!(
+            px(&p, (140, 130), 1.0),
+            GREEN,
+            "placed in the viewport, {shape:?}"
+        );
+        assert_eq!(
+            px(&p, OUT, 1.0),
+            NOTHING,
+            "cut to the border box, {shape:?}"
+        );
+    }
+}
+
+/// **The fixed box is composited into its context's `opacity` group, and the
+/// group is composited once** — under a clipper above the context, which the
+/// fixed box escapes. `A` is painted before the fixed entry and `B` after it,
+/// overlapping each other far from the fixed box: Chrome 155 draws `B` over
+/// `A` and fades the two together, `(128, 128, 228)`.
+///
+/// Kills: re-pushing the group layer around the fixed entry, which composites
+/// `A` and `B` as two groups (`(113, 63, 163)`, #2057's first round).
+#[test]
+fn a_fixed_box_does_not_split_its_contexts_opacity_group() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let clipper = el(
+        &mut doc,
+        body,
+        "overflow: hidden; width: 400px; height: 400px",
+    );
+    let ctx = el(
+        &mut doc,
+        clipper,
+        "opacity: 0.5; width: 300px; height: 300px",
+    );
+    el(
+        &mut doc,
+        ctx,
+        "width: 200px; height: 200px; background-color: rgb(200, 0, 0)",
+    );
+    el(
+        &mut doc,
+        ctx,
+        "position: fixed; left: 600px; top: 500px; width: 20px; height: 20px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    el(
+        &mut doc,
+        ctx,
+        "position: relative; z-index: 1; top: -100px; width: 200px; height: 100px; \
+         background-color: rgb(0, 0, 200)",
+    );
+    doc.resolve_layout(VW, VH);
+    let p = paint(&mut doc, 1.0);
+    assert_near(over_white(&p, (100, 150)), [128, 128, 228], "B over A");
+    assert_near(over_white(&p, (100, 50)), [228, 128, 128], "A alone");
+    assert_near(over_white(&p, (610, 510)), [128, 228, 128], "the fixed box");
+}
+
+/// **A fading card in a scroller, holding a fixed popover** — rinch's own
+/// `Popover`/`Select` dropdowns are `position: fixed` — mid-fade. The card's
+/// background is painted before the fixed entry and its `z-index: 1` badge
+/// after it; the popover reaches past the scroller. Every pixel is Chrome
+/// 155's (headless screenshot of the same markup).
+///
+/// Kills: the group split (`(100, 200)`, the badge over the card's background,
+/// fades twice) and a popover cut to the scroller (`(420, 100)`).
+#[test]
+fn a_fixed_popover_in_a_fading_card_in_a_scroller() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let scroller = el(
+        &mut doc,
+        body,
+        "overflow: auto; width: 400px; height: 400px",
+    );
+    let card = el(
+        &mut doc,
+        scroller,
+        "opacity: 0.6; width: 300px; height: 300px; background-color: rgb(200, 0, 0)",
+    );
+    el(
+        &mut doc,
+        card,
+        "position: relative; z-index: 1; width: 200px; height: 100px; margin-top: 150px; \
+         background-color: rgb(0, 0, 200)",
+    );
+    el(
+        &mut doc,
+        card,
+        "position: fixed; left: 150px; top: 50px; width: 300px; height: 140px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.resolve_layout(VW, VH);
+    let p = paint(&mut doc, 1.0);
+    for (at, chrome, what) in [
+        ((170, 170), [102, 102, 222], "badge over popover over card"),
+        ((100, 200), [102, 102, 222], "badge over card"),
+        ((300, 100), [102, 222, 102], "popover"),
+        ((420, 100), [102, 222, 102], "popover past the scroller"),
+        (
+            (50, 50),
+            [255, 255, 255],
+            "above the card (its margin collapsed)",
+        ),
+    ] {
+        assert_near(over_white(&p, at), chrome, what);
+    }
+}
+
+/// **A modal fading in, with a fixed tooltip in its scrolling dialog.** The
+/// overlay is the `opacity` context and the dialog's clip is inside it, so the
+/// lift pops only that clip. Every pixel is Chrome 155's.
+///
+/// Kills: a tooltip cut to the dialog (`(430, 280)`).
+#[test]
+fn a_fixed_tooltip_in_a_fading_modal() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let overlay = el(
+        &mut doc,
+        body,
+        "position: fixed; left: 0; top: 0; width: 800px; height: 600px; opacity: 0.5; \
+         background-color: rgba(0, 0, 0, 0.4)",
+    );
+    let dialog = el(
+        &mut doc,
+        overlay,
+        "margin: 100px; width: 300px; height: 200px; overflow: auto; \
+         background-color: rgb(255, 255, 255)",
+    );
+    el(
+        &mut doc,
+        dialog,
+        "width: 280px; height: 300px; background-color: rgb(200, 0, 0)",
+    );
+    el(
+        &mut doc,
+        dialog,
+        "position: fixed; left: 350px; top: 250px; width: 100px; height: 40px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.resolve_layout(VW, VH);
+    let p = paint(&mut doc, 1.0);
+    for (at, chrome, what) in [
+        ((370, 260), [128, 228, 128], "tooltip inside the dialog"),
+        ((430, 280), [128, 228, 128], "tooltip past the dialog"),
+        ((150, 150), [228, 128, 128], "dialog content"),
+        ((50, 50), [204, 204, 204], "overlay"),
+        ((390, 150), [255, 255, 255], "dialog background"),
+    ] {
+        assert_near(over_white(&p, at), chrome, what);
+    }
+}
+
+/// With no clip to escape nothing is lifted: the fixed box is painted into its
+/// context's group like any child. Chrome 155: `(102, 222, 102)` on white,
+/// premultiplied `[0, 120, 0, 153]` on the transparent canvas. (#2057 review,
+/// P6.)
+///
+/// Kills: a lift that pops from the floor up rather than from the lowest clip
+/// above it, which pops the group layer with no clip above it and re-pushes it.
+#[test]
+fn an_opacity_owner_with_no_clip_to_escape_is_one_group() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let ctx = el(
+        &mut doc,
+        body,
+        "opacity: 0.6; width: 300px; height: 300px; background-color: rgb(200, 0, 0)",
+    );
+    el(
+        &mut doc,
+        ctx,
+        "position: fixed; left: 50px; top: 50px; width: 100px; height: 40px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.resolve_layout(VW, VH);
+    let p = paint(&mut doc, 1.0);
+    assert_eq!(px(&p, (60, 60), 1.0), [0, 120, 0, 153]);
+}
+
+/// The fixed floor a transformed box sets is put back when paint leaves it: a
+/// transformed box inside a clipper is painted first, then the issue's shape
+/// elsewhere. (#2057 review, P7.)
+///
+/// Kills: a floor that is not restored (the later fixed box keeps the clipper,
+/// `OUT` empty).
+#[test]
+fn the_fixed_floor_is_restored_after_a_transformed_box() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let a = el(
+        &mut doc,
+        body,
+        "overflow: hidden; width: 20px; height: 20px; margin-top: 500px",
+    );
+    el(
+        &mut doc,
+        a,
+        "transform: translate(0px, 0px); width: 10px; height: 10px",
+    );
+    let clipper = el(
+        &mut doc,
+        body,
+        "overflow: hidden; width: 200px; height: 200px; position: absolute; left: 0; top: 0",
+    );
+    let owner = el(&mut doc, clipper, OWNER);
+    el(&mut doc, owner, FIXED);
+    doc.resolve_layout(VW, VH);
+    let p = paint(&mut doc, 1.0);
+    assert_eq!(px(&p, IN, 1.0), GREEN);
+    assert_eq!(
+        px(&p, OUT, 1.0),
+        GREEN,
+        "escapes the clipper after a transform elsewhere"
+    );
+}
+
+/// The clip masks one software paint rasterises.
+fn clip_masks(doc: &mut RinchDocument) -> u64 {
+    paint(doc, 1.0).stats().clip_masks
+}
+
+/// **A fixed box that draws nothing costs nothing**: a closed popover
+/// (`opacity: 0`) or a `visibility: hidden` leaf, inside an `opacity` context
+/// under three rounded clippers. Neither the lift around the entry nor the
+/// group layer's sinking re-rasterises a clip for it, so the software painter
+/// builds exactly the masks of the same page without it.
+///
+/// One that draws is lifted out of the three (re-pushed once, after it) and
+/// has the group sunk under them (re-pushed at the push and at the pop): nine
+/// more masks. One off the window is culled before the lift, but the sinking
+/// is decided from style alone, before anything is placed: six.
+///
+/// Kills: lifting before the cull (the off-window box costs nine), and sinking
+/// the group for a box that draws nothing (six each).
+#[test]
+fn a_fixed_box_that_draws_nothing_lifts_no_clip() {
+    let build = |fixed: Option<&str>| {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin: 0");
+        let mut parent = body;
+        for _ in 0..3 {
+            parent = el(
+                &mut doc,
+                parent,
+                "overflow: hidden; border-radius: 5px; padding: 2px; width: 300px",
+            );
+        }
+        let ctx = el(
+            &mut doc,
+            parent,
+            "opacity: 0.9; height: 20px; background-color: rgb(200, 0, 0)",
+        );
+        if let Some(style) = fixed {
+            el(&mut doc, ctx, style);
+        }
+        doc.resolve_layout(VW, VH);
+        doc
+    };
+    let none = clip_masks(&mut build(None));
+    assert!(
+        none >= 3,
+        "positive control: the rounded clippers are masks ({none})"
+    );
+    let box_at = |extra: &str| {
+        format!(
+            "position: fixed; left: 500px; top: 300px; width: 40px; height: 40px; \
+             background-color: rgb(0, 200, 0); {extra}"
+        )
+    };
+    for (extra, more) in [
+        ("opacity: 0", 0),
+        ("visibility: hidden", 0),
+        ("left: 2000px", 6),
+        ("", 9),
+    ] {
+        let style = box_at(extra);
+        assert_eq!(
+            clip_masks(&mut build(Some(&style))),
+            none + more,
+            "{extra:?}"
+        );
+    }
 }

@@ -1,8 +1,9 @@
 //! #549 in hit testing: a `position: fixed` box is tapped wherever paint
 //! draws it — outside every clip between it and the viewport, not only
 //! outside the clip of the stacking context that owns it — and stays
-//! untappable past a clip at or above a `transform`, `filter` or `mask-image`
-//! ancestor, which paint keeps applying. Chrome 155's `elementFromPoint`
+//! untappable past a clip above a `transform`, `filter` or `mask-image`
+//! ancestor, or a transformed or filtered one's own, which paint keeps
+//! applying. Chrome 155's `elementFromPoint`
 //! answers each probe below the same way (headless, the same markup).
 //!
 //! Paint's half is `rinch-dom/tests/fixed_escape_549_tests.rs`; the shapes and
@@ -171,4 +172,75 @@ fn a_fixed_box_under_a_context_scrolled_out_of_its_clipper_is_tapped() {
     doc.tree.hit_cache.invalidate();
     assert_eq!(hit(&doc, IN), Some(fixed.0));
     assert_eq!(hit(&doc, OUT), Some(fixed.0));
+}
+
+/// **A transformed or filtered box's own clip keeps a fixed descendant
+/// untappable past it**, whether it owns the fixed box's stacking context or
+/// an ancestor of it does: it is the containing block, and paint keeps its
+/// bracket on (`fixed_escape_549_tests::
+/// a_transformed_or_filtered_box_clips_a_fixed_descendant_to_its_own_overflow`).
+/// Chrome 155's `elementFromPoint` misses it at `OUT` (#2057's review, P1).
+///
+/// Kills: a fixed entry clearing the transformed root's own bounds gate (the
+/// fixed box is hit at `OUT`).
+#[test]
+fn a_fixed_box_is_not_tapped_past_its_transformed_containing_blocks_clip() {
+    for own in [
+        "transform: translate(0px, 0px); overflow: hidden; width: 200px; height: 200px",
+        "filter: brightness(0.9); overflow: hidden; width: 200px; height: 200px",
+    ] {
+        for shape in [&[own, OWNER][..], &[own][..]] {
+            let (doc, fixed) = chain(shape);
+            assert_eq!(hit(&doc, IN), Some(fixed.0), "positive control, {shape:?}");
+            assert_ne!(hit(&doc, OUT), Some(fixed.0), "clipped, {shape:?}");
+        }
+    }
+}
+
+/// The cached "a fixed box below escapes" bit follows the tree: a fixed box
+/// added two levels under a clipped owner after a probe cached "none", removed
+/// again, switched to `absolute` and back, and put under a transform added
+/// between (#2057's review, P5).
+///
+/// Kills: a bit that survives a generation (every step after the first answers
+/// from the stale tree).
+#[test]
+fn the_escaping_fixed_bit_follows_insert_remove_and_restyle() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let clipper = el(&mut doc, body, CLIPPER);
+    let owner = el(&mut doc, clipper, OWNER);
+    let inner = el(&mut doc, owner, "width: 20px; height: 20px");
+    doc.resolve_layout(800.0, 600.0);
+    let none = hit(&doc, OUT);
+    assert_ne!(none, Some(owner.0));
+
+    let fixed = el(&mut doc, inner, FIXED);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(hit(&doc, OUT), Some(fixed.0), "after the insert");
+
+    doc.remove_child(inner, fixed);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(hit(&doc, OUT), none, "after the removal");
+
+    let fixed = el(&mut doc, inner, FIXED);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(hit(&doc, OUT), Some(fixed.0), "re-added");
+    doc.set_attribute(
+        fixed,
+        "style",
+        "position: absolute; left: 130px; top: 110px; width: 270px; height: 290px",
+    );
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(hit(&doc, OUT), none, "fixed -> absolute");
+
+    doc.set_attribute(fixed, "style", FIXED);
+    doc.set_attribute(
+        inner,
+        "style",
+        "width: 20px; height: 20px; transform: translate(0px, 0px)",
+    );
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(hit(&doc, OUT), none, "under a transform added between");
 }

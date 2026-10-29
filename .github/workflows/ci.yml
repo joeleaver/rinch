@@ -359,8 +359,9 @@ jobs:
           }
           # The render-surface, compositor and partial-frame fixtures, and
           # the split oracles (`gpu_split_*`, #1865: 25 compositor, 33 runtime,
-          # 2 pages), and #1866's GameViewport base layer (7).
-          run 88 -p rinch --features gpu,video --lib -- \
+          # 2 pages), #1866's GameViewport base layer (7), and #549's fixed box
+          # escaping a clip around a split surface (1).
+          run 89 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --test-threads=1
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves),
@@ -371,7 +372,7 @@ jobs:
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
             --ignored --test-threads=1
           # #549's fixed box escaping the clips above its stacking context.
-          run 2 -p rinch --features gpu,video --test gpu_fixed_escape_549 -- \
+          run 3 -p rinch --features gpu,video --test gpu_fixed_escape_549 -- \
             --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).

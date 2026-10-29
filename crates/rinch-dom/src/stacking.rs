@@ -137,10 +137,13 @@
 //!   bracket alone left `plain clipper > stacking context > fixed` cut to the
 //!   clipper, where a browser paints it. Paint lifts every clip it has open
 //!   down to the nearest ancestor that *contains* fixed descendants (a
-//!   `transform`, a `filter`, a `mask-image`, or the viewport) and puts them
-//!   back after the entry (`paint::LiftedClips`); hit testing carries "the
-//!   probe is outside such a clip" down the walk and lets only a fixed entry
-//!   clear it. Pinned by
+//!   `transform`, a `filter`, a `mask-image`, or the viewport — a transformed
+//!   or filtered one's own clip included, it being the containing block) and
+//!   puts them back after the entry (`paint::LiftedClips`); a translucent
+//!   context holding such a box opens its layer under those clips, so the
+//!   lift does not split its group (`paint::GroupLayer`). Hit testing carries
+//!   "the probe is outside such a clip" down the walk and lets only a fixed
+//!   entry clear it. Pinned by
 //!   `stacking_tests::a_fixed_box_escapes_clips_above_the_context_that_owns_it`
 //!   and `fixed_escape_549_tests`.
 //! - **The collecting root's own transform does not apply to it either.** A
@@ -148,7 +151,7 @@
 //!   coordinates live and what `paint::compute_absolute_position_and_transform`
 //!   reports for it. (A transformed ancestor should really *contain* a fixed box
 //!   — position, clip and transform together — and rinch models only the
-//!   clips *above* that ancestor (#549); `out_of_flow.rs` answers "the
+//!   clips, its own and above it (#549); `out_of_flow.rs` answers "the
 //!   viewport" for every fixed box, #1372. Keeping the
 //!   body's transform here leaves that case exactly as wrong as it already was,
 //!   rather than letting paint and hit testing disagree about it.)

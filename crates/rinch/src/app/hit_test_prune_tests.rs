@@ -878,7 +878,11 @@ fn reference_hit_test_node(
         let is_stretched_ifc_text =
             |child: &rinch_dom::Node| child.is_text() && child.ifc_root.is_some();
 
-        if node_id == tree.body_id || node.creates_stacking_context() {
+        if !check_children && rinch_dom::paint::clips_fixed_descendants(node) {
+            // A transformed or filtered root is its fixed descendants'
+            // containing block: its own clip is one none of them escapes
+            // (#549), so a probe outside it reaches nothing in its sequence.
+        } else if node_id == tree.body_id || node.creates_stacking_context() {
             // A stacking-context root probes exactly the sequence paint draws,
             // read backwards — the last box painted is the first one tapped.
             // Same function, same offsets, opposite direction: the two cannot

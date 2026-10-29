@@ -295,6 +295,11 @@ fn hit_test_node(
         {
             // No sequence to build for a stacking context with nothing in its
             // box tree: there is nothing below it to probe (#1719).
+        } else if !check_children && rinch_dom::paint::clips_fixed_descendants(node) {
+            // A transformed or filtered root is the containing block of its
+            // fixed descendants, so its own clip is the one none of them
+            // escapes (#549): paint takes the fixed floor after this root's
+            // bracket. A probe outside it hits nothing in its sequence.
         } else if node_id == tree.body_id || node.creates_stacking_context() {
             // A stacking-context root probes exactly the sequence paint draws,
             // read backwards — the last box painted is the first one tapped.
@@ -3333,4 +3338,3 @@ mod tests {
 #[cfg(test)]
 #[path = "hidden_ancestor_hit_review_2008_tests.rs"]
 mod review_2008_probe_tests;
-

@@ -268,3 +268,114 @@ fn gpu_what_paints_after_the_fixed_box_is_clipped_again() {
     assert_near!(at(&px, (600, 160)), WHITE);
     assert_near!(at(&px, OUT), GREEN);
 }
+
+/// The second round's shapes on Vello, against Chrome 155's pixels: a
+/// transformed box's own clip cuts a fixed descendant, a masked box's does
+/// not, and the fixed box is composited into its context's `opacity` group
+/// with the group composited once (`fixed_escape_549_tests` holds the same
+/// markup for the software painter). Vello clips a layer's content to the
+/// layer, so a group sunk under the clips with bounds too small would lose the
+/// fixed box here and only here.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_the_containing_block_clip_and_one_opacity_group() {
+    // A transformed or filtered box's own clip, owner deeper or the box itself.
+    for own in [
+        "transform: translate(0px, 0px); overflow: hidden; width: 200px; height: 200px",
+        "filter: brightness(0.9); overflow: hidden; width: 200px; height: 200px",
+    ] {
+        for shape in [&[own, OWNER][..], &[own][..]] {
+            let px = render(&mut chain(shape, FIXED));
+            // `brightness(0.9)` draws the green at 180.
+            let inside = at(&px, IN);
+            assert!(
+                inside[1] >= 178 && inside[0] <= 2,
+                "positive control, {shape:?}: {inside:?}"
+            );
+            assert_near!(at(&px, OUT), WHITE, "clipped to {shape:?}");
+        }
+    }
+
+    // A masked box's own clip is escaped; the mask's border box is not.
+    let masked = "mask-image: linear-gradient(#000, #000); overflow: hidden; width: 200px; \
+                  height: 200px; border: 30px solid rgb(0, 0, 200); box-sizing: border-box";
+    let px = render(&mut chain(&[masked, OWNER], FIXED));
+    assert_near!(at(&px, (10, 10)), BLUE, "positive control: the border");
+    assert_near!(at(&px, (185, 185)), GREEN, "over the border");
+    assert_near!(at(&px, OUT), WHITE, "cut to the border box");
+
+    // B over A in one group, far from the fixed box, under a clipper.
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let clipper = el(
+        &mut doc,
+        body,
+        "overflow: hidden; width: 400px; height: 400px",
+    );
+    let ctx = el(
+        &mut doc,
+        clipper,
+        "opacity: 0.5; width: 300px; height: 300px",
+    );
+    el(
+        &mut doc,
+        ctx,
+        "width: 200px; height: 200px; background-color: rgb(200, 0, 0)",
+    );
+    el(
+        &mut doc,
+        ctx,
+        "position: fixed; left: 600px; top: 500px; width: 20px; height: 20px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    el(
+        &mut doc,
+        ctx,
+        "position: relative; z-index: 1; top: -100px; width: 200px; height: 100px; \
+         background-color: rgb(0, 0, 200)",
+    );
+    doc.resolve_layout(W as f32, H as f32);
+    let px = render(&mut doc);
+    assert_near!(at(&px, (100, 150)), [128, 128, 228, 255], "B over A");
+    assert_near!(at(&px, (100, 50)), [228, 128, 128, 255], "A alone");
+    assert_near!(at(&px, (610, 510)), [128, 228, 128, 255], "the fixed box");
+
+    // A fixed popover in a fading card in a scroller.
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let scroller = el(
+        &mut doc,
+        body,
+        "overflow: auto; width: 400px; height: 400px",
+    );
+    let card = el(
+        &mut doc,
+        scroller,
+        "opacity: 0.6; width: 300px; height: 300px; background-color: rgb(200, 0, 0)",
+    );
+    el(
+        &mut doc,
+        card,
+        "position: relative; z-index: 1; width: 200px; height: 100px; margin-top: 150px; \
+         background-color: rgb(0, 0, 200)",
+    );
+    el(
+        &mut doc,
+        card,
+        "position: fixed; left: 150px; top: 50px; width: 300px; height: 140px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.resolve_layout(W as f32, H as f32);
+    let px = render(&mut doc);
+    for (p, chrome) in [
+        ((170, 170), [102, 102, 222, 255]),
+        ((100, 200), [102, 102, 222, 255]),
+        ((300, 100), [102, 222, 102, 255]),
+        ((420, 100), [102, 222, 102, 255]),
+        ((50, 50), WHITE),
+    ] {
+        assert_near!(at(&px, p), chrome, "the card at {p:?}");
+    }
+}

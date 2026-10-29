@@ -4059,3 +4059,141 @@ fn gpu_split_runtime_review_s4_random() {
     assert!(kept_total > 0, "no frame kept below: S4 never ran");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+// #549 on the split path: a `position: fixed` box escapes the clips above the
+// stacking context that owns it, and a GPU surface beside it or inside it is
+// still split. Paint pops those clips around the fixed entry and pushes them
+// back after it; the split painter mirrors every push and pop, so the clips
+// the split recorded as open around the surface are the ones that are.
+#[cfg(test)]
+mod fixed_escape_549 {
+    use super::review_b::custom_page;
+    use super::*;
+
+    const GREEN: [u8; 4] = [0, 200, 0, 255];
+
+    /// `clipper > owner(z-index: 1) > …`, the clipper rounded and cutting
+    /// both the surface's region and the fixed box.
+    fn make(surface_in_fixed: bool) -> Page {
+        custom_page(
+            &[red()],
+            Rc::new(move |scope, root, ss, kept| {
+                let clipper = scope.create_element("div");
+                clipper.set_attribute(
+                    "style",
+                    "position: absolute; left: 20px; top: 20px; width: 200px; height: 150px; \
+                     overflow: hidden; border-radius: 12px",
+                );
+                let owner = scope.create_element("div");
+                owner.set_attribute(
+                    "style",
+                    "position: relative; z-index: 1; width: 180px; height: 130px",
+                );
+                let n = RenderSurface {
+                    surface: Some(ss[0].clone()),
+                }
+                .render(scope, &[]);
+                let fixed = scope.create_element("div");
+                if surface_in_fixed {
+                    // The surface is inside the fixed box, and reaches past
+                    // the clipper with it.
+                    fixed.set_attribute(
+                        "style",
+                        "position: fixed; left: 120px; top: 80px; width: 200px; height: 150px; \
+                         background: rgb(0, 200, 0)",
+                    );
+                    n.set_attribute(
+                        "style",
+                        "position: absolute; left: 20px; top: 20px; width: 140px; height: 90px",
+                    );
+                    fixed.append_child(&n);
+                    owner.append_child(&fixed);
+                } else {
+                    // The fixed box is painted over the surface's region and
+                    // reaches past the clipper.
+                    n.set_attribute(
+                        "style",
+                        "position: absolute; left: 10px; top: 10px; width: 120px; height: 80px",
+                    );
+                    fixed.set_attribute(
+                        "style",
+                        "position: fixed; left: 100px; top: 60px; width: 200px; height: 60px; \
+                         background: rgb(0, 200, 0)",
+                    );
+                    owner.append_child(&n);
+                    owner.append_child(&fixed);
+                }
+                clipper.append_child(&owner);
+                root.append_child(&clipper);
+                kept.borrow_mut().push(fixed);
+            }),
+        )
+    }
+
+    /// Both shapes, split, against in-scene, over a full frame and a partial
+    /// one that recolours the fixed box; the fixed box (and in the second
+    /// shape the surface in it) drawn past the clipper.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_split_runtime_a_fixed_box_escapes_a_clip_around_a_split_surface() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let mut failures = Vec::new();
+        for (surface_in_fixed, past) in [(false, (280, 90)), (true, (250, 150))] {
+            let name = if surface_in_fixed {
+                "a surface in the fixed box"
+            } else {
+                "a fixed box over the surface"
+            };
+            let (mut split_page, mut scene_page) = (make(surface_in_fixed), make(surface_in_fixed));
+            let surfaces: Vec<usize> = split_page.surfaces.iter().map(|s| s.id()).collect();
+            let mut win = Window::new(true);
+            let mut reference = Window::new(false);
+            let recolor = |p: &Page| p.boxes.borrow()[0].set_style("background", "rgb(0, 160, 0)");
+            for n in 0..2 {
+                if n == 1 {
+                    recolor(&split_page);
+                    recolor(&scene_page);
+                }
+                let got = win.frame(&mut split_page.app, n == 0, Fault::None);
+                let want = reference.frame(&mut scene_page.app, true, Fault::None);
+                if got.split_ids != surfaces {
+                    failures.push(format!(
+                        "{name}, frame {n}: split {:?}, want {surfaces:?}",
+                        got.split_ids
+                    ));
+                }
+                let at = |px: &[[u8; 4]], (x, y): (u32, u32)| px[(y * W + x) as usize];
+                let drawn = at(&want.pixels, past);
+                let expect = if surface_in_fixed {
+                    red().get()
+                } else if n == 0 {
+                    GREEN
+                } else {
+                    [0, 160, 0, 255]
+                };
+                if drawn != expect {
+                    failures.push(format!(
+                        "{name}, frame {n}: in-scene {drawn:?} at {past:?} past the clipper, \
+                         want {expect:?}"
+                    ));
+                }
+                let wrong = compare(&got.pixels, &want.pixels, &win.allowances(EDGES), win.dev.0);
+                if !wrong.is_empty() {
+                    failures.push(format!(
+                        "{name}, frame {n} ({}): {} pixels past their allowance: {:?}",
+                        got.kind,
+                        wrong.len(),
+                        &wrong[..wrong.len().min(6)]
+                    ));
+                }
+            }
+            for s in split_page.surfaces.iter().chain(&scene_page.surfaces) {
+                unregister_render_surface(s.id());
+            }
+        }
+        crate::shell::renderer::set_gpu_presenting(false);
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+}
