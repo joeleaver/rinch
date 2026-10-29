@@ -22,12 +22,16 @@ use rinch_editor_view::registry;
 
 use super::virtual_window::CeVirtualWindow;
 
+/// One virtualized editor: `(doc_key, container id)`, its window, and the
+/// caret scroll it is following, if any.
+type WindowEntry = ((u64, usize), CeVirtualWindow, Option<CaretSettle>);
+
 thread_local! {
     /// `((doc_key, container id), window)` for each scroll-container editor being
     /// virtualized. Keyed per document: container ids are per-document slab
     /// indices, so two documents on one thread would otherwise share (and stomp)
     /// a window at a colliding id (issue #134).
-    static WINDOWS: RefCell<Vec<((u64, usize), CeVirtualWindow, Option<CaretSettle>)>> =
+    static WINDOWS: RefCell<Vec<WindowEntry>> =
         const { RefCell::new(Vec::new()) };
 }
 
