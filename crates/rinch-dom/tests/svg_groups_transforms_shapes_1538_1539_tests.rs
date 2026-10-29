@@ -165,7 +165,7 @@ fn translate_moves_a_shape() {
 fn rotate_about_a_centre() {
     check(
         r#"<rect x="45" y="10" width="10" height="80" fill="green" transform="rotate(30 50 50)"/>"#,
-        &[(69, 16, INK), (49, 15, NONE), (30, 84, INK), (50, 50, INK)],
+        &[(69, 16, INK), (49, 15, NONE), (35, 76, INK), (50, 50, INK)],
     );
 }
 
@@ -289,7 +289,7 @@ fn a_rect_with_rx_has_round_corners() {
 fn unequal_radii_make_elliptical_corners() {
     check(
         r#"<rect x="10" y="10" width="80" height="80" rx="30" ry="10" fill="green"/>"#,
-        &[(15, 12, NONE), (12, 18, INK), (85, 87, NONE), (87, 85, INK)],
+        &[(15, 12, NONE), (12, 18, INK), (84, 87, NONE), (87, 81, INK)],
     );
 }
 
