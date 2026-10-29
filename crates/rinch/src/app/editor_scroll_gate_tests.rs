@@ -253,11 +253,10 @@ fn scrolling_a_virtualized_editor_does_not_yank_back_to_the_caret() {
 }
 
 /// Nested scrollers: the editor's 120px scroller sits 2000px down the page
-/// (the body is the outer scroller). A caret move scrolls the inner scroller;
-/// does anything bring the scroller itself on screen, as `scrollIntoView` does
-/// on the web (every scrollable ancestor)?
+/// (the body is the outer scroller). A caret move scrolls the inner scroller
+/// **and** the page, so the caret lands in the window, as `scrollIntoView` does
+/// on the web (every scrollable ancestor, #842).
 #[test]
-#[ignore = "issue #842: desktop scrolls only the nearest scroll container"]
 fn nested_scrollers_the_outer_one_follows_too() {
     let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
@@ -294,6 +293,22 @@ fn nested_scrollers_the_outer_one_follows_too() {
     assert!(
         outer > 0.0,
         "the page did not follow (body scroll {outer}); the caret is still 1400px below the window"
+    );
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let caret = d
+        .tree
+        .nodes
+        .iter()
+        .find(|(_, n)| n.attributes.contains_key("data-pm-caret"))
+        .map(|(id, _)| id)
+        .expect("a caret overlay");
+    let painted = rinch_dom::paint::painted_border_box(&d.tree, caret, 1.0);
+    assert!(
+        painted.y0 >= 0.0 && painted.y1 <= 600.0,
+        "the caret is painted in the window (got {}..{})",
+        painted.y0,
+        painted.y1
     );
 }
 
