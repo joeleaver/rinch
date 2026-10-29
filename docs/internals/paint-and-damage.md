@@ -171,21 +171,39 @@ in Chrome). The body fallback now also asks `scrolls_y()`/`scrolls_x()`, so an
 `overflow: hidden` body is no fallback wheel target (CSS-correct). Still open
 beside it: `apply_scroll_into_view`'s nearest branch mixes a border-box origin
 with the content-box height (**#1367**), and `clamp_scroll_offsets` never
-clamps the x offset (**#1368**). A **positioned** child — `absolute`, or `relative`
-with an offset — is measured differently from Chrome. The paddings of rinch's
-content-box frame and Chrome's padding-box frame cancel for a **non-positioned**
-child only. An `absolute` child's overflow is over-reported by **up to** the
-container's end padding: a `position: absolute; inset: 0` child (a
-`LoadingOverlay`) in a `padding: 20px; overflow: auto; position: relative` panel
-paints two bars with 20px of travel where Chrome paints none. A `relative` child
-is read only at its offset position, where Chrome also counts its static one. An
-offset toward the end over-reports by up to the end padding; an offset toward
-the **start** under-reports by up to the offset, and needs no padding to do it —
-a 240x50 child at `left: -40px` in a plain 200x100 scroller gives Chrome 40px of
-travel and rinch no bar. `content_extents`' doc has the rule and the
-measurements. And the extent is each child's untransformed **border** box, so a
-child's `transform` and its end margins add nothing, where Chrome counts
-both.
+clamps the x offset (**#1368**).
+
+**How each box counts (#776, #775).** `extend_with_child` gives every box two
+contributions, as Chrome 156 measures them. An **in-flow** box (anything but
+`absolute`) counts its **margin box** at its *static* position — the layout
+rect less a `relative`/`sticky` offset (Taffy places the box at the offset),
+grown by the *declared* end margins (a percentage against the container's
+content width, `auto` as 0, negative never below the border box; an
+over-constrained block's used `margin-right` is negative and Chrome still
+counts the declared one). Chrome extends that in-flow area by the container's
+end padding, which cancels against the frame difference, so it is measured as
+is. Separately, the box **where it is drawn** — an `absolute` box's border box,
+a `relative` box at its offset, and either one's `transform`ed bounding box
+(`compose_node_transform`, then `transform_rect_bbox`) — counts with no
+margins and **without** the end padding, so it is measured less the
+container's `padding-right`/`padding-bottom`. An `absolute` box has only that
+second contribution: translated back inside the padding box it overflows
+nothing, whatever its untransformed size. Before this every box counted its
+untransformed border box plus the end padding — no margins, no transforms, an
+`absolute; inset: 0` overlay (`LoadingOverlay`) in a padded scroller painted
+two bars, and a `relative` box offset toward the start lost range Chrome gives
+it. Two kinds of in-flow box count their border box alone: a non-replaced
+`display: inline` box (its block-axis margins do nothing, CSS 2.1 §10.6.1, and
+its inline-axis ones are in the line the container's inline layout measures;
+a replaced element at `display: inline` is `DisplayMode::InlineBlock` and keeps
+its margins), and a **grid item** (`ContainerFrame::grid`): Chrome counts the
+grid's *tracks*, not an item's margin box, and layout does not keep them, so a
+margin box overshoots (`margin-right: 300px` past a 100px column: Chrome 0) and
+the border box, as before #776, under-counts only where a margin grows an
+`auto` track (Chrome 86x46 and 0x120 in the pinned rows, rinch 0). Rows:
+`tests/scroll_range_margin_transform_776_tests.rs`. Not counted yet:
+a margin that collapses through a child's end (a `height: auto` child whose
+last child has `margin-bottom: 80px`: Chrome 30px of travel, rinch 0).
 
 **Styling the bar (#416).** Two inherited custom properties:
 `--rinch-scrollbar-color: <thumb> [<track>]` and `--rinch-scrollbar-width: auto
