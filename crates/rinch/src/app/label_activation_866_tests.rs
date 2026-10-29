@@ -508,3 +508,48 @@ fn checkbox_radio_and_switch_toggle_once_per_press_on_their_label() {
         assert_eq!(count.get(), 2, "{name}: a press on its box toggles once");
     }
 }
+
+#[test]
+fn the_control_is_resolved_after_the_labels_own_click() {
+    // Chrome resolves `label.control` after the label's listeners: a label
+    // whose own handler removes its control forwards to nothing.
+    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let l = log.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "font-size: 16px; line-height: 20px");
+        let label = scope.create_element("label");
+        label.set_attribute("id", "l14");
+        label.set_attribute("for", "c14");
+        label.set_attribute("style", "display: inline-block; width: 120px; height: 24px");
+        label.append_child(&scope.create_text("Fourteen"));
+        let wrapper = scope.create_element("div");
+        let input = scope.create_element("input");
+        input.set_attribute("type", "checkbox");
+        input.set_attribute("id", "c14");
+        wrapper.append_child(&input);
+        let w = scope.register_handler(logger(&l, "w14"));
+        wrapper.set_attribute("data-rid", &w.0.to_string());
+        let a = scope.register_handler({
+            let l = l.clone();
+            let wrapper = wrapper.clone();
+            move || {
+                l.borrow_mut().push("a14");
+                wrapper.remove();
+            }
+        });
+        label.set_attribute("data-rid", &a.0.to_string());
+        root.append_child(&label);
+        root.append_child(&wrapper);
+        root
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    click(&mut app, "l14");
+    assert_eq!(
+        *log.borrow(),
+        vec!["a14"],
+        "the removed control is not clicked"
+    );
+    assert_eq!(focused(&app), None, "nor focused");
+}
