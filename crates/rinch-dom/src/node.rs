@@ -981,9 +981,9 @@ impl std::fmt::Debug for InlineLayout {
     }
 }
 
-/// A single-line `<input>`'s displayed line: `(caret x, full width, height)`
-/// in logical px (#1721).
-pub(crate) type InputLineMetrics = (f32, f32, f32);
+/// A text control's displayed text: `(caret x, caret y, full width, height)`
+/// in logical px (#1721, #827).
+pub(crate) type InputLineMetrics = (f32, f32, f32, f32);
 
 /// A node in the DOM tree.
 pub struct Node {
@@ -1513,9 +1513,11 @@ pub struct Node {
     /// shaped under (#1195, review of #1302) — so a restyle that moves
     /// neither shapes nothing. `None` until the control is first sized.
     pub(crate) form_label_width: Cell<Option<(u64, f32)>>,
-    /// A focused single-line `<input>`'s displayed line, `(caret x, full
-    /// width, height)`, under the hash of what it was shaped from
-    /// (`form_control::displayed_line_metrics`, #1721).
+    /// A text control's displayed text, `(caret x, caret y, full width,
+    /// height)`, under the hash of what it was shaped from
+    /// (`form_control::displayed_metrics`): a focused single-line `<input>`'s
+    /// line for its horizontal scroll (#1721), a `<textarea>`'s text for its
+    /// caret reveal and its scroll extent (#827).
     pub(crate) input_line_metrics: Cell<Option<(u64, InputLineMetrics)>>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of

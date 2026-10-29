@@ -310,6 +310,13 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
     } else {
         false
     };
+    // A `<textarea>`'s own text (#827): its value is an attribute, so no box
+    // and no inline layout holds it. Its height as last shaped for its
+    // scroll, at the content origin like an IFC's lines; it wraps at the
+    // column, so it adds no width.
+    if let Some(text_h) = crate::form_control::textarea_scroll_extent(node) {
+        bottom = bottom.max(content_top + text_h as f64);
+    }
     let frame = ContainerFrame {
         end_padding: (
             cs.padding_right.to_px() as f64,

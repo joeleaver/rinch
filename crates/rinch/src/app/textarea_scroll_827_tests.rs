@@ -8,10 +8,10 @@
 //! loses focus. The desktop textarea painted every line from the top of its
 //! box down, over whatever lay below it, and nothing scrolled it.
 //!
-//! Text is set in the bundled Inter (`sans-serif`). The field is `border: 3px`
-//! + `padding: 5px 7px`, so its content box `x ∈ [10, 210), y ∈ [8, 62)` and
-//! padding box `x ∈ [3, 217), y ∈ [3, 67)` sit off the border-box origin, and
-//! the content box (54px) holds two and a fraction of a line — off every
+//! Text is set in the bundled Inter (`sans-serif`). The field has a 3px
+//! border and 5px/7px padding, so its content box `x ∈ [10, 210), y ∈ [8, 62)`
+//! and padding box `x ∈ [3, 217), y ∈ [3, 67)` sit off the border-box origin,
+//! and the content box (54px) holds two and a fraction of a line — off every
 //! whole-line fixed point.
 
 use super::*;
@@ -247,6 +247,12 @@ fn an_overflowing_textarea_paints_inside_its_padding_box() {
 #[test]
 fn the_caret_stays_in_view_vertically() {
     let (mut app, id, field) = area(TEN);
+    // Where offset 0's caret is drawn unscrolled: the first line's top.
+    let top0 = field.caret_rect_at(0).unwrap().y;
+    assert!(
+        (top0 - CONTENT_TOP).abs() < 1.5,
+        "the text starts at the content box, {top0}"
+    );
     focus(&mut app, &field, id);
     ctrl(&mut app, KeyCode::End);
     repaint(&mut app);
@@ -285,10 +291,80 @@ fn the_caret_stays_in_view_vertically() {
     assert_eq!(caret_pos(&app, id), 0);
     let (_, y, _) = caret_rect(&field);
     assert!(
-        (y - CONTENT_TOP).abs() < 0.5,
-        "Ctrl+Home: the caret at the content box's top, got {y}"
+        (y - top0).abs() < 0.5,
+        "Ctrl+Home: the caret at the content box's top {top0}, got {y}"
     );
     assert_eq!(scroll_top(&app, id), 0.0);
+
+    // ArrowDown past the bottom, off the text's end: the least scroll puts
+    // the caret's line at the content box's bottom, not its top (the end of
+    // the text would clamp either answer to the same place).
+    for _ in 0..3 {
+        key(&mut app, KeyCode::ArrowDown);
+    }
+    repaint(&mut app);
+    let (_, y, h) = caret_rect(&field);
+    assert!(
+        y + h <= CONTENT_BOTTOM + 1.0 && y + h > CONTENT_BOTTOM - 4.0,
+        "ArrowDown: the caret's line at the bottom, got y {y}..{}",
+        y + h
+    );
+    let s = scroll_top(&app, id);
+    assert!(
+        s > 5.0 && s < 40.0,
+        "scrolled by less than a line and a half: {s}"
+    );
+}
+
+/// A scrolled textarea whose text gets shorter — here a smaller font — is
+/// held inside its new range at the layout that shrank it, as any scroll
+/// container is (`clamp_scroll_offsets`), not only drawn there.
+#[test]
+fn a_shrunk_textarea_clamps_its_scroll() {
+    let (mut app, id, field) = area(TEN);
+    for _ in 0..10 {
+        ev(
+            &mut app,
+            PlatformEvent::MouseWheel {
+                x: 100.0,
+                y: 30.0,
+                delta_x: 0.0,
+                delta_y: -100.0,
+            },
+        );
+    }
+    repaint(&mut app);
+    let before = scroll_top(&app, id);
+    assert!(
+        before > 100.0,
+        "positive control: scrolled to the end, {before}"
+    );
+    rinch_core::dom::DomDocument::set_attribute(
+        &mut *app.doc.as_ref().unwrap().borrow_mut(),
+        rinch_core::dom::NodeId(id),
+        "style",
+        &format!("{AREA_STYLE}; font-size: 8px"),
+    );
+    repaint(&mut app);
+    let (height, client) = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let nid = rinch_core::dom::NodeId(id);
+        (
+            rinch_core::dom::DomDocument::scroll_height(&*d, nid),
+            rinch_core::dom::DomDocument::client_height(&*d, nid),
+        )
+    };
+    let max = height - client;
+    assert!(
+        max > 10.0 && max < before - 40.0,
+        "the range shrank: {before} → {max}"
+    );
+    let after = scroll_top(&app, id);
+    assert!(
+        (after - max).abs() <= 1.0,
+        "the scroll is clamped to the new range {max}, got {after}"
+    );
+    let _ = field;
 }
 
 /// Typing a new line at the end scrolls by the least: the new last line is
@@ -349,6 +425,12 @@ fn a_click_after_scrolling_maps_to_the_line_under_it() {
 #[test]
 fn the_wheel_scrolls_an_overflowing_textarea() {
     let (mut app, id, field) = area(TEN);
+    // Where offset 0's caret is drawn unscrolled: the first line's top.
+    let top0 = field.caret_rect_at(0).unwrap().y;
+    assert!(
+        (top0 - CONTENT_TOP).abs() < 1.5,
+        "the text starts at the content box, {top0}"
+    );
     // Over the field, towards the content's end (winit's sign: negative).
     ev(
         &mut app,
@@ -367,7 +449,7 @@ fn the_wheel_scrolls_an_overflowing_textarea() {
     );
     let y0 = field.caret_rect_at(0).unwrap().y;
     assert!(
-        (y0 - (CONTENT_TOP - 37.0)).abs() < 0.5,
+        (y0 - (top0 - 37.0)).abs() < 0.5,
         "the text moved with it: offset 0 at {y0}"
     );
     assert_eq!(ink(&mut app).1, 0);

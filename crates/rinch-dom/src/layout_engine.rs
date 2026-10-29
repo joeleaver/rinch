@@ -1106,6 +1106,25 @@ impl RinchDocument {
     /// After layout changes (e.g., viewport resize), a container's content or
     /// visible area may have changed, making the old scroll offset too large.
     fn clamp_scroll_offsets(&mut self) {
+        // A `<textarea>`'s extent is its text (#827), shaped at its new width
+        // before it is read — below, and by the wheel, the bars and
+        // `scroll_height` until the next layout. Shaped only when its text,
+        // caret, width or font changed (`form_control::displayed_metrics`).
+        let textareas: Vec<usize> = self
+            .tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.tag() == Some("textarea"))
+            .map(|(id, _)| id)
+            .collect();
+        for id in textareas {
+            crate::form_control::refresh_textarea_extent(
+                &self.tree,
+                &mut self.font_cx,
+                &mut self.layout_cx,
+                id,
+            );
+        }
         // Collect (node_id, max_scroll) for nodes that need clamping
         let mut clamps: Vec<(usize, f64)> = Vec::new();
         for (node_id, _) in self.tree.nodes.iter() {
