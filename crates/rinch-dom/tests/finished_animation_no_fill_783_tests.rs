@@ -160,13 +160,21 @@ fn assert_at_rest(doc: &mut RinchDocument, node: NodeId, what: &str) {
         10.0,
         "{what}: the box is back at its cascaded 10px, as in Chrome"
     );
-    assert_eq!(layout_width(doc, node), 10.0, "{what}: and so is its layout");
+    assert_eq!(
+        layout_width(doc, node),
+        10.0,
+        "{what}: and so is its layout"
+    );
     assert!(
         !doc.tree.has_running_animations(),
         "{what}: a finished animation has nothing to advance"
     );
     assert!(!frame(doc), "{what}: and asks the shell for no frame");
-    assert_eq!(width_px(doc, node), 10.0, "{what}: a later tick moves nothing");
+    assert_eq!(
+        width_px(doc, node),
+        10.0,
+        "{what}: a later tick moves nothing"
+    );
 }
 
 // ── half 1: the last sample is removed ──────────────────────────────────────
@@ -177,7 +185,11 @@ fn a_finished_animation_without_fill_returns_to_its_base_value() {
     // In the delay, `none` has no effect: the base.
     age(&mut doc, node, DELAY / 2.0);
     assert!(frame(&mut doc));
-    assert_eq!(width_px(&doc, node), 10.0, "in the delay, no fill: the base");
+    assert_eq!(
+        width_px(&doc, node),
+        10.0,
+        "in the delay, no fill: the base"
+    );
 
     age(&mut doc, node, DURING - DELAY / 2.0);
     assert!(frame(&mut doc));
@@ -321,7 +333,10 @@ fn re_displaying_a_finished_animation_starts_it_again() {
 fn a_restyle_that_extends_a_finished_animation_runs_it_again() {
     let (mut doc, node) = finished("box none");
     set_class(&mut doc, node, "box none more");
-    assert!(doc.tree.has_running_animations(), "more iterations: running");
+    assert!(
+        doc.tree.has_running_animations(),
+        "more iterations: running"
+    );
     assert!(frame(&mut doc), "and ticking");
     let w = width_px(&doc, node);
     assert!(
@@ -338,7 +353,10 @@ fn a_restyle_that_extends_a_finished_animation_runs_it_again() {
 fn a_finished_animation_on_a_before_box_returns_to_its_base_value() {
     let (mut doc, owner) = mount("gen");
     let pseudo = doc.tree.get(owner.0).unwrap().children[0];
-    assert!(doc.tree.get(pseudo).unwrap().is_pseudo_element, "precondition");
+    assert!(
+        doc.tree.get(pseudo).unwrap().is_pseudo_element,
+        "precondition"
+    );
     let pseudo = NodeId(pseudo);
     age(&mut doc, pseudo, DURING);
     assert!(frame(&mut doc));
@@ -352,5 +370,9 @@ fn a_finished_animation_on_a_before_box_returns_to_its_base_value() {
     );
     assert_at_rest(&mut doc, pseudo, "::before, after the end");
     set_class(&mut doc, owner, "gen other");
-    assert_at_rest(&mut doc, pseudo, "::before, then `.other` on its originator");
+    assert_at_rest(
+        &mut doc,
+        pseudo,
+        "::before, then `.other` on its originator",
+    );
 }
