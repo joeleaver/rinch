@@ -3,7 +3,10 @@
 mod invalidation;
 mod pseudo;
 mod resolve;
+mod sheets;
 mod state_tracking;
+
+pub(crate) use sheets::StyleElementSheet;
 
 use servo_arc::Arc as ServoArc;
 
@@ -18,8 +21,10 @@ use crate::node::{DirtyFlags, DisplayMode, NodeKind, NodeTree};
 impl RinchDocument {
     /// Load CSS into the document's stylesheet.
     ///
-    /// Parses the CSS string and merges rules/variables into the existing stylesheet.
-    /// Call this at startup to load theme and component CSS.
+    /// Parses the CSS string and adds it after every sheet loaded before it.
+    /// It may be called at any time: after the document has been styled, the
+    /// next `resolve_styles` restyles the elements its rules can reach and no
+    /// others (#884; see `style_resolution/sheets.rs`).
     pub fn load_css(&mut self, css: &str) {
         self.load_stylo_css(css);
     }
@@ -62,43 +67,11 @@ impl RinchDocument {
         }
     }
 
-    /// If the given node is a `<style>` element, extract its text children's content
-    /// and load it into the stylesheet.
+    /// If the given node is a `<style>` element, its text may have changed:
+    /// its sheet is brought up to date at the next style resolve (#884,
+    /// `sheets.rs`).
     pub(crate) fn maybe_load_style_css(&mut self, node_id: usize) {
-        let is_style = self
-            .tree
-            .nodes
-            .get(node_id)
-            .and_then(|n| n.tag())
-            .map(|t| t == "style")
-            .unwrap_or(false);
-        if !is_style {
-            return;
-        }
-
-        // Collect text content from children
-        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
-        let mut css = String::new();
-        for child_id in children {
-            if let Some(text) = self.tree.nodes.get(child_id).and_then(|n| n.text_content()) {
-                css.push_str(text);
-            }
-        }
-        if !css.is_empty() {
-            self.load_stylo_css(&css);
-            // New CSS rules may affect any existing node — invalidate all caches
-            // and clear style_roots to force a full tree walk.
-            self.tree
-                .note_full_restyle(crate::perf::FullRestyleReason::Stylesheet);
-            for (nid, _) in self.tree.nodes.iter() {
-                self.tree.nodes[nid].stylo_element_data.clear();
-            }
-            self.tree.style_roots.clear();
-            self.tree.full_style_walk = true;
-            self.tree.styles_dirty = true;
-            self.resolve_styles();
-            self.apply_stylo_styles_to_taffy();
-        }
+        self.note_style_text_changed(node_id);
     }
 
     /// Set viewport dimensions for resolving vh/vw CSS units.
@@ -315,27 +288,36 @@ impl RinchDocument {
 
     /// Load CSS into Stylo's stylesheet system.
     ///
-    /// Parses the CSS string and appends it to the Stylist for CSS cascade.
-    /// Appended sheets cascade after everything loaded before them, matching
-    /// document source order.
+    /// Parses the CSS string and adds it to the Stylist for CSS cascade. It
+    /// cascades after everything loaded before it, matching document source
+    /// order, and before every `<style>` element's sheet (those are body
+    /// sheets; these are the web's `<head>` ones).
+    ///
+    /// The Stylist records which elements the new rules can reach; the next
+    /// `resolve_styles` restyles those (#884). Forcing the origin dirty
+    /// instead, as this used to, threw that set away and marked nothing.
     pub fn load_stylo_css(&mut self, css: &str) {
-        use style::stylesheets::Origin;
-
         let doc_stylesheet = self.parse_author_stylesheet(css);
 
-        // Add the stylesheet to the stylist
+        let before = self.first_style_element_sheet();
         let guard = self.tree.guard.read();
-        self.stylist
-            .append_stylesheet(doc_stylesheet.clone(), &guard);
+        match before {
+            Some(before) => {
+                self.stylist
+                    .insert_stylesheet_before(doc_stylesheet.clone(), before, &guard);
+            }
+            None => self
+                .stylist
+                .append_stylesheet(doc_stylesheet.clone(), &guard),
+        }
         drop(guard);
 
         // Track app author sheets in insertion order so the theme sheet can be
         // re-inserted ahead of them (see `set_theme_css`).
         self.author_stylesheets.push(doc_stylesheet);
 
-        // Mark stylesheets as changed so they'll be flushed on next style computation
-        self.stylist
-            .force_stylesheet_origins_dirty(Origin::Author.into());
+        self.sheet_invalidations_pending = true;
+        self.tree.styles_dirty = true;
 
         self.recompute_bare_focus_rules();
     }
@@ -352,6 +334,11 @@ impl RinchDocument {
             .theme_stylesheet
             .iter()
             .chain(self.author_stylesheets.iter())
+            .chain(
+                self.style_element_sheets
+                    .iter()
+                    .filter_map(|e| e.sheet.as_ref()),
+            )
             .cloned()
             .collect();
         let guard = self.tree.guard.read();
@@ -452,8 +439,6 @@ impl RinchDocument {
     /// app's `<style>` rules, letting theme `:root` custom properties silently
     /// win over an app's `:root` overrides of the same variable.
     pub fn set_theme_css(&mut self, css: &str) {
-        use style::stylesheets::Origin;
-
         let new_sheet = self.parse_author_stylesheet(css);
 
         let guard = self.tree.guard.read();
@@ -465,10 +450,15 @@ impl RinchDocument {
 
         // Re-insert ahead of the first app sheet so app CSS keeps overriding the
         // theme. With no app sheets yet, appending puts it first anyway.
-        match self.author_stylesheets.first() {
+        let first_app = self
+            .author_stylesheets
+            .first()
+            .cloned()
+            .or_else(|| self.first_style_element_sheet());
+        match first_app {
             Some(first_app) => {
                 self.stylist
-                    .insert_stylesheet_before(new_sheet.clone(), first_app.clone(), &guard);
+                    .insert_stylesheet_before(new_sheet.clone(), first_app, &guard);
             }
             None => {
                 self.stylist.append_stylesheet(new_sheet.clone(), &guard);
@@ -478,8 +468,11 @@ impl RinchDocument {
 
         self.theme_stylesheet = Some(new_sheet);
 
-        self.stylist
-            .force_stylesheet_origins_dirty(Origin::Author.into());
+        // The old sheet's and the new sheet's rules are both invalidations
+        // (#884): replacing the theme restyles what either can reach, with no
+        // `recompute_all_styles_full` needed.
+        self.sheet_invalidations_pending = true;
+        self.tree.styles_dirty = true;
 
         self.recompute_bare_focus_rules();
     }
@@ -494,7 +487,10 @@ impl RinchDocument {
     }
 
     /// Update theme CSS variables without duplicating non-`:root` rules.
-    /// After calling this, call `recompute_all_styles_full()` to apply the new variables.
+    ///
+    /// The next `resolve_styles` applies the new sheet by itself (#884). The
+    /// shell still follows it with `recompute_all_styles_full()`, which
+    /// re-cascades with transitions off so a theme switch lands instantly.
     ///
     /// Replaces the theme sheet in its stable pre-app slot; see [`Self::set_theme_css`].
     pub fn update_theme_variables(&mut self, css: &str) {
@@ -1180,7 +1176,31 @@ impl RinchDocument {
                 && !self.tree.nodes[node_id].styled_unrendered;
             if self.tree.transitions_enabled && node_has_been_styled && !specs.is_empty() {
                 let old_style = &self.tree.nodes[node_id].computed_style;
-                let diffs = diff_animatable(old_style, &new_style);
+                let mut diffs = diff_animatable(old_style, &new_style);
+
+                // The restyle a finished no-fill animation asked for (#783):
+                // `old_style` still holds its last sample, but the
+                // before-change style css-transitions-1 compares against is
+                // updated to the current time, when the animation has no
+                // effect. So the way back to the cascaded value is not a
+                // change, and starts no transition.
+                //
+                // Known gap (review of #2000, F3): a *real* change of the same
+                // property in the same frame as the end — a class moving
+                // `width` 10px → 20px on the tick that finishes a `width`
+                // animation — is dropped with it, so it starts no transition
+                // and the box jumps to 20px. css-transitions-1 would start
+                // 10px → 20px from the previous cascaded value, and that value
+                // is not kept anywhere: `old_style` holds the last sample and
+                // Stylo's previous style is already replaced.
+                // `finished_animation_no_fill_783_tests::
+                // an_end_and_a_real_change_in_one_frame_start_no_transition`
+                // pins it.
+                if self.tree.ended_animations.contains(&node_id)
+                    && let Some(anims) = self.tree.finished_animations.get(&node_id)
+                {
+                    diffs.retain(|d| !anims.iter().any(|a| a.animates(d.property)));
+                }
 
                 // css-transitions-1 §3 defines the before-change style only for
                 // an element that is **being rendered**, so no transition
@@ -1287,7 +1307,8 @@ impl RinchDocument {
                 // and only for a node that either declares an `animation` or
                 // has one running: a node with neither never walks its
                 // ancestor chain. See [`Self::animation_is_rendered`].
-                let has_active = self.tree.active_animations.contains_key(&node_id);
+                let has_active = self.tree.active_animations.contains_key(&node_id)
+                    || self.tree.finished_animations.contains_key(&node_id);
                 if !self.tree.nodes[node_id].animation_specs.is_empty() || has_active {
                     if Self::animation_is_rendered(&self.tree, node_id, new_style.display) {
                         let anim_specs = self.tree.nodes[node_id].animation_specs.clone();
@@ -1297,8 +1318,11 @@ impl RinchDocument {
                         // Extract active_animations temporarily to avoid borrow conflict
                         let mut active_animations =
                             std::mem::take(&mut self.tree.active_animations);
+                        let mut finished_animations =
+                            std::mem::take(&mut self.tree.finished_animations);
                         crate::animation::start_animations(
                             &mut active_animations,
+                            &mut finished_animations,
                             node_id,
                             &anim_specs,
                             &base_style,
@@ -1308,9 +1332,15 @@ impl RinchDocument {
                             current_time_ms,
                         );
                         self.tree.active_animations = active_animations;
+                        self.tree.finished_animations = finished_animations;
                         drop(guard);
 
-                        // Apply current animation values on top of computed_style
+                        // Apply current animation values on top of computed_style.
+                        // A finished animation without a fill is not in this
+                        // map (it writes nothing), so it does not count as one
+                        // that changes the text measure either (review of
+                        // #2000, F2: a finished `font-size` one-shot made every
+                        // later restyle of its node re-measure and lay out).
                         if let Some(animations) = self.tree.active_animations.get(&node_id) {
                             animated_text_measure =
                                 animations.iter().any(|a| a.changes_text_measure());
@@ -1333,6 +1363,7 @@ impl RinchDocument {
                         // was already running stops. The subtree walk below
                         // catches descendants whose own cascade does not run.
                         self.tree.active_animations.remove(&node_id);
+                        self.tree.finished_animations.remove(&node_id);
                     }
                 }
             }
@@ -1352,7 +1383,9 @@ impl RinchDocument {
                 if !self.tree.active_transitions.is_empty() {
                     self.cancel_transitions_in_subtree(node_id);
                 }
-                if !self.tree.active_animations.is_empty() {
+                if !self.tree.active_animations.is_empty()
+                    || !self.tree.finished_animations.is_empty()
+                {
                     self.cancel_animations_in_subtree(node_id);
                 }
             }
@@ -1776,6 +1809,9 @@ impl RinchDocument {
             }
         }
 
+        // The restyles the last tick asked for have run (#783).
+        self.tree.ended_animations.clear();
+
         if !resync_absolutes.is_empty() {
             // Their containing block changed, so they move — whether or not
             // the re-sync below changes a Taffy style. A box whose size does
@@ -2143,6 +2179,9 @@ impl RinchDocument {
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
             self.tree.active_animations.remove(&id);
+            if !self.tree.finished_animations.is_empty() {
+                self.tree.finished_animations.remove(&id);
+            }
             if let Some(node) = self.tree.nodes.get(id) {
                 stack.extend(node.children.iter().copied());
             }
@@ -2219,6 +2258,7 @@ impl RinchDocument {
             None => return,
         };
         let mut active_animations = std::mem::take(&mut self.tree.active_animations);
+        let mut finished_animations = std::mem::take(&mut self.tree.finished_animations);
         // Nodes whose restarted sample can change their text measure. The
         // cascade of a node shown by an ancestor need not run, so its own
         // `animated_text_measure` check does not either (#763).
@@ -2254,6 +2294,7 @@ impl RinchDocument {
                 let guard = self.tree.guard.read();
                 crate::animation::start_animations(
                     &mut active_animations,
+                    &mut finished_animations,
                     id,
                     &specs,
                     &base_style,
@@ -2288,6 +2329,7 @@ impl RinchDocument {
         }
 
         self.tree.active_animations = active_animations;
+        self.tree.finished_animations = finished_animations;
         for id in remeasure {
             self.invalidate_text_measure_for_node(id);
             self.tree.layout_dirty = true;

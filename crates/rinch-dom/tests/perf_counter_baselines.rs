@@ -321,12 +321,16 @@ fn every_rinch_dom_counter_fires_somewhere() {
     doc.resolve_layout(VP.0, VP.1);
     doc.resolve_layout(VP.0, VP.1);
     // Whole-document restyles by each reason rinch-dom can be asked for.
-    doc.recompute_all_styles_full();
-    doc.set_device_pixel_ratio(2.0);
+    // A `<style>` whose rule Stylo cannot bucket by id/class/tag (`:root`) is
+    // one (a `.class` rule matching nothing restyles nothing since #884). It
+    // goes first: after the device-pixel-ratio change below a whole-document
+    // walk is already pending, and the sheet adds nothing to it.
     let style = doc.create_element("style");
-    let css = doc.create_text(".late { color: blue; }");
+    let css = doc.create_text(":root { --late: blue; }");
     doc.append_child(style, css);
     doc.append_child(body, style);
+    doc.recompute_all_styles_full();
+    doc.set_device_pixel_ratio(2.0);
     doc.load_css("html { font-size: 20px; }");
     // 800 -> 801 flips the `min-width: 801px` query: a full restyle.
     doc.resolve_layout(VP.0 + 1.0, VP.1);
@@ -983,6 +987,59 @@ fn transform_animation_tick() {
     });
     expect(
         "transform animation tick",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 50),
+            (StackingOrderBuilds, 2),
+        ],
+    );
+}
+
+/// The same tick, with every row holding a **finished** one-shot entrance
+/// animation without a fill (#783, review of #2000): the frame must be
+/// `transform_animation_tick`'s exactly. The markers those leave behind are
+/// kept in `finished_animations`, which no tick walks, so they add no cascade
+/// (a tick that restyled them again — the review's mutant MD — shows here as
+/// `elements_cascaded`), no paint and no layout. The positive control: the 40
+/// markers are there, and the spinner is the only animation a tick sees.
+#[test]
+fn transform_animation_tick_beside_finished_one_shots() {
+    let mut f = build_with(
+        ROWS,
+        false,
+        "@keyframes perf-fade { from { opacity: 0.2; } to { opacity: 0.8; } }
+         .row { animation: perf-fade 200ms linear 1; }",
+    );
+    for row in &f.rows {
+        for a in f.doc.tree.active_animations.get_mut(&row.0).unwrap() {
+            a.start_time_ms -= 1000.0;
+        }
+    }
+    f.doc.tick_animations();
+    f.doc.resolve_layout(VP.0, VP.1);
+    let chip = f.chips[ROWS / 2];
+    f.doc.set_attribute(chip, "class", "chip spin");
+    f.doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        f.doc.tree.finished_animations.len(),
+        ROWS,
+        "positive control: every row's one-shot has finished and is kept"
+    );
+    assert_eq!(
+        f.doc.tree.active_animations.len(),
+        1,
+        "and the spinner is the only node a tick walks"
+    );
+    paint(&mut f);
+    f.doc.tree.perf.reset();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let s = frame(&mut f, |f| {
+        f.doc.tick_animations();
+    });
+    expect(
+        "transform animation tick beside finished one-shots",
         &s,
         &[
             (LayoutResolves, 1),

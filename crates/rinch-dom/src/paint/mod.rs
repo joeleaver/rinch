@@ -1928,7 +1928,7 @@ pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
 /// model (#319), so its laid-out and painted geometry coincide — the parent's
 /// padding is applied once, by Taffy, when it places the anonymous box inside
 /// the parent's content box, and never again here.
-pub(crate) fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
+pub fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
     let cs = &root.computed_style;
     (
         cs.padding_left.to_px() + cs.border_left_width.to_px(),
@@ -4780,8 +4780,8 @@ fn paint_node_unmasked(
                 if matches!(node.tag(), Some("input" | "textarea")) {
                     let value = crate::form_control::control_value(&tree.nodes, node_id)
                         .unwrap_or_default();
-                    let scroll_x =
-                        crate::form_control::input_scroll_x(tree, font_cx, layout_cx, node_id);
+                    let scroll =
+                        crate::form_control::field_scroll(tree, font_cx, layout_cx, node_id);
                     paint_input_value(
                         node,
                         &value,
@@ -4795,7 +4795,7 @@ fn paint_node_unmasked(
                         font_cx,
                         layout_cx,
                         node_transform,
-                        scroll_x,
+                        scroll,
                     );
                 } else if node.tag() == Some("select") {
                     // The closed control's label + arrow. Options are display:none

@@ -33,6 +33,7 @@ mod dropdown_viewport_1764_tests;
 mod review_1589_tests;
 #[cfg(test)]
 mod review_1601_tests;
+mod scroll_into_view;
 #[cfg(test)]
 mod tree_drop_tests;
 #[cfg(test)]
@@ -115,6 +116,8 @@ mod editor_file_drop_caret_1649_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_focus_and_reveal_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_generated_content_891_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_hanging_space_caret_1041_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_home_end_image_1116_tests;
@@ -172,6 +175,8 @@ mod editor_wrapped_selection_tests;
 mod element_key_1678_tests;
 mod event_dispatch;
 #[cfg(test)]
+mod field_label_2034_tests;
+#[cfg(test)]
 mod file_drop_click_context_1650_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod files_drop_1771_tests;
@@ -217,6 +222,8 @@ mod key_event_data_tests;
 mod key_repeat_tests;
 #[cfg(test)]
 mod key_up_redraw_486_tests;
+#[cfg(test)]
+mod label_activation_866_tests;
 #[cfg(test)]
 mod late_children_716_tests;
 #[cfg(test)]
@@ -346,6 +353,8 @@ mod textarea_home_end_tests;
 mod textarea_max_rows_tests;
 #[cfg(test)]
 mod textarea_newline_tests;
+#[cfg(all(test, software_shell))]
+mod textarea_scroll_827_tests;
 #[cfg(test)]
 mod textarea_text_child_tests;
 #[cfg(test)]
@@ -2029,8 +2038,9 @@ impl RinchApp {
     /// Apply deferred scroll-into-view requests.
     ///
     /// Must be called AFTER `resolve_layout` so node positions are valid.
-    /// Walks ancestors to find the nearest scroll container and adjusts its
-    /// scroll offset to make the target element visible.
+    /// Each request moves every scroller the target is in, innermost first and
+    /// the page last, on both axes — the browser's `scrollIntoView` (#842; see
+    /// `scroll_into_view.rs`).
     fn apply_scroll_into_view(&mut self) {
         let Some(doc) = &self.doc else { return };
         let (nearest, placed) = {
@@ -2051,131 +2061,11 @@ impl RinchApp {
             .map(|n| (n, None))
             .chain(placed.into_iter().map(|(n, f, m)| (n, Some((f, m)))));
 
-        for (target_nid, placement) in requests {
+        for (target, placement) in requests {
             let mut d = doc.borrow_mut();
-
-            // Walk ancestors to find nearest scroll container
-            let target_id = target_nid.0;
-            let scroll_container = {
-                let mut current = d.tree.nodes.get(target_id).and_then(|n| n.parent);
-                let mut found = None;
-                while let Some(ancestor_id) = current {
-                    if let Some(ancestor) = d.tree.nodes.get(ancestor_id) {
-                        // `scrolls_y`, not `overflow_y`: a `display: contents`
-                        // ancestor has no box to scroll (#1038).
-                        if ancestor.scrolls_y() {
-                            found = Some(ancestor_id);
-                            break;
-                        }
-                        current = ancestor.parent;
-                    } else {
-                        break;
-                    }
-                }
-                found
-            };
-
-            let Some(container_id) = scroll_container else {
-                continue;
-            };
-
-            // Where the target is *painted*, in the scroll container's own
-            // coordinate space — the space `scroll_offset` moves content in.
-            // Measured against the container's border-box origin at the
-            // *current* scroll, so the two branches below read the adjustment
-            // straight off it.
-            //
-            // Two things about this are worth stating, because neither is
-            // obvious and the parent-chain sum it replaces got the first wrong
-            // while implicitly relying on the second (#203):
-            //
-            // - What "visible" means is where the box is **drawn**, not where
-            //   Taffy laid it out. The old walk summed `layout.y`, so any
-            //   transform between the container and the target scrolled to a
-            //   position the element is not at — including the common case of
-            //   a `translate`d panel inside a scroller, where Tab could land on
-            //   a control and scroll it off screen.
-            //
-            // - The adjustment is nevertheless **1:1** with the scroll, even
-            //   under a `scale()` between the two. `paint_node` composes a
-            //   descendant's transform about that descendant's *own* origin,
-            //   and the scroll moves that origin along with the box, so the
-            //   linear part cancels: a scroll of N moves the painted box by N
-            //   in the container's space, at any scale. Dividing by a composed
-            //   scale here would be wrong, which is what
-            //   `a_scaled_subtree_scrolls_by_the_painted_distance` pins.
-            //
-            // For a *rotated* ancestor this is the bounding box, the same
-            // approximation `painted_border_box` makes everywhere else.
-            let painted = rinch_dom::paint::painted_border_box(&d.tree, target_id, 1.0);
-            let local = |y: f64| {
-                rinch_dom::paint::point_in_painted_box(&d.tree, container_id, 1.0, painted.x0, y)
-                    .map(|(_, ly)| ly)
-            };
-            let (Some(elem_top), Some(elem_bottom)) = (local(painted.y0), local(painted.y1)) else {
-                // A non-invertible transform on the chain: the subtree paints
-                // to zero area, so no scroll position makes it visible.
-                continue;
-            };
-
-            let container_nid = rinch_core::dom::NodeId(container_id);
-            let visible_height = d.client_height(container_nid);
-            let current_scroll = d.scroll_top(container_nid);
-            let content_height = d.scroll_height(container_nid);
-            let max_scroll = (content_height - visible_height).max(0.0);
-
-            let new_scroll = if let Some((fraction, margin)) = placement {
-                // Placed: the element's top at `fraction` of the visible
-                // height, at least `margin` inside either edge (the top edge
-                // wins when the element is too tall for both).
-                //
-                // "Visible" is the container's **padding** box, from the
-                // inside of its top border — what a browser scrolls content
-                // through (`clientTop` / `clientHeight`), and so what the web
-                // backend measures against. `elem_top` is from the border
-                // box's top and `client_height` is the content box here, so
-                // both are corrected; the nearest branch below keeps its
-                // pre-existing reading, which mixes that
-                // border-box origin with the content-box height (#1367).
-                let cs = &d.tree.nodes[container_id].computed_style;
-                let border_top = f64::from(cs.border_top_width.to_px());
-                let padding_box = visible_height
-                    + f64::from(cs.padding_top.to_px())
-                    + f64::from(cs.padding_bottom.to_px());
-                let (fraction, margin) = (f64::from(fraction), f64::from(margin));
-                let height = elem_bottom - elem_top;
-                let at = (fraction * padding_box)
-                    .min(padding_box - margin - height)
-                    .max(margin);
-                current_scroll + elem_top - border_top - at
-            } else if elem_top < 0.0 {
-                // Element is above the visible area — scroll up
-                current_scroll + elem_top
-            } else if elem_bottom > visible_height {
-                // Element is below the visible area — scroll down
-                current_scroll + (elem_bottom - visible_height)
-            } else {
-                continue; // already visible
-            };
-
-            let mut clamped = new_scroll.clamp(0.0, max_scroll);
-            // `mark_scrolled` floors the offset to the device pixel grid
-            // (#1543). Scrolling down to reveal a box, a floor would stop up to
-            // a device pixel short of its bottom edge, so round that one up —
-            // as far as the range allows, where the floor takes over again.
-            if clamped > current_scroll {
-                let s = d.tree.device_scale;
-                if s.is_finite() && s > 0.0 {
-                    clamped = ((clamped * s - 1e-6).ceil() / s).clamp(clamped, max_scroll);
-                }
+            if scroll_into_view::reveal(&mut d, target.0, placement) {
+                self.scene_dirty = true;
             }
-            if let Some(node) = d.tree.nodes.get_mut(container_id) {
-                node.scroll_offset.1 = clamped;
-            }
-            // A scroll moves every box inside the container: repaint the
-            // container, as the wheel does (which also tells the hit cache).
-            d.tree.mark_scrolled(container_id);
-            self.scene_dirty = true;
         }
     }
 
@@ -4582,12 +4472,18 @@ impl RinchApp {
             d.tree.paint_dirty_nodes.push(node_id);
         }
         d.tree.dirty_nodes.insert(node_id);
-        // A single-line field scrolls its caret into view at the move that
-        // put it there (#1721), so a run of keys between two frames scrolls
-        // as they would one frame apart. Paint and the hit-test builders read
-        // the same offset afterwards.
+        // A field scrolls its caret into view at the move that put it there
+        // — an `<input>` horizontally (#1721), a `<textarea>` vertically
+        // (#827) — so a run of keys between two frames scrolls as they would
+        // one frame apart. Paint and the hit-test builders read the same
+        // offset afterwards.
         let d = &mut *d;
-        rinch_dom::form_control::input_scroll_x(&d.tree, &mut d.font_cx, &mut d.layout_cx, node_id);
+        rinch_dom::form_control::reveal_caret(
+            &mut d.tree,
+            &mut d.font_cx,
+            &mut d.layout_cx,
+            node_id,
+        );
     }
 
     /// Set the focused field's dirty value flag: write its text to `value`,
@@ -10020,31 +9916,33 @@ mod input_caret_hit_tests {
     /// Where the painter puts the field's text: the origin of its first line box
     /// and, per visual line, `(top, height, byte range)` relative to that origin.
     ///
-    /// Built the way `paint_input_value` builds it, against the *document's* font
-    /// context, so this is the geometry actually on screen on whatever machine
+    /// Built with the builder and origin `paint_input_value` uses, against the
+    /// *document's* font context, so this is the geometry actually on screen on whatever machine
     /// runs the test rather than a second guess at it.
     #[allow(clippy::type_complexity)]
     fn painted_lines(app: &mut RinchApp, id: usize) -> ((f32, f32), Vec<(f32, f32, Range<usize>)>) {
         let doc = app.doc.clone().expect("mounted");
         let mut d = doc.borrow_mut();
-        let (style, width) = {
-            let node = d.tree.get(id).expect("the field");
-            (node.computed_style.clone(), node.layout.width)
-        };
         // The painted box already carries the IFC content-box offset, which
         // this used to add on top of a plain parent-chain sum (#203).
         let (box_x, box_y, _, _) = painted_element_box(&d.tree, id);
-        let pad_l = style.padding_left.to_px();
-        let pad_t = style.padding_top.to_px();
 
         let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
-        let family =
-            rinch_dom::fonts::parley_text_family(&mut d.font_cx, &style.font_family, VALUE);
-        let mut builder = layout_cx.ranged_builder(&mut d.font_cx, VALUE, 1.0, true);
-        builder.push_default(parley::style::StyleProperty::FontSize(style.font_size));
-        family.push_to(&mut builder);
-        let mut layout = builder.build(VALUE);
-        layout.break_all_lines(Some(width - pad_l * 2.0));
+        let d = &mut *d;
+        let scroll =
+            rinch_dom::form_control::field_scroll(&d.tree, &mut d.font_cx, &mut layout_cx, id);
+        let node = d.tree.get(id).expect("the field");
+        // Paint's own builder and origin (#827), not a copy of them: a copy
+        // is what drifted from paint before (#320).
+        let layout = rinch_dom::form_control::field_text_layout(
+            node,
+            VALUE,
+            1.0,
+            None,
+            &mut d.font_cx,
+            &mut layout_cx,
+        );
+        let (ox, oy) = rinch_dom::form_control::field_text_origin(node, layout.height(), scroll);
 
         let lines = layout
             .lines()
@@ -10053,7 +9951,7 @@ mod input_caret_hit_tests {
                 (m.baseline - m.ascent, m.line_height, line.text_range())
             })
             .collect();
-        ((box_x + pad_l, box_y + pad_t), lines)
+        ((box_x + ox, box_y + oy), lines)
     }
 
     /// The fault: a click on the middle of a painted line must put the caret on
@@ -10606,8 +10504,10 @@ mod android_frame_clock_tests {
     ///
     /// `fill-mode` is left at its default `none` on purpose. That is what makes
     /// the last tick a *completing* tick: `Animation::is_filling` is false, so
-    /// the animation is dropped rather than kept, and `tick_animations` reports
-    /// `any_active = false` for the very tick that ended it.
+    /// the animation stops counting as running — it moves to
+    /// `finished_animations` as a settled marker (#783) — and
+    /// `tick_animations` reports `any_active = false` for the very tick that
+    /// ended it.
     const RISE_CSS: &str = r#"
         @keyframes k24-rise {
             from { opacity: 0.1; }
@@ -10654,10 +10554,17 @@ mod android_frame_clock_tests {
         Riser { app, trigger }
     }
 
+    /// Animations a tick can still move. Not the map's length: a finished
+    /// one is kept there as a settled marker (#783), and a paused one too.
     fn running_animations(app: &RinchApp) -> usize {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
-        d.tree.active_animations.len()
+        d.tree
+            .active_animations
+            .values()
+            .flatten()
+            .filter(|a| !a.is_paused() && !a.settled)
+            .count()
     }
 
     /// The same fault as `the_tick_that_finishes_the_slide_asks_to_be_presented`,
@@ -12477,9 +12384,15 @@ mod editor_scroll_gate_tests;
 #[cfg(test)]
 mod editor_table_span_1182_tests;
 #[cfg(test)]
+mod editor_virtualized_caret_scroll_845_tests;
+#[cfg(test)]
 mod grapheme_hit_1684_tests;
 #[cfg(test)]
 mod review_1687_tests;
+#[cfg(test)]
+mod scroll_into_view_nested_842_tests;
+#[cfg(test)]
+mod scroll_into_view_review_2014_tests;
 #[cfg(test)]
 mod window_facts_1770_tests;
 

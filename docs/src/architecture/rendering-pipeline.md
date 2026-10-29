@@ -782,8 +782,8 @@ beside it: `NodeTree::transitions_enabled`, false at construction and set at the
 very end of the first `resolve_layout` ("Enable transitions after first layout
 completes", `layout_engine.rs`). `has_been_styled` alone would not do the job,
 because a tree is cascaded more than once before its first layout — appending a
-`<style>` element re-resolves the whole document there and then
-(`maybe_load_style_css`), so a component that appends its own stylesheet after
+`<style>` element to the document restyles every element its rules reach there
+and then (`flush_stylist`, #884), so a component that appends its own stylesheet after
 building its markup leaves every node already styled, and the next rule it loads
 is a *change* on an already-styled node. Without the flag that is a transition
 running on page load. `recompute_all_styles_full` forces the same flag off for
@@ -845,8 +845,9 @@ seeked `currentTime`, added three more rows the refresh also matches:
 
 The refresh is scoped to `recompute_all_styles_full` on purpose, and that is
 **not** the only pass that re-cascades the whole document. Two others drop every
-node's cached style too and do not set the flag: appending a `<style>` element
-(`maybe_load_style_css`), and a viewport change in `resolve_layout`. Measured
+node's cached style too and do not set the flag: a stylesheet change whose rules
+Stylo cannot bucket by id, class or tag — a `@keyframes` rule is always one
+(`flush_stylist`, #884) — and a viewport change in `resolve_layout`. Measured
 after the first layout, a `<style>` appended with a redefined `@keyframes kk`
 leaves a running `kk` on its old body. Those two passes, and every targeted
 restyle — a class change, a hover — still keep a kept animation's stops and
@@ -859,19 +860,16 @@ extraction per animated node; a targeted restyle runs per hover and should not
 pay that.
 `crates/rinch-dom/tests/full_restyle_animation_refresh_tests.rs` pins every row.
 
-**One divergence the theme path now reaches, not fixed here: a finished one-shot
-animation replays on a theme toggle.** An animation with a finite iteration
-count and no `forwards` fill is removed from `tree.active_animations` by
-`tick_animations` once it completes. The full restyle re-cascades its node,
-`start_animations` finds no entry of that name, and mints a new one from t=0.
-Chrome does not replay it, and neither did `main` before #762 — its full restyle
-cleared the map with the animation block gated off, so nothing was minted, which
-was right by accident. It is the mechanism of issue **#783** (a finished
-animation's entry is forgotten, so any later cascade of the node restarts it),
-reached through the theme path. Component CSS declares only `infinite`
-animations; the one finite iteration count rinch ships is the theme's
-`prefers-reduced-motion` rule (`animation-duration: 0.01ms;
-animation-iteration-count: 1`), whose replay would last 0.01ms.
+**A finished one-shot animation does not replay on a theme toggle** (issue
+**#783**). Until #783, an animation with a finite iteration count and no
+`forwards` fill was removed from `tree.active_animations` once it completed, so
+the full restyle — or any later cascade of the node — found no entry of that
+name and minted a new one from t=0. Chrome does not replay it. The finished
+entry is now kept as a settled marker (below, beside #782's fill), which the
+re-cascade finds by name and applies nothing for. The one finite iteration count
+rinch ships is the theme's `prefers-reduced-motion` rule (`animation-duration:
+0.01ms; animation-iteration-count: 1`), so under reduced motion every
+component animation is one of these.
 
 One consequence comes with the first-frame start, and it is pre-existing rather
 than new: an animation's clock begins at the cascade that styles the node —
@@ -1007,11 +1005,34 @@ on an `ifc_dirty` pass instead of returning early.
 A finished animation with `animation-fill-mode: forwards` or `both` is the same
 shape (issue **#782**): its fill is as constant as a paused sample. The tick that
 finishes it writes the fill and marks the node dirty — that frame shows the end —
-and records it in `ActiveAnimation::fill_settled`; later ticks re-apply it
+and records it in `ActiveAnimation::settled`; later ticks re-apply it
 without dirtying anything, and neither `tick_animations` nor
 `has_running_animations()` counts it. A zero-duration infinite animation
 (`0s infinite forwards`) is one of these: its active duration is `0 × ∞ = 0`, so
 it finishes when its delay ends, as in Chrome (issue **#786**).
+
+A finished animation **without** a forwards fill (`none`, `backwards`) has no
+effect at all once its active duration ends, so the animated properties go back
+to their cascaded values (issue **#783**). The tick cannot write those itself —
+`computed_style` holds the last sample and nothing beneath it — so the tick that
+finishes such an animation keeps the entry, settled, in
+`NodeTree::finished_animations` — a map of its own, which no tick walks, so a
+list of rows that each finished an entrance animation costs a running spinner's
+frames nothing — and pushes its node onto `NodeTree::ended_animations`; `RinchDocument::tick_animations` restyles the node
+(its originator, for a `::before`/`::after` box), and that cascade applies no
+sample for it. The way back from the last sample is not a transition start: the
+cascade drops those properties from its transition diff, because the
+before-change style is the one updated to the current time. The kept entry is
+what keeps it finished: a later class change, `animation-play-state: paused` or
+theme toggle finds it by name instead of starting the still-declared animation
+from t=0, as Chrome does. A new `animation-name`, or the element being rendered
+again after `display: none` (#747), starts a new one; a restyle that gives it
+more iterations runs it again, as with a fill (`start_animations` keeps
+`settled` only while the animation has still ended; pausing it does not count
+as un-ending it). One known gap: a real change of an animated property in the
+same frame as the end starts no transition, because the diff drops that
+property whole. Pinned by
+`crates/rinch-dom/tests/finished_animation_no_fill_783_tests.rs`.
 
 The fill is the value at the end of the active duration (`duration × count`):
 iteration `floor(count)` at progress `fract(count)`, in that iteration's

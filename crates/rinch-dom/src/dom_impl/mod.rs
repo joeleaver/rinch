@@ -148,8 +148,24 @@ pub struct RinchDocument {
     /// The theme stylesheet, held in a stable slot before every app sheet so app
     /// CSS always cascades over it. Managed by `set_theme_css`.
     pub(crate) theme_stylesheet: Option<style::stylesheets::DocumentStyleSheet>,
-    /// App author stylesheets, in insertion (source) order.
+    /// App author stylesheets (`load_css`), in insertion (source) order. They
+    /// are the web's `<head>` sheets: after the theme slot, before every
+    /// `<style>` element's sheet.
     pub(crate) author_stylesheets: Vec<style::stylesheets::DocumentStyleSheet>,
+    /// Every `<style>` element created in this document (#884), so the sheets
+    /// can follow them in and out of it. May hold ids since freed or reused;
+    /// [`Self::sync_style_element_sheets`] drops those.
+    pub(crate) style_elements: Vec<usize>,
+    /// The sheets of the connected `<style>` elements, in tree order, each
+    /// with the element and the CSS text it was parsed from. They cascade
+    /// after `author_stylesheets`.
+    pub(crate) style_element_sheets: Vec<crate::style_resolution::StyleElementSheet>,
+    /// A `<style>` element may have entered or left the document, or its text
+    /// changed, since `style_element_sheets` was last brought up to date.
+    pub(crate) style_elements_stale: bool,
+    /// A sheet was added, replaced or removed since the last stylist flush,
+    /// and its invalidations are to be applied to the styled document (#884).
+    pub(crate) sheet_invalidations_pending: bool,
     /// Whether any loaded stylesheet has a rule whose rightmost compound is a
     /// bare focus pseudo-class (`:focus` / `:focus-visible` / `:focus-within`
     /// with no tag/class/id/attribute anchor) — e.g. the theme's
@@ -260,6 +276,10 @@ impl RinchDocument {
             device_params,
             theme_stylesheet: None,
             author_stylesheets: Vec::new(),
+            style_elements: Vec::new(),
+            style_element_sheets: Vec::new(),
+            style_elements_stale: false,
+            sheet_invalidations_pending: false,
             has_bare_focus_rules: false,
             viewport_units_used: false,
             has_before_rules: true,
@@ -1279,8 +1299,10 @@ impl RinchDocument {
 
     /// Advance all active CSS animations by one frame.
     /// Returns true if any **running** animation is still active (caller should
-    /// keep polling). A paused one, and a finished one that fills, is kept but
-    /// not counted (#763, #782) — see [`crate::animation::tick_animations`].
+    /// keep polling). A paused one, and a finished one, is kept but not
+    /// counted (#763, #782, #783) — see [`crate::animation::tick_animations`].
+    /// The node of one that finishes on this tick without a forwards fill is
+    /// restyled at the next resolve, which puts its cascaded values back.
     pub fn tick_animations(&mut self) -> bool {
         use web_time::SystemTime;
         let current_time_ms = SystemTime::now()
@@ -1312,7 +1334,7 @@ impl RinchDocument {
                 let inline = self.tree.nodes[**id].display_mode == crate::node::DisplayMode::Inline;
                 anims.iter().any(|a| {
                     !a.is_paused()
-                        && !a.fill_settled
+                        && !a.settled
                         && (a.changes_text_measure() || (inline && a.changes_inline_edge()))
                 })
             })
@@ -1324,7 +1346,7 @@ impl RinchDocument {
         let moving_colour = |anims: &[crate::animation::ActiveAnimation]| {
             anims.iter().any(|a| {
                 !a.is_paused()
-                    && !a.fill_settled
+                    && !a.settled
                     && a.animates(crate::transition::TransitionProperty::Color)
             })
         };
@@ -1338,6 +1360,26 @@ impl RinchDocument {
         let bare_inlines = self.inlines_without_background(self.tree.active_animations.keys());
 
         let any_active = crate::animation::tick_animations(&mut self.tree, current_time_ms);
+
+        // An animation without a forwards fill that finished on this tick left
+        // its last sample in `computed_style` (#783): restyle its node, so the
+        // cascaded values come back in the frame that shows the end. A
+        // generated `::before`/`::after` box is styled by its originator's
+        // cascade, so that is the one marked. The cascade clears the list.
+        for i in 0..self.tree.ended_animations.len() {
+            let id = self.tree.ended_animations[i];
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            let target = if node.is_pseudo_element {
+                node.parent
+            } else {
+                Some(id)
+            };
+            if let Some(target) = target {
+                self.mark_restyle(target, false);
+            }
+        }
 
         let colour_done: Vec<usize> = colour_nodes
             .into_iter()

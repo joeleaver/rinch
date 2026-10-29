@@ -283,6 +283,41 @@ press outside it is swallowed by the backdrop and does nothing. Pins:
 `rinch-components/tests/backdrop_any_button_1093.rs`,
 `rinch-web/tests/right_press_click_1093.rs`.
 
+**A press on a `<label>` activates its control** (#866; guide: `rsx-syntax.md#labels`).
+Desktop's half of HTML's label activation, which rinch-web gets from the
+browser. In `handle_click_with_button`'s phase 3, a **left** press resolves
+`pressed_label` (the nearest `<label>` up the box tree from the hit, `None` if
+interactive content — `button`, `a[href]`, non-hidden `input`, `select`,
+`textarea`, `details`, `embed`, `iframe`, `audio`/`video[controls]`,
+`img[usemap]` — comes first; a `tabindex` is not interactive content, as in
+Chrome 156) and its `labeled_control` (`for`: first element in tree order with
+that `id` in the label's tree, kept only if labelable — no fallback; else the
+first labelable descendant). After the press's own `data-rid` (if any) runs,
+`activate_label_control` re-resolves the control on the tree as it is now
+(Chrome resolves `label.control` after the label's listeners; a handler that
+removed it forwards nothing), returns for a disabled control
+(`node_is_disabled_in_tree`, fieldset included), calls `try_focus_input` (the
+`focus()` path: kept selection, a `<select>` closed) and then dispatches the
+nearest live `data-rid` above the control through `dispatch_rid_click` —
+unless it is the node the press already dispatched. Chrome 156's sequence for
+a press on a label is `click@label | focus@control | click@control`; a browser
+would run a handler above both twice (the second click bubbles back), and
+rinch runs it once, as rinch-web's #272 duplicate rule does. A press that
+claims `data-drag-window` activates no label. rinch-web applies the same rule
+(#2033): a gesture records the `data-rid`s its press ran (`GESTURE_RAN`, in
+`dispatch_click_at`) and, when it suppresses the trailing click on or inside a
+`<label>`, that label's `control` (`GESTURE_LABEL_CONTROL`; not when that
+click was `preventDefault`ed, since the label then forwards nothing). The record
+is consumed by the forward, which the browser dispatches synchronously in the
+same task; an unconsumed one is cleared by a `setTimeout(0)`, one task later
+(on a real click a microtask checkpoint runs after each listener, before the
+forward, so a microtask clear would be too early). The forwarded click at that control dispatches its nearest live
+`data-rid` if the press did not run it, and is suppressed if it did or if the
+press ran nothing (an activated drag); a trailing click outside any label stays
+suppressed. Web pins: `crates/rinch-web/tests/label_onclick_2033.rs`. Desktop
+pins:
+`app/label_activation_866_tests.rs`.
+
 ### File Drop (OS → App)
 
 File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example. The drop handler reads the drop point and its element's painted box through `get_click_context()` (`dispatch_file_drop` sets it, #1650; logical window px, as a click's), and so do the files an editor hands back from a mixed drop. rinch-web dispatches no `data-onfiledrop` (a browser drop has no paths); its `ondropfiles` handler reads the same context (below).

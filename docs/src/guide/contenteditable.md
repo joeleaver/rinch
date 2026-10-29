@@ -319,6 +319,12 @@ handle.in_node_type("bullet_list")     // -> bool: is the cursor inside a bullet
 handle.can_run("liftListItem")         // -> bool: would this command apply right now?
 ```
 
+`can_run` is a query: it asks the command whether it *would* apply (the
+command's `dispatch = None` branch) and never runs the edit, so asking for every
+toolbar button on every caret move builds no transactions, and a command of your
+own whose dispatch branch does something besides dispatching never sees it fire
+from a query.
+
 A reactive toolbar button can read these inside a `{|| ... }` closure so it
 re-renders when the selection moves:
 
@@ -374,6 +380,12 @@ read-only editor (collaborating or not) accepts it, nothing is sent to peers and
 `on_change` does not fire. A plugin whose key is already installed is refused
 (`false`), and a refused call changes nothing.
 
+A command that only moves the selection (never edits the document) should be
+named in the plugin's `selection_commands()`. On a read-only editor `can_run`
+answers `false` for every command not named there, so a toolbar button for an
+undeclared selection-only command greys out; running it still works. The
+built-in `selectAll` is declared by the base commands plugin.
+
 A plugin marks ranges of text through its `decorations()`, without touching the
 document:
 
@@ -400,6 +412,13 @@ The built-in stylesheet draws `pm-spell-error` (red) and `pm-grammar-error`
 to style. Decorations are recomputed from every new state, and the editor does
 **not** move a range for you when text is inserted before it — a plugin that
 caches ranges maps them through `tr.mapping()` in its `apply`.
+
+`decorations()` is called on every transaction, a caret move included, so build
+its set from ranges the plugin already holds rather than re-scanning the
+document there. The view's own pass is about linear in the decorations (a sort, then one walk): it walks the
+top-level blocks once beside the decorations sorted by position and descends
+only into a block a decoration reaches (or one that still shows a segment to
+take off), and a run whose decorations did not change is not rewritten (#848).
 
 Plugin code runs **untracked** (issue #943). `decorations`, `apply`,
 `init_state`, `handle_paste` and a plugin's commands run synchronously inside
@@ -982,9 +1001,14 @@ rsx! { Editor { editor: editor.clone() } }   // or: Editor { read_only: true, co
 
 It makes no difference who asks: a toolbar button calling `command("toggleBold")` and
 a keystroke go through the same gate, which sits at the one place every local change
-lands rather than in each input handler. `can_run(name)` answers `false` for a refused
-command, so a toolbar that greys its buttons from it goes inert with the switch; a
-toolbar of your own should also read `is_read_only()`. The built-in context menu
+lands rather than in each input handler. `can_run(name)` answers `false` for every
+command except those that change only the selection, so a toolbar that greys its
+buttons from it goes inert with the switch; a toolbar of your own should also read
+`is_read_only()`. It answers without running the command: a command counts as
+selection-only when its plugin lists it in `Plugin::selection_commands()`
+(`selectAll` is the built-in one), and an unlisted command is greyed. The list only
+steers `can_run`; `command(..)` on a read-only editor still refuses whatever would
+change the document or the stored marks, listed or not. The built-in context menu
 offers Copy and Select all only, the OS input method stays off (no IME candidate
 window), and on the web the hidden capture field is `readonly`, so no soft keyboard
 is raised and the browser's own menu drops Paste and Cut.
@@ -1015,10 +1039,10 @@ moving (head) corner.
 
 The scroll is the minimal one (`nearest`): a caret already in view moves nothing,
 and one out of view is brought just inside the edge it left by, instantly rather
-than smoothly. On the **web** that is the browser's `scrollIntoView`, which scrolls
-every scrollable ancestor, the page included. On **desktop** only the caret's
-nearest scroll container scrolls (issue #842), so an editor whose scroller is itself
-off screen stays off screen.
+than smoothly. Every scroll container the caret is in moves, innermost first and the
+page last, on both axes, so an editor whose scroller is itself off screen is brought
+on screen too. On the **web** that is the browser's `scrollIntoView`; **desktop**
+does the same (since issue #842; before it only the nearest scroll container moved).
 
 It deliberately does **not** scroll when the caret's position on screen changes
 without the user moving it — a user who scrolled away to read something is left
@@ -1042,11 +1066,15 @@ where they are:
 - an editor that is not focused: its caret is not drawn, so a programmatic
   `set_selection` on it scrolls when it is next focused, not before.
 
-Not covered: the moving end of a text **range** (Shift+arrow) is not revealed, and
-moving the caret into a block of a virtualized editor that has never been laid out
-(Ctrl+End from the top of a very long document) does not scroll to it until the
-block is on screen (issue #845). An app that wants either on screen asks for it with
-`scroll_into_view`, below.
+Moving the caret into a part of a long, virtualized desktop editor that has not
+been laid out yet (Ctrl+End from the top, `set_selection` far below) lays out the
+caret's paragraph and scrolls to it; as the paragraphs around it are measured,
+within that frame, the scroll follows the caret, so it ends in view. A
+`scroll_into_view` asked for together with the caret move still decides where the
+view goes: the caret is not followed past it.
+
+Not covered: the moving end of a text **range** (Shift+arrow) is not revealed. An
+app that wants it on screen asks for it with `scroll_into_view`, below.
 
 ### Setting the selection from code
 
@@ -1081,9 +1109,8 @@ position between blocks reveals the nearest text.
 It uses the scroll the caret uses, on two hidden boxes the view places over the
 range's end and then its start, so the rules above apply: on **desktop** it happens
 after the next layout (the call wakes the runtime for one, from an effect or a timer
-as well as from an event handler) and moves the nearest scroll container; on the
-**web** it happens during the call and `scrollIntoView` moves every scrollable
-ancestor, the page included. A virtualized desktop editor lays out the blocks holding
+as well as from an event handler); on the **web** it happens during the call. Both
+move every scroll container the range is in, the page included. A virtualized desktop editor lays out the blocks holding
 `from` and `to` for it. The request waits on the handle until there is geometry for
 its start (a block edited since the last layout has none on desktop); if the end has
 none by then, the start alone is revealed. A later call replaces it, local edits
@@ -1112,9 +1139,8 @@ handle.scroll_into_view_aligned(from, to, ScrollAlign::Fraction(1.0 / 3.0));
 handle.focus();
 ```
 
-It waits, carries and drops exactly as `scroll_into_view` does, and scrolls the same
-containers on **desktop** (the nearest scroll container, vertically). On the
-**web** it sets the nearest scroll container's `scrollTop` (the page's, when no
+It waits, carries and drops exactly as `scroll_into_view` does. On both backends it
+sets the `scrollTop` of the nearest vertical scroll container (the page's, when no
 ancestor scrolls) and then brings the start into the view of the scrollers further
 out, the page included, the "nearest" way. One limit: in a virtualized desktop
 editor the blocks the scroll brings into the window were laid out at their
@@ -1268,6 +1294,26 @@ claim, the table above decides.
 > included. To open links in an editable editor, register `on_link_click` and open
 > `click.link.href` yourself (for example on `click.primary`, the Ctrl/Cmd+click
 > convention). Desktop never navigates: there is no browser to follow the link.
+
+**Decorating links with CSS generated content.** A stylesheet rule may add text
+around a mark, for example a small "opens outside" arrow after web links:
+
+```css
+[data-pm-editor] a[href^="http"]::after { content: "\2197"; font-size: 0.7em; }
+```
+
+That text is not in the document, and the caret and a press step over it. The
+caret right after the link is drawn before the arrow, as a browser draws it, and
+a press on the arrow puts the caret there; a character typed there still goes
+after the link (a link does not continue past its end), so it appears after the
+arrow. When the arrow wraps onto the next line, the caret after the link stays
+at the end of the link's line. A padded link is the exception on desktop: the
+caret after it is drawn past its padding, and so past the arrow too, unless the
+arrow wrapped. `::before` works the mirror way, on a mark or on a block: the
+caret before a link is drawn before its `::before` text, and a caret inside an
+inclusive mark (such as bold) at its start after it. On desktop the selection
+highlight leaves the generated text out; in the browser the highlight is drawn
+from the browser's own `Range` rectangles.
 
 ### Autocomplete popups: keys, selection and caret geometry
 

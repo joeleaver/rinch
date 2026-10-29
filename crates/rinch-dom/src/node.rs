@@ -1,6 +1,6 @@
 //! Node tree data structures for rinch-dom.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -1044,9 +1044,9 @@ impl std::fmt::Debug for InlineLayout {
     }
 }
 
-/// A single-line `<input>`'s displayed line: `(caret x, full width, height)`
-/// in logical px (#1721).
-pub(crate) type InputLineMetrics = (f32, f32, f32);
+/// A text control's displayed text: `(caret x, caret y, full width, height)`
+/// in logical px (#1721, #827).
+pub(crate) type InputLineMetrics = (f32, f32, f32, f32);
 
 /// A node in the DOM tree.
 pub struct Node {
@@ -1577,10 +1577,20 @@ pub struct Node {
     /// shaped under (#1195, review of #1302) — so a restyle that moves
     /// neither shapes nothing. `None` until the control is first sized.
     pub(crate) form_label_width: Cell<Option<(u64, f32)>>,
-    /// A focused single-line `<input>`'s displayed line, `(caret x, full
-    /// width, height)`, under the hash of what it was shaped from
-    /// (`form_control::displayed_line_metrics`, #1721).
+    /// A text control's displayed text, `(caret x, caret y, full width,
+    /// height)`, under the hash of what it was shaped from
+    /// (`form_control::displayed_metrics`): a focused single-line `<input>`'s
+    /// line for its horizontal scroll (#1721), a `<textarea>`'s text for its
+    /// caret reveal and its scroll extent (#827).
     pub(crate) input_line_metrics: Cell<Option<(u64, InputLineMetrics)>>,
+    /// A **focused** text control's displayed text as shaped for
+    /// [`Self::input_line_metrics`], under the hash of everything it is
+    /// shaped from except the caret, so a caret move reads its new position
+    /// off this layout instead of shaping the whole text again (review of
+    /// #2023: ten arrows in a 15 KB textarea shaped it ten times). Dropped
+    /// when the control is shaped unfocused, so only the field being edited
+    /// keeps one.
+    pub(crate) input_text_layout: RefCell<Option<(u64, parley::layout::Layout<Brush>)>>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of
     /// measuring via Parley. Used by contenteditable block virtualization to
@@ -1842,6 +1852,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -1923,6 +1934,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -2003,6 +2015,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -2081,6 +2094,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -3166,8 +3180,42 @@ pub struct NodeTree {
     /// because their constant samples are still written into `computed_style`
     /// on every cascade. So "is this map non-empty" is not "does anything need
     /// another frame"; that is [`NodeTree::has_running_animations`] (#763,
-    /// #782).
+    /// #782). A finished animation **without** a fill is not here: it is in
+    /// [`NodeTree::finished_animations`].
     pub active_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
+    /// Finished `@keyframes` animations that do not fill forwards
+    /// (`animation-fill-mode: none` / `backwards`, #783), kept per node as
+    /// markers with no effect.
+    ///
+    /// The cascade looks an animation up by name in both maps
+    /// ([`crate::animation::start_animations`]), so finding one here keeps a
+    /// still-declared animation from starting again from t=0 — a browser does
+    /// not replay it on an unrelated restyle, a pause or a theme change. A
+    /// restyle that gives it more iterations moves it back to
+    /// [`NodeTree::active_animations`]; one that drops its name drops it.
+    ///
+    /// **Its own map, so that a tick never walks it** (review of #2000): a
+    /// list of rows with a one-shot entrance animation leaves one marker per
+    /// row for the rows' lives, and when they sat in `active_animations` every
+    /// frame of an unrelated spinner cloned all of them (2000 rows: 0.003 ms →
+    /// ~5 ms per tick, debug). Nothing here writes a sample, so nothing reads
+    /// it but the cascade.
+    pub finished_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
+    /// Nodes on which a tick has just **finished** an animation that does not
+    /// fill forwards (`animation-fill-mode: none` / `backwards`, #783).
+    ///
+    /// `animation::tick_animations` pushes the node and moves the entry to
+    /// [`NodeTree::finished_animations`] as a finished marker
+    /// ([`ActiveAnimation::settled`]); `computed_style` still
+    /// holds the last sample, and only a cascade knows the values underneath
+    /// it. `RinchDocument::tick_animations` restyles each node pushed here (its
+    /// originator, for a generated box), and that cascade reads the list for
+    /// one more thing: the change from the last sample back to the cascaded
+    /// value is not a style change a `transition` starts from —
+    /// css-transitions-1's before-change style is the one *updated to the
+    /// current time*, at which the animation has no effect. The cascade
+    /// clears the list when it is done.
+    pub ended_animations: Vec<RawNodeId>,
     /// Whether transitions are armed (false until the first layout completes).
     ///
     /// **Transitions only** (issue #762). `@keyframes` animations do not read
@@ -3191,8 +3239,9 @@ pub struct NodeTree {
     /// hover.
     ///
     /// It is **not** the only pass that re-cascades the whole document. A
-    /// `<style>` append (`maybe_load_style_css`) and a viewport change in
-    /// `resolve_layout` drop every node's cached style too, and do not set this
+    /// stylesheet change Stylo cannot target (a sheet with a `@keyframes`
+    /// rule is one; `RinchDocument::flush_stylist`, #884) and a viewport
+    /// change in `resolve_layout` drop every node's cached style too, and do not set this
     /// flag, so a running animation keeps stale stops and timing across them —
     /// measured, a `<style>` appended after the first layout that redefines a
     /// running `@keyframes` leaves the animation on its old body. Tracked on
@@ -3282,6 +3331,13 @@ pub struct NodeTree {
     /// `note_select_content_changed` (which walks a mutated node's ancestors
     /// looking for one) returns at once (#1128).
     pub option_elements: usize,
+    /// How many `<textarea>` elements this document has ever created. Never
+    /// decremented, so `0` proves no node is a textarea, and the textarea
+    /// extent refresh (`clamp_scroll_offsets`' scan of every node, #827) and
+    /// [`Self::push_dirty`]'s textarea check are skipped — the scan cost
+    /// every layout of a document without one ~3% (`inset_move.list_500`,
+    /// review of batch #2031).
+    pub textarea_elements: usize,
     /// Text nodes whose Taffy measure context (`NodeContext::Text`) no longer
     /// matches the typography their parent now computes (issue #678).
     ///
@@ -3433,6 +3489,14 @@ pub struct NodeTree {
     /// here — coalesced per node, last value wins, since layout may resolve
     /// more than once per frame — for the facade to drain after layout.
     pub pending_scroll_clamps: Vec<(RawNodeId, f64)>,
+    /// `<textarea>`s whose value may have changed since the last resolve —
+    /// a `value` write, or a write to one of its text children — noted by
+    /// [`Self::push_dirty`] (review of #2023). A textarea's scroll range is
+    /// its text's height, which no layout measures, so a value change runs
+    /// no layout: the resolve that skips layout refreshes these ones' extent
+    /// and clamps their scroll, as `clamp_scroll_offsets` does for every
+    /// scroll container when layout runs.
+    pub(crate) textarea_extent_dirty: Vec<RawNodeId>,
     /// The device pixels per CSS px this document is painted at — the
     /// display scale, set with the Stylo device pixel ratio
     /// (`RinchDocument::set_device_pixel_ratio`). A scroll offset is kept on
@@ -3616,6 +3680,8 @@ impl NodeTree {
             ifc_measure_leaves: HashMap::new(),
             active_transitions: HashMap::new(),
             active_animations: HashMap::new(),
+            finished_animations: HashMap::new(),
+            ended_animations: Vec::new(),
             transitions_enabled: false,
             refreshing_animations: false,
             image_cache: ImageCache::new(),
@@ -3634,6 +3700,7 @@ impl NodeTree {
             mousemove_handlers: 0,
             title_sources: 0,
             option_elements: 0,
+            textarea_elements: 0,
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),
@@ -3648,6 +3715,7 @@ impl NodeTree {
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
+            textarea_extent_dirty: Vec::new(),
             device_scale: 1.0,
             text_scale: 1.0,
             taffy_attach_faults: 0,
@@ -3766,7 +3834,7 @@ impl NodeTree {
     /// because a tick has nothing left to move for either: a **paused**
     /// animation, whose elapsed time is frozen (#763), and a **finished
     /// `forwards`/`both`** animation whose fill a tick has already written
-    /// ([`crate::animation::ActiveAnimation::fill_settled`], #782). A finished
+    /// ([`crate::animation::ActiveAnimation::settled`], #782). A finished
     /// animation *is* counted until that tick runs, which is what lets the
     /// frame that shows its end be presented.
     ///
@@ -3778,7 +3846,7 @@ impl NodeTree {
         self.active_animations
             .values()
             .flatten()
-            .any(|anim| !anim.is_paused() && !anim.fill_settled)
+            .any(|anim| !anim.is_paused() && !anim.settled)
     }
 
     /// Record a whole-document restyle: count it under `reason`, and mark the
@@ -3804,6 +3872,48 @@ impl NodeTree {
         self.hit_cache.invalidate();
         self.dirty_nodes.insert(id);
         self.paint_dirty_nodes.push(id);
+        self.note_textarea_extent_dirty(id);
+    }
+
+    /// Queue `id`'s `onscroll` for an offset the engine wrote itself — a
+    /// clamp, a caret reveal — in [`Self::pending_scroll_clamps`], coalesced
+    /// per node (last value wins): layout can resolve more than once per
+    /// frame, and a consumer must see one event per drain (#144).
+    pub(crate) fn queue_scroll_clamp(&mut self, id: RawNodeId, offset: f64) {
+        if let Some(pending) = self
+            .pending_scroll_clamps
+            .iter_mut()
+            .find(|(n, _)| *n == id)
+        {
+            pending.1 = offset;
+        } else {
+            self.pending_scroll_clamps.push((id, offset));
+        }
+    }
+
+    /// If `id` is a `<textarea>` or one of its text children, queue the
+    /// textarea for the extent refresh and scroll clamp the next resolve owes
+    /// it ([`Self::textarea_extent_dirty`]).
+    fn note_textarea_extent_dirty(&mut self, id: RawNodeId) {
+        if self.textarea_elements == 0 {
+            return;
+        }
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        let textarea = if node.tag() == Some("textarea") {
+            id
+        } else if node.is_text()
+            && let Some(parent) = node.parent
+            && self.nodes.get(parent).and_then(Node::tag) == Some("textarea")
+        {
+            parent
+        } else {
+            return;
+        };
+        if !self.textarea_extent_dirty.contains(&textarea) {
+            self.textarea_extent_dirty.push(textarea);
+        }
     }
 
     /// `v`, a scroll offset in CSS px, on this document's device pixel grid
@@ -4046,6 +4156,10 @@ impl NodeTree {
         for node_id in &to_remove {
             self.active_transitions.remove(node_id);
             self.active_animations.remove(node_id);
+            // Guarded: `remove` hashes the key even on an empty map (#783).
+            if !self.finished_animations.is_empty() {
+                self.finished_animations.remove(node_id);
+            }
             // The slab recycles ids: a node created later may be handed this
             // one, and must not inherit this node's measured sizes.
             self.ifc_measure_cache.remove(node_id);
