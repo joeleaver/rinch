@@ -58,6 +58,8 @@ const CSS: &str = "
     .tr { transition: width 4000ms linear; }
     .other { color: red; }
     .hidden { display: none; }
+    .gen::before { content: \"x\"; display: inline-block; width: 10px; height: 10px;
+                   animation: k783-grow 4000ms linear 1600ms 2 none; }
 ";
 
 const VP: (f32, f32) = (800.0, 600.0);
@@ -317,4 +319,29 @@ fn a_restyle_that_extends_a_finished_animation_runs_it_again() {
         (40.0..100.0).contains(&w),
         "the third iteration's sample, not the base: {w}"
     );
+}
+
+// ── a generated box ─────────────────────────────────────────────────────────
+
+/// A `::before` box is styled by its originator's cascade (#1004, #1023), so the
+/// restyle the finishing tick asks for has to be the originator's.
+#[test]
+fn a_finished_animation_on_a_before_box_returns_to_its_base_value() {
+    let (mut doc, owner) = mount("gen");
+    let pseudo = doc.tree.get(owner.0).unwrap().children[0];
+    assert!(doc.tree.get(pseudo).unwrap().is_pseudo_element, "precondition");
+    let pseudo = NodeId(pseudo);
+    age(&mut doc, pseudo, DURING);
+    assert!(frame(&mut doc));
+    assert!((width_px(&doc, pseudo) - 55.0).abs() < 3.0, "during: 55px");
+    age(&mut doc, pseudo, AFTER - DURING);
+    frame(&mut doc);
+    assert_eq!(
+        doc.tree.get(owner.0).unwrap().children[0],
+        pseudo.0,
+        "the box is kept across its originator's cascade (#1023)"
+    );
+    assert_at_rest(&mut doc, pseudo, "::before, after the end");
+    set_class(&mut doc, owner, "gen other");
+    assert_at_rest(&mut doc, pseudo, "::before, then `.other` on its originator");
 }

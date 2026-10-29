@@ -373,14 +373,12 @@ fn b3_animation_start_after_first_layout() {
     }
 }
 
-/// PRE-EXISTING, not this PR (fails the same way on main ee5123ba): a
-/// finished animation with no fill is dropped by `animation::tick_animations`
-/// (`AnimationResult::Complete`) and nothing restores the base style, so the
-/// last sample stays in `computed_style` — here the cb keeps a transform, and
-/// stays a containing block — until something re-cascades the node.
-/// Issue draft: reports/issue-draft-review2-1409-1.md.
+/// #783 (found by this review, failed on main ee5123ba): a finished animation
+/// with no fill used to be dropped by `animation::tick_animations` with nothing
+/// restoring the base style, so the last sample stayed in `computed_style` —
+/// here the cb kept a transform, and stayed a containing block — until
+/// something re-cascaded the node. The finishing tick now restyles the node.
 #[test]
-#[ignore = "pre-existing on main: a finished non-fill animation leaves its last sample"]
 fn b4_animation_ending_without_fill() {
     let mut doc = build(&anim_page("run"));
     let cb = m(&doc, "cb");
@@ -393,11 +391,13 @@ fn b4_animation_ending_without_fill() {
         a.start_time_ms -= 100_000.0;
     }
     doc.tick_animations();
+    // The finishing tick asks for a restyle of the node (#783); the cascaded
+    // `transform: none` is back once the frame that shows the end resolves.
+    frame(&mut doc);
     assert!(
         !doc.tree.nodes[cb.0].establishes_abs_containing_block(),
         "control: finished, no fill"
     );
-    frame(&mut doc);
     twin(
         &doc,
         &page("", "", BOXES),
