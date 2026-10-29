@@ -319,6 +319,12 @@ handle.in_node_type("bullet_list")     // -> bool: is the cursor inside a bullet
 handle.can_run("liftListItem")         // -> bool: would this command apply right now?
 ```
 
+`can_run` is a query: it asks the command whether it *would* apply (the
+command's `dispatch = None` branch) and never runs the edit, so asking for every
+toolbar button on every caret move builds no transactions, and a command of your
+own whose dispatch branch does something besides dispatching never sees it fire
+from a query.
+
 A reactive toolbar button can read these inside a `{|| ... }` closure so it
 re-renders when the selection moves:
 
@@ -373,6 +379,12 @@ on a freshly created handle, before content is typed. It is not an edit: a
 read-only editor (collaborating or not) accepts it, nothing is sent to peers and
 `on_change` does not fire. A plugin whose key is already installed is refused
 (`false`), and a refused call changes nothing.
+
+A command that only moves the selection (never edits the document) should be
+named in the plugin's `selection_commands()`. On a read-only editor `can_run`
+answers `false` for every command not named there, so a toolbar button for an
+undeclared selection-only command greys out; running it still works. The
+built-in `selectAll` is declared by the base commands plugin.
 
 A plugin marks ranges of text through its `decorations()`, without touching the
 document:
@@ -982,9 +994,14 @@ rsx! { Editor { editor: editor.clone() } }   // or: Editor { read_only: true, co
 
 It makes no difference who asks: a toolbar button calling `command("toggleBold")` and
 a keystroke go through the same gate, which sits at the one place every local change
-lands rather than in each input handler. `can_run(name)` answers `false` for a refused
-command, so a toolbar that greys its buttons from it goes inert with the switch; a
-toolbar of your own should also read `is_read_only()`. The built-in context menu
+lands rather than in each input handler. `can_run(name)` answers `false` for every
+command except those that change only the selection, so a toolbar that greys its
+buttons from it goes inert with the switch; a toolbar of your own should also read
+`is_read_only()`. It answers without running the command: a command counts as
+selection-only when its plugin lists it in `Plugin::selection_commands()`
+(`selectAll` is the built-in one), and an unlisted command is greyed. The list only
+steers `can_run`; `command(..)` on a read-only editor still refuses whatever would
+change the document or the stored marks, listed or not. The built-in context menu
 offers Copy and Select all only, the OS input method stays off (no IME candidate
 window), and on the web the hidden capture field is `readonly`, so no soft keyboard
 is raised and the browser's own menu drops Paste and Cut.
@@ -1042,11 +1059,15 @@ where they are:
 - an editor that is not focused: its caret is not drawn, so a programmatic
   `set_selection` on it scrolls when it is next focused, not before.
 
-Not covered: the moving end of a text **range** (Shift+arrow) is not revealed, and
-moving the caret into a block of a virtualized editor that has never been laid out
-(Ctrl+End from the top of a very long document) does not scroll to it until the
-block is on screen (issue #845). An app that wants either on screen asks for it with
-`scroll_into_view`, below.
+Moving the caret into a part of a long, virtualized desktop editor that has not
+been laid out yet (Ctrl+End from the top, `set_selection` far below) lays out the
+caret's paragraph and scrolls to it; as the paragraphs around it are measured,
+within that frame, the scroll follows the caret, so it ends in view. A
+`scroll_into_view` asked for together with the caret move still decides where the
+view goes: the caret is not followed past it.
+
+Not covered: the moving end of a text **range** (Shift+arrow) is not revealed. An
+app that wants it on screen asks for it with `scroll_into_view`, below.
 
 ### Setting the selection from code
 
