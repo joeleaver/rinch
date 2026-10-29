@@ -235,7 +235,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         .vw { width: 10vw; height: 4px; }
         .gen::before { content: \"*\"; }
         .inset { width: 20px; height: 20px; box-shadow: inset 0 0 4px rgb(0, 0, 0); }
-        .hang { width: 1px; white-space: pre-wrap; }
+        .hang { width: 1px; }
         .narrow { width: 20px; }
         @media (min-width: 801px) { .mq { color: rgb(0, 0, 255); } }
         ",
@@ -291,12 +291,13 @@ fn every_rinch_dom_counter_fires_somewhere() {
     let inset = doc.create_element("div");
     doc.set_attribute(inset, "class", "inset");
     doc.append_child(body, inset);
-    // Preserved spaces at a soft wrap: at 1px every word overflows, the first
-    // space after it hangs, and the second must be hung on the same line.
+    // An inline element's padding at a soft wrap (#1426): at 1px every word
+    // overflows, and parley breaks after the span's start edge box, where CSS
+    // does not, so the paragraph takes the hang pass. (Preserved spaces at a
+    // soft wrap took it until parley 0.12, which hangs them itself.)
     let hang = doc.create_element("div");
     doc.set_attribute(hang, "class", "hang");
-    let ht = doc.create_text("a  b");
-    doc.append_child(hang, ht);
+    doc.set_inner_html(hang, "a <span style=\"padding: 0 4px\">bb cc</span> d");
     doc.append_child(body, hang);
 
     // A paragraph ending in an atomic inline too wide for its line: parley's

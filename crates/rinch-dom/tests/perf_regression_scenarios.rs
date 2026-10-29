@@ -1240,15 +1240,13 @@ fn a_blurred_text_shadow_is_rasterised_once() {
     );
 }
 
-/// A 40-line `pre-wrap` paragraph whose every line wraps at a double space:
-/// each line hangs its second space (#1018). `ifc_hang_passes` is the
-/// linearity pin — one re-break per layout however many lines it fixes, where
-/// #1018's first version re-broke the paragraph once per fixed line, 40 times
-/// per layout and quadratic in the paragraph (review of #1018, F1).
-/// `ifc_hang_lines` is the lines it fixed, summed over every layout the frame
-/// built: each measure the root compute made and the paint layout.
+/// A 40-line `pre-wrap` paragraph whose every line wraps at a double space.
+/// Until parley 0.12 each line's second space started the next line and the
+/// hang pass put it back (#1018): one re-break per layout however many lines
+/// it fixed (the linearity pin, review of #1018 F1), 2 passes and 80 lines
+/// for the frame. parley hangs the whole run itself now: no pass.
 #[test]
-fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
+fn a_double_spaced_pre_wrap_paragraph_pays_no_pass() {
     let mut doc = doc_with(".p { width: 36px; white-space: pre-wrap; }");
     doc.tree.perf.reset();
     let body = doc.body();
@@ -1269,8 +1267,6 @@ fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
             (ShapeIfcBuild, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
-            (IfcHangPasses, 2),
-            (IfcHangLines, 80),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -1498,12 +1494,13 @@ fn a_chip_followed_by_a_space_in_a_flex_item_pays_one_hang_pass_at_min_content()
     );
 }
 /// A right-aligned `pre-wrap` paragraph whose last line ends in spaces that
-/// fit (#1042): the line is aligned with them as content, which takes the hang
-/// pass, one re-break of the paragraph per layout built — the root compute's
-/// measure and the paint layout. The same paragraph aligned to the start pays
-/// none (`a_start_aligned_paragraph_ending_in_spaces_pays_no_pass`).
+/// fit (#1042): the line is aligned with them as content. Until parley 0.12
+/// that took the hang pass, one re-break per layout built (2); parley hangs
+/// them only as far as they overflow itself now: no pass, as for the same
+/// paragraph aligned to the start
+/// (`a_start_aligned_paragraph_ending_in_spaces_pays_no_pass`).
 #[test]
-fn a_right_aligned_paragraph_ending_in_spaces_pays_one_pass() {
+fn a_right_aligned_paragraph_ending_in_spaces_pays_no_pass() {
     let mut doc = doc_with(".p { width: 200px; white-space: pre-wrap; text-align: right; }");
     doc.tree.perf.reset();
     let body = doc.body();
@@ -1524,7 +1521,6 @@ fn a_right_aligned_paragraph_ending_in_spaces_pays_one_pass() {
             (ShapeIfcBuild, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
-            (IfcHangPasses, 2),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -1578,11 +1574,11 @@ fn a_right_aligned_nowrap_paragraph_is_aligned_without_a_pass() {
 }
 
 /// A centred `pre` paragraph whose first line ends in preserved spaces before
-/// its newline (#1237): they are content, so the paint layout is broken once
-/// more to count them (`align_unhung_trailing`) — one pass, the paint
-/// layout's only.
+/// its newline (#1237): they are content. Until parley 0.12 the paint layout
+/// was broken once more to count them (1 pass); parley hangs such spaces
+/// only as far as they overflow itself now: no pass.
 #[test]
-fn a_centred_pre_paragraph_with_spaces_before_a_newline_pays_one_pass() {
+fn a_centred_pre_paragraph_with_spaces_before_a_newline_pays_no_pass() {
     let mut doc = doc_with(".p { width: 200px; white-space: pre; text-align: center; }");
     doc.tree.perf.reset();
     let body = doc.body();
@@ -1603,7 +1599,6 @@ fn a_centred_pre_paragraph_with_spaces_before_a_newline_pays_one_pass() {
             (ShapeIfcBuild, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
-            (IfcHangPasses, 1),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -1659,16 +1654,13 @@ fn a_right_aligned_shrink_to_fit_pre_box_pays_one_pass() {
     );
 }
 
-/// A justified `pre-wrap` paragraph whose lines end in three spaces (#1056):
-/// parley would count two of them as justification opportunities, so the
-/// paragraph takes the hang pass, and each such line is committed once more by
-/// length so that parley's count is exact: per layout built (the root
-/// compute's measure and the paint layout), one pass and four lines broken
-/// again, two widened for their spaces and the same two committed by length
-/// (`ifc_hang_lines`). The third line ends in one space that fits and is left
-/// as it is.
+/// A justified `pre-wrap` paragraph whose lines end in three spaces (#1056).
+/// Until parley 0.12 parley counted two of them as justification
+/// opportunities, so the paragraph took the hang pass and each such line was
+/// committed again by length (2 passes, 8 lines). parley counts CSS's
+/// opportunities itself now: no pass.
 #[test]
-fn a_justified_paragraph_with_lines_ending_in_spaces_pays_one_pass() {
+fn a_justified_paragraph_with_lines_ending_in_spaces_pays_no_pass() {
     let mut doc = doc_with(".p { width: 50px; white-space: pre-wrap; text-align: justify; }");
     doc.tree.perf.reset();
     let body = doc.body();
@@ -1689,8 +1681,6 @@ fn a_justified_paragraph_with_lines_ending_in_spaces_pays_one_pass() {
             (ShapeIfcBuild, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
-            (IfcHangPasses, 2),
-            (IfcHangLines, 8),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -1705,14 +1695,13 @@ fn a_justified_paragraph_with_lines_ending_in_spaces_pays_one_pass() {
 }
 
 /// The common case of justified prose (review of #1680): `normal` text whose
-/// first line's last word ends within a space of the edge, so parley hangs
-/// that space and, uncounted, it takes a word gap's share away. The paragraph
-/// takes the pass: one per layout built, and the line committed again by
-/// length. Most multi-line justified paragraphs have such a line somewhere
-/// (35 of 41 widths of a four-sentence paragraph), so this, not the
-/// single-space twin below, is what justified text usually pays.
+/// first line's last word ends within a space of the edge. Until parley 0.12
+/// that space hung uncounted and took a word gap's share away, so the
+/// paragraph took the hang pass, one per layout built, and the line was
+/// committed again by length (2 passes, 2 lines). parley now counts CSS's
+/// opportunities itself: no pass.
 #[test]
-fn a_justified_paragraph_whose_word_ends_at_the_edge_pays_one_pass() {
+fn a_justified_paragraph_whose_word_ends_at_the_edge_pays_no_pass() {
     let mut doc = doc_with(".p { width: 44px; text-align: justify; }");
     doc.tree.perf.reset();
     let body = doc.body();
@@ -1733,8 +1722,6 @@ fn a_justified_paragraph_whose_word_ends_at_the_edge_pays_one_pass() {
             (ShapeIfcBuild, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
-            (IfcHangPasses, 2),
-            (IfcHangLines, 2),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -1905,13 +1892,14 @@ fn a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds() {
     );
 }
 
-/// A paragraph of 1600 words all glued by NBSPs (#1218, review of #1257 F1),
-/// at a width parley hangs an NBSP at: one line, overflowing. The re-break
-/// that moves parley's break off the NBSP searches the line by galloping, so
-/// it is a handful of breaks of the line — not one per glued word, which made
-/// this paragraph quadratic (62 ms where main took 4).
+/// A paragraph of 1600 words all glued by NBSPs (#1218, review of #1257 F1):
+/// one line, overflowing. Until parley 0.12 parley hung an NBSP at this width
+/// and broke after it, and the re-break that moved the break off the NBSP
+/// searched the line by galloping — a handful of breaks (30), not one per
+/// glued word, which had made it quadratic. An NBSP no longer hangs, so
+/// parley never breaks there: no pass, no re-break.
 #[test]
-fn an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks() {
+fn an_nbsp_glued_chain_pays_no_rebreak() {
     let mut doc = doc_with(".p { width: 40px; }");
     doc.tree.perf.reset();
     let body = doc.body();
@@ -1932,11 +1920,6 @@ fn an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks() {
             (ShapeIfcBuild, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
-            // One hang pass, one line re-broken, 15 breaks of it, from each
-            // site (the measure and the paint layout).
-            (IfcHangPasses, 2),
-            (IfcHangLines, 2),
-            (IfcUnglueRebreaks, 30),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -1950,9 +1933,10 @@ fn an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks() {
     );
 }
 
-/// The text-leaf site of the same re-break: a flex item's own text.
+/// The text-leaf site of the same re-break: a flex item's own text (4
+/// passes, 60 re-breaks until parley 0.12; none now).
 #[test]
-fn an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way() {
+fn an_nbsp_glued_chain_in_a_flex_items_own_text_pays_no_rebreak() {
     let mut doc = doc_with(".p { width: 40px; display: flex; flex-direction: column; }");
     doc.tree.perf.reset();
     let body = doc.body();
@@ -1971,10 +1955,6 @@ fn an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way() {
             (TaffyStyleChanges, 2),
             (ShapeMeasureText, 4),
             (IfcMeasureInvalidations, 2),
-            // 15 breaks of the one line per measure, four measures.
-            (IfcHangPasses, 4),
-            (IfcHangLines, 4),
-            (IfcUnglueRebreaks, 60),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -1989,9 +1969,10 @@ fn an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way() {
 }
 
 /// The atomic-inline site of the same counters: an `inline-block` whose
-/// `pre-wrap` text wraps at double spaces inside it.
+/// `pre-wrap` text wraps at double spaces inside it (2 passes and 20 lines
+/// until parley 0.12; none now).
 #[test]
-fn an_inline_block_hangs_its_spaces_in_one_pass() {
+fn an_inline_block_wrapping_at_double_spaces_pays_no_pass() {
     let mut doc =
         doc_with(".chip { display: inline-block; max-width: 36px; white-space: pre-wrap; }");
     doc.tree.perf.reset();
@@ -2015,8 +1996,6 @@ fn an_inline_block_hangs_its_spaces_in_one_pass() {
             (ShapeAtomicInline, 2),
             (IfcMeasureInvalidations, 3),
             (IfcSignatureChanges, 2),
-            (IfcHangPasses, 2),
-            (IfcHangLines, 20),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
