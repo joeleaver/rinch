@@ -24,16 +24,18 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use rinch_components as rinch;
 use rinch_components::color_input::ColorInput;
 use rinch_components::number_input::NumberInput;
 use rinch_components::password_input::PasswordInput;
 use rinch_components::select::{Select, SelectOption};
 use rinch_components::text_input::TextInput;
 use rinch_components::textarea::Textarea;
-use rinch_core::Component;
 use rinch_core::dom::traits::DomDocument;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::dispatch_event;
+use rinch_core::{Component, Signal};
+use rinch_macros::rsx;
 
 mod common;
 use common::{find_by_class, handler};
@@ -385,4 +387,48 @@ fn a_press_on_the_select_label_focuses_the_trigger() {
 fn a_disabled_select_label_focuses_nothing() {
     let m = select("", true);
     assert_eq!(attr(&m.part(SELECT_LABEL), "data-rid"), None);
+}
+
+/// `error` has no `_fn` variant, so a reactive `error` re-renders the whole
+/// component: `aria-invalid` and `aria-describedby` must follow it there and
+/// back (absent → `"true"` → absent), and the label's `for` must follow the
+/// field id each re-render generates (review of #2039).
+#[test]
+fn a_reactive_error_toggles_aria_invalid_and_describedby() {
+    let err = Signal::new(String::new());
+    let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+    let body = doc.borrow().body();
+    let mut scope = RenderScope::new(doc.clone(), body);
+    let root = {
+        let __scope = &mut scope;
+        rsx! { div { TextInput { label: "L", description: "Help", error: {move || err.get()} } } }
+    };
+    scope.parent().append_child(&root);
+    let input = || find_by_class(&root, "rinch-text-input__input").expect("input");
+    let label = || find_by_class(&root, "rinch-text-input__label").expect("label");
+
+    let id = attr(&input(), "id").expect("field id");
+    assert_eq!(attr(&input(), "aria-invalid"), None);
+    assert_eq!(
+        attr(&input(), "aria-describedby"),
+        Some(format!("{id}-description"))
+    );
+
+    err.set("Bad".into());
+    let id = attr(&input(), "id").expect("field id");
+    assert_eq!(attr(&input(), "aria-invalid").as_deref(), Some("true"));
+    assert_eq!(
+        attr(&input(), "aria-describedby"),
+        Some(format!("{id}-error {id}-description"))
+    );
+    assert_eq!(attr(&label(), "for"), Some(id.clone()));
+
+    err.set(String::new());
+    let id = attr(&input(), "id").expect("field id");
+    assert_eq!(attr(&input(), "aria-invalid"), None);
+    assert_eq!(
+        attr(&input(), "aria-describedby"),
+        Some(format!("{id}-description"))
+    );
+    assert_eq!(attr(&label(), "for"), Some(id));
 }

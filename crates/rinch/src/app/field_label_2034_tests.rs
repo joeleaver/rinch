@@ -125,7 +125,6 @@ fn focused(app: &RinchApp) -> Option<usize> {
 }
 
 #[test]
-#[ignore = "needs #2036 (desktop label activation, #866)"]
 fn a_press_on_each_field_label_focuses_its_field() {
     let mut app = mount();
     for (label, field) in [
