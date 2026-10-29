@@ -7,7 +7,7 @@ use std::rc::{Rc, Weak};
 
 use crate::handle::ScrollAlign;
 use crate::node_views::{Kept, Registry, Slot, Work};
-use rinch_core::dom::{CaretAffinity, DomDocument, NodeFont, NodeHandle};
+use rinch_core::dom::{CaretAffinity, DomDocument, GeneratedFlatRange, NodeFont, NodeHandle};
 use rinch_editor_core::decoration::DecorationSet;
 use rinch_editor_core::serialize::{mark_dom_tag, node_dom_tag};
 use rinch_editor_core::transform::Mapping;
@@ -2503,7 +2503,23 @@ impl RinchDomEditorView {
             desc = desc.children.get(r.index(d))?;
         }
         let flat_byte = textblock_flat_byte(&desc.node, r.parent_offset(), self.flat);
-        Some((desc.dom.clone(), flat_byte))
+        let generated = self.generated_ranges(desc.dom.node_id().0);
+        Some((desc.dom.clone(), host_flat_byte(&generated, flat_byte)))
+    }
+
+    /// The stretches of textblock `block_id`'s host flat bytes that hold CSS
+    /// generated content ([`DomDocument::generated_flat_ranges`], #891), which
+    /// the model's text does not: [`host_flat_byte`] steps over them. None
+    /// when the host is gone or busy (a document being written answers no
+    /// geometry either).
+    fn generated_ranges(&self, block_id: u64) -> Vec<GeneratedFlatRange> {
+        let Some(host) = self.doc.upgrade() else {
+            return Vec::new();
+        };
+        let Ok(d) = host.try_borrow() else {
+            return Vec::new();
+        };
+        d.generated_flat_ranges(block_id)
     }
 
     /// Map a host caret address — `(textblock element id, flat UTF-8 byte offset)`,
@@ -2512,6 +2528,8 @@ impl RinchDomEditorView {
     /// textblock in this view.
     pub(crate) fn pos_at(&self, textblock_dom_id: u64, ifc_byte: usize) -> Option<Pos> {
         let (content_start, block) = find_block(&self.root, textblock_dom_id, 0)?;
+        let generated = self.generated_ranges(textblock_dom_id);
+        let ifc_byte = model_flat_byte(&generated, ifc_byte);
         Some(Pos(
             content_start + ifc_byte_to_char(block, ifc_byte, self.flat)
         ))
@@ -3155,10 +3173,16 @@ impl RinchDomEditorView {
                 if a < b
                     && let Some((block_id, _)) = self.caret_address(doc, Pos(content_start))
                 {
+                    // The host's bytes, past its generated content (#891),
+                    // which the host leaves out of the highlight.
+                    let generated = self.generated_ranges(block_id);
+                    let host = |off: usize| {
+                        host_flat_byte(&generated, textblock_flat_byte(node, off, self.flat))
+                    };
                     targets.push((
                         block_id,
-                        textblock_flat_byte(node, a - content_start, self.flat),
-                        textblock_flat_byte(node, b - content_start, self.flat),
+                        host(a - content_start),
+                        host(b - content_start),
                         self.selected_zero_byte_leaves(
                             doc,
                             content_start,
@@ -3996,6 +4020,42 @@ fn ifc_byte_to_char(block: &Node, ifc_byte: usize, flat: FlatWidths) -> usize {
         }
     }
     chars
+}
+
+/// The host's flat byte for the model's flat byte `model` of a textblock whose
+/// host lays out CSS generated content in `generated` (#891): the model's
+/// bytes with every generated stretch before them added. A stretch that starts
+/// exactly there is passed when it is a `::before`'s, which belongs to the
+/// content after it, and not when it is an `::after`'s, which belongs to the
+/// content before it — so a caret at the start of a paragraph with a
+/// `p::before` is drawn after that, and one at a link's end before the link's
+/// `::after`. (Which side of an element's own generated text a caret at its
+/// edge is on is the marks' call: [`RinchDomEditorView::mark_edges_beside`]
+/// asks the host's edge carets, which count it.)
+fn host_flat_byte(generated: &[GeneratedFlatRange], model: usize) -> usize {
+    let mut host = model;
+    for g in generated {
+        if g.start < host || (g.start == host && !g.after) {
+            host += g.end - g.start;
+        } else {
+            break;
+        }
+    }
+    host
+}
+
+/// The inverse of [`host_flat_byte`]: the model's flat byte for the host's
+/// `host` — less every generated stretch before it; a byte inside one is the
+/// byte where it starts, the position its text stands at in the model.
+fn model_flat_byte(generated: &[GeneratedFlatRange], host: usize) -> usize {
+    let mut skipped = 0;
+    for g in generated {
+        if g.start >= host {
+            break;
+        }
+        skipped += g.end.min(host) - g.start;
+    }
+    host - skipped
 }
 
 /// The flat bytes an inline leaf occupies in the host's offsets: the host's
@@ -5668,6 +5728,38 @@ mod tests {
         assert_eq!(spans[0].2, "he");
         assert_eq!(spans[1].2, "lo");
         assert_eq!(text(&h, block).as_deref(), Some("helo"));
+    }
+
+    /// #891: the host's generated text is stepped over both ways. `ab` + an
+    /// `::after`'s "XYZ" (host 2..5, at model 2) + `cd` + a `::before`'s "Q"
+    /// (host 7..8, at model 4) + `ef`, laid out `abXYZcdQef`.
+    #[test]
+    fn generated_flat_ranges_are_stepped_over_both_ways() {
+        let g = [
+            GeneratedFlatRange {
+                start: 2,
+                end: 5,
+                after: true,
+            },
+            GeneratedFlatRange {
+                start: 7,
+                end: 8,
+                after: false,
+            },
+        ];
+        // Model 2 is at the `::after`'s start: before it. Model 4 is at the
+        // `::before`'s start: past it.
+        let host: Vec<usize> = (0..=6).map(|m| host_flat_byte(&g, m)).collect();
+        assert_eq!(host, vec![0, 1, 2, 6, 8, 9, 10]);
+        // Every host byte inside generated text is the model byte it stands at.
+        let model: Vec<usize> = (0..=10).map(|h| model_flat_byte(&g, h)).collect();
+        assert_eq!(model, vec![0, 1, 2, 2, 2, 2, 3, 4, 4, 5, 6]);
+        for m in 0..=6 {
+            assert_eq!(model_flat_byte(&g, host_flat_byte(&g, m)), m);
+        }
+        // None: the identity.
+        assert_eq!(host_flat_byte(&[], 7), 7);
+        assert_eq!(model_flat_byte(&[], 7), 7);
     }
 
     /// rinch-dom's flat offsets as they were until #1122: a `<br>` is

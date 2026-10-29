@@ -95,6 +95,22 @@ impl_into_node_for_display!(
     i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64, bool, char
 );
 
+/// A stretch of a text-bearing element's flat byte offsets that holds CSS
+/// generated content, `start..end`
+/// ([`DomDocument::generated_flat_ranges`], #891). `after` when it is an
+/// `::after`'s text, which belongs after the content before it: a caret at
+/// `start` is drawn before it. A `::before`'s text belongs before the content
+/// after it, so a caret at its `start` is drawn past it, at `end`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GeneratedFlatRange {
+    /// The first byte of the generated text.
+    pub start: usize,
+    /// The byte after it.
+    pub end: usize,
+    /// An `::after`'s text (else a `::before`'s, or a list marker's).
+    pub after: bool,
+}
+
 /// Which side of a soft line wrap a text caret belongs to (#301).
 ///
 /// The end of one visual line and the start of the next are one text position,
@@ -1171,6 +1187,18 @@ pub trait DomDocument {
         &[]
     }
 
+    /// The stretches of `node_id`'s flat byte offsets (the offsets every text
+    /// query here takes) that hold CSS generated content — the text of a
+    /// `::before` / `::after` — sorted and disjoint (#891). Such text is laid
+    /// out among the element's own but is not in its DOM, so a caller that
+    /// counts the DOM's (or a model's) text steps over these bytes. None by
+    /// default — the browser's DOM ranges never count generated content.
+    /// rinch-dom lays it out in the inline formatting context, and answers
+    /// each pseudo-element's text there.
+    fn generated_flat_ranges(&self, _node_id: u64) -> Vec<GeneratedFlatRange> {
+        Vec::new()
+    }
+
     /// The caret beside the atomic inline `box_id` (an `<img>`) that the
     /// text-bearing element `node_id` lays out in its inline layout, as
     /// `(x, y, height)`, border-box-local like [`Self::query_caret_position`]:
@@ -1213,6 +1241,14 @@ pub trait DomDocument {
     /// no room at that edge or is not in `node_id`'s inline layout; the
     /// caller then asks by byte. Default `None`: the browser backend draws
     /// its own caret, and the mock has no geometry.
+    ///
+    /// rinch-dom counts the element's own generated text on that edge (its
+    /// `::after` at the end, its `::before` at the start) as part of it
+    /// (#891): the inner side is the caret on the element's side of that
+    /// text. The outer side is past any padding; with none, the end edge's
+    /// outer side is before the `::after` text too (Chrome's caret after a
+    /// link with an arrow), and the start edge's is before the `::before`
+    /// text.
     fn query_inline_edge_caret(
         &self,
         _node_id: u64,

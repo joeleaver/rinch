@@ -12,16 +12,12 @@ pub(super) struct InputTextLayout {
     /// The field's real value (a password field's layout is over bullets).
     pub value: String,
     pub is_password: bool,
-    /// The text column's left edge in the border box
-    /// (`rinch_dom::form_control::text_column`): a single-line input's content
-    /// box, a textarea's left padding.
-    pub padding_left: f32,
-    pub padding_top: f32,
-    /// A single-line input's horizontal scroll (#1721), logical px; 0 for a
-    /// textarea.
-    pub scroll_x: f32,
-    /// The extra top offset a single-line `<input>` centres its line with.
-    pub vertical_offset: f32,
+    /// Where the layout's origin sits in the field's border box, logical px
+    /// (`rinch_dom::form_control::field_text_origin`): the text column, a
+    /// single-line input's centring, and the field's scroll — horizontal for
+    /// an `<input>` (#1721), vertical for a `<textarea>` (#827) — all in it.
+    pub origin_x: f32,
+    pub origin_y: f32,
 }
 
 impl RinchApp {
@@ -414,6 +410,17 @@ impl RinchApp {
             claim
         };
 
+        // A left press on a `<label>` (issue #866) activates the label's
+        // control once the press's own click has run — resolved here, on the
+        // tree as pressed, and re-checked after that click
+        // (`activate_label_control`).
+        let label_press = if button == MouseButton::Left {
+            Self::pressed_label(&d.tree, hit_id)
+                .and_then(|label| Some((label, Self::labeled_control(&d.tree, label)?)))
+        } else {
+            None
+        };
+
         // Drop the borrow before calling methods that re-borrow self.doc
         drop(d);
 
@@ -533,49 +540,24 @@ impl RinchApp {
                     return actions;
                 }
                 let text_hit = Self::compute_text_hit_info(&d.tree, hit_id, x, y);
-
-                // The element bounds a handler reads are the bounds it is
-                // *painted* at, which is what rinch-web already reports here
-                // (`getBoundingClientRect`) and what `Drag::percent()` divides
-                // by. The hand-rolled parent-chain sum this replaces composed no
-                // transform and had no `position: fixed` exception, so a slider
-                // inside the `translate(-50%, -50%)` centring idiom measured
-                // itself against a box nobody can see (#203). Hit testing works
-                // in layout pixels, so the painted box is asked for at scale 1.
-                let (elem_x, elem_y, elem_w, elem_h) = painted_element_box(&d.tree, node_id);
-
-                events::set_click_context(events::ClickContext {
-                    mouse_x: x,
-                    mouse_y: y,
-                    element_x: elem_x,
-                    element_y: elem_y,
-                    element_width: elem_w,
-                    element_height: elem_h,
-                    text_hit,
-                    viewport_width,
-                    viewport_height,
-                    // The button that pressed (issue #1087): a pointer-capture
-                    // `Drag` armed from this handler ends on that button's
-                    // release. Only a left press reaches a `data-rid`, or a
-                    // press of any button a backdrop (#1093).
-                    button: Self::core_button(button),
-                    modifiers: self.modifier_state(),
-                });
-                events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
-
                 drop(d);
-                events::dispatch_event(events::EventHandlerId(handler_id));
-                // Process any pending focus request from the event handler
-                // (e.g., a handler may call request_focus on an input element).
-                // No layout has run since the handler mutated state, so an
-                // overlay request is re-parked rather than resolved against the
-                // pre-open tree (issue #695).
-                self.drain_focus_requests(false);
-                // Likewise a pending set_selection_range()/select() (issue
-                // #552) — drained *after* the focus request above, so a
-                // selection posted alongside a focus() for the same node
-                // lands on the input the focus request just focused.
-                self.drain_pending_text_selection();
+                self.dispatch_rid_click(
+                    node_id,
+                    handler_id,
+                    text_hit,
+                    (x, y),
+                    button,
+                    (viewport_width, viewport_height),
+                );
+                if let Some((label, control)) = label_press {
+                    self.activate_label_control(
+                        label,
+                        control,
+                        Some(node_id),
+                        (x, y),
+                        (viewport_width, viewport_height),
+                    );
+                }
                 actions.push(AppAction::RequestRedraw);
                 return actions;
             }
@@ -583,9 +565,251 @@ impl RinchApp {
                 actions.push(AppAction::DragWindow);
                 return actions;
             }
-            None => {}
+            None => {
+                if let Some((label, control)) = label_press {
+                    self.activate_label_control(
+                        label,
+                        control,
+                        None,
+                        (x, y),
+                        (viewport_width, viewport_height),
+                    );
+                    actions.push(AppAction::RequestRedraw);
+                }
+            }
         }
         actions
+    }
+
+    /// Dispatch a `data-rid` click on `node_id`, with the click context a
+    /// handler reads, then apply the focus and selection requests it posted.
+    fn dispatch_rid_click(
+        &mut self,
+        node_id: u64,
+        handler_id: usize,
+        text_hit: events::TextHitInfo,
+        (x, y): (f32, f32),
+        button: MouseButton,
+        (viewport_width, viewport_height): (f32, f32),
+    ) {
+        let Some(doc) = self.doc.clone() else {
+            return;
+        };
+        let d = doc.borrow();
+        // The element bounds a handler reads are the bounds it is
+        // *painted* at, which is what rinch-web already reports here
+        // (`getBoundingClientRect`) and what `Drag::percent()` divides
+        // by. The hand-rolled parent-chain sum this replaces composed no
+        // transform and had no `position: fixed` exception, so a slider
+        // inside the `translate(-50%, -50%)` centring idiom measured
+        // itself against a box nobody can see (#203). Hit testing works
+        // in layout pixels, so the painted box is asked for at scale 1.
+        let (elem_x, elem_y, elem_w, elem_h) = painted_element_box(&d.tree, node_id);
+
+        events::set_click_context(events::ClickContext {
+            mouse_x: x,
+            mouse_y: y,
+            element_x: elem_x,
+            element_y: elem_y,
+            element_width: elem_w,
+            element_height: elem_h,
+            text_hit,
+            viewport_width,
+            viewport_height,
+            // The button that pressed (issue #1087): a pointer-capture
+            // `Drag` armed from this handler ends on that button's
+            // release. Only a left press reaches a `data-rid`, or a
+            // press of any button a backdrop (#1093).
+            button: Self::core_button(button),
+            modifiers: self.modifier_state(),
+        });
+        events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
+
+        drop(d);
+        events::dispatch_event(events::EventHandlerId(handler_id));
+        // Process any pending focus request from the event handler
+        // (e.g., a handler may call request_focus on an input element).
+        // No layout has run since the handler mutated state, so an
+        // overlay request is re-parked rather than resolved against the
+        // pre-open tree (issue #695).
+        self.drain_focus_requests(false);
+        // Likewise a pending set_selection_range()/select() (issue
+        // #552) — drained *after* the focus request above, so a
+        // selection posted alongside a focus() for the same node
+        // lands on the input the focus request just focused.
+        self.drain_pending_text_selection();
+    }
+
+    // ── Label activation (issue #866) ────────────────────────────────────
+
+    /// The `<label>` a press on `hit` activates, if any: the nearest `<label>`
+    /// ancestor-or-self, unless the walk meets **interactive content** first —
+    /// a press on a `<button>`, a link or the control itself inside a label is
+    /// that element's alone, as in Chrome (whose label handler returns for a
+    /// target inside interactive content). A `<label>` is interactive content
+    /// too, so of nested labels only the innermost acts.
+    pub(super) fn pressed_label(tree: &rinch_dom::NodeTree, hit: u64) -> Option<u64> {
+        let mut cur = Some(hit);
+        while let Some(nid) = cur {
+            let node = tree.get(nid)?;
+            if node.tag() == Some("label") {
+                return Some(nid);
+            }
+            if Self::is_interactive_content(node) {
+                return None;
+            }
+            // The box tree, as the claim walks above: an anonymous box a press
+            // can land on is not in the element tree (#566).
+            cur = rinch_dom::RinchDocument::box_tree_parent(&tree.nodes, nid);
+        }
+        None
+    }
+
+    /// HTML's *interactive content* (minus `<label>`, which
+    /// [`Self::pressed_label`] tests first): what a press inside a label keeps
+    /// for itself. A `tabindex` does not make an element interactive content —
+    /// Chrome 156 forwards a press on a `<span tabindex>` inside a label.
+    fn is_interactive_content(node: &rinch_dom::Node) -> bool {
+        let has = |attr: &str| node.attributes.contains_key(attr);
+        match node.tag() {
+            Some("button" | "details" | "embed" | "iframe" | "select" | "textarea") => true,
+            Some("a") => has("href"),
+            Some("audio" | "video") => has("controls"),
+            Some("img") => has("usemap"),
+            Some("input") => !Self::input_is_hidden(node),
+            _ => false,
+        }
+    }
+
+    fn input_is_hidden(node: &rinch_dom::Node) -> bool {
+        node.attributes
+            .get("type")
+            .is_some_and(|t| t.trim().eq_ignore_ascii_case("hidden"))
+    }
+
+    /// HTML's *labelable elements*: what a label can label.
+    fn is_labelable(node: &rinch_dom::Node) -> bool {
+        match node.tag() {
+            Some("button" | "meter" | "output" | "progress" | "select" | "textarea") => true,
+            Some("input") => !Self::input_is_hidden(node),
+            _ => false,
+        }
+    }
+
+    /// A label's **labeled control** (HTML's `label.control`): with a `for`
+    /// attribute, the first element in tree order in the label's tree with
+    /// that `id`, if it is labelable — a `for` that names nothing labelable
+    /// labels nothing, it does not fall back to a descendant; without one, the
+    /// label's first labelable descendant in tree order.
+    pub(super) fn labeled_control(tree: &rinch_dom::NodeTree, label: u64) -> Option<u64> {
+        let node = tree.get(label)?;
+        if let Some(for_id) = node.attributes.get("for") {
+            let mut root = label;
+            while let Some(parent) = tree.get(root).and_then(|n| n.parent) {
+                root = parent;
+            }
+            let target = Self::first_in_tree_order(tree, root, &|n| {
+                n.attributes.get("id").is_some_and(|id| id == for_id)
+            })?;
+            return tree
+                .get(target)
+                .is_some_and(Self::is_labelable)
+                .then_some(target);
+        }
+        node.children
+            .iter()
+            .find_map(|&child| Self::first_in_tree_order(tree, child, &Self::is_labelable))
+    }
+
+    /// The first node of the subtree at `root` (itself included), in tree
+    /// order, that `pred` accepts.
+    fn first_in_tree_order(
+        tree: &rinch_dom::NodeTree,
+        root: u64,
+        pred: &dyn Fn(&rinch_dom::Node) -> bool,
+    ) -> Option<u64> {
+        let mut stack = vec![root];
+        while let Some(nid) = stack.pop() {
+            // `root` and every id below it come from a walk of the tree.
+            let Some(node) = tree.get_live(nid) else {
+                continue;
+            };
+            if node.tag().is_some() && pred(node) {
+                return Some(nid);
+            }
+            stack.extend(node.children.iter().rev().copied());
+        }
+        None
+    }
+
+    /// A label's activation behaviour, after the press's own click (issue
+    /// #866): focus the label's control, then click it — the nearest live
+    /// `data-rid` above the control, which is what a press on the control
+    /// itself dispatches. Chrome 156's order for a press on a label is
+    /// `click@label | focus@control | click@control`.
+    ///
+    /// Skipped when the label or its control changed under the press's own
+    /// handler (re-checked on the tree as it is now; Chrome resolves the
+    /// control after the label's listeners, and a label the handler replaced
+    /// has nothing of rinch's left to forward to), and when the control is
+    /// disabled — by its own `disabled` or a disabled `<fieldset>` — which
+    /// Chrome neither focuses nor clicks.
+    ///
+    /// The control's `data-rid` is **not** dispatched again when it is the one
+    /// the press already dispatched (`dispatched`): `Checkbox`, `Radio` and
+    /// `Switch` put their handler on the `<label>` around the `<input>`, and a
+    /// browser's second click there is the gesture duplicate rinch-web
+    /// suppresses (#272). One press, one toggle.
+    fn activate_label_control(
+        &mut self,
+        label: u64,
+        control: u64,
+        dispatched: Option<u64>,
+        point: (f32, f32),
+        viewport: (f32, f32),
+    ) {
+        let Some(doc) = self.doc.clone() else {
+            return;
+        };
+        let rid = {
+            let d = doc.borrow();
+            let still_labels =
+                rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(label))
+                    && d.tree.get(label).and_then(|n| n.tag()) == Some("label")
+                    && Self::labeled_control(&d.tree, label) == Some(control);
+            if !still_labels || Self::node_is_disabled_in_tree(&d.tree, control) {
+                return;
+            }
+            let mut rid = None;
+            let mut cur = Some(control);
+            while let Some(nid) = cur {
+                let Some(node) = d.tree.get(nid) else { break };
+                if let Some(handler_id) = node
+                    .attributes
+                    .get("data-rid")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&h| events::has_click_handler(events::EventHandlerId(h)))
+                {
+                    rid = Some((nid, handler_id));
+                    break;
+                }
+                cur = node.parent;
+            }
+            rid
+        };
+        self.try_focus_input(control);
+        if let Some((node_id, handler_id)) = rid
+            && dispatched != Some(node_id)
+        {
+            self.dispatch_rid_click(
+                node_id,
+                handler_id,
+                events::TextHitInfo::default(),
+                point,
+                MouseButton::Left,
+                viewport,
+            );
+        }
     }
 
     /// Compute text hit info for click-to-position in rich text editors.
@@ -690,13 +914,11 @@ impl RinchApp {
         // `paint_inline_layout` a content-box origin.
         let (box_x, box_y) = pointer_in_node(tree, node_id, click_x, click_y);
 
-        // Local coordinates within the text area, the single-line centring
-        // taken off the y.
-        // A single-line field's scroll (#1721) is added back: the press lands
-        // on the character painted under it.
-        let local_x = (box_x - it.padding_left + it.scroll_x).max(0.0);
-        let local_y = (box_y - it.padding_top).max(0.0);
-        let adjusted_y = (local_y - it.vertical_offset).max(0.0);
+        // Into the layout's own space: the text origin paint draws at, the
+        // field's scroll in it (#1721, #827), so the press lands on the
+        // character painted under it.
+        let local_x = (box_x - it.origin_x).max(0.0);
+        let adjusted_y = (box_y - it.origin_y).max(0.0);
 
         // A caret never stands inside a grapheme cluster (#1684); a password
         // field's layout is over bullets, one per char, so it has none.
@@ -782,10 +1004,10 @@ impl RinchApp {
         )
         .geometry(&it.layout, 0.0);
         let line_h = (geometry.y1 - geometry.y0).max(1.0) as f32;
-        // Into the border box (padding, and the single-line centring), then
+        // Into the border box (the text origin, scroll included), then
         // forward through the composed transform to the painted box (#203).
-        let bx = (it.padding_left - it.scroll_x + lx) as f64;
-        let by = (it.padding_top + it.vertical_offset + ly) as f64;
+        let bx = (it.origin_x + lx) as f64;
+        let by = (it.origin_y + ly) as f64;
         let (ax, ay) = rinch_dom::paint::point_from_painted_box(tree, node_id, 1.0, bx, by);
         let (_, ay2) =
             rinch_dom::paint::point_from_painted_box(tree, node_id, 1.0, bx, by + line_h as f64);
@@ -822,8 +1044,8 @@ impl RinchApp {
             offset
         };
         let g = rinch_dom::text_query::glyph_bounds_for_offset_layout(&it.layout, display_offset)?;
-        let bx = (it.padding_left - it.scroll_x + g.x) as f64;
-        let by = (it.padding_top + it.vertical_offset + g.y) as f64;
+        let bx = (it.origin_x + g.x) as f64;
+        let by = (it.origin_y + g.y) as f64;
         let (x, y, w, h) = rinch_dom::paint::rect_from_painted_box(
             tree,
             node_id,
@@ -852,14 +1074,6 @@ impl RinchApp {
             return None;
         }
 
-        // The text column's left edge: a single-line input's content box, a
-        // textarea's left padding (`form_control::text_column`).
-        let (padding_left, _) = rinch_dom::form_control::text_column(node);
-        let padding_top = node.computed_style.padding_top.to_px();
-
-        // Build a Parley layout matching paint_input_value's parameters
-        let font_size = node.computed_style.font_size;
-        let font_weight = node.computed_style.font_weight;
         // Password masking: the layout is built over bullet text
         let is_password = node.attributes.get("type").map(|s| s.as_str()) == Some("password");
         let password_display;
@@ -870,52 +1084,32 @@ impl RinchApp {
         } else {
             value
         };
-        let font_family = rinch_dom::fonts::parley_text_family(
-            font_cx,
-            &node.computed_style.font_family,
-            display_text,
-        );
 
-        // Both contexts are the app's own, never fresh ones: a
+        // The builder paint draws with (`field_text_layout`, #827). Both
+        // contexts are the app's own, never fresh ones: a
         // `FontContext::new()` here would re-scan the system on every click and
         // would not have the app's own registered typefaces in it at all, so it
         // would measure the text against a face the painter never used — and a
         // `LayoutContext::new()` would throw away its shaping caches once per
         // click for no gain.
-        let mut builder = layout_cx.ranged_builder(font_cx, display_text, 1.0, true);
-        builder.push_default(parley::style::StyleProperty::FontSize(font_size));
-        font_family.push_to(&mut builder);
-        if (font_weight - 400.0).abs() > 1.0 {
-            builder.push_default(parley::style::StyleProperty::FontWeight(
-                parley::style::FontWeight::new(font_weight),
-            ));
-        }
-
-        let mut layout = builder.build(display_text);
-        // One unwrapped line for an `<input>` (#1721); a textarea wraps.
-        layout.break_all_lines(rinch_dom::form_control::wrap_width(node, 1.0));
-
-        // A single-line input centres its line vertically; a textarea starts
-        // at the top of its content box.
-        let is_textarea = node.tag() == Some("textarea");
-        let vertical_offset = if !is_textarea {
-            let text_height = layout.height();
-            let content_height = node.layout.height;
-            ((content_height - text_height) / 2.0 - padding_top).max(0.0)
-        } else {
-            0.0
-        };
-
-        let scroll_x = rinch_dom::form_control::input_scroll_x(tree, font_cx, layout_cx, node_id);
+        let layout = rinch_dom::form_control::field_text_layout(
+            node,
+            display_text,
+            1.0,
+            None,
+            font_cx,
+            layout_cx,
+        );
+        let scroll = rinch_dom::form_control::field_scroll(tree, font_cx, layout_cx, node_id);
+        let (origin_x, origin_y) =
+            rinch_dom::form_control::field_text_origin(node, layout.height(), scroll);
 
         Some(InputTextLayout {
-            scroll_x,
             layout,
             value: value.to_string(),
             is_password,
-            padding_left,
-            padding_top,
-            vertical_offset,
+            origin_x,
+            origin_y,
         })
     }
 

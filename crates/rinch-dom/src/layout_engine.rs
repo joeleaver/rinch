@@ -236,6 +236,15 @@ impl RinchDocument {
         // However, text-affecting style changes (font-size, font-weight, font-style,
         // text-decoration) don't change Taffy styles so layout_dirty won't be set.
         // For these, skip Taffy but still rebuild the affected IFC text layouts.
+        //
+        // A `<textarea>` whose value changed owes its scroll range and clamp
+        // whichever way this goes: here when layout is skipped, and in
+        // `clamp_scroll_offsets` (which refreshes every textarea) when it runs.
+        if self.tree.layout_dirty {
+            self.tree.textarea_extent_dirty.clear();
+        } else {
+            self.refresh_value_changed_textareas();
+        }
         if !self.tree.layout_dirty {
             if !self.tree.dirty_ifc_text_roots.is_empty() {
                 self.tree.hit_cache.invalidate();
@@ -1103,10 +1112,71 @@ impl RinchDocument {
         }
     }
 
+    /// The `<textarea>`s whose value changed since the last resolve
+    /// (`NodeTree::textarea_extent_dirty`), on a resolve that runs no layout:
+    /// shape each one's text for its scroll range, so `scroll_height`, the
+    /// wheel and the bars read the new value's height right after the write,
+    /// and hold its scroll offset inside that range — a value that shrank to
+    /// fit scrolls back to 0, as Chrome's does — with its `onscroll` queued
+    /// like layout's clamp (review of #2023). A value that grew moves
+    /// nothing: Chrome keeps the offset.
+    fn refresh_value_changed_textareas(&mut self) {
+        let ids = std::mem::take(&mut self.tree.textarea_extent_dirty);
+        for id in ids {
+            if !self
+                .tree
+                .nodes
+                .get(id)
+                .is_some_and(|n| n.tag() == Some("textarea"))
+            {
+                continue;
+            }
+            crate::form_control::refresh_textarea_extent(
+                &self.tree,
+                &mut self.font_cx,
+                &mut self.layout_cx,
+                id,
+            );
+            let offset = self.tree.nodes[id].scroll_offset.1;
+            if offset == 0.0 {
+                continue;
+            }
+            // The range `clamp_scroll_offsets` holds every scroll container
+            // in: one extent walk, against the content box the bars use.
+            let content = crate::paint::scrollbar::content_extents(&self.tree, id).1;
+            let visible = crate::paint::scrollbar::visible_extents(&self.tree, id).1;
+            let max = self.tree.snap_scroll_offset((content - visible).max(0.0));
+            if offset > max {
+                self.tree.nodes[id].scroll_offset.1 = max;
+                // Repaints the field and re-places any absolute box that
+                // summed the old offset, as the wheel's scroll does.
+                self.tree.mark_scrolled(id);
+                self.tree.queue_scroll_clamp(id, max);
+            }
+        }
+    }
+
     /// Clamp scroll offsets for all scroll containers to their valid range.
     /// After layout changes (e.g., viewport resize), a container's content or
     /// visible area may have changed, making the old scroll offset too large.
     fn clamp_scroll_offsets(&mut self) {
+        // A `<textarea>`'s extent is its text (#827), shaped at its new width
+        // before it is read — below, and by the wheel, the bars and
+        // `scroll_height` until the next layout. Shaped only when its text,
+        // caret, width or font changed (`form_control::displayed_metrics`).
+        // A document that never made a textarea scans nothing.
+        if self.tree.textarea_elements > 0 {
+            for (id, node) in self.tree.nodes.iter() {
+                if node.tag() == Some("textarea") {
+                    crate::form_control::refresh_textarea_extent(
+                        &self.tree,
+                        &mut self.font_cx,
+                        &mut self.layout_cx,
+                        id,
+                    );
+                }
+            }
+        }
         // Collect (node_id, max_scroll) for nodes that need clamping
         let mut clamps: Vec<(RawNodeId, f64)> = Vec::new();
         for (node_id, _) in self.tree.nodes.iter() {
@@ -1140,19 +1210,8 @@ impl RinchDocument {
             // offset (`out_of_flow::replace_all`).
             self.tree.abs_late_moves = true;
             // Queue a deferred scroll notification so the clamp isn't a silent
-            // mutation (#144). Coalesce per node (last value wins): layout can
-            // resolve more than once per frame, and a consumer must see one
-            // event per drain.
-            if let Some(pending) = self
-                .tree
-                .pending_scroll_clamps
-                .iter_mut()
-                .find(|(id, _)| *id == node_id)
-            {
-                pending.1 = max_scroll;
-            } else {
-                self.tree.pending_scroll_clamps.push((node_id, max_scroll));
-            }
+            // mutation (#144).
+            self.tree.queue_scroll_clamp(node_id, max_scroll);
         }
     }
 

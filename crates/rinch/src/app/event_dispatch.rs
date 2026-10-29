@@ -4360,19 +4360,24 @@ impl RinchApp {
         // The composition is painted inline from `data-preedit`: name the
         // field, or a partial frame keeps the old composition on screen.
         d.tree.mark_paint_dirty(node_id);
-        // A single-line field scrolls the composition's end into view (#1721).
+        // A field scrolls the composition's end into view (#1721, #827).
         let d = &mut *d;
-        rinch_dom::form_control::input_scroll_x(&d.tree, &mut d.font_cx, &mut d.layout_cx, node_id);
+        rinch_dom::form_control::reveal_caret(
+            &mut d.tree,
+            &mut d.font_cx,
+            &mut d.layout_cx,
+            node_id,
+        );
     }
 
     /// The focused field's caret rect in logical window space, for the IME
-    /// candidate box. A single-line `<input>` answers the caret paint draws —
-    /// the displayed text's, so the end of an IME composition, through the
-    /// field's horizontal scroll (#1721) — from the line it keeps cached
+    /// candidate box: the caret paint draws — the displayed text's, so the
+    /// end of an IME composition, through the field's scroll (#1721, #827) —
+    /// from the metrics it keeps cached
     /// (`rinch_dom::form_control::input_displayed_caret_rect`), so the poll
     /// every event-loop pass makes shapes nothing at an unchanged state. A
-    /// `<textarea>`, or a document already borrowed, answers the text origin,
-    /// full height ([`Self::input_text_origin_area`]).
+    /// document already borrowed answers the text origin, full height
+    /// ([`Self::input_text_origin_area`]).
     #[cfg(any(feature = "desktop", feature = "embed", test))]
     pub(crate) fn input_caret_area(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
         let doc = self.doc.as_ref()?;

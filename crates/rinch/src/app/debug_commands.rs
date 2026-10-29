@@ -2008,8 +2008,11 @@ mod text_geometry_units_tests {
         let end = "one two three four five six".len();
         let one = caret(&mut app, textarea, end, 1.0);
         let two = caret(&mut app, textarea, end, 2.0);
+        // One line, at the content box's top (#827): the textarea's top 100,
+        // the UA textarea's 1px border, then its 7px top padding — Chrome's
+        // text origin. Before #827 the column started at the padding alone.
         assert!(
-            close(one.1, 100.0 + 7.0),
+            close(one.1, 100.0 + 1.0 + 7.0),
             "at scale 1 the text fits one line, got {one:?}"
         );
         assert!(

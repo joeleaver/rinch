@@ -175,11 +175,15 @@ define_counters! {
     /// weight, style, letter-spacing or word-spacing changes; a restyle that
     /// moves none of them shapes none.
     ShapeFormControlLabel = "shape_form_control_label",
-    /// Parley layouts built to scroll a focused single-line `<input>`
-    /// (#1721): its displayed text, unwrapped, to find the caret's x and the
-    /// line's width. One per change of that text, its caret or its font; paint,
-    /// the IME poll, a click and the caret rect at an unchanged state reuse it
-    /// (`form_control::displayed_line_metrics`).
+    /// Parley layouts built to scroll a text control: a focused single-line
+    /// `<input>`'s displayed text, unwrapped, for the caret's x and the line's
+    /// width (#1721), and a `<textarea>`'s, wrapped, for the caret's line and
+    /// the text's height — its scroll extent (#827). One per change of that
+    /// text, its wrap width or its font; paint, the IME poll, a click, the
+    /// wheel and the caret rect at an unchanged state reuse it, and a caret
+    /// move in the focused field reads the caret off its kept layout
+    /// (`form_control::displayed_metrics`). An unfocused field keeps no layout,
+    /// so a caret write to one shapes.
     ShapeInputScroll = "shape_input_scroll",
     /// IFC measures served from `ifc_measure_cache` without shaping.
     IfcMeasureCacheHits = "ifc_measure_cache_hits",
