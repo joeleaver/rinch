@@ -2665,7 +2665,7 @@ impl RinchDocument {
             .as_ref()?;
         let mut ranges = il.text_ranges.iter().filter(|r| r.node_id == text);
         let first = ranges.next()?;
-        let stop = ranges.last().map_or(first.flat_end, |r| r.flat_end);
+        let stop = ranges.next_back().map_or(first.flat_end, |r| r.flat_end);
         Some((first.flat_start, stop))
     }
 
