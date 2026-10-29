@@ -414,6 +414,17 @@ impl RinchApp {
             claim
         };
 
+        // A left press on a `<label>` (issue #866) activates the label's
+        // control once the press's own click has run — resolved here, on the
+        // tree as pressed, and re-checked after that click
+        // (`activate_label_control`).
+        let label_press = if button == MouseButton::Left {
+            Self::pressed_label(&d.tree, hit_id)
+                .and_then(|label| Some((label, Self::labeled_control(&d.tree, label)?)))
+        } else {
+            None
+        };
+
         // Drop the borrow before calling methods that re-borrow self.doc
         drop(d);
 
@@ -533,49 +544,24 @@ impl RinchApp {
                     return actions;
                 }
                 let text_hit = Self::compute_text_hit_info(&d.tree, hit_id, x, y);
-
-                // The element bounds a handler reads are the bounds it is
-                // *painted* at, which is what rinch-web already reports here
-                // (`getBoundingClientRect`) and what `Drag::percent()` divides
-                // by. The hand-rolled parent-chain sum this replaces composed no
-                // transform and had no `position: fixed` exception, so a slider
-                // inside the `translate(-50%, -50%)` centring idiom measured
-                // itself against a box nobody can see (#203). Hit testing works
-                // in layout pixels, so the painted box is asked for at scale 1.
-                let (elem_x, elem_y, elem_w, elem_h) = painted_element_box(&d.tree, node_id);
-
-                events::set_click_context(events::ClickContext {
-                    mouse_x: x,
-                    mouse_y: y,
-                    element_x: elem_x,
-                    element_y: elem_y,
-                    element_width: elem_w,
-                    element_height: elem_h,
-                    text_hit,
-                    viewport_width,
-                    viewport_height,
-                    // The button that pressed (issue #1087): a pointer-capture
-                    // `Drag` armed from this handler ends on that button's
-                    // release. Only a left press reaches a `data-rid`, or a
-                    // press of any button a backdrop (#1093).
-                    button: Self::core_button(button),
-                    modifiers: self.modifier_state(),
-                });
-                events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
-
                 drop(d);
-                events::dispatch_event(events::EventHandlerId(handler_id));
-                // Process any pending focus request from the event handler
-                // (e.g., a handler may call request_focus on an input element).
-                // No layout has run since the handler mutated state, so an
-                // overlay request is re-parked rather than resolved against the
-                // pre-open tree (issue #695).
-                self.drain_focus_requests(false);
-                // Likewise a pending set_selection_range()/select() (issue
-                // #552) — drained *after* the focus request above, so a
-                // selection posted alongside a focus() for the same node
-                // lands on the input the focus request just focused.
-                self.drain_pending_text_selection();
+                self.dispatch_rid_click(
+                    node_id,
+                    handler_id,
+                    text_hit,
+                    (x, y),
+                    button,
+                    (viewport_width, viewport_height),
+                );
+                if let Some((label, control)) = label_press {
+                    self.activate_label_control(
+                        label,
+                        control,
+                        Some(node_id),
+                        (x, y),
+                        (viewport_width, viewport_height),
+                    );
+                }
                 actions.push(AppAction::RequestRedraw);
                 return actions;
             }
@@ -583,9 +569,248 @@ impl RinchApp {
                 actions.push(AppAction::DragWindow);
                 return actions;
             }
-            None => {}
+            None => {
+                if let Some((label, control)) = label_press {
+                    self.activate_label_control(
+                        label,
+                        control,
+                        None,
+                        (x, y),
+                        (viewport_width, viewport_height),
+                    );
+                    actions.push(AppAction::RequestRedraw);
+                }
+            }
         }
         actions
+    }
+
+    /// Dispatch a `data-rid` click on `node_id`, with the click context a
+    /// handler reads, then apply the focus and selection requests it posted.
+    fn dispatch_rid_click(
+        &mut self,
+        node_id: usize,
+        handler_id: usize,
+        text_hit: events::TextHitInfo,
+        (x, y): (f32, f32),
+        button: MouseButton,
+        (viewport_width, viewport_height): (f32, f32),
+    ) {
+        let Some(doc) = self.doc.clone() else {
+            return;
+        };
+        let d = doc.borrow();
+        // The element bounds a handler reads are the bounds it is
+        // *painted* at, which is what rinch-web already reports here
+        // (`getBoundingClientRect`) and what `Drag::percent()` divides
+        // by. The hand-rolled parent-chain sum this replaces composed no
+        // transform and had no `position: fixed` exception, so a slider
+        // inside the `translate(-50%, -50%)` centring idiom measured
+        // itself against a box nobody can see (#203). Hit testing works
+        // in layout pixels, so the painted box is asked for at scale 1.
+        let (elem_x, elem_y, elem_w, elem_h) = painted_element_box(&d.tree, node_id);
+
+        events::set_click_context(events::ClickContext {
+            mouse_x: x,
+            mouse_y: y,
+            element_x: elem_x,
+            element_y: elem_y,
+            element_width: elem_w,
+            element_height: elem_h,
+            text_hit,
+            viewport_width,
+            viewport_height,
+            // The button that pressed (issue #1087): a pointer-capture
+            // `Drag` armed from this handler ends on that button's
+            // release. Only a left press reaches a `data-rid`, or a
+            // press of any button a backdrop (#1093).
+            button: Self::core_button(button),
+            modifiers: self.modifier_state(),
+        });
+        events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
+
+        drop(d);
+        events::dispatch_event(events::EventHandlerId(handler_id));
+        // Process any pending focus request from the event handler
+        // (e.g., a handler may call request_focus on an input element).
+        // No layout has run since the handler mutated state, so an
+        // overlay request is re-parked rather than resolved against the
+        // pre-open tree (issue #695).
+        self.drain_focus_requests(false);
+        // Likewise a pending set_selection_range()/select() (issue
+        // #552) — drained *after* the focus request above, so a
+        // selection posted alongside a focus() for the same node
+        // lands on the input the focus request just focused.
+        self.drain_pending_text_selection();
+    }
+
+    // ── Label activation (issue #866) ────────────────────────────────────
+
+    /// The `<label>` a press on `hit` activates, if any: the nearest `<label>`
+    /// ancestor-or-self, unless the walk meets **interactive content** first —
+    /// a press on a `<button>`, a link or the control itself inside a label is
+    /// that element's alone, as in Chrome (whose label handler returns for a
+    /// target inside interactive content). A `<label>` is interactive content
+    /// too, so of nested labels only the innermost acts.
+    pub(super) fn pressed_label(tree: &rinch_dom::NodeTree, hit: usize) -> Option<usize> {
+        let mut cur = Some(hit);
+        while let Some(nid) = cur {
+            let node = tree.get(nid)?;
+            if node.tag() == Some("label") {
+                return Some(nid);
+            }
+            if Self::is_interactive_content(node) {
+                return None;
+            }
+            // The box tree, as the claim walks above: an anonymous box a press
+            // can land on is not in the element tree (#566).
+            cur = rinch_dom::RinchDocument::box_tree_parent(&tree.nodes, nid);
+        }
+        None
+    }
+
+    /// HTML's *interactive content* (minus `<label>`, which
+    /// [`Self::pressed_label`] tests first): what a press inside a label keeps
+    /// for itself. A `tabindex` does not make an element interactive content —
+    /// Chrome 156 forwards a press on a `<span tabindex>` inside a label.
+    fn is_interactive_content(node: &rinch_dom::Node) -> bool {
+        let has = |attr: &str| node.attributes.contains_key(attr);
+        match node.tag() {
+            Some("button" | "details" | "embed" | "iframe" | "select" | "textarea") => true,
+            Some("a") => has("href"),
+            Some("audio" | "video") => has("controls"),
+            Some("img") => has("usemap"),
+            Some("input") => !Self::input_is_hidden(node),
+            _ => false,
+        }
+    }
+
+    fn input_is_hidden(node: &rinch_dom::Node) -> bool {
+        node.attributes
+            .get("type")
+            .is_some_and(|t| t.trim().eq_ignore_ascii_case("hidden"))
+    }
+
+    /// HTML's *labelable elements*: what a label can label.
+    fn is_labelable(node: &rinch_dom::Node) -> bool {
+        match node.tag() {
+            Some("button" | "meter" | "output" | "progress" | "select" | "textarea") => true,
+            Some("input") => !Self::input_is_hidden(node),
+            _ => false,
+        }
+    }
+
+    /// A label's **labeled control** (HTML's `label.control`): with a `for`
+    /// attribute, the first element in tree order in the label's tree with
+    /// that `id`, if it is labelable — a `for` that names nothing labelable
+    /// labels nothing, it does not fall back to a descendant; without one, the
+    /// label's first labelable descendant in tree order.
+    pub(super) fn labeled_control(tree: &rinch_dom::NodeTree, label: usize) -> Option<usize> {
+        let node = tree.get(label)?;
+        if let Some(for_id) = node.attributes.get("for") {
+            let mut root = label;
+            while let Some(parent) = tree.get(root).and_then(|n| n.parent) {
+                root = parent;
+            }
+            let target = Self::first_in_tree_order(tree, root, &|n| {
+                n.attributes.get("id").is_some_and(|id| id == for_id)
+            })?;
+            return tree
+                .get(target)
+                .is_some_and(Self::is_labelable)
+                .then_some(target);
+        }
+        node.children
+            .iter()
+            .find_map(|&child| Self::first_in_tree_order(tree, child, &Self::is_labelable))
+    }
+
+    /// The first node of the subtree at `root` (itself included), in tree
+    /// order, that `pred` accepts.
+    fn first_in_tree_order(
+        tree: &rinch_dom::NodeTree,
+        root: usize,
+        pred: &dyn Fn(&rinch_dom::Node) -> bool,
+    ) -> Option<usize> {
+        let mut stack = vec![root];
+        while let Some(nid) = stack.pop() {
+            let Some(node) = tree.get(nid) else { continue };
+            if node.tag().is_some() && pred(node) {
+                return Some(nid);
+            }
+            stack.extend(node.children.iter().rev().copied());
+        }
+        None
+    }
+
+    /// A label's activation behaviour, after the press's own click (issue
+    /// #866): focus the label's control, then click it — the nearest live
+    /// `data-rid` above the control, which is what a press on the control
+    /// itself dispatches. Chrome 156's order for a press on a label is
+    /// `click@label | focus@control | click@control`.
+    ///
+    /// Skipped when the label or its control changed under the press's own
+    /// handler (re-checked on the tree as it is now; Chrome resolves the
+    /// control after the label's listeners, and a label the handler replaced
+    /// has nothing of rinch's left to forward to), and when the control is
+    /// disabled — by its own `disabled` or a disabled `<fieldset>` — which
+    /// Chrome neither focuses nor clicks.
+    ///
+    /// The control's `data-rid` is **not** dispatched again when it is the one
+    /// the press already dispatched (`dispatched`): `Checkbox`, `Radio` and
+    /// `Switch` put their handler on the `<label>` around the `<input>`, and a
+    /// browser's second click there is the gesture duplicate rinch-web
+    /// suppresses (#272). One press, one toggle.
+    fn activate_label_control(
+        &mut self,
+        label: usize,
+        control: usize,
+        dispatched: Option<usize>,
+        point: (f32, f32),
+        viewport: (f32, f32),
+    ) {
+        let Some(doc) = self.doc.clone() else {
+            return;
+        };
+        let rid = {
+            let d = doc.borrow();
+            let still_labels =
+                rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(label))
+                    && d.tree.get(label).and_then(|n| n.tag()) == Some("label")
+                    && Self::labeled_control(&d.tree, label) == Some(control);
+            if !still_labels || Self::node_is_disabled_in_tree(&d.tree, control) {
+                return;
+            }
+            let mut rid = None;
+            let mut cur = Some(control);
+            while let Some(nid) = cur {
+                let Some(node) = d.tree.get(nid) else { break };
+                if let Some(handler_id) = node
+                    .attributes
+                    .get("data-rid")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&h| events::has_click_handler(events::EventHandlerId(h)))
+                {
+                    rid = Some((nid, handler_id));
+                    break;
+                }
+                cur = node.parent;
+            }
+            rid
+        };
+        self.try_focus_input(control);
+        if let Some((node_id, handler_id)) = rid
+            && dispatched != Some(node_id)
+        {
+            self.dispatch_rid_click(
+                node_id,
+                handler_id,
+                events::TextHitInfo::default(),
+                point,
+                MouseButton::Left,
+                viewport,
+            );
+        }
     }
 
     /// Compute text hit info for click-to-position in rich text editors.
