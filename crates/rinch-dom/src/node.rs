@@ -3100,16 +3100,35 @@ pub struct NodeTree {
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
     /// Active CSS animations per node — **paused and filling ones included**,
     /// because their constant samples are still written into `computed_style`
-    /// on every cascade, and **finished ones without a fill** too, as markers
-    /// that keep the cascade from starting them again (#783). So "is this map
-    /// non-empty" is not "does anything need another frame"; that is
-    /// [`NodeTree::has_running_animations`] (#763, #782).
+    /// on every cascade. So "is this map non-empty" is not "does anything need
+    /// another frame"; that is [`NodeTree::has_running_animations`] (#763,
+    /// #782). A finished animation **without** a fill is not here: it is in
+    /// [`NodeTree::finished_animations`].
     pub active_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
+    /// Finished `@keyframes` animations that do not fill forwards
+    /// (`animation-fill-mode: none` / `backwards`, #783), kept per node as
+    /// markers with no effect.
+    ///
+    /// The cascade looks an animation up by name in both maps
+    /// ([`crate::animation::start_animations`]), so finding one here keeps a
+    /// still-declared animation from starting again from t=0 — a browser does
+    /// not replay it on an unrelated restyle, a pause or a theme change. A
+    /// restyle that gives it more iterations moves it back to
+    /// [`NodeTree::active_animations`]; one that drops its name drops it.
+    ///
+    /// **Its own map, so that a tick never walks it** (review of #2000): a
+    /// list of rows with a one-shot entrance animation leaves one marker per
+    /// row for the rows' lives, and when they sat in `active_animations` every
+    /// frame of an unrelated spinner cloned all of them (2000 rows: 0.003 ms →
+    /// ~5 ms per tick, debug). Nothing here writes a sample, so nothing reads
+    /// it but the cascade.
+    pub finished_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
     /// Nodes on which a tick has just **finished** an animation that does not
     /// fill forwards (`animation-fill-mode: none` / `backwards`, #783).
     ///
-    /// `animation::tick_animations` pushes the node and keeps the entry as a
-    /// finished marker ([`ActiveAnimation::settled`]); `computed_style` still
+    /// `animation::tick_animations` pushes the node and moves the entry to
+    /// [`NodeTree::finished_animations`] as a finished marker
+    /// ([`ActiveAnimation::settled`]); `computed_style` still
     /// holds the last sample, and only a cascade knows the values underneath
     /// it. `RinchDocument::tick_animations` restyles each node pushed here (its
     /// originator, for a generated box), and that cascade reads the list for
@@ -3567,6 +3586,7 @@ impl NodeTree {
             ifc_measure_leaves: HashMap::new(),
             active_transitions: HashMap::new(),
             active_animations: HashMap::new(),
+            finished_animations: HashMap::new(),
             ended_animations: Vec::new(),
             transitions_enabled: false,
             refreshing_animations: false,
@@ -3998,6 +4018,7 @@ impl NodeTree {
         for node_id in &to_remove {
             self.active_transitions.remove(node_id);
             self.active_animations.remove(node_id);
+            self.finished_animations.remove(node_id);
             // The slab recycles ids: a node created later may be handed this
             // one, and must not inherit this node's measured sizes.
             self.ifc_measure_cache.remove(node_id);

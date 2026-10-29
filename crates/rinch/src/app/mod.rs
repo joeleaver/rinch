@@ -10599,8 +10599,10 @@ mod android_frame_clock_tests {
     ///
     /// `fill-mode` is left at its default `none` on purpose. That is what makes
     /// the last tick a *completing* tick: `Animation::is_filling` is false, so
-    /// the animation is dropped rather than kept, and `tick_animations` reports
-    /// `any_active = false` for the very tick that ended it.
+    /// the animation stops counting as running — it moves to
+    /// `finished_animations` as a settled marker (#783) — and
+    /// `tick_animations` reports `any_active = false` for the very tick that
+    /// ended it.
     const RISE_CSS: &str = r#"
         @keyframes k24-rise {
             from { opacity: 0.1; }

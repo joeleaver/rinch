@@ -1016,8 +1016,10 @@ A finished animation **without** a forwards fill (`none`, `backwards`) has no
 effect at all once its active duration ends, so the animated properties go back
 to their cascaded values (issue **#783**). The tick cannot write those itself —
 `computed_style` holds the last sample and nothing beneath it — so the tick that
-finishes such an animation keeps the entry, settled, and pushes its node onto
-`NodeTree::ended_animations`; `RinchDocument::tick_animations` restyles the node
+finishes such an animation keeps the entry, settled, in
+`NodeTree::finished_animations` — a map of its own, which no tick walks, so a
+list of rows that each finished an entrance animation costs a running spinner's
+frames nothing — and pushes its node onto `NodeTree::ended_animations`; `RinchDocument::tick_animations` restyles the node
 (its originator, for a `::before`/`::after` box), and that cascade applies no
 sample for it. The way back from the last sample is not a transition start: the
 cascade drops those properties from its transition diff, because the
@@ -1027,7 +1029,10 @@ theme toggle finds it by name instead of starting the still-declared animation
 from t=0, as Chrome does. A new `animation-name`, or the element being rendered
 again after `display: none` (#747), starts a new one; a restyle that gives it
 more iterations runs it again, as with a fill (`start_animations` keeps
-`settled` only while the animation is still complete). Pinned by
+`settled` only while the animation has still ended; pausing it does not count
+as un-ending it). One known gap: a real change of an animated property in the
+same frame as the end starts no transition, because the diff drops that
+property whole. Pinned by
 `crates/rinch-dom/tests/finished_animation_no_fill_783_tests.rs`.
 
 The fill is the value at the end of the active duration (`duration × count`):

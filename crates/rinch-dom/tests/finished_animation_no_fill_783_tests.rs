@@ -45,11 +45,33 @@
 //!
 //! Red at 49586231 (before the fix): 8 of the first 11 fixtures; the
 //! forwards/both control, the rename and the re-display fixtures pass there.
+//!
+//! # The review of #2000
+//!
+//! A finished marker lives in `NodeTree::finished_animations`, which no tick
+//! walks (F1), so it also drops out of the cascade's `animated_text_measure`
+//! (F2); a pause no longer clears `settled` (F4). The fixtures in the last
+//! section pin that; the mutants, applied to the committed source with the
+//! anchors asserted, and run against this file, `perf_counter_baselines`,
+//! `filled_animation_frame_tests` and `zero_duration_infinite_animation_tests`:
+//!
+//! | mutant | killed by |
+//! |---|---|
+//! | MF1 markers kept in `active_animations` (the PR's first shape) | 7 here, `perf_counter_baselines::transform_animation_tick_beside_finished_one_shots`, the zero-duration pin |
+//! | MC `ended_animations` never cleared | `a_later_real_change_after_the_end_still_transitions`, `the_frames_after_the_end_restyle_nothing`, `resuming_…`, the baseline |
+//! | MD every tick restyles every finished node | `the_frames_after_the_end_restyle_nothing`, `resuming_…`, the baseline |
+//! | MF4 `settled` recomputed with `is_complete` (cleared by a pause) | `resuming_a_paused_finished_animation_costs_no_frame`, alone |
+//! | MF2 `animated_text_measure` counts finished markers | `a_colour_restyle_after_a_finished_font_size_animation_owes_no_layout`, alone |
+//! | MG the cascade's animation gate ignores `finished_animations` | `removing_and_redeclaring_a_finished_animation_starts_it_again`, alone |
+//!
+//! F3 is a known gap, pinned as it stands by
+//! `an_end_and_a_real_change_in_one_frame_start_no_transition`.
 
 #![cfg(feature = "software-renderer")]
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
+use rinch_dom::perf::Counter;
 
 const CSS: &str = "
     @keyframes k783-grow { from { width: 40px; } to { width: 100px; } }
@@ -69,6 +91,14 @@ const CSS: &str = "
     .hidden { display: none; }
     .gen::before { content: \"x\"; display: inline-block; width: 10px; height: 10px;
                    animation: k783-grow 4000ms linear 1600ms 2 none; }
+    .wide { width: 20px; }
+    @keyframes k783-spin { from { opacity: 0.2; } to { opacity: 0.9; } }
+    .spin { animation: k783-spin 1000s linear infinite; }
+    .entrance { animation: k783-grow 200ms linear 1; }
+    @keyframes k783-size { from { font-size: 30px; } to { font-size: 20px; } }
+    .text { font-size: 12px; line-height: 16px; }
+    .sized { animation: k783-size 200ms linear 1; }
+    .red { color: rgb(200, 0, 0); }
 ";
 
 const VP: (f32, f32) = (800.0, 600.0);
@@ -92,12 +122,16 @@ fn layout_width(doc: &RinchDocument, node: NodeId) -> f32 {
     doc.tree.get(node.0).unwrap().layout.width
 }
 
+/// The animations on `node`, running or finished.
 fn names(doc: &RinchDocument, node: NodeId) -> Vec<String> {
-    doc.tree
-        .active_animations
-        .get(&node.0)
-        .map(|anims| anims.iter().map(|a| a.name.clone()).collect())
-        .unwrap_or_default()
+    let running = doc.tree.active_animations.get(&node.0);
+    let finished = doc.tree.finished_animations.get(&node.0);
+    running
+        .into_iter()
+        .chain(finished)
+        .flatten()
+        .map(|a| a.name.clone())
+        .collect()
 }
 
 fn mount(class: &str) -> (RinchDocument, NodeId) {
@@ -313,6 +347,22 @@ fn changing_the_animation_name_starts_a_new_animation() {
     );
 }
 
+/// Taking the animation away drops its finished marker, so declaring it again
+/// starts a new one — even though the node then declares no animation and the
+/// marker is in `finished_animations`, which the cascade has to look at too.
+#[test]
+fn removing_and_redeclaring_a_finished_animation_starts_it_again() {
+    let (mut doc, node) = finished("box backwards");
+    set_class(&mut doc, node, "box");
+    assert!(
+        names(&doc, node).is_empty(),
+        "no animation declared: none kept"
+    );
+    set_class(&mut doc, node, "box backwards");
+    assert!(doc.tree.has_running_animations(), "declared again: it runs");
+    assert_eq!(width_px(&doc, node), 40.0, "from t=0, in its delay");
+}
+
 /// css-animations-1 §3: an element rendered again after `display: none` starts
 /// its animations afresh — the finished marker goes with the hide (#747).
 #[test]
@@ -375,4 +425,175 @@ fn a_finished_animation_on_a_before_box_returns_to_its_base_value() {
         pseudo,
         "::before, then `.other` on its originator",
     );
+}
+
+// ── review of #2000: what a finished marker costs, and the edges ────────────
+
+/// F1: a finished one-shot leaves a marker for the node's life, and a list of
+/// rows with an entrance animation leaves one per row. No tick may walk them:
+/// beside a running spinner, the tick sees the spinner alone.
+#[test]
+fn finished_one_shots_are_not_walked_by_the_tick() {
+    const ROWS: usize = 50;
+    let mut doc = RinchDocument::new();
+    doc.load_css(CSS);
+    let body = doc.body();
+    let rows: Vec<NodeId> = (0..ROWS)
+        .map(|_| {
+            let r = doc.create_element("div");
+            doc.set_attribute(r, "class", "box entrance");
+            doc.append_child(body, r);
+            r
+        })
+        .collect();
+    let spinner = doc.create_element("div");
+    doc.set_attribute(spinner, "class", "box spin");
+    doc.append_child(body, spinner);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(VP.0, VP.1);
+    for r in &rows {
+        age(&mut doc, *r, 1000.0);
+    }
+    assert!(frame(&mut doc), "the spinner runs");
+    for r in &rows {
+        assert_eq!(width_px(&doc, *r), 10.0, "each row is back at its base");
+        assert_eq!(names(&doc, *r), ["k783-grow"], "and keeps its marker");
+    }
+    assert_eq!(doc.tree.finished_animations.len(), ROWS);
+    assert_eq!(
+        doc.tree
+            .active_animations
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        [spinner.0],
+        "the tick's map holds the spinner alone"
+    );
+    // An unrelated restyle of a row keeps it finished and off the tick's map.
+    set_class(&mut doc, rows[7], "box entrance other");
+    assert_eq!(doc.tree.active_animations.len(), 1);
+    assert_eq!(width_px(&doc, rows[7]), 10.0);
+}
+
+/// The review's mutant MD: the finishing tick restyles the node once, and the
+/// idle frames after it restyle nothing, while a spinner keeps them coming.
+#[test]
+fn the_frames_after_the_end_restyle_nothing() {
+    let (mut doc, node) = mount("box none");
+    let spinner = doc.create_element("div");
+    doc.set_attribute(spinner, "class", "box spin");
+    let body = doc.body();
+    doc.append_child(body, spinner);
+    doc.resolve_layout(VP.0, VP.1);
+    age(&mut doc, node, DURING);
+    assert!(frame(&mut doc));
+    age(&mut doc, node, AFTER - DURING);
+    doc.tree.perf.reset();
+    assert!(frame(&mut doc), "the spinner keeps frames coming");
+    assert_eq!(
+        doc.tree.perf.end_frame().get(Counter::ElementsCascaded),
+        1,
+        "positive control: the frame that ends it restyles its node"
+    );
+    assert_eq!(width_px(&doc, node), 10.0);
+    for i in 0..4 {
+        assert!(frame(&mut doc));
+        assert_eq!(
+            doc.tree.perf.end_frame().get(Counter::ElementsCascaded),
+            0,
+            "idle frame {i} after the end restyles nothing"
+        );
+    }
+}
+
+/// The review's mutant MC (`ended_animations` never cleared): the stale entry
+/// would drop a later, real `width` change from the transition diff.
+#[test]
+fn a_later_real_change_after_the_end_still_transitions() {
+    let (mut doc, node) = finished("box tr none");
+    assert_at_rest(&mut doc, node, "precondition");
+    set_class(&mut doc, node, "box tr none wide");
+    assert!(
+        doc.tree.active_transitions.contains_key(&node.0),
+        "10px → 20px under `transition: width` starts a transition"
+    );
+}
+
+/// Known gap (F3), pinned so a fix shows up here: the end and a real change of
+/// the same property land in one frame. css-transitions-1 would start a 10px →
+/// 20px transition from the previous cascaded value; rinch keeps no copy of
+/// it, drops the `width` diff with the way back, and the box jumps to 20px.
+#[test]
+fn an_end_and_a_real_change_in_one_frame_start_no_transition() {
+    let (mut doc, node) = mount("box tr none");
+    age(&mut doc, node, DURING);
+    assert!(frame(&mut doc));
+    age(&mut doc, node, AFTER - DURING);
+    doc.set_attribute(node, "class", "box tr none wide");
+    frame(&mut doc);
+    assert!(
+        !doc.tree.active_transitions.contains_key(&node.0),
+        "the known gap: no transition (the spec starts 10px → 20px)"
+    );
+    assert_eq!(width_px(&doc, node), 20.0, "the box is at the new value");
+}
+
+/// F4: pausing a finished animation and resuming it costs nothing. A pause
+/// used to clear `settled` (`is_complete` answers `false` while paused), so the
+/// resume counted it as running and its node was restyled once more.
+#[test]
+fn resuming_a_paused_finished_animation_costs_no_frame() {
+    let (mut doc, node) = finished("box none");
+    set_class(&mut doc, node, "box none paused");
+    assert_at_rest(&mut doc, node, "paused after the end");
+    set_class(&mut doc, node, "box none");
+    assert!(
+        !doc.tree.has_running_animations(),
+        "resumed, it is still finished"
+    );
+    doc.tree.perf.reset();
+    assert!(!frame(&mut doc), "and asks for no frame");
+    assert_eq!(
+        doc.tree.perf.end_frame().get(Counter::ElementsCascaded),
+        0,
+        "nor a restyle"
+    );
+    assert_at_rest(&mut doc, node, "resumed after the end");
+}
+
+/// F2: a finished `font-size` one-shot writes nothing, so a later colour-only
+/// restyle of its node (a hover) owes no re-measure and no layout.
+#[test]
+fn a_colour_restyle_after_a_finished_font_size_animation_owes_no_layout() {
+    for (class, what) in [
+        ("text", "control, no animation"),
+        ("text sized", "after the end"),
+    ] {
+        let mut doc = RinchDocument::new();
+        doc.load_css(CSS);
+        let body = doc.body();
+        let p = doc.create_element("p");
+        doc.set_attribute(p, "class", class);
+        let t = doc.create_text("hello world");
+        doc.append_child(p, t);
+        doc.append_child(body, p);
+        doc.tree.transitions_enabled = true;
+        doc.resolve_layout(VP.0, VP.1);
+        if doc.tree.active_animations.contains_key(&p.0) {
+            age(&mut doc, p, 1000.0);
+        }
+        frame(&mut doc);
+        frame(&mut doc);
+        assert!(!doc.tree.layout_dirty, "{what}: precondition, at rest");
+        if class == "text sized" {
+            assert_eq!(names(&doc, p), ["k783-size"], "positive control: kept");
+        }
+        doc.set_attribute(p, "class", &format!("{class} red"));
+        doc.resolve_styles();
+        doc.apply_stylo_styles_to_taffy();
+        assert!(
+            !doc.tree.layout_dirty,
+            "{what}: a colour-only restyle owes no layout"
+        );
+    }
 }

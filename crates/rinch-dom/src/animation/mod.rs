@@ -43,6 +43,7 @@ use crate::transition::apply_value_to_style;
 #[allow(clippy::too_many_arguments)]
 pub fn start_animations(
     active_animations: &mut HashMap<RawNodeId, Vec<ActiveAnimation>>,
+    finished_animations: &mut HashMap<RawNodeId, Vec<ActiveAnimation>>,
     node_id: RawNodeId,
     specs: &[AnimationSpec],
     base_style: &ComputedStyle,
@@ -51,7 +52,12 @@ pub fn start_animations(
     tree: &NodeTree,
     current_time_ms: f64,
 ) {
-    let existing = active_animations.remove(&node_id).unwrap_or_default();
+    // Both maps: a finished animation without a fill is kept in
+    // `finished_animations` (#783), and is found by name the same way.
+    let mut existing = active_animations.remove(&node_id).unwrap_or_default();
+    if let Some(finished) = finished_animations.remove(&node_id) {
+        existing.extend(finished);
+    }
 
     if specs.is_empty() {
         // No animations — remove all
@@ -139,11 +145,15 @@ pub fn start_animations(
             // `has_running_animations()` answering `false` for it and the tick
             // that finishes it a second time not dirtying its node (measured:
             // the box keeps the last running sample instead of the fill).
-            // `is_complete`, not `is_filling`: a finished animation without a
+            // `has_ended`, not `is_filling`: a finished animation without a
             // fill is settled too, and stays so across a restyle that changes
             // nothing about its timing — that is what keeps it from replaying.
+            // And not `is_complete`, which answers `false` for a paused
+            // animation: pausing a finished one would clear `settled`, and the
+            // resume would then count it as running for one frame and restyle
+            // its node once more (review of #2000, F4).
             existing_anim.settled =
-                existing_anim.settled && existing_anim.is_complete(current_time_ms);
+                existing_anim.settled && existing_anim.has_ended(current_time_ms);
 
             new_active.push(existing_anim);
         } else {
@@ -171,8 +181,17 @@ pub fn start_animations(
         }
     }
 
-    if !new_active.is_empty() {
-        active_animations.insert(node_id, new_active);
+    // A settled animation that holds no fill writes nothing, on a tick or in a
+    // cascade, so it goes back to `finished_animations`, where no tick walks
+    // it (review of #2000, F1).
+    let (finished, running): (Vec<_>, Vec<_>) = new_active
+        .into_iter()
+        .partition(|a| a.settled && !a.fills_forwards());
+    if !running.is_empty() {
+        active_animations.insert(node_id, running);
+    }
+    if !finished.is_empty() {
+        finished_animations.insert(node_id, finished);
     }
 }
 
@@ -203,8 +222,9 @@ pub fn start_animations(
 /// (#783), as a settled marker with no sample: the tick that finishes it
 /// pushes its node onto [`NodeTree::ended_animations`], which
 /// `RinchDocument::tick_animations` turns into a restyle of the node so its
-/// cascaded values replace the last sample. A caller of this function alone
-/// owns that restyle.
+/// cascaded values replace the last sample, and moves the entry to
+/// [`NodeTree::finished_animations`], which no tick walks. A caller of this
+/// function alone owns that restyle.
 pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
     let node_ids: Vec<RawNodeId> = tree.active_animations.keys().copied().collect();
     let mut any_active = false;
@@ -222,7 +242,7 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
 
         let mut needs_layout = false;
         let mut needs_paint = false;
-        let mut ended = false;
+        let mut ended = Vec::new();
         let mut kept_animations = Vec::new();
         let hit_key = crate::hit_cache::HitStyleKey::of(&tree.nodes[node_id].computed_style);
 
@@ -288,25 +308,28 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
                 }
                 AnimationResult::Complete => {
                     // Finished with no fill to hold (#783). The entry is kept,
-                    // settled, as a marker: the next cascade of the node finds
-                    // it by name, applies nothing and does not start the
-                    // still-declared animation again from t=0. The tick that
-                    // finishes it cannot put the cascaded values back itself —
-                    // `computed_style` holds the last sample and nothing under
-                    // it — so it asks for a restyle of the node. Later ticks
-                    // pass over it without dirtying or counting anything.
-                    if !anim.settled {
-                        ended = true;
-                    }
+                    // settled, as a marker in `finished_animations`: the next
+                    // cascade of the node finds it by name, applies nothing
+                    // and does not start the still-declared animation again
+                    // from t=0. The tick that finishes it cannot put the
+                    // cascaded values back itself — `computed_style` holds the
+                    // last sample and nothing under it — so it asks for a
+                    // restyle of the node. Later ticks never see it.
                     let mut settled = anim.clone();
                     settled.settled = true;
-                    kept_animations.push(settled);
+                    ended.push(settled);
                 }
             }
         }
 
-        if ended && !tree.ended_animations.contains(&node_id) {
-            tree.ended_animations.push(node_id);
+        if !ended.is_empty() {
+            tree.finished_animations
+                .entry(node_id)
+                .or_default()
+                .extend(ended);
+            if !tree.ended_animations.contains(&node_id) {
+                tree.ended_animations.push(node_id);
+            }
         }
 
         // A colour or opacity animation (a `Loader`, a shimmer) leaves every

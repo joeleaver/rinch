@@ -158,11 +158,16 @@ fn a_zero_duration_infinite_animation_without_fill_has_no_effect() {
     assert_eq!(width_px(&doc, node), Some(10.0), "the box's own width");
     // Kept as a settled marker, not dropped (#783): a later restyle of the
     // box must find it by name rather than start it again.
-    assert_eq!(animations(&doc, node), 1, "the entry is kept, finished");
+    assert_eq!(
+        doc.tree.finished_animations[&node.0].len(),
+        1,
+        "the entry is kept, finished"
+    );
     assert!(
-        doc.tree.active_animations[&node.0][0].settled,
+        doc.tree.finished_animations[&node.0][0].settled,
         "and settled, so nothing counts it"
     );
+    assert_eq!(animations(&doc, node), 0, "and no tick walks it");
 }
 
 /// A positive delay keeps it running — it has a delay to wait out, with the

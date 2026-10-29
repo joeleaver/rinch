@@ -559,11 +559,27 @@ Three things it deliberately does not do.
   drops the marker's properties from its transition diff, so the way back is
   not a transition start (the before-change style is the one updated to the
   current time), and clears the list. `start_animations` keeps `settled` only
-  while `is_complete` holds, so more iterations run it again; a new
-  `animation-name`, or `display: none` and back (#747, which drops the marker),
-  starts a new one. `tests/finished_animation_no_fill_783_tests.rs` is the pin.
-  A caller of `animation::tick_animations` alone (several tests do) gets the
-  marker but owns the restyle. **The component library declares the pause itself** (#912):
+  while `has_ended` holds (`is_complete`, but a paused animation is asked at its
+  frozen elapsed time, so pausing and resuming a finished one costs no frame),
+  so more iterations run it again; a new `animation-name`, taking the animation
+  away, or `display: none` and back (#747, which drops the marker), starts a new
+  one. **The marker lives in `NodeTree::finished_animations`, not in
+  `active_animations`** (review of #2000): a list of rows with a one-shot
+  entrance animation keeps one per row for the rows' lives, and in
+  `active_animations` every frame of an unrelated spinner cloned all of them
+  (2000 rows, debug: 0.003 → ~5 ms per tick). No tick walks the second map;
+  `start_animations` looks a name up in both and puts a settled entry without a
+  fill back there. Being out of `active_animations` also keeps it out of the
+  cascade's `animated_text_measure`, so a finished `font-size` one-shot does not
+  make every later restyle of its node re-measure. **Known gap:** the transition
+  diff drops the marker's properties whole, so a *real* change of the same
+  property in the same frame as the end (a class moving `width` on the
+  finishing tick) starts no transition and jumps; the previous cascaded value
+  it would start from is not kept anywhere.
+  `tests/finished_animation_no_fill_783_tests.rs` is the pin, and
+  `perf_counter_baselines::transform_animation_tick_beside_finished_one_shots`
+  pins the frame. A caller of `animation::tick_animations` alone (several
+  tests do) gets the marker but owns the restyle. **The component library declares the pause itself** (#912):
   `.rinch-drawer__root--hidden *`, a closed `.rinch-popover__dropdown`'s
   subtree and an unhovered `.rinch-hover-card__dropdown`'s subtree all carry
   `animation-play-state: paused !important` — every descendant rather than a
