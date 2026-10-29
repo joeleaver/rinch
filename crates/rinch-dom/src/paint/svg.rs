@@ -861,6 +861,16 @@ mod tests {
         }
     }
 
+    /// The pixel fixture cannot tell `inf` from `f64`'s 1.6e16 (both shear the
+    /// shape out of sight), so the pole is pinned here.
+    #[test]
+    fn a_skew_of_ninety_degrees_is_not_finite() {
+        for t in ["skewX(90)", "skewY(-90)", "skewX(270)"] {
+            assert!(!coeffs(t).iter().all(|c| c.is_finite()), "{t}");
+        }
+        assert!(coeffs("skewX(89.9)").iter().all(|c| c.is_finite()));
+    }
+
     #[test]
     fn radii_follow_svg2s_auto_rule() {
         assert_eq!(resolve_radii(None, None), (0.0, 0.0));
