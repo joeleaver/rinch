@@ -1,6 +1,8 @@
 # Node Graph Editing — `rinch-graph-core` + `rinch-graph-view`
 
-**Status:** Proposed (2026-10-29). Nothing built yet.
+**Status:** v1 built (2026-10-29, PR #2061): milestones 1–5 on desktop. See
+[What building it changed](#what-building-it-changed) for where the code differs
+from the plan below.
 **Scope:** a foundation for node-and-wire editors built on rinch: shader and
 material graphs, flowcharts, org charts, audio routing, state machines. Two new
 crates in this workspace, opt-in behind a `graph` feature on `rinch`.
@@ -339,3 +341,48 @@ Prerequisites 1 (wheel) and 3 (edge hit-testing) are needed by milestone 3;
   being the default `port` renderer.
 - **Edges between nodes in different groups**, and edges that route around
   nodes, are left out of v1 entirely.
+
+## What building it changed
+
+Recorded after v1 (milestones 1–5) was built and driven in the running demo
+(`examples/node-graph-demo`). The user guide is `docs/src/guide/node-graphs.md`.
+
+- **Prerequisite 2 already existed.** `NodeHandle::bounds_signal()` is a
+  reactive on-screen box refreshed after every layout (#30, #145, #203). The
+  view measures each port dot with it, relative to its node frame's box, and
+  each frame's size the same way. There is no workaround.
+- **Prerequisite 3 is not needed.** Edges are picked by distance to the drawn
+  curve in the canvas's own press handler (`geometry::distance_to_edge`,
+  8 screen pixels); the edge `<svg>` is `pointer-events: none`.
+- **Prerequisite 1 is still open.** With no element wheel event, zoom is by the
+  corner controls, `+`/`-`/`0` and the API. Wheel and pinch zoom wait on it.
+- **`GraphView` is `Copy`.** Its state lives in the reactive store (a `Signal`
+  holding an `Rc`), so it can be captured by any number of rsx closures, the
+  way `Signal` is. A reactive child in rsx (`{move || …}`) is rebuilt inside an
+  `FnMut`, so a `Clone`-only handle had to be cloned outside every closure.
+- **Per-item signals live in the item's own scope.** A node's position,
+  selection, size and revision signals are created when its frame renders
+  (inside the keyed list's per-item scope) and are freed with it; the view
+  keeps a map to them and an `on_cleanup` removes the entry. Model changes are
+  mirrored from `GraphState::take_applied()` into whichever slots exist.
+- **Geometry computed before its items mount must hear about the mount.** The
+  edge layer renders before the node layer, so a wire first computed its ends
+  with no node or port mounted and fell back to the bare node position. A
+  `mounts` signal, bumped by every frame and port mount and read by those
+  fallback paths, fixes it (found in the demo: nothing drew right until the
+  first edit).
+- **Port offsets assume a frame's box updates before its ports'.** Bounds
+  signals are published one node at a time, not in a batch, in node-id order.
+  A frame is created before the dots inside it, so its box is current when a
+  dot's change arrives, and the dot reads it untracked. A dot created before
+  its frame would measure against a stale box until it next moved.
+- **The edge `<svg>` is sized to the graph.** It sits in the transformed world
+  layer with a `viewBox` equal to its own box (the content bounds plus 400
+  units), so pan and zoom stay one transform and the shapes stay inside the
+  box that damage and culling use.
+- **Auto-layout landed in core** as `rinch_graph_core::layout::tree` rather than
+  as a separate module, since it is small and pure.
+- **Not done yet:** milestone 6 (rinch-web and its browser tests); a perf
+  baseline for a single-node drag; the pending wire is solid, not dashed
+  (`stroke-dasharray` is not painted); a menu opened at a drop point near the
+  canvas edge is not kept inside it (the demo's, not the library's).

@@ -1,0 +1,16 @@
+[package]
+name = "rinch-graph-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure model for node-and-wire editors: nodes, typed ports, edges, connection rules, invertible steps and undo history. No rendering, no rinch dependency, wasm-clean."
+
+[dependencies]
+serde = { version = "1", optional = true, features = ["derive"] }
+
+[features]
+# Derive serde on ids, geometry and the graph itself.
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde_json = "1"
