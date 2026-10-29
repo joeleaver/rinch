@@ -380,6 +380,12 @@ read-only editor (collaborating or not) accepts it, nothing is sent to peers and
 `on_change` does not fire. A plugin whose key is already installed is refused
 (`false`), and a refused call changes nothing.
 
+A command that only moves the selection (never edits the document) should be
+named in the plugin's `selection_commands()`. On a read-only editor `can_run`
+answers `false` for every command not named there, so a toolbar button for an
+undeclared selection-only command greys out; running it still works. The
+built-in `selectAll` is declared by the base commands plugin.
+
 A plugin marks ranges of text through its `decorations()`, without touching the
 document:
 
