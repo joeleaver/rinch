@@ -2953,6 +2953,17 @@ pub struct NodeTree {
     /// `replace_after_scroll` iterate. Rebuilt by every layout
     /// (`out_of_flow::begin_read`).
     pub(crate) placed_absolutes: Vec<(RawNodeId, crate::out_of_flow::OutOfFlowKind)>,
+    /// `(scroll container, absolute box)` for every laid-out absolute box
+    /// whose **scrollable overflow** belongs to a scroll container that is
+    /// not the box it is laid out in (#770): the nearest scroll container at
+    /// or above its containing block (`out_of_flow::overflow_scroller`),
+    /// when that is not the box's own layout parent — which measures it
+    /// itself (`paint::scrollbar::content_extents`' walk of its child boxes).
+    /// Sorted by scroll container, so `content_extents` finds a container's
+    /// entries with one binary search. Rebuilt by every layout read-back
+    /// (`out_of_flow::begin_read`) and empty in a document whose absolute
+    /// boxes are all children of their own scroll container.
+    pub(crate) overflow_absolutes: Vec<(RawNodeId, RawNodeId)>,
     /// The placed boxes among those that are **shrunk to fit from their
     /// static position** (#1404): an `auto` (or `fit-content`) width and both
     /// inline insets `auto`. What
@@ -3593,6 +3604,7 @@ impl NodeTree {
             atomic_inline_registry: BTreeSet::new(),
             ancestor_absolutes: BTreeSet::new(),
             placed_absolutes: Vec::new(),
+            overflow_absolutes: Vec::new(),
             abs_static_fits: Vec::new(),
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,

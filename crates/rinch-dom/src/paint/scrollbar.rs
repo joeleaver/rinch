@@ -236,6 +236,15 @@ impl Scrollbars {
 /// may resolve against an ancestor, and neither swells the scroll range of a
 /// box that merely happens to be its Taffy parent (issue #765).
 ///
+/// **And every absolute box below the first box whose range this is**
+/// (issue #770): one laid out in a box that is no scroll container, or whose
+/// containing block is above the box it is laid out in, is part of the
+/// scrollable overflow of the nearest scroll container at or above its
+/// containing block (`out_of_flow::overflow_scroller`; the page's is the
+/// `<body>`'s). The layout read-back lists them by container
+/// (`NodeTree::overflow_absolutes`), and [`extend_with_overflow_absolutes`]
+/// measures this container's from that list, through every box between them.
+///
 /// Taffy's `child.layout.{x,y}` are relative to the **parent's border box**, so
 /// they include the leading padding and border; subtracting that offset is what
 /// keeps a padded container from deciding it overflows when it does not.
@@ -272,8 +281,9 @@ impl Scrollbars {
 ///
 /// Not counted yet: a margin that collapses through a child's end (a
 /// child of `height: auto` whose last child has `margin-bottom: 80px` scrolls
-/// 30 in Chrome and 0 here) and a descendant's overflow below the first box
-/// (#770).
+/// 30 in Chrome and 0 here) and an **in-flow** descendant's overflow below the
+/// first box (a 300px child of a `height: 50px` child scrolls 200 in Chrome,
+/// 0 here — #2054).
 ///
 /// In logical pixels — this is layout's own unit, and every caller either wants
 /// it that way or scales the result itself.
@@ -331,6 +341,7 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
         ),
     };
     extend_with_children(tree, node_id, node_id, &frame, &mut right, &mut bottom);
+    extend_with_overflow_absolutes(tree, node_id, &frame, &mut right, &mut bottom);
     (
         (right - content_left).max(0.0),
         (bottom - content_top).max(0.0),
@@ -429,6 +440,118 @@ fn extend_with_box_tree_children(
     }
 }
 
+/// Grow `right`/`bottom` by every absolute box whose scrollable overflow is
+/// `container_id`'s but which is laid out in another box (issue #770): one
+/// under a box between it and the container, or one whose containing block
+/// is an ancestor of the box it is laid out in. The layout read-back names
+/// them (`NodeTree::overflow_absolutes`, from
+/// `out_of_flow::overflow_scroller`), so this is one binary search, and a
+/// document with none pays an `is_empty`.
+///
+/// Each counts as an `absolute` child does in [`extend_with_child`]: its
+/// border box where it is drawn, transformed, less the container's end
+/// padding — here in the container's border-box frame through every box
+/// between them ([`border_box_in`]).
+fn extend_with_overflow_absolutes(
+    tree: &NodeTree,
+    container_id: usize,
+    frame: &ContainerFrame,
+    right: &mut f64,
+    bottom: &mut f64,
+) {
+    let list = &tree.overflow_absolutes;
+    if list.is_empty() {
+        return;
+    }
+    let first = list.partition_point(|&(scroller, _)| scroller < container_id);
+    for &(scroller, abs_id) in &list[first..] {
+        if scroller != container_id {
+            break;
+        }
+        // Freed, or no longer an absolute box with an area, since the layout
+        // that recorded it (`extend_with_child` skips an empty one too).
+        if !tree
+            .get(abs_id)
+            .is_some_and(|n| n.box_position() == PositionValue::Absolute && !is_empty_box(n))
+        {
+            continue;
+        }
+        let Some(drawn) = border_box_in(tree, abs_id, container_id) else {
+            continue;
+        };
+        *right = right.max(drawn.x1 - frame.end_padding.0);
+        *bottom = bottom.max(drawn.y1 - frame.end_padding.1);
+    }
+}
+
+/// Whether `node`'s border box has no area — no width or no height.
+fn is_empty_box(node: &crate::node::Node) -> bool {
+    node.layout.width <= 0.0 || node.layout.height <= 0.0
+}
+
+/// `node_id`'s border box where it is drawn, in the border-box frame of its
+/// box-tree ancestor `ancestor_id` with that ancestor unscrolled: its layout
+/// rect moved by the layout offset of every box between them and by the
+/// scroll of each, and transformed by each transform on the way (the box's
+/// own included), composed as paint composes them
+/// ([`super::compose_node_transform`]). `None` when `ancestor_id` is not a
+/// box-tree ancestor of the node.
+///
+/// The scrolls are taken off because a box whose containing block is above a
+/// scroller does not move with it: `out_of_flow::replace_after_scroll` writes
+/// that scroll into the box's `layout`, so the sum less the scrolls is where
+/// it is drawn, whatever any scroller between them is scrolled to.
+fn border_box_in(tree: &NodeTree, node_id: usize, ancestor_id: usize) -> Option<kurbo::Rect> {
+    let node = tree.get(node_id)?;
+    // The common case: nothing on the way is transformed, so the offsets add.
+    let (mut x, mut y) = (0.0_f64, 0.0_f64);
+    let mut transformed = false;
+    let mut current = Some(node_id);
+    loop {
+        let id = current?;
+        if id == ancestor_id {
+            break;
+        }
+        let n = tree.get(id)?;
+        transformed |= n.has_applied_transform();
+        let (dx, dy) = super::ifc_content_box_offset(tree, n);
+        x += (n.layout.x + dx) as f64;
+        y += (n.layout.y + dy) as f64;
+        if id != node_id {
+            x -= n.scroll_offset.0;
+            y -= n.scroll_offset.1;
+        }
+        current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
+    }
+    let (w, h) = (node.layout.width as f64, node.layout.height as f64);
+    if !transformed {
+        return Some(kurbo::Rect::new(x, y, x + w, y + h));
+    }
+    // A transform on the way: compose top-down, as paint does.
+    let mut chain = Vec::new();
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        if id == ancestor_id {
+            break;
+        }
+        chain.push(id);
+        current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
+    }
+    let (mut off_x, mut off_y) = (0.0_f64, 0.0_f64);
+    let (mut x, mut y) = (0.0_f64, 0.0_f64);
+    let mut transform = kurbo::Affine::IDENTITY;
+    for &id in chain.iter().rev() {
+        let n = tree.get(id)?;
+        let (dx, dy) = super::ifc_content_box_offset(tree, n);
+        x = off_x + (n.layout.x + dx) as f64;
+        y = off_y + (n.layout.y + dy) as f64;
+        transform = super::compose_node_transform(n, x, y, 1.0, transform);
+        off_x = x - n.scroll_offset.0;
+        off_y = y - n.scroll_offset.1;
+    }
+    Some(transform.transform_rect_bbox(kurbo::Rect::new(x, y, x + w, y + h)))
+}
+
 /// What [`extend_with_child`] needs of the scroll container itself.
 struct ContainerFrame {
     /// Its `(padding-right, padding-bottom)`: what Chrome extends the in-flow
@@ -471,6 +594,13 @@ fn extend_with_child(
     let l = &child.layout;
     let (x, y, w, h) = (l.x as f64, l.y as f64, l.width as f64, l.height as f64);
     let cs = &child.computed_style;
+    // An `absolute` box with no area counts nothing, wherever it is: Chrome
+    // 156 gives a 200x100 scroller no range for a `0x500` one, a `10x0` one
+    // at `top: 300px` or a `0x50` one at `left: 300px`
+    // (`tests/abs_scroll_range_770_tests.rs`).
+    if cs.position == PositionValue::Absolute && is_empty_box(child) {
+        return;
+    }
     let (cb_w, cb_h) = (frame.content_box.0 as f32, frame.content_box.1 as f32);
     // In flow: the margin box at the static position, which the container's
     // end padding extends — and the frame difference cancels (see

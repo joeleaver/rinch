@@ -32,6 +32,12 @@
 //! | c9 | scroller > `relative` > `fixed` 900x900 | 0x0, page 0x0 |
 //! | c10 | `<body>` > absolute `30,900` 50x50 | page 0x350 |
 //! | c11 | `<body>` > `relative; margin-top: 20px` 30px > div > absolute `top: 1000px` 100px | page 0x520 |
+//! | e1 | `<body>` > absolute `0,1000` 0x0 | page 0x0 |
+//! | f1–f3 | `relative` 200x100 scroller > absolute 0x500 / 10x0 at `top: 300px` / 0x50 at `left: 300px` | 0x0 |
+//! | e4 | static scroller > div > `relative` span > absolute `top: 300px` 10x10, `line-height: 20px` | 0x211 |
+//! | g1 | `relative` scroller `r` > static scroller > absolute `10,20` > `relative` > absolute `top: 400px` 30x30 | `r` 0x250 |
+//! | g2 | scroller > `fixed` 100x100 > absolute `top: 900px` 50x50 | 0x0, page 0x0 |
+//! | h1 | c6b's `o` and `i`, then c6's box after `i` in `o` | `i` 50x100, `o` 0x100 |
 //!
 //! **The page.** Chrome scrolls the viewport, whose range is
 //! `documentElement.scrollWidth/Height`. rinch's page scroll is the `<body>`'s
@@ -251,12 +257,95 @@ fn a_fixed_box_scrolls_nothing() {
 /// no scroll container.
 #[test]
 fn the_page_reaches_absolutes_below_the_body() {
-    let doc =
-        doc_of(r#"<div style="position:absolute;left:30px;top:900px;width:50px;height:50px;"></div>"#);
+    let doc = doc_of(
+        r#"<div style="position:absolute;left:30px;top:900px;width:50px;height:50px;"></div>"#,
+    );
     assert_range(ranges(&doc, doc.body()), (0.0, 350.0));
 
     let doc = doc_of(
         r#"<div style="position:relative;margin-top:20px;height:30px;"><div style="height:10px;"><div style="position:absolute;left:0;top:1000px;width:10px;height:100px;"></div></div></div>"#,
     );
     assert_range(ranges(&doc, doc.body()), (0.0, 520.0));
+}
+
+/// An absolute box with no area counts nothing, wherever it is: Chrome 156
+/// gives a 200x100 `relative` scroller no range for a `0x500` child, a
+/// `10x0` one at `top: 300px` or a `0x50` one at `left: 300px`, and the page
+/// none for a `0x0` child of the body at `top: 1000px`. The first three are
+/// the scroller's own children (`extend_with_child`), the last the page's
+/// through #770's list; the c4 shape with a `0x0` box is the list's too.
+#[test]
+fn an_absolute_box_with_no_area_counts_nothing() {
+    for abs in [
+        "left:0;top:0;width:0;height:500px",
+        "left:0;top:300px;width:10px;height:0",
+        "left:300px;top:0;width:0;height:50px",
+    ] {
+        let doc = doc_of(&format!(
+            r#"<div id="s" style="position:relative;width:200px;height:100px;overflow:auto;"><div style="position:absolute;{abs};"></div></div>"#
+        ));
+        assert_range(ranges(&doc, by_id(&doc, "s")), (0.0, 0.0));
+    }
+    let doc =
+        doc_of(r#"<div style="position:absolute;left:0;top:1000px;width:0;height:0;"></div>"#);
+    assert_range(ranges(&doc, doc.body()), (0.0, 0.0));
+    let doc = doc_of(
+        &c3("position:relative", "3px 0 0 6px", false)
+            .replace("width:500px;height:400px", "width:0;height:400px"),
+    );
+    assert_range(ranges(&doc, by_id(&doc, "s")), (0.0, 0.0));
+}
+
+/// A box hung from a `position: relative` span is the scroll container's
+/// above the block holding the span's line (Chrome 156: `scrollHeight` 311 of
+/// a 200x100 static scroller, `line-height: 20px`, the box at `top: 300px`,
+/// 10px tall). Before #770 a block between the scroller and the line put it
+/// in no range (#1049 counted it only where the scroller *is* that block).
+/// The span's fragment top is the font's (rinch 209 with the host's fonts),
+/// so this pins that the box counts —
+/// 210 of travel and its line's offset — not that offset.
+#[test]
+fn a_box_hung_from_a_span_counts_through_the_block_holding_its_line() {
+    let doc = doc_of(
+        r#"<div id="s" style="width:200px;height:100px;overflow:auto;line-height:20px;font-size:16px;"><div><span style="position:relative;">x<span style="position:absolute;left:0;top:300px;width:10px;height:10px;"></span></span></div></div>"#,
+    );
+    let (x, y) = ranges(&doc, by_id(&doc, "s"));
+    assert_eq!(x, 0.0);
+    assert!((200.0..=220.0).contains(&y), "Chrome 211, here {y}");
+}
+
+/// Above its containing block the box's overflow follows the
+/// **containing-block chain**: through an `absolute` box that escapes a
+/// static scroller (g1: the box at `top: 400px` under it escapes that
+/// scroller too, and the `relative` scroller above scrolls 450 - 200), and
+/// into the viewport through a `fixed` box (g2: an absolute child of a
+/// `fixed` box scrolls no ancestor of it, nor the page). Chrome 156.
+#[test]
+fn above_its_block_the_overflow_follows_the_containing_block_chain() {
+    let doc = doc_of(
+        r#"<div id="r" style="position:relative;width:300px;height:200px;overflow:auto;"><div id="s1" style="width:200px;height:100px;overflow:auto;"><div style="position:absolute;left:10px;top:20px;width:50px;height:50px;"><div style="position:relative;"><div style="position:absolute;left:0;top:400px;width:30px;height:30px;"></div></div></div></div></div>"#,
+    );
+    assert_range(ranges(&doc, by_id(&doc, "r")), (0.0, 250.0));
+    assert_range(ranges(&doc, by_id(&doc, "s1")), (0.0, 0.0));
+
+    let doc = doc_of(
+        r#"<div id="s" style="width:300px;height:200px;overflow:auto;"><div style="position:fixed;left:0;top:0;width:100px;height:100px;"><div style="position:absolute;left:0;top:900px;width:50px;height:50px;"></div></div></div>"#,
+    );
+    assert_range(ranges(&doc, by_id(&doc, "s")), (0.0, 0.0));
+    assert_range(ranges(&doc, doc.body()), (0.0, 0.0));
+}
+
+/// Two scroll containers each take their own box, whatever order the boxes
+/// come in: the first box in the document is the inner scroller's, the
+/// second the outer's (c6b's inner shape, then c6's box after it). The
+/// layout read-back lists them by container, and a list in document order
+/// would hand the outer container's search the inner one's entry first. Chrome
+/// 156: `i` 50x100, `o` 0x100.
+#[test]
+fn each_container_finds_its_own_boxes() {
+    let doc = doc_of(
+        r#"<div id="o" style="position:relative;width:300px;height:200px;overflow:auto;"><div id="i" style="position:relative;width:200px;height:100px;overflow:auto;margin:10px 0 0 20px;padding:4px 6px 8px 12px;"><div style="width:50px;height:20px;"><div style="position:absolute;left:150px;top:120px;width:100px;height:80px;"></div></div></div><div style="width:50px;height:20px;"><div style="position:absolute;left:250px;top:260px;width:50px;height:40px;"></div></div></div>"#,
+    );
+    assert_range(ranges(&doc, by_id(&doc, "i")), (50.0, 100.0));
+    assert_range(ranges(&doc, by_id(&doc, "o")), (0.0, 100.0));
 }

@@ -548,6 +548,8 @@ impl RinchDocument {
                 for anon_id in self.tree.anonymous_block_boxes.clone() {
                     self.read_layout_results_for_box(anon_id);
                 }
+                // By scroll container, for `content_extents`' binary search.
+                self.tree.overflow_absolutes.sort_unstable();
                 if reread || !std::mem::take(&mut self.tree.abs_resolve_owed) {
                     self.tree.abs_resolve_owed = false;
                     break;
@@ -1556,6 +1558,18 @@ impl RinchDocument {
                 // element, which generates no box to place.)
                 let kind = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id);
                 crate::out_of_flow::note_kind_at_read(&mut self.tree, node_id, kind);
+                // Which scroll container's range it is, when that is not the
+                // box it is laid out in (#770).
+                if self.tree.nodes[node_id].box_position()
+                    == crate::computed_style::PositionValue::Absolute
+                    && crate::out_of_flow::is_laid_out(
+                        &self.tree,
+                        node_id,
+                        (new_layout.width, new_layout.height),
+                    )
+                {
+                    crate::out_of_flow::note_overflow_scroller(&mut self.tree, node_id, kind);
+                }
                 if crate::out_of_flow::has_inline_containing_block(&self.tree, kind) {
                     self.tree.abs_inline_cb_seen = true;
                 }
