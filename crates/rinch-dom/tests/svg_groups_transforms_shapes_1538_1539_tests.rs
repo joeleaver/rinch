@@ -6,7 +6,7 @@
 //! `stroke` reached nothing, a `transform` was ignored, an `<ellipse>` fell
 //! through the shape match and a rounded `<rect>` painted square.
 //!
-//! **The oracle is Chrome 155**: the same markup in a 100x100 `<svg
+//! **The oracle is Chrome 156**: the same markup in a 100x100 `<svg
 //! viewBox="0 0 100 100">`, each probe asked with `document.elementFromPoint`
 //! at the probe pixel's centre (a shape, or the `<svg>` behind it). Every
 //! probe here is at least 1.5px from any edge of the geometry, so its pixel is
@@ -30,9 +30,9 @@ const EMPTY: [u8; 4] = [0, 0, 0, 0];
 const INK: bool = true;
 const NONE: bool = false;
 
-/// Paint `markup` inside a 100x100 `<svg viewBox="0 0 100 100">` at the
+/// Paint `markup` inside a 100x100 `<svg viewBox="{viewbox}">` at the
 /// window's origin, on the software painter.
-fn paint(markup: &str) -> TinySkiaPainter {
+fn paint(viewbox: &str, markup: &str) -> TinySkiaPainter {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let host = doc.create_element("div");
@@ -40,7 +40,7 @@ fn paint(markup: &str) -> TinySkiaPainter {
     doc.set_inner_html(
         host,
         &format!(
-            "<svg viewBox=\"0 0 100 100\" style=\"position: absolute; left: 0; top: 0; \
+            "<svg viewBox=\"{viewbox}\" style=\"position: absolute; left: 0; top: 0; \
              display: block; width: 100px; height: 100px\">{markup}</svg>"
         ),
     );
@@ -64,11 +64,16 @@ fn pixel(p: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
     [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
 }
 
-/// Paint `markup` and check each `(x, y, ink)` probe against Chrome 155's
+/// Paint `markup` and check each `(x, y, ink)` probe against Chrome 156's
 /// answer.
 #[track_caller]
 fn check(markup: &str, probes: &[(u32, u32, bool)]) {
-    let p = paint(markup);
+    check_in("0 0 100 100", markup, probes);
+}
+
+#[track_caller]
+fn check_in(viewbox: &str, markup: &str, probes: &[(u32, u32, bool)]) {
+    let p = paint(viewbox, markup);
     let mut wrong = Vec::new();
     for &(x, y, ink) in probes {
         let got = pixel(&p, x, y);
@@ -82,7 +87,7 @@ fn check(markup: &str, probes: &[(u32, u32, bool)]) {
     }
     assert!(
         wrong.is_empty(),
-        "{markup}\nprobes that differ from Chrome 155: {wrong:#?}"
+        "{markup}\nprobes that differ from Chrome 156: {wrong:#?}"
     );
 }
 
@@ -195,7 +200,24 @@ fn group_transforms_compose_with_the_shapes_own() {
         r#"<g transform="translate(20,0)"><g transform="translate(0,30)">
              <rect x="0" y="0" width="20" height="20" fill="green" transform="scale(1.5)"/>
            </g></g>"#,
-        &[(45, 55, INK), (15, 35, NONE), (25, 25, NONE)],
+        &[
+            (45, 55, INK),
+            (22, 35, INK),
+            (15, 35, NONE),
+            (25, 25, NONE),
+            (55, 70, NONE),
+        ],
+    );
+}
+
+/// The transform composes inside the `viewBox` mapping (here a scale of 2):
+/// `translate(10,5)` is 20px right and 10px down, the rect then 20px wide.
+#[test]
+fn a_transform_is_in_viewbox_units() {
+    check_in(
+        "0 0 50 50",
+        r#"<rect x="0" y="0" width="10" height="10" fill="green" transform="translate(10,5)"/>"#,
+        &[(35, 27, INK), (22, 12, INK), (12, 7, NONE)],
     );
 }
 
@@ -223,7 +245,7 @@ fn transform_numbers_need_no_separator() {
 }
 
 /// A `transform` that does not parse is ignored whole (the shape is drawn
-/// untransformed), as Chrome does.
+/// untransformed), as Chrome does; a skew of 90° draws nothing.
 #[test]
 fn an_invalid_transform_is_ignored() {
     check(
@@ -233,6 +255,16 @@ fn an_invalid_transform_is_ignored() {
     check(
         r#"<rect x="0" y="0" width="20" height="20" fill="green" transform="translate(30,40,5)"/>"#,
         &[(10, 10, INK), (40, 50, NONE)],
+    );
+    for t in ["translate(30,40),", "translate(30px,40px)", "rotate(0deg)"] {
+        check(
+            &format!(r#"<rect x="0" y="0" width="20" height="20" fill="green" transform="{t}"/>"#),
+            &[(10, 10, INK), (40, 50, NONE)],
+        );
+    }
+    check(
+        r#"<rect x="0" y="0" width="20" height="20" fill="green" transform="skewX(90)"/>"#,
+        &[(10, 10, NONE), (40, 50, NONE)],
     );
 }
 
@@ -254,13 +286,26 @@ fn an_ellipse_is_painted() {
     );
 }
 
-/// SVG 2: an absent (or `auto`) radius takes the other one.
+/// SVG 2: an absent (or `auto`) radius takes the other one. A negative one
+/// is an error, ignored, so it is `auto` too; a value that is no number is
+/// `0` (Chrome 156), and an ellipse with a zero radius draws nothing.
 #[test]
 fn an_ellipses_auto_radius_takes_the_other() {
     check(
         r#"<ellipse cx="50" cy="50" rx="20" fill="green"/>"#,
         &[(50, 50, INK), (50, 35, INK), (50, 25, NONE)],
     );
+    check(
+        r#"<ellipse cx="50" cy="50" rx="-5" ry="20" fill="green"/>"#,
+        &[(50, 50, INK), (35, 50, INK), (25, 50, NONE)],
+    );
+    check(
+        r#"<ellipse cx="50" cy="50" rx="abc" ry="20" fill="green"/>"#,
+        &[(50, 50, NONE), (35, 50, NONE)],
+    );
+    // **Not Chrome 156**, which draws nothing for the attribute keyword
+    // `auto` (it reads it as `0`) though it draws this circle for
+    // `style="rx: auto"`; SVG 2 makes the keyword `auto` in either.
     check(
         r#"<ellipse cx="50" cy="50" rx="auto" ry="20" fill="green"/>"#,
         &[(50, 50, INK), (35, 50, INK), (25, 50, NONE)],
@@ -304,12 +349,26 @@ fn radii_clamp_to_half_the_size_each() {
     );
 }
 
-/// A negative radius is an error and reads as `auto`.
+/// A negative radius is an error and reads as `auto`; one that is no number
+/// is `0`, which squares the corners (Chrome 156).
 #[test]
 fn a_negative_radius_is_auto() {
     check(
         r#"<rect x="10" y="10" width="80" height="80" rx="-5" ry="20" fill="green"/>"#,
         &[(14, 14, NONE), (11, 50, INK)],
+    );
+    check(
+        r#"<rect x="10" y="10" width="80" height="80" rx="abc" ry="20" fill="green"/>"#,
+        &[(14, 14, INK), (11, 50, INK)],
+    );
+}
+
+/// A rect of zero width renders nothing, its stroke included (Chrome 156).
+#[test]
+fn a_zero_width_rect_is_not_stroked() {
+    check(
+        r#"<rect x="50" y="10" width="0" height="80" stroke="green" stroke-width="6"/>"#,
+        &[(50, 50, NONE)],
     );
 }
 

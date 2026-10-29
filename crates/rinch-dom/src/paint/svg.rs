@@ -113,7 +113,7 @@ pub(super) fn paint_svg(
         // declares none inherits its parent's).
         let current_color = resolve_current_color(tree, child);
         let own = inherited.derive(child, current_color);
-        // `skewX(90)` and the like: nothing a browser draws either.
+        // `skewX(90)` (see `tan_degrees`): nothing a browser draws either.
         if !own.transform.is_finite() {
             continue;
         }
@@ -198,10 +198,20 @@ fn num_attr(node: &Node, name: &str) -> Option<f64> {
 }
 
 /// A radius that may be `auto` (`rx`/`ry` of `<rect>` and `<ellipse>`):
-/// `None` for `auto`, absent, unparsable or negative (an error, which SVG 2
-/// treats as `auto`).
+/// `None` for `auto` — absent, the keyword, or negative (an error, which is
+/// ignored, leaving the initial `auto`) — else its value. Any other value
+/// that is not a number is `0`, as in Chrome 156 (which also reads the
+/// attribute *keyword* `auto` as `0`, against SVG 2; its `style="rx: auto"`
+/// is `auto`).
 fn radius_attr(node: &Node, name: &str) -> Option<f64> {
-    num_attr(node, name).filter(|v| *v >= 0.0)
+    let v = node.attributes.get(name)?.trim();
+    if v.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    match v.parse::<f64>() {
+        Ok(r) if r.is_finite() => (r >= 0.0).then_some(r),
+        _ => Some(0.0),
+    }
 }
 
 /// SVG 2's `auto` rule for a pair of radii: an `auto` one takes the other's
@@ -337,8 +347,8 @@ pub(super) fn parse_svg_transform(s: &str) -> Option<Affine> {
             ("scale", &[sx, sy]) => Affine::scale_non_uniform(sx, sy),
             ("rotate", &[deg]) => Affine::rotate(deg.to_radians()),
             ("rotate", &[deg, cx, cy]) => Affine::rotate_about(deg.to_radians(), (cx, cy)),
-            ("skewX", &[deg]) => Affine::new([1.0, 0.0, deg.to_radians().tan(), 1.0, 0.0, 0.0]),
-            ("skewY", &[deg]) => Affine::new([1.0, deg.to_radians().tan(), 0.0, 1.0, 0.0, 0.0]),
+            ("skewX", &[deg]) => Affine::new([1.0, 0.0, tan_degrees(deg), 1.0, 0.0, 0.0]),
+            ("skewY", &[deg]) => Affine::new([1.0, tan_degrees(deg), 0.0, 1.0, 0.0, 0.0]),
             _ => return None,
         };
         out *= t;
@@ -357,6 +367,18 @@ pub(super) fn parse_svg_transform(s: &str) -> Option<Affine> {
         };
     }
     Some(out)
+}
+
+/// `tan` of an angle in degrees, infinite at an odd multiple of 90° (where
+/// `f64`'s radians land just off the pole and give about `1.6e16`): a skew of
+/// 90° makes a transform no browser draws through (Chrome 156 draws nothing
+/// for `skewX(90)`), and an infinite one is skipped by the walk.
+fn tan_degrees(deg: f64) -> f64 {
+    if (deg % 180.0).abs() == 90.0 {
+        f64::INFINITY
+    } else {
+        deg.to_radians().tan()
+    }
 }
 
 /// One SVG number at the start of `s` (`-1`, `.5`, `1e-3`, `+2.`), and the
