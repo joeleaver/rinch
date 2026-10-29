@@ -440,7 +440,8 @@ async fn an_answered_picker_input_takes_later_events_without_throwing() {
     rinch::file::__set_require_user_activation(false);
     let thrown = ThrownErrors::watch();
 
-    // Positive control: a listener's throw is seen through the window.
+    // Positive control: a listener's throw is seen through the window. Chrome
+    // says "Uncaught Error: control throw", Firefox "Error: control throw".
     let control = document().create_element("div").unwrap();
     let throwing = js_sys::Function::new_no_args("throw new Error('control throw')");
     control
@@ -449,9 +450,10 @@ async fn an_answered_picker_input_takes_later_events_without_throwing() {
     control
         .dispatch_event(&web_sys::Event::new("ping").unwrap())
         .unwrap();
-    assert_eq!(
-        thrown.take(),
-        vec!["Uncaught Error: control throw".to_string()]
+    let seen = thrown.take();
+    assert!(
+        seen.len() == 1 && seen[0].ends_with("Error: control throw"),
+        "{seen:?}"
     );
 
     // Answered with `change`; then the same input gets `change` and `cancel`
