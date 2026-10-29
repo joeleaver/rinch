@@ -1022,7 +1022,6 @@ const ANON_ELLIPSIS: Case = Case {
 // written to pass once that is fixed.
 
 #[test]
-#[ignore = "#1450: an anonymous box's ellipsis line keeps a stale colour"]
 fn rv_a1_anon_box_ellipsis_mid_run() {
     let (mut doc, d) = ANON_ELLIPSIS.started();
     age_transitions(&mut doc, d, MID);
@@ -1039,7 +1038,6 @@ fn rv_a1_anon_box_ellipsis_mid_run() {
 }
 
 #[test]
-#[ignore = "#1450: an anonymous box's ellipsis line keeps a stale colour"]
 fn rv_a2_anon_box_ellipsis_finished() {
     ANON_ELLIPSIS.finished_matches_the_twin();
 }
@@ -1538,7 +1536,6 @@ fn rv_t_nested_three_levels_inherit() {
 
 /// A3: the same anon-box ellipsis line, class flipped with NO transition.
 #[test]
-#[ignore = "#1450: an anonymous box's ellipsis line keeps a stale colour"]
 fn rv_a3_anon_box_ellipsis_static_restyle() {
     let mut doc = doc_with(ANON_ELLIPSIS.css);
     let d = ellipsis_text_beside_a_block(&mut doc, "e a");
@@ -1559,7 +1556,6 @@ fn rv_a3_anon_box_ellipsis_static_restyle() {
 
 /// A4: how long the anon-box ellipsis stays stale after the run ends.
 #[test]
-#[ignore = "#1450: an anonymous box's ellipsis line keeps a stale colour"]
 fn rv_a4_anon_box_ellipsis_after_end() {
     let (mut doc, d) = ANON_ELLIPSIS.started();
     age_transitions(&mut doc, d, LONG * 2.0);

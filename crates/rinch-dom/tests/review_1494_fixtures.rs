@@ -1380,7 +1380,6 @@ fn absolute_to_fixed_with_no_insets_owes_a_layout() {
 /// move it (fresh: 271). A static position found in those lines is stale the
 /// same way. Root inline formatting contexts are fine.
 #[test]
-#[ignore = "review of #1494: older than the PR; see issue-draft-review-1494-1.md"]
 fn a_text_align_restyle_reaches_an_anonymous_box() {
     let html = |align: &str| {
         format!(
