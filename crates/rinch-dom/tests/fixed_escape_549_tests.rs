@@ -44,8 +44,7 @@ const IN: (u32, u32) = (150, 130);
 const OUT: (u32, u32) = (380, 380);
 
 fn paint(doc: &mut RinchDocument, scale: f64) -> TinySkiaPainter {
-    let mut painter =
-        TinySkiaPainter::new((VW as f64 * scale) as u32, (VH as f64 * scale) as u32);
+    let mut painter = TinySkiaPainter::new((VW as f64 * scale) as u32, (VH as f64 * scale) as u32);
     let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
     rinch_dom::paint::paint_document(
         &doc.tree,
@@ -103,7 +102,11 @@ fn a_fixed_box_escapes_a_plain_clipper_above_its_stacking_context() {
     for scale in [1.0, 2.0] {
         let (mut doc, _) = chain(&[CLIPPER, OWNER]);
         let p = paint(&mut doc, scale);
-        assert_eq!(px(&p, IN, scale), GREEN, "inside the clipper, scale {scale}");
+        assert_eq!(
+            px(&p, IN, scale),
+            GREEN,
+            "inside the clipper, scale {scale}"
+        );
         assert_eq!(
             px(&p, OUT, scale),
             GREEN,
@@ -252,11 +255,31 @@ fn what_paints_after_the_fixed_box_is_clipped_again() {
     );
     doc.resolve_layout(VW, VH);
     let p = paint(&mut doc, 1.0);
-    assert_eq!(px(&p, (100, 30), 1.0), BLUE, "positive control, owner's child");
-    assert_eq!(px(&p, (600, 30), 1.0), NOTHING, "the owner's child past the clip");
-    assert_eq!(px(&p, (100, 160), 1.0), BLUE, "positive control, later sibling");
-    assert_eq!(px(&p, (600, 160), 1.0), NOTHING, "the later sibling past the clip");
-    assert_eq!(px(&p, OUT, 1.0), GREEN, "the fixed box between them escaped");
+    assert_eq!(
+        px(&p, (100, 30), 1.0),
+        BLUE,
+        "positive control, owner's child"
+    );
+    assert_eq!(
+        px(&p, (600, 30), 1.0),
+        NOTHING,
+        "the owner's child past the clip"
+    );
+    assert_eq!(
+        px(&p, (100, 160), 1.0),
+        BLUE,
+        "positive control, later sibling"
+    );
+    assert_eq!(
+        px(&p, (600, 160), 1.0),
+        NOTHING,
+        "the later sibling past the clip"
+    );
+    assert_eq!(
+        px(&p, OUT, 1.0),
+        GREEN,
+        "the fixed box between them escaped"
+    );
 }
 
 /// The clipper is scrolled so the owner's own box is above its viewport: the

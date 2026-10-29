@@ -371,13 +371,36 @@ correct, and each has a fixture in
   contain: paint lifts the bracket for the length of that entry and puts the very
   same shape back, and hit testing exempts it from the bounds gate per entry.
   That was stage B's documented "Known gap", and #545 is what made it live.
-  **Only that one clip is lifted (#549).** The chain on the *root's own* entry,
-  in whatever sequence hoisted the root, is still pushed around the root's whole
-  subtree — so under `plain clipper > stacking context > fixed` the fixed box is
-  clipped away, where a browser paints it. Paint and hit testing agree on it, so
-  it is a consistent deviation and not drift; the honest fix moves the collecting
-  root's clip off the bracket and into every entry's chain, which would close
-  the "Known gap" `stacking.rs` describes for an absolute too. A third consumer has to know the same thing from the other
+  **And every clip above the root too (#549).** The chain on the *root's own*
+  entry, in whatever sequence hoisted the root, is pushed around the root's
+  whole subtree, so lifting the root's bracket alone left `plain clipper >
+  stacking context > fixed` cut to the clipper, where Chrome 155 paints and
+  hits the fixed box. Paint now lifts every clip the painter has open down to
+  the fixed box's containing block: `ClipTrackingPainter` mirrors each layer it
+  forwards onto `OPEN_LAYERS` (beside `CLIP_CULL`, #910), `paint_node` records
+  a floor (`FIXED_FLOOR`) when it enters a box that contains fixed descendants
+  (`paint::contains_fixed_descendants`: a `transform`, a `filter`, a
+  `mask-image`), and `paint_sequence_entry`'s `LiftedClips` pops everything
+  from the lowest clip above that floor, pushes back the non-clip layers among
+  them (an ancestor context's `opacity` applies to a fixed descendant), paints
+  the entry, and restores the exact stack. The common case is the old one: the
+  root's bracket on top, popped and pushed back alone. The one deviation is
+  group opacity: when a clip sits *under* an ancestor's `opacity` layer, the
+  fixed box is composited as a group of its own at that opacity rather than
+  with the rest of the context (visible only where the two overlap). Hit
+  testing carries the same fact down as `hit_test_node`'s `clipped` flag —
+  "the probe is outside a clip a fixed descendant escapes" — which a fixed
+  entry clears, a containing box turns into a miss, and which only stacking
+  contexts holding such a box are entered under (`holds_escaping_fixed`, a
+  per-generation bit in the hit cache). Under a transformed, filtered or
+  masked ancestor the clips at and above it still apply, as in Chrome — rinch
+  still *places* the box against the viewport there (#1372). Pins:
+  `rinch-dom/tests/fixed_escape_549_tests.rs` (pixels),
+  `rinch/src/app/fixed_escape_hit_549_tests.rs`, `damage_clip_chain_tests`'
+  `a_fixed_box_under_a_context_inside_a_clipper_is_damaged_outside_it`, and
+  `rinch/tests/gpu_fixed_escape_549.rs` (Vello, `test-gpu`). An absolute's
+  "Known gap" in `stacking.rs` is untouched: it is the root's bracket applying
+  to an absolute the root does not contain, a different escape. A third consumer has to know the same thing from the other
   side: `paint::layer_bounds` walks the tree rather than the sequence, so it sees
   clippers a fixed descendant escapes, and its `Extent::Escapes` case stops one
   narrowing a translucent layer to less than it paints — which tiny-skia ignores
@@ -593,8 +616,9 @@ took the realistic case.
 **A `position: fixed` box is hoisted to its NEAREST ancestor stacking context**,
 not to the body (#545). It is viewport-*positioned*, not viewport-*stacked*: its
 entry keeps zeroed offsets, an empty clip chain and the body's transform, but it
-is entered in the sequence CSS says owns it. **"Empty clip chain" is not "escapes
-every clip"** — see the paragraph on #549 below. It used to be pulled out to the body
+is entered in the sequence CSS says owns it. Its empty clip chain is not what
+makes it escape the clips above that context — paint's lift is (#549, the
+clip-chain rules above). It used to be pulled out to the body
 whatever lay between, which compared two `z-index` values across two stacking
 contexts — the same fault `overflow` caused before stage B. A `z-index: 99`
 dismiss backdrop escaped a wrapper its `z-index: 100` panel could not and covered

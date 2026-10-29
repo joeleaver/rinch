@@ -142,6 +142,7 @@ struct State {
     extents: Vec<Option<Extent>>,
     hoists: Vec<Option<bool>>,
     shows: Vec<Option<bool>>,
+    escaping_fixed: Vec<Option<bool>>,
     orders: HashMap<OrderKey, Rc<PaintOrder>>,
 }
 
@@ -189,6 +190,7 @@ impl HitCache {
             s.extents.clear();
             s.hoists.clear();
             s.shows.clear();
+            s.escaping_fixed.clear();
             s.orders.clear();
         }
         s
@@ -282,6 +284,25 @@ impl HitCache {
             s.shows.resize(id + 1, None);
         }
         s.shows[id] = Some(shows);
+    }
+
+    /// Whether a `position: fixed` box under `id` escapes the clips above
+    /// `id` (#549), stored for the current generation. The hit tester asks it
+    /// only of a stacking context whose box a probe is clipped away from, to
+    /// know whether anything under it can still be hit there. It reads no scroll
+    /// offset, so a scroll keeps it (`invalidate_scroll` drops only the sequences).
+    #[inline]
+    pub fn escaping_fixed(&self, id: usize) -> Option<bool> {
+        self.state().escaping_fixed.get(id).copied().flatten()
+    }
+
+    /// Store `id`'s "a fixed box below escapes" bit for the current generation.
+    pub fn store_escaping_fixed(&self, id: usize, escapes: bool) {
+        let mut s = self.state();
+        if s.escaping_fixed.len() <= id {
+            s.escaping_fixed.resize(id + 1, None);
+        }
+        s.escaping_fixed[id] = Some(escapes);
     }
 
     /// Store `id`'s extent for the current generation.

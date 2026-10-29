@@ -24,7 +24,7 @@ use rinch_dom::stacking::{paints_at_stacking_root, stacking_paint_order};
 
 /// The oracle: `hit_test` as it was before the prune and the cache.
 fn reference_hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<usize> {
-    reference_hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
+    reference_hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y, false)
 }
 
 struct Rng(u64);
@@ -792,6 +792,9 @@ fn reference_hit_test_node(
     y: f32,
     vx: f32,
     vy: f32,
+    // The probe is outside a clip a `position: fixed` descendant escapes
+    // (#549); see `hit_test_node`. Unpruned here: every entry is entered.
+    clipped: bool,
 ) -> Option<usize> {
     tree.perf
         .bump(rinch_dom::perf::Counter::HitTestNodesVisited);
@@ -808,6 +811,10 @@ fn reference_hit_test_node(
         vx,
         vy,
     } = descend(tree, node, node_id, offset_x, offset_y, x, y, vx, vy)?;
+
+    if clipped && rinch_dom::paint::contains_fixed_descendants(node) {
+        return None;
+    }
 
     let nw = node.layout.width;
     let nh = node.layout.height;
@@ -888,11 +895,8 @@ fn reference_hit_test_node(
                 // (`paint_children_with_stacking`, #545). Without the exemption
                 // a fixed modal inside an `overflow: hidden; z-index: 1` panel
                 // would be painted and never tappable.
-                let escapes_root_clip = child.computed_style.position
+                let escapes_clips = child.computed_style.position
                     == rinch_dom::computed_style::PositionValue::Fixed;
-                if !check_children && !escapes_root_clip {
-                    continue;
-                }
                 if is_stretched_ifc_text(child) {
                     continue;
                 }
@@ -905,13 +909,16 @@ fn reference_hit_test_node(
                 // The clips are in this root's own space, which is the space
                 // `x`/`y` are in here, and at scale 1.0 because that is what
                 // this walk asked `stacking_paint_order` for.
-                if !order
-                    .clips_for(entry)
-                    .iter()
-                    .all(|c| c.contains(x as f64, y as f64))
-                {
-                    continue;
-                }
+                let inside_clips = check_children
+                    && order
+                        .clips_for(entry)
+                        .iter()
+                        .all(|c| c.contains(x as f64, y as f64));
+                // A fixed entry escapes this root's gate, its own (empty)
+                // chain and every clip `clipped` stands for (#545, #549);
+                // anything else clipped away is still entered, clipped, to
+                // look for one.
+                let child_clipped = !escapes_clips && (clipped || !inside_clips);
                 if let Some(hit) = reference_hit_test_node(
                     tree,
                     entry.node_id,
@@ -921,11 +928,12 @@ fn reference_hit_test_node(
                     y,
                     vx,
                     vy,
+                    child_clipped,
                 ) {
                     return Some(hit);
                 }
             }
-        } else if check_children {
+        } else if check_children && !clipped {
             // Not a stacking-context root — test only the children that were
             // not hoisted to an ancestor's sequence, in reverse tree order.
             // Nothing here can be a fixed box: one creates a stacking context
@@ -943,7 +951,7 @@ fn reference_hit_test_node(
                     continue;
                 }
                 if let Some(hit) =
-                    reference_hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy)
+                    reference_hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy, false)
                 {
                     return Some(hit);
                 }
@@ -951,7 +959,10 @@ fn reference_hit_test_node(
         }
     }
 
-    if !point_in_bounds || (hidden && !super::visible_text_at(tree, node, x - nx, y - ny)) {
+    if clipped
+        || !point_in_bounds
+        || (hidden && !super::visible_text_at(tree, node, x - nx, y - ny))
+    {
         return None;
     }
 
@@ -1014,6 +1025,7 @@ fn reference_hit_test_node_is_per_axis_like_the_real_one() {
         150.0,
         50.0,
         150.0,
+        false,
     );
     assert_eq!(
         real,

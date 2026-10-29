@@ -146,7 +146,11 @@ fn only_the_fixed_box_escapes_the_clip() {
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(hit(&doc, (100.0, 30.0)), Some(wide.0), "positive control");
     assert_eq!(hit(&doc, (600.0, 30.0)), Some(doc.tree.body_id));
-    assert_eq!(hit(&doc, (600.0, 10.0)), Some(doc.tree.body_id), "the owner");
+    assert_eq!(
+        hit(&doc, (600.0, 10.0)),
+        Some(doc.tree.body_id),
+        "the owner"
+    );
     assert_eq!(hit(&doc, (100.0, 160.0)), Some(later.0), "positive control");
     assert_eq!(hit(&doc, (600.0, 160.0)), Some(doc.tree.body_id));
     assert_eq!(hit(&doc, OUT), Some(fixed.0));

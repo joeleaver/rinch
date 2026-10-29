@@ -153,13 +153,14 @@ fn render(doc: &mut RinchDocument) -> Vec<[u8; 4]> {
         .collect()
 }
 
-
 fn at(px: &[[u8; 4]], (x, y): (u32, u32)) -> [u8; 4] {
     px[(y * W + x) as usize]
 }
 
 fn near(a: [u8; 4], b: [u8; 4]) -> bool {
-    a.iter().zip(b).all(|(x, y)| (*x as i32 - y as i32).abs() <= 2)
+    a.iter()
+        .zip(b)
+        .all(|(x, y)| (*x as i32 - y as i32).abs() <= 2)
 }
 
 /// `assert_eq!` within 2 per channel: Vello's quantisation, not a tolerance
@@ -196,7 +197,11 @@ fn gpu_a_fixed_box_escapes_the_clips_above_its_context() {
     // Two clippers above an `opacity` owner: drawn as with no clipper.
     let owner = "opacity: 0.5; width: 50px; height: 50px";
     let px = render(&mut chain(
-        &[CLIPPER, "overflow: clip; width: 150px; height: 150px", owner],
+        &[
+            CLIPPER,
+            "overflow: clip; width: 150px; height: 150px",
+            owner,
+        ],
         FIXED,
     ));
     let reference = render(&mut chain(&[owner], FIXED));

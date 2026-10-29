@@ -967,7 +967,11 @@ fn a_fixed_box_under_a_context_inside_a_clipper_is_damaged_outside_it() {
     }));
     let before = full_frame(&mut app);
     let old = (300, 200, 340, 240);
-    assert_eq!(ink_in(&before, old), 1600, "positive control: drawn outside");
+    assert_eq!(
+        ink_in(&before, old),
+        1600,
+        "positive control: drawn outside"
+    );
 
     h[2].set_style("top", "300px");
     resolve(&mut app);
