@@ -208,7 +208,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     // The IME's composing region, and the field it belongs to. See
     // `shell::android_ime` for why the region is mirrored on this side at all.
     let mut composition = ImeComposition::new();
-    let mut composing_field: Option<usize> = None;
+    let mut composing_field: Option<u64> = None;
     let mut backgrounded = false;
     // A window-focus change seen inside `poll_events`, dispatched after it
     // returns (`app` is not reachable from the callback). `None` = no change

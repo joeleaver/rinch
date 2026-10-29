@@ -120,7 +120,7 @@ fn dump_doc(out: &mut String, style: &str, texts: &[&str]) {
     let total: usize = texts.iter().map(|t| t.len()).sum();
     for b in 0..=total {
         for a in [CaretAffinity::Upstream, CaretAffinity::Downstream] {
-            let s = match doc.query_caret_rect_with_affinity(block.0 as u64, b, a) {
+            let s = match doc.query_caret_rect_with_affinity(block.0, b, a) {
                 Some((x, y, h)) => {
                     format!("{:.4} {:.4} {:.4}", x as f64 - r.x(), y as f64 - r.y(), h)
                 }
@@ -298,8 +298,8 @@ fn emulated_gecko_a_collapsible_newline_at_a_wrap_keeps_its_upstream_caret() {
     let top = el.get_bounding_client_rect().y();
     let left = el.get_bounding_client_rect().x();
     gecko_emulation(true);
-    let up = doc.query_caret_rect_with_affinity(block.0 as u64, 9, CaretAffinity::Upstream);
-    let down = doc.query_caret_rect_with_affinity(block.0 as u64, 9, CaretAffinity::Downstream);
+    let up = doc.query_caret_rect_with_affinity(block.0, 9, CaretAffinity::Upstream);
+    let down = doc.query_caret_rect_with_affinity(block.0, 9, CaretAffinity::Downstream);
     gecko_emulation(false);
     el.remove();
     let (_, uy, _) = up.expect("upstream rect");
