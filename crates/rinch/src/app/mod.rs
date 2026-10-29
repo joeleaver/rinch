@@ -10647,10 +10647,17 @@ mod android_frame_clock_tests {
         Riser { app, trigger }
     }
 
+    /// Animations a tick can still move. Not the map's length: a finished
+    /// one is kept there as a settled marker (#783), and a paused one too.
     fn running_animations(app: &RinchApp) -> usize {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
-        d.tree.active_animations.len()
+        d.tree
+            .active_animations
+            .values()
+            .flatten()
+            .filter(|a| !a.is_paused() && !a.settled)
+            .count()
     }
 
     /// The same fault as `the_tick_that_finishes_the_slide_asks_to_be_presented`,
