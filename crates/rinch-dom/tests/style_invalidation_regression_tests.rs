@@ -1046,3 +1046,87 @@ fn r15b_insert_under_snapshotted_ancestor_cascades_against_the_new_style() {
         "the insertion cascaded against the old ancestor style"
     );
 }
+
+// ===== attr() outside `content` (stylo 0.22, #680) =====
+//
+// Stylo 0.22 resolves typed `attr()` in any property, and through custom
+// properties. `get_attr` flags the element that read an attribute
+// (`Node::content_reads_attrs`), `note_attribute_change` restyles a flagged
+// element on any attribute write, and the flag is cleared before each cascade.
+// T9 cannot see the flag: its element has a `::before`, and an element with
+// pseudo children restyles on any attribute change anyway. These elements have
+// none.
+
+/// `ElementsCascaded` spent by `f` and the layout after it.
+fn cascaded(d: &mut RinchDocument, f: impl FnOnce(&mut RinchDocument)) -> u64 {
+    let before = d.tree.perf.total();
+    f(d);
+    d.resolve_layout(800.0, 600.0);
+    d.tree
+        .perf
+        .total()
+        .since(&before)
+        .get(rinch_dom::perf::Counter::ElementsCascaded)
+}
+
+/// A typed `attr()` width follows its attribute; an unrelated attribute on the
+/// flagged element restyles it (one cascade), one on an unflagged element costs
+/// nothing, and once the element stops using `attr()` the flag is gone.
+#[test]
+fn attr_typed_width_follows_its_attribute_and_the_flag_clears() {
+    let mut d = doc("div { height: 5px; width: 3px } .a { width: attr(data-w px); }");
+    let body = d.body();
+    let a = el(&mut d, "div", "a");
+    d.append_child(body, a);
+    d.set_attribute(a, "data-w", "50");
+    let b = el(&mut d, "div", "b");
+    d.append_child(body, b);
+    d.resolve_layout(800.0, 600.0);
+    let wa = |d: &RinchDocument| d.tree.get(a.0).unwrap().layout.width;
+    assert_eq!(wa(&d), 50.0);
+
+    cascaded(&mut d, |d| d.set_attribute(a, "data-w", "80"));
+    assert_eq!(
+        wa(&d),
+        80.0,
+        "the attr() width did not follow the attribute"
+    );
+
+    let flagged_other = cascaded(&mut d, |d| d.set_attribute(a, "data-other", "1"));
+    assert_eq!(
+        flagged_other, 1,
+        "an attribute write on an element that reads attr() restyles it"
+    );
+    let unflagged = cascaded(&mut d, |d| d.set_attribute(b, "data-w", "70"));
+    assert_eq!(
+        unflagged, 0,
+        "an element that reads no attr() is not restyled"
+    );
+
+    cascaded(&mut d, |d| d.set_attribute(a, "class", "b"));
+    assert_eq!(wa(&d), 3.0);
+    let after = cascaded(&mut d, |d| d.set_attribute(a, "data-w", "90"));
+    assert_eq!(
+        after, 0,
+        "the attr() flag was not cleared once attr() went unused"
+    );
+}
+
+/// `attr()` read through an inherited custom property: the child's width
+/// follows the parent's attribute.
+#[test]
+fn attr_through_a_custom_property_follows_the_parents_attribute() {
+    let mut d = doc("div { height: 2px } .p { --w: attr(data-w px); } .c { width: var(--w); }");
+    let body = d.body();
+    let p = el(&mut d, "div", "p");
+    d.append_child(body, p);
+    d.set_attribute(p, "data-w", "40");
+    let c = el(&mut d, "div", "c");
+    d.append_child(p, c);
+    d.resolve_layout(800.0, 600.0);
+    let wc = |d: &RinchDocument| d.tree.get(c.0).unwrap().layout.width;
+    assert_eq!(wc(&d), 40.0);
+    d.set_attribute(p, "data-w", "65");
+    d.resolve_layout(800.0, 600.0);
+    assert_eq!(wc(&d), 65.0, "the child's var(--w) did not follow data-w");
+}
