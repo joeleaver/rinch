@@ -143,6 +143,8 @@ The runtime uses event delegation (a single document-level listener) that dispat
 
 A `NodeId` is a `u64` on every target: a 32-bit slot index and a 32-bit generation (`NodeId::new`, `index()`, `generation()`, `NodeId::from_index` for a `usize` slot). Every id is issued at generation 0 today, so `NodeId(4)` is slot 4 and prints as `NodeId(4)`; the generation exists so that a backend which reuses a slot can tell an old id from the new occupant's, and an operation through an id that names no live node does nothing (issue #723; mechanism in `docs/internals/reactive-rendering.md`).
 
+**Migrating from `usize` ids.** `NodeId` wrapped a `usize` before #723, and the public APIs that carried a bare `usize` node id (selection and focus requests, `TextHitInfo`, `InputContext`, the editor-view registry, the debug protocol) take a `u64` now. Write `NodeId::from_index(i)` for a `usize` slot and `id.index()` to get one back; never use `.0` as an index, since it holds the packed bits. A generation-0 id prints as before (`NodeId(4)`, and `4` on the debug wire). The full list is in the guide's [Writing Components](../guide/writing-components.md#migrating-from-usize-ids) page.
+
 ### Text Content
 
 ```rust

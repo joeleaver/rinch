@@ -332,6 +332,36 @@ mod tests {
         tree.nodes[stale].scroll_offset = (1.0, 1.0);
     }
 
+    /// The debug assert in `get_live` is what makes a site that hands it an
+    /// id from outside the tree fail the tests (#723 PR 2's safety net), so it
+    /// is pinned. A release build does not compare (see the next test).
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale node id: slot 2 generation 1 is now held by generation 0")]
+    fn get_live_with_a_stale_generation_panics_in_debug() {
+        let (tree, body, stale) = body_and_stale();
+        assert!(tree.nodes.get_live(body).is_some(), "positive control");
+        let _ = tree.nodes.get_live(stale);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale node id")]
+    fn get_live_mut_with_a_stale_generation_panics_in_debug() {
+        let (mut tree, body, stale) = body_and_stale();
+        assert!(tree.nodes.get_live_mut(body).is_some(), "positive control");
+        let _ = tree.nodes.get_live_mut(stale);
+    }
+
+    /// The release half of the contract: no compare, the slot's node.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn get_live_does_not_compare_the_generation_in_release() {
+        let (mut tree, body, stale) = body_and_stale();
+        assert_eq!(tree.nodes.get_live(stale).map(|n| n.id), Some(body));
+        assert_eq!(tree.nodes.get_live_mut(stale).map(|n| n.id), Some(body));
+    }
+
     #[test]
     #[should_panic(expected = "a node must be inserted under the id vacant_key() gave it")]
     fn a_node_carrying_another_id_is_refused() {

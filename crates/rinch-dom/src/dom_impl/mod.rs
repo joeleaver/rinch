@@ -1065,8 +1065,11 @@ impl RinchDocument {
             .iter()
             .filter(|(id, props)| {
                 props.keys().any(|p| p.changes_text_measure())
-                    || (self.tree.nodes[**id].display_mode == crate::node::DisplayMode::Inline
-                        && props.keys().any(|p| p.changes_inline_edge()))
+                    // Checked (#723): the keys outlive a node unless every
+                    // free goes through `remove_subtree`, which drops them.
+                    || (self.tree.get(**id).is_some_and(|n| {
+                        n.display_mode == crate::node::DisplayMode::Inline
+                    }) && props.keys().any(|p| p.changes_inline_edge()))
             })
             .map(|(id, _)| *id)
             .collect();
@@ -1085,7 +1088,10 @@ impl RinchDocument {
             .filter(|(_, props)| {
                 props.contains_key(&crate::transition::TransitionProperty::Transform)
             })
-            .map(|(id, _)| (*id, self.tree.nodes[*id].establishes_abs_containing_block()))
+            .filter_map(|(id, _)| {
+                let node = self.tree.get(*id)?;
+                Some((*id, node.establishes_abs_containing_block()))
+            })
             .collect();
 
         // What the tick owes text it does not re-measure (#679): see
@@ -1113,8 +1119,10 @@ impl RinchDocument {
 
         let mut resync_absolutes = Vec::new();
         for (node_id, was) in transform_nodes {
-            if self.tree.contains(node_id)
-                && self.tree.nodes[node_id].establishes_abs_containing_block() != was
+            if self
+                .tree
+                .get(node_id)
+                .is_some_and(|n| n.establishes_abs_containing_block() != was)
             {
                 self.collect_absolute_descendants(node_id, &mut resync_absolutes);
             }
@@ -1286,7 +1294,11 @@ impl RinchDocument {
             .active_animations
             .iter()
             .filter(|(id, anims)| {
-                let inline = self.tree.nodes[**id].display_mode == crate::node::DisplayMode::Inline;
+                // Checked, as the transition twin is (#723).
+                let inline = self
+                    .tree
+                    .get(**id)
+                    .is_some_and(|n| n.display_mode == crate::node::DisplayMode::Inline);
                 anims.iter().any(|a| {
                     !a.is_paused()
                         && !a.fill_settled

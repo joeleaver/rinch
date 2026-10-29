@@ -8553,7 +8553,16 @@ impl RinchDocument {
         // meet a box inside it whose min-content size is not known yet; those
         // are measured and the compute run again.
         let this_max = std::cell::Cell::new(f32::INFINITY);
-        let node_id = self.tree.taffy_map.get(&taffy_id).copied();
+        // Checked (#723): `taffy_map` keeps an element's entry after the node
+        // is freed (`remove_subtree` leaves it and the Taffy node), so the id
+        // it hands back may name a slot's next occupant. The indexing below
+        // relies on this filter.
+        let node_id = self
+            .tree
+            .taffy_map
+            .get(&taffy_id)
+            .copied()
+            .filter(|&n| self.tree.contains(n));
         let fit_content = |this: &mut Self, stretch: f32| -> f32 {
             // From before the max-content compute: a flex item inside the
             // box is asked for its min-content size by that compute too, and
@@ -9088,11 +9097,16 @@ impl RinchDocument {
     /// Have IFC `root_id` measured and line-broken again: an atomic inline
     /// on its lines changed size, or what it contributes to a measure did.
     fn invalidate_ifc_of_atomic_inline(&mut self, root_id: RawNodeId) {
-        if let Some(root) = self.tree.nodes.get_mut(root_id) {
-            root.text_layout = None;
-        }
+        // One checked lookup for both (#723): a root that is gone has nothing
+        // to re-measure, and its Taffy id must not be read off the slot's
+        // next occupant.
+        let Some(root) = self.tree.nodes.get_mut(root_id) else {
+            return;
+        };
+        root.text_layout = None;
+        let root_taffy = root.taffy_id;
         self.tree.dirty_ifc_text_roots.insert(root_id);
-        if let Some(root_taffy) = self.tree.nodes[root_id].taffy_id {
+        if let Some(root_taffy) = root_taffy {
             let _ = self.tree.taffy.mark_dirty(root_taffy);
         }
         // The measure may be cached on the root's measure leaf rather than

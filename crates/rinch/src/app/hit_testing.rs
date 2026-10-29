@@ -288,7 +288,11 @@ fn hit_test_node(
             for entry in order.iter().rev() {
                 // The cached order is dropped by every mutation that can move or
                 // free a node (`hit_cache.invalidate()`), so its ids are as live
-                // as the walk that built it (#723).
+                // as the walk that built it (#723). Unchecked on purpose: this
+                // runs per entry per probe. PR 2: every route that frees a slot
+                // (free-on-discard included) must drop the hit cache before the
+                // slot can be reused — `NodeTree::remove_subtree` does, so a
+                // free that goes through it is covered; a new one must too.
                 let Some(child) = tree.get_live(entry.node_id) else {
                     continue;
                 };

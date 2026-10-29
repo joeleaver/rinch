@@ -94,7 +94,15 @@ When unsure, a site keeps the checked lookup. A `pub(crate)` helper reached only
 from walks and from verbs that already checked their argument takes the
 internal one; a public helper an app can call with its own id (the paint and
 scrollbar queries, `RinchDocument::box_tree_*` are the walk helpers excepted)
-stays checked. A table indexed by slot (the hit-test cache's extents) takes
+stays checked. The paint geometry queries
+(`paint::compute_absolute_position_and_transform` and the `painted_border_box`
+/ `point_in_painted_box` / `point_from_painted_box` / `rect_from_painted_box`
+family) check the caller's id once at the entry and walk the ancestors
+unchecked: a stale id answers the origin with the identity transform (an empty
+box, `None` from `point_in_painted_box`), never the slot's live node — pinned by
+`crates/rinch-dom/tests/stale_node_id_paint_tests.rs`. The debug assert in
+`get_live`/`get_live_mut` is pinned by `node_slab`'s
+`get_live_*_with_a_stale_generation_panics_in_debug` tests. A table indexed by slot (the hit-test cache's extents) takes
 `node_slab::slot_of(id)`. The browser backend's ids are its monotonic counter
 in the same `u64`.
 
@@ -116,6 +124,30 @@ the side tables still keyed by a raw id (`dirty_nodes`, `paint_dirty_nodes`,
 carries only the slot on a 32-bit target — and the others the survey on #723
 lists). Until then a stale entry in such a table cannot name a freed slot,
 because none is freed on the routes that leave entries behind.
+
+What PR 2 must keep true, because PR 1's unchecked readers lean on it (found in
+review of #2017):
+
+- **Every free drops the hit cache.** `hit_testing`'s stacking-root probe reads
+  the cached paint order's ids with `get_live` (per entry, per probe — too hot
+  to check). `NodeTree::remove_subtree` calls `hit_cache.invalidate()`; a new
+  free route (free-on-discard) must go through it or do the same.
+- **Every free drops the node's `active_transitions`/`active_animations`
+  entries** (`remove_subtree` does). The tick's readers of those keys are now
+  checked, so a miss there costs a skipped node, not a wrong one, but the
+  entries would otherwise tick a node that is gone.
+- **`taffy.remove` prunes `taffy_map`.** The atomic-inline fit-content measure
+  filters the id `taffy_map` hands back through `contains` before indexing; any
+  new reader of `taffy_map` must do the same until the map is pruned.
+- **Wire ids past 2^53.** The debug protocol and the MCP server carry ids as
+  JSON integers; serde writes a `u64` exactly, but a JavaScript client (the MCP
+  host among them) rounds an integer above 2^53, which a packed id reaches once
+  one slot's generation passes 2^21. A rounded id fails closed (the lookup is
+  checked: "no node"), but PR 2 must decide before generations grow: cap or
+  wrap the generation at 21 bits (ids stay plain numbers, a slot reused 2^21
+  times aliases an old id again), or put ids on the wire as `"slot@gen"`
+  strings (exact, a protocol change for every client). PR 1 changes nothing
+  here: every id is generation 0. Recorded on #723.
 
 ### Who picks the verb: **scope ownership**, not a judgement call
 

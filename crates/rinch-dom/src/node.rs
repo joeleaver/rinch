@@ -3988,6 +3988,12 @@ impl NodeTree {
     }
 
     /// Remove a node and all its descendants from the slab.
+    ///
+    /// The one route that frees slots, and the one that keeps the tree's
+    /// unchecked (`get_live`) readers sound (#723): it drops the hit cache
+    /// (whose cached paint orders `hit_testing` reads unchecked) and each
+    /// freed node's `active_transitions`/`active_animations` entries. PR 2's
+    /// free-on-discard must go through it, or repeat both.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
         self.hit_cache.invalidate();
         // Collect all descendant IDs first

@@ -2281,11 +2281,20 @@ fn painted_origin_step(
 ///
 /// The common untransformed case takes an allocation-free fast path and returns
 /// `Affine::IDENTITY`.
+///
+/// `node_id` is the caller's, so it is looked up **checked** (#723): an id that
+/// names no live node — a vacant slot, or a slot reused since the id was taken
+/// (a stale generation) — answers `(0.0, 0.0, Affine::IDENTITY)`, never the
+/// position of whatever node holds the slot now. The ancestor steps are the
+/// tree's own links and stay unchecked.
 pub fn compute_absolute_position_and_transform(
     tree: &NodeTree,
     node_id: RawNodeId,
     scale: f64,
 ) -> (f64, f64, Affine) {
+    if tree.get(node_id).is_none() {
+        return (0.0, 0.0, Affine::IDENTITY);
+    }
     position_and_transform_in(tree, node_id, scale, Frame::Current)
 }
 
@@ -2419,6 +2428,9 @@ pub fn painted_border_box(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Re
 /// corresponds to anything inside it. `hit_test`'s `local_point` takes the same
 /// exit for the same reason.
 ///
+/// Also `None` when `node_id` names no live node (a vacant slot or a stale
+/// generation, #723).
+///
 /// `scale` is the DPI scale factor `px`/`py` are expressed in — pass `1.0` to
 /// work in layout pixels.
 pub fn point_in_painted_box(
@@ -2428,7 +2440,8 @@ pub fn point_in_painted_box(
     px: f64,
     py: f64,
 ) -> Option<(f64, f64)> {
-    let (x, y, transform) = compute_absolute_position_and_transform(tree, node_id, scale);
+    tree.get(node_id)?;
+    let (x, y, transform) = position_and_transform_in(tree, node_id, scale, Frame::Current);
     if transform == Affine::IDENTITY {
         return Some((px - x, py - y));
     }
