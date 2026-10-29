@@ -810,6 +810,11 @@ fn a_container_restyled_to_contents_two_levels_down_walks_the_whole_chain() {
 /// The control that names the culprit: the identical restyle under a **block**
 /// ancestor, which repairs itself.
 ///
+/// The ancestor declares the inner's `line-height`: once the inner is
+/// `display: contents`, its text is in the ancestor's line boxes, and since
+/// parley 0.12 those hold the ancestor's strut — under `normal`, the host
+/// font's height (Noto Sans: a 22px line, as Chrome gives with that face).
+///
 /// It must stay green, and it must stay green against both walk mutants —
 /// measured, and stated here so nobody reads it as a second witness. Flattening
 /// `text + block` into a block ancestor makes that ancestor mixed content in
@@ -821,7 +826,7 @@ fn a_container_restyled_to_contents_two_levels_down_walks_the_whole_chain() {
 fn the_same_restyle_under_a_block_ancestor_repairs_itself() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
-    let outer = child_of(&mut doc, body, "div", "width: 400px");
+    let outer = child_of(&mut doc, body, "div", "width: 400px; line-height: 20px");
     let inner = child_of(&mut doc, outer, "div", "font-size: 16px; line-height: 20px");
     text_in(&mut doc, inner, "label");
     let blk = child_of(&mut doc, inner, "div", "height: 30px; background: red");

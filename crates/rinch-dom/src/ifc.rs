@@ -819,7 +819,15 @@ fn taffy_baseline(
                 };
                 off(a).total_cmp(&off(b))
             })?;
-        return if first { entry.2 } else { entry.3 }.map(|b| top + b);
+        // A last line keeps its distance from the content bottom when the
+        // nearest measure was of another height (Taffy answered the layout
+        // from a cache the records no longer match exactly).
+        return if first {
+            entry.2
+        } else {
+            entry.3.map(|b| height - (entry.1 - b))
+        }
+        .map(|b| top + b);
     }
     let count = taffy::TraversePartialTree::child_count(taffy, taffy_id);
     let in_flow = |child: taffy::NodeId| {
