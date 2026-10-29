@@ -97,7 +97,10 @@ define_counters! {
     /// ...because the theme or another whole-document style input changed
     /// (`recompute_all_styles_full`).
     FullRestyleTheme = "full_restyle_theme",
-    /// ...because a `<style>` element's text changed (`maybe_load_style_css`).
+    /// ...because a stylesheet was added, replaced or removed (`load_css`, a
+    /// `<style>` element) with a rule Stylo's stylesheet invalidation cannot
+    /// target by id, class or tag (`flush_stylist`, #884). A sheet it can
+    /// target restyles only the elements it names and counts nothing here.
     FullRestyleStylesheet = "full_restyle_stylesheet",
     /// ...because the device pixel ratio changed.
     FullRestyleDpr = "full_restyle_dpr",

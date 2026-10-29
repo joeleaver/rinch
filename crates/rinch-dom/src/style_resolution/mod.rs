@@ -487,7 +487,10 @@ impl RinchDocument {
     }
 
     /// Update theme CSS variables without duplicating non-`:root` rules.
-    /// After calling this, call `recompute_all_styles_full()` to apply the new variables.
+    ///
+    /// The next `resolve_styles` applies the new sheet by itself (#884). The
+    /// shell still follows it with `recompute_all_styles_full()`, which
+    /// re-cascades with transitions off so a theme switch lands instantly.
     ///
     /// Replaces the theme sheet in its stable pre-app slot; see [`Self::set_theme_css`].
     pub fn update_theme_variables(&mut self, css: &str) {

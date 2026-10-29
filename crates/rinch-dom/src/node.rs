@@ -3161,8 +3161,9 @@ pub struct NodeTree {
     /// hover.
     ///
     /// It is **not** the only pass that re-cascades the whole document. A
-    /// `<style>` append (`maybe_load_style_css`) and a viewport change in
-    /// `resolve_layout` drop every node's cached style too, and do not set this
+    /// stylesheet change Stylo cannot target (a sheet with a `@keyframes`
+    /// rule is one; `RinchDocument::flush_stylist`, #884) and a viewport
+    /// change in `resolve_layout` drop every node's cached style too, and do not set this
     /// flag, so a running animation keeps stale stops and timing across them —
     /// measured, a `<style>` appended after the first layout that redefines a
     /// running `@keyframes` leaves the animation on its old body. Tracked on

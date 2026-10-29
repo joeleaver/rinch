@@ -218,6 +218,39 @@ went stale on class toggles, insertions and removals. Now:
   element with generated content (`content: attr()` now works) force what they
   feed. `:nth-child(… of S)` needs nothing extra: Stylo's maps record the
   selectors inside `of S`.
+- **Stylesheet changes use Stylo's stylesheet invalidation** (#884,
+  `style_resolution/sheets.rs`). `load_css`, `set_theme_css` and a `<style>`
+  element's sheet coming, going or changing text record the sheet on the
+  Stylist without forcing the origin dirty, so Stylo keeps the
+  `StylesheetInvalidationSet` it collects (each selector's rightmost
+  id/class/tag, or the outermost one left of a descendant combinator for a
+  subtree). `flush_stylist` (both flush sites: `resolve_styles` and
+  `resolve_inserted_subtree`, which declines when it queued anything) passes
+  `<html>` to `Stylist::flush` while `sheet_invalidations_pending` is set, so
+  the matching elements get restyle hints and `<html>` is pushed as a style
+  root for the walk to follow them. A rule matching nothing restyles nothing
+  and does not relayout. A selector Stylo cannot bucket (`*`, `:root`, a bare
+  pseudo-class), a `@keyframes` (the servo `Device` says every name may be
+  referenced), `@property` or `@layer` mark `<html>`'s subtree: that is the old
+  whole-document restyle (`full_restyle_stylesheet`). The viewport, DPR and
+  theme full restyles still force origins dirty and flush with no document
+  element, so they never take this path. Forcing `Author` dirty in
+  `load_stylo_css` is what made a `load_css` after the first layout restyle
+  nothing: it emptied the invalidation set, and the flush had no element to
+  apply it to anyway.
+- **`<style>` elements apply while connected, in tree order, after every
+  `load_css` sheet** (which are the web's `<head>` sheets: `inject_style`).
+  `create_element("style")` registers the id; `note_style_elements_moved`
+  (called from `note_child_list_changed_with`, `note_child_inserted` and after
+  `remove_node` unlinks — it ran while still linked) marks the sheets stale when
+  a registered element's connectedness differs from what is installed or a
+  `<style>`'s own children changed, and `maybe_load_style_css` on a text edit.
+  `sync_style_element_sheets`, at the next flush, keeps the installed prefix
+  that still matches (element and text), removes the rest and appends what is
+  wanted, re-using a parsed sheet whose element and text are unchanged. A
+  document with no `<style>` element pays nothing. Before #884 a `<style>`'s
+  text was loaded the moment it was appended, connected or not, never unloaded,
+  and every text edit appended another sheet.
 - **Child-list changes use selector flags.** Matching runs with
   `NeedsSelectorFlags::Yes`; `note_child_list_changed` restyles the siblings the
   parent's `HAS_SLOW_SELECTOR*` / `HAS_EDGE_CHILD_SELECTOR` /
