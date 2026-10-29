@@ -57,6 +57,58 @@ impl RinchApp {
         !ids.is_empty() && events::dispatch_key_handler_chain(ids, data)
     }
 
+    /// Offer a wheel to the `onwheel` handler of the element under the
+    /// pointer (`hit`) and then its ancestors', nearest first, stopping at the
+    /// first that consumes it. Answers whether one did — the caller then
+    /// scrolls no container. The ids are read before any handler runs, so a
+    /// handler that changes the tree does not change who is asked.
+    pub(super) fn offer_element_wheel(&mut self, hit: u64, event: &events::WheelEvent) -> bool {
+        let ids: Vec<events::EventHandlerId> = {
+            let Some(doc) = self.doc.as_ref() else {
+                return false;
+            };
+            let d = doc.borrow();
+            let mut ids = Vec::new();
+            let mut cur = Some(hit);
+            while let Some(id) = cur {
+                let Some(node) = d.tree.get(id) else { break };
+                if let Some(h) = node
+                    .attributes
+                    .get("data-onwheel")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    ids.push(events::EventHandlerId(h));
+                }
+                cur = node.parent;
+            }
+            ids
+        };
+        !ids.is_empty() && events::dispatch_wheel_handler_chain(ids, event)
+    }
+
+    /// A trackpad pinch no render surface took (macOS, Wayland): offered to
+    /// the `onwheel` chain under the pointer as a wheel with Ctrl held, the
+    /// way a browser reports a pinch. `delta` is winit's scale change (0.1 is
+    /// 10% larger); the wheel's `delta_y` is chosen so
+    /// [`events::WheelEvent::zoom_factor`] gives back `1 + delta`.
+    pub(crate) fn pinch_as_wheel(&mut self, delta: f32) -> bool {
+        let Some((x, y)) = self.cursor_pos else {
+            return false;
+        };
+        let scale = 1.0 + delta;
+        if !(scale.is_finite() && scale > 0.0) {
+            return false;
+        }
+        let Some(hit) = self.move_hit(x, y) else {
+            return false;
+        };
+        let mut modifiers = self.modifier_state();
+        modifiers.ctrl = true;
+        let event =
+            events::WheelEvent::new(0.0, -100.0 * scale.ln(), x, y).with_modifiers(modifiers);
+        self.offer_element_wheel(hit, &event)
+    }
+
     /// Offer a key to the app-wide listeners (`rinch_core::on_app_key`, issue
     /// #1784) — after the interceptor, the key entries, the dismiss stack and a
     /// focused render surface's claim, before the focused element's default.
@@ -1315,7 +1367,23 @@ impl RinchApp {
                     false
                 };
 
-                if !surface_consumed && let Some(doc) = &self.doc {
+                // The element's own `onwheel`, then its ancestors', nearest
+                // first; one that consumes the wheel scrolls nothing. The
+                // handlers get the DOM's sign, the opposite of winit's.
+                let wheel_consumed = !surface_consumed
+                    && hit.is_some_and(|hit| {
+                        let event = events::WheelEvent::new(-delta_x as f32, -delta_y as f32, x, y)
+                            .with_modifiers(self.modifier_state());
+                        self.offer_element_wheel(hit, &event)
+                    });
+                if wheel_consumed {
+                    actions.push(AppAction::RequestRedraw);
+                }
+
+                if !surface_consumed
+                    && !wheel_consumed
+                    && let Some(doc) = &self.doc
+                {
                     if let Some(hit_node) = hit {
                         let mut doc_mut = doc.borrow_mut();
                         // (container, handler) per container that actually moved.

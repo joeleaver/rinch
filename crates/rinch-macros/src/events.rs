@@ -13,10 +13,11 @@
 
 /// Every supported event, with the attribute its handler id is written to.
 ///
-/// The first eight take handlers of their own shape (`Fn(String)`,
+/// The first nine take handlers of their own shape (`Fn(String)`,
 /// `Fn(ScrollEvent)`, `Fn(Vec<PathBuf>)`, `Fn(Vec<LocalFile>)` (issue #1771),
-/// and `Fn(&KeyEventData) -> bool` for the two key events, issue #1678) and
-/// have their own arms in the codegen;
+/// `Fn(&KeyEventData) -> bool` for the two key events, issue #1678, and
+/// `Fn(&WheelEvent) -> bool` for `onwheel`) and have their own arms in the
+/// codegen;
 /// the rest are `Fn()` handlers registered with `register_handler`.
 pub const HTML_EVENTS: &[(&str, &str)] = &[
     ("onclick", "data-rid"),
@@ -27,6 +28,7 @@ pub const HTML_EVENTS: &[(&str, &str)] = &[
     ("ondropfiles", "data-ondropfiles"),
     ("onkeydown", "data-onkeydown"),
     ("onkeyup", "data-onkeyup"),
+    ("onwheel", "data-onwheel"),
     ("onsubmit", "data-onsubmit"),
     ("onmousedown", "data-onmousedown"),
     ("onmouseup", "data-onmouseup"),
