@@ -315,7 +315,7 @@ pub fn caret_on_line(
         match item {
             PositionedLayoutItem::GlyphRun(g) => {
                 last_box = None;
-                let run = g.run().clone();
+                let run = *g.run();
                 if runs
                     .last()
                     .is_none_or(|(_, r): &(f32, parley::layout::Run<'_, Brush>)| {

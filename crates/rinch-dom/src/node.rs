@@ -2807,6 +2807,11 @@ pub struct IfcRootMeasures {
     pub sizes: Vec<(u32, IfcMeasure)>,
 }
 
+/// One measure's line baselines, `(content width, content height, first,
+/// last)`, the baselines from the content-box top
+/// ([`NodeTree::atomic_line_baselines`], #663).
+pub(crate) type LineBaselines = (f32, f32, Option<f32>, Option<f32>);
+
 /// What an IFC root's measure answered under one available width: the content
 /// size Taffy was given and the first line's baseline (#1013), both from the
 /// same Parley build.
@@ -3438,8 +3443,7 @@ pub struct NodeTree {
     /// once its compute is done (`ifc::atomic_inline_baseline`, #663) — Taffy
     /// keeps no baseline in a node's layout, and may answer a later compute
     /// from its cache without measuring again.
-    pub(crate) atomic_line_baselines:
-        rustc_hash::FxHashMap<RawNodeId, Vec<(f32, f32, Option<f32>, Option<f32>)>>,
+    pub(crate) atomic_line_baselines: rustc_hash::FxHashMap<RawNodeId, Vec<LineBaselines>>,
     /// Nodes that have requested scroll-into-view (deferred until after layout).
     pub scroll_into_view_requests: Vec<RawNodeId>,
     /// Nodes that have requested a scroll to a fraction of their scroll
