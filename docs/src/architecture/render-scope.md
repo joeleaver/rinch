@@ -141,6 +141,8 @@ The runtime uses event delegation (a single document-level listener) that dispat
 
 `NodeHandle` is a stable reference to a DOM node. It remains valid even as the document changes around it. Internally it holds a `NodeId` and a `Weak<RefCell<dyn DomDocument>>`.
 
+A `NodeId` is a `u64` on every target: a 32-bit slot index and a 32-bit generation (`NodeId::new`, `index()`, `generation()`, `NodeId::from_index` for a `usize` slot). Every id is issued at generation 0 today, so `NodeId(4)` is slot 4 and prints as `NodeId(4)`; the generation exists so that a backend which reuses a slot can tell an old id from the new occupant's, and an operation through an id that names no live node does nothing (issue #723; mechanism in `docs/internals/reactive-rendering.md`).
+
 ### Text Content
 
 ```rust
