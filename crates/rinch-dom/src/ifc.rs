@@ -105,18 +105,29 @@ pub(crate) fn line_ascent(m: &parley::LineMetrics) -> f32 {
 }
 
 /// The top of what a line covers: its line box's (`block_min_coord`), or its
-/// content area's when that reaches higher — under a negative half-leading,
-/// where the glyphs stand out of a line box shorter than they are. That is
-/// what parley 0.11.1 reported as `block_min_coord`; 0.12 reports the two
-/// apart (`content_block_min_coord`). Chrome highlights and hit-tests the
-/// content area there.
-pub(crate) fn line_top(m: &parley::LineMetrics) -> f32 {
-    m.block_min_coord.min(m.content_block_min_coord)
+/// glyphs' when they reach higher — under a negative half-leading, where they
+/// stand out of a line box shorter than they are (Chrome highlights and
+/// hit-tests that content area). The glyphs are the line's text runs, each
+/// its font's ascent above the baseline: what parley 0.11.1 folded into
+/// `block_min_coord`. Not 0.12's `content_block_min_coord`, which also holds
+/// the strut — the block's own font — so a 16px run in a 32px block reached
+/// 8px above its line (`review_1587_tests`, `span32`).
+pub(crate) fn line_top(line: &parley::layout::Line<'_, Brush>) -> f32 {
+    let m = line.metrics();
+    // Rounded as parley 0.11.1 rounded them in a quantized layout (every
+    // IFC's), so a highlight stays on whole pixels.
+    line.runs()
+        .map(|run| m.baseline - run.font_metrics().ascent.round())
+        .fold(m.block_min_coord, f32::min)
 }
 
-/// [`line_top`]'s counterpart at the bottom.
-pub(crate) fn line_bottom(m: &parley::LineMetrics) -> f32 {
-    m.block_max_coord.max(m.content_block_max_coord)
+/// [`line_top`]'s counterpart at the bottom: the line box's, or its runs'
+/// descent below the baseline.
+pub(crate) fn line_bottom(line: &parley::layout::Line<'_, Brush>) -> f32 {
+    let m = line.metrics();
+    line.runs()
+        .map(|run| m.baseline + run.font_metrics().descent.round())
+        .fold(m.block_max_coord, f32::max)
 }
 
 /// [`line_ascent`]'s counterpart below the baseline (`LineMetrics::descent`
