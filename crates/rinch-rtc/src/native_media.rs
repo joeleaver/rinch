@@ -2045,9 +2045,10 @@ pub(crate) mod worker {
     /// nothing was retransmitted (#1947's third review). So the label is
     /// the codec negotiation will most likely pick: the far side's first
     /// one we support when its offer is already here, our first otherwise.
-    /// A negotiation that leaves the label out still sends, unbound: no
-    /// retransmission or sender reports (rtc gives a sender's track no
-    /// codec at negotiation, as it does a receiver's).
+    /// A negotiation that leaves the label out would send unbound (no
+    /// retransmission or sender reports), so the worker relabels the
+    /// sender to a negotiated codec before the binding runs (#1954); a
+    /// sender still unmatched afterwards gets one warning.
     async fn video_label(
         pc: &Arc<dyn PeerConnection>,
     ) -> (RTCRtpCodec, Vec<RTCRtpCodecParameters>) {
