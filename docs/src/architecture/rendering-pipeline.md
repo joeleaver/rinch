@@ -814,11 +814,11 @@ So the animation block reads no flag, and `recompute_all_styles_full` no longer
 clears the map. The re-cascade it runs is what reconciles it:
 `animation::start_animations` matches a running animation **by name**, keeps its
 clock — `start_time_ms`, `paused_elapsed_ms`, `play_state` — and drops one whose
-declaration the new sheet no longer carries. On this pass, and only this one
-(`NodeTree::refreshing_animations`, a flag of its own), a kept animation takes
-everything else afresh: the `@keyframes` rule is looked up again and the
-animation dropped if it is gone, the stops are re-extracted from the new base
-style, and the duration and delay come from the new declaration.
+declaration the new sheet no longer carries. On this pass, as on every cascade
+of an animated node (#766), a kept animation takes everything else afresh: the
+`@keyframes` rule is looked up again and the animation dropped if it is gone,
+the stops are re-extracted when the rule or the base style they resolve against
+changed, and the duration and delay come from the new declaration.
 
 Preserving rather than restarting is what a browser does, measured in Chrome
 150.0.7871.100 by replacing a `<style>` element's `textContent` under a running
@@ -845,20 +845,29 @@ seeked `currentTime`, added three more rows the refresh also matches:
 | `animation-duration` 10s → 20s | same animation, `currentTime` 3000, progress 0.15 |
 | a panel shown by the theme, which also moves `font-size` 10px → 40px under a `1em → 11em` spinner | width 80px at 1000ms |
 
-The refresh is scoped to `recompute_all_styles_full` on purpose, and that is
-**not** the only pass that re-cascades the whole document. Two others drop every
-node's cached style too and do not set the flag: appending a `<style>` element
-(`maybe_load_style_css`), and a viewport change in `resolve_layout`. Measured
-after the first layout, a `<style>` appended with a redefined `@keyframes kk`
-leaves a running `kk` on its old body. Those two passes, and every targeted
-restyle — a class change, a hover — still keep a kept animation's stops and
-timing whole: an edited `@keyframes` body (issue **#766**), a changed duration or
-delay (**#780**), and a stop derived from the base style, such as the implicit
-`from` of a `to`-only rule carrying `color` (**#781**), stay stale. **#781**
-tracks the two whole-document passes. The full restyle is the pass a theme
-toggle takes, it runs rarely, and it can afford a keyframes lookup and a stop
-extraction per animated node; a targeted restyle runs per hover and should not
-pay that.
+The refresh is not scoped to this pass (issues **#766**, **#780**, **#781**).
+Every cascade of an animated node — a class change, a hover, a `<style>`
+appended, a viewport change that flips a `@media` block holding a
+`@keyframes` — keeps a running animation's clock and nothing else, as CSS
+Animations 1 §3 says and Chrome 156 does: a new `animation-duration` or
+`animation-delay` re-times it around the kept `currentTime`, a redefined or
+newly winning `@keyframes` body plays at once, and a rule that is gone cancels
+it. Repeated names match by position from the end, so `k 10s, k 20s` stays two
+animations. What it costs a node cascaded while it animates is one keyframes
+lookup and a compare: `ActiveAnimation::stop_inputs` holds the rule's
+declaration blocks and the font sizes and colours an authored stop resolves
+against, and the stops are re-extracted only when one of those moved.
+
+An **implicit keyframe** — the `from` or `to` Stylo generates for a rule that
+lacks one, and any property an authored `from`/`to` leaves out — is the
+element's base value for exactly the properties the rule animates (Web
+Animations' neutral keyframe), and it is re-read from the base style on every
+cascade (`keyframes::refresh_implicit_values`). It used to carry a fixed list
+(opacity, background colour and position, colour, transform), so a `to`-only
+`transform` spin pinned the element's `color` at the value it had when the spin
+started, and a `to { background-color }` fade kept fading from the background
+the element no longer had.
+`crates/rinch-dom/tests/animation_restyle_refresh_tests.rs` pins those routes;
 `crates/rinch-dom/tests/full_restyle_animation_refresh_tests.rs` pins every row.
 
 **A finished one-shot animation does not replay on a theme toggle** (issue

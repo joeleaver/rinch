@@ -656,18 +656,18 @@ impl RinchDocument {
         // every spinner in the window would jump back to 0° on a dark-mode
         // toggle.
         //
-        // What the re-cascade keeps is the **clock**, and only the clock. A
-        // kept animation's keyframes, stops and timing were taken from the old
-        // sheet and the old base style, so while this pass runs
+        // What the re-cascade keeps is the **clock**, and only the clock: as on
+        // every cascade of an animated node (#766, #780, #781),
         // `start_animations` looks the rule up again (dropping the animation if
         // the new sheet no longer defines it — Chrome cancels it), re-extracts
-        // the stops from the new base style, and takes the new
-        // `animation-duration` / `animation-delay`. Chrome 153, measured under
-        // a seeked `currentTime`: a redefined `@keyframes` body plays at once on
-        // the kept clock, a 10s → 20s duration keeps `currentTime` and halves
-        // the progress, and an `em` stop follows the new font-size.
+        // the stops when the rule or their base-style inputs changed, and takes
+        // the new `animation-duration` / `animation-delay`. Chrome 153,
+        // measured under a seeked `currentTime`: a redefined `@keyframes` body
+        // plays at once on the kept clock, a 10s → 20s duration keeps
+        // `currentTime` and halves the progress, and an `em` stop follows the
+        // new font-size.
         //
-        // This also repairs what #747's restart walk does on this pass. The
+        // That also repairs what #747's restart walk does on this pass. The
         // walk runs on a shown panel's cascade, before its descendants', and
         // mints their entries from their pre-restyle `computed_style`; each
         // descendant's own cascade comes after it here — every node is
@@ -677,10 +677,8 @@ impl RinchDocument {
         self.tree.full_style_walk = true;
         // Resolve styles using Stylo
         self.tree.styles_dirty = true;
-        self.tree.refreshing_animations = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
-        self.tree.refreshing_animations = false;
         self.tree.transitions_enabled = transitions_were_enabled;
         // Run the whole-document IFC setup pass: the new sheet can change any
         // element's `display` or `position`, which moves the formatting
@@ -2228,24 +2226,15 @@ impl RinchDocument {
     /// before children — so every descendant it visits is still carrying the
     /// `computed_style` it had *before* this pass. `start_animations` extracts
     /// keyframe stops from that, so an `em`, `rem` or `currentcolor` in a
-    /// keyframe resolves against the stale basis, and — **outside
-    /// `recompute_all_styles_full`** — the find-by-name in `start_animations`
-    /// then keeps those stops when the descendant's own cascade runs a moment
-    /// later. Measured with `width: 1em` keyframes on a box whose `font-size`
-    /// goes 10px → 40px in the same class write that un-hides its wrapper: stops
-    /// come out `10..100` where `40..400` is right.
-    ///
-    /// It is not a regression — `main` was equally stale, by never dropping the
-    /// entry at all — but this walk does foreclose the correct answer the
-    /// per-node path would have reached on the `set_attribute` route. The root
-    /// cause is that `start_animations` does not re-extract stops for a name it
-    /// already knows, which is older and wider than this function. The one
-    /// exception is the full restyle: there `NodeTree::refreshing_animations`
-    /// makes the descendant's own cascade, which follows this walk on that pass,
-    /// re-extract them from its new style, so a theme that un-hides a panel and
-    /// changes its font-size gets the right basis
-    /// (`full_restyle_animation_refresh_tests`). The `<style>`-append and
-    /// viewport-change passes do not set that flag.
+    /// keyframe resolves against the stale basis. When the descendant's own
+    /// cascade runs later on the same pass — a class write that un-hides its
+    /// wrapper and also changes its font-size, or any full restyle — that
+    /// cascade re-extracts the stops from its new style (`start_animations`
+    /// refreshes a kept animation whenever its stops' inputs moved, #766), so
+    /// the basis comes out right: `width: 1em` keyframes on a box whose
+    /// `font-size` goes 10px → 40px give `40..400`. A descendant whose own
+    /// cascade does not run keeps the basis the walk saw, which is its current
+    /// style unless something else changed it in the same pass.
     ///
     /// # Cost
     ///

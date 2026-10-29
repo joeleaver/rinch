@@ -702,23 +702,30 @@ re-cascade matches each running animation by name and **keeps its clock**
 (`start_time_ms`, `paused_elapsed_ms`, `play_state`). Measured in Chrome, replacing
 a `<style>` element's text under a running animation leaves `currentTime`
 untouched — so preserving is right and restarting would be the smaller wrong
-answer. **The clock is all it keeps on that pass.** While
-`recompute_all_styles_full` runs, `NodeTree::refreshing_animations` (a flag of
-its own, not `!transitions_enabled`) makes a kept animation look its
-`@keyframes` rule up again — **dropping it if the new sheet no longer defines
-it**, which Chrome does and which keeping the entry whole got wrong, since a
-theme sheet can carry `@keyframes` — re-extract its stops from the new base
-style, and take the new duration and delay. A paused animation keeps its frozen
-elapsed *time* across a re-timing, as Chrome keeps `currentTime`. That is
-`recompute_all_styles_full` **only**, and it is not the only pass that
-re-cascades the whole document: a `<style>` append (`maybe_load_style_css`) and
-a viewport change that flips a media query do too, and set no flag — measured, a
-`<style>` appended after the first layout with a redefined `@keyframes` body
-leaves the running animation on its old one (tracked on **#781**). On those two
-passes and on every targeted restyle, an edited `@keyframes` body (**#766**), a
-changed duration or delay (**#780**) and a stop derived from the base style
-(**#781**) still stay stale, because a refresh per animated node per cascade is
-a cost a hover should not pay. One divergence the theme path reached, now
+answer. **The clock is all a kept animation keeps, on every cascade of its
+node** (#766, #780, #781; until then only `recompute_all_styles_full` refreshed,
+behind a `NodeTree::refreshing_animations` flag that is gone). On a class change,
+a hover, a `<style>` append, a `@media` flip or a theme, `start_animations`
+takes the timing (duration, delay, direction, fill, count, easing) from the
+spec, looks the `@keyframes` rule up again — **dropping the animation if no rule
+of that name exists any more**, as Chrome does — and re-extracts the stops when
+`ActiveAnimation::stop_inputs` moved: the rule's declaration blocks (held as
+`Arc`s, so a redefined, removed or newly winning rule compares unequal and a
+freed address cannot be reused under it), the element's `font-size` and
+`color`, the root's `font-size` and the parent's `color`. Otherwise it keeps the
+stops and re-reads only their **implicit** values
+(`keyframes::refresh_implicit_values`): a 0%/100% stop holds the element's base
+value for each property the rule animates and that stop does not author (Web
+Animations' neutral keyframe) — no other property, so a `to`-only `transform`
+spin never writes `color` — and that value follows the base style. A paused
+animation keeps its frozen elapsed *time* across a re-timing, as Chrome keeps
+`currentTime`. Repeated names match by position from the end (`k 10s, k 20s`
+stays two animations); `ActiveAnimation::position` orders entries split between
+the running and finished maps. The cost on a cascade of an animated node is a
+keyframes lookup and that compare per animation; a node with no animation never
+reaches `start_animations`. A viewport change re-cascades the animated node only
+if Stylo reports a media-query result changed, which is the case where a
+`@media`-held `@keyframes` can have moved. One divergence the theme path reached, now
 fixed (**#783**): **a finished one-shot animation replayed on a theme toggle**
 — its entry was dropped when it completed, so the full restyle minted it again
 from t=0. Chrome does not. The entry is now kept as a settled marker (below).
@@ -726,14 +733,14 @@ from t=0. Chrome does not. The entry is now kept as a settled marker (below).
 write its animations back — reads no flag either; it shipped behind this one, so
 a panel shown by such a write on a cascade before the first layout completed
 kept a still spinner until something unrelated re-cascaded it. The full restyle
-reaches the walk as well, and that half is **not** harmless without the refresh:
-the walk runs on a shown panel's cascade before its descendants' and mints their
-entries from their pre-restyle styles, so an `em`-sized spinner under a theme
-that also changed the font-size came out on the old basis. Each descendant's own
-cascade runs after the walk on that pass, and the refresh there re-extracts the
-stops.
-`crates/rinch-dom/tests/animation_start_gating_tests.rs` and
-`full_restyle_animation_refresh_tests.rs` are the pins, with the Chrome
+reaches the walk as well: the walk runs on a shown panel's cascade before its
+descendants' and mints their entries from their pre-restyle styles, so an
+`em`-sized spinner under a theme that also changed the font-size starts on the
+old basis. Each descendant's own cascade runs after the walk on that pass (and
+on a class write that restyles it), and the refresh there re-extracts the stops.
+`crates/rinch-dom/tests/animation_start_gating_tests.rs`,
+`full_restyle_animation_refresh_tests.rs` and
+`animation_restyle_refresh_tests.rs` are the pins, with the Chrome
 measurements and mutant-by-fixture tables in their module docs.
 
 **A `transform` transitions and animates by function list, not matrix entry by

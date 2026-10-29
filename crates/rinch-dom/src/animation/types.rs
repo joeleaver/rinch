@@ -62,6 +62,17 @@ pub struct KeyframeStop {
     pub values: Vec<(TransitionProperty, AnimatableValue)>,
     /// Per-keyframe timing function override.
     pub timing_function: Option<TimingFunction>,
+    /// The properties whose value in this stop is not authored but the
+    /// element's **base value** — Web Animations' neutral keyframe (#781).
+    ///
+    /// Only a 0% or 100% stop has any: a property some keyframe of the rule
+    /// animates and that stop does not set. That covers the whole stop Stylo
+    /// generates for a missing `from`/`to` (`KeyframesStepValue::ComputedValues`)
+    /// and a property an authored `from`/`to` leaves out. A property no
+    /// keyframe names is in no stop, so the animation never writes it.
+    /// [`super::keyframes::refresh_implicit_values`] re-reads these values from
+    /// the current base style on every cascade of the node, so they follow it.
+    pub implicit: Vec<TransitionProperty>,
 }
 
 // =============================================================================
@@ -105,6 +116,73 @@ pub struct ActiveAnimation {
     /// clear it ([`Self::has_ended`]): a paused finished animation is still
     /// finished, and resuming it costs no frame.
     pub settled: bool,
+    /// What [`Self::keyframe_stops`] were extracted from (#766): the
+    /// `@keyframes` rule's declaration blocks and the base-style inputs an
+    /// authored stop resolves against. A cascade that finds them unchanged
+    /// keeps the stops and refreshes only their implicit values; anything else
+    /// re-extracts them.
+    pub(crate) stop_inputs: StopInputs,
+    /// This animation's index in the node's `animation-name` list at its last
+    /// cascade, so a later cascade matches repeated names by position even
+    /// when the entries are split between the running and the finished maps
+    /// (#780).
+    pub(crate) position: usize,
+}
+
+/// The inputs a kept animation's keyframe stops were extracted from (#766).
+///
+/// The blocks are held, not just their addresses, so an address cannot be
+/// reused by a different rule while this compares against it. Stylo shares a
+/// keyframe's declaration block between the `@keyframes` rule and every
+/// cascade data rebuilt from it, so a sheet flush that leaves the rule alone
+/// leaves these equal, and a redefined, removed or newly winning rule does not.
+#[derive(Clone, Default)]
+pub(crate) struct StopInputs {
+    /// One per keyframe step; `None` for a step Stylo generated.
+    pub(crate) blocks: Vec<
+        Option<
+            servo_arc::Arc<style::shared_lock::Locked<style::properties::PropertyDeclarationBlock>>,
+        >,
+    >,
+    /// The element's `font-size` (`em`).
+    pub(crate) font_size: f32,
+    /// The root's `font-size` (`rem`).
+    pub(crate) root_font_size: f32,
+    /// The element's `color` (`currentcolor`).
+    pub(crate) color: Option<peniko::Color>,
+    /// The parent's `color` (`currentcolor` on `color`).
+    pub(crate) parent_color: Option<peniko::Color>,
+}
+
+impl PartialEq for StopInputs {
+    fn eq(&self, other: &Self) -> bool {
+        self.font_size == other.font_size
+            && self.root_font_size == other.root_font_size
+            && self.color == other.color
+            && self.parent_color == other.parent_color
+            && self.blocks.len() == other.blocks.len()
+            && self
+                .blocks
+                .iter()
+                .zip(&other.blocks)
+                .all(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => servo_arc::Arc::ptr_eq(a, b),
+                    (None, None) => true,
+                    _ => false,
+                })
+    }
+}
+
+impl std::fmt::Debug for StopInputs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StopInputs")
+            .field("steps", &self.blocks.len())
+            .field("font_size", &self.font_size)
+            .field("root_font_size", &self.root_font_size)
+            .field("color", &self.color)
+            .field("parent_color", &self.parent_color)
+            .finish()
+    }
 }
 
 /// Result of computing animation values at a given time.
