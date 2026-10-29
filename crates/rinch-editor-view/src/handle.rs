@@ -3606,11 +3606,13 @@ impl EditorHandle {
     /// its start:
     ///
     /// - **Desktop** applies it after the next layout (the call wakes the
-    ///   runtime for one), and moves the **nearest** scroll container only. A
-    ///   virtualized editor lays out the blocks holding `from` and `to` for it.
+    ///   runtime for one). A virtualized editor lays out the blocks holding
+    ///   `from` and `to` for it.
     /// - **Web** applies it immediately (the call runs the overlay refresh an
-    ///   input event would), and `scrollIntoView` moves every scrollable
-    ///   ancestor, the page included.
+    ///   input event would).
+    ///
+    /// Both move every scroll container the range is in, the page included
+    /// (on desktop since #842).
     ///
     /// A later call replaces an unfulfilled one. The range is carried through
     /// local edits made before it is fulfilled and dropped by
@@ -3660,11 +3662,10 @@ impl EditorHandle {
     ///
     /// Everything else — when it happens, what waits and what is carried or
     /// dropped, which containers move — is as [`Self::scroll_into_view`]
-    /// describes, with one difference for `Fraction`: on the **web** the
-    /// nearest scroll container (the page's scrolling element when no ancestor
-    /// scrolls) is set to the computed `scrollTop`, and the start is then
-    /// brought into view of the scrollers further out, the page included, the
-    /// "nearest" way.
+    /// describes, with one difference for `Fraction`: the nearest vertical
+    /// scroll container (the page's scrolling element when no ancestor scrolls)
+    /// is set to the computed `scrollTop`, and the start is then brought into
+    /// view of the scrollers further out, the page included, the "nearest" way.
     pub fn scroll_into_view_aligned(&self, from: Pos, to: Pos, align: ScrollAlign) {
         let doc_key = {
             let mut core = self.core_mut();
