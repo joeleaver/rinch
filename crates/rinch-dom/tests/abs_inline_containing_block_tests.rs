@@ -40,7 +40,7 @@ const BOX: &str = "width: 40px; height: 30px;";
 
 struct Case {
     doc: RinchDocument,
-    c: usize,
+    c: u64,
     relayouts: u32,
 }
 
@@ -91,7 +91,7 @@ impl Case {
         ))
     }
 
-    fn id(&self, m: &str) -> usize {
+    fn id(&self, m: &str) -> u64 {
         one(&self.doc, &format!("[data-m={m}]"))
     }
 

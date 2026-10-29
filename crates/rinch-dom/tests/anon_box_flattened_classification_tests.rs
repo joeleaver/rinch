@@ -124,7 +124,7 @@ fn height_of(doc: &RinchDocument, id: NodeId) -> f32 {
 }
 
 /// The IFC root a node's inline content belongs to, if any.
-fn ifc_root(doc: &RinchDocument, id: NodeId) -> Option<usize> {
+fn ifc_root(doc: &RinchDocument, id: NodeId) -> Option<u64> {
     doc.tree.get(id.0).unwrap().ifc_root
 }
 
@@ -171,18 +171,18 @@ fn run_box(doc: &RinchDocument, id: NodeId) -> Option<usize> {
 }
 
 /// A box's run, in the order the box recorded it.
-fn run_members(doc: &RinchDocument, bx: usize) -> Vec<usize> {
+fn run_members(doc: &RinchDocument, bx: usize) -> Vec<u64> {
     doc.tree.get(bx).unwrap().run_members.clone()
 }
 
 /// The boxes a container records — invariant A's downward half, and what
 /// `box_tree_children` decides on in O(1).
-fn run_boxes(doc: &RinchDocument, id: NodeId) -> Vec<usize> {
+fn run_boxes(doc: &RinchDocument, id: NodeId) -> Vec<u64> {
     doc.tree.get(id.0).unwrap().run_boxes.clone()
 }
 
 /// The container an anonymous box hangs off.
-fn box_parent(doc: &RinchDocument, bx: usize) -> Option<usize> {
+fn box_parent(doc: &RinchDocument, bx: usize) -> Option<u64> {
     doc.tree.get(bx).unwrap().parent
 }
 
@@ -1601,7 +1601,7 @@ mod painted {
 
     /// Count of pixels that are not the white background, per horizontal band
     /// of `LINE` pixels — one entry per line of the container.
-    fn ink_per_band(doc: &mut RinchDocument, bands: usize) -> Vec<usize> {
+    fn ink_per_band(doc: &mut RinchDocument, bands: usize) -> Vec<u64> {
         let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
         let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
         rinch_dom::paint::paint_document(

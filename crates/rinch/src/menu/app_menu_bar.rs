@@ -745,7 +745,7 @@ mod tests {
     }
 
     /// Every node carrying `class` exactly, in tree order.
-    fn nodes_with_class(doc: &RinchDocument, class: &str) -> Vec<usize> {
+    fn nodes_with_class(doc: &RinchDocument, class: &str) -> Vec<u64> {
         let mut out = Vec::new();
         let mut stack = vec![doc.tree.body_id];
         while let Some(id) = stack.pop() {
@@ -1202,7 +1202,7 @@ mod tests {
         assert_eq!(flyouts.len(), 2, "two flyout panels");
 
         /// Which flyouts are showing, as a `[bool; 2]`.
-        fn shown(doc: &Rc<RefCell<RinchDocument>>, flyouts: &[usize]) -> Vec<bool> {
+        fn shown(doc: &Rc<RefCell<RinchDocument>>, flyouts: &[u64]) -> Vec<bool> {
             let d = doc.borrow();
             flyouts.iter().map(|&f| is_displayed(&d, f)).collect()
         }

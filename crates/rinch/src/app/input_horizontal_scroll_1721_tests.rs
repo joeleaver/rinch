@@ -90,7 +90,7 @@ fn caret_pos(app: &RinchApp, id: u64) -> usize {
 
 /// One `<input type=…>` holding `value`, with a button after it to take focus
 /// away. Returns the app, the field and its handle.
-fn page(ty: &'static str, value: &'static str) -> (RinchApp, usize, NodeHandle) {
+fn page(ty: &'static str, value: &'static str) -> (RinchApp, u64, NodeHandle) {
     let h = register_input_handler(InputCallback::new(|_| {}));
     let id = Rc::new(Cell::new(0usize));
     let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));

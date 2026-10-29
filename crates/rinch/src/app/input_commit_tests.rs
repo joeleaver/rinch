@@ -14,7 +14,7 @@ use std::cell::Cell;
 /// oninput is a no-op recorder-less handler). Returns the app, the three
 /// node ids, and the shared event log.
 #[allow(clippy::type_complexity)]
-fn mount_fixture() -> (RinchApp, usize, usize, usize, Rc<RefCell<Vec<String>>>) {
+fn mount_fixture() -> (RinchApp, u64, u64, u64, Rc<RefCell<Vec<String>>>) {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let record = |tag: &'static str| {
         let log = log.clone();
@@ -31,7 +31,7 @@ fn mount_fixture() -> (RinchApp, usize, usize, usize, Rc<RefCell<Vec<String>>>) 
         move || log.borrow_mut().push("a-submit".to_string())
     }));
 
-    let ids: Rc<Cell<Option<(usize, usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64, u64)>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -348,7 +348,7 @@ fn a_select_commit_fires_change_only_when_the_value_changed() {
         move |v: String| log.borrow_mut().push(format!("change:{v}"))
     }));
 
-    let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -411,7 +411,7 @@ fn picking_the_displayed_default_option_is_not_a_change() {
         move |v: String| log.borrow_mut().push(format!("change:{v}"))
     }));
 
-    let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -455,7 +455,7 @@ fn enter_in_a_textarea_does_not_commit() {
         move |v: String| log.borrow_mut().push(format!("change:{v}"))
     }));
 
-    let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -500,7 +500,7 @@ fn an_ancestor_onchange_receives_the_commit() {
         move |v: String| log.borrow_mut().push(format!("change:{v}"))
     }));
 
-    let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -665,7 +665,7 @@ fn a_programmatic_write_to_the_focused_field_is_adopted() {
 #[test]
 fn a_rewrite_from_the_oninput_handler_is_adopted_in_the_same_keystroke() {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let slot: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let slot: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let (slot_in, handle_in, log_in) = (slot.clone(), handle.clone(), log.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -1094,9 +1094,9 @@ fn inputs(log: &Rc<RefCell<Vec<String>>>) -> Vec<String> {
 /// Mount one `<input>` whose `oninput` upper-cases what it is given by writing
 /// it back — the controlled-normalizer pattern of #238. Returns the app, the
 /// input's id and the log of every `oninput` payload.
-fn mount_uppercasing_field() -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
+fn mount_uppercasing_field() -> (RinchApp, u64, Rc<RefCell<Vec<String>>>) {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let slot: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let slot: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let (slot_in, handle_in, log_in) = (slot.clone(), handle.clone(), log.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -1451,9 +1451,9 @@ fn undo_is_refused_while_a_composition_is_shown() {
 /// differs. Returns the app, the input's id and every `oninput` payload.
 fn mount_filtering_field(
     filter: fn(&str) -> String,
-) -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
+) -> (RinchApp, u64, Rc<RefCell<Vec<String>>>) {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let slot: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let slot: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let (slot_in, handle_in, log_in) = (slot.clone(), handle.clone(), log.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -1489,7 +1489,7 @@ fn mount_filtering_field(
 /// that check protects, should a focus move ever land synchronously.
 #[test]
 fn an_oninput_that_moves_focus_keeps_each_fields_history_its_own() {
-    let slot: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let slot: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let b_handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let (slot_in, b_in) = (slot.clone(), b_handle.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

@@ -52,8 +52,8 @@ fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchA
 /// detaches it without freeing its slab entry, so a scan of the arena still
 /// finds every alternate this component dropped and would report the promotion
 /// as having happened when it had not.
-fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
-    fn walk(d: &RinchDocument, id: u64, class: &str, out: &mut Vec<usize>) {
+fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<u64> {
+    fn walk(d: &RinchDocument, id: u64, class: &str, out: &mut Vec<u64>) {
         let Some(node) = d.tree.get(id) else { return };
         if node
             .attributes

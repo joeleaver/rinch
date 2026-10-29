@@ -153,7 +153,7 @@ fn shift_word(p: &mut Page, key: KeyCode) {
 type Rect = (f32, f32, f32, f32);
 
 impl Page {
-    fn block(&self) -> usize {
+    fn block(&self) -> u64 {
         self.handle.caret_address(Pos(1)).unwrap().0
     }
 
@@ -183,7 +183,7 @@ impl Page {
     }
 
     /// The visual line holding char offset `i` on `affinity`'s side.
-    fn line_of(&self, i: u32, affinity: CaretAffinity) -> usize {
+    fn line_of(&self, i: u32, affinity: CaretAffinity) -> u64 {
         let lines = self.starts.len() - 1;
         (0..lines)
             .rev()

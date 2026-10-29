@@ -262,7 +262,7 @@ fn a_right_press_leaves_a_live_dom_drag_alone() {
 
 /// A 200x200 `overflow-y: auto` box at (0,200) holding 1000px of content, and
 /// a plain button beside it.
-pub(super) fn mount_scroller() -> (RinchApp, usize) {
+pub(super) fn mount_scroller() -> (RinchApp, u64) {
     let mut app = RinchApp::new(|scope: &mut RenderScope| {
         let root = scope.create_element("div");
         root.set_attribute("style", "position: relative; width: 800px; height: 600px");
@@ -375,7 +375,7 @@ pub(super) fn mount_text() -> RinchApp {
     app
 }
 
-pub(super) fn focus_offset(app: &RinchApp) -> usize {
+pub(super) fn focus_offset(app: &RinchApp) -> u64 {
     app.text_selection
         .as_ref()
         .expect("a selection")
@@ -383,7 +383,7 @@ pub(super) fn focus_offset(app: &RinchApp) -> usize {
 }
 
 /// Press in the text, drag across some of it, lose the release.
-pub(super) fn strand_a_text_selection(app: &mut RinchApp) -> usize {
+pub(super) fn strand_a_text_selection(app: &mut RinchApp) -> u64 {
     press(app, (23.0, 9.0));
     assert!(app.text_selecting, "precondition: selecting");
     let anchor = focus_offset(app);

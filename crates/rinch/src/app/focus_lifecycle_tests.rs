@@ -19,7 +19,7 @@ use std::cell::Cell;
 /// widgets' `on_key` should consume.
 struct Fixture {
     app: RinchApp,
-    input_id: usize,
+    input_id: u64,
     a_id: u64,
     b_id: u64,
     log: Rc<RefCell<Vec<String>>>,
@@ -74,7 +74,7 @@ fn mount_fixture() -> Fixture {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let consume: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let oninput_id = register_input_handler(InputCallback::new(|_| {}));
-    let ids: Rc<Cell<Option<(usize, usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64, u64)>>> = Rc::new(Cell::new(None));
 
     let (log_in, consume_in, ids_in) = (log.clone(), consume.clone(), ids.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -256,7 +256,7 @@ fn a_click_on_a_registered_node_claims_the_keyboard() {
 fn a_click_on_a_child_claims_the_focusable_ancestor() {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let consume: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let (log_in, consume_in, ids_in) = (log.clone(), consume.clone(), ids.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -331,7 +331,7 @@ fn two_registered_widgets_blur_each_other() {
 fn an_unmounted_registered_target_releases_focus_without_calling_back() {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let consume: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let visible = rinch_core::Signal::new(true);
 
     let (log_in, consume_in, id_in) = (log.clone(), consume.clone(), id.clone());

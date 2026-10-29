@@ -80,7 +80,7 @@ fn color_bbox(px: &[u8], rgb: (u8, u8, u8)) -> Option<(u32, u32, u32, u32)> {
     }
 }
 
-fn ifc_root_of(doc: &RinchDocument, node: NodeId) -> Option<usize> {
+fn ifc_root_of(doc: &RinchDocument, node: NodeId) -> Option<u64> {
     doc.tree.get(node.0).unwrap().ifc_root
 }
 
@@ -92,7 +92,7 @@ fn role_of(doc: &RinchDocument, node: NodeId) -> InlineFlowRole {
 /// range (text nodes, `<br>`) or a positioned inline child (inline elements,
 /// inline-blocks). This is the walk's output, so it is the ground truth for
 /// "the IFC lays this box out".
-fn flowed_by(doc: &RinchDocument, root: usize, node: usize) -> bool {
+fn flowed_by(doc: &RinchDocument, root: u64, node: u64) -> bool {
     let Some(layout) = doc.tree.get(root).and_then(|n| n.text_layout.as_ref()) else {
         return false;
     };

@@ -63,10 +63,10 @@ const ROOT: &str = "rinch-drawer__root";
 const CLOSE: &str = "rinch-drawer__close";
 
 /// The one node carrying `class` exactly, as a raw node id.
-fn node_with_class(app: &RinchApp, class: &str) -> usize {
+fn node_with_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()

@@ -52,13 +52,13 @@ const CSS: &str = "
 /// The fixture's nodes, by role.
 #[derive(Clone, Copy, Default)]
 struct Ids {
-    sel: usize,
-    focusable: usize,
-    field: usize,
-    src: usize,
-    a: usize,
-    b: usize,
-    far_row: usize,
+    sel: u64,
+    focusable: u64,
+    field: u64,
+    src: u64,
+    a: u64,
+    b: u64,
+    far_row: u64,
 }
 
 fn mount() -> (RinchApp, Ids) {

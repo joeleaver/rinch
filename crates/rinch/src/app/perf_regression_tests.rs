@@ -300,7 +300,7 @@ fn mount_loader(in_closed_drawer: bool) -> RinchApp {
 
 /// Idle turns with time passing, so a running animation has something to
 /// advance. Returns each turn's frame.
-fn ticking_turns(app: &mut RinchApp, n: usize) -> Vec<(bool, FrameStats)> {
+fn ticking_turns(app: &mut RinchApp, n: u64) -> Vec<(bool, FrameStats)> {
     (0..n)
         .map(|_| {
             std::thread::sleep(std::time::Duration::from_millis(3));
@@ -457,7 +457,7 @@ fn mount_list() -> (RinchApp, Signal<Vec<Item>>) {
 fn row_count(app: &RinchApp) -> usize {
     use rinch_core::dom::{DomDocument, NodeId};
     let d = app.doc.as_ref().unwrap().borrow();
-    let ids: Vec<usize> = d.tree.nodes.iter().map(|(id, _)| id).collect();
+    let ids: Vec<u64> = d.tree.nodes.iter().map(|(id, _)| id).collect();
     ids.into_iter()
         .filter(|&id| d.get_attribute(NodeId(id), "class").as_deref() == Some("row"))
         .filter(|&id| {
@@ -2056,10 +2056,10 @@ fn hovering_an_outer_shadowed_card_costs_one_shadow_clip() {
 /// `branch` children per open folder, `depth` levels, every folder open, every
 /// node with an icon (`li > content > icon > svg > path`).
 fn open_tree(
-    level: usize,
+    level: u64,
     prefix: &str,
-    branch: usize,
-    depth: usize,
+    branch: u64,
+    depth: u64,
     open: &mut std::collections::HashSet<String>,
 ) -> Vec<rinch_components::TreeNodeData> {
     use rinch_components::TreeNodeData;

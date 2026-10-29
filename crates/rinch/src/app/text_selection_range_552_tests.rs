@@ -11,12 +11,12 @@ use std::cell::Cell;
 /// Node ids captured at mount, in DOM order.
 #[derive(Clone, Copy)]
 struct Ids {
-    a: usize,
-    b: usize,
+    a: u64,
+    b: u64,
     /// A generic `tabindex="0"` div — focusable, but not a text control:
     /// `node_takes_text_focus` refuses it, so it never reaches
     /// `try_focus_input`'s stash-consuming branch (review of #1325, finding 3).
-    generic: usize,
+    generic: u64,
 }
 
 /// Two plain `<input>`s, `a` carrying `value="ab🙂"` (3 chars / 6 bytes / 4

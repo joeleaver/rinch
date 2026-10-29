@@ -52,7 +52,7 @@ fn snapshot(doc: &RinchDocument) -> Vec<String> {
     out
 }
 
-fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
+fn walk(doc: &RinchDocument, id: u64, depth: usize, out: &mut Vec<String>) {
     let Some(node) = doc.tree.get(id) else { return };
     let pad = depth * 2;
     match &node.kind {
@@ -124,7 +124,7 @@ fn new_doc() -> RinchDocument {
     doc
 }
 
-fn copy_node(src: &RinchDocument, id: usize, dst: &mut RinchDocument) -> Option<NodeId> {
+fn copy_node(src: &RinchDocument, id: u64, dst: &mut RinchDocument) -> Option<NodeId> {
     let node = src.tree.get(id)?;
     if node.is_pseudo_element || node.is_anonymous_block_box {
         return None;
@@ -154,7 +154,7 @@ fn copy_node(src: &RinchDocument, id: usize, dst: &mut RinchDocument) -> Option<
 fn fresh(src: &RinchDocument) -> Vec<String> {
     let mut doc = new_doc();
     let body = doc.body();
-    let kids: Vec<usize> = src.tree.get(src.tree.body_id).unwrap().children.clone();
+    let kids: Vec<u64> = src.tree.get(src.tree.body_id).unwrap().children.clone();
     for c in kids {
         if let Some(n) = copy_node(src, c, &mut doc) {
             doc.append_child(body, n);

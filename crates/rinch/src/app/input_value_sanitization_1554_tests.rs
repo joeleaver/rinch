@@ -84,7 +84,7 @@ fn focus(app: &mut RinchApp, id: u64) {
 }
 
 /// One `<input>` (or `tag`) holding `value`, logging its `oninput`.
-fn page(tag: &'static str, value: &'static str) -> (RinchApp, usize, Log) {
+fn page(tag: &'static str, value: &'static str) -> (RinchApp, u64, Log) {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let l = log.clone();
     let h = register_input_handler(InputCallback::new(move |v: String| {

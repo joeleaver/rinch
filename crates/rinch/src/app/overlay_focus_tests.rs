@@ -81,9 +81,9 @@ fn button(scope: &mut RenderScope, id: &str) -> NodeHandle {
 #[derive(Clone, Copy, Default)]
 struct Ids {
     opener: u64,
-    elsewhere: usize,
-    inside_first: usize,
-    inside_last: usize,
+    elsewhere: u64,
+    inside_first: u64,
+    inside_last: u64,
 }
 
 /// A page with an opener button, a `Modal` holding two controls, and a second
@@ -1088,7 +1088,7 @@ fn an_opener_inside_an_already_closed_overlay_is_not_restored() {
 fn editor_modal_page(
     open: Signal<bool>,
     editor_inside: bool,
-) -> (RinchApp, crate::editor::EditorHandle, usize, usize, usize) {
+) -> (RinchApp, crate::editor::EditorHandle, u64, u64, u64) {
     let handle = crate::editor::create_editor();
     assert!(handle.load_html("<p>modal</p>"));
     let ids: Rc<Cell<(usize, usize, usize)>> = Rc::default();

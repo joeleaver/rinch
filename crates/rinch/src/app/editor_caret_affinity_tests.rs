@@ -131,7 +131,7 @@ fn type_x(app: &mut RinchApp) {
 
 impl Page {
     /// The paragraph's host id.
-    fn block(&self) -> usize {
+    fn block(&self) -> u64 {
         self.handle.caret_address(Pos(1)).unwrap().0
     }
 

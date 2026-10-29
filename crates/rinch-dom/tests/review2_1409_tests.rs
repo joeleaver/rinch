@@ -749,7 +749,7 @@ fn p4_animation_start_position_only() {
 
 // ---- cost probes (printed; run with --nocapture) ----------------------
 
-fn rows_page(n: usize, card: &str, badge_parent: &str) -> String {
+fn rows_page(n: u64, card: &str, badge_parent: &str) -> String {
     let mut s = format!(r#"<div data-m="card" style="width: 500px; {card}">"#);
     for i in 0..n {
         s += &format!(

@@ -153,15 +153,15 @@ fn s1b_right_press_in_editor_inside_card() {
 struct Page {
     app: RinchApp,
     input: u64,
-    plain: usize,
+    plain: u64,
     listbox: u64,
-    disabled_btn: usize,
+    disabled_btn: u64,
     log: Rc<RefCell<Vec<String>>>,
 }
 
 fn page() -> Page {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let ids: Rc<Cell<Option<[usize; 4]>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<[u64; 4]>>> = Rc::new(Cell::new(None));
     let (log_in, ids_in) = (log.clone(), ids.clone());
     let changed = register_input_handler(InputCallback::new({
         let log = log.clone();
@@ -296,7 +296,7 @@ fn s5_right_press_on_a_disabled_child() {
 }
 
 /// S6: a render surface inside a focusable wrapper; right vs left announce.
-fn surface_app() -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
+fn surface_app() -> (RinchApp, u64, Rc<RefCell<Vec<String>>>) {
     use crate::render_surface::create_render_surface;
     let surface = create_render_surface();
     let sid = surface.id();
@@ -390,7 +390,7 @@ fn s7_right_press_on_oncontextmenu_outside_releases() {
 /// S8: a `<select>` popup open, a right press on an option.
 #[test]
 fn s8_right_press_in_an_open_select_popup() {
-    let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

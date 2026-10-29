@@ -67,8 +67,8 @@ fn table_doc(handle: &crate::editor::EditorHandle, rows: &[Vec<(i64, i64)>]) -> 
 }
 
 /// Mount an editor holding `rows` in a 400px column and lay it out.
-fn mounted(rows: &[Vec<(i64, i64)>]) -> (RinchApp, Vec<usize>, usize) {
-    let editor_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+fn mounted(rows: &[Vec<(i64, i64)>]) -> (RinchApp, Vec<u64>, u64) {
+    let editor_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let editor_in = editor_id.clone();
     let handle = crate::editor::create_editor();
     // As an app's own transaction: a load would cap the 1,000,000 colspans
@@ -95,7 +95,7 @@ fn mounted(rows: &[Vec<(i64, i64)>]) -> (RinchApp, Vec<usize>, usize) {
     let _ = editor_id.get().unwrap();
     let doc = app.doc.as_ref().unwrap().clone();
     let d = doc.borrow();
-    let cells: Vec<usize> = (0..d.tree.nodes.len())
+    let cells: Vec<u64> = (0..d.tree.nodes.len())
         .filter(|&id| {
             d.tree.nodes.get(id).is_some()
                 && d.get_attribute(NodeId(id), "data-pm-type").as_deref() == Some("table_cell")

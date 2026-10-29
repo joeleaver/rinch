@@ -95,7 +95,7 @@ fn mount_stops(
     outside: &'static [(&'static str, &'static str, Option<&'static str>)],
     stops: &'static [(&'static str, &'static str, Option<&'static str>)],
     trap: bool,
-) -> (RinchApp, Rc<std::collections::HashMap<&'static str, usize>>) {
+) -> (RinchApp, Rc<std::collections::HashMap<&'static str, u64>>) {
     let ids: Rc<RefCell<std::collections::HashMap<&'static str, usize>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
     let ids_in = ids.clone();
@@ -140,7 +140,7 @@ fn mount_stops(
 fn tour(
     app: &mut RinchApp,
     ids: &std::collections::HashMap<&'static str, usize>,
-    presses: usize,
+    presses: u64,
     shift: bool,
 ) -> Vec<&'static str> {
     let by_id: std::collections::HashMap<usize, &'static str> =
@@ -198,7 +198,7 @@ fn shift_tab_walks_the_same_sequence_backwards() {
 fn the_focusable_collection_itself_stays_in_tree_order() {
     let (app, ids) = mount_stops(&[], DOC, false);
     let names = ["A", "B", "C", "D", "E", "G"];
-    let expected: Vec<usize> = names.iter().map(|n| ids[n]).collect();
+    let expected: Vec<u64> = names.iter().map(|n| ids[n]).collect();
     assert_eq!(app.collect_focusable_nodes(), expected);
 }
 
@@ -320,7 +320,7 @@ type Nested = (
 
 fn mount_nested(
     markup: &'static [Nested],
-) -> (RinchApp, std::collections::HashMap<&'static str, usize>) {
+) -> (RinchApp, std::collections::HashMap<&'static str, u64>) {
     let ids: Rc<RefCell<std::collections::HashMap<&'static str, usize>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
     let ids_in = ids.clone();

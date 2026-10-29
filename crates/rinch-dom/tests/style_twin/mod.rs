@@ -68,7 +68,7 @@ pub fn stylo_fingerprint(cv: &ComputedValues) -> String {
 /// The fingerprint of one node (not its children). `hidden`: the node is in a
 /// `display: none` subtree, where the layout box means nothing and is left
 /// out.
-pub fn node_fingerprint(doc: &RinchDocument, id: usize, hidden: bool) -> String {
+pub fn node_fingerprint(doc: &RinchDocument, id: u64, hidden: bool) -> String {
     let node = &doc.tree.nodes[id];
     let mut out = String::new();
     if let Some(text) = node.text_content() {
@@ -104,7 +104,7 @@ pub fn node_fingerprint(doc: &RinchDocument, id: usize, hidden: bool) -> String 
 }
 
 /// Every node under (and including) `root`, in tree order, with its path.
-pub fn tree_fingerprint(doc: &RinchDocument, root: usize, boxes: bool) -> Vec<(String, String)> {
+pub fn tree_fingerprint(doc: &RinchDocument, root: u64, boxes: bool) -> Vec<(String, String)> {
     let mut out = Vec::new();
     walk(doc, root, "0".to_string(), !boxes, &mut out);
     out
@@ -112,7 +112,7 @@ pub fn tree_fingerprint(doc: &RinchDocument, root: usize, boxes: bool) -> Vec<(S
 
 fn walk(
     doc: &RinchDocument,
-    id: usize,
+    id: u64,
     path: String,
     hidden: bool,
     out: &mut Vec<(String, String)>,

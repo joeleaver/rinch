@@ -72,7 +72,7 @@ fn page(html: &str) -> Page {
 }
 
 impl Page {
-    fn block(&self) -> usize {
+    fn block(&self) -> u64 {
         self.handle.caret_address(Pos(1)).unwrap().0
     }
     fn block_box(&self) -> (f32, f32, f32, f32) {
@@ -424,7 +424,7 @@ fn a_drag_onto_an_image_on_line_two_lands_on_its_half() {
 /// every drag onto an image ended before it — and onto a leading image, after.
 #[test]
 fn a_drag_onto_an_image_lands_on_the_half_it_ends_on() {
-    let drag = |html: &str, from: usize, img: usize, frac: f32| {
+    let drag = |html: &str, from: usize, img: u64, frac: f32| {
         let mut p = page(html);
         let (bx, by, _, _) = p.block_box();
         let (fx, _) = p.local(from);

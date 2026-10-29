@@ -22,17 +22,17 @@ use std::cell::Cell;
 #[derive(Clone, Copy)]
 struct Ids {
     button: u64,
-    disabled_button: usize,
-    stepper: usize,
-    link: usize,
-    bare_anchor: usize,
+    disabled_button: u64,
+    stepper: u64,
+    link: u64,
+    bare_anchor: u64,
     select: u64,
-    bare_select: usize,
-    hidden_checkbox: usize,
-    checkbox_label: usize,
-    text_input: usize,
-    summary: usize,
-    plain_div: usize,
+    bare_select: u64,
+    hidden_checkbox: u64,
+    checkbox_label: u64,
+    text_input: u64,
+    summary: u64,
+    plain_div: u64,
 }
 
 /// One document holding the whole tag set, plus the two shapes that must stay
@@ -257,7 +257,7 @@ fn the_tab_order_follows_the_dom() {
         ids.hidden_checkbox,
         ids.text_input,
     ];
-    let filtered: Vec<usize> = order
+    let filtered: Vec<u64> = order
         .iter()
         .copied()
         .filter(|id| expected.contains(id))

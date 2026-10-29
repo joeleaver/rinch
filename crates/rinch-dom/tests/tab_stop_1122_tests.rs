@@ -51,7 +51,7 @@ fn doc() -> RinchDocument {
     d
 }
 
-fn text_nodes(d: &RinchDocument, id: usize, out: &mut Vec<usize>) {
+fn text_nodes(d: &RinchDocument, id: u64, out: &mut Vec<u64>) {
     let n = d.tree.get(id).unwrap();
     if matches!(n.kind, rinch_dom::node::NodeKind::Text(_)) {
         out.push(id);

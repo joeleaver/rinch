@@ -32,7 +32,7 @@ const M: &str = "display: inline-block; width: 0; height: 0";
 
 struct Case {
     doc: RinchDocument,
-    c: usize,
+    c: u64,
 }
 
 fn document() -> RinchDocument {

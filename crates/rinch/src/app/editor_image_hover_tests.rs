@@ -54,7 +54,7 @@ fn frame(app: &mut RinchApp) {
 /// Every `<img>` in the document, in tree order: `(node id, its src)`.
 fn images(app: &RinchApp) -> Vec<(usize, String)> {
     let d = app.doc.as_ref().expect("mounted").borrow();
-    let mut ids: Vec<usize> = d
+    let mut ids: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -81,7 +81,7 @@ fn pointer_move(app: &mut RinchApp, (x, y): (f32, f32)) {
 
 /// Every source the loader is asked for, in order, and frames until it has
 /// been asked for `n` in all.
-fn wait_for_asks(app: &mut RinchApp, asked: &Mutex<Vec<String>>, n: usize) -> Vec<String> {
+fn wait_for_asks(app: &mut RinchApp, asked: &Mutex<Vec<String>>, n: u64) -> Vec<String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while asked.lock().unwrap().len() < n && Instant::now() < deadline {
         frame(app);

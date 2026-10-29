@@ -30,7 +30,7 @@ struct Fixture {
     /// A text target: registers `on_ime` + `caret_rect`.
     text_id: u64,
     /// A focusable non-text target: registers the focus lifecycle but no `on_ime`.
-    plain_id: usize,
+    plain_id: u64,
     log: Rc<RefCell<Vec<String>>>,
     caret: Caret,
 }
@@ -98,7 +98,7 @@ fn plain_widget(
 fn mount_fixture() -> Fixture {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let caret: Caret = Rc::new(Cell::new(Some((10.0, 20.0, 2.0, 16.0))));
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
 
     let (log_in, caret_in, ids_in) = (log.clone(), caret.clone(), ids.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -317,7 +317,7 @@ fn composition_does_not_reach_an_unfocused_target() {
 fn an_unmounted_target_gets_no_ime_state_and_no_composition() {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let caret: Caret = Rc::new(Cell::new(Some((10.0, 20.0, 2.0, 16.0))));
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let visible = rinch_core::Signal::new(true);
 
     let (log_in, caret_in, id_in) = (log.clone(), caret.clone(), id.clone());

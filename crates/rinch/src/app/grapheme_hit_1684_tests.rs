@@ -15,7 +15,7 @@ const VALUE: &str = "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b\u{2764}\u{FE0
 const STYLE: &str =
     "display: block; width: 700px; font: 32px/40px sans-serif; padding: 0; border: 0";
 
-fn page(tag: &'static str) -> (RinchApp, usize) {
+fn page(tag: &'static str) -> (RinchApp, u64) {
     let id = Rc::new(Cell::new(0usize));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -32,7 +32,7 @@ fn page(tag: &'static str) -> (RinchApp, usize) {
     (app, id.get())
 }
 
-fn sweep(app: &mut RinchApp, field: usize) -> Vec<usize> {
+fn sweep(app: &mut RinchApp, field: u64) -> Vec<u64> {
     let (bx, by, bw, _) = {
         let d = app.doc.as_ref().unwrap().borrow();
         painted_element_box(&d.tree, field)
@@ -59,7 +59,7 @@ fn sweep(app: &mut RinchApp, field: usize) -> Vec<usize> {
 fn check(tag: &'static str) {
     let (mut app, field) = page(tag);
     let offsets = sweep(&mut app, field);
-    let inside: Vec<usize> = offsets
+    let inside: Vec<u64> = offsets
         .iter()
         .copied()
         .filter(|&o| !rinch_words::is_grapheme_boundary(VALUE, o))
@@ -69,7 +69,7 @@ fn check(tag: &'static str) {
         "{tag}: carets inside a cluster at {inside:?}"
     );
     // Positive control: every boundary of the value was reached.
-    let boundaries: Vec<usize> = (0..=VALUE.len())
+    let boundaries: Vec<u64> = (0..=VALUE.len())
         .filter(|&b| rinch_words::is_grapheme_boundary(VALUE, b))
         .collect();
     for b in boundaries {
@@ -147,7 +147,7 @@ fn a_press_in_the_editor_lands_on_a_cluster_edge_1684() {
         }
         x += 0.5;
     }
-    let inside: Vec<usize> = bytes
+    let inside: Vec<u64> = bytes
         .iter()
         .copied()
         .filter(|&b| !rinch_words::is_grapheme_boundary(VALUE, b))

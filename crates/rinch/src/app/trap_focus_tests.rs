@@ -102,7 +102,7 @@ fn focused(app: &RinchApp) -> Option<usize> {
 }
 
 /// Tab `n` times, recording where the arbiter lands each time.
-fn tab_tour(app: &mut RinchApp, n: usize) -> Vec<Option<usize>> {
+fn tab_tour(app: &mut RinchApp, n: u64) -> Vec<Option<usize>> {
     (0..n)
         .map(|_| {
             tab(app);
@@ -135,11 +135,11 @@ fn text_input(scope: &mut RenderScope, id: &str) -> NodeHandle {
 /// Node ids captured at mount, by the name the fixture gave them.
 #[derive(Clone, Copy, Default)]
 struct Ids {
-    before: usize,
-    after: usize,
-    inside_first: usize,
-    inside_middle: usize,
-    inside_last: usize,
+    before: u64,
+    after: u64,
+    inside_first: u64,
+    inside_middle: u64,
+    inside_last: u64,
     root: u64,
 }
 
@@ -557,9 +557,9 @@ fn the_false_escape_opts_out_and_zero_does_not() {
 #[derive(Clone, Copy, Default)]
 struct Nested {
     outer_a: u64,
-    outer_b: usize,
+    outer_b: u64,
     inner_a: u64,
-    inner_b: usize,
+    inner_b: u64,
 }
 
 /// An inner `Modal` mounted inside an outer one's body, each with two controls.
@@ -712,10 +712,10 @@ fn closing_a_nested_trap_hands_containment_back_to_the_outer_one() {
 fn focus_inside_one_of_two_sibling_traps_stays_in_that_one() {
     #[derive(Clone, Copy, Default)]
     struct Pair {
-        a1: usize,
-        a2: usize,
-        b1: usize,
-        b2: usize,
+        a1: u64,
+        a2: u64,
+        b1: u64,
+        b2: u64,
     }
 
     let build = || {

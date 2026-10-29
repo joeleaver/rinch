@@ -129,7 +129,7 @@ fn key(app: &mut RinchApp, key: KeyCode, text: Option<&str>) {
 }
 
 /// The first element whose `data-pm-type` is `ty`.
-fn host(page: &Page, ty: &str) -> usize {
+fn host(page: &Page, ty: &str) -> u64 {
     let doc = page.app.doc.as_ref().unwrap();
     let d = doc.borrow();
     (0..d.tree.nodes.len())
@@ -355,7 +355,7 @@ mod review_1575 {
             .unwrap_or_default()
     }
 
-    fn focus_input(p: &mut Page, view: &Rc<View>) -> usize {
+    fn focus_input(p: &mut Page, view: &Rc<View>) -> u64 {
         let input = view.input.borrow().clone().unwrap().node_id().0;
         let at = point_in(p, input, 5.0);
         press(&mut p.app, at);

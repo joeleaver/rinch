@@ -121,10 +121,10 @@ fn settle(app: &mut RinchApp, nth: f32) {
     app.resolve_and_repaint(VIEWPORT.0 + nth, VIEWPORT.1);
 }
 
-fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
+fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<u64> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let mut found: Vec<usize> = d
+    let mut found: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -139,7 +139,7 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
     found
 }
 
-fn node_with_class(app: &RinchApp, class: &str) -> usize {
+fn node_with_class(app: &RinchApp, class: &str) -> u64 {
     let found = nodes_with_class(app, class);
     assert_eq!(found.len(), 1, "expected one `{class}`, found {found:?}");
     found[0]
@@ -415,10 +415,10 @@ fn the_dropdown_panel_declares_no_transition_so_a_display_reveal_is_legitimate()
 
 struct MountedTabs {
     app: RinchApp,
-    tabs: Vec<usize>,
-    panels: Vec<usize>,
-    labels: Vec<usize>,
-    indicators: Vec<usize>,
+    tabs: Vec<u64>,
+    panels: Vec<u64>,
+    labels: Vec<u64>,
+    indicators: Vec<u64>,
 }
 
 fn tabs_app(variant: &str) -> MountedTabs {
@@ -728,7 +728,7 @@ fn the_pills_and_outline_variants_are_styled_by_the_same_hook() {
 /// No tab button carries an inline `style` at all. The active styling used to be
 /// four `set_style` calls on the button (and one more on its label span); the
 /// cascade owns all of it now.
-fn no_inline_style(app: &RinchApp, nodes: &[usize]) {
+fn no_inline_style(app: &RinchApp, nodes: &[u64]) {
     for n in nodes {
         assert_eq!(
             attr(app, *n, "style"),
@@ -760,7 +760,7 @@ fn no_inline_style(app: &RinchApp, nodes: &[usize]) {
 // instances in the same state sit on the fixed point where a leaking rule and
 // a correct one agree.
 
-fn parent_of(app: &RinchApp, node: u64) -> Option<usize> {
+fn parent_of(app: &RinchApp, node: u64) -> Option<u64> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).and_then(|n| n.parent)
@@ -778,10 +778,10 @@ fn is_inside(app: &RinchApp, node: u64, ancestor: u64) -> bool {
 }
 
 /// The one node carrying `data-probe="{marker}"`.
-fn probe(app: &RinchApp, marker: &str) -> usize {
+fn probe(app: &RinchApp, marker: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let found: Vec<usize> = d
+    let found: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -793,8 +793,8 @@ fn probe(app: &RinchApp, marker: &str) -> usize {
 }
 
 /// The one node with `class` whose parent is `parent`.
-fn child_with_class(app: &RinchApp, parent: u64, class: &str) -> usize {
-    let found: Vec<usize> = nodes_with_class(app, class)
+fn child_with_class(app: &RinchApp, parent: u64, class: &str) -> u64 {
+    let found: Vec<u64> = nodes_with_class(app, class)
         .into_iter()
         .filter(|n| parent_of(app, *n) == Some(parent))
         .collect();
@@ -1093,7 +1093,7 @@ fn nested_default_tabs_do_not_take_the_outer_variants_active_styling() {
             is_inside(&app, inner, outer),
             "the fixture really nests them"
         );
-        let active: Vec<usize> = nodes_with_class(&app, "rinch-tabs__tab")
+        let active: Vec<u64> = nodes_with_class(&app, "rinch-tabs__tab")
             .into_iter()
             .filter(|t| attr(&app, *t, "data-active").as_deref() == Some("true"))
             .collect();
@@ -1199,8 +1199,8 @@ fn connected(app: &RinchApp, node: u64) -> bool {
 
 /// The one **attached** node with `class` — a branch that was swapped out can
 /// leave a detached one in the arena.
-fn live_node_with_class(app: &RinchApp, class: &str) -> usize {
-    let found: Vec<usize> = nodes_with_class(app, class)
+fn live_node_with_class(app: &RinchApp, class: &str) -> u64 {
+    let found: Vec<u64> = nodes_with_class(app, class)
         .into_iter()
         .filter(|n| connected(app, *n))
         .collect();

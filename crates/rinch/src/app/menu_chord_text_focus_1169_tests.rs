@@ -30,10 +30,10 @@ const FIELD_STYLE: &str = "width: 300px; height: 30px; padding: 0; margin: 0; \
 struct Ids {
     input: u64,
     textarea: u64,
-    checkbox: usize,
-    other: usize,
+    checkbox: u64,
+    other: u64,
     /// A `tabindex` div registered for composition: a custom text target.
-    ime: usize,
+    ime: u64,
 }
 
 fn page() -> (RinchApp, Ids) {

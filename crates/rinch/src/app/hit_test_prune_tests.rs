@@ -147,7 +147,7 @@ fn build(
     doc: &mut RinchDocument,
     r: &mut Rng,
     parent: NodeId,
-    depth: usize,
+    depth: u64,
     all: &mut Vec<NodeId>,
 ) {
     let kids = if depth >= 5 { 0 } else { 1 + r.below(4) };
@@ -663,7 +663,7 @@ fn oracle_grid(doc: &RinchDocument) -> Vec<Option<usize>> {
     out
 }
 
-fn id_of(doc: &RinchDocument, class: &str) -> usize {
+fn id_of(doc: &RinchDocument, class: &str) -> u64 {
     doc.query_selector(&format!(".{class}"))
         .expect("fixture element")
         .0

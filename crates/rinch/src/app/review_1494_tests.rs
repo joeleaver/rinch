@@ -51,7 +51,7 @@ fn mount(
     app
 }
 
-fn node(app: &RinchApp, selector: &str) -> usize {
+fn node(app: &RinchApp, selector: &str) -> u64 {
     let doc = app.doc().unwrap().borrow();
     let found = rinch_dom::testing::query_selector(&doc.tree, selector);
     assert_eq!(found.len(), 1, "{selector}");

@@ -25,13 +25,13 @@ struct Rig {
 /// `editor_is_scroller`: the editor container itself is the `overflow-y: auto`
 /// box (which is what turns on block virtualization at >= 60 blocks).
 fn rig(
-    blocks: usize,
+    blocks: u64,
     root_style: &'static str,
     scroller_style: &'static str,
     editor_is_scroller: bool,
     vw: f32,
 ) -> Rig {
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let handle = crate::editor::create_editor();
     let html: String = (0..blocks)
@@ -256,7 +256,7 @@ fn scrolling_a_virtualized_editor_does_not_yank_back_to_the_caret() {
 #[test]
 #[ignore = "issue #842: desktop scrolls only the nearest scroll container"]
 fn nested_scrollers_the_outer_one_follows_too() {
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let handle = crate::editor::create_editor();
     let html: String = (0..40).map(|i| format!("<p>line {i}</p>")).collect();

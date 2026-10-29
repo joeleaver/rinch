@@ -105,7 +105,7 @@ fn r2f1b_seed_218() {
             }
         )
     };
-    let boxes = |doc: &RinchDocument| -> Vec<usize> { query_selector(&doc.tree, "[data-m=t]") };
+    let boxes = |doc: &RinchDocument| -> Vec<u64> { query_selector(&doc.tree, "[data-m=t]") };
     let mut bad = vec![];
     for variant in ["full", "no_extra_step", "no_row1_edit"] {
         let mut doc = mount(&html(LONG, "Wavy", variant == "no_extra_step"));

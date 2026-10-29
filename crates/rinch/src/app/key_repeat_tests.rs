@@ -22,7 +22,7 @@ use super::*;
 use std::cell::Cell;
 
 /// A focusable `<div>` with a click handler, already holding the keyboard.
-fn focused_node_app() -> (RinchApp, Rc<Cell<usize>>) {
+fn focused_node_app() -> (RinchApp, Rc<Cell<u64>>) {
     let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let clicks_in = clicks.clone();
     let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));

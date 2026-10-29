@@ -29,9 +29,9 @@ struct Page {
     app: RinchApp,
     handle: crate::editor::EditorHandle,
     scroller: u64,
-    editor: usize,
+    editor: u64,
     /// A `tabindex` box outside the editor that can hold the keyboard.
-    other: usize,
+    other: u64,
 }
 
 /// `blocks` paragraphs in a 160px scroller. `editor_is_scroller` makes the

@@ -53,13 +53,13 @@ struct Fixture {
     /// `tabindex="0"`, registered as a focus target.
     listbox: u64,
     /// `tabindex="-1"` inside the listbox, registered as a focus target.
-    item: usize,
+    item: u64,
     /// No `tabindex`, inside the listbox.
-    plain: usize,
+    plain: u64,
     /// A `data-nofocus` `tabindex="0"` node outside the listbox.
-    nofocus: usize,
+    nofocus: u64,
     /// Nothing focusable, outside the listbox.
-    outside: usize,
+    outside: u64,
     log: Rc<RefCell<Vec<String>>>,
     /// `document.activeElement` when the item's `data-oncontextmenu` ran.
     focus_at_contextmenu: Rc<Cell<Option<Option<usize>>>>,
@@ -70,7 +70,7 @@ struct Fixture {
 fn mount(item_contextmenu: bool) -> Fixture {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let focus_at_contextmenu: Rc<Cell<Option<Option<usize>>>> = Rc::new(Cell::new(None));
-    let ids: Rc<Cell<Option<[usize; 5]>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<[u64; 5]>>> = Rc::new(Cell::new(None));
     let (log_in, ids_in) = (log.clone(), ids.clone());
     let at_ctx_in = focus_at_contextmenu.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

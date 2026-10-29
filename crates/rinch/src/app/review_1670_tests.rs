@@ -67,7 +67,7 @@ impl Page {
         self.handle.set_selection(Selection::cursor(Pos(pos)));
         idle(&mut self.app);
     }
-    fn block(&self, pos: usize) -> usize {
+    fn block(&self, pos: usize) -> u64 {
         self.handle.caret_address(Pos(pos)).unwrap().0
     }
     fn content_origin(&self, block: u64) -> (f32, f32) {

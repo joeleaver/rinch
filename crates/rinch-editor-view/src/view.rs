@@ -5655,18 +5655,18 @@ mod tests {
             )
             .unwrap();
         // rinch-dom: the `<br>` is one byte, `"ab\ncdef"`.
-        let desktop: Vec<usize> = (0..=8)
+        let desktop: Vec<u64> = (0..=8)
             .map(|c| textblock_flat_byte(&p, c, DESKTOP))
             .collect();
         assert_eq!(desktop, [0, 1, 2, 3, 4, 5, 5, 6, 7]);
         // The browser: no byte for either leaf, `"abcdef"`.
-        let web: Vec<usize> = (0..=8).map(|c| textblock_flat_byte(&p, c, WEB)).collect();
+        let web: Vec<u64> = (0..=8).map(|c| textblock_flat_byte(&p, c, WEB)).collect();
         assert_eq!(web, [0, 1, 2, 2, 3, 4, 4, 5, 6]);
         // The inverse: the `"\n"` byte (2) is before the break, the next after
         // it; an image's shared byte (5 / 4) reads as the side before it.
-        let back: Vec<usize> = (0..=7).map(|b| ifc_byte_to_char(&p, b, DESKTOP)).collect();
+        let back: Vec<u64> = (0..=7).map(|b| ifc_byte_to_char(&p, b, DESKTOP)).collect();
         assert_eq!(back, [0, 1, 2, 3, 4, 5, 7, 8]);
-        let back_web: Vec<usize> = (0..=6).map(|b| ifc_byte_to_char(&p, b, WEB)).collect();
+        let back_web: Vec<u64> = (0..=6).map(|b| ifc_byte_to_char(&p, b, WEB)).collect();
         assert_eq!(back_web, [0, 1, 2, 4, 5, 7, 8]);
     }
 
@@ -5687,17 +5687,17 @@ mod tests {
             )
             .unwrap();
         // rinch-dom: `"a    é    b"`, é two bytes.
-        let desktop: Vec<usize> = (0..=5)
+        let desktop: Vec<u64> = (0..=5)
             .map(|c| textblock_flat_byte(&p, c, DESKTOP))
             .collect();
         assert_eq!(desktop, [0, 1, 5, 7, 11, 12]);
-        let web: Vec<usize> = (0..=5).map(|c| textblock_flat_byte(&p, c, WEB)).collect();
+        let web: Vec<u64> = (0..=5).map(|c| textblock_flat_byte(&p, c, WEB)).collect();
         assert_eq!(web, [0, 1, 2, 4, 5, 6]);
         // Inverse: bytes 2 inside the first tab (1..5) is before it (1), 3 and
         // 4 after it (2); 6 inside é reads after it; 8 before the second tab.
-        let back: Vec<usize> = (0..=12).map(|b| ifc_byte_to_char(&p, b, DESKTOP)).collect();
+        let back: Vec<u64> = (0..=12).map(|b| ifc_byte_to_char(&p, b, DESKTOP)).collect();
         assert_eq!(back, [0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5]);
-        let back_web: Vec<usize> = (0..=6).map(|b| ifc_byte_to_char(&p, b, WEB)).collect();
+        let back_web: Vec<u64> = (0..=6).map(|b| ifc_byte_to_char(&p, b, WEB)).collect();
         assert_eq!(back_web, [0, 1, 2, 3, 3, 4, 5]);
     }
 
@@ -6606,7 +6606,7 @@ mod table_span_tests {
             placed(&[vec![(w + 1, 1)], vec![(1, 1)]]),
             vec![p("span 10000", "auto"), p("auto", "auto")]
         );
-        let tall = |n: usize| vec![vec![(1, 2)]; n];
+        let tall = |n: u64| vec![vec![(1, 2)]; n];
         let at = placed(&tall(MAX_DEFINITE_GRID_TRACKS));
         assert_eq!(at[0], p("1 / 2", "1 / 3"));
         assert_eq!(at.last(), Some(&p("1 / 2", "9999 / 10000")));
@@ -6756,7 +6756,7 @@ mod table_span_differential {
             .collect()
     }
     /// Positions of every cell (the position before it).
-    fn cell_positions(doc: &Node) -> Vec<usize> {
+    fn cell_positions(doc: &Node) -> Vec<u64> {
         let mut out = Vec::new();
         doc.nodes_between(0, doc.content_size(), &mut |n, pos, _| {
             if n.type_name() == "table_cell" || n.type_name() == "table_header_cell" {

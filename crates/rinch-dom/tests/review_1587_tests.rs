@@ -28,7 +28,7 @@ fn doc() -> RinchDocument {
     d
 }
 
-fn text_nodes(d: &RinchDocument, id: usize, out: &mut Vec<usize>) {
+fn text_nodes(d: &RinchDocument, id: u64, out: &mut Vec<u64>) {
     let n = d.tree.get(id).unwrap();
     if matches!(n.kind, rinch_dom::node::NodeKind::Text(_)) {
         out.push(id);
@@ -88,7 +88,7 @@ fn carets_of(d: &RinchDocument, c: NodeId) -> Vec<(f32, f32)> {
 }
 
 /// `yyy\tzz` pairs separated by spaces, word lengths from a fixed LCG.
-fn pairs(n: usize, seed: u64) -> String {
+fn pairs(n: u64, seed: u64) -> String {
     let mut s = seed;
     let mut next = |k: u64| {
         s = s

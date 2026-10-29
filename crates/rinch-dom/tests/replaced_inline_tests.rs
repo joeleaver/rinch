@@ -34,7 +34,7 @@ const BOX: &str = "width: 20px; height: 20px; padding: 0; border: 0; margin: 0; 
 
 /// Build `div > "ab" + <tag style="display: {display}; …">` and return the
 /// document and the element.
-fn build(tag: &str, display: &str) -> (RinchDocument, usize) {
+fn build(tag: &str, display: &str) -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let d = doc.create_element("div");
@@ -55,7 +55,7 @@ fn build(tag: &str, display: &str) -> (RinchDocument, usize) {
 
 /// The on-screen box paint places the element at: `(x, y, w, h)`, transform
 /// included.
-fn painted_box(doc: &RinchDocument, id: usize) -> (f64, f64, f32, f32) {
+fn painted_box(doc: &RinchDocument, id: u64) -> (f64, f64, f32, f32) {
     let (x, y, tf) = rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, id, 1.0);
     let c = tf.as_coeffs();
     let n = doc.tree.get(id).unwrap();
@@ -168,7 +168,7 @@ fn html_doc(html: &str) -> RinchDocument {
     doc
 }
 
-fn first_with_tag(doc: &RinchDocument, tag: &str) -> usize {
+fn first_with_tag(doc: &RinchDocument, tag: &str) -> u64 {
     doc.tree
         .nodes
         .iter()

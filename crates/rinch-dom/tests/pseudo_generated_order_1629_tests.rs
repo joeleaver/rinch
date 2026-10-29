@@ -92,7 +92,7 @@ fn shape(doc: &RinchDocument, p: NodeId) -> String {
         .collect()
 }
 
-fn flat_of(doc: &RinchDocument, id: usize) -> String {
+fn flat_of(doc: &RinchDocument, id: u64) -> String {
     let n = doc.tree.get(id).unwrap();
     match &n.kind {
         rinch_dom::node::NodeKind::Text(t) => t.content.clone(),
@@ -371,7 +371,7 @@ const BOX_CSS: &str = "body { font-size: 16px; line-height: 20px; margin: 0 } \
 type Boxes = Vec<(bool, (f32, f32, f32, f32))>;
 
 /// Every element box under `p` in DOM order (generated ones included).
-fn boxes(d: &RinchDocument, p: usize, out: &mut Boxes) {
+fn boxes(d: &RinchDocument, p: u64, out: &mut Boxes) {
     for &c in &d.tree.get(p).unwrap().children {
         let n = d.tree.get(c).unwrap();
         if n.is_element() {

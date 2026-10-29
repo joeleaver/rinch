@@ -403,7 +403,7 @@ impl N {
         }
         false
     }
-    fn surfaces(&self, out: &mut Vec<usize>) {
+    fn surfaces(&self, out: &mut Vec<u64>) {
         if let Some(id) = self.surface {
             out.push(id);
         }
@@ -415,7 +415,7 @@ impl N {
 
 struct Gen {
     rng: Rng,
-    next_id: usize,
+    next_id: u64,
     frames: Vec<Frame>,
 }
 

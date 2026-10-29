@@ -126,7 +126,7 @@ fn running(app: &RinchApp, node: u64) -> usize {
 }
 
 /// The one node carrying `class` exactly. Panics unless exactly one does.
-fn node_with_class(app: &RinchApp, class: &str) -> usize {
+fn node_with_class(app: &RinchApp, class: &str) -> u64 {
     let found = nodes_with_class(app, class);
     assert_eq!(
         found.len(),
@@ -137,10 +137,10 @@ fn node_with_class(app: &RinchApp, class: &str) -> usize {
     found[0]
 }
 
-fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
+fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<u64> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let mut found: Vec<usize> = d
+    let mut found: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -490,7 +490,7 @@ fn popover_fades_its_dropdown_out() {
     });
     let panel = node_with_class(&app, "rinch-popover__dropdown");
     let content = node_with_class(&app, "fixture-popover-content");
-    let vis = |app: &RinchApp, n: usize| {
+    let vis = |app: &RinchApp, n: u64| {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
         d.tree.get(n).unwrap().computed_style.visibility

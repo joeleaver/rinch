@@ -28,7 +28,7 @@ const H: f32 = 100.0;
 
 /// A `W`x`H` scroller at the document origin, white on white, overflowing on
 /// both axes, scrolled by `(wheel_x, wheel_y)` px.
-fn mount(extra_style: &str, wheel: (f64, f64), onscroll: Option<String>) -> (RinchApp, usize) {
+fn mount(extra_style: &str, wheel: (f64, f64), onscroll: Option<String>) -> (RinchApp, u64) {
     let container_style = format!(
         "position: absolute; left: 0px; top: 0px; width: {W}px; height: {H}px; \
          overflow: auto; background: white; {extra_style}"

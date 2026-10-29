@@ -41,7 +41,7 @@ fn doc() -> RinchDocument {
     d
 }
 
-fn find(d: &RinchDocument, id: usize, want: &str) -> Option<usize> {
+fn find(d: &RinchDocument, id: u64, want: &str) -> Option<u64> {
     let n = d.tree.get(id)?;
     if n.attributes.get("id").map(String::as_str) == Some(want) {
         return Some(id);
@@ -331,7 +331,7 @@ fn offsets_across_mixed_modes_round_trip() {
     // `a ` + `b` + a tab as one space (widened to its stop, #1122) + ` ` +
     // ` c` (kept: after a preserved space).
     assert_eq!(il.text_content, "a b   c");
-    let d2f = |node: NodeId, n: usize| -> Vec<usize> {
+    let d2f = |node: NodeId, n: u64| -> Vec<u64> {
         (0..=n)
             .map(|o| dom_cursor_to_ifc_offset(&il.text_ranges, node.0, o).unwrap())
             .collect()
@@ -464,7 +464,7 @@ fn pre_line_offsets_skip_the_spaces_around_a_newline() {
     d.resolve_layout(800.0, 600.0);
     let il = d.tree.get(p.0).unwrap().text_layout.as_ref().unwrap();
     assert_eq!(il.text_content, "a\nb\nc");
-    let d2f = |node: NodeId, n: usize| -> Vec<usize> {
+    let d2f = |node: NodeId, n: u64| -> Vec<u64> {
         (0..=n)
             .map(|o| dom_cursor_to_ifc_offset(&il.text_ranges, node.0, o).unwrap())
             .collect()

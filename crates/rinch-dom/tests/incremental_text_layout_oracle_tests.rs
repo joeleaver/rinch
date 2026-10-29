@@ -57,7 +57,7 @@ fn r(v: f32) -> f32 {
     (v * 64.0).round() / 64.0
 }
 
-fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
+fn walk(doc: &RinchDocument, id: u64, depth: usize, out: &mut Vec<String>) {
     let Some(node) = doc.tree.get(id) else {
         return;
     };
@@ -2995,7 +2995,7 @@ fn rv_seed1733_hist(contents: bool, whole: bool, name: &str) {
                 } else {
                     h.0
                 };
-                let kids: Vec<usize> = doc.tree.get(w.0).unwrap().children.clone();
+                let kids: Vec<u64> = doc.tree.get(w.0).unwrap().children.clone();
                 NodeId(
                     kids.into_iter()
                         .find(|&k| {

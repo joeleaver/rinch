@@ -27,7 +27,7 @@ struct Fixture {
 /// A 200x30 `<select>` with three options, starting on `one`, at a known place
 /// in the window, with a sibling block below it to press on "outside".
 fn mount() -> Fixture {
-    let sel: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sel: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let sel_in = sel.clone();
     let picks: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let picks_in = picks.clone();

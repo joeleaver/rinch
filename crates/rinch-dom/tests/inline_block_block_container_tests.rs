@@ -284,7 +284,7 @@ fn an_inline_flex_lays_its_mixed_content_out_in_a_row() {
          no anonymous block boxes — got {:?}",
         doc.tree.get(w.0).unwrap().run_boxes,
     );
-    let claimed: Vec<usize> = doc
+    let claimed: Vec<u64> = doc
         .tree
         .nodes
         .iter()

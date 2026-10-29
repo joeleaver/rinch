@@ -58,13 +58,13 @@ fn build(spec: &Spec) -> (RinchApp, Vec<NodeHandle>) {
 }
 
 struct Outcome {
-    changed: usize,
-    stale: usize,
+    changed: u64,
+    stale: u64,
     full: u64,
     repainted: u64,
 }
 
-fn probe(spec: &Spec, target: usize, to: &str) -> Outcome {
+fn probe(spec: &Spec, target: u64, to: &str) -> Outcome {
     let (mut app, hs) = build(spec);
     let before = full_frame(&mut app);
     hs[target].set_attribute("style", to);

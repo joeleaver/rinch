@@ -16,7 +16,7 @@ use rinch_macros::rsx;
 const VIEWPORT: (f32, f32) = (800.0, 600.0);
 const SCALE: f64 = 1.25;
 
-fn mount() -> (RinchApp, usize, usize) {
+fn mount() -> (RinchApp, u64, u64) {
     let mut app = RinchApp::new(|__scope: &mut RenderScope| {
         rsx! {
             div { class: "scroller", style: "width: 200px; height: 100px; overflow-y: auto;",

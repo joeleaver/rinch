@@ -107,7 +107,7 @@ impl Page {
     }
 
     /// The host element of the textblock holding `pos`.
-    fn block(&self, pos: usize) -> usize {
+    fn block(&self, pos: usize) -> u64 {
         self.handle.caret_address(Pos(pos)).unwrap().0
     }
 

@@ -47,7 +47,7 @@ fn build(doc: &mut RinchDocument, parent: NodeId, el: &El) {
 
 /// One `div` scroll container under `<body>`, holding `children`, laid out at
 /// the viewport.
-fn scroller(container_style: &str, children: &[El]) -> (RinchDocument, usize) {
+fn scroller(container_style: &str, children: &[El]) -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
@@ -72,7 +72,7 @@ fn max_scroll(bars: &Scrollbars) -> (Option<f64>, Option<f64>) {
 /// paint and hit testing use, and the `DomDocument` pair the wheel clamps to.
 type Ranges = ((f64, f64), (Option<f64>, Option<f64>), (f64, f64));
 
-fn ranges(doc: &RinchDocument, id: usize) -> Ranges {
+fn ranges(doc: &RinchDocument, id: u64) -> Ranges {
     (
         content_extents(&doc.tree, id),
         max_scroll(&scrollbars(&doc.tree, id, 1.0)),
@@ -269,7 +269,7 @@ const TEXT_SCROLLER: &str =
     "width: 200px; height: 40px; overflow: auto; font-size: 16px; line-height: 20px";
 
 /// A text scroller: `wrapper` (a `span` style, or `None` for bare text).
-fn text_scroller(container_style: &str, wrapper: Option<&str>) -> (RinchDocument, usize) {
+fn text_scroller(container_style: &str, wrapper: Option<&str>) -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
@@ -293,7 +293,7 @@ fn text_scroller(container_style: &str, wrapper: Option<&str>) -> (RinchDocument
 /// `(max_scroll_x, max_scroll_y, scroll_height)`: the bars and the wheel's
 /// range. The width is not asserted beyond "no horizontal bar" — it is the
 /// longest line's advance, which is the host font's.
-fn text_ranges(doc: &RinchDocument, id: usize) -> (Option<f64>, Option<f64>, f64) {
+fn text_ranges(doc: &RinchDocument, id: u64) -> (Option<f64>, Option<f64>, f64) {
     let (x, y) = max_scroll(&scrollbars(&doc.tree, id, 1.0));
     (x, y, doc.scroll_height(NodeId(id)))
 }
@@ -509,7 +509,7 @@ fn build_mixed(doc: &mut RinchDocument, parent: NodeId, piece: &Mixed) {
     }
 }
 
-fn mixed_scroller(extra_style: &str, pieces: &[Mixed]) -> (RinchDocument, usize) {
+fn mixed_scroller(extra_style: &str, pieces: &[Mixed]) -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");

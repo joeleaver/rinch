@@ -19,21 +19,21 @@ use std::cell::Cell;
 /// Ids captured at mount, in DOM order.
 #[derive(Clone, Copy)]
 struct Ids {
-    plain: usize,
-    disabled: usize,
-    readonly: usize,
-    data_disabled: usize,
+    plain: u64,
+    disabled: u64,
+    readonly: u64,
+    data_disabled: u64,
     /// `disabled="false"` — **disabled**, like a browser (issue #612).
-    disabled_false: usize,
+    disabled_false: u64,
     /// `readonly="false"` — **read-only**, for the same reason.
-    readonly_false: usize,
+    readonly_false: u64,
     /// `data-disabled="false"` — rinch's own attribute, which keeps the escape.
-    data_disabled_false: usize,
-    in_fieldset: usize,
-    in_legend: usize,
+    data_disabled_false: u64,
+    in_fieldset: u64,
+    in_legend: u64,
     select: u64,
-    select_in_fieldset: usize,
-    fieldset: usize,
+    select_in_fieldset: u64,
+    fieldset: u64,
 }
 
 /// One document holding every case: an ordinary `<input>`, a `disabled` one, a

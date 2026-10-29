@@ -22,9 +22,9 @@ use std::cell::Cell;
 
 const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 
-fn mount(tag: &'static str, width: u32) -> (RinchApp, usize) {
+fn mount(tag: &'static str, width: u32) -> (RinchApp, u64) {
     let input_id = register_input_handler(InputCallback::new(|_v: String| {}));
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

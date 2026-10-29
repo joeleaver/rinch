@@ -1114,7 +1114,7 @@ mod transform_dpi_covariance {
     use peniko::kurbo::Affine;
 
     /// One `<div>` carrying `style`, laid out, plus its node id.
-    pub(super) fn styled_div(style: &str) -> (RinchDocument, usize) {
+    pub(super) fn styled_div(style: &str) -> (RinchDocument, u64) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let div = doc.create_element("div");
@@ -2911,7 +2911,7 @@ mod opacity_layer_bounds {
 
     /// `<body><div id=subject style=...>{children}</div></body>`, laid out.
     /// Returns the document and the subject's id.
-    fn doc_with(subject_style: &str, children: &[&str]) -> (RinchDocument, usize) {
+    fn doc_with(subject_style: &str, children: &[&str]) -> (RinchDocument, u64) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let subject = doc.create_element("div");
@@ -2927,13 +2927,13 @@ mod opacity_layer_bounds {
     }
 
     /// The bounds paint would hand the layer it opens around `id`.
-    fn bounds_of(doc: &RinchDocument, id: usize) -> Rect {
+    fn bounds_of(doc: &RinchDocument, id: u64) -> Rect {
         let (x, y) = compute_absolute_position(&doc.tree, id, 1.0);
         opacity_layer_bounds(&doc.tree, id, 1.0, x, y)
     }
 
     /// Where a node's border box actually is, in the same space as the bounds.
-    fn box_of(doc: &RinchDocument, id: usize) -> Rect {
+    fn box_of(doc: &RinchDocument, id: u64) -> Rect {
         let (x, y) = compute_absolute_position(&doc.tree, id, 1.0);
         let l = doc.tree.get(id).unwrap().layout;
         Rect::new(x, y, x + l.width as f64, y + l.height as f64)
@@ -3273,7 +3273,7 @@ mod opacity_layer_bounds {
 
     /// `layer(opacity) > clipper(overflow: hidden) > [children…]`, one child per
     /// name. Returns `(doc, layer, the fixed child if any)`.
-    fn layer_over_clipper(children: &[&str]) -> (RinchDocument, usize, usize) {
+    fn layer_over_clipper(children: &[&str]) -> (RinchDocument, u64, u64) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
 
@@ -3322,7 +3322,7 @@ mod opacity_layer_bounds {
 
     /// `layer > clipper > [n plain fillers…, fixed]` — the fixed box **last**,
     /// behind enough siblings to exhaust `MAX_VISITS`.
-    fn clipper_over_fillers_then_fixed(n: usize) -> (RinchDocument, usize, usize) {
+    fn clipper_over_fillers_then_fixed(n: u64) -> (RinchDocument, u64, u64) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
 
@@ -3363,7 +3363,7 @@ mod opacity_layer_bounds {
     /// `layer > clipper > (depth nested divs) > fixed` — deeper than
     /// `MAX_DEPTH`, so the walk gives up on depth rather than on the budget.
     /// No wide node anywhere, which is what makes this a separate route.
-    fn clipper_over_deep_nest_then_fixed(depth: usize) -> (RinchDocument, usize, usize) {
+    fn clipper_over_deep_nest_then_fixed(depth: u64) -> (RinchDocument, u64, u64) {
         let (mut doc, layer, clipper) = layer_and_clipper();
         let mut cursor = clipper;
         for _ in 0..depth {
@@ -3386,9 +3386,9 @@ mod opacity_layer_bounds {
     /// `layer > clipper > p(lots of text, then an inline-block > fixed)` — the
     /// inline-block is on a line the line budget never reaches.
     fn clipper_over_long_text_then_inline_fixed(
-        words: usize,
+        words: u64,
         display: &str,
-    ) -> (RinchDocument, usize, usize) {
+    ) -> (RinchDocument, u64, u64) {
         let (mut doc, layer, clipper) = layer_and_clipper();
         let para = doc.create_element("p");
         doc.set_attribute(para, "style", "width: 40px; font-size: 12px");

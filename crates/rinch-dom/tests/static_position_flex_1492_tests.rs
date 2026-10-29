@@ -324,7 +324,7 @@ fn one(doc: &RinchDocument, selector: &str) -> usize {
     found[0]
 }
 
-fn screen(doc: &RinchDocument, id: usize) -> (f32, f32) {
+fn screen(doc: &RinchDocument, id: u64) -> (f32, f32) {
     let (x, y) = rinch_dom::paint::compute_absolute_position(&doc.tree, id, 1.0);
     (x as f32, y as f32)
 }

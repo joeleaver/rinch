@@ -76,7 +76,7 @@ impl Page {
         ((bx + x) as f64, (by + LINE / 2.0) as f64)
     }
 
-    fn node_with(&self, attr: &str) -> Option<usize> {
+    fn node_with(&self, attr: &str) -> Option<u64> {
         let d = self.app.doc.as_ref().unwrap().borrow();
         d.tree
             .nodes
@@ -96,7 +96,7 @@ impl Page {
         Some(painted_element_box(&d.tree, id))
     }
 
-    fn container(&self) -> usize {
+    fn container(&self) -> u64 {
         self.node_with("data-pm-editor").unwrap()
     }
 

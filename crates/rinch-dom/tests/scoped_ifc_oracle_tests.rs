@@ -100,7 +100,7 @@ fn snapshot(doc: &RinchDocument) -> Vec<String> {
     out
 }
 
-fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
+fn walk(doc: &RinchDocument, id: u64, depth: usize, out: &mut Vec<String>) {
     let Some(node) = doc.tree.get(id) else {
         return;
     };
@@ -193,7 +193,7 @@ fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
     }
 }
 
-fn has_atomic_inline_ancestor(doc: &RinchDocument, id: usize) -> bool {
+fn has_atomic_inline_ancestor(doc: &RinchDocument, id: u64) -> bool {
     let mut cur = doc.tree.get(id).and_then(|n| n.parent);
     while let Some(p) = cur {
         let Some(n) = doc.tree.get(p) else {
@@ -221,7 +221,7 @@ fn new_doc() -> RinchDocument {
 fn fresh_twin(src: &RinchDocument) -> RinchDocument {
     let mut doc = new_doc();
     let body = doc.body();
-    let kids: Vec<usize> = src.tree.get(src.tree.body_id).unwrap().children.clone();
+    let kids: Vec<u64> = src.tree.get(src.tree.body_id).unwrap().children.clone();
     for c in kids {
         if let Some(n) = copy_node(src, c, &mut doc) {
             doc.append_child(body, n);
@@ -232,7 +232,7 @@ fn fresh_twin(src: &RinchDocument) -> RinchDocument {
     doc
 }
 
-fn copy_node(src: &RinchDocument, id: usize, dst: &mut RinchDocument) -> Option<NodeId> {
+fn copy_node(src: &RinchDocument, id: u64, dst: &mut RinchDocument) -> Option<NodeId> {
     let node = src.tree.get(id)?;
     if node.is_pseudo_element || node.is_anonymous_block_box {
         return None;
@@ -1046,7 +1046,7 @@ impl Rng {
         self.0 = x;
         x.wrapping_mul(0x2545_f491_4f6c_dd1d)
     }
-    fn below(&mut self, n: usize) -> usize {
+    fn below(&mut self, n: u64) -> usize {
         (self.next() % n as u64) as usize
     }
     fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
@@ -1401,7 +1401,7 @@ fn run_random(seeds: std::ops::Range<u64>, steps: usize) -> Result<RandomStats, 
                     let ff = matches_fresh(f, &snapshot(f)).is_none();
                     if trace_on() {
                         eprintln!("scoped vs fresh:\n{}", sd.unwrap_or_default());
-                        let ids: Vec<usize> = std::env::var("SCOPED_ORACLE_NODE")
+                        let ids: Vec<u64> = std::env::var("SCOPED_ORACLE_NODE")
                             .unwrap_or_default()
                             .split(',')
                             .filter_map(|v| v.parse().ok())
@@ -1473,16 +1473,16 @@ fn run_random(seeds: std::ops::Range<u64>, steps: usize) -> Result<RandomStats, 
 #[derive(Debug, Default)]
 struct RandomStats {
     /// Steps compared with the twins agreeing and matching a fresh layout.
-    steps_compared: usize,
+    steps_compared: u64,
     /// Seeds stopped because both twins agreed and both differed from a
     /// fresh layout: a pre-existing defect.
-    fresh_divergent: usize,
+    fresh_divergent: u64,
     /// Seeds whose whole-document twin panicked (a Taffy `set_children` panic
     /// reproduced on `main`).
-    control_broken: usize,
+    control_broken: u64,
     /// Seeds where the twins differed and the scoped one matched a fresh layout
     /// — the whole-document pass was the one wrong.
-    scoped_better: usize,
+    scoped_better: u64,
     /// Which seeds those were, to replay with `SCOPED_ORACLE_SEED`.
     scoped_better_seeds: Vec<u64>,
 }

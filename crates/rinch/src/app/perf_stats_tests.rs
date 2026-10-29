@@ -676,7 +676,7 @@ fn a_release_right_after_a_drag_move_sees_the_moved_box() {
 /// A box in flow inside a wrapper, starting a `property` transition from
 /// `from` to `to` (both in `.go`), mid-flight after one tick; returns the app
 /// and the box's id. The pointer has warmed the hit cache just before the tick.
-fn transition_into_a_stacking_context(property: &str, from: &str, to: &str) -> (RinchApp, usize) {
+fn transition_into_a_stacking_context(property: &str, from: &str, to: &str) -> (RinchApp, u64) {
     let css = format!(
         ".box {{ width: 100px; height: 100px; {property}: {from}; transition: {property} 1s linear; }}
          .box.go {{ {property}: {to}; }}"

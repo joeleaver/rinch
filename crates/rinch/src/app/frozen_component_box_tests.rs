@@ -57,10 +57,10 @@ fn badge_beside_text(label: &'static str) -> RinchApp {
 }
 
 /// The one `.rinch-badge` node's id.
-fn badge_id(app: &RinchApp) -> usize {
+fn badge_id(app: &RinchApp) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()

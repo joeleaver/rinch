@@ -148,10 +148,10 @@ fn hover(app: &mut RinchApp, node: Option<u64>) {
     d.update_hover(node, &mut changed);
 }
 
-fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
+fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<u64> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let mut found: Vec<usize> = d
+    let mut found: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -166,7 +166,7 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
     found
 }
 
-fn parent_of(app: &RinchApp, node: u64) -> Option<usize> {
+fn parent_of(app: &RinchApp, node: u64) -> Option<u64> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).and_then(|n| n.parent)
@@ -184,10 +184,10 @@ fn is_inside(app: &RinchApp, node: u64, ancestor: u64) -> bool {
 }
 
 /// The one node carrying `data-probe="{marker}"`.
-fn probe(app: &RinchApp, marker: &str) -> usize {
+fn probe(app: &RinchApp, marker: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let found: Vec<usize> = d
+    let found: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -199,8 +199,8 @@ fn probe(app: &RinchApp, marker: &str) -> usize {
 }
 
 /// The one node with `class` whose parent is `parent`.
-fn child_with_class(app: &RinchApp, parent: u64, class: &str) -> usize {
-    let found: Vec<usize> = nodes_with_class(app, class)
+fn child_with_class(app: &RinchApp, parent: u64, class: &str) -> u64 {
+    let found: Vec<u64> = nodes_with_class(app, class)
         .into_iter()
         .filter(|n| parent_of(app, *n) == Some(parent))
         .collect();

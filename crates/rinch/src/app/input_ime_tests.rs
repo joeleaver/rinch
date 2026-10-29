@@ -12,7 +12,7 @@ use rinch_core::events::{InputCallback, register_input_handler};
 use std::cell::Cell;
 
 /// One `<input>` that records every `oninput` payload.
-fn mount_fixture() -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
+fn mount_fixture() -> (RinchApp, u64, Rc<RefCell<Vec<String>>>) {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let input_id = {
         let log = log.clone();
@@ -20,7 +20,7 @@ fn mount_fixture() -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
             log.borrow_mut().push(v);
         }))
     };
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

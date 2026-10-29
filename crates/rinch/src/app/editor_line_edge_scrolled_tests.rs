@@ -111,12 +111,12 @@ fn key(app: &mut RinchApp, key: KeyCode, shift: bool) {
 
 impl Page {
     /// The first paragraph's host id.
-    fn block(&self) -> usize {
+    fn block(&self) -> u64 {
         self.handle.caret_address(Pos(1)).unwrap().0
     }
 
     /// The editor container's host id.
-    fn container(&self) -> usize {
+    fn container(&self) -> u64 {
         let doc = self.app.doc.as_ref().unwrap().borrow();
         doc.query_selector_all("[data-pm-editor]")[0].0
     }

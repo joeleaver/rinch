@@ -5158,7 +5158,7 @@ mod tests {
     // unhardened walk produced. A positive assertion alone survives most of
     // these regressions, because the two boxes overlap.
 
-    fn child_of(doc: &mut RinchDocument, parent: rinch_core::dom::NodeId, style: &str) -> usize {
+    fn child_of(doc: &mut RinchDocument, parent: rinch_core::dom::NodeId, style: &str) -> u64 {
         let el = doc.create_element("div");
         doc.set_attribute(el, "style", style);
         doc.append_child(parent, el);

@@ -8335,7 +8335,7 @@ mod tests {
                     self.0 = x;
                     x
                 }
-                fn below(&mut self, n: usize) -> usize {
+                fn below(&mut self, n: u64) -> usize {
                     if n == 0 {
                         0
                     } else {
@@ -8365,7 +8365,7 @@ mod tests {
                 let mut seen = [0usize, 0usize];
                 let mut rng = Rng::new(seed);
 
-                let deliver = |p: usize, seen: &mut [usize; 2]| {
+                let deliver = |p: u64, seen: &mut [usize; 2]| {
                     let delta = {
                         let q = inbox[p].borrow();
                         (seen[p] < q.len()).then(|| q[seen[p]].clone())
@@ -9044,7 +9044,7 @@ mod tests {
         }
 
         /// A caret that moves on every call: `a`, `b`, `a`, `b`, …
-        fn alternating(a: usize, b: usize) -> impl Fn() -> Selection {
+        fn alternating(a: u64, b: u64) -> impl Fn() -> Selection {
             let flip = Cell::new(false);
             move || {
                 flip.set(!flip.get());
@@ -9535,7 +9535,7 @@ mod tests {
         }
 
         /// A caret that moves on every call.
-        fn alternating(a: usize, b: usize) -> impl Fn() -> Selection {
+        fn alternating(a: u64, b: u64) -> impl Fn() -> Selection {
             let flip = Cell::new(false);
             move || {
                 flip.set(!flip.get());
@@ -10184,7 +10184,7 @@ mod tests {
         }
 
         thread_local! {
-            static FOCUSED: Cell<Option<usize>> = const { Cell::new(None) };
+            static FOCUSED: Cell<Option<u64>> = const { Cell::new(None) };
         }
 
         fn record_focus(container: u64) {
@@ -10206,7 +10206,7 @@ mod tests {
         }
 
         thread_local! {
-            static BLURRED: Cell<Option<usize>> = const { Cell::new(None) };
+            static BLURRED: Cell<Option<u64>> = const { Cell::new(None) };
         }
 
         fn record_blur(container: u64) {

@@ -90,10 +90,10 @@ const PHYSICAL: (u32, u32) = (804, 600);
 /// The spinning element: the oval inside the `Loader`.
 const OVAL: &str = "rinch-loader__oval";
 
-fn node_with_class(app: &RinchApp, class: &str) -> usize {
+fn node_with_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -259,7 +259,7 @@ fn mount_loader_in_panel(open_at_start: bool) -> (RinchApp, Signal<bool>) {
 /// Pump the frame clock `n` times, the way the desktop event loop does when
 /// nothing else is happening, and report how many of those frames asked the
 /// shell to redraw.
-fn idle_frames_requesting_redraw(app: &mut RinchApp, n: usize) -> usize {
+fn idle_frames_requesting_redraw(app: &mut RinchApp, n: u64) -> u64 {
     let mut asked = 0;
     for _ in 0..n {
         let actions = app.handle_event(PlatformEvent::AboutToWait, PHYSICAL, 1.0);

@@ -25,11 +25,11 @@ const X: f32 = 100.0;
 
 struct Fixture {
     app: RinchApp,
-    list: usize,
+    list: u64,
     /// The row index each `data-ondragover` fired on, in order.
-    over: Rc<RefCell<Vec<usize>>>,
+    over: Rc<RefCell<Vec<u64>>>,
     /// The row index each `data-ondragenter` fired on, in order.
-    entered: Rc<RefCell<Vec<usize>>>,
+    entered: Rc<RefCell<Vec<u64>>>,
     /// `data-onscroll` on the list.
     scrolls: Rc<Cell<u32>>,
 }
@@ -38,8 +38,8 @@ struct Fixture {
 /// drop target, and a draggable source at (500,40)-(600,80) outside it.
 /// `list_style` is appended to the list's own style.
 fn fixture_with(list_style: &str, page_height: Option<f32>) -> Fixture {
-    let over: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
-    let entered: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    let over: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    let entered: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
     let scrolls = Rc::new(Cell::new(0u32));
     let (over_sink, enter_sink, scroll_sink) = (over.clone(), entered.clone(), scrolls.clone());
     let list_style = list_style.to_string();
@@ -111,7 +111,7 @@ fn fixture() -> Fixture {
     fixture_with("", None)
 }
 
-fn find_by_id(app: &RinchApp, wanted: &str) -> usize {
+fn find_by_id(app: &RinchApp, wanted: &str) -> u64 {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .nodes

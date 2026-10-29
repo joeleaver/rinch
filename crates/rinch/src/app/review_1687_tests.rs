@@ -4,7 +4,7 @@ use std::cell::Cell;
 
 const FAM: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
 
-fn page(tag: &'static str, value: String, width: u32) -> (RinchApp, usize) {
+fn page(tag: &'static str, value: String, width: u32) -> (RinchApp, u64) {
     let id = Rc::new(Cell::new(0usize));
     let id_in = id.clone();
     let style = format!(
@@ -24,7 +24,7 @@ fn page(tag: &'static str, value: String, width: u32) -> (RinchApp, usize) {
     (app, id.get())
 }
 
-fn sweep_line(app: &mut RinchApp, field: usize, y_off: f32) -> Vec<(f32, usize)> {
+fn sweep_line(app: &mut RinchApp, field: u64, y_off: f32) -> Vec<(f32, usize)> {
     let (bx, by, bw, _) = {
         let d = app.doc.as_ref().unwrap().borrow();
         painted_element_box(&d.tree, field)
@@ -130,7 +130,7 @@ fn review_1687_read_only_selection_lands_on_a_cluster_edge() {
         ));
         x += 0.5;
     }
-    let inside: Vec<usize> = got
+    let inside: Vec<u64> = got
         .iter()
         .copied()
         .filter(|&o| !rinch_words::is_grapheme_boundary(VALUE, o))
@@ -215,7 +215,7 @@ fn review_1687_textarea_arrow_down_lands_on_a_cluster_edge() {
         );
         app.resolve_and_repaint(800.0, 600.0);
         let d = app.doc.as_ref().unwrap().borrow();
-        let c: usize = d
+        let c: u64 = d
             .tree
             .get(id.get())
             .unwrap()
@@ -227,7 +227,7 @@ fn review_1687_textarea_arrow_down_lands_on_a_cluster_edge() {
         landed.push(c);
     }
     let _ = bx;
-    let inside: Vec<usize> = landed
+    let inside: Vec<u64> = landed
         .iter()
         .copied()
         .filter(|&o| !rinch_words::is_grapheme_boundary(&value, o))

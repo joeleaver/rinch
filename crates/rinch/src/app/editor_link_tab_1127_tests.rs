@@ -71,7 +71,7 @@ fn page(html: &str) -> Page {
 }
 
 impl Page {
-    fn block(&self) -> usize {
+    fn block(&self) -> u64 {
         self.handle.caret_address(Pos(1)).unwrap().0
     }
     /// The block's painted origin.

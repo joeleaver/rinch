@@ -73,7 +73,7 @@ fn focused_target_freed(markup: &str, dispose: bool) -> (Vec<String>, FocusTarge
     let own: Rc<RefCell<Option<Scope>>> = Rc::new(RefCell::new(None));
     let own_in = own.clone();
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let (log_in, ids_in) = (log.clone(), ids.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

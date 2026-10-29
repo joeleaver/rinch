@@ -27,7 +27,7 @@ fn page(
     ty: Option<&'static str>,
     style: impl Into<String>,
     value: &'static str,
-) -> (RinchApp, usize) {
+) -> (RinchApp, u64) {
     let id: Rc<Cell<usize>> = Rc::default();
     let id_in = id.clone();
     let style: String = style.into();
@@ -217,8 +217,8 @@ fn assert_caret_is_painted(app: &mut RinchApp, id: u64, byte: usize, what: &str)
 fn assert_glyph_between_carets(
     app: &mut RinchApp,
     id: u64,
-    byte: usize,
-    next: usize,
+    byte: u64,
+    next: u64,
     what: &str,
 ) {
     let g = mcp_glyph(app, id, byte, 1.0);
@@ -358,7 +358,7 @@ fn an_unpadded_paragraph_answers_its_painted_glyph() {
 
 fn page_html(
     build: impl Fn(&mut RenderScope) -> (NodeHandle, NodeHandle) + 'static,
-) -> (RinchApp, usize) {
+) -> (RinchApp, u64) {
     let id: Rc<Cell<usize>> = Rc::default();
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

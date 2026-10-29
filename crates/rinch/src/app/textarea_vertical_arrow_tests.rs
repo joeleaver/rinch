@@ -20,9 +20,9 @@ const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 
 /// One focusable control of tag `tag` (and `type` attribute `ty`, if any),
 /// `width` px wide, in Inter at 16px. Returns the app and the control's id.
-fn mount(tag: &'static str, ty: Option<&'static str>, width: u32) -> (RinchApp, usize) {
+fn mount(tag: &'static str, ty: Option<&'static str>, width: u32) -> (RinchApp, u64) {
     let input_id = register_input_handler(InputCallback::new(|_v: String| {}));
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -416,7 +416,7 @@ fn painted_caret_rows(app: &mut RinchApp, id: u64) -> std::ops::RangeInclusive<u
     let (on, w) = frame(app, id, "true");
     let (off, _) = frame(app, id, "false");
     let w = w as usize;
-    let rows: Vec<usize> = on
+    let rows: Vec<u64> = on
         .as_chunks::<4>()
         .0
         .iter()

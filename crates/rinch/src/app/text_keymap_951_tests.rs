@@ -49,9 +49,9 @@ const SHIFT: Modifiers = Modifiers {
 const CTRL: Modifiers = Modifiers { ctrl: true, ..NONE };
 
 /// A focused `tag` of `width` px under the macOS keymap, holding `text`.
-fn field(tag: &'static str, width: u32, text: &str) -> (RinchApp, usize) {
+fn field(tag: &'static str, width: u32, text: &str) -> (RinchApp, u64) {
     let input_id = register_input_handler(InputCallback::new(|_v: String| {}));
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -373,9 +373,9 @@ fn field_with(
     attrs: &[(&'static str, &'static str)],
     tag: &'static str,
     text: &'static str,
-) -> (RinchApp, usize) {
+) -> (RinchApp, u64) {
     let input_id = register_input_handler(InputCallback::new(|_v: String| {}));
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let attrs: Vec<(&'static str, &'static str)> = attrs.to_vec();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

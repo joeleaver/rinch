@@ -36,7 +36,7 @@ fn text_in(doc: &mut RinchDocument, parent: NodeId, text: &str) -> NodeId {
 }
 
 /// Every node of `node`'s subtree that still carries an `ifc_root` mark.
-fn marked_in(doc: &RinchDocument, node: NodeId) -> Vec<usize> {
+fn marked_in(doc: &RinchDocument, node: NodeId) -> Vec<u64> {
     let mut out = Vec::new();
     let mut stack = vec![node.0];
     while let Some(id) = stack.pop() {

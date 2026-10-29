@@ -54,7 +54,7 @@ fn carries_inline_root(doc: &RinchDocument, node: NodeId) -> bool {
     )
 }
 
-fn taffy_child_count(doc: &RinchDocument, node: NodeId) -> usize {
+fn taffy_child_count(doc: &RinchDocument, node: NodeId) -> u64 {
     doc.tree
         .taffy
         .children(taffy_id_of(doc, node))

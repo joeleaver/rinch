@@ -92,9 +92,9 @@ fn non_ascii_words_and_off_boundary_carets_are_handled() {
 
 /// One `<input>` holding `value`, with an `oninput` so the shell will claim
 /// it. Returns the app and the input's node id.
-fn app_with_input(value: &'static str) -> (RinchApp, usize) {
+fn app_with_input(value: &'static str) -> (RinchApp, u64) {
     let oninput = register_input_handler(InputCallback::new(|_| {}));
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

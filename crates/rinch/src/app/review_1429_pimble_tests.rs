@@ -38,7 +38,7 @@ fn red_px(px: &[u8]) -> usize {
 fn img_boxes(app: &RinchApp) -> Vec<(f32, f32)> {
     let doc = app.doc.as_ref().expect("mounted");
     let d = doc.borrow();
-    let mut ids: Vec<usize> = d
+    let mut ids: Vec<u64> = d
         .tree
         .nodes
         .iter()

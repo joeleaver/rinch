@@ -44,7 +44,7 @@ fn count(px: &[u8], (x0, x1, y0, y1): (u32, u32, u32, u32), rgb: [u8; 3]) -> usi
     n
 }
 
-fn id(app: &RinchApp, sel: &str) -> usize {
+fn id(app: &RinchApp, sel: &str) -> u64 {
     app.doc.as_ref().unwrap().borrow().query_selector_all(sel)[0].0
 }
 

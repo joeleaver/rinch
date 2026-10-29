@@ -29,7 +29,7 @@ const WORDS: &str = "lorem ipsum dolor sit amet consectetur adipiscing elit sed 
 struct Rig {
     app: RinchApp,
     handle: crate::editor::EditorHandle,
-    pane: usize,
+    pane: u64,
 }
 
 /// `paragraphs` paragraphs of ~48 words in a 500x500 pane. `flex_pane`: the

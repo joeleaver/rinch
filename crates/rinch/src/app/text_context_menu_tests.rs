@@ -182,12 +182,12 @@ const FIELD_STYLE: &str = "width: 300px; height: 30px; padding: 0; margin: 0; \
 struct Ids {
     input: u64,
     textarea: u64,
-    checkbox: usize,
-    plain: usize,
+    checkbox: u64,
+    plain: u64,
     /// An input under a `div` carrying a live `data-oncontextmenu`.
-    guarded_input: usize,
+    guarded_input: u64,
     /// A `<div tabindex>` beside the fields, for a press that lands elsewhere.
-    other: usize,
+    other: u64,
 }
 
 type Log = Rc<RefCell<Vec<String>>>;
@@ -1271,7 +1271,7 @@ fn two_hundred_cycles_add_no_nodes_and_the_panel_is_as_tall_as_its_rows() {
 }
 
 /// The panel's node ids and every node under it.
-fn panel_subtree(app: &RinchApp) -> Vec<usize> {
+fn panel_subtree(app: &RinchApp) -> Vec<u64> {
     let Some(panel) = app.text_menu_panel.as_ref().map(|p| p.panel_id) else {
         return Vec::new();
     };
@@ -1442,9 +1442,9 @@ mod anchor {
     const OFFSET_FIELD: &str = "width: 300px; height: 80px; padding: 0; margin: 0; \
          font-size: 16px; line-height: 20px; font-family: sans-serif";
 
-    fn field_app(tag: &'static str, value: &'static str, style: &'static str) -> (RinchApp, usize) {
+    fn field_app(tag: &'static str, value: &'static str, style: &'static str) -> (RinchApp, u64) {
         let h = register_input_handler(InputCallback::new(|_| {}));
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -1661,7 +1661,7 @@ mod unadopted_write {
     /// writes the field's `value` — during the press itself. (It was a
     /// `data-rid` until #1093: a right press no longer clicks, and a press's
     /// own `data-onmousedown` is what still runs user code on every button.)
-    fn mousedown_writing_page(new_value: &'static str) -> (RinchApp, usize, Rc<Cell<u32>>) {
+    fn mousedown_writing_page(new_value: &'static str) -> (RinchApp, u64, Rc<Cell<u32>>) {
         let node: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
         let fired = Rc::new(Cell::new(0u32));
         let h = register_input_handler(InputCallback::new(|_| {}));
@@ -1856,9 +1856,9 @@ mod anchor_against_paint {
         tag: &'static str,
         value: &'static str,
         style: &'static str,
-    ) -> (RinchApp, usize) {
+    ) -> (RinchApp, u64) {
         let h = register_input_handler(InputCallback::new(|_| {}));
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -2003,7 +2003,7 @@ mod editor {
         app: RinchApp,
         container: u64,
         handle: crate::editor::EditorHandle,
-        other: usize,
+        other: u64,
     }
 
     fn editor_page(html: &'static str) -> EditorPage {
@@ -2183,10 +2183,10 @@ mod in_a_modal {
 
     /// A `Modal` with `lock_scroll` (its default) holding one text field, under
     /// the real theme and component sheets, opened from the start.
-    fn modal_page() -> (RinchApp, usize) {
+    fn modal_page() -> (RinchApp, u64) {
         let opened = Signal::new(true);
         let input_h = register_input_handler(InputCallback::new(|_| {}));
-        let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let input = scope.create_element("input");

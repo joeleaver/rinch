@@ -7406,7 +7406,7 @@ mod video_inline_dirty_region_tests {
     ///
     /// Returns the app and the label's node id.
     fn mount() -> (RinchApp, usize) {
-        let label_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let label_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let captured = label_id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -7578,7 +7578,7 @@ mod viewport_relayout_tests {
     /// A `width/height: 100%` box resolves against the viewport, so its layout
     /// box *is* the viewport the document currently believes in.
     fn mount_at_logical() -> (RinchApp, usize) {
-        let captured: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let captured: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let captured_in = captured.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -7882,7 +7882,7 @@ mod tab_focus_tests {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
         let oninput_id = register_input_handler(InputCallback::new(|_| {}));
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -8083,7 +8083,7 @@ mod tab_focus_tests {
     /// a quiet no-op (no panic) and Tab keeps moving.
     #[test]
     fn node_without_handler_neither_panics_nor_swallows_tab() {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -8185,7 +8185,7 @@ mod tab_focus_tests {
     /// keeps it out of the Tab order, applied to the pointer.
     #[test]
     fn a_press_on_a_disabled_node_claims_nothing() {
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -8229,7 +8229,7 @@ mod tab_focus_tests {
     #[test]
     fn tab_after_click_anchors_at_the_clicked_position() {
         let oninput_id = register_input_handler(InputCallback::new(|_| {}));
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -8287,7 +8287,7 @@ mod tab_focus_tests {
     /// tabbable and only this test's own fixture was ever caught.
     #[test]
     fn disabled_and_negative_tabindex_skip_only_the_node() {
-        let ids: Rc<Cell<Option<[usize; 5]>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<[u64; 5]>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -8405,8 +8405,8 @@ mod hidden_box_hit_tests {
     #[test]
     fn a_hidden_overlays_former_box_takes_no_clicks() {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-        let panel_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
-        let item_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let panel_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+        let item_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
 
         let clicks_in = clicks.clone();
         let panel_in = panel_id.clone();
@@ -8539,12 +8539,12 @@ mod popup_backdrop_hit_tests {
     struct Menu {
         app: RinchApp,
         /// The first item's node id, so a tap can be aimed at where it is.
-        item: usize,
+        item: u64,
         /// The clipping shell's node id, so a test can prove a sample point is
         /// outside it rather than assert it from the style string.
-        shell: usize,
+        shell: u64,
         /// The chrome bar's node id, when the fixture mounts one.
-        chrome: Option<usize>,
+        chrome: Option<u64>,
         /// How many times the item's own `onclick` ran.
         item_clicks: Rc<Cell<usize>>,
         /// How many times the menu asked to be closed — by the backdrop, or by
@@ -8639,9 +8639,9 @@ mod popup_backdrop_hit_tests {
         let item_clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let closes: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let chrome_clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-        let item_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
-        let shell_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
-        let chrome_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let item_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+        let shell_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+        let chrome_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
 
         let clicks_in = item_clicks.clone();
         let closes_in = closes.clone();
@@ -8758,7 +8758,7 @@ mod popup_backdrop_hit_tests {
     /// its *occupied* count, not one past its highest index, so the moment
     /// anything in the tree is freed the backdrop can live past the end of
     /// that range and this would fail blaming the component.
-    fn find_by_class(app: &RinchApp, class: &str) -> usize {
+    fn find_by_class(app: &RinchApp, class: &str) -> u64 {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
         d.tree
@@ -8769,7 +8769,7 @@ mod popup_backdrop_hit_tests {
             .unwrap_or_else(|| panic!("no node carries the class {class}"))
     }
 
-    fn find_backdrop(app: &RinchApp) -> usize {
+    fn find_backdrop(app: &RinchApp) -> u64 {
         find_by_class(app, "rinch-dropdown-menu__backdrop")
     }
 
@@ -9064,7 +9064,7 @@ mod popup_backdrop_hit_tests {
     fn mount_select(shell_style: &'static str) -> (RinchApp, usize) {
         use rinch_components::{Select, SelectOption};
 
-        let shell_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let shell_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let shell_id_in = shell_id.clone();
 
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -9166,7 +9166,7 @@ mod pointer_cancel_tests {
     fn mount_draggable() -> (RinchApp, (f32, f32), Rc<Cell<usize>>) {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -9323,7 +9323,7 @@ mod wheel_scroll_dispatch_tests {
         }));
         let container_style = container_style.to_string();
         let content_style = content_style.to_string();
-        let id: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let id: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let container = scope.create_element("div");
@@ -9502,7 +9502,7 @@ mod wheel_scroll_dispatch_tests {
             register_scroll_handler(ScrollCallback::from(move |ev: ScrollEvent| {
                 inner_in.borrow_mut().push(ev);
             }));
-        let ids: Rc<RefCell<Option<(usize, usize)>>> = Rc::new(RefCell::new(None));
+        let ids: Rc<RefCell<Option<(u64, u64)>>> = Rc::new(RefCell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let page = scope.create_element("div");
@@ -9553,7 +9553,7 @@ mod wheel_scroll_dispatch_tests {
     /// recompute — rather than asserting on the payload alone.
     #[test]
     fn virtual_list_still_windows_off_the_vertical_offset() {
-        let list_id: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let list_id: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
         let list_in = list_id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let outer = scope.create_element("div");
@@ -9643,7 +9643,7 @@ mod horizontal_scrollbar_tests {
         }));
         let container_style = container_style.to_string();
         let content_style = content_style.to_string();
-        let id: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let id: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let container = scope.create_element("div");
@@ -9953,7 +9953,7 @@ mod input_caret_hit_tests {
     /// origin picks up and a plain parent-chain sum does not.
     fn mount_field() -> (RinchApp, usize) {
         let oninput_id = register_input_handler(InputCallback::new(|_| {}));
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -10079,7 +10079,7 @@ mod input_caret_hit_tests {
     #[test]
     fn a_field_outside_a_text_flow_still_lands_on_its_line() {
         let oninput_id = register_input_handler(InputCallback::new(|_| {}));
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -10237,7 +10237,7 @@ mod android_frame_clock_tests {
         }
     }
 
-    fn by_class(app: &RinchApp, class: &str) -> usize {
+    fn by_class(app: &RinchApp, class: &str) -> u64 {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
         (0..d.tree.nodes.len())
@@ -11565,7 +11565,7 @@ mod transform_aware_walk_tests {
     fn a_drag_over_target_reports_its_painted_box() {
         let seen: Seen = Rc::new(Cell::new(None));
         let seen_in = seen.clone();
-        let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -11720,7 +11720,7 @@ mod transform_aware_walk_tests {
 
         let captured: Rc<Cell<Option<Signal<ElementBounds>>>> = Rc::new(Cell::new(None));
         let captured_in = captured.clone();
-        let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -11875,7 +11875,7 @@ mod transform_aware_walk_tests {
                 .scroll_offset
                 .1
         };
-        let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let build = move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -11963,7 +11963,7 @@ mod scroll_into_view_tests {
         outer_style: &'static str,
         children: &[(&'static str, &'static str)],
     ) -> f64 {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let children: Vec<(&'static str, &'static str)> = children.to_vec();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -12156,7 +12156,7 @@ mod scroll_into_view_tests {
     fn a_caret_move_below_the_fold_scrolls_the_editor_into_view() {
         use rinch_editor_core::{Pos, Selection};
 
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let handle = crate::editor::create_editor();
         // 40 paragraphs: far taller than the 120px scroller, so a cursor in the
@@ -12260,7 +12260,7 @@ mod scroll_into_view_tests {
     fn typing_below_the_fold_scrolls_within_the_same_frame() {
         use rinch_editor_core::{Pos, Selection};
 
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let handle = crate::editor::create_editor();
         let html: String = (0..40).map(|i| format!("<p>line {i}</p>")).collect();
@@ -12415,7 +12415,7 @@ mod click_viewport_tests {
     /// event path rather than the paint preamble.
     #[test]
     fn a_re_layout_from_an_event_uses_the_logical_viewport() {
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");

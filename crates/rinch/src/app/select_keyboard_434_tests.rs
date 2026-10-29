@@ -63,10 +63,10 @@ fn mount(value: &str) -> Fixture {
     Fixture { app, picks }
 }
 
-fn find_all(app: &RinchApp, class: &str) -> Vec<usize> {
+fn find_all(app: &RinchApp, class: &str) -> Vec<u64> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let mut ids: Vec<usize> = d
+    let mut ids: Vec<u64> = d
         .tree
         .nodes
         .iter()

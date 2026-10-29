@@ -136,7 +136,7 @@ fn box_of(page: &Page, id: u64) -> (f32, f32, f32, f32) {
 }
 
 /// The element carrying `data-pm-type="image"` and a mounted view.
-fn span(page: &Page) -> usize {
+fn span(page: &Page) -> u64 {
     let doc = page.app.doc.as_ref().unwrap();
     let d = doc.borrow();
     (0..d.tree.nodes.len())

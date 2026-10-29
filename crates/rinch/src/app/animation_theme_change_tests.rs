@@ -25,10 +25,10 @@ const VIEWPORT: (f32, f32) = (800.0, 600.0);
 const OVAL: &str = "rinch-loader__oval";
 
 /// The one node carrying `class` exactly, as a raw node id.
-fn node_with_class(app: &RinchApp, class: &str) -> usize {
+fn node_with_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()

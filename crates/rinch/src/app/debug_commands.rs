@@ -1068,7 +1068,7 @@ mod tests {
     /// region computed from it alone cannot reach the scroller.
     ///
     /// Returns `(scroller, bystander)`.
-    fn app_with_scroller(ids: Rc<Cell<Option<(usize, usize)>>>) -> RinchApp {
+    fn app_with_scroller(ids: Rc<Cell<Option<(u64, u64)>>>) -> RinchApp {
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
             root.set_attribute("style", "position: relative; width: 800px; height: 600px");
@@ -1130,7 +1130,7 @@ mod tests {
     /// nothing else is dirty.)
     #[test]
     fn an_mcp_scroll_pushes_the_container_paint_dirty() {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let mut app = app_with_scroller(ids.clone());
         let (sc, _bystander) = ids.get().expect("the node ids");
 
@@ -1167,7 +1167,7 @@ mod tests {
     /// empty damage repaints nothing, so the entry is needed either way.)
     #[test]
     fn an_mcp_scroll_widens_a_dirty_region_that_already_has_other_nodes_in_it() {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let mut app = app_with_scroller(ids.clone());
         let (_sc, bystander) = ids.get().expect("the node ids");
 
@@ -1215,7 +1215,7 @@ mod tests {
     /// hand-written arm ignored `delta_x` for document scrolling entirely.
     #[test]
     fn an_mcp_scroll_moves_both_axes_in_the_documented_direction() {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let mut app = app_with_scroller(ids.clone());
         let (sc, _bystander) = ids.get().expect("the node ids");
         assert_eq!(offsets(&app, sc), (0.0, 0.0));
@@ -1238,7 +1238,7 @@ mod tests {
     /// name, and `reset: true` zeroes them after the read.
     #[test]
     fn perf_stats_reports_and_resets_the_counters() {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let mut app = app_with_scroller(ids);
         app.end_perf_frame();
         let mut actions = Vec::new();
@@ -1767,7 +1767,7 @@ mod text_geometry_units_tests {
     use std::cell::Cell;
 
     /// `(input, textarea, paragraph)` node ids.
-    type Ids = Rc<Cell<Option<(usize, usize, usize)>>>;
+    type Ids = Rc<Cell<Option<(u64, u64, u64)>>>;
 
     /// An `<input>` and a `<textarea>` with off-zero paddings, placed off the
     /// origin, and a `<p>` holding IFC text. Fonts and line heights are

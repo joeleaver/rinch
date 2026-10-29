@@ -9,9 +9,9 @@ type Log = Rc<RefCell<Vec<String>>>;
 
 /// A registered `tabindex` widget under a host; `lost`/`ime` choose which
 /// callbacks the entry carries. Clicked so it holds the claim.
-fn app_with_focused_widget(lost: bool, ime: bool) -> (RinchApp, Log, usize, usize) {
+fn app_with_focused_widget(lost: bool, ime: bool) -> (RinchApp, Log, u64, u64) {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let (log_in, ids_in) = (log.clone(), ids.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -201,7 +201,7 @@ fn s5_parked_entry_after_the_app_is_dropped() {
 #[test]
 fn s6_an_unfocused_freed_target_is_not_parked() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let (log_in, ids_in) = (log.clone(), ids.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

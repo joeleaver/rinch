@@ -12,7 +12,7 @@ use std::cell::Cell;
 /// A single focusable control of tag `tag`, with `data-oninput` recording
 /// every value it is given and `data-onsubmit` present only if `with_submit`.
 /// Returns the app, the control's node id, and the shared log.
-fn mount(tag: &'static str, with_submit: bool) -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
+fn mount(tag: &'static str, with_submit: bool) -> (RinchApp, u64, Rc<RefCell<Vec<String>>>) {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let input_id = register_input_handler(InputCallback::new({
         let log = log.clone();
@@ -23,7 +23,7 @@ fn mount(tag: &'static str, with_submit: bool) -> (RinchApp, usize, Rc<RefCell<V
         move || log.borrow_mut().push("submit".to_string())
     }));
 
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -329,7 +329,7 @@ fn an_ancestor_submit_handler_wins_over_the_break() {
         move || log.borrow_mut().push("submit".to_string())
     }));
 
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

@@ -84,13 +84,13 @@ fn any_ink(p: [u8; 4]) -> bool {
     p[3] > 0
 }
 
-fn red_of(html: &str, css: &str) -> usize {
+fn red_of(html: &str, css: &str) -> u64 {
     count(&paint(&mut doc_with(html, css)), reddish)
 }
 
 /// The id of the one element carrying `id="…"`.
 fn by_id(doc: &RinchDocument, id: &str) -> NodeId {
-    let found: Vec<usize> = doc
+    let found: Vec<u64> = doc
         .tree
         .nodes
         .iter()
@@ -408,7 +408,7 @@ fn a_hidden_filtered_box_draws_no_overlay() {
 #[test]
 fn a_decoration_is_cut_where_its_run_is_hidden() {
     let css = ".u { text-decoration: underline line-through; }";
-    let rows = |px: &[[u8; 4]]| -> Vec<Vec<usize>> {
+    let rows = |px: &[[u8; 4]]| -> Vec<Vec<u64>> {
         (0..VH as usize)
             .map(|y| {
                 (0..VW as usize)
@@ -418,14 +418,14 @@ fn a_decoration_is_cut_where_its_run_is_hidden() {
             .collect()
     };
     // The widest gap between two red pixels of one row.
-    let widest_gap = |xs: &[usize]| xs.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
+    let widest_gap = |xs: &[u64]| xs.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
     // A decoration row is one the unhidden document inks red, unbroken, for
     // longer than any glyph could.
     let whole = rows(&paint(&mut doc_with(
         r#"<div class="t red u">before <span class="u" style="display: contents">SPAN</span> after</div>"#,
         css,
     )));
-    let deco_rows: Vec<usize> = (0..whole.len())
+    let deco_rows: Vec<u64> = (0..whole.len())
         .filter(|&y| whole[y].len() > 120 && widest_gap(&whole[y]) <= 2)
         .collect();
     assert!(

@@ -426,7 +426,7 @@ mod tests {
     /// `<p data-pm-type="paragraph">` blocks (each wrapping to ~2 lines in a narrow
     /// column) plus a `data-pm-caret` overlay sibling that has **no** `data-pm-type`
     /// (so the block filter must exclude it). Returns `(container, block_ids, caret)`.
-    fn build_editor_host(doc: &mut RinchDocument, n: usize) -> (usize, Vec<u64>, usize) {
+    fn build_editor_host(doc: &mut RinchDocument, n: u64) -> (usize, Vec<u64>, usize) {
         let body = doc.body();
         let container = doc.create_element("div");
         doc.set_attribute(container, "data-pm-editor", "true");

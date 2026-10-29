@@ -44,9 +44,9 @@ fn is(p: [u8; 4], rgb: [u8; 3]) -> bool {
 /// and a small label far below standing in for anything that ticks.
 ///
 /// Returns the app, the label's node id, and the game's surface.
-fn mount() -> (RinchApp, usize, RenderSurfaceHandle) {
+fn mount() -> (RinchApp, u64, RenderSurfaceHandle) {
     let game = create_render_surface_with_name("game-361");
-    let label_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let label_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let captured = label_id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -549,7 +549,7 @@ fn oracle_mount(
     name: &'static str,
     card_extra: &'static str,
     wrapper_extra: &'static str,
-) -> (RinchApp, usize, usize, RenderSurfaceHandle) {
+) -> (RinchApp, u64, u64, RenderSurfaceHandle) {
     let game = create_render_surface_with_name(name);
     let ids: Rc<Cell<(usize, usize, usize)>> = Rc::new(Cell::new((0, 0, 0)));
     let captured = ids.clone();
