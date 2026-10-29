@@ -245,7 +245,7 @@ fn a_re_rendered_component_gets_its_quoted_attributes_back() {
 #[component]
 fn quoted_on_element() -> NodeHandle {
     rsx! {
-        div { "title": "Tip", "p": "literal", "data-2x": "yes", "aria-label": "Box" }
+        div { "title": "Tip", "p": "literal", "data-2x": "yes", "aria-label": "Box", "value_fn": "x" }
     }
 }
 
@@ -265,6 +265,31 @@ fn a_quoted_name_on_an_element_is_the_literal_attribute() {
     );
     assert_eq!(root.get_attribute("data-2x").as_deref(), Some("yes"));
     assert_eq!(root.get_attribute("aria-label").as_deref(), Some("Box"));
+    assert_eq!(
+        root.get_attribute("value_fn").as_deref(),
+        Some("x"),
+        "a quoted `_fn` name is an attribute, not a `_fn` binding"
+    );
+}
+
+#[component]
+fn quoted_shorthand_on_component() -> NodeHandle {
+    rsx! { Tagged { label: "x", "p": "md" } }
+}
+
+/// From the #2003 review: on a component too, a quoted `"p"` is the attribute
+/// `p` on the root, never the padding shorthand.
+#[test]
+fn a_quoted_shorthand_name_on_a_component_is_the_attribute() {
+    let (_doc, _scope, root) = mount(quoted_shorthand_on_component);
+    assert_eq!(root.get_attribute("p").as_deref(), Some("md"));
+    assert!(
+        !root
+            .get_attribute("style")
+            .unwrap_or_default()
+            .contains("padding"),
+        "not the padding shorthand"
+    );
 }
 
 #[component]
