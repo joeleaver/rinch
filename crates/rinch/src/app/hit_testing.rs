@@ -3294,3 +3294,7 @@ mod tests {
 #[cfg(test)]
 #[path = "hidden_ancestor_hit_review_2008_tests.rs"]
 mod review_2008_probe_tests;
+
+#[cfg(test)]
+#[path = "fixed_over_scroller_2038_tests.rs"]
+mod fixed_over_scroller_2038_tests;
