@@ -30,8 +30,8 @@ const VIEWPORT: (f32, f32) = (800.0, 600.0);
 const CHROME: &[(&str, &str, &str)] = &[
     (
         "f01_issue_tooltip",
-        r##"<div data-m="a" style="position:fixed;left:280px;top:200px;max-width:420px;padding:4px 8px;border:1px solid;font-size:12px;line-height:16px"><div>VENDORS · Family Management</div><div>Ctrl+click to open</div></div>"##,
-        "a=280,200,208.2,42",
+        r##"<div data-m="a" style="position:fixed;left:280px;top:200px;max-width:420px;padding:4px 8px;border:1px solid;font-size:12px;line-height:16px"><div>VENDORS - Family Management</div><div>Ctrl+click to open</div></div>"##,
+        "a=280,200,202.39,42",
     ),
     (
         "f02_short_left_top",
@@ -113,12 +113,31 @@ const CHROME: &[(&str, &str, &str)] = &[
         r##"<div data-m="a" style="position:fixed;right:300px;top:0"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div>"##,
         "a=0,0,500,40 t=0,0,500,40",
     ),
+    // The static position of a fixed box inside another fixed one is
+    // measured from that one's viewport position, not from the boxes above
+    // it: the room is 800 - 300, not 800 - 400.
+    (
+        "f18_static_in_fixed",
+        r##"<div style="margin-left:100px"><div data-m="o" style="position:fixed;left:300px;top:0;width:400px"><div data-m="a" style="position:fixed"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "o=300,0,400,0 a=300,0,500,40 t=300,0,500,40",
+    ),
 ];
 
 /// (name, rinch's answer, why) — rows of `CHROME` that are not Chrome's yet,
 /// each for a reason that is not this issue's. Pinned so that a fix has to
 /// come here and take the row out.
-const KNOWN: &[(&str, &str, &str)] = &[];
+const KNOWN: &[(&str, &str, &str)] = &[
+    (
+        "f14_transform_short",
+        "a=10,10,134,20",
+        "#1372: a transformed ancestor is not a fixed box's containing block (the width is Chrome's: the content is narrower than either block)",
+    ),
+    (
+        "f15_transform_long",
+        "a=10,10,544,20",
+        "#1372: shrunk to fit in the viewport, not in the transformed ancestor",
+    ),
+];
 
 fn document() -> RinchDocument {
     use parley::fontique::{Blob, FontInfoOverride};

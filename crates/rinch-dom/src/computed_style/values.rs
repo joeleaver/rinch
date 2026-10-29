@@ -94,7 +94,7 @@ pub enum DisplayValue {
     ///
     /// It lays out as [`Self::Block`] does, and every layout site that asks
     /// for `Block` must ask for this too (`to_taffy` → `taffy::Display::Block`,
-    /// `DisplayMode::Block`, `compute_content_height`'s stacking). The marker
+    /// `DisplayMode::Block`). The marker
     /// itself does not read this value: `resolve_list_marker` reads Stylo's
     /// `is_list_item()`.
     ListItem,
