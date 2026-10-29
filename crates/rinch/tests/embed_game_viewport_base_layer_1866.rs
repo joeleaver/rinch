@@ -567,3 +567,69 @@ fn gpu_overlay_renderers_taking_turns_draw_their_contexts_current_frame_1976() {
         "the first context again"
     );
 }
+
+/// REVIEW #1978: the steady state — one renderer, one context, nothing
+/// changed — paints once and then serves the cached scene: the stamp check
+/// asks for no repaint. Off the fixed point: several frames, then a change,
+/// then several frames again (exactly one more paint).
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_review_1978_steady_state_paints_no_extra_frame() {
+    use rinch::perf::Counter;
+    let (device, queue) = gpu();
+    let (mut ctx, hud) = hud_context("embed-1978-steady", "rgb(0,0,255)");
+    let mut r =
+        rinch::embed::RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
+    ctx.reset_perf();
+    for _ in 0..4 {
+        let _ = r.render(&device, &queue, &mut ctx);
+    }
+    let t = ctx.perf_total();
+    assert_eq!(
+        (
+            t.get(Counter::PaintFrames),
+            t.get(Counter::PaintCachedFrames)
+        ),
+        (1, 3),
+        "four frames, nothing changed"
+    );
+    hud.set_style("background", "rgb(255,0,255)");
+    ctx.update(&[]);
+    for _ in 0..3 {
+        let _ = r.render(&device, &queue, &mut ctx);
+    }
+    let t = ctx.perf_total();
+    assert_eq!(
+        (
+            t.get(Counter::PaintFrames),
+            t.get(Counter::PaintCachedFrames)
+        ),
+        (2, 5),
+        "one change, three more frames"
+    );
+    assert_eq!(
+        hud_and_hole(&read_back(&device, &queue, r.texture())),
+        (MAGENTA, true)
+    );
+}
+
+/// REVIEW #1978: a host that calls `ctx.scene()` between overlay renders
+/// (an unsliced paint of the same context) still gets the HUD from the
+/// overlay, which paints sliced again.
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_review_1978_scene_between_overlay_renders() {
+    let (device, queue) = gpu();
+    let (mut ctx, _hud) = hud_context("embed-1978-mixed", "rgb(0,0,255)");
+    let mut r =
+        rinch::embed::RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
+    let _ = r.render(&device, &queue, &mut ctx);
+    let _ = ctx.scene();
+    let _ = r.render(&device, &queue, &mut ctx);
+    assert_eq!(
+        hud_and_hole(&read_back(&device, &queue, r.texture())),
+        (BLUE, true)
+    );
+}

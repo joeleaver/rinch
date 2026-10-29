@@ -940,6 +940,9 @@ pub struct RinchOverlayRenderer {
     /// none: a context asked by a renderer holding another stamp paints the
     /// frame again for it (#1976).
     fed: u64,
+    /// A failed slice apply was logged and none has succeeded since: a
+    /// persistent error logs once, not every frame.
+    slice_error_logged: bool,
     /// Where Vello renders the UI while a viewport is split: the split
     /// compositor then writes `render_texture` from it.
     below: Option<Texture>,
@@ -976,6 +979,7 @@ impl RinchOverlayRenderer {
             split: Default::default(),
             compositor: None,
             fed: 0,
+            slice_error_logged: false,
             below: None,
         }
     }
@@ -1023,10 +1027,15 @@ impl RinchOverlayRenderer {
                     add: slices,
                 },
             ) {
-                tracing::error!("rinch: overlay split slices: {e}");
+                if !self.slice_error_logged {
+                    tracing::error!("rinch: overlay split slices: {e}");
+                    self.slice_error_logged = true;
+                }
                 self.split.clear();
                 // Holding none of the frame's slices: ask for it again.
                 self.fed = 0;
+            } else {
+                self.slice_error_logged = false;
             }
         }
         let scene = ctx.app.painter.scene();

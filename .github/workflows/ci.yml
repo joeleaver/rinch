@@ -365,7 +365,7 @@ jobs:
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves),
           # and #1976's renderer replaced or taking turns (2).
-          run 5 -p rinch --features gpu,video --test embed_game_viewport_base_layer_1866 -- \
+          run 7 -p rinch --features gpu,video --test embed_game_viewport_base_layer_1866 -- \
             --ignored --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \

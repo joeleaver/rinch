@@ -358,7 +358,7 @@ scene with nothing it split out: everything painted after a `GameViewport` missi
 frame a context paints takes a stamp from one process-wide counter (`NEXT_SLICED_STAMP`, so a
 stamp names one frame of one context; `0` is "none"); the renderer keeps the stamp of the slices
 it holds (`fed`) and passes it in, and a mismatch calls `request_repaint` first. That covers a new
-renderer (Playweft's device loss: it used to call `mark_scene_dirty` itself), two renderers taking
+renderer (a host's device loss: the host used to call `mark_scene_dirty` itself), two renderers taking
 turns on one context, and one renderer on several contexts. A failed `SplitFrame::apply` clears
 the split and resets `fed`, so the next frame asks again. Pins:
 `gpu_a_new_overlay_renderer_on_an_existing_context_draws_the_hud_1976` and
