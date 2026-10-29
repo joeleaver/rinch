@@ -470,7 +470,10 @@ fn extend_with_child(
                 .resolve(cb_h)
                 .or_else(|| cs.bottom.resolve(cb_h).map(|b| -b))
                 .unwrap_or(0.0);
-            offset = (dx as f64, dy as f64);
+            // Rounded as Taffy rounds the layout rect it applied the offset
+            // to: a `top: -10%` of 74px is placed 7px up, and taking 7.4 off
+            // it left the static box 0.4px low.
+            offset = (dx.round() as f64, dy.round() as f64);
         }
         // A percentage margin, on either axis, resolves against the
         // containing block's width; `auto` counts as 0, and a negative margin
