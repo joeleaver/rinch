@@ -387,3 +387,147 @@ async fn a_picker_with_no_answer_ends_when_the_window_focus_comes_back() {
     root.unmount();
     host.remove();
 }
+
+/// Every error a listener threw while this is alive, from the window's `error`
+/// event (`dispatchEvent` reports a listener's throw there; it does not rethrow).
+struct ThrownErrors {
+    seen: Rc<RefCell<Vec<String>>>,
+    listener: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>,
+}
+
+impl ThrownErrors {
+    fn watch() -> Self {
+        let seen: Rc<RefCell<Vec<String>>> = Rc::default();
+        let log = seen.clone();
+        let listener = wasm_bindgen::closure::Closure::wrap(Box::new(move |e: web_sys::Event| {
+            let message = js_sys::Reflect::get(&e, &"message".into())
+                .ok()
+                .and_then(|m| m.as_string())
+                .unwrap_or_default();
+            log.borrow_mut().push(message);
+            // Reported here, so not again as an uncaught error.
+            e.prevent_default();
+        })
+            as Box<dyn FnMut(web_sys::Event)>);
+        web_sys::window()
+            .unwrap()
+            .add_event_listener_with_callback("error", listener.as_ref().unchecked_ref())
+            .unwrap();
+        Self { seen, listener }
+    }
+
+    fn take(&self) -> Vec<String> {
+        std::mem::take(&mut self.seen.borrow_mut())
+    }
+}
+
+impl Drop for ThrownErrors {
+    fn drop(&mut self) {
+        let _ = web_sys::window()
+            .unwrap()
+            .remove_event_listener_with_callback("error", self.listener.as_ref().unchecked_ref());
+    }
+}
+
+/// Issue #1855: an answered picker's input keeps no listener whose closure is
+/// gone. The input stays an object the browser (or a test driver) can still
+/// fire `change`/`cancel` at after the answer, and a listener left on it with
+/// its closure freed threw "closure invoked recursively or after being
+/// dropped" at every such event.
+#[wasm_bindgen_test]
+async fn an_answered_picker_input_takes_later_events_without_throwing() {
+    let (root, host) = mount(|__scope: &mut RenderScope| rsx! { div { "picker" } });
+    rinch::file::__set_require_user_activation(false);
+    let thrown = ThrownErrors::watch();
+
+    // Positive control: a listener's throw is seen through the window. Chrome
+    // says "Uncaught Error: control throw", Firefox "Error: control throw".
+    let control = document().create_element("div").unwrap();
+    let throwing = js_sys::Function::new_no_args("throw new Error('control throw')");
+    control
+        .add_event_listener_with_callback("ping", &throwing)
+        .unwrap();
+    control
+        .dispatch_event(&web_sys::Event::new("ping").unwrap())
+        .unwrap();
+    let seen = thrown.take();
+    assert!(
+        seen.len() == 1 && seen[0].ends_with("Error: control throw"),
+        "{seen:?}"
+    );
+
+    // Answered with `change`; then the same input gets `change` and `cancel`
+    // again, as when a driver's chooser is torn down after its pick.
+    let picked: Rc<RefCell<Vec<usize>>> = Rc::default();
+    let into = picked.clone();
+    FilePicker::new().open(move |files| into.borrow_mut().push(files.len()));
+    let input = picker_input().expect("the picker's input is in the page");
+    let dt = web_sys::DataTransfer::new().unwrap();
+    dt.items()
+        .add_with_file(&file("a.glb", "", b"abc"))
+        .unwrap();
+    input.set_files(dt.files().as_ref());
+    input
+        .dispatch_event(&web_sys::Event::new("change").unwrap())
+        .unwrap();
+    assert!(wait_for(|| !picked.borrow().is_empty()).await);
+    wait(20).await;
+    for name in ["change", "cancel", "change"] {
+        input
+            .dispatch_event(&web_sys::Event::new(name).unwrap())
+            .unwrap();
+    }
+    wait(20).await;
+    assert_eq!(
+        thrown.take(),
+        Vec::<String>::new(),
+        "after a `change` answer"
+    );
+    assert_eq!(*picked.borrow(), vec![1], "answered once");
+
+    // Answered with `cancel`, then fired at again.
+    let cancelled: Rc<RefCell<Vec<usize>>> = Rc::default();
+    let into = cancelled.clone();
+    FilePicker::new().open(move |files| into.borrow_mut().push(files.len()));
+    let input = picker_input().expect("a second picker input");
+    input
+        .dispatch_event(&web_sys::Event::new("cancel").unwrap())
+        .unwrap();
+    assert!(wait_for(|| !cancelled.borrow().is_empty()).await);
+    wait(20).await;
+    for name in ["cancel", "change"] {
+        input
+            .dispatch_event(&web_sys::Event::new(name).unwrap())
+            .unwrap();
+    }
+    wait(20).await;
+    assert_eq!(
+        thrown.take(),
+        Vec::<String>::new(),
+        "after a `cancel` answer"
+    );
+    assert_eq!(*cancelled.borrow(), vec![0], "answered once");
+
+    // A picker whose future is dropped unanswered: its input still gets the
+    // browser's answer later.
+    let pick = FilePicker::new().pick();
+    let input = picker_input().expect("a third picker input");
+    drop(pick);
+    assert!(picker_input().is_none(), "a dropped picker takes its input");
+    for name in ["change", "cancel"] {
+        input
+            .dispatch_event(&web_sys::Event::new(name).unwrap())
+            .unwrap();
+    }
+    wait(20).await;
+    assert_eq!(
+        thrown.take(),
+        Vec::<String>::new(),
+        "after the future was dropped"
+    );
+
+    drop(thrown);
+    rinch::file::__set_require_user_activation(true);
+    root.unmount();
+    host.remove();
+}

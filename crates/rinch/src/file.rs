@@ -308,16 +308,30 @@ mod web {
             }
             self.detach();
             fill(&self.slot, files);
-            // The closures may be the ones running: wasm-bindgen drops a
-            // closure taken out during its own call when that call returns.
+            // The closures may be the ones running: wasm-bindgen frees a
+            // closure dropped during its own call when that call returns. Each
+            // is off its target already (`detach`), so nothing calls it after.
             self.input_listener.borrow_mut().take();
             self.release_listener.borrow_mut().take();
             self.focus_listener.borrow_mut().take();
         }
 
-        /// Take the input out of the page and the document and window
-        /// listeners off.
+        /// Take the input out of the page and every listener off its target.
+        ///
+        /// The input's own listener comes off too (#1855): the input outlives
+        /// the session (the browser still holds it for its picker, a caller
+        /// may hold it), and an event fired at it later — a `cancel` after the
+        /// `change`, the answer to a picker whose future was dropped — would
+        /// call a closure already freed, which throws "closure invoked
+        /// recursively or after being dropped".
         fn detach(&self) {
+            if let Some(l) = self.input_listener.borrow().as_ref() {
+                for name in ["change", "cancel"] {
+                    let _ = self
+                        .input
+                        .remove_event_listener_with_callback(name, l.as_ref().unchecked_ref());
+                }
+            }
             self.input.remove();
             if let Some(doc) = web_sys::window().and_then(|w| w.document())
                 && let Some(l) = self.release_listener.borrow().as_ref()

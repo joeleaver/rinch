@@ -358,7 +358,11 @@ user gesture) and returns a future; `open(cb)` is `pick()` in `spawn_local`.
 Native: the blocking `rfd` dialog, the future already resolved. Web: a hidden
 but rendered `<input type=file data-rinch-file-picker>` in `<body>` (an input
 that is not rendered makes `showPicker()` throw `NotSupportedError`), one
-closure on `change` and `cancel` that removes the input and drops itself, and
+closure on `change` and `cancel` that removes the input, takes itself off
+it and drops itself (#1855: the input outlives the answer, and a later
+`change`/`cancel` at a listener whose closure was freed threw "closure invoked
+recursively or after being dropped"; pinned by `files_1771.rs`
+`an_answered_picker_input_takes_later_events_without_throwing`), and
 `showPicker()` — which throws `NotAllowedError` without user activation where
 `click()` is ignored silently and no event would ever come; then the future
 resolves empty and a warning is logged once — **unless** the click is being
@@ -371,8 +375,8 @@ id))`, and the picker (`Session::show_on_release`) opens on that pointer's
 reason, refused when `navigator.userActivation.isActive` says no. Where the
 input has no `oncancel`, a `focus` listener on the window resolves empty
 `FOCUS_RETURN_MS` (1 s) after the focus returns with no `change`. The future
-holds the `Session` (listeners hold it weakly; its `Drop` takes the input and
-listeners away). A desktop read is `std::fs::read` of a regular file only (a
+holds the `Session` (listeners hold it weakly; its `Drop` takes the input away and every
+listener off its target before freeing it). A desktop read is `std::fs::read` of a regular file only (a
 FIFO or device is refused, `metadata().is_file()`), whole. Pins add
 `rinch-web/tests/real_touch_picker_1771.rs` (trusted CDP touch, run by
 `tests/support/run_real_keys.sh`). Playwright's Firefox grants every page
