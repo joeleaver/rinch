@@ -824,9 +824,7 @@ fn reference_hit_test_node(
         )
     };
     let hidden = if node.is_text() {
-        node.parent
-            .and_then(|p| tree.get(p))
-            .is_some_and(|p| is_hidden(p))
+        node.parent.and_then(|p| tree.get(p)).is_some_and(is_hidden)
     } else {
         is_hidden(node)
     };

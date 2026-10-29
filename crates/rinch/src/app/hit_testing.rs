@@ -594,9 +594,7 @@ fn hides_own_hit(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node) -> bool {
         )
     };
     if node.is_text() {
-        node.parent
-            .and_then(|p| tree.get(p))
-            .is_some_and(|p| hidden(p))
+        node.parent.and_then(|p| tree.get(p)).is_some_and(hidden)
     } else {
         hidden(node)
     }
