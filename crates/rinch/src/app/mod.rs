@@ -3727,7 +3727,7 @@ impl RinchApp {
                     (true, true) => EditCommand::DeleteToLineEnd,
                 })
             }
-            TextKeyAction::Inert => {}
+            TextKeyAction::Inert | TextKeyAction::ScrollPage { .. } => {}
         }
     }
     /// Whether the focused text field is an `<input type="password">`.
@@ -3768,6 +3768,9 @@ impl RinchApp {
             TextMotion::DocEnd => self.handle_line_edge(true, extend, true),
             TextMotion::LineUp => self.handle_vertical_arrow(false, extend),
             TextMotion::LineDown => self.handle_vertical_arrow(true, extend),
+            // A field is not routed Page Up / Down (`handle_text_key`'s
+            // callers name its keys); only the rich editor pages (#2020).
+            TextMotion::PageUp | TextMotion::PageDown => {}
         }
     }
     /// Enter in a focused text control.
@@ -12363,6 +12366,9 @@ mod click_viewport_tests {
 
 #[cfg(test)]
 mod editor_enter_scroll_tests;
+
+#[cfg(test)]
+mod editor_page_keys_2020_tests;
 #[cfg(test)]
 mod editor_scroll_gate_tests;
 #[cfg(test)]
