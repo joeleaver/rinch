@@ -258,26 +258,39 @@ fn inline_decos(set: &DecorationSet) -> Vec<InlineDeco> {
 /// stretch per distinct sub-range carrying **both** classes, so a stretch is never
 /// wrapped twice; abutting stretches with an identical class list are merged back
 /// into one, so the projected DOM is the minimum that expresses the decorations.
-fn run_decos(decos: &[InlineDeco], run_from: usize, len: usize) -> Vec<RunDeco> {
+fn run_decos<'a>(
+    decos: impl IntoIterator<Item = &'a InlineDeco>,
+    run_from: usize,
+    len: usize,
+) -> Vec<RunDeco> {
     let run_to = run_from + len;
-    let clipped: Vec<(usize, usize, &str)> = decos
-        .iter()
-        .filter_map(|d| {
-            let a = d.from.max(run_from);
-            let b = d.to.min(run_to);
-            (a < b).then(|| (a - run_from, b - run_from, &*d.class))
-        })
-        .collect();
-    if clipped.is_empty() {
+    let mut clipped = decos.into_iter().filter_map(|d| {
+        let a = d.from.max(run_from);
+        let b = d.to.min(run_to);
+        (a < b).then(|| (a - run_from, b - run_from, &d.class))
+    });
+    // One decoration over the run — a spellchecker's every squiggle — is its
+    // own stretch and shares the decoration's class string (#848: this runs for
+    // every decorated run on every transaction).
+    let Some(first) = clipped.next() else {
         return Vec::new();
-    }
+    };
+    let Some(second) = clipped.next() else {
+        return vec![RunDeco {
+            start: first.0,
+            end: first.1,
+            class: first.2.clone(),
+        }];
+    };
+    let clipped: Vec<(usize, usize, &Rc<str>)> =
+        [first, second].into_iter().chain(clipped).collect();
     let mut bounds: Vec<usize> = clipped.iter().flat_map(|(a, b, _)| [*a, *b]).collect();
     bounds.sort_unstable();
     bounds.dedup();
     let mut out: Vec<RunDeco> = Vec::new();
     for w in bounds.windows(2) {
         let (a, b) = (w[0], w[1]);
-        let mut classes: Vec<&str> = clipped
+        let mut classes: Vec<&Rc<str>> = clipped
             .iter()
             .filter(|(x, y, _)| *x <= a && *y >= b)
             .map(|(_, _, c)| *c)
@@ -286,7 +299,16 @@ fn run_decos(decos: &[InlineDeco], run_from: usize, len: usize) -> Vec<RunDeco> 
             continue;
         }
         classes.dedup();
-        let class: Rc<str> = Rc::from(classes.join(" "));
+        let class: Rc<str> = match classes[..] {
+            [one] => one.clone(),
+            _ => Rc::from(
+                classes
+                    .iter()
+                    .map(|c| &***c)
+                    .collect::<Vec<&str>>()
+                    .join(" "),
+            ),
+        };
         match out.last_mut() {
             Some(last) if last.end == a && last.class == class => last.end = b,
             _ => out.push(RunDeco {
@@ -1489,6 +1511,9 @@ pub struct RinchDomEditorView {
     last_preedit: Option<(i32, i32, String)>,
     /// The decoration set currently projected, for the next diff.
     decorations: DecorationSet,
+    /// The inline decorations of [`Self::decorations`], flattened once per
+    /// change of the set rather than once per transaction (#848).
+    inline: Vec<InlineDeco>,
     /// Set whenever the post-layout pass writes an overlay's geometry (caret,
     /// selection rect, or node outline). The runtime reads it via
     /// [`Self::take_overlay_dirty`] to re-resolve layout and schedule a repaint,
@@ -1652,6 +1677,7 @@ impl RinchDomEditorView {
             preedit: None,
             last_preedit: None,
             decorations: DecorationSet::empty(),
+            inline: Vec::new(),
             overlay_dirty: false,
             reveal_probes: Vec::new(),
             drop_caret: None,
@@ -1678,18 +1704,19 @@ impl RinchDomEditorView {
         let next = state.decorations();
         if next != self.decorations {
             self.sync_widget_decorations(&next);
+            self.inline = inline_decos(&next);
+            self.decorations = next;
         }
         // Inline decorations are re-applied whenever any are present *or* any were
         // last time, even when the set itself compares equal. The document diff
         // runs first and may have rebuilt a decorated run — a fresh text node
         // carries no segments — so "the decorations did not change" does not imply
-        // "what projects them is still there". The `has_deco` prune below keeps
-        // that re-check to one range test per undecorated top-level block.
-        let inline = inline_decos(&next);
-        if !inline.is_empty() || self.root.has_deco {
-            self.root.has_deco = sync_inline_decos(&mut self.root, &inline, 0, &self.doc);
+        // "what projects them is still there". The `has_deco` prune and the sorted
+        // cursor keep that re-check to one test per top-level block plus one per
+        // decoration it reaches (#848), and an unchanged run writes nothing.
+        if !self.inline.is_empty() || self.root.has_deco {
+            self.root.has_deco = sync_inline_decos(&mut self.root, &self.inline, 0, &self.doc);
         }
-        self.decorations = next;
     }
 
     /// The widget half of [`Self::sync_decorations`]: today the empty-editor
@@ -3780,34 +3807,76 @@ fn count_deco_range_tests(_: usize) {}
 /// run on every transaction: the per-run comparison is against
 /// [`ViewDesc::decos`], and a subtree that neither holds a segment nor overlaps a
 /// decoration is not even descended into.
+///
+/// The list is sorted by `from` once per pass and walked with a cursor beside
+/// the children, which are in position order, so each level costs one check per
+/// child plus one per decoration that reaches it — not children × decorations
+/// (#848: a spellchecker's thousand squiggles on a long document made every
+/// keystroke pay blocks × decorations range tests).
 fn sync_inline_decos(
     desc: &mut ViewDesc,
     decos: &[InlineDeco],
     content_start: usize,
     doc: &DocRef,
 ) -> bool {
+    // Stable, so equal starts keep draw order; each entry also keeps its
+    // draw-order index, which is the order a run's class list is written in.
+    let mut sorted: Vec<(usize, &InlineDeco)> = decos.iter().enumerate().collect();
+    sorted.sort_by_key(|(_, d)| d.from);
+    sync_sorted_inline_decos(desc, &sorted, content_start, doc)
+}
+
+/// [`sync_inline_decos`] over `decos` sorted by `from`, each with its draw-order
+/// index. Only the decorations that can reach `desc`'s content are passed down.
+fn sync_sorted_inline_decos(
+    desc: &mut ViewDesc,
+    decos: &[(usize, &InlineDeco)],
+    content_start: usize,
+    doc: &DocRef,
+) -> bool {
     let mut any = false;
     let mut pos = content_start; // the position just before the current child
+    // `decos[next..]` start at or after the end of every child visited so far;
+    // `live` holds, in `from` order, those started earlier that still reach
+    // `pos` — together, exactly the decorations overlapping the current child.
+    let mut next = 0;
+    let mut live: Vec<(usize, &InlineDeco)> = Vec::new();
     for child in &mut desc.children {
         let size = child.node.node_size();
-        let overlaps = decos.iter().any(|d| {
+        let end = pos + size;
+        count_deco_range_tests(live.len());
+        live.retain(|(_, d)| d.to > pos);
+        while let Some(&(i, d)) = decos.get(next) {
             count_deco_range_tests(1);
-            d.from < pos + size && d.to > pos
-        });
+            if d.from >= end {
+                break;
+            }
+            if d.to > pos {
+                live.push((i, d));
+            }
+            next += 1;
+        }
         // `has_deco` is what makes the skip sound in the other direction: a subtree
         // no decoration reaches any more still has to be visited to *take its
         // segments off*.
-        if overlaps || child.has_deco {
+        if !live.is_empty() || child.has_deco {
             if child.is_text {
                 let len = child.node.text().map_or(0, |t| t.chars().count());
-                apply_run_decos(child, run_decos(decos, pos, len), doc);
+                let run = if live.len() < 2 {
+                    run_decos(live.iter().map(|(_, d)| *d), pos, len)
+                } else {
+                    let mut drawn = live.clone();
+                    drawn.sort_unstable_by_key(|(i, _)| *i);
+                    run_decos(drawn.into_iter().map(|(_, d)| d), pos, len)
+                };
+                apply_run_decos(child, run, doc);
                 child.has_deco = !child.decos.is_empty();
             } else {
-                child.has_deco = sync_inline_decos(child, decos, pos + 1, doc);
+                child.has_deco = sync_sorted_inline_decos(child, &live, pos + 1, doc);
             }
         }
         any |= child.has_deco;
-        pos += size;
+        pos = end;
     }
     any
 }
