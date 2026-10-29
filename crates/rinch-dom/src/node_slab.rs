@@ -55,13 +55,54 @@ pub fn pack(slot: usize, generation: u32) -> RawNodeId {
     ((generation as u64) << 32) | slot as u64
 }
 
+/// The highest generation a slot is issued at (2^21 − 1).
+///
+/// A packed id is then below 2^53, so it survives a JSON round trip through a
+/// client that reads numbers as `f64` — the MCP host, any JavaScript client of
+/// the debug protocol — exactly (the wire decision recorded on #723). A slot
+/// whose occupant at this generation is freed is **retired**: it is never
+/// handed out again, so no id is ever re-issued and none goes past 2^53. That
+/// costs one slot (one empty entry) per 2^21 reuses of a single slot.
+pub const MAX_GENERATION: u32 = (1 << 21) - 1;
+
+/// One slot: its node, or the generation its next node will get and the next
+/// free slot after it.
+enum Entry {
+    Occupied(Node),
+    Vacant {
+        /// The free slot after this one; `u32::MAX` for none (or a retired
+        /// slot, which is on no list).
+        next: u32,
+        /// The generation the slot's next occupant is issued.
+        generation: u32,
+    },
+}
+
+const NO_SLOT: u32 = u32::MAX;
+
 /// The nodes of a [`crate::node::NodeTree`], keyed by generation-checked id.
 ///
-/// The API mirrors the parts of `slab::Slab` the tree used, with ids in place
-/// of slab keys. Iteration yields each node's own id.
-#[derive(Default)]
+/// A slab with a free list, like `slab::Slab` (which it replaced, #723 PR 2),
+/// with ids in place of slab keys: a vacant slot remembers the generation its
+/// next occupant gets, one past its last occupant's, so an id issued for the
+/// slot earlier never names the node stored there later. Freed slots are
+/// reused last-freed first, as `slab::Slab` did. Iteration yields each node's
+/// own id.
 pub struct NodeSlab {
-    slab: slab::Slab<Node>,
+    entries: Vec<Entry>,
+    /// The first free slot; `entries.len()` when none is free.
+    next: usize,
+    len: usize,
+}
+
+impl Default for NodeSlab {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            next: 0,
+            len: 0,
+        }
+    }
 }
 
 #[cold]
@@ -89,11 +130,29 @@ impl NodeSlab {
         Self::default()
     }
 
+    /// The node in slot `slot`, whatever its generation.
+    #[inline(always)]
+    fn slot(&self, slot: usize) -> Option<&Node> {
+        match self.entries.get(slot) {
+            Some(Entry::Occupied(n)) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// [`Self::slot`], mutably.
+    #[inline(always)]
+    fn slot_mut(&mut self, slot: usize) -> Option<&mut Node> {
+        match self.entries.get_mut(slot) {
+            Some(Entry::Occupied(n)) => Some(n),
+            _ => None,
+        }
+    }
+
     /// The node `id` names, or `None` if its slot is vacant or holds a node of
     /// another generation.
     #[inline]
     pub fn get(&self, id: RawNodeId) -> Option<&Node> {
-        match self.slab.get(slot_of(id)) {
+        match self.slot(slot_of(id)) {
             Some(n) if n.id == id => Some(n),
             _ => None,
         }
@@ -102,7 +161,7 @@ impl NodeSlab {
     /// The node `id` names, mutably; `None` as [`Self::get`].
     #[inline]
     pub fn get_mut(&mut self, id: RawNodeId) -> Option<&mut Node> {
-        match self.slab.get_mut(slot_of(id)) {
+        match self.slot_mut(slot_of(id)) {
             Some(n) if n.id == id => Some(n),
             _ => None,
         }
@@ -122,7 +181,7 @@ impl NodeSlab {
     #[inline]
     #[track_caller]
     pub fn get_live(&self, id: RawNodeId) -> Option<&Node> {
-        let n = self.slab.get(slot_of(id))?;
+        let n = self.slot(slot_of(id))?;
         #[cfg(debug_assertions)]
         if n.id != id {
             stale(id, Some(n.id));
@@ -134,7 +193,7 @@ impl NodeSlab {
     #[inline]
     #[track_caller]
     pub fn get_live_mut(&mut self, id: RawNodeId) -> Option<&mut Node> {
-        let n = self.slab.get_mut(slot_of(id))?;
+        let n = self.slot_mut(slot_of(id))?;
         #[cfg(debug_assertions)]
         if n.id != id {
             stale(id, Some(n.id));
@@ -148,28 +207,48 @@ impl NodeSlab {
         self.get(id).is_some()
     }
 
-    /// The id the next [`Self::insert`] will store its node under. The node
-    /// must carry it as its [`Node::id`].
+    /// The id the next [`Self::insert`] will store its node under: the most
+    /// recently freed slot at its next generation, or a new slot at
+    /// generation 0. The node must carry it as its [`Node::id`].
     #[inline]
     pub fn vacant_key(&self) -> RawNodeId {
-        pack(self.slab.vacant_key(), 0)
+        match self.entries.get(self.next) {
+            Some(Entry::Vacant { generation, .. }) => pack(self.next, *generation),
+            _ => pack(self.next, 0),
+        }
     }
 
     /// Store `node` under its own id, which must be [`Self::vacant_key`].
     /// Returns that id.
     pub fn insert(&mut self, node: Node) -> RawNodeId {
         let id = node.id;
-        let entry = self.slab.vacant_entry();
         assert_eq!(
-            pack(entry.key(), generation_of(id)),
+            self.vacant_key(),
             id,
             "a node must be inserted under the id vacant_key() gave it"
         );
-        entry.insert(node);
+        let slot = self.next;
+        if slot == self.entries.len() {
+            self.entries.push(Entry::Occupied(node));
+            self.next = self.entries.len();
+        } else {
+            let Entry::Vacant { next, .. } =
+                std::mem::replace(&mut self.entries[slot], Entry::Occupied(node))
+            else {
+                unreachable!("the free list names only vacant slots")
+            };
+            self.next = if next == NO_SLOT {
+                self.entries.len()
+            } else {
+                next as usize
+            };
+        }
+        self.len += 1;
         id
     }
 
-    /// Take the node `id` names out of the slab, freeing its slot.
+    /// Take the node `id` names out of the slab, freeing its slot for a node
+    /// of the next generation — or retiring it, past [`MAX_GENERATION`].
     ///
     /// # Panics
     ///
@@ -177,55 +256,105 @@ impl NodeSlab {
     #[track_caller]
     pub fn remove(&mut self, id: RawNodeId) -> Node {
         let slot = slot_of(id);
-        match self.slab.get(slot) {
-            Some(n) if n.id == id => self.slab.remove(slot),
+        match self.slot(slot) {
+            Some(n) if n.id == id => {}
             other => stale(id, other.map(|n| n.id)),
         }
+        let generation = generation_of(id);
+        let retire = generation >= MAX_GENERATION;
+        let vacant = Entry::Vacant {
+            next: if retire {
+                NO_SLOT
+            } else if self.next == self.entries.len() {
+                NO_SLOT
+            } else {
+                self.next as u32
+            },
+            generation: generation.saturating_add(1),
+        };
+        let Entry::Occupied(node) = std::mem::replace(&mut self.entries[slot], vacant) else {
+            unreachable!("checked above")
+        };
+        if !retire {
+            self.next = slot;
+        }
+        self.len -= 1;
+        node
     }
 
     /// How many nodes are stored.
     #[inline]
     pub fn len(&self) -> usize {
-        self.slab.len()
+        self.len
     }
 
     /// Whether no node is stored.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.slab.is_empty()
+        self.len == 0
     }
 
     /// One past the highest slot ever used: the length a table indexed by
     /// [`slot_of`] needs to cover every node.
     #[inline]
     pub fn slot_bound(&self) -> usize {
-        self.slab.capacity().max(self.slab.len())
+        self.entries.len()
     }
 
     /// Every node with its id, in slot order.
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = (RawNodeId, &Node)> + '_ {
-        self.slab.iter().map(|(_, n)| (n.id, n))
+    pub fn iter(&self) -> Iter<'_> {
+        Iter {
+            entries: self.entries.iter(),
+        }
     }
 
     /// Every node with its id, mutably, in slot order.
     #[inline]
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (RawNodeId, &mut Node)> + '_ {
-        self.slab.iter_mut().map(|(_, n)| (n.id, n))
+        self.entries.iter_mut().filter_map(|e| match e {
+            Entry::Occupied(n) => Some((n.id, n)),
+            Entry::Vacant { .. } => None,
+        })
+    }
+}
+
+#[cfg(test)]
+impl NodeSlab {
+    /// Set the generation vacant slot `slot`'s next occupant gets.
+    fn set_vacant_generation_for_tests(&mut self, slot: usize, to: u32) {
+        match &mut self.entries[slot] {
+            Entry::Vacant { generation, .. } => *generation = to,
+            Entry::Occupied(_) => panic!("slot {slot} is occupied"),
+        }
+    }
+}
+
+/// [`NodeSlab::iter`]'s iterator.
+pub struct Iter<'a> {
+    entries: std::slice::Iter<'a, Entry>,
+}
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = (RawNodeId, &'a Node);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        for e in self.entries.by_ref() {
+            if let Entry::Occupied(n) = e {
+                return Some((n.id, n));
+            }
+        }
+        None
     }
 }
 
 impl<'a> IntoIterator for &'a NodeSlab {
     type Item = (RawNodeId, &'a Node);
-    type IntoIter = std::iter::Map<slab::Iter<'a, Node>, fn((usize, &'a Node)) -> Self::Item>;
+    type IntoIter = Iter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
-        fn with_id(entry: (usize, &Node)) -> (RawNodeId, &Node) {
-            (entry.1.id, entry.1)
-        }
-        self.slab
-            .iter()
-            .map(with_id as fn((usize, &'a Node)) -> Self::Item)
+        self.iter()
     }
 }
 
@@ -248,12 +377,15 @@ impl Index<RawNodeId> for NodeSlab {
     #[track_caller]
     fn index(&self, id: RawNodeId) -> &Node {
         #[cfg(debug_assertions)]
-        match self.slab.get(slot_of(id)) {
+        match self.slot(slot_of(id)) {
             Some(n) if n.id == id => n,
             other => stale(id, other.map(|n| n.id)),
         }
         #[cfg(not(debug_assertions))]
-        &self.slab[slot_of(id)]
+        match self.slot(slot_of(id)) {
+            Some(n) => n,
+            None => stale(id, None),
+        }
     }
 }
 
@@ -261,9 +393,9 @@ impl IndexMut<RawNodeId> for NodeSlab {
     #[inline]
     #[track_caller]
     fn index_mut(&mut self, id: RawNodeId) -> &mut Node {
-        #[cfg(debug_assertions)]
-        match self.slab.get_mut(slot_of(id)) {
+        match self.slot_mut(slot_of(id)) {
             Some(n) => {
+                #[cfg(debug_assertions)]
                 if n.id != id {
                     stale(id, Some(n.id));
                 }
@@ -271,8 +403,6 @@ impl IndexMut<RawNodeId> for NodeSlab {
             }
             None => stale(id, None),
         }
-        #[cfg(not(debug_assertions))]
-        &mut self.slab[slot_of(id)]
     }
 }
 
@@ -360,6 +490,72 @@ mod tests {
         let (mut tree, body, stale) = body_and_stale();
         assert_eq!(tree.nodes.get_live(stale).map(|n| n.id), Some(body));
         assert_eq!(tree.nodes.get_live_mut(stale).map(|n| n.id), Some(body));
+    }
+
+    fn comment(tree: &crate::node::NodeTree) -> crate::node::Node {
+        crate::node::Node::comment(tree.nodes.vacant_key(), "x", tree.guard.clone())
+    }
+
+    #[test]
+    fn a_freed_slot_is_reused_last_freed_first_under_the_next_generation() {
+        let mut tree = crate::node::NodeTree::new();
+        let a = tree.nodes.insert(comment(&tree));
+        let b = tree.nodes.insert(comment(&tree));
+        let len = tree.nodes.len();
+        tree.nodes.remove(a);
+        tree.nodes.remove(b);
+        assert_eq!(tree.nodes.len(), len - 2);
+        assert!(!tree.nodes.contains(a) && !tree.nodes.contains(b));
+        // Last freed first, as `slab::Slab` did.
+        let b2 = tree.nodes.insert(comment(&tree));
+        let a2 = tree.nodes.insert(comment(&tree));
+        assert_eq!((slot_of(b2), generation_of(b2)), (slot_of(b), 1));
+        assert_eq!((slot_of(a2), generation_of(a2)), (slot_of(a), 1));
+        assert!(tree.nodes.get(a).is_none(), "the old id names nothing");
+        assert_eq!(tree.nodes.get(a2).map(|n| n.id), Some(a2));
+        // A third occupant gets generation 2.
+        tree.nodes.remove(a2);
+        let a3 = tree.nodes.insert(comment(&tree));
+        assert_eq!((slot_of(a3), generation_of(a3)), (slot_of(a), 2));
+        assert_eq!(
+            tree.nodes
+                .iter()
+                .filter(|(id, _)| slot_of(*id) == slot_of(a))
+                .count(),
+            1
+        );
+    }
+
+    /// The wire decision on #723: no id is ever past 2^53, so a JSON client
+    /// that reads numbers as `f64` gets it exactly. A slot whose occupant at
+    /// [`MAX_GENERATION`] is freed is retired rather than wrapped, so no id is
+    /// ever issued twice either.
+    #[test]
+    fn a_slot_past_the_last_generation_is_retired_not_wrapped() {
+        assert!(pack(u32::MAX as usize, MAX_GENERATION) < (1u64 << 53));
+        assert!(
+            (pack(u32::MAX as usize, MAX_GENERATION) as f64) as u64
+                == pack(u32::MAX as usize, MAX_GENERATION)
+        );
+        let mut tree = crate::node::NodeTree::new();
+        let a = tree.nodes.insert(comment(&tree));
+        let slot = slot_of(a);
+        tree.nodes.remove(a);
+        tree.nodes
+            .set_vacant_generation_for_tests(slot, MAX_GENERATION);
+        let last = tree.nodes.insert(comment(&tree));
+        assert_eq!((slot_of(last), generation_of(last)), (slot, MAX_GENERATION));
+        let bound = tree.nodes.slot_bound();
+        tree.nodes.remove(last);
+        let next = tree.nodes.insert(comment(&tree));
+        assert_ne!(
+            slot_of(next),
+            slot,
+            "the retired slot is not handed out again"
+        );
+        assert_eq!(generation_of(next), 0);
+        assert_eq!(slot_of(next), bound, "a new slot instead");
+        assert!(tree.nodes.get(last).is_none());
     }
 
     #[test]

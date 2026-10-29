@@ -345,8 +345,9 @@ impl RinchDocument {
                 self.taffy_detach_contribution(span_taffy, t);
             }
             self.mark_subtree_paint_dirty(t);
-            self.tree.remove_subtree(t);
             self.tree.nodes[span_raw].children.retain(|&c| c != t);
+            self.tree.nodes[t].parent = None;
+            self.free_detached_subtree(t);
         }
         if !text.is_empty() {
             let text_raw = self.create_text(text).0;
@@ -391,8 +392,9 @@ impl RinchDocument {
         // originator, or casts a shadow past it, left them on screen when its
         // rule stopped matching.
         self.mark_subtree_paint_dirty(cid);
-        self.tree.remove_subtree(cid);
         self.tree.nodes[parent_id].children.retain(|&c| c != cid);
+        self.tree.nodes[cid].parent = None;
+        self.free_detached_subtree(cid);
         true
     }
 

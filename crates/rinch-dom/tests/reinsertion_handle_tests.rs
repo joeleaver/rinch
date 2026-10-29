@@ -121,20 +121,8 @@ fn the_node_a_replace_displaces_can_be_inserted_again() {
 /// `discard_node` is at least as strong as `remove_node` on every backend: the
 /// node leaves the tree.
 ///
-/// Desktop's `discard_node` is the trait default — it reclaims nothing, because
-/// its slab is per-document and freeing the slot would recycle the id (#304).
-/// So this fixture asserts the *floor the contract guarantees* — a discard is at
-/// least a remove — and deliberately does **not** assert that the slab entry is
-/// gone: that would pin a promise desktop does not make. That the slab therefore
-/// only grows is **#723**, and the fixture that belongs here once it is fixed is
-/// named in that issue.
-///
-/// **Measured, so nobody has to take the inertness on trust**: after this call a
-/// discarded node on `rinch-dom` still re-inserts with its subtree and still
-/// takes attribute writes. `the_discard_a_desktop_backend_performs_is_inert`
-/// below says so out loud, because the trait doc's one-sided contract is only
-/// credible if the weak end is written down somewhere that fails when it
-/// changes.
+/// What else a backend does is its own: since #723 `rinch-dom` frees the
+/// subtree (`a_desktop_discard_retires_the_node_as_the_browser_does` below).
 #[test]
 fn discard_takes_the_node_out_of_the_tree_here_too() {
     let (mut doc, panel, _inner) = mounted_panel();
@@ -147,60 +135,60 @@ fn discard_takes_the_node_out_of_the_tree_here_too() {
     );
 }
 
-/// **Pins the weak end of `discard_node`'s one-sided contract** (issues #719,
-/// #723), so the trait doc's "may reclaim nothing" is a measured statement and
-/// not an assumption.
+/// **A discard on `rinch-dom` retires the node, as `rinch-web` and
+/// `MockDomDocument` do** (issue #723).
 ///
-/// `rinch-dom` takes the trait default, so a discarded node here is exactly a
-/// removed one: it re-inserts, keeps its subtree, and takes writes. An app that
-/// leaned on that would be right on desktop and dead on `rinch-web`, which is
-/// #719's own shape one verb along — `MockDomDocument` retires like the browser
-/// and is what makes that mistake fail `cargo test`.
-///
-/// When #723 lands this fixture goes red. That is the point: it is the list of
-/// what changes.
+/// Until #723 this fixture was `the_discard_a_desktop_backend_performs_is_inert`
+/// and pinned the opposite — the weak end of `discard_node`'s one-sided
+/// contract: desktop took the trait default, so a discarded node re-inserted,
+/// kept its subtree and took writes, and the slab only grew. #723 frees the
+/// subtree, so it now says what changed, verb by verb: the node does not come
+/// back, its subtree is gone with it, and a write through the old id reaches
+/// nothing. The backends now agree, which is what the trait doc's "treat a
+/// discarded handle as dead" asked apps to assume all along.
 #[test]
-fn the_discard_a_desktop_backend_performs_is_inert() {
+fn a_desktop_discard_retires_the_node_as_the_browser_does() {
     let (mut doc, panel, inner) = mounted_panel();
     let body = doc.body();
+    assert!(!doc.is_retired(panel), "precondition: live");
 
     doc.discard_node(panel);
+    assert!(doc.is_retired(panel), "#723: the id names nothing now");
+    assert!(
+        doc.is_retired(inner),
+        "#723: nor does any id in its subtree"
+    );
 
     doc.append_child(body, panel);
-    assert_eq!(
-        body_children(&doc),
-        vec![panel],
-        "#723: desktop reclaims nothing on discard, so the node still re-inserts"
+    assert!(
+        body_children(&doc).is_empty(),
+        "#723: a discarded node does not re-insert"
     );
-    assert_eq!(
-        doc.get_children(panel),
-        vec![inner],
-        "#723: with its subtree"
+    assert!(
+        doc.get_children(panel).is_empty(),
+        "#723: nor keep its subtree"
     );
 
     doc.set_attribute(panel, "class", "still-writable");
     assert_eq!(
-        doc.get_attribute(panel, "class").as_deref(),
-        Some("still-writable"),
-        "#723: and it still takes writes"
+        doc.get_attribute(panel, "class"),
+        None,
+        "#723: and takes no write"
     );
 }
 
-/// **`rinch-dom` DOES recycle node ids — just never through `discard`** (issues
-/// #304, #723).
+/// **`rinch-dom` re-issues freed slots, never freed ids** (issues #304, #723).
 ///
-/// The trait doc says a *discarded* id is never handed to a different node, and
-/// it is careful to say only that. This fixture is why the qualifier is there:
-/// `set_inner_html` reaches `NodeTree::remove_subtree`, which frees the slab
-/// key, and `slab::Slab` has a free list, so the next `create_element` gets that
-/// key back. #304's recycled-slot hazard is live on desktop today, independently
-/// of anything #719 added.
+/// `set_inner_html` reaches `NodeTree::remove_subtree`, which frees the slots,
+/// and the slab has a free list, so the next `create_element` gets one back.
+/// Before #723 that was the same id — #304's recycled-slot hazard, live on
+/// desktop. Since #723 a freed slot is reused under the next **generation**:
+/// the slot comes back, the id does not, and the old id names nothing.
 ///
 /// Constructed rather than assumed, because an earlier round of PR #728 wrote
-/// the unqualified claim ("ids are never re-issued on either backend") into
-/// three documents.
+/// an unqualified claim about re-issue into three documents.
 #[test]
-fn set_inner_html_recycles_the_slab_keys_it_frees() {
+fn set_inner_html_recycles_the_slots_it_frees_under_new_ids() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let host = doc.create_element("div");
@@ -214,12 +202,21 @@ fn set_inner_html_recycles_the_slab_keys_it_frees() {
     doc.set_inner_html(host, "<span>fresh</span>");
 
     let minted = [doc.create_element("div"), doc.create_element("div")];
-    let recycled: Vec<_> = minted.iter().filter(|id| freed.contains(id)).collect();
-
+    let reused: Vec<_> = minted
+        .iter()
+        .filter(|id| freed.iter().any(|f| f.index() == id.index()))
+        .collect();
     assert!(
-        !recycled.is_empty(),
-        "#304: a slab key freed by set_inner_html must be observed coming back — \
-         freed {freed:?}, minted {minted:?}. If this stops being true, slab has \
-         stopped recycling and the qualifier on `discard_node`'s id claim can go"
+        !reused.is_empty(),
+        "a slot freed by set_inner_html comes back — freed {freed:?}, minted {minted:?}"
     );
+    for id in &minted {
+        assert!(
+            !freed.contains(id),
+            "#723: no freed id is issued again: {id:?}"
+        );
+    }
+    for id in &freed {
+        assert_eq!(doc.tag_name(*id), None, "#723: a freed id names nothing");
+    }
 }

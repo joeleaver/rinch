@@ -4524,10 +4524,10 @@ impl RinchDocument {
                             return true;
                         };
                         let Some(p) = anon.parent else { return true };
+                        // Checked: a box's container can have been freed
+                        // with the box left listed (#723).
                         scope.rootable.contains(&p)
-                            || nodes
-                                .get_live(p)
-                                .is_none_or(|pn| !pn.run_boxes.contains(&b))
+                            || nodes.get(p).is_none_or(|pn| !pn.run_boxes.contains(&b))
                     });
                 self.tree.anonymous_block_boxes = keep;
                 go

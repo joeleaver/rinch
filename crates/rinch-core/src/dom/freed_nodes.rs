@@ -2,30 +2,35 @@
 //! (issue #1509).
 //!
 //! [`NodeHandle::set_inner_html`](super::NodeHandle::set_inner_html) frees the
-//! children it replaces, and `rinch-dom` hands their ids to the next nodes it
-//! mints — the very markup the write parses. A registry keyed by node id that
-//! still holds an entry under a freed id answers for an unrelated node. The
-//! child-observer registry, which lives in this crate, forgets its own
-//! entries directly (#1489, `late_child::forget_descendants`); a registry in a
-//! crate `rinch-core` cannot name (the focus-target registry in `rinch`)
-//! registers a [`FreedNodesListener`] here instead.
+//! children it replaces, and [`NodeHandle::discard`](super::NodeHandle::discard)
+//! frees the node and its subtree (on `rinch-dom` since #723; `rinch-web`
+//! drops them from its node maps). An entry left under a freed id is dead:
+//! since #723 a freed slot is re-issued under a new **generation**, so the id
+//! never names the node minted into the slot next — but the entry would stay
+//! for good if nothing removed it, and before #723 `set_inner_html` handed the
+//! very same id to the markup it parsed. The child-observer registry, which
+//! lives in this crate, forgets its own entries directly (#1489,
+//! `late_child::forget_descendants`); a registry in a crate `rinch-core`
+//! cannot name (the focus-target registry in `rinch`) registers a
+//! [`FreedNodesListener`] here instead.
 //!
-//! Nothing else frees a node through a [`NodeHandle`](super::NodeHandle):
-//! `discard` and `remove` detach on `rinch-dom` (#723), and a text write
-//! orphans children without freeing them.
+//! `remove` frees nothing (the node can be inserted again, #719), and a text
+//! write orphans children without freeing them.
 
 use std::cell::RefCell;
 
 use super::{NodeHandle, NodeId};
 
-/// A registry that wants to forget nodes [`NodeHandle::set_inner_html`]
-/// frees. See the [module docs](self).
+/// A registry that wants to forget nodes [`NodeHandle::set_inner_html`] and
+/// [`NodeHandle::discard`] free. See the [module docs](self).
 ///
 /// [`NodeHandle::set_inner_html`]: super::NodeHandle::set_inner_html
+/// [`NodeHandle::discard`]: super::NodeHandle::discard
 #[derive(Clone, Copy)]
 pub struct FreedNodesListener {
     /// Whether the registry holds anything a freed node could be under. While
-    /// every listener answers `false`, a `set_inner_html` walks nothing.
+    /// every listener answers `false`, a `set_inner_html` or a `discard`
+    /// walks nothing.
     pub wants: fn() -> bool,
     /// Forget every entry under one of `ids` in the document `doc_key`. Called
     /// before the write frees them, with no document borrow held.
@@ -54,6 +59,16 @@ pub fn on_nodes_freed(listener: FreedNodesListener) {
 /// Tell the listeners that want it about every node **beneath** `node`, before
 /// a write that frees them.
 pub(super) fn forget_descendants(node: &NodeHandle) {
+    forget(node, false);
+}
+
+/// Tell the listeners that want it about `node` **and** every node beneath
+/// it, before a discard frees them (#723).
+pub(super) fn forget_subtree(node: &NodeHandle) {
+    forget(node, true);
+}
+
+fn forget(node: &NodeHandle, with_root: bool) {
     let wanting: Vec<FreedNodesListener> = LISTENERS.with(|l| {
         l.borrow()
             .iter()
@@ -69,6 +84,9 @@ pub(super) fn forget_descendants(node: &NodeHandle) {
     };
     let doc_key = node.doc_key();
     let mut ids = Vec::new();
+    if with_root {
+        ids.push(node.node_id());
+    }
     {
         let doc = doc.borrow();
         let mut stack = doc.get_children(node.node_id());

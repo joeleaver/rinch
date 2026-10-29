@@ -1944,7 +1944,9 @@ pub(crate) fn place_fixed_static(
 /// — an absolute box whose layout parent is its containing block, Taffy's
 /// own answer — is in no list, and is written here.
 pub(crate) fn place_static_after_lines(tree: &mut NodeTree, node_id: RawNodeId) {
-    let Some(node) = tree.get_live(node_id) else {
+    // Checked: the lines can be an earlier pass's, naming a box freed since
+    // (#723).
+    let Some(node) = tree.get(node_id) else {
         return;
     };
     let (horizontal, vertical) = static_axes(&node.computed_style);
@@ -2305,8 +2307,10 @@ impl RinchDocument {
         let tree = &self.tree;
         let mut wanted: Vec<(RawNodeId, RawNodeId)> = Vec::new();
         let mut want = |kind: Option<OutOfFlowKind>| {
+            // Checked: a kind recorded by an earlier read-back can name a
+            // containing block freed since (#723).
             if let Some(OutOfFlowKind::AncestorAbsolute(cb)) = kind
-                && let Some(span) = tree.get_live(cb)
+                && let Some(span) = tree.get(cb)
                 && !generates_layout_box(span)
                 && let Some(root) = span.ifc_root
             {

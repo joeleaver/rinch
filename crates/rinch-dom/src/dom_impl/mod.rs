@@ -835,6 +835,32 @@ impl RinchDocument {
             Some(ServoArc::new(self.tree.guard.wrap(pdb)));
     }
 
+    /// Free `id` and its subtree, which is already out of the tree (no parent;
+    /// its Taffy contribution and its pixels accounted for): the document's
+    /// half of `NodeTree::remove_subtree` (#723). The subtree's inline
+    /// formatting marks go first, so a live anonymous box no longer lists a
+    /// freed member; a `<style>` in it stops contributing its sheet.
+    pub(crate) fn free_detached_subtree(&mut self, id: RawNodeId) {
+        if !self.tree.nodes.contains(id) {
+            return;
+        }
+        debug_assert!(
+            self.tree.nodes[id].parent.is_none(),
+            "free_detached_subtree: the node is still attached"
+        );
+        self.clear_ifc_root_recursive(id);
+        let had_style = !self.style_elements.is_empty();
+        self.tree.remove_subtree(id);
+        if had_style
+            && self
+                .style_elements
+                .iter()
+                .any(|&s| !self.tree.nodes.contains(s))
+        {
+            self.style_elements_stale = true;
+        }
+    }
+
     /// Mark a node and its entire subtree as paint-dirty for removal.
     ///
     /// Used before removing nodes so the dirty region includes the old layout

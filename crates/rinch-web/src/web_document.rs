@@ -288,8 +288,17 @@ pub(crate) fn element_of(handle: &rinch_core::dom::NodeHandle) -> Option<web_sys
 }
 
 /// Set the `__nid` JS property on a browser node for reverse lookups.
+///
+/// Stored as a JS number holding the whole `u64` id, which is exact below
+/// 2^53 — every id here, a monotonic counter (#723; it was truncated to 32
+/// bits, so the 2^32nd node aliased the first).
 fn set_nid(node: &web_sys::Node, id: NodeId) {
-    let _ = js_sys::Reflect::set(node, &"__nid".into(), &JsValue::from(id.0 as u32));
+    debug_assert!(
+        id.0 < (1 << 53),
+        "node id {} is not exact as a JS number",
+        id.0
+    );
+    let _ = js_sys::Reflect::set(node, &"__nid".into(), &JsValue::from(id.0 as f64));
     NODE_REGISTRY.with(|m| m.borrow_mut().insert(id.0, node.clone()));
 }
 

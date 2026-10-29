@@ -8,7 +8,6 @@ license.workspace = true
 # Grapheme-cluster boundaries for hit testing (#1684).
 rinch-words.workspace = true
 rinch-core = { workspace = true }
-slab = "0.4"
 # Taffy's default features minus the five rinch never reads (#1260), which
 # cost instructions in every compute whether read or not:
 # - `content_size`: a scrollable-overflow rect per node in flex, block, grid and

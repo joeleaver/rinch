@@ -739,6 +739,10 @@ impl NodeHandle {
         let vacated = late_child::vacated_parent(self);
         if let Some(doc) = self.accessed_doc() {
             release_focus_within(&doc, self.node_id, false, |_| true);
+            // The registries outside this crate keyed by node id, as
+            // `set_inner_html` tells them (#1509): the backend frees the whole
+            // subtree (#723).
+            freed_nodes::forget_subtree(self);
             doc.borrow_mut().discard_node(self.node_id);
         }
         if let Some(vacated) = vacated {

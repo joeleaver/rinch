@@ -539,7 +539,34 @@ impl DomDocument for RinchDocument {
         // change to animate (#699). Unconditional: `remove_node` on an already
         // detached node is a no-op for a subtree that is already reset.
         self.detach_subtree_styles(node.0);
-        // Don't remove from slab yet — caller may still reference it
+        // Not freed: a removed node can be inserted again (#719). A discard
+        // frees (below).
+    }
+
+    /// A [`remove_node`](Self::remove_node), then the subtree is **freed**
+    /// (#723): every node in it leaves the slab, its slot is reused under
+    /// the next generation, and its Taffy nodes and the tree's side tables
+    /// go with it (`NodeTree::remove_subtree`). An id kept from before names
+    /// nothing afterwards — every verb is a no-op for it, as on `rinch-web` —
+    /// and never the node minted into its slot next.
+    ///
+    /// The document's own root, `<html>` and `<body>` are only removed.
+    fn discard_node(&mut self, node: NodeId) {
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
+        self.remove_node(node);
+        let id = node.0;
+        if id == self.tree.root_id || id == self.tree.html_id || id == self.tree.body_id {
+            return;
+        }
+        self.free_detached_subtree(id);
+    }
+
+    /// Whether `node` names no live node: it was discarded (or freed by
+    /// `set_inner_html`), or never issued.
+    fn is_retired(&self, node: NodeId) -> bool {
+        !self.tree.nodes.contains(node.0)
     }
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
@@ -1234,7 +1261,7 @@ impl DomDocument for RinchDocument {
                 self.taffy_detach_contribution(parent_taffy, child);
             }
             self.tree.nodes[child].parent = None;
-            self.tree.remove_subtree(child);
+            self.free_detached_subtree(child);
         }
         self.tree.nodes[node.0].children.drain(lo..hi);
         // `:empty` on the node, and whatever a structural selector ties to

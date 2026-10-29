@@ -1877,7 +1877,12 @@ impl RinchDocument {
         // A hoisted out-of-flow box is held by its host's lists, not its DOM
         // parent's (#591): its `layout` is relative to the host, so every
         // coordinate sum steps there. `Node::hoisted_out_of_flow_to`.
-        if let Some(host) = node.hoisted_out_of_flow_to {
+        // Checked: the mark is reset by the next layout, not by a detach, so
+        // a detached box can still name a host freed since (#723). Only a
+        // hoisted box pays the compare.
+        if let Some(host) = node.hoisted_out_of_flow_to
+            && nodes.contains(host)
+        {
             return Some(host);
         }
         if let Some(b) = node.run_box {

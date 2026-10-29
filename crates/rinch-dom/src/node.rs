@@ -4097,62 +4097,170 @@ impl NodeTree {
         self.ifc_dirty = true;
     }
 
-    /// Remove a node and all its descendants from the slab.
+    /// Free a node and all its descendants: take them out of the slab, so
+    /// each slot is reused under the next generation, and drop everything the
+    /// tree keeps under their ids (#723).
     ///
-    /// The one route that frees slots, and the one that keeps the tree's
-    /// unchecked (`get_live`) readers sound (#723): it drops the hit cache
-    /// (whose cached paint orders `hit_testing` reads unchecked) and each
-    /// freed node's `active_transitions`/`active_animations` entries. PR 2's
-    /// free-on-discard must go through it, or repeat both.
+    /// The one route that frees DOM nodes — `set_inner_html`, pseudo-element
+    /// pruning and `RinchDocument::discard_node` all come here (the IFC
+    /// passes free their own anonymous boxes) — and the one that keeps the
+    /// tree's unchecked (`get_live`) readers sound: it drops the hit cache
+    /// (whose cached paint orders `hit_testing` reads unchecked), and every
+    /// side table whose readers index an id unchecked, or that would keep a
+    /// freed id for good, forgets the freed ones. Tables drained by the next
+    /// style, layout or paint pass whose readers check the id
+    /// (`paint_dirty_nodes`, `style_dirty_nodes`, `ifc_seeds`, …) are left to
+    /// that pass: a freed id there names nothing.
+    ///
+    /// The node itself must already be out of its parent's child list (and
+    /// its Taffy contribution out of the parent's, `taffy_detach_contribution`);
+    /// its own Taffy node, its descendants' and its IFC measure leaves are
+    /// removed here, with their `taffy_map` entries. The anonymous block boxes
+    /// a freed container holds (`run_boxes`, not among its children) are
+    /// freed with it.
+    ///
+    /// An id that names no live node is a no-op.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
+        if !self.nodes.contains(id) {
+            return;
+        }
         self.hit_cache.invalidate();
         // Collect all descendant IDs first
         let mut to_remove = Vec::new();
         self.collect_descendants(id, &mut to_remove);
-        for node_id in &to_remove {
-            self.active_transitions.remove(node_id);
-            self.active_animations.remove(node_id);
+        for &node_id in &to_remove {
+            self.active_transitions.remove(&node_id);
+            self.active_animations.remove(&node_id);
             // Guarded: `remove` hashes the key even on an empty map (#783).
             if !self.finished_animations.is_empty() {
-                self.finished_animations.remove(node_id);
+                self.finished_animations.remove(&node_id);
             }
             // The slab recycles ids: a node created later may be handed this
             // one, and must not inherit this node's measured sizes.
-            self.ifc_measure_cache.remove(node_id);
-            self.text_layout_stamps.remove(node_id);
+            self.ifc_measure_cache.remove(&node_id);
+            self.text_layout_stamps.remove(&node_id);
             // Nor a freshness flag meant for a now-gone `<select>` (#757).
-            self.select_value_fresh.remove(node_id);
+            self.select_value_fresh.remove(&node_id);
             // Nor a selection remembered for a now-gone text control (#1678).
             if !self.text_selections.is_empty() {
-                self.text_selections.remove(node_id);
+                self.text_selections.remove(&node_id);
             }
             // Nor what was recorded about a now-gone atomic inline (#1476;
             // the first two leaked until then, review of #1477).
             if !self.keyword_inline_cb_width.is_empty() {
-                self.keyword_inline_cb_width.remove(node_id);
+                self.keyword_inline_cb_width.remove(&node_id);
             }
             if !self.auto_inline_percent_content.is_empty() {
-                self.auto_inline_percent_content.remove(node_id);
+                self.auto_inline_percent_content.remove(&node_id);
             }
             if !self.atomic_min_content.is_empty() {
-                self.atomic_min_content.remove(node_id);
+                self.atomic_min_content.remove(&node_id);
             }
             if !self.atomic_min_dropped.is_empty() {
-                self.atomic_min_dropped.remove(node_id);
+                self.atomic_min_dropped.remove(&node_id);
+            }
+            // The tables kept across frames (#723): a freed id would stay in
+            // them for good, and the out-of-flow pass reads
+            // `ancestor_absolutes` unchecked.
+            if !self.dirty_nodes.is_empty() {
+                self.dirty_nodes.remove(&node_id);
+            }
+            if !self.dirty_text_contexts.is_empty() {
+                self.dirty_text_contexts.remove(&node_id);
+            }
+            if !self.ancestor_absolutes.is_empty() {
+                self.ancestor_absolutes.remove(&node_id);
+            }
+            if !self.ifc_root_registry.is_empty() {
+                self.ifc_root_registry.remove(&node_id);
+            }
+            if !self.atomic_inline_registry.is_empty() {
+                self.atomic_inline_registry.remove(&node_id);
+            }
+            if !self.dirty_atomic_inlines.is_empty() {
+                self.dirty_atomic_inlines.remove(&node_id);
+            }
+            if let Some(leaf) = self.ifc_measure_leaves.remove(&node_id) {
+                let _ = self.taffy.remove(leaf);
+            }
+            let node = &mut self.nodes[node_id];
+            let taffy_id = node.taffy_id.take();
+            let run_box = node.run_box.take();
+            // A freed member leaves the anonymous box that lists it, when the
+            // box itself lives on (its container is not being freed).
+            if let Some(b) = run_box
+                && let Some(boxx) = self.nodes.get_mut(b)
+            {
+                boxx.run_members.retain(|&m| m != node_id);
+            }
+            if let Some(t) = taffy_id {
+                self.taffy_map.remove(&t);
+                // Detaches it from a parent still standing and orphans its
+                // children, which are removed next (pre-order).
+                let _ = self.taffy.remove(t);
             }
         }
-        for node_id in to_remove {
+        // The lists kept across frames, scanned once for the whole subtree.
+        // `placed_absolutes` and `abs_static_fits` are re-read unchecked by a
+        // text-only layout and a scroll write; the anonymous-box list by the
+        // next IFC pass; the scroll-lock roots never shrink otherwise.
+        if !self.placed_absolutes.is_empty()
+            || !self.abs_static_fits.is_empty()
+            || !self.anonymous_block_boxes.is_empty()
+            || !self.scroll_lock_roots.is_empty()
+            || !self.scroll_lock_exempt.is_empty()
+            || !self.atomic_leaf_layouts.is_empty()
+        {
+            let freed: rustc_hash::FxHashSet<RawNodeId> = to_remove.iter().copied().collect();
+            self.placed_absolutes.retain(|(n, _)| !freed.contains(n));
+            self.abs_static_fits.retain(|(n, _)| !freed.contains(n));
+            self.anonymous_block_boxes.retain(|n| !freed.contains(n));
+            self.scroll_lock_roots.retain(|n| !freed.contains(n));
+            self.scroll_lock_exempt.retain(|n| !freed.contains(n));
+            self.atomic_leaf_layouts
+                .retain(|(n, _), _| !freed.contains(n));
+        }
+        // Interaction state naming a freed node names nothing now. (The
+        // generation already keeps it from matching the slot's next node;
+        // this keeps it from naming a dead one.)
+        let freed = |n: Option<RawNodeId>| n.is_some_and(|n| to_remove.contains(&n));
+        if freed(self.hovered_node) {
+            self.hovered_node = None;
+        }
+        if freed(self.focused_node) {
+            self.focused_node = None;
+        }
+        if freed(self.active_node) {
+            self.active_node = None;
+        }
+        if freed(self.keyboard_editor) {
+            self.keyboard_editor = None;
+        }
+        // Deepest first, so the subtree's root is the slot handed out next
+        // (the free list is last-freed first).
+        for node_id in to_remove.into_iter().rev() {
             self.nodes.remove(node_id);
         }
     }
 
+    /// `id` and every node it owns, pre-order: its children, and the
+    /// anonymous block boxes it holds (`run_boxes`), which are not among them.
     fn collect_descendants(&self, id: RawNodeId, out: &mut Vec<RawNodeId>) {
-        out.push(id);
-        if let Some(node) = self.nodes.get(id) {
-            let children: Vec<_> = node.children.clone();
-            for child in children {
-                self.collect_descendants(child, out);
-            }
+        let mut stack = vec![id];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.nodes.get(id) else {
+                continue;
+            };
+            out.push(id);
+            // Reversed onto the stack so children come off in order.
+            stack.extend(node.children.iter().rev().copied());
+            stack.extend(
+                node.run_boxes
+                    .iter()
+                    .rev()
+                    .copied()
+                    .filter(|&b| self.nodes.get(b).is_some_and(|b| b.parent == Some(id))),
+            );
         }
     }
 }
