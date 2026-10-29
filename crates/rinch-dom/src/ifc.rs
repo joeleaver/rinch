@@ -507,17 +507,13 @@ pub(crate) fn break_lines_hanging_spaces(
     // The pass hangs preserved spaces on every line it breaks, whichever
     // test sent the paragraph through it: a line [`unglue`] moves an NBSP onto
     // can come out ending in spaces parley did not hang.
-    let fix = max.filter(|&max| {
-        (preserves_spaces
-            && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung)))
-            || any_hung_nbsp_line(layout, text, max)
-            || any_emergency_box_line_before_white_space(layout, text)
-            || (count_trailing && any_counted_trailing_line(layout, text, preserves_spaces))
-            || (justify && any_miscounted_justified_line(layout, text, max))
+    let fix = max.filter(|_| {
+        any_emergency_box_line_before_white_space(layout, text)
             || any_line_split_at_edge(layout)
             || unhung.active_seams().is_some()
     });
-    let fix = fix.map(|max| (max, preserves_spaces));
+    let (count_trailing, justify) = (false, false);
+    let fix = fix.map(|max| (max, false));
     let mut stats = match fix {
         Some((max, hang_spaces)) => hang_pass(
             layout,
@@ -851,6 +847,23 @@ fn taffy_baseline(
     }
 }
 
+/// The `white-space-collapse` parley 0.12 is handed for an element's text:
+/// which of its spaces hang at a line's end (CSS Text 4 §4.3). rinch
+/// collapses white space itself ([`IfcText`]), so everything parley sees is
+/// preserved — `Preserve` (hangs at a soft wrap, and only as far as it
+/// overflows before a forced break or the end) — except `break-spaces`, whose
+/// spaces never hang (`BreakSpaces`, #1043).
+pub(crate) fn white_space_hanging(
+    white_space: crate::computed_style::WhiteSpaceValue,
+) -> parley::style::WhiteSpaceCollapse {
+    match white_space {
+        crate::computed_style::WhiteSpaceValue::BreakSpaces => {
+            parley::style::WhiteSpaceCollapse::BreakSpaces
+        }
+        _ => parley::style::WhiteSpaceCollapse::Preserve,
+    }
+}
+
 /// An atomic inline's `vertical-align` as parley 0.12 lines a box up by it
 /// (CSS 2.1 §10.8.1; #663): every keyword, and a length or percentage (of the
 /// box's own `line-height`) raising it. Before 0.12 an atomic inline sat on
@@ -990,6 +1003,7 @@ pub(crate) fn shape_text_leaf(
     // CSS pixels either way.
     builder.push_default(P::LetterSpacing(text.letter_spacing));
     builder.push_default(P::WordSpacing(text.word_spacing));
+    builder.push_default(P::WhiteSpaceCollapse(white_space_hanging(text.white_space)));
     let mut layout = builder.build(&leaf.text);
     let hang = break_lines_hanging_spaces(
         &mut layout,
@@ -1977,7 +1991,7 @@ fn break_unwrapped_aligned(
     // parley offsets a right-to-left line by its trailing white space, so a
     // narrowed alignment width would move it the wrong way (as in
     // `break_lines_hanging_spaces`): such a line is left as parley aligns it.
-    let trailing = !layout.is_rtl() && any_counted_trailing_line(layout, text, preserves_spaces);
+    let trailing = false;
     let keep = phantom_last_line(layout);
     if widened || trailing || keep.is_some() {
         let units = trailing.then(|| logical_units(layout, text, unhung));
@@ -9613,6 +9627,7 @@ impl RinchDocument {
         // after a `normal` span followed by the root's preserved spaces,
         // where Chrome breaks before the spaces and rinch does not.
         root_text_style.text_wrap_mode = Self::text_wrap_mode(root_computed);
+        root_text_style.white_space_collapse = white_space_hanging(root_computed.white_space);
 
         // Apply white-space mode from computed style.
         // Contenteditable elements always use Preserve (pre-wrap) to prevent
@@ -10475,6 +10490,9 @@ impl RinchDocument {
         ));
         props.push(parley::style::StyleProperty::TextWrapMode(
             Self::text_wrap_mode(computed),
+        ));
+        props.push(parley::style::StyleProperty::WhiteSpaceCollapse(
+            white_space_hanging(computed.white_space),
         ));
         props
     }
