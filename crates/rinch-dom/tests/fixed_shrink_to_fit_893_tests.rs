@@ -258,21 +258,125 @@ fn known_gaps_pin_rinchs_current_answer() {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
-/// Every row, laid out a second time with nothing changed (a new viewport
-/// height, so the pass is not skipped): nothing moves but what is pinned to
-/// the bottom of the viewport.
+/// Every row, laid out a second time with nothing changed but the viewport
+/// height (so the pass is not skipped), then a third time back at the first
+/// viewport. Nothing moves the second time but what depends on the
+/// viewport's height — a box pinned to its bottom, a percentage height
+/// limit (`f19`: 10% of 640 is 64) — and the third layout is the first.
 #[test]
 fn a_second_layout_moves_nothing() {
+    let mut rows = 0;
     let bad: Vec<_> = CHROME
         .iter()
-        .filter(|(n, ..)| !n.contains("bottom"))
-        .filter_map(|(n, h, want)| {
+        .flat_map(|(n, h, want)| {
+            rows += 1;
             let mut doc = lay_out(h);
             let first = dump(&doc, want);
             doc.resolve_layout(VIEWPORT.0, VIEWPORT.1 + 40.0);
             let second = dump(&doc, want);
-            (first != second).then(|| format!("{n}: [{first}] then [{second}]"))
+            doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+            let third = dump(&doc, want);
+            let tall = n.contains("bottom") || n.contains("height_pct");
+            [
+                (!tall && first != second).then(|| format!("{n}: [{first}] then [{second}]")),
+                (first != third).then(|| format!("{n}: [{first}] then back [{third}]")),
+            ]
+        })
+        .flatten()
+        .collect();
+    assert!(rows >= 10, "the table is being read: {rows} rows");
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// The viewports `RESIZE` lays each row out at, in turn, on one document.
+const VIEWPORTS: [(f32, f32); 5] = [
+    (800.0, 600.0),
+    (800.0, 640.0),
+    (1000.0, 600.0),
+    (600.0, 300.0),
+    (800.0, 600.0),
+];
+
+/// (name, html, the box at each of `VIEWPORTS`) — not measured in a browser
+/// but read off the spec: a percentage `min-`/`max-` size of a fixed box is
+/// of the viewport's matching axis (CSS 2.1 §10.4, §10.7), whatever its
+/// parent's size. Each sits inside a parent the percentage is **not** of —
+/// a 200px-wide one, or an auto-height one — so resolving against the
+/// layout parent gives another number. Laid out again at each viewport, the
+/// limit follows it.
+const RESIZE: &[(&str, &str, [&str; 5])] = &[
+    (
+        "max_height_pct",
+        r##"<div data-m="a" style="position:fixed;left:0;top:0;width:100px;max-height:10%;overflow:hidden"><div style="height:200px"></div></div>"##,
+        [
+            "a=0,0,100,60",
+            "a=0,0,100,64",
+            "a=0,0,100,60",
+            "a=0,0,100,30",
+            "a=0,0,100,60",
+        ],
+    ),
+    (
+        "min_height_pct",
+        r##"<div data-m="a" style="position:fixed;left:0;top:0;width:100px;min-height:20%"><div style="height:10px"></div></div>"##,
+        [
+            "a=0,0,100,120",
+            "a=0,0,100,128",
+            "a=0,0,100,120",
+            "a=0,0,100,60",
+            "a=0,0,100,120",
+        ],
+    ),
+    (
+        "max_width_pct",
+        r##"<div style="width:200px"><div data-m="a" style="position:fixed;left:0;top:0;max-width:50%;height:10px"><div style="width:2000px;height:10px"></div></div></div>"##,
+        [
+            "a=0,0,400,10",
+            "a=0,0,400,10",
+            "a=0,0,500,10",
+            "a=0,0,300,10",
+            "a=0,0,400,10",
+        ],
+    ),
+    (
+        "min_width_pct",
+        r##"<div style="width:200px"><div data-m="a" style="position:fixed;left:20px;top:30px;min-width:50%;height:10px"></div></div>"##,
+        [
+            "a=20,30,400,10",
+            "a=20,30,400,10",
+            "a=20,30,500,10",
+            "a=20,30,300,10",
+            "a=20,30,400,10",
+        ],
+    ),
+];
+
+#[test]
+fn percentage_limits_follow_the_viewport() {
+    let mut checked = 0;
+    let bad: Vec<_> = RESIZE
+        .iter()
+        .flat_map(|(n, h, wants)| {
+            let mut doc = lay_out(h);
+            VIEWPORTS
+                .iter()
+                .zip(wants)
+                .enumerate()
+                .filter_map(|(i, (&(w, vh), want))| {
+                    if i > 0 {
+                        doc.resolve_layout(w, vh);
+                    }
+                    checked += 1;
+                    let got = dump(&doc, want);
+                    (got != *want).then(|| format!("{n} at {w}x{vh}: want[{want}] rinch[{got}]"))
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
+    assert_eq!(
+        checked,
+        RESIZE.len() * VIEWPORTS.len(),
+        "every layout is checked"
+    );
     assert!(bad.is_empty(), "{bad:#?}");
 }
