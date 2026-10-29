@@ -554,10 +554,12 @@ fn build_badges(variant: &str) -> BadgeFixture {
         scroller,
         leaf: leaf.expect("row 7 exists"),
     };
-    // Warm both operations once.
+    // Warm the operations once — the bars too, as the paint after that
+    // scroll has read them by the time the pointer next moves.
     f.doc.set_style(f.leaf, "margin-left", "1px");
     f.doc.resolve_layout(VP.0, VP.1);
     f.doc.set_scroll_top(f.scroller, 7.0);
+    f = op_badge_extents(f);
     f
 }
 
@@ -587,6 +589,24 @@ pub fn op_badge_relayout(mut f: BadgeFixture) -> BadgeFixture {
 /// The scroller scrolls by one notch's worth; no layout runs.
 pub fn op_badge_scroll(mut f: BadgeFixture) -> BadgeFixture {
     f.doc.set_scroll_top(f.scroller, 60.0);
+    f
+}
+
+/// The bars of the scroller and of the body, as every paint and every
+/// pointer move's hit test asks for them (`scrollbars` runs `content_extents`,
+/// which counts each badge in the scroller its containing block sits in, #770).
+pub fn op_badge_extents(f: BadgeFixture) -> BadgeFixture {
+    let body = f.doc.body();
+    std::hint::black_box(rinch_dom::paint::scrollbar::scrollbars(
+        &f.doc.tree,
+        f.scroller.0,
+        1.0,
+    ));
+    std::hint::black_box(rinch_dom::paint::scrollbar::scrollbars(
+        &f.doc.tree,
+        body.0,
+        1.0,
+    ));
     f
 }
 

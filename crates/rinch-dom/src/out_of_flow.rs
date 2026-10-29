@@ -398,14 +398,12 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
 /// Note this is *narrower* than "is the box in flow": a `relative` box is
 /// out of flow for nobody and contributes normally, and so does a float.
 ///
-/// The caller stops at the first box, so a box skipped here is measured by **nobody**:
-/// the ancestor that really is its containing block never looks past its own
-/// child boxes either. Chrome does give it to that ancestor (measured: a
-/// 700x1500 absolute under a static `overflow: auto` div reaches
-/// `documentElement.scrollHeight`), and closing that needs the recursive union
-/// css-overflow-3 describes rather than a one-level max — issue #770. It is not
-/// a regression: the box used to be measured by the *wrong* container, which is
-/// what grew the phantom bar #765 was filed for.
+/// The caller stops at the first box, so a box skipped here — and an
+/// absolute box below the first box at all — is measured by the scroll
+/// container [`overflow_scroller`] names instead, from
+/// `NodeTree::overflow_absolutes` (issue #770). Before #770 it was measured
+/// by nobody, and before #765 by the *wrong* container, which is what grew the
+/// phantom bar #765 was filed for.
 pub(crate) fn contributes_to_scrollable_overflow(
     tree: &NodeTree,
     parent_id: RawNodeId,
@@ -446,6 +444,100 @@ pub(crate) fn contributes_to_scrollable_overflow(
         }
         _ => true,
     }
+}
+
+/// The scroll container whose **scrollable overflow** the absolute box
+/// `node_id` (of kind `kind`, [`out_of_flow_kind`]'s answer) is part of
+/// (css-overflow-3 §2.2, issue #770): the nearest box at or above its
+/// containing block that clips — when that box is a scroll container
+/// (`overflow` `hidden`, `scroll` or `auto` on either axis). The box scrolls
+/// with that container and with no box below it: a scroll container between
+/// the box and its containing block does not carry it (the box escapes it),
+/// and neither does one above the first scroll container (that one clips it).
+///
+/// * The containing block is the box's own layout parent (`kind` `None`), an
+///   ancestor further up, or — for a positioned inline span (#631) — the
+///   block container whose lines hold the span ([`chain_end`]).
+/// * Above it the walk follows the **containing-block chain**, not the DOM: an
+///   in-flow box's overflow is its parent's, but an `absolute` box on the way
+///   passes it to *its* containing block (Chrome 156: under an absolute box
+///   that escapes a static scroller, an absolute grandchild escapes it too),
+///   and a `fixed` one to the viewport, which scrolls nothing (a `fixed`
+///   `Drawer`'s absolute panel scrolls no ancestor of the drawer).
+/// * A box that clips without scrolling (`overflow: clip`) ends the walk with
+///   no container: what overflows it is clipped away, and nothing above
+///   scrolls to reach it (Chrome 156: an `overflow: auto` box above an
+///   `overflow: clip` one holding a 400x500 absolute reports no overflow).
+///   Not modelled: `clip` on one axis with `visible` on the other, which
+///   clips that axis alone.
+/// * The **initial containing block**, and a walk that reaches it, belongs
+///   to the page's scroll — in rinch the `<body>`'s (the UA sheet gives it
+///   `overflow-y: auto`; its scroll is the one that carries an ICB box,
+///   [`chain_to_containing_block`]) when the body is a scroll container and
+///   holds the box, and the `<html>` box otherwise. Chrome scrolls the
+///   viewport, which in rinch is the body (measured: the issue's 700x1500
+///   absolute under a static `overflow: auto` div is
+///   `documentElement.scrollHeight` 1500).
+/// * `position: fixed` has none: the viewport does not scroll.
+///
+/// `None` also for a box the tree does not connect.
+pub(crate) fn overflow_scroller(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    kind: Option<OutOfFlowKind>,
+) -> Option<RawNodeId> {
+    let mut up = overflow_continues_at(tree, node_id, kind)?;
+    while let Some(id) = up {
+        if id == tree.html_id || id == tree.root_id {
+            break;
+        }
+        let node = tree.get(id)?;
+        let (clip_x, clip_y) = node.clip_axes();
+        if clip_x || clip_y {
+            return is_scroll_container(node).then_some(id);
+        }
+        up = match node.box_position() {
+            PositionValue::Fixed => return None,
+            PositionValue::Absolute => overflow_continues_at(tree, id, out_of_flow_kind(tree, id))?,
+            _ => Some(node.parent?),
+        };
+    }
+    // The initial containing block: the page's scroll.
+    let body_scrolls = tree.get(tree.body_id).is_some_and(|body| {
+        let (clip_x, clip_y) = body.clip_axes();
+        (clip_x || clip_y) && is_scroll_container(body)
+    });
+    if body_scrolls && is_box_ancestor(tree, tree.body_id, node_id) {
+        Some(tree.body_id)
+    } else {
+        Some(tree.html_id)
+    }
+}
+
+/// Where the overflow of the out-of-flow box `node_id` (of kind `kind`) goes
+/// on from: `Some(Some(block))` the box its containing block is (or, for an
+/// inline span, the block holding its line), `Some(None)` the initial
+/// containing block, `None` nowhere — the viewport of a `fixed` box, or a
+/// tree that does not connect.
+fn overflow_continues_at(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    kind: Option<OutOfFlowKind>,
+) -> Option<Option<RawNodeId>> {
+    match kind {
+        Some(OutOfFlowKind::Fixed) => None,
+        Some(OutOfFlowKind::IcbAbsolute) => Some(None),
+        Some(OutOfFlowKind::AncestorAbsolute(cb)) => Some(Some(chain_end(tree, cb)?)),
+        None => Some(Some(layout_parent(tree, node_id)?)),
+    }
+}
+
+/// `overflow` `hidden`, `scroll` or `auto` on either axis — a scroll
+/// container, asked of a box [`Node::clip_axes`] says clips.
+pub(crate) fn is_scroll_container(node: &Node) -> bool {
+    use crate::computed_style::OverflowValue as O;
+    let scrolls = |v: O| matches!(v, O::Hidden | O::Scroll | O::Auto);
+    scrolls(node.computed_style.overflow_x) || scrolls(node.computed_style.overflow_y)
 }
 
 /// A containing block's padding box, and where it starts inside the border
@@ -512,7 +604,7 @@ pub(crate) fn has_inline_containing_block(tree: &NodeTree, kind: Option<OutOfFlo
 /// at the block container whose lines hold the span ([`inline_host`]). The
 /// span's fragments are that block's content, so its own scroll carries the
 /// box and every box below it must not.
-fn chain_end(tree: &NodeTree, cb: RawNodeId) -> Option<RawNodeId> {
+pub(crate) fn chain_end(tree: &NodeTree, cb: RawNodeId) -> Option<RawNodeId> {
     let node = tree.get_live(cb)?;
     if generates_layout_box(node) {
         Some(cb)
@@ -1110,6 +1202,7 @@ pub(crate) fn note_kind_at_read(
 /// flags. Called before `read_layout_results` walks the document.
 pub(crate) fn begin_read(tree: &mut NodeTree) {
     tree.placed_absolutes.clear();
+    tree.overflow_absolutes.listed.clear();
     tree.abs_static_fits.clear();
     tree.abs_late_moves = false;
     tree.abs_inline_cb_seen = false;
@@ -1775,7 +1868,7 @@ pub(crate) fn static_axes(style: &ComputedStyle) -> (bool, bool) {
 /// The nearest ancestor of `node_id` in the box tree that generates a box:
 /// the one its `layout` is relative to. (A `display: contents` wrapper is in
 /// the chain and has none.)
-fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
+pub(crate) fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
     let mut current = RinchDocument::box_tree_parent(&tree.nodes, node_id)?;
     loop {
         let node = tree.get_live(current)?;
@@ -2039,6 +2132,9 @@ pub(crate) fn replace_all(tree: &mut NodeTree) {
     if !std::mem::take(&mut tree.abs_late_moves) || tree.placed_absolutes.is_empty() {
         return;
     }
+    // It moves boxes after the scroll ranges may have been measured (the
+    // layout's clamp asks for them first), so what those measured goes.
+    tree.hit_cache.invalidate();
     let placed = std::mem::take(&mut tree.placed_absolutes);
     tree.perf
         .add(crate::perf::Counter::AbsBoxesVisited, placed.len() as u64);

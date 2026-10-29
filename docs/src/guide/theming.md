@@ -608,6 +608,22 @@ inset: 0` overlay such as `LoadingOverlay` in a padded panel adds no scrollbar;
 and a `position: relative` child with an offset both where it is drawn and
 where it would have been.
 
+An `absolute` box counts wherever it sits, in the nearest scroll container at
+or above its containing block, as a browser counts it (#770): under a
+`position: relative` wrapper inside a scroll region it scrolls that region; a
+scroll region between the box and its containing block does not scroll to it
+(the box does not move with it); one with no positioned ancestor scrolls the
+page, which on desktop is the `<body>`. A `fixed` box scrolls nothing, and a
+box with no width or no height counts nothing.
+
+So an absolute overlay that hangs past the window's edge with no positioned
+scroll region above it — a tooltip or hover card on a control at the bottom or
+right of the window — gives the page a scroll range, and scrollbars, for as long
+as it is shown, as it does in a browser. (`Select`, `Popover` and `DropdownMenu`
+flip or shift to stay inside the window; `Tooltip` and `HoverCard` do not.) An
+app that does not want that sets `body { overflow: hidden }` (`ui-zoo-desktop`
+does), or keeps its overlays inside the window.
+
 Where desktop still differs from a browser:
 
 - **A grid item's margins** count nothing here: a browser counts the grid's
@@ -617,16 +633,9 @@ Where desktop still differs from a browser:
 - **A margin that collapses through a child's end** — the last child of a
   `height: auto` child carrying `margin-bottom` — is not counted; a browser
   counts it.
-- **An absolute whose containing block is further up than its parent** is
-  laid out in that containing block (#386) but counted by no scroll container
-  at all; a browser counts it in that ancestor (#770).
-  The exception is a parent that is a non-positioned inline element such as a
-  plain `<span>` (at any depth of them) sitting directly in the containing
-  block: the box then counts there, as a browser counts it. Under a
-  `position: relative` span — which is then the box's containing block — it
-  counts when the scroll container is the block holding the span's line,
-  placed against the span's text (#1049, #631); with another block between
-  them it is counted nowhere (#770).
+- **An in-flow box that overflows its own parent** — a 300px child of a
+  `height: 50px` child — is not counted: a browser scrolls 200 to it, desktop
+  0 (#2054). An absolute box in the same place is.
 
 ### Why not `scrollbar-color` / `scrollbar-width`?
 
