@@ -173,6 +173,8 @@ mod editor_word_delete_tests;
 mod editor_wrapped_selection_tests;
 #[cfg(test)]
 mod element_key_1678_tests;
+#[cfg(test)]
+mod element_wheel_tests;
 mod event_dispatch;
 #[cfg(test)]
 mod field_label_2034_tests;
@@ -604,14 +606,14 @@ pub(crate) struct SurfaceCapture {
     /// The surface's id.
     pub surface: usize,
     /// The surface's DOM node, for local coordinates.
-    pub node: usize,
+    pub node: u64,
 }
 
 /// Pending drag: mousedown happened on a draggable element but the movement
 /// threshold has not yet been crossed.
 pub(crate) struct PendingDrag {
     /// The DOM node with `draggable="true"`.
-    pub node_id: usize,
+    pub node_id: u64,
     /// Mouse position at mousedown, in **logical** (CSS) pixels — the space
     /// every `PlatformEvent` pointer coordinate arrives in (#299).
     pub mousedown_pos: (f32, f32),
@@ -651,7 +653,7 @@ pub(crate) struct FileDrag {
 /// it (#1649).
 #[cfg(feature = "desktop")]
 pub(crate) struct DropCaret {
-    pub(crate) container: usize,
+    pub(crate) container: u64,
     pub(crate) handle: crate::editor::EditorHandle,
     pub(crate) pos: rinch_editor_core::Pos,
     /// The document `pos` is a position in: a drop after it changed resolves
@@ -662,7 +664,7 @@ pub(crate) struct DropCaret {
 /// Active drag: movement threshold was crossed, snapshot captured.
 pub(crate) struct ActiveDrag {
     /// The draggable source element.
-    pub node_id: usize,
+    pub node_id: u64,
     /// Captured painting of the source element's subtree (at origin).
     #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
     pub snapshot: VelloPainter,
@@ -683,7 +685,7 @@ pub(crate) struct ActiveDrag {
     /// Current cursor position, in **logical** pixels (#299).
     pub cursor: (f32, f32),
     /// Node ID of the current drop target (if hovering over one).
-    pub over_target: Option<usize>,
+    pub over_target: Option<u64>,
 }
 
 #[cfg(any(
@@ -720,7 +722,7 @@ const DRAG_THRESHOLD: f32 = 5.0;
 /// State for read-only text selection (non-contenteditable).
 pub(crate) struct TextSelection {
     /// The IFC root node where the selection lives (the block element containing the text).
-    pub(crate) ifc_node_id: usize,
+    pub(crate) ifc_node_id: u64,
     /// Selection anchor (byte offset in IFC flat text, set on mousedown).
     pub(crate) anchor_offset: usize,
     /// Selection focus/cursor (byte offset, updated on mousemove).
@@ -759,7 +761,7 @@ impl ScrollAxis {
 /// read along [`ScrollbarDrag::axis`].
 pub(crate) struct ScrollbarDrag {
     /// The node ID of the scroll container being scrolled.
-    pub node_id: usize,
+    pub node_id: u64,
     /// Which bar is being dragged.
     pub axis: ScrollAxis,
     /// The pointer coordinate along `axis` where the drag started, in the
@@ -794,17 +796,17 @@ pub(crate) enum FocusTarget {
     /// A render surface (game viewport / custom renderer), by surface id.
     Surface(usize),
     /// An `<input>`/`<textarea>` (the rinch-editable engine), by DOM node id.
-    Input(usize),
+    Input(u64),
     /// A native `<select>` whose popup is open, by the select's DOM node id. The
     /// popup nodes and highlight live in [`RinchApp::open_select`] (issue #121).
-    Select(usize),
+    Select(u64),
     /// A rich-text editor (`rinch-editor-core`) instance, by container node id.
     #[cfg(feature = "desktop")]
-    Editor(usize),
+    Editor(u64),
     /// A generic focusable DOM node (`tabindex >= 0`, no text engine), by DOM
     /// node id — a custom control reached via Tab or `request_focus`
     /// (issue #228). Enter/Space dispatch its click handler; it drives no IME.
-    Node(usize),
+    Node(u64),
 }
 
 /// What a pointer press does to the keyboard claim — the answer
@@ -818,7 +820,7 @@ pub(crate) enum FocusTarget {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum PressFocus {
     /// The press focuses this node.
-    Node(usize),
+    Node(u64),
     /// The press focuses nothing of its own, so a generic node's claim is
     /// released. (An `<input>` under the press is claimed separately, on the
     /// click path, by the text engine.)
@@ -837,7 +839,7 @@ pub(crate) struct HitMemo {
     generation: u64,
     x: u32,
     y: u32,
-    hit: Option<usize>,
+    hit: Option<u64>,
 }
 
 // ── RinchApp ─────────────────────────────────────────────────────────────────
@@ -895,7 +897,7 @@ pub struct RinchApp {
     pub(crate) active_dnd: Option<ActiveDrag>,
     /// Surface currently being dragged over (for DragEnter/DragLeave dispatch).
     /// Stores (surface_id, dom_node_id).
-    pub(crate) drag_over_surface: Option<(usize, usize)>,
+    pub(crate) drag_over_surface: Option<(usize, u64)>,
     /// When the last drag auto-scroll tick scrolled
     /// ([`Self::tick_drag_auto_scroll`]); `None` while the pointer of the drag
     /// in flight is in no band, and with no drag.
@@ -1008,7 +1010,7 @@ pub struct RinchApp {
     /// Editable state for the focused text input (cursor, selection, undo).
     pub(crate) focused_input_state: Option<EditableState<StringDocument>>,
     /// DOM node ID of the currently focused text input.
-    pub(crate) focused_input_node_id: Option<usize>,
+    pub(crate) focused_input_node_id: Option<u64>,
     /// A `NodeHandle::set_selection_range`/`select()` request (issue #552)
     /// for a node that was **not** the focused input when it arrived,
     /// keyed by node id: UTF-16 `(start, end, direction)`. Consulted by
@@ -1019,7 +1021,7 @@ pub struct RinchApp {
     /// straight to `focused_input_state` by
     /// `apply_or_stash_text_selection` and this map is left alone.
     pub(crate) pending_text_selection:
-        std::collections::HashMap<usize, (usize, usize, rinch_core::dom::SelectionDirection)>,
+        std::collections::HashMap<u64, (usize, usize, rinch_core::dom::SelectionDirection)>,
     /// In-progress IME composition (preedit) for the focused `<input>`: the
     /// composing string and an optional `(begin, end)` byte cursor within it.
     /// Rendered inline at the input caret as an underlined overlay (via the
@@ -1034,7 +1036,7 @@ pub struct RinchApp {
     /// [`Self::input_caret_generation`], not by comparing the selection: a
     /// Left then Right, or a typed character then Backspace, puts the field
     /// back exactly as the vertical move left it and must still drop the goal.
-    pub(crate) input_vertical_goal: Option<(usize, u64, f32)>,
+    pub(crate) input_vertical_goal: Option<(u64, u64, f32)>,
     /// Which platform's caret keys text fields and the rich editor follow
     /// (issue #951): [`TextKeymap::host`], set otherwise only by tests, which
     /// drive the macOS keymap on any host.
@@ -1149,7 +1151,7 @@ pub struct RinchApp {
     pub(crate) editor_goal_x: Option<f32>,
     /// The render surface currently under the mouse cursor (for enter/leave events).
     /// Stores (surface_id, dom_node_id) so we can compute local coords during drags.
-    pub(crate) hovered_surface: Option<(usize, usize)>,
+    pub(crate) hovered_surface: Option<(usize, u64)>,
     /// The render surfaces holding a press: from a press on a surface until
     /// the release of the button that started it, that pointer's moves and
     /// releases go to that surface wherever they are. One per pointer, so two
@@ -1162,7 +1164,7 @@ pub struct RinchApp {
     /// Whether we're currently mouse-drag selecting text (read-only, non-CE).
     pub(crate) text_selecting: bool,
     /// Node ID of the current file-drop hover target (for enter/leave during OS drag).
-    pub(crate) file_hover_target: Option<usize>,
+    pub(crate) file_hover_target: Option<u64>,
     /// The OS file drag over the window, with its drop caret (#1649).
     #[cfg(feature = "desktop")]
     pub(crate) file_drag: Option<FileDrag>,
@@ -1958,12 +1960,12 @@ impl RinchApp {
                 rinch_core::reactive::registered_bounds_nodes(doc_key)
                     .into_iter()
                     .filter_map(|node_id| {
-                        d.tree.nodes.get(node_id as usize)?;
+                        d.tree.nodes.get(node_id)?;
                         // The box the node is *painted* in — the same rect
                         // `ClickContext::element_x` carries, which is the
                         // promise `NodeHandle::bounds_signal`'s own docs make
                         // (#203).
-                        Some((node_id, painted_element_box(&d.tree, node_id as usize)))
+                        Some((node_id, painted_element_box(&d.tree, node_id)))
                     })
                     .collect();
             (doc_key, measured)
@@ -2029,7 +2031,7 @@ impl RinchApp {
     /// new and one stale (#177).
     pub(crate) fn scroll_event_for(
         tree: &rinch_dom::NodeTree,
-        node_id: usize,
+        node_id: u64,
     ) -> rinch_core::events::ScrollEvent {
         let (left, top) = tree.get(node_id).map_or((0.0, 0.0), |n| n.scroll_offset);
         rinch_core::events::ScrollEvent::new(top, left)
@@ -2463,7 +2465,7 @@ impl RinchApp {
             a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
         };
         let by_node = by_node.filter(|_| full.is_none() && !split_hit.is_empty());
-        let watch: Vec<usize> = by_node
+        let watch: Vec<u64> = by_node
             .iter()
             .flatten()
             .filter(|d| {
@@ -4172,7 +4174,7 @@ impl RinchApp {
 
     /// The affinity of the focused field `node_id`'s caret, as the last sync
     /// wrote it (#941).
-    fn focused_input_caret_affinity(&self, node_id: usize) -> rinch_core::dom::CaretAffinity {
+    fn focused_input_caret_affinity(&self, node_id: u64) -> rinch_core::dom::CaretAffinity {
         self.doc
             .as_ref()
             .and_then(|doc| {
@@ -4375,7 +4377,7 @@ impl RinchApp {
     /// first (#238), and the paste plus its `oninput`'s rewrite is one undo
     /// step (#288).
     #[cfg(feature = "clipboard")]
-    pub(crate) fn complete_input_paste(&mut self, node_id: usize, epoch: u64, text: String) {
+    pub(crate) fn complete_input_paste(&mut self, node_id: u64, epoch: u64, text: String) {
         if text.is_empty()
             || self.focus_target != FocusTarget::Input(node_id)
             || self.focus_epoch != epoch
@@ -4591,7 +4593,7 @@ impl RinchApp {
         // focusable set stays tree-ordered in `stops`, because a start that is
         // not in the sequence resumes at its *tree* neighbour below.
         let sequence = Self::tab_sequence(&stops);
-        let seq_pos = |node: usize| sequence.iter().position(|&n| n == node);
+        let seq_pos = |node: u64| sequence.iter().position(|&n| n == node);
 
         let current_idx = current.and_then(seq_pos).or_else(|| {
             // A start the walk visited is not a stop, and resumes at its tree
@@ -4645,8 +4647,8 @@ impl RinchApp {
     /// `tabindex` in ascending order, then every `0`, ties in tree order — the
     /// HTML sequential focus navigation order. A stable sort, so tree order is
     /// what breaks ties.
-    fn tab_sequence(stops: &[(usize, i32)]) -> Vec<usize> {
-        let mut seq: Vec<(usize, i32)> = stops.to_vec();
+    fn tab_sequence(stops: &[(u64, i32)]) -> Vec<u64> {
+        let mut seq: Vec<(u64, i32)> = stops.to_vec();
         seq.sort_by_key(|&(_, t)| if t > 0 { (0u8, t) } else { (1u8, 0) });
         seq.into_iter().map(|(id, _)| id).collect()
     }
@@ -4725,7 +4727,7 @@ impl RinchApp {
     /// Everything else disables only itself (a disabled `<button>` does not
     /// disable a `<span>` inside it), which is why the Tab collector's own
     /// comment about not skipping subtrees still stands for every other tag.
-    pub(crate) fn node_is_disabled_in_tree(tree: &rinch_dom::NodeTree, node_id: usize) -> bool {
+    pub(crate) fn node_is_disabled_in_tree(tree: &rinch_dom::NodeTree, node_id: u64) -> bool {
         rinch_dom::node_is_disabled_in_tree(tree, node_id)
     }
 
@@ -4845,10 +4847,7 @@ impl RinchApp {
     ///    keeps going after this, to give rule 1 its chance at an ancestor.
     ///
     /// Nothing matched ⇒ [`PressFocus::Release`].
-    pub(crate) fn resolve_click_focus(
-        tree: &rinch_dom::NodeTree,
-        hit: Option<usize>,
-    ) -> PressFocus {
+    pub(crate) fn resolve_click_focus(tree: &rinch_dom::NodeTree, hit: Option<u64>) -> PressFocus {
         let mut cur = hit;
         let mut focusable = None;
         while let Some(nid) = cur {
@@ -4978,7 +4977,7 @@ impl RinchApp {
     ///
     /// Visibility is checked at every step, so a *closed* overlay is skipped
     /// even if it kept the attribute — see [`Self::node_is_visible`].
-    fn tab_trap_root(&self, current: Option<usize>) -> Option<usize> {
+    fn tab_trap_root(&self, current: Option<u64>) -> Option<u64> {
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
 
@@ -4998,7 +4997,7 @@ impl RinchApp {
         //    the stack pops them in document order, which is what makes "last"
         //    mean last in the document rather than last visited.
         let mut last = None;
-        let mut stack = vec![0usize];
+        let mut stack = vec![0u64];
         while let Some(nid) = stack.pop() {
             let Some(node) = d.tree.get(nid) else {
                 continue;
@@ -5022,7 +5021,7 @@ impl RinchApp {
     /// the same answer, including HTML's carve-out: only the fieldset's *own*
     /// first `<legend>` is exempt from it, and an outer disabled fieldset still
     /// reaches into a nested legend.
-    fn inherited_disable_above(d: &RinchDocument, root: usize) -> bool {
+    fn inherited_disable_above(d: &RinchDocument, root: u64) -> bool {
         let mut child = root;
         let mut cur = d.tree.get(root).and_then(|n| n.parent);
         while let Some(id) = cur {
@@ -5045,7 +5044,7 @@ impl RinchApp {
     /// first itself ([`Self::tab_sequence`], issue #435). Tests only: the
     /// runtime walks through [`Self::collect_tab_stops_from`].
     #[cfg(test)]
-    fn collect_focusable_nodes(&self) -> Vec<usize> {
+    fn collect_focusable_nodes(&self) -> Vec<u64> {
         self.collect_focusable_nodes_from(0)
     }
 
@@ -5057,7 +5056,7 @@ impl RinchApp {
     /// given, confining the list is the whole of confining Tab. Tree order is
     /// also what [`Self::focus_into_subtree`] needs: HTML picks a dialog's
     /// focus delegate in tree order, not in Tab order.
-    fn collect_focusable_nodes_from(&self, root: usize) -> Vec<usize> {
+    fn collect_focusable_nodes_from(&self, root: u64) -> Vec<u64> {
         self.collect_tab_stops_from(root, None)
             .stops
             .into_iter()
@@ -5070,7 +5069,7 @@ impl RinchApp {
     /// `data-oninput` control with none), plus — when `probe` is inside `root`
     /// — how many stops precede it in tree order, which is where a Tab from a
     /// node that is not itself a stop resumes.
-    fn collect_tab_stops_from(&self, root: usize, probe: Option<usize>) -> TabStops {
+    fn collect_tab_stops_from(&self, root: u64, probe: Option<u64>) -> TabStops {
         let Some(doc) = &self.doc else {
             return TabStops {
                 stops: Vec::new(),
@@ -5087,7 +5086,7 @@ impl RinchApp {
         // where an ancestor walk per node would be quadratic. It is seeded from
         // *above* `root`, which is a no-op for the whole-document walk and the
         // only way a trap inside a disabled fieldset stays disabled.
-        let mut stack: Vec<(usize, bool)> = vec![(root, Self::inherited_disable_above(&d, root))];
+        let mut stack: Vec<(u64, bool)> = vec![(root, Self::inherited_disable_above(&d, root))];
         while let Some((nid, inherited_disabled)) = stack.pop() {
             let Some(node) = d.tree.get(nid) else {
                 continue;
@@ -5243,7 +5242,7 @@ impl RinchApp {
     /// equivalent (see `DomDocument::set_selection_range`'s doc comment).
     pub(crate) fn apply_or_stash_text_selection(
         &mut self,
-        node_id: usize,
+        node_id: u64,
         start: usize,
         end: usize,
         direction: rinch_core::dom::SelectionDirection,
@@ -5334,7 +5333,7 @@ impl RinchApp {
     ///    `rinch-web` and `handle_trapped_tab` verify theirs, so a refusal the
     ///    predicate did not anticipate still falls through to rule 3.
     /// 3. **Otherwise release the claim**, which by rule 1 is inside `root`.
-    fn apply_focus_restore(&mut self, opener: Option<usize>, root: usize) {
+    fn apply_focus_restore(&mut self, opener: Option<u64>, root: u64) {
         let restorable = opener.filter(|&id| self.node_can_take_focus_now(id));
         let Some(claim) = self.claim_node_or_dom_focus() else {
             // Nothing holds the keyboard. Rule 1 counts that as the overlay's to
@@ -5367,7 +5366,7 @@ impl RinchApp {
     /// Give `id` the keyboard for [`Self::apply_focus_restore`]: an editor's
     /// container through `try_focus_input`, which hands it to the editor as
     /// `EditorHandle::focus` does (issue #1126), anything else as a Tab move.
-    fn restore_onto(&mut self, id: usize) {
+    fn restore_onto(&mut self, id: u64) {
         #[cfg(feature = "desktop")]
         if crate::editor::editor_for_doc(self.doc_key(), id).is_some() {
             self.try_focus_input(id);
@@ -5378,7 +5377,7 @@ impl RinchApp {
 
     /// The node the keyboard claim names, falling back to the DOM's own focused
     /// node for a claim the arbiter does not model as a node id.
-    fn claim_node_or_dom_focus(&self) -> Option<usize> {
+    fn claim_node_or_dom_focus(&self) -> Option<u64> {
         let from_arbiter = match self.focus_target {
             FocusTarget::Input(id) | FocusTarget::Node(id) | FocusTarget::Select(id) => Some(id),
             #[cfg(feature = "desktop")]
@@ -5389,7 +5388,7 @@ impl RinchApp {
     }
 
     /// Whether `node` is `root` or sits under it.
-    fn node_is_self_or_descendant(&self, node: usize, root: usize) -> bool {
+    fn node_is_self_or_descendant(&self, node: u64, root: u64) -> bool {
         let Some(doc) = &self.doc else { return false };
         let d = doc.borrow();
         let mut cur = Some(node);
@@ -5416,7 +5415,7 @@ impl RinchApp {
     /// A rich-text editor's container counts too (issue #1126): it is what an
     /// overlay opened from a focused editor remembers as its opener, and
     /// `try_focus_input` gives it the keyboard as `EditorHandle::focus` does.
-    fn node_can_take_focus_now(&self, node_id: usize) -> bool {
+    fn node_can_take_focus_now(&self, node_id: u64) -> bool {
         let Some(doc) = &self.doc else { return false };
         let d = doc.borrow();
         let Some(node) = d.tree.get(node_id) else {
@@ -5445,7 +5444,7 @@ impl RinchApp {
     /// touches the request slot — a pointer press claims its node immediately.
     /// The DOM's own `:focus` is cleared either way, so a closed overlay never
     /// keeps painting a focus ring.
-    fn blur_node(&mut self, node_id: usize) {
+    fn blur_node(&mut self, node_id: u64) {
         let holds = match self.focus_target {
             FocusTarget::Input(id) | FocusTarget::Node(id) | FocusTarget::Select(id) => {
                 id == node_id
@@ -5482,7 +5481,7 @@ impl RinchApp {
     /// looked for *within the focusable set* rather than in the raw tree, so
     /// `autofocus` on a hidden or disabled node falls through to the first real
     /// stop instead of moving focus nowhere.
-    fn focus_into_subtree(&mut self, root: usize, policy: rinch_core::dom::FocusIntoPolicy) {
+    fn focus_into_subtree(&mut self, root: u64, policy: rinch_core::dom::FocusIntoPolicy) {
         let candidates = self.collect_focusable_nodes_from(root);
         let target = {
             let Some(doc) = &self.doc else { return };
@@ -5508,7 +5507,7 @@ impl RinchApp {
     /// Focus a specific element by node ID via Tab: an `<input>`/`<textarea>`,
     /// or a generic `tabindex >= 0` node (issue #228). Keyboard-driven, so the
     /// focused node gets the `:focus-visible` ring either way.
-    fn focus_element(&mut self, node_id: usize) {
+    fn focus_element(&mut self, node_id: u64) {
         let takes_text_focus = {
             let Some(doc) = &self.doc else { return };
             let d = doc.borrow();
@@ -5590,7 +5589,7 @@ impl RinchApp {
     /// handler must not swallow the key), with a `ClickContext` synthesized
     /// from the handler node's absolute rect, cursor at its center. A node with
     /// no live handler anywhere in its chain is a quiet no-op.
-    fn activate_focused_node(&mut self, node_id: usize, vp_w: f32, vp_h: f32) {
+    fn activate_focused_node(&mut self, node_id: u64, vp_w: f32, vp_h: f32) {
         let Some(doc) = self.doc.clone() else {
             return;
         };
@@ -5668,7 +5667,7 @@ impl RinchApp {
     /// still passes, and that widget starts receiving `on_key` without ever
     /// having been announced an `on_focus_gained`. Closing it needs a
     /// registration identity (a generation counter), not a sharper probe.
-    fn node_target_is_live(&self, node_id: usize) -> bool {
+    fn node_target_is_live(&self, node_id: u64) -> bool {
         // A registered target `set_inner_html` freed (#1509): dead whatever
         // node `rinch-dom` minted on its id since.
         if crate::focus_registry::was_freed(self.doc_key(), node_id) {
@@ -5730,7 +5729,7 @@ impl RinchApp {
     /// clicking it. For a generic `tabindex >= 0` node, takes Node focus
     /// through the arbiter (issue #228). Programmatic focus is not
     /// keyboard-driven, so it does not set the `:focus-visible` ring.
-    pub(crate) fn try_focus_input(&mut self, node_id: usize) {
+    pub(crate) fn try_focus_input(&mut self, node_id: u64) {
         let Some(doc) = &self.doc else { return };
         let d = doc.borrow();
         let Some(node) = d.tree.get(node_id) else {
@@ -6437,7 +6436,7 @@ impl RinchApp {
 
             // Helper: where a clipping ancestor is painted. Paint clips against
             // that box, so the intersection has to be taken there (#203).
-            let abs_pos = |id: usize| -> (f32, f32) {
+            let abs_pos = |id: u64| -> (f32, f32) {
                 let (x, y, _, _) = painted_element_box(&d.tree, id);
                 (x, y)
             };
@@ -7308,8 +7307,8 @@ mod video_inline_dirty_region_tests {
     /// produces a *small* dirty region with the video outside it.
     ///
     /// Returns the app and the label's node id.
-    fn mount() -> (RinchApp, usize) {
-        let label_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    fn mount() -> (RinchApp, u64) {
+        let label_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let captured = label_id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -7361,7 +7360,7 @@ mod video_inline_dirty_region_tests {
     }
 
     /// Dirty only the label, the way a one-second timestamp tick does.
-    fn dirty_the_label(app: &mut RinchApp, label: usize) {
+    fn dirty_the_label(app: &mut RinchApp, label: u64) {
         let doc = app.doc.as_ref().expect("document");
         let mut d = doc.borrow_mut();
         d.tree.paint_dirty_nodes.push(label);
@@ -7480,8 +7479,8 @@ mod viewport_relayout_tests {
     /// Mount a full-viewport element and hand back the app plus its node id.
     /// A `width/height: 100%` box resolves against the viewport, so its layout
     /// box *is* the viewport the document currently believes in.
-    fn mount_at_logical() -> (RinchApp, usize) {
-        let captured: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    fn mount_at_logical() -> (RinchApp, u64) {
+        let captured: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let captured_in = captured.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -7495,7 +7494,7 @@ mod viewport_relayout_tests {
         (app, id)
     }
 
-    fn viewport_of(app: &RinchApp, id: usize) -> (f32, f32) {
+    fn viewport_of(app: &RinchApp, id: u64) -> (f32, f32) {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
         let l = d.tree.get(id).expect("root node").layout;
@@ -7781,11 +7780,11 @@ mod tab_focus_tests {
 
     /// Mount an `<input>` followed by a `tabindex="0"` div carrying a live
     /// click handler. Returns the app, both node ids, and the click counter.
-    fn mount_input_and_div() -> (RinchApp, usize, usize, Rc<Cell<usize>>) {
+    fn mount_input_and_div() -> (RinchApp, u64, u64, Rc<Cell<usize>>) {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
         let oninput_id = register_input_handler(InputCallback::new(|_| {}));
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -7850,13 +7849,13 @@ mod tab_focus_tests {
     }
 
     /// `(is_focused, is_focus_visible)` for a node.
-    fn focus_bits(app: &RinchApp, id: usize) -> (bool, bool) {
+    fn focus_bits(app: &RinchApp, id: u64) -> (bool, bool) {
         let d = app.doc.as_ref().unwrap().borrow();
         let n = d.tree.get(id).unwrap();
         (n.is_focused, n.is_focus_visible)
     }
 
-    fn abs_center(app: &RinchApp, id: usize) -> (f32, f32) {
+    fn abs_center(app: &RinchApp, id: u64) -> (f32, f32) {
         let d = app.doc.as_ref().unwrap().borrow();
         // The same walk the click/hit paths use (scroll offsets included), so
         // these clicks stay on target if a fixture ever gains a scroller.
@@ -7986,7 +7985,7 @@ mod tab_focus_tests {
     /// a quiet no-op (no panic) and Tab keeps moving.
     #[test]
     fn node_without_handler_neither_panics_nor_swallows_tab() {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -8088,7 +8087,7 @@ mod tab_focus_tests {
     /// keeps it out of the Tab order, applied to the pointer.
     #[test]
     fn a_press_on_a_disabled_node_claims_nothing() {
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -8132,7 +8131,7 @@ mod tab_focus_tests {
     #[test]
     fn tab_after_click_anchors_at_the_clicked_position() {
         let oninput_id = register_input_handler(InputCallback::new(|_| {}));
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -8190,7 +8189,7 @@ mod tab_focus_tests {
     /// tabbable and only this test's own fixture was ever caught.
     #[test]
     fn disabled_and_negative_tabindex_skip_only_the_node() {
-        let ids: Rc<Cell<Option<[usize; 5]>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<[u64; 5]>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -8308,8 +8307,8 @@ mod hidden_box_hit_tests {
     #[test]
     fn a_hidden_overlays_former_box_takes_no_clicks() {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-        let panel_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
-        let item_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let panel_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+        let item_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
 
         let clicks_in = clicks.clone();
         let panel_in = panel_id.clone();
@@ -8442,12 +8441,12 @@ mod popup_backdrop_hit_tests {
     struct Menu {
         app: RinchApp,
         /// The first item's node id, so a tap can be aimed at where it is.
-        item: usize,
+        item: u64,
         /// The clipping shell's node id, so a test can prove a sample point is
         /// outside it rather than assert it from the style string.
-        shell: usize,
+        shell: u64,
         /// The chrome bar's node id, when the fixture mounts one.
-        chrome: Option<usize>,
+        chrome: Option<u64>,
         /// How many times the item's own `onclick` ran.
         item_clicks: Rc<Cell<usize>>,
         /// How many times the menu asked to be closed — by the backdrop, or by
@@ -8542,9 +8541,9 @@ mod popup_backdrop_hit_tests {
         let item_clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let closes: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let chrome_clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-        let item_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
-        let shell_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
-        let chrome_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let item_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+        let shell_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+        let chrome_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
 
         let clicks_in = item_clicks.clone();
         let closes_in = closes.clone();
@@ -8642,7 +8641,7 @@ mod popup_backdrop_hit_tests {
 
     /// A node's painted border box as `(x0, y0, x1, y1)`, in the same logical
     /// pixels [`tap`] takes.
-    fn box_of(app: &RinchApp, node_id: usize) -> (f32, f32, f32, f32) {
+    fn box_of(app: &RinchApp, node_id: u64) -> (f32, f32, f32, f32) {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
         let (x, y, w, h) = painted_element_box(&d.tree, node_id);
@@ -8661,7 +8660,7 @@ mod popup_backdrop_hit_tests {
     /// its *occupied* count, not one past its highest index, so the moment
     /// anything in the tree is freed the backdrop can live past the end of
     /// that range and this would fail blaming the component.
-    fn find_by_class(app: &RinchApp, class: &str) -> usize {
+    fn find_by_class(app: &RinchApp, class: &str) -> u64 {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
         d.tree
@@ -8672,11 +8671,11 @@ mod popup_backdrop_hit_tests {
             .unwrap_or_else(|| panic!("no node carries the class {class}"))
     }
 
-    fn find_backdrop(app: &RinchApp) -> usize {
+    fn find_backdrop(app: &RinchApp) -> u64 {
         find_by_class(app, "rinch-dropdown-menu__backdrop")
     }
 
-    fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
+    fn centre(app: &RinchApp, node_id: u64) -> (f32, f32) {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
         let n = d.tree.get(node_id).expect("node still in the tree");
@@ -8964,10 +8963,10 @@ mod popup_backdrop_hit_tests {
     /// (which is internal, not a prop) is driven through the real click path.
     ///
     /// Returns the app and the shell's id.
-    fn mount_select(shell_style: &'static str) -> (RinchApp, usize) {
+    fn mount_select(shell_style: &'static str) -> (RinchApp, u64) {
         use rinch_components::{Select, SelectOption};
 
-        let shell_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let shell_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let shell_id_in = shell_id.clone();
 
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -9069,7 +9068,7 @@ mod pointer_cancel_tests {
     fn mount_draggable() -> (RinchApp, (f32, f32), Rc<Cell<usize>>) {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -9210,7 +9209,7 @@ mod wheel_scroll_dispatch_tests {
     /// has been handed.
     struct Scroller {
         app: RinchApp,
-        id: usize,
+        id: u64,
         centre: (f32, f32),
         fired: Rc<RefCell<Vec<ScrollEvent>>>,
     }
@@ -9226,7 +9225,7 @@ mod wheel_scroll_dispatch_tests {
         }));
         let container_style = container_style.to_string();
         let content_style = content_style.to_string();
-        let id: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let id: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let container = scope.create_element("div");
@@ -9275,7 +9274,7 @@ mod wheel_scroll_dispatch_tests {
 
     /// `(scroll_left, scroll_top)` of one container. See [`wheel`] for why this
     /// is `pub(super)`.
-    pub(super) fn offsets(app: &RinchApp, id: usize) -> (f64, f64) {
+    pub(super) fn offsets(app: &RinchApp, id: u64) -> (f64, f64) {
         let d = app.doc.as_ref().unwrap().borrow();
         d.tree.get(id).unwrap().scroll_offset
     }
@@ -9405,7 +9404,7 @@ mod wheel_scroll_dispatch_tests {
             register_scroll_handler(ScrollCallback::from(move |ev: ScrollEvent| {
                 inner_in.borrow_mut().push(ev);
             }));
-        let ids: Rc<RefCell<Option<(usize, usize)>>> = Rc::new(RefCell::new(None));
+        let ids: Rc<RefCell<Option<(u64, u64)>>> = Rc::new(RefCell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let page = scope.create_element("div");
@@ -9456,7 +9455,7 @@ mod wheel_scroll_dispatch_tests {
     /// recompute — rather than asserting on the payload alone.
     #[test]
     fn virtual_list_still_windows_off_the_vertical_offset() {
-        let list_id: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let list_id: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
         let list_in = list_id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let outer = scope.create_element("div");
@@ -9529,7 +9528,7 @@ mod horizontal_scrollbar_tests {
 
     struct Bars {
         app: RinchApp,
-        id: usize,
+        id: u64,
         /// Absolute origin and size of the scroll container.
         rect: (f32, f32, f32, f32),
         fired: Rc<RefCell<Vec<ScrollEvent>>>,
@@ -9546,7 +9545,7 @@ mod horizontal_scrollbar_tests {
         }));
         let container_style = container_style.to_string();
         let content_style = content_style.to_string();
-        let id: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let id: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let container = scope.create_element("div");
@@ -9590,7 +9589,7 @@ mod horizontal_scrollbar_tests {
         app.handle_event(PlatformEvent::MouseMove { x, y }, (800, 600), 1.0);
     }
 
-    fn offsets(app: &RinchApp, id: usize) -> (f64, f64) {
+    fn offsets(app: &RinchApp, id: u64) -> (f64, f64) {
         let d = app.doc.as_ref().unwrap().borrow();
         d.tree.get(id).unwrap().scroll_offset
     }
@@ -9854,9 +9853,9 @@ mod input_caret_hit_tests {
     /// The app screen this was found on: a padded scrolling column with a note,
     /// the field, and room under it. The padding is what the field's painted
     /// origin picks up and a plain parent-chain sum does not.
-    fn mount_field() -> (RinchApp, usize) {
+    fn mount_field() -> (RinchApp, u64) {
         let oninput_id = register_input_handler(InputCallback::new(|_| {}));
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -9920,7 +9919,7 @@ mod input_caret_hit_tests {
     /// *document's* font context, so this is the geometry actually on screen on whatever machine
     /// runs the test rather than a second guess at it.
     #[allow(clippy::type_complexity)]
-    fn painted_lines(app: &mut RinchApp, id: usize) -> ((f32, f32), Vec<(f32, f32, Range<usize>)>) {
+    fn painted_lines(app: &mut RinchApp, id: u64) -> ((f32, f32), Vec<(f32, f32, Range<usize>)>) {
         let doc = app.doc.clone().expect("mounted");
         let mut d = doc.borrow_mut();
         // The painted box already carries the IFC content-box offset, which
@@ -9984,7 +9983,7 @@ mod input_caret_hit_tests {
     #[test]
     fn a_field_outside_a_text_flow_still_lands_on_its_line() {
         let oninput_id = register_input_handler(InputCallback::new(|_| {}));
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -10093,9 +10092,9 @@ mod android_frame_clock_tests {
 
     struct Sheet {
         app: RinchApp,
-        trigger: usize,
-        scrim: usize,
-        panel: usize,
+        trigger: u64,
+        scrim: u64,
+        panel: u64,
     }
 
     /// Mount the chip and the sheet it opens, inside the `overflow: hidden`
@@ -10142,10 +10141,13 @@ mod android_frame_clock_tests {
         }
     }
 
-    fn by_class(app: &RinchApp, class: &str) -> usize {
+    fn by_class(app: &RinchApp, class: &str) -> u64 {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
-        (0..d.tree.nodes.len())
+        d.tree
+            .nodes
+            .iter()
+            .map(|(id, _)| id)
             .find(|&id| {
                 d.tree
                     .get(id)
@@ -10157,7 +10159,7 @@ mod android_frame_clock_tests {
 
     /// The panel's translateY, in pixels: `matrix[5]` is the `f` of the
     /// `[a, b, c, d, e, f]` affine, which is the vertical translation.
-    fn panel_y(app: &RinchApp, panel: usize) -> f64 {
+    fn panel_y(app: &RinchApp, panel: u64) -> f64 {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
         d.tree
@@ -10170,17 +10172,17 @@ mod android_frame_clock_tests {
 
     /// The resolved `opacity` of a node, which for a transitioned or animated
     /// one is the value the last tick sampled.
-    fn opacity_of(app: &RinchApp, node_id: usize) -> f32 {
+    fn opacity_of(app: &RinchApp, node_id: u64) -> f32 {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
         d.tree.get(node_id).expect("node").computed_style.opacity
     }
 
-    fn scrim_opacity(app: &RinchApp, scrim: usize) -> f32 {
+    fn scrim_opacity(app: &RinchApp, scrim: u64) -> f32 {
         opacity_of(app, scrim)
     }
 
-    fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
+    fn centre(app: &RinchApp, node_id: u64) -> (f32, f32) {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
         let n = d.tree.get(node_id).expect("node still in the tree");
@@ -10520,7 +10522,7 @@ mod android_frame_clock_tests {
 
     struct Riser {
         app: RinchApp,
-        trigger: usize,
+        trigger: u64,
     }
 
     /// A chip that, when tapped, hands a box the class that animates it.
@@ -11479,7 +11481,7 @@ mod transform_aware_walk_tests {
     fn a_drag_over_target_reports_its_painted_box() {
         let seen: Seen = Rc::new(Cell::new(None));
         let seen_in = seen.clone();
-        let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -11634,7 +11636,7 @@ mod transform_aware_walk_tests {
 
         let captured: Rc<Cell<Option<Signal<ElementBounds>>>> = Rc::new(Cell::new(None));
         let captured_in = captured.clone();
-        let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -11784,12 +11786,12 @@ mod transform_aware_walk_tests {
     /// 20 pixels of track, so the thumb stays under the finger.
     #[test]
     fn a_scrollbar_drag_inside_a_scaled_container_tracks_the_thumb() {
-        let scroll_of = |app: &RinchApp, id: usize| -> f64 {
+        let scroll_of = |app: &RinchApp, id: u64| -> f64 {
             app.doc.as_ref().unwrap().borrow().tree.nodes[id]
                 .scroll_offset
                 .1
         };
-        let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let build = move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -11877,7 +11879,7 @@ mod scroll_into_view_tests {
         outer_style: &'static str,
         children: &[(&'static str, &'static str)],
     ) -> f64 {
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let children: Vec<(&'static str, &'static str)> = children.to_vec();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -12070,7 +12072,7 @@ mod scroll_into_view_tests {
     fn a_caret_move_below_the_fold_scrolls_the_editor_into_view() {
         use rinch_editor_core::{Pos, Selection};
 
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let handle = crate::editor::create_editor();
         // 40 paragraphs: far taller than the 120px scroller, so a cursor in the
@@ -12174,7 +12176,7 @@ mod scroll_into_view_tests {
     fn typing_below_the_fold_scrolls_within_the_same_frame() {
         use rinch_editor_core::{Pos, Selection};
 
-        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let ids_in = ids.clone();
         let handle = crate::editor::create_editor();
         let html: String = (0..40).map(|i| format!("<p>line {i}</p>")).collect();
@@ -12222,10 +12224,14 @@ mod scroll_into_view_tests {
     /// Whether the focused editor's caret overlay paints inside `scroller`'s
     /// visible band — the same question `apply_scroll_into_view` asks, read back.
     #[cfg(feature = "desktop")]
-    fn caret_is_visible(app: &RinchApp, scroller_id: usize) -> bool {
+    fn caret_is_visible(app: &RinchApp, scroller_id: u64) -> bool {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
-        let caret = (0..d.tree.nodes.len())
+        let caret = d
+            .tree
+            .nodes
+            .iter()
+            .map(|(id, _)| id)
             .find(|&id| {
                 d.tree
                     .nodes
@@ -12329,7 +12335,7 @@ mod click_viewport_tests {
     /// event path rather than the paint preamble.
     #[test]
     fn a_re_layout_from_an_event_uses_the_logical_viewport() {
-        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -12399,7 +12405,7 @@ mod window_facts_1770_tests;
 /// What [`RinchApp::collect_tab_stops_from`] found under a root.
 struct TabStops {
     /// Every Tab stop, in tree order, with the `tabindex` it behaves as.
-    stops: Vec<(usize, i32)>,
+    stops: Vec<(u64, i32)>,
     /// How many of `stops` precede the probe in tree order, when the probe was
     /// inside the root.
     probe_rank: Option<usize>,
@@ -12417,7 +12423,7 @@ impl Drop for RinchApp {
 }
 
 /// Whether `node_id` hangs from the document's root.
-fn connected(tree: &rinch_dom::node::NodeTree, node_id: usize) -> bool {
+fn connected(tree: &rinch_dom::node::NodeTree, node_id: u64) -> bool {
     let mut current = Some(node_id);
     while let Some(id) = current {
         if id == tree.root_id {

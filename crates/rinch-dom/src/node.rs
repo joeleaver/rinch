@@ -23,8 +23,12 @@ use style::shared_lock::{Locked, SharedRwLock};
 
 use crate::computed_style::ComputedStyle;
 
-/// Raw node ID (index into slab).
-pub type RawNodeId = usize;
+/// A node id inside `rinch-dom`: the packed bits of `rinch_core::dom::NodeId`
+/// (slot index in the low 32 bits, generation in the high 32; issue #723).
+/// `NodeId(raw)` and `id.0` convert between the two for free. Index the node
+/// storage with it ([`crate::node_slab::NodeSlab`]); a table indexed by slot
+/// takes [`crate::node_slab::slot_of`].
+pub type RawNodeId = u64;
 
 bitflags! {
     /// Tracks what needs updating for a node.
@@ -117,7 +121,7 @@ pub enum NodeContext {
     /// `debug_assertions` validator
     /// ([`crate::RinchDocument::ifc_leaf_invariant_violations`]) checks the
     /// invariant after every setup pass.
-    InlineRoot(usize), // stores the RawNodeId of the IFC root
+    InlineRoot(RawNodeId), // stores the RawNodeId of the IFC root
     /// A text-entry form control — `<textarea>`, or an `<input>` of a
     /// text-like type — whose value is an attribute rather than a child, so
     /// nothing in the tree gives it a content size (#297). The measure
@@ -170,7 +174,7 @@ pub struct TextMeasure {
     /// Empty means use font metrics default.
     pub line_height_css: String,
     /// DOM node ID for caching the layout after measurement.
-    pub node_id: usize,
+    pub node_id: RawNodeId,
     /// Text color (inherited from parent).
     pub color: AlphaColor<Srgb>,
     /// Whether text wrapping is disabled (white-space: nowrap/pre).
@@ -449,7 +453,7 @@ pub struct IfcTextRange {
     /// Byte range end (exclusive) in the IFC `text_content`.
     pub flat_end: usize,
     /// DOM node ID: text node for text, `<br>` element for `<br>`.
-    pub node_id: usize,
+    pub node_id: RawNodeId,
     /// Byte offset within the text node (0 for most; nonzero when a node
     /// is split across multiple style spans).
     pub node_offset: usize,
@@ -2834,7 +2838,7 @@ impl IfcRootMeasures {
 /// The node tree, stored in a slab for stable IDs.
 pub struct NodeTree {
     /// All nodes, indexed by RawNodeId.
-    pub nodes: slab::Slab<Node>,
+    pub nodes: crate::node_slab::NodeSlab,
     /// The root document node ID.
     pub root_id: RawNodeId,
     /// The html element node ID.
@@ -3502,7 +3506,7 @@ impl NodeTree {
 
     /// Create a new node tree with root and body nodes.
     pub fn new() -> Self {
-        let mut nodes = slab::Slab::new();
+        let mut nodes = crate::node_slab::NodeSlab::new();
         let mut taffy = taffy::TaffyTree::new();
         let mut taffy_map = HashMap::new();
 
@@ -3663,9 +3667,19 @@ impl NodeTree {
         self.nodes.contains(id)
     }
 
-    /// Get a reference to a node.
+    /// The node an id names, checking its generation: for any id from outside
+    /// the tree (see [`crate::node_slab`]).
     pub fn get(&self, id: RawNodeId) -> Option<&Node> {
         self.nodes.get(id)
+    }
+
+    /// The node a **tree-internal** id names — see
+    /// [`crate::node_slab::NodeSlab::get_live`]: for ids the tree handed itself
+    /// during a walk; the generation is asserted in debug builds only.
+    #[inline]
+    #[track_caller]
+    pub fn get_live(&self, id: RawNodeId) -> Option<&Node> {
+        self.nodes.get_live(id)
     }
 
     /// Whether a **scroll gesture** landing on `node_id` must be refused because
@@ -3733,7 +3747,7 @@ impl NodeTree {
                 if id == ancestor {
                     return true;
                 }
-                current = self.nodes.get(id).and_then(|n| n.parent);
+                current = self.nodes.get_live(id).and_then(|n| n.parent);
             }
             false
         })
@@ -3961,7 +3975,7 @@ impl NodeTree {
         let nodes = &mut self.nodes;
         // Each state is read with the slab borrowed shared (an IFC root's ink
         // reads its inline elements' styles, #1048), then written.
-        let refresh = |nodes: &mut slab::Slab<Node>, id: RawNodeId, layout: bool| {
+        let refresh = |nodes: &mut crate::node_slab::NodeSlab, id: RawNodeId, layout: bool| {
             let Some(node) = nodes.get(id) else {
                 return;
             };
@@ -4084,6 +4098,12 @@ impl NodeTree {
     }
 
     /// Remove a node and all its descendants from the slab.
+    ///
+    /// The one route that frees slots, and the one that keeps the tree's
+    /// unchecked (`get_live`) readers sound (#723): it drops the hit cache
+    /// (whose cached paint orders `hit_testing` reads unchecked) and each
+    /// freed node's `active_transitions`/`active_animations` entries. PR 2's
+    /// free-on-discard must go through it, or repeat both.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
         self.hit_cache.invalidate();
         // Collect all descendant IDs first
@@ -4256,7 +4276,7 @@ pub fn first_legend_child(tree: &NodeTree, parent: &Node) -> Option<RawNodeId> {
         .children
         .iter()
         .copied()
-        .find(|&c| tree.get(c).and_then(|n| n.tag()) == Some("legend"))
+        .find(|&c| tree.get_live(c).and_then(|n| n.tag()) == Some("legend"))
 }
 
 /// Whether a tag names an element HTML lets be disabled — the set `:disabled`

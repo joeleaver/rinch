@@ -4,8 +4,8 @@ use std::cell::Cell;
 
 const FAM: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
 
-fn page(tag: &'static str, value: String, width: u32) -> (RinchApp, usize) {
-    let id = Rc::new(Cell::new(0usize));
+fn page(tag: &'static str, value: String, width: u32) -> (RinchApp, u64) {
+    let id = Rc::new(Cell::new(0u64));
     let id_in = id.clone();
     let style = format!(
         "display: block; width: {width}px; font: 32px/40px sans-serif; padding: 0; border: 0"
@@ -24,7 +24,7 @@ fn page(tag: &'static str, value: String, width: u32) -> (RinchApp, usize) {
     (app, id.get())
 }
 
-fn sweep_line(app: &mut RinchApp, field: usize, y_off: f32) -> Vec<(f32, usize)> {
+fn sweep_line(app: &mut RinchApp, field: u64, y_off: f32) -> Vec<(f32, usize)> {
     let (bx, by, bw, _) = {
         let d = app.doc.as_ref().unwrap().borrow();
         painted_element_box(&d.tree, field)
@@ -100,7 +100,7 @@ const VALUE: &str = "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b\u{2764}\u{FE0
 /// is a cluster edge (`compute_ifc_offset_from_click`, text_selection.rs).
 #[test]
 fn review_1687_read_only_selection_lands_on_a_cluster_edge() {
-    let id = Rc::new(Cell::new(0usize));
+    let id = Rc::new(Cell::new(0u64));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -151,7 +151,7 @@ fn review_1687_textarea_arrow_down_lands_on_a_cluster_edge() {
     let input_id = rinch_core::events::register_input_handler(
         rinch_core::events::InputCallback::new(|_v: String| {}),
     );
-    let id = Rc::new(Cell::new(0usize));
+    let id = Rc::new(Cell::new(0u64));
     let id_in = id.clone();
     let v2 = value.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -245,7 +245,7 @@ fn review_1687_textarea_arrow_down_lands_on_a_cluster_edge() {
 #[test]
 fn review_1687_editor_wrap_right_half_of_last_emoji() {
     let fams: String = std::iter::repeat_n(FAM, 8).collect();
-    let slot: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let slot: Rc<Cell<u64>> = Rc::new(Cell::new(0));
     let slot_in = slot.clone();
     let f2 = fams.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -294,7 +294,7 @@ fn review_1687_editor_wrap_right_half_of_last_emoji() {
 #[test]
 fn review_1687_flex_text_leaf_read_only_selection() {
     for display in ["block", "flex"] {
-        let id = Rc::new(Cell::new(0usize));
+        let id = Rc::new(Cell::new(0u64));
         let id_in = id.clone();
         let style = format!(
             "display: {display}; user-select: text; width: 400px; font: 20px/24px sans-serif"

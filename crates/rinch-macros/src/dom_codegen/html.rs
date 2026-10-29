@@ -201,6 +201,17 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                         #elem_var.set_attribute(#data_attr, &__handler_id.0.to_string());
                     }
                 }
+            } else if event_name == "onwheel" {
+                // A wheel over the element takes `Fn(&WheelEvent) -> bool`:
+                // `true` consumes it — no ancestor's `onwheel` is offered it
+                // and no scroll container scrolls.
+                quote! {
+                    {
+                        #handler_shadows
+                        let __handler_id = __scope.register_wheel_handler(#handler);
+                        #elem_var.set_attribute("data-onwheel", &__handler_id.0.to_string());
+                    }
+                }
             } else if event_name == "onfiledrop" {
                 // OS file-drop events use register_file_drop_handler with Fn(Vec<PathBuf>)
                 quote! {
@@ -718,6 +729,18 @@ mod event_and_fn_prop_tests {
             assert!(out.contains(&format!("\"{attr}\"")), "{name}: {out}");
             assert!(!out.contains("\"data-rid\""), "{name}: {out}");
         }
+    }
+
+    /// `onwheel` registers a wheel handler (`Fn(&WheelEvent) -> bool`)
+    /// written to `data-onwheel` — not a click handler, not `Fn()`.
+    #[test]
+    fn onwheel_registers_a_wheel_handler() {
+        let out = codegen("div { onwheel: |w| w.modifiers.ctrl }");
+        assert!(!is_error(&out), "{out}");
+        assert!(out.contains("register_wheel_handler"), "{out}");
+        assert!(out.contains("\"data-onwheel\""), "{out}");
+        assert!(!out.contains("\"data-rid\""), "{out}");
+        assert!(!out.contains("\"data-oninput\""), "{out}");
     }
 
     /// #1591: `value_fn:` / `checked_fn:` are component prop conventions; on a

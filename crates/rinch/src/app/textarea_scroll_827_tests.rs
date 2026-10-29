@@ -109,7 +109,7 @@ fn repaint(app: &mut RinchApp) {
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
 }
 
-fn caret_pos(app: &RinchApp, id: usize) -> usize {
+fn caret_pos(app: &RinchApp, id: u64) -> usize {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -118,7 +118,7 @@ fn caret_pos(app: &RinchApp, id: usize) -> usize {
         .expect("a focused field carries its caret")
 }
 
-fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+fn scroll_top(app: &RinchApp, id: u64) -> f64 {
     app.doc
         .as_ref()
         .unwrap()
@@ -136,9 +136,9 @@ fn page(
     tag: &'static str,
     style: &'static str,
     value: &'static str,
-) -> (RinchApp, usize, NodeHandle) {
+) -> (RinchApp, u64, NodeHandle) {
     let h = register_input_handler(InputCallback::new(|_| {}));
-    let id = Rc::new(Cell::new(0usize));
+    let id = Rc::new(Cell::new(0u64));
     let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let (id_in, handle_in) = (id.clone(), handle.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -167,11 +167,11 @@ fn page(
     (app, id.get(), field)
 }
 
-fn area(value: &'static str) -> (RinchApp, usize, NodeHandle) {
+fn area(value: &'static str) -> (RinchApp, u64, NodeHandle) {
     page("textarea", AREA_STYLE, value)
 }
 
-fn focus(app: &mut RinchApp, field: &NodeHandle, id: usize) {
+fn focus(app: &mut RinchApp, field: &NodeHandle, id: u64) {
     field.focus();
     repaint(app);
     ev(app, PlatformEvent::AboutToWait);
@@ -647,7 +647,7 @@ fn wheel_to_end(app: &mut RinchApp, x: f32) {
 }
 
 /// `(scroll_height, client_height)` as the DOM API answers them.
-fn heights(app: &RinchApp, id: usize) -> (f64, f64) {
+fn heights(app: &RinchApp, id: u64) -> (f64, f64) {
     let d = app.doc.as_ref().unwrap().borrow();
     let nid = rinch_core::dom::NodeId(id);
     (

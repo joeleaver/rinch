@@ -30,18 +30,21 @@ use style::invalidation::element::restyle_hints::RestyleHint;
 use style::stylesheets::DocumentStyleSheet;
 
 use crate::RinchDocument;
+use crate::node::RawNodeId;
 
 /// A connected `<style>` element's sheet, with the CSS text it was parsed
 /// from. `sheet` is `None` for an element with no text.
 pub(crate) struct StyleElementSheet {
-    pub(crate) node: usize,
+    pub(crate) node: RawNodeId,
     pub(crate) css: String,
     pub(crate) sheet: Option<DocumentStyleSheet>,
 }
 
 impl RinchDocument {
-    /// Whether `id` is a live `<style>` element.
-    fn is_style_element(&self, id: usize) -> bool {
+    /// Whether `id` is a live `<style>` element. A checked lookup:
+    /// `style_elements` keeps ids that may since have been freed or reused
+    /// (#723), and a stale id's generation no longer matches.
+    fn is_style_element(&self, id: RawNodeId) -> bool {
         self.tree
             .nodes
             .get(id)
@@ -50,7 +53,7 @@ impl RinchDocument {
 
     /// A `<style>` element's text changed: its sheet is brought up to date at
     /// the next style resolve.
-    pub(crate) fn note_style_text_changed(&mut self, node_id: usize) {
+    pub(crate) fn note_style_text_changed(&mut self, node_id: RawNodeId) {
         if self.is_style_element(node_id) {
             self.style_elements_stale = true;
             self.tree.styles_dirty = true;
@@ -61,7 +64,7 @@ impl RinchDocument {
     /// or out of the document, or changed a `<style>`'s text children, its
     /// sheet is brought up to date at the next style resolve. Costs nothing in
     /// a document with no `<style>` element.
-    pub(crate) fn note_style_elements_moved(&mut self, parent: usize) {
+    pub(crate) fn note_style_elements_moved(&mut self, parent: RawNodeId) {
         if self.style_elements.is_empty() || self.style_elements_stale {
             return;
         }
@@ -94,14 +97,19 @@ impl RinchDocument {
         ids.dedup();
         self.style_elements = ids;
 
-        let mut wanted: Vec<(Vec<usize>, usize, String)> = Vec::new();
+        let mut wanted: Vec<(Vec<usize>, RawNodeId, String)> = Vec::new();
         for &id in &self.style_elements {
             let Some(path) = self.tree_order_path(id) else {
                 continue;
             };
             let mut css = String::new();
             for &child in &self.tree.nodes[id].children {
-                if let Some(text) = self.tree.nodes.get(child).and_then(|n| n.text_content()) {
+                if let Some(text) = self
+                    .tree
+                    .nodes
+                    .get_live(child)
+                    .and_then(|n| n.text_content())
+                {
                     css.push_str(text);
                 }
             }
@@ -151,7 +159,7 @@ impl RinchDocument {
 
     /// The child indices from the document node down to `id`, which order
     /// nodes in tree order; `None` when `id` is not in the document.
-    fn tree_order_path(&self, id: usize) -> Option<Vec<usize>> {
+    fn tree_order_path(&self, id: RawNodeId) -> Option<Vec<usize>> {
         let mut path = Vec::new();
         let mut current = id;
         while current != self.tree.root_id {

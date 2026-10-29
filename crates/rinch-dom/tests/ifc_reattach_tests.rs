@@ -109,7 +109,7 @@ fn attached(doc: &RinchDocument, id: NodeId) -> bool {
     doc.tree.taffy.parent(t).is_some()
 }
 
-fn ifc_root(doc: &RinchDocument, id: NodeId) -> Option<usize> {
+fn ifc_root(doc: &RinchDocument, id: NodeId) -> Option<u64> {
     doc.tree.get(id.0).and_then(|n| n.ifc_root)
 }
 
@@ -748,7 +748,7 @@ fn the_mirror_case_is_no_longer_stranded() {
 }
 
 /// The DOM node whose Taffy node holds `id`'s Taffy node.
-fn doc_taffy_parent_dom(doc: &RinchDocument, id: NodeId) -> Option<usize> {
+fn doc_taffy_parent_dom(doc: &RinchDocument, id: NodeId) -> Option<u64> {
     let t = doc.tree.get(id.0).and_then(|n| n.taffy_id)?;
     let p = doc.tree.taffy.parent(t)?;
     doc.tree.taffy_map.get(&p).copied()
