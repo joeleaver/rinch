@@ -169,7 +169,7 @@ fn hit_test_node(
 ) -> Option<u64> {
     tree.perf
         .bump(rinch_dom::perf::Counter::HitTestNodesVisited);
-    let node = tree.get(node_id)?;
+    let node = tree.get_live(node_id)?;
 
     // The `position: fixed` hoist, the IFC content-box offset, the transform
     // inverse and the body's viewport re-seed all live in `descend`, which every
@@ -362,7 +362,7 @@ fn hit_test_node(
                 .iter()
                 .rev()
             {
-                let Some(child) = tree.get(child_id) else {
+                let Some(child) = tree.get_live(child_id) else {
                     continue;
                 };
                 if paints_at_stacking_root(child) || is_stretched_ifc_text(child) {
@@ -489,7 +489,7 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: u64) -> rinch_dom::hit_cache::Ext
         return e;
     }
     tree.perf.bump(rinch_dom::perf::Counter::HitExtentsComputed);
-    let Some(node) = tree.get(id) else {
+    let Some(node) = tree.get_live(id) else {
         return [0.0; 4];
     };
     let mut e = [0.0, 0.0, node.layout.width, node.layout.height];
@@ -498,7 +498,7 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: u64) -> rinch_dom::hit_cache::Ext
         let sx = node.scroll_offset.0 as f32;
         let sy = node.scroll_offset.1 as f32;
         for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
-            let Some(child) = tree.get(child_id) else {
+            let Some(child) = tree.get_live(child_id) else {
                 continue;
             };
             if paints_at_stacking_root(child) || (child.is_text() && child.ifc_root.is_some()) {
@@ -560,7 +560,7 @@ fn flow_hoists(tree: &rinch_dom::NodeTree, id: u64) -> bool {
     if let Some(h) = tree.hit_cache.hoists(id) {
         return h;
     }
-    let Some(node) = tree.get(id) else {
+    let Some(node) = tree.get_live(id) else {
         return false;
     };
     let (clip_x, clip_y) = node.clip_axes();
@@ -570,7 +570,7 @@ fn flow_hoists(tree: &rinch_dom::NodeTree, id: u64) -> bool {
         rinch_dom::RinchDocument::box_tree_children(&tree.nodes, id)
             .iter()
             .any(|&child_id| {
-                tree.get(child_id).is_some_and(|child| {
+                tree.get_live(child_id).is_some_and(|child| {
                     paints_at_stacking_root(child)
                         || (!(child.is_text() && child.ifc_root.is_some())
                             && flow_hoists(tree, child_id))
@@ -870,7 +870,7 @@ fn find_scroll_container_at_point_recursive(
     vx: f32,
     vy: f32,
 ) -> Option<u64> {
-    let node = tree.get(node_id)?;
+    let node = tree.get_live(node_id)?;
     let Frame {
         nx,
         ny,
@@ -933,7 +933,7 @@ fn find_hscroll_container_at_point_recursive(
     vx: f32,
     vy: f32,
 ) -> Option<u64> {
-    let node = tree.get(node_id)?;
+    let node = tree.get_live(node_id)?;
     let Frame {
         nx,
         ny,
@@ -1051,7 +1051,7 @@ fn find_scrollbar_hit_node(
     vx: f32,
     vy: f32,
 ) -> Option<ScrollbarHit> {
-    let node = tree.get(node_id)?;
+    let node = tree.get_live(node_id)?;
 
     // Skip hidden subtrees
     if matches!(

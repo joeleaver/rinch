@@ -178,7 +178,7 @@ pub(super) fn paint_inline_layout(
         let owner = root
             .parent
             .filter(|_| root.is_anonymous_block_box)
-            .and_then(|p| tree.get(p))
+            .and_then(|p| tree.get_live(p))
             .unwrap_or(root);
         paint_ellipsis(
             painter,
@@ -816,7 +816,7 @@ pub(super) fn is_hidden(node: &Node) -> bool {
 fn range_element<'a>(tree: &'a NodeTree, range: &crate::node::IfcTextRange) -> Option<&'a Node> {
     tree.get(range.node_id)
         .and_then(|t| t.parent)
-        .and_then(|p| tree.get(p))
+        .and_then(|p| tree.get_live(p))
 }
 
 /// One `text-shadow` list an IFC's text casts, and the mask that keeps its

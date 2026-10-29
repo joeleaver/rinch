@@ -568,7 +568,7 @@ fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId) -> bool {
         return false;
     };
     for &child_id in &node.children {
-        let Some(child) = tree.get(child_id) else {
+        let Some(child) = tree.get_live(child_id) else {
             continue;
         };
         if matches!(child.computed_style.display, DisplayValue::None) {
@@ -667,7 +667,7 @@ fn subtree_has_partially_escaping_absolute(
         return false;
     };
     for &child_id in &node.children {
-        let Some(child) = tree.get(child_id) else {
+        let Some(child) = tree.get_live(child_id) else {
             continue;
         };
         if matches!(child.computed_style.display, DisplayValue::None) {
@@ -2335,7 +2335,7 @@ fn position_and_transform_in(
             // of this sum. Stepping to `parent` here lands every run after the
             // first at its container's origin.
             let up = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
-            if let Some(parent) = up.and_then(|pid| tree.get(pid)) {
+            if let Some(parent) = up.and_then(|pid| tree.get_live(pid)) {
                 x -= parent.scroll_offset.0 * scale;
                 y -= parent.scroll_offset.1 * scale;
             }
@@ -2751,7 +2751,7 @@ fn warn_where_the_viewport_cannot_be_the_base(
     let ancestors = || {
         std::iter::successors(Some((node_id, node)), |(_, n)| {
             let p = n.parent?;
-            Some((p, tree.get(p)?))
+            Some((p, tree.get_live(p)?))
         })
     };
     let mut warnings: Vec<(&'static str, String)> = Vec::new();
@@ -3276,7 +3276,7 @@ fn paint_children_with_stacking(
         // `children`. Walking `children` here paints nothing for the run at all
         // — the line is drawn from `text_layout` on the box itself.
         for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node_id).iter() {
-            let Some(child) = tree.get(child_id) else {
+            let Some(child) = tree.get_live(child_id) else {
                 continue;
             };
             if paints_at_stacking_root(child) || already_drawn_inline(child, PaintKind::InFlow) {
@@ -3457,7 +3457,7 @@ fn subtree_has_fixed(tree: &NodeTree, node_id: RawNodeId) -> bool {
         return false;
     };
     node.children.iter().any(|&c| {
-        tree.get(c).is_some_and(|child| {
+        tree.get_live(c).is_some_and(|child| {
             child.computed_style.display != DisplayValue::None
                 && (child.box_position() == PositionValue::Fixed || subtree_has_fixed(tree, c))
         })
@@ -3593,7 +3593,7 @@ fn paints_nothing_within(
     crate::RinchDocument::box_tree_children(&tree.nodes, node_id)
         .iter()
         .all(|&child_id| {
-            let Some(child) = tree.get(child_id) else {
+            let Some(child) = tree.get_live(child_id) else {
                 return true;
             };
             paints_at_stacking_root(child)
@@ -3673,7 +3673,7 @@ fn zero_box_paints_nothing_within(
         return crate::RinchDocument::box_tree_children(&tree.nodes, node_id)
             .iter()
             .all(|&child_id| {
-                let Some(child) = tree.get(child_id) else {
+                let Some(child) = tree.get_live(child_id) else {
                     return true;
                 };
                 paints_at_stacking_root(child)
@@ -4986,7 +4986,7 @@ fn paint_node_unmasked(
             // Check visibility (inherited from parent)
             let parent_visibility = node
                 .parent
-                .and_then(|p| tree.get(p))
+                .and_then(|p| tree.get_live(p))
                 .map(|p| &p.computed_style.visibility);
             if matches!(
                 parent_visibility,
@@ -5000,7 +5000,7 @@ fn paint_node_unmasked(
                 // Layout is already aligned during caching, use it directly
                 let text_shadows = node
                     .parent
-                    .and_then(|p| tree.get(p))
+                    .and_then(|p| tree.get_live(p))
                     .map(|p| p.computed_style.text_shadow.as_slice())
                     .unwrap_or(&[]);
                 // Painted in the parent's **current** colour, not the brush
@@ -5010,7 +5010,7 @@ fn paint_node_unmasked(
                 // without one. The same default as the fallback below.
                 let color = node
                     .parent
-                    .and_then(|p| tree.get(p))
+                    .and_then(|p| tree.get_live(p))
                     .and_then(|p| p.computed_style.color)
                     .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
                 render_text_with_shadow(
@@ -5029,7 +5029,7 @@ fn paint_node_unmasked(
             }
 
             // Fallback: build layout on demand (should not happen with caching)
-            let parent_node = node.parent.and_then(|p| tree.get(p));
+            let parent_node = node.parent.and_then(|p| tree.get_live(p));
             let parent_computed = parent_node.map(|p| &p.computed_style);
 
             let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
@@ -5223,7 +5223,7 @@ mod tests {
             let Some(n) = doc.tree.get(id) else { break };
             x += n.layout.x;
             y += n.layout.y;
-            if let Some(p) = n.parent.and_then(|pid| doc.tree.get(pid)) {
+            if let Some(p) = n.parent.and_then(|pid| doc.tree.get_live(pid)) {
                 x -= p.scroll_offset.0 as f32;
                 y -= p.scroll_offset.1 as f32;
             }

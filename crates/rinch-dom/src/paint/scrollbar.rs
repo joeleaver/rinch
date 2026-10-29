@@ -370,7 +370,7 @@ fn extend_with_children(
     right: &mut f64,
     bottom: &mut f64,
 ) {
-    let Some(parent) = tree.get(parent_id) else {
+    let Some(parent) = tree.get_live(parent_id) else {
         return;
     };
     // **The common case walks `children` once.** Where `parent` holds no
@@ -387,7 +387,7 @@ fn extend_with_children(
         && !parent.is_anonymous_block_box
     {
         for &child_id in &parent.children {
-            let Some(child) = tree.get(child_id) else {
+            let Some(child) = tree.get_live(child_id) else {
                 continue;
             };
             if child.is_split_inline()
@@ -436,7 +436,7 @@ fn extend_with_box_tree_children(
     bottom: &mut f64,
 ) {
     for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, parent_id).iter() {
-        let Some(child) = tree.get(child_id) else {
+        let Some(child) = tree.get_live(child_id) else {
             continue;
         };
         extend_with_child(

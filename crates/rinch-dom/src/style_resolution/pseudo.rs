@@ -478,7 +478,7 @@ impl RinchDocument {
             None => return counters,
         };
 
-        let parent = match self.tree.nodes.get(parent_id) {
+        let parent = match self.tree.nodes.get_live(parent_id) {
             Some(n) => n,
             None => return counters,
         };
@@ -500,7 +500,7 @@ impl RinchDocument {
             if sibling_id == node_id {
                 break;
             }
-            if let Some(sibling) = self.tree.nodes.get(sibling_id) {
+            if let Some(sibling) = self.tree.nodes.get_live(sibling_id) {
                 if sibling.tag() == Some("li") {
                     // Check for value attribute override
                     if let Some(val) = sibling.attributes.get("value") {

@@ -1305,7 +1305,7 @@ impl DomDocument for RinchDocument {
             .or_else(|| {
                 node.children
                     .iter()
-                    .filter_map(|&c| self.tree.nodes.get(c))
+                    .filter_map(|&c| self.tree.nodes.get_live(c))
                     .find_map(|c| c.cached_text_parley.as_deref())
             })?;
         let (top, height) = crate::text_query::line_box_for_offset(layout, byte_offset, affinity)?;
@@ -2640,7 +2640,7 @@ impl RinchDocument {
         }
         node.children
             .iter()
-            .filter_map(|&c| self.tree.nodes.get(c))
+            .filter_map(|&c| self.tree.nodes.get_live(c))
             .find(|c| c.cached_text_parley.is_some())
             .map(|c| (c.layout.x, c.layout.y))
             .unwrap_or((0.0, 0.0))

@@ -1029,7 +1029,7 @@ impl RinchDocument {
             let Some(taffy_id) = node.taffy_id else {
                 continue;
             };
-            let parent = node.parent.and_then(|p| self.tree.nodes.get(p));
+            let parent = node.parent.and_then(|p| self.tree.nodes.get_live(p));
             updates.push((taffy_id, id, TextContextFields::from_parent(parent)));
         }
         self.tree.dirty_text_contexts.clear();
@@ -1065,7 +1065,7 @@ impl RinchDocument {
             let Some(taffy_id) = node.taffy_id else {
                 continue;
             };
-            let parent = node.parent.and_then(|p| self.tree.nodes.get(p));
+            let parent = node.parent.and_then(|p| self.tree.nodes.get_live(p));
             updates.push((taffy_id, id, TextContextFields::from_parent(parent)));
         }
         for (taffy_id, node_id, fields) in updates {
@@ -1089,7 +1089,7 @@ impl RinchDocument {
                     continue;
                 };
                 // Read from the parent's parsed computed_style, not from CSS strings.
-                let parent = node.parent.and_then(|p| self.tree.nodes.get(p));
+                let parent = node.parent.and_then(|p| self.tree.nodes.get_live(p));
                 updates.push((taffy_id, id, TextContextFields::from_parent(parent)));
             }
         }
@@ -1641,7 +1641,7 @@ impl RinchDocument {
         let child_count = node.children.len();
 
         for (i, &child_id) in node.children.iter().enumerate() {
-            if let Some(child_taffy) = self.tree.nodes.get(child_id).and_then(|c| c.taffy_id) {
+            if let Some(child_taffy) = self.tree.nodes.get_live(child_id).and_then(|c| c.taffy_id) {
                 if let Ok(child_layout) = self.tree.taffy.layout(child_taffy) {
                     let ch = child_layout.size.height;
                     if is_column {
@@ -1996,7 +1996,7 @@ impl RinchDocument {
         // and the box is its host's. Both are one bit per child.
         if node.run_boxes.is_empty()
             && !node.children.iter().any(|&c| {
-                nodes.get(c).is_some_and(|child| {
+                nodes.get_live(c).is_some_and(|child| {
                     child.is_split_inline()
                         || child.hosts_hoisted_out_of_flow
                         || child.hoisted_out_of_flow_to.is_some()
@@ -2138,12 +2138,12 @@ impl RinchDocument {
         // blocks and once as an IFC line.
         //
         // `get`, not indexing, on both hops. The anonymous-box rebuilds this
-        // replaced skipped an id missing from the slab (`nodes.get(child_id)`),
+        // replaced skipped an id missing from the slab (`nodes.get_live(child_id)`),
         // and routing them here must not turn that into a panic — a DOM
         // `children` list holding a freed id is a bug, but a wrong picture beats
         // a crash and this function is not where it should be discovered.
         for &child_id in Self::box_tree_children(nodes, node_id).iter() {
-            let Some(child) = nodes.get(child_id) else {
+            let Some(child) = nodes.get_live(child_id) else {
                 continue;
             };
             if child.computed_style.display == DisplayValue::Contents {
@@ -2206,7 +2206,7 @@ impl RinchDocument {
 
         let mut ancestor = Self::box_tree_parent(nodes, node_id)?;
         loop {
-            let node = nodes.get(ancestor)?;
+            let node = nodes.get_live(ancestor)?;
             // Two kinds of ancestor hold none of their children's boxes, so
             // neither can be the answer: a `display: contents` element, which
             // generates no box (#476), and a **split inline** (#513), whose
@@ -2438,7 +2438,7 @@ impl RinchDocument {
         self.invalidate_ifc_for_node(node_id);
         self.mark_atomic_inline_dirty_for(node_id, sizes);
         for child in self.tree.nodes[node_id].children.clone() {
-            let Some(child_node) = self.tree.nodes.get(child) else {
+            let Some(child_node) = self.tree.nodes.get_live(child) else {
                 continue;
             };
             if !matches!(child_node.kind, NodeKind::Text(_)) {
@@ -2487,7 +2487,7 @@ impl RinchDocument {
         let mut roots = node.run_boxes.clone();
         roots.extend(node.ifc_root);
         roots.extend(node.children.iter().filter_map(|&child| {
-            let child = self.tree.nodes.get(child)?;
+            let child = self.tree.nodes.get_live(child)?;
             matches!(child.kind, NodeKind::Text(_))
                 .then_some(child.ifc_root)
                 .flatten()
@@ -2535,7 +2535,7 @@ impl RinchDocument {
                 self.invalidate_ifc_root(pid);
                 break;
             }
-            cur = self.tree.nodes.get(pid).and_then(|n| n.parent);
+            cur = self.tree.nodes.get_live(pid).and_then(|n| n.parent);
         }
     }
 
@@ -2787,7 +2787,7 @@ impl RinchDocument {
         use crate::computed_style::values::DisplayValue;
 
         for &child_id in &nodes[node_id].children {
-            let Some(child) = nodes.get(child_id) else {
+            let Some(child) = nodes.get_live(child_id) else {
                 continue;
             };
             if let Some(child_taffy) = child.taffy_id {
@@ -3049,7 +3049,7 @@ impl RinchDocument {
     /// A child with no style yet — never styled, or its data dropped by an
     /// earlier insertion this frame — is cascaded as before.
     pub(crate) fn keeps_style_across_move(&self, child: RawNodeId, new_parent: RawNodeId) -> bool {
-        let Some(node) = self.tree.nodes.get(child) else {
+        let Some(node) = self.tree.nodes.get_live(child) else {
             return false;
         };
         node.parent == Some(new_parent)

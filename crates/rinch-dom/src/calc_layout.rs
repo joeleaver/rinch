@@ -168,7 +168,7 @@ impl RinchDocument {
     fn taffy_parent_rinch(&self, node_id: RawNodeId) -> Option<RawNodeId> {
         let mut current = self.tree.get(node_id)?.parent?;
         loop {
-            let node = self.tree.get(current)?;
+            let node = self.tree.get_live(current)?;
             if node.taffy_id.is_some() {
                 return Some(current);
             }
@@ -222,7 +222,7 @@ impl RinchDocument {
                 // What Taffy does with the auto depends on the parent's
                 // layout mode — read the parent's *Taffy* style, which
                 // carries rinch's element-default display/direction.
-                let Some(p_taffy) = self.tree.get(p).and_then(|n| n.taffy_id) else {
+                let Some(p_taffy) = self.tree.get_live(p).and_then(|n| n.taffy_id) else {
                     return false;
                 };
                 let Ok(p_style) = self.tree.taffy.style(p_taffy) else {

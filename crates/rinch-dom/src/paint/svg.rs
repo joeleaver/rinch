@@ -82,7 +82,7 @@ pub(super) fn paint_svg(
     // Paint each child SVG element
     let child_ids: Vec<crate::node::RawNodeId> = node.children.to_vec();
     for child_id in child_ids {
-        let Some(child) = tree.get(child_id) else {
+        let Some(child) = tree.get_live(child_id) else {
             continue;
         };
         let NodeKind::Element(ref el) = child.kind else {

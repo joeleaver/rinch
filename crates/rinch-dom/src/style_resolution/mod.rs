@@ -81,7 +81,7 @@ impl RinchDocument {
         let children: Vec<RawNodeId> = self.tree.nodes[node_id].children.clone();
         let mut css = String::new();
         for child_id in children {
-            if let Some(text) = self.tree.nodes.get(child_id).and_then(|n| n.text_content()) {
+            if let Some(text) = self.tree.nodes.get_live(child_id).and_then(|n| n.text_content()) {
                 css.push_str(text);
             }
         }
@@ -1978,7 +1978,7 @@ impl RinchDocument {
         }
         let parent = node
             .parent
-            .and_then(|p| tree.nodes.get(p))
+            .and_then(|p| tree.nodes.get_live(p))
             .map_or(&[][..], |p| p.computed_style.text_shadow.as_slice());
         if style.text_shadow.as_slice() != parent {
             tree.inline_text_shadows = true;

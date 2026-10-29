@@ -332,7 +332,7 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
                 if current == tree.html_id || current == tree.root_id {
                     return Some(OutOfFlowKind::IcbAbsolute);
                 }
-                let ancestor = tree.get(current)?;
+                let ancestor = tree.get_live(current)?;
                 if ancestor.establishes_abs_containing_block() {
                     // The layout parent establishing it is Taffy's own answer,
                     // so there is nothing to correct. Anything else is an
@@ -471,7 +471,7 @@ impl ContainingBox {
     /// lines **last built** for it ([`inline_fragments_box`]), measured from
     /// the border box of the block that holds those lines.
     fn of_ancestor(tree: &NodeTree, cb: RawNodeId) -> Option<Self> {
-        let node = tree.get(cb)?;
+        let node = tree.get_live(cb)?;
         if !generates_layout_box(node) {
             return inline_fragments_box(tree, cb);
         }
@@ -501,7 +501,7 @@ impl ContainingBox {
 /// this kind was read back (`NodeTree::abs_inline_cb_seen`).
 pub(crate) fn has_inline_containing_block(tree: &NodeTree, kind: Option<OutOfFlowKind>) -> bool {
     matches!(kind, Some(OutOfFlowKind::AncestorAbsolute(cb))
-        if tree.get(cb).is_some_and(|n| !generates_layout_box(n)))
+        if tree.get_live(cb).is_some_and(|n| !generates_layout_box(n)))
 }
 
 /// Where the chain of boxes from an absolute box to its containing block
@@ -510,7 +510,7 @@ pub(crate) fn has_inline_containing_block(tree: &NodeTree, kind: Option<OutOfFlo
 /// span's fragments are that block's content, so its own scroll carries the
 /// box and every box below it must not.
 fn chain_end(tree: &NodeTree, cb: RawNodeId) -> Option<RawNodeId> {
-    let node = tree.get(cb)?;
+    let node = tree.get_live(cb)?;
     if generates_layout_box(node) {
         Some(cb)
     } else {
@@ -794,7 +794,7 @@ fn measure_span_fragments(
                     span.boxes.push(b);
                 }
             }
-            above = tree.get(p).and_then(|n| n.parent);
+            above = tree.get_live(p).and_then(|n| n.parent);
         }
     }
 
@@ -829,7 +829,7 @@ fn measure_span_fragments(
                 {
                     let parent_size = el
                         .parent
-                        .and_then(|p| tree.get(p))
+                        .and_then(|p| tree.get_live(p))
                         .map_or(el.computed_style.font_size, |p| p.computed_style.font_size);
                     shift = RinchDocument::vertical_align_shift_px(&el.computed_style, parent_size);
                     if shift != 0.0 {
@@ -1771,7 +1771,7 @@ pub(crate) fn static_axes(style: &ComputedStyle) -> (bool, bool) {
 fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
     let mut current = RinchDocument::box_tree_parent(&tree.nodes, node_id)?;
     loop {
-        let node = tree.get(current)?;
+        let node = tree.get_live(current)?;
         if node.computed_style.display != DisplayValue::Contents {
             return Some(current);
         }
@@ -2116,7 +2116,7 @@ fn static_anchor(
     let ((ox, _), _) = chain_to_containing_block(tree, node_id, end, false)?;
     // The parent's border-box start, in the containing block's padding box.
     let origin = ox - cb.border_left;
-    let parent = tree.get(parent_id)?;
+    let parent = tree.get_live(parent_id)?;
     let parent_layout = *tree.taffy.layout(parent.taffy_id?).ok()?;
     let anchor = match parent.computed_style.display {
         DisplayValue::Flex | DisplayValue::InlineFlex => {
@@ -2293,7 +2293,7 @@ impl RinchDocument {
         let mut wanted: Vec<(RawNodeId, RawNodeId)> = Vec::new();
         let mut want = |kind: Option<OutOfFlowKind>| {
             if let Some(OutOfFlowKind::AncestorAbsolute(cb)) = kind
-                && let Some(span) = tree.get(cb)
+                && let Some(span) = tree.get_live(cb)
                 && !generates_layout_box(span)
                 && let Some(root) = span.ifc_root
             {

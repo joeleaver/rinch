@@ -2641,7 +2641,7 @@ fn closes_into_wrap(
     leaf: RawNodeId,
     next: RawNodeId,
 ) -> bool {
-    let Some(target) = nodes.get(next).and_then(|n| n.parent) else {
+    let Some(target) = nodes.get_live(next).and_then(|n| n.parent) else {
         return false;
     };
     let mut wraps = false;
@@ -2671,7 +2671,7 @@ fn only_closes(
     leaf: RawNodeId,
     next: RawNodeId,
 ) -> bool {
-    let Some(target) = nodes.get(next).and_then(|n| n.parent) else {
+    let Some(target) = nodes.get_live(next).and_then(|n| n.parent) else {
         return false;
     };
     let mut el = nodes.get(leaf).and_then(|n| n.parent);
@@ -2716,7 +2716,7 @@ fn closes_into_nowrap(
         let Some(parent) = nodes.get(id).and_then(|n| n.parent) else {
             return false;
         };
-        let Some(into) = nodes.get(parent) else {
+        let Some(into) = nodes.get_live(parent) else {
             return false;
         };
         if RinchDocument::text_wrap_mode(&into.computed_style) != parley::style::TextWrapMode::Wrap
@@ -4400,7 +4400,7 @@ impl RinchDocument {
             // Get text-align from parent's computed style
             let alignment = self.tree.nodes[id]
                 .parent
-                .and_then(|p| self.tree.nodes.get(p))
+                .and_then(|p| self.tree.nodes.get_live(p))
                 .map(|p| p.computed_style.text_align.to_parley())
                 .unwrap_or(parley::layout::Alignment::Start);
             layout.align(alignment, parley::layout::AlignmentOptions::default());
@@ -4431,7 +4431,7 @@ impl RinchDocument {
                             continue;
                         }
                         let child_id = positioned_box.id as RawNodeId;
-                        if let Some(child) = self.tree.nodes.get_mut(child_id) {
+                        if let Some(child) = self.tree.nodes.get_live_mut(child_id) {
                             // A move is a move, whoever makes it: push the box
                             // paint-dirty like any other layout change, so the
                             // region clears where it was painted and draws where
@@ -4468,10 +4468,10 @@ impl RinchDocument {
         let ifc_content_height = inline_layout.layout.height();
         let children: Vec<RawNodeId> = self.tree.nodes[root_id].children.clone();
         for child_id in children {
-            if let Some(child) = self.tree.nodes.get(child_id)
+            if let Some(child) = self.tree.nodes.get_live(child_id)
                 && child.is_text()
                 && child.ifc_root == Some(root_id)
-                && let Some(child) = self.tree.nodes.get_mut(child_id)
+                && let Some(child) = self.tree.nodes.get_live_mut(child_id)
             {
                 child.layout.x = 0.0;
                 child.layout.y = 0.0;
@@ -4525,7 +4525,7 @@ impl RinchDocument {
                         };
                         let Some(p) = anon.parent else { return true };
                         scope.rootable.contains(&p)
-                            || nodes.get(p).is_none_or(|pn| !pn.run_boxes.contains(&b))
+                            || nodes.get_live(p).is_none_or(|pn| !pn.run_boxes.contains(&b))
                     });
                 self.tree.anonymous_block_boxes = keep;
                 go
@@ -4614,7 +4614,7 @@ impl RinchDocument {
             // point invariant C at freed indices — and send
             // `box_tree_children` down the substituting path for a container
             // with nothing to substitute.
-            if let Some(p) = self.tree.nodes.get_mut(parent_id) {
+            if let Some(p) = self.tree.nodes.get_live_mut(parent_id) {
                 p.run_boxes.clear();
             }
             self.rebuild_effective_taffy_children(parent_id);
@@ -4782,7 +4782,7 @@ impl RinchDocument {
             return;
         };
         for &child_id in &node.children {
-            let Some(child) = nodes.get(child_id) else {
+            let Some(child) = nodes.get_live(child_id) else {
                 continue;
             };
             // A hoisted out-of-flow box is a unit of its **host** and of nothing
@@ -4846,7 +4846,7 @@ impl RinchDocument {
             return;
         };
         for &child_id in &node.children {
-            let Some(child) = nodes.get(child_id) else {
+            let Some(child) = nodes.get_live(child_id) else {
                 continue;
             };
             if child.hoisted_out_of_flow_to == Some(owner) {
@@ -5159,7 +5159,7 @@ impl RinchDocument {
                 // `box_tree_children` reads, and it must be set before the
                 // Taffy rebuild below, which consults it.
                 for &child_id in &run {
-                    if let Some(child) = self.tree.nodes.get_mut(child_id) {
+                    if let Some(child) = self.tree.nodes.get_live_mut(child_id) {
                         child.run_box = Some(anon_id);
                     }
                 }
@@ -5386,7 +5386,7 @@ impl RinchDocument {
             // not, so the O(1) gate in `box_tree_children` fires for exactly
             // the lists that must be rebuilt from units.
             let hosts = node.children.iter().any(|&c| {
-                self.tree.nodes.get(c).is_some_and(|child| {
+                self.tree.nodes.get_live(c).is_some_and(|child| {
                     child.hoisted_out_of_flow_to.is_some()
                         || (child.hosts_hoisted_out_of_flow
                             && (child.inline_flow_role() == InlineFlowRole::Contents
@@ -5452,7 +5452,7 @@ impl RinchDocument {
         let mut changes: Vec<(RawNodeId, Option<RawNodeId>, Option<RawNodeId>)> = Vec::new();
         let hosts_of = |nodes: &crate::node_slab::NodeSlab, id: RawNodeId| -> bool {
             nodes[id].children.iter().any(|&c| {
-                nodes.get(c).is_some_and(|child| {
+                nodes.get_live(c).is_some_and(|child| {
                     child.hoisted_out_of_flow_to.is_some()
                         || (child.hosts_hoisted_out_of_flow
                             && (child.inline_flow_role() == InlineFlowRole::Contents
@@ -5707,7 +5707,7 @@ impl RinchDocument {
         use crate::computed_style::values::DisplayValue;
         let mut current = nodes.get(id).and_then(|n| n.parent);
         while let Some(pid) = current {
-            let Some(parent) = nodes.get(pid) else {
+            let Some(parent) = nodes.get_live(pid) else {
                 break;
             };
             if parent.computed_style.display == DisplayValue::None {
@@ -5936,7 +5936,7 @@ impl RinchDocument {
             let mut has_non_comment_inline = false;
             let mut all_children_are_comments = !own_children.is_empty();
             for &child_id in own_children {
-                let Some(child) = self.tree.nodes.get(child_id) else {
+                let Some(child) = self.tree.nodes.get_live(child_id) else {
                     continue;
                 };
                 if child.run_box.is_some() && !node.is_anonymous_block_box {
@@ -6094,7 +6094,7 @@ impl RinchDocument {
             let root_scan: Vec<RawNodeId> =
                 Self::box_tree_children(&self.tree.nodes, root_id).to_vec();
             for &child_id in &root_scan {
-                let Some(child) = self.tree.nodes.get(child_id) else {
+                let Some(child) = self.tree.nodes.get_live(child_id) else {
                     continue;
                 };
                 match child.inline_flow_role() {
@@ -6321,7 +6321,7 @@ impl RinchDocument {
                         if c == root {
                             return true;
                         }
-                        cur = nodes.get(c).and_then(|n| n.parent);
+                        cur = nodes.get_live(c).and_then(|n| n.parent);
                     }
                     false
                 });
@@ -6420,7 +6420,7 @@ impl RinchDocument {
         for (id, node) in &self.tree.nodes {
             // C: children must name live slab entries.
             for &c in &node.children {
-                if self.tree.nodes.get(c).is_none() {
+                if self.tree.nodes.get_live(c).is_none() {
                     out.push(format!(
                         "C freed child: {id} lists {c}, which is not in the slab"
                     ));
@@ -6490,7 +6490,7 @@ impl RinchDocument {
             }
             // C: a parent must name a live slab entry.
             if let Some(p) = node.parent
-                && self.tree.nodes.get(p).is_none()
+                && self.tree.nodes.get_live(p).is_none()
             {
                 out.push(format!(
                     "C freed parent: {id}.parent is {p}, which is not in the slab"
@@ -6517,7 +6517,7 @@ impl RinchDocument {
         // assertion from silent to firing on every box, every frame.
         for (id, node) in &self.tree.nodes {
             let Some(p) = node.parent else { continue };
-            let Some(parent) = self.tree.nodes.get(p) else {
+            let Some(parent) = self.tree.nodes.get_live(p) else {
                 continue; // reported as "C freed parent" above
             };
             let in_children = parent.children.contains(&id);
@@ -7233,7 +7233,7 @@ impl RinchDocument {
         out: &mut Vec<taffy::NodeId>,
     ) {
         for &child_id in &nodes[wrapper_id].children {
-            let Some(child) = nodes.get(child_id) else {
+            let Some(child) = nodes.get_live(child_id) else {
                 continue;
             };
             match child.inline_flow_role() {
@@ -7490,7 +7490,7 @@ impl RinchDocument {
         // (#566). Every other node walks its children as before.
         let children: Vec<RawNodeId> = self.tree.nodes[node_id].ifc_children().to_vec();
         for child_id in children {
-            let (role, is_inline_element, child_taffy) = match self.tree.nodes.get(child_id) {
+            let (role, is_inline_element, child_taffy) = match self.tree.nodes.get_live(child_id) {
                 Some(c) => (
                     c.inline_flow_role(),
                     c.is_element() && c.display_mode == DisplayMode::Inline,
@@ -7516,7 +7516,7 @@ impl RinchDocument {
                     if !Self::contents_is_inline_transparent(&self.tree.nodes, child_id) {
                         break;
                     }
-                    if let Some(c) = self.tree.nodes.get_mut(child_id) {
+                    if let Some(c) = self.tree.nodes.get_live_mut(child_id) {
                         c.ifc_root = Some(root_id);
                         if c.display_mode.is_atomic_inline() {
                             self.tree.atomic_inline_registry.insert(child_id);
@@ -7558,11 +7558,11 @@ impl RinchDocument {
                         // actually happened: a node with no current Taffy
                         // parent is already detached and is not this root's to
                         // claim.
-                        if let Some(c) = self.tree.nodes.get_mut(child_id) {
+                        if let Some(c) = self.tree.nodes.get_live_mut(child_id) {
                             c.ifc_detached = true;
                         }
                     }
-                    if let Some(c) = self.tree.nodes.get_mut(child_id) {
+                    if let Some(c) = self.tree.nodes.get_live_mut(child_id) {
                         c.ifc_root = Some(root_id);
                         // A member is no text leaf: its root lays out and
                         // paints its text. A leaf layout left from when it was
@@ -7640,7 +7640,7 @@ impl RinchDocument {
                         // role, not the arm that removed it, so a child that is
                         // still `display: none` is skipped and one that has
                         // become block-level is restored.
-                        if let Some(c) = self.tree.nodes.get_mut(child_id) {
+                        if let Some(c) = self.tree.nodes.get_live_mut(child_id) {
                             c.ifc_detached = true;
                         }
                     }
@@ -7831,7 +7831,7 @@ impl RinchDocument {
             let mut cur = node.parent;
             while let Some(p) = cur {
                 depth += 1;
-                cur = self.tree.nodes.get(p).and_then(|n| n.parent);
+                cur = self.tree.nodes.get_live(p).and_then(|n| n.parent);
             }
             targets.push((depth, id, taffy_id));
         }
@@ -9264,7 +9264,7 @@ impl RinchDocument {
             if p == ancestor {
                 return true;
             }
-            cur = self.tree.nodes.get(p).and_then(|n| n.parent);
+            cur = self.tree.nodes.get_live(p).and_then(|n| n.parent);
         }
         false
     }
@@ -10400,7 +10400,7 @@ impl RinchDocument {
         if owner.computed_style.vertical_align != VerticalAlignValue::Baseline {
             let parent_font_size = owner
                 .parent
-                .and_then(|p| nodes.get(p))
+                .and_then(|p| nodes.get_live(p))
                 .map(|p| p.computed_style.font_size)
                 .unwrap_or(owner.computed_style.font_size);
             let shift = Self::vertical_align_shift_px(&owner.computed_style, parent_font_size);
@@ -10507,7 +10507,7 @@ impl RinchDocument {
             for &(_, id) in between.iter().filter(|(at, _)| *at == member_index) {
                 builder.note_out_of_flow(id);
             }
-            let child = match nodes.get(child_id) {
+            let child = match nodes.get_live(child_id) {
                 Some(c) => c,
                 None => continue,
             };
@@ -10573,7 +10573,7 @@ impl RinchDocument {
                 child
                     .parent
                     .filter(|&dom_parent| dom_parent != parent_id)
-                    .and_then(|dom_parent| nodes.get(dom_parent))
+                    .and_then(|dom_parent| nodes.get_live(dom_parent))
                     .filter(|owner| {
                         !Self::same_inline_text_style(
                             &owner.computed_style,
@@ -10614,7 +10614,7 @@ impl RinchDocument {
                         let mode = SpaceCollapse::of(
                             child
                                 .parent
-                                .and_then(|dom_parent| nodes.get(dom_parent))
+                                .and_then(|dom_parent| nodes.get_live(dom_parent))
                                 .unwrap_or(&nodes[parent_id])
                                 .computed_style
                                 .white_space,
@@ -11010,7 +11010,7 @@ impl RinchDocument {
                     for &c in &scope.containers {
                         roots.insert(c);
                         parents.push(c);
-                        if let Some(cn) = nodes.get(c) {
+                        if let Some(cn) = nodes.get_live(c) {
                             roots.extend(cn.run_boxes.iter().copied());
                             parents.extend(cn.run_boxes.iter().copied());
                         }
@@ -11020,7 +11020,7 @@ impl RinchDocument {
                 }
             };
         for parent_id in parents {
-            let Some(parent) = nodes.get(parent_id) else {
+            let Some(parent) = nodes.get_live(parent_id) else {
                 continue;
             };
             let children = parent.ifc_children();
@@ -11029,7 +11029,7 @@ impl RinchDocument {
             let mut near: Option<RawNodeId> = None;
             let mut first: Option<Option<RawNodeId>> = None;
             for (index, &child_id) in children.iter().enumerate() {
-                let Some(child) = nodes.get(child_id) else {
+                let Some(child) = nodes.get_live(child_id) else {
                     continue;
                 };
                 let root = match child.ifc_root {
@@ -11051,7 +11051,7 @@ impl RinchDocument {
                             *first.get_or_insert_with(|| {
                                 children
                                     .iter()
-                                    .find_map(|&c| nodes.get(c).and_then(|n| n.ifc_root))
+                                    .find_map(|&c| nodes.get_live(c).and_then(|n| n.ifc_root))
                             })
                         });
                         match found {

@@ -69,7 +69,7 @@ pub fn caret_position_for_offset_with_affinity(
     // For block elements with a single text child (non-IFC case),
     // check the first text child's cached layout
     for &child_id in &node.children {
-        if let Some(child) = doc.tree.nodes.get(child_id)
+        if let Some(child) = doc.tree.nodes.get_live(child_id)
             && let Some(ref layout) = child.cached_text_parley
         {
             return Some(at(layout));
@@ -116,7 +116,7 @@ pub fn glyph_bounds_for_offset(
     // For block elements with a single text child (non-IFC case),
     // check the first text child's cached layout
     for &child_id in &node.children {
-        if let Some(child) = doc.tree.nodes.get(child_id)
+        if let Some(child) = doc.tree.nodes.get_live(child_id)
             && let Some(ref layout) = child.cached_text_parley
         {
             return glyph_bounds_for_offset_layout(layout, byte_offset);

@@ -387,7 +387,7 @@ fn textarea_child_text<'a>(
     let mut texts = node
         .children
         .iter()
-        .filter_map(|&c| nodes.get(c))
+        .filter_map(|&c| nodes.get_live(c))
         .filter_map(|c| c.text_content());
     let Some(first) = texts.next() else {
         return Cow::Borrowed("");

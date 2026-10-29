@@ -3599,9 +3599,19 @@ impl NodeTree {
         self.nodes.contains(id)
     }
 
-    /// Get a reference to a node.
+    /// The node an id names, checking its generation: for any id from outside
+    /// the tree (see [`crate::node_slab`]).
     pub fn get(&self, id: RawNodeId) -> Option<&Node> {
         self.nodes.get(id)
+    }
+
+    /// The node a **tree-internal** id names — see
+    /// [`crate::node_slab::NodeSlab::get_live`]: for ids the tree handed itself
+    /// during a walk; the generation is asserted in debug builds only.
+    #[inline]
+    #[track_caller]
+    pub fn get_live(&self, id: RawNodeId) -> Option<&Node> {
+        self.nodes.get_live(id)
     }
 
     /// Whether a **scroll gesture** landing on `node_id` must be refused because
@@ -4146,7 +4156,7 @@ pub fn first_legend_child(tree: &NodeTree, parent: &Node) -> Option<RawNodeId> {
         .children
         .iter()
         .copied()
-        .find(|&c| tree.get(c).and_then(|n| n.tag()) == Some("legend"))
+        .find(|&c| tree.get_live(c).and_then(|n| n.tag()) == Some("legend"))
 }
 
 /// Whether a tag names an element HTML lets be disabled — the set `:disabled`

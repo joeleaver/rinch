@@ -587,7 +587,7 @@ impl RinchDocument {
         empty_may_flip: bool,
     ) {
         self.note_table_children_changed(parent);
-        let Some(p) = self.tree.nodes.get(parent) else {
+        let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };
         if !p.is_element() {
@@ -657,7 +657,7 @@ impl RinchDocument {
     /// keeps a node non-empty — every keystroke in an editor paragraph under
     /// `p:empty` — costs nothing.
     pub(crate) fn note_text_emptiness_changed(&mut self, parent: RawNodeId, child: RawNodeId) {
-        let Some(p) = self.tree.nodes.get(parent) else {
+        let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };
         if p.selector_flags
@@ -716,7 +716,7 @@ impl RinchDocument {
     pub(crate) fn own_children_range(&self, parent: RawNodeId) -> (usize, usize) {
         let children = &self.tree.nodes[parent].children;
         let generated = |i: Option<&RawNodeId>, after: bool| {
-            i.and_then(|&c| self.tree.nodes.get(c))
+            i.and_then(|&c| self.tree.nodes.get_live(c))
                 .is_some_and(|n| n.is_pseudo_element && n.is_generated_after == after)
         };
         let len = children.len();
@@ -758,7 +758,7 @@ impl RinchDocument {
         // Before the structural-selector gate: a row moved in keeps its
         // table part, so no cascade of its own tells the table (#1083).
         self.note_table_children_changed(parent);
-        let Some(p) = self.tree.nodes.get(parent) else {
+        let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };
         if !p.is_element()

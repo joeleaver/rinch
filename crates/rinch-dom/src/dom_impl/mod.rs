@@ -913,7 +913,7 @@ impl RinchDocument {
         child: RawNodeId,
         new_parent: RawNodeId,
     ) -> bool {
-        let Some(node) = self.tree.nodes.get(child) else {
+        let Some(node) = self.tree.nodes.get_live(child) else {
             return false;
         };
         let moves = node.parent.is_some_and(|old| old != new_parent) && node.painted.is_some();
@@ -952,7 +952,7 @@ impl RinchDocument {
             .unwrap_or_default();
 
         for child_id in children {
-            if let Some(node) = self.tree.nodes.get_mut(child_id) {
+            if let Some(node) = self.tree.nodes.get_live_mut(child_id) {
                 // Drop the cached match result so the descendant re-resolves against
                 // the new ancestor state (class / attribute).
                 *node.stylo_element_data.borrow_mut() = None;

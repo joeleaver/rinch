@@ -457,7 +457,7 @@ impl RinchDocument {
     fn find_parent_computed_style(&self, node_id: RawNodeId) -> Option<ServoArc<ComputedValues>> {
         let mut current = self.tree.nodes.get(node_id)?.parent;
         while let Some(pid) = current {
-            let node = self.tree.nodes.get(pid)?;
+            let node = self.tree.nodes.get_live(pid)?;
             let data = node.stylo_element_data.borrow();
             if let Some(style) = data.as_ref().and_then(|d| d.styles.primary.clone()) {
                 return Some(style);
@@ -559,7 +559,7 @@ impl RinchDocument {
             if pid == self.tree.root_id {
                 return Some(depth);
             }
-            current = self.tree.nodes.get(pid)?.parent;
+            current = self.tree.nodes.get_live(pid)?.parent;
         }
         None
     }
@@ -681,7 +681,7 @@ impl RinchDocument {
             });
             if had_pseudo {
                 for &cid in &self.tree.nodes[node_id].children {
-                    let Some(n) = self.tree.nodes.get(cid) else {
+                    let Some(n) = self.tree.nodes.get_live(cid) else {
                         continue;
                     };
                     if !n.is_pseudo_element {

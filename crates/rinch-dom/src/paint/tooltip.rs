@@ -83,11 +83,11 @@ pub fn own_title(tree: &NodeTree, id: RawNodeId) -> Option<String> {
         let title = n
             .children
             .iter()
-            .filter_map(|&c| tree.nodes.get(c))
+            .filter_map(|&c| tree.nodes.get_live(c))
             .find(|c| c.tag() == Some("title"))?;
         let mut text = String::new();
         for &c in &title.children {
-            if let Some(t) = tree.nodes.get(c).and_then(|c| c.text_content()) {
+            if let Some(t) = tree.nodes.get_live(c).and_then(|c| c.text_content()) {
                 text.push_str(t);
             }
         }

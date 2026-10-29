@@ -1,11 +1,24 @@
 //! The node storage: a slab whose keys are generation-checked ids (issue #723).
 //!
 //! A [`RawNodeId`] is the same packed `u64` as `rinch_core::dom::NodeId`: the
-//! slot index in the low 32 bits, the slot's generation in the high 32. Every
-//! lookup compares the id it was given against the id the stored node carries
-//! ([`Node::id`]), so an id issued for a slot's earlier occupant resolves to
-//! nothing — [`NodeSlab::get`] answers `None` and indexing panics — instead of
-//! naming whichever node holds the slot now.
+//! slot index in the low 32 bits, the slot's generation in the high 32.
+//!
+//! # Two lookups, and which one a site uses
+//!
+//! - [`NodeSlab::get`] / [`NodeSlab::get_mut`] / [`NodeSlab::contains`] are
+//!   **checked**: they compare the id against the id the stored node carries
+//!   ([`Node::id`]), so an id issued for a slot's earlier occupant resolves to
+//!   nothing instead of naming whichever node holds the slot now. Use them for
+//!   every id that comes from **outside the tree**: a `DomDocument` /
+//!   `NodeHandle` argument, an app-held handle, an event target, a side table
+//!   or cache keyed by node id that can outlive the node.
+//! - [`NodeSlab::get_live`] / [`NodeSlab::get_live_mut`] and indexing
+//!   (`nodes[id]`) are for ids the tree **hands itself** during a walk — a
+//!   node's `children` / `parent`, a layout, paint or hit-test traversal —
+//!   which are live by construction. A release build looks only at the slot; a
+//!   debug build asserts the generation, so a misuse fails the tests.
+//!
+//! When unsure, use the checked lookup.
 //!
 //! **Every id is generation 0 today.** Slots freed by `NodeTree::remove_subtree`
 //! (`set_inner_html`, pseudo-element pruning) and by the IFC passes' anonymous
@@ -93,6 +106,40 @@ impl NodeSlab {
             Some(n) if n.id == id => Some(n),
             _ => None,
         }
+    }
+
+    /// The node a **tree-internal** id names: one the tree handed itself during
+    /// a walk (a `children`/`parent` link, a layout, paint or hit-test
+    /// traversal), which is live by construction. `None` only for a vacant slot.
+    ///
+    /// A release build looks the slot up without comparing the generation —
+    /// the compare cost 4–7% on the hit-test and relayout benches (#723). A
+    /// debug build asserts it, so a site that hands this an id from outside the
+    /// tree fails the tests rather than reading another node in production. An
+    /// id from outside the tree (a `DomDocument`/`NodeHandle` argument, an app's
+    /// handle, an event target, a side table or cache that can outlive a node)
+    /// goes through [`Self::get`]. When unsure, use [`Self::get`].
+    #[inline]
+    #[track_caller]
+    pub fn get_live(&self, id: RawNodeId) -> Option<&Node> {
+        let n = self.slab.get(slot_of(id))?;
+        #[cfg(debug_assertions)]
+        if n.id != id {
+            stale(id, Some(n.id));
+        }
+        Some(n)
+    }
+
+    /// [`Self::get_live`], mutably.
+    #[inline]
+    #[track_caller]
+    pub fn get_live_mut(&mut self, id: RawNodeId) -> Option<&mut Node> {
+        let n = self.slab.get_mut(slot_of(id))?;
+        #[cfg(debug_assertions)]
+        if n.id != id {
+            stale(id, Some(n.id));
+        }
+        Some(n)
     }
 
     /// Whether `id` names a live node.
