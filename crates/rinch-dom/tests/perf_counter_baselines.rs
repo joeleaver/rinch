@@ -321,12 +321,16 @@ fn every_rinch_dom_counter_fires_somewhere() {
     doc.resolve_layout(VP.0, VP.1);
     doc.resolve_layout(VP.0, VP.1);
     // Whole-document restyles by each reason rinch-dom can be asked for.
-    doc.recompute_all_styles_full();
-    doc.set_device_pixel_ratio(2.0);
+    // A `<style>` whose rule Stylo cannot bucket by id/class/tag (`:root`) is
+    // one (a `.class` rule matching nothing restyles nothing since #884). It
+    // goes first: after the device-pixel-ratio change below a whole-document
+    // walk is already pending, and the sheet adds nothing to it.
     let style = doc.create_element("style");
-    let css = doc.create_text(".late { color: blue; }");
+    let css = doc.create_text(":root { --late: blue; }");
     doc.append_child(style, css);
     doc.append_child(body, style);
+    doc.recompute_all_styles_full();
+    doc.set_device_pixel_ratio(2.0);
     doc.load_css("html { font-size: 20px; }");
     // 800 -> 801 flips the `min-width: 801px` query: a full restyle.
     doc.resolve_layout(VP.0 + 1.0, VP.1);

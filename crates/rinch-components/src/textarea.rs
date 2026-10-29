@@ -13,6 +13,10 @@ pub type ReactiveString = Rc<dyn Fn() -> String>;
 pub struct Textarea {
     /// Label displayed above the textarea.
     pub label: String,
+    /// The field's `id` (Mantine's `id`): its label's `for` names it, and the
+    /// description and error are `{id}-description` / `{id}-error`. Empty
+    /// generates a unique one per render (issue #2034).
+    pub id: String,
     /// Description displayed below the textarea.
     pub description: String,
     /// Error message to display.
@@ -80,6 +84,7 @@ impl std::fmt::Debug for Textarea {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Textarea")
             .field("label", &self.label)
+            .field("id", &self.id)
             .field("description", &self.description)
             .field("error", &self.error)
             .field("placeholder", &self.placeholder)
@@ -134,6 +139,8 @@ impl Component for Textarea {
         container.set_attribute("class", &self.class_string());
 
         // Label
+        let ids = crate::field_ids::FieldIds::new(&self.id);
+        let mut label_node = None;
         if !self.label.is_empty() {
             let label_text = &self.label;
             let label =
@@ -146,6 +153,7 @@ impl Component for Textarea {
             }
 
             container.append_child(&label);
+            label_node = Some(label);
         }
 
         // Textarea element
@@ -230,19 +238,32 @@ impl Component for Textarea {
         container.append_child(&textarea);
 
         // Description
+        let mut desc_node = None;
         if !self.description.is_empty() {
             let desc = &self.description;
             let desc_div =
                 rinch_macros::rsx! { div { class: "rinch-textarea__description", {desc} } };
             container.append_child(&desc_div);
+            desc_node = Some(desc_div);
         }
 
         // Error
+        let mut err_node = None;
         if !self.error.is_empty() {
             let err = &self.error;
             let err_div = rinch_macros::rsx! { div { class: "rinch-textarea__error", {err} } };
             container.append_child(&err_div);
+            err_node = Some(err_div);
         }
+
+        // The label names the field (#2034).
+        ids.wire(
+            &textarea,
+            true,
+            label_node.as_ref(),
+            desc_node.as_ref(),
+            err_node.as_ref(),
+        );
 
         container
     }

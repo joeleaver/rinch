@@ -705,7 +705,9 @@ untouched — so preserving is right and restarting would be the smaller wrong
 answer. **The clock is all a kept animation keeps, on every cascade of its
 node** (#766, #780, #781; until then only `recompute_all_styles_full` refreshed,
 behind a `NodeTree::refreshing_animations` flag that is gone). On a class change,
-a hover, a `<style>` append, a `@media` flip or a theme, `start_animations`
+a hover, a `<style>` append (a sheet carrying `@keyframes` takes
+`flush_stylist`'s whole-document re-cascade, #884), a `@media` flip or a theme,
+`start_animations`
 takes the timing (duration, delay, direction, fill, count, easing) from the
 spec, looks the `@keyframes` rule up again — **dropping the animation if no rule
 of that name exists any more**, as Chrome does — and re-extracts the stops when

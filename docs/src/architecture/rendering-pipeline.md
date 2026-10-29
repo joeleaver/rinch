@@ -784,8 +784,8 @@ beside it: `NodeTree::transitions_enabled`, false at construction and set at the
 very end of the first `resolve_layout` ("Enable transitions after first layout
 completes", `layout_engine.rs`). `has_been_styled` alone would not do the job,
 because a tree is cascaded more than once before its first layout — appending a
-`<style>` element re-resolves the whole document there and then
-(`maybe_load_style_css`), so a component that appends its own stylesheet after
+`<style>` element to the document restyles every element its rules reach there
+and then (`flush_stylist`, #884), so a component that appends its own stylesheet after
 building its markup leaves every node already styled, and the next rule it loads
 is a *change* on an already-styled node. Without the flag that is a transition
 running on page load. `recompute_all_styles_full` forces the same flag off for
@@ -847,8 +847,9 @@ seeked `currentTime`, added three more rows the refresh also matches:
 
 The refresh is not scoped to this pass (issues **#766**, **#780**, **#781**).
 Every cascade of an animated node — a class change, a hover, a `<style>`
-appended, a viewport change that flips a `@media` block holding a
-`@keyframes` — keeps a running animation's clock and nothing else, as CSS
+appended (whose `@keyframes` takes `flush_stylist`'s whole-document re-cascade,
+#884), a viewport change that flips a `@media` block holding a `@keyframes` —
+keeps a running animation's clock and nothing else, as CSS
 Animations 1 §3 says and Chrome 156 does: a new `animation-duration` or
 `animation-delay` re-times it around the kept `currentTime`, a redefined or
 newly winning `@keyframes` body plays at once, and a rule that is gone cancels
