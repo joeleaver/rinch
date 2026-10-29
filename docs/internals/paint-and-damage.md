@@ -192,7 +192,16 @@ nothing, whatever its untransformed size. Before this every box counted its
 untransformed border box plus the end padding — no margins, no transforms, an
 `absolute; inset: 0` overlay (`LoadingOverlay`) in a padded scroller painted
 two bars, and a `relative` box offset toward the start lost range Chrome gives
-it. Rows: `tests/scroll_range_margin_transform_776_tests.rs`. Not counted yet:
+it. Two kinds of in-flow box count their border box alone: a non-replaced
+`display: inline` box (its block-axis margins do nothing, CSS 2.1 §10.6.1, and
+its inline-axis ones are in the line the container's inline layout measures;
+a replaced element at `display: inline` is `DisplayMode::InlineBlock` and keeps
+its margins), and a **grid item** (`ContainerFrame::grid`): Chrome counts the
+grid's *tracks*, not an item's margin box, and layout does not keep them, so a
+margin box overshoots (`margin-right: 300px` past a 100px column: Chrome 0) and
+the border box, as before #776, under-counts only where a margin grows an
+`auto` track (Chrome 86x46 and 0x120 in the pinned rows, rinch 0). Rows:
+`tests/scroll_range_margin_transform_776_tests.rs`. Not counted yet:
 a margin that collapses through a child's end (a `height: auto` child whose
 last child has `margin-bottom: 80px`: Chrome 30px of travel, rinch 0).
 

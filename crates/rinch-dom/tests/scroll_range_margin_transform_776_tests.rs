@@ -29,7 +29,7 @@
 //! | m3 | 200x100: 100x150, `margin-bottom: -30px` | 0x50 |
 //! | m4 | `PB`: 100x50, `margin-right: 60%` | 34x0 (34.4) |
 //! | m5 | `PB` flex: m1's child, `flex-shrink: 0` | 86x46 |
-//! | m6 | `PB` grid: m1's child | 86x46 |
+//! | m6 | `PB` grid: m1's child | 86x46 (here 0x0: a known gap) |
 //! | m7 | `PB`: 100x50 `mb 70px`, then 100x20 `mb 9px` | 0x75 |
 //! | t1 | `PB`: 100x50, `translate(500px, 300px)` | 425x263 |
 //! | t2 | `PB`: 180x80, `rotate(30deg)` | 16x33 (32.64) |
@@ -64,7 +64,11 @@
 //! | g2 | g1 with `margin-right: 200%` | 0x0 |
 //! | g3 | 200x100 grid (auto column): 50x20, `margin-right: 150%` | 0x0 |
 //! | g4 | g1's grid: 50x20, `margin-bottom: 200%` | 0x120 (here 0: a known gap) |
-//! | g5 | g1's grid: 50x20, `margin-right: 300px` | 0x0 (here 150: a known gap) |
+//! | g5 | g1's grid: 50x20, `margin-right: 300px` | 0x0 |
+//!
+//! A grid item counts its border box alone (as before #776): Chrome counts
+//! the grid's tracks, which layout does not keep, so m6 and g4 — a margin
+//! growing an `auto` track — are known gaps, pinned at rinch's numbers.
 //!
 //! A `position: sticky` child is laid out by Taffy as a `relative` one at its
 //! inset (`top: 20px` scrolls 0x20 here, 0x0 in Chrome, before #776 too), so
@@ -159,16 +163,13 @@ fn assert_range(got: (f64, f64), want: (f64, f64)) {
 fn an_in_flow_childs_end_margins_are_scrollable() {
     let child = "width: 100px; height: 50px; margin-right: 150px; margin-bottom: 70px";
     assert_range(max_scroll(PB, &[child]), (86.0, 46.0));
-    // The same box as a flex item and as a grid item.
+    // The same box as a flex item. (As a grid item it is a known gap:
+    // `a_grid_items_margins_count_nothing`.)
     assert_range(
         max_scroll(
             &format!("{PB} display: flex;"),
             &[&format!("{child}; flex-shrink: 0")],
         ),
-        (86.0, 46.0),
-    );
-    assert_range(
-        max_scroll(&format!("{PB} display: grid;"), &[child]),
         (86.0, 46.0),
     );
 }
@@ -581,17 +582,20 @@ fn an_atomic_inlines_margins_still_count() {
     }
 }
 
-/// A grid item's percentage margin resolves against its grid area, not the
-/// container, and Chrome counts the grid's tracks: `margin-right: 100%` or
-/// `200%` on a 50px item in a 100px column, and `150%` in an auto column,
-/// all scroll 0. Resolved against the 200px container they scrolled 50, 250
-/// and 150 (before #776: 0).
+/// A grid item's margins count nothing: Chrome counts the grid's tracks, and
+/// a margin past a fixed track is not in them. `margin-right: 100%` or `200%`
+/// (of the 100px area) on a 50px item in a 100px column, `150%` in an auto
+/// column, and `margin-right: 300px` in the 100px column all scroll 0 in
+/// Chrome. The item's margin box gave 50, 250, 150 and 150.
 #[test]
-fn a_grid_items_percentage_margin_adds_no_range() {
+fn a_grid_items_margins_count_nothing() {
     let item = "<div style='width: 50px; height: 20px; margin-right: {}'></div>";
     let two = format!("{B} display: grid; grid-template-columns: 100px 100px;");
-    for pct in ["100%", "200%"] {
-        assert_range(max_scroll_html(&two, &item.replace("{}", pct)), (0.0, 0.0));
+    for margin in ["100%", "200%", "300px"] {
+        assert_range(
+            max_scroll_html(&two, &item.replace("{}", margin)),
+            (0.0, 0.0),
+        );
     }
     assert_range(
         max_scroll_html(&format!("{B} display: grid;"), &item.replace("{}", "150%")),
@@ -599,26 +603,22 @@ fn a_grid_items_percentage_margin_adds_no_range() {
     );
 }
 
-/// **Known gaps**, pinned at rinch's numbers so a fix shows: Chrome counts a
-/// grid's tracks rather than its items' margin boxes. A percentage that grows
-/// an auto row (`margin-bottom: 200%` of the 100px area: Chrome 0x120) counts
-/// nothing here, and a length margin that overflows a fixed column
-/// (`margin-right: 300px`: Chrome 0x0) counts here.
+/// **Known gaps**, pinned at rinch's numbers (main's too) so a fix shows: a
+/// margin that grows an `auto` track is in Chrome's tracks. m1's child as the
+/// item of an auto grid (Chrome 86x46), and `margin-bottom: 200%` of the
+/// 100px area in an auto row (Chrome 0x120).
 #[test]
-fn a_grid_items_margins_against_the_tracks_known_gaps() {
-    let two = format!("{B} display: grid; grid-template-columns: 100px 100px;");
+fn a_grid_items_margin_growing_an_auto_track_known_gaps() {
+    let child = "width: 100px; height: 50px; margin-right: 150px; margin-bottom: 70px";
     assert_range(
-        max_scroll_html(
-            &two,
-            "<div style='width: 50px; height: 20px; margin-bottom: 200%'></div>",
-        ),
+        max_scroll(&format!("{PB} display: grid;"), &[child]),
         (0.0, 0.0),
     );
     assert_range(
         max_scroll_html(
-            &two,
-            "<div style='width: 50px; height: 20px; margin-right: 300px'></div>",
+            &format!("{B} display: grid; grid-template-columns: 100px 100px;"),
+            "<div style='width: 50px; height: 20px; margin-bottom: 200%'></div>",
         ),
-        (150.0, 0.0),
+        (0.0, 0.0),
     );
 }
