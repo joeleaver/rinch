@@ -482,5 +482,8 @@ fn a_box_placed_again_after_the_clamp_is_measured_where_it_lands() {
     let fresh = doc_of(&shape.replace("PRE", tall));
     let want = ranges(&fresh, by_id(&fresh, "s"));
     assert_ne!(before, want, "the line moved");
-    assert_range(after, want);
+    assert!(
+        (after.0 - want.0).abs() < 0.01 && (after.1 - want.1).abs() < 0.01,
+        "max scroll {after:?}, a fresh document {want:?}"
+    );
 }

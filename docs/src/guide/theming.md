@@ -606,6 +606,14 @@ scroll region between the box and its containing block does not scroll to it
 page, which on desktop is the `<body>`. A `fixed` box scrolls nothing, and a
 box with no width or no height counts nothing.
 
+So an absolute overlay that hangs past the window's edge with no positioned
+scroll region above it — a tooltip or hover card on a control at the bottom or
+right of the window — gives the page a scroll range, and scrollbars, for as long
+as it is shown, as it does in a browser. (`Select`, `Popover` and `DropdownMenu`
+flip or shift to stay inside the window; `Tooltip` and `HoverCard` do not.) An
+app that does not want that sets `body { overflow: hidden }` (`ui-zoo-desktop`
+does), or keeps its overlays inside the window.
+
 Where desktop still differs from a browser:
 
 - **A grid item's margins** count nothing here: a browser counts the grid's
