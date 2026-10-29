@@ -31,6 +31,10 @@ bitflags = "2"
 web-time = "1"
 tracing = { workspace = true }
 parley = { workspace = true }
+# parley 0.12's `Run::normalized_coords` is `&[NormalizedCoord]`, a transparent
+# `i16`; the painters take `&[i16]`, cast for free (parley's `bytemuck` feature).
+# Already in the lock through Vello and others.
+bytemuck = "1"
 # The primary font's OS/2 `xAvgCharWidth` and `head` bounds, which size a text
 # control (#1177). The version parley itself depends on, so nothing new is built.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }

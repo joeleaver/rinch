@@ -931,7 +931,7 @@ fn width_keeping_nbsp(
     let mut extent = width;
     for line in layout.lines() {
         let m = line.metrics();
-        if m.trailing_whitespace <= 0.0 {
+        if m.hanging_advance <= 0.0 {
             continue;
         }
         // The line's clusters in logical order, last first: the trailing

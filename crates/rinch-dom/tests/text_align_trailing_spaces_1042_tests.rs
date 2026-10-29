@@ -310,9 +310,9 @@ fn a_right_to_left_line_is_not_narrowed() {
     let n = d.tree.get(c.0).unwrap();
     let il = n.text_layout.as_ref().unwrap();
     let m = *il.layout.lines().next().unwrap().metrics();
-    assert!(m.trailing_whitespace > 10.0, "the spaces are on the line");
+    assert!(m.hanging_advance > 10.0, "the spaces are on the line");
     let chrome = (200.0 - m.advance) / 2.0;
-    near(m.offset, chrome - m.trailing_whitespace / 2.0);
+    near(m.offset, chrome - m.hanging_advance / 2.0);
 }
 
 /// Only the spaces at the very end of a line hang; spaces of another

@@ -695,7 +695,6 @@ fn line_inline_boxes(
             parley::layout::PositionedLayoutItem::InlineBox(bx) => {
                 let index = layout
                     .inline_boxes()
-                    .iter()
                     .find(|ib| ib.id == bx.id)
                     .map(|ib| ib.index)?;
                 Some((bx.id, index, bx.x, bx.x + bx.width))
@@ -749,7 +748,12 @@ fn selection_rects_impl(
         // overlapping the neighbours is what Chrome paints; and the last line
         // keeps its own bottom.
         let bottom = match lines.peek() {
-            Some(next) if metrics.leading >= 0.0 => next.metrics().block_min_coord,
+            Some(next)
+                if metrics.line_height
+                    >= crate::ifc::line_ascent(metrics) + crate::ifc::line_descent(metrics) =>
+            {
+                next.metrics().block_min_coord
+            }
             _ => metrics.block_max_coord,
         };
         let height = bottom - top;
@@ -805,7 +809,8 @@ fn selection_rects_impl(
             let before_break = Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream)
                 .geometry(layout, 0.0)
                 .x0 as f32;
-            before_break + (metrics.ascent + metrics.descent) * 0.25
+            before_break
+                + (crate::ifc::line_ascent(metrics) + crate::ifc::line_descent(metrics)) * 0.25
         } else {
             let end_affinity = if end == range.end {
                 Affinity::Upstream
@@ -874,7 +879,6 @@ fn bidi_line_pieces(
                 }
                 let index = layout
                     .inline_boxes()
-                    .iter()
                     .find(|ib| ib.id == bx.id)
                     .map(|ib| ib.index);
                 if index.is_some_and(|i| box_selected(bx.id, i)) {
@@ -916,7 +920,7 @@ fn bidi_line_pieces(
         let nx = Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream)
             .geometry(layout, 0.0)
             .x0 as f32;
-        let nr = nx + (metrics.ascent + metrics.descent) * 0.25;
+        let nr = nx + (crate::ifc::line_ascent(metrics) + crate::ifc::line_descent(metrics)) * 0.25;
         match pieces.iter_mut().find(|(l, r)| *l <= nx && nx <= *r) {
             Some(piece) => piece.1 = piece.1.max(nr),
             None => pieces.push((nx, nr)),

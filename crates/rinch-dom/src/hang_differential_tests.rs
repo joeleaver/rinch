@@ -163,6 +163,8 @@ fn build(
             width,
             height: 10.0,
             kind: parley::InlineBoxKind::InFlow,
+            baseline: None,
+            vertical_align: parley::style::VerticalAlign::BASELINE,
         });
     }
     b.build(text)

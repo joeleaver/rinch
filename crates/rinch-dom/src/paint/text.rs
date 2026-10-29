@@ -198,7 +198,7 @@ pub(super) fn paint_inline_layout(
         .map_or(&[][..], |c| c.hidden_boxes.as_slice());
     // Walking a line's items walks its clusters; a layout with no inline box
     // has nothing to find.
-    let lines = if inline_layout.layout.inline_boxes().is_empty() {
+    let lines = if inline_layout.layout.inline_boxes().len() == 0 {
         None
     } else {
         Some(inline_layout.layout.lines())
@@ -516,8 +516,8 @@ pub(super) fn inline_background_rects<'a>(
 
             let line_metrics = line.metrics();
             let baseline = line_metrics.baseline as f64;
-            let ascent = line_metrics.ascent as f64;
-            let descent = line_metrics.descent as f64;
+            let ascent = crate::ifc::line_ascent(line_metrics) as f64;
+            let descent = crate::ifc::line_descent(line_metrics) as f64;
             let pt = bg_span.padding_top as f64;
             let pb = bg_span.padding_bottom as f64;
 
@@ -646,8 +646,8 @@ fn wavy_wave(line: &parley::layout::Line<'_, Brush>, scale: f64) -> (f64, f64) {
     let offset = line
         .runs()
         .next()
-        .map(|r| r.metrics().underline_offset)
-        .unwrap_or(-metrics.descent * 0.4);
+        .map(|r| r.font_metrics().underline_offset)
+        .unwrap_or(-crate::ifc::line_descent(metrics) * 0.4);
     // Sit the *top* of the wave where a straight underline would be, so a
     // squiggle never rides up into the glyphs.
     let mid = baseline - (offset * sf) as f64 + AMPLITUDE * scale;
@@ -753,8 +753,8 @@ pub(crate) fn inline_ink_past_lines<'a>(
         note_span_line_visits(on.len());
         for line in on.filter_map(|i| layout.get(i)) {
             let m = line.metrics();
-            let top = (m.block_min_coord as f64).min((m.baseline - m.ascent) as f64);
-            let bottom = (m.block_max_coord as f64).max((m.baseline + m.descent) as f64);
+            let top = m.block_min_coord.min(m.content_block_min_coord) as f64;
+            let bottom = m.block_max_coord.max(m.content_block_max_coord) as f64;
             let (x0, x1) = line_reach(m);
             add(Rect::new(
                 x0 * scale,
@@ -1150,8 +1150,8 @@ impl<'a> TextFragment<'a> {
             }
             let m = line.metrics();
             let (top, bottom) = (
-                (m.baseline - m.ascent) as f64,
-                (m.baseline + m.descent) as f64,
+                m.content_block_min_coord as f64,
+                m.content_block_max_coord as f64,
             );
             for run in line.runs() {
                 let Some(mut x) = run.visual_clusters().next().and_then(|c| c.visual_offset())
@@ -1161,11 +1161,11 @@ impl<'a> TextFragment<'a> {
                 for cluster in run.visual_clusters() {
                     let byte = cluster.text_range().start;
                     let advance = cluster.advance() as f64;
-                    let decorated = cluster.glyphs().next().is_some_and(|g| {
-                        styles
-                            .get(g.style_index())
-                            .is_some_and(|st| st.underline.is_some() || st.strikethrough.is_some())
-                    }) || (wavy
+                    let decorated = (cluster.glyphs().next().is_some()
+                        && styles
+                            .get(usize::from(cluster.style_index()))
+                            .is_some_and(|st| st.underline.is_some() || st.strikethrough.is_some()))
+                        || (wavy
                         && inline_layout
                             .decoration_spans
                             .iter()
@@ -1610,7 +1610,7 @@ impl GlyphCursor {
             for cluster in shown_clusters(run, self.limit) {
                 let hidden = mask.hidden_at(cluster.text_range().start);
                 self.glyphs
-                    .extend(cluster.glyphs().map(|g| (g.style_index(), hidden)));
+                    .extend(cluster.glyphs().map(|_| (usize::from(cluster.style_index()), hidden)));
             }
         }
         let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
@@ -1657,7 +1657,7 @@ impl ValignCursor {
             for cluster in run.visual_clusters() {
                 let shift = inline_layout.vertical_align_shift_at(cluster.text_range().start);
                 self.glyphs
-                    .extend(cluster.glyphs().map(|g| (g.style_index(), shift)));
+                    .extend(cluster.glyphs().map(|_| (usize::from(cluster.style_index()), shift)));
             }
         }
         let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
@@ -1836,7 +1836,7 @@ impl ColourCursor {
             for cluster in run.visual_clusters() {
                 let recolour = live.at(cluster.text_range().start);
                 self.glyphs
-                    .extend(cluster.glyphs().map(|g| (g.style_index(), recolour)));
+                    .extend(cluster.glyphs().map(|_| (usize::from(cluster.style_index()), recolour)));
             }
         }
         let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
@@ -1958,7 +1958,7 @@ pub(super) struct PaintText<'a> {
     /// The line an unkept walk is collected into, reused line after line.
     scratch: std::cell::RefCell<Option<PaintLine<'a>>>,
     /// One parley run's glyphs, reused by every collection.
-    run_glyphs: std::cell::RefCell<Vec<parley::layout::Glyph>>,
+    run_glyphs: std::cell::RefCell<Vec<(u16, parley::layout::Glyph)>>,
     glyph_count: std::cell::OnceCell<usize>,
     /// [`ellipsis_line_limits`]: a line's glyphs past its cut are not
     /// collected.
@@ -2002,7 +2002,7 @@ impl<'a> PaintLine<'a> {
         &mut self,
         index: usize,
         line: parley::layout::Line<'a, Brush>,
-        run_glyphs: &mut Vec<parley::layout::Glyph>,
+        run_glyphs: &mut Vec<(u16, parley::layout::Glyph)>,
         limit: Option<f32>,
     ) {
         LINE_WALKS.with(|w| w.set(w.get() + 1));
@@ -2027,16 +2027,19 @@ impl<'a> PaintLine<'a> {
                         key = Some(k);
                         next = 0;
                         run_glyphs.clear();
-                        run_glyphs.extend(shown_clusters(run, limit).flat_map(|c| c.glyphs()));
+                        // parley 0.12 keeps a style index per cluster, not per glyph:
+                        // every glyph of a cluster has the cluster's style.
+                        run_glyphs.extend(shown_clusters(run, limit).flat_map(|c| {
+                            let style = c.style_index();
+                            c.glyphs().map(move |g| (style, g))
+                        }));
                         GLYPHS_COLLECTED.with(|g| g.set(g.get() + run_glyphs.len() as u64));
                     }
                     let rest = run_glyphs.get(next..).unwrap_or(&[]);
-                    let count = rest.first().map_or(0, |first| {
-                        rest.iter()
-                            .take_while(|g| g.style_index() == first.style_index())
-                            .count()
+                    let count = rest.first().map_or(0, |&(first, _)| {
+                        rest.iter().take_while(|&&(style, _)| style == first).count()
                     });
-                    self.glyphs.extend_from_slice(&rest[..count]);
+                    self.glyphs.extend(rest[..count].iter().map(|&(_, g)| g));
                     next += count;
                 }
             }
@@ -2239,7 +2242,7 @@ pub(super) fn draw_text(
                 .unwrap_or(0.0)
                 * sf;
 
-            let run_metrics = run.metrics();
+            let run_metrics = run.font_metrics();
             // Underline, then line-through: `(offset, size, brush)` each.
             let decorations = [
                 style.underline.as_ref().map(|d| {
@@ -2270,7 +2273,7 @@ pub(super) fn draw_text(
                     glyph_xform,
                     recoloured.as_ref().unwrap_or(brush),
                     true,
-                    run.normalized_coords(),
+                    bytemuck::cast_slice(run.normalized_coords()),
                     glyphs,
                 );
                 let follows = [recolour.underline, recolour.strikethrough];

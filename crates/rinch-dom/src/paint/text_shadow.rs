@@ -274,8 +274,8 @@ fn text_extent(
             continue;
         }
         let m = line.metrics();
-        let top = m.block_min_coord.min(m.baseline - m.ascent) as f64;
-        let bottom = m.block_max_coord.max(m.baseline + m.descent) as f64;
+        let top = m.block_min_coord.min(m.content_block_min_coord) as f64;
+        let bottom = m.block_max_coord.max(m.content_block_max_coord) as f64;
         if mask.is_none() && valign.is_none() {
             // All of the line: its glyph runs' extent.
             let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);

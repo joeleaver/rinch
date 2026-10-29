@@ -96,6 +96,20 @@ pub const EDGE_BOX: u64 = 1 << 31;
 /// Set with [`EDGE_BOX`] on an element's inline-end box.
 pub const EDGE_BOX_END: u64 = 1 << 30;
 
+/// A line's typographic extent above its baseline: the tallest ascent of its
+/// glyphs and the part of its inline boxes over the baseline. parley 0.12
+/// dropped `LineMetrics::ascent` (linebender/parley#697); its
+/// `content_block_min_coord` is the top of that extent.
+pub(crate) fn line_ascent(m: &parley::LineMetrics) -> f32 {
+    m.baseline - m.content_block_min_coord
+}
+
+/// [`line_ascent`]'s counterpart below the baseline (`LineMetrics::descent`
+/// before parley 0.12).
+pub(crate) fn line_descent(m: &parley::LineMetrics) -> f32 {
+    m.content_block_max_coord - m.baseline
+}
+
 /// Whether an inline box id is an edge box ([`EDGE_BOX`]) rather than an
 /// atomic inline's node id.
 pub fn is_edge_box(id: u64) -> bool {
@@ -1244,6 +1258,8 @@ impl<'a> IfcText<'a> {
             width,
             height: 0.0,
             kind: parley::InlineBoxKind::InFlow,
+            baseline: None,
+            vertical_align: parley::style::VerticalAlign::BASELINE,
         });
         self.edge_boxes = true;
         if end {
@@ -1535,7 +1551,8 @@ impl<'a> IfcText<'a> {
         emoji_family: Option<&parley::style::FontFamily<'static>>,
         tab_spacing: &[f32],
     ) {
-        builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
+        // parley 0.12 made `white-space-collapse` a style (`TextStyle::white_space_collapse`),
+        // `Preserve` by default and set by nothing in rinch: the builder collapses nothing.
         use parley::style::StyleProperty as P;
         let emoji_span = emoji_family.map(|f| [P::FontFamily(f.clone())]);
         let push_plain =
@@ -1720,7 +1737,7 @@ pub(crate) fn resolve_out_of_flow_marks(
                 } else {
                     // Not past the line's content: a space hung at a soft
                     // wrap takes no room there.
-                    (start + cluster.advance()).min(m.offset + m.advance - m.trailing_whitespace)
+                    (start + cluster.advance()).min(m.offset + m.advance - m.hanging_advance)
                 };
                 (x, top(index), top(index + 1))
             })
@@ -1830,7 +1847,7 @@ fn break_unwrapped(
         committed += 1;
         breaker.set_prior_line_width(width);
         if let (Some(units), Some(start)) = (units, cursor) {
-            cursor = line_end(units, start, data.advance);
+            cursor = line_end(units, start, data.metrics.advance);
             if let Some(end) = cursor {
                 align_unhung_trailing(&mut breaker, &units[start..end], width, data.reason, true);
             }
@@ -1904,7 +1921,7 @@ fn hang_pass(
         let soft = matches!(data.reason, BreakReason::Regular | BreakReason::Emergency);
         let emergency = data.reason == BreakReason::Emergency;
         if (has_edges && soft) || seams {
-            let Some(end) = line_end(&units, cursor, data.advance) else {
+            let Some(end) = line_end(&units, cursor, data.metrics.advance) else {
                 in_step = false;
                 continue;
             };
@@ -1941,14 +1958,14 @@ fn hang_pass(
                 };
                 stats.lines += 1;
                 data.reason = reason;
-                data.advance = advance;
+                data.metrics.advance = advance;
             }
         }
         // The last line is committed as it is (`BreakReason::None`; an empty
         // one after a final newline even copies the previous line's advance),
         // but its unhung spaces still count for its alignment (#1212).
         if data.reason == BreakReason::None {
-            if let Some(end) = line_end(&units, cursor, data.advance) {
+            if let Some(end) = line_end(&units, cursor, data.metrics.advance) {
                 align_unhung_trailing(
                     &mut breaker,
                     &units[cursor..end],
@@ -1966,7 +1983,7 @@ fn hang_pass(
                 &mut breaker,
                 &units,
                 cursor,
-                data.advance,
+                data.metrics.advance,
                 &line_start,
                 max,
             ) {
@@ -1987,7 +2004,7 @@ fn hang_pass(
         // started from, with room for its content and every space and tab
         // after it. That can end at a hang again — an NBSP after the spaces
         // overflows too, and parley hangs NBSP itself — so until it does not.
-        let (mut reason, mut advance) = (data.reason, data.advance);
+        let (mut reason, mut advance) = (data.reason, data.metrics.advance);
         let mut line_max = max;
         let mut widened_from = f32::NEG_INFINITY;
         let mut unglued = false;
@@ -2103,7 +2120,7 @@ fn hang_pass(
             };
             breaker.set_prior_line_width(max);
             stats.lines += 1;
-            (reason, advance) = (again.reason, again.advance);
+            (reason, advance) = (again.reason, again.metrics.advance);
         }
     }
     breaker.finish();
@@ -2227,7 +2244,7 @@ fn unglue(
         state.set_layout_max_advance(line_max);
         state.set_line_max_advance(line_max);
         match breaker.break_next()? {
-            YieldData::LineBreak(d) => Some((d.reason, d.advance)),
+            YieldData::LineBreak(d) => Some((d.reason, d.metrics.advance)),
             _ => None,
         }
     };
@@ -2453,9 +2470,9 @@ fn break_overflowing_spaces(
                 if let Some(YieldData::LineBreak(d)) = breaker.break_next() {
                     if d.reason == BreakReason::Emergency {
                         wraps_in_word = true;
-                    } else if d.advance <= room + TOL {
+                    } else if d.metrics.advance <= room + TOL {
                         breaker.set_prior_line_width(max);
-                        return Some((d.reason, d.advance));
+                        return Some((d.reason, d.metrics.advance));
                     }
                 }
             }
@@ -2582,7 +2599,7 @@ impl WrapSeams {
             .filter(|(_, r)| r.flat_end > r.flat_start)
             .map(|(i, r)| ((r.flat_start, 1, i), r.node_id))
             .collect();
-        for (i, b) in layout.inline_boxes().iter().enumerate() {
+        for (i, b) in layout.inline_boxes().enumerate() {
             if !is_edge_box(b.id) && b.kind == parley::InlineBoxKind::InFlow {
                 leaves.push(((b.index, 0, i), b.id as usize));
             }
@@ -2600,7 +2617,7 @@ impl WrapSeams {
                 closes: next.is_some_and(|next| only_closes(nodes, root_id, node, next)),
             };
             if kind == 0 {
-                seams.boxes.push((layout.inline_boxes()[index].id, seam));
+                seams.boxes.push((node as u64, seam));
             } else {
                 seams.text_ends.push((text_ranges[index].flat_end, seam));
             }
@@ -3399,7 +3416,7 @@ fn any_line_split_at_edge(layout: &parley::Layout<Brush>) -> bool {
     use parley::PositionedLayoutItem;
     use parley::layout::BreakReason;
     let edge = |item: Option<PositionedLayoutItem<'_, Brush>>| matches!(item, Some(PositionedLayoutItem::InlineBox(b)) if is_edge_box(b.id));
-    if !layout.inline_boxes().iter().any(|b| is_edge_box(b.id)) {
+    if !layout.inline_boxes().any(|b| is_edge_box(b.id)) {
         return false;
     }
     // Items are in visual order: on a right-to-left line the logical end is
@@ -3638,7 +3655,7 @@ fn any_counted_trailing_line(
 ) -> bool {
     use parley::layout::BreakReason;
     layout.lines().any(|line| {
-        if line.metrics().trailing_whitespace <= 0.0 {
+        if line.metrics().hanging_advance <= 0.0 {
             return false;
         }
         let body = text.get(line.text_range()).unwrap_or("");
@@ -3705,7 +3722,7 @@ fn logical_units(
             // run on the next line) took two indices, and a line the hang
             // pass broke again around them saw two runs where parley sees
             // one. Its metrics live in the layout's run data, one per run.
-            let run_index = std::ptr::from_ref(run.metrics()) as usize;
+            let run_index = std::ptr::from_ref(run.font_metrics()) as usize;
             for c in run.clusters() {
                 let range = c.text_range();
                 let n = keyed.len();
@@ -3749,7 +3766,7 @@ fn logical_units(
             }
         }
     }
-    for (i, b) in layout.inline_boxes().iter().enumerate() {
+    for (i, b) in layout.inline_boxes().enumerate() {
         let in_flow = matches!(b.kind, parley::InlineBoxKind::InFlow);
         let seam = unhung.active_seams().and_then(|s| s.after_box(b.id));
         let advance = if in_flow { b.width } else { 0.0 };
@@ -9844,7 +9861,7 @@ impl RinchDocument {
         const EPS: f32 = 0.01;
         let overflowing = |line: &parley::layout::Line<'_, Brush>| {
             let m = line.metrics();
-            m.advance - m.trailing_whitespace > container_width
+            m.advance - m.hanging_advance > container_width
         };
         if !il.layout.lines().any(|l| overflowing(&l)) {
             return None;
@@ -10713,6 +10730,8 @@ impl RinchDocument {
                         width: width * scale,
                         height: height * scale,
                         kind: parley::InlineBoxKind::InFlow,
+                        baseline: None,
+                        vertical_align: parley::style::VerticalAlign::BASELINE,
                     });
                     child_positions.push((child_id, LayoutResult::default()));
                 }
@@ -11262,7 +11281,8 @@ impl TabStops {
         scale: f32,
     ) -> Self {
         let mut builder = layout_cx.tree_builder(font_cx, scale, true, style);
-        builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
+        // parley 0.12 made `white-space-collapse` a style (`TextStyle::white_space_collapse`),
+        // `Preserve` by default and set by nothing in rinch: the builder collapses nothing.
         builder.push_text(" ");
         let (mut layout, _) = builder.build();
         layout.break_all_lines(None);
@@ -11295,7 +11315,6 @@ impl TabStops {
     pub(crate) fn deltas(&self, layout: &parley::Layout<Brush>, tabs: &[usize]) -> Vec<f32> {
         use parley::PositionedLayoutItem;
         let mut deltas = vec![0.0f32; tabs.len()];
-        let boxes = layout.inline_boxes();
         /// (byte, 0 = inline box / 1 = cluster, order), advance, tab index.
         type Unit = ((usize, u8, usize), f32, Option<usize>);
         let mut units: Vec<Unit> = Vec::new();
@@ -11310,7 +11329,7 @@ impl TabStops {
             }
             for item in line.items() {
                 if let PositionedLayoutItem::InlineBox(b) = item {
-                    let Some(ib) = boxes.iter().find(|ib| ib.id == b.id) else {
+                    let Some(ib) = layout.inline_boxes().find(|ib| ib.id == b.id) else {
                         continue;
                     };
                     let advance = if matches!(ib.kind, parley::InlineBoxKind::InFlow) {

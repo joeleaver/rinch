@@ -976,7 +976,7 @@ fn font_box(
         .and_then(|line| {
             line.items().find_map(|item| match item {
                 parley::layout::PositionedLayoutItem::GlyphRun(run) => {
-                    let m = run.run().metrics();
+                    let m = run.run().font_metrics();
                     Some((m.ascent, m.descent))
                 }
                 _ => None,

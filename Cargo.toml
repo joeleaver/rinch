@@ -94,7 +94,7 @@ rinch-clipboard = { path = "crates/rinch-clipboard" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 # Text layout
-parley = { version = "0.11.1", features = ["complex-scripts"] }
+parley = { version = "0.12.0", features = ["complex-scripts", "bytemuck"] }
 
 # CSS engine (Stylo from Firefox/Servo)
 stylo = "0.11"
