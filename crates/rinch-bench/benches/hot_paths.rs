@@ -85,6 +85,14 @@ fn abs_badge_scroll(f: BadgeFixture) -> BadgeFixture {
 }
 
 #[library_benchmark]
+#[bench::direct_500(setup = setup_badges_direct)]
+#[bench::ancestor_500(setup = setup_badges_ancestor)]
+#[bench::icb_500(setup = setup_badges_icb)]
+fn abs_badge_extents(f: BadgeFixture) -> BadgeFixture {
+    black_box(measure(black_box(f), op_badge_extents))
+}
+
+#[library_benchmark]
 #[bench::text_page_warm(setup = setup_full_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
@@ -157,6 +165,7 @@ library_benchmark_group!(
         set_text_content,
         flex_label_hover,
         drawer_toggle,
+        abs_badge_extents,
         inset_move,
         abs_badge_relayout,
         abs_badge_scroll,

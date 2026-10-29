@@ -590,6 +590,16 @@ pub fn op_badge_scroll(mut f: BadgeFixture) -> BadgeFixture {
     f
 }
 
+/// The bars of the scroller and of the body, as every paint and every
+/// pointer move's hit test asks for them (`scrollbars` runs `content_extents`,
+/// which counts each badge in the scroller its containing block sits in, #770).
+pub fn op_badge_extents(f: BadgeFixture) -> BadgeFixture {
+    let body = f.doc.body();
+    std::hint::black_box(rinch_dom::paint::scrollbar::scrollbars(&f.doc.tree, f.scroller.0, 1.0));
+    std::hint::black_box(rinch_dom::paint::scrollbar::scrollbars(&f.doc.tree, body.0, 1.0));
+    f
+}
+
 // ── rinch-dom: a full software paint ───────────────────────────────────────
 
 const LOREM: &str = "The quick brown fox jumps over the lazy dog while a sphinx of black \
