@@ -124,7 +124,7 @@ fn height_of(doc: &RinchDocument, id: NodeId) -> f32 {
 }
 
 /// The IFC root a node's inline content belongs to, if any.
-fn ifc_root(doc: &RinchDocument, id: NodeId) -> Option<usize> {
+fn ifc_root(doc: &RinchDocument, id: NodeId) -> Option<u64> {
     doc.tree.get(id.0).unwrap().ifc_root
 }
 
@@ -166,23 +166,23 @@ fn dom_children(doc: &RinchDocument, id: NodeId) -> Vec<String> {
 // what the fixtures that used to read DOM parentage ask instead.
 
 /// The anonymous box a node is a run member of — the member's own back-pointer.
-fn run_box(doc: &RinchDocument, id: NodeId) -> Option<usize> {
+fn run_box(doc: &RinchDocument, id: NodeId) -> Option<u64> {
     doc.tree.get(id.0).unwrap().run_box
 }
 
 /// A box's run, in the order the box recorded it.
-fn run_members(doc: &RinchDocument, bx: usize) -> Vec<usize> {
+fn run_members(doc: &RinchDocument, bx: u64) -> Vec<u64> {
     doc.tree.get(bx).unwrap().run_members.clone()
 }
 
 /// The boxes a container records — invariant A's downward half, and what
 /// `box_tree_children` decides on in O(1).
-fn run_boxes(doc: &RinchDocument, id: NodeId) -> Vec<usize> {
+fn run_boxes(doc: &RinchDocument, id: NodeId) -> Vec<u64> {
     doc.tree.get(id.0).unwrap().run_boxes.clone()
 }
 
 /// The container an anonymous box hangs off.
-fn box_parent(doc: &RinchDocument, bx: usize) -> Option<usize> {
+fn box_parent(doc: &RinchDocument, bx: u64) -> Option<u64> {
     doc.tree.get(bx).unwrap().parent
 }
 

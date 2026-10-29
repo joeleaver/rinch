@@ -107,13 +107,13 @@ impl Page {
     }
 
     /// The host element of the textblock holding `pos`.
-    fn block(&self, pos: usize) -> usize {
+    fn block(&self, pos: usize) -> u64 {
         self.handle.caret_address(Pos(pos)).unwrap().0
     }
 
     /// Where the block's text starts on screen: its painted border box moved
     /// in by its padding and border.
-    fn content_origin(&self, block: usize) -> (f32, f32) {
+    fn content_origin(&self, block: u64) -> (f32, f32) {
         let doc = self.app.doc.as_ref().unwrap().borrow();
         let (bx, by, _, _) = painted_element_box(&doc.tree, block);
         let cs = &doc.tree.nodes[block].computed_style;
@@ -125,7 +125,7 @@ impl Page {
 
     /// Where the caret at flat byte `byte` of `block` is drawn, by Parley's
     /// layout-local answer from the content origin.
-    fn expected_caret(&self, block: usize, byte: usize) -> (f32, f32) {
+    fn expected_caret(&self, block: u64, byte: usize) -> (f32, f32) {
         let (cx, cy) = self.content_origin(block);
         let doc = self.app.doc.as_ref().unwrap().borrow();
         let layout = &doc.tree.nodes[block]
@@ -260,7 +260,7 @@ fn the_caret_in_a_padded_bordered_paragraph_sits_on_its_text() {
         let doc = p.app.doc.as_ref().unwrap().borrow();
         let img = doc.query_selector_all("img")[0].0;
         let layout = &doc.tree.nodes[block].text_layout.as_ref().unwrap().layout;
-        let (x, y, _) = rinch_dom::text_query::inline_box_caret(layout, img as u64, true)
+        let (x, y, _) = rinch_dom::text_query::inline_box_caret(layout, img, true)
             .expect("the image is an inline box of the paragraph");
         (cx + x, cy + y)
     };

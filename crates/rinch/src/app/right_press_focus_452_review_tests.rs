@@ -23,17 +23,17 @@ fn press_at(app: &mut RinchApp, x: f32, y: f32, button: MouseButton) {
     ev(app, PlatformEvent::MouseDown { x, y, button });
     ev(app, PlatformEvent::MouseUp { x, y, button });
 }
-fn center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn center(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (ax, ay, w, h) = painted_element_box(&d.tree, id);
     (ax + w / 2.0, ay + h / 2.0)
 }
-fn dom_focus(app: &RinchApp) -> Option<usize> {
+fn dom_focus(app: &RinchApp) -> Option<u64> {
     app.doc.as_ref().unwrap().borrow().tree.focused_node
 }
 
 #[cfg(feature = "desktop")]
-type Slot = Option<(usize, crate::editor::EditorHandle)>;
+type Slot = Option<(u64, crate::editor::EditorHandle)>;
 
 #[cfg(feature = "desktop")]
 /// An editor, optionally inside a registered `tabindex="0"` card.
@@ -41,7 +41,7 @@ fn editor_app(
     wrapped: bool,
 ) -> (
     RinchApp,
-    usize,
+    u64,
     crate::editor::EditorHandle,
     Rc<RefCell<Vec<String>>>,
 ) {
@@ -152,16 +152,16 @@ fn s1b_right_press_in_editor_inside_card() {
 
 struct Page {
     app: RinchApp,
-    input: usize,
-    plain: usize,
-    listbox: usize,
-    disabled_btn: usize,
+    input: u64,
+    plain: u64,
+    listbox: u64,
+    disabled_btn: u64,
     log: Rc<RefCell<Vec<String>>>,
 }
 
 fn page() -> Page {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let ids: Rc<Cell<Option<[usize; 4]>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<[u64; 4]>>> = Rc::new(Cell::new(None));
     let (log_in, ids_in) = (log.clone(), ids.clone());
     let changed = register_input_handler(InputCallback::new({
         let log = log.clone();
@@ -390,7 +390,7 @@ fn s7_right_press_on_oncontextmenu_outside_releases() {
 /// S8: a `<select>` popup open, a right press on an option.
 #[test]
 fn s8_right_press_in_an_open_select_popup() {
-    let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

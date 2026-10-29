@@ -27,11 +27,11 @@ fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchA
 }
 
 /// (li node, its pseudo-children's text, display) for every `li` under body.
-fn items(app: &RinchApp) -> Vec<(usize, Vec<String>, String)> {
+fn items(app: &RinchApp) -> Vec<(u64, Vec<String>, String)> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let mut out = Vec::new();
-    fn walk(d: &RinchDocument, id: usize, out: &mut Vec<(usize, Vec<String>, String)>) {
+    fn walk(d: &RinchDocument, id: u64, out: &mut Vec<(u64, Vec<String>, String)>) {
         let Some(n) = d.tree.get(id) else { return };
         if n.tag() == Some("li") {
             let ps = n

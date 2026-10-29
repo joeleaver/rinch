@@ -26,11 +26,11 @@ use rinch_dom::RinchDocument;
 const VW: f32 = 800.0;
 const VH: f32 = 600.0;
 
-fn margin_top(doc: &RinchDocument, id: usize) -> f32 {
+fn margin_top(doc: &RinchDocument, id: u64) -> f32 {
     doc.tree.get(id).unwrap().computed_style.margin_top.to_px()
 }
 
-fn margin_bottom(doc: &RinchDocument, id: usize) -> f32 {
+fn margin_bottom(doc: &RinchDocument, id: u64) -> f32 {
     doc.tree
         .get(id)
         .unwrap()

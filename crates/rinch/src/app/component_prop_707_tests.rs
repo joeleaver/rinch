@@ -43,10 +43,10 @@ fn restyle(app: &RinchApp) {
 }
 
 /// The one node carrying `class` exactly.
-fn node_with_class(app: &RinchApp, class: &str) -> usize {
+fn node_with_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().expect("a mounted document");
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()

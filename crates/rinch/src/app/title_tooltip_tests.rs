@@ -35,8 +35,8 @@ const ON_CORNER: (f32, f32) = (781.0, 589.0);
 
 #[derive(Default)]
 struct Ids {
-    save: Cell<usize>,
-    outer: Cell<usize>,
+    save: Cell<u64>,
+    outer: Cell<u64>,
 }
 
 fn mount() -> (RinchApp, Rc<Ids>) {
@@ -787,7 +787,7 @@ mod review_1652 {
         );
     }
 
-    fn scroller_app() -> (RinchApp, Rc<Cell<usize>>) {
+    fn scroller_app() -> (RinchApp, Rc<Cell<u64>>) {
         let id = Rc::new(Cell::new(0));
         let i = id.clone();
         let app = mount_with(move |scope, root| {

@@ -37,7 +37,7 @@ struct Page {
     app: RinchApp,
     handle: crate::editor::EditorHandle,
     /// The textblock the caret is in.
-    block: usize,
+    block: u64,
 }
 
 /// One editor, 130px wide (the editor stylesheet's 20px side padding inside

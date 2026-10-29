@@ -487,7 +487,10 @@ mod tests {
     }
 
     /// Depth-first search for a node's object in a serialized tree.
-    fn find_by_id(node: &serde_json::Value, id: usize) -> Option<&serde_json::Value> {
+    fn find_by_id(
+        node: &serde_json::Value,
+        id: crate::node::RawNodeId,
+    ) -> Option<&serde_json::Value> {
         if node["id"] == id {
             return Some(node);
         }
