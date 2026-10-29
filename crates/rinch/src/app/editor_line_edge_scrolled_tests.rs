@@ -623,9 +623,11 @@ fn home_under_a_line_holding_an_image_stays_on_its_line() {
 }
 
 /// The Parley line the caret is drawn on, read independently of the code
-/// under test: the line whose box top is exactly the caret's top (Parley
-/// draws a caret from its line's `block_min_coord`). `None` outside the
-/// first paragraph.
+/// under test: the line whose top is exactly the caret's top. rinch draws a
+/// caret from its line's top: the line box's (`block_min_coord`), or its
+/// runs' glyph tops, rounded, where they reach higher — under a line height
+/// smaller than the text (`rinch_dom::text_query`; parley 0.11.1 folded that
+/// into `block_min_coord`). `None` outside the first paragraph.
 fn drawn_line(p: &Page) -> Option<usize> {
     let head = p.handle.selection().head();
     let (tb, byte) = p.handle.caret_address(head)?;
@@ -641,7 +643,12 @@ fn drawn_line(p: &Page) -> Option<usize> {
     );
     let lines: Vec<f32> = layout
         .lines()
-        .map(|l| l.metrics().block_min_coord)
+        .map(|l| {
+            let m = l.metrics();
+            l.runs()
+                .map(|r| m.baseline - r.font_metrics().ascent.round())
+                .fold(m.block_min_coord, f32::min)
+        })
         .collect();
     assert_eq!(
         lines.iter().filter(|&&m| m == cy).count(),

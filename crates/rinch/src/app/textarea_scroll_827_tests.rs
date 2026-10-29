@@ -326,12 +326,13 @@ fn the_caret_stays_in_view_vertically() {
         "ArrowDown: the caret's line at the padding box's bottom, got y {y}..{}",
         y + h
     );
-    // Four lines down to the padding box's bottom: 5 + 3 × 19.36 + 19.2 − 64
-    // with rinch's 19.36px lines (#320), on the grid — Chrome's 21 at 20px.
+    // Four lines down to the padding box's bottom: 5 + 3 × 20 + 19 − 64 with
+    // rinch's 20px lines, on the grid — Chrome's 21, also at 20px. (Until
+    // parley 0.12 rinch's lines were 19.36px, #320, and this was 18.)
     let s = scroll_top(&app, id);
     assert!(
-        (17.0..=19.0).contains(&s),
-        "ArrowDown: scrollTop 18, got {s}"
+        (19.0..=21.0).contains(&s),
+        "ArrowDown: scrollTop 20, got {s}"
     );
 }
 

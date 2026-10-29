@@ -164,8 +164,12 @@ fn a_claimed_image_is_one_inline_box_and_the_caret_is_drawn_at_its_edges() {
     assert_eq!(view.renders.get(), 1);
     let span = span(&p);
     let (sx, _sy, sw, sh) = box_of(&p, span);
+    // As wide as the component, and as tall as the line inside it: the 20px
+    // chip on its baseline and the strut's descent below it (Chrome 156:
+    // 60x27 with the host's sans-serif; 60x20 until parley 0.12 gave every
+    // line its strut).
     assert!(
-        (sw - 60.0).abs() < 0.5 && (sh - 20.0).abs() < 0.5,
+        (sw - 60.0).abs() < 0.5 && sh > 20.0 && sh < 28.0,
         "sized by the component: {sw}x{sh}"
     );
     let (before, _, _) = caret(&p, IMAGE);
