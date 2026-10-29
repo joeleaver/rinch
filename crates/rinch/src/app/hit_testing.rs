@@ -195,14 +195,14 @@ fn hit_test_node(
     let nw = node.layout.width;
     let nh = node.layout.height;
 
-    // Skip entire subtree when visibility: hidden — per CSS spec, hidden elements
-    // and their descendants don't receive pointer events. This also guards against
-    // Stylo not cascading visibility to children when a parent's class changes.
-    if matches!(
-        node.computed_style.visibility,
-        rinch_dom::computed_style::VisibilityValue::Hidden
-            | rinch_dom::computed_style::VisibilityValue::Collapse
-    ) {
+    // A hidden box is not hit itself, but `visibility` is inherited and a
+    // descendant may set it back to `visible`: that descendant is painted
+    // (#829) and hit, as in Chrome (#843). So a hidden node's subtree is
+    // skipped only when nothing below it is visible — the common case, which
+    // keeps the old whole-subtree skip — and otherwise walked for the visible
+    // boxes alone.
+    let hidden = hides_own_hit(tree, node);
+    if hidden && !shows_below(tree, node_id) {
         return None;
     }
 
@@ -378,7 +378,7 @@ fn hit_test_node(
         }
     }
 
-    if !point_in_bounds {
+    if !point_in_bounds || hidden {
         return None;
     }
 
@@ -579,6 +579,50 @@ fn flow_hoists(tree: &rinch_dom::NodeTree, id: usize) -> bool {
     };
     tree.hit_cache.store_hoists(id, hoists);
     hoists
+}
+
+/// Whether `node` computes to `visibility: hidden`/`collapse`, so that it is
+/// not hit itself (#843). A text node is drawn with its parent element's
+/// visibility (paint reads the parent's), so it is answered from there.
+#[inline]
+fn hides_own_hit(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node) -> bool {
+    let hidden = |n: &rinch_dom::Node| {
+        matches!(
+            n.computed_style.visibility,
+            rinch_dom::computed_style::VisibilityValue::Hidden
+                | rinch_dom::computed_style::VisibilityValue::Collapse
+        )
+    };
+    if node.is_text() {
+        node.parent
+            .and_then(|p| tree.get(p))
+            .is_some_and(|p| hidden(p))
+    } else {
+        hidden(node)
+    }
+}
+
+/// Whether some element below `id` computes to `visibility: visible` (#843),
+/// i.e. whether a hidden `id`'s subtree can hold anything to hit.
+///
+/// Walks the DOM children, a superset of every box either walk enters below
+/// `id` (box-tree children, stacking-sequence entries, hoisted descendants),
+/// so `false` is a proof. Text nodes are skipped: they take their parent's
+/// visibility ([`hides_own_hit`]). Memoised in the hit cache, so a hidden
+/// subtree is walked once per generation, not once per probe.
+fn shows_below(tree: &rinch_dom::NodeTree, id: usize) -> bool {
+    if let Some(s) = tree.hit_cache.shows(id) {
+        return s;
+    }
+    let shows = tree.get(id).is_some_and(|node| {
+        node.children.iter().any(|&child_id| {
+            tree.get(child_id).is_some_and(|child| {
+                !child.is_text() && (!hides_own_hit(tree, child) || shows_below(tree, child_id))
+            })
+        })
+    });
+    tree.hit_cache.store_shows(id, shows);
+    shows
 }
 
 /// The box a node is *painted* in, in layout pixels, shaped as the four
@@ -1053,12 +1097,10 @@ fn find_scrollbar_hit_node(
 ) -> Option<ScrollbarHit> {
     let node = tree.get(node_id)?;
 
-    // Skip hidden subtrees
-    if matches!(
-        node.computed_style.visibility,
-        rinch_dom::computed_style::VisibilityValue::Hidden
-            | rinch_dom::computed_style::VisibilityValue::Collapse
-    ) {
+    // A hidden scroller paints no bar (#829) and offers none, but a visible
+    // descendant's bar is painted and grabbed (#843), as in `hit_test_node`.
+    let hidden = hides_own_hit(tree, node);
+    if hidden && !shows_below(tree, node_id) {
         return None;
     }
 
@@ -1086,6 +1128,10 @@ fn find_scrollbar_hit_node(
         if let Some(hit) = find_scrollbar_hit_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy) {
             return Some(hit);
         }
+    }
+
+    if hidden {
+        return None;
     }
 
     // Which bars exist, and where they are: the paint pass's own computation,
