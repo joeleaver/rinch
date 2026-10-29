@@ -29,7 +29,7 @@ const STEP: f64 = PAGE_BOX * 0.875;
 struct Rig {
     app: RinchApp,
     handle: crate::editor::EditorHandle,
-    scroller: usize,
+    scroller: u64,
 }
 
 fn blocks_html(n: usize) -> String {
@@ -54,7 +54,7 @@ fn rig(blocks: usize, editor_is_scroller: bool) -> Rig {
 /// `height`: the scroller's border box, which is its padding box here.
 /// `font_px`: the editor's font size (its lines are 1.25 of it).
 fn rig_with(html: &str, editor_is_scroller: bool, height: u32, font_px: u32) -> Rig {
-    let ids: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let ids: Rc<Cell<u64>> = Rc::new(Cell::new(0));
     let ids_in = ids.clone();
     let handle = crate::editor::create_editor();
     assert!(handle.load_html(html));
@@ -114,13 +114,19 @@ fn idle(app: &mut RinchApp) {
     }
 }
 
-fn scroll_of(app: &RinchApp, id: usize) -> f64 {
-    app.doc.as_ref().unwrap().borrow().tree.nodes[id]
+fn scroll_of(app: &RinchApp, id: u64) -> f64 {
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .tree
+        .get(id)
+        .expect("a live node")
         .scroll_offset
         .1
 }
 
-fn max_scroll(app: &RinchApp, id: usize) -> f64 {
+fn max_scroll(app: &RinchApp, id: u64) -> f64 {
     let d = app.doc.as_ref().unwrap().borrow();
     let nid = rinch_core::dom::NodeId(id);
     (d.scroll_height(nid) - d.client_height(nid)).max(0.0)
@@ -976,7 +982,7 @@ mod review_2028 {
         let handle = crate::editor::create_editor();
         assert!(handle.load_html(&blocks_html(60)));
         let h = handle.clone();
-        let other: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let other: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let other_in = other.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -1037,7 +1043,7 @@ mod review_2028 {
         let second = crate::editor::create_editor();
         assert!(second.load_html(&blocks_html(40)));
         let (a, b) = (first.clone(), second.clone());
-        let ids: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let ids: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -1153,7 +1159,7 @@ mod review_2028 {
     /// `rig(40, false)` with — `cover` — a second editor in a fixed box over
     /// the window's strip 90..160.
     fn rig_covered(cover: bool) -> Rig {
-        let ids: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let ids: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let ids_in = ids.clone();
         let handle = crate::editor::create_editor();
         assert!(handle.load_html(&blocks_html(40)));

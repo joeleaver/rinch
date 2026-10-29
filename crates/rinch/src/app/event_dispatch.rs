@@ -4436,7 +4436,7 @@ impl RinchApp {
 
     /// Scroll `s` by `dy` for a page key and fire its `onscroll`, as the wheel
     /// does. Returns how far it actually moved.
-    fn page_scroll_by(&mut self, doc: &Rc<RefCell<RinchDocument>>, s: usize, dy: f64) -> f64 {
+    fn page_scroll_by(&mut self, doc: &Rc<RefCell<RinchDocument>>, s: u64, dy: f64) -> f64 {
         use rinch_core::dom::NodeId;
         let (scrolled, fired) = {
             let mut d = doc.borrow_mut();
@@ -5252,7 +5252,7 @@ impl RinchApp {
     /// is laid out but not on screen (scrolled past the window's edge, or
     /// under a box that covers it) still resolves. A point below (above) the
     /// editor resolves on its last (first) line.
-    fn editor_point_by_geometry(&self, container: usize, x: f32, y: f32) -> Option<EditorPoint> {
+    fn editor_point_by_geometry(&self, container: u64, x: f32, y: f32) -> Option<EditorPoint> {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
         let tb = Self::nearest_textblock_in(&d.tree, container, x, y)?;
@@ -5262,8 +5262,8 @@ impl RinchApp {
     /// Window point `(x, y)` resolved inside textblock `tb` of editor `cont`.
     fn point_in_textblock(
         d: &RinchDocument,
-        cont: usize,
-        tb: usize,
+        cont: u64,
+        tb: u64,
         x: f32,
         y: f32,
     ) -> Option<EditorPoint> {

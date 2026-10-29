@@ -2763,7 +2763,7 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
 /// the browser's own Page Down would scroll the capture textarea's page.
 fn page_step(
     handle: &EditorHandle,
-    container_nid: usize,
+    container_nid: u64,
     doc: &web_sys::Document,
     down: bool,
     extend: bool,

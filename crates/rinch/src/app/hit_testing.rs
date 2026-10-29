@@ -911,8 +911,8 @@ pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: u64) -> O
 /// scroll the page behind a modal and leave the caret where it was. Then
 /// nothing scrolls (`None`).
 #[cfg(feature = "desktop")]
-pub(crate) fn page_scroller(tree: &rinch_dom::NodeTree, start: usize) -> Option<usize> {
-    let usable = |id: usize| {
+pub(crate) fn page_scroller(tree: &rinch_dom::NodeTree, start: u64) -> Option<u64> {
+    let usable = |id: u64| {
         rinch_dom::paint::scrollbar::overflows(tree, id, ScrollbarAxis::Vertical)
             && !tree.scroll_locked_out(id)
     };
