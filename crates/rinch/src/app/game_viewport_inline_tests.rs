@@ -104,7 +104,7 @@ fn paint(app: &mut RinchApp) -> FrameStats {
 }
 
 /// Mark `label` paint-dirty, the way a hover or a ticking clock does.
-fn dirty(app: &mut RinchApp, label: usize) {
+fn dirty(app: &mut RinchApp, label: u64) {
     app.doc
         .as_ref()
         .unwrap()
@@ -636,7 +636,7 @@ fn first_diff(a: &[u8], b: &[u8], w: u32) -> Option<(u32, u32, [u8; 4], [u8; 4])
         })
 }
 
-fn set_style(app: &RinchApp, id: usize, k: &str, v: &str) {
+fn set_style(app: &RinchApp, id: u64, k: &str, v: &str) {
     app.doc
         .as_ref()
         .unwrap()

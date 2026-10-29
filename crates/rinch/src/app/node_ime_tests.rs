@@ -28,7 +28,7 @@ type Caret = Rc<Cell<Option<(f32, f32, f32, f32)>>>;
 struct Fixture {
     app: RinchApp,
     /// A text target: registers `on_ime` + `caret_rect`.
-    text_id: usize,
+    text_id: u64,
     /// A focusable non-text target: registers the focus lifecycle but no `on_ime`.
     plain_id: usize,
     log: Rc<RefCell<Vec<String>>>,
@@ -122,13 +122,13 @@ fn mount_fixture() -> Fixture {
     }
 }
 
-fn abs_center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn abs_center(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, id);
     (ax + ax_w / 2.0, ay + ay_h / 2.0)
 }
 
-fn click_node(app: &mut RinchApp, id: usize) {
+fn click_node(app: &mut RinchApp, id: u64) {
     let (x, y) = abs_center(app, id);
     for down in [true, false] {
         let event = if down {

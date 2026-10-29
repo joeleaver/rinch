@@ -12,10 +12,10 @@ struct Page {
     app: RinchApp,
     a: crate::editor::EditorHandle,
     b: crate::editor::EditorHandle,
-    a_id: usize,
+    a_id: u64,
     #[allow(dead_code)]
-    b_id: usize,
-    input: usize,
+    b_id: u64,
+    input: u64,
     changes: Rc<Cell<usize>>,
 }
 

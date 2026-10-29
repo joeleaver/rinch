@@ -21,12 +21,12 @@ use std::cell::Cell;
 
 #[derive(Clone, Copy)]
 struct Ids {
-    button: usize,
+    button: u64,
     disabled_button: usize,
     stepper: usize,
     link: usize,
     bare_anchor: usize,
-    select: usize,
+    select: u64,
     bare_select: usize,
     hidden_checkbox: usize,
     checkbox_label: usize,
@@ -433,7 +433,7 @@ fn a_press_on_a_select_goes_straight_to_the_popup() {
 fn an_explicit_tabindex_always_wins_over_the_tag() {
     let (app, ids, _log) = mount_fixture();
     let d = app.doc.as_ref().unwrap().borrow();
-    let of = |id: usize| RinchApp::effective_tabindex(d.tree.get(id).unwrap());
+    let of = |id: u64| RinchApp::effective_tabindex(d.tree.get(id).unwrap());
 
     assert_eq!(of(ids.stepper), Some(-1), "explicit -1 beats the implied 0");
     assert_eq!(of(ids.button), Some(0));

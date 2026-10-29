@@ -122,7 +122,7 @@ fn find_by_class(app: &RinchApp, class: &str) -> usize {
         .unwrap_or_else(|| panic!("no node carries the class {class}"))
 }
 
-fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, node_id: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let n = d.tree.get(node_id).expect("node still in the tree");

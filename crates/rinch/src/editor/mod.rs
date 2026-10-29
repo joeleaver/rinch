@@ -27,7 +27,7 @@ pub(crate) use virtualization::{
 /// where [`collab_receive_for`] integrates it and re-projects the editor; the runtime
 /// is woken so the change paints promptly.
 #[cfg(feature = "collaboration")]
-pub fn post_remote_delta(container_id: usize, delta: Vec<u8>) {
+pub fn post_remote_delta(container_id: u64, delta: Vec<u8>) {
     crate::shell::run_on_main_thread(move || {
         rinch_editor_view::collab_receive_for(container_id, &delta);
     });

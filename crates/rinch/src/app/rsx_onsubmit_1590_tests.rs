@@ -17,7 +17,7 @@ const VP: (u32, u32) = (800, 600);
 
 struct Fixture {
     app: RinchApp,
-    input: usize,
+    input: u64,
     wrapper: usize,
     log: Rc<RefCell<Vec<String>>>,
 }
@@ -82,7 +82,7 @@ fn mount(shape: Shape) -> Fixture {
 }
 
 impl Fixture {
-    fn attr(&self, id: usize, name: &str) -> Option<String> {
+    fn attr(&self, id: u64, name: &str) -> Option<String> {
         let d = self.app.doc.as_ref().unwrap().borrow();
         d.tree.nodes[id].attributes.get(name).cloned()
     }

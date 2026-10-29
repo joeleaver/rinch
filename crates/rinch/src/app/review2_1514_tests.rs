@@ -50,13 +50,13 @@ fn app_with_focused_widget(lost: bool, ime: bool) -> (RinchApp, Log, usize, usiz
     (app, log, host_id, w_id)
 }
 
-fn center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn center(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (ax, ay, aw, ah) = painted_element_box(&d.tree, id);
     (ax + aw / 2.0, ay + ah / 2.0)
 }
 
-fn click_node(app: &mut RinchApp, id: usize) {
+fn click_node(app: &mut RinchApp, id: u64) {
     let (x, y) = center(app, id);
     for ev in [
         PlatformEvent::MouseDown {

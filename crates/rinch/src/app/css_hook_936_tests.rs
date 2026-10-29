@@ -108,7 +108,7 @@ fn probe(app: &RinchApp, marker: &str) -> usize {
     found[0]
 }
 
-fn visibility_of(app: &RinchApp, node: usize) -> VisibilityValue {
+fn visibility_of(app: &RinchApp, node: u64) -> VisibilityValue {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.visibility

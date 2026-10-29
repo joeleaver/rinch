@@ -79,7 +79,7 @@ fn probe(spec: &Spec, target: usize, to: &str) -> Outcome {
     }
 }
 
-fn s(parent: Option<usize>, style: &str) -> (Option<usize>, String) {
+fn s(parent: Option<u64>, style: &str) -> (Option<usize>, String) {
     (parent, style.to_string())
 }
 

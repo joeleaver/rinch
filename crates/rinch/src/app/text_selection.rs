@@ -5,7 +5,7 @@ use super::*;
 impl RinchApp {
     /// Find the IFC root node (block element with an inline layout) at or
     /// above `hit_id` that has `user_select.is_selectable()`.
-    pub(super) fn find_selectable_ifc(tree: &rinch_dom::NodeTree, hit_id: usize) -> Option<usize> {
+    pub(super) fn find_selectable_ifc(tree: &rinch_dom::NodeTree, hit_id: u64) -> Option<u64> {
         let mut check = Some(hit_id);
         while let Some(nid) = check {
             if let Some(node) = tree.get(nid) {
@@ -23,7 +23,7 @@ impl RinchApp {
     /// Compute a byte offset into an IFC layout from a click position.
     pub(super) fn compute_ifc_offset_from_click(
         tree: &rinch_dom::NodeTree,
-        ifc_node_id: usize,
+        ifc_node_id: u64,
         click_x: f32,
         click_y: f32,
     ) -> usize {
@@ -55,7 +55,7 @@ impl RinchApp {
     /// Set data attributes on the IFC node for paint to read.
     pub(super) fn set_text_selection_attributes(
         &self,
-        ifc_node_id: usize,
+        ifc_node_id: u64,
         anchor: usize,
         focus: usize,
     ) {

@@ -163,7 +163,7 @@ pub(crate) fn frame_pixels(w: u32, h: u32, translucent: bool, seed: u32) -> Vec<
 }
 
 pub(crate) struct Frame {
-    pub id: usize,
+    pub id: u64,
     pub w: u32,
     pub h: u32,
     pub px: Vec<u8>,
@@ -457,7 +457,7 @@ pub(crate) fn oracle(html: &str, frames: &[Frame]) -> Outcome {
     }
 }
 
-pub(crate) fn opaque(id: usize, w: u32, h: u32) -> Frame {
+pub(crate) fn opaque(id: u64, w: u32, h: u32) -> Frame {
     Frame {
         id,
         w,

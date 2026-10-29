@@ -70,7 +70,7 @@ fn images(app: &RinchApp) -> Vec<(usize, String)> {
         .collect()
 }
 
-fn painted_box(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn painted_box(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     crate::app::hit_testing::painted_element_box(&d.tree, id)
 }

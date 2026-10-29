@@ -31,7 +31,7 @@ fn items(app: &RinchApp) -> Vec<(usize, Vec<String>, String)> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let mut out = Vec::new();
-    fn walk(d: &RinchDocument, id: usize, out: &mut Vec<(usize, Vec<String>, String)>) {
+    fn walk(d: &RinchDocument, id: u64, out: &mut Vec<(usize, Vec<String>, String)>) {
         let Some(n) = d.tree.get(id) else { return };
         if n.tag() == Some("li") {
             let ps = n

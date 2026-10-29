@@ -80,7 +80,7 @@ fn button(scope: &mut RenderScope, id: &str) -> NodeHandle {
 /// Node ids captured at mount, by the name the fixture gave them.
 #[derive(Clone, Copy, Default)]
 struct Ids {
-    opener: usize,
+    opener: u64,
     elsewhere: usize,
     inside_first: usize,
     inside_last: usize,
@@ -485,9 +485,9 @@ fn a_parked_restore_is_refused_if_focus_moved_since() {
 fn a_nested_overlay_restores_into_the_one_that_contains_it() {
     #[derive(Clone, Copy, Default)]
     struct Nested {
-        opener: usize,
-        outer_a: usize,
-        inner_a: usize,
+        opener: u64,
+        outer_a: u64,
+        inner_a: u64,
     }
 
     let ids: Rc<Cell<Nested>> = Rc::new(Cell::new(Nested::default()));
@@ -610,7 +610,7 @@ fn a_popover_takes_focus_only_for_an_autofocus_child() {
 // ── 5. how overlays are actually opened ─────────────────────────────────────
 
 /// The centre of a node's painted box, in the logical space `click()` speaks.
-fn centre(app: &RinchApp, id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (x, y, w, h) = crate::app::hit_testing::painted_element_box(&d.tree, id);
     (x + w / 2.0, y + h / 2.0)
@@ -618,7 +618,7 @@ fn centre(app: &RinchApp, id: usize) -> (f32, f32) {
 
 /// A real left press and release on a node, so the `data-rid` dispatch runs on
 /// the path a pointer takes.
-fn click_node(app: &mut RinchApp, id: usize) {
+fn click_node(app: &mut RinchApp, id: u64) {
     let (x, y) = centre(app, id);
     for ev in [
         PlatformEvent::MouseDown {
@@ -911,9 +911,9 @@ fn a_restore_the_arbiter_refuses_releases_the_claim() {
 fn closing_the_outer_overlay_first_still_restores_the_page() {
     #[derive(Clone, Copy, Default)]
     struct Nested {
-        opener: usize,
-        outer_a: usize,
-        inner_a: usize,
+        opener: u64,
+        outer_a: u64,
+        inner_a: u64,
     }
 
     let ids: Rc<Cell<Nested>> = Rc::new(Cell::new(Nested::default()));
@@ -1001,8 +1001,8 @@ fn closing_the_outer_overlay_first_still_restores_the_page() {
 fn an_opener_inside_an_already_closed_overlay_is_not_restored() {
     #[derive(Clone, Copy, Default)]
     struct Nested {
-        outer_a: usize,
-        inner_a: usize,
+        outer_a: u64,
+        inner_a: u64,
     }
 
     let ids: Rc<Cell<Nested>> = Rc::new(Cell::new(Nested::default()));

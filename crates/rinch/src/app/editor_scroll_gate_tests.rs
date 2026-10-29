@@ -19,7 +19,7 @@ const WORDS: &str = "lorem ipsum dolor sit amet consectetur adipiscing elit sed 
 struct Rig {
     app: RinchApp,
     handle: crate::editor::EditorHandle,
-    scroller: usize,
+    scroller: u64,
 }
 
 /// `editor_is_scroller`: the editor container itself is the `overflow-y: auto`
@@ -67,7 +67,7 @@ fn rig(
     }
 }
 
-fn scroll_of(app: &RinchApp, id: usize) -> f64 {
+fn scroll_of(app: &RinchApp, id: u64) -> f64 {
     app.doc.as_ref().unwrap().borrow().tree.nodes[id]
         .scroll_offset
         .1
@@ -86,7 +86,7 @@ fn caret_top(app: &RinchApp) -> Option<String> {
         .and_then(|id| d.tree.nodes[id].attributes.get("style").cloned())
 }
 
-fn user_scrolls_to(app: &mut RinchApp, id: usize, y: f64) {
+fn user_scrolls_to(app: &mut RinchApp, id: u64, y: f64) {
     let doc = app.doc.as_ref().unwrap();
     let mut d = doc.borrow_mut();
     d.tree.nodes[id].scroll_offset.1 = y;

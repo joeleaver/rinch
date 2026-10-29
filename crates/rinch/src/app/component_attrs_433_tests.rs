@@ -20,7 +20,7 @@ const VP: (u32, u32) = (800, 600);
 
 struct Fixture {
     app: RinchApp,
-    button: usize,
+    button: u64,
     editor: usize,
     clicks: Rc<Cell<u32>>,
 }
@@ -77,7 +77,7 @@ fn mount(nofocus: bool) -> Fixture {
     }
 }
 
-fn press(app: &mut RinchApp, id: usize) {
+fn press(app: &mut RinchApp, id: u64) {
     let (x, y, w, h) = {
         let d = app.doc.as_ref().unwrap().borrow();
         painted_element_box(&d.tree, id)

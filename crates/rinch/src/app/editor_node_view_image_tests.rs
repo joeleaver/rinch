@@ -130,7 +130,7 @@ fn key(app: &mut RinchApp, key: KeyCode) {
     key_mod(app, key, None, Modifiers::default());
 }
 
-fn box_of(page: &Page, id: usize) -> (f32, f32, f32, f32) {
+fn box_of(page: &Page, id: u64) -> (f32, f32, f32, f32) {
     let doc = page.app.doc.as_ref().unwrap();
     painted_element_box(&doc.borrow().tree, id)
 }
@@ -244,7 +244,7 @@ fn keys_in_a_views_input_reach_on_key_then_the_input() {
     }
     key(&mut p.app, KeyCode::ArrowLeft);
     key_mod(&mut p.app, KeyCode::KeyX, Some("x"), Modifiers::default());
-    let value = |p: &Page, id: usize| {
+    let value = |p: &Page, id: u64| {
         p.app
             .doc
             .as_ref()

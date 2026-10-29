@@ -27,7 +27,7 @@ thread_local! {
     /// virtualized. Keyed per document: container ids are per-document slab
     /// indices, so two documents on one thread would otherwise share (and stomp)
     /// a window at a colliding id (issue #134).
-    static WINDOWS: RefCell<Vec<((u64, usize), CeVirtualWindow)>> =
+    static WINDOWS: RefCell<Vec<((u64, u64), CeVirtualWindow)>> =
         const { RefCell::new(Vec::new()) };
 }
 
@@ -36,7 +36,7 @@ thread_local! {
 /// previous frame's positions. Creating a window (or moving the range) sets the
 /// document's style/layout dirty flags, so the caller's short-circuit will not fire
 /// and the upcoming resolve applies the collapse.
-pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
+pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<u64>) {
     // This pass asks the editor handles for their caret while it holds
     // `WINDOWS` and the document mutably; a handle read may run pending effects
     // (`rinch_core::flush_pending_effects`) when called inside a batch, and an
@@ -47,7 +47,7 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
     let doc_key = doc.doc_key();
     // Only this document's editors: another document's editors are driven by its
     // own runtime pass, against its own tree (issue #134).
-    let editors: Vec<(usize, EditorHandle)> = registry::all_editors()
+    let editors: Vec<(u64, EditorHandle)> = registry::all_editors()
         .into_iter()
         .filter(|(dk, _, _)| *dk == doc_key)
         .map(|(_, id, h)| (id, h))
@@ -106,11 +106,11 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
 
 /// Phase 2 (after layout): cache measured heights, then re-verify the materialized
 /// range with fresh positions; if it changed (a big scroll jump), re-layout once.
-pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<usize>, vw_w: f32, vw_h: f32) {
+pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<u64>, vw_w: f32, vw_h: f32) {
     // Same reason as `pre_layout`.
     let _no_flush = rinch_core::reactive::suppress_effect_flush();
     let doc_key = doc.doc_key();
-    let editors: Vec<(usize, EditorHandle)> = registry::all_editors()
+    let editors: Vec<(u64, EditorHandle)> = registry::all_editors()
         .into_iter()
         .filter(|(dk, _, _)| *dk == doc_key)
         .map(|(_, id, h)| (id, h))
@@ -145,9 +145,9 @@ pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<usize>, vw_w:
 fn protected_block(
     doc: &RinchDocument,
     handle: &EditorHandle,
-    container: usize,
-    focused: Option<usize>,
-) -> Vec<usize> {
+    container: u64,
+    focused: Option<u64>,
+) -> Vec<u64> {
     let mut out = Vec::new();
     let mut protect = |pos| {
         if let Some((textblock, _)) = handle.caret_address(pos)
@@ -168,7 +168,7 @@ fn protected_block(
 }
 
 /// Walk up from `id` to the direct child of `container`.
-fn top_block(doc: &RinchDocument, mut id: usize, container: usize) -> Option<usize> {
+fn top_block(doc: &RinchDocument, mut id: u64, container: u64) -> Option<u64> {
     loop {
         let parent = doc.tree.nodes.get(id)?.parent?;
         if parent == container {
@@ -179,7 +179,7 @@ fn top_block(doc: &RinchDocument, mut id: usize, container: usize) -> Option<usi
 }
 
 /// The number of `data-pm-type` block children of `container`.
-fn block_count(doc: &RinchDocument, container: usize) -> usize {
+fn block_count(doc: &RinchDocument, container: u64) -> usize {
     doc.tree
         .nodes
         .get(container)
@@ -198,6 +198,6 @@ fn block_count(doc: &RinchDocument, container: usize) -> usize {
 }
 
 /// Whether `container`'s computed `overflow-y` makes it a scrollable viewport.
-fn is_scroll_container(doc: &RinchDocument, id: usize) -> bool {
+fn is_scroll_container(doc: &RinchDocument, id: u64) -> bool {
     doc.tree.nodes.get(id).is_some_and(|n| n.scrolls_y())
 }

@@ -120,7 +120,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn click_center(app: &mut RinchApp, id: usize) {
+fn click_center(app: &mut RinchApp, id: u64) {
     let (cx, cy) = {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();

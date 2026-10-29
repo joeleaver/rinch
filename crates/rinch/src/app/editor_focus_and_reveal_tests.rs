@@ -28,7 +28,7 @@ fn end_of(i: usize) -> Pos {
 struct Page {
     app: RinchApp,
     handle: crate::editor::EditorHandle,
-    scroller: usize,
+    scroller: u64,
     editor: usize,
     /// A `tabindex` box outside the editor that can hold the keyboard.
     other: usize,

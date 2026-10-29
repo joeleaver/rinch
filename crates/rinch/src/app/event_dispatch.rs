@@ -1328,7 +1328,7 @@ impl RinchApp {
                         // vertically". The payload is read back off the node once
                         // both axes have been applied, so a diagonal's single
                         // event carries both new offsets.
-                        let mut scrolled: Vec<(usize, usize)> = Vec::new();
+                        let mut scrolled: Vec<(u64, usize)> = Vec::new();
 
                         // Vertical scrolling
                         // First try the hit node's ancestor chain. If the hit node is in
@@ -2476,7 +2476,7 @@ impl RinchApp {
     /// document is held.
     pub(crate) fn scroll_vertically_by(
         doc_mut: &mut RinchDocument,
-        id: usize,
+        id: u64,
         dy: f64,
     ) -> (bool, Option<usize>) {
         let nid = rinch_core::dom::NodeId(id);
@@ -2616,10 +2616,10 @@ impl RinchApp {
     /// the viewport; the body's on the viewport.
     fn drag_auto_scroll_container(
         d: &RinchDocument,
-        hit: usize,
+        hit: u64,
         y: f32,
         vp_h: f32,
-    ) -> Option<(usize, f32)> {
+    ) -> Option<(u64, f32)> {
         use rinch_dom::paint::scrollbar::{ScrollbarAxis, overflows};
         let tree = &d.tree;
         let chain = std::iter::successors(Some(hit), |&id| tree.get(id).and_then(|n| n.parent))
@@ -2919,7 +2919,7 @@ impl RinchApp {
     ///
     /// Walks up from `hit_id` looking for a `data-onenter` attribute. If found,
     /// dispatches the registered event handler. Used for menu hover-to-switch.
-    pub(super) fn dispatch_onenter(doc: &Rc<RefCell<RinchDocument>>, hit_id: usize) {
+    pub(super) fn dispatch_onenter(doc: &Rc<RefCell<RinchDocument>>, hit_id: u64) {
         let handler_id = {
             let d = doc.borrow();
             let mut current = Some(hit_id);
@@ -2955,7 +2955,7 @@ impl RinchApp {
     ///
     /// Walks up from `old_id` looking for a `data-onleave` attribute. If found,
     /// dispatches the registered event handler. Used for tooltip hover-out.
-    pub(super) fn dispatch_onleave(doc: &Rc<RefCell<RinchDocument>>, old_id: usize) {
+    pub(super) fn dispatch_onleave(doc: &Rc<RefCell<RinchDocument>>, old_id: u64) {
         let handler_id = {
             let d = doc.borrow();
             let mut current = Some(old_id);
@@ -3095,7 +3095,7 @@ impl RinchApp {
     /// element carrying the attribute; a stale one claims nothing.
     pub(super) fn oncontextmenu_handler_at(
         doc: &Rc<RefCell<RinchDocument>>,
-        hit_id: usize,
+        hit_id: u64,
     ) -> Option<(usize, f32, f32, f32, f32)> {
         let d = doc.borrow();
         let mut current = Some(hit_id);
@@ -3169,10 +3169,10 @@ impl RinchApp {
     /// enough to be worth the agreement.
     pub(crate) fn collect_click_ancestors(
         tree: &rinch_dom::NodeTree,
-        hit_id: usize,
+        hit_id: u64,
     ) -> Vec<events::AncestorBounds> {
         // Chain from hit upward: [hit, parent, grandparent, ..., root]
-        let mut chain: Vec<usize> = Vec::new();
+        let mut chain: Vec<u64> = Vec::new();
         let mut cur = Some(hit_id);
         while let Some(nid) = cur {
             chain.push(nid);
@@ -3207,7 +3207,7 @@ impl RinchApp {
 
     /// Walk up from `hit_id` looking for a `draggable="true"` attribute.
     /// Returns the node ID of the first draggable ancestor (or self).
-    pub(crate) fn find_draggable(tree: &rinch_dom::NodeTree, hit_id: usize) -> Option<usize> {
+    pub(crate) fn find_draggable(tree: &rinch_dom::NodeTree, hit_id: u64) -> Option<u64> {
         let mut current = Some(hit_id);
         while let Some(nid) = current {
             if let Some(node) = tree.get(nid) {
@@ -3224,7 +3224,7 @@ impl RinchApp {
 
     /// Walk up from `hit_id` looking for a `data-ondrop` attribute.
     /// Returns the node ID of the first drop target ancestor (or self).
-    pub(crate) fn find_drop_target(tree: &rinch_dom::NodeTree, hit_id: usize) -> Option<usize> {
+    pub(crate) fn find_drop_target(tree: &rinch_dom::NodeTree, hit_id: u64) -> Option<u64> {
         let mut current = Some(hit_id);
         while let Some(nid) = current {
             if let Some(node) = tree.get(nid) {
@@ -3244,7 +3244,7 @@ impl RinchApp {
     /// to know the cursor position relative to the target.
     pub(crate) fn dispatch_drag_attr_with_context(
         doc: &Rc<RefCell<RinchDocument>>,
-        node_id: usize,
+        node_id: u64,
         attr: &str,
         cursor_x: f32,
         cursor_y: f32,
@@ -3299,7 +3299,7 @@ impl RinchApp {
 
     /// Dispatch a drag event attribute (data-ondragstart, data-ondrop, etc.)
     /// by walking up from `node_id` looking for the specified attribute.
-    pub(crate) fn dispatch_drag_attr(doc: &Rc<RefCell<RinchDocument>>, node_id: usize, attr: &str) {
+    pub(crate) fn dispatch_drag_attr(doc: &Rc<RefCell<RinchDocument>>, node_id: u64, attr: &str) {
         let handler_id = {
             let d = doc.borrow();
             let mut current = Some(node_id);
@@ -3391,7 +3391,7 @@ impl RinchApp {
     /// `handle_event(AboutToWait)` and nothing in that arm hit-tests, so no answer
     /// from before a tick is ever reused. A hit test added after the ticks there
     /// would have to drop the memo first.
-    pub(crate) fn shared_hit(&self, d: &RinchDocument, x: f32, y: f32) -> Option<usize> {
+    pub(crate) fn shared_hit(&self, d: &RinchDocument, x: f32, y: f32) -> Option<u64> {
         let doc_key = d.doc_key();
         let generation = d.tree.hit_cache.generation();
         let (xb, yb) = (x.to_bits(), y.to_bits());
@@ -3417,7 +3417,7 @@ impl RinchApp {
     }
 
     /// [`Self::shared_hit`] against this app's own document.
-    pub(super) fn move_hit(&self, x: f32, y: f32) -> Option<usize> {
+    pub(super) fn move_hit(&self, x: f32, y: f32) -> Option<u64> {
         let doc = self.doc.as_ref()?;
         self.shared_hit(&doc.borrow(), x, y)
     }
@@ -3427,7 +3427,7 @@ impl RinchApp {
     pub(super) fn dispatch_mouse_attr_at(
         &self,
         attr: &str,
-        hit: Option<usize>,
+        hit: Option<u64>,
         x: f32,
         y: f32,
         button: events::MouseButton,
@@ -3491,8 +3491,8 @@ impl RinchApp {
     /// file-drop target ancestor (or self).
     pub(crate) fn find_file_drop_target(
         tree: &rinch_dom::NodeTree,
-        hit_id: usize,
-    ) -> Option<usize> {
+        hit_id: u64,
+    ) -> Option<u64> {
         let mut current = Some(hit_id);
         while let Some(nid) = current {
             if let Some(node) = tree.get(nid) {
@@ -3520,7 +3520,7 @@ impl RinchApp {
     /// the frame every other handler's context is in.
     pub(crate) fn dispatch_file_drop(
         doc: &Rc<RefCell<RinchDocument>>,
-        hit_id: usize,
+        hit_id: u64,
         paths: Vec<std::path::PathBuf>,
         (x, y, viewport_width, viewport_height, modifiers): (
             f32,
@@ -3606,7 +3606,7 @@ impl RinchApp {
     /// up the active drag state.
     pub(crate) fn activate_drag(
         &mut self,
-        node_id: usize,
+        node_id: u64,
         mousedown_pos: (f32, f32),
         cursor: (f32, f32),
         scale_factor: f64,
@@ -4278,7 +4278,7 @@ impl RinchApp {
     /// `pub(super)` so the focus arbiter can flush a pending composition as an
     /// implicit commit when the input blurs (issue #226) — the browser's
     /// compositionend-before-blur.
-    pub(super) fn dispatch_input_ime(&mut self, node_id: usize, ime: ImeEvent) {
+    pub(super) fn dispatch_input_ime(&mut self, node_id: u64, ime: ImeEvent) {
         match ime {
             ImeEvent::Enabled => {}
             ImeEvent::Preedit { text, cursor } => {
@@ -4329,7 +4329,7 @@ impl RinchApp {
 
     /// Write (or clear) the focused `<input>`'s `data-preedit` attribute so the
     /// paint path renders the composition string inline at the caret.
-    fn sync_input_preedit_to_dom(&self, node_id: usize) {
+    fn sync_input_preedit_to_dom(&self, node_id: u64) {
         let Some(doc) = &self.doc else { return };
         let mut d = doc.borrow_mut();
         if let Some(node) = d.tree.nodes.get_mut(node_id) {
@@ -4359,7 +4359,7 @@ impl RinchApp {
     /// `<textarea>`, or a document already borrowed, answers the text origin,
     /// full height ([`Self::input_text_origin_area`]).
     #[cfg(any(feature = "desktop", feature = "embed", test))]
-    pub(crate) fn input_caret_area(&self, node_id: usize) -> Option<(f32, f32, f32, f32)> {
+    pub(crate) fn input_caret_area(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
         let doc = self.doc.as_ref()?;
         if let Ok(mut d) = doc.try_borrow_mut() {
             let d = &mut *d;
@@ -4379,7 +4379,7 @@ impl RinchApp {
     /// `rinch_dom::form_control::text_column`), full height, in logical window
     /// space: the text context menu's anchor for an empty field, and the IME
     /// area's fallback.
-    pub(crate) fn input_text_origin_area(&self, node_id: usize) -> Option<(f32, f32, f32, f32)> {
+    pub(crate) fn input_text_origin_area(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
         let node = d.tree.get(node_id)?;
@@ -4961,7 +4961,7 @@ impl RinchApp {
         x: f32,
         y: f32,
     ) -> Option<(
-        usize,
+        u64,
         crate::editor::EditorHandle,
         rinch_editor_core::Pos,
         rinch_core::dom::CaretAffinity,
@@ -5050,7 +5050,7 @@ impl RinchApp {
         // Parley steps over an inline box to the byte after it, which is the
         // byte of both of the box's sides: name the box and the half instead.
         let inline_box = rinch_dom::text_query::inline_box_at_point(&layout.layout, rel_x, rel_y)
-            .map(|(id, after)| (id as usize, after));
+            .map(|(id, after)| (id, after));
         Some(point(ifc_byte, inline_box))
     }
 
@@ -5114,7 +5114,7 @@ impl RinchApp {
     /// blockquote / the editor root, which carry schema-node element children) or a
     /// void leaf (image / hr / hard break). Recognizes **empty** textblocks too,
     /// which have no Parley `text_layout`, by structure rather than layout.
-    fn is_editor_textblock(tree: &rinch_dom::NodeTree, id: usize) -> bool {
+    fn is_editor_textblock(tree: &rinch_dom::NodeTree, id: u64) -> bool {
         let Some(node) = tree.get(id) else {
             return false;
         };
@@ -5148,11 +5148,11 @@ impl RinchApp {
     /// unrelated one above/below. Considers empty textblocks (no `text_layout`) too.
     fn nearest_textblock_in(
         tree: &rinch_dom::NodeTree,
-        container: usize,
+        container: u64,
         x: f32,
         y: f32,
-    ) -> Option<usize> {
-        let mut best: Option<(usize, f32)> = None;
+    ) -> Option<u64> {
+        let mut best: Option<(u64, f32)> = None;
         let mut stack = vec![container];
         while let Some(id) = stack.pop() {
             let Some(node) = tree.get(id) else { continue };
@@ -5394,7 +5394,7 @@ impl RinchApp {
             caret_on_line(&layout.layout, &layout.text_content, target, rel_x)?
         };
         let p = inline_box
-            .and_then(|(leaf, after)| handle.pos_beside_inline_leaf(leaf as usize, after))
+            .and_then(|(leaf, after)| handle.pos_beside_inline_leaf(leaf, after))
             .or_else(|| handle.pos_at(tb, byte))?;
         // The side of a soft wrap that is on the target line; neither means
         // the column resolved somewhere else, and the hit test decides.
@@ -5460,7 +5460,7 @@ impl RinchApp {
         } else {
             edges.first_box
         };
-        if let Some(p) = edge_box.and_then(|id| handle.pos_beside_inline_leaf(id as usize, end)) {
+        if let Some(p) = edge_box.and_then(|id| handle.pos_beside_inline_leaf(id, end)) {
             return Some(p);
         }
         // At a soft wrap the end-of-line position is the same model position as
@@ -5480,7 +5480,7 @@ impl RinchApp {
     /// `(x, y)`, if the click landed inside any editor — independent of whether it
     /// hit a textblock. Used so a click on the editor's padding / empty area still
     /// takes (or keeps) focus rather than blurring it.
-    pub(crate) fn editor_container_at(&self, x: f32, y: f32) -> Option<usize> {
+    pub(crate) fn editor_container_at(&self, x: f32, y: f32) -> Option<u64> {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
         let hit = self.shared_hit(&d, x, y)?;
@@ -5507,14 +5507,14 @@ impl RinchApp {
     /// accepts a selectable leaf atom (an image, a horizontal rule, an `embed`, or
     /// an app schema's own) and nothing else, so a paragraph's host answers `None`
     /// and the press places a caret. The click→node-select path.
-    pub(super) fn editor_leaf_at(&self, x: f32, y: f32) -> Option<usize> {
+    pub(super) fn editor_leaf_at(&self, x: f32, y: f32) -> Option<u64> {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
         let hit = self.shared_hit(&d, x, y)?;
         if Self::in_node_view(&d.tree, hit) {
             return None;
         }
-        let mut leaf: Option<usize> = None;
+        let mut leaf: Option<u64> = None;
         let mut cur = Some(hit);
         while let Some(id) = cur {
             let node = d.tree.get(id)?;
@@ -5533,7 +5533,7 @@ impl RinchApp {
     /// element carrying [`NODE_VIEW_ATTR`](crate::editor::NODE_VIEW_ATTR) that sits
     /// in an editor. A press or a key there is the component's; a press on the
     /// view's host itself (its frame) is the editor's, and node-selects it.
-    pub(crate) fn in_node_view(tree: &rinch_dom::NodeTree, hit: usize) -> bool {
+    pub(crate) fn in_node_view(tree: &rinch_dom::NodeTree, hit: u64) -> bool {
         Self::node_view_around(tree, hit).is_some()
     }
 
@@ -5541,9 +5541,9 @@ impl RinchApp {
     /// component (see [`Self::in_node_view`]).
     pub(crate) fn node_view_around(
         tree: &rinch_dom::NodeTree,
-        node: usize,
-    ) -> Option<(usize, usize)> {
-        let mut host: Option<usize> = None;
+        node: u64,
+    ) -> Option<(u64, u64)> {
+        let mut host: Option<u64> = None;
         let mut cur = tree.get(node)?.parent;
         while let Some(id) = cur {
             let n = tree.get(id)?;
@@ -5568,11 +5568,11 @@ impl RinchApp {
     /// one hit test with hover and cursor (update-path audit F2.1).
     pub(crate) fn editor_link_at_hit(
         &self,
-        hit: usize,
+        hit: u64,
         x: f32,
         y: f32,
     ) -> Option<(
-        usize,
+        u64,
         crate::editor::EditorHandle,
         rinch_editor_core::LinkSpan,
     )> {
@@ -5695,7 +5695,7 @@ impl RinchApp {
     /// the pointer move's shared hit test. The caller has checked
     /// [`crate::editor::link_hover_wanted`], so an app without a hover
     /// callback never gets here.
-    pub(crate) fn update_editor_link_hover(&self, hit: Option<usize>, x: f32, y: f32) {
+    pub(crate) fn update_editor_link_hover(&self, hit: Option<u64>, x: f32, y: f32) {
         let hovered =
             hit.and_then(|hit| self.editor_link_at_hit(hit, x, y))
                 .map(|(_, handle, link)| {
@@ -5711,7 +5711,7 @@ impl RinchApp {
     /// transform, as `bounds_signal` reports it).
     fn editor_image_at_hit(
         &self,
-        hit: usize,
+        hit: u64,
     ) -> Option<(crate::editor::EditorHandle, crate::editor::ImageHover)> {
         let doc = self.doc.clone()?;
         let (container, image, rect) = {
@@ -5941,10 +5941,10 @@ impl RinchApp {
 /// whether the point is on its right half.
 #[cfg(feature = "desktop")]
 pub(crate) struct EditorPoint {
-    pub(crate) container: usize,
-    pub(crate) textblock: usize,
+    pub(crate) container: u64,
+    pub(crate) textblock: u64,
     pub(crate) byte: usize,
-    pub(crate) inline_box: Option<(usize, bool)>,
+    pub(crate) inline_box: Option<(u64, bool)>,
 }
 
 #[cfg(feature = "desktop")]

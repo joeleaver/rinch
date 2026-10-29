@@ -49,7 +49,7 @@ fn press(app: &mut RinchApp, key: KeyCode, text: Option<&str>) {
     );
 }
 
-fn click_into(app: &mut RinchApp, id: usize) {
+fn click_into(app: &mut RinchApp, id: u64) {
     let (x, y) = {
         let d = app.doc.as_ref().unwrap().borrow();
         let (ax, ay, w, h) = painted_element_box(&d.tree, id);
@@ -71,7 +71,7 @@ fn click_into(app: &mut RinchApp, id: usize) {
     }
 }
 
-fn value_attr(app: &RinchApp, id: usize) -> Option<String> {
+fn value_attr(app: &RinchApp, id: u64) -> Option<String> {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -161,14 +161,14 @@ fn mount_with_change(child: &'static str) -> (RinchApp, usize, usize, Rc<RefCell
     (app, field, text, log)
 }
 
-fn live(app: &RinchApp, id: usize) -> Option<String> {
+fn live(app: &RinchApp, id: u64) -> Option<String> {
     let d = app.doc.as_ref().unwrap().borrow();
     d.live_value(rinch_core::dom::NodeId(id))
 }
 
 /// The reactive `textarea { {|| draft.get()} }` shape: the child text changes
 /// and a frame runs.
-fn set_child(app: &mut RinchApp, text_id: usize, s: &str) {
+fn set_child(app: &mut RinchApp, text_id: u64, s: &str) {
     app.doc
         .as_ref()
         .unwrap()
@@ -530,7 +530,7 @@ mod review1208 {
 mod dirty_flag_1222 {
     use super::*;
 
-    fn write(app: &mut RinchApp, id: usize, v: Option<&str>) {
+    fn write(app: &mut RinchApp, id: u64, v: Option<&str>) {
         {
             let mut d = app.doc.as_ref().unwrap().borrow_mut();
             match v {

@@ -31,18 +31,18 @@ fn ev(app: &mut RinchApp, event: PlatformEvent) -> Vec<AppAction> {
     app.handle_event(event, VP, 1.0)
 }
 
-fn center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn center(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (ax, ay, w, h) = painted_element_box(&d.tree, id);
     (ax + w / 2.0, ay + h / 2.0)
 }
 
-fn down(app: &mut RinchApp, id: usize, button: MouseButton) {
+fn down(app: &mut RinchApp, id: u64, button: MouseButton) {
     let (x, y) = center(app, id);
     ev(app, PlatformEvent::MouseDown { x, y, button });
 }
 
-fn press(app: &mut RinchApp, id: usize, button: MouseButton) {
+fn press(app: &mut RinchApp, id: u64, button: MouseButton) {
     let (x, y) = center(app, id);
     ev(app, PlatformEvent::MouseDown { x, y, button });
     ev(app, PlatformEvent::MouseUp { x, y, button });
@@ -51,7 +51,7 @@ fn press(app: &mut RinchApp, id: usize, button: MouseButton) {
 struct Fixture {
     app: RinchApp,
     /// `tabindex="0"`, registered as a focus target.
-    listbox: usize,
+    listbox: u64,
     /// `tabindex="-1"` inside the listbox, registered as a focus target.
     item: usize,
     /// No `tabindex`, inside the listbox.

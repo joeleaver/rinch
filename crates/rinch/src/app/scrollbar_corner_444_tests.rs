@@ -78,11 +78,11 @@ fn mount(extra_style: &str, wheel: (f64, f64), onscroll: Option<String>) -> (Rin
     (app, id)
 }
 
-fn offsets(app: &RinchApp, id: usize) -> (f64, f64) {
+fn offsets(app: &RinchApp, id: u64) -> (f64, f64) {
     app.doc.as_ref().unwrap().borrow().tree.nodes[id].scroll_offset
 }
 
-fn bars(app: &RinchApp, id: usize) -> rinch_dom::paint::scrollbar::Scrollbars {
+fn bars(app: &RinchApp, id: u64) -> rinch_dom::paint::scrollbar::Scrollbars {
     let d = app.doc.as_ref().unwrap().borrow();
     rinch_dom::paint::scrollbar::scrollbars(&d.tree, id, 1.0)
 }

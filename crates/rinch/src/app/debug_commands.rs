@@ -1113,7 +1113,7 @@ mod tests {
         );
     }
 
-    fn offsets(app: &RinchApp, id: usize) -> (f64, f64) {
+    fn offsets(app: &RinchApp, id: u64) -> (f64, f64) {
         app.doc.as_ref().unwrap().borrow().tree.nodes[id].scroll_offset
     }
 
@@ -1830,7 +1830,7 @@ mod text_geometry_units_tests {
         }
     }
 
-    fn caret(app: &mut RinchApp, node_id: usize, byte_offset: usize, scale: f64) -> (f64, f64) {
+    fn caret(app: &mut RinchApp, node_id: u64, byte_offset: usize, scale: f64) -> (f64, f64) {
         let v = query(
             app,
             DebugCommandKind::GetCaretPosition {
@@ -1842,7 +1842,7 @@ mod text_geometry_units_tests {
         (v["x"].as_f64().unwrap(), v["y"].as_f64().unwrap())
     }
 
-    fn glyph(app: &mut RinchApp, node_id: usize, byte_offset: usize, scale: f64) -> [f64; 4] {
+    fn glyph(app: &mut RinchApp, node_id: u64, byte_offset: usize, scale: f64) -> [f64; 4] {
         let v = query(
             app,
             DebugCommandKind::GetGlyphBounds {
@@ -1863,7 +1863,7 @@ mod text_geometry_units_tests {
     /// the field marked focused with its caret at `byte`, and the caret found as the dark ink in the column the engine's
     /// caret rect names (only the caret is drawn there: its x is at a glyph
     /// edge, and an empty field draws no glyph at all).
-    fn painted_caret_top_left(app: &mut RinchApp, input: usize, byte: usize) -> (f64, f64) {
+    fn painted_caret_top_left(app: &mut RinchApp, input: u64, byte: usize) -> (f64, f64) {
         let (_, by, _, bh) = {
             let d = app.doc.as_ref().unwrap().borrow();
             crate::app::hit_testing::painted_element_box(&d.tree, input)

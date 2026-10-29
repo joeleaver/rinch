@@ -239,7 +239,7 @@ impl RinchApp {
         // If we didn't land on a CE element, check if we hit selectable text.
         // Gather data from the doc borrow, then mutate after dropping the borrow.
         enum TextSelAction {
-            StartSelection { ifc_node_id: usize, offset: usize },
+            StartSelection { ifc_node_id: u64, offset: usize },
             Clear,
             Keep,
         }
@@ -297,7 +297,7 @@ impl RinchApp {
 
         // Walk up from hit target to detect text input focus (data-oninput).
         // This must happen before the data-rid walk which may return early.
-        let mut found_input_focus: Option<(usize, usize, String)> = None; // (node_id, handler_id, value)
+        let mut found_input_focus: Option<(u64, usize, String)> = None; // (node_id, handler_id, value)
         {
             let mut check = Some(hit_id);
             while let Some(nid) = check {
@@ -384,7 +384,7 @@ impl RinchApp {
         // modal wrapping it, silently and permanently.
         enum ClickClaim {
             /// (node_id, handler_id, the node is a `BACKDROP_ATTRIBUTE` backdrop)
-            Rid(usize, usize, bool),
+            Rid(u64, usize, bool),
             DragWindow,
         }
         let click_claim = {
@@ -591,7 +591,7 @@ impl RinchApp {
     /// Compute text hit info for click-to-position in rich text editors.
     fn compute_text_hit_info(
         tree: &rinch_dom::NodeTree,
-        hit_id: usize,
+        hit_id: u64,
         click_x: f32,
         click_y: f32,
     ) -> events::TextHitInfo {
@@ -673,7 +673,7 @@ impl RinchApp {
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-        node_id: usize,
+        node_id: u64,
         click_x: f32,
         click_y: f32,
     ) -> usize {
@@ -733,7 +733,7 @@ impl RinchApp {
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-        node_id: usize,
+        node_id: u64,
         offset: usize,
     ) -> Option<(f32, f32, f32, f32)> {
         Self::input_caret_rect_with_affinity(
@@ -753,7 +753,7 @@ impl RinchApp {
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-        node_id: usize,
+        node_id: u64,
         offset: usize,
         affinity: rinch_core::dom::CaretAffinity,
     ) -> Option<(f32, f32, f32, f32)> {
@@ -805,7 +805,7 @@ impl RinchApp {
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-        node_id: usize,
+        node_id: u64,
         offset: usize,
     ) -> Option<(f32, f32, f32, f32)> {
         let it = Self::input_text_layout(tree, font_cx, layout_cx, node_id)?;
@@ -841,7 +841,7 @@ impl RinchApp {
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-        node_id: usize,
+        node_id: u64,
     ) -> Option<InputTextLayout> {
         let node = tree.get(node_id)?;
 
@@ -925,7 +925,7 @@ impl RinchApp {
     /// relative to the surface element's top-left corner.
     pub(crate) fn find_render_surface_at(
         tree: &rinch_dom::NodeTree,
-        hit_id: usize,
+        hit_id: u64,
         screen_x: f32,
         screen_y: f32,
     ) -> Option<(usize, f32, f32)> {
@@ -936,10 +936,10 @@ impl RinchApp {
     /// Like `find_render_surface_at` but also returns the surface's DOM node ID.
     pub(crate) fn find_render_surface_at_full(
         tree: &rinch_dom::NodeTree,
-        hit_id: usize,
+        hit_id: u64,
         screen_x: f32,
         screen_y: f32,
-    ) -> Option<(usize, usize, f32, f32)> {
+    ) -> Option<(usize, u64, f32, f32)> {
         let mut current = Some(hit_id);
         while let Some(nid) = current {
             if let Some(node) = tree.get(nid) {
@@ -966,7 +966,7 @@ impl RinchApp {
     /// rather than merely shifted (#203).
     pub(crate) fn surface_local_coords(
         tree: &rinch_dom::NodeTree,
-        surface_dom_node: usize,
+        surface_dom_node: u64,
         screen_x: f32,
         screen_y: f32,
     ) -> (f32, f32) {

@@ -44,7 +44,7 @@ fn mount() -> (RinchApp, usize, usize) {
     (app, s, t)
 }
 
-fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+fn scroll_top(app: &RinchApp, id: u64) -> f64 {
     let doc = app.doc.as_ref().expect("a mounted document");
     doc.borrow().scroll_top(rinch_core::dom::NodeId(id))
 }

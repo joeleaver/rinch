@@ -58,7 +58,7 @@ fn node(app: &RinchApp, selector: &str) -> usize {
     found[0]
 }
 
-fn screen_box(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn screen_box(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let doc = app.doc().unwrap().borrow();
     let (x, y) = rinch_dom::paint::compute_absolute_position(&doc.tree, id, 1.0);
     let n = doc.tree.get(id).unwrap();

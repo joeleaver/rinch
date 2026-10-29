@@ -37,7 +37,7 @@ fn mount_fixture() -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
     (app, a_id, log)
 }
 
-fn focus(app: &mut RinchApp, id: usize) {
+fn focus(app: &mut RinchApp, id: u64) {
     let (cx, cy) = {
         let d = app.doc.as_ref().unwrap().borrow();
         let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, id);
@@ -91,7 +91,7 @@ fn preedit(app: &mut RinchApp, text: &str) {
     );
 }
 
-fn attr(app: &RinchApp, id: usize, name: &str) -> Option<String> {
+fn attr(app: &RinchApp, id: u64, name: &str) -> Option<String> {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree.get(id).and_then(|n| n.attributes.get(name).cloned())
 }

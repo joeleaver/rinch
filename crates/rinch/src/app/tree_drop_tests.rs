@@ -123,7 +123,7 @@ fn row(app: &RinchApp, value: &str) -> usize {
         .expect("the item has a content box")
 }
 
-fn box_of(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn box_of(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     hit_testing::painted_element_box(&d.tree, id)
@@ -137,7 +137,7 @@ fn at(app: &RinchApp, value: &str, x: f32, fraction: f32) -> (f32, f32) {
 
 /// Whether `id` is still in the tree (under its `rinch-tree` list), not a
 /// row a redraw took out.
-fn in_tree(d: &RinchDocument, mut id: usize) -> bool {
+fn in_tree(d: &RinchDocument, mut id: u64) -> bool {
     loop {
         if has_class(&d.tree.nodes[id], "rinch-tree") {
             return true;

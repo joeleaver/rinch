@@ -21,7 +21,7 @@ const HTML: &str = r#"<p>go <a href="pimble:a/b" title="B">h<strong>er</strong>e
 
 struct Page {
     app: RinchApp,
-    container: usize,
+    container: u64,
     handle: crate::editor::EditorHandle,
 }
 

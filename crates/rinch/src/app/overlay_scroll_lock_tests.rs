@@ -71,7 +71,7 @@ const AIM: (f32, f32) = (400.0, 450.0);
 /// The page scroller behind the overlay, and the overlay's own scroller.
 struct Fixture {
     app: RinchApp,
-    page: usize,
+    page: u64,
     inner: usize,
 }
 
@@ -140,7 +140,7 @@ fn modal_over_page(open: Signal<bool>, lock_scroll: bool) -> Fixture {
 
 /// The centre of a node's painted box, which is where a pointer event aimed at
 /// it has to go in.
-fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, node_id: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let n = d.tree.get(node_id).expect("node still in the tree");
@@ -153,11 +153,11 @@ fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
     (x + w / 2.0, y + h / 2.0)
 }
 
-fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+fn scroll_top(app: &RinchApp, id: u64) -> f64 {
     offsets(app, id).1
 }
 
-fn scroll_left(app: &RinchApp, id: usize) -> f64 {
+fn scroll_left(app: &RinchApp, id: u64) -> f64 {
     offsets(app, id).0
 }
 
@@ -999,7 +999,7 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
 
 /// The scroller must have more room than the gesture uses, or an assertion
 /// would sit on the clamp, where a moved and an unmoved container agree.
-fn assert_room(app: &RinchApp, scroller: usize) {
+fn assert_room(app: &RinchApp, scroller: u64) {
     let d = app.doc.as_ref().unwrap().borrow();
     let nid = rinch_core::dom::NodeId(scroller);
     let max_scroll = d.scroll_height(nid) - d.client_height(nid);
@@ -1010,7 +1010,7 @@ fn assert_room(app: &RinchApp, scroller: usize) {
 }
 
 /// Whether the topmost box at `at` is `ancestor` or inside it.
-fn hit_is_inside(app: &RinchApp, at: (f32, f32), ancestor: usize) -> bool {
+fn hit_is_inside(app: &RinchApp, at: (f32, f32), ancestor: u64) -> bool {
     let d = app.doc.as_ref().unwrap().borrow();
     let mut cur = hit_test(&d.tree, at.0, at.1);
     while let Some(id) = cur {
@@ -1025,7 +1025,7 @@ fn hit_is_inside(app: &RinchApp, at: (f32, f32), ancestor: usize) -> bool {
 /// What every menu fixture below asserts of the open scroller: its wheel is
 /// its own, and the page behind is still locked. (Its thumb is not asserted:
 /// see `a_long_menu_bar_dropdown_scrolls_when_nothing_is_locked`.)
-fn assert_scrolls_over_the_lock(app: &mut RinchApp, scroller: usize, page: usize) {
+fn assert_scrolls_over_the_lock(app: &mut RinchApp, scroller: u64, page: u64) {
     assert_room(app, scroller);
     let inside = centre(app, scroller);
     assert!(
@@ -1256,8 +1256,8 @@ enum Mark {
 
 struct Scene {
     app: RinchApp,
-    page: usize,
-    panel: usize,
+    page: u64,
+    panel: u64,
     holder: usize,
     inside: usize,
     panel_handle: NodeHandle,

@@ -79,13 +79,13 @@ fn shift() -> Modifiers {
     }
 }
 
-fn attr(app: &RinchApp, id: usize, name: &str) -> Option<String> {
+fn attr(app: &RinchApp, id: u64, name: &str) -> Option<String> {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree.get(id).and_then(|n| n.attributes.get(name).cloned())
 }
 
 /// `(value, selection start, cursor)` as the DOM carries them.
-fn field(app: &RinchApp, id: usize) -> (String, String, String) {
+fn field(app: &RinchApp, id: u64) -> (String, String, String) {
     (
         attr(app, id, "value").unwrap_or_default(),
         attr(app, id, "data-selection-start").unwrap_or_default(),
@@ -97,20 +97,20 @@ fn state(value: &str, anchor: usize, head: usize) -> (String, String, String) {
     (value.into(), anchor.to_string(), head.to_string())
 }
 
-fn abs_box(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn abs_box(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     painted_element_box(&d.tree, id)
 }
 
 /// Focus `id` with a press at its left edge.
-fn focus(app: &mut RinchApp, id: usize) {
+fn focus(app: &mut RinchApp, id: u64) {
     let (bx, by, _, bh) = abs_box(app, id);
     left_press(app, bx + 1.0, by + bh / 2.0);
     assert_eq!(app.focus_target, FocusTarget::Input(id));
 }
 
 /// Focus `id` and select bytes `2..5` through the keyboard.
-fn focus_and_select(app: &mut RinchApp, id: usize) {
+fn focus_and_select(app: &mut RinchApp, id: u64) {
     focus(app, id);
     key(app, KeyCode::Home);
     key(app, KeyCode::ArrowRight);
@@ -151,8 +151,8 @@ type Log = Rc<RefCell<Vec<String>>>;
 
 #[derive(Clone, Copy)]
 struct Ids {
-    input: usize,
-    textarea: usize,
+    input: u64,
+    textarea: u64,
 }
 
 /// An `<input>` and a `<textarea>`, both holding `hello world`, each logging
@@ -195,7 +195,7 @@ fn page(extra: &'static [(&'static str, &'static str)]) -> (RinchApp, Ids, Log) 
     (app, ids.get().expect("ids captured at mount"), log)
 }
 
-fn set_attr(app: &mut RinchApp, id: usize, name: &str) {
+fn set_attr(app: &mut RinchApp, id: u64, name: &str) {
     app.doc
         .as_ref()
         .unwrap()

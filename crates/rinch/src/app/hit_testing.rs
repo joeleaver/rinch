@@ -10,7 +10,7 @@ use rinch_dom::stacking::{PaintOrder, paints_at_stacking_root, stacking_hit_orde
 /// Respects CSS stacking contexts so that elements with higher z-index
 /// are tested before visually-behind siblings, and CSS transforms so that a
 /// transformed subtree is hit where it is *painted* (#199).
-pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<usize> {
+pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<u64> {
     tree.perf.bump(rinch_dom::perf::Counter::HitTests);
     hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
 }
@@ -111,7 +111,7 @@ struct Frame {
 fn descend(
     tree: &rinch_dom::NodeTree,
     node: &rinch_dom::Node,
-    node_id: usize,
+    node_id: u64,
     offset_x: f32,
     offset_y: f32,
     x: f32,
@@ -159,14 +159,14 @@ fn descend(
 #[allow(clippy::too_many_arguments)]
 fn hit_test_node(
     tree: &rinch_dom::NodeTree,
-    node_id: usize,
+    node_id: u64,
     offset_x: f32,
     offset_y: f32,
     x: f32,
     y: f32,
     vx: f32,
     vy: f32,
-) -> Option<usize> {
+) -> Option<u64> {
     tree.perf
         .bump(rinch_dom::perf::Counter::HitTestNodesVisited);
     let node = tree.get(node_id)?;
@@ -397,7 +397,7 @@ fn hit_test_node(
 /// when nothing has invalidated it since it was built (see
 /// [`rinch_dom::hit_cache`]). Paint builds its own at the DPI scale; this one
 /// is at `scale = 1.0`, the unit hit testing works in, so it is cached apart.
-fn cached_paint_order(tree: &rinch_dom::NodeTree, root: usize, ox: f64, oy: f64) -> Rc<PaintOrder> {
+fn cached_paint_order(tree: &rinch_dom::NodeTree, root: u64, ox: f64, oy: f64) -> Rc<PaintOrder> {
     if let Some(order) = tree.hit_cache.order(root, ox, oy) {
         return order;
     }
@@ -419,7 +419,7 @@ const EXTENT_SLACK: f32 = 1.0;
 /// #1720, which also measured +18% on `shell::pointer_move_warm` while
 /// nothing inlined the hit).
 #[inline]
-fn cached_flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::Extent {
+fn cached_flow_extent(tree: &rinch_dom::NodeTree, id: u64) -> rinch_dom::hit_cache::Extent {
     match tree.hit_cache.extent(id) {
         Some(e) => e,
         None => flow_extent(tree, id),
@@ -484,7 +484,7 @@ fn flow_subtree_may_contain(
 /// to the box but lets `y` grow with whatever a child reaches, which is what a
 /// sibling's `flow_subtree_may_contain` has to see to still walk into a child
 /// overflowing *this* node vertically.
-fn flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::Extent {
+fn flow_extent(tree: &rinch_dom::NodeTree, id: u64) -> rinch_dom::hit_cache::Extent {
     if let Some(e) = tree.hit_cache.extent(id) {
         return e;
     }
@@ -532,7 +532,7 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::E
 fn stacking_context_misses(
     tree: &rinch_dom::NodeTree,
     node: &rinch_dom::Node,
-    node_id: usize,
+    node_id: u64,
     nx: f32,
     ny: f32,
     x: f32,
@@ -556,7 +556,7 @@ fn stacking_context_misses(
 /// axes answers conservatively ("hoists", if it has children) without walking.
 /// Kept apart from [`flow_extent`] so a document with no stacking context
 /// below the body pays nothing for it.
-fn flow_hoists(tree: &rinch_dom::NodeTree, id: usize) -> bool {
+fn flow_hoists(tree: &rinch_dom::NodeTree, id: u64) -> bool {
     if let Some(h) = tree.hit_cache.hoists(id) {
         return h;
     }
@@ -592,7 +592,7 @@ fn flow_hoists(tree: &rinch_dom::NodeTree, id: usize) -> bool {
 /// behave the same on both backends (#203).
 pub(crate) fn painted_element_box(
     tree: &rinch_dom::NodeTree,
-    node_id: usize,
+    node_id: u64,
 ) -> (f32, f32, f32, f32) {
     let r = rinch_dom::paint::painted_border_box(tree, node_id, 1.0);
     (
@@ -617,7 +617,7 @@ pub(crate) fn painted_element_box(
 /// position and the caller's clamp is as good an answer as any).
 pub(crate) fn pointer_in_node(
     tree: &rinch_dom::NodeTree,
-    node_id: usize,
+    node_id: u64,
     x: f32,
     y: f32,
 ) -> (f32, f32) {
@@ -803,7 +803,7 @@ pub(super) fn cursor_value_to_style(
 /// Only `overflow: scroll` and `overflow: auto` are considered scrollable.
 /// `overflow: hidden` clips content but should NOT consume mousewheel events —
 /// the wheel should bubble up to the nearest actual scroll container.
-pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) -> Option<usize> {
+pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: u64) -> Option<u64> {
     let mut current = Some(start);
     while let Some(node_id) = current {
         let node = tree.get(node_id)?;
@@ -823,8 +823,8 @@ pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) ->
 /// Find the nearest ancestor (or self) that is a horizontal scroll container.
 pub(crate) fn find_horizontal_scroll_container(
     tree: &rinch_dom::NodeTree,
-    start: usize,
-) -> Option<usize> {
+    start: u64,
+) -> Option<u64> {
     let mut current = Some(start);
     while let Some(node_id) = current {
         let node = tree.get(node_id)?;
@@ -855,21 +855,21 @@ pub(crate) fn find_scroll_container_at_point(
     tree: &rinch_dom::NodeTree,
     x: f32,
     y: f32,
-) -> Option<usize> {
+) -> Option<u64> {
     find_scroll_container_at_point_recursive(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn find_scroll_container_at_point_recursive(
     tree: &rinch_dom::NodeTree,
-    node_id: usize,
+    node_id: u64,
     offset_x: f32,
     offset_y: f32,
     x: f32,
     y: f32,
     vx: f32,
     vy: f32,
-) -> Option<usize> {
+) -> Option<u64> {
     let node = tree.get(node_id)?;
     let Frame {
         nx,
@@ -918,21 +918,21 @@ pub(crate) fn find_horizontal_scroll_container_at_point(
     tree: &rinch_dom::NodeTree,
     x: f32,
     y: f32,
-) -> Option<usize> {
+) -> Option<u64> {
     find_hscroll_container_at_point_recursive(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn find_hscroll_container_at_point_recursive(
     tree: &rinch_dom::NodeTree,
-    node_id: usize,
+    node_id: u64,
     offset_x: f32,
     offset_y: f32,
     x: f32,
     y: f32,
     vx: f32,
     vy: f32,
-) -> Option<usize> {
+) -> Option<u64> {
     let node = tree.get(node_id)?;
     let Frame {
         nx,
@@ -1001,7 +1001,7 @@ pub(crate) const SCROLLBAR_HIT_THICKNESS: f32 = rinch_dom::paint::scrollbar::HIT
 /// works in device pixels.
 pub(crate) struct ScrollbarHit {
     /// The scroll container whose bar was hit.
-    pub node_id: usize,
+    pub node_id: u64,
     /// Which of its two bars.
     pub axis: ScrollAxis,
     /// That bar's geometry, in the container's own space — the *paint pass's*
@@ -1043,7 +1043,7 @@ pub(crate) fn find_scrollbar_hit(
 #[allow(clippy::too_many_arguments)]
 fn find_scrollbar_hit_node(
     tree: &rinch_dom::NodeTree,
-    node_id: usize,
+    node_id: u64,
     offset_x: f32,
     offset_y: f32,
     x: f32,
@@ -1141,7 +1141,7 @@ mod tests {
     /// the answer. Do not "fix" it to call `painted_element_box`: it exists
     /// precisely to disagree with it. (`paint::tests::untransformed_origin`
     /// serves the same purpose in rinch-dom.)
-    fn abs_origin(doc: &RinchDocument, node_id: usize) -> (f32, f32) {
+    fn abs_origin(doc: &RinchDocument, node_id: u64) -> (f32, f32) {
         let (mut x, mut y) = (0.0f32, 0.0f32);
         let body = doc.body().0;
         let mut cur = Some(node_id);

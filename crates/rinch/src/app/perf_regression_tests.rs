@@ -420,7 +420,7 @@ const LIST_ROWS: usize = 200;
 
 #[derive(Clone, PartialEq, Debug)]
 struct Item {
-    id: usize,
+    id: u64,
     label: String,
 }
 

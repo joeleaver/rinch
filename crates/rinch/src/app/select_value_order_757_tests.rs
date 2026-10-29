@@ -19,7 +19,7 @@ const VP: (f32, f32) = (800.0, 600.0);
 
 struct Fixture {
     app: RinchApp,
-    select: usize,
+    select: u64,
     options: [usize; 3],
 }
 
@@ -70,7 +70,7 @@ fn key(app: &mut RinchApp, key: KeyCode) {
     );
 }
 
-fn resolved_index(app: &RinchApp, select: usize) -> Option<usize> {
+fn resolved_index(app: &RinchApp, select: u64) -> Option<usize> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     rinch_dom::select::resolve_select_model(&d.tree, select).selected_index

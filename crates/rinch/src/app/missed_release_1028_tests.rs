@@ -293,14 +293,14 @@ pub(super) fn mount_scroller() -> (RinchApp, usize) {
     (app, id)
 }
 
-pub(super) fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+pub(super) fn scroll_top(app: &RinchApp, id: u64) -> f64 {
     app.doc.as_ref().unwrap().borrow().tree.nodes[id]
         .scroll_offset
         .1
 }
 
 /// Press the thumb, drag it, lose the release.
-pub(super) fn strand_a_scrollbar_drag(app: &mut RinchApp, id: usize) -> f64 {
+pub(super) fn strand_a_scrollbar_drag(app: &mut RinchApp, id: u64) -> f64 {
     press(app, (195.0, 213.0));
     assert!(app.scrollbar_drag.is_some(), "precondition: thumb pressed");
     let before = scroll_top(app, id);

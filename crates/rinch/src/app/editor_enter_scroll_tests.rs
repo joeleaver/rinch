@@ -95,7 +95,7 @@ fn idle(app: &mut RinchApp) {
     }
 }
 
-fn scroll_of(app: &RinchApp, id: usize) -> f64 {
+fn scroll_of(app: &RinchApp, id: u64) -> f64 {
     app.doc.as_ref().unwrap().borrow().tree.nodes[id]
         .scroll_offset
         .1

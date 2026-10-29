@@ -106,7 +106,7 @@ fn snapshot(app: &RinchApp) -> HashMap<usize, ComputedStyle> {
 }
 
 /// A node's `class` attribute, for a readable failure message.
-fn class_of(app: &RinchApp, node: usize) -> String {
+fn class_of(app: &RinchApp, node: u64) -> String {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -115,7 +115,7 @@ fn class_of(app: &RinchApp, node: usize) -> String {
         .unwrap_or_else(|| format!("<node {node}, no class>"))
 }
 
-fn running(app: &RinchApp, node: usize) -> usize {
+fn running(app: &RinchApp, node: u64) -> usize {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -157,7 +157,7 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
 
 /// Fire the handler behind a node's `attr` (`data-rid`, `data-onenter`, …), the
 /// way the click and hover paths do.
-fn fire(app: &RinchApp, node: usize, attr: &str) {
+fn fire(app: &RinchApp, node: u64, attr: &str) {
     let rid = {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
@@ -784,7 +784,7 @@ fn stepper_refuses_nothing_when_a_step_changes_state() {
     }
 }
 
-fn display_of(app: &RinchApp, node: usize) -> rinch_dom::computed_style::DisplayValue {
+fn display_of(app: &RinchApp, node: u64) -> rinch_dom::computed_style::DisplayValue {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.display

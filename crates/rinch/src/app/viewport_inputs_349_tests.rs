@@ -100,7 +100,7 @@ fn paint(app: &mut RinchApp) -> FrameStats {
     paint_with(app, collect_viewport_frames_by_name())
 }
 
-fn dirty(app: &mut RinchApp, label: usize) {
+fn dirty(app: &mut RinchApp, label: u64) {
     app.doc
         .as_ref()
         .unwrap()

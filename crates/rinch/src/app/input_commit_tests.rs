@@ -102,13 +102,13 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn abs_center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn abs_center(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, id);
     (ax + ax_w / 2.0, ay + ay_h / 2.0)
 }
 
-fn click_center(app: &mut RinchApp, id: usize) {
+fn click_center(app: &mut RinchApp, id: u64) {
     let (cx, cy) = abs_center(app, id);
     click(app, cx, cy);
 }
@@ -608,13 +608,13 @@ fn engine(app: &RinchApp) -> (String, usize, usize) {
     )
 }
 
-fn attr(app: &RinchApp, id: usize, name: &str) -> Option<String> {
+fn attr(app: &RinchApp, id: u64, name: &str) -> Option<String> {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree.get(id).and_then(|n| n.attributes.get(name).cloned())
 }
 
 /// A component/app write: the trait path, exactly what a `value_fn` effect does.
-fn write_value(app: &RinchApp, id: usize, value: &str) {
+fn write_value(app: &RinchApp, id: u64, value: &str) {
     let doc = app.doc.clone().expect("doc");
     let mut d = doc.borrow_mut();
     d.set_attribute(rinch_core::dom::NodeId(id), "value", value);

@@ -764,7 +764,7 @@ mod tests {
         out
     }
 
-    fn rid_of(doc: &RinchDocument, node_id: usize) -> String {
+    fn rid_of(doc: &RinchDocument, node_id: u64) -> String {
         doc.tree
             .get(node_id)
             .and_then(|n| n.attributes.get("data-rid"))
@@ -787,14 +787,14 @@ mod tests {
     }
 
     /// Run a node's own `data-rid` handler, as the click dispatcher would.
-    fn run_rid_handler(doc: &Rc<RefCell<RinchDocument>>, node_id: usize) {
+    fn run_rid_handler(doc: &Rc<RefCell<RinchDocument>>, node_id: u64) {
         let rid: usize = rid_of(&doc.borrow(), node_id).parse().unwrap();
         rinch_core::events::dispatch_event(rinch_core::events::EventHandlerId(rid));
     }
 
     /// Run a node's `data-onenter` handler, as the hover dispatcher would.
-    fn run_onenter_handler(doc: &Rc<RefCell<RinchDocument>>, node_id: usize) {
-        let id: usize = doc
+    fn run_onenter_handler(doc: &Rc<RefCell<RinchDocument>>, node_id: u64) {
+        let id: u64 = doc
             .borrow()
             .tree
             .get(node_id)
@@ -805,12 +805,12 @@ mod tests {
         rinch_core::events::dispatch_event(rinch_core::events::EventHandlerId(id));
     }
 
-    fn center(doc: &RinchDocument, id: usize) -> (f32, f32) {
+    fn center(doc: &RinchDocument, id: u64) -> (f32, f32) {
         let r = rinch_dom::paint::painted_border_box(&doc.tree, id, 1.0);
         (r.center().x as f32, r.center().y as f32)
     }
 
-    fn is_displayed(doc: &RinchDocument, id: usize) -> bool {
+    fn is_displayed(doc: &RinchDocument, id: u64) -> bool {
         doc.tree.get(id).unwrap().computed_style.display
             != rinch_dom::computed_style::DisplayValue::None
     }

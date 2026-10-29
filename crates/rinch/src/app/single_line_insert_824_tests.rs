@@ -20,8 +20,8 @@ type Log = Rc<RefCell<Vec<String>>>;
 
 #[derive(Clone, Copy)]
 struct Ids {
-    input: usize,
-    textarea: usize,
+    input: u64,
+    textarea: u64,
 }
 
 fn ev(app: &mut RinchApp, event: PlatformEvent) -> Vec<AppAction> {
@@ -61,13 +61,13 @@ fn primary() -> Modifiers {
     }
 }
 
-fn attr(app: &RinchApp, id: usize, name: &str) -> Option<String> {
+fn attr(app: &RinchApp, id: u64, name: &str) -> Option<String> {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree.get(id).and_then(|n| n.attributes.get(name).cloned())
 }
 
 /// `(value, selection start, cursor)` as the DOM carries them.
-fn field(app: &RinchApp, id: usize) -> (String, String, String) {
+fn field(app: &RinchApp, id: u64) -> (String, String, String) {
     (
         attr(app, id, "value").unwrap_or_default(),
         attr(app, id, "data-selection-start").unwrap_or_default(),
@@ -80,7 +80,7 @@ fn state(value: &str, anchor: usize, head: usize) -> (String, String, String) {
 }
 
 /// Focus `id` with a press at its left edge.
-fn focus(app: &mut RinchApp, id: usize) {
+fn focus(app: &mut RinchApp, id: u64) {
     let (bx, by, _, bh) = {
         let d = app.doc.as_ref().unwrap().borrow();
         painted_element_box(&d.tree, id)

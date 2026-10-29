@@ -79,7 +79,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     ev(app, PlatformEvent::MouseUp { x, y, button });
 }
 
-fn caret_pos(app: &RinchApp, id: usize) -> usize {
+fn caret_pos(app: &RinchApp, id: u64) -> usize {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -147,7 +147,7 @@ fn ink(app: &mut RinchApp) -> (usize, usize) {
     (inside, outside)
 }
 
-fn focus_by_tab(app: &mut RinchApp, field: &NodeHandle, id: usize) {
+fn focus_by_tab(app: &mut RinchApp, field: &NodeHandle, id: u64) {
     field.focus();
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
     about_to_wait(app);

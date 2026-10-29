@@ -124,13 +124,13 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
     found
 }
 
-fn parent_of(app: &RinchApp, node: usize) -> Option<usize> {
+fn parent_of(app: &RinchApp, node: u64) -> Option<usize> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).and_then(|n| n.parent)
 }
 
-fn is_inside(app: &RinchApp, node: usize, ancestor: usize) -> bool {
+fn is_inside(app: &RinchApp, node: u64, ancestor: u64) -> bool {
     let mut cur = parent_of(app, node);
     while let Some(p) = cur {
         if p == ancestor {
@@ -157,7 +157,7 @@ fn probe(app: &RinchApp, marker: &str) -> usize {
 }
 
 /// The one node with `class` whose parent is `parent`.
-fn child_with_class(app: &RinchApp, parent: usize, class: &str) -> usize {
+fn child_with_class(app: &RinchApp, parent: u64, class: &str) -> usize {
     let found: Vec<usize> = nodes_with_class(app, class)
         .into_iter()
         .filter(|n| parent_of(app, *n) == Some(parent))
@@ -176,7 +176,7 @@ fn live_node_with_class(app: &RinchApp, class: &str) -> usize {
         .unwrap_or_else(|| panic!("expected an attached `{class}`"))
 }
 
-fn is_attached(app: &RinchApp, node: usize) -> bool {
+fn is_attached(app: &RinchApp, node: u64) -> bool {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let mut cur = Some(node);
@@ -189,13 +189,13 @@ fn is_attached(app: &RinchApp, node: usize) -> bool {
     false
 }
 
-fn visibility_of(app: &RinchApp, node: usize) -> VisibilityValue {
+fn visibility_of(app: &RinchApp, node: u64) -> VisibilityValue {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.visibility
 }
 
-fn opacity_of(app: &RinchApp, node: usize) -> f32 {
+fn opacity_of(app: &RinchApp, node: u64) -> f32 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.opacity
@@ -204,12 +204,12 @@ fn opacity_of(app: &RinchApp, node: usize) -> f32 {
 /// Whether the dropdown is actually revealed: `visibility: visible` AND
 /// `opacity` above 0 (the sheet sets both together; checking only one would
 /// pass against a mutant that drops the other half of the pair).
-fn revealed(app: &RinchApp, node: usize) -> bool {
+fn revealed(app: &RinchApp, node: u64) -> bool {
     visibility_of(app, node) == VisibilityValue::Visible && opacity_of(app, node) > 0.0
 }
 
 /// How many animations are registered on a node.
-fn animations(app: &RinchApp, node: usize) -> usize {
+fn animations(app: &RinchApp, node: u64) -> usize {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -219,7 +219,7 @@ fn animations(app: &RinchApp, node: usize) -> usize {
         .unwrap_or(0)
 }
 
-fn is_paused(app: &RinchApp, node: usize) -> bool {
+fn is_paused(app: &RinchApp, node: u64) -> bool {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -291,7 +291,7 @@ fn a_closed_popover_nested_in_an_open_ones_dropdown_stays_hidden() {
     );
 }
 
-fn has_class_778(app: &RinchApp, node: usize, class: &str) -> bool {
+fn has_class_778(app: &RinchApp, node: u64, class: &str) -> bool {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree

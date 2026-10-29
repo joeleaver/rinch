@@ -20,8 +20,8 @@ use std::cell::Cell;
 struct Fixture {
     app: RinchApp,
     input_id: usize,
-    a_id: usize,
-    b_id: usize,
+    a_id: u64,
+    b_id: u64,
     log: Rc<RefCell<Vec<String>>>,
     consume: Rc<RefCell<Vec<String>>>,
 }
@@ -130,7 +130,7 @@ fn tab(app: &mut RinchApp) {
     key(app, KeyCode::Tab, None);
 }
 
-fn abs_center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn abs_center(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, id);
     (ax + ax_w / 2.0, ay + ay_h / 2.0)
@@ -157,7 +157,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn click_node(app: &mut RinchApp, id: usize) {
+fn click_node(app: &mut RinchApp, id: u64) {
     let (x, y) = abs_center(app, id);
     click(app, x, y);
 }

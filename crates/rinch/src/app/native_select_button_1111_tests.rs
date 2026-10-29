@@ -19,7 +19,7 @@ const VIEWPORT: (f32, f32) = (800.0, 600.0);
 
 struct Fixture {
     app: RinchApp,
-    select: usize,
+    select: u64,
     /// Every value the select's `oninput` reported.
     picks: Rc<RefCell<Vec<String>>>,
 }
@@ -63,7 +63,7 @@ fn press(app: &mut RinchApp, x: f32, y: f32, button: MouseButton) {
     app.handle_event(PlatformEvent::MouseUp { x, y, button }, (800, 600), 1.0);
 }
 
-fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, node_id: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let (x, y, w, h) = painted_element_box(&d.tree, node_id);

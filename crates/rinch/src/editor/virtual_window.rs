@@ -30,7 +30,7 @@ const INITIAL_MATERIALIZED: usize = 40;
 /// vs collapsed (estimated height, no Parley work).
 pub(crate) struct CeVirtualWindow {
     /// CE root node ID.
-    ce_node_id: usize,
+    ce_node_id: u64,
 
     /// Cached measured heights for blocks, indexed by child position.
     /// Used when collapsing a block so it keeps its real height.
@@ -61,8 +61,8 @@ impl CeVirtualWindow {
     /// When `filter_blocks` is true the window models only the container's
     /// `data-pm-type` children (editor blocks), so overlay siblings are never
     /// collapsed or counted.
-    pub fn new_filtered(ce_node_id: usize, doc: &mut RinchDocument, filter_blocks: bool) -> Self {
-        let children: Vec<usize> = block_children_of(doc, ce_node_id, filter_blocks);
+    pub fn new_filtered(ce_node_id: u64, doc: &mut RinchDocument, filter_blocks: bool) -> Self {
+        let children: Vec<u64> = block_children_of(doc, ce_node_id, filter_blocks);
         let block_count = children.len();
 
         let active = block_count >= MIN_BLOCKS_FOR_VIRTUALIZATION;
@@ -105,13 +105,13 @@ impl CeVirtualWindow {
     pub fn pre_layout_update(
         &mut self,
         doc: &mut RinchDocument,
-        protected_blocks: &[usize],
+        protected_blocks: &[u64],
     ) -> bool {
         if !self.active || !self.initialized {
             return false;
         }
 
-        let children: Vec<usize> = self.block_children(doc);
+        let children: Vec<u64> = self.block_children(doc);
         let block_count = children.len();
         if block_count == 0 {
             return false;
@@ -191,7 +191,7 @@ impl CeVirtualWindow {
     /// For `EditorHandle::scroll_into_view`, which needs the geometry of a
     /// block the user has not scrolled to — the one thing a window driven by
     /// the scroll position cannot supply by itself (#845's shape).
-    pub fn materialize(&mut self, doc: &mut RinchDocument, block: usize) -> bool {
+    pub fn materialize(&mut self, doc: &mut RinchDocument, block: u64) -> bool {
         if !self.active || !self.initialized {
             return false;
         }
@@ -217,7 +217,7 @@ impl CeVirtualWindow {
             return;
         }
 
-        let children: Vec<usize> = self.block_children(doc);
+        let children: Vec<u64> = self.block_children(doc);
         if self.measured_heights.len() != children.len() {
             self.measured_heights.resize(children.len(), None);
         }
@@ -240,7 +240,7 @@ impl CeVirtualWindow {
     /// Find visible block range using Taffy layout.y positions.
     fn find_visible_range(
         doc: &RinchDocument,
-        children: &[usize],
+        children: &[u64],
         scroll_y: f32,
         viewport_h: f32,
     ) -> (usize, usize) {
@@ -261,7 +261,7 @@ impl CeVirtualWindow {
     }
 
     /// Update unmeasured collapsed blocks with average measured height.
-    fn update_unmeasured_estimates(&mut self, doc: &mut RinchDocument, children: &[usize]) {
+    fn update_unmeasured_estimates(&mut self, doc: &mut RinchDocument, children: &[u64]) {
         let mut sum = 0.0_f32;
         let mut count = 0u32;
         for h in self.measured_heights.iter().flatten() {
@@ -293,7 +293,7 @@ impl CeVirtualWindow {
 
     /// Ensure a specific block is materialized.
     #[allow(dead_code)]
-    pub fn ensure_materialized(&mut self, doc: &mut RinchDocument, block_node_id: usize) -> bool {
+    pub fn ensure_materialized(&mut self, doc: &mut RinchDocument, block_node_id: u64) -> bool {
         if !self.active {
             return false;
         }
@@ -323,7 +323,7 @@ impl CeVirtualWindow {
 
     /// Called when blocks are inserted/removed.
     pub fn on_blocks_changed(&mut self, doc: &mut RinchDocument) {
-        let children: Vec<usize> = self.block_children(doc);
+        let children: Vec<u64> = self.block_children(doc);
         let block_count = children.len();
 
         if block_count < MIN_BLOCKS_FOR_VIRTUALIZATION {
@@ -379,7 +379,7 @@ impl CeVirtualWindow {
 
     /// The container's block children, honoring `filter_blocks` (excludes overlay
     /// siblings for the new editor).
-    fn block_children(&self, doc: &RinchDocument) -> Vec<usize> {
+    fn block_children(&self, doc: &RinchDocument) -> Vec<u64> {
         block_children_of(doc, self.ce_node_id, self.filter_blocks)
     }
 }
@@ -388,7 +388,7 @@ impl CeVirtualWindow {
 /// false, or only the `data-pm-type` children when true (the editor, where caret /
 /// selection / outline / placeholder overlays are container siblings with no
 /// `data-pm-type`).
-fn block_children_of(doc: &RinchDocument, ce_node_id: usize, filter_blocks: bool) -> Vec<usize> {
+fn block_children_of(doc: &RinchDocument, ce_node_id: u64, filter_blocks: bool) -> Vec<u64> {
     let children = &doc.tree.nodes[ce_node_id].children;
     if !filter_blocks {
         return children.clone();
@@ -412,7 +412,7 @@ fn block_children_of(doc: &RinchDocument, ce_node_id: usize, filter_blocks: bool
 /// over itself (`rinch_dom::ifc_scope`) rather than asking for the
 /// whole-document one, which every scroll that moved the materialized window
 /// used to pay.
-fn seed_block(doc: &mut RinchDocument, block: usize) {
+fn seed_block(doc: &mut RinchDocument, block: u64) {
     doc.tree
         .seed_ifc(block, rinch_dom::ifc_scope::IfcSeed::Children);
 }
@@ -426,7 +426,7 @@ mod tests {
     /// `<p data-pm-type="paragraph">` blocks (each wrapping to ~2 lines in a narrow
     /// column) plus a `data-pm-caret` overlay sibling that has **no** `data-pm-type`
     /// (so the block filter must exclude it). Returns `(container, block_ids, caret)`.
-    fn build_editor_host(doc: &mut RinchDocument, n: usize) -> (usize, Vec<usize>, usize) {
+    fn build_editor_host(doc: &mut RinchDocument, n: usize) -> (usize, Vec<u64>, usize) {
         let body = doc.body();
         let container = doc.create_element("div");
         doc.set_attribute(container, "data-pm-editor", "true");

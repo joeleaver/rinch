@@ -140,7 +140,7 @@ struct Ids {
     inside_first: usize,
     inside_middle: usize,
     inside_last: usize,
-    root: usize,
+    root: u64,
 }
 
 /// A page with a control either side of a `Modal`, and three controls inside
@@ -556,9 +556,9 @@ fn the_false_escape_opts_out_and_zero_does_not() {
 /// Node ids for the two-modal fixture.
 #[derive(Clone, Copy, Default)]
 struct Nested {
-    outer_a: usize,
+    outer_a: u64,
     outer_b: usize,
-    inner_a: usize,
+    inner_a: u64,
     inner_b: usize,
 }
 

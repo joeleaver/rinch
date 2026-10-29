@@ -81,7 +81,7 @@ fn find_all(app: &RinchApp, class: &str) -> Vec<usize> {
     ids
 }
 
-fn attr(app: &RinchApp, node: usize, name: &str) -> Option<String> {
+fn attr(app: &RinchApp, node: u64, name: &str) -> Option<String> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -106,7 +106,7 @@ impl Fixture {
             .map(|id| options.iter().position(|o| o == id).unwrap())
     }
 
-    fn centre(&self, node: usize) -> (f32, f32) {
+    fn centre(&self, node: u64) -> (f32, f32) {
         let doc = self.app.doc.as_ref().unwrap();
         let d = doc.borrow();
         let (x, y, w, h) = painted_element_box(&d.tree, node);
@@ -114,7 +114,7 @@ impl Fixture {
         (x + w / 2.0, y + h / 2.0)
     }
 
-    fn tap(&mut self, node: usize) {
+    fn tap(&mut self, node: u64) {
         let (x, y) = self.centre(node);
         for ev in [
             PlatformEvent::MouseDown {

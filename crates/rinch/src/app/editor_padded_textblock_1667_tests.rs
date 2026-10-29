@@ -113,7 +113,7 @@ impl Page {
 
     /// Where the block's text starts on screen: its painted border box moved
     /// in by its padding and border.
-    fn content_origin(&self, block: usize) -> (f32, f32) {
+    fn content_origin(&self, block: u64) -> (f32, f32) {
         let doc = self.app.doc.as_ref().unwrap().borrow();
         let (bx, by, _, _) = painted_element_box(&doc.tree, block);
         let cs = &doc.tree.nodes[block].computed_style;
@@ -125,7 +125,7 @@ impl Page {
 
     /// Where the caret at flat byte `byte` of `block` is drawn, by Parley's
     /// layout-local answer from the content origin.
-    fn expected_caret(&self, block: usize, byte: usize) -> (f32, f32) {
+    fn expected_caret(&self, block: u64, byte: usize) -> (f32, f32) {
         let (cx, cy) = self.content_origin(block);
         let doc = self.app.doc.as_ref().unwrap().borrow();
         let layout = &doc.tree.nodes[block]

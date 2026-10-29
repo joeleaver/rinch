@@ -31,7 +31,7 @@ struct Ids {
     data_disabled_false: usize,
     in_fieldset: usize,
     in_legend: usize,
-    select: usize,
+    select: u64,
     select_in_fieldset: usize,
     fieldset: usize,
 }
@@ -217,7 +217,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn click_center(app: &mut RinchApp, id: usize) {
+fn click_center(app: &mut RinchApp, id: u64) {
     let (x, y) = {
         let d = app.doc.as_ref().unwrap().borrow();
         let (ax, ay, w, h) = painted_element_box(&d.tree, id);
@@ -244,7 +244,7 @@ fn click_center(app: &mut RinchApp, id: usize) {
 }
 
 /// Set (or clear) an attribute on a live node, the way a reactive prop would.
-fn set_attr(app: &mut RinchApp, id: usize, name: &str, value: Option<&str>) {
+fn set_attr(app: &mut RinchApp, id: u64, name: &str, value: Option<&str>) {
     let doc = app.doc.as_ref().unwrap();
     let mut d = doc.borrow_mut();
     let node = d.tree.get_mut(id).expect("node is live");
@@ -260,7 +260,7 @@ fn set_attr(app: &mut RinchApp, id: usize, name: &str, value: Option<&str>) {
 
 /// The `value` attribute a field actually displays — what survives the claim
 /// being released, unlike `focused_input_state`.
-fn dom_value(app: &RinchApp, id: usize) -> String {
+fn dom_value(app: &RinchApp, id: u64) -> String {
     app.doc
         .as_ref()
         .unwrap()

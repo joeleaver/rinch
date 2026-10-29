@@ -38,7 +38,7 @@ impl Plugin for Spell {
 
 struct Page {
     app: RinchApp,
-    container: usize,
+    container: u64,
     handle: crate::editor::EditorHandle,
     seen: Rc<RefCell<Vec<Selection>>>,
 }

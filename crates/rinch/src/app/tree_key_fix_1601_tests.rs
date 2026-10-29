@@ -186,13 +186,13 @@ fn row(app: &RinchApp, value: &str) -> usize {
         .unwrap()
 }
 
-fn attr(app: &RinchApp, id: usize, name: &str) -> Option<String> {
+fn attr(app: &RinchApp, id: u64, name: &str) -> Option<String> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.nodes[id].attributes.get(name).cloned()
 }
 
-fn centre(app: &RinchApp, id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, id: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let (x, y, w, h) = hit_testing::painted_element_box(&d.tree, id);

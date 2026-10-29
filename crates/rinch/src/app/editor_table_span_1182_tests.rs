@@ -111,7 +111,7 @@ fn mounted(rows: &[Vec<(i64, i64)>]) -> (RinchApp, Vec<usize>, usize) {
     (app, cells, table)
 }
 
-fn rect(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn rect(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let l = app.doc.as_ref().unwrap().borrow().tree.nodes[id].layout;
     (l.x, l.y, l.width, l.height)
 }
@@ -279,7 +279,7 @@ fn row_spans_lay_out_as_the_row_lines_they_replace() {
             .collect();
         let (mut app, cells, table) = mounted(&rows);
         let doc = app.doc.as_ref().unwrap().clone();
-        let style = |id: usize| {
+        let style = |id: u64| {
             doc.borrow()
                 .get_attribute(NodeId(id), "style")
                 .unwrap_or_default()

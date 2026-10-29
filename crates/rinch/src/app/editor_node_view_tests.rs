@@ -142,13 +142,13 @@ fn host(page: &Page, ty: &str) -> usize {
         .expect("a host")
 }
 
-fn box_of(page: &Page, id: usize) -> (f32, f32, f32, f32) {
+fn box_of(page: &Page, id: u64) -> (f32, f32, f32, f32) {
     let doc = page.app.doc.as_ref().unwrap();
     painted_element_box(&doc.borrow().tree, id)
 }
 
 /// A point inside `id`'s box, `inset` px from its top-left corner.
-fn point_in(page: &Page, id: usize, inset: f32) -> (f32, f32) {
+fn point_in(page: &Page, id: u64, inset: f32) -> (f32, f32) {
     let (x, y, _, _) = box_of(page, id);
     (x + inset, y + inset)
 }
@@ -346,7 +346,7 @@ mod review_1575 {
         app.resolve_and_repaint(800.0, 600.0);
     }
 
-    fn input_value(p: &Page, id: usize) -> String {
+    fn input_value(p: &Page, id: u64) -> String {
         let doc = p.app.doc.as_ref().unwrap();
         let d = doc.borrow();
         d.tree

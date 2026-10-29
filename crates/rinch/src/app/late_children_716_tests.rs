@@ -49,7 +49,7 @@ fn restyle(app: &RinchApp) {
 /// Every node carrying `class`, in document order, **walked from the body** —
 /// a scan of the arena still finds detached nodes.
 fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
-    fn walk(d: &RinchDocument, id: usize, class: &str, out: &mut Vec<usize>) {
+    fn walk(d: &RinchDocument, id: u64, class: &str, out: &mut Vec<usize>) {
         let Some(node) = d.tree.get(id) else { return };
         if node
             .attributes
@@ -69,7 +69,7 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
     out
 }
 
-fn display_of(app: &RinchApp, id: usize) -> DisplayValue {
+fn display_of(app: &RinchApp, id: u64) -> DisplayValue {
     let doc = app.doc.as_ref().expect("a mounted document");
     let d = doc.borrow();
     d.tree
@@ -80,8 +80,8 @@ fn display_of(app: &RinchApp, id: usize) -> DisplayValue {
 }
 
 /// The `<svg>` inside `id`'s subtree, if there is one.
-fn svg_under(app: &RinchApp, id: usize) -> Option<usize> {
-    fn walk(d: &RinchDocument, id: usize, out: &mut Option<usize>) {
+fn svg_under(app: &RinchApp, id: u64) -> Option<usize> {
+    fn walk(d: &RinchDocument, id: u64, out: &mut Option<usize>) {
         if out.is_some() {
             return;
         }

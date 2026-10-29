@@ -18,7 +18,7 @@ const VP: (u32, u32) = (800, 600);
 
 struct Page {
     app: RinchApp,
-    container: usize,
+    container: u64,
     handle: crate::editor::EditorHandle,
 }
 

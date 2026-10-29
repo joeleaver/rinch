@@ -28,13 +28,13 @@ const TYPEAHEAD_RESET_MS: u128 = 900;
 /// highlight/type-ahead state. Index-aligned vectors mirror the resolved options.
 pub(crate) struct OpenSelect {
     /// The `<select>` element the popup belongs to.
-    pub select_id: usize,
+    pub select_id: u64,
     /// Full-window click-catcher behind the panel.
-    pub backdrop_id: usize,
+    pub backdrop_id: u64,
     /// The option-list panel.
-    pub panel_id: usize,
+    pub panel_id: u64,
     /// Option row node ids, aligned to the option list.
-    pub option_ids: Vec<usize>,
+    pub option_ids: Vec<u64>,
     /// Option submit values, aligned.
     pub values: Vec<String>,
     /// Option display labels, aligned (for type-ahead).
@@ -121,7 +121,7 @@ impl RinchApp {
     }
 
     /// Walk up from a hit node to the enclosing `<select>` element, if any.
-    pub(super) fn select_ancestor(tree: &rinch_dom::NodeTree, hit_id: usize) -> Option<usize> {
+    pub(super) fn select_ancestor(tree: &rinch_dom::NodeTree, hit_id: u64) -> Option<u64> {
         let mut cur = Some(hit_id);
         while let Some(nid) = cur {
             let node = tree.get(nid)?;
@@ -136,7 +136,7 @@ impl RinchApp {
     /// Absolute on-screen rect `(x, y, w, h)` of a node — the box it is
     /// *painted* in, so the popup is anchored under the control the user can
     /// see rather than under an untransformed layout box (#203).
-    fn absolute_rect(tree: &rinch_dom::NodeTree, node_id: usize) -> (f32, f32, f32, f32) {
+    fn absolute_rect(tree: &rinch_dom::NodeTree, node_id: u64) -> (f32, f32, f32, f32) {
         if tree.get(node_id).is_none() {
             return (0.0, 0.0, 0.0, 0.0);
         }
@@ -161,7 +161,7 @@ impl RinchApp {
     /// does not dispatch a click on a disabled form control at all, so an
     /// enclosing card's `data-rid` must not run either. Same rule
     /// `found_input_focus` follows for a disabled `<input>`.
-    pub(super) fn open_select_popup(&mut self, select_id: usize, vp_w: f32, vp_h: f32) {
+    pub(super) fn open_select_popup(&mut self, select_id: u64, vp_w: f32, vp_h: f32) {
         let disabled = self
             .doc
             .as_ref()
@@ -447,7 +447,7 @@ impl RinchApp {
     /// Refuses a control that vanished or was disabled while the popup was
     /// open — a change handler that disables the select it just committed must
     /// not be handed the keyboard back (issue #315).
-    fn focus_select_control(&mut self, select_id: usize) {
+    fn focus_select_control(&mut self, select_id: u64) {
         let ok = self.doc.as_ref().is_some_and(|doc| {
             let d = doc.borrow();
             d.tree.get(select_id).is_some() && !Self::node_is_disabled_in_tree(&d.tree, select_id)

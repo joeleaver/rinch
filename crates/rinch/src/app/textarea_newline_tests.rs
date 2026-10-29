@@ -89,7 +89,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn focus(app: &mut RinchApp, id: usize) {
+fn focus(app: &mut RinchApp, id: u64) {
     let (cx, cy) = {
         let d = app.doc.as_ref().unwrap().borrow();
         let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, id);
@@ -100,7 +100,7 @@ fn focus(app: &mut RinchApp, id: usize) {
 
 /// The control's live `value` attribute — what it displays, and what the paint
 /// layer reads.
-fn value(app: &RinchApp, id: usize) -> String {
+fn value(app: &RinchApp, id: u64) -> String {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -109,7 +109,7 @@ fn value(app: &RinchApp, id: usize) -> String {
 }
 
 /// The caret's byte offset, as written to the DOM for the paint layer.
-fn caret(app: &RinchApp, id: usize) -> usize {
+fn caret(app: &RinchApp, id: u64) -> usize {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)

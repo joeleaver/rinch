@@ -128,7 +128,7 @@ fn press(app: &mut RinchApp, key: KeyCode, text: Option<&str>, modifiers: Modifi
     app.resolve_and_repaint(800.0, 600.0);
 }
 
-fn attr(app: &RinchApp, id: usize, name: &str) -> String {
+fn attr(app: &RinchApp, id: u64, name: &str) -> String {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -136,12 +136,12 @@ fn attr(app: &RinchApp, id: usize, name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn value(app: &RinchApp, id: usize) -> String {
+fn value(app: &RinchApp, id: u64) -> String {
     attr(app, id, "value")
 }
 
 /// `(anchor, head)` as written to the DOM for the paint layer.
-fn sel(app: &RinchApp, id: usize) -> (usize, usize) {
+fn sel(app: &RinchApp, id: u64) -> (usize, usize) {
     (
         attr(app, id, "data-selection-start").parse().unwrap(),
         attr(app, id, "data-cursor-pos").parse().unwrap(),
@@ -149,7 +149,7 @@ fn sel(app: &RinchApp, id: usize) -> (usize, usize) {
 }
 
 /// A collapsed caret at byte `at`: Cmd+Up, then `at` plain Rights.
-fn caret_to(app: &mut RinchApp, id: usize, at: usize) {
+fn caret_to(app: &mut RinchApp, id: u64, at: usize) {
     press(app, KeyCode::ArrowUp, None, CMD);
     for _ in 0..at {
         press(app, KeyCode::ArrowRight, None, NONE);

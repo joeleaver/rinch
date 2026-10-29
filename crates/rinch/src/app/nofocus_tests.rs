@@ -115,7 +115,7 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
     (app, ids, log)
 }
 
-fn abs_box(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn abs_box(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     painted_element_box(&d.tree, id)
 }
@@ -141,7 +141,7 @@ fn press_at(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn press(app: &mut RinchApp, id: usize) {
+fn press(app: &mut RinchApp, id: u64) {
     let (x, y, w, h) = abs_box(app, id);
     press_at(app, x + w / 2.0, y + h / 2.0);
 }

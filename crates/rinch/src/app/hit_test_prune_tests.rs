@@ -785,7 +785,7 @@ fn a_border_top_width_tick_moves_an_inline_block_it_places() {
 #[allow(clippy::too_many_arguments)]
 fn reference_hit_test_node(
     tree: &rinch_dom::NodeTree,
-    node_id: usize,
+    node_id: u64,
     offset_x: f32,
     offset_y: f32,
     x: f32,

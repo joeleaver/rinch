@@ -23,7 +23,7 @@ fn press_at(app: &mut RinchApp, x: f32, y: f32, button: MouseButton) {
     ev(app, PlatformEvent::MouseDown { x, y, button });
     ev(app, PlatformEvent::MouseUp { x, y, button });
 }
-fn center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn center(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (ax, ay, w, h) = painted_element_box(&d.tree, id);
     (ax + w / 2.0, ay + h / 2.0)
@@ -152,9 +152,9 @@ fn s1b_right_press_in_editor_inside_card() {
 
 struct Page {
     app: RinchApp,
-    input: usize,
+    input: u64,
     plain: usize,
-    listbox: usize,
+    listbox: u64,
     disabled_btn: usize,
     log: Rc<RefCell<Vec<String>>>,
 }
