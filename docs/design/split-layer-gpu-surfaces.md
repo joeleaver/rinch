@@ -632,6 +632,10 @@ box transparent. It is a `SurfaceDraw` with a `base: bool`; PR 3's
   `composite_straight`, so its texture stays straight alpha. `RinchContext::scene()`
   keeps the in-scene erase, for hosts with their own Vello. The split modules
   moved from `shell` to the crate root so the `embed` build has them.
+  The slices are the renderer's and the scene the context's, so since #1976
+  each sliced frame is stamped and a renderer holding another stamp (a new
+  renderer after a device loss, or another renderer's or context's turn) has
+  the frame painted again.
 - **The order** this record assumed (base layers first, below second, split
   surfaces after) is now one pass: a base is a slice like the others, and two
   regions never overlap (D7).
