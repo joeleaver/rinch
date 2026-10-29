@@ -91,7 +91,10 @@ fn discarded_rows_are_freed_and_their_slots_reused() {
     // And the slab really did hold a round's worth at its peak: the rows were
     // there, and are gone.
     let (slab, _, _) = after_first.unwrap();
-    assert!(slab < ROWS * 3, "the discarded rows are not in the slab: {slab}");
+    assert!(
+        slab < ROWS * 3,
+        "the discarded rows are not in the slab: {slab}"
+    );
 }
 
 /// `set_inner_html` freed slab slots before #723 but never their Taffy nodes,
@@ -168,7 +171,11 @@ fn a_stale_handle_never_reaches_the_node_minted_into_its_slot() {
     assert_eq!(doc.get_attribute(new, "style"), None);
     assert_eq!(doc.get_children(new), vec![child]);
     assert_eq!(doc.text_content(new).as_deref(), Some("fresh"));
-    assert_eq!(doc.get_children(list), vec![new], "nothing moved, nothing removed");
+    assert_eq!(
+        doc.get_children(list),
+        vec![new],
+        "nothing moved, nothing removed"
+    );
     assert_eq!(doc.parent_node(new), Some(list));
     // And the stale request queued nothing a layout would act on.
     doc.resolve_layout(802.0, 600.0);
@@ -189,7 +196,10 @@ fn the_node_minted_into_a_freed_slot_inherits_no_state() {
     doc.update_active(Some(old.0));
     doc.set_focus_visible(old.0, true);
     doc.mark_dirty(old);
-    assert!(doc.tree.nodes.get(old.0).unwrap().is_hovered, "precondition");
+    assert!(
+        doc.tree.nodes.get(old.0).unwrap().is_hovered,
+        "precondition"
+    );
     doc.discard_node(old);
 
     let new = doc.create_element("div");
@@ -202,11 +212,28 @@ fn the_node_minted_into_a_freed_slot_inherits_no_state() {
     assert_ne!(doc.tree.focused_node, Some(new.0));
     assert_ne!(doc.tree.active_node, Some(new.0));
     // Nothing keyed by the old id survives the free to be read under the slot.
-    assert!(doc.tree.hovered_node.is_none_or(|id| doc.tree.nodes.contains(id)));
-    assert!(doc.tree.focused_node.is_none_or(|id| doc.tree.nodes.contains(id)));
-    assert!(doc.tree.active_node.is_none_or(|id| doc.tree.nodes.contains(id)));
+    assert!(
+        doc.tree
+            .hovered_node
+            .is_none_or(|id| doc.tree.nodes.contains(id))
+    );
+    assert!(
+        doc.tree
+            .focused_node
+            .is_none_or(|id| doc.tree.nodes.contains(id))
+    );
+    assert!(
+        doc.tree
+            .active_node
+            .is_none_or(|id| doc.tree.nodes.contains(id))
+    );
     assert!(!doc.tree.dirty_nodes.contains(&old.0));
-    assert!(doc.tree.taffy_map.values().all(|&id| doc.tree.nodes.contains(id)));
+    assert!(
+        doc.tree
+            .taffy_map
+            .values()
+            .all(|&id| doc.tree.nodes.contains(id))
+    );
 
     // Hovering the new node is a change, and lays out and paints.
     let mut changed = false;
