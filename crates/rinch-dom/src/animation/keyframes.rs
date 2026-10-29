@@ -33,13 +33,32 @@ pub fn extract_keyframe_stops(
 ) -> Vec<KeyframeStop> {
     let mut stops = Vec::new();
 
+    // The properties the rule's own stops declare. An implicit stop is built
+    // "using the computed values of the properties being animated"
+    // (css-animations-1 §4) — those, and no others (#767, #781).
+    let mut declared: Vec<TransitionProperty> = Vec::new();
+    for step in &animation.steps {
+        if let KeyframesStepValue::Declarations { block } = &step.value {
+            let block = block.read_with(guard);
+            for (prop, _) in
+                extract_declaration_values(block, base_style, parent_color, root_font_size)
+            {
+                if !declared.contains(&prop) {
+                    declared.push(prop);
+                }
+            }
+        }
+    }
+
     for step in &animation.steps {
         let percentage = step.start_percentage.0;
 
         let (values, timing_function) = match &step.value {
             KeyframesStepValue::ComputedValues => {
-                // Auto-generated step: use current element style as values
-                let values = extract_base_style_values(base_style);
+                // Auto-generated step: the element's own computed values of
+                // the properties the declared stops animate.
+                let mut values = extract_base_style_values(base_style);
+                values.retain(|(prop, _)| declared.contains(prop));
                 (values, None)
             }
             KeyframesStepValue::Declarations { block } => {
@@ -312,7 +331,10 @@ fn margin(
     }
 }
 
-/// Extract all animatable values from a ComputedStyle (for auto-generated keyframes).
+/// Every property a keyframe stop can declare, read off a ComputedStyle — the
+/// values an implicit (auto-generated) `from`/`to` stop is built from.
+/// [`extract_keyframe_stops`] keeps only the ones the rule's declared stops
+/// animate.
 fn extract_base_style_values(style: &ComputedStyle) -> Vec<(TransitionProperty, AnimatableValue)> {
     use crate::computed_style::BackgroundValue;
 
@@ -333,6 +355,66 @@ fn extract_base_style_values(style: &ComputedStyle) -> Vec<(TransitionProperty, 
     if let Some(c) = style.color {
         values.push((TransitionProperty::Color, AnimatableValue::Color(c)));
     }
+
+    for (prop, c) in [
+        (TransitionProperty::BorderTopColor, style.border_top_color),
+        (
+            TransitionProperty::BorderRightColor,
+            style.border_right_color,
+        ),
+        (
+            TransitionProperty::BorderBottomColor,
+            style.border_bottom_color,
+        ),
+        (TransitionProperty::BorderLeftColor, style.border_left_color),
+    ] {
+        if let Some(c) = c {
+            values.push((prop, AnimatableValue::Color(c)));
+        }
+    }
+
+    // The layout properties (#767). Without them a `to`-only `width` stop had
+    // nothing to start from and snapped to its end value on the first frame.
+    // An `auto` base is carried as `auto`: it does not interpolate with a
+    // length, so the animation flips at the midpoint, as in Chrome.
+    values.push((
+        TransitionProperty::Width,
+        AnimatableValue::Dimension(style.width),
+    ));
+    values.push((
+        TransitionProperty::Height,
+        AnimatableValue::Dimension(style.height),
+    ));
+    for (prop, lp) in [
+        (TransitionProperty::PaddingTop, style.padding_top),
+        (TransitionProperty::PaddingRight, style.padding_right),
+        (TransitionProperty::PaddingBottom, style.padding_bottom),
+        (TransitionProperty::PaddingLeft, style.padding_left),
+        (TransitionProperty::BorderTopWidth, style.border_top_width),
+        (
+            TransitionProperty::BorderRightWidth,
+            style.border_right_width,
+        ),
+        (
+            TransitionProperty::BorderBottomWidth,
+            style.border_bottom_width,
+        ),
+        (TransitionProperty::BorderLeftWidth, style.border_left_width),
+    ] {
+        values.push((prop, AnimatableValue::LengthPercentage(lp)));
+    }
+    for (prop, lpa) in [
+        (TransitionProperty::MarginTop, style.margin_top),
+        (TransitionProperty::MarginRight, style.margin_right),
+        (TransitionProperty::MarginBottom, style.margin_bottom),
+        (TransitionProperty::MarginLeft, style.margin_left),
+    ] {
+        values.push((prop, AnimatableValue::LengthPercentageAuto(lpa)));
+    }
+    values.push((
+        TransitionProperty::FontSize,
+        AnimatableValue::Float(style.font_size),
+    ));
 
     values.push((
         TransitionProperty::BackgroundPositionX,
