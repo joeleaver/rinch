@@ -1,5 +1,8 @@
 //! Animation types: AnimationSpec, ActiveAnimation, KeyframeStop.
 
+use style::stylesheets::keyframes_rule::{KeyframesAnimation, KeyframesStepValue};
+
+use super::keyframes::StopBasis;
 use crate::transition::types::{AnimatableValue, TimingFunction, TransitionProperty};
 
 // =============================================================================
@@ -62,6 +65,17 @@ pub struct KeyframeStop {
     pub values: Vec<(TransitionProperty, AnimatableValue)>,
     /// Per-keyframe timing function override.
     pub timing_function: Option<TimingFunction>,
+    /// The properties whose value in this stop is not authored but the
+    /// element's **base value** — Web Animations' neutral keyframe (#781).
+    ///
+    /// Only a 0% or 100% stop has any: a property some keyframe of the rule
+    /// animates and that stop does not set. That covers the whole stop Stylo
+    /// generates for a missing `from`/`to` (`KeyframesStepValue::ComputedValues`)
+    /// and a property an authored `from`/`to` leaves out. A property no
+    /// keyframe names is in no stop, so the animation never writes it.
+    /// [`super::keyframes::refresh_implicit_values`] re-reads these values from
+    /// the current base style on every cascade of the node, so they follow it.
+    pub implicit: Vec<TransitionProperty>,
 }
 
 // =============================================================================
@@ -105,6 +119,103 @@ pub struct ActiveAnimation {
     /// clear it ([`Self::has_ended`]): a paused finished animation is still
     /// finished, and resuming it costs no frame.
     pub settled: bool,
+    /// What [`Self::keyframe_stops`] were extracted from (#766): the
+    /// `@keyframes` rule's declaration blocks and the base-style inputs an
+    /// authored stop resolves against. A cascade that finds them unchanged
+    /// keeps the stops and refreshes only their implicit values; anything else
+    /// re-extracts them.
+    pub(crate) stop_inputs: StopInputs,
+    /// This animation's index in the node's `animation-name` list at its last
+    /// cascade, so a later cascade matches repeated names by position even
+    /// when the entries are split between the running and the finished maps
+    /// (#780).
+    pub(crate) position: usize,
+}
+
+/// The inputs a kept animation's keyframe stops were extracted from (#766).
+///
+/// The blocks are held, not just their addresses, so an address cannot be
+/// reused by a different rule while this compares against it. Stylo shares a
+/// keyframe's declaration block between the `@keyframes` rule and every
+/// cascade data rebuilt from it, so a sheet flush that leaves the rule alone
+/// leaves these equal, and a redefined, removed or newly winning rule does not.
+///
+/// Of the base-style inputs, only the ones the authored stops **read** at
+/// extraction count ([`StopDeps`]): a `to { transform: rotate(…) }` spin reads
+/// none, so a hover that moves the element's `color` or `font-size` keeps its
+/// stops, and a `from { background-color: currentcolor }` reads the colour, so
+/// the same hover re-extracts them. The implicit (base) values of a 0%/100%
+/// stop are not inputs: they are re-read on every cascade anyway
+/// ([`super::keyframes::refresh_implicit_values`]).
+#[derive(Clone)]
+pub(crate) struct StopInputs {
+    /// One per keyframe step; `None` for a step Stylo generated.
+    blocks: Vec<
+        Option<
+            servo_arc::Arc<style::shared_lock::Locked<style::properties::PropertyDeclarationBlock>>,
+        >,
+    >,
+    /// The values the stops resolved against, and which of them they read.
+    basis: StopBasis,
+}
+
+impl StopInputs {
+    /// The inputs of stops just extracted from `animation` against `basis`.
+    pub(crate) fn new(animation: &KeyframesAnimation, basis: StopBasis) -> Self {
+        Self {
+            blocks: animation
+                .steps
+                .iter()
+                .map(|step| match &step.value {
+                    KeyframesStepValue::Declarations { block } => Some(block.clone()),
+                    KeyframesStepValue::ComputedValues => None,
+                })
+                .collect(),
+            basis,
+        }
+    }
+
+    /// Whether stops extracted from `animation` against `basis` would come out
+    /// as the ones these inputs produced: the same declaration blocks, and the
+    /// same value for every base-style input those blocks read.
+    pub(crate) fn hold_for(&self, animation: &KeyframesAnimation, basis: &StopBasis) -> bool {
+        self.blocks.len() == animation.steps.len()
+            && self
+                .blocks
+                .iter()
+                .zip(&animation.steps)
+                .all(|(held, step)| match (held, &step.value) {
+                    (Some(a), KeyframesStepValue::Declarations { block }) => {
+                        servo_arc::Arc::ptr_eq(a, block)
+                    }
+                    (None, KeyframesStepValue::ComputedValues) => true,
+                    _ => false,
+                })
+            && self.basis.agrees_on(basis, self.basis.read())
+    }
+}
+
+impl std::fmt::Debug for StopInputs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StopInputs")
+            .field("steps", &self.blocks.len())
+            .field("read", &self.basis.read())
+            .finish()
+    }
+}
+
+/// Which base-style inputs a rule's authored keyframe stops read when they
+/// were extracted ([`StopInputs`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StopDeps {
+    /// An `em` length: the element's `font-size`.
+    pub(crate) em: bool,
+    /// A `rem` length: the root font size.
+    pub(crate) rem: bool,
+    /// A `currentcolor`: the element's `color`.
+    pub(crate) color: bool,
+    /// `color: currentcolor`: the parent's `color`.
+    pub(crate) parent_color: bool,
 }
 
 /// Result of computing animation values at a given time.
