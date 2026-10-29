@@ -1238,7 +1238,10 @@ pub trait DomDocument {
     /// rinch-dom counts the element's own generated text on that edge (its
     /// `::after` at the end, its `::before` at the start) as part of it
     /// (#891): the inner side is the caret on the element's side of that
-    /// text, the outer side past it and past any padding.
+    /// text. The outer side is past any padding; with none, the end edge's
+    /// outer side is before the `::after` text too (Chrome's caret after a
+    /// link with an arrow), and the start edge's is before the `::before`
+    /// text.
     fn query_inline_edge_caret(
         &self,
         _node_id: u64,

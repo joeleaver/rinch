@@ -252,8 +252,11 @@ fn a_caret_after_the_link_is_beside_its_own_character() {
 
 /// A press just right of the arrow, on the left half of the `.`, puts the
 /// cursor right after the link — not three characters on — and the caret is
-/// drawn there: past the arrow, where the next typed character (outside the
-/// non-inclusive link) lands.
+/// drawn there before the arrow, as Chrome draws the caret at the end of a
+/// link with an `::after` (#2035's review, F2: Chrome 156 draws `<a>link</a>`'s
+/// end at 71.4 with its arrow at 71.4–84.8, and a press anywhere on the
+/// arrow gives that position). A typed character still lands after the
+/// (non-inclusive) link, past the arrow.
 #[test]
 fn a_press_right_of_the_arrow_puts_the_caret_after_the_link() {
     let mut p = page(ISSUE_P, ISSUE_TEXT, ARROW_AFTER);
@@ -264,11 +267,12 @@ fn a_press_right_of_the_arrow_puts_the_caret_after_the_link() {
     let after_link = p.pos_of(". and");
     assert_eq!(p.handle.selection(), Selection::cursor(after_link));
     let painted = p.painted_caret();
-    let arrow_right = arrow.0 + arrow.2;
     assert!(
-        (painted - arrow_right).abs() <= 1.0,
-        "the caret is drawn past the arrow, at {arrow_right}: {painted}"
+        (painted - arrow.0).abs() <= 1.0,
+        "the caret is drawn before the arrow, at {}: {painted}",
+        arrow.0
     );
+    p.assert_caret(after_link, p.flat_of("\u{2197}"), "the link's end");
     // A press further on lands on its own character.
     let m = p.glyph(p.flat_of("more"));
     p.press(m.0 + m.2 * 0.75, m.1 + m.3 / 2.0);
@@ -317,6 +321,13 @@ fn a_selection_over_the_link_highlights_its_own_characters() {
     let r = boxes.iter().map(|b| b.0 + b.1).fold(f32::MIN, f32::max);
     let want = p.parley_caret(p.laid_out().len()).0;
     assert!((r - want).abs() <= 1.0, "{boxes:?} ends at {want}");
+    // And one that starts after the link starts at its own first character
+    // (#2035's review, F3: its left edge was never checked).
+    let want = p.parley_caret(p.flat_of("more")).0;
+    assert!(
+        (boxes[0].0 - want).abs() <= 1.0,
+        "{boxes:?} starts at {want}"
+    );
 }
 
 /// Two decorated links: the shifts add up.
@@ -326,8 +337,13 @@ fn two_decorated_links_shift_the_text_after_both() {
     let text = "see alpha then beta and the end";
     let mut p = page(html, text, ARROW_AFTER);
     assert_eq!(p.laid_out().len(), text.len() + 6);
-    for needle in ["then", "beta", " and", "end"] {
+    for needle in ["then", "beta", "and", "end"] {
         let (pos, flat) = (p.pos_of(needle), p.flat_of(needle));
+        p.assert_caret(pos, flat, needle);
+    }
+    // Each link's end is drawn before its own arrow.
+    for (needle, n) in [(" then", 0), (" and", 1)] {
+        let (pos, flat) = (p.pos_of(needle), p.flat_nth("\u{2197}", n));
         p.assert_caret(pos, flat, needle);
     }
     let (end, flat) = (p.end(), p.laid_out().len());
@@ -441,5 +457,219 @@ fn right_to_left_text_after_a_decorated_link() {
     for needle in ["\u{631}", "\u{628}\u{627}\u{644}", "\u{639}"] {
         let (pos, flat) = (p.pos_of(needle), p.flat_of(needle));
         p.assert_caret(pos, flat, needle);
+    }
+}
+
+// ---- #2035's review: F1 (wrapped generated text), F3 (the missing pins) ----
+
+impl Page {
+    fn key_mod(&mut self, key: KeyCode, modifiers: Modifiers) {
+        self.app.handle_event(
+            PlatformEvent::KeyDown {
+                key,
+                logical_key: None,
+                text: None,
+                modifiers,
+                repeat: KeyRepeat::Fresh,
+            },
+            VP,
+            1.0,
+        );
+        self.app.handle_event(
+            PlatformEvent::KeyUp {
+                key,
+                logical_key: None,
+                modifiers,
+            },
+            VP,
+            1.0,
+        );
+        self.repaint();
+    }
+
+    fn key(&mut self, key: KeyCode) {
+        self.key_mod(key, Modifiers::default());
+    }
+
+    /// The painted caret overlay's `(x, y)`.
+    fn caret_xy(&self) -> (f32, f32) {
+        let doc = self.app.doc.as_ref().unwrap().borrow();
+        let id = doc.query_selector_all("[data-pm-caret]")[0];
+        let b = painted_element_box(&doc.tree, id.0);
+        (b.0, b.1)
+    }
+
+    /// The painted selection highlight boxes `(x, y, w)`, top to bottom,
+    /// left to right.
+    fn highlight_xyw(&mut self, from: Pos, to: Pos) -> Vec<(f32, f32, f32)> {
+        self.handle.set_selection(Selection::text(from, to));
+        self.repaint();
+        let doc = self.app.doc.as_ref().unwrap().borrow();
+        let mut boxes: Vec<(f32, f32, f32)> = doc
+            .query_selector_all("[data-pm-selection]")
+            .into_iter()
+            .map(|id| {
+                let (x, y, w, _) = painted_element_box(&doc.tree, id.0);
+                (x, y, w)
+            })
+            .filter(|&(_, _, w)| w > 0.0)
+            .collect();
+        boxes.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.total_cmp(&b.0)));
+        boxes
+    }
+}
+
+/// A press inside multi-character generated text — the right half of the `→`
+/// of a link's `::before` `"→ "` — is the position that text stands at, the
+/// link's start (Chrome 156 gives the link's start for a press there too),
+/// not a position before it.
+#[test]
+fn a_press_inside_multi_character_before_text_is_the_link_start() {
+    let css = "[data-pm-editor] a[href^=\"http\"]::before { content: \"\\2192  \"; }";
+    let mut p = page(ISSUE_P, ISSUE_TEXT, css);
+    let arrow = p.glyph(p.flat_of("\u{2192}"));
+    assert!(arrow.2 > 4.0, "the arrow has a right half: {arrow:?}");
+    p.press(arrow.0 + arrow.2 * 0.75, arrow.1 + arrow.3 / 2.0);
+    assert_eq!(p.handle.selection(), Selection::cursor(p.pos_of("https")));
+}
+
+/// The inner side of a start edge: a caret at the start of a paragraph that
+/// opens with a bold run carries bold (ProseMirror's marks at a block's
+/// start are the run's after it), so typed text goes into the run, and the
+/// caret is drawn inside it, after its `::before` text. Chrome 156 draws
+/// `<p><b>bold</b> rest</p>`'s `b@0` after `b::before`'s `§ ` (23.6, the
+/// `§ ` 10–23.6), and typing there goes into the `<b>`.
+#[test]
+fn a_caret_inside_a_start_edge_is_drawn_after_its_before_text() {
+    let css = "[data-pm-editor] strong::before { content: \"\\00a7  \"; }";
+    let html = "<p><strong>bold</strong> rest</p>";
+    let text = "bold rest";
+    let mut p = page(html, text, css);
+    assert_eq!(p.laid_out(), "\u{a7} bold rest");
+    p.assert_caret(Pos(1), p.flat_of("bold"), "the start, inside the bold run");
+    let (pos, flat) = (Pos(2), p.flat_of("old"));
+    p.assert_caret(pos, flat, "one character in");
+}
+
+/// A selection over two lines whose second line runs under the arrow: only
+/// the arrow's own line has the hole (Chrome leaves generated content out of
+/// the highlight; the cut is per line).
+#[test]
+fn a_two_line_selection_cuts_the_arrow_on_its_own_line_only() {
+    let css = "[data-pm-editor] a[href^=\"http\"]::after { content: \"\\2197\"; font-size: 0.7em; } \
+               [data-pm-editor] p { width: 380px; }";
+    let html = "<p>hello world see <a href=\"https://example.com/docs\">https://example.com/docs</a>. and more text after it, enough to run the second line well past the arrow</p>";
+    let text = "hello world see https://example.com/docs. and more text after it, enough to run the second line well past the arrow";
+    let mut p = page(html, text, css);
+    let arrow = p.glyph(p.flat_of("\u{2197}"));
+    let boxes = p.highlight_xyw(p.pos_of("see"), p.end());
+    let arrow_mid = arrow.0 + arrow.2 / 2.0;
+    // The line under the arrow's line runs past the arrow's x.
+    let line2 = boxes
+        .iter()
+        .map(|b| b.1)
+        .find(|&y| y > arrow.1 + 10.0)
+        .unwrap_or_else(|| panic!("the selection wraps: {boxes:?}"));
+    let right2 = boxes
+        .iter()
+        .filter(|b| (b.1 - line2).abs() < 1.0)
+        .map(|b| b.0 + b.2)
+        .fold(f32::MIN, f32::max);
+    assert!(
+        right2 > arrow.0 + arrow.2 + 2.0,
+        "line 2 runs past the arrow ({arrow:?}): {boxes:?}"
+    );
+    assert!(
+        !boxes
+            .iter()
+            .any(|b| b.1 < line2 - 1.0 && b.0 < arrow_mid && arrow_mid < b.0 + b.2),
+        "the arrow at {arrow_mid} is not highlighted on its line: {boxes:?}"
+    );
+    assert!(
+        boxes
+            .iter()
+            .any(|b| (b.1 - line2).abs() < 1.0 && b.0 < arrow_mid && arrow_mid < b.0 + b.2),
+        "line 2 is highlighted under the arrow's x {arrow_mid}: {boxes:?}"
+    );
+}
+
+/// A page whose link ends line 1 and whose `::after` (` ↗↗↗`) wraps: the
+/// space stays on line 1, the arrows go to line 2. `pad` is extra CSS for
+/// the link.
+fn wrapped_arrows(pad: &str) -> Page {
+    let html = "<p>aaaa bbbb <a href=\"https://z.example\">link</a> tail words more words</p>";
+    let text = "aaaa bbbb link tail words more words";
+    for w in (60..400).step_by(2) {
+        let css: &'static str = Box::leak(
+            format!(
+                "[data-pm-editor] a[href^=\"http\"]::after {{ content: \" \\2197\\2197\\2197\"; }} \
+                 [data-pm-editor] a[href^=\"http\"] {{ {pad} }} \
+                 [data-pm-editor] p {{ width: {w}px; }}"
+            )
+            .into_boxed_str(),
+        );
+        let p = page(html, text, css);
+        let first = p.glyph(0);
+        let link_end = p.glyph(p.flat_of("link") + 3);
+        let arrow = p.glyph(p.flat_of("\u{2197}"));
+        if (first.1 - link_end.1).abs() < 0.5 && arrow.1 > link_end.1 + 10.0 {
+            return p;
+        }
+    }
+    panic!("no width wraps the arrows alone");
+}
+
+/// #2035's review, F1: a link that ends line 1, its `::after` arrows wrapped
+/// to line 2. Chrome 156 (`p { width: 120px }`, the same shape): End on line 1
+/// is the link's end, drawn on line 1 at the link's right edge (128.3, 70);
+/// ArrowDown goes to line 2 (" tail"@5, 80.3, 90); ArrowUp comes back to the
+/// link's end on line 1; a press right of the link on line 1 is the link's
+/// end on line 1; text typed there goes after `</a>`.
+#[test]
+fn a_link_end_whose_after_text_wraps_stays_on_its_line() {
+    for pad in ["", "padding-right: 6px;"] {
+        let mut p = wrapped_arrows(pad);
+        let line1 = p.glyph(0).1;
+        let line2 = p.glyph(p.flat_of("\u{2197}")).1;
+        let link_end = p.pos_of(" tail");
+        // Parley's caret right after `link`, on its line.
+        let want_x = {
+            let l = p.glyph(p.flat_of("link") + 3);
+            l.0 + l.2
+        };
+        let on = |xy: (f32, f32), y: f32| (xy.1 - y).abs() < 2.0;
+
+        p.handle.set_selection(Selection::cursor(Pos(1)));
+        p.repaint();
+        p.key(KeyCode::End);
+        let end = (p.handle.selection().head(), p.caret_xy());
+        assert_eq!(end.0, link_end, "{pad}: End on line 1 is the link's end");
+        assert!(
+            on(end.1, line1) && (end.1.0 - want_x).abs() <= 1.0,
+            "{pad}: End draws the caret on line 1 at {want_x}, {line1}: {end:?}"
+        );
+
+        p.key(KeyCode::ArrowDown);
+        let down = (p.handle.selection().head(), p.caret_xy());
+        assert!(
+            down.0 > link_end && on(down.1, line2),
+            "{pad}: ArrowDown goes to line 2 ({line2}): {down:?}"
+        );
+        p.key(KeyCode::ArrowUp);
+        let up = (p.handle.selection().head(), p.caret_xy());
+        assert!(
+            up.0 <= link_end && on(up.1, line1),
+            "{pad}: ArrowUp comes back to line 1 ({line1}): {up:?}"
+        );
+
+        // A press right of the link, at the end of line 1.
+        let l = p.glyph(p.flat_of("link") + 3);
+        p.press(l.0 + l.2 + 3.0, l.1 + l.3 / 2.0);
+        assert_eq!(p.handle.selection(), Selection::cursor(link_end), "{pad}");
+        let xy = p.caret_xy();
+        assert!(
+            on(xy, line1) && (xy.0 - want_x).abs() <= 1.0,
+            "{pad}: the pressed caret is on line 1 at {want_x}: {xy:?}"
+        );
     }
 }

@@ -1383,9 +1383,14 @@ impl DomDocument for RinchDocument {
     /// end edge box, and a `::before`'s after its start edge box, so the
     /// element's own content stops at the generated text, and the edge runs
     /// from there out past the box. Its inner side (inside the element at its
-    /// end, or at its start) is the caret at the generated text's inner end;
-    /// its outer side the box's, or with no box the generated text's outer
-    /// end.
+    /// end, or at its start) is the caret at the generated text's inner end.
+    /// Its outer side is the box's; with no box, the end edge's outer side
+    /// is the inner caret — before the `::after` text, as Chrome draws the
+    /// caret after a link with an arrow (#2035's review, F2) — and the start
+    /// edge's is before the `::before` text. An end box on another line than
+    /// the inner caret (the `::after` text wrapped) also answers the inner
+    /// caret, so the caret for "after the link" stays on the link's line, as
+    /// Chrome's does (F1).
     fn query_inline_edge_caret(
         &self,
         node_id: u64,
@@ -1406,17 +1411,26 @@ impl DomDocument for RinchDocument {
         // The inner side: the leading side of the end edge, the trailing
         // side of the start edge.
         let inner = end != after;
-        let (byte, affinity) = match (inner, end) {
+        let caret_at = |byte: usize, affinity: CaretAffinity| {
+            let (x, _) = self.query_caret_position_with_affinity(node_id, byte, affinity)?;
+            let (top, height) = self.query_line_box(node_id, byte, affinity)?;
+            Some((x, top, height))
+        };
+        match (inner, end) {
             // Inside at the end: after the element's own last character,
             // on its line.
-            (true, true) => (start, CaretAffinity::Upstream),
-            (true, false) => (stop, CaretAffinity::Downstream),
-            (false, true) => return boxed().or_else(|| self.edge_text_caret(node_id, stop)),
-            (false, false) => return boxed().or_else(|| self.edge_text_caret(node_id, start)),
-        };
-        let (x, _) = self.query_caret_position_with_affinity(node_id, byte, affinity)?;
-        let (top, height) = self.query_line_box(node_id, byte, affinity)?;
-        Some((x, top, height))
+            (true, true) => caret_at(start, CaretAffinity::Upstream),
+            (true, false) => caret_at(stop, CaretAffinity::Downstream),
+            (false, true) => {
+                let inside = caret_at(start, CaretAffinity::Upstream);
+                match (boxed(), inside) {
+                    (Some(b), Some(i)) if (b.1 - i.1).abs() < 0.5 => Some(b),
+                    (b, None) => b,
+                    (_, i) => i,
+                }
+            }
+            (false, false) => boxed().or_else(|| caret_at(start, CaretAffinity::Downstream)),
+        }
     }
 
     fn query_inline_edge_caret_rect(
@@ -2667,15 +2681,6 @@ impl RinchDocument {
         let first = ranges.next()?;
         let stop = ranges.next_back().map_or(first.flat_end, |r| r.flat_end);
         Some((first.flat_start, stop))
-    }
-
-    /// A caret at `byte` of `node_id`'s layout drawn as an edge caret is: at
-    /// the top of its line and one line high.
-    fn edge_text_caret(&self, node_id: u64, byte: usize) -> Option<(f32, f32, f32)> {
-        let (x, _) =
-            self.query_caret_position_with_affinity(node_id, byte, CaretAffinity::Downstream)?;
-        let (top, height) = self.query_line_box(node_id, byte, CaretAffinity::Downstream)?;
-        Some((x, top, height))
     }
 
     /// `rects` (selection rects of `node_id` over `byte_a..byte_b`) less the
