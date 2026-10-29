@@ -51,6 +51,24 @@
 //! | r7 | `PB`: `relative; left: 20px` 150x60, `translate(30px, 40px)` | 25x13 |
 //! | r8 | `PB`: `relative; top: -10%` 100x90 | 0x16 |
 //! | r9 | `PB`: `relative; left: -10%` 180x50 | 16x0 |
+//! | n1 | 200x100: 300x50, `margin-right: -50px` | 100x0 |
+//! | r10 | 200x100: `relative; top: 60px` 100x80 | 0x40 |
+//! | i1 | 200x100: `<span style="margin-bottom: 200px">x</span>` | 0x0 |
+//! | i2 | 200x100: `<b style="margin-bottom: 150px">x</b><i>y</i>` | 0x0 |
+//! | i3 | 200x100: `<span style="margin-right: 300px">x</span>` | 107x0 (the line) |
+//! | i4 | 200x100: `<img>` 50x20 `vertical-align: top`, `margin-bottom: 200px` | 0x120 |
+//! | i5 | the same `<img>`, `margin-right: 200px` | 50x0 |
+//! | i6 | 200x100: `inline-block` 50x20 `vertical-align: top`, `margin-bottom: 200px` | 0x120 |
+//! | i7 | the same as `inline-flex` / `inline-grid` with `margin-right: 200px` | 50x0 |
+//! | g1 | 200x100 grid `100px 100px`: 50x20, `margin-right: 100%` | 0x0 |
+//! | g2 | g1 with `margin-right: 200%` | 0x0 |
+//! | g3 | 200x100 grid (auto column): 50x20, `margin-right: 150%` | 0x0 |
+//! | g4 | g1's grid: 50x20, `margin-bottom: 200%` | 0x120 (here 0: a known gap) |
+//! | g5 | g1's grid: 50x20, `margin-right: 300px` | 0x0 (here 150: a known gap) |
+//!
+//! A `position: sticky` child is laid out by Taffy as a `relative` one at its
+//! inset (`top: 20px` scrolls 0x20 here, 0x0 in Chrome, before #776 too), so
+//! no row pins sticky: it would pin rinch's own wrong layout.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -86,6 +104,30 @@ fn scroller(container_style: &str, children: &[&str]) -> (RinchDocument, NodeId)
 /// `(max_scroll_x, max_scroll_y)` of the bars, `0.0` for an axis with none.
 fn max_scroll(container_style: &str, children: &[&str]) -> (f64, f64) {
     let (doc, id) = scroller(container_style, children);
+    ranges(&doc, id)
+}
+
+/// [`max_scroll`] of a scroll container whose content is `html`, with
+/// `line-height: 16px; font-size: 14px` declared so a line's height does not
+/// come from the host's fonts.
+fn max_scroll_html(container_style: &str, html: &str) -> (f64, f64) {
+    let mut doc = RinchDocument::new();
+    doc.load_css(CSS);
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        &format!("{container_style} line-height: 16px; font-size: 14px;"),
+    );
+    doc.append_child(body, container);
+    doc.set_inner_html(container, html);
+    doc.resolve_layout(800.0, 600.0);
+    ranges(&doc, container)
+}
+
+/// The bars' ranges of `id`, checked against the wheel's.
+fn ranges(doc: &RinchDocument, id: NodeId) -> (f64, f64) {
     let bars = scrollbars(&doc.tree, id.0, 1.0);
     let x = bars.horizontal.map_or(0.0, |t| t.max_scroll);
     let y = bars.vertical.map_or(0.0, |t| t.max_scroll);
@@ -446,5 +488,137 @@ fn a_startward_percentage_offset_keeps_the_static_box() {
             &["position: relative; left: -10%; width: 180px; height: 50px"],
         ),
         (16.0, 0.0),
+    );
+}
+
+// ── Review of #2004: the remaining branches, inline boxes, grid items ───
+
+/// The floor on the **inline** axis too: a 300px block with `margin-right:
+/// -50px` scrolls its whole border box, 100. Without the floor it was 50.
+#[test]
+fn a_negative_end_margin_does_not_shrink_the_border_box_inline() {
+    assert_range(
+        max_scroll(B, &["width: 300px; height: 50px; margin-right: -50px"]),
+        (100.0, 0.0),
+    );
+}
+
+/// A `relative` offset on the **block** axis alone still counts where the box
+/// is drawn: 60 + 80 - 100 = 40. Counting the drawn box only for an x offset
+/// gave 0.
+#[test]
+fn a_relative_offset_down_counts_where_it_is_drawn() {
+    assert_range(
+        max_scroll(
+            B,
+            &["position: relative; top: 60px; width: 100px; height: 80px"],
+        ),
+        (0.0, 40.0),
+    );
+}
+
+/// A non-replaced `display: inline` box's vertical margins do nothing (CSS
+/// 2.1 §10.6.1), so they add no range: Chrome 0x0 for both. Counting its
+/// margin box (the first cut of #776) gave 0x100 and 0x50 — a bar main never
+/// drew.
+#[test]
+fn an_inline_boxs_vertical_margin_adds_no_range() {
+    assert_range(
+        max_scroll_html(B, "<span style='margin-bottom: 200px'>x</span>"),
+        (0.0, 0.0),
+    );
+    assert_range(
+        max_scroll_html(B, "<b style='margin-bottom: 150px'>x</b><i>y</i>"),
+        (0.0, 0.0),
+    );
+}
+
+/// Its inline-axis margin is in its line, which the container's inline
+/// layout measures: 300 + the glyph's width - 200. Chrome 107; the glyph's
+/// width is the host font's, so only the margin's share is pinned.
+#[test]
+fn an_inline_boxs_end_margin_is_in_its_line() {
+    let (x, y) = max_scroll_html(B, "<span style='margin-right: 300px'>x</span>");
+    assert!((100.0..120.0).contains(&x) && y == 0.0, "({x}, {y})");
+}
+
+/// A replaced element at `display: inline` is an atomic inline, and its
+/// margins count on both axes: 20 + 200 - 100 = 120 and 50 + 200 - 200 = 50
+/// (Chrome 0x120, 50x0).
+#[test]
+fn an_inline_images_margins_still_count() {
+    let img = "width: 50px; height: 20px; vertical-align: top";
+    assert_range(
+        max_scroll_html(B, &format!("<img style='{img}; margin-bottom: 200px'>")),
+        (0.0, 120.0),
+    );
+    assert_range(
+        max_scroll_html(B, &format!("<img style='{img}; margin-right: 200px'>")),
+        (50.0, 0.0),
+    );
+}
+
+/// So do an `inline-block`'s, an `inline-flex`'s and an `inline-grid`'s
+/// (Chrome 0x120, 50x0, 50x0).
+#[test]
+fn an_atomic_inlines_margins_still_count() {
+    let b = "width: 50px; height: 20px; vertical-align: top";
+    assert_range(
+        max_scroll_html(
+            B,
+            &format!("<div style='display: inline-block; {b}; margin-bottom: 200px'></div>"),
+        ),
+        (0.0, 120.0),
+    );
+    for display in ["inline-flex", "inline-grid"] {
+        assert_range(
+            max_scroll_html(
+                B,
+                &format!("<div style='display: {display}; {b}; margin-right: 200px'></div>"),
+            ),
+            (50.0, 0.0),
+        );
+    }
+}
+
+/// A grid item's percentage margin resolves against its grid area, not the
+/// container, and Chrome counts the grid's tracks: `margin-right: 100%` or
+/// `200%` on a 50px item in a 100px column, and `150%` in an auto column,
+/// all scroll 0. Resolved against the 200px container they scrolled 50, 250
+/// and 150 (before #776: 0).
+#[test]
+fn a_grid_items_percentage_margin_adds_no_range() {
+    let item = "<div style='width: 50px; height: 20px; margin-right: {}'></div>";
+    let two = format!("{B} display: grid; grid-template-columns: 100px 100px;");
+    for pct in ["100%", "200%"] {
+        assert_range(max_scroll_html(&two, &item.replace("{}", pct)), (0.0, 0.0));
+    }
+    assert_range(
+        max_scroll_html(&format!("{B} display: grid;"), &item.replace("{}", "150%")),
+        (0.0, 0.0),
+    );
+}
+
+/// **Known gaps**, pinned at rinch's numbers so a fix shows: Chrome counts a
+/// grid's tracks rather than its items' margin boxes. A percentage that grows
+/// an auto row (`margin-bottom: 200%` of the 100px area: Chrome 0x120) counts
+/// nothing here, and a length margin that overflows a fixed column
+/// (`margin-right: 300px`: Chrome 0x0) counts here.
+#[test]
+fn a_grid_items_margins_against_the_tracks_known_gaps() {
+    let two = format!("{B} display: grid; grid-template-columns: 100px 100px;");
+    assert_range(
+        max_scroll_html(
+            &two,
+            "<div style='width: 50px; height: 20px; margin-bottom: 200%'></div>",
+        ),
+        (0.0, 0.0),
+    );
+    assert_range(
+        max_scroll_html(
+            &two,
+            "<div style='width: 50px; height: 20px; margin-right: 300px'></div>",
+        ),
+        (150.0, 0.0),
     );
 }

@@ -591,13 +591,19 @@ footer line sits after its rows.
 
 A child counts as a browser counts it (#776, #775): an in-flow child by its
 **margin box**, so a last child's `margin-bottom` (and a flex or grid item's
-end margins) is room to scroll to; a `transform`ed child also where it is
+end margins) is room to scroll to — except a plain `display: inline` element
+such as a `<span>`, whose vertical margins a browser ignores too; a `transform`ed child also where it is
 drawn; an `absolute` child by its border box alone, so a `position: absolute;
 inset: 0` overlay such as `LoadingOverlay` in a padded panel adds no scrollbar;
 and a `position: relative` child with an offset both where it is drawn and
 where it would have been.
 
 Where desktop still differs from a browser:
+
+- **A grid item's margins.** A browser counts the grid's tracks, not each
+  item's margin box: a percentage margin on a grid item counts nothing here
+  (it would resolve against the item's grid area), and a fixed margin that
+  overflows a fixed-size track counts here where a browser counts nothing.
 
 - **A margin that collapses through a child's end** — the last child of a
   `height: auto` child carrying `margin-bottom` — is not counted; a browser

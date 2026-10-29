@@ -35,6 +35,7 @@
 
 use crate::NodeTree;
 use crate::computed_style::{PositionValue, ScrollbarWidthValue};
+use crate::node::DisplayMode;
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo;
 
@@ -252,7 +253,11 @@ impl Scrollbars {
 ///   over-constrained block's *used* `margin-right` is negative, and Chrome
 ///   counts the declared one). Chrome extends this in-flow area by the
 ///   container's end padding, and the pair of paddings on each side of the
-///   frame difference cancel, so it is measured as is.
+///   frame difference cancel, so it is measured as is. Two exceptions: a
+///   non-replaced `display: inline` box counts its border box alone (its
+///   block-axis margins do nothing, its inline-axis ones are in its line),
+///   and a grid item's percentage margins count as 0, since they resolve
+///   against a grid area layout does not keep (see `extend_with_child`).
 /// * **Where it is drawn:** an `absolute` box's border box, an in-flow box's
 ///   border box at its `relative` offset, and either one's **transformed**
 ///   bounding box — no margins, and *not* extended by the end padding, so
@@ -312,6 +317,11 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
         ),
         content_box: visible_extents(tree, node_id),
         inline_measured,
+        grid: matches!(
+            cs.display,
+            crate::computed_style::DisplayValue::Grid
+                | crate::computed_style::DisplayValue::InlineGrid
+        ),
     };
     extend_with_children(tree, node_id, node_id, &frame, &mut right, &mut bottom);
     (
@@ -424,6 +434,10 @@ struct ContainerFrame {
     /// Whether the container's own inline layout is already measured, so a
     /// text node it lays out is skipped (see [`extend_with_children`]).
     inline_measured: bool,
+    /// Whether it is a grid container, whose items' percentage margins
+    /// resolve against their grid *area* — which layout does not keep — and
+    /// not against the container (see [`extend_with_child`]).
+    grid: bool,
 }
 
 /// Grow `right`/`bottom` by one box-tree child of the walk — by how it
@@ -478,8 +492,34 @@ fn extend_with_child(
         // A percentage margin, on either axis, resolves against the
         // containing block's width; `auto` counts as 0, and a negative margin
         // never pulls the end inside the border box.
-        let margin_right = cs.margin_right.resolve(cb_w).unwrap_or(0.0).max(0.0) as f64;
-        let margin_bottom = cs.margin_bottom.resolve(cb_w).unwrap_or(0.0).max(0.0) as f64;
+        //
+        // A grid item's containing block is its grid area, which layout does
+        // not keep, so its percentages count as 0 (the length part of a
+        // `calc()` still counts): `margin-right: 100%` on a 50px item in a
+        // 100px column scrolls 0 in Chrome, and resolved against the 200px
+        // container it scrolled 50. Chrome counts the grid's tracks rather
+        // than an item's margin box, so this under-counts a percentage that
+        // grows an auto track (`margin-bottom: 200%` in an auto row: Chrome
+        // 120, here 0) and over-counts a length margin that overflows a fixed
+        // track (`margin-right: 300px` on a 50px item in a 100px column:
+        // Chrome 0, here 150).
+        //
+        // A non-replaced `display: inline` box's block-axis margins do
+        // nothing (CSS 2.1 §10.6.1) and its inline-axis ones are already in
+        // the line the container's inline layout measured, so it counts its
+        // border box alone: `<span style="margin-bottom: 200px">` scrolls 0
+        // in Chrome. A replaced element at `display: inline` is
+        // `DisplayMode::InlineBlock` (#1089) and keeps its margins, as an
+        // `inline-block`, `inline-flex` and `inline-grid` box does.
+        let (margin_right, margin_bottom) = if child.display_mode == DisplayMode::Inline {
+            (0.0, 0.0)
+        } else {
+            let basis = if frame.grid { 0.0 } else { cb_w };
+            (
+                cs.margin_right.resolve(basis).unwrap_or(0.0).max(0.0) as f64,
+                cs.margin_bottom.resolve(basis).unwrap_or(0.0).max(0.0) as f64,
+            )
+        };
         *right = right.max(x - offset.0 + w + margin_right);
         *bottom = bottom.max(y - offset.1 + h + margin_bottom);
     }
