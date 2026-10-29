@@ -35,6 +35,8 @@
 //! `animation_start_gating_tests`, `finished_animation_no_fill_783_tests`,
 //! `filled_animation_frame_tests` and `paused_animation_frame_tests`. The
 //! source before the fix fails all eleven fixtures here.
+//! M10–M15 (the review of #2049, once the stops were keyed on the inputs they
+//! read) were run against this file alone.
 //!
 //! | Mutant | Killed by |
 //! |---|---|
@@ -48,6 +50,12 @@
 //! | **M7** only a generated stop is filled, not an authored one that omits a property | `a_property_missing_from_an_explicit_from_…`, alone |
 //! | **M8** a kept animation whose rule is gone is kept | `a_media_query_that_drops_…`, the theme file's dropped-rule fixture |
 //! | **M9** entries are not put back in declaration order before matching | `a_finished_and_a_running_animation_of_one_name_…`, alone |
+//! | **M10** the element's `color` left out of the inputs a stop read | `a_currentcolor_stop_follows_a_colour_class_change`, alone |
+//! | **M11** the parent's `color` left out of the inputs a stop read | `a_currentcolor_stop_on_color_follows_the_parent`, alone |
+//! | **M12** `font-size` left out of the inputs a stop read (M2, on the narrowed key) | `an_em_stop_follows_a_font_size_class_change`, alone |
+//! | **M13** `StopBasis` records no read, so no base-style input is compared | the three fixtures above |
+//! | **M14** only the 0% stop takes implicit values, not the 100% | `a_from_only_rule_runs_to_the_base`, alone |
+//! | **M15** a kept animation's `position` is not updated to its new index | `a_kept_animation_takes_its_new_position_when_a_name_is_prepended`, alone |
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;

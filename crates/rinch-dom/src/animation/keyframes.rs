@@ -210,7 +210,9 @@ pub(crate) fn refresh_implicit_values(stops: &mut [KeyframeStop], base_style: &C
 
 /// The element's base value for one animatable property, for an implicit
 /// keyframe stop. `None` for a property the base style does not carry here,
-/// which the stop then leaves out.
+/// which the stop then leaves out: until #767 (PR #2050) that is every
+/// property but the six below, so a `to { width: 110px }` rule has no implicit
+/// `from` and holds 110px throughout.
 fn base_style_value(
     style: &ComputedStyle,
     property: TransitionProperty,

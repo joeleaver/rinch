@@ -709,20 +709,39 @@ a hover, a `<style>` append, a `@media` flip or a theme, `start_animations`
 takes the timing (duration, delay, direction, fill, count, easing) from the
 spec, looks the `@keyframes` rule up again — **dropping the animation if no rule
 of that name exists any more**, as Chrome does — and re-extracts the stops when
-`ActiveAnimation::stop_inputs` moved: the rule's declaration blocks (held as
-`Arc`s, so a redefined, removed or newly winning rule compares unequal and a
-freed address cannot be reused under it), the element's `font-size` and
-`color`, the root's `font-size` and the parent's `color`. Otherwise it keeps the
-stops and re-reads only their **implicit** values
+`ActiveAnimation::stop_inputs` no longer holds: the rule's declaration blocks
+(held as `Arc`s, so a redefined, removed or newly winning rule compares unequal
+and a freed address cannot be reused under it), and **only the base-style
+inputs the authored stops read** at extraction. The extractor resolves through a
+`keyframes::StopBasis` that records each read (`StopDeps`): an `em` reads the
+element's `font-size`, a `rem` the root font size, a `currentcolor` the
+element's `color`, and `color: currentcolor` the parent's `color`. A
+`to { transform: rotate(…) }` spin reads none, so a hover that moves `color`
+re-extracts nothing; a `from { background-color: currentcolor }` reads the
+colour and is re-extracted by the same hover. (The "root font size" is
+`tree.root_id`'s, the document node's, which is always the initial 16px, so a
+`rem` stop ignores `html { font-size }` and that input never moves: #2058.)
+Otherwise it keeps the stops and re-reads only their **implicit** values
 (`keyframes::refresh_implicit_values`): a 0%/100% stop holds the element's base
 value for each property the rule animates and that stop does not author (Web
 Animations' neutral keyframe) — no other property, so a `to`-only `transform`
-spin never writes `color` — and that value follows the base style. A paused
+spin never writes `color` — and that value follows the base style. Which
+properties those are is settled once at extraction (`KeyframeStop::implicit`),
+and a cascade reads just those from the base style
+(`keyframes::base_style_value`). Until #767 (PR #2050) lands, that function
+carries opacity, background colour and position, colour and transform only, so
+an implicit stop for any other animated property is left out rather than
+filled from the base, and the authored value holds throughout
+(`to { width: 110px }` gives 110px at 30% where Chrome gives 40px from a 10px
+base). A paused
 animation keeps its frozen elapsed *time* across a re-timing, as Chrome keeps
 `currentTime`. Repeated names match by position from the end (`k 10s, k 20s`
 stays two animations); `ActiveAnimation::position` orders entries split between
-the running and finished maps. The cost on a cascade of an animated node is a
-keyframes lookup and that compare per animation; a node with no animation never
+the running and finished maps. The cost on a cascade of an animated node is,
+per animation, a keyframes lookup, a pointer compare per keyframe plus the
+inputs its stops read, and the re-read of its implicit values; an extraction
+only when an input it read moved (500 spinning rows under a colour class:
+`rinch-bench`'s `animated_list_color`). A node with no animation never
 reaches `start_animations`. A viewport change re-cascades the animated node only
 if Stylo reports a media-query result changed, which is the case where a
 `@media`-held `@keyframes` can have moved. One divergence the theme path reached, now

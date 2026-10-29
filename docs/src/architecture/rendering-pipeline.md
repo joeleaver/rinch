@@ -817,7 +817,7 @@ clock — `start_time_ms`, `paused_elapsed_ms`, `play_state` — and drops one w
 declaration the new sheet no longer carries. On this pass, as on every cascade
 of an animated node (#766), a kept animation takes everything else afresh: the
 `@keyframes` rule is looked up again and the animation dropped if it is gone,
-the stops are re-extracted when the rule or the base style they resolve against
+the stops are re-extracted when the rule or a base-style input they read
 changed, and the duration and delay come from the new declaration.
 
 Preserving rather than restarting is what a browser does, measured in Chrome
@@ -853,16 +853,28 @@ Animations 1 §3 says and Chrome 156 does: a new `animation-duration` or
 `animation-delay` re-times it around the kept `currentTime`, a redefined or
 newly winning `@keyframes` body plays at once, and a rule that is gone cancels
 it. Repeated names match by position from the end, so `k 10s, k 20s` stays two
-animations. What it costs a node cascaded while it animates is one keyframes
-lookup and a compare: `ActiveAnimation::stop_inputs` holds the rule's
-declaration blocks and the font sizes and colours an authored stop resolves
-against, and the stops are re-extracted only when one of those moved.
+animations. `ActiveAnimation::stop_inputs` holds the rule's declaration blocks
+and the base-style inputs the authored stops **read** when they were extracted
+— the element's `font-size` for an `em`, the root font size for a `rem`, the
+element's `color` for a `currentcolor`, the parent's for `color:
+currentcolor` — and the stops are re-extracted only when one of those moved.
+So a node cascaded while it animates pays a keyframes lookup, a pointer compare
+per keyframe and a re-read of its implicit values per animation, and a hover
+that changes `color` under a `transform` spin extracts nothing. Keying on every
+input instead, whether a stop read it or not, cost 500 spinning rows +3.2% on a
+body colour change and +6.1% on a colour hover (review of #2049, Callgrind);
+`rinch-bench`'s `animated_list_color` keeps this path under the Perf job. The
+root font size is the document node's, always 16px, so a `rem` stop does not
+follow `html { font-size }` yet (#2058).
 
 An **implicit keyframe** — the `from` or `to` Stylo generates for a rule that
 lacks one, and any property an authored `from`/`to` leaves out — is the
 element's base value for exactly the properties the rule animates (Web
 Animations' neutral keyframe), and it is re-read from the base style on every
-cascade (`keyframes::refresh_implicit_values`). It used to carry a fixed list
+cascade (`keyframes::refresh_implicit_values`). Until #767 (PR #2050) lands, the
+base value is available for opacity, background colour and position, colour
+and transform only; an implicit stop for another animated property is left
+out, so `to { width: 110px }` holds 110px throughout. It used to carry a fixed list
 (opacity, background colour and position, colour, transform), so a `to`-only
 `transform` spin pinned the element's `color` at the value it had when the spin
 started, and a `to { background-color }` fade kept fading from the background
