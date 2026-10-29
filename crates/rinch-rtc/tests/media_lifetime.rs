@@ -10,17 +10,25 @@
 //! flat with `MALLOC_ARENA_MAX=1` (31.2 MB after 10 calls and after 60)
 //! and levels off at about 62 MB with glibc's default arenas (one per
 //! thread, up to 8 per core, keeping freed memory). The test runs itself as
-//! a child with `MALLOC_ARENA_MAX=1`, where growth would be a leak.
+//! a child with `MALLOC_ARENA_MAX=1`.
+//!
+//! RSS still moved in allocator steps, over 3 MB in one ten-call window
+//! with no leak (#2009). So the test measures the heap in use instead,
+//! twice: what Rust code holds (a counting `#[global_allocator]`) and what
+//! glibc's malloc has handed out (`mallinfo2`, which also sees the C
+//! codecs' memory). Neither counts memory kept after a free, and both are
+//! read after the call's threads have exited.
 #![cfg(all(not(target_arch = "wasm32"), feature = "media"))]
 
 mod common;
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use common::media::{Pair, moving_box, tone};
-use common::{init, pump_until};
+use common::{drain_pump, init, pump_until};
 use rinch_rtc::media::{AudioSourceOptions, LocalTrack, MediaKind, VideoSourceOptions};
 
 const CHILD: &str = "RINCH_RTC_LIFETIME_CHILD";
@@ -38,6 +46,7 @@ fn threads() -> Vec<String> {
     names
 }
 
+/// For the log only: RSS moves in allocator steps (#2009).
 fn rss_kb() -> u64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -48,6 +57,71 @@ fn rss_kb() -> u64 {
                 .and_then(|v| v.parse().ok())
         })
         .unwrap_or(0)
+}
+
+/// The bytes Rust code holds right now: every allocation through the
+/// global allocator, less every deallocation.
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+struct Counting;
+
+// SAFETY: forwards every call to `System` unchanged; only counts.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let p = unsafe { System.alloc(layout) };
+        if !p.is_null() {
+            LIVE.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        p
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let p = unsafe { System.alloc_zeroed(layout) };
+        if !p.is_null() {
+            LIVE.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        p
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) };
+        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let p = unsafe { System.realloc(ptr, layout, new_size) };
+        if !p.is_null() {
+            LIVE.fetch_add(new_size, Ordering::Relaxed);
+            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        }
+        p
+    }
+}
+
+#[global_allocator]
+static COUNTING: Counting = Counting;
+
+/// The malloc heap in use, C code's included (the codecs': openh264, opus,
+/// libvpx), which `LIVE` cannot see. glibc's own count of allocated chunks,
+/// not RSS: memory the allocator keeps after a free is not in it.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn malloc_in_use() -> usize {
+    // SAFETY: no arguments; reads glibc's counters.
+    let m = unsafe { libc::mallinfo2() };
+    m.uordblks + m.hblkhd
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn malloc_in_use() -> usize {
+    0
+}
+
+fn named(prefix: &str) -> Vec<String> {
+    threads()
+        .into_iter()
+        .filter(|t| t.starts_with(prefix))
+        .collect()
+}
+
+fn rtc_threads() -> Vec<String> {
+    named("rinch-rtc-")
 }
 
 #[test]
@@ -75,8 +149,8 @@ fn thirty_calls_leave_nothing_behind() {
     init();
     let mixed = rinch_rtc::testing::capture_audio_output();
     let (w, h) = (320u32, 240u32);
-    // RSS after calls 10, 20 and 30.
-    let mut rss: Vec<u64> = Vec::new();
+    // The heap (Rust's, and malloc's) after calls 10, 20 and 30.
+    let mut heap: Vec<(usize, usize)> = Vec::new();
     let calls: usize = std::env::var("RINCH_RTC_LIFETIME_CALLS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -127,7 +201,20 @@ fn thirty_calls_leave_nothing_behind() {
         pair.b.close();
         drop((video, audio, back, pair));
         run.store(false, Ordering::Relaxed);
-        let _ = pump_until(|| false, Duration::from_millis(300));
+        // Every thread the call started exits, rinch-rtc's and the test's
+        // own sources (which hold a frame while they run); under load that
+        // can take well over the 300 ms this used to wait (#2009).
+        let _ = pump_until(
+            || rtc_threads().is_empty() && named("synth-").is_empty(),
+            Duration::from_secs(10),
+        );
+        let left = rtc_threads();
+        assert!(left.is_empty(), "call {call}: threads left {left:?}");
+        let sources = named("synth-");
+        assert!(sources.is_empty(), "call {call}: sources left {sources:?}");
+        // What they posted to the main thread on the way out is still
+        // queued: deliver it before the heap is counted.
+        drain_pump();
         // The test's own capture of the mixed audio grows 384 kB a second
         // of call (48 kHz stereo f32): not the calls' memory.
         {
@@ -135,27 +222,39 @@ fn thirty_calls_leave_nothing_behind() {
             m.clear();
             m.shrink_to_fit();
         }
-        let left: Vec<String> = threads()
-            .into_iter()
-            .filter(|t| t.starts_with("rinch-rtc-"))
-            .collect();
-        assert!(left.is_empty(), "call {call}: threads left {left:?}");
+        let (live, malloc) = (LIVE.load(Ordering::Relaxed), malloc_in_use());
+        eprintln!(
+            "after {} calls: {live} B live, {malloc} B malloc, RSS {} kB",
+            call + 1,
+            rss_kb()
+        );
         if call % 10 == 9 {
-            let r = rss_kb();
-            eprintln!("RSS after {} calls: {r} kB", call + 1);
-            rss.push(r);
+            heap.push((live, malloc));
         }
     }
-    // A leak grows every ten calls; the allocator can also keep a single
-    // step (seen twice in about fifteen runs on a loaded host: 14 MB once,
-    // flat before and after), which is not one. So the smaller of the last
-    // two ten-call growths must stay under 3 MB (0.3 MB a call; the leak
-    // this was written for was 1 MB).
-    if let [_, a, b, c, ..] | [a, b, c] = rss.as_slice() {
-        let (g1, g2) = (b.saturating_sub(*a), c.saturating_sub(*b));
-        assert!(
-            g1.min(g2) < 3_000,
-            "RSS grew {g1} kB over calls 10-20 and {g2} kB over calls 20-30: a leak"
-        );
+    // A leak grows every ten calls. Both counts are exact (no allocator
+    // step, no freed memory kept), so each ten-call growth is checked, not
+    // the smaller of two. Measured on a loaded host (#2009 and its review):
+    // Rust's heap grew 0 to 7.7 kB over ten calls, malloc's 6 to 52 kB
+    // (its first window still settling, about twice its second). The
+    // bounds are 8x and 5x those, so a leak of about 6.4 kB a call (Rust)
+    // or 26 kB a call (malloc, the C codecs included) fails; a planted
+    // 50 kB-a-call leak reads about 500 kB a window.
+    const RUST_BOUND: i64 = 64 * 1024;
+    const MALLOC_BOUND: i64 = 256 * 1024;
+    if !cfg!(all(target_os = "linux", target_env = "gnu")) {
+        eprintln!("malloc's heap is not counted on this target (glibc only)");
+    }
+    if let [a, b, c] = heap.as_slice() {
+        for (name, bound, x, y, z) in [
+            ("Rust's heap", RUST_BOUND, a.0, b.0, c.0),
+            ("the malloc heap", MALLOC_BOUND, a.1, b.1, c.1),
+        ] {
+            let (g1, g2) = (y as i64 - x as i64, z as i64 - y as i64);
+            assert!(
+                g1 < bound && g2 < bound,
+                "{name} grew {g1} B over calls 10-20 and {g2} B over calls 20-30 (bound {bound} B): a leak"
+            );
+        }
     }
 }
