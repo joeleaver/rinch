@@ -460,7 +460,7 @@ request and `RinchApp::apply_scroll_into_view` applies it after the layout
 through `app/scroll_into_view.rs`, which does what CSSOM View and Chrome do.
 It walks the target's DOM ancestors, and each one that `scrolls_x()` or
 `scrolls_y()` (so not a `display: contents` box, #1038, and not
-`overflow: hidden` — Chrome does scroll a hidden one, rinch does not) brings the
+`overflow: hidden` — Chrome does scroll a hidden one, rinch does not, #2013) brings the
 target's **painted** box into its scrollport, the **padding** box
 (`clientTop`/`clientHeight`), each axis `nearest`: inside or covering it moves
 nothing, otherwise the near edge is aligned (the start edge for a box larger
