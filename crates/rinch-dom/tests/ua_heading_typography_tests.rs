@@ -186,9 +186,9 @@ fn th_is_bold_and_centred_and_td_is_not() {
 /// | `text-align: justify` | `justify` | `justify` |
 /// | `text-align: start` | `center` | `start` |
 ///
-/// rinch folds the physical `left`/`right` onto `Start`/`End`
-/// (`text_align_from_stylo`), an LTR-only simplification that predates this
-/// change, so those two rows are asserted as `Start`/`End`.
+/// rinch keeps the physical `left`/`right` apart from `start`/`end` since the
+/// parley 0.12 upgrade gave a `direction: rtl` block its direction (they used
+/// to be folded onto `Start`/`End`, an LTR-only simplification).
 ///
 /// The `start` row is not redundant: `start` **is** the initial value, so the
 /// condition still holds and the cell centres. It separates "the parent
@@ -201,13 +201,13 @@ fn a_th_inherits_an_alignment_its_parent_declares() {
         ("", TextAlignValue::Center, TextAlignValue::Start),
         (
             "text-align: right",
-            TextAlignValue::End,
-            TextAlignValue::End,
+            TextAlignValue::Right,
+            TextAlignValue::Right,
         ),
         (
             "text-align: left",
-            TextAlignValue::Start,
-            TextAlignValue::Start,
+            TextAlignValue::Left,
+            TextAlignValue::Left,
         ),
         (
             "text-align: justify",
@@ -290,13 +290,13 @@ fn the_th_alignment_condition_reads_the_parent_not_an_ancestor() {
     );
     assert_eq!(
         align(&doc, th_inherits),
-        TextAlignValue::End,
+        TextAlignValue::Right,
         "control: with nothing resetting it, the same <th> inherits the \
          right-alignment (Chrome: right)"
     );
     assert_eq!(
         align(&doc, th_author),
-        TextAlignValue::Start,
+        TextAlignValue::Left,
         "an author declaration on the <th> beats the UA rule in either context"
     );
 }
@@ -357,7 +357,7 @@ fn an_author_declaration_beats_the_new_ua_heading_rules() {
         font_size(&doc, twelve)
     );
     assert_eq!(weight(&doc, th_normal), 400.0, "and on <th> too");
-    assert_eq!(align(&doc, th_left), TextAlignValue::Start, "`left` wins");
+    assert_eq!(align(&doc, th_left), TextAlignValue::Left, "`left` wins");
 }
 
 /// An author `font-size` moves the margins with it, because the UA margin is

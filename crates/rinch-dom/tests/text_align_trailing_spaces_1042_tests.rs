@@ -294,14 +294,11 @@ fn start_aligned_lines_are_unchanged() {
     near(l[1].1, 0.0);
 }
 
-/// A right-to-left paragraph is left as it was, not moved further from
-/// Chrome. Chrome 155 centres the whole line, its trailing spaces (at its left
-/// end) included: offset `(200 - advance) / 2`. rinch still hangs them, half a
-/// run short of that (a separate gap: parley offsets an RTL line by its
-/// trailing white space, so the fix here, a narrowed alignment width, would
-/// move it a whole run short instead, and is not applied to RTL).
+/// A right-to-left paragraph: Chrome 155 centres the whole line, its
+/// trailing spaces (at its left end) included: offset `(200 - advance) / 2`.
+/// Until parley 0.12 rinch hung them, half a run short of that.
 #[test]
-fn a_right_to_left_line_is_not_narrowed() {
+fn a_right_to_left_line_centres_its_trailing_spaces() {
     let (d, c) = lay_out(
         &format!("{W200};white-space:pre-wrap;text-align:center;direction:rtl"),
         "\u{5d0}\u{5d1}\u{5d2}   ",
@@ -310,9 +307,9 @@ fn a_right_to_left_line_is_not_narrowed() {
     let n = d.tree.get(c.0).unwrap();
     let il = n.text_layout.as_ref().unwrap();
     let m = *il.layout.lines().next().unwrap().metrics();
-    assert!(m.hanging_advance > 10.0, "the spaces are on the line");
-    let chrome = (200.0 - m.advance) / 2.0;
-    near(m.offset, chrome - m.hanging_advance / 2.0);
+    assert!(m.advance > 30.0, "the spaces are on the line: {}", m.advance);
+    assert_eq!(m.hanging_advance, 0.0, "and they fit, so none hangs");
+    near(m.offset, (200.0 - m.advance) / 2.0);
 }
 
 /// Only the spaces at the very end of a line hang; spaces of another

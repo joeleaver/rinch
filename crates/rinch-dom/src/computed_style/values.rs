@@ -869,12 +869,18 @@ impl LineHeightValue {
 }
 
 /// CSS text-align property values.
+///
+/// `left` and `right` are their own values, not `start` and `end`: they are
+/// the same only in a left-to-right paragraph, and rinch hands parley a
+/// `direction: rtl` block's direction (parley 0.12's base direction).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum TextAlignValue {
     #[default]
     Start,
     Center,
     End,
+    Left,
+    Right,
     Justify,
 }
 
@@ -885,6 +891,8 @@ impl TextAlignValue {
             Self::Start => parley::layout::Alignment::Start,
             Self::Center => parley::layout::Alignment::Center,
             Self::End => parley::layout::Alignment::End,
+            Self::Left => parley::layout::Alignment::Left,
+            Self::Right => parley::layout::Alignment::Right,
             Self::Justify => parley::layout::Alignment::Justify,
         }
     }

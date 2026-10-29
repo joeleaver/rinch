@@ -130,8 +130,8 @@ pub(super) fn text_align_from_stylo(align: &style::values::computed::TextAlign) 
     match *align {
         TextAlign::Start => TextAlignValue::Start,
         TextAlign::End => TextAlignValue::End,
-        TextAlign::Left => TextAlignValue::Start,
-        TextAlign::Right => TextAlignValue::End,
+        TextAlign::Left => TextAlignValue::Left,
+        TextAlign::Right => TextAlignValue::Right,
         TextAlign::Center => TextAlignValue::Center,
         TextAlign::Justify => TextAlignValue::Justify,
         _ => TextAlignValue::Start,

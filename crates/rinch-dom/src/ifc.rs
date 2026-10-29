@@ -1866,11 +1866,9 @@ fn break_lines_up_to(layout: &mut parley::Layout<Brush>, max_width: Option<f32>,
 /// When the paragraph's own width (its widest line, as a measure counts it:
 /// [`crate::node::measured_width_of`]) turns out to lie between that and
 /// `align.up_to` — a shrink-to-fit box floored from it — the lines are
-/// aligned within that width instead; when a line ends in white space
-/// [`align_unhung_trailing`] counts as content
-/// ([`any_counted_trailing_line`]); and when parley left an empty line after
-/// a final forced break ([`phantom_last_line`]): for any of those the
-/// paragraph is broken once more, for all of them at once.
+/// aligned within that width instead; and when parley left an empty line
+/// after a final forced break ([`phantom_last_line`]): for either the
+/// paragraph is broken once more, for both at once.
 fn break_unwrapped_aligned(
     layout: &mut parley::Layout<Brush>,
     text: &str,
@@ -2815,7 +2813,7 @@ impl RetiredAnonBoxes {
 }
 
 /// One cluster or inline box of a paragraph, in logical order: what the line
-/// breaker adds to a line's advance, and what [`hanging_after`] needs to know.
+/// breaker adds to a line's advance, and what the hang pass needs to know.
 struct LineUnit {
     advance: f32,
     /// A space or tab that hangs at a soft wrap: one whose element wraps
@@ -2835,9 +2833,8 @@ struct LineUnit {
     newline: bool,
     /// A no-break space (U+00A0), which parley hangs and CSS glues (#1218).
     nbsp: bool,
-    /// A space or NBSP cluster (parley's `is_space_or_nbsp`): what parley
-    /// counts as a justification opportunity ([`justify_line`]). A preserved
-    /// tab is one too: it is pushed to parley as a space (#1122).
+    /// A space or NBSP cluster (parley's `is_space_or_nbsp`). A preserved tab
+    /// is one too: it is pushed to parley as a space (#1122).
     space: bool,
     /// Counted by [`parley::layout::BreakLines::break_next_with_length`]:
     /// every cluster and in-flow inline box, not an out-of-flow box.
@@ -9344,16 +9341,25 @@ impl RinchDocument {
         // A line aligned away from its start in a left-to-right block is
         // aligned within the content width even when nothing wraps (#1237):
         // rinch hands parley no CSS `direction`.
+        let ltr = css_direction_is_ltr(nodes, root_id);
         let aligned_away = matches!(
             alignment,
             parley::layout::Alignment::Right
                 | parley::layout::Alignment::Center
                 | parley::layout::Alignment::End
-        ) && css_direction_is_ltr(nodes, root_id);
+        ) && ltr;
         let mut hang = HangStats::default();
         let mut builds = 0u32;
         let (text_layout, text_content) = loop {
             let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
+            // A `direction: rtl` block's paragraph is right to left whatever
+            // its text (parley 0.12 takes a base direction): its trailing
+            // spaces are at its visual left, inside the box (Chrome 155,
+            // review of #1669). A `ltr` one — the initial value, so nearly
+            // every block — is still left to parley's first-strong rule.
+            if !ltr {
+                builder.set_base_direction(parley::BaseDirection::Rtl);
+            }
             ifc_text.replay(&mut builder, emoji_family.as_ref(), &tab_spacing);
             let (mut text_layout, text_content) = builder.build();
             builds += 1;
