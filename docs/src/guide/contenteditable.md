@@ -1044,8 +1044,10 @@ where they are:
 
 Moving the caret into a part of a long, virtualized desktop editor that has not
 been laid out yet (Ctrl+End from the top, `set_selection` far below) lays out the
-caret's paragraph and scrolls to it; as the paragraphs around it are measured over
-the next frame or two, the scroll follows the caret, so it ends in view.
+caret's paragraph and scrolls to it; as the paragraphs around it are measured,
+within that frame, the scroll follows the caret, so it ends in view. A
+`scroll_into_view` asked for together with the caret move still decides where the
+view goes: the caret is not followed past it.
 
 Not covered: the moving end of a text **range** (Shift+arrow) is not revealed. An
 app that wants it on screen asks for it with `scroll_into_view`, below.

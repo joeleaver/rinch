@@ -22,9 +22,11 @@ use rinch_editor_view::registry;
 
 use super::virtual_window::CeVirtualWindow;
 
-/// One virtualized editor: `(doc_key, container id)`, its window, and the
-/// caret scroll it is following, if any.
-type WindowEntry = ((u64, usize), CeVirtualWindow, Option<CaretSettle>);
+/// One virtualized editor: `(doc_key, container id)`, its window, and whether
+/// this frame's caret scroll follows the caret while the window measures the
+/// blocks the scroll reaches (#845; set by [`pre_layout`], read by
+/// [`post_layout`]).
+type WindowEntry = ((u64, usize), CeVirtualWindow, bool);
 
 thread_local! {
     /// `((doc_key, container id), window)` for each scroll-container editor being
@@ -33,27 +35,6 @@ thread_local! {
     /// a window at a colliding id (issue #134).
     static WINDOWS: RefCell<Vec<WindowEntry>> =
         const { RefCell::new(Vec::new()) };
-}
-
-/// How many frames a caret scroll may keep following the caret after the
-/// window laid out its block by estimated heights (#845), so a settle that
-/// never stops moving cannot scroll forever. Each frame measures the blocks the
-/// last scroll reached, so it converges in two or three.
-const CARET_SETTLE_FRAMES: u8 = 8;
-
-/// A caret scroll fulfilled on a block [`pre_layout`] laid out for it, at a
-/// position computed from the estimated heights of the blocks above it. While
-/// it lasts, a frame whose window moved — measuring blocks, which moves the
-/// caret — owes the caret its scroll again.
-#[derive(Clone, Copy, Debug)]
-struct CaretSettle {
-    /// The caret the scroll is for; the settle ends when it moves.
-    pos: rinch_editor_core::Pos,
-    frames_left: u8,
-    /// The caret scroll was still owed when this frame began.
-    owed_at_start: bool,
-    /// The window moved this frame.
-    moved: bool,
 }
 
 /// Phase 1 (before layout): for every mounted editor that is a scroll container,
@@ -96,11 +77,13 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
                         continue;
                     }
                     let vw = CeVirtualWindow::new_filtered(container, doc, true);
-                    windows.push((key, vw, None));
+                    windows.push((key, vw, false));
                     windows.len() - 1
                 }
             };
-            let (_, vw, settle) = &mut windows[idx];
+            let (_, vw, follow) = &mut windows[idx];
+            // A follow lasts one frame: the frame of the caret scroll it is for.
+            *follow = false;
             // Re-sync only on a block-count change (insert/delete) — doing it every
             // frame would stomp measured heights with the default estimate.
             if block_count(doc, container) != vw.block_count() {
@@ -109,44 +92,33 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
             if !vw.is_active() {
                 continue;
             }
-            // A caret settle older than this frame: keep it only while the
-            // caret stays where it was scrolled to and the editor focused.
-            let head = handle.selection().head();
-            let owed = Some(container) == focused && handle.caret_scroll_owed();
-            if let Some(s) = settle
-                && (s.pos != head || Some(container) != focused || s.frames_left == 0)
-            {
-                *settle = None;
-            }
-            if let Some(s) = settle {
-                s.frames_left -= 1;
-                s.owed_at_start = owed;
-                s.moved = false;
-            }
             let protected = protected_block(doc, handle, container, focused);
-            let moved = vw.pre_layout_update(doc, &protected);
-            if let Some(s) = settle {
-                s.moved |= moved;
-            }
+            vw.pre_layout_update(doc, &protected);
             // A caret move that owes a scroll needs the block holding the
             // caret laid out, wherever the window is (#845): Ctrl+End or a
             // `set_selection` far below lands in a collapsed block, which has
             // no caret to scroll to, and the window — which follows the
             // scroll position — would never reach it. Only the focused
             // editor's caret pass fulfils that scroll, so only its caret. The
-            // scroll then lands where the block is by the estimated heights
-            // above it; `post_layout` follows it while the blocks it reaches
-            // are measured (`CaretSettle`).
+            // scroll lands where the block is by the estimated heights of the
+            // blocks above it, so `post_layout` follows the caret as the
+            // blocks the scroll reaches are measured, whether or not this call
+            // was what laid the block out. Known limit (#2019's review, F3): a
+            // caret move into a block that is laid out but sits below
+            // unmeasured blocks (an arrow key in a deep link's caret block) is
+            // scrolled by the input path's caret pass before any frame, so it
+            // is never owed here and not followed.
+            //
+            // Not while a `scroll_into_view` is pending: the caret pass runs
+            // the caret scroll first and the reveal after it, so the reveal
+            // wins, and following the caret would pull the view back off it.
+            let owed = Some(container) == focused && handle.caret_scroll_owed();
             if owed
-                && let Some(block) = block_at(doc, handle, head, container)
-                && vw.materialize(doc, block)
+                && handle.pending_reveal_range().is_none()
+                && let Some(block) = block_at(doc, handle, handle.selection().head(), container)
             {
-                *settle = Some(CaretSettle {
-                    pos: head,
-                    frames_left: CARET_SETTLE_FRAMES,
-                    owed_at_start: true,
-                    moved: false,
-                });
+                vw.materialize(doc, block);
+                *follow = true;
             }
             // A pending `scroll_into_view` needs the blocks holding its start
             // and its end laid out, wherever the window is: the reveal is what
@@ -183,7 +155,7 @@ pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<usize>, vw_w:
             let Some(idx) = windows.iter().position(|(k, _, _)| *k == key) else {
                 continue;
             };
-            let (_, vw, settle) = &mut windows[idx];
+            let (_, vw, follow) = &mut windows[idx];
             if !vw.is_active() {
                 continue;
             }
@@ -198,17 +170,14 @@ pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<usize>, vw_w:
             // A caret scrolled to by estimated heights (#845): the scroll moved
             // the window, the blocks it reached were measured, and their real
             // heights moved the caret — owe its scroll again, and the caret
-            // pass right after this follows it. Settled once a frame neither
-            // owed a caret scroll at its start nor moved the window.
-            if let Some(s) = settle {
-                s.moved |= moved;
-                if s.moved {
-                    if !handle.caret_scroll_owed() {
-                        handle.owe_caret_scroll();
-                    }
-                } else if !s.owed_at_start {
-                    *settle = None;
-                }
+            // pass right after this in `after_layout` follows it (a no-op
+            // when the caret is still in view). This runs in the frame's
+            // layout pass and in each bounds-settle pass after it — a pass
+            // runs only while the layout is dirty, so those passes bound the
+            // corrections; the next frame's `pre_layout` ends the follow, and
+            // a window still moving after the last pass is not followed.
+            if *follow && !handle.caret_scroll_owed() {
+                handle.owe_caret_scroll();
             }
         }
     });

@@ -306,3 +306,146 @@ fn scrolling_away_after_ctrl_end_stays_away() {
         scroll_of(&r)
     );
 }
+
+/// The position just inside block `b` (the editor's `b`th top-level child).
+fn pos_in_block(r: &Rig, b: usize) -> Pos {
+    let doc = r.handle.doc();
+    Pos((0..b).map(|i| doc.child(i).node_size()).sum::<usize>() + 1)
+}
+
+/// A deep link: the caret at the end of a range taller than the scroller, then
+/// a reveal of that range. The reveal decides where the view goes, as it does
+/// without the caret move; following the caret afterwards (#2019's review, F1)
+/// pulled the view thousands of pixels past the range's start.
+fn reveal_wins_over_a_caret_moved_with_it(reveal: impl Fn(&crate::editor::EditorHandle, Pos, Pos)) {
+    for (a, b) in [(150usize, 250usize), (200, 230)] {
+        let mut with_caret = rig();
+        let from = pos_in_block(&with_caret, a);
+        let to = Pos(pos_in_block(&with_caret, b).0 + 2);
+        with_caret.handle.set_selection(Selection::cursor(to));
+        reveal(&with_caret.handle, from, to);
+        frames(&mut with_caret, 12);
+        let mut alone = rig();
+        reveal(&alone.handle, from, to);
+        frames(&mut alone, 12);
+        assert!(
+            scroll_of(&alone) > 0.0,
+            "control: the reveal alone scrolled"
+        );
+        assert!(
+            (scroll_of(&with_caret) - scroll_of(&alone)).abs() < 40.0,
+            "{a}->{b}: with the caret moved {} vs the reveal alone {}",
+            scroll_of(&with_caret),
+            scroll_of(&alone)
+        );
+    }
+}
+
+#[test]
+fn d3_reveal_wins_over_a_caret_moved_with_it() {
+    reveal_wins_over_a_caret_moved_with_it(|h, from, to| h.scroll_into_view(from, to));
+}
+
+#[test]
+fn an_aligned_reveal_wins_over_a_caret_moved_with_it() {
+    reveal_wins_over_a_caret_moved_with_it(|h, from, to| {
+        h.scroll_into_view_aligned(from, to, crate::editor::ScrollAlign::Fraction(0.0))
+    });
+}
+
+/// A wheel scroll delivered right after Ctrl+End's frame, before the next one,
+/// is the user's: the caret follow belongs to the caret scroll's own frame and
+/// does not pull the view back to the caret (#2019's review, F4).
+#[test]
+fn a_wheel_scroll_right_after_ctrl_end_is_kept() {
+    let mut r = rig();
+    press(&mut r, KeyCode::End, ctrl());
+    frame(&mut r);
+    assert_caret_in_view(&r, "Ctrl+End");
+    r.app.handle_event(
+        PlatformEvent::MouseWheel {
+            x: 20.0,
+            y: 150.0,
+            delta_x: 0.0,
+            delta_y: 300.0,
+        },
+        VP,
+        1.0,
+    );
+    let user = scroll_of(&r);
+    frames(&mut r, 8);
+    assert!(
+        (scroll_of(&r) - user).abs() < 1.0,
+        "the wheel scroll to {user} was undone to {}",
+        scroll_of(&r)
+    );
+}
+
+/// Two virtualized editors side by side, editor 0 focused. A caret moved far
+/// below in the *unfocused* one scrolls nothing (its caret pass does not
+/// scroll, as with a non-virtualized editor); once it is focused, its owed
+/// scroll is performed and the caret is in view (#2019's review, P3).
+#[test]
+fn an_unfocused_editors_caret_is_scrolled_to_once_focused() {
+    let ids = Rc::new(RefCell::new(Vec::new()));
+    let ids_in = ids.clone();
+    let html: String = (0..BLOCKS)
+        .map(|i| {
+            if i < SHORT {
+                format!("<p>{i} short</p>")
+            } else {
+                format!("<p>{i} {}</p>", &LONG[..LONG.len() - (i * 7) % 60])
+            }
+        })
+        .collect();
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let h = crate::editor::create_editor();
+            assert!(h.load_html(&html));
+            h
+        })
+        .collect();
+    let hs = handles.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 800px; height: 600px; display: flex");
+        for h in &hs {
+            let editor = h.mount(scope);
+            editor.set_attribute(
+                "style",
+                "width: 380px; height: 300px; overflow-y: auto; font-family: sans-serif; \
+                 font-size: 16px; line-height: 20px; flex: none",
+            );
+            root.append_child(&editor);
+            ids_in.borrow_mut().push(editor.node_id().0);
+        }
+        root
+    });
+    app.register_app_font(AppFont::sans_serif(INTER));
+    app.text_keymap = TextKeymap::Standard;
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let editors = ids.borrow().clone();
+    app.focus_target = FocusTarget::Editor(editors[0]);
+    let mut r = Rig {
+        app,
+        handle: handles[1].clone(),
+        editor: editors[1],
+    };
+    frames(&mut r, 4);
+    let scroll_0 = |r: &Rig| {
+        r.app.doc.as_ref().unwrap().borrow().tree.nodes[editors[0]]
+            .scroll_offset
+            .1
+    };
+    let target = Pos(pos_in_block(&r, 200).0 + 2);
+    r.handle.set_selection(Selection::cursor(target));
+    frames(&mut r, 12);
+    assert_eq!(scroll_of(&r), 0.0, "the unfocused editor did not scroll");
+    assert_eq!(scroll_0(&r), 0.0, "the focused editor did not scroll");
+    r.app.focus_target = FocusTarget::Editor(editors[1]);
+    r.app.refresh_editor_overlays();
+    frames(&mut r, 12);
+    assert_caret_in_view(&r, "focused afterwards");
+    assert_eq!(scroll_0(&r), 0.0, "editor 0 untouched");
+}
