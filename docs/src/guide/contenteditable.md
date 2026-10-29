@@ -415,7 +415,7 @@ caches ranges maps them through `tr.mapping()` in its `apply`.
 
 `decorations()` is called on every transaction, a caret move included, so build
 its set from ranges the plugin already holds rather than re-scanning the
-document there. The view's own pass is linear in the decorations: it walks the
+document there. The view's own pass is about linear in the decorations (a sort, then one walk): it walks the
 top-level blocks once beside the decorations sorted by position and descends
 only into a block a decoration reaches (or one that still shows a segment to
 take off), and a run whose decorations did not change is not rewritten (#848).
