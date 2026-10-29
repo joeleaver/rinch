@@ -415,8 +415,8 @@ fn a_transition_declared_before_the_first_layout_does_not_run() {
 ///
 /// `has_been_styled` only suppresses a node's *first* cascade. A tree is
 /// cascaded more than once before its first layout: appending a `<style>`
-/// element re-resolves the whole document there and then
-/// (`maybe_load_style_css`), so a component that appends its own stylesheet
+/// element to the document restyles every element its rules reach there and
+/// then (`flush_stylist`, #884), so a component that appends its own stylesheet
 /// after building its markup leaves every node already styled, and the very
 /// next rule it loads is a *change* on an already-styled node. Without the
 /// flag that is a transition running on page load, which is the thing the flag
