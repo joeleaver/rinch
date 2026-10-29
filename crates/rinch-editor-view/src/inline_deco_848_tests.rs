@@ -192,7 +192,7 @@ fn a_keystroke_away_from_the_decorations_costs_linear_range_tests() {
     for (blocks, decos) in [(100, 100), (200, 200), (400, 400)] {
         let n = keystroke_range_tests(blocks, decos);
         assert!(
-            n <= 3 * (blocks + decos),
+            n <= 2 * (blocks + decos),
             "{blocks} blocks × {decos} decorations: {n} range tests for one keystroke"
         );
     }
@@ -253,6 +253,35 @@ fn overlapping_decorations_keep_draw_order_whatever_their_positions() {
             (size - 9, size - 5, "img"),
         ],
     ]);
+
+    // The same first step spelled out, independently of `run_decos`: "alpha
+    // beta" is chars 1..11, and every stretch lists its classes in draw order
+    // (b, a, c) — not in order of position (c, a, b).
+    let s = Rc::new(Schema::starter_kit());
+    let plugin = Rc::new(Decos(RefCell::new(vec![
+        (4, 9, "b"),
+        (2, 6, "a"),
+        (1, 30, "c"),
+    ])));
+    let st = state(&s, doc_from_html(&s, NESTED), &plugin);
+    let h = harness();
+    let view = RinchDomEditorView::new(h.container.clone(), Rc::downgrade(&h.doc), &st);
+    let run = &view.root.children[0].children[0];
+    let got: Vec<(usize, usize, &str)> = run
+        .decos
+        .iter()
+        .map(|d| (d.start, d.end, &*d.class))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (0, 1, "c"),
+            (1, 3, "a c"),
+            (3, 5, "b a c"),
+            (5, 8, "b c"),
+            (8, 10, "c")
+        ]
+    );
 }
 
 #[test]

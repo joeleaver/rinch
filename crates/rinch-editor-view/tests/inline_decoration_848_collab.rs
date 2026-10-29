@@ -121,6 +121,9 @@ fn html(h: &EditorHandle) -> String {
 const START: &str = "<p>one helo two</p><blockquote><p>helo <strong>three</strong></p>\
      <p>four</p></blockquote><ul><li><p>five helo<img src=\"x.png\">six</p></li></ul><p>last helo</p>";
 
+/// One host edit, from its state: replace `from..to` with the text.
+type Edit = Box<dyn Fn(&EditorState) -> (usize, usize, &'static str)>;
+
 #[test]
 fn a_peers_edits_leave_the_decorations_exactly_as_a_fresh_render() {
     let a = page(START);
@@ -138,7 +141,7 @@ fn a_peers_edits_leave_the_decorations_exactly_as_a_fresh_render() {
 
     // Each edit on the host, as (from, to, text): replace from..to with text.
     let last = a.handle.doc().content_size() - 2;
-    let edits: Vec<Box<dyn Fn(&EditorState) -> (usize, usize, &'static str)>> = vec![
+    let edits: Vec<Edit> = vec![
         // Type at the end of the last paragraph, away from every decoration.
         Box::new(move |_| (last, last, "x")),
         // Type before everything: every decoration shifts.
