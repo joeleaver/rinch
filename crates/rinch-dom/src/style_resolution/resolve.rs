@@ -120,15 +120,9 @@ impl RinchDocument {
     }
 
     fn resolve_styles_inner(&mut self) {
-        use crate::stylo_impl::RinchNode;
-        use style::shared_lock::StylesheetGuards;
-
-        // Flush any pending stylesheet changes
-        {
-            let guard = self.tree.guard.read();
-            let guards = StylesheetGuards::same(&guard);
-            self.stylist.flush::<RinchNode>(&guards, None, None);
-        }
+        // Flush any pending stylesheet changes, restyling what they reach
+        // (#884, `sheets.rs`).
+        self.flush_stylist();
         self.refresh_pseudo_rule_presence();
         // Attribute and state changes since the last resolve: Stylo's
         // invalidator turns their snapshots into restyle hints and style
@@ -283,13 +277,17 @@ impl RinchDocument {
     ///   replace, and its next cascade would then read as a *change* — a
     ///   transition on a node that was only just inserted.
     pub(crate) fn resolve_inserted_subtree(&mut self, node_id: usize) -> bool {
-        use crate::stylo_impl::RinchNode;
-        use style::shared_lock::StylesheetGuards;
-
         if self.tree.full_style_walk {
             return false;
         }
         if self.depth_if_connected(node_id).is_none() {
+            return false;
+        }
+        // A sheet change that restyles part of the document (a `<style>` this
+        // insertion connected, a `load_css` since the last resolve) is
+        // resolved with everything else pending: the subtree would otherwise
+        // cascade against ancestor styles about to change (#884).
+        if self.flush_stylist() {
             return false;
         }
         let mut current = self.tree.nodes[node_id].parent;
@@ -311,11 +309,6 @@ impl RinchDocument {
         self.tree.hit_cache.invalidate();
         let t = web_time::Instant::now();
         self.tree.perf.bump(crate::perf::Counter::StyleResolves);
-        {
-            let guard = self.tree.guard.read();
-            let guards = StylesheetGuards::same(&guard);
-            self.stylist.flush::<RinchNode>(&guards, None, None);
-        }
         self.refresh_pseudo_rule_presence();
         let parent_style = self.find_parent_computed_style(node_id);
         self.fill_style_bloom_for(node_id);

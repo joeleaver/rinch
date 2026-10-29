@@ -141,7 +141,11 @@ fn a_late_rule_restyles_only_what_it_matches() {
     doc.load_css(".box { width: 137px; }");
     doc.resolve_layout(VW, VH);
     let s = doc.tree.perf.end_frame();
-    assert_eq!(width_of(&doc, bx), 137.0, "positive control: the rule applied");
+    assert_eq!(
+        width_of(&doc, bx),
+        137.0,
+        "positive control: the rule applied"
+    );
     assert_eq!(s.get(FullRestyles), 0, "a class rule is targeted");
     // `.box` and its span (its descendants are re-cascaded only when an
     // inherited value moved; the width is not inherited).
@@ -159,11 +163,15 @@ fn a_late_universal_rule_restyles_every_element() {
     let (mut doc, bx, span) = laid_out_box();
     doc.load_css("* { min-height: 7px; }");
     doc.resolve_layout(VW, VH);
-    let min_h = |doc: &RinchDocument, id: NodeId| {
-        match doc.tree.get(id.0).unwrap().computed_style.min_height {
-            DimensionValue::Length(v) => v,
-            other => panic!("min-height not a length: {other:?}"),
-        }
+    let min_h = |doc: &RinchDocument, id: NodeId| match doc
+        .tree
+        .get(id.0)
+        .unwrap()
+        .computed_style
+        .min_height
+    {
+        DimensionValue::Length(v) => v,
+        other => panic!("min-height not a length: {other:?}"),
     };
     assert_eq!(min_h(&doc, bx), 7.0);
     assert_eq!(min_h(&doc, span), 7.0);
@@ -185,7 +193,11 @@ fn late_sheets_keep_cascade_order_and_the_theme_slot() {
     // The theme slot is ahead of every app sheet: its rule loses.
     doc.set_theme_css(".box { width: 300px; height: 44px; }");
     doc.resolve_layout(VW, VH);
-    assert_eq!(width_of(&doc, bx), 200.0, "app CSS still overrides the theme");
+    assert_eq!(
+        width_of(&doc, bx),
+        200.0,
+        "app CSS still overrides the theme"
+    );
     assert_eq!(
         height_of(&doc, bx),
         10.0,
@@ -203,7 +215,11 @@ fn late_sheets_keep_cascade_order_and_the_theme_slot() {
     assert_eq!(width_of(&doc, bx), 220.0, "replaced theme sheet applied");
     doc.set_theme_css("");
     doc.resolve_layout(VW, VH);
-    assert_eq!(width_of(&doc, bx), 200.0, "the old theme sheet's rules are gone");
+    assert_eq!(
+        width_of(&doc, bx),
+        200.0,
+        "the old theme sheet's rules are gone"
+    );
 }
 
 /// A `<style>` element inserted after layout applies; removed, its rules are
@@ -219,7 +235,11 @@ fn style_element_inserted_removed_and_reinserted_after_layout() {
 
     doc.remove_child(body, style);
     doc.resolve_layout(VW, VH);
-    assert_eq!(width_of(&doc, bx), VW, "#884: a removed <style> must revert");
+    assert_eq!(
+        width_of(&doc, bx),
+        VW,
+        "#884: a removed <style> must revert"
+    );
 
     doc.append_child(body, style);
     doc.resolve_layout(VW, VH);
@@ -285,7 +305,11 @@ fn style_elements_cascade_in_tree_order() {
     // A `load_css` sheet is a `<head>` sheet: the body `<style>` still wins.
     doc.load_css(".box { width: 999px; }");
     doc.resolve_layout(VW, VH);
-    assert_eq!(width_of(&doc, bx), 120.0, "a <style> element follows load_css");
+    assert_eq!(
+        width_of(&doc, bx),
+        120.0,
+        "a <style> element follows load_css"
+    );
 }
 
 /// A `<style>` in a subtree that is not in the document applies nothing until
@@ -325,5 +349,9 @@ fn set_inner_html_style_applies_and_reverts() {
 
     doc.set_inner_html(host, "<p>y</p>");
     doc.resolve_layout(VW, VH);
-    assert_eq!(width_of(&doc, bx), VW, "#884: replaced markup's <style> reverted");
+    assert_eq!(
+        width_of(&doc, bx),
+        VW,
+        "#884: replaced markup's <style> reverted"
+    );
 }
