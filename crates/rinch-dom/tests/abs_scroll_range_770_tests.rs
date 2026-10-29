@@ -442,3 +442,20 @@ fn a_removed_box_leaves_the_range_with_the_layout() {
     doc.resolve_layout(800.0, 600.0);
     assert_range(ranges(&doc, s), (0.0, 0.0));
 }
+
+/// Layout's clamp holds a scroll offset inside the range with the listed
+/// boxes in it: it measures them only for an offset past the rest of the
+/// range, and the offset past it here is all theirs. c2's `r` scrolled to
+/// the end of its 196 of travel, none of it in-flow content, keeps 196
+/// through a layout; and a resize that shrinks the travel clamps to it.
+#[test]
+fn a_scroll_into_the_listed_boxes_survives_a_layout() {
+    let mut doc = doc_of(&C2.replace("CONTENT", ""));
+    let r = by_id(&doc, "r");
+    doc.set_scroll_top(r, 196.0);
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(doc.scroll_top(r), 196.0);
+    doc.set_style(r, "height", "300px");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(doc.scroll_top(r), 96.0);
+}
