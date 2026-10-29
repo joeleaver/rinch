@@ -44,14 +44,18 @@ fn blocks_html(n: usize) -> String {
         .collect()
 }
 
-/// `blocks` blocks in a 500 × 200 scroller with 13px padding (the editor
+/// `blocks` blocks in a 500 × 226 scroller with 13px padding (the editor
 /// inside it), or — `editor_is_scroller` — the editor itself the scroller,
 /// which is what turns on block virtualization at >= 60 blocks.
 fn rig(blocks: usize, editor_is_scroller: bool) -> Rig {
+    rig_with(&blocks_html(blocks), editor_is_scroller)
+}
+
+fn rig_with(html: &str, editor_is_scroller: bool) -> Rig {
     let ids: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ids_in = ids.clone();
     let handle = crate::editor::create_editor();
-    assert!(handle.load_html(&blocks_html(blocks)));
+    assert!(handle.load_html(html));
     let handle_in = handle.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -63,7 +67,9 @@ fn rig(blocks: usize, editor_is_scroller: bool) -> Rig {
             // A number: a paragraph's line is 20px, a heading's 30px.
             ("line-height", "1.25"),
         ]);
-        let scroller_style = "width: 500px; height: 200px; padding: 13px; overflow-y: auto";
+        // Rinch sizes every box as `border-box` (#1278): 226px is the
+        // padding box Chrome's `height: 200px; padding: 13px` has.
+        let scroller_style = "width: 500px; height: 226px; padding: 13px; overflow-y: auto";
         if editor_is_scroller {
             editor.set_attribute("style", scroller_style);
             editor.set_styles(&[
@@ -413,4 +419,44 @@ fn page_down_in_a_virtualized_editor_lands_in_blocks_never_laid_out() {
         );
         last = got;
     }
+}
+
+/// The goal column survives a page that lands on a short line, as it does a
+/// run of Up / Down: the next page goes back to it.
+#[test]
+fn the_goal_column_survives_a_short_line() {
+    // Every fourth block is two characters long.
+    let html: String = (0..60)
+        .map(|i| match i % 4 {
+            3 => format!("<p>{i:02}</p>"),
+            1 => format!("<h2>abcdefghij {i:02}</h2>"),
+            _ => format!("<p>abcdefghij {i:02}</p>"),
+        })
+        .collect();
+    let mut r = rig_with(&html, false);
+    r.handle
+        .set_selection(Selection::cursor(pos_in_block(&r.handle, 2, 12)));
+    r.handle.focus();
+    idle(&mut r.app);
+    let (x0, _, _) = caret(&r);
+    let (mut short, mut long_after_short) = (false, false);
+    for _ in 0..5 {
+        press(&mut r.app, KeyCode::PageDown, NONE);
+        let block = block_of(&r.handle, r.handle.selection().head());
+        let (x, _, _) = caret(&r);
+        if block % 4 == 3 {
+            short = true;
+            assert!(x < x0 - 20.0, "control: a short line ends left of the column");
+        } else {
+            long_after_short |= short;
+            assert!(
+                (x - x0).abs() < 8.0,
+                "block {block}: the caret is back at the goal column (x {x0} -> {x})"
+            );
+        }
+    }
+    assert!(
+        short && long_after_short,
+        "positive control: a page landed on a short line and a later one on a long line"
+    );
 }

@@ -1760,6 +1760,7 @@ impl RinchApp {
                                     ctrl,
                                     alt,
                                     modifiers,
+                                    (vp_w, vp_h),
                                 );
                             }
                             // Position the caret against the current layout (dirtying
@@ -4037,6 +4038,7 @@ impl RinchApp {
         ctrl: bool,
         alt: bool,
         modifiers: Modifiers,
+        viewport: (f32, f32),
     ) -> bool {
         // 1. Cursor movement / selection extension — geometry-dependent (visual lines,
         //    goal column), so it stays view-owned and never touches the keymap. Which
@@ -4050,14 +4052,33 @@ impl RinchApp {
                 self.editor_goal_x = None;
                 return false;
             }
+            // macOS Page Up / Down: a page of scroll, the caret left (#2020).
+            Some(TextKeyAction::ScrollPage { down }) => {
+                self.page_editor(handle, down, false, true, viewport);
+                return false;
+            }
             _ => None,
         };
-        // The vertical "goal column" survives only a run of Up/Down — any other key
-        // (typing, horizontal arrows, Home/End, edits) abandons it.
-        if !matches!(motion, Some((TextMotion::LineUp | TextMotion::LineDown, _))) {
+        // The vertical "goal column" survives only a run of Up/Down and Page
+        // Up/Down — any other key (typing, horizontal arrows, Home/End, edits)
+        // abandons it.
+        if !matches!(
+            motion,
+            Some((
+                TextMotion::LineUp
+                    | TextMotion::LineDown
+                    | TextMotion::PageUp
+                    | TextMotion::PageDown,
+                _
+            ))
+        ) {
             self.editor_goal_x = None;
         }
         if let Some((motion, extend)) = motion {
+            if let TextMotion::PageUp | TextMotion::PageDown = motion {
+                let down = motion == TextMotion::PageDown;
+                return self.page_editor(handle, down, extend, false, viewport);
+            }
             let motion = match motion {
                 TextMotion::CharLeft => Motion::CharLeft,
                 TextMotion::CharRight => Motion::CharRight,
@@ -4069,6 +4090,7 @@ impl RinchApp {
                 TextMotion::LineDown => Motion::LineDown,
                 TextMotion::DocStart => Motion::DocStart,
                 TextMotion::DocEnd => Motion::DocEnd,
+                TextMotion::PageUp | TextMotion::PageDown => unreachable!("paged above"),
             };
             return self.move_editor(handle, motion, extend);
         }
@@ -4252,6 +4274,132 @@ impl RinchApp {
             }
             None => false,
         }
+    }
+
+    /// Page Up (`down = false`) or Page Down in the focused editor (#2020).
+    ///
+    /// The page is Chrome's: 0.875 of the scrollport's height
+    /// (`ScrollableArea::MinFractionToStepWhenPaging`), the scrollport being
+    /// the editor's nearest scroll container's padding box — the editor's own
+    /// when it scrolls — at most the viewport, or the viewport when nothing
+    /// scrolls. Chrome measures the focused editable element instead; for an
+    /// editor inside a taller scroller that pages past what is on screen, and
+    /// Firefox (like this) measures the scroller.
+    ///
+    /// The scroller moves a page first and is laid out — so a virtualized
+    /// editor materializes the blocks the page lands in — and the caret goes
+    /// to the point a page below (above) where it was, at the goal column
+    /// Up/Down keep: the caret keeps its place on screen, as in Firefox and
+    /// native text views, and is moved by the same amount the content
+    /// scrolled unless the scroll stopped at an end. A page that reaches the
+    /// document's last (first) line, or runs past the editor, puts the caret
+    /// at the document's end (start), as Chrome does. `extend` (Shift) keeps
+    /// the anchor.
+    ///
+    /// `scroll_only` (macOS's plain Page Up / Down), a read-only editor (as
+    /// Chrome's read-only `<textarea>`) and a caret with no geometry scroll a
+    /// page and leave the selection. Returns whether the selection changed.
+    fn page_editor(
+        &mut self,
+        handle: &crate::editor::EditorHandle,
+        down: bool,
+        extend: bool,
+        scroll_only: bool,
+        (vp_w, vp_h): (f32, f32),
+    ) -> bool {
+        use rinch_core::dom::NodeId;
+        use rinch_editor_core::{CursorMotion, Selection};
+        let FocusTarget::Editor(container) = self.focus_target else {
+            return false;
+        };
+        let Some(doc) = self.doc.clone() else {
+            return false;
+        };
+        let (scroller, page) = {
+            let d = doc.borrow();
+            let scroller = find_scroll_container(&d.tree, container);
+            let port = scroller.map_or(f64::from(vp_h), |s| {
+                let cs = &d.tree.nodes[s].computed_style;
+                d.client_height(NodeId(s))
+                    + f64::from(cs.padding_top.to_px())
+                    + f64::from(cs.padding_bottom.to_px())
+            });
+            (scroller, (port.min(f64::from(vp_h)) * 0.875).max(1.0))
+        };
+        let step = if down { page } else { -page };
+        let head = handle.selection().head();
+        let from = if scroll_only || handle.refuses_edits() {
+            None
+        } else {
+            self.editor_caret_point(handle, head)
+        };
+        // A page of scroll, with the scroller's `onscroll`, as the wheel.
+        let mut scrolled = 0.0;
+        if let Some(s) = scroller {
+            let fired = {
+                let mut d = doc.borrow_mut();
+                let before = d.scroll_top(NodeId(s));
+                let (moved, handler) = Self::scroll_vertically_by(&mut d, s, step);
+                scrolled = d.scroll_top(NodeId(s)) - before;
+                if moved {
+                    self.scene_dirty = true;
+                }
+                handler.map(|h| (h, Self::scroll_event_for(&d.tree, s)))
+            };
+            if let Some((h, event)) = fired {
+                rinch_core::events::dispatch_scroll_event(
+                    rinch_core::events::EventHandlerId(h),
+                    event,
+                );
+            }
+        }
+        let Some((cx, cy, ch)) = from else {
+            return false;
+        };
+        // Lay the scrolled content out: the hit test below reads it, and a
+        // virtualized editor materializes the blocks now on screen.
+        self.resolve_and_repaint(vp_w, vp_h);
+        let goal_x = self.editor_goal_x.unwrap_or(cx);
+        self.editor_goal_x = Some(goal_x);
+        // A page from the caret's middle, where the caret is drawn now.
+        let ty = (f64::from(cy + ch * 0.5) + step - scrolled) as f32;
+        let edge = || {
+            let doc = handle.doc();
+            if down {
+                Selection::at_end(&doc).head()
+            } else {
+                Selection::at_start(&doc).head()
+            }
+        };
+        let target = self
+            .editor_point(goal_x, ty)
+            .filter(|hit| hit.container == container)
+            .and_then(|hit| hit.pos(handle))
+            .map(|p| {
+                let (affinity, rect) = self.editor_hit_affinity(handle, p, ty);
+                (p, affinity, rect)
+            })
+            // On the document's last (first) line: Chrome goes to its end.
+            .filter(|&(_, _, rect)| {
+                let end = self.editor_caret_point(handle, edge());
+                !matches!((rect, end), (Some((_, py, ph)), Some((_, ey, _)))
+                    if (py - ey).abs() < ph * 0.5)
+            });
+        let Some((p, affinity, _)) = target else {
+            let motion = if down {
+                CursorMotion::DocEnd
+            } else {
+                CursorMotion::DocStart
+            };
+            return handle.move_cursor(motion, extend);
+        };
+        let sel = if extend {
+            Selection::text(handle.selection().anchor(), p)
+        } else {
+            Selection::cursor(p)
+        };
+        handle.set_selection_with_affinity(sel, affinity);
+        true
     }
 
     // ── IME (input method editor) ──────────────────────────────────────

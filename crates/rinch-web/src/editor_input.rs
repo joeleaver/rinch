@@ -2589,7 +2589,8 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
     let shift = event.shift_key();
     let alt = event.alt_key();
 
-    if key != "ArrowUp" && key != "ArrowDown" {
+    // The goal column survives a run of Up / Down and Page Up / Down.
+    if !matches!(key.as_str(), "ArrowUp" | "ArrowDown" | "PageUp" | "PageDown") {
         set_goal_x(None);
     }
 
@@ -2653,6 +2654,28 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
             },
             shift,
         ),
+        // Page Up / Down (#2020), Chrome's bindings: on macOS the plain key
+        // scrolls a page and leaves the caret, Option moves it and Shift
+        // extends; elsewhere the key moves and Shift extends. Ctrl (Cmd) and
+        // Alt there are the browser's.
+        "PageUp" | "PageDown" if is_mac() && !event.meta_key() && !event.ctrl_key() => {
+            page_step(
+                &handle,
+                container_nid,
+                doc,
+                key == "PageDown",
+                shift,
+                !alt && !shift,
+            )
+        }
+        "PageUp" | "PageDown" if !is_mac() && !ctrl && !alt => page_step(
+            &handle,
+            container_nid,
+            doc,
+            key == "PageDown",
+            shift,
+            false,
+        ),
         "Home" if ctrl => handle.move_cursor(CursorMotion::DocStart, shift),
         "End" if ctrl => handle.move_cursor(CursorMotion::DocEnd, shift),
         // The visual line's edges, as on desktop (#301).
@@ -2715,6 +2738,119 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         refresh_caret();
     }
     handled
+}
+
+/// Page Up (`down = false`) or Page Down in the focused editor (#2020), as on
+/// desktop (`RinchApp::page_editor`): the page is 0.875 of the nearest
+/// scroller's `clientHeight` (Chrome's step), at most the window's; the
+/// scroller moves a page, and the caret goes to the point a page below (above)
+/// where it was, at the goal column, so it keeps its place on screen. A page
+/// that reaches the document's last (first) line, or runs past the editor, puts
+/// the caret at the document's end (start), as Chrome does. `scroll_only`
+/// (macOS's plain key), a read-only editor (Chrome's read-only `<textarea>`)
+/// and a caret with no rect scroll and leave the selection. Always consumed:
+/// the browser's own Page Down would scroll the capture textarea's page.
+fn page_step(
+    handle: &EditorHandle,
+    container_nid: usize,
+    doc: &web_sys::Document,
+    down: bool,
+    extend: bool,
+    scroll_only: bool,
+) -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let Some(container) =
+        node_by_nid(container_nid).and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+    else {
+        return false;
+    };
+    // The nearest scroller that overflows, the editor itself included, else
+    // the page's scrolling element.
+    let mut scroller = None;
+    let mut cur = Some(container.clone());
+    while let Some(el) = cur {
+        let scrolls = window
+            .get_computed_style(&el)
+            .ok()
+            .flatten()
+            .and_then(|cs| cs.get_property_value("overflow-y").ok())
+            .is_some_and(|o| o == "auto" || o == "scroll");
+        if scrolls && el.scroll_height() > el.client_height() {
+            scroller = Some(el);
+            break;
+        }
+        cur = el.parent_element();
+    }
+    let scroller = scroller.or_else(|| doc.scrolling_element());
+    let view = window
+        .inner_height()
+        .ok()
+        .and_then(|h| h.as_f64())
+        .unwrap_or(f64::MAX);
+    let port = scroller
+        .as_ref()
+        .map_or(view, |s| f64::from(s.client_height()))
+        .min(view);
+    let page = (port * 0.875).round().max(1.0);
+    let step = if down { page } else { -page };
+    let head = handle.selection().head();
+    let from = if scroll_only || handle.refuses_edits() {
+        None
+    } else {
+        head_screen_rect(handle, head)
+    };
+    let mut scrolled = 0.0;
+    if let Some(s) = &scroller {
+        let before = f64::from(s.scroll_top());
+        s.set_scroll_top((before + step) as i32);
+        scrolled = f64::from(s.scroll_top()) - before;
+    }
+    let Some((hx, hy, hh)) = from else {
+        return true;
+    };
+    let gx = goal_x().unwrap_or(hx);
+    set_goal_x(Some(gx));
+    // A page from the caret's middle, where the caret is drawn now.
+    let ty = (f64::from(hy + hh * 0.5) + step - scrolled) as f32;
+    let edge = || {
+        let doc = handle.doc();
+        if down {
+            Selection::at_end(&doc).head()
+        } else {
+            Selection::at_start(&doc).head()
+        }
+    };
+    let target = resolve_editor_point(doc, gx, ty)
+        .filter(|hit| hit.container_nid == container_nid)
+        .and_then(|hit| hit.pos(handle))
+        .map(|p| {
+            let (affinity, rect) = hit_affinity(handle, p, ty);
+            (p, affinity, rect)
+        })
+        // On the document's last (first) line: Chrome goes to its end.
+        .filter(|&(_, _, rect)| {
+            let end = head_screen_rect(handle, edge());
+            !matches!((rect, end), (Some((_, py, ph)), Some((_, ey, _)))
+                if (py - ey).abs() < ph * 0.5)
+        });
+    let Some((p, affinity, _)) = target else {
+        let motion = if down {
+            CursorMotion::DocEnd
+        } else {
+            CursorMotion::DocStart
+        };
+        handle.move_cursor(motion, extend);
+        return true;
+    };
+    let sel = if extend {
+        Selection::text(handle.selection().anchor(), p)
+    } else {
+        Selection::cursor(p)
+    };
+    handle.set_selection_with_affinity(sel, affinity);
+    true
 }
 
 /// Vertical caret movement: hit-test at the goal column one line above/below the head's
