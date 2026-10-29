@@ -117,10 +117,16 @@ fn an_in_flow_childs_end_margins_are_scrollable() {
     assert_range(max_scroll(PB, &[child]), (86.0, 46.0));
     // The same box as a flex item and as a grid item.
     assert_range(
-        max_scroll(&format!("{PB} display: flex;"), &[&format!("{child}; flex-shrink: 0")]),
+        max_scroll(
+            &format!("{PB} display: flex;"),
+            &[&format!("{child}; flex-shrink: 0")],
+        ),
         (86.0, 46.0),
     );
-    assert_range(max_scroll(&format!("{PB} display: grid;"), &[child]), (86.0, 46.0));
+    assert_range(
+        max_scroll(&format!("{PB} display: grid;"), &[child]),
+        (86.0, 46.0),
+    );
 }
 
 /// The margin counts as **declared**: an over-constrained block's used
@@ -179,7 +185,10 @@ fn the_last_childs_end_margin_counts_after_its_siblings() {
 #[test]
 fn a_translated_child_is_scrollable_where_it_is_drawn() {
     assert_range(
-        max_scroll(PB, &["width: 100px; height: 50px; transform: translate(500px, 300px)"]),
+        max_scroll(
+            PB,
+            &["width: 100px; height: 50px; transform: translate(500px, 300px)"],
+        ),
         (425.0, 263.0),
     );
 }
@@ -191,7 +200,10 @@ fn a_translated_child_is_scrollable_where_it_is_drawn() {
 #[test]
 fn a_rotated_childs_bounding_box_is_scrollable() {
     assert_range(
-        max_scroll(PB, &["width: 180px; height: 80px; transform: rotate(30deg)"]),
+        max_scroll(
+            PB,
+            &["width: 180px; height: 80px; transform: rotate(30deg)"],
+        ),
         (16.0, 32.64),
     );
 }
@@ -216,8 +228,10 @@ fn a_transformed_childs_margin_box_still_counts_untransformed() {
     assert_range(
         max_scroll(
             PB,
-            &["width: 100px; height: 50px; margin-right: 150px; margin-bottom: 70px; \
-               transform: translate(50px, 10px)"],
+            &[
+                "width: 100px; height: 50px; margin-right: 150px; margin-bottom: 70px; \
+               transform: translate(50px, 10px)",
+            ],
         ),
         (86.0, 46.0),
     );
@@ -242,7 +256,10 @@ fn a_translated_flex_item_is_scrollable_where_it_is_drawn() {
 #[test]
 fn an_absolute_childs_border_box_counts_without_the_end_padding() {
     assert_range(
-        max_scroll(PB, &["position: absolute; left: 0; top: 0; width: 210px; height: 50px"]),
+        max_scroll(
+            PB,
+            &["position: absolute; left: 0; top: 0; width: 210px; height: 50px"],
+        ),
         (18.0, 0.0),
     );
 }
@@ -266,8 +283,10 @@ fn an_absolute_childs_margins_do_not_count() {
     assert_range(
         max_scroll(
             PB,
-            &["position: absolute; left: 0; top: 0; width: 100px; height: 50px; \
-               margin-right: 150px; margin-bottom: 70px"],
+            &[
+                "position: absolute; left: 0; top: 0; width: 100px; height: 50px; \
+               margin-right: 150px; margin-bottom: 70px",
+            ],
         ),
         (0.0, 0.0),
     );
@@ -280,8 +299,10 @@ fn a_translated_absolute_counts_where_it_is_drawn() {
     assert_range(
         max_scroll(
             PB,
-            &["position: absolute; left: 0; top: 0; width: 100px; height: 50px; \
-               transform: translate(170px, 90px)"],
+            &[
+                "position: absolute; left: 0; top: 0; width: 100px; height: 50px; \
+               transform: translate(170px, 90px)",
+            ],
         ),
         (78.0, 46.0),
     );
@@ -294,8 +315,10 @@ fn an_absolute_translated_back_inside_overflows_nothing() {
     assert_range(
         max_scroll(
             PB,
-            &["position: absolute; left: 0; top: 0; width: 300px; height: 150px; \
-               transform: translate(-150px, -100px)"],
+            &[
+                "position: absolute; left: 0; top: 0; width: 300px; height: 150px; \
+               transform: translate(-150px, -100px)",
+            ],
         ),
         (0.0, 0.0),
     );
@@ -332,11 +355,17 @@ fn a_relative_offset_toward_the_end_counts_without_the_end_padding() {
 #[test]
 fn a_relative_offset_toward_the_start_keeps_the_static_box() {
     assert_range(
-        max_scroll(B, &["position: relative; left: -40px; width: 240px; height: 50px"]),
+        max_scroll(
+            B,
+            &["position: relative; left: -40px; width: 240px; height: 50px"],
+        ),
         (40.0, 0.0),
     );
     assert_range(
-        max_scroll(B, &["position: relative; top: -40px; width: 100px; height: 130px"]),
+        max_scroll(
+            B,
+            &["position: relative; top: -40px; width: 100px; height: 130px"],
+        ),
         (0.0, 30.0),
     );
 }
@@ -348,8 +377,10 @@ fn a_relative_childs_static_margin_box_counts() {
     assert_range(
         max_scroll(
             PB,
-            &["position: relative; left: 10px; top: 20px; width: 100px; height: 50px; \
-               margin-right: 150px; margin-bottom: 70px"],
+            &[
+                "position: relative; left: 10px; top: 20px; width: 100px; height: 50px; \
+               margin-right: 150px; margin-bottom: 70px",
+            ],
         ),
         (86.0, 46.0),
     );
@@ -385,8 +416,10 @@ fn a_relative_and_translated_child_counts_where_it_is_drawn() {
     assert_range(
         max_scroll(
             PB,
-            &["position: relative; left: 20px; width: 150px; height: 60px; \
-               transform: translate(30px, 40px)"],
+            &[
+                "position: relative; left: 20px; width: 150px; height: 60px; \
+               transform: translate(30px, 40px)",
+            ],
         ),
         (25.0, 13.0),
     );
