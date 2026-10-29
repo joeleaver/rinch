@@ -2015,6 +2015,7 @@ fn hang_pass(
                     css_line(&units, &breaks, cursor, max, pre_seams)
                 })
                 .filter(|css| !same_end(&units, css.0, end));
+
             if let Some(css) = css {
                 let Some((reason, advance)) =
                     commit_css_line(&mut breaker, &units, cursor, css, &line_start, max)
@@ -2167,7 +2168,7 @@ fn fold_after_overflowing_box(
     // The table's cursor can sit on the zero-width newline that ended the
     // line before; a newline is never the first unit of a line.
     let first = cursor + units[cursor..end].iter().take_while(|u| u.newline).count();
-    let n = units[first..take].iter().filter(|u| u.counted).count();
+    let n = units[first..take].iter().map(|u| u.counted as usize).sum::<usize>();
     breaker.revert_to(line_start.clone());
     breaker
         .break_next_with_length(u32::try_from(n).map_err(|_| ())?)
@@ -2263,7 +2264,7 @@ fn unglue(
             if (width - run_x).abs() > 0.005 {
                 return None;
             }
-            let n = before.iter().filter(|u| u.counted).count();
+            let n = before.iter().map(|u| u.counted as usize).sum::<usize>();
             rebreaks.set(rebreaks.get() + 1);
             breaker.revert_to(line_start.clone());
             breaker.break_next_with_length(u32::try_from(n).ok()?)?;
@@ -2477,7 +2478,7 @@ fn break_overflowing_spaces(
             }
         }
     };
-    let n = units[first..through].iter().filter(|u| u.counted).count();
+    let n = units[first..through].iter().map(|u| u.counted as usize).sum::<usize>();
     breaker.revert_to(line_start.clone());
     breaker.break_next_with_length(u32::try_from(n).ok()?)?;
     breaker.set_prior_line_width(max);
@@ -2836,9 +2837,11 @@ struct LineUnit {
     /// A space or NBSP cluster (parley's `is_space_or_nbsp`). A preserved tab
     /// is one too: it is pushed to parley as a space (#1122).
     space: bool,
-    /// Counted by [`parley::layout::BreakLines::break_next_with_length`]:
-    /// every cluster and in-flow inline box, not an out-of-flow box.
-    counted: bool,
+    /// What [`parley::layout::BreakLines::break_next_with_length`] counts
+    /// for it: a cluster's characters — parley 0.12's clusters are grapheme
+    /// clusters, `ง่` is one cluster of two — an in-flow inline box 1, an
+    /// out-of-flow box 0.
+    counted: u32,
     /// An in-flow inline box.
     inline_box: bool,
     /// A hyphen or another UAX #14 class HY/BA character that is not white
@@ -3259,7 +3262,7 @@ fn commit_css_line(
 ) -> Option<(parley::layout::BreakReason, f32)> {
     use parley::layout::BreakReason;
     let first = cursor + units[cursor..].iter().take_while(|u| u.newline).count();
-    let n = units[first..e].iter().filter(|u| u.counted).count();
+    let n = units[first..e].iter().map(|u| u.counted as usize).sum::<usize>();
     breaker.revert_to(line_start.clone());
     breaker.break_next_with_length(u32::try_from(n).ok()?)?;
     breaker.set_prior_line_width(max);
@@ -3478,7 +3481,7 @@ fn logical_units(
                                 .get(range.clone())
                                 .is_some_and(|t| t.starts_with('\u{a0}')),
                         space: c.is_space_or_nbsp(),
-                        counted: true,
+                        counted: text.get(range.clone()).map_or(1, |t| t.chars().count() as u32),
                         inline_box: false,
                         breaks_before_glue: text
                             .get(range.clone())
@@ -3513,7 +3516,7 @@ fn logical_units(
                 newline: false,
                 nbsp: false,
                 space: false,
-                counted: in_flow,
+                counted: u32::from(in_flow),
                 inline_box: in_flow && !is_edge_box(b.id),
                 breaks_before_glue: false,
                 edge: match edge_box_owner(b.id) {
