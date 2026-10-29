@@ -573,11 +573,15 @@ Where the native backend differs from 3.1–3.6, the code holds:
     supported one when its offer is already here, our first otherwise),
     and its transceiver's preferences are set again to every codec, that
     one first (`video_label`). Every m-line offers both codecs, and an
-    answer lists only what the offer did. A negotiation that leaves the
-    label out (a track added before an H.264-only offer arrives) still
-    sends, unbound: no retransmission or sender reports. rtc gives a
-    sender's track no codec at negotiation, as it does a receiver's; that
-    upstream change would close the gap.
+    answer lists only what the offer did. A negotiation can still leave
+    the label out (a track added before an H.264-only offer arrives; an
+    offerer's VP8 label answered by a peer without VP8), and such a
+    sender used to send unbound: no retransmission or sender reports.
+    rtc gives a sender's track no codec at negotiation, as it does a
+    receiver's, so the worker relabels the sender itself just before rtc
+    binds it (#1954): after a remote offer is applied, to the codec our
+    answer will use; before a remote answer is applied, to the answer's
+    first codec. A sender left unmatched anyway gets one warning.
   - **The sender encodes whatever was negotiated.** Each sender reads its
     codec from webrtc-rs's `get_parameters` (every 250 ms until known,
     then every 2 s, so a renegotiation that changes it is followed), and
