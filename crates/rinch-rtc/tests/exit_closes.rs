@@ -5,6 +5,13 @@
 //! The test re-runs its own binary as a child: the child connects to a lite
 //! peer in this (parent) process, signalling over its stdin/stdout, and then
 //! exits without closing anything.
+//!
+//! The child waits for the parent's `LEAVE` line before it leaves (#1972).
+//! Every mode closes the peer as soon as the child leaves (`close()`, the
+//! drop, the `atexit` close and `shutdown()` alike), so without that hand-off the
+//! parent's "nothing closed yet" check raced the very close it waits for, and
+//! failed whenever the parent was descheduled between reading `OPEN` and
+//! asking the lite peer.
 #![cfg(not(target_arch = "wasm32"))]
 
 mod common;
@@ -18,7 +25,7 @@ use rinch_rtc::{ChannelOptions, ChannelState, Description, Peer, Reliability, Rt
 
 const CHILD: &str = "RINCH_RTC_EXIT_CHILD";
 
-/// The child: connect, report OPEN, exit with the peer open.
+/// The child: connect, report OPEN, wait for LEAVE, exit with the peer open.
 #[test]
 fn exit_child() {
     if std::env::var(CHILD).is_err() {
@@ -43,6 +50,10 @@ fn exit_child() {
     let _ = pump_until(|| false, Duration::from_millis(300));
     println!("OPEN");
     std::io::stdout().flush().unwrap();
+    // Leave only when the parent has checked that nothing closed yet.
+    line.clear();
+    std::io::stdin().read_line(&mut line).unwrap();
+    assert_eq!(line.trim_end(), "LEAVE", "the parent's go-ahead");
     // How the child leaves (review of #1909): with the peer still open,
     // right after close(), or right after dropping it. The last two used
     // to die before the in-flight close was sent.
@@ -101,7 +112,14 @@ fn far_end_sees_the_close(how: &str) {
         assert!(Instant::now() < deadline, "child never opened");
     }
     assert_eq!(lite.stats().received.get("control"), Some(&2), "connected");
-    assert!(lite.stats().closed.is_empty());
+    // The child is parked on its stdin: nothing has closed the peer, and
+    // nothing will until the LEAVE below.
+    assert!(
+        lite.stats().closed.is_empty(),
+        "exit with the peer {how}: closed before the child was told to leave: {:?}",
+        lite.stats()
+    );
+    writeln!(stdin, "LEAVE").unwrap();
     let status = child.wait().unwrap();
     assert!(status.success(), "child exited {status:?}");
     // Well inside any ICE consent timeout: only a close sent at exit
