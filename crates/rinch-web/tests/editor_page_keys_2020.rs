@@ -294,3 +294,47 @@ fn a_read_only_editor_scrolls_a_page_and_keeps_the_caret() {
     assert_eq!(f64::from(f.scroller().scroll_top()), STEP, "a page of scroll");
     f.teardown();
 }
+
+/// A page that lands on the document's last line goes to the document's end
+/// (Chrome), not to the goal column on that line. The scroller is resized so
+/// that a page from block `n - 7`'s caret lands mid-way down the last line.
+#[wasm_bindgen_test]
+fn a_page_that_lands_on_the_last_line_goes_to_the_end() {
+    let f = Fixture::mount();
+    f.start();
+    let bands = f.bands();
+    let n = bands.len();
+    let k = n - 7;
+    f.handle
+        .set_selection(Selection::cursor(pos_in_block(&f.handle, k, 3)));
+    let (_, cy, ch) = f.caret();
+    let (lt, lb) = bands[n - 1];
+    // 0.875 × clientHeight = from the caret's middle to the last line's.
+    let client = (((lt + lb) / 2.0 - (cy + ch * 0.5)) / 0.875).round();
+    let sc = f.scroller();
+    sc.set_attribute(
+        "style",
+        &format!(
+            "box-sizing: content-box; height: {}px; padding: 13px; width: 500px; \
+             overflow-y: auto",
+            client - 26.0
+        ),
+    )
+    .unwrap();
+    sc.set_scroll_top(0);
+    let (_, cy, ch) = f.caret();
+    let (lt, lb) = f.bands()[n - 1];
+    let page = (f64::from(sc.client_height()) * 0.875).round();
+    let target = cy + ch * 0.5 + page;
+    assert!(
+        target > lt + 2.0 && target < lb - 2.0,
+        "control: a page from block {k} lands on the last line ({target} in {lt}..{lb})"
+    );
+    assert!(key("PageDown", false));
+    assert_eq!(
+        f.handle.selection().head(),
+        Selection::at_end(&f.handle.doc()).head(),
+        "the document's end, not the column on its last line"
+    );
+    f.teardown();
+}
