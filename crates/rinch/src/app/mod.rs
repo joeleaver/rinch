@@ -12472,6 +12472,9 @@ mod click_viewport_tests {
 
 #[cfg(test)]
 mod editor_enter_scroll_tests;
+
+#[cfg(test)]
+mod editor_page_keys_2020_tests;
 #[cfg(test)]
 mod editor_scroll_gate_tests;
 #[cfg(test)]
