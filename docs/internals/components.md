@@ -1,6 +1,6 @@
 # Components: icons and container defaults
 
-Read this page when your task touches: icons, List/Stepper/RadioGroup defaults, child insertion/removal observers, DropdownMenu/Popover placement.
+Read this page when your task touches: icons, List/Stepper/RadioGroup defaults, child insertion/removal observers, DropdownMenu/Popover placement, field labels and ids.
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
@@ -350,3 +350,43 @@ the `--opened` CSS hooks and scrolling with the page are unchanged.
 Pins: `rinch/src/app/dropdown_viewport_1764_tests.rs` (desktop, the issue's
 measured cases, nested menus), `rinch-web/tests/dropdown_viewport_1764.rs`
 (Chrome 155, Firefox 155), `floating::tests`.
+
+## Field labels and ids
+
+**A labelled field component names its field by id** (issue #2034).
+`TextInput`, `Textarea`, `NumberInput`, `PasswordInput`, `ColorInput` and
+`Select` render their `<label>` *beside* the field, so without `for` the label
+labels nothing (it has no labelable descendant) and a press on it focused
+nothing on either backend. `src/field_ids.rs` (`FieldIds`) is the one copy of
+Mantine's `Input.Wrapper` markup: the field gets the `id` prop, else a
+generated `rinch-field-{n}` from one process-wide `AtomicU64` (unique across
+instances, component kinds, re-renders and windows); the label
+`id="{id}-label"` and `for="{id}"`; the description and error
+`{id}-description` / `{id}-error`; the field `aria-describedby` naming the
+error then the description, and `aria-invalid="true"` while an error is shown.
+A quoted `"id"` root attribute still lands on the wrapper (the macro writes it
+after `render`), so the field's id is the bare `id` prop.
+
+`Select`'s trigger is a `div role="combobox"`, not a labelable element, so a
+`for` would reach it on neither backend: `wire(.., labelable: false, ..)`
+writes no `for`, the trigger names the label in `aria-labelledby`, and the
+label carries its own `data-rid` that focuses the trigger (not when disabled;
+it does not open the list). The other five rely on the backend's label
+activation — the browser's own on the web, #866's on desktop.
+
+So the two answer a label press differently. A press on `ColorInput`'s label
+**opens its dropdown**, on both backends: the activation's synthetic click on
+the `<input>` bubbles to the input group's toggle `data-rid`. A press on
+`Select`'s label only focuses the trigger and leaves the list shut, as native
+`<select>` and the ARIA combobox pattern do (Mantine's `Select` is an `<input>`
+whose `htmlFor` click reaches its toggle, so it opens there; rinch does not
+match Mantine on this).
+
+Pins: `rinch-components/tests/field_label_for_2034.rs` (markup, uniqueness,
+app id), `rinch-web/tests/field_label_focus_2034.rs` (Chrome and Firefox),
+`rinch/src/app/field_label_2034_tests.rs` (desktop, through #866's label
+activation).
+
+`Slider::label` is the value bubble over the thumb, not a field label, and is
+left alone; `Checkbox`, `Radio` and `Switch` wrap their `<input>` in the
+`<label>`, so they need no `for`.

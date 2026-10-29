@@ -116,6 +116,8 @@ mod editor_file_drop_caret_1649_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_focus_and_reveal_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_generated_content_891_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_hanging_space_caret_1041_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_home_end_image_1116_tests;
@@ -173,6 +175,8 @@ mod editor_wrapped_selection_tests;
 mod element_key_1678_tests;
 mod event_dispatch;
 #[cfg(test)]
+mod field_label_2034_tests;
+#[cfg(test)]
 mod file_drop_click_context_1650_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod files_drop_1771_tests;
@@ -218,6 +222,8 @@ mod key_event_data_tests;
 mod key_repeat_tests;
 #[cfg(test)]
 mod key_up_redraw_486_tests;
+#[cfg(test)]
+mod label_activation_866_tests;
 #[cfg(test)]
 mod late_children_716_tests;
 #[cfg(test)]
@@ -347,6 +353,8 @@ mod textarea_home_end_tests;
 mod textarea_max_rows_tests;
 #[cfg(test)]
 mod textarea_newline_tests;
+#[cfg(all(test, software_shell))]
+mod textarea_scroll_827_tests;
 #[cfg(test)]
 mod textarea_text_child_tests;
 #[cfg(test)]
@@ -4467,12 +4475,18 @@ impl RinchApp {
             d.tree.paint_dirty_nodes.push(node_id);
         }
         d.tree.dirty_nodes.insert(node_id);
-        // A single-line field scrolls its caret into view at the move that
-        // put it there (#1721), so a run of keys between two frames scrolls
-        // as they would one frame apart. Paint and the hit-test builders read
-        // the same offset afterwards.
+        // A field scrolls its caret into view at the move that put it there
+        // — an `<input>` horizontally (#1721), a `<textarea>` vertically
+        // (#827) — so a run of keys between two frames scrolls as they would
+        // one frame apart. Paint and the hit-test builders read the same
+        // offset afterwards.
         let d = &mut *d;
-        rinch_dom::form_control::input_scroll_x(&d.tree, &mut d.font_cx, &mut d.layout_cx, node_id);
+        rinch_dom::form_control::reveal_caret(
+            &mut d.tree,
+            &mut d.font_cx,
+            &mut d.layout_cx,
+            node_id,
+        );
     }
 
     /// Set the focused field's dirty value flag: write its text to `value`,
@@ -9905,31 +9919,33 @@ mod input_caret_hit_tests {
     /// Where the painter puts the field's text: the origin of its first line box
     /// and, per visual line, `(top, height, byte range)` relative to that origin.
     ///
-    /// Built the way `paint_input_value` builds it, against the *document's* font
-    /// context, so this is the geometry actually on screen on whatever machine
+    /// Built with the builder and origin `paint_input_value` uses, against the
+    /// *document's* font context, so this is the geometry actually on screen on whatever machine
     /// runs the test rather than a second guess at it.
     #[allow(clippy::type_complexity)]
     fn painted_lines(app: &mut RinchApp, id: usize) -> ((f32, f32), Vec<(f32, f32, Range<usize>)>) {
         let doc = app.doc.clone().expect("mounted");
         let mut d = doc.borrow_mut();
-        let (style, width) = {
-            let node = d.tree.get(id).expect("the field");
-            (node.computed_style.clone(), node.layout.width)
-        };
         // The painted box already carries the IFC content-box offset, which
         // this used to add on top of a plain parent-chain sum (#203).
         let (box_x, box_y, _, _) = painted_element_box(&d.tree, id);
-        let pad_l = style.padding_left.to_px();
-        let pad_t = style.padding_top.to_px();
 
         let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
-        let family =
-            rinch_dom::fonts::parley_text_family(&mut d.font_cx, &style.font_family, VALUE);
-        let mut builder = layout_cx.ranged_builder(&mut d.font_cx, VALUE, 1.0, true);
-        builder.push_default(parley::style::StyleProperty::FontSize(style.font_size));
-        family.push_to(&mut builder);
-        let mut layout = builder.build(VALUE);
-        layout.break_all_lines(Some(width - pad_l * 2.0));
+        let d = &mut *d;
+        let scroll =
+            rinch_dom::form_control::field_scroll(&d.tree, &mut d.font_cx, &mut layout_cx, id);
+        let node = d.tree.get(id).expect("the field");
+        // Paint's own builder and origin (#827), not a copy of them: a copy
+        // is what drifted from paint before (#320).
+        let layout = rinch_dom::form_control::field_text_layout(
+            node,
+            VALUE,
+            1.0,
+            None,
+            &mut d.font_cx,
+            &mut layout_cx,
+        );
+        let (ox, oy) = rinch_dom::form_control::field_text_origin(node, layout.height(), scroll);
 
         let lines = layout
             .lines()
@@ -9938,7 +9954,7 @@ mod input_caret_hit_tests {
                 (m.baseline - m.ascent, m.line_height, line.text_range())
             })
             .collect();
-        ((box_x + pad_l, box_y + pad_t), lines)
+        ((box_x + ox, box_y + oy), lines)
     }
 
     /// The fault: a click on the middle of a painted line must put the caret on
