@@ -402,14 +402,14 @@ fn a_hidden_group_paints_nothing() {
     );
 }
 
-/// `rx="100"` on a 40x80 rect: `rx` clamps to 20 (half the width) and the
-/// auto `ry` to 40 (half the height), so the rect is the inscribed ellipse
-/// centred on (30, 50). A clamp to the whole side (40x80) draws something
+/// `rx="30" ry="100"` on a 40x80 rect: `rx` clamps to 20 (half the width) and
+/// `ry` to 40 (half the height), so the rect is the inscribed ellipse
+/// centred on (30, 50). A clamp to the whole side (30x80) draws something
 /// else at the corner probes.
 #[test]
 fn radii_clamp_to_half_not_the_whole_side() {
     check(
-        r#"<rect x="10" y="10" width="40" height="80" rx="100" fill="green"/>"#,
+        r#"<rect x="10" y="10" width="40" height="80" rx="30" ry="100" fill="green"/>"#,
         &[
             (30, 50, INK),
             (30, 13, INK),
