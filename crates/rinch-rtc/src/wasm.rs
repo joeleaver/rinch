@@ -535,7 +535,10 @@ pub(crate) fn close_channel(id: u64, key: u64) {
 /// closes the channels in the registry (the browser fires no events once
 /// detached).
 pub(crate) fn close(id: u64, notify: bool) {
-    let peer = PEERS.with(|p| p.borrow_mut().remove(&id));
+    // `try_with`: reached from `PeerInner::drop`, which may run while the
+    // thread's locals are torn down; the table is gone then, and so is the
+    // peer (#1952).
+    let peer = PEERS.try_with(|p| p.borrow_mut().remove(&id)).ok().flatten();
     let Some(peer) = peer else {
         return;
     };

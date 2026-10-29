@@ -63,3 +63,20 @@ fn a_handle_owned_by_a_callback_drops_quietly_as_the_table_is_destroyed() {
     });
     assert!(t.join().is_ok(), "the thread panicked at exit");
 }
+
+/// Not at exit: dropping a handle whose callback owns another handle. The
+/// owned handle's drop unregisters itself from the same table, so the owner's
+/// callbacks must be dropped outside the table's borrow.
+#[test]
+fn dropping_a_handle_whose_callback_owns_another_handle_does_not_panic() {
+    no_dispatch();
+    let t = std::thread::spawn(|| {
+        let owner = connect(refused_url()).expect("connect starts");
+        let owned = connect(refused_url()).expect("connect starts");
+        owner.on_message(move |_| {
+            let _keep = &owned;
+        });
+        drop(owner);
+    });
+    assert!(t.join().is_ok(), "dropping the owner panicked");
+}

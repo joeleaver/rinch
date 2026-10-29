@@ -743,9 +743,18 @@ impl WsStream {
 impl Drop for WsHandle {
     fn drop(&mut self) {
         self.backend.close();
-        HANDLERS.with(|h| {
-            h.borrow_mut().remove(&self.id);
-        });
+        // `try_with`: a handle dropped while the thread's locals are torn down
+        // (held in an app's own `thread_local!`, or by another connection's
+        // callback, which this table drops as it is destroyed) finds the table
+        // gone and has nothing left to unregister. `with` panicked there, and a
+        // panic in a thread-local destructor aborts the process (#1952).
+        // The callbacks drop outside the borrow: they are user code whose
+        // `Drop` may re-enter (a captured handle unregistering itself).
+        let gone = HANDLERS
+            .try_with(|h| h.borrow_mut().remove(&self.id))
+            .ok()
+            .flatten();
+        drop(gone);
     }
 }
 
