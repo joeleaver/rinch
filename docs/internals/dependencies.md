@@ -9,11 +9,14 @@ Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New
 Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, Taffy, Parley, and dual rendering backends (Vello for GPU, tiny-skia for software). The goal is to provide a reactive GUI framework using HTML/CSS for layout.
 
 **Key dependencies:**
-- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.14** in one place, `crates/rinch-dom/Cargo.toml` (its `[dependencies]` and `[dev-dependencies]` lines must agree, **features included**: rinch builds Taffy without the five default features it never reads — `content_size`, `calc`, `float_layout`, `flexbox_balance`, `detailed_layout_info` — which cost about 4% of a structural edit's instructions whether read or not (#1260), and a dev-dependency left on the defaults would unify them back into every test build; the vendored `crates/stylo-taffy` that used to pin it too was unused and was deleted with the 0.14 bump, #1236). 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height. 0.12 numbered grid lines as `i16` and **panicked** on a grid past 32,767 lines (40,000 auto-placed rows, stacked `span`s, #1210) and on `repeat(auto-fill, 0px)` or `minmax(0px, 1fr)` at any width (#1231); 0.14 clamps each grid axis at **10,000 tracks** instead (css-grid-1 §7.2.4), which is not Chrome's geometry: every item past the 10,000th track lands in the last one and they overlap, so a grid of 10,001–32,767 lines that 0.12 laid out correctly now overlaps too (`crates/rinch-dom/tests/grid_line_overflow_tests.rs`). Both measure closures (`layout_engine.rs`, `ifc.rs`) return a `LayoutOutput` through `taffy::compute_leaf_layout` with the same `0.0` calc resolver 0.12 used, and set its first baseline (`ifc::with_first_baseline`, #1013): an IFC root's or text leaf's first Parley line's baseline plus the box's top padding and border, since Taffy measures from the border-box top. `ifc_measure_cache` keeps the baseline beside each size (`IfcMeasure`), and Taffy's block algorithm hands a block item its first in-flow child's, so flex/grid `align-items: baseline` lines items up by their first lines (`tests/flex_baseline_tests.rs`). It used to synthesize every item's from its bottom border edge. A **form control** still reports none and is aligned by its bottom edge (an `<input>` beside a 32px line sits 6px higher than Chrome's, #1273), and so is an image, which is right. And an item whose first line holds an atomic inline (an `inline-block`, a `Button`) is aligned by that box's **bottom**, because rinch's IFC puts such a line's baseline there (#663): beside a 32px line Chrome puts the other item at 0 and rinch at 18 (9 before #1013), pinned by `an_items_first_line_holding_an_inline_block_is_aligned_by_its_bottom_issue_663`. `min_size`/`max_size` are `LengthPercentageAuto` in 0.14 (`DimensionValue::to_taffy_lpa`), and `size`/`flex_basis` carry the intrinsic keywords, which rinch hands over since #691 (see **Common Issues**). The bump itself moved layout in a few shapes, every one to Chrome 153's answer (`crates/rinch-dom/tests/taffy_014_layout_changes_tests.rs`): flex auto margins absorb free space **before** `justify-content` (0.12 justified first and pushed an auto-margin item off the end), a `min-height` parent keeps its last child's bottom margin inside it, and an empty scroll container's margins collapse through it — so a horizontal `Tabs` nested in a vertical `Tabs` now gets an inner panel 44px wide where 0.12 gave 85 (Chrome: 42.9). An editor table of more than 10,000 rows (which #1209 places by auto-placement past 9,999 tracks) now overlaps its rows from the 10,000th on, on desktop.
-- **parley** - Text shaping and line breaking, at the **published `0.11.1`**. It was a git `rev`
-  on an unmerged 22-commit "Floats WIP" branch off `v0.7.0` until #659; upstream landed that work
-  in 0.9.0, so nothing was lost by moving to the release line. Two things about the dependency line
-  are load-bearing and neither is enforced by the compiler:
+- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.14** in one place, `crates/rinch-dom/Cargo.toml` (its `[dependencies]` and `[dev-dependencies]` lines must agree, **features included**: rinch builds Taffy without the five default features it never reads — `content_size`, `calc`, `float_layout`, `flexbox_balance`, `detailed_layout_info` — which cost about 4% of a structural edit's instructions whether read or not (#1260), and a dev-dependency left on the defaults would unify them back into every test build; the vendored `crates/stylo-taffy` that used to pin it too was unused and was deleted with the 0.14 bump, #1236). 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height. 0.12 numbered grid lines as `i16` and **panicked** on a grid past 32,767 lines (40,000 auto-placed rows, stacked `span`s, #1210) and on `repeat(auto-fill, 0px)` or `minmax(0px, 1fr)` at any width (#1231); 0.14 clamps each grid axis at **10,000 tracks** instead (css-grid-1 §7.2.4), which is not Chrome's geometry: every item past the 10,000th track lands in the last one and they overlap, so a grid of 10,001–32,767 lines that 0.12 laid out correctly now overlaps too (`crates/rinch-dom/tests/grid_line_overflow_tests.rs`). Both measure closures (`layout_engine.rs`, `ifc.rs`) return a `LayoutOutput` through `taffy::compute_leaf_layout` with the same `0.0` calc resolver 0.12 used, and set its first baseline (`ifc::with_first_baseline`, #1013): an IFC root's or text leaf's first Parley line's baseline plus the box's top padding and border, since Taffy measures from the border-box top. `ifc_measure_cache` keeps the baseline beside each size (`IfcMeasure`), and Taffy's block algorithm hands a block item its first in-flow child's, so flex/grid `align-items: baseline` lines items up by their first lines (`tests/flex_baseline_tests.rs`). It used to synthesize every item's from its bottom border edge. A **form control** still reports none and is aligned by its bottom edge (an `<input>` beside a 32px line sits 6px higher than Chrome's, #1273), and so is an image, which is right. An item whose first line holds an atomic inline (an `inline-block`, a `Button`) is aligned by that box's baseline since parley 0.12 (#663): beside a 32px line Chrome 156 puts the `A` at 0 and the item at 1, as rinch does (it put the `A` at 18 before, 9 before #1013), pinned by `an_items_first_line_holding_an_inline_block_is_aligned_by_its_baseline_issue_663`. `min_size`/`max_size` are `LengthPercentageAuto` in 0.14 (`DimensionValue::to_taffy_lpa`), and `size`/`flex_basis` carry the intrinsic keywords, which rinch hands over since #691 (see **Common Issues**). The bump itself moved layout in a few shapes, every one to Chrome 153's answer (`crates/rinch-dom/tests/taffy_014_layout_changes_tests.rs`): flex auto margins absorb free space **before** `justify-content` (0.12 justified first and pushed an auto-margin item off the end), a `min-height` parent keeps its last child's bottom margin inside it, and an empty scroll container's margins collapse through it — so a horizontal `Tabs` nested in a vertical `Tabs` now gets an inner panel 44px wide where 0.12 gave 85 (Chrome: 42.9). An editor table of more than 10,000 rows (which #1209 places by auto-placement past 9,999 tracks) now overlaps its rows from the 10,000th on, on desktop.
+- **parley** - Text shaping and line breaking, at the **published `0.12.0`** (from 0.11.1 by
+  the parley 0.12 upgrade, Refs #624; Joe's decision of 2026-10-29). It was a git `rev` on an
+  unmerged 22-commit "Floats WIP" branch off `v0.7.0` until #659; upstream landed that work in
+  0.9.0, so nothing was lost by moving to the release line. The workspace line is
+  `features = ["complex-scripts", "bytemuck"]` (`bytemuck` casts `Run::normalized_coords`, a
+  `&[NormalizedCoord]` since 0.12, to the painters' `&[i16]` for free). Two things about the
+  dependency line are load-bearing and neither is enforced by the compiler:
   - **`features = ["complex-scripts"]` is on, and must stay on.** It is not in parley's `default`.
     Without it icu4x has no Thai/Lao/Khmer/Burmese segmentation dictionary and a Thai paragraph
     finds **no** line-break opportunity at all — measured, 4 lines become 1 and the text runs off
@@ -32,6 +35,62 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     right in English: `y` is 0 for ordinary Latin shaping and non-zero only for mark positioning.
     `crates/rinch-dom/src/paint/text.rs` **adds** it, in the main pass and the shadow pass alike;
     `crates/rinch-dom/tests/glyph_y_ydown_tests.rs` is the pin, one fixture per site.
+
+  What 0.12 changed, and what rinch does about it:
+  - **Line boxes are CSS line boxes** (linebender/parley#697, #863, #864). A line holds the root
+    style's box — the **strut**, the block's own font and `line-height` — and every span's box
+    with its own line height, and an inline box sits by its baseline (`InlineBox::baseline`,
+    `None` = its bottom edge) and `vertical_align`. So #577 (a span's larger line height or font
+    raises the line it shares) and #624 (a line holding only an atomic inline keeps the block's
+    line height) are parley's now: `tests/line_box_metrics_tests.rs`, ignored until 0.12, is live.
+    With the strut, a box lined up by its bottom grows its line by the strut's descent, so rinch
+    hands parley each atomic inline's **baseline** (#663): `ifc::atomic_inline_baseline`, read
+    when its detached compute is read back (`Node::atomic_baseline`) by walking the box's Taffy
+    subtree to its last (an `inline-flex`/`inline-grid`: first) line, whose baseline the compute's
+    IFC and text-leaf measures record by content size (`NodeTree::atomic_line_baselines`); none
+    for a replaced element, a box with no line or `overflow` other than `visible`/`clip`; an
+    `<input>` by its centred text (`form_control::input_baseline`, from the primary font's
+    ascent and descent in `CharMetrics`). The baseline is in the IFC content signature, a box that
+    became an atomic inline by a restyle is measured before the IFC around it
+    (`Node::atomic_baseline_known`), and an atomic inline's `vertical-align` is parley's
+    (`ifc::atomic_vertical_align`; a text span's is still rinch's glyph shift).
+    `tests/atomic_inline_baseline_663_tests.rs` pins Chrome 156. Not done: a zero-height atomic
+    inline alone on a line still makes a 0px line (Chrome: the strut's; parley counts a box with
+    no extent as no content), and margins of an atomic inline take no room on its line.
+  - **A layout with no item keeps one line, the strut's**, for a caret. CSS makes such a line box
+    zero-height, so an IFC with no text and no inline box is handed one zero-size out-of-flow box
+    (`ifc::EMPTY_IFC_BOX`, an edge-box id no node owns): parley then makes the line invisible.
+  - **An anonymous block box now matters to its text's line height** (its style is the strut), so
+    a container's restyle refreshes its boxes' inherited style
+    (`invalidate_text_layout_for_node`); they kept the style they were minted with until the
+    next structural pass.
+  - **`LineMetrics` lost `ascent`, `descent`, `leading`**; `block_min/max_coord` are the line box
+    and `content_block_min/max_coord` the content (strut included). `ifc::line_ascent` /
+    `line_descent` read the content extent; caret tops, selection rects and line hit tests use
+    `ifc::line_top` / `line_bottom` — the line box or the line's **runs'** glyph extent, rounded,
+    whichever reaches further (0.11.1's `block_min_coord`; not the content box, whose strut put a
+    16px run's caret 8px above its line in a 32px block). `LineBreakData::advance` is
+    `metrics.advance`; `trailing_whitespace` is `hanging_advance` and holds what actually hangs.
+  - **Clusters are grapheme clusters** (#715): `ง่` is one cluster of two characters, and
+    `BreakLines::break_next_with_length` counts characters, so the hang pass's `LineUnit::counted`
+    is a cluster's character count. A glyph's style is its cluster's (`Cluster::style_index`).
+  - **White space hangs as CSS Text 4 says** (#762, #784, #785, #790): preserved spaces hang at a
+    soft wrap and, before a forced break or at the end, only as far as they overflow; an NBSP
+    never hangs; a justified line's opportunities are CSS's. rinch hands parley every element's
+    `white-space-collapse` (`ifc::white_space_hanging`): `Preserve` — rinch has already collapsed
+    the text — or `BreakSpaces`, whose spaces never hang. The 0.11.1 fix-ups for all of that are
+    gone (below).
+  - **A `direction: rtl` block's paragraph is right to left** (`TreeBuilder::set_base_direction`);
+    an `ltr` one is still parley's first-strong guess. `text-align: left`/`right` are
+    `TextAlignValue::Left`/`Right`, no longer folded onto `Start`/`End`.
+  - **Known differences from Chrome that 0.12 brought** (each pinned where it is measured): a
+    `nowrap` root's spaces after a wrapping span's text no longer offer a break (`g2_55`,
+    `g2_80` of `tests/soft_wrap_1238/chrome155.tsv`), parley misses the opportunity before an
+    image after `pre` text and stops at an earlier one (`p704`), a glued word followed by
+    ` \u200b ` takes the zero-width space onto its overflowing line
+    (`nbsp_glue_line_break_tests`), and a collapsible space then `break-spaces` spaces break
+    after the first `break-spaces` space (`pre_space_seams_1243_tests`). Six cases of the same
+    corpus moved to Chrome's.
   - **An inline box too wide for any line leaves an empty line after it** when it is the
     paragraph's last item (its emergency break returns without marking the breaker done), and
     with text before the box that line is counted at the box's height. `ifc::phantom_last_line`
@@ -66,82 +125,39 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     text-final `"\n"`, and in an empty text node, though not at every such position — is drawn
     where what follows it starts: the next character's own box (a newline's is zero-width), else
     the same "what follows" walk (`caret_where_next_starts_at`, #1202; it used to fall back to the block's whole box).
-  - **An overflowing NBSP is hung like a space** (`is_space_or_nbsp` in the breaker's hang
-    branch) and the line committed right after it, where UAX #14 class GL allows no break:
-    `x yyx&nbsp;Wkxxpq` at 40px broke as `x yyx&nbsp;` / `Wkxxpq`. `ifc::unglue` breaks such a
-    line again inside `break_lines_hanging_spaces`' pass (and `shape_text_leaf`, a flex item's
-    own text), where Chrome 153 does: at the last opportunity before the NBSP; right before it
-    after an atomic inline or a hyphen (LB12a), or for `overflow-wrap` with nothing else; and
-    with no opportunity before it, the glued word overflows to the next one (#1218). That last
-    one is found by a galloping search over the line's units, a few breaks of the line each
-    (`ifc_unglue_rebreaks`, 15 for a 1600-word chain) — one re-break per glued word was
-    quadratic in an NBSP chain (review of #1257).
+  - **An overflowing NBSP was hung like a space** until 0.12 and the line committed right after
+    it, where UAX #14 class GL allows no break (`x yyx&nbsp;Wkxxpq` at 40px broke as
+    `x yyx&nbsp;` / `Wkxxpq`). `ifc::unglue` breaks a line parley ends after an overflowing NBSP
+    again where Chrome 153 does (#1218), by a galloping search over the line's units. Since 0.12
+    no shape in the suite reaches it (an instrumented run over the NBSP, line-separator and #1238
+    suites never did); it stays for a line parley could still end there.
     `crates/rinch-dom/tests/nbsp_glue_line_break_tests.rs` (Chrome 153) and
-    `nbsp_glue_oracle_tests.rs` (a greedy token oracle) are the pins;
-    `perf_regression_scenarios::an_nbsp_glued_chain_*` pins the cost. Upstream fixed it
-    after 0.11.1 (linebender/parley#762, merged 2026-09-07, unreleased as of 2026-10-01:
-    `whitespace_hangs` there hangs no NBSP); `unglue` can go when rinch takes that release.
-  - **Preserved spaces do not hang in 0.11.1.** At a width a `pre-wrap` space overflows, parley
-    hangs the first such space and commits the line, so the rest of the spaces (or, when nothing
-    is left, an empty line) make one more line. `ifc::break_lines_hanging_spaces` is how an IFC
-    breaks its lines, and puts the spaces back on the line they hang from; upstream's rework
-    (#790, #785) is unreleased. Spaces and tabs hang, NBSP does not (it glues, and after a hung run starts the next line).
-    A `break-spaces` space or tab in an IFC never hangs (#1043, `WhiteSpaceValue::BreakSpaces`; it read as
-    `pre-wrap` before; and, since #1672, a flex or grid item's own text too): the same pass breaks a line parley ended past the box in such spaces
-    (`ifc::break_overflowing_spaces`) after the last one that fits, else before the word they follow,
-    else after their first space, committed by length; the line is aligned with them as content and
-    `measured_width` counts them (Chrome 155, `tests/white_space_break_spaces_1043_tests.rs`). It is **one**
-    extra break of the paragraph, line by line, however many lines it fixes: the first version
-    restarted from line 0 per fixed line, which is quadratic (0.7–1.0 s for 1,600 double-spaced
-    lines). `ifc_hang_passes` counts those breaks, at most one per layout, and
-    `perf_regression_scenarios::a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass` pins it;
-    `ifc::hang_differential_tests` holds the old loop as the oracle. Likewise an IFC's measure is `InlineLayout::measured_width`, not
+    `nbsp_glue_oracle_tests.rs` (a greedy token oracle) are the pins.
+  - **Preserved spaces did not hang in 0.11.1**: parley hung the first overflowing one and
+    committed the line, so the rest made one more line, and rinch's hang pass put them back
+    (#1018). 0.12 hangs them itself. A `break-spaces` space or tab never hangs (#1043; parley's
+    `BreakSpaces`); the hang pass still breaks a line parley ended past the box in such spaces
+    (`ifc::break_overflowing_spaces`) after the last one that fits, else before the word they
+    follow, else after their first space (Chrome 155, `tests/white_space_break_spaces_1043_tests.rs`).
+    The hang pass (`ifc::hang_pass`) is **one** extra break of the paragraph, line by line,
+    however many lines it fixes, and runs only for a paragraph with edge boxes at a soft wrap,
+    seams, or a box parley placed by its emergency branch; `ifc_hang_passes` counts it.
+Likewise an IFC's measure is `InlineLayout::measured_width`, not
     `Layout::width`: the latter drops a preserved trailing space that Chrome counts, and a box
     sized without it wraps the space onto a line of its own (the editor's list bullet dropping a
     line after "text "). Only when the IFC holds preserved text (`pre`, `pre-wrap`, `break-spaces`, a
     contenteditable root): collapsible spaces, `pre-line`'s included, are gone at a line's end
     before parley sees them.
     `crates/rinch-dom/tests/list_item_trailing_space_tests.rs` is the pin.
-  - **parley's `align` hangs every line's trailing white space** (`free = width - advance +
-    trailing_whitespace`), NBSP included. CSS hangs a preserved space unconditionally only at a
-    soft wrap; at the end of the paragraph or before a forced break only the part that does not
-    fit hangs, and an NBSP never hangs. So a line aligned `right`, `center` or `end` that ends in
-    such white space is sent through the hang pass and its alignment width narrowed by what
-    counts (`ifc::align_unhung_trailing` with `count_trailing`; the cheap trigger is
-    `any_counted_trailing_line`), #1042: `abc` and three `pre-wrap` spaces right-aligned in 200px
-    start at 158.58, as in Chrome 155 (they started at 172.08), and a shrink-to-fit box no
-    longer draws its line past its own edge. A start-aligned paragraph is not re-broken for it.
-    The width is narrowed by what parley adds back — the trailing white space of the line's
-    **last shaped run** only (a tab, or a span with its own font size or spacing, is a run of its
-    own) — less what CSS hangs. Such a paragraph pays one extra break of the whole paragraph per
-    layout (`ifc_hang_passes`; `perf_regression_scenarios::a_right_aligned_paragraph_ending_in_spaces_pays_one_pass`).
-    Not done: a right-to-left line, by parley's inferred direction or CSS `direction: rtl`
-    (parley offsets it by its trailing white space, so narrowing would move it the wrong way;
-    #1666), a flex or grid item's own text (a text leaf, `shape_text_leaf`). A `nowrap`/`pre`
-    root with no wrapping text gets the same narrowing on its unconstrained lines since #1237
-    (`ifc::break_unwrapped_aligned`).
-    `crates/rinch-dom/tests/text_align_trailing_spaces_1042_tests.rs` is the pin.
-  - **parley counts a justified line's opportunities as it breaks it** (`num_spaces`, not
-    public): every space or NBSP that fits, less one when the line ends in one. So two or more
-    spaces hanging at a wrap took shares of the free space, and a line parley ended by hanging
-    the one space that did not fit lost a word gap (the line was not flush; on `main` that
-    second case was any justified line whose last word ended within a space of the edge, in
-    `normal` and `pre-wrap` alike). Chrome 155's opportunities are the spaces and NBSPs of the
-    line's content, hanging spaces excluded, less the last when the content ends in one. With
-    `text-align: justify` in a left-to-right block, a paragraph with such a line
-    (`any_miscounted_justified_line`) takes the hang pass, and `ifc::justify_line` commits the
-    line again **by length** — parley's count is then every space on it less one, never fewer
-    than CSS's — and sets its alignment width so each opportunity gets `free / opportunities`
-    (#1056). Most multi-line justified paragraphs pay that pass, one extra break per layout
-    built, since some line's last word usually ends within a space of the edge (35 of 41 widths
-    of a four-sentence paragraph; `perf_regression_scenarios::a_justified_paragraph_whose_word_ends_at_the_edge_pays_one_pass`).
-    The surplus shares land on the spaces after the opportunities: hanging spaces
-    (past the edge; a caret between two of them is right of Chrome's) or, when the content
-    ends in an NBSP before hanging spaces, that NBSP (a caret after it is one share right of
-    Chrome's). `LineUnit::run` is the shaped run's identity (its `RunMetrics` address), not
-    `Run::index`, which is a place on a line: #1042's trailing white space read hanging spaces
-    of one run that the table's layout had on two lines as two runs.
-    `crates/rinch-dom/tests/justify_hanging_spaces_1056_tests.rs` is the pin.
+  - **Trailing white space and justification** were rinch's until 0.12: parley 0.11.1's `align`
+    hung every line's trailing white space, NBSP included, so a right-aligned or centred line
+    ending in spaces that fit was narrowed by the hang pass (#1042, `align_unhung_trailing`),
+    and its justification counted every space that fit, so a justified line was committed again
+    by length (#1056, `justify_line`) — one extra break of most justified paragraphs. 0.12 does
+    both as CSS does; the code is gone, and `perf_regression_scenarios::*_pays_no_pass` pin that
+    such paragraphs no longer pay the pass. `text_align_trailing_spaces_1042_tests.rs` and
+    `justify_hanging_spaces_1056_tests.rs` (Chrome 155) are the pins, now with the carets in
+    hanging spaces, a text leaf's trailing spaces and a right-to-left line at Chrome's numbers too.
   - **rinch collapses an IFC's white space itself; the IFC's tree builder always hands parley
     `Preserve`.** (The ranged builders — form controls, text leaves — are separate and unchanged.)
     `WhiteSpaceCollapse::Collapse` collapses and trims per *style span*, and rinch pushes one span
@@ -184,8 +200,8 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     **The flat offsets index that collapsed text** — the caret maps,
     inline backgrounds and decorations, the visibility mask; they used to count the pushed text,
     one byte late per collapsed byte — and `IfcTextRange::offset_map` is each text node's
-    DOM↔flat correspondence. Since parley counts a trailing NBSP in `trailing_whitespace`,
-    `measured_width` keeps it (`width_keeping_nbsp`), whatever else the IFC holds.
+    DOM↔flat correspondence. `measured_width` keeps a trailing NBSP (`width_keeping_nbsp`),
+    which parley 0.11.1 counted as trailing white space; since 0.12 it never hangs.
     `crates/rinch-dom/tests/inline_edge_space_tests.rs` and `nbsp_line_box_tests.rs` are the pins.
   - **Parley has no tab stops; rinch sets them** (#1122). A preserved tab
     (`pre`, `pre-wrap`, `break-spaces`, a contenteditable root) is pushed as
@@ -222,7 +238,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     `|tail` after it inside its end padding; the editor draws its caret on
     the side its marks say, `docs/internals/editor.md`). **Every walker of a layout's inline boxes that maps a box to a
     node asks `ifc::is_edge_box` first** (positions, paint, layer bounds,
-    span fragments, text queries). parley 0.11.1 allows a break after every
+    span fragments, text queries). parley allows a break after every
     in-flow box and before one that does not fit, which is wrong for an edge
     box, so a paragraph with a soft wrap next to one takes the hang pass
     (`any_line_split_at_edge`), and a line parley ended where CSS does not
@@ -235,7 +251,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     negative total is clamped to 0 (Chrome lets a negative margin pull the
     content back). A split inline (#513) gets no edge boxes.
     `tests/inline_edge_room_1426_tests.rs` is the pin.
-- **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.11.1 depends on — and Vello 0.11 too (`vello`/`vello_encoding` ^0.44; the Vello 0.7 rinch had before #1955 built a second skrifa, 0.40). parley does not re-export it, so a parley (or Vello) bump that moves skrifa silently builds a second copy unless this pin moves with it. (swash 0.2, the software painter's glyph rasteriser, still brings its own skrifa 0.37.)
+- **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.12.0 (and 0.11.1 before it) depends on — and Vello 0.11 too (`vello`/`vello_encoding` ^0.44; the Vello 0.7 rinch had before #1955 built a second skrifa, 0.40). parley does not re-export it, so a parley (or Vello) bump that moves skrifa silently builds a second copy unless this pin moves with it. (swash 0.2, the software painter's glyph rasteriser, still brings its own skrifa 0.37.)
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`). **Vello 0.11 on wgpu 30** (#1955; workspace `[workspace.dependencies]`, every crate takes `workspace = true`), no wgpu patch (`app-and-windows.md` "wgpu Fork"). Vello pins wgpu's major (0.8 → 28, 0.9/0.10 → 29, 0.11 → 30), so the two move together; peniko stays 0.6 (kurbo 0.13). Check `cargo tree -d` for a second wgpu/vello/skrifa after a bump. wgpu 30 needs wasm-bindgen ≥ 0.2.127 (CI's `wasm-bindgen-test-runner` follows `Cargo.lock`). Rendering changes met in 0.7 → 0.11: images are sampled at the pixel centre since Vello 0.9 (rinch dropped its own half-pixel shift for images; `platform.md` item 6); `ImageQuality::High` became bicubic (rinch uses Low/Medium only); gradients are still evaluated at the pixel corner and the ramp is unchanged for the default `InterpolationAlphaSpace::Premultiplied`. `anyrender`/`anyrender_vello` were removed in #1955: no rinch code used them, and they pulled a second (crates.io) Vello. **Vello comes from `joeleaver/vello-fork` at a pinned rev** (workspace `vello = { git, rev }`; its `vello` takes the patched `vello_encoding` by path): Vello 0.9+ keeps its image atlas across renders, and the fork fixes the atlas being wiped by a render with no images, gradients or glyphs and images staying resident two renders after their last use (`app-and-windows.md` "Vello Fork"). A dependency, not a `[patch]`, so apps get it with nothing to copy; they use `rinch::vello`. Nothing else may pull crates.io `vello` (check `cargo tree -d`), or the graph has two Vellos. Images reach Vello as one blob per image (`DecodedImage::blob`, `frame_blob`), so a repainted image stays resident.
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)
 - **softbuffer** - Software window presentation (default mode)

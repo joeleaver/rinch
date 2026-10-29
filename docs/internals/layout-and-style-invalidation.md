@@ -430,7 +430,7 @@ input a shaped layout is built from:
   wider break at the same width). It is not broken *at* that width:
   parley marks a break opportunity after every inline box whatever the wrap
   mode, so a `nowrap` paragraph with a chip would wrap after it. **Soft wraps
-  next to atomic inlines follow `white-space`** (#1238): parley 0.11.1 allows
+  next to atomic inlines follow `white-space`** (#1238): parley allows
   a break after every inline box, and before one whenever the character
   before it wraps. Chrome 155 asks the `white-space` of the element the box
   (or text) is in — not the inline-block's own, which styles its contents —
@@ -478,11 +478,10 @@ input a shaped layout is built from:
   (`build_inline_layout`'s `align_width`; a measure takes only sizes from its layout).
   Parley takes a break's wrap mode from the cluster before it,
   so `pre` text then a `normal` span has no break at their seam, as in
-  Chrome 153. A `pre` element's preserved spaces are not taken into a
-  soft-wrap hang by rinch's hang pass, and a line ending in them is aligned
-  with them as content (`ifc::align_unhung_trailing` narrows its alignment
-  width by the `pre` spaces at its very end), so an overflowing right-aligned
-  line starts at 0 as in Chrome. On a left-to-right line aligned `right`,
+  Chrome 153. A `pre` element's preserved spaces at a line's end are
+  aligned as content: parley 0.12 hangs them only as far as they overflow,
+  so an overflowing right-aligned line starts at 0 as in Chrome (rinch
+  narrowed the alignment width for them until then, `align_unhung_trailing`). On a left-to-right line aligned `right`,
   `center` or `end`, every space before the hanging run at the line's end
   counts too, whatever its `white-space` (#1042, below). A paragraph
   broken at a width that holds a `pre` element's spaces or tabs
@@ -515,8 +514,7 @@ input a shaped layout is built from:
   wrapping space then a `break-spaces` one break between them too, in
   `css_line`'s scan; a paragraph with no `pre` spaces is laid out as before
   #1243. A line whose trailing run of spaces has `pre` spaces before the
-  part that hangs is aligned with them as content
-  (`any_unhung_trailing_line`). A text node whose spaces collapsed away
+  part that hangs is aligned with them as content (parley's since 0.12). A text node whose spaces collapsed away
   between the wrapping run and the `pre` spaces counts as the run going on
   into another text node when the run's element closes into it
   (`<span>dd </span> <span pre>`; `UnhungSpaces::collapsed`), not when it

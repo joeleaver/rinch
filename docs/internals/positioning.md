@@ -206,10 +206,10 @@ box by its own `justify-self`/`align-self`, else the container's
 `justify-items`/`align-items` (#1511 carried the `justify-*` pair, which used to
 be dropped; pins: `justify_items_1511_tests.rs`, Chrome 156). Under an
 unpositioned grid Chrome aligns it in the grid's content box and rinch in its
-padding box (#1986). Not Chrome's, each pinned in
-`known_differences_from_chrome`: the static position
-follows rinch's line boxes, so below a line holding a 26px `inline-block` and
-text it is 4px high (rinch's line is 26px, Chrome's 30 — #663).
+padding box (#1986). The static position follows rinch's line boxes: below a
+line holding a 26px `inline-block` and text it is at Chrome's 37 since parley
+0.12 lined the box up on a strut (it was 4px high, a 26px line, before — #663;
+`a_block_level_box_below_a_line_with_a_tall_inline_block`).
 
 **A positioned inline span is a containing block too** (#631, CSS 2.1 §10.1):
 `out_of_flow_kind` answers `AncestorAbsolute(span)` for a `position: relative`
