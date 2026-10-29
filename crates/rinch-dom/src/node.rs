@@ -3679,7 +3679,7 @@ impl NodeTree {
                 if id == ancestor {
                     return true;
                 }
-                current = self.nodes.get(id).and_then(|n| n.parent);
+                current = self.nodes.get_live(id).and_then(|n| n.parent);
             }
             false
         })

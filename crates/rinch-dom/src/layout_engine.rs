@@ -1056,7 +1056,7 @@ impl RinchDocument {
     pub(crate) fn sync_scoped_text_contexts(&mut self, scope: &crate::ifc_scope::IfcScope) {
         let mut updates: Vec<(taffy::NodeId, RawNodeId, TextContextFields)> = Vec::new();
         for &(id, _, _) in &scope.region {
-            let Some(node) = self.tree.nodes.get(id) else {
+            let Some(node) = self.tree.nodes.get_live(id) else {
                 continue;
             };
             if !matches!(&node.kind, NodeKind::Text(_)) {
@@ -1210,7 +1210,7 @@ impl RinchDocument {
         let zero = LayoutResult::default();
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
-            let Some(node) = self.tree.nodes.get_mut(id) else {
+            let Some(node) = self.tree.nodes.get_live_mut(id) else {
                 continue;
             };
             if node.layout != zero {
@@ -1892,7 +1892,7 @@ impl RinchDocument {
         nodes: &crate::node_slab::NodeSlab,
         node_id: RawNodeId,
     ) -> Option<RawNodeId> {
-        let node = nodes.get(node_id)?;
+        let node = nodes.get_live(node_id)?;
         // A hoisted out-of-flow box is held by its host's lists, not its DOM
         // parent's (#591): its `layout` is relative to the host, so every
         // coordinate sum steps there. `Node::hoisted_out_of_flow_to`.
@@ -1955,7 +1955,7 @@ impl RinchDocument {
         node_id: RawNodeId,
     ) -> std::borrow::Cow<'_, [RawNodeId]> {
         use std::borrow::Cow;
-        let Some(node) = nodes.get(node_id) else {
+        let Some(node) = nodes.get_live(node_id) else {
             return Cow::Borrowed(&[]);
         };
         // An anonymous box's box-tree children **are** its run, verbatim — no
@@ -2272,7 +2272,7 @@ impl RinchDocument {
     ) {
         use crate::computed_style::values::DisplayValue;
 
-        let Some(node) = nodes.get(node_id) else {
+        let Some(node) = nodes.get_live(node_id) else {
             return;
         };
         if let Some(taffy_id) = node.taffy_id {
@@ -2291,7 +2291,7 @@ impl RinchDocument {
         if node.hosts_hoisted_out_of_flow {
             let mut stack: Vec<RawNodeId> = node.children.clone();
             while let Some(id) = stack.pop() {
-                let Some(n) = nodes.get(id) else {
+                let Some(n) = nodes.get_live(id) else {
                     continue;
                 };
                 if n.hoisted_out_of_flow_to.is_some()
@@ -2757,7 +2757,7 @@ impl RinchDocument {
             .filter_map(|&id| self.tree.nodes.get(id).and_then(|n| n.taffy_id))
             .collect();
         for &id in &subtree[1..] {
-            let Some(t) = self.tree.nodes.get(id).and_then(|n| n.taffy_id) else {
+            let Some(t) = self.tree.nodes.get_live(id).and_then(|n| n.taffy_id) else {
                 continue;
             };
             if let Some(p) = self.tree.taffy.parent(t)
@@ -2911,7 +2911,7 @@ impl RinchDocument {
         // overflow the stack on its way out of the document.
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
-            let Some(node) = self.tree.nodes.get_mut(id) else {
+            let Some(node) = self.tree.nodes.get_live_mut(id) else {
                 continue;
             };
             node.has_been_styled = false;
@@ -3077,7 +3077,7 @@ impl RinchDocument {
         // Use iterative approach to avoid stack overflow
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
-            let Some(node) = self.tree.nodes.get_mut(id) else {
+            let Some(node) = self.tree.nodes.get_live_mut(id) else {
                 continue;
             };
             node.ifc_root = None;

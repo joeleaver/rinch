@@ -2081,7 +2081,7 @@ impl RinchDocument {
         use crate::computed_style::DisplayValue;
         let mut current = tree.nodes.get(node_id).and_then(|n| n.parent);
         while let Some(id) = current {
-            let Some(node) = tree.nodes.get(id) else {
+            let Some(node) = tree.nodes.get_live(id) else {
                 break;
             };
             if matches!(node.computed_style.display, DisplayValue::None) || was_hidden.contains(&id)
@@ -2251,7 +2251,7 @@ impl RinchDocument {
         let mut remeasure = Vec::new();
 
         while let Some(id) = stack.pop() {
-            let Some(node) = self.tree.nodes.get(id) else {
+            let Some(node) = self.tree.nodes.get_live(id) else {
                 continue;
             };
             if matches!(node.computed_style.display, DisplayValue::None) {

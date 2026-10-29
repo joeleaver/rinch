@@ -429,7 +429,7 @@ pub(crate) fn contributes_to_scrollable_overflow(
                             .get(id)
                             .is_some_and(Node::establishes_abs_containing_block);
                 }
-                let Some(ancestor) = tree.get(id) else {
+                let Some(ancestor) = tree.get_live(id) else {
                     return false;
                 };
                 if ancestor.establishes_abs_containing_block() {
@@ -762,7 +762,7 @@ fn measure_span_fragments(
     let mut before = Before::Nothing;
     for &(id, _) in &inline.child_positions {
         *steps += 1;
-        let Some(node) = tree.get(id) else { continue };
+        let Some(node) = tree.get_live(id) else { continue };
         if let Some(own) = content.get_mut(&id) {
             own.seen = true;
             own.before = before;
@@ -820,7 +820,7 @@ fn measure_span_fragments(
                     break;
                 }
                 *steps += 1;
-                let Some(el) = tree.get(id) else { break };
+                let Some(el) = tree.get_live(id) else { break };
                 if !(el.is_element() && el.display_mode == crate::node::DisplayMode::Inline) {
                     break;
                 }
@@ -1332,7 +1332,7 @@ fn takes_room(v: LengthPercentageAutoValue) -> bool {
 fn layout_parent_box(tree: &NodeTree, node: &Node) -> Option<RawNodeId> {
     let mut current = node.parent;
     while let Some(id) = current {
-        let ancestor = tree.get(id)?;
+        let ancestor = tree.get_live(id)?;
         if generates_layout_box(ancestor) {
             return Some(id);
         }
@@ -1622,7 +1622,7 @@ fn chain_to_containing_block(
             }
             break;
         };
-        let node = tree.get(id)?;
+        let node = tree.get_live(id)?;
         // Mirrors `paint`'s origin step: an atomic inline's `layout` is
         // relative to its IFC root's content box.
         let (dx, dy) = crate::paint::ifc_content_box_offset(tree, node);
@@ -1740,7 +1740,7 @@ pub(crate) fn is_laid_out(tree: &NodeTree, node_id: RawNodeId, size: (f32, f32))
     }
     let mut current = tree.get(node_id).and_then(|n| n.parent);
     while let Some(id) = current {
-        let Some(node) = tree.get(id) else {
+        let Some(node) = tree.get_live(id) else {
             return false;
         };
         if node.computed_style.display == DisplayValue::None {
@@ -1880,7 +1880,7 @@ fn unscrolled_parent_origin(tree: &mut NodeTree, node_id: RawNodeId) -> (f32, f3
     let (mut x, mut y) = (0.0_f32, 0.0_f32);
     let mut current = RinchDocument::box_tree_parent(&tree.nodes, node_id);
     while let Some(id) = current {
-        let Some(node) = tree.get(id) else { break };
+        let Some(node) = tree.get_live(id) else { break };
         let (dx, dy) = crate::paint::ifc_content_box_offset(tree, node);
         x += node.layout.x + dx;
         y += node.layout.y + dy;

@@ -505,7 +505,7 @@ impl RinchDocument {
     ) -> Option<ServoArc<ComputedValues>> {
         let mut current = start;
         while let Some(id) = current {
-            let node = self.tree.nodes.get(id)?;
+            let node = self.tree.nodes.get_live(id)?;
             let style = node
                 .stylo_element_data
                 .borrow()

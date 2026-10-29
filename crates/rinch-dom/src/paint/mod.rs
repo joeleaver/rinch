@@ -240,7 +240,7 @@ fn compute_damage_impl(
         let h = node.layout.height as f64 * scale;
 
         let mut ink = Outsets::from_css(
-            ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get(id)),
+            ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get_live(id)),
             scale,
         );
         // A positioned box that moved carries its whole painted subtree with
@@ -383,7 +383,7 @@ fn compute_damage_impl(
             // among them (#1048): where they are now, and — from the ink the
             // root was last painted with — where they were.
             let root_ink = Outsets::from_css(
-                ink_outsets_in(root, tree.inline_text_shadows, |id| tree.get(id)),
+                ink_outsets_in(root, tree.inline_text_shadows, |id| tree.get_live(id)),
                 scale,
             );
             if rw > 0.0
@@ -468,7 +468,7 @@ fn compute_damage_impl(
                 let ow = owner_node.layout.width as f64 * scale;
                 let oh = owner_node.layout.height as f64 * scale;
                 let ink = Outsets::from_css(
-                    ink_outsets_in(owner_node, tree.inline_text_shadows, |id| tree.get(id)),
+                    ink_outsets_in(owner_node, tree.inline_text_shadows, |id| tree.get_live(id)),
                     scale,
                 );
                 if add(
@@ -620,7 +620,7 @@ fn hoists_negative_z(tree: &NodeTree, node_id: RawNodeId) -> bool {
             );
             return true;
         }
-        let Some(child) = tree.get(id) else {
+        let Some(child) = tree.get_live(id) else {
             continue;
         };
         if matches!(child.computed_style.display, DisplayValue::None) {
@@ -780,7 +780,7 @@ fn clip_chain_walk(
         }
         let Some(id) = current else { break };
         *steps += 1;
-        let ancestor = tree.get(id)?;
+        let ancestor = tree.get_live(id)?;
         let a = style(ancestor)?;
         // The containing block ends the escape, and its own clip applies: a
         // `position: relative; overflow: hidden` box clips its absolute
@@ -901,7 +901,7 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
             connected = true;
             break;
         }
-        cur = tree.get(id).and_then(|n| n.parent);
+        cur = tree.get_live(id).and_then(|n| n.parent);
     }
     if !connected {
         return None;
@@ -916,7 +916,7 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
     };
     let mut cur = tree.get(node_id)?.parent;
     while let Some(id) = cur {
-        let n = tree.get(id)?;
+        let n = tree.get_live(id)?;
         if n.tag() == Some("select") {
             return Some(id);
         }
@@ -958,7 +958,7 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
         return r;
     }
     Outsets::from_css(
-        ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get(id)),
+        ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get_live(id)),
         scale,
     )
     .grow(r)
@@ -2301,7 +2301,7 @@ fn position_and_transform_in(
     let mut hoisted_fixed = false;
     let mut current = Some(node_id);
     while let Some(id) = current {
-        let Some(node) = tree.get(id) else { break };
+        let Some(node) = tree.get_live(id) else { break };
         any_transform |= !frame.is_identity(node);
         if frame.position(node) == PositionValue::Fixed {
             hoisted_fixed = true;
@@ -2323,7 +2323,7 @@ fn position_and_transform_in(
         let (mut x, mut y) = (0.0_f64, 0.0_f64);
         let mut current = Some(node_id);
         while let Some(id) = current {
-            let Some(node) = tree.get(id) else { break };
+            let Some(node) = tree.get_live(id) else { break };
             let (nx, ny) = painted_origin_step(tree, node, x, y, scale, frame);
             x = nx;
             y = ny;
@@ -2350,7 +2350,7 @@ fn position_and_transform_in(
     let mut chain: Vec<RawNodeId> = Vec::new();
     let mut current = Some(node_id);
     while let Some(id) = current {
-        let Some(node) = tree.get(id) else { break };
+        let Some(node) = tree.get_live(id) else { break };
         chain.push(id);
         if frame.position(node) == PositionValue::Fixed || id == tree.body_id {
             break;
@@ -2370,7 +2370,7 @@ fn position_and_transform_in(
     };
     let (mut x, mut y) = (0.0_f64, 0.0_f64);
     for &id in chain.iter().rev() {
-        let Some(node) = tree.get(id) else { break };
+        let Some(node) = tree.get_live(id) else { break };
         let (nx, ny) = painted_origin_step(tree, node, off_x, off_y, scale, frame);
         x = nx;
         y = ny;
