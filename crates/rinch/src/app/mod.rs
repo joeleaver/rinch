@@ -173,6 +173,8 @@ mod editor_word_delete_tests;
 mod editor_wrapped_selection_tests;
 #[cfg(test)]
 mod element_key_1678_tests;
+#[cfg(test)]
+mod element_wheel_tests;
 mod event_dispatch;
 #[cfg(test)]
 mod field_label_2034_tests;
