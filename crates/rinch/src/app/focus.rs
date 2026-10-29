@@ -133,7 +133,7 @@ pub(crate) struct PendingFocusWork {
     input_commit: Option<(usize, String)>,
     /// A blurred registered focus target's `on_focus_lost`, as its
     /// `(doc_key, node id)` (issue #147).
-    focus_lost: Option<(u64, usize)>,
+    focus_lost: Option<(u64, u64)>,
     /// The `on_focus_lost` owed to a registered target `set_inner_html` freed
     /// while it held the claim (#1509), whose registration is gone.
     freed_focus_lost: Option<crate::focus_registry::FreedFocusLost>,
@@ -246,7 +246,7 @@ impl RinchApp {
     /// not happen — and a no-op for an unregistered node: every generic
     /// `tabindex` node takes `FocusTarget::Node`, only some registered for the
     /// news.
-    pub(crate) fn notify_node_focus_gained(&self, node_id: usize) {
+    pub(crate) fn notify_node_focus_gained(&self, node_id: u64) {
         if self.focus_target == FocusTarget::Node(node_id) {
             crate::focus_registry::notify_focus_gained(self.doc_key(), node_id);
         }
@@ -258,7 +258,7 @@ impl RinchApp {
     /// ancestor of the control).
     pub(crate) fn input_attr_handler_up(
         tree: &rinch_dom::NodeTree,
-        start: usize,
+        start: u64,
         attr: &str,
     ) -> Option<usize> {
         let mut cur = Some(start);
@@ -541,7 +541,7 @@ impl RinchApp {
     /// move itself and restart the IME. Crate-internal, like the
     /// `focused_editor_id` below it — the shell is in this crate, and
     /// embedders are served by `has_focused_input`.
-    pub(crate) fn focused_input_node(&self) -> Option<usize> {
+    pub(crate) fn focused_input_node(&self) -> Option<u64> {
         match self.focus_target {
             FocusTarget::Input(id) => Some(id),
             _ => None,
@@ -574,7 +574,7 @@ impl RinchApp {
     /// can hold a line break. One predicate for both readers of it (the Enter
     /// key path's insert-or-submit decision and the soft-keyboard flag above),
     /// so they cannot drift apart.
-    pub(crate) fn node_is_textarea(tree: &rinch_dom::NodeTree, node_id: usize) -> bool {
+    pub(crate) fn node_is_textarea(tree: &rinch_dom::NodeTree, node_id: u64) -> bool {
         tree.get(node_id).and_then(|n| n.tag()) == Some("textarea")
     }
 
@@ -655,7 +655,7 @@ impl RinchApp {
     /// [`Node::is_focus_visible`](rinch_dom::node::Node::is_focus_visible),
     /// set only by keyboard/programmatic focus, never by a mouse press
     /// claiming `FocusTarget::Node`. See [`Self::has_focused_key_consumer`].
-    fn node_is_focus_visible(&self, node_id: usize) -> bool {
+    fn node_is_focus_visible(&self, node_id: u64) -> bool {
         self.doc.as_ref().is_some_and(|doc| {
             doc.borrow()
                 .tree
@@ -667,7 +667,7 @@ impl RinchApp {
     /// The container id of the focused new-editor, if one holds focus. Drives
     /// the post-layout caret/selection overlay pass.
     #[cfg(feature = "desktop")]
-    pub(crate) fn focused_editor_id(&self) -> Option<usize> {
+    pub(crate) fn focused_editor_id(&self) -> Option<u64> {
         match self.focus_target {
             FocusTarget::Editor(id) => Some(id),
             _ => None,
@@ -694,7 +694,7 @@ impl RinchApp {
     /// runtime owns the winit loop and has no test harness; this is the
     /// decision, and it is testable.
     #[cfg(feature = "desktop")]
-    pub(crate) fn blinking_editor_id(&self) -> Option<usize> {
+    pub(crate) fn blinking_editor_id(&self) -> Option<u64> {
         if !self.window_focused {
             return None;
         }

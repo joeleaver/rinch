@@ -131,7 +131,7 @@ pub struct CaretBlink {
 /// [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)) — `focused`
 /// is a container id from that document's focus arbiter, and container ids
 /// collide across documents on one thread (issue #134).
-pub fn caret_blink_tick(doc_key: u64, focused: Option<usize>) -> Option<CaretBlink> {
+pub fn caret_blink_tick(doc_key: u64, focused: Option<u64>) -> Option<CaretBlink> {
     // Only a focused editor that is still registered gets a clock. The focus
     // arbiter keeps naming an editor that unmounted until the next key, and a
     // clock made for it here would outlive the document once the context is

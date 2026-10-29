@@ -19,7 +19,7 @@ const WORDS: &str = "lorem ipsum dolor sit amet consectetur adipiscing elit sed 
 struct Rig {
     app: RinchApp,
     handle: crate::editor::EditorHandle,
-    scroller: usize,
+    scroller: u64,
 }
 
 /// `editor_is_scroller`: the editor container itself is the `overflow-y: auto`
@@ -31,7 +31,7 @@ fn rig(
     editor_is_scroller: bool,
     vw: f32,
 ) -> Rig {
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let handle = crate::editor::create_editor();
     let html: String = (0..blocks)
@@ -67,7 +67,7 @@ fn rig(
     }
 }
 
-fn scroll_of(app: &RinchApp, id: usize) -> f64 {
+fn scroll_of(app: &RinchApp, id: u64) -> f64 {
     app.doc.as_ref().unwrap().borrow().tree.nodes[id]
         .scroll_offset
         .1
@@ -76,7 +76,10 @@ fn scroll_of(app: &RinchApp, id: usize) -> f64 {
 fn caret_top(app: &RinchApp) -> Option<String> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    (0..d.tree.nodes.len())
+    d.tree
+        .nodes
+        .iter()
+        .map(|(id, _)| id)
         .find(|&id| {
             d.tree
                 .nodes
@@ -86,7 +89,7 @@ fn caret_top(app: &RinchApp) -> Option<String> {
         .and_then(|id| d.tree.nodes[id].attributes.get("style").cloned())
 }
 
-fn user_scrolls_to(app: &mut RinchApp, id: usize, y: f64) {
+fn user_scrolls_to(app: &mut RinchApp, id: u64, y: f64) {
     let doc = app.doc.as_ref().unwrap();
     let mut d = doc.borrow_mut();
     d.tree.nodes[id].scroll_offset.1 = y;
@@ -250,13 +253,12 @@ fn scrolling_a_virtualized_editor_does_not_yank_back_to_the_caret() {
 }
 
 /// Nested scrollers: the editor's 120px scroller sits 2000px down the page
-/// (the body is the outer scroller). A caret move scrolls the inner scroller;
-/// does anything bring the scroller itself on screen, as `scrollIntoView` does
-/// on the web (every scrollable ancestor)?
+/// (the body is the outer scroller). A caret move scrolls the inner scroller
+/// **and** the page, so the caret lands in the window, as `scrollIntoView` does
+/// on the web (every scrollable ancestor, #842).
 #[test]
-#[ignore = "issue #842: desktop scrolls only the nearest scroll container"]
 fn nested_scrollers_the_outer_one_follows_too() {
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let handle = crate::editor::create_editor();
     let html: String = (0..40).map(|i| format!("<p>line {i}</p>")).collect();
@@ -291,6 +293,22 @@ fn nested_scrollers_the_outer_one_follows_too() {
     assert!(
         outer > 0.0,
         "the page did not follow (body scroll {outer}); the caret is still 1400px below the window"
+    );
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let caret = d
+        .tree
+        .nodes
+        .iter()
+        .find(|(_, n)| n.attributes.contains_key("data-pm-caret"))
+        .map(|(id, _)| id)
+        .expect("a caret overlay");
+    let painted = rinch_dom::paint::painted_border_box(&d.tree, caret, 1.0);
+    assert!(
+        painted.y0 >= 0.0 && painted.y1 <= 600.0,
+        "the caret is painted in the window (got {}..{})",
+        painted.y0,
+        painted.y1
     );
 }
 
@@ -434,7 +452,11 @@ fn r846_a_focusing_checkbox_click_does_not_yank_to_the_old_caret() {
     let (bx, by) = {
         let doc = r.app.doc.as_ref().unwrap();
         let d = doc.borrow();
-        let item = (0..d.tree.nodes.len())
+        let item = d
+            .tree
+            .nodes
+            .iter()
+            .map(|(id, _)| id)
             .find(|&id| {
                 d.tree.get(id).is_some_and(|n| {
                     n.attributes.get("data-pm-type").map(String::as_str) == Some("task_item")

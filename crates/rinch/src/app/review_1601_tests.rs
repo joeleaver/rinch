@@ -91,7 +91,7 @@ fn has_class(n: &rinch_dom::Node, class: &str) -> bool {
         .is_some_and(|c| c.split_whitespace().any(|one| one == class))
 }
 
-fn find(app: &RinchApp, pred: impl Fn(&rinch_dom::Node) -> bool) -> usize {
+fn find(app: &RinchApp, pred: impl Fn(&rinch_dom::Node) -> bool) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -102,7 +102,7 @@ fn find(app: &RinchApp, pred: impl Fn(&rinch_dom::Node) -> bool) -> usize {
         .expect("the node")
 }
 
-fn row(app: &RinchApp, value: &str) -> usize {
+fn row(app: &RinchApp, value: &str) -> u64 {
     let li = find(app, |n| {
         n.attributes.get("data-value").map(String::as_str) == Some(value)
     });
@@ -116,7 +116,7 @@ fn row(app: &RinchApp, value: &str) -> usize {
         .unwrap()
 }
 
-fn centre(app: &RinchApp, id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, id: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let (x, y, w, h) = hit_testing::painted_element_box(&d.tree, id);
@@ -328,7 +328,7 @@ mod removed_cursor_row {
         }
     }
 
-    fn focused(app: &RinchApp) -> Option<usize> {
+    fn focused(app: &RinchApp) -> Option<u64> {
         match app.focus_target {
             FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
             _ => None,
@@ -366,7 +366,7 @@ mod removed_cursor_row {
         f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
     }
 
-    fn run(delete: bool) -> (bool, Option<usize>, Option<usize>) {
+    fn run(delete: bool) -> (bool, Option<u64>, Option<u64>) {
         let _guard = crate::app::timer_backend_lock();
         rinch_core::set_timer_backend(manual);
         let rows: Rc<RefCell<Option<Signal<Vec<TreeNodeData>>>>> = Rc::default();

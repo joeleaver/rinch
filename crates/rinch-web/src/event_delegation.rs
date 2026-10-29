@@ -38,7 +38,8 @@ thread_local! {
     /// `click` that belongs to a gesture whose press acted (`GESTURE_ACTED`,
     /// issue #272) is a duplicate: the browser's own
     /// click after the press, the deferred touch click, and the trusted,
-    /// `detail == 0` click a `<label>` fires at its control.
+    /// `detail == 0` click a `<label>` fires at its control — unless that one
+    /// reaches a handler the press did not run (issue #2033, `GESTURE_RAN`).
     ///
     /// The flag is scoped to the gesture, never latched: assistive technology
     /// activates through a *trusted* click with no pointer or key event of its
@@ -75,6 +76,28 @@ thread_local! {
     /// bubble listener; no key touches it, so a drag cancelled with Escape
     /// while the button is held still suppresses its trailing click.
     static GESTURE_ACTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// The `data-rid` handlers the current pointer gesture's press ran (the
+    /// eager `pointerdown` dispatch, or the deferred one at `pointerup`).
+    /// Reset by each `pointerdown`. What the click a `<label>` forwards to its
+    /// control is checked against (issue #2033): it is the press's duplicate
+    /// only when it resolves to one of these — desktop's rule, "a handler the
+    /// press already ran is not run again" (#866).
+    static GESTURE_RAN: std::cell::RefCell<Vec<events::EventHandlerId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+
+    /// The control a `<label>` is about to forward its click to: recorded when
+    /// an acted gesture's trailing click on (or inside) the label is
+    /// suppressed and not `preventDefault`ed (a prevented label forwards
+    /// nothing), and consumed by the forwarded click, which the browser
+    /// dispatches synchronously after that click's listeners, still inside
+    /// the same task. An unconsumed record is cleared by a `setTimeout(0)`
+    /// scheduled with it — one task later, not at the end of this one: on a
+    /// real click a microtask checkpoint runs after each listener, before the
+    /// label's forward, so a microtask clear would come too early. The next
+    /// `pointerdown` also clears it.
+    static GESTURE_LABEL_CONTROL: std::cell::RefCell<Option<web_sys::Element>> =
+        const { std::cell::RefCell::new(None) };
 
     /// `data-rid` handlers currently dispatching (innermost last). A handler
     /// that raises a click itself (`hidden_input.click()` to open a file
@@ -184,12 +207,66 @@ fn begin_pointer_gesture() {
     GESTURE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     POINTER_GESTURE.with(|p| p.set(true));
     GESTURE_ACTED.with(|a| a.set(false));
+    GESTURE_RAN.with(|r| r.borrow_mut().clear());
+    GESTURE_LABEL_CONTROL.with(|c| c.borrow_mut().take());
 }
 
 /// The current gesture's press dispatched or armed something (see
 /// `GESTURE_ACTED`).
 fn mark_gesture_acted() {
     GESTURE_ACTED.with(|a| a.set(true));
+}
+
+/// The current gesture's press is running `data-rid` handler `rid` (see
+/// `GESTURE_RAN`).
+fn note_gesture_ran(rid: events::EventHandlerId) {
+    GESTURE_RAN.with(|r| r.borrow_mut().push(rid));
+}
+
+/// An acted gesture's trailing click on `target` is being suppressed. If it is
+/// a click on a `<label>` (or on content inside one) that the label will
+/// forward to a control, remember that control until the next task
+/// (`setTimeout(0)`; see `GESTURE_LABEL_CONTROL`). The caller skips a click
+/// whose default was prevented: its label forwards nothing. A click on the control itself is not forwarded,
+/// and no click follows to consume its record.
+fn note_gesture_label_forward(target: &web_sys::Element) {
+    let Some(label) = target.closest("label").ok().flatten() else {
+        return;
+    };
+    let Some(control) = js_sys::Reflect::get(&label, &"control".into())
+        .ok()
+        .and_then(|c| c.dyn_into::<web_sys::Element>().ok())
+    else {
+        return;
+    };
+    GESTURE_LABEL_CONTROL.with(|c| *c.borrow_mut() = Some(control));
+    after_task(0, || {
+        GESTURE_LABEL_CONTROL.with(|c| c.borrow_mut().take());
+    });
+}
+
+/// Whether a click at `target`, inside an acted gesture, is the click a
+/// `<label>` forwarded to its control *and* resolves to a handler the press
+/// did not run (issue #2033) — Chrome's `click@label | focus@control |
+/// click@control` reaching a different `onclick` above the control. Consumes
+/// the record, so only that one forward is let through. A gesture whose press
+/// ran nothing (an activated drag) lets none through.
+fn is_new_label_forward(target: &web_sys::Element) -> bool {
+    let recorded = GESTURE_LABEL_CONTROL.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.as_ref().is_some_and(|ctl| ctl.is_same_node(Some(target))) {
+            c.take()
+        } else {
+            None
+        }
+    });
+    recorded.is_some()
+        && nearest_live_rid(target).is_some_and(|(_, rid)| {
+            GESTURE_RAN.with(|r| {
+                let ran = r.borrow();
+                !ran.is_empty() && !ran.contains(&rid)
+            })
+        })
 }
 
 /// Clear the gesture flag after `delay_ms`, unless a newer gesture has begun
@@ -251,6 +328,8 @@ pub fn __reset_activation_state() {
     GESTURE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     POINTER_GESTURE.with(|p| p.set(false));
     GESTURE_ACTED.with(|a| a.set(false));
+    GESTURE_RAN.with(|r| r.borrow_mut().clear());
+    GESTURE_LABEL_CONTROL.with(|c| c.borrow_mut().take());
     DISPATCHING.with(|d| d.borrow_mut().clear());
     LABEL_FORWARD.with(|l| l.set(None));
     FORCE_TRUSTED.with(|t| t.set(false));
@@ -1939,6 +2018,7 @@ fn dispatch_click_at(
         // Recorded before the handler runs, so a handler that raises a trusted
         // click of its own is still inside an acted gesture.
         mark_gesture_acted();
+        note_gesture_ran(rid);
         let cursor = (event.client_x() as f32, event.client_y() as f32);
         let text_hit = resolve_text_hit(browser_doc, cursor.0, cursor.1).unwrap_or_default();
         set_click_context_for(
@@ -3244,17 +3324,31 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         let mouse = event.dyn_ref::<web_sys::MouseEvent>();
         let trusted = event.is_trusted() || FORCE_TRUSTED.with(|t| t.get());
         let acted_gesture = POINTER_GESTURE.with(|p| p.get()) && GESTURE_ACTED.with(|a| a.get());
-        if !activation::click_should_dispatch(acted_gesture, trusted) {
+        let target_el = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok());
+        if !activation::click_should_dispatch(acted_gesture, trusted)
+            // A `<label>`'s forwarded click reaching a handler the press did
+            // not run is the label's activation of its control, not the
+            // press's duplicate (issue #2033): it dispatches, once.
+            && !target_el.as_ref().is_some_and(is_new_label_forward)
+        {
             // The gesture's trailing click: the interaction is over once this
             // task ends. A `<label>`'s forwarded click (a second trusted click,
             // at the control) is dispatched synchronously inside this task and
-            // is still suppressed; an assistive-technology click after it is
-            // not.
+            // is still suppressed when it reaches a handler the press already
+            // ran; an assistive-technology click after it is not.
+            // A prevented click's label forwards nothing (the listener is on
+            // the document's bubble phase, after the label's own listeners).
+            if let Some(el) = &target_el
+                && !event.default_prevented()
+            {
+                note_gesture_label_forward(el);
+            }
             schedule_gesture_end(0);
             return;
         }
-        if let Some(target) = event.target()
-            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+        if let Some(el) = target_el
             // The editor and a render surface consume their own pointer
             // input (each stops an in-target pointerdown before the generic
             // delegation), so a click inside either must not reach an

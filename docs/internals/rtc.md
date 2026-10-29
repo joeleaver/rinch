@@ -153,7 +153,9 @@ There are no cargo features for the backends: the target picks one.
   - `before_app_run`: no dispatcher, headless drains.
   - `exit_closes`: re-runs its own binary as a child that connects to a lite
     peer in the parent and exits four ways: open, `close()` then exit, drop
-    then exit, and `shutdown()` then `_exit`.
+    then exit, and `shutdown()` then `_exit`. The child leaves only on the
+    parent's `LEAVE` line, after the parent has checked that nothing closed
+    yet: every mode closes at once, so that check raced the close (#1972).
 - **str0m is a dev-dependency with `openssl`, not `rust-crypto`.**
   `str0m-rust-crypto` turns on dimpl's `rcgen` feature, which turns on
   rcgen's `aws_lc_rs`. Cargo unifies that into the rcgen webrtc-rs uses, so

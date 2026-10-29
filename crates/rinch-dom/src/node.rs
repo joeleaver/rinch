@@ -1,6 +1,6 @@
 //! Node tree data structures for rinch-dom.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -23,8 +23,12 @@ use style::shared_lock::{Locked, SharedRwLock};
 
 use crate::computed_style::ComputedStyle;
 
-/// Raw node ID (index into slab).
-pub type RawNodeId = usize;
+/// A node id inside `rinch-dom`: the packed bits of `rinch_core::dom::NodeId`
+/// (slot index in the low 32 bits, generation in the high 32; issue #723).
+/// `NodeId(raw)` and `id.0` convert between the two for free. Index the node
+/// storage with it ([`crate::node_slab::NodeSlab`]); a table indexed by slot
+/// takes [`crate::node_slab::slot_of`].
+pub type RawNodeId = u64;
 
 bitflags! {
     /// Tracks what needs updating for a node.
@@ -117,7 +121,7 @@ pub enum NodeContext {
     /// `debug_assertions` validator
     /// ([`crate::RinchDocument::ifc_leaf_invariant_violations`]) checks the
     /// invariant after every setup pass.
-    InlineRoot(usize), // stores the RawNodeId of the IFC root
+    InlineRoot(RawNodeId), // stores the RawNodeId of the IFC root
     /// A text-entry form control — `<textarea>`, or an `<input>` of a
     /// text-like type — whose value is an attribute rather than a child, so
     /// nothing in the tree gives it a content size (#297). The measure
@@ -170,7 +174,7 @@ pub struct TextMeasure {
     /// Empty means use font metrics default.
     pub line_height_css: String,
     /// DOM node ID for caching the layout after measurement.
-    pub node_id: usize,
+    pub node_id: RawNodeId,
     /// Text color (inherited from parent).
     pub color: AlphaColor<Srgb>,
     /// Whether text wrapping is disabled (white-space: nowrap/pre).
@@ -449,7 +453,7 @@ pub struct IfcTextRange {
     /// Byte range end (exclusive) in the IFC `text_content`.
     pub flat_end: usize,
     /// DOM node ID: text node for text, `<br>` element for `<br>`.
-    pub node_id: usize,
+    pub node_id: RawNodeId,
     /// Byte offset within the text node (0 for most; nonzero when a node
     /// is split across multiple style spans).
     pub node_offset: usize,
@@ -981,9 +985,9 @@ impl std::fmt::Debug for InlineLayout {
     }
 }
 
-/// A single-line `<input>`'s displayed line: `(caret x, full width, height)`
-/// in logical px (#1721).
-pub(crate) type InputLineMetrics = (f32, f32, f32);
+/// A text control's displayed text: `(caret x, caret y, full width, height)`
+/// in logical px (#1721, #827).
+pub(crate) type InputLineMetrics = (f32, f32, f32, f32);
 
 /// A node in the DOM tree.
 pub struct Node {
@@ -1513,10 +1517,20 @@ pub struct Node {
     /// shaped under (#1195, review of #1302) — so a restyle that moves
     /// neither shapes nothing. `None` until the control is first sized.
     pub(crate) form_label_width: Cell<Option<(u64, f32)>>,
-    /// A focused single-line `<input>`'s displayed line, `(caret x, full
-    /// width, height)`, under the hash of what it was shaped from
-    /// (`form_control::displayed_line_metrics`, #1721).
+    /// A text control's displayed text, `(caret x, caret y, full width,
+    /// height)`, under the hash of what it was shaped from
+    /// (`form_control::displayed_metrics`): a focused single-line `<input>`'s
+    /// line for its horizontal scroll (#1721), a `<textarea>`'s text for its
+    /// caret reveal and its scroll extent (#827).
     pub(crate) input_line_metrics: Cell<Option<(u64, InputLineMetrics)>>,
+    /// A **focused** text control's displayed text as shaped for
+    /// [`Self::input_line_metrics`], under the hash of everything it is
+    /// shaped from except the caret, so a caret move reads its new position
+    /// off this layout instead of shaping the whole text again (review of
+    /// #2023: ten arrows in a 15 KB textarea shaped it ten times). Dropped
+    /// when the control is shaped unfocused, so only the field being edited
+    /// keeps one.
+    pub(crate) input_text_layout: RefCell<Option<(u64, parley::layout::Layout<Brush>)>>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of
     /// measuring via Parley. Used by contenteditable block virtualization to
@@ -1778,6 +1792,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -1859,6 +1874,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -1939,6 +1955,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -2017,6 +2034,7 @@ impl Node {
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
+            input_text_layout: RefCell::new(None),
             estimated_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
@@ -2820,7 +2838,7 @@ impl IfcRootMeasures {
 /// The node tree, stored in a slab for stable IDs.
 pub struct NodeTree {
     /// All nodes, indexed by RawNodeId.
-    pub nodes: slab::Slab<Node>,
+    pub nodes: crate::node_slab::NodeSlab,
     /// The root document node ID.
     pub root_id: RawNodeId,
     /// The html element node ID.
@@ -3161,8 +3179,9 @@ pub struct NodeTree {
     /// hover.
     ///
     /// It is **not** the only pass that re-cascades the whole document. A
-    /// `<style>` append (`maybe_load_style_css`) and a viewport change in
-    /// `resolve_layout` drop every node's cached style too, and do not set this
+    /// stylesheet change Stylo cannot target (a sheet with a `@keyframes`
+    /// rule is one; `RinchDocument::flush_stylist`, #884) and a viewport
+    /// change in `resolve_layout` drop every node's cached style too, and do not set this
     /// flag, so a running animation keeps stale stops and timing across them —
     /// measured, a `<style>` appended after the first layout that redefines a
     /// running `@keyframes` leaves the animation on its old body. Tracked on
@@ -3252,6 +3271,13 @@ pub struct NodeTree {
     /// `note_select_content_changed` (which walks a mutated node's ancestors
     /// looking for one) returns at once (#1128).
     pub option_elements: usize,
+    /// How many `<textarea>` elements this document has ever created. Never
+    /// decremented, so `0` proves no node is a textarea, and the textarea
+    /// extent refresh (`clamp_scroll_offsets`' scan of every node, #827) and
+    /// [`Self::push_dirty`]'s textarea check are skipped — the scan cost
+    /// every layout of a document without one ~3% (`inset_move.list_500`,
+    /// review of batch #2031).
+    pub textarea_elements: usize,
     /// Text nodes whose Taffy measure context (`NodeContext::Text`) no longer
     /// matches the typography their parent now computes (issue #678).
     ///
@@ -3403,6 +3429,14 @@ pub struct NodeTree {
     /// here — coalesced per node, last value wins, since layout may resolve
     /// more than once per frame — for the facade to drain after layout.
     pub pending_scroll_clamps: Vec<(RawNodeId, f64)>,
+    /// `<textarea>`s whose value may have changed since the last resolve —
+    /// a `value` write, or a write to one of its text children — noted by
+    /// [`Self::push_dirty`] (review of #2023). A textarea's scroll range is
+    /// its text's height, which no layout measures, so a value change runs
+    /// no layout: the resolve that skips layout refreshes these ones' extent
+    /// and clamps their scroll, as `clamp_scroll_offsets` does for every
+    /// scroll container when layout runs.
+    pub(crate) textarea_extent_dirty: Vec<RawNodeId>,
     /// The device pixels per CSS px this document is painted at — the
     /// display scale, set with the Stylo device pixel ratio
     /// (`RinchDocument::set_device_pixel_ratio`). A scroll offset is kept on
@@ -3472,7 +3506,7 @@ impl NodeTree {
 
     /// Create a new node tree with root and body nodes.
     pub fn new() -> Self {
-        let mut nodes = slab::Slab::new();
+        let mut nodes = crate::node_slab::NodeSlab::new();
         let mut taffy = taffy::TaffyTree::new();
         let mut taffy_map = HashMap::new();
 
@@ -3606,6 +3640,7 @@ impl NodeTree {
             mousemove_handlers: 0,
             title_sources: 0,
             option_elements: 0,
+            textarea_elements: 0,
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),
@@ -3620,6 +3655,7 @@ impl NodeTree {
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
+            textarea_extent_dirty: Vec::new(),
             device_scale: 1.0,
             text_scale: 1.0,
             taffy_attach_faults: 0,
@@ -3631,9 +3667,19 @@ impl NodeTree {
         self.nodes.contains(id)
     }
 
-    /// Get a reference to a node.
+    /// The node an id names, checking its generation: for any id from outside
+    /// the tree (see [`crate::node_slab`]).
     pub fn get(&self, id: RawNodeId) -> Option<&Node> {
         self.nodes.get(id)
+    }
+
+    /// The node a **tree-internal** id names — see
+    /// [`crate::node_slab::NodeSlab::get_live`]: for ids the tree handed itself
+    /// during a walk; the generation is asserted in debug builds only.
+    #[inline]
+    #[track_caller]
+    pub fn get_live(&self, id: RawNodeId) -> Option<&Node> {
+        self.nodes.get_live(id)
     }
 
     /// Whether a **scroll gesture** landing on `node_id` must be refused because
@@ -3701,7 +3747,7 @@ impl NodeTree {
                 if id == ancestor {
                     return true;
                 }
-                current = self.nodes.get(id).and_then(|n| n.parent);
+                current = self.nodes.get_live(id).and_then(|n| n.parent);
             }
             false
         })
@@ -3776,6 +3822,48 @@ impl NodeTree {
         self.hit_cache.invalidate();
         self.dirty_nodes.insert(id);
         self.paint_dirty_nodes.push(id);
+        self.note_textarea_extent_dirty(id);
+    }
+
+    /// Queue `id`'s `onscroll` for an offset the engine wrote itself — a
+    /// clamp, a caret reveal — in [`Self::pending_scroll_clamps`], coalesced
+    /// per node (last value wins): layout can resolve more than once per
+    /// frame, and a consumer must see one event per drain (#144).
+    pub(crate) fn queue_scroll_clamp(&mut self, id: RawNodeId, offset: f64) {
+        if let Some(pending) = self
+            .pending_scroll_clamps
+            .iter_mut()
+            .find(|(n, _)| *n == id)
+        {
+            pending.1 = offset;
+        } else {
+            self.pending_scroll_clamps.push((id, offset));
+        }
+    }
+
+    /// If `id` is a `<textarea>` or one of its text children, queue the
+    /// textarea for the extent refresh and scroll clamp the next resolve owes
+    /// it ([`Self::textarea_extent_dirty`]).
+    fn note_textarea_extent_dirty(&mut self, id: RawNodeId) {
+        if self.textarea_elements == 0 {
+            return;
+        }
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        let textarea = if node.tag() == Some("textarea") {
+            id
+        } else if node.is_text()
+            && let Some(parent) = node.parent
+            && self.nodes.get(parent).and_then(Node::tag) == Some("textarea")
+        {
+            parent
+        } else {
+            return;
+        };
+        if !self.textarea_extent_dirty.contains(&textarea) {
+            self.textarea_extent_dirty.push(textarea);
+        }
     }
 
     /// `v`, a scroll offset in CSS px, on this document's device pixel grid
@@ -3887,7 +3975,7 @@ impl NodeTree {
         let nodes = &mut self.nodes;
         // Each state is read with the slab borrowed shared (an IFC root's ink
         // reads its inline elements' styles, #1048), then written.
-        let refresh = |nodes: &mut slab::Slab<Node>, id: RawNodeId, layout: bool| {
+        let refresh = |nodes: &mut crate::node_slab::NodeSlab, id: RawNodeId, layout: bool| {
             let Some(node) = nodes.get(id) else {
                 return;
             };
@@ -4010,6 +4098,12 @@ impl NodeTree {
     }
 
     /// Remove a node and all its descendants from the slab.
+    ///
+    /// The one route that frees slots, and the one that keeps the tree's
+    /// unchecked (`get_live`) readers sound (#723): it drops the hit cache
+    /// (whose cached paint orders `hit_testing` reads unchecked) and each
+    /// freed node's `active_transitions`/`active_animations` entries. PR 2's
+    /// free-on-discard must go through it, or repeat both.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
         self.hit_cache.invalidate();
         // Collect all descendant IDs first
@@ -4182,7 +4276,7 @@ pub fn first_legend_child(tree: &NodeTree, parent: &Node) -> Option<RawNodeId> {
         .children
         .iter()
         .copied()
-        .find(|&c| tree.get(c).and_then(|n| n.tag()) == Some("legend"))
+        .find(|&c| tree.get_live(c).and_then(|n| n.tag()) == Some("legend"))
 }
 
 /// Whether a tag names an element HTML lets be disabled — the set `:disabled`

@@ -214,9 +214,83 @@ pub fn has_render_scope() -> bool {
 // NodeId and NodeHandle
 // ============================================================================
 
-/// Unique identifier for a DOM node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NodeId(pub usize);
+/// Unique identifier for a DOM node: a slot **index** and a **generation**,
+/// packed into one `u64` on every target (issue #723).
+///
+/// The low 32 bits are the slot the backend stores the node in, the high 32
+/// bits the generation of that slot. A backend that reuses a slot after
+/// freeing it gives the new node a higher generation, so an id held from
+/// before the free names *nothing* rather than the slot's new occupant:
+/// `rinch-dom`'s checked node storage answers `None` for it, as the browser
+/// backend does for an id it has retired.
+///
+/// The field is public and holds the packed bits. An id of generation 0 is
+/// just its index, so `NodeId(4)` is slot 4, generation 0, and prints as
+/// `NodeId(4)` everywhere it printed before (`Debug`, the debug server's
+/// wire ids, DevTools). A non-zero generation prints as `NodeId(4@g1)`.
+/// Build an id from parts with [`NodeId::new`] or [`NodeId::from_index`], and
+/// read them back with [`NodeId::index`] and [`NodeId::generation`]; do not
+/// treat [`NodeId::to_raw`] as an index.
+///
+/// The order (`Ord`) is that of the packed bits: generation first, then index.
+/// It is a total order fit for sorted containers, not document order.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NodeId(pub u64);
+
+impl NodeId {
+    /// The id of slot `index` at `generation`.
+    #[inline]
+    pub const fn new(index: u32, generation: u32) -> Self {
+        NodeId(((generation as u64) << 32) | index as u64)
+    }
+
+    /// The id of slot `index` at generation 0 — what a backend that has not
+    /// reused the slot hands out, and what a test literal means.
+    ///
+    /// # Panics
+    ///
+    /// If `index` does not fit in 32 bits.
+    #[inline]
+    pub fn from_index(index: usize) -> Self {
+        let index = u32::try_from(index).expect("NodeId index exceeds 32 bits");
+        NodeId::new(index, 0)
+    }
+
+    /// The id whose packed bits are `raw` (the inverse of [`NodeId::to_raw`]).
+    #[inline]
+    pub const fn from_raw(raw: u64) -> Self {
+        NodeId(raw)
+    }
+
+    /// The packed bits: generation in the high 32, index in the low 32. Stable
+    /// across a process, so fit for a wire id or a map key.
+    #[inline]
+    pub const fn to_raw(self) -> u64 {
+        self.0
+    }
+
+    /// The slot index.
+    #[inline]
+    pub const fn index(self) -> usize {
+        (self.0 & 0xFFFF_FFFF) as usize
+    }
+
+    /// The generation of the slot this id was issued for.
+    #[inline]
+    pub const fn generation(self) -> u32 {
+        (self.0 >> 32) as u32
+    }
+}
+
+impl std::fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.generation() == 0 {
+            write!(f, "NodeId({})", self.index())
+        } else {
+            write!(f, "NodeId({}@g{})", self.index(), self.generation())
+        }
+    }
+}
 
 /// Whether writing or removing the attribute `name` on the **focused** element
 /// can make a browser blur it inside the write (issue #1478): `hidden`,
@@ -1130,14 +1204,17 @@ impl NodeHandle {
     /// Request that this element be scrolled into view — the minimal
     /// ("nearest") scroll: an element already in view does not move.
     ///
-    /// The backends differ in when and how far:
+    /// Both backends move **every** scroll container the element is in,
+    /// innermost first and the page last, on both axes, each just far enough to
+    /// bring the element (as the scrollers inside it have placed it) into its
+    /// padding box; nothing outside a `position: fixed` ancestor moves. They
+    /// differ in when:
     /// - **desktop** (`rinch-dom`) defers the scroll until after the next layout
     ///   pass, since the element's position must be known relative to its scroll
-    ///   container, and scrolls only the **nearest** scroll container (issue #842).
+    ///   containers (#842 made it move every one, as the web does).
     /// - **web** (`rinch-web`) scrolls immediately, with the browser's
-    ///   `scrollIntoView({block: "nearest", inline: "nearest"})`, which scrolls
-    ///   **every** scrollable ancestor, the page included. Until the editor's
-    ///   caret scroll (#837) it was a silent no-op there.
+    ///   `scrollIntoView({block: "nearest", inline: "nearest"})`. Until the
+    ///   editor's caret scroll (#837) it was a silent no-op there.
     /// - the test `MockDomDocument` only queues the request.
     pub fn scroll_into_view(&self) {
         if let Some(doc) = self.accessed_doc() {
@@ -1152,12 +1229,12 @@ impl NodeHandle {
     /// near the top of the content stays near the top. It moves even an element
     /// already in view.
     ///
-    /// - **desktop** (`rinch-dom`) defers it until after the next layout pass
-    ///   and moves the **nearest** scroll container only, vertically, as
-    ///   [`Self::scroll_into_view`] does.
-    /// - **web** (`rinch-web`) sets the nearest scroll container's `scrollTop`
-    ///   at once (the page's, when no ancestor scrolls), then brings the element
-    ///   into the page's view the way [`Self::scroll_into_view`] does.
+    /// The place is in the nearest **vertical** scroll container (the page's, when
+    /// no ancestor scrolls); every scroller further out, and the other axis, then
+    /// bring the element into view the way [`Self::scroll_into_view`] does.
+    /// - **desktop** (`rinch-dom`) defers it until after the next layout pass.
+    /// - **web** (`rinch-web`) sets that scroller's `scrollTop` at once, then
+    ///   calls the browser's `scrollIntoView` for the rest.
     /// - the test `MockDomDocument` only queues the request.
     pub fn scroll_to_fraction(&self, fraction: f32, margin: f32) {
         let fraction = if fraction.is_nan() {
@@ -1244,7 +1321,7 @@ impl NodeHandle {
     pub fn query_caret_position(&self, byte_offset: usize) -> Option<(f32, f32)> {
         let doc = self.accessed_doc()?;
         doc.borrow()
-            .query_caret_position(self.node_id.0 as u64, byte_offset)
+            .query_caret_position(self.node_id.0, byte_offset)
     }
 
     /// Query the bounding box of a glyph cluster at the given byte offset.
@@ -1256,8 +1333,7 @@ impl NodeHandle {
     /// Some(GlyphBounds) if the node has text layout and the offset is valid, None otherwise
     pub fn query_glyph_bounds(&self, byte_offset: usize) -> Option<GlyphBounds> {
         let doc = self.accessed_doc()?;
-        doc.borrow()
-            .query_glyph_bounds(self.node_id.0 as u64, byte_offset)
+        doc.borrow().query_glyph_bounds(self.node_id.0, byte_offset)
     }
 
     /// Get the layout bounds of this node relative to its parent.
@@ -1266,7 +1342,7 @@ impl NodeHandle {
     /// For where the node is on screen, use [`Self::bounding_rect`].
     pub fn get_layout_bounds(&self) -> Option<(f32, f32, f32, f32)> {
         let doc = self.accessed_doc()?;
-        doc.borrow().query_node_layout(self.node_id.0 as u64)
+        doc.borrow().query_node_layout(self.node_id.0)
     }
 
     /// Where this element is **now**: the box it is painted in, in
@@ -1364,7 +1440,7 @@ impl NodeHandle {
         // across documents (issue #134). A handle whose document is already
         // gone registers under key 0 (matches no live document), yielding a
         // signal that simply keeps its zero rect.
-        let signal = crate::reactive::register_bounds_signal(self.doc_key(), self.node_id.0 as u64);
+        let signal = crate::reactive::register_bounds_signal(self.doc_key(), self.node_id.0);
         // Asked on every call, not only for a new entry: a call made while the
         // document is borrowed cannot reach the backend, and the next one must
         // still start the watch (a backend ignores a node it already watches).
@@ -1765,6 +1841,26 @@ pub fn warn_invalid_selector(selector: &str) {
 mod tests {
     use super::*;
     use mock::MockDomDocument;
+
+    /// `NodeId` packs a 32-bit slot and a 32-bit generation into one `u64` on
+    /// every target (#723), sampled off the fixed point: a generation of 0
+    /// would let a packing that drops the high half pass.
+    #[test]
+    fn a_node_id_packs_slot_and_generation_into_64_bits() {
+        let id = NodeId::new(0xABCD_1234, 0x0000_0007);
+        assert_eq!(id.index(), 0xABCD_1234);
+        assert_eq!(id.generation(), 7);
+        assert_eq!(id.to_raw(), (7u64 << 32) | 0xABCD_1234);
+        assert_eq!(NodeId::from_raw(id.to_raw()), id);
+        assert_eq!(std::mem::size_of::<NodeId>(), 8);
+        // A generation-0 id is just its slot: what every test literal means
+        // and what the debug server's wire ids still print.
+        assert_eq!(NodeId::from_index(4), NodeId(4));
+        assert_eq!(NodeId::new(4, 0).to_raw(), 4);
+        assert_ne!(NodeId::new(4, 1), NodeId(4), "the generation is identity");
+        assert_eq!(format!("{:?}", NodeId(4)), "NodeId(4)");
+        assert_eq!(format!("{:?}", NodeId::new(4, 3)), "NodeId(4@g3)");
+    }
 
     /// `a.insert_after(b)` with `b` already `a`'s next sibling leaves `b` where
     /// it is (issue #356) — the DOM's `insertBefore` rule. Handed to the mock as

@@ -195,7 +195,10 @@ fn the_embed_overlay_splits_every_viewport_with_no_game() {
     let p = paint(&mut doc, true, false);
     assert!(!p.refused);
     assert_eq!(p.slices.len(), 1);
-    assert_eq!(p.slices[0].surface_id, BASE_WITHOUT_GAME_IDS + viewport.0);
+    assert_eq!(
+        p.slices[0].surface_id,
+        BASE_WITHOUT_GAME_IDS + viewport.index()
+    );
     let base = p.slices[0].base.as_ref().expect("a base slice");
     assert!(!base.black_backdrop);
     assert!(matches!(base.clear, SliceCoverage::Rect([20, 12, 60, 38])));

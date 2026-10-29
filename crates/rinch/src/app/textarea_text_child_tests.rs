@@ -11,13 +11,13 @@ use super::*;
 use rinch_core::events::{InputCallback, register_input_handler};
 use std::cell::Cell;
 
-fn mount(child: &'static str) -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
+fn mount(child: &'static str) -> (RinchApp, u64, Rc<RefCell<Vec<String>>>) {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let input_id = register_input_handler(InputCallback::new({
         let log = log.clone();
         move |v: String| log.borrow_mut().push(v)
     }));
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -49,7 +49,7 @@ fn press(app: &mut RinchApp, key: KeyCode, text: Option<&str>) {
     );
 }
 
-fn click_into(app: &mut RinchApp, id: usize) {
+fn click_into(app: &mut RinchApp, id: u64) {
     let (x, y) = {
         let d = app.doc.as_ref().unwrap().borrow();
         let (ax, ay, w, h) = painted_element_box(&d.tree, id);
@@ -71,7 +71,7 @@ fn click_into(app: &mut RinchApp, id: usize) {
     }
 }
 
-fn value_attr(app: &RinchApp, id: usize) -> Option<String> {
+fn value_attr(app: &RinchApp, id: u64) -> Option<String> {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -131,7 +131,7 @@ fn the_first_click_places_the_caret_in_the_child_text() {
 
 /// [`mount`], plus a `data-onchange` handler; returns its log as well.
 #[allow(clippy::type_complexity)]
-fn mount_with_change(child: &'static str) -> (RinchApp, usize, usize, Rc<RefCell<Vec<String>>>) {
+fn mount_with_change(child: &'static str) -> (RinchApp, u64, u64, Rc<RefCell<Vec<String>>>) {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let record = |tag: &'static str| {
         let log = log.clone();
@@ -141,7 +141,7 @@ fn mount_with_change(child: &'static str) -> (RinchApp, usize, usize, Rc<RefCell
     };
     let input_id = record("input");
     let change_id = record("change");
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -161,14 +161,14 @@ fn mount_with_change(child: &'static str) -> (RinchApp, usize, usize, Rc<RefCell
     (app, field, text, log)
 }
 
-fn live(app: &RinchApp, id: usize) -> Option<String> {
+fn live(app: &RinchApp, id: u64) -> Option<String> {
     let d = app.doc.as_ref().unwrap().borrow();
     d.live_value(rinch_core::dom::NodeId(id))
 }
 
 /// The reactive `textarea { {|| draft.get()} }` shape: the child text changes
 /// and a frame runs.
-fn set_child(app: &mut RinchApp, text_id: usize, s: &str) {
+fn set_child(app: &mut RinchApp, text_id: u64, s: &str) {
     app.doc
         .as_ref()
         .unwrap()
@@ -213,7 +213,7 @@ fn shift_left(app: &mut RinchApp) {
 }
 
 /// Caret after the `n`th character from the start of the (single) line.
-fn caret_at(app: &mut RinchApp, n: usize) {
+fn caret_at(app: &mut RinchApp, n: u64) {
     press(app, KeyCode::Home, None);
     for _ in 0..n {
         press(app, KeyCode::ArrowRight, None);
@@ -461,7 +461,7 @@ mod review1208 {
     /// An `<input>` with no `value` attribute still gets one at focus.
     #[test]
     fn r_input_still_writes_value_at_focus() {
-        let id_cell: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id_cell: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let id_in = id_cell.clone();
         let h = register_input_handler(InputCallback::new(|_v: String| {}));
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -530,7 +530,7 @@ mod review1208 {
 mod dirty_flag_1222 {
     use super::*;
 
-    fn write(app: &mut RinchApp, id: usize, v: Option<&str>) {
+    fn write(app: &mut RinchApp, id: u64, v: Option<&str>) {
         {
             let mut d = app.doc.as_ref().unwrap().borrow_mut();
             match v {

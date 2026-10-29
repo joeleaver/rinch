@@ -78,7 +78,7 @@ pub(super) fn paint_svg(
         };
         *next += 1;
         let inherited = *inherited;
-        let Some(child) = tree.get(child_id) else {
+        let Some(child) = tree.get_live(child_id) else {
             continue;
         };
         let NodeKind::Element(ref el) = child.kind else {

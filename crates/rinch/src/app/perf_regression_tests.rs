@@ -457,7 +457,7 @@ fn mount_list() -> (RinchApp, Signal<Vec<Item>>) {
 fn row_count(app: &RinchApp) -> usize {
     use rinch_core::dom::{DomDocument, NodeId};
     let d = app.doc.as_ref().unwrap().borrow();
-    let ids: Vec<usize> = d.tree.nodes.iter().map(|(id, _)| id).collect();
+    let ids: Vec<u64> = d.tree.nodes.iter().map(|(id, _)| id).collect();
     ids.into_iter()
         .filter(|&id| d.get_attribute(NodeId(id), "class").as_deref() == Some("row"))
         .filter(|&id| {
@@ -1323,8 +1323,11 @@ fn a_stacking_context_that_only_changes_opacity_repaints_its_own_box() {
     );
 }
 
-/// A `<style>` element was added: a whole-document restyle, which can change
-/// any node's paint without naming one.
+/// A `<style>` element was added whose rule Stylo cannot bucket by id, class
+/// or tag (`:root`): a whole-document restyle, which can change any node's
+/// paint without naming one. (Its rule was `.late { … }`, matching nothing,
+/// until #884: that was a whole-document restyle too, and now restyles
+/// nothing — [`late_class_rule_matching_nothing_restyles_nothing`].)
 ///
 /// `shape_ifc_build` and `ifc_signature_changes` are 0, not 1 (#509, #826):
 /// the appended `<style>` is `display: none` with its CSS text as a child —
@@ -1340,7 +1343,7 @@ fn full_repaint_restyle() {
         let mut d = doc.borrow_mut();
         let body = d.body();
         let style = d.create_element("style");
-        let css = d.create_text(".late { color: rgb(0, 0, 200); }");
+        let css = d.create_text(":root { --late: rgb(0, 0, 200); }");
         d.append_child(style, css);
         d.append_child(body, style);
     });
@@ -1348,9 +1351,15 @@ fn full_repaint_restyle() {
         "full repaint: restyle",
         &s,
         &[
-            (StyleResolves, 3),
+            // 3 -> 2 and 428 -> 429 (#884): the text is appended to the
+            // `<style>` while it is detached, which used to load the sheet and
+            // walk the whole document on the spot, before the element was in
+            // it; the insertion then cascaded the element on its own. The
+            // sheet now applies when the element is connected, and the one
+            // whole-document walk reaches the `<style>` with everything else.
+            (StyleResolves, 2),
             (ElementsCascaded, 217),
-            (StyleNodesVisited, 428),
+            (StyleNodesVisited, 429),
             (FullRestyles, 1),
             (FullRestyleStylesheet, 1),
             (FullStyleWalks, 1),
@@ -1375,6 +1384,64 @@ fn full_repaint_restyle() {
             // #536, see `full_repaint_resize` above.
             (ClipMasks, 2),
             (ClipMaskPx, 38656),
+        ],
+    );
+}
+
+/// A sheet loaded after mount whose rule matches no element (#884): Stylo's
+/// stylesheet invalidation names no element, so the frame resolves styles and
+/// does nothing else — no cascade, no layout, no paint.
+#[test]
+fn late_class_rule_matching_nothing_restyles_nothing() {
+    let mut app = static_page();
+    let s = interaction(&mut app, |app| {
+        let doc = app.doc.clone().unwrap();
+        doc.borrow_mut()
+            .load_css(".late { color: rgb(0, 0, 200); }");
+    });
+    expect_frame(
+        "late rule matching nothing",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (RepaintNone, 1),
+        ],
+    );
+}
+
+/// A sheet loaded after mount whose rule matches the rows (#884): the rows are
+/// restyled and repainted, nothing else.
+#[test]
+fn late_class_rule_restyles_and_repaints_what_it_matches() {
+    let mut app = static_page();
+    let s = interaction(&mut app, |app| {
+        let doc = app.doc.clone().unwrap();
+        doc.borrow_mut().load_css(".row { color: rgb(0, 0, 200); }");
+    });
+    expect_frame(
+        "late rule matching the rows",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 10),
+            (StyleNodesVisited, 13),
+            (TaffyStyleSyncs, 10),
+            (ShapeIfcBuild, 10),
+            (IfcMeasureInvalidations, 10),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 163200),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 12),
+            (StackingOrderBuilds, 1),
+            (GlyphCacheHits, 50),
+            (ClipMasks, 1),
+            (ClipMaskPx, 164800),
         ],
     );
 }

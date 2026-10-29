@@ -79,7 +79,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     ev(app, PlatformEvent::MouseUp { x, y, button });
 }
 
-fn caret_pos(app: &RinchApp, id: usize) -> usize {
+fn caret_pos(app: &RinchApp, id: u64) -> usize {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -90,9 +90,9 @@ fn caret_pos(app: &RinchApp, id: usize) -> usize {
 
 /// One `<input type=…>` holding `value`, with a button after it to take focus
 /// away. Returns the app, the field and its handle.
-fn page(ty: &'static str, value: &'static str) -> (RinchApp, usize, NodeHandle) {
+fn page(ty: &'static str, value: &'static str) -> (RinchApp, u64, NodeHandle) {
     let h = register_input_handler(InputCallback::new(|_| {}));
-    let id = Rc::new(Cell::new(0usize));
+    let id = Rc::new(Cell::new(0u64));
     let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let (id_in, handle_in) = (id.clone(), handle.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -147,7 +147,7 @@ fn ink(app: &mut RinchApp) -> (usize, usize) {
     (inside, outside)
 }
 
-fn focus_by_tab(app: &mut RinchApp, field: &NodeHandle, id: usize) {
+fn focus_by_tab(app: &mut RinchApp, field: &NodeHandle, id: u64) {
     field.focus();
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
     about_to_wait(app);

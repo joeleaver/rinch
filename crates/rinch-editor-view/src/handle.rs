@@ -1788,7 +1788,7 @@ impl EditorHandle {
     /// The `image` node whose `<img>` is the host element `host_id`, as the
     /// position before it and its attributes; `None` for any other element.
     /// The runtimes ask it on a pointer move to build an [`ImageHover`].
-    pub fn image_at_host(&self, host_id: usize) -> Option<(Pos, rinch_editor_core::Attrs)> {
+    pub fn image_at_host(&self, host_id: u64) -> Option<(Pos, rinch_editor_core::Attrs)> {
         let core = self.core();
         let (pos, node) = core.view.as_ref()?.node_pos_for_host(host_id)?;
         (node.type_name() == "image").then(|| (Pos(pos), node.attrs().clone()))
@@ -2251,20 +2251,20 @@ impl EditorHandle {
     }
 
     /// The host id of the editor container element, or `0` if not yet mounted.
-    pub fn container_id(&self) -> usize {
+    pub fn container_id(&self) -> u64 {
         self.core().view.as_ref().map_or(0, |v| v.container_id())
     }
 
     /// The host caret address `(textblock element id, flat UTF-8 byte offset)` for a
     /// model `pos` (used by app-side geometry: caret point, vertical movement).
-    pub fn caret_address(&self, pos: Pos) -> Option<(usize, usize)> {
+    pub fn caret_address(&self, pos: Pos) -> Option<(u64, usize)> {
         let core = self.core();
         core.view.as_ref()?.caret_address(&core.state.doc, pos)
     }
 
     /// Map a host caret address `(textblock element id, flat UTF-8 byte offset)` —
     /// e.g. from a pointer hit-test — to a model [`Pos`] (without moving the cursor).
-    pub fn pos_at(&self, textblock_dom_id: usize, ifc_byte: usize) -> Option<Pos> {
+    pub fn pos_at(&self, textblock_dom_id: u64, ifc_byte: usize) -> Option<Pos> {
         self.core()
             .view
             .as_ref()?
@@ -2277,7 +2277,7 @@ impl EditorHandle {
     /// desktop, where an image is an inline box with no bytes, so the byte on
     /// its two sides is one number (#1104). `None` if that element is not an
     /// inline leaf of this editor.
-    pub fn pos_beside_inline_leaf(&self, leaf_dom_id: usize, after: bool) -> Option<Pos> {
+    pub fn pos_beside_inline_leaf(&self, leaf_dom_id: u64, after: bool) -> Option<Pos> {
         self.core()
             .view
             .as_ref()?
@@ -2289,11 +2289,7 @@ impl EditorHandle {
     /// after)`: for a `Downstream` caret the image just after `pos`, else the
     /// one just before it (#1104, #1116). The host draws such a caret from the leaf's
     /// box (`DomDocument::query_inline_box_caret`). `None` anywhere else.
-    pub fn caret_inline_box(
-        &self,
-        pos: Pos,
-        affinity: CaretAffinity,
-    ) -> Option<(usize, usize, bool)> {
+    pub fn caret_inline_box(&self, pos: Pos, affinity: CaretAffinity) -> Option<(u64, u64, bool)> {
         let core = self.core();
         let view = core.view.as_ref()?;
         let (tb, _) = view.caret_address(&core.state.doc, pos)?;
@@ -2308,7 +2304,7 @@ impl EditorHandle {
     /// from the DOM: in the browser's flat byte offsets ([`Self::pos_at`]) a leaf
     /// has no width, so they cannot tell the position before a hard break from
     /// the one after it (#1025).
-    pub fn pos_in_textblock(&self, textblock_dom_id: usize, offset: usize) -> Option<Pos> {
+    pub fn pos_in_textblock(&self, textblock_dom_id: u64, offset: usize) -> Option<Pos> {
         self.core()
             .view
             .as_ref()?
@@ -2319,7 +2315,7 @@ impl EditorHandle {
     /// into its content)` for `pos`, a text character and an inline leaf each
     /// counting one. Unlike [`Self::caret_address`]'s flat byte offset it tells
     /// the two sides of a leaf apart. `None` when `pos` is not in a textblock.
-    pub fn textblock_offset(&self, pos: Pos) -> Option<(usize, usize)> {
+    pub fn textblock_offset(&self, pos: Pos) -> Option<(u64, usize)> {
         let core = self.core();
         core.view.as_ref()?.textblock_offset(&core.state.doc, pos)
     }
@@ -2383,7 +2379,7 @@ impl EditorHandle {
     /// selectable (design §6 node-views).
     ///
     /// [`Selection::Node`]: rinch_editor_core::Selection::Node
-    pub fn node_selection_at_host(&self, host_id: usize) -> Option<Selection> {
+    pub fn node_selection_at_host(&self, host_id: u64) -> Option<Selection> {
         let core = self.core();
         let (pos, node) = core.view.as_ref()?.node_pos_for_host(host_id)?;
         // Node-views are *leaf* atoms (image / horizontal rule). A block container
@@ -2398,7 +2394,7 @@ impl EditorHandle {
     /// Place the cursor at a host caret address `(textblock element id, flat UTF-8
     /// byte offset)` produced by a pointer hit-test (the click→`Pos` path). Returns
     /// whether the address resolved to a model position.
-    pub fn set_cursor_from_ifc(&self, textblock_dom_id: usize, ifc_byte: usize) -> bool {
+    pub fn set_cursor_from_ifc(&self, textblock_dom_id: u64, ifc_byte: usize) -> bool {
         match self.pos_at(textblock_dom_id, ifc_byte) {
             Some(pos) => {
                 self.set_selection(Selection::cursor(pos));
@@ -3606,11 +3602,13 @@ impl EditorHandle {
     /// its start:
     ///
     /// - **Desktop** applies it after the next layout (the call wakes the
-    ///   runtime for one), and moves the **nearest** scroll container only. A
-    ///   virtualized editor lays out the blocks holding `from` and `to` for it.
+    ///   runtime for one). A virtualized editor lays out the blocks holding
+    ///   `from` and `to` for it.
     /// - **Web** applies it immediately (the call runs the overlay refresh an
-    ///   input event would), and `scrollIntoView` moves every scrollable
-    ///   ancestor, the page included.
+    ///   input event would).
+    ///
+    /// Both move every scroll container the range is in, the page included
+    /// (on desktop since #842).
     ///
     /// A later call replaces an unfulfilled one. The range is carried through
     /// local edits made before it is fulfilled and dropped by
@@ -3660,11 +3658,10 @@ impl EditorHandle {
     ///
     /// Everything else — when it happens, what waits and what is carried or
     /// dropped, which containers move — is as [`Self::scroll_into_view`]
-    /// describes, with one difference for `Fraction`: on the **web** the
-    /// nearest scroll container (the page's scrolling element when no ancestor
-    /// scrolls) is set to the computed `scrollTop`, and the start is then
-    /// brought into view of the scrollers further out, the page included, the
-    /// "nearest" way.
+    /// describes, with one difference for `Fraction`: the nearest vertical
+    /// scroll container (the page's scrolling element when no ancestor scrolls)
+    /// is set to the computed `scrollTop`, and the start is then brought into
+    /// view of the scrollers further out, the page included, the "nearest" way.
     pub fn scroll_into_view_aligned(&self, from: Pos, to: Pos, align: ScrollAlign) {
         let doc_key = {
             let mut core = self.core_mut();
@@ -4574,7 +4571,7 @@ impl EditorHandle {
 
     /// Whether `host_id` is the host element of a mounted node view of this
     /// editor.
-    pub fn is_node_view_host(&self, host_id: usize) -> bool {
+    pub fn is_node_view_host(&self, host_id: u64) -> bool {
         self.core()
             .view
             .as_ref()
@@ -4588,7 +4585,7 @@ impl EditorHandle {
     /// right after the node. `true` when the key was consumed either way — the
     /// platform then stops it. The platform's entry point, called before the
     /// element that holds the keyboard sees the key.
-    pub fn offer_node_view_key(&self, host_id: usize, key: &EditorKey<'_>) -> bool {
+    pub fn offer_node_view_key(&self, host_id: u64, key: &EditorKey<'_>) -> bool {
         let Some(slot) = self
             .core()
             .view
@@ -5053,7 +5050,7 @@ mod tests {
     fn caret_top(h: &Harness) -> Option<String> {
         let d = h.mock.borrow();
         (0..d.__node_count())
-            .map(NodeId)
+            .map(NodeId::from_index)
             .find(|id| d.get_attribute(*id, "data-pm-caret").is_some())
             .and_then(|id| d.get_attribute(id, "style"))
     }
@@ -10216,10 +10213,10 @@ mod tests {
         }
 
         thread_local! {
-            static FOCUSED: Cell<Option<usize>> = const { Cell::new(None) };
+            static FOCUSED: Cell<Option<u64>> = const { Cell::new(None) };
         }
 
-        fn record_focus(container: usize) {
+        fn record_focus(container: u64) {
             FOCUSED.with(|f| f.set(Some(container)));
         }
 
@@ -10238,10 +10235,10 @@ mod tests {
         }
 
         thread_local! {
-            static BLURRED: Cell<Option<usize>> = const { Cell::new(None) };
+            static BLURRED: Cell<Option<u64>> = const { Cell::new(None) };
         }
 
-        fn record_blur(container: usize) {
+        fn record_blur(container: u64) {
             BLURRED.with(|f| f.set(Some(container)));
         }
 

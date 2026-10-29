@@ -413,6 +413,13 @@ to style. Decorations are recomputed from every new state, and the editor does
 **not** move a range for you when text is inserted before it — a plugin that
 caches ranges maps them through `tr.mapping()` in its `apply`.
 
+`decorations()` is called on every transaction, a caret move included, so build
+its set from ranges the plugin already holds rather than re-scanning the
+document there. The view's own pass is about linear in the decorations (a sort, then one walk): it walks the
+top-level blocks once beside the decorations sorted by position and descends
+only into a block a decoration reaches (or one that still shows a segment to
+take off), and a run whose decorations did not change is not rewritten (#848).
+
 Plugin code runs **untracked** (issue #943). `decorations`, `apply`,
 `init_state`, `handle_paste` and a plugin's commands run synchronously inside
 whatever app effect called the handle (a `set_selection`, a `command`, an
@@ -1032,10 +1039,10 @@ moving (head) corner.
 
 The scroll is the minimal one (`nearest`): a caret already in view moves nothing,
 and one out of view is brought just inside the edge it left by, instantly rather
-than smoothly. On the **web** that is the browser's `scrollIntoView`, which scrolls
-every scrollable ancestor, the page included. On **desktop** only the caret's
-nearest scroll container scrolls (issue #842), so an editor whose scroller is itself
-off screen stays off screen.
+than smoothly. Every scroll container the caret is in moves, innermost first and the
+page last, on both axes, so an editor whose scroller is itself off screen is brought
+on screen too. On the **web** that is the browser's `scrollIntoView`; **desktop**
+does the same (since issue #842; before it only the nearest scroll container moved).
 
 It deliberately does **not** scroll when the caret's position on screen changes
 without the user moving it — a user who scrolled away to read something is left
@@ -1102,9 +1109,8 @@ position between blocks reveals the nearest text.
 It uses the scroll the caret uses, on two hidden boxes the view places over the
 range's end and then its start, so the rules above apply: on **desktop** it happens
 after the next layout (the call wakes the runtime for one, from an effect or a timer
-as well as from an event handler) and moves the nearest scroll container; on the
-**web** it happens during the call and `scrollIntoView` moves every scrollable
-ancestor, the page included. A virtualized desktop editor lays out the blocks holding
+as well as from an event handler); on the **web** it happens during the call. Both
+move every scroll container the range is in, the page included. A virtualized desktop editor lays out the blocks holding
 `from` and `to` for it. The request waits on the handle until there is geometry for
 its start (a block edited since the last layout has none on desktop); if the end has
 none by then, the start alone is revealed. A later call replaces it, local edits
@@ -1133,9 +1139,8 @@ handle.scroll_into_view_aligned(from, to, ScrollAlign::Fraction(1.0 / 3.0));
 handle.focus();
 ```
 
-It waits, carries and drops exactly as `scroll_into_view` does, and scrolls the same
-containers on **desktop** (the nearest scroll container, vertically). On the
-**web** it sets the nearest scroll container's `scrollTop` (the page's, when no
+It waits, carries and drops exactly as `scroll_into_view` does. On both backends it
+sets the `scrollTop` of the nearest vertical scroll container (the page's, when no
 ancestor scrolls) and then brings the start into the view of the scrollers further
 out, the page included, the "nearest" way. One limit: in a virtualized desktop
 editor the blocks the scroll brings into the window were laid out at their
@@ -1289,6 +1294,26 @@ claim, the table above decides.
 > included. To open links in an editable editor, register `on_link_click` and open
 > `click.link.href` yourself (for example on `click.primary`, the Ctrl/Cmd+click
 > convention). Desktop never navigates: there is no browser to follow the link.
+
+**Decorating links with CSS generated content.** A stylesheet rule may add text
+around a mark, for example a small "opens outside" arrow after web links:
+
+```css
+[data-pm-editor] a[href^="http"]::after { content: "\2197"; font-size: 0.7em; }
+```
+
+That text is not in the document, and the caret and a press step over it. The
+caret right after the link is drawn before the arrow, as a browser draws it, and
+a press on the arrow puts the caret there; a character typed there still goes
+after the link (a link does not continue past its end), so it appears after the
+arrow. When the arrow wraps onto the next line, the caret after the link stays
+at the end of the link's line. A padded link is the exception on desktop: the
+caret after it is drawn past its padding, and so past the arrow too, unless the
+arrow wrapped. `::before` works the mirror way, on a mark or on a block: the
+caret before a link is drawn before its `::before` text, and a caret inside an
+inclusive mark (such as bold) at its start after it. On desktop the selection
+highlight leaves the generated text out; in the browser the highlight is drawn
+from the browser's own `Range` rectangles.
 
 ### Autocomplete popups: keys, selection and caret geometry
 

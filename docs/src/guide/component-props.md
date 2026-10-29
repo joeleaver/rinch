@@ -168,6 +168,7 @@ and no stylesheet in the workspace matches that class.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `label` | `String` | `""` | |
+| `id` | `String` | `""` | The field's `id` (Mantine's `id`); empty generates a unique `rinch-field-{n}`. The label's `for` names it — so a press on the label focuses the field — and the description/error are `{id}-description`/`{id}-error`, named by the field's `aria-describedby` (#2034). A quoted `"id"` root attribute goes on the wrapper instead |
 | `placeholder` | `String` | `""` | |
 | `description` | `String` | `""` | Help text below input |
 | `error` | `String` | `""` | Error message; shows error styling |
@@ -187,6 +188,7 @@ and no stylesheet in the workspace matches that class.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `label` | `String` | `""` | |
+| `id` | `String` | `""` | The field's `id` (Mantine's `id`); empty generates a unique `rinch-field-{n}`. The label's `for` names it — so a press on the label focuses the field — and the description/error are `{id}-description`/`{id}-error`, named by the field's `aria-describedby` (#2034). A quoted `"id"` root attribute goes on the wrapper instead |
 | `description` | `String` | `""` | |
 | `error` | `String` | `""` | |
 | `placeholder` | `String` | `""` | |
@@ -208,6 +210,7 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `label` | `String` | `""` | |
+| `id` | `String` | `""` | The field's `id` (Mantine's `id`); empty generates a unique `rinch-field-{n}`. The label's `for` names it — so a press on the label focuses the field — and the description/error are `{id}-description`/`{id}-error`, named by the field's `aria-describedby` (#2034). A quoted `"id"` root attribute goes on the wrapper instead |
 | `description` | `String` | `""` | |
 | `error` | `String` | `""` | |
 | `placeholder` | `String` | `""` | |
@@ -230,6 +233,7 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `label` | `String` | `""` | |
+| `id` | `String` | `""` | The field's `id` (Mantine's `id`); empty generates a unique `rinch-field-{n}`. The label's `for` names it — so a press on the label focuses the field — and the description/error are `{id}-description`/`{id}-error`, named by the field's `aria-describedby` (#2034). A quoted `"id"` root attribute goes on the wrapper instead |
 | `description` | `String` | `""` | |
 | `error` | `String` | `""` | |
 | `placeholder` | `String` | `""` | |
@@ -283,6 +287,7 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `label` | `String` | `""` | |
+| `id` | `String` | `""` | The trigger's `id`; empty generates a unique `rinch-field-{n}`. The trigger is a `div`, which a `for` cannot reach, so it names its label (`{id}-label`) in `aria-labelledby` and a press on the label focuses it; description/error as for `TextInput` (#2034) |
 | `description` | `String` | `""` | |
 | `error` | `String` | `""` | |
 | `placeholder` | `String` | `""` | |
@@ -488,6 +493,7 @@ Text input with inline color preview and dropdown ColorPicker.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `label` | `String` | `""` | Input label |
+| `id` | `String` | `""` | The field's `id` (Mantine's `id`); empty generates a unique `rinch-field-{n}`. The label's `for` names it — so a press on the label focuses the field — and the description/error are `{id}-description`/`{id}-error`, named by the field's `aria-describedby` (#2034). A quoted `"id"` root attribute goes on the wrapper instead |
 | `description` | `String` | `""` | Description text below the input |
 | `error` | `String` | `""` | Error message (shows error styling) |
 | `placeholder` | `String` | `""` | Placeholder text |
