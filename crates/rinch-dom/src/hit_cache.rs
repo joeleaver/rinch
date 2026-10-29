@@ -150,6 +150,9 @@ struct State {
 #[derive(Default)]
 pub struct HitCache {
     generation: Cell<u64>,
+    /// Moved by [`Self::invalidate`] and by a scroll that reaches extents,
+    /// but not by one that does not: see [`Self::shape_generation`].
+    shape_generation: Cell<u64>,
     state: RefCell<State>,
 }
 
@@ -166,6 +169,21 @@ impl HitCache {
     #[inline]
     pub fn invalidate(&self) {
         self.generation.set(self.generation.get().wrapping_add(1));
+        self.shape_generation
+            .set(self.shape_generation.get().wrapping_add(1));
+    }
+
+    /// The generation of everything but a scroll's answers: moved by
+    /// [`Self::invalidate`], and by [`Self::invalidate_scroll`] only when the
+    /// scroll reaches an extent (a box that does not clip on both axes). A
+    /// memo of geometry that a scroll of a clipping box cannot change keys on
+    /// it, so a notch of a long list keeps it: the measured extents of the
+    /// absolute boxes listed for their scroll containers
+    /// (`paint::scrollbar::OverflowAbsExtents`, #770), which subtract every
+    /// scroll they pass.
+    #[inline]
+    pub fn shape_generation(&self) -> u64 {
+        self.shape_generation.get()
     }
 
     /// The current generation. Two reads that agree bracket a span in which
@@ -236,7 +254,11 @@ impl HitCache {
     pub fn invalidate_scroll(&self, extent_reads_scroll: bool) {
         let mut s = self.state.borrow_mut();
         let was_current = s.filled_at == self.generation.get();
-        self.invalidate();
+        self.generation.set(self.generation.get().wrapping_add(1));
+        if extent_reads_scroll {
+            self.shape_generation
+                .set(self.shape_generation.get().wrapping_add(1));
+        }
         if !was_current || extent_reads_scroll {
             // Already stale, or the scroll reaches extents: the next lookup
             // clears.

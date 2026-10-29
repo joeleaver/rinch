@@ -236,6 +236,16 @@ impl Scrollbars {
 /// may resolve against an ancestor, and neither swells the scroll range of a
 /// box that merely happens to be its Taffy parent (issue #765).
 ///
+/// **And every absolute box below the first box whose range this is**
+/// (issue #770): one laid out in a box that is no scroll container, or whose
+/// containing block is above the box it is laid out in, is part of the
+/// scrollable overflow of the nearest scroll container at or above its
+/// containing block (`out_of_flow::overflow_scroller`; the page's is the
+/// `<body>`'s). The layout read-back lists them
+/// (`NodeTree::overflow_absolutes`), and [`extend_with_overflow_absolutes`]
+/// measures this container's through every box between them, once per
+/// geometry (`OverflowAbsolutes`).
+///
 /// Taffy's `child.layout.{x,y}` are relative to the **parent's border box**, so
 /// they include the leading padding and border; subtracting that offset is what
 /// keeps a padded container from deciding it overflows when it does not.
@@ -272,8 +282,9 @@ impl Scrollbars {
 ///
 /// Not counted yet: a margin that collapses through a child's end (a
 /// child of `height: auto` whose last child has `margin-bottom: 80px` scrolls
-/// 30 in Chrome and 0 here) and a descendant's overflow below the first box
-/// (#770).
+/// 30 in Chrome and 0 here) and an **in-flow** descendant's overflow below the
+/// first box (a 300px child of a `height: 50px` child scrolls 200 in Chrome,
+/// 0 here — #2054).
 ///
 /// In logical pixels — this is layout's own unit, and every caller either wants
 /// it that way or scales the result itself.
@@ -285,6 +296,19 @@ impl Scrollbars {
 /// scroll container is never an anonymous box (an anonymous box's style
 /// carries no `overflow`).
 pub fn content_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
+    content_extents_with(tree, node_id, true)
+}
+
+/// [`content_extents`] without the absolute boxes listed for `node_id` from
+/// below its children (#770, `NodeTree::overflow_absolutes`). They only add
+/// to it, so a scroll offset inside this range is inside that one: the
+/// layout's clamp asks this first, and measures them only for an offset past
+/// it.
+pub(crate) fn content_extents_in_flow(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
+    content_extents_with(tree, node_id, false)
+}
+
+fn content_extents_with(tree: &NodeTree, node_id: RawNodeId, listed: bool) -> (f64, f64) {
     let Some(node) = tree.get(node_id) else {
         return (0.0, 0.0);
     };
@@ -331,6 +355,9 @@ pub fn content_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
         ),
     };
     extend_with_children(tree, node_id, node_id, &frame, &mut right, &mut bottom);
+    if listed {
+        extend_with_overflow_absolutes(tree, node_id, &frame, &mut right, &mut bottom);
+    }
     (
         (right - content_left).max(0.0),
         (bottom - content_top).max(0.0),
@@ -427,6 +454,392 @@ fn extend_with_box_tree_children(
         };
         extend_with_child(tree, container_id, child_id, child, frame, right, bottom);
     }
+}
+
+/// Grow `right`/`bottom` by every absolute box whose scrollable overflow is
+/// `container_id`'s but which is laid out in another box (issue #770): one
+/// under a box between it and the container, or one whose containing block
+/// is an ancestor of the box it is laid out in.
+///
+/// Each counts as an `absolute` child does in [`extend_with_child`]: its
+/// border box where it is drawn, transformed, less the container's end
+/// padding — here in the container's border-box frame through every box
+/// between them.
+///
+/// The layout read-back lists the absolute boxes
+/// (`NodeTree::overflow_absolutes`), and [`OverflowAbsolutes`] measures them
+/// once per geometry: so this is one binary search, plus a walk for each box
+/// with a transform on its way, and a document with none pays an `is_empty`.
+fn extend_with_overflow_absolutes(
+    tree: &NodeTree,
+    container_id: RawNodeId,
+    frame: &ContainerFrame,
+    right: &mut f64,
+    bottom: &mut f64,
+) {
+    if tree.overflow_absolutes.listed.is_empty() {
+        return;
+    }
+    let state = tree.overflow_absolutes.current(tree);
+    let measured = &state.measured;
+    if let Ok(i) = measured.binary_search_by_key(&container_id, |m| m.0) {
+        let (_, x1, y1) = measured[i];
+        *right = right.max(x1 - frame.end_padding.0);
+        *bottom = bottom.max(y1 - frame.end_padding.1);
+    }
+    let live = &state.live;
+    if live.is_empty() {
+        return;
+    }
+    let first = live.partition_point(|&(scroller, _)| scroller < container_id);
+    for &(scroller, abs_id) in &live[first..] {
+        if scroller != container_id {
+            break;
+        }
+        // Freed, or no longer an absolute box with an area, since the layout
+        // that listed it (`extend_with_child` skips an empty one too).
+        if !tree
+            .get(abs_id)
+            .is_some_and(|n| n.box_position() == PositionValue::Absolute && !is_empty_box(n))
+        {
+            continue;
+        }
+        let Some(drawn) = border_box_in(tree, abs_id, container_id) else {
+            continue;
+        };
+        *right = right.max(drawn.x1 - frame.end_padding.0);
+        *bottom = bottom.max(drawn.y1 - frame.end_padding.1);
+    }
+}
+
+/// `NodeTree::overflow_absolutes`: every `absolute` box the layout read back
+/// (`listed`, #770), and a memo of them, each assigned to the scroll
+/// container whose range it is (`out_of_flow::overflow_scroller`) and
+/// measured in that container's border-box frame — filled by the first scroll
+/// range asked for after the geometry changed and kept until it changes
+/// again.
+///
+/// **Keyed on `HitCache::shape_generation`**, which everything that can move
+/// a box moves: a layout, a mutation, a restyle, a tick that changes a
+/// box's `HitStyleKey` — and `out_of_flow::replace_all`, which moves boxes
+/// after the layout's clamp may already have measured them. A scroll of a box
+/// that clips does not: a listed box's place in its container is measured
+/// with the scroll of every box between them taken off, and the ones that
+/// scroll away from it are written back by `out_of_flow::replace_after_scroll`
+/// with their scroll added, so it is the same at every offset.
+///
+/// **A box with a transform on its way** — its own, or any box's between it
+/// and its container, identity included — is not measured here but listed
+/// in `live`, and measured by every call: a tick writes a transform's value
+/// without moving the generation (only whether there is one is in the key).
+/// So is a box whose way up the walk below does not follow (an absolute box
+/// between it and its containing block's chain), measured as
+/// `out_of_flow::overflow_scroller` and [`border_box_in`] say.
+#[derive(Debug, Default)]
+pub(crate) struct OverflowAbsolutes {
+    /// `(absolute box, its out_of_flow_kind)`, in read order. Cleared by
+    /// `out_of_flow::begin_read`.
+    pub(crate) listed: Vec<(RawNodeId, Option<crate::out_of_flow::OutOfFlowKind>)>,
+    state: std::cell::RefCell<OverflowAbsState>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct OverflowAbsState {
+    /// The generation `measured` and `live` were filled at.
+    filled_at: Option<u64>,
+    /// `(scroll container, right, bottom)`: the furthest border-box edges of
+    /// its listed boxes with nothing transformed on their way, in its
+    /// border-box frame. One per container, sorted by container.
+    measured: Vec<(RawNodeId, f64, f64)>,
+    /// `(scroll container, absolute box)` for the boxes measured per call,
+    /// sorted by container.
+    live: Vec<(RawNodeId, RawNodeId)>,
+}
+
+impl OverflowAbsolutes {
+    /// The memo, filled for `tree`'s current geometry.
+    fn current<'a>(&'a self, tree: &NodeTree) -> std::cell::Ref<'a, OverflowAbsState> {
+        let generation = tree.hit_cache.shape_generation();
+        if self.state.borrow().filled_at != Some(generation) {
+            let mut state = self.state.borrow_mut();
+            state.fill(tree);
+            state.filled_at = Some(generation);
+        }
+        self.state.borrow()
+    }
+}
+
+/// Where one listed box's walk up ended.
+enum Placed {
+    /// It counts nowhere: no scroll container takes it (a `clip` box clips
+    /// it, the viewport holds a `fixed` box), or the container's own walk
+    /// of its children measures it.
+    Nowhere,
+    /// Its container, and its border box's far edges there, with nothing
+    /// transformed on the way.
+    Measured(RawNodeId, f64, f64),
+    /// Measured per call, in this container.
+    Live(RawNodeId),
+}
+
+impl OverflowAbsState {
+    fn fill(&mut self, tree: &NodeTree) {
+        self.measured.clear();
+        self.live.clear();
+        let body_scrolls = tree.get(tree.body_id).is_some_and(|body| {
+            let (clip_x, clip_y) = body.clip_axes();
+            (clip_x || clip_y) && crate::out_of_flow::is_scroll_container(body)
+        });
+        let mut sorted = true;
+        for &(abs_id, kind) in &tree.overflow_absolutes.listed {
+            match place_listed(tree, abs_id, kind, body_scrolls) {
+                Placed::Nowhere => {}
+                Placed::Measured(scroller, x1, y1) => match self.measured.last_mut() {
+                    Some(last) if last.0 == scroller => {
+                        last.1 = last.1.max(x1);
+                        last.2 = last.2.max(y1);
+                    }
+                    last => {
+                        sorted &= last.is_none_or(|l| l.0 < scroller);
+                        self.measured.push((scroller, x1, y1));
+                    }
+                },
+                Placed::Live(scroller) => self.live.push((scroller, abs_id)),
+            }
+        }
+        if !sorted {
+            self.measured.sort_unstable_by_key(|m| m.0);
+            self.measured.dedup_by(|later, kept| {
+                let same = later.0 == kept.0;
+                if same {
+                    kept.1 = kept.1.max(later.1);
+                    kept.2 = kept.2.max(later.2);
+                }
+                same
+            });
+        }
+        self.live.sort_unstable();
+    }
+}
+
+/// Which scroll container the listed absolute box `abs_id` (of
+/// `out_of_flow_kind` `kind`) is part of the scrollable overflow of, and
+/// where it is there: one walk up its box-tree ancestors that finds the
+/// container as `out_of_flow::overflow_scroller` does and sums the offsets as
+/// [`border_box_in`] does.
+///
+/// The walk first looks for the box's containing block — passing every box
+/// on the way, scroll containers included (the box escapes them), with its
+/// scroll taken off — and from there on stops at the first box that clips,
+/// which is the container when it scrolls. The initial containing block's
+/// scroll is the `<body>`'s when the body scrolls and the `<html>` box's
+/// otherwise. An `absolute` or `fixed` box on the way, or a containing block
+/// the walk does not pass, hands the box to the general answer, measured per
+/// call ([`Placed::Live`]).
+fn place_listed(
+    tree: &NodeTree,
+    abs_id: RawNodeId,
+    kind: Option<crate::out_of_flow::OutOfFlowKind>,
+    body_scrolls: bool,
+) -> Placed {
+    use crate::out_of_flow::OutOfFlowKind;
+    let Some(node) = tree.get(abs_id) else {
+        return Placed::Nowhere;
+    };
+    if node.box_position() != PositionValue::Absolute || is_empty_box(node) {
+        return Placed::Nowhere;
+    }
+    // What the walk looks for before it climbs: the containing block, the
+    // page (an initial-containing-block box), or nothing (the box's layout
+    // parent is its containing block, so it climbs from the first box).
+    enum Seek {
+        Climb,
+        Block(RawNodeId),
+        Page,
+    }
+    let mut seek = match kind {
+        Some(OutOfFlowKind::Fixed) => return Placed::Nowhere,
+        Some(OutOfFlowKind::IcbAbsolute) => Seek::Page,
+        Some(OutOfFlowKind::AncestorAbsolute(cb)) => {
+            match crate::out_of_flow::chain_end(tree, cb) {
+                Some(block) => Seek::Block(block),
+                None => return general(tree, abs_id, kind),
+            }
+        }
+        None => Seek::Climb,
+    };
+    let (dx, dy) = super::ifc_content_box_offset(tree, node);
+    let mut x = (node.layout.x + dx) as f64;
+    let mut y = (node.layout.y + dy) as f64;
+    let mut transformed = !node.computed_style.transform.is_none;
+    // The first box above it that is not `display: contents` — its layout
+    // parent, whose own walk of its children may measure it already.
+    let mut layout_parent = None;
+    let mut current = crate::RinchDocument::box_tree_parent(&tree.nodes, abs_id);
+    let scroller = loop {
+        let Some(id) = current else {
+            return general(tree, abs_id, kind);
+        };
+        if id == tree.html_id {
+            match seek {
+                Seek::Block(_) => return general(tree, abs_id, kind),
+                Seek::Climb | Seek::Page => break id,
+            }
+        }
+        if id == tree.root_id {
+            return general(tree, abs_id, kind);
+        }
+        let Some(n) = tree.get_live(id) else {
+            return Placed::Nowhere;
+        };
+        let climbing = match seek {
+            Seek::Climb => true,
+            Seek::Block(block) if block == id => {
+                seek = Seek::Climb;
+                true
+            }
+            Seek::Block(_) => false,
+            Seek::Page => {
+                if id == tree.body_id && body_scrolls {
+                    break id;
+                }
+                false
+            }
+        };
+        if climbing {
+            let (clip_x, clip_y) = n.clip_axes();
+            if clip_x || clip_y {
+                if crate::out_of_flow::is_scroll_container(n) {
+                    break id;
+                }
+                return Placed::Nowhere;
+            }
+            if matches!(
+                n.box_position(),
+                PositionValue::Absolute | PositionValue::Fixed
+            ) {
+                return general(tree, abs_id, kind);
+            }
+        }
+        if layout_parent.is_none()
+            && n.computed_style.display != crate::computed_style::DisplayValue::Contents
+        {
+            layout_parent = Some(id);
+        }
+        transformed |= !n.computed_style.transform.is_none;
+        let (dx, dy) = super::ifc_content_box_offset(tree, n);
+        x += (n.layout.x + dx) as f64 - n.scroll_offset.0;
+        y += (n.layout.y + dy) as f64 - n.scroll_offset.1;
+        current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
+    };
+    let layout_parent = layout_parent.or(Some(scroller));
+    if layout_parent == Some(scroller)
+        && crate::out_of_flow::contributes_to_scrollable_overflow(tree, scroller, node)
+    {
+        return Placed::Nowhere;
+    }
+    if transformed {
+        return Placed::Live(scroller);
+    }
+    Placed::Measured(
+        scroller,
+        x + node.layout.width as f64,
+        y + node.layout.height as f64,
+    )
+}
+
+/// [`place_listed`]'s answer for a box whose way up its walk does not follow:
+/// `out_of_flow::overflow_scroller`'s container, measured per call.
+fn general(
+    tree: &NodeTree,
+    abs_id: RawNodeId,
+    kind: Option<crate::out_of_flow::OutOfFlowKind>,
+) -> Placed {
+    let Some(scroller) = crate::out_of_flow::overflow_scroller(tree, abs_id, kind) else {
+        return Placed::Nowhere;
+    };
+    if crate::out_of_flow::layout_parent(tree, abs_id) == Some(scroller)
+        && crate::out_of_flow::contributes_to_scrollable_overflow(
+            tree,
+            scroller,
+            &tree.nodes[abs_id],
+        )
+    {
+        return Placed::Nowhere;
+    }
+    Placed::Live(scroller)
+}
+
+/// Whether `node`'s border box has no area — no width or no height.
+fn is_empty_box(node: &crate::node::Node) -> bool {
+    node.layout.width <= 0.0 || node.layout.height <= 0.0
+}
+
+/// `node_id`'s border box where it is drawn, in the border-box frame of its
+/// box-tree ancestor `ancestor_id` with that ancestor unscrolled: its layout
+/// rect moved by the layout offset of every box between them and by the
+/// scroll of each, and transformed by each transform on the way (the box's
+/// own included), composed as paint composes them
+/// ([`super::compose_node_transform`]). `None` when `ancestor_id` is not a
+/// box-tree ancestor of the node.
+///
+/// The scrolls are taken off because a box whose containing block is above a
+/// scroller does not move with it: `out_of_flow::replace_after_scroll` writes
+/// that scroll into the box's `layout`, so the sum less the scrolls is where
+/// it is drawn, whatever any scroller between them is scrolled to.
+fn border_box_in(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    ancestor_id: RawNodeId,
+) -> Option<kurbo::Rect> {
+    let node = tree.get(node_id)?;
+    // The common case: nothing on the way is transformed, so the offsets add.
+    let (mut x, mut y) = (0.0_f64, 0.0_f64);
+    let mut transformed = false;
+    let mut current = Some(node_id);
+    loop {
+        let id = current?;
+        if id == ancestor_id {
+            break;
+        }
+        let n = tree.get_live(id)?;
+        transformed |= n.has_applied_transform();
+        let (dx, dy) = super::ifc_content_box_offset(tree, n);
+        x += (n.layout.x + dx) as f64;
+        y += (n.layout.y + dy) as f64;
+        if id != node_id {
+            x -= n.scroll_offset.0;
+            y -= n.scroll_offset.1;
+        }
+        current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
+    }
+    let (w, h) = (node.layout.width as f64, node.layout.height as f64);
+    if !transformed {
+        return Some(kurbo::Rect::new(x, y, x + w, y + h));
+    }
+    // A transform on the way: compose top-down, as paint does.
+    let mut chain = Vec::new();
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        if id == ancestor_id {
+            break;
+        }
+        chain.push(id);
+        current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
+    }
+    let (mut off_x, mut off_y) = (0.0_f64, 0.0_f64);
+    let (mut x, mut y) = (0.0_f64, 0.0_f64);
+    let mut transform = kurbo::Affine::IDENTITY;
+    for &id in chain.iter().rev() {
+        let n = tree.get_live(id)?;
+        let (dx, dy) = super::ifc_content_box_offset(tree, n);
+        x = off_x + (n.layout.x + dx) as f64;
+        y = off_y + (n.layout.y + dy) as f64;
+        transform = super::compose_node_transform(n, x, y, 1.0, transform);
+        off_x = x - n.scroll_offset.0;
+        off_y = y - n.scroll_offset.1;
+    }
+    Some(transform.transform_rect_bbox(kurbo::Rect::new(x, y, x + w, y + h)))
 }
 
 /// What [`extend_with_child`] needs of the scroll container itself.
@@ -527,6 +940,12 @@ fn extend_with_child(
             };
         *right = right.max(x - offset.0 + w + margin_right);
         *bottom = bottom.max(y - offset.1 + h + margin_bottom);
+    } else if is_empty_box(child) {
+        // An `absolute` box with no area counts nothing, wherever it is:
+        // Chrome 156 gives a 200x100 scroller no range for a `0x500` one, a
+        // `10x0` one at `top: 300px` or a `0x50` one at `left: 300px`
+        // (`tests/abs_scroll_range_770_tests.rs`).
+        return;
     }
     // Where it is drawn: an `absolute` box, an offset `relative` one and a
     // transformed one count their border box, transformed, with no end
