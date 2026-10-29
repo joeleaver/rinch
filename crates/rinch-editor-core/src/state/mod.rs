@@ -20,7 +20,7 @@ use crate::schema::Schema;
 use crate::selection::Selection;
 use crate::transform::Mapping;
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// The immutable, shared configuration of an editor: its schema, plugins, and the
@@ -31,6 +31,9 @@ struct Config {
     schema: Rc<Schema>,
     plugins: Vec<Rc<dyn Plugin>>,
     commands: HashMap<String, Command>,
+    /// The registered commands their plugin declared selection-only
+    /// ([`Plugin::selection_commands`]).
+    selection_commands: HashSet<String>,
     keymap: Keymap,
     input_rules: Vec<InputRule>,
 }
@@ -57,10 +60,18 @@ impl EditorState {
     /// rules into the shared config.
     pub fn create(schema: Rc<Schema>, doc: Node, plugins: Vec<Rc<dyn Plugin>>) -> EditorState {
         let mut commands: HashMap<String, Command> = HashMap::new();
+        let mut selection_commands: HashSet<String> = HashSet::new();
         let mut keymap = Keymap::new();
         let mut input_rules: Vec<InputRule> = Vec::new();
         for p in &plugins {
+            let declared = p.selection_commands();
             for (name, cmd) in p.commands() {
+                // The plugin whose command wins the name owns its declaration.
+                if declared.contains(&name) {
+                    selection_commands.insert(name.to_string());
+                } else {
+                    selection_commands.remove(name);
+                }
                 commands.insert(name.to_string(), cmd);
             }
             for (binding, command) in p.keymap() {
@@ -81,6 +92,7 @@ impl EditorState {
             schema,
             plugins,
             commands,
+            selection_commands,
             keymap,
             input_rules,
         });
@@ -237,9 +249,18 @@ impl EditorState {
         cmd(self, None)
     }
 
-    /// Whether the named command would apply.
+    /// Whether the named command would apply — `cmd(state, None)`, so the
+    /// command's dispatch branch never runs.
     pub fn can_run(&self, name: &str) -> bool {
         self.command(name).is_some_and(|cmd| cmd(self, None))
+    }
+
+    /// Whether the named command is registered **and** its plugin declared it
+    /// selection-only ([`Plugin::selection_commands`]): it changes the selection
+    /// and nothing else. A declaration, not a check — nothing here runs the
+    /// command.
+    pub fn is_selection_command(&self, name: &str) -> bool {
+        self.config.selection_commands.contains(name)
     }
 }
 

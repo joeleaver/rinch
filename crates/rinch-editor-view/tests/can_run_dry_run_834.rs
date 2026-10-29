@@ -45,7 +45,32 @@ impl Plugin for Counting {
             dispatch(tr);
             true
         });
-        vec![("test.bang834", edit)]
+        // Two selection-only commands, alike but for the declaration: put the
+        // caret at the end of the document.
+        let to_end = |seen: Rc<Seen>| -> Command {
+            Rc::new(move |state: &EditorState, dispatch| {
+                let Some(dispatch) = dispatch else {
+                    seen.asked.set(seen.asked.get() + 1);
+                    return true;
+                };
+                seen.dispatched.set(seen.dispatched.get() + 1);
+                let mut tr = state.tr();
+                tr.set_selection(Selection::at_end(&state.doc));
+                dispatch(tr);
+                true
+            })
+        };
+        vec![
+            ("test.bang834", edit),
+            ("test.toEnd834", to_end(self.0.clone())),
+            ("test.toEndUndeclared834", to_end(self.0.clone())),
+        ]
+    }
+
+    fn selection_commands(&self) -> Vec<&'static str> {
+        // `test.bang834` is not one; the name below is not this plugin's, and
+        // is ignored.
+        vec!["test.toEnd834", "test.notMine834"]
     }
 
     fn apply(
@@ -104,7 +129,10 @@ fn read_only_can_run_never_dispatches() {
     let folded = seen.folded.get();
     let (doc, selection) = (e.doc(), e.selection());
     for _ in 0..3 {
-        assert!(!e.can_run("test.bang834"), "an edit is unavailable read-only");
+        assert!(
+            !e.can_run("test.bang834"),
+            "an edit is unavailable read-only"
+        );
     }
     for name in ["toggleBold", "setHeading1", "undo", "enter"] {
         assert!(!e.can_run(name), "{name} is unavailable read-only");
@@ -116,3 +144,74 @@ fn read_only_can_run_never_dispatches() {
     assert_eq!(node_to_html(&e.doc()), "<p>hello world</p>");
 }
 
+/// A command its plugin declared selection-only still answers read-only —
+/// from its applicability branch, never its dispatch branch — and still runs.
+/// The same command undeclared answers `false` there (the safe default), and
+/// running it is not affected.
+#[test]
+fn read_only_can_run_answers_a_declared_selection_command_without_dispatching() {
+    let (e, seen) = editor();
+    e.set_read_only(true);
+    let asked = seen.asked.get();
+    assert!(
+        e.can_run("test.toEnd834"),
+        "declared: available to a reader"
+    );
+    assert!(e.can_run("selectAll"), "the built-in declaration");
+    assert!(seen.asked.get() > asked, "answered by asking the command");
+    assert!(
+        !e.can_run("test.toEndUndeclared834"),
+        "undeclared: treated as an edit by the query"
+    );
+    assert!(!e.can_run("test.notMine834"), "no such command");
+    assert_eq!(seen.dispatched.get(), 0, "a query ran the dispatch branch");
+    assert_eq!(
+        e.selection(),
+        Selection::cursor(Pos(3)),
+        "and moved nothing"
+    );
+
+    // Running is judged on what the command does, declared or not.
+    assert!(e.command("test.toEndUndeclared834"));
+    assert_eq!(seen.dispatched.get(), 1);
+    e.set_selection(Selection::cursor(Pos(3)));
+    assert!(e.command("test.toEnd834"));
+    assert_eq!(seen.dispatched.get(), 2);
+    assert_eq!(e.selection(), Selection::at_end(&e.doc()));
+    assert_eq!(node_to_html(&e.doc()), "<p>hello world</p>");
+}
+
+/// A plugin that replaces a command by name owns its declaration: replacing
+/// `selectAll` without declaring it makes it an edit as far as the read-only
+/// query is concerned, and declaring a name it does not contribute changes
+/// nobody else's.
+#[test]
+fn the_plugin_that_wins_a_name_owns_its_declaration() {
+    struct Replaces(bool);
+    impl Plugin for Replaces {
+        fn key(&self) -> PluginKey {
+            PluginKey("test.replaces-834")
+        }
+        fn commands(&self) -> Vec<(&'static str, Command)> {
+            vec![("selectAll", Rc::new(|_: &EditorState, _| true))]
+        }
+        fn selection_commands(&self) -> Vec<&'static str> {
+            if self.0 {
+                vec!["selectAll", "toggleBold"]
+            } else {
+                vec![]
+            }
+        }
+    }
+    for declares in [false, true] {
+        let e = create_editor();
+        assert!(e.add_plugin(Rc::new(Replaces(declares))));
+        assert!(e.load_html("<p>hello</p>"));
+        e.set_read_only(true);
+        assert_eq!(e.can_run("selectAll"), declares, "declares = {declares}");
+        assert!(
+            !e.can_run("toggleBold"),
+            "not the declaring plugin's command"
+        );
+    }
+}

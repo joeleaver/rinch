@@ -319,6 +319,12 @@ handle.in_node_type("bullet_list")     // -> bool: is the cursor inside a bullet
 handle.can_run("liftListItem")         // -> bool: would this command apply right now?
 ```
 
+`can_run` is a query: it asks the command whether it *would* apply (the
+command's `dispatch = None` branch) and never runs the edit, so asking for every
+toolbar button on every caret move builds no transactions, and a command of your
+own whose dispatch branch does something besides dispatching never sees it fire
+from a query.
+
 A reactive toolbar button can read these inside a `{|| ... }` closure so it
 re-renders when the selection moves:
 
@@ -982,9 +988,14 @@ rsx! { Editor { editor: editor.clone() } }   // or: Editor { read_only: true, co
 
 It makes no difference who asks: a toolbar button calling `command("toggleBold")` and
 a keystroke go through the same gate, which sits at the one place every local change
-lands rather than in each input handler. `can_run(name)` answers `false` for a refused
-command, so a toolbar that greys its buttons from it goes inert with the switch; a
-toolbar of your own should also read `is_read_only()`. The built-in context menu
+lands rather than in each input handler. `can_run(name)` answers `false` for every
+command except those that change only the selection, so a toolbar that greys its
+buttons from it goes inert with the switch; a toolbar of your own should also read
+`is_read_only()`. It answers without running the command: a command counts as
+selection-only when its plugin lists it in `Plugin::selection_commands()`
+(`selectAll` is the built-in one), and an unlisted command is greyed. The list only
+steers `can_run`; `command(..)` on a read-only editor still refuses whatever would
+change the document or the stored marks, listed or not. The built-in context menu
 offers Copy and Select all only, the OS input method stays off (no IME candidate
 window), and on the web the hidden capture field is `readonly`, so no soft keyboard
 is raised and the browser's own menu drops Paste and Cut.
