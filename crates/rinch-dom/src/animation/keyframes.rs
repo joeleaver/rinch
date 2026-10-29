@@ -17,10 +17,13 @@ use crate::transition::types::{TimingFunction, convert_timing_function};
 
 /// Extract KeyframeStops from a Stylo KeyframesAnimation.
 ///
-/// For `ComputedValues` steps (auto-generated 0%/100%), we use `base_style`
-/// values. For `Declarations` steps the stop's *typed* specified value is
-/// matched directly — the same discipline `plain_inset` uses on the inset fast
-/// path — rather than serialised to CSS text and re-parsed.
+/// For `Declarations` steps the stop's *typed* specified value is matched
+/// directly — the same discipline `plain_inset` uses on the inset fast path —
+/// rather than serialised to CSS text and re-parsed. A `ComputedValues` step
+/// (the 0%/100% Stylo generates for a missing `from`/`to`) and any property an
+/// authored 0%/100% stop leaves out take the element's base value, for the
+/// properties the rule animates and no others ([`refresh_implicit_values`],
+/// #781).
 ///
 /// `parent_color` is what a `color: currentcolor` stop inherits;
 /// `root_font_size` is what a `rem` stop resolves against.
@@ -37,11 +40,8 @@ pub fn extract_keyframe_stops(
         let percentage = step.start_percentage.0;
 
         let (values, timing_function) = match &step.value {
-            KeyframesStepValue::ComputedValues => {
-                // Auto-generated step: use current element style as values
-                let values = extract_base_style_values(base_style);
-                (values, None)
-            }
+            // Auto-generated step: filled with base values below.
+            KeyframesStepValue::ComputedValues => (Vec::new(), None),
             KeyframesStepValue::Declarations { block } => {
                 let block = block.read_with(guard);
                 let values =
@@ -63,10 +63,62 @@ pub fn extract_keyframe_stops(
             percentage,
             values,
             timing_function,
+            implicit: Vec::new(),
         });
     }
 
+    refresh_implicit_values(&mut stops, base_style);
     stops
+}
+
+/// Give every 0% and 100% stop the element's **current** base value for each
+/// property the rule animates and that stop does not author — Web Animations'
+/// neutral keyframe (#781) — replacing the base values it held before.
+///
+/// "Animates" is the set of properties the authored stops set, so a `to`-only
+/// `transform` spin carries `transform` in its implicit `from` and nothing
+/// else: it does not pin the element's `color` or `opacity` at the values they
+/// had when it started. Run at extraction and again on every cascade of a node
+/// whose animation keeps its stops, so the implicit values follow the base
+/// style (a `to { background-color: … }` fade starts from the background the
+/// element has now). A stop with no implicit property costs a scan of the
+/// stops and nothing else.
+pub(crate) fn refresh_implicit_values(stops: &mut [KeyframeStop], base_style: &ComputedStyle) {
+    // Drop the old base values, so what is left is what the rule authors.
+    for stop in stops.iter_mut() {
+        if !stop.implicit.is_empty() {
+            let implicit = std::mem::take(&mut stop.implicit);
+            stop.values.retain(|(p, _)| !implicit.contains(p));
+        }
+    }
+
+    let mut animated: Vec<TransitionProperty> = Vec::new();
+    for stop in stops.iter() {
+        for (p, _) in &stop.values {
+            if !animated.contains(p) {
+                animated.push(*p);
+            }
+        }
+    }
+
+    let mut base: Option<Vec<(TransitionProperty, AnimatableValue)>> = None;
+    for stop in stops.iter_mut() {
+        if stop.percentage != 0.0 && stop.percentage != 1.0 {
+            continue;
+        }
+        let missing: Vec<TransitionProperty> = animated
+            .iter()
+            .copied()
+            .filter(|p| !stop.values.iter().any(|(q, _)| q == p))
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        let base = base.get_or_insert_with(|| extract_base_style_values(base_style));
+        stop.values
+            .extend(base.iter().filter(|(p, _)| missing.contains(p)).cloned());
+        stop.implicit = missing;
+    }
 }
 
 /// Extract animatable values from a PropertyDeclarationBlock.
