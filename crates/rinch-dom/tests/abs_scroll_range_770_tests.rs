@@ -459,3 +459,28 @@ fn a_scroll_into_the_listed_boxes_survives_a_layout() {
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(doc.scroll_top(r), 96.0);
 }
+
+/// The memo is dropped when `out_of_flow::replace_all` moves boxes after the
+/// layout's clamp measured them: a box hung from a span is read back against
+/// the span's fragment in the lines of the pass before (#631), and placed
+/// again once this pass's lines exist. Here a 40px inline-block put before
+/// the span moves its line down while the scroller is scrolled past its
+/// in-flow content, so the clamp measures the box first. The range is the
+/// one a fresh document of the final markup gives, and not the one before.
+#[test]
+fn a_box_placed_again_after_the_clamp_is_measured_where_it_lands() {
+    let shape = r#"<div id="s" style="width:200px;height:100px;overflow:auto;line-height:20px;font-size:16px;"><div><span id="pre">PRE</span><span style="position:relative;">x<span style="position:absolute;left:0;top:300px;width:10px;height:10px;"></span></span></div></div>"#;
+    let tall = r#"<span style="display:inline-block;width:10px;height:40px;"></span>"#;
+    let mut doc = doc_of(&shape.replace("PRE", ""));
+    let s = by_id(&doc, "s");
+    let before = ranges(&doc, s);
+    doc.set_scroll_top(s, 150.0);
+    let pre = by_id(&doc, "pre");
+    doc.set_inner_html(pre, tall);
+    doc.resolve_layout(800.0, 600.0);
+    let after = ranges(&doc, s);
+    let fresh = doc_of(&shape.replace("PRE", tall));
+    let want = ranges(&fresh, by_id(&fresh, "s"));
+    assert_ne!(before, want, "the line moved");
+    assert_range(after, want);
+}
