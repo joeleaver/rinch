@@ -62,7 +62,7 @@ fn mount() -> Fixture {
                         id: "w1",
                         style: "display: inline-block",
                         onclick: logger(&l, "w1"),
-                        input { r#type: "checkbox", id: "c1" }
+                        input { r#type: "checkbox", id: "c1", style: "width: 13px; height: 13px" }
                     }
                 }
                 // 2. A label wrapping a text field.
