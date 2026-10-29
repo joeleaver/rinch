@@ -2658,8 +2658,18 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         // The visual line's edges, as on desktop (#301).
         "Home" => move_to_line_edge(&handle, false, shift),
         "End" => move_to_line_edge(&handle, true, shift),
-        // 2. Tab: table cell-nav (shared) first; else the keymap resolves
+        // 2. Tab. A read-only editor is a `readonly` field to it (#833): its
+        //    keymap's sink / lift are refused, so Tab and Shift+Tab move the focus
+        //    on from the editor's place in the page instead of being swallowed.
+        //    Otherwise table cell-nav (shared) first; else the keymap resolves
         //    `Tab`→sinkListItem / `Shift-Tab`→liftListItem below. Consumed either way.
+        "Tab" if !ctrl && !alt && handle.refuses_edits() => {
+            return node_by_nid(container_nid)
+                .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+                .is_some_and(|container| {
+                    crate::event_delegation::tab_from_editor(doc, &container, shift)
+                });
+        }
         "Tab" if handle.tab_cell(shift) => true,
         _ => {
             // 3. THE KEYMAP — the single source of truth for every command key. Letters
