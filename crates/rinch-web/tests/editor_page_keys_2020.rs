@@ -49,17 +49,28 @@ fn content() -> String {
         .collect()
 }
 
-impl Fixture {
-    fn mount() -> Self {
-        if let Ok(stale) = document().query_selector_all(&format!("[{HOST_MARKER}]")) {
-            for i in 0..stale.length() {
-                if let Some(node) = stale.item(i)
-                    && let Ok(el) = node.dyn_into::<web_sys::Element>()
-                {
-                    el.remove();
-                }
+/// A failed test leaves its host behind: take every one off the page.
+fn remove_stale_hosts() {
+    if let Ok(stale) = document().query_selector_all(&format!("[{HOST_MARKER}]")) {
+        for i in 0..stale.length() {
+            if let Some(node) = stale.item(i)
+                && let Ok(el) = node.dyn_into::<web_sys::Element>()
+            {
+                el.remove();
             }
         }
+    }
+}
+
+impl Fixture {
+    fn mount() -> Self {
+        Self::mount_with(false)
+    }
+
+    /// `lock_other`: a sibling of the scroller holds a scroll lock
+    /// (`lock_scroll`), which locks the scroller out.
+    fn mount_with(lock_other: bool) -> Self {
+        remove_stale_hosts();
         let host = document().create_element("div").unwrap();
         host.set_attribute(HOST_MARKER, "").unwrap();
         // A number: a paragraph's line is 20px, a heading's 30px.
@@ -84,7 +95,15 @@ impl Fixture {
                      overflow-y: auto",
                 );
                 scroller.append_child(&mounted.mount(scope));
-                scroller
+                if !lock_other {
+                    return scroller;
+                }
+                let wrap = scope.create_element("div");
+                wrap.append_child(&scroller);
+                let other = scope.create_element("div");
+                wrap.append_child(&other);
+                other.set_scroll_locked(true);
+                wrap
             },
         );
         // The runner's page has its log above: the fixture at the top.
@@ -439,5 +458,321 @@ fn a_page_landing_below_the_window_finds_its_line() {
         "the caret landed in block {got}; a page down is {want:?}"
     );
     window.scroll_to_with_x_and_y(0.0, 0.0);
+    f.teardown();
+}
+
+/// Where Page Down (Up) from `(block, 6)` lands with the caret in view: a
+/// fresh fixture, the scroller placed so the caret is in its view.
+fn in_view_landing(block: usize, page_key: &str) -> Pos {
+    let f = Fixture::mount();
+    f.start();
+    f.handle
+        .set_selection(Selection::cursor(pos_in_block(&f.handle, block, 6)));
+    let sc = f.scroller();
+    let top = f.bands()[block].0 - sc.get_bounding_client_rect().top() - 13.0;
+    sc.set_scroll_top((top - 60.0).max(0.0).round() as i32);
+    assert!(key(page_key, false));
+    let head = f.handle.selection().head();
+    f.teardown();
+    head
+}
+
+/// The caret's line is inside the scroller's padding box.
+fn assert_caret_in_view(f: &Fixture, what: &str) {
+    let (_, y, h) = f.caret();
+    let r = f.scroller().get_bounding_client_rect();
+    assert!(
+        y >= r.top() - 0.5 && y + h <= r.bottom() + 0.5,
+        "{what}: the caret ({y}..{}) is in the scroller's view ({}..{})",
+        y + h,
+        r.top(),
+        r.bottom()
+    );
+}
+
+/// Review of #2028, F1 (web): the caret scrolled out of the scroller's view
+/// above (the wheel), then Page Down. Chrome 155 and Firefox 155 move the
+/// caret a page from where it is, wherever the view is; the page used to
+/// resolve on screen, miss, and jump to the document's end (scroll 1418).
+#[wasm_bindgen_test]
+fn page_down_with_the_caret_scrolled_above_the_view_pages_from_the_caret() {
+    let want = in_view_landing(2, "PageDown");
+    let f = Fixture::mount();
+    f.start();
+    let sc = f.scroller();
+    sc.set_scroll_top(400);
+    let (_, cy, _) = f.caret();
+    assert!(
+        cy < sc.get_bounding_client_rect().top(),
+        "control: the caret ({cy}) is above the view"
+    );
+    assert!(
+        (3..30).contains(&block_of(&f.handle, want)),
+        "control: an in-view page lands mid-document ({want:?})"
+    );
+    assert!(key("PageDown", false), "rinch took Page Down");
+    assert_eq!(
+        f.handle.selection().head(),
+        want,
+        "the page from the off-view caret lands where it does in view"
+    );
+    assert_caret_in_view(&f, "PageDown");
+    f.teardown();
+}
+
+/// F1 (web): the caret below the view, then Page Up.
+#[wasm_bindgen_test]
+fn page_up_with_the_caret_scrolled_below_the_view_pages_from_the_caret() {
+    let want = in_view_landing(30, "PageUp");
+    let f = Fixture::mount();
+    f.start();
+    f.handle
+        .set_selection(Selection::cursor(pos_in_block(&f.handle, 30, 6)));
+    let sc = f.scroller();
+    sc.set_scroll_top(0);
+    let (_, cy, _) = f.caret();
+    assert!(
+        cy > sc.get_bounding_client_rect().bottom(),
+        "control: the caret ({cy}) is below the view"
+    );
+    assert!(
+        (3..30).contains(&block_of(&f.handle, want)),
+        "control: {want:?}"
+    );
+    assert!(key("PageUp", false));
+    assert_eq!(
+        f.handle.selection().head(),
+        want,
+        "the page from the off-view caret lands where it does in view"
+    );
+    assert_caret_in_view(&f, "PageUp");
+    f.teardown();
+}
+
+/// A host holding an editor (10 blocks in a fixed box, else 60) in a box —
+/// `fixed`: `position: fixed`
+/// (a modal's root) — over a page made 3000px taller, with — `lock`: a scroll
+/// lock held by another element (rinch's `lock_scroll`).
+fn mount_over_tall_page(fixed: bool, lock: bool) -> (web_sys::Element, RootHandle, EditorHandle) {
+    remove_stale_hosts();
+    let host = document().create_element("div").unwrap();
+    host.set_attribute(HOST_MARKER, "").unwrap();
+    host.set_attribute(
+        "style",
+        "font-family: monospace; font-size: 16px; line-height: 1.25;",
+    )
+    .unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let handle = create_editor();
+    // Short in the fixed box, so a page runs past it; long on the page, so a
+    // page lands inside it.
+    let n = if fixed { 10 } else { 60 };
+    let ten: String = (0..n)
+        .map(|i| format!("<p>abcdefghij {i:02}</p>"))
+        .collect();
+    assert!(handle.load_html(&ten));
+    let mounted = handle.clone();
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |scope: &mut RenderScope| {
+            let page = scope.create_element("div");
+            let boxed = scope.create_element("div");
+            if fixed {
+                boxed.set_attribute(
+                    "style",
+                    "position: fixed; top: 20px; left: 20px; width: 400px; \
+                     background: white",
+                );
+            }
+            boxed.append_child(&mounted.mount(scope));
+            page.append_child(&boxed);
+            let tall = scope.create_element("div");
+            tall.set_attribute("style", "height: 3000px");
+            page.append_child(&tall);
+            if lock {
+                tall.set_scroll_locked(true);
+            }
+            page
+        },
+    );
+    web_sys::window().unwrap().scroll_to_with_x_and_y(0.0, 0.0);
+    (host, root, handle)
+}
+
+fn focus_editor_at(handle: &EditorHandle, block: usize) {
+    let ed = document()
+        .query_selector(&format!("[{HOST_MARKER}] [data-pm-editor]"))
+        .unwrap()
+        .unwrap();
+    let r = ed.get_bounding_client_rect();
+    let (x, y) = ((r.x() + 30.0) as f32, (r.y() + 8.0) as f32);
+    mouse("mousedown", x, y);
+    mouse("mouseup", x, y);
+    handle.set_selection(Selection::cursor(pos_in_block(handle, block, 6)));
+}
+
+/// Review of #2028, F2 (web): an editor in a `position: fixed` box (a modal)
+/// over a page that scrolls. The walk stops at the fixed box, so Page Down
+/// leaves the page and takes the short editor's caret to its end — it used to
+/// page the window and leave the caret where it was.
+#[wasm_bindgen_test]
+fn page_down_in_a_fixed_box_leaves_the_page_behind_it() {
+    let (host, root, handle) = mount_over_tall_page(true, false);
+    let window = web_sys::window().unwrap();
+    focus_editor_at(&handle, 2);
+    assert_eq!(window.scroll_y().unwrap(), 0.0, "control: the page at 0");
+    let doc_el = document().document_element().unwrap();
+    assert!(
+        doc_el.scroll_height() > doc_el.client_height() + 1000,
+        "control: the page scrolls"
+    );
+    assert!(key("PageDown", false), "rinch took Page Down");
+    assert_eq!(window.scroll_y().unwrap(), 0.0, "the page did not move");
+    assert_eq!(
+        handle.selection().head(),
+        Selection::at_end(&handle.doc()).head(),
+        "the caret went to the short editor's end"
+    );
+    root.unmount();
+    host.remove();
+}
+
+/// F2 (web): the scroll lock alone, no fixed box: an editor on a page that a
+/// `lock_scroll` on another element holds. Page Down leaves the page (the
+/// drag auto-scroll's rule) and moves the caret a page.
+#[wasm_bindgen_test]
+fn page_down_on_a_locked_page_leaves_the_page() {
+    let (host, root, handle) = mount_over_tall_page(false, true);
+    let window = web_sys::window().unwrap();
+    assert_eq!(
+        rinch_web::__scroll_lock_depth(),
+        1,
+        "control: the lock is held"
+    );
+    focus_editor_at(&handle, 0);
+    let before = handle.selection().head();
+    assert!(key("PageDown", false), "rinch took Page Down");
+    assert_eq!(
+        window.scroll_y().unwrap(),
+        0.0,
+        "the locked page did not move"
+    );
+    assert_ne!(handle.selection().head(), before, "the caret moved");
+    root.unmount();
+    host.remove();
+    rinch_web::__reset_scroll_lock();
+}
+
+/// F2 (web): a scroller the lock leaves out is not paged either. Read-only,
+/// so the page is the scroll alone: a moved caret would be revealed, and the
+/// reveal is not the page key's (it ignores the lock, as an arrow key's does).
+#[wasm_bindgen_test]
+async fn page_down_leaves_a_locked_out_scroller() {
+    let f = Fixture::mount_with(true);
+    f.start();
+    f.handle.set_read_only(true);
+    settle_reveal().await;
+    let depth = rinch_web::__scroll_lock_depth();
+    let took = key("PageDown", false);
+    let top = f.scroller().scroll_top();
+    // Released before asserting: a failure must not leave the page locked
+    // for the tests after it.
+    f.teardown();
+    rinch_web::__reset_scroll_lock();
+    assert_eq!(depth, 1, "control: the lock was held");
+    assert!(took, "rinch took Page Down");
+    assert_eq!(top, 0, "the locked-out scroller kept still");
+}
+
+/// The control for both: with neither, Page Down pages the window.
+#[wasm_bindgen_test]
+async fn control_page_down_on_an_open_page_pages_the_window() {
+    let (host, root, handle) = mount_over_tall_page(false, false);
+    let window = web_sys::window().unwrap();
+    focus_editor_at(&handle, 0);
+    settle_reveal().await;
+    assert!(key("PageDown", false));
+    let y = window.scroll_y().unwrap();
+    // The page's scrollport is the scrolling element's `clientHeight` (the
+    // window less any horizontal scrollbar).
+    let port = f64::from(document().document_element().unwrap().client_height());
+    assert!(
+        (y - (port * 0.875).round()).abs() <= 1.0,
+        "a page of the window: {y} (scrollport {port})"
+    );
+    window.scroll_to_with_x_and_y(0.0, 0.0);
+    root.unmount();
+    host.remove();
+}
+
+/// Let the caret reveal a selection change queued for a microtask run, as
+/// it has long before a user presses a key.
+async fn settle_reveal() {
+    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL))
+        .await
+        .unwrap();
+}
+
+fn key_alt(name: &str) -> bool {
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_key(name);
+    init.set_code(name);
+    init.set_alt_key(true);
+    let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    let ta = document()
+        .query_selector("textarea[data-pm-capture]")
+        .unwrap()
+        .unwrap();
+    !ta.dispatch_event(&ev).unwrap()
+}
+
+/// macOS (through the test seam, `__set_mac_platform`): the plain key scrolls
+/// a page and leaves the caret; Option moves it — Chrome's bindings there.
+#[wasm_bindgen_test]
+async fn on_macos_page_down_scrolls_and_option_page_down_moves() {
+    rinch_web::__set_mac_platform(Some(true));
+    let f = Fixture::mount();
+    f.start();
+    // `start`'s selection queues the caret's reveal for a microtask: let it
+    // run, or the key's caret refresh runs it after the page and scrolls
+    // back to the caret.
+    settle_reveal().await;
+    assert_eq!(
+        f.scroller().scroll_top(),
+        0,
+        "control: the caret is in view at 0"
+    );
+    let before = f.handle.selection();
+    assert!(key("PageDown", false), "rinch took Page Down");
+    assert_eq!(
+        f.handle.selection(),
+        before,
+        "the plain key leaves the caret"
+    );
+    assert_eq!(
+        f64::from(f.scroller().scroll_top()),
+        STEP,
+        "and scrolls a page"
+    );
+    f.scroller().set_scroll_top(0);
+    assert!(key_alt("PageDown"), "rinch took Option+Page Down");
+    assert_ne!(
+        block_of(&f.handle, f.handle.selection().head()),
+        2,
+        "Option moves the caret"
+    );
+    rinch_web::__set_mac_platform(Some(false));
+    // Control: off macOS, Alt+Page Down is the browser's, and the plain key moves.
+    f.handle
+        .set_selection(Selection::cursor(pos_in_block(&f.handle, 2, 6)));
+    f.scroller().set_scroll_top(0);
+    assert!(
+        !key_alt("PageDown"),
+        "off macOS Alt+Page Down is not rinch's"
+    );
+    rinch_web::__set_mac_platform(None);
     f.teardown();
 }

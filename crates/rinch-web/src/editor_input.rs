@@ -888,9 +888,25 @@ fn context_menu_claimed_by_app(target: &web_sys::Element) -> bool {
         .is_some_and(|(_, id)| rinch_core::events::has_click_handler(id))
 }
 
+thread_local! {
+    /// A test's answer for [`is_mac`] (`__set_mac_platform`), so the macOS key
+    /// bindings run in CI's Linux browsers. `None`: ask the browser.
+    static MAC_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Make the editor's key handling take the page as macOS (`Some(true)`), as
+/// not macOS (`Some(false)`), or ask the browser again (`None`). Test-only.
+#[doc(hidden)]
+pub fn __set_mac_platform(mac: Option<bool>) {
+    MAC_OVERRIDE.with(|m| m.set(mac));
+}
+
 /// Whether the page runs on macOS, where a Control-click is the context click
 /// (CodeMirror 5 asks `navigator.platform` the same question).
 fn is_mac() -> bool {
+    if let Some(mac) = MAC_OVERRIDE.with(std::cell::Cell::get) {
+        return mac;
+    }
     web_sys::window()
         .and_then(|w| js_sys::Reflect::get(&w, &"navigator".into()).ok())
         .and_then(|n| js_sys::Reflect::get(&n, &"platform".into()).ok())
@@ -2738,9 +2754,12 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
 
 /// Page Up (`down = false`) or Page Down in the focused editor (#2020), as on
 /// desktop (`RinchApp::page_editor`): the page is 0.875 of the nearest
-/// scroller's `clientHeight` (Chrome's step), at most the window's; the
+/// scroller's `clientHeight` (Chrome's step), at most the window's — the
+/// scroller a scroll lock leaves alone, not past a `position: fixed` box; the
 /// scroller moves a page, and the caret goes to the point a page below (above)
-/// where it was, at the goal column, so it keeps its place on screen. A page
+/// where it is, at the goal column, so with the caret in view it keeps its
+/// place on screen. With the caret scrolled out of view the point is brought
+/// into the scrollport first: the page is from the caret, not the view. A page
 /// that reaches the document's last (first) line, or runs past the editor, puts
 /// the caret at the document's end (start), as Chrome does. `scroll_only`
 /// (macOS's plain key), a read-only editor (Chrome's read-only `<textarea>`)
@@ -2762,24 +2781,42 @@ fn page_step(
     else {
         return false;
     };
-    // The nearest scroller that overflows, the editor itself included, else
-    // the page's scrolling element.
+    // The nearest scroller that overflows, the editor itself included, and
+    // that no `lock_scroll` overlay locks out (desktop's `page_scroller`, the
+    // drag auto-scroll's rule) — else the page's scrolling element, on the
+    // same terms. The walk stops at a `position: fixed` box (a modal): the
+    // viewport holds it, so nothing outside it moves it.
     let mut scroller = None;
+    let mut fixed = false;
     let mut cur = Some(container.clone());
     while let Some(el) = cur {
-        let scrolls = window
-            .get_computed_style(&el)
-            .ok()
-            .flatten()
-            .and_then(|cs| cs.get_property_value("overflow-y").ok())
-            .is_some_and(|o| o == "auto" || o == "scroll");
-        if scrolls && el.scroll_height() > el.client_height() {
+        let cs = window.get_computed_style(&el).ok().flatten();
+        let prop = |name: &str| {
+            cs.as_ref()
+                .and_then(|cs| cs.get_property_value(name).ok())
+                .unwrap_or_default()
+        };
+        let overflow = prop("overflow-y");
+        if (overflow == "auto" || overflow == "scroll")
+            && el.scroll_height() > el.client_height()
+            && !crate::web_document::scroll_locked_out(&el)
+        {
             scroller = Some(el);
+            break;
+        }
+        if prop("position") == "fixed" {
+            fixed = true;
             break;
         }
         cur = el.parent_element();
     }
-    let scroller = scroller.or_else(|| doc.scrolling_element());
+    let page_el = doc.scrolling_element();
+    let page_locked = page_el
+        .as_ref()
+        .is_none_or(crate::web_document::scroll_locked_out);
+    if scroller.is_none() && !fixed && !page_locked {
+        scroller = page_el.clone();
+    }
     let view = window
         .inner_height()
         .ok()
@@ -2797,23 +2834,54 @@ fn page_step(
     } else {
         head_screen_rect(handle, head)
     };
-    let mut scrolled = 0.0;
-    if let Some(s) = &scroller {
+    let scroll_by = |s: &web_sys::Element, dy: f64| {
         let before = f64::from(s.scroll_top());
-        s.set_scroll_top((before + step) as i32);
-        scrolled = f64::from(s.scroll_top()) - before;
-    }
+        s.set_scroll_top((before + dy).round() as i32);
+        f64::from(s.scroll_top()) - before
+    };
+    let scrolled = scroller.as_ref().map_or(0.0, |s| scroll_by(s, step));
     let Some((hx, hy, hh)) = from else {
         return true;
     };
     let gx = goal_x().unwrap_or(hx);
     set_goal_x(Some(gx));
-    // A page from the caret's middle, where the caret is drawn now.
-    let mut ty = (f64::from(hy + hh * 0.5) + step - scrolled) as f32;
-    // A point off the window resolves to nothing (`caretPositionFromPoint`):
-    // with the scroller running past the window's edge, bring the point in
-    // first, as the caret's reveal would have afterwards.
+    // A page from the caret's middle, where the caret is drawn now —
+    // measured, so a scroller that did not carry the editor moves nothing.
+    let now_y =
+        head_screen_rect(handle, head).map_or(f64::from(hy) - scrolled, |(_, y, _)| f64::from(y));
+    let mut ty = (now_y + f64::from(hh * 0.5) + step) as f32;
     let view_h = view.min(f64::from(i32::MAX)) as f32;
+    // The caret scrolled out of the scroller's view (the wheel): the point a
+    // page from it is outside the scrollport too, where
+    // `caretPositionFromPoint` finds nothing or another element. Chrome 155
+    // and Firefox 155 move the caret a page from where it is, wherever the
+    // view is: bring the point into the scrollport first, half a caret in
+    // from the edge it is past.
+    if let Some(s) = &scroller {
+        let band = if page_el.as_ref().is_some_and(|p| p.is_same_node(Some(s))) {
+            (0.0, view_h)
+        } else {
+            let r = s.get_bounding_client_rect();
+            let top = r.top() as f32 + s.client_top() as f32;
+            (top.max(0.0), (top + s.client_height() as f32).min(view_h))
+        };
+        let (lo, hi) = (band.0 + hh * 0.5, band.1 - hh * 0.5);
+        let over = if ty < lo {
+            ty - lo
+        } else if ty > hi {
+            ty - hi
+        } else {
+            0.0
+        };
+        if over != 0.0 && lo <= hi {
+            ty -= scroll_by(s, f64::from(over)) as f32;
+        }
+    }
+    // A point still off the window resolves to nothing: with the scroller
+    // running past the window's edge (and stopped at its end), bring the
+    // point in by the window, as the caret's reveal would have afterwards —
+    // unless a scroll lock holds the page, or the editor is in a fixed box,
+    // which the window does not move.
     let off = if ty < 0.0 {
         ty - hh
     } else if ty >= view_h {
@@ -2821,7 +2889,7 @@ fn page_step(
     } else {
         0.0
     };
-    if off != 0.0 {
+    if off != 0.0 && !page_locked && !fixed {
         let before = window.scroll_y().unwrap_or(0.0);
         window.scroll_by_with_x_and_y(0.0, f64::from(off));
         ty -= (window.scroll_y().unwrap_or(0.0) - before) as f32;

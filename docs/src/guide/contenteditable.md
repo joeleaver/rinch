@@ -1514,10 +1514,16 @@ or Cmd on every platform.
 Page Up and Page Down (issue #2020) follow Chrome's editing keys. The page is
 0.875 of the editor's nearest scroll container's height — the editor's own when it
 scrolls, at most the window's, the window's when nothing scrolls. The scroller
-moves a page and the caret moves to the point a page below (above) where it was,
-at the column Up and Down keep, so it stays where it was on screen. A page that
-reaches the document's last (first) line puts the caret at the document's end
-(start), Shift extends the selection, and a [read-only](#read-only) editor
+moves a page and the caret moves to the point a page below (above) where it is,
+at the column Up and Down keep, so a caret on screen stays where it was there.
+The page is measured from the caret, not from the view: after scrolling away
+from the caret with the wheel, Page Down still moves it a page below where it
+is, and the view follows it (as in Chrome and Firefox). A scroller a
+`lock_scroll` overlay holds still is not paged, and nothing outside a
+`position: fixed` box (a modal) is: an editor in a modal pages only scrollers
+inside the modal. A page that reaches the document's last (first) line, or runs
+past the editor, puts the caret at the document's end (start), Shift extends
+the selection, and a [read-only](#read-only) editor
 scrolls a page and leaves the caret, as a read-only `<textarea>` does in Chrome.
 On macOS (desktop, and the web on a Mac) plain Page Up / Page Down scroll and
 leave the caret, Option+Page Up / Page Down move it and Shift+Page Up / Page Down
