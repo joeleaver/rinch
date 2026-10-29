@@ -57,6 +57,11 @@
 //!   detached compute, so no `Calc` in one is resolved, in flow or out —
 //!   #1412.)
 //!   `position: fixed` keeps the Taffy parent as its basis for these.
+//! - An absolute box whose containing block *is* its Taffy parent resolves
+//!   against that parent's padding box with the basis definite on both axes
+//!   for the same reason, however the parent is sized — an auto-height
+//!   block, a content-sized flex or grid container, a grid item (#1789,
+//!   #1974: `top: calc(100% + 4px)` there used to keep only its `4px`).
 //! - The out-of-flow *position* patch goes through
 //!   `LengthPercentageAutoValue::resolve`, which resolves a `Calc` against
 //!   the real containing block exactly.
@@ -328,9 +333,23 @@ impl RinchDocument {
 
             // Definiteness per basis axis: an axis that is content-sized
             // resolves the percentage part as zero/auto instead (module doc).
+            // An absolute box laid out in its own containing block (the
+            // Taffy parent) has a definite basis too, whatever sizes that
+            // block: it is laid out after the block's size is final, and an
+            // out-of-flow box sizes nothing above it, so the percentage
+            // cannot feed its own basis. Judging it by the in-flow rule made
+            // `top: calc(100% + 4px)` under an auto-height block `4px`
+            // (#1789, #1974) while a plain `top: 100%` (Taffy's) resolved.
+            // `position: fixed` keeps the in-flow judgement: its basis here
+            // is the Taffy parent, not its containing block (the viewport,
+            // whose insets the read-back resolves).
+            let absolute = matches!(
+                self.tree.nodes[id].computed_style.position,
+                PositionValue::Absolute
+            );
             let parent_rinch = self.taffy_parent_rinch(id);
             let (pw_def, ph_def) = match parent_rinch {
-                _ if abs_cb.is_some() => (true, true),
+                _ if abs_cb.is_some() || absolute => (true, true),
                 Some(p) => (
                     self.calc_axis_definite(p, Axis::X, 0),
                     self.calc_axis_definite(p, Axis::Y, 0),

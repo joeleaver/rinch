@@ -103,7 +103,7 @@ fn render(ctx: &mut RinchContext) -> Vec<[u8; 4]> {
 }
 
 #[cfg(feature = "gpu")]
-fn render_via(ctx: &mut RinchContext, via: Via) -> Vec<[u8; 4]> {
+fn gpu() -> (wgpu::Device, wgpu::Queue) {
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -113,8 +113,12 @@ fn render_via(ctx: &mut RinchContext, via: Via) -> Vec<[u8; 4]> {
         apply_limit_buckets: false,
     }))
     .expect("a GPU adapter");
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap()
+}
+
+#[cfg(feature = "gpu")]
+fn render_via(ctx: &mut RinchContext, via: Via) -> Vec<[u8; 4]> {
+    let (device, queue) = gpu();
     let mut overlay =
         rinch::embed::RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
     match via {
@@ -148,7 +152,12 @@ fn render_via(ctx: &mut RinchContext, via: Via) -> Vec<[u8; 4]> {
                 .expect("render");
         }
     }
+    read_back(&device, &queue, overlay.texture())
+}
 
+/// `texture`'s pixels, row-major.
+#[cfg(feature = "gpu")]
+fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<[u8; 4]> {
     let row = (W * 4).div_ceil(256) * 256;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -158,7 +167,7 @@ fn render_via(ctx: &mut RinchContext, via: Via) -> Vec<[u8; 4]> {
     });
     let mut encoder = device.create_command_encoder(&Default::default());
     encoder.copy_texture_to_buffer(
-        overlay.texture().as_image_copy(),
+        texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &buffer,
             layout: wgpu::TexelCopyBufferLayout {
@@ -426,5 +435,201 @@ fn gpu_game_viewport_base_layer_no_halo_on_the_embed_overlay() {
     assert!(
         mid[0] >= 253 && mid[1] <= 2 && mid[2] <= 2 && mid[3].abs_diff(128) <= 1,
         "the viewport's middle: the overlay at half alpha over nothing, got {mid:?}"
+    );
+}
+
+/// [`page`] with the later sibling (the HUD over the viewport's bottom edge)
+/// in `hud`'s colour, and its handle.
+#[cfg(feature = "gpu")]
+fn hud_context(name: &str, hud: &str) -> (RinchContext, NodeHandle) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let html = page(name).replace(
+        "background: rgb(0,0,255)\"",
+        &format!("background: {hud}\" id=\"hud\""),
+    );
+    let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let keep = handle.clone();
+    let mut ctx = RinchContext::new(
+        RinchContextConfig {
+            width: W,
+            height: H,
+            scale_factor: 1.0,
+            theme: None,
+            fonts: Vec::new(),
+        },
+        move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_inner_html(&html);
+            *keep.borrow_mut() = root.query_selector("#hud");
+            root
+        },
+    );
+    ctx.update(&[]);
+    let hud = handle.borrow().clone().expect("the #hud element");
+    (ctx, hud)
+}
+
+/// What a texture of [`page`] shows: the HUD's colour where it covers the
+/// viewport (130, 215), and whether the viewport is clear (200, 150).
+#[cfg(feature = "gpu")]
+fn hud_and_hole(px: &[[u8; 4]]) -> ([u8; 4], bool) {
+    let at = |x: u32, y: u32| px[(y * W + x) as usize];
+    (at(130, 215), at(200, 150)[3] == 0)
+}
+
+#[cfg(feature = "gpu")]
+const BLUE: [u8; 4] = [0, 0, 255, 255];
+#[cfg(feature = "gpu")]
+const MAGENTA: [u8; 4] = [255, 0, 255, 255];
+#[cfg(feature = "gpu")]
+const CYAN: [u8; 4] = [0, 255, 255, 255];
+
+/// #1976: a host replaces its `RinchOverlayRenderer` on the `RinchContext`
+/// it keeps — the step after a wgpu device loss, the renderer being
+/// device-bound and the context not — and renders with nothing changed in
+/// the document. The new renderer's first texture has the HUD painted over
+/// the `GameViewport`: it used to have nothing painted after the viewport,
+/// because the context's scene was not dirty, so it handed out no slices,
+/// and the new renderer's `SplitFrame` started empty.
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_a_new_overlay_renderer_on_an_existing_context_draws_the_hud_1976() {
+    let (mut ctx, _hud) = hud_context("embed-1976-replace", "rgb(0,0,255)");
+    let first = {
+        let (device, queue) = gpu();
+        let mut overlay =
+            rinch::embed::RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
+        let _ = overlay.render(&device, &queue, &mut ctx);
+        read_back(&device, &queue, overlay.texture())
+        // The device and the renderer are dropped here: the device is lost.
+    };
+    assert_eq!(hud_and_hole(&first), (BLUE, true), "positive control");
+
+    let (device, queue) = gpu();
+    let mut overlay =
+        rinch::embed::RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
+    let _ = overlay.render(&device, &queue, &mut ctx);
+    let second = read_back(&device, &queue, overlay.texture());
+    assert_eq!(
+        hud_and_hole(&second),
+        (BLUE, true),
+        "the replacing renderer's first frame"
+    );
+    assert!(first == second, "the two renderers' textures differ");
+}
+
+/// #1976's general case: each renderer's slices are those of the frame the
+/// context painted last *for it*. Two renderers taking turns on one context
+/// (the second one renders the change, so the context is clean when the
+/// first comes back), and one renderer taking turns on two contexts, each
+/// draw what their context shows now.
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_overlay_renderers_taking_turns_draw_their_contexts_current_frame_1976() {
+    let (device, queue) = gpu();
+    let new =
+        || rinch::embed::RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
+    let frame = |overlay: &mut rinch::embed::RinchOverlayRenderer, ctx: &mut RinchContext| {
+        let _ = overlay.render(&device, &queue, ctx);
+        hud_and_hole(&read_back(&device, &queue, overlay.texture()))
+    };
+
+    // Two renderers, one context.
+    let (mut ctx, hud) = hud_context("embed-1976-turns", "rgb(0,0,255)");
+    let (mut a, mut b) = (new(), new());
+    assert_eq!(frame(&mut a, &mut ctx), (BLUE, true), "a, first frame");
+    assert_eq!(frame(&mut b, &mut ctx), (BLUE, true), "b, first frame");
+    hud.set_style("background", "rgb(255,0,255)");
+    ctx.update(&[]);
+    assert_eq!(
+        frame(&mut b, &mut ctx),
+        (MAGENTA, true),
+        "b, after the change (positive control)"
+    );
+    assert_eq!(
+        frame(&mut a, &mut ctx),
+        (MAGENTA, true),
+        "a, after b painted the change"
+    );
+
+    // One renderer, two contexts.
+    let (mut one, _) = hud_context("embed-1976-one", "rgb(0,0,255)");
+    let (mut two, _) = hud_context("embed-1976-two", "rgb(0,255,255)");
+    let mut r = new();
+    assert_eq!(frame(&mut r, &mut one), (BLUE, true), "the first context");
+    assert_eq!(frame(&mut r, &mut two), (CYAN, true), "the second context");
+    assert_eq!(
+        frame(&mut r, &mut one),
+        (BLUE, true),
+        "the first context again"
+    );
+}
+
+/// REVIEW #1978: the steady state — one renderer, one context, nothing
+/// changed — paints once and then serves the cached scene: the stamp check
+/// asks for no repaint. Off the fixed point: several frames, then a change,
+/// then several frames again (exactly one more paint).
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_review_1978_steady_state_paints_no_extra_frame() {
+    use rinch::perf::Counter;
+    let (device, queue) = gpu();
+    let (mut ctx, hud) = hud_context("embed-1978-steady", "rgb(0,0,255)");
+    let mut r =
+        rinch::embed::RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
+    ctx.reset_perf();
+    for _ in 0..4 {
+        let _ = r.render(&device, &queue, &mut ctx);
+    }
+    let t = ctx.perf_total();
+    assert_eq!(
+        (
+            t.get(Counter::PaintFrames),
+            t.get(Counter::PaintCachedFrames)
+        ),
+        (1, 3),
+        "four frames, nothing changed"
+    );
+    hud.set_style("background", "rgb(255,0,255)");
+    ctx.update(&[]);
+    for _ in 0..3 {
+        let _ = r.render(&device, &queue, &mut ctx);
+    }
+    let t = ctx.perf_total();
+    assert_eq!(
+        (
+            t.get(Counter::PaintFrames),
+            t.get(Counter::PaintCachedFrames)
+        ),
+        (2, 5),
+        "one change, three more frames"
+    );
+    assert_eq!(
+        hud_and_hole(&read_back(&device, &queue, r.texture())),
+        (MAGENTA, true)
+    );
+}
+
+/// REVIEW #1978: a host that calls `ctx.scene()` between overlay renders
+/// (an unsliced paint of the same context) still gets the HUD from the
+/// overlay, which paints sliced again.
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_review_1978_scene_between_overlay_renders() {
+    let (device, queue) = gpu();
+    let (mut ctx, _hud) = hud_context("embed-1978-mixed", "rgb(0,0,255)");
+    let mut r =
+        rinch::embed::RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
+    let _ = r.render(&device, &queue, &mut ctx);
+    let _ = ctx.scene();
+    let _ = r.render(&device, &queue, &mut ctx);
+    assert_eq!(
+        hud_and_hole(&read_back(&device, &queue, r.texture())),
+        (BLUE, true)
     );
 }

@@ -103,7 +103,17 @@ one); a mixed `calc()` in any of those resolves against the same box
 (`calc_layout`) — except for a box inside an atomic inline, where no `calc()`
 is resolved at all, in flow or out of it (#1412, older than #386: a `width: calc(50%
 + 10px)` child of a 200px `inline-block` is 10px wide; the plain-percentage
-rules above do hold there). A real 0x0 box is placed; one in a `display: none`
+rules above do hold there). That holds for a box whose containing block is
+its own parent too, however the parent is sized: `top: calc(100% + 4px)` under
+an auto-height `position: relative` block, a content-sized flex or grid
+container, or a grid item resolves its `100%` against the parent's laid-out
+padding box. `calc_layout` judged that basis by the in-flow rule
+(`calc_axis_definite`: an auto height is indefinite, so the percentage is 0)
+until #1789/#1974, and such a dropdown came out at `top: 4px`, over its own
+trigger, while a plain `top: 100%` (Taffy's) was right; an absolute box sizes
+nothing above it, so its basis is definite whatever sizes the block
+(`tests/abs_calc_inset_auto_cb_1789_tests.rs`, Chrome 155's numbers). A real
+0x0 box is placed; one in a `display: none`
 subtree is not (`out_of_flow::is_laid_out`).
 
 **Scrolling.** A scroller *between* a box and its containing block does not

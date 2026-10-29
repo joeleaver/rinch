@@ -580,6 +580,17 @@ fn main() {
 }
 ```
 
+**Replacing the overlay renderer.** `RinchOverlayRenderer` is bound to the
+device it was created on, and the `RinchContext` is not. After a device loss,
+drop the renderer, create a new one on the new device and keep the context:
+the new renderer's first `render` draws the whole UI, the HUD over a
+`GameViewport` included, with nothing changed in the document and nothing to
+mark dirty (#1976). The same holds for two renderers taking turns on one
+context, and for one renderer drawing several contexts in turn: a renderer
+that does not hold the context's last painted frame has that frame painted
+again for it. Steady state (one renderer, one context) paints only when the
+document changes.
+
 ### RinchContext
 
 `RinchContext` is the main handle. Create it during initialization, call
@@ -1153,7 +1164,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | Method | Description |
 |--------|-------------|
 | `new(device, w, h, format)` | Create from game's wgpu device |
-| `render(device, queue, &mut ctx) -> TextureView` | Render the context's UI to a texture, transparent inside each `GameViewport` (straight alpha). Call it in place of `ctx.scene()`. Before #1866 it took `ctx.scene()` |
+| `render(device, queue, &mut ctx) -> TextureView` | Render the context's UI to a texture, transparent inside each `GameViewport` (straight alpha). Call it in place of `ctx.scene()`. Before #1866 it took `ctx.scene()`. A new renderer on an existing context (after a device loss) draws the whole UI on its first call (#1976) |
 | `resize(device, w, h)` | Resize render target |
 | `texture()` | Get the underlying wgpu Texture |
 
