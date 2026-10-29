@@ -104,10 +104,16 @@ fn ev(app: &mut RinchApp, event: PlatformEvent) -> Vec<AppAction> {
 }
 
 fn tab(app: &mut RinchApp, shift: bool) {
-    let modifiers = Modifiers {
-        shift,
-        ..Default::default()
-    };
+    tab_with(
+        app,
+        Modifiers {
+            shift,
+            ..Default::default()
+        },
+    );
+}
+
+fn tab_with(app: &mut RinchApp, modifiers: Modifiers) {
     ev(
         app,
         PlatformEvent::KeyDown {
@@ -203,6 +209,28 @@ fn an_editable_editor_still_indents_on_tab_also_after_read_only_is_switched_off(
             top_level_items(&p.handle),
             2,
             "was_read_only={was_read_only}: Shift+Tab lifted it back out"
+        );
+    }
+}
+
+/// Ctrl+Tab and Meta+Tab are not Tab: they are the platform's (tab switching)
+/// or an app's, and a read-only editor does not move the focus on them.
+#[test]
+fn ctrl_or_meta_tab_does_not_move_the_focus_out_of_a_read_only_editor() {
+    for (ctrl, meta) in [(true, false), (false, true)] {
+        let mut p = page(true);
+        tab_with(
+            &mut p.app,
+            Modifiers {
+                ctrl,
+                meta,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            p.app.focus_target,
+            FocusTarget::Editor(p.container),
+            "ctrl={ctrl} meta={meta}: the focus stays in the editor"
         );
     }
 }

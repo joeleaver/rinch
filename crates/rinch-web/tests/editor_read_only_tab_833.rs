@@ -51,6 +51,13 @@ enum Layout {
     /// trap's first stop, so Shift+Tab wraps to `inside` instead of reaching
     /// `outer`.
     Trapped,
+    /// `before` · editor: no Tab stop after the editor.
+    LastStop,
+    /// editor · `after`: no Tab stop before the editor.
+    FirstStop,
+    /// trap{ editor · `a1` } · trap{ `b1` · `b2` }: two visible traps, the
+    /// editor in the first.
+    TwoTraps,
 }
 
 fn button(scope: &mut RenderScope, name: &str) -> rinch_core::dom::NodeHandle {
@@ -87,18 +94,42 @@ impl Fixture {
             ThemeProviderProps::default(),
             move |scope: &mut RenderScope| {
                 let wrapper = scope.create_element("div");
-                wrapper.append_child(&button(scope, "outer"));
-                let inner = scope.create_element("div");
-                if matches!(layout, Layout::Trapped) {
-                    inner.set_attribute("data-trap-focus", "");
-                    inner.append_child(&mounted.mount(scope));
-                    inner.append_child(&button(scope, "inside"));
-                } else {
-                    inner.append_child(&button(scope, "before"));
-                    inner.append_child(&mounted.mount(scope));
+                match layout {
+                    Layout::Page | Layout::Trapped => {
+                        wrapper.append_child(&button(scope, "outer"));
+                        let inner = scope.create_element("div");
+                        if matches!(layout, Layout::Trapped) {
+                            inner.set_attribute("data-trap-focus", "");
+                            inner.append_child(&mounted.mount(scope));
+                            inner.append_child(&button(scope, "inside"));
+                        } else {
+                            inner.append_child(&button(scope, "before"));
+                            inner.append_child(&mounted.mount(scope));
+                        }
+                        wrapper.append_child(&inner);
+                        wrapper.append_child(&button(scope, "after"));
+                    }
+                    Layout::LastStop => {
+                        wrapper.append_child(&button(scope, "before"));
+                        wrapper.append_child(&mounted.mount(scope));
+                    }
+                    Layout::FirstStop => {
+                        wrapper.append_child(&mounted.mount(scope));
+                        wrapper.append_child(&button(scope, "after"));
+                    }
+                    Layout::TwoTraps => {
+                        let a = scope.create_element("div");
+                        a.set_attribute("data-trap-focus", "");
+                        a.append_child(&mounted.mount(scope));
+                        a.append_child(&button(scope, "a1"));
+                        wrapper.append_child(&a);
+                        let b = scope.create_element("div");
+                        b.set_attribute("data-trap-focus", "");
+                        b.append_child(&button(scope, "b1"));
+                        b.append_child(&button(scope, "b2"));
+                        wrapper.append_child(&b);
+                    }
                 }
-                wrapper.append_child(&inner);
-                wrapper.append_child(&button(scope, "after"));
                 wrapper
             },
         );
@@ -246,6 +277,68 @@ fn an_editable_editor_still_indents_on_tab_also_after_read_only_is_switched_off(
         assert!(tab(true), "was_read_only={was_read_only}: consumed");
         assert!(f.active_is(f.capture().as_ref()));
         assert_eq!(f.top_level_items(), 2, "was_read_only={was_read_only}");
+        f.teardown();
+    }
+}
+
+/// The editor is the page's last Tab stop: Tab is left to the browser (not
+/// consumed, nothing moved here), whose own Tab from the capture textarea at
+/// the end of `<body>` then leaves the page, as from a native last control.
+/// Not a wrap to `before`, which a trap's Tab would do.
+#[wasm_bindgen_test]
+fn tab_past_the_last_stop_is_left_to_the_browser() {
+    let f = Fixture::new(Layout::LastStop, true);
+    assert!(
+        !tab(false),
+        "not consumed: the browser's Tab leaves the page"
+    );
+    assert!(
+        f.active_is(f.capture().as_ref()),
+        "nothing moved, is on {:?}",
+        document().active_element().map(|e| e.outer_html())
+    );
+    f.teardown();
+}
+
+/// The editor is the page's first Tab stop: Shift+Tab leaves the page
+/// backward, as from a native `<textarea readonly>` there — the focus goes to
+/// the document (`<body>`), measured with trusted keys in Chrome 155. Left to
+/// the browser, its Shift+Tab from the capture textarea at the end of
+/// `<body>` would land on `after`, the page's last control: a wrap.
+#[wasm_bindgen_test]
+fn shift_tab_before_the_first_stop_leaves_the_focus_to_the_document() {
+    let f = Fixture::new(Layout::FirstStop, true);
+    assert!(
+        tab(true),
+        "consumed: rinch blurs the capture textarea itself"
+    );
+    assert_eq!(
+        document().active_element(),
+        document().body().map(Into::into),
+        "the focus is on the document, is on {:?}",
+        document().active_element().map(|e| e.outer_html())
+    );
+    assert!(
+        !f.active_is(&f.button("after")),
+        "no wrap to the last control"
+    );
+    f.teardown();
+}
+
+/// Two visible traps, the editor in the first: the Tab stays in the trap the
+/// *editor* is in (desktop's `tab_trap_root` from the focused node), not the
+/// last visible trap in the page, which is the answer from the capture
+/// textarea at the end of `<body>`.
+#[wasm_bindgen_test]
+fn with_two_traps_tab_stays_in_the_editors_trap() {
+    for shift in [false, true] {
+        let f = Fixture::new(Layout::TwoTraps, true);
+        assert!(tab(shift), "shift={shift}: consumed");
+        assert!(
+            f.active_is(&f.button("a1")),
+            "shift={shift}: focus went to `a1`, is on {:?}",
+            document().active_element().map(|e| e.outer_html())
+        );
         f.teardown();
     }
 }

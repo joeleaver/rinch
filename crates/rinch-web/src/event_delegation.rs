@@ -2551,10 +2551,14 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
 ///
 /// Inside a live focus trap this is the trap's Tab, wrapping within it. With
 /// none, the walk is over the whole document and does **not** wrap: past the
-/// last stop (or before the first) nothing is moved and the key is left to
-/// the browser, whose own Tab from the capture textarea then leaves the page
-/// forward as from a last control, and goes to the page's last control
-/// backward, as Shift+Tab from before the first does.
+/// last stop (or before the first) nothing is moved and this answers `false`.
+/// Forward, the caller leaves the key to the browser, whose own Tab from the
+/// capture textarea then leaves the page as from a last control — native.
+/// Backward it must not: the browser's Shift+Tab from the capture textarea
+/// goes to the page's *last* control, a wrap, where a native
+/// `<textarea readonly>` that is the first stop sends the focus to the
+/// document (measured with trusted keys in Chrome 155). So the caller blurs the
+/// capture textarea and consumes the key instead (`editor_input`'s Tab arm).
 pub(crate) fn tab_from_editor(
     browser_doc: &web_sys::Document,
     container: &web_sys::Element,
@@ -3448,8 +3452,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // browser would otherwise walk straight out of the dialog and into
             // the page behind it, so the move is made here and its own default
             // suppressed. With no live trap this is false and the browser's Tab
-            // is left entirely alone — rinch does not otherwise manage web
-            // focus order.
+            // is left alone here. The one other place rinch moves web focus on
+            // Tab is a read-only rich-text editor (#833, `tab_from_editor`),
+            // which the editor's own keydown handles from its place in the page
+            // before this listener sees the key.
             //
             // After the interceptor, so a document-level `set_keyboard_interceptor`
             // still sees Tab first, and before the activation branch, which only

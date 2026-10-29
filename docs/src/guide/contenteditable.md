@@ -991,8 +991,10 @@ is raised and the browser's own menu drops Paste and Cut.
 
 Tab and Shift+Tab move the focus on, as from a `readonly` field: to the next and the
 previous Tab stop from the editor's place in the page, on desktop and on the web (inside
-a focus trap, within the trap). An editable editor keeps them for table cells and list
-indentation, so a reader who comes in by keyboard can always leave by keyboard. An
+a focus trap, within the trap). Past the last or the first Tab stop, desktop wraps round,
+as every Tab there does; the web behaves as a native field: Tab is left to the browser,
+and Shift+Tab sends the focus to the document. An editable editor keeps them for table
+cells and list indentation, so a reader who comes in by keyboard can always leave by keyboard. An
 `on_key` callback still sees Tab first and may claim it.
 
 The caret stays visible — a reader selects and copies with it. The mounted container

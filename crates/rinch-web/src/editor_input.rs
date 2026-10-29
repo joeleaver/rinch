@@ -2663,12 +2663,27 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         //    on from the editor's place in the page instead of being swallowed.
         //    Otherwise table cell-nav (shared) first; else the keymap resolves
         //    `Tab`→sinkListItem / `Shift-Tab`→liftListItem below. Consumed either way.
+        //    Shift+Tab with no Tab stop before the editor (and no trap) leaves the
+        //    page backward, as from a native `<textarea readonly>` that is the first
+        //    stop: the focus goes to the document, so the capture textarea is
+        //    blurred and the key consumed. The browser's own Shift+Tab would start
+        //    from the capture textarea at the end of `<body>` and land on the
+        //    page's last control instead. Forward past the last stop is left to
+        //    the browser, whose Tab from there leaves the page as native does.
         "Tab" if !ctrl && !alt && handle.refuses_edits() => {
-            return node_by_nid(container_nid)
-                .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
-                .is_some_and(|container| {
-                    crate::event_delegation::tab_from_editor(doc, &container, shift)
-                });
+            let Some(container) =
+                node_by_nid(container_nid).and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+            else {
+                return false;
+            };
+            if crate::event_delegation::tab_from_editor(doc, &container, shift) {
+                return true;
+            }
+            if shift {
+                blur_editor(container_nid);
+                return true;
+            }
+            return false;
         }
         "Tab" if handle.tab_cell(shift) => true,
         _ => {
