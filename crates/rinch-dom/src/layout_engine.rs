@@ -1192,10 +1192,22 @@ impl RinchDocument {
             // direct `children` only — took back on every layout pass the
             // range that one grants: an anonymous box's lines, a `display:
             // contents` wrapper's children, an IFC root's inline content.
-            let content_height = crate::paint::scrollbar::content_extents(&self.tree, node_id).1;
+            //
             // The content box `scrollbars`, `client_height` and the wheel's
             // finders measure against (#769) — one computation, not a copy.
             let visible_h = crate::paint::scrollbar::visible_extents(&self.tree, node_id).1;
+            // First without the absolute boxes listed for this container
+            // from below its children (#770): they only add to the range, so
+            // an offset inside the rest needs no clamp and the walk measures
+            // none of them — the common case, a long list scrolled anywhere
+            // but its end, whose layout would otherwise measure every row's
+            // badge.
+            let flow_height =
+                crate::paint::scrollbar::content_extents_in_flow(&self.tree, node_id).1;
+            if node.scroll_offset.1 <= (flow_height - visible_h).max(0.0) {
+                continue;
+            }
+            let content_height = crate::paint::scrollbar::content_extents(&self.tree, node_id).1;
             let max_scroll = (content_height - visible_h).max(0.0);
             if node.scroll_offset.1 > max_scroll {
                 // On the device pixel grid, at or below the range (#1543),
@@ -1557,6 +1569,13 @@ impl RinchDocument {
                 // element, which generates no box to place.)
                 let kind = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id);
                 crate::out_of_flow::note_kind_at_read(&mut self.tree, node_id, kind);
+                // Listed for the scroll range it belongs to (#770): which
+                // container that is, and where the box is in it, is worked out
+                // from the final layout when a range is first asked for
+                // (`paint::scrollbar::OverflowAbsolutes`), which also passes
+                // over a box with no area, as a box in a `display: none`
+                // subtree is — so nothing is asked here.
+                self.tree.overflow_absolutes.listed.push((node_id, kind));
                 if crate::out_of_flow::has_inline_containing_block(&self.tree, kind) {
                     self.tree.abs_inline_cb_seen = true;
                 }

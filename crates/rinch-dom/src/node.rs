@@ -2957,6 +2957,18 @@ pub struct NodeTree {
     /// `replace_after_scroll` iterate. Rebuilt by every layout
     /// (`out_of_flow::begin_read`).
     pub(crate) placed_absolutes: Vec<(RawNodeId, crate::out_of_flow::OutOfFlowKind)>,
+    /// Every `absolute` box the layout read back, with its
+    /// [`crate::out_of_flow::out_of_flow_kind`] (`listed`): the boxes whose
+    /// **scrollable overflow** may belong to a scroll container that is not
+    /// the box they are laid out in (#770) — the nearest scroll container at or
+    /// above the containing block (`out_of_flow::overflow_scroller`).
+    /// Rebuilt by every layout read-back (`out_of_flow::begin_read`), and only
+    /// listed there: which container each box belongs to, and where it is in
+    /// that container's frame, is worked out once per geometry, by the first
+    /// scroll range asked for after it changed — `content_extents`' memo,
+    /// beside the list. Boxed: a document is moved by value, and this is
+    /// one pointer of it.
+    pub(crate) overflow_absolutes: Box<crate::paint::scrollbar::OverflowAbsolutes>,
     /// The placed boxes among those that are **shrunk to fit from their
     /// static position** (#1404): an `auto` (or `fit-content`) width and both
     /// inline insets `auto`. What
@@ -3598,6 +3610,7 @@ impl NodeTree {
             atomic_inline_registry: BTreeSet::new(),
             ancestor_absolutes: BTreeSet::new(),
             placed_absolutes: Vec::new(),
+            overflow_absolutes: Default::default(),
             abs_static_fits: Vec::new(),
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
