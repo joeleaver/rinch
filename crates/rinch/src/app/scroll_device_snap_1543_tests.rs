@@ -16,7 +16,7 @@ use rinch_macros::rsx;
 const VIEWPORT: (f32, f32) = (800.0, 600.0);
 const SCALE: f64 = 1.25;
 
-fn mount() -> (RinchApp, usize, usize) {
+fn mount() -> (RinchApp, u64, u64) {
     let mut app = RinchApp::new(|__scope: &mut RenderScope| {
         rsx! {
             div { class: "scroller", style: "width: 200px; height: 100px; overflow-y: auto;",
@@ -44,7 +44,7 @@ fn mount() -> (RinchApp, usize, usize) {
     (app, s, t)
 }
 
-fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+fn scroll_top(app: &RinchApp, id: u64) -> f64 {
     let doc = app.doc.as_ref().expect("a mounted document");
     doc.borrow().scroll_top(rinch_core::dom::NodeId(id))
 }

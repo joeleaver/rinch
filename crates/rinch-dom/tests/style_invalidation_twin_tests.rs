@@ -487,7 +487,7 @@ fn apply(spec: &mut Spec, l: &mut Live, op: &Op) {
             // No detach: the reference is counted without the node itself,
             // which is the spec's index once the node has left its old slot.
             let p = l.map[parent];
-            let element_kids: Vec<usize> = l.doc.tree.nodes[p.0]
+            let element_kids: Vec<u64> = l.doc.tree.nodes[p.0]
                 .children
                 .iter()
                 .copied()
@@ -527,7 +527,7 @@ fn apply(spec: &mut Spec, l: &mut Live, op: &Op) {
 /// Clear, through the real entry points, any interaction state held by a node
 /// in `sub` (about to be removed or moved).
 fn clear_state_in(l: &mut Live, sub: &[usize]) {
-    let raw: Vec<usize> = sub
+    let raw: Vec<u64> = sub
         .iter()
         .filter_map(|s| l.map.get(s))
         .map(|n| n.0)
@@ -548,7 +548,7 @@ fn clear_state_in(l: &mut Live, sub: &[usize]) {
 /// (text children and generated boxes are skipped when counting).
 fn insert_at(l: &mut Live, parent: usize, index: usize, n: NodeId) {
     let p = l.map[&parent];
-    let element_kids: Vec<usize> = l.doc.tree.nodes[p.0]
+    let element_kids: Vec<u64> = l.doc.tree.nodes[p.0]
         .children
         .iter()
         .copied()

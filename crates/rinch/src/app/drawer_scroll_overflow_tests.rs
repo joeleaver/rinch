@@ -73,7 +73,7 @@ fn mount(build: impl Fn(&mut RenderScope) -> Vec<NodeHandle> + 'static) -> Rinch
 }
 
 /// The id of the node carrying `id="scroller"`.
-fn scroller_id(app: &RinchApp) -> usize {
+fn scroller_id(app: &RinchApp) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree

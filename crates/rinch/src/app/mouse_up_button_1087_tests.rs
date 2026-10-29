@@ -321,7 +321,7 @@ mod pointer_capture {
     #[cfg(feature = "desktop")]
     #[test]
     fn a_right_release_does_not_end_an_editor_drag_select() {
-        const CONTAINER: usize = 876_543;
+        const CONTAINER: u64 = 876_543;
         let (mut app, _log) = mount();
         let doc = rinch_core::doc_identity(app.doc_key());
         crate::editor::begin_drag(doc, CONTAINER, 5);

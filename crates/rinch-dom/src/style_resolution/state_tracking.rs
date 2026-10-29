@@ -1,6 +1,7 @@
 //! Interaction state tracking: hover, focus, active state changes and style recomputation.
 
 use crate::RinchDocument;
+use crate::node::RawNodeId;
 
 impl RinchDocument {
     /// Update hover state: set the hovered node and its ancestors as hovered,
@@ -11,7 +12,11 @@ impl RinchDocument {
     /// state). The `hovered_changed` out-parameter is set when the hovered node
     /// identity changed (used by the caller to dispatch `data-onenter`
     /// regardless of whether repaint is needed).
-    pub fn update_hover(&mut self, new_hovered: Option<usize>, hovered_changed: &mut bool) -> bool {
+    pub fn update_hover(
+        &mut self,
+        new_hovered: Option<RawNodeId>,
+        hovered_changed: &mut bool,
+    ) -> bool {
         let old_hovered = self.tree.hovered_node;
         *hovered_changed = old_hovered != new_hovered;
         if !*hovered_changed {
@@ -82,21 +87,21 @@ impl RinchDocument {
         needs_repaint
     }
 
-    fn node_is_hover_sensitive(&self, id: usize) -> bool {
+    fn node_is_hover_sensitive(&self, id: RawNodeId) -> bool {
         self.tree
             .nodes
             .get(id)
             .is_some_and(|n| n.hover_sensitive.get())
     }
 
-    fn node_is_active_sensitive(&self, id: usize) -> bool {
+    fn node_is_active_sensitive(&self, id: RawNodeId) -> bool {
         self.tree
             .nodes
             .get(id)
             .is_some_and(|n| n.active_sensitive.get())
     }
 
-    fn node_is_focus_sensitive(&self, id: usize) -> bool {
+    fn node_is_focus_sensitive(&self, id: RawNodeId) -> bool {
         // The per-node flag is set by Stylo *matching* a focus pseudo-class
         // against the node — but a rule whose rightmost compound is a bare
         // focus pseudo (the theme's `:focus-visible { outline }`) lives in
@@ -118,7 +123,7 @@ impl RinchDocument {
     /// focus-sensitive during selector matching.
     ///
     /// Returns `true` if a repaint is needed.
-    pub fn update_focus(&mut self, new_focused: Option<usize>) -> bool {
+    pub fn update_focus(&mut self, new_focused: Option<RawNodeId>) -> bool {
         let old_focused = self.tree.focused_node;
         if old_focused == new_focused {
             return false;
@@ -166,7 +171,7 @@ impl RinchDocument {
     /// CSS rule depends on this node's focus state.
     ///
     /// Returns `true` if a repaint is needed.
-    pub fn set_focus_visible(&mut self, node_id: usize, visible: bool) -> bool {
+    pub fn set_focus_visible(&mut self, node_id: RawNodeId, visible: bool) -> bool {
         match self.tree.nodes.get(node_id) {
             Some(node) if node.is_focus_visible != visible => {}
             _ => return false,
@@ -184,7 +189,7 @@ impl RinchDocument {
     /// nodes that Stylo flagged as active-sensitive during selector matching.
     ///
     /// Returns `true` if a repaint is needed.
-    pub fn update_active(&mut self, new_active: Option<usize>) -> bool {
+    pub fn update_active(&mut self, new_active: Option<RawNodeId>) -> bool {
         let old_active = self.tree.active_node;
         if old_active == new_active {
             return false;

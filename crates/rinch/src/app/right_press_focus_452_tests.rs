@@ -31,18 +31,18 @@ fn ev(app: &mut RinchApp, event: PlatformEvent) -> Vec<AppAction> {
     app.handle_event(event, VP, 1.0)
 }
 
-fn center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn center(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (ax, ay, w, h) = painted_element_box(&d.tree, id);
     (ax + w / 2.0, ay + h / 2.0)
 }
 
-fn down(app: &mut RinchApp, id: usize, button: MouseButton) {
+fn down(app: &mut RinchApp, id: u64, button: MouseButton) {
     let (x, y) = center(app, id);
     ev(app, PlatformEvent::MouseDown { x, y, button });
 }
 
-fn press(app: &mut RinchApp, id: usize, button: MouseButton) {
+fn press(app: &mut RinchApp, id: u64, button: MouseButton) {
     let (x, y) = center(app, id);
     ev(app, PlatformEvent::MouseDown { x, y, button });
     ev(app, PlatformEvent::MouseUp { x, y, button });
@@ -51,26 +51,26 @@ fn press(app: &mut RinchApp, id: usize, button: MouseButton) {
 struct Fixture {
     app: RinchApp,
     /// `tabindex="0"`, registered as a focus target.
-    listbox: usize,
+    listbox: u64,
     /// `tabindex="-1"` inside the listbox, registered as a focus target.
-    item: usize,
+    item: u64,
     /// No `tabindex`, inside the listbox.
-    plain: usize,
+    plain: u64,
     /// A `data-nofocus` `tabindex="0"` node outside the listbox.
-    nofocus: usize,
+    nofocus: u64,
     /// Nothing focusable, outside the listbox.
-    outside: usize,
+    outside: u64,
     log: Rc<RefCell<Vec<String>>>,
     /// `document.activeElement` when the item's `data-oncontextmenu` ran.
-    focus_at_contextmenu: Rc<Cell<Option<Option<usize>>>>,
+    focus_at_contextmenu: Rc<Cell<Option<Option<u64>>>>,
 }
 
 /// The issue's shape. Every box sits off the origin and off an even spacing,
 /// so a press resolved against the wrong box lands on something else.
 fn mount(item_contextmenu: bool) -> Fixture {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let focus_at_contextmenu: Rc<Cell<Option<Option<usize>>>> = Rc::new(Cell::new(None));
-    let ids: Rc<Cell<Option<[usize; 5]>>> = Rc::new(Cell::new(None));
+    let focus_at_contextmenu: Rc<Cell<Option<Option<u64>>>> = Rc::new(Cell::new(None));
+    let ids: Rc<Cell<Option<[u64; 5]>>> = Rc::new(Cell::new(None));
     let (log_in, ids_in) = (log.clone(), ids.clone());
     let at_ctx_in = focus_at_contextmenu.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -163,7 +163,7 @@ fn mount(item_contextmenu: bool) -> Fixture {
     }
 }
 
-fn dom_focus(app: &RinchApp) -> Option<usize> {
+fn dom_focus(app: &RinchApp) -> Option<u64> {
     app.doc.as_ref().unwrap().borrow().tree.focused_node
 }
 
@@ -316,7 +316,7 @@ fn a_right_press_does_not_set_active() {
 #[test]
 fn a_right_press_in_an_editor_inside_a_focusable_leaves_the_wrapper_alone() {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    type Slot = Option<(usize, crate::editor::EditorHandle)>;
+    type Slot = Option<(u64, crate::editor::EditorHandle)>;
     let slot: Rc<RefCell<Slot>> = Rc::new(RefCell::new(None));
     let (log_in, slot_in) = (log.clone(), slot.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

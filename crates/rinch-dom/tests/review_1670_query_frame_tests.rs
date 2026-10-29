@@ -24,7 +24,7 @@ fn doc_with(style: &str, text: &str) -> (RinchDocument, u64, u64) {
     let t = doc.create_text(text);
     doc.append_child(p, t);
     doc.resolve_layout(400.0, 600.0);
-    (doc, p.0 as u64, t.0 as u64)
+    (doc, p.0, t.0)
 }
 
 const BOX: &str = "margin: 0; width: 200px; font-family: ProbeFace; font-size: 16px; \

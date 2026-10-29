@@ -137,7 +137,7 @@ impl Page {
     fn line_of(&self, i: usize) -> usize {
         let (block, byte) = self.handle.caret_address(Pos(i + 1)).unwrap();
         let doc = self.app.doc.as_ref().unwrap().borrow();
-        let (_, y) = doc.query_caret_position(block as u64, byte).unwrap();
+        let (_, y) = doc.query_caret_position(block, byte).unwrap();
         (y / LINE).floor() as usize
     }
 }

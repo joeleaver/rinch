@@ -19,21 +19,21 @@ use std::cell::Cell;
 /// Ids captured at mount, in DOM order.
 #[derive(Clone, Copy)]
 struct Ids {
-    plain: usize,
-    disabled: usize,
-    readonly: usize,
-    data_disabled: usize,
+    plain: u64,
+    disabled: u64,
+    readonly: u64,
+    data_disabled: u64,
     /// `disabled="false"` — **disabled**, like a browser (issue #612).
-    disabled_false: usize,
+    disabled_false: u64,
     /// `readonly="false"` — **read-only**, for the same reason.
-    readonly_false: usize,
+    readonly_false: u64,
     /// `data-disabled="false"` — rinch's own attribute, which keeps the escape.
-    data_disabled_false: usize,
-    in_fieldset: usize,
-    in_legend: usize,
-    select: usize,
-    select_in_fieldset: usize,
-    fieldset: usize,
+    data_disabled_false: u64,
+    in_fieldset: u64,
+    in_legend: u64,
+    select: u64,
+    select_in_fieldset: u64,
+    fieldset: u64,
 }
 
 /// One document holding every case: an ordinary `<input>`, a `disabled` one, a
@@ -217,7 +217,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn click_center(app: &mut RinchApp, id: usize) {
+fn click_center(app: &mut RinchApp, id: u64) {
     let (x, y) = {
         let d = app.doc.as_ref().unwrap().borrow();
         let (ax, ay, w, h) = painted_element_box(&d.tree, id);
@@ -244,7 +244,7 @@ fn click_center(app: &mut RinchApp, id: usize) {
 }
 
 /// Set (or clear) an attribute on a live node, the way a reactive prop would.
-fn set_attr(app: &mut RinchApp, id: usize, name: &str, value: Option<&str>) {
+fn set_attr(app: &mut RinchApp, id: u64, name: &str, value: Option<&str>) {
     let doc = app.doc.as_ref().unwrap();
     let mut d = doc.borrow_mut();
     let node = d.tree.get_mut(id).expect("node is live");
@@ -260,7 +260,7 @@ fn set_attr(app: &mut RinchApp, id: usize, name: &str, value: Option<&str>) {
 
 /// The `value` attribute a field actually displays — what survives the claim
 /// being released, unlike `focused_input_state`.
-fn dom_value(app: &RinchApp, id: usize) -> String {
+fn dom_value(app: &RinchApp, id: u64) -> String {
     app.doc
         .as_ref()
         .unwrap()
@@ -1052,7 +1052,7 @@ fn programmatic_focus_refuses_a_field_inside_a_disabled_fieldset() {
 /// tell them apart, and without it the difference is invisible.
 #[test]
 fn a_press_on_a_focusable_inside_a_disabled_fieldset_claims_nothing() {
-    let ids: Rc<std::cell::Cell<(usize, usize)>> = Rc::new(std::cell::Cell::new((0, 0)));
+    let ids: Rc<std::cell::Cell<(u64, u64)>> = Rc::new(std::cell::Cell::new((0, 0)));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -1201,7 +1201,7 @@ fn readonly_false_on_a_textarea_refuses_text_and_is_inert_on_a_select() {
         l2.borrow_mut().push(format!("sel:{v}"));
     }));
 
-    let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+    let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
