@@ -1126,6 +1126,10 @@ fn find_scrollbar_hit_node(
 mod prune_tests;
 
 #[cfg(test)]
+#[path = "hidden_ancestor_hit_843_tests.rs"]
+mod hidden_ancestor_hit_843_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{flow_extent, hit_test};
     use rinch_core::dom::{DomDocument, NodeId};
