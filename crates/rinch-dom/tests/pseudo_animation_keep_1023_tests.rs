@@ -65,7 +65,7 @@ fn doc_with(class: &str) -> (RinchDocument, NodeId, NodeId) {
 }
 
 /// The generated box of the given kind (`after == false` for `::before`).
-fn generated(doc: &RinchDocument, owner: NodeId, after: bool) -> Option<usize> {
+fn generated(doc: &RinchDocument, owner: NodeId, after: bool) -> Option<u64> {
     let children = &doc.tree.get(owner.0).unwrap().children;
     let pick = if after {
         children.last()
@@ -76,7 +76,7 @@ fn generated(doc: &RinchDocument, owner: NodeId, after: bool) -> Option<usize> {
         .filter(|&c| doc.tree.get(c).unwrap().is_pseudo_element)
 }
 
-fn before(doc: &RinchDocument, owner: NodeId) -> usize {
+fn before(doc: &RinchDocument, owner: NodeId) -> u64 {
     generated(doc, owner, false).expect("the element generates a ::before")
 }
 

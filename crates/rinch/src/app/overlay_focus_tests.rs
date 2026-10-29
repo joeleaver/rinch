@@ -62,7 +62,7 @@ fn settle(app: &mut RinchApp) {
 }
 
 /// The node the arbiter currently holds, whichever target kind it is.
-fn focused(app: &RinchApp) -> Option<usize> {
+fn focused(app: &RinchApp) -> Option<u64> {
     match app.focus_target {
         FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
         _ => None,
@@ -569,7 +569,7 @@ fn a_nested_overlay_restores_into_the_one_that_contains_it() {
 #[test]
 fn a_popover_takes_focus_only_for_an_autofocus_child() {
     for autofocus in [false, true] {
-        let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+        let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
         let out = ids.clone();
         let open = Signal::new(false);
         let mut app = mount(move |scope: &mut RenderScope| {
@@ -1091,7 +1091,7 @@ fn editor_modal_page(
 ) -> (RinchApp, crate::editor::EditorHandle, u64, u64, u64) {
     let handle = crate::editor::create_editor();
     assert!(handle.load_html("<p>modal</p>"));
-    let ids: Rc<Cell<(usize, usize, usize)>> = Rc::default();
+    let ids: Rc<Cell<(u64, u64, u64)>> = Rc::default();
     let (out, ed_in) = (ids.clone(), handle.clone());
     let app = mount(move |scope: &mut RenderScope| {
         let page = scope.create_element("div");
@@ -1187,7 +1187,7 @@ fn an_editor_inside_releases_and_the_editor_opener_gets_the_keyboard() {
     assert!(a.load_html("<p>outer</p>"));
     let b = crate::editor::create_editor();
     assert!(b.load_html("<p>inner</p>"));
-    let ids: Rc<Cell<(usize, usize)>> = Rc::default();
+    let ids: Rc<Cell<(u64, u64)>> = Rc::default();
     let (out, a2, b2) = (ids.clone(), a.clone(), b.clone());
     let mut app = mount(move |scope: &mut RenderScope| {
         let page = scope.create_element("div");
@@ -1240,7 +1240,7 @@ fn an_unmounted_editor_is_not_where_the_focus_is() {
     let shown = Signal::new(true);
     let h = crate::editor::create_editor();
     assert!(h.load_html("<p>x</p>"));
-    let ids: Rc<Cell<usize>> = Rc::default();
+    let ids: Rc<Cell<u64>> = Rc::default();
     let (out, h2) = (ids.clone(), h.clone());
     let mut app = mount(move |scope: &mut RenderScope| {
         let page = scope.create_element("div");

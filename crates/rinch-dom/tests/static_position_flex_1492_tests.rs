@@ -318,7 +318,7 @@ fn lay_out(html: &str, height: f32) -> RinchDocument {
     doc
 }
 
-fn one(doc: &RinchDocument, selector: &str) -> usize {
+fn one(doc: &RinchDocument, selector: &str) -> u64 {
     let found = query_selector(&doc.tree, selector);
     assert_eq!(found.len(), 1, "{selector} names exactly one node");
     found[0]

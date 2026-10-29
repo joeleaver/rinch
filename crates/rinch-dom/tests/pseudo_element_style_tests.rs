@@ -34,7 +34,7 @@ fn hex(doc: &RinchDocument, n: u64) -> String {
     format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b)
 }
 
-fn generated(doc: &RinchDocument, owner: NodeId) -> usize {
+fn generated(doc: &RinchDocument, owner: NodeId) -> u64 {
     doc.tree
         .get(owner.0)
         .unwrap()

@@ -237,7 +237,7 @@ fn press(f: &mut F, key: KeyCode, text: Option<&str>) {
     f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
 }
 
-fn focused(app: &RinchApp) -> Option<usize> {
+fn focused(app: &RinchApp) -> Option<u64> {
     match app.focus_target {
         FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
         _ => None,

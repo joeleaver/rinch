@@ -52,7 +52,7 @@ fn page() -> Page {
     let b = editor_with(3);
     let on_click: OnClick = Rc::default();
     let oninput = register_input_handler(InputCallback::new(|_| {}));
-    let ids: Rc<Cell<(usize, usize, usize, usize)>> = Rc::default();
+    let ids: Rc<Cell<(u64, u64, u64, u64)>> = Rc::default();
     let (a_in, b_in, click_in, ids_in) = (a.clone(), b.clone(), on_click.clone(), ids.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

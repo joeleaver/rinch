@@ -551,7 +551,7 @@ fn oracle_mount(
     wrapper_extra: &'static str,
 ) -> (RinchApp, u64, u64, RenderSurfaceHandle) {
     let game = create_render_surface_with_name(name);
-    let ids: Rc<Cell<(usize, usize, usize)>> = Rc::new(Cell::new((0, 0, 0)));
+    let ids: Rc<Cell<(u64, u64, u64)>> = Rc::new(Cell::new((0, 0, 0)));
     let captured = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

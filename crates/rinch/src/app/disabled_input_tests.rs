@@ -1052,7 +1052,7 @@ fn programmatic_focus_refuses_a_field_inside_a_disabled_fieldset() {
 /// tell them apart, and without it the difference is invisible.
 #[test]
 fn a_press_on_a_focusable_inside_a_disabled_fieldset_claims_nothing() {
-    let ids: Rc<std::cell::Cell<(usize, usize)>> = Rc::new(std::cell::Cell::new((0, 0)));
+    let ids: Rc<std::cell::Cell<(u64, u64)>> = Rc::new(std::cell::Cell::new((0, 0)));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -1201,7 +1201,7 @@ fn readonly_false_on_a_textarea_refuses_text_and_is_inert_on_a_select() {
         l2.borrow_mut().push(format!("sel:{v}"));
     }));
 
-    let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+    let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

@@ -94,7 +94,7 @@ fn shift_tab(app: &mut RinchApp) {
 }
 
 /// The node the arbiter currently holds, whichever target kind it is.
-fn focused(app: &RinchApp) -> Option<usize> {
+fn focused(app: &RinchApp) -> Option<u64> {
     match app.focus_target {
         FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
         _ => None,
@@ -478,7 +478,7 @@ fn closing_removes_the_attribute_rather_than_writing_false() {
 /// its *other* guard, so it needs a fixture that keeps the attribute on purpose.
 #[test]
 fn an_invisible_trap_is_not_a_trap() {
-    let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+    let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
     let out = ids.clone();
     let mut app = mount(move |scope: &mut RenderScope| {
         let page = scope.create_element("div");
@@ -521,7 +521,7 @@ fn an_invisible_trap_is_not_a_trap() {
 #[test]
 fn the_false_escape_opts_out_and_zero_does_not() {
     for (value, traps) in [("false", false), ("FALSE", false), ("0", true)] {
-        let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+        let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
         let out = ids.clone();
         let mut app = mount(move |scope: &mut RenderScope| {
             let page = scope.create_element("div");

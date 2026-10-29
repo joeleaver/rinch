@@ -29,7 +29,7 @@ fn mount(html: &str) -> RinchDocument {
     doc
 }
 
-fn one(doc: &RinchDocument, sel: &str) -> usize {
+fn one(doc: &RinchDocument, sel: &str) -> u64 {
     query_selector(&doc.tree, sel)[0]
 }
 

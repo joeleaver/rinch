@@ -33,7 +33,7 @@ fn page() -> Page {
     let oninput = register_input_handler(InputCallback::new(|_| {}));
     let ch = changes.clone();
     let onchange = register_input_handler(InputCallback::new(move |_| ch.set(ch.get() + 1)));
-    let ids: Rc<Cell<(usize, usize, usize)>> = Rc::default();
+    let ids: Rc<Cell<(u64, u64, u64)>> = Rc::default();
     let (a_in, b_in, ids_in) = (a.clone(), b.clone(), ids.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

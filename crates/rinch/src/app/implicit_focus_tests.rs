@@ -552,7 +552,7 @@ fn the_mouse_route_still_anchors_tab() {
 /// to a disabled control, undoing #315 through the one door #437 opens.
 #[test]
 fn a_commit_handler_that_disables_the_select_does_not_get_focus_back() {
-    let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+    let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

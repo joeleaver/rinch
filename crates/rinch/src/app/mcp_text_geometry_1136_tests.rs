@@ -28,7 +28,7 @@ fn page(
     style: impl Into<String>,
     value: &'static str,
 ) -> (RinchApp, u64) {
-    let id: Rc<Cell<usize>> = Rc::default();
+    let id: Rc<Cell<u64>> = Rc::default();
     let id_in = id.clone();
     let style: String = style.into();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -359,7 +359,7 @@ fn an_unpadded_paragraph_answers_its_painted_glyph() {
 fn page_html(
     build: impl Fn(&mut RenderScope) -> (NodeHandle, NodeHandle) + 'static,
 ) -> (RinchApp, u64) {
-    let id: Rc<Cell<usize>> = Rc::default();
+    let id: Rc<Cell<u64>> = Rc::default();
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let (root, target) = build(scope);

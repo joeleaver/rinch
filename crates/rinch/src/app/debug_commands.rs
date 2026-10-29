@@ -2024,7 +2024,7 @@ mod text_geometry_units_tests {
     /// branch unpinned by the fixtures above.
     #[test]
     fn an_empty_input_caret_is_logical_at_scale_two() {
-        let id: Rc<Cell<usize>> = Rc::default();
+        let id: Rc<Cell<u64>> = Rc::default();
         let id2 = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -2169,7 +2169,7 @@ mod key_press_menu_shortcut_533_tests {
     fn a_debug_key_press_with_no_matching_chord_still_dispatches_a_keydown() {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
-        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -2204,7 +2204,7 @@ mod key_press_menu_shortcut_533_tests {
     #[test]
     fn a_debug_key_press_yields_a_bare_chord_to_a_focused_text_input() {
         let (fired, _chords) = counting_menu("N");
-        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -2266,7 +2266,7 @@ mod key_release_485_tests {
     fn activation_counting_app() -> (RinchApp, Rc<Cell<usize>>, usize) {
         let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let clicks_in = clicks.clone();
-        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let id_in = id.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -2343,7 +2343,7 @@ mod key_release_485_tests {
     fn key_recording_app() -> (RinchApp, Rc<RefCell<Vec<KeyEventData>>>) {
         let seen: Rc<RefCell<Vec<KeyEventData>>> = Rc::new(RefCell::new(Vec::new()));
         let sink = seen.clone();
-        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let id_in = id.clone();
 
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {

@@ -1126,7 +1126,7 @@ fn locked_page_with_side_panel(
     attr: Option<&'static str>,
     on_wrapper: bool,
 ) -> (RinchApp, u64, u64) {
-    let ids: Rc<Cell<(usize, usize, usize)>> = Rc::new(Cell::new((0, 0, 0)));
+    let ids: Rc<Cell<(u64, u64, u64)>> = Rc::new(Cell::new((0, 0, 0)));
     let ids_in = ids.clone();
 
     let app = mount(move |scope: &mut RenderScope| {
@@ -1266,7 +1266,7 @@ struct Scene {
 /// Page scroller (both axes), a side panel scroller (both axes) outside the
 /// lock holder, a tiny lock holder. `lock` takes the lock at once.
 fn scene(mark: Mark, lock: bool) -> Scene {
-    let ids: Rc<Cell<(usize, usize, usize, usize)>> = Rc::new(Cell::new((0, 0, 0, 0)));
+    let ids: Rc<Cell<(u64, u64, u64, u64)>> = Rc::new(Cell::new((0, 0, 0, 0)));
     let ids_in = ids.clone();
     let handle: Rc<std::cell::RefCell<Option<NodeHandle>>> = Rc::new(std::cell::RefCell::new(None));
     let handle_in = handle.clone();
@@ -1507,7 +1507,7 @@ fn a_falsey_write_removes_the_exemption() {
 #[test]
 fn a_marked_panel_behind_the_backdrop_still_scrolls() {
     for marked in [false, true] {
-        let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+        let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
         let ids_in = ids.clone();
         let open = Signal::new(true);
         let mut app = mount(move |scope: &mut RenderScope| {

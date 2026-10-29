@@ -29,7 +29,7 @@ use rinch_dom::perf::Counter;
 const VW: f32 = 400.0;
 const VH: f32 = 800.0;
 
-fn raw(id: NodeId) -> usize {
+fn raw(id: NodeId) -> u64 {
     id.0
 }
 
