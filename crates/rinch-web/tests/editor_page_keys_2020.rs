@@ -87,6 +87,8 @@ impl Fixture {
                 scroller
             },
         );
+        // The runner's page has its log above: the fixture at the top.
+        host.scroll_into_view();
         let f = Self { root, host, handle };
         assert_eq!(f.scroller().client_height() as f64, PAGE_BOX, "control: the page box");
         f
@@ -321,14 +323,29 @@ fn a_page_that_lands_on_the_last_line_goes_to_the_end() {
         ),
     )
     .unwrap();
-    sc.set_scroll_top(0);
+    // Block `k` at the scroller's top, the last line in view below it.
+    let k_top = f.bands()[k].0 - sc.get_bounding_client_rect().top() - 13.0;
+    sc.set_scroll_top(k_top.round() as i32);
+    let before = sc.scroll_top();
     let (_, cy, ch) = f.caret();
     let (lt, lb) = f.bands()[n - 1];
     let page = (f64::from(sc.client_height()) * 0.875).round();
+    let max = sc.scroll_height() - sc.client_height();
+    // How far the page's own scroll will get (the rest of the page is the
+    // caret's move on screen).
+    let scrolled = f64::from((before + page as i32).min(max) - before);
     let target = cy + ch * 0.5 + page;
     assert!(
         target > lt + 2.0 && target < lb - 2.0,
         "control: a page from block {k} lands on the last line ({target} in {lt}..{lb})"
+    );
+    let window = web_sys::window().unwrap();
+    let view = window.inner_height().unwrap().as_f64().unwrap();
+    assert!(
+        target - scrolled < view,
+        "control: the last line is on screen ({} < {view}), so the page \
+         resolves a hit there rather than finding none",
+        target - scrolled
     );
     assert!(key("PageDown", false));
     assert_eq!(
@@ -336,5 +353,65 @@ fn a_page_that_lands_on_the_last_line_goes_to_the_end() {
         Selection::at_end(&f.handle.doc()).head(),
         "the document's end, not the column on its last line"
     );
+    f.teardown();
+}
+
+/// The scroller runs past the bottom of the window, and the page's scroll is
+/// cut short at the scroller's end: the line a page down is below the window,
+/// where `caretPositionFromPoint` finds nothing. The page still lands on that
+/// line (the window is scrolled to it), not at the document's end.
+#[wasm_bindgen_test]
+fn a_page_landing_below_the_window_finds_its_line() {
+    let f = Fixture::mount();
+    f.start();
+    let window = web_sys::window().unwrap();
+    let view = window.inner_height().unwrap().as_f64().unwrap();
+    let sc = f.scroller();
+    // The scroller's top 60px above the window's bottom.
+    sc.set_attribute(
+        "style",
+        &format!(
+            "box-sizing: content-box; height: 200px; padding: 13px; width: 500px; \
+             overflow-y: auto; margin-top: {view}px"
+        ),
+    )
+    .unwrap();
+    let top = sc.get_bounding_client_rect().top() + window.scroll_y().unwrap();
+    window.scroll_to_with_x_and_y(0.0, top - (view - 60.0));
+    // Short of the scroller's end by `short` px, so the page's scroll stops
+    // after `short`, with the caret on a block on screen whose page lands
+    // below the window and before the last line.
+    let max = sc.scroll_height() - sc.client_height();
+    let last = f.bands().len() - 1;
+    let mut found = None;
+    'search: for short in (30..=160).step_by(10) {
+        sc.set_scroll_top(max - short);
+        let sc_top = sc.get_bounding_client_rect().top();
+        let bands = f.bands();
+        for (i, &(t, b)) in bands.iter().enumerate() {
+            if t < sc_top + 13.0 || b > view {
+                continue;
+            }
+            f.handle
+                .set_selection(Selection::cursor(pos_in_block(&f.handle, i, 6)));
+            let (_, cy, ch) = f.caret();
+            let target = cy + ch * 0.5 + STEP;
+            let want = expected_blocks(&bands, target);
+            if target - f64::from(short) > view + 5.0 && !want.is_empty() && !want.contains(&last)
+            {
+                found = Some((short, want));
+                break 'search;
+            }
+        }
+    }
+    let (short, want) = found.expect("control: a caret whose page lands below the window");
+    assert!(key("PageDown", false));
+    assert_eq!(sc.scroll_top(), max, "the scroller went to its end ({short}px)");
+    let got = block_of(&f.handle, f.handle.selection().head());
+    assert!(
+        want.contains(&got),
+        "the caret landed in block {got}; a page down is {want:?}"
+    );
+    window.scroll_to_with_x_and_y(0.0, 0.0);
     f.teardown();
 }

@@ -2813,7 +2813,23 @@ fn page_step(
     let gx = goal_x().unwrap_or(hx);
     set_goal_x(Some(gx));
     // A page from the caret's middle, where the caret is drawn now.
-    let ty = (f64::from(hy + hh * 0.5) + step - scrolled) as f32;
+    let mut ty = (f64::from(hy + hh * 0.5) + step - scrolled) as f32;
+    // A point off the window resolves to nothing (`caretPositionFromPoint`):
+    // with the scroller running past the window's edge, bring the point in
+    // first, as the caret's reveal would have afterwards.
+    let view_h = view.min(f64::from(i32::MAX)) as f32;
+    let off = if ty < 0.0 {
+        ty - hh
+    } else if ty >= view_h {
+        ty - view_h + hh
+    } else {
+        0.0
+    };
+    if off != 0.0 {
+        let before = window.scroll_y().unwrap_or(0.0);
+        window.scroll_by_with_x_and_y(0.0, f64::from(off));
+        ty -= (window.scroll_y().unwrap_or(0.0) - before) as f32;
+    }
     let edge = || {
         let doc = handle.doc();
         if down {
