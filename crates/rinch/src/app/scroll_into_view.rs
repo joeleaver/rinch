@@ -49,10 +49,7 @@ pub(super) fn reveal(d: &mut RinchDocument, target: usize, placement: Option<(f3
     // out brings into view.
     let mut passed: Vec<usize> = Vec::new();
     let mut below = target;
-    loop {
-        let Some(node) = d.tree.nodes.get(below) else {
-            break;
-        };
+    while let Some(node) = d.tree.nodes.get(below) {
         // Nothing outside a fixed box can move it.
         if node.box_position() == PositionValue::Fixed {
             break;
