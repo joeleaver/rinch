@@ -1285,11 +1285,7 @@ thread_local! {
 /// push, kept so that it can be pushed again (#549).
 #[derive(Clone)]
 enum OpenLayer {
-    Clip {
-        fill: Fill,
-        transform: Affine,
-        shape: PaintShape,
-    },
+    Clip(painter::ClipSpec),
     Layer {
         blend: BlendMode,
         opacity: f32,
@@ -1305,16 +1301,19 @@ enum OpenLayer {
 
 impl OpenLayer {
     fn is_clip(&self) -> bool {
-        matches!(self, OpenLayer::Clip { .. })
+        matches!(self, OpenLayer::Clip(_))
+    }
+
+    fn clip(&self) -> Option<&painter::ClipSpec> {
+        match self {
+            OpenLayer::Clip(c) => Some(c),
+            _ => None,
+        }
     }
 
     fn push(&self, painter: &mut dyn Painter) {
         match self {
-            OpenLayer::Clip {
-                fill,
-                transform,
-                shape,
-            } => painter.push_clip(*fill, *transform, shape),
+            OpenLayer::Clip(c) => painter.push_clip(c.fill, c.transform, &c.shape),
             OpenLayer::Layer {
                 blend,
                 opacity,
@@ -1458,9 +1457,17 @@ impl Drop for FixedFloor {
 /// sit above a lifted clip, and that one is popped and re-pushed: everything
 /// drawn into it before the fixed box, the fixed box, and everything after it
 /// are then three groups composited one after the other.
-struct LiftedClips {
-    popped: Vec<OpenLayer>,
-    repushed: usize,
+enum LiftedClips {
+    /// Clips only, the usual case: taken off with [`Painter::suspend_clips`]
+    /// and put back with [`Painter::resume_clips`], which a painter whose
+    /// clips are per-draw masks does without rasterising them again.
+    Clips(Vec<painter::ClipSpec>),
+    /// A non-clip layer among them: everything popped, the non-clip layers
+    /// pushed again (`repushed` of them), and all of it put back after.
+    Mixed {
+        popped: Vec<OpenLayer>,
+        repushed: usize,
+    },
 }
 
 impl LiftedClips {
@@ -1473,6 +1480,12 @@ impl LiftedClips {
                 .map(|first| l[floor + first..].to_vec())
                 .unwrap_or_default()
         });
+        if popped.iter().all(OpenLayer::is_clip) {
+            let clips: Vec<painter::ClipSpec> =
+                popped.iter().filter_map(OpenLayer::clip).cloned().collect();
+            painter.suspend_clips(&clips);
+            return LiftedClips::Clips(clips);
+        }
         for _ in &popped {
             painter.pop_layer();
         }
@@ -1481,15 +1494,20 @@ impl LiftedClips {
             layer.push(painter);
             repushed += 1;
         }
-        LiftedClips { popped, repushed }
+        LiftedClips::Mixed { popped, repushed }
     }
 
     fn restore(self, painter: &mut dyn Painter) {
-        for _ in 0..self.repushed {
-            painter.pop_layer();
-        }
-        for layer in &self.popped {
-            layer.push(painter);
+        match self {
+            LiftedClips::Clips(clips) => painter.resume_clips(&clips),
+            LiftedClips::Mixed { popped, repushed } => {
+                for _ in 0..repushed {
+                    painter.pop_layer();
+                }
+                for layer in &popped {
+                    layer.push(painter);
+                }
+            }
         }
     }
 }
@@ -1520,7 +1538,7 @@ impl LiftedClips {
 /// A context with no such clip open, or none that draws, opens its layer the
 /// ordinary way, and pays one length check.
 struct GroupLayer {
-    sunk: Vec<OpenLayer>,
+    sunk: Vec<painter::ClipSpec>,
 }
 
 impl GroupLayer {
@@ -1535,32 +1553,34 @@ impl GroupLayer {
         bounds: &PaintShape,
     ) -> Self {
         let first = escaped_clips_on_top();
-        let sunk: Vec<OpenLayer> = match first {
+        let sunk: Vec<painter::ClipSpec> = match first {
             Some(first)
                 if !contains_fixed_descendants(node)
                     && holds_painted_escaping_fixed(tree, node_id) =>
             {
-                OPEN_LAYERS.with(|l| l.borrow()[first..].to_vec())
+                OPEN_LAYERS.with(|l| {
+                    l.borrow()[first..]
+                        .iter()
+                        .filter_map(OpenLayer::clip)
+                        .cloned()
+                        .collect()
+                })
             }
             _ => Vec::new(),
         };
-        for _ in &sunk {
-            painter.pop_layer();
-        }
-        painter.push_layer(BlendMode::Normal, opacity, transform, bounds);
-        for clip in &sunk {
-            clip.push(painter);
+        if sunk.is_empty() {
+            painter.push_layer(BlendMode::Normal, opacity, transform, bounds);
+        } else {
+            painter.push_layer_beneath_clips(&sunk, BlendMode::Normal, opacity, transform, bounds);
         }
         GroupLayer { sunk }
     }
 
     fn pop(self, painter: &mut dyn Painter) {
-        for _ in &self.sunk {
+        if self.sunk.is_empty() {
             painter.pop_layer();
-        }
-        painter.pop_layer();
-        for clip in &self.sunk {
-            clip.push(painter);
+        } else {
+            painter.pop_layer_beneath_clips(&self.sunk);
         }
     }
 }
@@ -1669,6 +1689,51 @@ impl ClipTrackingPainter<'_> {
     }
 }
 
+impl ClipTrackingPainter<'_> {
+    /// Record a clip pushed: its cull rect on [`CLIP_CULL`], the clip itself
+    /// on [`OPEN_LAYERS`].
+    fn mirror_clip(&self, fill: Fill, transform: Affine, shape: &PaintShape) {
+        let bounds = transform
+            .transform_rect_bbox(shape.bounding_box())
+            .inflate(self.ink_margin, self.ink_margin);
+        CLIP_CULL.with(|c| {
+            let mut c = c.borrow_mut();
+            let next = match c.last().copied().flatten() {
+                Some(open) => open.intersect(bounds),
+                None => bounds,
+            };
+            c.push(Some(next));
+        });
+        OPEN_LAYERS.with(|l| {
+            l.borrow_mut().push(OpenLayer::Clip(painter::ClipSpec {
+                fill,
+                transform,
+                shape: shape.clone(),
+            }))
+        });
+    }
+
+    /// Record a non-clip layer pushed: it narrows no cull.
+    fn mirror_layer(layer: OpenLayer) {
+        CLIP_CULL.with(|c| {
+            let mut c = c.borrow_mut();
+            let open = c.last().copied().flatten();
+            c.push(open);
+        });
+        OPEN_LAYERS.with(|l| l.borrow_mut().push(layer));
+    }
+
+    /// Record the top layer popped.
+    fn mirror_pop() {
+        CLIP_CULL.with(|c| {
+            c.borrow_mut().pop();
+        });
+        OPEN_LAYERS.with(|l| {
+            l.borrow_mut().pop();
+        });
+    }
+}
+
 impl Painter for ClipTrackingPainter<'_> {
     fn reset(&mut self) {
         CLIP_CULL.with(|c| c.borrow_mut().clear());
@@ -1758,25 +1823,52 @@ impl Painter for ClipTrackingPainter<'_> {
         self.inner.erase(fill, transform, shape);
     }
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
-        let bounds = transform
-            .transform_rect_bbox(shape.bounding_box())
-            .inflate(self.ink_margin, self.ink_margin);
-        CLIP_CULL.with(|c| {
-            let mut c = c.borrow_mut();
-            let next = match c.last().copied().flatten() {
-                Some(open) => open.intersect(bounds),
-                None => bounds,
-            };
-            c.push(Some(next));
-        });
-        OPEN_LAYERS.with(|l| {
-            l.borrow_mut().push(OpenLayer::Clip {
-                fill,
-                transform,
-                shape: shape.clone(),
-            })
-        });
+        self.mirror_clip(fill, transform, shape);
         self.inner.push_clip(fill, transform, shape);
+    }
+    fn push_layer_beneath_clips(
+        &mut self,
+        clips: &[painter::ClipSpec],
+        blend: BlendMode,
+        opacity: f32,
+        transform: Affine,
+        bounds: &PaintShape,
+    ) {
+        for _ in clips {
+            Self::mirror_pop();
+        }
+        Self::mirror_layer(OpenLayer::Layer {
+            blend,
+            opacity,
+            transform,
+            bounds: bounds.clone(),
+        });
+        for c in clips {
+            self.mirror_clip(c.fill, c.transform, &c.shape);
+        }
+        self.inner
+            .push_layer_beneath_clips(clips, blend, opacity, transform, bounds);
+    }
+    fn pop_layer_beneath_clips(&mut self, clips: &[painter::ClipSpec]) {
+        for _ in 0..=clips.len() {
+            Self::mirror_pop();
+        }
+        for c in clips {
+            self.mirror_clip(c.fill, c.transform, &c.shape);
+        }
+        self.inner.pop_layer_beneath_clips(clips);
+    }
+    fn suspend_clips(&mut self, clips: &[painter::ClipSpec]) {
+        for _ in clips {
+            Self::mirror_pop();
+        }
+        self.inner.suspend_clips(clips);
+    }
+    fn resume_clips(&mut self, clips: &[painter::ClipSpec]) {
+        for c in clips {
+            self.mirror_clip(c.fill, c.transform, &c.shape);
+        }
+        self.inner.resume_clips(clips);
     }
     fn push_layer(
         &mut self,
@@ -1785,43 +1877,24 @@ impl Painter for ClipTrackingPainter<'_> {
         transform: Affine,
         bounds: &PaintShape,
     ) {
-        CLIP_CULL.with(|c| {
-            let mut c = c.borrow_mut();
-            let open = c.last().copied().flatten();
-            c.push(open);
-        });
-        OPEN_LAYERS.with(|l| {
-            l.borrow_mut().push(OpenLayer::Layer {
-                blend,
-                opacity,
-                transform,
-                bounds: bounds.clone(),
-            })
+        Self::mirror_layer(OpenLayer::Layer {
+            blend,
+            opacity,
+            transform,
+            bounds: bounds.clone(),
         });
         self.inner.push_layer(blend, opacity, transform, bounds);
     }
     fn push_isolated_layer(&mut self, opacity: f32, transform: Affine, bounds: &PaintShape) {
-        CLIP_CULL.with(|c| {
-            let mut c = c.borrow_mut();
-            let open = c.last().copied().flatten();
-            c.push(open);
-        });
-        OPEN_LAYERS.with(|l| {
-            l.borrow_mut().push(OpenLayer::Isolated {
-                opacity,
-                transform,
-                bounds: bounds.clone(),
-            })
+        Self::mirror_layer(OpenLayer::Isolated {
+            opacity,
+            transform,
+            bounds: bounds.clone(),
         });
         self.inner.push_isolated_layer(opacity, transform, bounds);
     }
     fn pop_layer(&mut self) {
-        CLIP_CULL.with(|c| {
-            c.borrow_mut().pop();
-        });
-        OPEN_LAYERS.with(|l| {
-            l.borrow_mut().pop();
-        });
+        Self::mirror_pop();
         self.inner.pop_layer();
     }
     fn split_surface(&mut self, split: &painter::SurfaceSplit) -> painter::SplitVerdict {

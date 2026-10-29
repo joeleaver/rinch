@@ -11,7 +11,7 @@ use tiny_skia::{
     PathBuilder, Pixmap, PixmapPaint, PixmapRef, SpreadMode, Stroke as SkStroke, Transform,
 };
 
-use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
+use super::painter::{BlendMode, ClipSpec, PaintGlyph, PaintImage, PaintShape, Painter};
 
 // ── Conversion helpers ────────────────────────────────────────────────────
 
@@ -812,6 +812,10 @@ pub struct TinySkiaPainter {
     clip_mask: Option<ClipMask>,
     /// Stack of saved layer states.
     layer_stack: Vec<LayerState>,
+    /// The masks [`Painter::suspend_clips`] took off, top first, one entry
+    /// per suspension (`None`: it fell back to popping), for
+    /// [`Painter::resume_clips`] to put back as they were (#549).
+    suspended: Vec<Option<Vec<Option<ClipMask>>>>,
     /// Reusable swash scale context for glyph rasterization.
     scale_context: swash::scale::ScaleContext,
     /// A second swash context for colour bitmap strikes (#804): a strike is
@@ -850,6 +854,7 @@ impl TinySkiaPainter {
             pixmap: Pixmap::new(width.max(1), height.max(1)).expect("invalid pixmap dimensions"),
             clip_mask: None,
             layer_stack: Vec::new(),
+            suspended: Vec::new(),
             scale_context: swash::scale::ScaleContext::new(),
             bitmap_scale_context: swash::scale::ScaleContext::new(),
             glyph_cache: GlyphCache::default(),
@@ -1533,12 +1538,110 @@ impl TinySkiaPainter {
     }
 }
 
+impl TinySkiaPainter {
+    /// Whether the top `n` states of the layer stack are clips.
+    fn clips_on_top(&self, n: usize) -> bool {
+        self.layer_stack.len() >= n
+            && self.layer_stack[self.layer_stack.len() - n..]
+                .iter()
+                .all(|s| matches!(s, LayerState::Clip { .. }))
+    }
+
+    /// Undo one pushed state: what `pop_layer` does with the top of the
+    /// stack, and `pop_layer_beneath_clips` with one beneath it.
+    fn pop_state(&mut self, state: LayerState) {
+        match state {
+            // Nothing was saved because nothing was changed (`push_layer`'s
+            // near-opaque branch). Writing anything to `clip_mask` here — a
+            // `None` above all — would be inventing state this push never took.
+            LayerState::Noop => {}
+            LayerState::DamageShadowed => {
+                if let Some(m) = self.clip_mask.as_mut() {
+                    m.damage_only = true;
+                }
+            }
+            LayerState::Clip { previous_mask } => {
+                if let Some(m) = std::mem::replace(&mut self.clip_mask, previous_mask) {
+                    self.release_mask(m);
+                }
+            }
+            LayerState::Opacity {
+                mut parent_pixmap,
+                parent_touched,
+                opacity,
+                blend,
+            } => {
+                // Composite the layer back onto the parent — only the part of
+                // it anything was drawn into. Everywhere else the layer is
+                // transparent, and `SourceOver` of transparent is the identity.
+                let drawn = if self.reference_mode {
+                    self.surface_rect()
+                } else if blend == tiny_skia::BlendMode::DestinationIn {
+                    // `destination-in` of a transparent pixel clears what is
+                    // under it, so the layer acts wherever the parent holds
+                    // anything, drawn into or not: a mask that draws nothing
+                    // hides the content, as on Vello and in CSS (#1798).
+                    let mine = self.touched.unwrap_or(DeviceRect::EMPTY);
+                    match parent_touched {
+                        Some(p) => mine.union(p),
+                        None => self.surface_rect(),
+                    }
+                } else {
+                    self.touched.unwrap_or(DeviceRect::EMPTY)
+                };
+                let paint = PixmapPaint {
+                    opacity,
+                    blend_mode: blend,
+                    quality: tiny_skia::FilterQuality::Nearest,
+                };
+                if drawn == self.surface_rect() {
+                    parent_pixmap.draw_pixmap(
+                        0,
+                        0,
+                        self.pixmap.as_ref(),
+                        &paint,
+                        Transform::identity(),
+                        None,
+                    );
+                } else if !drawn.is_empty()
+                    && let Some(rect) = tiny_skia::IntRect::from_xywh(
+                        drawn.x0 as i32,
+                        drawn.y0 as i32,
+                        drawn.x1 - drawn.x0,
+                        drawn.y1 - drawn.y0,
+                    )
+                    && let Some(part) = self.pixmap.clone_rect(rect)
+                {
+                    parent_pixmap.draw_pixmap(
+                        drawn.x0 as i32,
+                        drawn.y0 as i32,
+                        part.as_ref(),
+                        &paint,
+                        Transform::identity(),
+                        None,
+                    );
+                }
+                self.stats.layer_px += drawn.area();
+
+                let layer = std::mem::replace(&mut self.pixmap, parent_pixmap);
+                self.release_layer(layer, drawn);
+                self.touched = parent_touched;
+                // What the layer drew is now drawn into the parent.
+                if let Some(t) = self.touched.as_mut() {
+                    *t = t.union(drawn);
+                }
+            }
+        }
+    }
+}
+
 impl Painter for TinySkiaPainter {
     fn reset(&mut self) {
         self.pixmap.fill(tiny_skia::Color::TRANSPARENT);
         // Anything still open is dropped, not pooled: no longer live.
         self.clip_mask = None;
         self.layer_stack.clear();
+        self.suspended.clear();
         self.touched = None;
         self.mask_use.live = 0;
         self.layer_use.live = 0;
@@ -2354,86 +2457,97 @@ impl Painter for TinySkiaPainter {
         let Some(state) = self.layer_stack.pop() else {
             return;
         };
+        self.pop_state(state);
+    }
 
-        match state {
-            // Nothing was saved because nothing was changed (`push_layer`'s
-            // near-opaque branch). Writing anything to `clip_mask` here — a
-            // `None` above all — would be inventing state this push never took.
-            LayerState::Noop => {}
-            LayerState::DamageShadowed => {
-                if let Some(m) = self.clip_mask.as_mut() {
-                    m.damage_only = true;
+    // A clip here is a per-draw mask and a layer a pixmap swap: neither holds
+    // the other, so a layer can be slid beneath the clips on top of the stack,
+    // and clips taken off and put back, without rasterising a mask again
+    // (#549). Each falls back to the default when the top of the stack is not
+    // the run of clips the caller says it is.
+    fn push_layer_beneath_clips(
+        &mut self,
+        clips: &[ClipSpec],
+        blend: BlendMode,
+        opacity: f32,
+        transform: Affine,
+        bounds: &PaintShape,
+    ) {
+        let n = clips.len();
+        if !self.clips_on_top(n) {
+            for _ in clips {
+                self.pop_layer();
+            }
+            self.push_layer(blend, opacity, transform, bounds);
+            for c in clips {
+                self.push_clip(c.fill, c.transform, &c.shape);
+            }
+            return;
+        }
+        self.push_layer(blend, opacity, transform, bounds);
+        let state = self.layer_stack.pop().expect("just pushed");
+        let at = self.layer_stack.len() - n;
+        self.layer_stack.insert(at, state);
+    }
+
+    fn pop_layer_beneath_clips(&mut self, clips: &[ClipSpec]) {
+        let n = clips.len();
+        let len = self.layer_stack.len();
+        if !self.clips_on_top(n)
+            || len <= n
+            || matches!(
+                self.layer_stack[len - 1 - n],
+                LayerState::Clip { .. } | LayerState::DamageShadowed
+            )
+        {
+            for _ in clips {
+                self.pop_layer();
+            }
+            self.pop_layer();
+            for c in clips {
+                self.push_clip(c.fill, c.transform, &c.shape);
+            }
+            return;
+        }
+        let state = self.layer_stack.remove(len - 1 - n);
+        self.pop_state(state);
+    }
+
+    fn suspend_clips(&mut self, clips: &[ClipSpec]) {
+        let n = clips.len();
+        if !self.clips_on_top(n) {
+            for _ in clips {
+                self.pop_layer();
+            }
+            self.suspended.push(None);
+            return;
+        }
+        let mut masks = Vec::with_capacity(n);
+        for _ in 0..n {
+            let Some(LayerState::Clip { previous_mask }) = self.layer_stack.pop() else {
+                unreachable!("checked: clips on top");
+            };
+            masks.push(std::mem::replace(&mut self.clip_mask, previous_mask));
+        }
+        self.suspended.push(Some(masks));
+    }
+
+    fn resume_clips(&mut self, clips: &[ClipSpec]) {
+        match self.suspended.pop() {
+            Some(Some(masks)) if masks.len() == clips.len() => {
+                for mask in masks.into_iter().rev() {
+                    let previous_mask = std::mem::replace(&mut self.clip_mask, mask);
+                    self.layer_stack.push(LayerState::Clip { previous_mask });
                 }
             }
-            LayerState::Clip { previous_mask } => {
-                if let Some(m) = std::mem::replace(&mut self.clip_mask, previous_mask) {
-                    self.release_mask(m);
-                }
-            }
-            LayerState::Opacity {
-                mut parent_pixmap,
-                parent_touched,
-                opacity,
-                blend,
-            } => {
-                // Composite the layer back onto the parent — only the part of
-                // it anything was drawn into. Everywhere else the layer is
-                // transparent, and `SourceOver` of transparent is the identity.
-                let drawn = if self.reference_mode {
-                    self.surface_rect()
-                } else if blend == tiny_skia::BlendMode::DestinationIn {
-                    // `destination-in` of a transparent pixel clears what is
-                    // under it, so the layer acts wherever the parent holds
-                    // anything, drawn into or not: a mask that draws nothing
-                    // hides the content, as on Vello and in CSS (#1798).
-                    let mine = self.touched.unwrap_or(DeviceRect::EMPTY);
-                    match parent_touched {
-                        Some(p) => mine.union(p),
-                        None => self.surface_rect(),
+            other => {
+                if let Some(Some(masks)) = other {
+                    for m in masks.into_iter().flatten() {
+                        self.release_mask(m);
                     }
-                } else {
-                    self.touched.unwrap_or(DeviceRect::EMPTY)
-                };
-                let paint = PixmapPaint {
-                    opacity,
-                    blend_mode: blend,
-                    quality: tiny_skia::FilterQuality::Nearest,
-                };
-                if drawn == self.surface_rect() {
-                    parent_pixmap.draw_pixmap(
-                        0,
-                        0,
-                        self.pixmap.as_ref(),
-                        &paint,
-                        Transform::identity(),
-                        None,
-                    );
-                } else if !drawn.is_empty()
-                    && let Some(rect) = tiny_skia::IntRect::from_xywh(
-                        drawn.x0 as i32,
-                        drawn.y0 as i32,
-                        drawn.x1 - drawn.x0,
-                        drawn.y1 - drawn.y0,
-                    )
-                    && let Some(part) = self.pixmap.clone_rect(rect)
-                {
-                    parent_pixmap.draw_pixmap(
-                        drawn.x0 as i32,
-                        drawn.y0 as i32,
-                        part.as_ref(),
-                        &paint,
-                        Transform::identity(),
-                        None,
-                    );
                 }
-                self.stats.layer_px += drawn.area();
-
-                let layer = std::mem::replace(&mut self.pixmap, parent_pixmap);
-                self.release_layer(layer, drawn);
-                self.touched = parent_touched;
-                // What the layer drew is now drawn into the parent.
-                if let Some(t) = self.touched.as_mut() {
-                    *t = t.union(drawn);
+                for c in clips {
+                    self.push_clip(c.fill, c.transform, &c.shape);
                 }
             }
         }

@@ -289,6 +289,15 @@ pub enum Refusal {
 
 // ── The Painter trait ───────────────────────────────────────────────────────
 
+/// A clip as it was pushed: what [`Painter::push_clip`] was given, kept so it
+/// can be pushed again (#549).
+#[derive(Clone, Debug)]
+pub struct ClipSpec {
+    pub fill: Fill,
+    pub transform: Affine,
+    pub shape: PaintShape,
+}
+
 /// Abstract 2D rendering backend.
 ///
 /// Implementations accumulate drawing commands (Vello) or rasterize immediately
@@ -490,6 +499,59 @@ pub trait Painter {
 
     /// Pop the most recent clip or opacity layer.
     fn pop_layer(&mut self);
+
+    /// Push a group layer **beneath** the `clips` on top of the stack (bottom
+    /// first, exactly as they were pushed), as if they were popped, the layer
+    /// pushed and the same clips pushed again: what is drawn next is clipped by
+    /// them and composited in the layer (#549). The default does exactly that;
+    /// a painter whose clips are per-draw masks can reorder its own stack and
+    /// rasterise nothing again.
+    fn push_layer_beneath_clips(
+        &mut self,
+        clips: &[ClipSpec],
+        blend: BlendMode,
+        opacity: f32,
+        transform: Affine,
+        bounds: &PaintShape,
+    ) {
+        for _ in clips {
+            self.pop_layer();
+        }
+        self.push_layer(blend, opacity, transform, bounds);
+        for c in clips {
+            self.push_clip(c.fill, c.transform, &c.shape);
+        }
+    }
+
+    /// Pop the layer beneath the `clips` on top of the stack, keeping them:
+    /// the inverse of [`Self::push_layer_beneath_clips`]. The default pops the
+    /// clips, the layer, and pushes the clips again.
+    fn pop_layer_beneath_clips(&mut self, clips: &[ClipSpec]) {
+        for _ in clips {
+            self.pop_layer();
+        }
+        self.pop_layer();
+        for c in clips {
+            self.push_clip(c.fill, c.transform, &c.shape);
+        }
+    }
+
+    /// Take the `clips` on top of the stack off for a while (#549): what is
+    /// drawn until [`Self::resume_clips`] is not clipped by them. The default
+    /// pops them.
+    fn suspend_clips(&mut self, clips: &[ClipSpec]) {
+        for _ in clips {
+            self.pop_layer();
+        }
+    }
+
+    /// Put back the `clips` the matching [`Self::suspend_clips`] took off. The
+    /// default pushes them again.
+    fn resume_clips(&mut self, clips: &[ClipSpec]) {
+        for c in clips {
+            self.push_clip(c.fill, c.transform, &c.shape);
+        }
+    }
 
     /// Offer a GPU surface's frame for the split-layer path (#1865): on
     /// [`SplitVerdict::Split`] the painter has taken the frame and routes

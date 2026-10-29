@@ -595,6 +595,85 @@ fn the_fixed_floor_is_restored_after_a_transformed_box() {
     );
 }
 
+/// A painter that draws nothing and counts the clips it is asked to push,
+/// keeping every other operation at the trait's default: what a painter that
+/// cannot reorder its own stack (Vello) pays, clip by clip.
+#[derive(Default)]
+struct Clips(u64);
+
+impl rinch_dom::paint::painter::Painter for Clips {
+    fn reset(&mut self) {
+        self.0 = 0;
+    }
+    fn fill(
+        &mut self,
+        _: peniko::Fill,
+        _: peniko::kurbo::Affine,
+        _: &Brush,
+        _: &rinch_dom::paint::painter::PaintShape,
+    ) {
+    }
+    fn stroke(
+        &mut self,
+        _: &peniko::kurbo::Stroke,
+        _: peniko::kurbo::Affine,
+        _: &Brush,
+        _: &rinch_dom::paint::painter::PaintShape,
+    ) {
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn draw_glyphs(
+        &mut self,
+        _: &peniko::FontData,
+        _: f32,
+        _: peniko::kurbo::Affine,
+        _: Option<peniko::kurbo::Affine>,
+        _: &Brush,
+        _: bool,
+        _: &[i16],
+        _: &[rinch_dom::paint::painter::PaintGlyph],
+    ) {
+    }
+    fn draw_image(
+        &mut self,
+        _: &rinch_dom::paint::painter::PaintImage<'_>,
+        _: peniko::kurbo::Affine,
+    ) {
+    }
+    fn push_clip(
+        &mut self,
+        _: peniko::Fill,
+        _: peniko::kurbo::Affine,
+        _: &rinch_dom::paint::painter::PaintShape,
+    ) {
+        self.0 += 1;
+    }
+    fn push_layer(
+        &mut self,
+        _: rinch_dom::paint::painter::BlendMode,
+        _: f32,
+        _: peniko::kurbo::Affine,
+        _: &rinch_dom::paint::painter::PaintShape,
+    ) {
+    }
+    fn pop_layer(&mut self) {}
+}
+
+/// The clips one paint pushes, at the painter interface.
+fn clip_pushes(doc: &mut RinchDocument) -> u64 {
+    let mut painter = Clips::default();
+    let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        (VW, VH),
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    painter.0
+}
+
 /// The clip masks one software paint rasterises.
 fn clip_masks(doc: &mut RinchDocument) -> u64 {
     paint(doc, 1.0).stats().clip_masks
@@ -603,16 +682,20 @@ fn clip_masks(doc: &mut RinchDocument) -> u64 {
 /// **A fixed box that draws nothing costs nothing**: a closed popover
 /// (`opacity: 0`) or a `visibility: hidden` leaf, inside an `opacity` context
 /// under three rounded clippers. Neither the lift around the entry nor the
-/// group layer's sinking re-rasterises a clip for it, so the software painter
-/// builds exactly the masks of the same page without it.
+/// group layer's sinking pushes a clip for it, so a painter is asked for
+/// exactly the clips of the same page without it.
 ///
-/// One that draws is lifted out of the three (re-pushed once, after it) and
-/// has the group sunk under them (re-pushed at the push and at the pop): nine
-/// more masks. One off the window is culled before the lift, but the sinking
-/// is decided from style alone, before anything is placed: six.
+/// One that draws is lifted out of the three (pushed again once, after it)
+/// and has the group sunk under them (pushed again at the push and at the
+/// pop): nine more pushes at a painter that takes the defaults. One off the
+/// window is culled before the lift, but the sinking is decided from style
+/// alone, before anything is placed: six. The software painter overrides all
+/// three (a layer slid under its masks, masks set aside and put back) and
+/// rasterises no mask again in any case.
 ///
-/// Kills: lifting before the cull (the off-window box costs nine), and sinking
-/// the group for a box that draws nothing (six each).
+/// Kills: lifting before the cull (the off-window box costs nine), sinking the
+/// group for a box that draws nothing (six each), and the software painter
+/// falling back to the defaults (masks rasterised again).
 #[test]
 fn a_fixed_box_that_draws_nothing_lifts_no_clip() {
     let build = |fixed: Option<&str>| {
@@ -638,10 +721,11 @@ fn a_fixed_box_that_draws_nothing_lifts_no_clip() {
         doc.resolve_layout(VW, VH);
         doc
     };
-    let none = clip_masks(&mut build(None));
+    let none = clip_pushes(&mut build(None));
+    let none_masks = clip_masks(&mut build(None));
     assert!(
-        none >= 3,
-        "positive control: the rounded clippers are masks ({none})"
+        none >= 3 && none_masks >= 3,
+        "positive control: the rounded clippers are pushed and are masks ({none}, {none_masks})"
     );
     let box_at = |extra: &str| {
         format!(
@@ -657,9 +741,14 @@ fn a_fixed_box_that_draws_nothing_lifts_no_clip() {
     ] {
         let style = box_at(extra);
         assert_eq!(
-            clip_masks(&mut build(Some(&style))),
+            clip_pushes(&mut build(Some(&style))),
             none + more,
             "{extra:?}"
+        );
+        assert_eq!(
+            clip_masks(&mut build(Some(&style))),
+            none_masks,
+            "software masks, {extra:?}"
         );
     }
 }
