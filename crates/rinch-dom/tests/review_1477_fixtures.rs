@@ -188,6 +188,13 @@ const CHROME: &[(&str, &str, &str)] = &[
         r##"<div style="width:400px;display:flex"><div data-m="f" style="min-width:0"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
         "f=400.0x40.0 t=400.0x40.0",
     ),
+    // A gap until parley 0.12 (#624/#1258): the line holding only the
+    // 10px box had no strut, and `t` was 30 tall.
+    (
+        "p26_img_child_maxw",
+        r##"<div style="width:400px"><span data-m="t" style="display:inline-block">short <span data-m="a" style="display:inline-block;width:100%;height:10px;background:red"></span></span></div>"##,
+        "t=43.5x40.0 a=43.5x10.0",
+    ),
 ];
 
 /// (name, html, rinch today, Chrome 153, why)
@@ -208,13 +215,6 @@ const GAPS: &[(&str, &str, &str, &str, &str)] = &[
         "t=100.0x160.0",
         "t=200.0x80.0",
         "pre-existing: pass C re-resolves a percentage max-width against the clamped width (issue draft 1)",
-    ),
-    (
-        "p26_img_child_maxw",
-        r##"<div style="width:400px"><span data-m="t" style="display:inline-block">short <span data-m="a" style="display:inline-block;width:100%;height:10px;background:red"></span></span></div>"##,
-        "t=44.0x30.0 a=44.0x10.0",
-        "t=43.5x40.0 a=43.5x10.0",
-        "#624/#1258: a line holding only an atomic inline has no strut",
     ),
 ];
 

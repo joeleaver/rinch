@@ -1079,12 +1079,11 @@ fn a_container_that_stops_being_one_takes_its_text_back() {
 /// `set_inner_html` is outer-first: the host came out `14x14`, its padding and
 /// nothing else.
 ///
-/// Chrome 150: host `54x34`, inner at `(7, 10)` inside it. **rinch gives the
-/// host `54x26` and the inner `(7, 7)`, and that 8px is #624**, not this fix: a
-/// line box holding only an atomic inline gets no strut, so the line is the
-/// inner's own 12px rather than the container's declared 20, and there is no
-/// room above it to baseline-align into. The width and the inner's own box are
-/// asserted; the height is recorded here and left to #624.
+/// Chrome 156 (the bundled Inter, `16px/20px`): host `54x34`, inner at
+/// `(7, 11)` inside it — its line box is the declared 20px strut, and the 12px
+/// box baseline-aligns into it. Before parley 0.12 rinch gave the host `54x26`
+/// and the inner `(7, 7)`: a line box holding only an atomic inline had no
+/// strut (#624).
 ///
 /// **This one passed on `main` too**, so it is a regression pin rather than a
 /// kill: before the fix the inner `<i>` was not IFC content at all and the host
@@ -1094,12 +1093,23 @@ fn a_container_that_stops_being_one_takes_its_text_back() {
 #[test]
 fn a_nested_atomic_inline_is_measured_before_the_box_that_places_it() {
     let mut doc = RinchDocument::new();
+    {
+        use parley::fontique::{Blob, FontInfoOverride};
+        const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+        doc.font_cx.collection.register_fonts(
+            Blob::new(std::sync::Arc::new(FACE)),
+            Some(FontInfoOverride {
+                family_name: Some("ProbeFace"),
+                ..Default::default()
+            }),
+        );
+    }
     let body = doc.body();
     let container = doc.create_element("div");
     doc.append_child(body, container);
     doc.set_inner_html(
         container,
-        "<div style=\"padding: 20px\">\
+        "<div style=\"padding: 20px; font: 16px/20px ProbeFace\">\
            <span id=\"host\" style=\"display: inline-block; padding: 7px\">\
              <i id=\"inner\" style=\"display: inline-block; width: 40px; height: 12px\"></i>\
            </span>\
@@ -1123,10 +1133,10 @@ fn a_nested_atomic_inline_is_measured_before_the_box_that_places_it() {
     );
     assert_eq!(
         rel(&doc, inner, host),
-        (7.0, 7.0),
-        "inside the host's padding. Chrome says (7, 10): its line box is the \
-         container's declared 20px and the 12px box baseline-aligns into it, \
-         where rinch's line box is the box's own 12px — that is #624",
+        (7.0, 11.0),
+        "inside the host's padding, baseline-aligned into the declared 20px \
+         line box (Chrome 156: (7, 11))",
     );
+    assert_eq!(lay(&doc, host).3, 34.0, "Chrome 156: the host is 54x34");
     assert_consistent(&doc, "nested atomic inlines");
 }

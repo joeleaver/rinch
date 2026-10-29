@@ -2668,12 +2668,23 @@ fn test_inline_block_inside_an_inline_element_is_measured() {
 #[test]
 fn test_inline_block_inside_an_inline_block_is_not_joined_to_the_outer_ifc() {
     let mut doc = RinchDocument::new();
+    {
+        use parley::fontique::{Blob, FontInfoOverride};
+        const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+        doc.font_cx.collection.register_fonts(
+            Blob::new(std::sync::Arc::new(FACE)),
+            Some(FontInfoOverride {
+                family_name: Some("ProbeFace"),
+                ..Default::default()
+            }),
+        );
+    }
     let body = doc.body();
     let container = doc.create_element("div");
     doc.append_child(body, container);
     doc.set_inner_html(
         container,
-        "<div style=\"padding: 20px\">\
+        "<div style=\"padding: 20px; font: 16px/20px ProbeFace\">\
            <span id=\"host\" style=\"display: inline-block; padding: 7px\">\
              <i id=\"inner\" style=\"display: inline-block; width: 40px; height: 12px\"></i>\
            </span>\
@@ -2711,11 +2722,11 @@ fn test_inline_block_inside_an_inline_block_is_not_joined_to_the_outer_ifc() {
     assert_eq!((l.width, l.height), (40.0, 12.0));
     // Its `layout.x/y` is IFC-relative now rather than parent-relative, so the
     // question has to be asked of the position paint and hit testing use.
-    // Chrome 150 puts it at `(7, 10)` inside the host: the host's line box is
-    // the container's declared 20px `line-height` and the 12px box
-    // baseline-aligns into it. rinch gives `(7, 7)` because a line box holding
-    // only an atomic inline gets no strut — **#624**, unchanged by #592 and
-    // pinned from the other side in
+    // The host's line box is the container's declared 20px `line-height` and
+    // the 12px box baseline-aligns into it: Chrome 156, the bundled Inter,
+    // puts it at `(7, 11)`. Before parley 0.12 rinch gave `(7, 7)`: a line
+    // box holding only an atomic inline had no strut (#624). Pinned from the
+    // other side in
     // `inline_block_block_container_tests::a_nested_atomic_inline_is_measured_before_the_box_that_places_it`.
     let (hx, hy, _) =
         rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, host, 1.0);
@@ -2723,8 +2734,8 @@ fn test_inline_block_inside_an_inline_block_is_not_joined_to_the_outer_ifc() {
         rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, inner, 1.0);
     assert_eq!(
         ((ix - hx) as f32, (iy - hy) as f32),
-        (7.0, 7.0),
-        "it is painted inside its parent's padding"
+        (7.0, 11.0),
+        "it is painted inside its parent's padding, on its line's baseline"
     );
 }
 

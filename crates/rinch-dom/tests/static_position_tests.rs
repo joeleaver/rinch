@@ -2127,21 +2127,21 @@ fn a_relayout_visits_only_the_boxes_placed_from_outside_their_parent() {
     }
 }
 
-// ── Not Chrome's, pinned ────────────────────────────────────────────────────
+// ── The line box the rule is applied to ─────────────────────────────────────
 
-/// rinch's current answers where they are not Chrome's, each with Chrome
-/// 153's beside it. None is the static-position rule of this file: they are
-/// what the rule is applied **to** — a line box's height.
+/// Not the static-position rule of this file but what it is applied **to** —
+/// a line box's height. A line holding a 26px inline-block and text is 30px
+/// tall in Chrome 153 (the text's descent below the box's baseline), so a
+/// block-level box below it is at (11, 37). rinch's line was the box's 26px
+/// until parley 0.12 lined the box up on a strut (#663), and pinned (11, 33)
+/// here as a known difference.
 #[test]
-fn known_differences_from_chrome() {
-    // A line holding a 26px inline-block and text is 26px tall in rinch and
-    // 30 in Chrome (the text's descent below the box's baseline), so a
-    // block-level box below it is 4px high: Chrome (11, 37). Issue #663.
+fn a_block_level_box_below_a_line_with_a_tall_inline_block() {
     let ib = r#"<span style="display: inline-block; width: 50px; height: 26px"></span>"#;
     let c = Case::new(&format!("{ib}{}tail", boxed("absolute", "div", "", "")));
     assert_eq!(
         c.rel("abs"),
-        [11.0, 33.0],
+        [11.0, 37.0],
         "below a line with a tall inline-block"
     );
 }
