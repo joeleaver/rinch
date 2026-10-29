@@ -4,9 +4,9 @@ use servo_arc::Arc as ServoArc;
 
 use style::properties::ComputedValues;
 
-use crate::node::RawNodeId;
 use crate::RinchDocument;
 use crate::computed_style::ComputedStyle;
+use crate::node::RawNodeId;
 
 use super::resolve::style_is_flex_or_grid_container;
 

@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use peniko::Brush;
 use peniko::color::{AlphaColor, Srgb};
 
-use crate::node::RawNodeId;
 use crate::RinchDocument;
+use crate::node::RawNodeId;
 use crate::node::{LayoutResult, NodeContext, NodeKind};
 
 /// The parent-inherited text properties a text node's [`TextMeasure`] carries.
@@ -1888,7 +1888,10 @@ impl RinchDocument {
     /// run's. That is invisible for a document's first run, whose box is at
     /// `y = 0`, and wrong for every one after it: it was found by a focus test
     /// clicking a toolbar `<input>` and hitting the node above it.
-    pub fn box_tree_parent(nodes: &crate::node_slab::NodeSlab, node_id: RawNodeId) -> Option<RawNodeId> {
+    pub fn box_tree_parent(
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
+    ) -> Option<RawNodeId> {
         let node = nodes.get(node_id)?;
         // A hoisted out-of-flow box is held by its host's lists, not its DOM
         // parent's (#591): its `layout` is relative to the host, so every

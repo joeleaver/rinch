@@ -908,7 +908,11 @@ impl RinchDocument {
     /// the moves — records its pixels and forgets its painted state
     /// (`mark_subtree_paint_dirty`, #966), so an unpainted root has nothing
     /// painted below it.
-    pub(crate) fn record_pixels_left_by_move(&mut self, child: RawNodeId, new_parent: RawNodeId) -> bool {
+    pub(crate) fn record_pixels_left_by_move(
+        &mut self,
+        child: RawNodeId,
+        new_parent: RawNodeId,
+    ) -> bool {
         let Some(node) = self.tree.nodes.get(child) else {
             return false;
         };
@@ -976,7 +980,10 @@ impl RinchDocument {
     /// Those of `nodes` that are `display: inline` elements with no
     /// background to draw — the ones a tick could give one
     /// ([`Self::settle_ticked_text`]).
-    fn inlines_without_background<'a>(&self, nodes: impl Iterator<Item = &'a RawNodeId>) -> Vec<RawNodeId> {
+    fn inlines_without_background<'a>(
+        &self,
+        nodes: impl Iterator<Item = &'a RawNodeId>,
+    ) -> Vec<RawNodeId> {
         nodes
             .copied()
             .filter(|&id| {

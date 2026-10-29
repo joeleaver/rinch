@@ -31,8 +31,7 @@ fn page() -> Page {
 
 /// [`page`] with an author stylesheet `css` in front of the editor.
 fn page_with_css(css: &'static str) -> Page {
-    let slot: Rc<RefCell<Option<(u64, crate::editor::EditorHandle)>>> =
-        Rc::new(RefCell::new(None));
+    let slot: Rc<RefCell<Option<(u64, crate::editor::EditorHandle)>>> = Rc::new(RefCell::new(None));
     let slot_in = slot.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

@@ -10,10 +10,10 @@ use servo_arc::Arc as ServoArc;
 use rinch_core::dom::NodeId;
 use style::context::QuirksMode;
 
-use crate::node::RawNodeId;
 use crate::RinchDocument;
 use crate::computed_style::ComputedStyle;
 use crate::layout;
+use crate::node::RawNodeId;
 use crate::node::{DirtyFlags, DisplayMode, NodeKind, NodeTree};
 
 impl RinchDocument {
@@ -576,7 +576,8 @@ impl RinchDocument {
         // the next layout takes (full, scoped, or neither) drains through
         // `remeasure_dirty_atomic_inlines` — the same path a `set_text_content`
         // or restyle already relies on.
-        let atomic_inlines: Vec<RawNodeId> = self.tree.atomic_inline_registry.iter().copied().collect();
+        let atomic_inlines: Vec<RawNodeId> =
+            self.tree.atomic_inline_registry.iter().copied().collect();
         for id in atomic_inlines {
             self.mark_atomic_inline_dirty(id);
         }
@@ -792,7 +793,11 @@ impl RinchDocument {
     /// maximum would cost a full scan of the preceding siblings on every
     /// insert, including the common append-to-a-long-list, so the cheap rule
     /// wins a choice between two guesses.
-    pub(crate) fn compute_taffy_child_index(&self, parent_id: RawNodeId, dom_index: usize) -> usize {
+    pub(crate) fn compute_taffy_child_index(
+        &self,
+        parent_id: RawNodeId,
+        dom_index: usize,
+    ) -> usize {
         let Some(parent_taffy) = self.tree.nodes[parent_id].taffy_id else {
             return 0;
         };
@@ -1790,7 +1795,11 @@ impl RinchDocument {
     }
 
     /// Every `position: absolute` element under `node_id` (not the node).
-    pub(crate) fn collect_absolute_descendants(&self, node_id: RawNodeId, out: &mut Vec<RawNodeId>) {
+    pub(crate) fn collect_absolute_descendants(
+        &self,
+        node_id: RawNodeId,
+        out: &mut Vec<RawNodeId>,
+    ) {
         for &c in &self.tree.nodes[node_id].children {
             let child = &self.tree.nodes[c];
             if matches!(
@@ -2064,7 +2073,11 @@ impl RinchDocument {
     /// *now*", which the ancestors' post-cascade `display` answers on its own —
     /// pass `&[]`, or an ancestor that has just been shown would refuse the
     /// animation it is meant to be restarting.
-    fn ancestors_are_rendered(tree: &NodeTree, node_id: RawNodeId, was_hidden: &[RawNodeId]) -> bool {
+    fn ancestors_are_rendered(
+        tree: &NodeTree,
+        node_id: RawNodeId,
+        was_hidden: &[RawNodeId],
+    ) -> bool {
         use crate::computed_style::DisplayValue;
         let mut current = tree.nodes.get(node_id).and_then(|n| n.parent);
         while let Some(id) = current {

@@ -4942,10 +4942,7 @@ impl RinchApp {
     ///    keeps going after this, to give rule 1 its chance at an ancestor.
     ///
     /// Nothing matched ⇒ [`PressFocus::Release`].
-    pub(crate) fn resolve_click_focus(
-        tree: &rinch_dom::NodeTree,
-        hit: Option<u64>,
-    ) -> PressFocus {
+    pub(crate) fn resolve_click_focus(tree: &rinch_dom::NodeTree, hit: Option<u64>) -> PressFocus {
         let mut cur = hit;
         let mut focusable = None;
         while let Some(nid) = cur {
@@ -10240,7 +10237,10 @@ mod android_frame_clock_tests {
     fn by_class(app: &RinchApp, class: &str) -> u64 {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
-        d.tree.nodes.iter().map(|(id, _)| id)
+        d.tree
+            .nodes
+            .iter()
+            .map(|(id, _)| id)
             .find(|&id| {
                 d.tree
                     .get(id)
@@ -12311,7 +12311,11 @@ mod scroll_into_view_tests {
     fn caret_is_visible(app: &RinchApp, scroller_id: u64) -> bool {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
-        let caret = d.tree.nodes.iter().map(|(id, _)| id)
+        let caret = d
+            .tree
+            .nodes
+            .iter()
+            .map(|(id, _)| id)
             .find(|&id| {
                 d.tree
                     .nodes

@@ -66,11 +66,11 @@
 //!   `LengthPercentageAutoValue::resolve`, which resolves a `Calc` against
 //!   the real containing block exactly.
 
-use crate::node::RawNodeId;
 use crate::RinchDocument;
 use crate::computed_style::{
     ComputedStyle, DimensionValue, LengthPercentageAutoValue, LengthPercentageValue, PositionValue,
 };
+use crate::node::RawNodeId;
 
 impl ComputedStyle {
     /// Whether any Taffy-consumed field of this style carries a mixed calc

@@ -563,11 +563,7 @@ fn reconcile_mirror(handle: &EditorHandle) -> bool {
 /// `t`, so the edit ends at offset 13 while the user expects the caret after "there".
 /// The field already holds the right answer — the browser placed it — so take it from
 /// there rather than inferring it.
-fn adopt_field_caret(
-    handle: &EditorHandle,
-    ta: &web_sys::HtmlTextAreaElement,
-    textblock_nid: u64,
-) {
+fn adopt_field_caret(handle: &EditorHandle, ta: &web_sys::HtmlTextAreaElement, textblock_nid: u64) {
     let text = ta.value();
     let start = ta.selection_start().ok().flatten().unwrap_or(0);
     let end = ta.selection_end().ok().flatten().unwrap_or(start);

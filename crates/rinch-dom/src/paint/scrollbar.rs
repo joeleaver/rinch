@@ -33,9 +33,9 @@
 //! Offsets are measured from the container's **border-box** origin, which is
 //! what paint's `x`/`y` and Taffy's layout rect both use.
 
-use crate::node::RawNodeId;
 use crate::NodeTree;
 use crate::computed_style::ScrollbarWidthValue;
+use crate::node::RawNodeId;
 use peniko::color::{AlphaColor, Srgb};
 
 /// How thick a thumb is drawn, in logical pixels.

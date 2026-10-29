@@ -1,7 +1,7 @@
 //! Interaction state tracking: hover, focus, active state changes and style recomputation.
 
-use crate::node::RawNodeId;
 use crate::RinchDocument;
+use crate::node::RawNodeId;
 
 impl RinchDocument {
     /// Update hover state: set the hovered node and its ancestors as hovered,
@@ -12,7 +12,11 @@ impl RinchDocument {
     /// state). The `hovered_changed` out-parameter is set when the hovered node
     /// identity changed (used by the caller to dispatch `data-onenter`
     /// regardless of whether repaint is needed).
-    pub fn update_hover(&mut self, new_hovered: Option<RawNodeId>, hovered_changed: &mut bool) -> bool {
+    pub fn update_hover(
+        &mut self,
+        new_hovered: Option<RawNodeId>,
+        hovered_changed: &mut bool,
+    ) -> bool {
         let old_hovered = self.tree.hovered_node;
         *hovered_changed = old_hovered != new_hovered;
         if !*hovered_changed {

@@ -110,13 +110,7 @@ pub fn tree_fingerprint(doc: &RinchDocument, root: u64, boxes: bool) -> Vec<(Str
     out
 }
 
-fn walk(
-    doc: &RinchDocument,
-    id: u64,
-    path: String,
-    hidden: bool,
-    out: &mut Vec<(String, String)>,
-) {
+fn walk(doc: &RinchDocument, id: u64, path: String, hidden: bool, out: &mut Vec<(String, String)>) {
     let hidden = hidden
         || (doc.tree.nodes[id].is_element()
             && doc.tree.nodes[id].computed_style.display

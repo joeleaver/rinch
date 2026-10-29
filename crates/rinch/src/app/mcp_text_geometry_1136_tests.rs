@@ -214,13 +214,7 @@ fn assert_caret_is_painted(app: &mut RinchApp, id: u64, byte: usize, what: &str)
 
 /// A glyph box at `byte` runs from the caret before it to the caret after it,
 /// on the caret's line.
-fn assert_glyph_between_carets(
-    app: &mut RinchApp,
-    id: u64,
-    byte: usize,
-    next: usize,
-    what: &str,
-) {
+fn assert_glyph_between_carets(app: &mut RinchApp, id: u64, byte: usize, next: usize, what: &str) {
     let g = mcp_glyph(app, id, byte, 1.0);
     let a = mcp_caret(app, id, byte, 1.0);
     let b = mcp_caret(app, id, next, 1.0);

@@ -53,8 +53,8 @@
 //! ([`form_control_content_height`] already excludes them), and their own
 //! intrinsic sizes (13x13, 16, 27, the image's) stay unmodelled.
 
-use crate::node::RawNodeId;
 use crate::computed_style::{ComputedStyle, OverflowValue};
+use crate::node::RawNodeId;
 use crate::node::{Node, NodeContext, NodeTree};
 
 /// The scrollbar gutter Chrome 153 reserves in a `<textarea>`'s intrinsic
@@ -379,7 +379,10 @@ pub fn is_pristine_textarea(node: &Node) -> bool {
 
 /// A `<textarea>`'s child text content: its direct `Text` children,
 /// concatenated.
-fn textarea_child_text<'a>(nodes: &'a crate::node_slab::NodeSlab, node: &Node) -> std::borrow::Cow<'a, str> {
+fn textarea_child_text<'a>(
+    nodes: &'a crate::node_slab::NodeSlab,
+    node: &Node,
+) -> std::borrow::Cow<'a, str> {
     use std::borrow::Cow;
     let mut texts = node
         .children

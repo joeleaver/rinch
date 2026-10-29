@@ -3731,11 +3731,7 @@ fn find_block(desc: &ViewDesc, target: u64, content_start: usize) -> Option<(usi
 /// returning its model **position-before** and the node. `content_start` is the
 /// position just inside `desc`'s content (0 for the root/doc). The successor lookup
 /// to [`find_block`] for *node* (not text-cursor) addressing.
-fn find_node_by_host(
-    desc: &ViewDesc,
-    target: u64,
-    content_start: usize,
-) -> Option<(usize, &Node)> {
+fn find_node_by_host(desc: &ViewDesc, target: u64, content_start: usize) -> Option<(usize, &Node)> {
     let mut pos = content_start; // the position just before the current child
     for child in &desc.children {
         // A decorated run is placed as a wrapper span holding `<span data-pm-deco>`

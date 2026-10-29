@@ -139,7 +139,10 @@ fn box_of(page: &Page, id: u64) -> (f32, f32, f32, f32) {
 fn span(page: &Page) -> u64 {
     let doc = page.app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    d.tree.nodes.iter().map(|(id, _)| id)
+    d.tree
+        .nodes
+        .iter()
+        .map(|(id, _)| id)
         .find(|&id| {
             d.tree.nodes.get(id).is_some_and(|n| {
                 n.attributes.get("data-pm-type").map(String::as_str) == Some("image")
@@ -410,7 +413,10 @@ fn review_1595_control_unclaimed_image_at_the_end_of_its_line() {
     let ib = {
         let doc = p.app.doc.as_ref().unwrap();
         let d = doc.borrow();
-        d.tree.nodes.iter().map(|(id, _)| id)
+        d.tree
+            .nodes
+            .iter()
+            .map(|(id, _)| id)
             .find(|&id| {
                 d.tree.nodes.get(id).is_some_and(|n| {
                     n.attributes.get("data-pm-type").map(String::as_str) == Some("image")

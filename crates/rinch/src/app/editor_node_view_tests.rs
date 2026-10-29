@@ -132,7 +132,10 @@ fn key(app: &mut RinchApp, key: KeyCode, text: Option<&str>) {
 fn host(page: &Page, ty: &str) -> u64 {
     let doc = page.app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    d.tree.nodes.iter().map(|(id, _)| id)
+    d.tree
+        .nodes
+        .iter()
+        .map(|(id, _)| id)
         .find(|&id| {
             d.tree
                 .nodes
@@ -453,7 +456,10 @@ mod review_1575 {
         let top = |p: &Page| {
             let doc = p.app.doc.as_ref().unwrap();
             let d = doc.borrow();
-            d.tree.nodes.iter().map(|(id, _)| id)
+            d.tree
+                .nodes
+                .iter()
+                .map(|(id, _)| id)
                 .find(|&id| {
                     d.tree.nodes.get(id).is_some_and(|n| {
                         n.attributes.get("data-pm-selection").map(String::as_str) == Some("true")

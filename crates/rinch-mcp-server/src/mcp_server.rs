@@ -402,10 +402,8 @@ impl RinchMcpServer {
         description = "Get detailed information about a specific DOM node by ID (computed styles, display mode, geometry). Geometry is reported as `layout` (parent-relative box, == the node's own layout) and `absolute` (on-screen box). Pass `absolute.x`/`absolute.y` to click()/mouse_* — `layout` x/y are NOT screen coordinates."
     )]
     async fn get_node(&self, params: Parameters<NodeIdParams>) -> Result<CallToolResult, McpError> {
-        self.forward_json_command(DebugCommandKind::GetNode {
-            id: params.0.id,
-        })
-        .await
+        self.forward_json_command(DebugCommandKind::GetNode { id: params.0.id })
+            .await
     }
 
     #[tool(description = "Get all text content within a DOM node subtree.")]
@@ -413,10 +411,8 @@ impl RinchMcpServer {
         &self,
         params: Parameters<NodeIdParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.forward_json_command(DebugCommandKind::GetTextContent {
-            id: params.0.id,
-        })
-        .await
+        self.forward_json_command(DebugCommandKind::GetTextContent { id: params.0.id })
+            .await
     }
 
     #[tool(
@@ -641,10 +637,8 @@ impl RinchMcpServer {
         &self,
         params: Parameters<NodeIdParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.forward_json_command(DebugCommandKind::GetComputedStyles {
-            id: params.0.id,
-        })
-        .await
+        self.forward_json_command(DebugCommandKind::GetComputedStyles { id: params.0.id })
+            .await
     }
 
     #[tool(

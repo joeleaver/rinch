@@ -68,9 +68,9 @@ use style::traversal_flags::TraversalFlags;
 use style::values::GenericAtomIdent;
 use style::{Atom, LocalName, Namespace};
 
-use crate::node::RawNodeId;
 use crate::RinchDocument;
 use crate::node::DirtyFlags;
+use crate::node::RawNodeId;
 use crate::stylo_impl::RinchNode;
 
 /// The parent flags [`RinchDocument::note_child_list_changed_with`] acts on.
@@ -696,7 +696,12 @@ impl RinchDocument {
     /// else would put them back. Reads the first and last child only: O(1),
     /// and an element with no generated box answers `pos`. A generated box
     /// itself is placed by `resolve_pseudo_element`, never through this.
-    pub(crate) fn clamp_between_generated(&self, parent: RawNodeId, child: RawNodeId, pos: usize) -> usize {
+    pub(crate) fn clamp_between_generated(
+        &self,
+        parent: RawNodeId,
+        child: RawNodeId,
+        pos: usize,
+    ) -> usize {
         if self.tree.nodes[child].is_pseudo_element {
             return pos;
         }

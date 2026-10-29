@@ -4,10 +4,10 @@ use std::collections::HashMap;
 
 use peniko::Brush;
 
-use crate::node::RawNodeId;
 use crate::RinchDocument;
 use crate::computed_style::VerticalAlignValue;
 use crate::layout;
+use crate::node::RawNodeId;
 use crate::node::{
     DisplayMode, InlineFlowRole, InlineLayout, LayoutResult, Node, NodeContext, NodeKind,
 };
@@ -55,7 +55,10 @@ pub(crate) fn root_text_color(cs: &crate::computed_style::ComputedStyle) -> peni
 /// anonymous box, so in every case the brush a run gets is its text node's DOM
 /// parent's colour — which is what this answers, at the build (recorded as
 /// [`crate::node::IfcTextRange::color`]) and again at every paint (#679).
-pub(crate) fn text_color(nodes: &crate::node_slab::NodeSlab, text_node: RawNodeId) -> peniko::Color {
+pub(crate) fn text_color(
+    nodes: &crate::node_slab::NodeSlab,
+    text_node: RawNodeId,
+) -> peniko::Color {
     let mut cur = nodes.get(text_node).and_then(|t| t.parent);
     while let Some(node) = cur.and_then(|id| nodes.get(id)) {
         if let Some(color) = node.computed_style.color {
@@ -2632,7 +2635,12 @@ impl WrapSeams {
 
 /// Whether `next`'s parent element contains `leaf`, and some element from
 /// `leaf`'s parent up to (not including) it wraps ([`Seam::closes_into_wrap`]).
-fn closes_into_wrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: RawNodeId) -> bool {
+fn closes_into_wrap(
+    nodes: &crate::node_slab::NodeSlab,
+    root_id: RawNodeId,
+    leaf: RawNodeId,
+    next: RawNodeId,
+) -> bool {
     let Some(target) = nodes.get(next).and_then(|n| n.parent) else {
         return false;
     };
@@ -2657,7 +2665,12 @@ fn closes_into_wrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf
 
 /// Whether `next`'s parent element is a proper ancestor of `leaf`'s: elements
 /// close between them and none opens ([`Seam::closes`]).
-fn only_closes(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: RawNodeId) -> bool {
+fn only_closes(
+    nodes: &crate::node_slab::NodeSlab,
+    root_id: RawNodeId,
+    leaf: RawNodeId,
+    next: RawNodeId,
+) -> bool {
     let Some(target) = nodes.get(next).and_then(|n| n.parent) else {
         return false;
     };
@@ -2681,7 +2694,12 @@ fn only_closes(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: Raw
 /// `leaf`'s parent up to, not including, the nearest that also contains
 /// `next` — closes into one that does not wrap
 /// ([`Seam::closes_into_nowrap`]).
-fn closes_into_nowrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: RawNodeId) -> bool {
+fn closes_into_nowrap(
+    nodes: &crate::node_slab::NodeSlab,
+    root_id: RawNodeId,
+    leaf: RawNodeId,
+    next: RawNodeId,
+) -> bool {
     let contains_next = |el: RawNodeId| {
         std::iter::successors(Some(next), |&id| {
             (id != root_id)
@@ -2712,7 +2730,12 @@ fn closes_into_nowrap(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, le
 
 /// Whether some element from `leaf`'s parent up to the nearest one that also
 /// contains `next` — the IFC root at the most — wraps ([`WrapSeams`]).
-fn wraps_between(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId, leaf: RawNodeId, next: RawNodeId) -> bool {
+fn wraps_between(
+    nodes: &crate::node_slab::NodeSlab,
+    root_id: RawNodeId,
+    leaf: RawNodeId,
+    next: RawNodeId,
+) -> bool {
     let contains_next = |el: RawNodeId| {
         let mut n = Some(next);
         while let Some(id) = n {
@@ -4389,7 +4412,11 @@ impl RinchDocument {
     }
 
     /// Write computed positions from an InlineLayout back into child node layout fields.
-    pub(crate) fn write_inline_positions(&mut self, root_id: RawNodeId, inline_layout: &InlineLayout) {
+    pub(crate) fn write_inline_positions(
+        &mut self,
+        root_id: RawNodeId,
+        inline_layout: &InlineLayout,
+    ) {
         let root_layout = self.tree.nodes[root_id].layout;
 
         // Walk Parley layout lines to find positioned items
@@ -4491,14 +4518,15 @@ impl RinchDocument {
             None => all,
             Some(scope) => {
                 let nodes = &self.tree.nodes;
-                let (go, keep): (Vec<RawNodeId>, Vec<RawNodeId>) = all.into_iter().partition(|&b| {
-                    let Some(anon) = nodes.get(b) else {
-                        return true;
-                    };
-                    let Some(p) = anon.parent else { return true };
-                    scope.rootable.contains(&p)
-                        || nodes.get(p).is_none_or(|pn| !pn.run_boxes.contains(&b))
-                });
+                let (go, keep): (Vec<RawNodeId>, Vec<RawNodeId>) =
+                    all.into_iter().partition(|&b| {
+                        let Some(anon) = nodes.get(b) else {
+                            return true;
+                        };
+                        let Some(p) = anon.parent else { return true };
+                        scope.rootable.contains(&p)
+                            || nodes.get(p).is_none_or(|pn| !pn.run_boxes.contains(&b))
+                    });
                 self.tree.anonymous_block_boxes = keep;
                 go
             }
@@ -5435,7 +5463,8 @@ impl RinchDocument {
         };
         for &container in &scope.containers {
             // (node, folded, host, crossed)
-            let mut stack: Vec<(RawNodeId, bool, Option<RawNodeId>, bool)> = self.tree.nodes[container]
+            let mut stack: Vec<(RawNodeId, bool, Option<RawNodeId>, bool)> = self.tree.nodes
+                [container]
                 .children
                 .iter()
                 .map(|&c| (c, false, Some(container), false))
@@ -5519,7 +5548,10 @@ impl RinchDocument {
     /// inline element left the document has no new host and no live owner; its
     /// edge was already cut at mutation time by `taffy_detach_contribution`,
     /// and the old host's rebuild here is the second lock on the same door.
-    fn rehome_hoisted_out_of_flow(&mut self, changes: Vec<(RawNodeId, Option<RawNodeId>, Option<RawNodeId>)>) {
+    fn rehome_hoisted_out_of_flow(
+        &mut self,
+        changes: Vec<(RawNodeId, Option<RawNodeId>, Option<RawNodeId>)>,
+    ) {
         let mut owners: Vec<RawNodeId> = Vec::new();
         for (id, old, new) in changes {
             for host in [old, new].into_iter().flatten() {
@@ -6059,7 +6091,8 @@ impl RinchDocument {
             // makes the container (the CSS containing block) rather than the
             // anonymous box the Taffy parent it resolves its insets against.
             // For an anonymous box root this is its run, verbatim (#566).
-            let root_scan: Vec<RawNodeId> = Self::box_tree_children(&self.tree.nodes, root_id).to_vec();
+            let root_scan: Vec<RawNodeId> =
+                Self::box_tree_children(&self.tree.nodes, root_id).to_vec();
             for &child_id in &root_scan {
                 let Some(child) = self.tree.nodes.get(child_id) else {
                     continue;
@@ -6233,7 +6266,8 @@ impl RinchDocument {
         // A scoped pass sweeps its own nodes: only a container of the scope can
         // have stopped being a root (its units are what changed), or a region
         // node whose own display changed — and that puts it in the scope too.
-        let roots_this_pass: std::collections::HashSet<RawNodeId> = ifc_roots.iter().copied().collect();
+        let roots_this_pass: std::collections::HashSet<RawNodeId> =
+            ifc_roots.iter().copied().collect();
         let sweep: Vec<RawNodeId> = match scope {
             None => self.tree.nodes.iter().map(|(id, _)| id).collect(),
             Some(scope) => {
@@ -7165,7 +7199,10 @@ impl RinchDocument {
     /// wrapper for every `if`/`match`/`for`). **Deleting it is a behaviour change
     /// in a direction no test can see**, which is the #585 standard for keeping
     /// it.
-    fn contents_is_inline_transparent(nodes: &crate::node_slab::NodeSlab, node_id: RawNodeId) -> bool {
+    fn contents_is_inline_transparent(
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
+    ) -> bool {
         nodes
             .get(node_id)
             .is_none_or(|node| !node.contributes_in_flow_block)
@@ -8106,7 +8143,8 @@ impl RinchDocument {
         );
         // The layouts this compute's text leaves are measured with, kept for
         // paint (#904) — see `NodeTree::atomic_leaf_layouts`.
-        let mut leaf_layouts: HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>> = HashMap::new();
+        let mut leaf_layouts: HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>> =
+            HashMap::new();
         perf.bump(crate::perf::Counter::InlineBlockComputes);
         let _ = tree.taffy.compute_layout_with_measure(
             taffy_id,
@@ -9028,7 +9066,12 @@ impl RinchDocument {
     /// Whether the atomic inline `id` came out at another size than
     /// `before`; if so, the IFC `root_id` it is laid out in, which line-broke
     /// against the stale box, is invalidated.
-    fn atomic_inline_resized(&mut self, id: RawNodeId, root_id: RawNodeId, before: (f32, f32)) -> bool {
+    fn atomic_inline_resized(
+        &mut self,
+        id: RawNodeId,
+        root_id: RawNodeId,
+        before: (f32, f32),
+    ) -> bool {
         let now = {
             let n = &self.tree.nodes[id];
             (n.layout.width, n.layout.height)
@@ -10958,23 +11001,24 @@ impl RinchDocument {
         use std::hash::{Hash, Hasher};
         let nodes = &self.tree.nodes;
         let mut sigs: HashMap<RawNodeId, u64> = HashMap::new();
-        let (parents, roots): (Vec<RawNodeId>, Option<std::collections::HashSet<RawNodeId>>) = match scope {
-            None => (nodes.iter().map(|(id, _)| id).collect(), None),
-            Some(scope) => {
-                let mut roots = std::collections::HashSet::new();
-                let mut parents = Vec::new();
-                for &c in &scope.containers {
-                    roots.insert(c);
-                    parents.push(c);
-                    if let Some(cn) = nodes.get(c) {
-                        roots.extend(cn.run_boxes.iter().copied());
-                        parents.extend(cn.run_boxes.iter().copied());
+        let (parents, roots): (Vec<RawNodeId>, Option<std::collections::HashSet<RawNodeId>>) =
+            match scope {
+                None => (nodes.iter().map(|(id, _)| id).collect(), None),
+                Some(scope) => {
+                    let mut roots = std::collections::HashSet::new();
+                    let mut parents = Vec::new();
+                    for &c in &scope.containers {
+                        roots.insert(c);
+                        parents.push(c);
+                        if let Some(cn) = nodes.get(c) {
+                            roots.extend(cn.run_boxes.iter().copied());
+                            parents.extend(cn.run_boxes.iter().copied());
+                        }
                     }
+                    parents.extend(scope.transparent_region());
+                    (parents, Some(roots))
                 }
-                parents.extend(scope.transparent_region());
-                (parents, Some(roots))
-            }
-        };
+            };
         for parent_id in parents {
             let Some(parent) = nodes.get(parent_id) else {
                 continue;

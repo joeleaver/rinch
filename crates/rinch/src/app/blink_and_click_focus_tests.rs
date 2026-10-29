@@ -99,8 +99,7 @@ mod blink {
 /// A focusable outer node with a focusable *inner* node inside it, plus a
 /// plain child of the outer. Returns (app, outer, inner, plain_child).
 fn nested_fixture() -> (RinchApp, u64, u64, u64) {
-    let ids: Rc<std::cell::Cell<Option<(u64, u64, u64)>>> =
-        Rc::new(std::cell::Cell::new(None));
+    let ids: Rc<std::cell::Cell<Option<(u64, u64, u64)>>> = Rc::new(std::cell::Cell::new(None));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

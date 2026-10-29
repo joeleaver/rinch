@@ -1449,9 +1449,7 @@ fn undo_is_refused_while_a_composition_is_shown() {
 
 /// Mount one `<input>` whose `oninput` writes back `filter(value)` whenever it
 /// differs. Returns the app, the input's id and every `oninput` payload.
-fn mount_filtering_field(
-    filter: fn(&str) -> String,
-) -> (RinchApp, u64, Rc<RefCell<Vec<String>>>) {
+fn mount_filtering_field(filter: fn(&str) -> String) -> (RinchApp, u64, Rc<RefCell<Vec<String>>>) {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let slot: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));

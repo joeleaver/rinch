@@ -3489,10 +3489,7 @@ impl RinchApp {
     /// Walk up from `hit_id` looking for a `data-onfiledrop` or
     /// `data-ondropfiles` attribute. Returns the node ID of the first
     /// file-drop target ancestor (or self).
-    pub(crate) fn find_file_drop_target(
-        tree: &rinch_dom::NodeTree,
-        hit_id: u64,
-    ) -> Option<u64> {
+    pub(crate) fn find_file_drop_target(tree: &rinch_dom::NodeTree, hit_id: u64) -> Option<u64> {
         let mut current = Some(hit_id);
         while let Some(nid) = current {
             if let Some(node) = tree.get(nid) {
@@ -5539,10 +5536,7 @@ impl RinchApp {
 
     /// `(editor container, view host)` when `node` is inside a node view's
     /// component (see [`Self::in_node_view`]).
-    pub(crate) fn node_view_around(
-        tree: &rinch_dom::NodeTree,
-        node: u64,
-    ) -> Option<(u64, u64)> {
+    pub(crate) fn node_view_around(tree: &rinch_dom::NodeTree, node: u64) -> Option<(u64, u64)> {
         let mut host: Option<u64> = None;
         let mut cur = tree.get(node)?.parent;
         while let Some(id) = cur {

@@ -35,7 +35,10 @@ pub fn generation_of(id: RawNodeId) -> u32 {
 /// The id of slot `slot` at `generation`.
 #[inline(always)]
 pub fn pack(slot: usize, generation: u32) -> RawNodeId {
-    debug_assert!(slot <= u32::MAX as usize, "node slot {slot} exceeds 32 bits");
+    debug_assert!(
+        slot <= u32::MAX as usize,
+        "node slot {slot} exceeds 32 bits"
+    );
     ((generation as u64) << 32) | slot as u64
 }
 
@@ -173,7 +176,9 @@ impl<'a> IntoIterator for &'a NodeSlab {
         fn with_id(entry: (usize, &Node)) -> (RawNodeId, &Node) {
             (entry.1.id, entry.1)
         }
-        self.slab.iter().map(with_id as fn((usize, &'a Node)) -> Self::Item)
+        self.slab
+            .iter()
+            .map(with_id as fn((usize, &'a Node)) -> Self::Item)
     }
 }
 
@@ -241,7 +246,10 @@ mod tests {
         let (mut tree, body, stale) = body_and_stale();
         assert!(tree.nodes.get(body).is_some());
         assert!(tree.nodes.contains(body));
-        assert!(tree.nodes.get(stale).is_none(), "the slot is live, the id is not");
+        assert!(
+            tree.nodes.get(stale).is_none(),
+            "the slot is live, the id is not"
+        );
         assert!(!tree.nodes.contains(stale));
         assert!(tree.nodes.get_mut(stale).is_none());
         // A vacant slot answers the same.

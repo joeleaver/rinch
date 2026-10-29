@@ -38,11 +38,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
-use crate::node::RawNodeId;
 use crate::computed_style::{
     ComputedStyle, DisplayValue, LengthPercentageValue, OverflowValue, PointerEventsValue,
     PositionValue, VisibilityValue,
 };
+use crate::node::RawNodeId;
 use crate::stacking::PaintOrder;
 
 /// Every `computed_style` input hit testing reads, and nothing else — so a
@@ -247,14 +247,22 @@ impl HitCache {
     /// The extent stored for `id` in the current generation.
     #[inline]
     pub fn extent(&self, id: RawNodeId) -> Option<Extent> {
-        self.state().extents.get(crate::node_slab::slot_of(id)).copied().flatten()
+        self.state()
+            .extents
+            .get(crate::node_slab::slot_of(id))
+            .copied()
+            .flatten()
     }
 
     /// Whether the flow walk under `id` passes over a box painted at a
     /// stacking root (#1719), stored for the current generation.
     #[inline]
     pub fn hoists(&self, id: RawNodeId) -> Option<bool> {
-        self.state().hoists.get(crate::node_slab::slot_of(id)).copied().flatten()
+        self.state()
+            .hoists
+            .get(crate::node_slab::slot_of(id))
+            .copied()
+            .flatten()
     }
 
     /// Store `id`'s hoisting bit for the current generation.

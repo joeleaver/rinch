@@ -7,9 +7,9 @@ use style::properties::ComputedValues;
 use style::computed_value_flags::ComputedValueFlags;
 use style::invalidation::element::restyle_hints::RestyleHint;
 
-use crate::node::RawNodeId;
 use crate::RinchDocument;
 use crate::node::DirtyFlags;
+use crate::node::RawNodeId;
 
 /// Whether `style`'s **inside** is a flex or grid formatting context, by
 /// either outside — `flex`/`inline-flex`/`grid`/`inline-grid` all answer

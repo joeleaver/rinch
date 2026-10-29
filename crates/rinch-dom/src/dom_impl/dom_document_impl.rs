@@ -13,9 +13,9 @@ use style::properties::{
 use style::values::generics::position::GenericInset;
 use style::values::specified::{LengthPercentage, NoCalcLength};
 
-use crate::node::RawNodeId;
 use crate::computed_style::{LengthPercentageAutoValue, PositionValue};
 use crate::ifc_scope::IfcSeed;
+use crate::node::RawNodeId;
 use crate::node::{DirtyFlags, DisplayMode, Node, NodeContext, NodeKind, TextMeasure};
 
 use super::{RinchDocument, parse_inline_style};
@@ -263,7 +263,10 @@ impl DomDocument for RinchDocument {
 
     fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: NodeId) {
         // #723: an id that names no live node is a no-op, as on the web.
-        if !self.tree.nodes.contains(parent.0) || !self.tree.nodes.contains(child.0) || !self.tree.nodes.contains(reference.0) {
+        if !self.tree.nodes.contains(parent.0)
+            || !self.tree.nodes.contains(child.0)
+            || !self.tree.nodes.contains(reference.0)
+        {
             return;
         }
         // Anything this can move invalidates the hit tester's memo.
@@ -1367,13 +1370,7 @@ impl DomDocument for RinchDocument {
         box_id: u64,
         after: bool,
     ) -> Option<(f32, f32, f32)> {
-        let layout = &self
-            .tree
-            .nodes
-            .get(node_id)?
-            .text_layout
-            .as_ref()?
-            .layout;
+        let layout = &self.tree.nodes.get(node_id)?.text_layout.as_ref()?.layout;
         let (x, y, h) = crate::text_query::inline_box_caret(layout, box_id, after)?;
         let (ox, oy) = self.text_layout_origin(node_id);
         Some((ox + x, oy + y, h))
@@ -1397,11 +1394,7 @@ impl DomDocument for RinchDocument {
         end: bool,
         after: bool,
     ) -> Option<(f32, f32, f32)> {
-        self.query_inline_box_caret(
-            node_id,
-            crate::ifc::edge_box_id(element, end),
-            after,
-        )
+        self.query_inline_box_caret(node_id, crate::ifc::edge_box_id(element, end), after)
     }
 
     fn query_inline_edge_caret_rect(

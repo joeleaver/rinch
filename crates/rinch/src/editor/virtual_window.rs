@@ -102,11 +102,7 @@ impl CeVirtualWindow {
     ///
     /// `protected_blocks` are blocks that must not be collapsed (e.g. the block
     /// holding the caret).
-    pub fn pre_layout_update(
-        &mut self,
-        doc: &mut RinchDocument,
-        protected_blocks: &[u64],
-    ) -> bool {
+    pub fn pre_layout_update(&mut self, doc: &mut RinchDocument, protected_blocks: &[u64]) -> bool {
         if !self.active || !self.initialized {
             return false;
         }

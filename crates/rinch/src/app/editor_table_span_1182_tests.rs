@@ -95,13 +95,21 @@ fn mounted(rows: &[Vec<(i64, i64)>]) -> (RinchApp, Vec<u64>, u64) {
     let _ = editor_id.get().unwrap();
     let doc = app.doc.as_ref().unwrap().clone();
     let d = doc.borrow();
-    let cells: Vec<u64> = d.tree.nodes.iter().map(|(id, _)| id)
+    let cells: Vec<u64> = d
+        .tree
+        .nodes
+        .iter()
+        .map(|(id, _)| id)
         .filter(|&id| {
             d.tree.nodes.get(id).is_some()
                 && d.get_attribute(NodeId(id), "data-pm-type").as_deref() == Some("table_cell")
         })
         .collect();
-    let table = d.tree.nodes.iter().map(|(id, _)| id)
+    let table = d
+        .tree
+        .nodes
+        .iter()
+        .map(|(id, _)| id)
         .find(|&id| {
             d.tree.nodes.get(id).is_some()
                 && d.get_attribute(NodeId(id), "data-pm-type").as_deref() == Some("table")
