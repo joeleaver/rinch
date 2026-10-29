@@ -40,6 +40,10 @@ impl DomDocument for RinchDocument {
         if tag == "option" {
             self.tree.option_elements += 1;
         }
+        if tag == "style" {
+            // Its sheet follows it in and out of the document (#884).
+            self.style_elements.push(id);
+        }
         if tag == "textarea" {
             self.tree.textarea_elements += 1;
         }
@@ -500,7 +504,12 @@ impl DomDocument for RinchDocument {
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
             self.note_select_content_changed(parent_id);
         }
-        self.tree.nodes[node.0].parent = None;
+        let old_parent = self.tree.nodes[node.0].parent.take();
+        // Asked again now that the node is out: `note_child_list_changed` ran
+        // while it was still linked to its parent (#884).
+        if let Some(parent_id) = old_parent {
+            self.note_style_elements_moved(parent_id);
+        }
         // The whole removed subtree loses its before-change style, so a
         // re-insertion under a changed ancestor is a first style rather than a
         // change to animate (#699). Unconditional: `remove_node` on an already

@@ -620,8 +620,8 @@ impl RinchDocument {
         //
         // `Node::has_been_styled` is not enough on its own: a tree is cascaded
         // more than once before its first layout — appending a `<style>`
-        // element re-resolves the whole document on the spot
-        // (`maybe_load_style_css`) — so a component that appends its own
+        // element restyles every element its rules reach on the spot
+        // (`flush_stylist`, #884) — so a component that appends its own
         // stylesheet after building its markup leaves every node already
         // styled, and the next rule it loads is a *change* on an already-styled
         // node.

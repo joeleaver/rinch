@@ -784,8 +784,8 @@ beside it: `NodeTree::transitions_enabled`, false at construction and set at the
 very end of the first `resolve_layout` ("Enable transitions after first layout
 completes", `layout_engine.rs`). `has_been_styled` alone would not do the job,
 because a tree is cascaded more than once before its first layout — appending a
-`<style>` element re-resolves the whole document there and then
-(`maybe_load_style_css`), so a component that appends its own stylesheet after
+`<style>` element to the document restyles every element its rules reach there
+and then (`flush_stylist`, #884), so a component that appends its own stylesheet after
 building its markup leaves every node already styled, and the next rule it loads
 is a *change* on an already-styled node. Without the flag that is a transition
 running on page load. `recompute_all_styles_full` forces the same flag off for
@@ -847,8 +847,9 @@ seeked `currentTime`, added three more rows the refresh also matches:
 
 The refresh is scoped to `recompute_all_styles_full` on purpose, and that is
 **not** the only pass that re-cascades the whole document. Two others drop every
-node's cached style too and do not set the flag: appending a `<style>` element
-(`maybe_load_style_css`), and a viewport change in `resolve_layout`. Measured
+node's cached style too and do not set the flag: a stylesheet change whose rules
+Stylo cannot bucket by id, class or tag — a `@keyframes` rule is always one
+(`flush_stylist`, #884) — and a viewport change in `resolve_layout`. Measured
 after the first layout, a `<style>` appended with a redefined `@keyframes kk`
 leaves a running `kk` on its old body. Those two passes, and every targeted
 restyle — a class change, a hover — still keep a kept animation's stops and
