@@ -400,3 +400,45 @@ fn a_property_missing_from_an_explicit_from_starts_at_the_base_value() {
         "30% along red → green"
     );
 }
+
+/// Repeated names across the two maps: `k 1s` has finished (no fill, so its
+/// entry is a settled marker in `finished_animations`, #783) while `k 20s`
+/// still runs in `active_animations`. A restyle must give each spec its own
+/// entry back by position, not the running one's clock to the finished spec.
+#[test]
+fn a_finished_and_a_running_animation_of_one_name_keep_their_own_entries() {
+    let mut doc = document(&format!(
+        "{RED_GREEN} .d {{ animation: k 1s linear, k 20s linear infinite; }} \
+         .d.other {{ color: rgb(1, 2, 3); }}"
+    ));
+    // Both started 2000ms ago on the document's clock, so `k 1s` is over by
+    // any later cascade's "now".
+    let t = running(&mut doc, "d", &[2000.0, 2000.0]);
+    doc.tick_animations();
+    assert_eq!(
+        doc.tree.finished_animations[&t.0].len(),
+        1,
+        "precondition: `k 1s` has finished"
+    );
+    let running_start = {
+        let anims = doc.tree.active_animations.get_mut(&t.0).unwrap();
+        assert_eq!(anims.len(), 1, "precondition: `k 20s` still runs");
+        anims[0].start_time_ms -= 5000.0;
+        anims[0].start_time_ms
+    };
+
+    restyle_class(&mut doc, t, "d other");
+
+    let active = &doc.tree.active_animations[&t.0];
+    assert_eq!(active.len(), 1, "only `k 20s` runs");
+    assert_eq!(active[0].duration_ms, 20_000.0);
+    assert_eq!(
+        active[0].start_time_ms, running_start,
+        "`k 20s` keeps its own clock"
+    );
+    assert_eq!(
+        doc.tree.finished_animations[&t.0].len(),
+        1,
+        "`k 1s` stays finished"
+    );
+}
