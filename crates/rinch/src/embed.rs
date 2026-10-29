@@ -169,6 +169,11 @@ impl RinchContext {
     ///
     /// The component function runs immediately, building the initial DOM.
     /// Call this once during game initialization.
+    ///
+    /// On wasm32 it also installs the browser's timer backend and task
+    /// scheduler (issue #1956), so `set_timeout`, `sleep` and `spawn_local`
+    /// work with no `rinch-web` root on the page. A timer armed *before* the
+    /// first context is created needs `rinch::install_web_runtime()` first.
     pub fn new<F>(config: RinchContextConfig, component: F) -> Self
     where
         F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
@@ -228,6 +233,19 @@ impl RinchContext {
         // `rinch-timer` thread, found nothing parked there, and was lost.
         rinch_core::set_cross_thread_dispatcher_if_unset(queue_on_main_thread);
         rinch_core::register_main_thread();
+
+        // In a browser, the timer backend and task scheduler (issue #1956).
+        // Native rinch-core has a timer thread of its own; a browser has no
+        // threads, so without this a `set_timeout` (and a `sleep`, and every
+        // `rinch-ws` / `rinch-rtc` timer) armed by this context's UI never
+        // fired unless the page also mounted a `rinch-web` root, and a
+        // `spawn_local` task was polled only by the next `update()`'s drain of
+        // the main-thread queue. Now tasks are polled in a microtask, as under
+        // `rinch-web`. Before the mount, so the component's own timers are
+        // scheduled. Not the poll drain: `update()` does that once a frame,
+        // and a second drain would sample every-frame polls twice.
+        #[cfg(target_arch = "wasm32")]
+        crate::web_runtime::install_web_scheduling();
 
         // Mount the component (builds DOM, runs initial layout) at the
         // *logical* viewport — `width`/`height` are physical (see

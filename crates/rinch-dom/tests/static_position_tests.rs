@@ -2131,8 +2131,7 @@ fn a_relayout_visits_only_the_boxes_placed_from_outside_their_parent() {
 
 /// rinch's current answers where they are not Chrome's, each with Chrome
 /// 153's beside it. None is the static-position rule of this file: they are
-/// what the rule is applied **to** — a line box's height, Taffy's static
-/// position in a flex container, a fixed box's auto size (#893).
+/// what the rule is applied **to** — a line box's height.
 #[test]
 fn known_differences_from_chrome() {
     // A line holding a 26px inline-block and text is 26px tall in rinch and
@@ -2145,19 +2144,19 @@ fn known_differences_from_chrome() {
         [11.0, 33.0],
         "below a line with a tall inline-block"
     );
+}
 
-    // A fixed box with no insets and no size fills the viewport; Chrome
-    // shrinks it to its content, 27.766 x 20. Issue #893.
+/// A fixed box with no insets and no size is shrunk to its content at its
+/// static position, Chrome 153's 27.766 x 20 at (11, 27). It filled the
+/// viewport until #893.
+#[test]
+fn an_auto_sized_fixed_box_is_its_content_at_its_static_position() {
     let c = Case::new(r#"text<div data-m="abs" style="position: fixed">box</div>tail"#);
     let l = c.doc.tree.get(c.id("abs")).unwrap().layout;
     assert_eq!(
-        [l.width, l.height],
-        [800.0, 600.0],
-        "an auto-sized fixed box"
+        [l.width.round(), l.height],
+        [28.0, 20.0],
+        "its content's size"
     );
-    assert_at(
-        c.rel("abs"),
-        [11.0, 27.0],
-        "…at its static position all the same",
-    );
+    assert_at(c.rel("abs"), [11.0, 27.0], "at its static position");
 }

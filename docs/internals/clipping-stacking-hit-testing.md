@@ -470,6 +470,27 @@ scroller went from 2 hit tests visiting 1986 nodes to 1 visiting 4, including
 with `AboutToWait` between moves (`a_move_after_about_to_wait_is_warm`,
 `a_colour_animation_keeps_moves_warm`).
 
+**`visibility: hidden` is per node, not per subtree** (#843). A hidden box is
+not hit itself and offers no scrollbar (paint draws neither, #829), but
+`visibility` is inherited and a descendant may set it back to `visible`; paint
+draws that descendant and Chrome's `elementFromPoint` answers it, so
+`hit_test_node` and `find_scrollbar_hit_node` walk below a hidden node. They
+skip its whole subtree, as they always did, when nothing below it is visible:
+`shows_below`, a third memo (`HitCache::shows`), answered over the box-tree
+children (an anonymous block has no DOM children; its wrapped inline content is
+what it shows) and asked only of a hidden node, so a visible tree pays one enum
+test per node and an all-hidden one (a closed `Drawer`) one walk per
+generation. A text node takes its parent's visibility. An IFC's text is hit as
+its root, so a hidden IFC root still answers a point over the glyphs of a
+visible inline element in it (`visible_text_at`: the cluster under the point,
+its `IfcTextRange`, that text node's parent element); Chrome answers the span
+itself, which desktop never does for inline text, visible root or not.
+Before #843 the walks returned `None` at the first hidden node, with a comment
+fearing Stylo would leave a child's inherited `visible` stale when an ancestor's
+class changed; `hidden_ancestor_hit_843_tests::toggling_an_ancestors_visibility_reaches_the_inheriting_child`
+measures that it does not (class and `style` toggles both reach the child).
+The prune oracle walks hidden subtrees unconditionally.
+
 **A scroll is the one partial invalidation** (#911). Every scroll-offset write
 in the shell — the wheel (touch scrolls arrive as wheel events), a scrollbar
 drag, `apply_scroll_into_view` (every `scroll_into_view` and

@@ -233,8 +233,8 @@ impl RinchApp {
         let panel = d.create_element("div");
         d.set_attribute(panel, "class", "rinch-nsel-panel");
         // At least the control's width, and wide enough for the widest row, as
-        // Chrome's popup is. (A `width: auto` fixed block fills the viewport, so
-        // the width is spelled out.) The control's own width is no stand-in for
+        // Chrome's popup is. (The width is spelled out rather than left to a
+        // `width: auto` fixed block's shrink-to-fit, #893.) The control's own width is no stand-in for
         // the rows': since #1098 it is exactly its label plus 22px at the
         // select's font, with no slack for the panel's 30px of chrome, and the
         // rows are set at `POPUP_ROW_FONT_SIZE` in the body's font, which can be

@@ -58,8 +58,10 @@ thread_local! {
 /// [`drain_polls`].
 ///
 /// The desktop, Android and embed hosts drain once per frame and need none.
-/// `rinch-web` has no frame loop — the browser repaints on its own — so it
-/// installs a waker that schedules a drain (`requestAnimationFrame` for an
+/// The browser has no rinch frame loop — it repaints on its own — so the web
+/// runtime (`rinch::install_web_runtime`, called by every `rinch_web` mount;
+/// not by `RinchContext::new`, whose `update()` drains) installs a waker that
+/// schedules a drain (`requestAnimationFrame` for an
 /// [`EveryFrame`](PollRate::EveryFrame) poll, `setTimeout` for a timed one) and
 /// keeps scheduling while polls are registered. [`poll_signal`] calls the
 /// waker after each registration, so a new poll is sampled promptly.

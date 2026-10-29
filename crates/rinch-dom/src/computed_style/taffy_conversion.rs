@@ -83,6 +83,10 @@ impl ComputedStyle {
             // its own, so the cross axis ignored `align-items`: #1492.)
             align_self: self.align_self.map(|v| v.to_taffy()),
             justify_content: self.justify_content.map(|v| v.to_taffy()),
+            // Read by Taffy's grid only: a flex container ignores both, and
+            // Taffy's block layout does not align on the inline axis (#1985).
+            justify_items: self.justify_items.map(|v| v.to_taffy()),
+            justify_self: self.justify_self.map(|v| v.to_taffy()),
 
             padding: Rect {
                 top: self.padding_top.to_taffy(),

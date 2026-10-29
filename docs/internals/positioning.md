@@ -200,12 +200,16 @@ the static position is the box as its sole flex item: `justify-content` on the
 main axis and `align-self`, else `align-items`, on the cross (`stretch` as the
 start; #1492 — `to_taffy_style` used to force `align-self: flex-start` on every
 out-of-flow box, so the cross axis ignored `align-items`; pins:
-`static_position_flex_1492_tests.rs`, Chrome 153). Not Chrome's, each pinned in
+`static_position_flex_1492_tests.rs`, Chrome 153). In a **grid** container
+that is its containing block, Taffy aligns the box in the container's padding
+box by its own `justify-self`/`align-self`, else the container's
+`justify-items`/`align-items` (#1511 carried the `justify-*` pair, which used to
+be dropped; pins: `justify_items_1511_tests.rs`, Chrome 156). Under an
+unpositioned grid Chrome aligns it in the grid's content box and rinch in its
+padding box (#1986). Not Chrome's, each pinned in
 `known_differences_from_chrome`: the static position
 follows rinch's line boxes, so below a line holding a 26px `inline-block` and
-text it is 4px high (rinch's line is 26px, Chrome's 30 — #663); a fixed box with no
-insets and no size still fills the viewport where Chrome shrinks it to its
-content (**#893**).
+text it is 4px high (rinch's line is 26px, Chrome's 30 — #663).
 
 **A positioned inline span is a containing block too** (#631, CSS 2.1 §10.1):
 `out_of_flow_kind` answers `AncestorAbsolute(span)` for a `position: relative`
@@ -320,10 +324,27 @@ widest line (**#1276**: the issue's own example is 390x40, was 130x80, Chrome
 containing block (its content edge in Chrome).
 **Not covered:** a box whose containing block is a non-parent **scroll
 container** is placed in it but still counted in no scroll range (**#770**);
-`position: fixed` takes none of the margin, padding or min/max rules above,
-keeps the Taffy parent as its `calc()` basis, and is not contained by a
-transformed ancestor (**#1372**) — the `AncestorAbsolute` machinery is what
-that would use. **A component whose overlay must cover its parent (e.g.
+`position: fixed` takes none of the margin and padding rules above (its
+margins take nothing out of its room and are not added to its position),
+keeps the Taffy parent as its `calc()` basis (**#1980**), and is not contained
+by a transformed ancestor (**#1372**) — the `AncestorAbsolute` machinery is
+what that would use.
+
+**A fixed box is shrunk to fit too** (#893): the same bake, against the
+viewport (`ContainingBox::viewport`). An `auto` or `fit-content` width with
+fewer than two horizontal insets is `fit-content(<px>)` of the viewport less
+the insets — with both `auto`, of the room its static position leaves, a
+`StaticAnchor` measured from the unscrolled parent origin that
+`place_fixed_static` uses, so the read-back pushes such a box to
+`abs_static_fits` beside the absolute ones. An `auto` height with fewer than
+two vertical insets is left to Taffy, i.e. the content's; a percentage
+`min-`/`max-` size is baked against the viewport. It used to fill the viewport
+on both axes, `max-width` the only cap (a tooltip was drawn at its
+`max-width`), and the read-back replaced a one-inset height by a sum of the
+children's heights (`compute_content_height`, removed), which dropped text
+lines, `aspect-ratio` and the replaced measure (#1569). Pins:
+`tests/fixed_shrink_to_fit_893_tests.rs` (Chrome 156),
+`aspect_ratio_1286_tests::a_fixed_box_takes_the_ratio`. **A component whose overlay must cover its parent (e.g.
 `LoadingOverlay`) needs that parent to declare `position: relative`** — without
 it the overlay covers whatever positioned ancestor it does have, or the
 window, as it always has on the web.

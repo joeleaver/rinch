@@ -9,8 +9,10 @@
 //!   (see [`set_cross_thread_dispatcher`](crate::set_cross_thread_dispatcher)).
 //!   One daemon thread serves every timer — arming N timers does not spawn N
 //!   threads, so a debounce that re-arms on every keystroke stays cheap.
-//! - **Web** has no threads, so `rinch-web` installs a backend
-//!   ([`set_timer_backend`]) that drives `window.setTimeout`.
+//! - **Web** has no threads, so the web runtime installs a backend
+//!   ([`set_timer_backend`]) that drives `window.setTimeout`:
+//!   `rinch::install_web_runtime`, called by every `rinch_web` mount and by
+//!   `rinch::embed::RinchContext::new` on wasm32.
 //!
 //! The callback is parked via [`park_main_callback`](crate::park_main_callback),
 //! so only its id crosses the thread boundary and it need not be `Send` — it can
@@ -41,8 +43,10 @@ static BACKEND: Mutex<Option<TimerBackend>> = Mutex::new(None);
 pub struct TimeoutHandle(MainCallbackId);
 
 /// Install the platform's timer scheduler. Called by the runtime at startup;
-/// `rinch-web` installs a `window.setTimeout` backend. On native a built-in
-/// shared-thread scheduler is used when no backend is installed.
+/// on wasm32 the web runtime (`rinch::install_web_runtime`, called by every
+/// `rinch_web` mount and by `RinchContext::new`) installs a `window.setTimeout`
+/// backend. On native a built-in shared-thread scheduler is used when no
+/// backend is installed.
 pub fn set_timer_backend(backend: TimerBackend) {
     *BACKEND.lock().unwrap() = Some(backend);
 }
@@ -210,7 +214,8 @@ fn schedule(id: u64, delay_ms: u32) {
         let _ = (id, delay_ms);
         tracing::warn!(
             "set_timeout: no timer backend installed — the callback will never fire. \
-             The web runtime installs one at startup."
+             Call `rinch::install_web_runtime()` (or `rinch_web::install_runtime()`) \
+             at startup; a `rinch_web` mount or a `RinchContext` installs it too."
         );
     }
 }

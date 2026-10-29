@@ -24,18 +24,21 @@ use super::html::{
 use super::{DomCodegenContext, no_siblings};
 
 /// Whether a prop written on a component is an attribute for the component's
-/// **root DOM element** rather than a field of its struct (issue #433).
+/// **root DOM element** rather than a field of its struct (issues #433, #1653).
 ///
 /// Exactly the hyphenated names — `data-nofocus`, `aria-label`,
-/// `data-viewport` — because a hyphen is not legal in a Rust identifier, so no
+/// `data-viewport` — and the quoted ones — `"title"`, `"id"`, `"role"` —
+/// because neither a hyphen nor a string literal is a Rust identifier, so no
 /// component can ever declare a field of that name and the routing cannot
-/// shadow a prop. Such a prop is applied after `Component::render`, the way
-/// `style:` and `class:` are: through `NodeHandle::write_attribute`, so a
-/// boolean attribute (`data-nofocus`, `data-disabled`, `data-trap-focus`,
-/// `data-backdrop`, `hidden`, …) is a presence for a truthy value and removed
-/// for a falsey one (#551), exactly as on an HTML element.
-pub fn is_root_attribute(name: &str) -> bool {
-    name.contains('-')
+/// shadow a prop. That is why a bare `title` stays a field: `Alert`, `Modal`
+/// and others declare one meaning a heading. Such a prop is applied after
+/// `Component::render`, the way `style:` and `class:` are: through
+/// `NodeHandle::write_attribute`, so a boolean attribute (`data-nofocus`,
+/// `data-disabled`, `data-trap-focus`, `data-backdrop`, `hidden`, …) is a
+/// presence for a truthy value and removed for a falsey one (#551), exactly as
+/// on an HTML element.
+pub fn is_root_attribute(prop: &RsxProp) -> bool {
+    prop.quoted || prop.name.contains('-')
 }
 
 /// Check if an element is a component with reactive (closure) props that needs
@@ -49,11 +52,11 @@ pub fn has_reactive_component_props(element: &RsxElement) -> bool {
         // A hyphenated attribute is applied to the root, not the struct
         // (issue #433): a reactive one is an effect on a stable root, like a
         // reactive `style:`/`class:`, and re-renders nothing.
-        if name == "key"
+        if is_root_attribute(p)
+            || name == "key"
             || name == "ref"
             || name == "style"
             || name == "class"
-            || is_root_attribute(&name)
         {
             return false;
         }
@@ -89,7 +92,11 @@ pub fn generate_reactive_component_stmt(
 
     for prop in &element.props {
         let name_str = prop.name.to_string();
-        if name_str == "key" {
+        if is_root_attribute(prop) {
+            // Checked first: a quoted name (#1653) is the attribute even
+            // when it spells a style shorthand (`"p"`).
+            attr_props.push(prop);
+        } else if name_str == "key" {
             continue;
         } else if name_str == "ref" {
             ref_prop = Some(prop);
@@ -97,8 +104,6 @@ pub fn generate_reactive_component_stmt(
             style_prop = Some(prop);
         } else if name_str == "class" {
             class_prop = Some(prop);
-        } else if is_root_attribute(&name_str) {
-            attr_props.push(prop);
         } else if expand_style_shorthand(&name_str).is_some() {
             shorthand_props.push(prop);
         } else {
@@ -205,7 +210,11 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
 
     for prop in &element.props {
         let name_str = prop.name.to_string();
-        if name_str == "key" {
+        if is_root_attribute(prop) {
+            // Checked first: a quoted name (#1653) is the attribute even
+            // when it spells a style shorthand (`"p"`).
+            attr_props.push(prop);
+        } else if name_str == "key" {
             // key: is handled by the parent for-loop, not the component struct
             continue;
         } else if name_str == "ref" {
@@ -215,8 +224,6 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
             style_prop = Some(prop);
         } else if name_str == "class" {
             class_prop = Some(prop);
-        } else if is_root_attribute(&name_str) {
-            attr_props.push(prop);
         } else if expand_style_shorthand(&name_str).is_some() {
             shorthand_props.push(prop);
         } else {

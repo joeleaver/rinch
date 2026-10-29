@@ -402,10 +402,6 @@ const KNOWN: &[(&str, &str, &str, f32)] = &[
     // #1277: Taffy's automatic minimum size clamps a flex item's min-content
     // by its *definite* size, and `stretch` is not definite there.
     ("block", "flex-row cb150", "stretch", 300.0),
-    // Pre-existing, not a keyword: a fixed box with unpaired insets fills
-    // the viewport (`out_of_flow.rs`), where Chrome shrinks it to fit.
-    ("block", "fixed l", "auto", 800.0),
-    ("two", "fixed l", "auto", 800.0),
     // #1277: an atomic inline is a Taffy root, which ignores its own size
     // keyword; rinch resolves the *width* keywords there, not `height: stretch`.
     ("block", "inline-block h cb300", "stretch", 20.0),

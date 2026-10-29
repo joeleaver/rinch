@@ -119,6 +119,8 @@ impl ComputedStyle {
             align_items: align_items_from_stylo(&position_style.align_items),
             align_self: align_self_from_stylo(&position_style.align_self),
             justify_content: justify_content_from_stylo(&position_style.justify_content),
+            justify_items: justify_items_from_stylo(&position_style.justify_items),
+            justify_self: justify_self_from_stylo(&position_style.justify_self),
 
             // Padding
             padding_top: length_percentage_from_stylo(&padding.padding_top),

@@ -319,6 +319,12 @@ handle.in_node_type("bullet_list")     // -> bool: is the cursor inside a bullet
 handle.can_run("liftListItem")         // -> bool: would this command apply right now?
 ```
 
+`can_run` is a query: it asks the command whether it *would* apply (the
+command's `dispatch = None` branch) and never runs the edit, so asking for every
+toolbar button on every caret move builds no transactions, and a command of your
+own whose dispatch branch does something besides dispatching never sees it fire
+from a query.
+
 A reactive toolbar button can read these inside a `{|| ... }` closure so it
 re-renders when the selection moves:
 
@@ -373,6 +379,12 @@ on a freshly created handle, before content is typed. It is not an edit: a
 read-only editor (collaborating or not) accepts it, nothing is sent to peers and
 `on_change` does not fire. A plugin whose key is already installed is refused
 (`false`), and a refused call changes nothing.
+
+A command that only moves the selection (never edits the document) should be
+named in the plugin's `selection_commands()`. On a read-only editor `can_run`
+answers `false` for every command not named there, so a toolbar button for an
+undeclared selection-only command greys out; running it still works. The
+built-in `selectAll` is declared by the base commands plugin.
 
 A plugin marks ranges of text through its `decorations()`, without touching the
 document:
@@ -982,12 +994,25 @@ rsx! { Editor { editor: editor.clone() } }   // or: Editor { read_only: true, co
 
 It makes no difference who asks: a toolbar button calling `command("toggleBold")` and
 a keystroke go through the same gate, which sits at the one place every local change
-lands rather than in each input handler. `can_run(name)` answers `false` for a refused
-command, so a toolbar that greys its buttons from it goes inert with the switch; a
-toolbar of your own should also read `is_read_only()`. The built-in context menu
+lands rather than in each input handler. `can_run(name)` answers `false` for every
+command except those that change only the selection, so a toolbar that greys its
+buttons from it goes inert with the switch; a toolbar of your own should also read
+`is_read_only()`. It answers without running the command: a command counts as
+selection-only when its plugin lists it in `Plugin::selection_commands()`
+(`selectAll` is the built-in one), and an unlisted command is greyed. The list only
+steers `can_run`; `command(..)` on a read-only editor still refuses whatever would
+change the document or the stored marks, listed or not. The built-in context menu
 offers Copy and Select all only, the OS input method stays off (no IME candidate
 window), and on the web the hidden capture field is `readonly`, so no soft keyboard
 is raised and the browser's own menu drops Paste and Cut.
+
+Tab and Shift+Tab move the focus on, as from a `readonly` field: to the next and the
+previous Tab stop from the editor's place in the page, on desktop and on the web (inside
+a focus trap, within the trap). Past the last or the first Tab stop, desktop wraps round,
+as every Tab there does; the web behaves as a native field: Tab is left to the browser,
+and Shift+Tab sends the focus to the document. An editable editor keeps them for table
+cells and list indentation, so a reader who comes in by keyboard can always leave by keyboard. An
+`on_key` callback still sees Tab first and may claim it.
 
 The caret stays visible — a reader selects and copies with it. The mounted container
 carries `data-pm-readonly="true"` while the switch is on, for your own styling; the
@@ -1461,7 +1486,7 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 | Mod+Z / Mod+Shift+Z / Mod+Y | Undo / redo |
 | Enter | Split block / new list item (between two blocks: a new empty paragraph there) |
 | Shift+Enter | Insert a hard break (line break within the block) |
-| Tab / Shift+Tab | Move between table cells, else indent / outdent a list item |
+| Tab / Shift+Tab | Move between table cells, else indent / outdent a list item. Consumed even where neither applies, so Tab never leaves an editable editor; an app that wants it to claims it in `on_key`. In a [read-only](#read-only) editor: move the focus to the next / previous Tab stop |
 | Backspace / Delete | Delete backward / forward |
 | Ctrl+Backspace / Ctrl+Delete (Alt on macOS) | Delete the word backward / forward |
 

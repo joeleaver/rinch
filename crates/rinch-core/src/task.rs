@@ -421,12 +421,14 @@ fn finish(id: u64, task: Task) {
     drop(task);
 }
 
-/// Install the platform's task scheduler. `rinch-web` installs one that polls
-/// in a microtask; a host with no scheduler gets the main-thread callback queue.
+/// Install the platform's task scheduler. On wasm32 the web runtime
+/// (`rinch::install_web_runtime`, called by every `rinch_web` mount and by
+/// `RinchContext::new`) installs one that polls in a microtask; a host with no
+/// scheduler gets the main-thread callback queue.
 ///
 /// Tasks already waiting for a poll — spawned before the scheduler existed —
-/// are scheduled through it too, so a task spawned before the first web mount
-/// is not left on a queue the browser never drains. A backend hook, not app API.
+/// are scheduled through it too, so a task spawned before the web runtime is
+/// installed is not left on a queue the browser never drains. A backend hook, not app API.
 #[doc(hidden)]
 pub fn set_task_scheduler(scheduler: TaskScheduler) {
     *SCHEDULER.lock().unwrap_or_else(|e| e.into_inner()) = Some(scheduler);

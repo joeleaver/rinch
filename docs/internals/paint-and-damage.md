@@ -171,21 +171,39 @@ in Chrome). The body fallback now also asks `scrolls_y()`/`scrolls_x()`, so an
 `overflow: hidden` body is no fallback wheel target (CSS-correct). Still open
 beside it: `apply_scroll_into_view`'s nearest branch mixes a border-box origin
 with the content-box height (**#1367**), and `clamp_scroll_offsets` never
-clamps the x offset (**#1368**). A **positioned** child — `absolute`, or `relative`
-with an offset — is measured differently from Chrome. The paddings of rinch's
-content-box frame and Chrome's padding-box frame cancel for a **non-positioned**
-child only. An `absolute` child's overflow is over-reported by **up to** the
-container's end padding: a `position: absolute; inset: 0` child (a
-`LoadingOverlay`) in a `padding: 20px; overflow: auto; position: relative` panel
-paints two bars with 20px of travel where Chrome paints none. A `relative` child
-is read only at its offset position, where Chrome also counts its static one. An
-offset toward the end over-reports by up to the end padding; an offset toward
-the **start** under-reports by up to the offset, and needs no padding to do it —
-a 240x50 child at `left: -40px` in a plain 200x100 scroller gives Chrome 40px of
-travel and rinch no bar. `content_extents`' doc has the rule and the
-measurements. And the extent is each child's untransformed **border** box, so a
-child's `transform` and its end margins add nothing, where Chrome counts
-both.
+clamps the x offset (**#1368**).
+
+**How each box counts (#776, #775).** `extend_with_child` gives every box two
+contributions, as Chrome 156 measures them. An **in-flow** box (anything but
+`absolute`) counts its **margin box** at its *static* position — the layout
+rect less a `relative`/`sticky` offset (Taffy places the box at the offset),
+grown by the *declared* end margins (a percentage against the container's
+content width, `auto` as 0, negative never below the border box; an
+over-constrained block's used `margin-right` is negative and Chrome still
+counts the declared one). Chrome extends that in-flow area by the container's
+end padding, which cancels against the frame difference, so it is measured as
+is. Separately, the box **where it is drawn** — an `absolute` box's border box,
+a `relative` box at its offset, and either one's `transform`ed bounding box
+(`compose_node_transform`, then `transform_rect_bbox`) — counts with no
+margins and **without** the end padding, so it is measured less the
+container's `padding-right`/`padding-bottom`. An `absolute` box has only that
+second contribution: translated back inside the padding box it overflows
+nothing, whatever its untransformed size. Before this every box counted its
+untransformed border box plus the end padding — no margins, no transforms, an
+`absolute; inset: 0` overlay (`LoadingOverlay`) in a padded scroller painted
+two bars, and a `relative` box offset toward the start lost range Chrome gives
+it. Two kinds of in-flow box count their border box alone: a non-replaced
+`display: inline` box (its block-axis margins do nothing, CSS 2.1 §10.6.1, and
+its inline-axis ones are in the line the container's inline layout measures;
+a replaced element at `display: inline` is `DisplayMode::InlineBlock` and keeps
+its margins), and a **grid item** (`ContainerFrame::grid`): Chrome counts the
+grid's *tracks*, not an item's margin box, and layout does not keep them, so a
+margin box overshoots (`margin-right: 300px` past a 100px column: Chrome 0) and
+the border box, as before #776, under-counts only where a margin grows an
+`auto` track (Chrome 86x46 and 0x120 in the pinned rows, rinch 0). Rows:
+`tests/scroll_range_margin_transform_776_tests.rs`. Not counted yet:
+a margin that collapses through a child's end (a `height: auto` child whose
+last child has `margin-bottom: 80px`: Chrome 30px of travel, rinch 0).
 
 **Styling the bar (#416).** Two inherited custom properties:
 `--rinch-scrollbar-color: <thumb> [<track>]` and `--rinch-scrollbar-width: auto
@@ -378,8 +396,33 @@ keep a stale frame. Pins: `crates/rinch/src/app/viewport_inputs_349_tests.rs` an
 unchanged set costs nothing. The GPU shell's own call site
 (`paint` in `shell/rinch_runtime.rs`) has no fixture: it needs a window and a device.
 
-**SVG paint.** `paint/svg.rs` draws an `<svg>`'s direct children (`path`,
-`rect`, `circle`, `line`, `polyline`, `polygon`) itself. rinch's Stylo build
+**SVG paint.** `paint/svg.rs` draws an `<svg>`'s shapes (`path`, `rect`,
+`circle`, `ellipse`, `line`, `polyline`, `polygon`) itself, walking `<g>`
+groups to any depth (#1539) iteratively, in document order. Each element
+derives an `SvgInherited` from its parent's: `fill`/`stroke`
+(`InheritedPaint`; `currentcolor` stays symbolic, as CSS inherits the
+keyword, and resolves against each shape's own `color`), `stroke-width`,
+`stroke-linecap`, `stroke-linejoin` (a usable declaration replaces the
+inherited value; the `<svg>` starts from black / none / 2 / butt / miter), and
+the transform: the parent's times the element's own `transform` attribute
+(`parse_svg_transform`, SVG's grammar — `translate(10-5)` is two numbers —
+and an unparsable list is ignored whole, as Chrome does; the `<svg>`'s own
+`transform` attribute and a CSS `transform` on a shape are not read). The
+painters stroke in the transform's space, so a `scale` scales the stroke, as
+in a browser. `<rect rx/ry>` and `<ellipse rx/ry>` follow SVG 2's `auto`
+rule (an absent, `auto` or negative radius takes the other; one that is no
+number is `0`, as in Chrome 156, which also reads the attribute keyword
+`auto` as `0` where rinch keeps SVG 2's `auto`; #1538); a rect's
+radii are clamped to half its width and height separately, equal radii are a
+`RoundedRect` and unequal ones a path of quarter ellipses
+(`elliptical_rounded_rect`); a zero-size rect, circle or ellipse draws
+nothing, stroke included. The `<svg>` box is what culls and damages its
+content: a transform that moves a shape outside it paints unclipped where a
+browser clips (`overflow: hidden` on a non-root `<svg>`) and is not damaged
+there, as for coordinates outside the `viewBox` before (#1990). Pins:
+`crates/rinch-dom/tests/svg_groups_transforms_shapes_1538_1539_tests.rs`
+(Chrome 156 `elementFromPoint` answers), the parser's unit tests in
+`paint/svg.rs`. rinch's Stylo build
 has no `fill`/`stroke` property (Gecko-only in Stylo), so `declared_paint`
 reads each shape's own: its inline `style` declaration, which beats the
 presentation attribute, else the attribute, with every `var()` substituted

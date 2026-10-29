@@ -876,3 +876,67 @@ fn the_startup_default_turns_off_apps_created_after_it() {
     let (on, _) = mount();
     assert!(on.title_tooltips_enabled());
 }
+
+/// A component's `title` reaches the desktop tooltip (#1653): `ActionIcon`'s
+/// and `CloseButton`'s own prop, and the quoted `"title"` on any component,
+/// both written on the component's root `<button>`.
+mod component_titles_1653 {
+    use super::*;
+    use crate as rinch;
+    use rinch_components::{ActionIcon, Button, CloseButton};
+    use rinch_core::Signal;
+    use rinch_macros::rsx;
+
+    const ON_ICON: (f32, f32) = (63.0, 57.0);
+    const ON_CLOSE: (f32, f32) = (231.0, 61.0);
+    const ON_BUTTON: (f32, f32) = (419.0, 73.0);
+
+    fn mount_buttons(tip: Signal<String>) -> RinchApp {
+        mount_settled(move |__scope: &mut RenderScope| {
+            rsx! {
+                div {
+                    style: "position: relative; width: 800px; height: 600px; \
+                            font: 16px/20px sans-serif",
+                    ActionIcon {
+                        title: "Save file",
+                        style: "position: absolute; left: 40px; top: 40px; \
+                                width: 50px; height: 40px",
+                        "S"
+                    }
+                    CloseButton {
+                        title: "Dismiss",
+                        style: "position: absolute; left: 210px; top: 40px; \
+                                width: 44px; height: 44px",
+                    }
+                    Button {
+                        "title": {move || tip.get()},
+                        style: "position: absolute; left: 380px; top: 50px; \
+                                width: 90px; height: 50px",
+                        "Delete"
+                    }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn an_action_icons_and_a_close_buttons_title_prop_is_their_tooltip() {
+        let mut app = mount_buttons(Signal::new("Delete the row".into()));
+        rest_at(&mut app, ON_ICON);
+        assert_eq!(app.title_tooltip_text(), Some("Save file"));
+        rest_at(&mut app, ON_CLOSE);
+        assert_eq!(app.title_tooltip_text(), Some("Dismiss"));
+    }
+
+    #[test]
+    fn a_quoted_title_on_a_component_is_its_tooltip_and_follows_its_signal() {
+        let tip = Signal::new("Delete the row".to_string());
+        let mut app = mount_buttons(tip);
+        rest_at(&mut app, ON_BUTTON);
+        assert_eq!(app.title_tooltip_text(), Some("Delete the row"));
+        tip.set("Delete 3 rows".to_string());
+        move_to(&mut app, ON_PLAIN);
+        rest_at(&mut app, ON_BUTTON);
+        assert_eq!(app.title_tooltip_text(), Some("Delete 3 rows"));
+    }
+}

@@ -774,6 +774,11 @@ jobs:
           # the one place CI compiles rinch-web with `word-dictionary` on.
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features word-dictionary --test editor_word_dictionary
+          # `rinch` alone with `embed` (#1956): a RinchContext installs the
+          # browser's timers and task scheduler. rinch-web's run above builds
+          # `rinch` without `embed`, so this file would run nowhere else.
+          cargo test -p rinch --no-default-features --features embed \
+            --target wasm32-unknown-unknown --test embed_web_runtime_1956
 
       # rinch-av's audio capture where the browser holds an AudioContext
       # until a user gesture (Chrome's default; the step above allows
@@ -890,6 +895,8 @@ jobs:
           cargo test -p rinch-web --target wasm32-unknown-unknown
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
+          cargo test -p rinch --no-default-features --features embed \
+            --target wasm32-unknown-unknown --test embed_web_runtime_1956
           cargo test -p rinch-av --features audio,camera --target wasm32-unknown-unknown
           # The Chrome step's lite_echo, or a new one on the same port if that
           # one did not outlive its step: the same URL keeps the test binaries

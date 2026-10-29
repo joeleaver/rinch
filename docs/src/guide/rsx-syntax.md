@@ -716,9 +716,43 @@ rules are the HTML element's rules:
   rinch's own wiring attributes: a caller's `data-rid` on a component replaces
   the id of the component's own click handler, so it stops firing. Don't.
 
-Unhyphenated attribute names — `id`, `tabindex`, `role` — are not routed: on a
-component they are still struct fields, and a component that does not declare
-one does not compile.
+A bare unhyphenated name — `title`, `id`, `role` — is a struct field on a
+component, and a component that does not declare one does not compile. That is
+deliberate: `Alert`, `Modal`, `Drawer`, `Notification`, `FloatingPanel` and
+`BorderlessWindow` declare a `title` that means a heading, and `rsx!` cannot
+tell the two meanings apart. **Quote the name** to mean the HTML attribute
+(issue #1653):
+
+```rust
+rsx! {
+    Button { "title": "Delete the row", "id": "delete", onclick: …, "Delete" }
+    // The heading prop and the tooltip, side by side:
+    Alert { title: "Heads up", "title": "Shown on hover", "Body" }
+    // Reactive, and surgical: only the attribute is rewritten.
+    Badge { "title": {move || format!("{} unread", n.get())}, "New" }
+}
+```
+
+A quoted name is always the attribute of that name, whatever the component
+declares, and it follows every rule above (boolean attributes, reactive values
+that re-render nothing, the caller writing last). It takes any attribute name —
+`"title"`, `"id"`, `"role"`, `"lang"`, `"dir"`, `"tabindex"`, and hyphenated
+ones (`"data-2x"`, which a bare spelling cannot even tokenize).
+`ActionIcon` and `CloseButton` also take a bare `title` prop of their own (see
+the [component reference](component-props.md#actionicon)).
+
+On an **HTML element** a quoted name is the same attribute as the bare one,
+except that it is never anything else: `div { "p": "x" }` is an attribute named
+`p`, where `p:` is the padding shorthand, and `"value_fn"` is an attribute where
+`value_fn:` is refused. These are compile errors, on any element:
+
+- a name that is not an attribute name (`""`, `"two words"`, `"1st"`, a non-ASCII
+  letter): it must start with an ASCII letter, `_` or `:`, then ASCII letters,
+  digits, `-`, `_`, `.` or `:`;
+- `"style"`, `"class"`, `"key"` and `"ref"`, which `rsx!` gives its own meaning
+  (merged styles and classes, the `for` key, the node ref): write them unquoted;
+- `"on…"`, an event handler content attribute — a string of script, which rinch
+  never runs: write the handler unquoted, `onclick: move || …`.
 
 ### Keeping a handle to an element: `ref:`
 

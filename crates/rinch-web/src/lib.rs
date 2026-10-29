@@ -20,6 +20,8 @@
 //!   `App::new(app).title(..).theme(..).menu(..).run()` serves desktop and web.
 //! - [`set_suppress_native_context_menu`] — for a whole-page app that renders
 //!   its own right-click menus.
+//! - [`install_runtime`] — timers, `spawn_local` tasks and polled signals for
+//!   a page that mounts no rinch root.
 //!
 //! ## Menu bar
 //!
@@ -88,7 +90,6 @@ mod editor_input;
 mod event_delegation;
 mod images;
 mod menu_bar;
-mod polls;
 pub mod web_document;
 
 use std::cell::{Cell, RefCell};
@@ -249,41 +250,25 @@ impl RootHandle {
 // One-time page-global setup
 // ============================================================================
 
-/// The web timer backend: schedule `fire_timeout(id)` via `window.setTimeout`.
+/// Install the web runtime without mounting anything (issue #1956): the
+/// timer backend `set_timeout` and `sleep` run on, the scheduler that polls
+/// `spawn_local` tasks, and the drain that samples `poll_signal`s.
 ///
-/// Only `id` is captured, so the parked callback stays in rinch-core's
-/// main-thread registry. The closure is created with `Closure::once_into_js`,
-/// which hands ownership to the JS GC and drops the boxed `FnOnce` after it fires
-/// — so, unlike `Closure::forget()`, arming thousands of timers over a long
-/// session does not leak a closure per timer. A cancelled timeout
-/// (`clear_timeout`) still wakes here, then finds nothing parked and no-ops.
-fn web_set_timeout(id: u64, delay_ms: u32) {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen::closure::Closure;
-
-    let cb = Closure::once_into_js(move || rinch_core::fire_timeout(id));
-    if let Some(window) = web_sys::window() {
-        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-            cb.unchecked_ref(),
-            delay_ms as i32,
-        );
-    }
-}
-
-/// Poll a `spawn_local` task in a microtask (issue #1767): as soon as the
-/// current JS task is done, as `wasm_bindgen_futures::spawn_local` does, with
-/// no thread and no frame to wait for.
-fn web_schedule_task(id: u64) {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen::closure::Closure;
-
-    let poll = Closure::once_into_js(move || rinch_core::task::poll_task(id));
-    let global = js_sys::global();
-    if let Ok(queue) = js_sys::Reflect::get(&global, &"queueMicrotask".into())
-        && let Some(queue) = queue.dyn_ref::<js_sys::Function>()
-    {
-        let _ = queue.call1(&global, &poll);
-    }
+/// Every `mount*` calls this, so a page that mounts a root needs nothing more.
+/// It is for a page that mounts no rinch DOM but runs rinch code that arms
+/// timers, spawns tasks or polls — a game that owns the canvas, say, or
+/// `rinch-ws` / `rinch-rtc` code with no UI of its own. Call it at startup,
+/// before the first timer: a `set_timeout` armed earlier never fires (a task
+/// spawned earlier is picked up). Idempotent, page-global, and it builds no
+/// DOM: no event delegation, no theme `<style>`, no root.
+///
+/// The same function as `rinch::install_web_runtime`, for an app that
+/// depends on `rinch` alone. An embedded `rinch::embed::RinchContext` installs
+/// the timer backend and task scheduler itself on wasm32.
+pub fn install_runtime() {
+    // A no-op on host builds of this crate (the workspace's clippy and check):
+    // `rinch::install_web_runtime` installs nothing off wasm32.
+    rinch::install_web_runtime();
 }
 
 /// First-mount-only global init shared by every mount. Clearing handlers/context
@@ -299,17 +284,9 @@ fn ensure_global_init() {
         events::clear_handlers();
         rinch_core::clear_context();
 
-        // Drive `rinch_core::set_timeout` off `window.setTimeout`. The browser has
-        // no threads, so rinch-core's built-in shared-thread scheduler cannot run
-        // here — the web runtime supplies the scheduling half.
-        rinch_core::set_timer_backend(web_set_timeout);
-        // And `rinch_core::spawn_local`'s polls off microtasks: nothing drains
-        // the main-thread callback queue in a browser.
-        rinch_core::task::set_task_scheduler(web_schedule_task);
-
-        // Sample `poll_signal`s: the native hosts drain them once per frame,
-        // and the browser has no rinch frame loop to do it (#1773).
-        polls::install();
+        // Timers, tasks and polls: the same install a page with no root makes
+        // (issue #1956). Idempotent, so a page that called it first is fine.
+        install_runtime();
 
         // Theme CSS is page-global (one shared `<style>`). On any signal change
         // (e.g. dark-mode toggle), refresh it once — regardless of which root

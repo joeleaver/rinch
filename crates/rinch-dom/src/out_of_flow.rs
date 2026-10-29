@@ -199,7 +199,9 @@
 //! ## The shrink-to-fit width
 //!
 //! An absolute box with an `auto` (or `fit-content`) width is shrunk to fit
-//! (CSS 2.1 §10.3.7) in what its **containing block** leaves it: the block's
+//! (CSS 2.1 §10.3.7) in what its **containing block** leaves it — and so is a
+//! fixed one, in the viewport (issue #893; it filled the viewport, and its
+//! height was re-derived from its children's after the compute): the block's
 //! padding-box width less the insets and margins, and — with both inline
 //! insets `auto` — the room its static position leaves it ([`StaticAnchor`]:
 //! from the position to the block's end, or for a box a flex container
@@ -228,9 +230,8 @@
 //!   Chrome's: a line holding a 26px `inline-block` and text is 26px tall
 //!   here and 30 there (issue #663), so a block-level box below it is 4px
 //!   high.
-//! - A fixed box with no insets and no size still **fills the viewport**
-//!   (Chrome shrinks it to its content; issue #893), and a percentage margin on one
-//!   placed by Taffy is of the layout parent's width.
+//! - A percentage margin on a box placed by Taffy is of the layout parent's
+//!   width.
 //! - A **split** inline span — one holding a block-level child (#513), whose
 //!   fragments lie in several anonymous boxes — is not measured: a box inside
 //!   it keeps Taffy's answer, the block container (issue #1424).
@@ -255,8 +256,10 @@
 //!   (issue #1276); and a box placed from its static position by a flex
 //!   container's `justify-content` is given the room after the container's
 //!   content edge, wherever it is then put.
-//! - `position: fixed` takes none of the margin, padding or min/max rules
-//!   below, and a transformed ancestor does not contain it (#1372).
+//! - `position: fixed` is shrunk to fit in the viewport (#893) and takes a
+//!   percentage `min-`/`max-` size from it, but none of the margin and
+//!   padding rules below (#1980), and a transformed ancestor does not
+//!   contain it (#1372).
 
 use crate::RinchDocument;
 use crate::computed_style::{
@@ -1128,12 +1131,18 @@ pub(crate) fn begin_read(tree: &mut NodeTree) {
 /// block. That is why this is a pre-layout bake and not another post-layout
 /// patch.
 ///
+/// An auto (or `fit-content`) size with fewer than two insets on its axis is
+/// shrunk to fit: a width in what the block leaves it, a height its
+/// content's — a fixed box as well as an absolute one (#893). A percentage
+/// `min-`/`max-` size is resolved against the block for all three kinds.
+///
 /// For the two absolute cases it also resolves what else Taffy would take
 /// from the direct parent: the margins that come out of the space between two
-/// insets, and a percentage `min-`/`max-` size, padding or margin (a
-/// percentage padding or margin is of the containing block's **width** on
-/// every side). A `Calc` in one of those is `calc_layout`'s, which resolves it
-/// against the same box.
+/// insets, and a percentage padding or margin (of the containing block's
+/// **width** on every side). A `Calc` in one of those is `calc_layout`'s,
+/// which resolves it against the same box. A fixed box's margins and padding
+/// keep the Taffy parent as their basis, and take nothing out of its room
+/// (#1980).
 ///
 /// The result is a function of the computed style and `cb` alone **given a
 /// `size` that is the computed style's own** (`ComputedStyle::to_taffy_style`'s
@@ -1170,24 +1179,21 @@ pub(crate) fn apply_out_of_flow_size_overrides(
         let r = cs.right.resolve(cw).unwrap_or(0.0);
         taffy_style.size.width = taffy::Dimension::length((cw - l - r - ml - mr).max(0.0));
     } else if taffy_style.size.width == taffy::Dimension::auto()
-        || (absolute && taffy_style.size.width == taffy::Dimension::fit_content())
+        || taffy_style.size.width == taffy::Dimension::fit_content()
     {
         let auto = taffy_style.size.width == taffy::Dimension::auto();
         match (cs.left.resolve(cw), cs.right.resolve(cw)) {
             (Some(l), Some(r)) if auto => {
                 taffy_style.size.width = taffy::Dimension::length((cw - l - r - ml - mr).max(0.0));
             }
-            // A fixed box with unpaired insets fills the viewport, as it has
-            // since the fixed path was written.
-            _ if !absolute => {
-                taffy_style.size.width = taffy::Dimension::length(cw);
-            }
-            // An absolute one shrinks to fit (CSS 2.1 §10.3.7) — in what its
-            // **containing block** leaves it: that block's width less the
+            // Otherwise the box shrinks to fit (CSS 2.1 §10.3.7) — in what
+            // its **containing block** leaves it: that block's width less the
             // insets and margins, and with both insets `auto`, the room its
-            // static position leaves it (`StaticAnchor`, #1404). Taffy would measure it in the
-            // whole width of the box it lays it out in; `fit-content(<px>)`
-            // is its spelling of "measure at this available width".
+            // static position leaves it (`StaticAnchor`, #1404). A fixed box
+            // too: its block is the viewport, which it used to fill (#893).
+            // Taffy would measure it in the whole width of the box it lays
+            // it out in; `fit-content(<px>)` is its spelling of "measure at
+            // this available width".
             (l, r) => {
                 let room = if l.is_none() && r.is_none() {
                     node.abs_static_anchor.room(cw)
@@ -1217,14 +1223,10 @@ pub(crate) fn apply_out_of_flow_size_overrides(
         let b = cs.bottom.resolve(ch).unwrap_or(0.0);
         taffy_style.size.height = taffy::Dimension::length((ch - t - b - mt - mb).max(0.0));
     } else if taffy_style.size.height == taffy::Dimension::auto() {
-        match (cs.top.resolve(ch), cs.bottom.resolve(ch)) {
-            (Some(t), Some(b)) => {
-                taffy_style.size.height = taffy::Dimension::length((ch - t - b - mt - mb).max(0.0));
-            }
-            _ if !absolute => {
-                taffy_style.size.height = taffy::Dimension::length(ch);
-            }
-            _ => {}
+        // Between two insets it fills the space; otherwise it is its
+        // content's (CSS 2.1 §10.6.4), a fixed box's too (#893).
+        if let (Some(t), Some(b)) = (cs.top.resolve(ch), cs.bottom.resolve(ch)) {
+            taffy_style.size.height = taffy::Dimension::length((ch - t - b - mt - mb).max(0.0));
         }
     } else if absolute {
         match cs.height {
@@ -1238,9 +1240,9 @@ pub(crate) fn apply_out_of_flow_size_overrides(
         }
     }
 
-    if !absolute {
-        return;
-    }
+    // A percentage `min-`/`max-` size is of the containing block — for a
+    // fixed box the viewport, which a fixed box sized from its content needs
+    // to be capped by it (#893).
     let limit = |slot: &mut taffy::LengthPercentageAuto, v: DimensionValue, basis: f32| {
         if let DimensionValue::Percent(p) = v {
             *slot = taffy::LengthPercentageAuto::length((basis * p).max(0.0));
@@ -1250,6 +1252,9 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     limit(&mut taffy_style.max_size.width, cs.max_width, cw);
     limit(&mut taffy_style.min_size.height, cs.min_height, ch);
     limit(&mut taffy_style.max_size.height, cs.max_height, ch);
+    if !absolute {
+        return;
+    }
     let pad = |slot: &mut taffy::LengthPercentage, v: LengthPercentageValue| {
         if let LengthPercentageValue::Percent(p) = v {
             *slot = taffy::LengthPercentage::length((cw * p).max(0.0));
@@ -2103,7 +2108,9 @@ fn static_anchor(
 ) -> Option<StaticAnchor> {
     let parent_id = layout_parent(tree, node_id)?;
     let (end, cb) = match kind {
-        Some(OutOfFlowKind::Fixed) => return None,
+        // The viewport; the parent's origin in it is the unscrolled sum its
+        // static position is placed from (`place_fixed_static`, #893).
+        Some(OutOfFlowKind::Fixed) => (None, ContainingBox::viewport(tree)),
         Some(OutOfFlowKind::IcbAbsolute) => (None, ContainingBox::viewport(tree)),
         Some(kind @ OutOfFlowKind::AncestorAbsolute(cb)) => {
             (Some(chain_end(tree, cb)?), ContainingBox::of(tree, kind)?)
@@ -2113,7 +2120,11 @@ fn static_anchor(
             ContainingBox::of_ancestor(tree, parent_id)?,
         ),
     };
-    let ((ox, _), _) = chain_to_containing_block(tree, node_id, end, false)?;
+    let ox = if kind == Some(OutOfFlowKind::Fixed) {
+        unscrolled_parent_origin(tree, node_id).0
+    } else {
+        chain_to_containing_block(tree, node_id, end, false)?.0.0
+    };
     // The parent's border-box start, in the containing block's padding box.
     let origin = ox - cb.border_left;
     let parent = tree.get(parent_id)?;
