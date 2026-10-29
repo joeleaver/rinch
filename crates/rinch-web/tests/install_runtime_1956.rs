@@ -81,7 +81,11 @@ async fn install_runtime_drives_timers_tasks_and_polls_with_no_root() {
     let shape = page_shape();
     rinch_web::install_runtime();
     rinch_web::install_runtime();
-    assert_eq!(page_shape(), shape, "install_runtime must not build any DOM");
+    assert_eq!(
+        page_shape(),
+        shape,
+        "install_runtime must not build any DOM"
+    );
 
     // The task spawned before the install is picked up by it.
     assert!(
@@ -104,14 +108,20 @@ async fn install_runtime_drives_timers_tasks_and_polls_with_no_root() {
         sleep(Duration::from_millis(10)).await;
         s.set(true);
     });
-    assert!(wait_for(|| slept.get()).await, "spawn_local + sleep complete");
+    assert!(
+        wait_for(|| slept.get()).await,
+        "spawn_local + sleep complete"
+    );
 
     // 5. A polled signal is sampled.
     let source = Rc::new(Cell::new(1u32));
     let src = source.clone();
     let polled = unowned(|| poll_signal(move || src.get(), PollRate::Millis(5)));
     source.set(7);
-    assert!(wait_for(|| polled.get() == 7).await, "poll_signal is sampled");
+    assert!(
+        wait_for(|| polled.get() == 7).await,
+        "poll_signal is sampled"
+    );
 
     // 6. A mount after the install still works, and reinstalls nothing twice.
     let host = document().create_element("div").unwrap();
