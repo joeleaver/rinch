@@ -49,6 +49,8 @@
 //! | r5 | `PB`: `relative; right: 30px; bottom: 10px` 250x120 | 86x46 |
 //! | r6 | `PB`: `relative; left: 10%; top: 10%` 150x60 | 0x0 |
 //! | r7 | `PB`: `relative; left: 20px` 150x60, `translate(30px, 40px)` | 25x13 |
+//! | r8 | `PB`: `relative; top: -10%` 100x90 | 0x16 |
+//! | r9 | `PB`: `relative; left: -10%` 180x50 | 16x0 |
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -422,5 +424,27 @@ fn a_relative_and_translated_child_counts_where_it_is_drawn() {
             ],
         ),
         (25.0, 13.0),
+    );
+}
+
+/// Start-ward percentage offsets: the static box is what overflows, so the
+/// offset taken off the layout rect must be the one Taffy applied — `top`
+/// against the content box's **height** (-7.4), `left` against its width
+/// (-16.4). A 90px-tall box scrolls 90 - 74 = 16; a 180px-wide one 16.
+#[test]
+fn a_startward_percentage_offset_keeps_the_static_box() {
+    assert_range(
+        max_scroll(
+            PB,
+            &["position: relative; top: -10%; width: 100px; height: 90px"],
+        ),
+        (0.0, 16.0),
+    );
+    assert_range(
+        max_scroll(
+            PB,
+            &["position: relative; left: -10%; width: 180px; height: 50px"],
+        ),
+        (16.0, 0.0),
     );
 }
