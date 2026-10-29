@@ -424,6 +424,88 @@ fn a_drag_out_of_a_label_does_not_click_the_labelled_controls_handler() {
     f.teardown();
 }
 
+/// The issue's markup: `label#lbl { for: c, onclick: A }` beside
+/// `div#wrap { onclick: B, input#c }`.
+fn issue_markup(out: Rc<RefCell<Option<Pair>>>) -> impl FnOnce(&mut RenderScope) -> NodeHandle {
+    move |scope| {
+        let (a, ca) = counter(scope);
+        let (b, cb) = counter(scope);
+        *out.borrow_mut() = Some((ca, cb));
+        let root = scope.create_element("div");
+        let label = scope.create_element("label");
+        label.set_attribute("id", "lbl");
+        label.set_attribute("for", "c");
+        with_rid(&label, a);
+        label.append_child(&scope.create_text("label text"));
+        root.append_child(&label);
+        let wrap = scope.create_element("div");
+        wrap.set_attribute("id", "wrap");
+        with_rid(&wrap, b);
+        let input = scope.create_element("input");
+        input.set_attribute("type", "checkbox");
+        input.set_attribute("id", "c");
+        wrap.append_child(&input);
+        root.append_child(&wrap);
+        root
+    }
+}
+
+#[wasm_bindgen_test]
+fn a_handler_an_earlier_press_ran_does_not_suppress_the_next_label_forward() {
+    // What a press ran is per gesture: press 1 on `#wrap` runs B; press 2 on
+    // the label runs A, and its forward runs B again — press 2 never ran B. A
+    // record that outlived press 1 would suppress that forward (review of
+    // #2047, F1).
+    let counts: Rc<RefCell<Option<Pair>>> = Rc::default();
+    let f = Fixture::mount(issue_markup(counts.clone()));
+    let (a, b) = counts.borrow().clone().unwrap();
+    mouse_press(&f.el("wrap"));
+    assert_eq!(f.clicks(), ["click@wrap"], "positive control");
+    assert_eq!((a.get(), b.get()), (0, 1), "press 1 runs B");
+    mouse_press(&f.el("lbl"));
+    assert_eq!(
+        f.clicks(),
+        ["click@wrap", "click@lbl", "click@c"],
+        "positive control: press 2's label forwarded a click to #c"
+    );
+    assert_eq!(
+        (a.get(), b.get()),
+        (1, 2),
+        "press 2 runs A, and its forward runs B: press 2 had not run it"
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+async fn a_prevented_label_click_lets_no_later_click_at_its_control_through() {
+    // A label whose click is `preventDefault`ed forwards nothing, so nothing
+    // is recorded for its control: a trusted click at `#c` later in the same
+    // task is not that label's forward, and stays the gesture's duplicate
+    // (review of #2047, F2).
+    let counts: Rc<RefCell<Option<Pair>>> = Rc::default();
+    let f = Fixture::mount(issue_markup(counts.clone()));
+    let (a, b) = counts.borrow().clone().unwrap();
+    let lbl = f.el("lbl");
+    let prevent =
+        Closure::<dyn FnMut(web_sys::Event)>::new(|e: web_sys::Event| e.prevent_default());
+    lbl.add_event_listener_with_callback("click", prevent.as_ref().unchecked_ref())
+        .unwrap();
+    mouse_press(&lbl);
+    assert_eq!(f.clicks(), ["click@lbl"], "positive control: no forward");
+    assert_eq!((a.get(), b.get()), (1, 0));
+    f.el("c").click();
+    assert_eq!(f.clicks(), ["click@lbl", "click@c"], "positive control");
+    assert_eq!(
+        (a.get(), b.get()),
+        (1, 0),
+        "a click at the control that no label forwarded stays suppressed"
+    );
+    next_task().await;
+    lbl.remove_event_listener_with_callback("click", prevent.as_ref().unchecked_ref())
+        .unwrap();
+    f.teardown();
+}
+
 // ── Components: one press, one toggle ───────────────────────────────────────
 
 #[wasm_bindgen_test]
