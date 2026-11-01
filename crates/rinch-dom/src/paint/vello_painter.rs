@@ -26,6 +26,64 @@ pub struct VelloPainter {
     /// otherwise the draw itself (#1899 review: the routing generic cost
     /// 8.1k instructions a text page with no surface).
     routing: bool,
+    /// The clips and layers open, each with whether its pop reaches the scene
+    /// and the region drawing is confined to with it open: see
+    /// [`Painter::push_clip`] here.
+    open: Vec<OpenLayer>,
+}
+
+/// One clip or layer [`VelloPainter`] has open.
+#[derive(Clone, Copy)]
+struct OpenLayer {
+    /// Its pop has something to pop; `false` for a clip elided as cutting nothing.
+    pushed: bool,
+    /// Device bounds drawing is confined to while this is open.
+    region: Rect,
+    /// `region` is exactly what the open clips leave, not just its bounds:
+    /// every one of them is an axis-aligned rect. Only then is a clip judged
+    /// against it: a rounded clip leaves less than its bounds.
+    exact: bool,
+}
+
+/// No confinement: before any clip is open.
+const EVERYWHERE: Rect = Rect::new(
+    f64::NEG_INFINITY,
+    f64::NEG_INFINITY,
+    f64::INFINITY,
+    f64::INFINITY,
+);
+
+/// Whether clipping to `shape` under `transform` can remove nothing from
+/// `region` (device bounds drawing is already confined to): an axis-aligned
+/// rect, or rounded rect, that holds all of it. Conservative: `false` for any
+/// other shape or transform.
+fn clip_holds(transform: Affine, shape: &PaintShape, region: Rect) -> bool {
+    let [sx, b, c, sy, _, _] = transform.as_coeffs();
+    if b != 0.0 || c != 0.0 || !region.is_finite() {
+        return false;
+    }
+    let holds = |outer: Rect, inner: Rect| {
+        outer.x0 <= inner.x0 && outer.y0 <= inner.y0 && outer.x1 >= inner.x1 && outer.y1 >= inner.y1
+    };
+    match shape {
+        PaintShape::Rect(r) => holds(transform.transform_rect_bbox(*r), region),
+        PaintShape::RoundedRect(rr) => {
+            // A point of the rect lies outside the rounded shape only inside a
+            // corner square of the radius' size: a region clear of the corners
+            // in either axis is inside.
+            let outer = transform.transform_rect_bbox(rr.rect());
+            let radii = rr.radii();
+            let r = radii
+                .top_left
+                .max(radii.top_right)
+                .max(radii.bottom_left)
+                .max(radii.bottom_right)
+                * sx.abs().max(sy.abs());
+            holds(outer, region)
+                && (holds(outer.inset((-r, 0.0)), region) || holds(outer.inset((0.0, -r)), region))
+        }
+        _ => false,
+    }
 }
 
 /// Paint `$body` (with `$s` the scene) where it belongs: on a frame with no
@@ -54,7 +112,29 @@ impl VelloPainter {
             node_starts: Default::default(),
             reads_backdrop: false,
             routing: false,
+            open: Vec::new(),
         }
+    }
+
+    /// The region drawing is confined to now, and whether it is exact.
+    fn region(&self) -> (Rect, bool) {
+        self.open
+            .last()
+            .map_or((EVERYWHERE, true), |o| (o.region, o.exact))
+    }
+
+    /// Record a clip or layer pushed, confining drawing to `shape` under
+    /// `transform` as well.
+    fn opened(&mut self, transform: Affine, shape: &PaintShape) {
+        let (region, exact) = self.region();
+        let region = shape_bounds(transform, shape).map_or(region, |b| region.intersect(b));
+        let [_, b, c, _, _, _] = transform.as_coeffs();
+        let exact = exact && matches!(shape, PaintShape::Rect(_)) && b == 0.0 && c == 0.0;
+        self.open.push(OpenLayer {
+            pushed: true,
+            region,
+            exact,
+        });
     }
 
     /// Open this frame for the split-layer path (#1865): GPU surfaces offered
@@ -401,6 +481,7 @@ fn shape_bounds(transform: Affine, shape: &PaintShape) -> Option<Rect> {
 impl Painter for VelloPainter {
     fn reset(&mut self) {
         self.scene.reset();
+        self.open.clear();
         self.slicing = None;
         self.routing = false;
         self.reads_backdrop = false;
@@ -583,14 +664,46 @@ impl Painter for VelloPainter {
         );
     }
 
+    /// A clip that holds the whole region drawing is already confined to cuts
+    /// nothing, and is not pushed (judged only while every open clip is an
+    /// axis-aligned rect, so the region is exact). Vello allocates a clip's
+    /// tiles over its whole bounds and blends every one of them twice, whatever
+    /// it removes; a nested paint sequence re-opening a window-sized clip of an
+    /// outer one (a pane inside panes inside a window, each its own stacking
+    /// context) paid a window of tiles each time, cutting nothing. Its pop is
+    /// matched, and pops nothing. On the split-layer path it is still handed to
+    /// the split, which reasons over the whole chain, and only the window's
+    /// scene skips it, so a frame opened for slicing that splits nothing
+    /// encodes as an unsliced one does.
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
+        let (region, exact) = self.region();
+        let elide = exact && clip_holds(transform, shape, region);
         if self.slicing.is_none() {
+            if elide {
+                self.open.push(OpenLayer {
+                    pushed: false,
+                    region,
+                    exact,
+                });
+                return;
+            }
+            self.opened(transform, shape);
             return push_clip_into(&mut self.scene, fill, transform, shape);
+        }
+        if elide {
+            self.open.push(OpenLayer {
+                pushed: true,
+                region,
+                exact,
+            });
+        } else {
+            self.opened(transform, shape);
         }
         self.push_sliced(|| Open::Clip {
             fill,
             transform,
             shape: shape.clone(),
+            below: !elide,
         });
     }
 
@@ -604,6 +717,7 @@ impl Painter for VelloPainter {
         if matches!(blend, BlendMode::Saturation) {
             self.reads_backdrop = true;
         }
+        self.opened(transform, bounds);
         if self.slicing.is_none() {
             return push_layer_into(&mut self.scene, blend, opacity, transform, bounds);
         }
@@ -616,6 +730,7 @@ impl Painter for VelloPainter {
     }
 
     fn push_isolated_layer(&mut self, opacity: f32, transform: Affine, bounds: &PaintShape) {
+        self.opened(transform, bounds);
         if self.slicing.is_none() {
             return push_layer_into(
                 &mut self.scene,
@@ -633,6 +748,10 @@ impl Painter for VelloPainter {
     }
 
     fn pop_layer(&mut self) {
+        // An elided clip's pop pops nothing.
+        if !self.open.pop().is_none_or(|o| o.pushed) {
+            return;
+        }
         if self.slicing.is_none() {
             return self.scene.pop_layer();
         }
@@ -1031,5 +1150,121 @@ mod blob_identity_tests {
             opaque: true,
         };
         assert_ne!(paint(image()), paint(image()));
+    }
+}
+
+#[cfg(test)]
+mod clip_elision_in_painter_tests {
+    use super::*;
+    use peniko::kurbo::RoundedRect;
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> PaintShape {
+        PaintShape::Rect(Rect::new(x0, y0, x1, y1))
+    }
+
+    fn pushed(p: &VelloPainter) -> Vec<bool> {
+        p.open.iter().map(|o| o.pushed).collect()
+    }
+
+    /// A clip holding the whole region drawing is already confined to is not
+    /// pushed, and its pop pops nothing.
+    #[test]
+    fn a_clip_that_cuts_nothing_is_not_pushed_and_its_pop_balances() {
+        let mut p = VelloPainter::new();
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(-10.0, -10.0, 900.0, 900.0),
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(100.0, 100.0, 200.0, 200.0),
+        );
+        assert_eq!(pushed(&p), vec![true, false, false, true]);
+        assert_eq!(
+            p.scene.encoding().n_clips,
+            2,
+            "two clips begun on the scene"
+        );
+        for _ in 0..4 {
+            p.pop_layer();
+        }
+        assert!(p.open.is_empty());
+        assert_eq!(p.scene.encoding().n_clips, 4, "two begun, two ended");
+    }
+
+    /// A rounded clip cuts its corners: elided only when the region is clear
+    /// of them. A rotated clip is never judged, and nothing is judged inside a
+    /// clip that leaves less than its bounds.
+    #[test]
+    fn rounded_and_rotated_clips_are_judged_conservatively() {
+        let rounded = PaintShape::RoundedRect(RoundedRect::new(0.0, 0.0, 800.0, 600.0, 20.0));
+        let mut p = VelloPainter::new();
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        p.push_clip(Fill::NonZero, Affine::IDENTITY, &rounded);
+        assert_eq!(
+            pushed(&p),
+            vec![true, true],
+            "the region reaches the corners"
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        assert_eq!(
+            pushed(&p),
+            vec![true, true, true],
+            "inside a rounded clip nothing is judged"
+        );
+
+        let mut p = VelloPainter::new();
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(100.0, 100.0, 200.0, 200.0),
+        );
+        p.push_clip(Fill::NonZero, Affine::IDENTITY, &rounded);
+        assert_eq!(
+            pushed(&p),
+            vec![true, false],
+            "a region clear of the corners"
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::rotate(0.3),
+            &rect(-5000.0, -5000.0, 5000.0, 5000.0),
+        );
+        assert_eq!(
+            pushed(&p),
+            vec![true, false, true],
+            "a rotated clip is pushed"
+        );
+        p.push_layer(
+            BlendMode::Normal,
+            0.5,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        assert_eq!(
+            pushed(&p),
+            vec![true, false, true, true],
+            "a layer is always pushed"
+        );
     }
 }
