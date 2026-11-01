@@ -399,8 +399,41 @@ pub fn opacity_layer_bounds(
     x: f64,
     y: f64,
 ) -> Rect {
+    match opacity_layer_extent(tree, node_id, scale, x, y) {
+        // A zero-area answer is not worth trusting even when it is arrived at
+        // honestly: the layer is being pushed because paint is about to draw
+        // something into it, and a degenerate clip would blank whatever that
+        // is. The zero-area branch in `paint_node` reaches this with an element
+        // that has no box of its own and no children, and `UNBOUNDED` is
+        // exactly what that branch passed before this function existed.
+        Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => r,
+        _ => UNBOUNDED,
+    }
+}
+
+/// Whether the subtree at `node_id` provably paints nothing at all, whatever
+/// clips are open around it: the walk [`opacity_layer_bounds`] uses answers
+/// [`Extent::Nothing`], or that all it draws lies within a rect of no area
+/// (anything that draws a pixel, a border, a stroke or a glyph, gives its
+/// rect area). `x`/`y` are the node's painted origin, as there.
+pub(super) fn paints_nothing_at_all(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+) -> bool {
+    match opacity_layer_extent(tree, node_id, scale, x, y) {
+        Extent::Nothing => true,
+        Extent::Within(r) => !(r.width() > 0.0 && r.height() > 0.0),
+        Extent::Unknown | Extent::Escapes => false,
+    }
+}
+
+/// The subtree's extent as the walk finds it (see [`opacity_layer_bounds`]).
+fn opacity_layer_extent(tree: &NodeTree, node_id: RawNodeId, scale: f64, x: f64, y: f64) -> Extent {
     let Some(node) = tree.get(node_id) else {
-        return UNBOUNDED;
+        return Extent::Unknown;
     };
     // The walk re-derives every node's position as `offset + layout.x * scale`,
     // including the root's, so hand it the offset that reproduces the `x`/`y`
@@ -418,16 +451,7 @@ pub fn opacity_layer_bounds(
         absolutes_escape_clips: false,
         clipper_below_cb: false,
     };
-    match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
-        // A zero-area answer is not worth trusting even when it is arrived at
-        // honestly: the layer is being pushed because paint is about to draw
-        // something into it, and a degenerate clip would blank whatever that
-        // is. The zero-area branch in `paint_node` reaches this with an element
-        // that has no box of its own and no children, and `UNBOUNDED` is
-        // exactly what that branch passed before this function existed.
-        Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => r,
-        _ => UNBOUNDED,
-    }
+    walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0)
 }
 
 /// Where `node_id`'s subtree paints, for a damage computation: `Some(rect)`,
@@ -624,7 +648,14 @@ pub(super) fn subtree_is_entirely_outside(
     }
 }
 
-/// Convenience for the call sites, which all want a [`PaintShape`].
+/// The bounds of the layer an element with `opacity` below 1 is painted in,
+/// as the [`PaintShape`] the call sites push.
+///
+/// A subtree the walk proves paints **nothing** gets an empty rect at the
+/// element's own origin, where [`opacity_layer_bounds`] answers [`UNBOUNDED`]:
+/// Vello allocates a layer's tiles over its whole bounds, so a dimmed element
+/// that draws nothing would cost a window of tiles. Nothing is drawn into the
+/// layer, so an empty clip cuts nothing away.
 pub(super) fn opacity_layer_shape(
     tree: &NodeTree,
     node_id: RawNodeId,
@@ -632,7 +663,11 @@ pub(super) fn opacity_layer_shape(
     x: f64,
     y: f64,
 ) -> PaintShape {
-    opacity_layer_bounds(tree, node_id, scale, x, y).into()
+    match opacity_layer_extent(tree, node_id, scale, x, y) {
+        Extent::Nothing => Rect::new(x, y, x, y).into(),
+        Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => r.into(),
+        _ => UNBOUNDED.into(),
+    }
 }
 
 struct Walk<'a> {

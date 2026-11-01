@@ -3342,6 +3342,32 @@ fn paint_sequence_entry(
     {
         return;
     }
+    // An entry whose subtree provably draws nothing (a closed menu sized to
+    // nothing) is skipped before its clip chain is switched to. The cull below
+    // can only be asked once the chain is open, and a fixed entry's chain is
+    // empty: switching to it closed every clip the entries around it share,
+    // and the next entry opened them all again. The walk is clip-independent
+    // and capped (`MAX_VISITS`): an entry that paints nothing paints nothing
+    // under any clip. In Pimble at 4K this is 58K of a 523K-tile frame.
+    // Asked only when the switch would close a clip that is open: an entry
+    // under the same chain costs nothing to enter, and the walk is not free
+    // over a long paragraph.
+    if let Some(child) = child
+        && entry.clips != *open
+        && {
+            let open_chain = order.clips_for_span(*open);
+            shared_clip_prefix(open_chain, order.clips_for_span(entry.clips)) < open_chain.len()
+        }
+        && layer_bounds::paints_nothing_at_all(
+            tree,
+            entry.node_id,
+            scale,
+            entry.offset_x + child.layout.x as f64 * scale,
+            entry.offset_y + child.layout.y as f64 * scale,
+        )
+    {
+        return;
+    }
     switch_clip_chain(order, entry.clips, open, painter, node_transform);
 
     // A `position: fixed` entry is hoisted no further than this root
