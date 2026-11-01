@@ -642,7 +642,7 @@ impl RinchMcpServer {
     }
 
     #[tool(
-        description = "Get the app's performance counters: style cascades, Parley shapes, IFC setup passes, Taffy computes, full repaints by reason, dirty-region area, hit-test visits, effect runs and phase timings. Returns last_frame (the last completed redraw), current_frame, total (since the last reset) and frames. Pass reset: true to zero them after reading, then drive the app and call again to measure one interaction."
+        description = "Get the app's performance counters: style cascades, Parley shapes, IFC setup passes, Taffy computes, full repaints by reason, dirty-region area, Vello clip and layer tiles (vello_clip_tiles, an estimate; 0 on a software frame), hit-test visits, effect runs and phase timings. Returns last_frame (the last completed redraw), current_frame, total (since the last reset) and frames. Pass reset: true to zero them after reading, then drive the app and call again to measure one interaction."
     )]
     async fn perf_stats(
         &self,

@@ -492,6 +492,43 @@ undamaged as before. Pins:
 Chrome 152 pixel answers (canvas `getImageData`) run on tiny-skia and, in
 the `#[ignore]`d `gpu_*` test, on Vello.
 
+### `vello_clip_tiles`: what a frame asks Vello for
+
+`VelloPainter::clip_tiles` estimates the tiles a frame's clips and layers cost;
+the shell adds it to `Counter::VelloClipTiles`. The guide has the meaning and the
+limits (`docs/src/guide/performance.md`, *Vello's tiles*); this is the mechanism.
+
+- **The arithmetic** is `vello_painter::tile_cost(bounds, target)`, a pure
+  function: `tile_alloc.wgsl`'s rounding (floor the near edges, ceil the far
+  ones, 16px, empty is 0) applied to the box cut by the target. Vello's
+  `draw_bboxes` are also cut by the enclosing clips' bounds (`clip_leaf.wgsl`);
+  the estimate is not, by definition, so a nested clip reads high.
+- **The window's scene** is counted in `VelloPainter::opened`, the one place
+  every clip and layer that reaches it passes through, split path included. An
+  elided clip never gets there.
+- **The split path** adds the rest in `Slicing::kept_tiles`, read by
+  `take_slices`: the inverse clip per open, the mask scenes, and each above
+  scene, whose mirrored and replayed pushes are tallied per scene and dropped
+  when the scene has no draw (`finish` drops it, so it is never rendered). A
+  slice's target is R's far corner (`Slice::tile_target`), not the scratch
+  texture `render_slice` rounds it up to.
+- **The target** comes from the shell, `set_tile_target`, after `reset` and
+  `begin_slicing`. `paint_frame_scene` sets the damage's far corner on a partial
+  frame, because that is the target `GpuFrame::Partial` renders to; S4's
+  `below_kept` shrinks that target after the paint, so such a frame reads high.
+  With none set, nothing is cut: a drag snapshot, whose count `append_scene` adds.
+- **Reporting.** `reset` zeroes it, so of a frame's several paints (taint, the
+  memory cap, a damage grown over a region) the last, the rendered one, is what
+  `build_gpu_frame_split` and `build_scene_with` add. `build_gpu_frame_split` adds
+  nothing when it painted nothing: the painter still holds the previous scene.
+
+The fixtures in `crates/rinch-dom/tests/window_tiles_tests.rs` were each checked
+by removing the fix they pin. Two traps found doing that: `opacity_layer_shape`
+proves a hidden dimmed box empty, so the `display: none` guard moves no tile
+unless the box holds something that defeats the proof (a fixed descendant); and
+paint opens no clip around content that fits it, so a clip fixture needs an
+entry crossing the clip's edge, or the elision has nothing to elide.
+
 ### Split GPU surfaces in the Vello painter (#1865)
 
 Design record: `docs/design/split-layer-gpu-surfaces.md`, *Painter split*.
