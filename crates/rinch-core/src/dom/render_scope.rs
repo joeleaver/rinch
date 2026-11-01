@@ -1091,6 +1091,22 @@ impl RenderScope {
         crate::events::register_key_handler(crate::events::KeyCallback::new(callback))
     }
 
+    /// Register an element wheel handler (`onwheel`) and return its ID. The
+    /// callback answers whether it consumed the wheel — see
+    /// [`WheelCallback`](crate::events::WheelCallback).
+    ///
+    /// ```ignore
+    /// let id = scope.register_wheel_handler(|w| w.modifiers.ctrl);
+    /// element.set_attribute("data-onwheel", &id.to_string());
+    /// ```
+    #[doc(hidden)]
+    pub fn register_wheel_handler<F: Fn(&crate::events::WheelEvent) -> bool + 'static>(
+        &mut self,
+        callback: F,
+    ) -> crate::events::EventHandlerId {
+        crate::events::register_wheel_handler(crate::events::WheelCallback::new(callback))
+    }
+
     /// Dispose of this scope and all child scopes.
     ///
     /// Equivalent to dropping it: cleanups and effects both live on

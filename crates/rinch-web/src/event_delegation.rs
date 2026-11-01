@@ -2758,6 +2758,78 @@ fn move_tab(
     wrap
 }
 
+/// The `WheelEvent` an `onwheel` handler is given for a browser `wheel`:
+/// deltas in logical pixels with the DOM's sign — a `deltaMode` of lines is 40
+/// px a line (what the desktop scrolls a notch by), of pages the viewport's
+/// height — the pointer in client pixels, and the modifiers. A trackpad pinch
+/// already arrives as a wheel with `ctrlKey` set.
+fn wheel_event_data(event: &web_sys::WheelEvent) -> events::WheelEvent {
+    let unit = match event.delta_mode() {
+        web_sys::WheelEvent::DOM_DELTA_LINE => 40.0,
+        web_sys::WheelEvent::DOM_DELTA_PAGE => viewport_dims().1 as f64,
+        _ => 1.0,
+    };
+    let mouse: &web_sys::MouseEvent = event.as_ref();
+    events::WheelEvent::new(
+        (event.delta_x() * unit) as f32,
+        (event.delta_y() * unit) as f32,
+        mouse.client_x() as f32,
+        mouse.client_y() as f32,
+    )
+    .with_modifiers(modifiers_from_event(mouse))
+}
+
+/// Offer a `wheel` to the `data-onwheel` handler of its target and then its
+/// ancestors', nearest first, stopping at the first that consumes it; a
+/// consumed wheel is `preventDefault()`ed, so nothing scrolls and the
+/// browser does not zoom the page for a pinch. The ids are read before any
+/// handler runs.
+///
+/// The listener is on the document in the bubble phase and **not passive**: a
+/// passive one cannot cancel the scroll, and Chrome makes a document-level
+/// `wheel` listener passive unless told otherwise. A render surface's own
+/// wheel listener stops the event at the canvas, as on desktop, where a
+/// surface takes the wheel ahead of the element chain.
+fn install_wheel(doc: &web_sys::Document) {
+    let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let Ok(event) = event.dyn_into::<web_sys::WheelEvent>() else {
+            return;
+        };
+        let Some(el) = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let mut ids = Vec::new();
+        let mut cur = Some(el);
+        while let Some(e) = cur {
+            if let Some(id) = e
+                .get_attribute("data-onwheel")
+                .and_then(|v| v.parse::<usize>().ok())
+            {
+                ids.push(events::EventHandlerId(id));
+            }
+            cur = e.parent_element();
+        }
+        if ids.is_empty() {
+            return;
+        }
+        if events::dispatch_wheel_handler_chain(ids, &wheel_event_data(&event)) {
+            event.prevent_default();
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    let opts = web_sys::AddEventListenerOptions::new();
+    opts.set_passive(false);
+    doc.add_event_listener_with_callback_and_add_event_listener_options(
+        "wheel",
+        closure.as_ref().unchecked_ref(),
+        &opts,
+    )
+    .ok();
+    closure.forget();
+}
+
 /// Set up global event listeners that delegate to rinch's event handler registry.
 ///
 /// Wires `pointerdown`/`pointermove`/`pointerup`/`pointercancel` (click dispatch,
@@ -3951,6 +4023,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
 
     // Files dropped from outside the page on an `ondropfiles` element (#1771).
     install_file_drop(&browser_doc);
+
+    // `onwheel`: the element under the pointer, then its ancestors.
+    install_wheel(&browser_doc);
 
     // Scroll delegation: the native `scroll` event fires on the scrolled element
     // and does NOT bubble, so register in the capture phase to catch all

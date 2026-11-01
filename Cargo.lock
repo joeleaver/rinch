@@ -3713,6 +3713,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "node-graph-demo"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+]
+
+[[package]]
 name = "nokhwa"
 version = "0.10.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5344,6 +5351,7 @@ dependencies = [
  "rinch-editable",
  "rinch-editor-core",
  "rinch-editor-view",
+ "rinch-graph-view",
  "rinch-http",
  "rinch-macros",
  "rinch-platform",
@@ -5549,6 +5557,23 @@ dependencies = [
  "rinch-editor-core",
  "web-time",
  "yrs",
+]
+
+[[package]]
+name = "rinch-graph-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rinch-graph-view"
+version = "0.1.0"
+dependencies = [
+ "rinch-core",
+ "rinch-graph-core",
+ "rinch-macros",
 ]
 
 [[package]]
