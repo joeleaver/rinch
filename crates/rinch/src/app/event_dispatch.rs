@@ -91,6 +91,10 @@ impl RinchApp {
     /// way a browser reports a pinch. `delta` is winit's scale change (0.1 is
     /// 10% larger); the wheel's `delta_y` is chosen so
     /// [`events::WheelEvent::zoom_factor`] gives back `1 + delta`.
+    ///
+    /// Only the desktop shell and the tests call it, so embed and Android
+    /// builds compile no caller.
+    #[allow(dead_code)]
     pub(crate) fn pinch_as_wheel(&mut self, delta: f32) -> bool {
         let Some((x, y)) = self.cursor_pos else {
             return false;
