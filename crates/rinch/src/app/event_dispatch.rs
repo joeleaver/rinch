@@ -3731,6 +3731,14 @@ impl RinchApp {
             let mut painter = VelloPainter::new();
             let mut d = doc.borrow_mut();
             let d = &mut *d;
+            // Its clips reach the frame's count through `append_scene`: an
+            // unbounded layer must not count the whole plane.
+            painter.set_tile_target(peniko::kurbo::Rect::new(
+                0.0,
+                0.0,
+                d.tree.viewport.width as f64 * scale_factor,
+                d.tree.viewport.height as f64 * scale_factor,
+            ));
 
             rinch_dom::paint::paint_subtree(
                 &d.tree,

@@ -2132,6 +2132,12 @@ impl RinchApp {
                     (size.1 as f64 * scale).round(),
                 ));
             }
+            self.painter.set_tile_target(peniko::kurbo::Rect::new(
+                0.0,
+                0.0,
+                (size.0 as f64 * scale).round(),
+                (size.1 as f64 * scale).round(),
+            ));
             rinch_dom::paint::set_bases_without_game(sliced);
             if let Some(doc) = &self.doc {
                 let mut d = doc.borrow_mut();
@@ -2158,14 +2164,8 @@ impl RinchApp {
                     // Logical anchor/cursor, device-pixel snapshot — see
                     // `ActiveDrag::ghost_translate` (#299).
                     let (tx, ty) = drag.ghost_translate(scale);
-                    if sliced {
-                        self.painter
-                            .append_scene(&drag.snapshot, Affine::translate((tx, ty)));
-                    } else {
-                        self.painter
-                            .scene_mut()
-                            .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
-                    }
+                    self.painter
+                        .append_scene(&drag.snapshot, Affine::translate((tx, ty)));
                 }
             }
 
@@ -2204,6 +2204,7 @@ impl RinchApp {
             perf.full_repaint(FullRepaintReason::Gpu);
             perf.add(Counter::RepaintedPx, surface_px);
             perf.add(Counter::SurfacePx, surface_px);
+            perf.add(Counter::VelloClipTiles, self.painter.clip_tiles());
             perf.add_elapsed(Counter::TimePaintNs, paint_start);
         }
 
@@ -2244,6 +2245,23 @@ impl RinchApp {
             self.painter.begin_slicing(window);
             self.painter.refuse_split(&self.split.capped);
         }
+        // The target a partial frame is rendered to reaches the damage's far
+        // corner (`build_gpu_frame_split`); `S4` can shrink it after this paint.
+        let (w, h) = (
+            (size.0 as f64 * scale).round(),
+            (size.1 as f64 * scale).round(),
+        );
+        let far = |edge: fn(&peniko::kurbo::Rect) -> f64, whole: f64| {
+            rects.map_or(whole, |rects| {
+                rects.iter().map(edge).fold(0.0, f64::max).ceil().min(whole)
+            })
+        };
+        self.painter.set_tile_target(peniko::kurbo::Rect::new(
+            0.0,
+            0.0,
+            far(|r| r.x1, w),
+            far(|r| r.y1, h),
+        ));
         if let Some(rects) = rects {
             rinch_dom::paint::set_dirty_rects(Some(rects));
         }
@@ -2739,6 +2757,11 @@ impl RinchApp {
                     perf.add(Counter::DamageRects, damage.rects().len() as u64);
                     perf.add(Counter::RepaintedPx, (damage.area() as u64).min(surface_px));
                 }
+            }
+            // The last pass over the scene, the one that is rendered; none
+            // when nothing was painted, and the painter still holds an old one.
+            if full.is_some() || partial {
+                perf.add(Counter::VelloClipTiles, self.painter.clip_tiles());
             }
             perf.add_elapsed(Counter::TimePaintNs, paint_start);
         }
