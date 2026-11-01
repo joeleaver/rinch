@@ -169,7 +169,7 @@ use peniko::kurbo::Rect;
 
 use crate::paint::radii::BorderRadii;
 
-use crate::computed_style::PositionValue;
+use crate::computed_style::{DisplayValue, PositionValue};
 use crate::node::{Node, NodeTree, RawNodeId};
 use crate::paint::clip_shape;
 
@@ -667,6 +667,17 @@ impl<const BARS: bool> Collector<'_, BARS> {
             let Some(child) = self.tree.get_live(child_id) else {
                 continue;
             };
+            // Nothing under `display: none` renders, positioned and fixed
+            // descendants included. Descending into such a subtree hoisted
+            // every positioned box or stacking context in it (a dimmed toolbar
+            // button is one: `opacity < 1`) into this sequence, where paint
+            // entered each and, finding no area, pushed an opacity layer over
+            // the whole plane: Pimble's hidden toolbars and closed menus put 64
+            // such layers in every frame, 2.04M of the 2.81M tiles its 4K window
+            // asked Vello for, past Vello's fixed buffer.
+            if matches!(child.computed_style.display, DisplayValue::None) {
+                continue;
+            }
             let dom_order = self.order;
             self.order += 1;
 

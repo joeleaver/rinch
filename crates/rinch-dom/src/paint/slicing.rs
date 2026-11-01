@@ -122,6 +122,11 @@ pub(crate) enum Open {
         fill: Fill,
         transform: Affine,
         shape: PaintShape,
+        /// Written into the window's scene (`below`). `false` for a clip that
+        /// cuts nothing there (the painter's elision): kept here so the split
+        /// reasons over the same chain, and mirrored into the slices as before,
+        /// but the window's scene encodes as an unsliced frame's does.
+        below: bool,
     },
     Layer {
         blend: BlendMode,
@@ -252,6 +257,7 @@ pub(crate) fn push_open(scene: &mut Scene, entry: &Open) {
             fill,
             transform,
             shape,
+            ..
         } => push_clip_into(scene, *fill, *transform, shape),
         Open::Layer {
             blend,
@@ -365,7 +371,9 @@ impl Slicing {
     /// Mirror a push into every above scene and record it.
     pub(crate) fn push(&mut self, below: &mut Scene, entry: Open) {
         self.close_inverse(below);
-        push_open(below, &entry);
+        if !matches!(entry, Open::Clip { below: false, .. }) {
+            push_open(below, &entry);
+        }
         if let Open::Layer {
             blend,
             bounds,
@@ -398,7 +406,9 @@ impl Slicing {
 
     pub(crate) fn pop(&mut self, below: &mut Scene) {
         self.close_inverse(below);
-        below.pop_layer();
+        if !matches!(self.open.last(), Some(Open::Clip { below: false, .. })) {
+            below.pop_layer();
+        }
         let index = self.open.len().saturating_sub(1);
         for s in &mut self.slices {
             if index >= s.remaining {
