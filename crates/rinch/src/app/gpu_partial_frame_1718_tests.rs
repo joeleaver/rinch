@@ -571,7 +571,7 @@ fn gpu_hover_probe() {
     );
 }
 
-fn readback(
+pub(super) fn readback(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     tex: &wgpu::Texture,

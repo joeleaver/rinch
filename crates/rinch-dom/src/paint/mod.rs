@@ -3153,6 +3153,9 @@ fn paint_scrollbars(
 /// after the common prefix is popped and pushed. On vello every clip layer
 /// allocates tiles over its whole bounds, so re-pushing a window-sized outer
 /// clip for each positioned box is what overflows its fixed tile buffer.
+/// Entries with no prefix to share, rows of two panes whose `z-index`es
+/// alternate, are brought together where their clips share no pixel
+/// ([`PaintOrder::grouped_by_clip`](crate::stacking::PaintOrder::grouped_by_clip)).
 #[allow(clippy::too_many_arguments)]
 fn paint_children_with_stacking(
     tree: &NodeTree,
@@ -3230,7 +3233,10 @@ fn paint_children_with_stacking(
         let _deferred = DeferredBarsScope::enter(&order.bars);
         let mut open = ClipSpan::EMPTY;
         let mut bars = order.bars.iter().peekable();
-        for (index, entry) in order.iter().enumerate() {
+        let grouped = order.grouped_by_clip(node_transform);
+        for position in 0..order.len() {
+            let index = grouped.as_ref().map_or(position, |g| g[position] as usize);
+            let entry = &order[index];
             paint_sequence_entry(
                 tree,
                 &order,
@@ -3245,7 +3251,9 @@ fn paint_children_with_stacking(
             );
             // The bars of the scrollers whose last contained entry this was,
             // under the clips the scroller itself is drawn under (#1717).
-            while let Some(bar) = bars.next_if(|b| b.after == index) {
+            // Grouping keeps every entry up to `after` ahead of it, so this is
+            // that entry's position whichever entry fills it.
+            while let Some(bar) = bars.next_if(|b| b.after == position) {
                 switch_clip_chain(&order, bar.clips, &mut open, painter, node_transform);
                 if let Some(owner) = tree.get(bar.node_id)
                     && !matches!(

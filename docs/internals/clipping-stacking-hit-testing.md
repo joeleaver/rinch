@@ -646,7 +646,7 @@ comments' mechanism wrong.
 
 Vello allocates tiles over a clip's or a layer's whole bounds, whatever they hold,
 so a window-sized clip or layer around nothing still costs a window of tiles
-(#2069). Four rules keep that out of the scene:
+(#2069). Five rules keep that out of the scene:
 
 - `Collector::collect_hoisted` does not enter a `display: none` subtree.
 - `opacity_layer_shape` gives a subtree proved to paint nothing an empty rect.
@@ -656,8 +656,51 @@ so a window-sized clip or layer around nothing still costs a window of tiles
 - `VelloPainter::push_clip` leaves out a clip that holds the whole region, judged
   only while every open clip is an axis-aligned rect. On the split path the clip
   is still recorded and mirrored into slices.
+- `PaintOrder::grouped_by_clip` gathers entries under one chain across entries
+  whose chains share no device pixel (#1645), below.
 
 The first two callers to **trust** `Extent::Nothing` are `opacity_layer_shape` and
 `paints_nothing_at_all`, so the walk must see everything paint draws. A box
 collapsed to no area still draws its own inline content, which overflows it:
 `Walk::inline_extent` is read by both arms of `Walk::node` for that reason.
+
+### Entries gathered by clip chain
+
+`z-index` can alternate two panes' rows, `[A], [B], [A], [B], …`, with no prefix
+for `switch_clip_chain` to keep open, so each entry closed one pane-sized clip and
+opened another. `paint_children_with_stacking` paints the permutation
+`grouped_by_clip` returns instead. Hit testing keeps the true sequence: nothing it
+reads changed.
+
+**Why no pixel moves.** An entry paints inside its chain's clips on the painter's
+own stack, so whatever it draws stays inside them, shadows and a fixed descendant
+included (a lifted fixed entry leaves only its own root's bracket, #549). The proof reads only
+the clip rects and never an entry's ink. Two chains are apart when their
+intersected rects, under `node_transform` and rounded out to whole device pixels,
+share no pixel. The rounding is what makes it exact: clips meeting inside a pixel
+both antialias it, so a seam at 100.5 keeps its order and a seam at 100 does not
+have to.
+
+**The rule.** An entry joins the newest group of its chain only if every group
+after it is apart from the chain. An empty chain can reach everywhere, so nothing
+passes it. Chains are compared by content, since one chain can sit twice in
+`PaintOrder::clips`.
+
+**Bars.** Deferred scrollbars are drawn outside their scroller's clip, so no chain
+says where they reach. Nothing crosses a `DeferredBars::after`, and the loop
+matches `after` against the **position** painted, not the entry's index: a
+gathered entry can fill a different place in its segment.
+
+**Cost.** One pass over the entries when fewer than two changes of chain make
+grouping impossible, with no allocation, and at most `CLIP_GROUP_LOOKBACK` chain
+compares an entry otherwise. No subtree is walked.
+
+**Ruled out.** Narrowing or eliding the clip to the entry's extent would need
+`layer_bounds` to bound ink, which it does not: glyph ink past a line box is not
+caught, and #550's absolutes are under-measured for its bounds callers. That is a
+visible change on both renderers, where grouping cannot change a pixel.
+
+**What it does not gather.** Chains that differ only in an inner link (`[A, r1]`,
+`[B, s1]`, `[A, r2]`) are different chains, so each still reopens `A`. An entry
+with no chain between two others is a wall, even if it draws nothing; the
+`window_tiles_tests` finding stays at 3 clips rather than 2 for that reason.
