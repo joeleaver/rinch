@@ -1168,12 +1168,32 @@ mod clip_elision_in_painter_tests {
     #[test]
     fn a_clip_that_cuts_nothing_is_not_pushed_and_its_pop_balances() {
         let mut p = VelloPainter::new();
-        p.push_clip(Fill::NonZero, Affine::IDENTITY, &rect(0.0, 0.0, 800.0, 600.0));
-        p.push_clip(Fill::NonZero, Affine::IDENTITY, &rect(0.0, 0.0, 800.0, 600.0));
-        p.push_clip(Fill::NonZero, Affine::IDENTITY, &rect(-10.0, -10.0, 900.0, 900.0));
-        p.push_clip(Fill::NonZero, Affine::IDENTITY, &rect(100.0, 100.0, 200.0, 200.0));
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(-10.0, -10.0, 900.0, 900.0),
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(100.0, 100.0, 200.0, 200.0),
+        );
         assert_eq!(pushed(&p), vec![true, false, false, true]);
-        assert_eq!(p.scene.encoding().n_clips, 2, "two clips begun on the scene");
+        assert_eq!(
+            p.scene.encoding().n_clips,
+            2,
+            "two clips begun on the scene"
+        );
         for _ in 0..4 {
             p.pop_layer();
         }
@@ -1188,19 +1208,60 @@ mod clip_elision_in_painter_tests {
     fn rounded_and_rotated_clips_are_judged_conservatively() {
         let rounded = PaintShape::RoundedRect(RoundedRect::new(0.0, 0.0, 800.0, 600.0, 20.0));
         let mut p = VelloPainter::new();
-        p.push_clip(Fill::NonZero, Affine::IDENTITY, &rect(0.0, 0.0, 800.0, 600.0));
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
         p.push_clip(Fill::NonZero, Affine::IDENTITY, &rounded);
-        assert_eq!(pushed(&p), vec![true, true], "the region reaches the corners");
-        p.push_clip(Fill::NonZero, Affine::IDENTITY, &rect(0.0, 0.0, 800.0, 600.0));
-        assert_eq!(pushed(&p), vec![true, true, true], "inside a rounded clip nothing is judged");
+        assert_eq!(
+            pushed(&p),
+            vec![true, true],
+            "the region reaches the corners"
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        assert_eq!(
+            pushed(&p),
+            vec![true, true, true],
+            "inside a rounded clip nothing is judged"
+        );
 
         let mut p = VelloPainter::new();
-        p.push_clip(Fill::NonZero, Affine::IDENTITY, &rect(100.0, 100.0, 200.0, 200.0));
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(100.0, 100.0, 200.0, 200.0),
+        );
         p.push_clip(Fill::NonZero, Affine::IDENTITY, &rounded);
-        assert_eq!(pushed(&p), vec![true, false], "a region clear of the corners");
-        p.push_clip(Fill::NonZero, Affine::rotate(0.3), &rect(-5000.0, -5000.0, 5000.0, 5000.0));
-        assert_eq!(pushed(&p), vec![true, false, true], "a rotated clip is pushed");
-        p.push_layer(BlendMode::Normal, 0.5, Affine::IDENTITY, &rect(0.0, 0.0, 800.0, 600.0));
-        assert_eq!(pushed(&p), vec![true, false, true, true], "a layer is always pushed");
+        assert_eq!(
+            pushed(&p),
+            vec![true, false],
+            "a region clear of the corners"
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::rotate(0.3),
+            &rect(-5000.0, -5000.0, 5000.0, 5000.0),
+        );
+        assert_eq!(
+            pushed(&p),
+            vec![true, false, true],
+            "a rotated clip is pushed"
+        );
+        p.push_layer(
+            BlendMode::Normal,
+            0.5,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        assert_eq!(
+            pushed(&p),
+            vec![true, false, true, true],
+            "a layer is always pushed"
+        );
     }
 }

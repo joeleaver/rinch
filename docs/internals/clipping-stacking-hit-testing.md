@@ -641,3 +641,23 @@ comments' mechanism wrong.
 - `crates/rinch-dom/src/paint/skia_painter.rs` — Software backend
 - `crates/rinch-dom/src/paint/mod.rs` — `paint_document()`, dirty region computation, subtree pruning
 - `crates/rinch/src/app/mod.rs` — `build_scene()` (GPU) / `build_pixels()` (software)
+
+## What a frame asks Vello for
+
+Vello allocates tiles over a clip's or a layer's whole bounds, whatever they hold,
+so a window-sized clip or layer around nothing still costs a window of tiles
+(#2069). Four rules keep that out of the scene:
+
+- `Collector::collect_hoisted` does not enter a `display: none` subtree.
+- `opacity_layer_shape` gives a subtree proved to paint nothing an empty rect.
+  `opacity_layer_bounds`, which damage reads, keeps answering `UNBOUNDED` there.
+- `paint_sequence_entry` skips an entry that paints nothing before it switches
+  clip chains, and asks only when the switch would close an open clip.
+- `VelloPainter::push_clip` leaves out a clip that holds the whole region, judged
+  only while every open clip is an axis-aligned rect. On the split path the clip
+  is still recorded and mirrored into slices.
+
+The first two callers to **trust** `Extent::Nothing` are `opacity_layer_shape` and
+`paints_nothing_at_all`, so the walk must see everything paint draws. A box
+collapsed to no area still draws its own inline content, which overflows it:
+`Walk::inline_extent` is read by both arms of `Walk::node` for that reason.

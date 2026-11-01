@@ -709,6 +709,52 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
+    /// What an IFC root's own inline content draws. A root collapsed to no
+    /// area draws it too (it overflows the box), so both arms of [`Self::node`]
+    /// ask.
+    fn inline_extent(
+        &self,
+        node: &crate::Node,
+        x: f64,
+        y: f64,
+        scroll: Vec2,
+        transform: Affine,
+    ) -> Extent {
+        let Some(inline) = &node.text_layout else {
+            return Extent::Nothing;
+        };
+        let (off_x, off_y) = super::ifc_root_content_origin(node);
+        let content_x = x + off_x as f64 * self.scale - scroll.x;
+        let content_y = y + off_y as f64 * self.scale - scroll.y;
+        let mut text = Rect::new(
+            content_x,
+            content_y,
+            content_x + inline.painted_width() as f64 * self.scale,
+            content_y + inline.layout.height() as f64 * self.scale,
+        );
+        // What it draws past those line boxes: text `vertical-align`
+        // moves off its line, inline elements' backgrounds and borders
+        // (which reach past the line by their padding and border, #1762)
+        // and wavy underlines (#1817) — measured by the one function the
+        // damage ink reads too, from the geometry paint draws with.
+        // Before #1762 and #1817 a clip was elided whenever the unshifted
+        // lines fitted, and the pill, the raised text or the wave painted
+        // outside the box.
+        if let Some(past) =
+            super::text::inline_ink_past_lines(|id| self.tree.get(id), inline, self.scale)
+        {
+            text = text.union(past + Vec2::new(content_x, content_y));
+        }
+        // The shadows its inline elements declare are drawn with it (#1048).
+        let mut reach = text_shadow_reach(text, &node.computed_style.text_shadow, self.scale);
+        if self.tree.inline_text_shadows {
+            for list in super::member_text_shadows(node, true, |id| self.tree.get(id)) {
+                reach = reach.union(text_shadow_reach(text, list, self.scale));
+            }
+        }
+        Extent::Within(transform.transform_rect_bbox(reach))
+    }
+
     /// The extent of everything `paint_node` would draw for this node and its
     /// subtree, in the layer's coordinate space.
     ///
@@ -922,15 +968,19 @@ impl Walk<'_> {
             // smaller shape than the one this branch shipped before, and it is
             // the only branch of which that is true. The module doc's safety
             // property is stated with this exception; see "The one rule".
+            //
+            // `paint_node`'s zero-area arm draws the box's own inline content,
+            // which `children` skips as drawn by the IFC.
             let transform = self.own_transform(node, x, y, parent_transform, is_root);
-            return self.scoped_children(
+            let inline = self.inline_extent(node, x, y, scroll, transform);
+            return inline.union(self.scoped_children(
                 node,
                 x - scroll.x,
                 y - scroll.y,
                 transform,
                 depth,
                 is_root,
-            );
+            ));
         }
 
         let x = offset_x + layout.x as f64 * self.scale;
@@ -990,38 +1040,7 @@ impl Walk<'_> {
         // the enclosing element boxes are in the union, so it is a pre-existing
         // approximation left where it was rather than a new one introduced here.
         let mut extent = Extent::Within(transform.transform_rect_bbox(own));
-        if let Some(inline) = &node.text_layout {
-            let (off_x, off_y) = super::ifc_root_content_origin(node);
-            let content_x = x + off_x as f64 * self.scale - scroll.x;
-            let content_y = y + off_y as f64 * self.scale - scroll.y;
-            let mut text = Rect::new(
-                content_x,
-                content_y,
-                content_x + inline.painted_width() as f64 * self.scale,
-                content_y + inline.layout.height() as f64 * self.scale,
-            );
-            // What it draws past those line boxes: text `vertical-align`
-            // moves off its line, inline elements' backgrounds and borders
-            // (which reach past the line by their padding and border, #1762)
-            // and wavy underlines (#1817) — measured by the one function the
-            // damage ink reads too, from the geometry paint draws with.
-            // Before #1762 and #1817 a clip was elided whenever the unshifted
-            // lines fitted, and the pill, the raised text or the wave painted
-            // outside the box.
-            if let Some(past) =
-                super::text::inline_ink_past_lines(|id| self.tree.get(id), inline, self.scale)
-            {
-                text = text.union(past + Vec2::new(content_x, content_y));
-            }
-            // The shadows its inline elements declare are drawn with it (#1048).
-            let mut reach = text_shadow_reach(text, &node.computed_style.text_shadow, self.scale);
-            if self.tree.inline_text_shadows {
-                for list in super::member_text_shadows(node, true, |id| self.tree.get(id)) {
-                    reach = reach.union(text_shadow_reach(text, list, self.scale));
-                }
-            }
-            extent = extent.union(Extent::Within(transform.transform_rect_bbox(reach)));
-        }
+        extent = extent.union(self.inline_extent(node, x, y, scroll, transform));
 
         // A text node paints its cached Parley layout at its own origin. The
         // layout can be a little wider than the box Taffy sized for it (see the

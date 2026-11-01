@@ -4062,9 +4062,10 @@ fn paint_node_unmasked(
                 // The element's own rect is zero-area and Vello clips a layer
                 // to its bounds shape, which would blank the subtree. The
                 // subtree's own extent is the right answer here as it is
-                // everywhere else, and [`opacity_layer_bounds`] falls back to
-                // the conservative `UNBOUNDED` rect this branch used to pass
-                // whenever it cannot work one out (card K36).
+                // everywhere else; `opacity_layer_shape` gives a subtree that
+                // draws nothing an empty rect, and falls back to the
+                // conservative `UNBOUNDED` this branch used to pass whenever it
+                // cannot work one out (card K36).
                 let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
                 painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
             }
