@@ -12,7 +12,7 @@ thread_local! {
 }
 
 /// Current keyboard modifier state (Shift, Ctrl, Alt, Meta).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ModifierState {
     pub shift: bool,
     pub ctrl: bool,
