@@ -430,10 +430,13 @@ impl Painter for VelloPainter {
         route!(
             self,
             || {
-                // Half the width each side, under the transform's largest
-                // stretch.
+                // The stroke's reach past its path (half the width, more at
+                // a miter join or a square cap), under a bound on the
+                // transform's largest stretch.
                 let [a, b, c, d, _, _] = transform.as_coeffs();
-                let grow = stroke.width * (a.abs() + b.abs() + c.abs() + d.abs()) + 1.0;
+                let grow = super::svg::stroke_outset(stroke)
+                    * (a.abs() + b.abs() + c.abs() + d.abs())
+                    + 1.0;
                 shape_bounds(transform, shape).map(|r| r.inflate(grow, grow))
             },
             |scene| dispatch_stroke!(scene, stroke, transform, brush, shape)

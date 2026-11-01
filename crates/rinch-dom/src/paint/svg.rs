@@ -6,7 +6,9 @@ use peniko::kurbo::{
     Affine, BezPath, Cap, Circle, Ellipse, Join, Line, Rect, RoundedRect, Shape, Stroke,
 };
 
-use super::painter::{PaintShape, Painter};
+use std::rc::Rc;
+
+use super::painter::{BlendMode, PaintShape, Painter};
 use crate::layout::parse_color_with_current;
 use crate::node::{Node, NodeKind, NodeTree};
 
@@ -17,13 +19,15 @@ use crate::node::{Node, NodeKind, NodeTree};
 /// Paint an `<svg>` element and its shapes (`path`, `rect` with `rx`/`ry`,
 /// `circle`, `ellipse`, `line`, `polyline`, `polygon`), at any depth inside
 /// `<g>` groups, each under its own and its groups' `transform` (#1538,
-/// #1539).
+/// #1539), with SVG 2's stroke properties (dashes, miter limit, opacities,
+/// `paint-order`, `vector-effect: non-scaling-stroke`) and `opacity` on
+/// shapes and groups.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_svg(
     tree: &NodeTree,
     node: &Node,
     painter: &mut dyn Painter,
-    _scale: f64,
+    scale: f64,
     x: f64,
     y: f64,
     w: f64,
@@ -54,30 +58,63 @@ pub(super) fn paint_svg(
         viewbox_to_box_transform(viewbox, (x, y, w, h), preserve_aspect);
     let transform = css_transform * Affine::new([vb_sx, 0.0, 0.0, vb_sy, vb_tx, vb_ty]);
 
-    // What the `<svg>` hands its content: its own fill/stroke over SVG's
-    // initial values (`fill` black, `stroke` none). The `<svg>`'s own
-    // `transform` attribute is not read.
+    // A percentage stroke length (`stroke-width`, `stroke-dasharray`,
+    // `stroke-dashoffset`) is of the viewport's normalized diagonal,
+    // `sqrt((w² + h²) / 2)`, in user units: the viewBox's size.
+    let percent_base = ((vb_w * vb_w + vb_h * vb_h) / 2.0).sqrt() / 100.0;
+
+    // What the `<svg>` hands its content: its own values over SVG's initial
+    // ones. The `<svg>`'s own `transform` attribute is not read.
     let initial = SvgInherited {
         transform,
         fill: InheritedPaint::Fixed(Some(SVG_INITIAL_FILL)),
         stroke: InheritedPaint::Fixed(None),
-        stroke_width: 2.0,
+        fill_opacity: 1.0,
+        stroke_opacity: 1.0,
+        stroke_width: 1.0,
         linecap: Cap::Butt,
         linejoin: Join::Miter,
+        miter_limit: 4.0,
+        dasharray: None,
+        dashoffset: 0.0,
+        stroke_first: false,
     };
-    let root = initial.derive(node, resolve_current_color(tree, node));
+    let root = initial.derive(node, resolve_current_color(tree, node), percent_base);
+
+    // The `<svg>`'s own CSS `opacity` is its box's (`paint_node`'s layer);
+    // an `opacity` *attribute* on it is the SVG presentation attribute, which
+    // only this painter reads.
+    let svg_box = PaintShape::Rect(Rect::new(x, y, x + w, y + h));
+    let root_opacity = if node.computed_style.opacity < 1.0 || declares_in_style(node, "opacity") {
+        1.0
+    } else {
+        node.attributes
+            .get("opacity")
+            .and_then(|v| parse_alpha(v.trim()))
+            .unwrap_or(1.0)
+    };
+    if root_opacity <= 0.0 {
+        return;
+    }
+    let root_layer = root_opacity < 1.0;
+    if root_layer {
+        painter.push_layer(BlendMode::Normal, root_opacity, css_transform, &svg_box);
+    }
 
     // A depth-first walk in document order, so later shapes paint over
     // earlier ones. Iterative: a group's nesting is the document's, and paint
-    // must not run out of stack on it.
-    let mut stack: Vec<(&Node, SvgInherited, usize)> = vec![(node, root, 0)];
-    while let Some((parent, inherited, next)) = stack.last_mut() {
+    // must not run out of stack on it. Each frame remembers whether it pushed
+    // an opacity layer, popped with the frame.
+    let mut stack: Vec<(&Node, SvgInherited, usize, bool)> = vec![(node, root, 0, root_layer)];
+    while let Some((parent, inherited, next, _)) = stack.last_mut() {
         let Some(&child_id) = parent.children.get(*next) else {
-            stack.pop();
+            if let Some((_, _, _, true)) = stack.pop() {
+                painter.pop_layer();
+            }
             continue;
         };
         *next += 1;
-        let inherited = *inherited;
+        let inherited = inherited.clone();
         let Some(child) = tree.get_live(child_id) else {
             continue;
         };
@@ -95,14 +132,24 @@ pub(super) fn paint_svg(
         {
             continue;
         }
+        // `opacity` does not inherit: a group's or a shape's applies to what
+        // it paints as a whole (a stroke over its own fill is not seen
+        // through), so it is a layer, not an alpha on each paint.
+        let opacity = element_opacity(child);
+        if opacity <= 0.0 {
+            continue;
+        }
         if tag == "g" {
             // A hidden group still paints a child that sets `visibility`
             // back to `visible`, so only shapes ask.
-            stack.push((
-                child,
-                inherited.derive(child, resolve_current_color(tree, child)),
-                0,
-            ));
+            let derived = inherited.derive(child, resolve_current_color(tree, child), percent_base);
+            // The group's content is not measured, so its layer is the
+            // `<svg>` box, which a browser clips SVG content to anyway.
+            let layer = opacity < 1.0;
+            if layer {
+                painter.push_layer(BlendMode::Normal, opacity, css_transform, &svg_box);
+            }
+            stack.push((child, derived, 0, layer));
             continue;
         }
         if !matches!(
@@ -122,42 +169,137 @@ pub(super) fn paint_svg(
         // `currentcolor` is the shape's own cascaded `color` (a shape that
         // declares none inherits its parent's).
         let current_color = resolve_current_color(tree, child);
-        let own = inherited.derive(child, current_color);
+        let own = inherited.derive(child, current_color, percent_base);
         // `skewX(90)` (see `tan_degrees`): nothing a browser draws either.
         if !own.transform.is_finite() {
             continue;
         }
-        if fillable && let Some(fc) = own.fill.for_child(current_color) {
-            painter.fill_color(Fill::NonZero, own.transform, fc, &shape);
+        let fill = if fillable {
+            own.fill
+                .for_child(current_color)
+                .map(|c| c.multiply_alpha(own.fill_opacity))
+        } else {
+            None
+        };
+        // A zero width strokes nothing (tiny-skia would draw a hairline).
+        let stroke_color = own
+            .stroke
+            .for_child(current_color)
+            .filter(|_| own.stroke_width > 0.0)
+            .map(|c| c.multiply_alpha(own.stroke_opacity));
+        let stroke = stroke_color.map(|color| {
+            // `vector-effect: non-scaling-stroke` strokes the shape's
+            // outline in device space with lengths in CSS px (times the
+            // device scale); otherwise the stroke is in user space and the
+            // transform scales its width and dashes, as in a browser.
+            if non_scaling_stroke(child) {
+                let mut path = shape_path(&shape);
+                path.apply_affine(own.transform);
+                (
+                    own.kurbo_stroke(scale),
+                    Affine::IDENTITY,
+                    PaintShape::BezPath(path),
+                    color,
+                )
+            } else {
+                (own.kurbo_stroke(1.0), own.transform, shape.clone(), color)
+            }
+        });
+        if fill.is_none() && stroke.is_none() {
+            continue;
         }
-        if let Some(sc) = own.stroke.for_child(current_color) {
-            // Stroked in user space: the transform scales the width too.
-            let stroke = Stroke::new(own.stroke_width)
-                .with_caps(own.linecap)
-                .with_join(own.linejoin);
-            painter.stroke_color(&stroke, own.transform, sc, &shape);
+        let layer = opacity < 1.0;
+        if layer {
+            // The shape's own ink: its outline grown by the stroke's reach.
+            let mut ink = own.transform.transform_rect_bbox(shape.bounding_box());
+            if let Some((s, t, path, _)) = &stroke {
+                let r = stroke_outset(s);
+                ink = ink.union(t.transform_rect_bbox(path.bounding_box().inflate(r, r)));
+            }
+            painter.push_layer(
+                BlendMode::Normal,
+                opacity,
+                Affine::IDENTITY,
+                &PaintShape::Rect(ink.inflate(1.0, 1.0)),
+            );
+        }
+        let paint_fill = |painter: &mut dyn Painter| {
+            if let Some(fc) = fill {
+                painter.fill_color(Fill::NonZero, own.transform, fc, &shape);
+            }
+        };
+        let paint_stroke = |painter: &mut dyn Painter| {
+            if let Some((s, t, path, sc)) = &stroke {
+                painter.stroke_color(s, *t, *sc, path);
+            }
+        };
+        if own.stroke_first {
+            paint_stroke(painter);
+            paint_fill(painter);
+        } else {
+            paint_fill(painter);
+            paint_stroke(painter);
+        }
+        if layer {
+            painter.pop_layer();
         }
     }
 }
 
+/// How far `stroke` can reach past its path, in the path's space: half its
+/// width, times the miter limit where a miter join can spike, times `√2`
+/// where a square cap's corner sticks out diagonally.
+pub(super) fn stroke_outset(stroke: &Stroke) -> f64 {
+    let mut factor: f64 = 1.0;
+    if stroke.join == Join::Miter {
+        factor = factor.max(stroke.miter_limit);
+    }
+    if stroke.start_cap == Cap::Square || stroke.end_cap == Cap::Square {
+        factor = factor.max(std::f64::consts::SQRT_2);
+    }
+    stroke.width * 0.5 * factor
+}
+
+/// `shape` as a path, for transforming it into device space.
+fn shape_path(shape: &PaintShape) -> BezPath {
+    const TOLERANCE: f64 = 0.01;
+    match shape {
+        PaintShape::BezPath(p) => p.clone(),
+        PaintShape::Rect(r) => r.to_path(TOLERANCE),
+        PaintShape::RoundedRect(r) => r.to_path(TOLERANCE),
+        PaintShape::Circle(c) => c.to_path(TOLERANCE),
+        PaintShape::Line(l) => l.to_path(TOLERANCE),
+    }
+}
+
 /// What an SVG element hands its content: the paint properties that inherit
-/// (`fill`, `stroke`, `stroke-width`, `stroke-linecap`, `stroke-linejoin`)
-/// and the transform from user space to the window.
-#[derive(Clone, Copy)]
+/// and the transform from user space to the window. Lengths are user units,
+/// percentages already resolved.
+#[derive(Clone)]
 struct SvgInherited {
     transform: Affine,
     fill: InheritedPaint,
     stroke: InheritedPaint,
+    fill_opacity: f32,
+    stroke_opacity: f32,
     stroke_width: f64,
     linecap: Cap,
     linejoin: Join,
+    miter_limit: f64,
+    /// `None` draws solid. Otherwise even in length (an odd list is
+    /// repeated), no value negative and their sum positive.
+    dasharray: Option<Rc<[f64]>>,
+    dashoffset: f64,
+    /// `paint-order` puts the stroke before the fill.
+    stroke_first: bool,
 }
 
 impl SvgInherited {
     /// `el`'s own values: each one it declares (usably) replaces the
     /// inherited one, and its `transform` composes after its parent's.
-    /// `current_color` is `el`'s own `color`.
-    fn derive(&self, el: &Node, current_color: AlphaColor<Srgb>) -> Self {
+    /// `current_color` is `el`'s own `color`; `percent_base` is one percent
+    /// of the viewport's normalized diagonal.
+    fn derive(&self, el: &Node, current_color: AlphaColor<Srgb>, percent_base: f64) -> Self {
         let transform = match el.attributes.get("transform") {
             // The `<svg>` itself reads no `transform` (the caller's is the
             // viewBox one), and an attribute that does not parse is ignored.
@@ -166,6 +308,14 @@ impl SvgInherited {
                 None => self.transform,
             },
             _ => self.transform,
+        };
+        let font_size = el.computed_style.font_size as f64;
+        let length = |v: &str| parse_svg_length(v, percent_base, font_size);
+        let dasharray = match declared(el, "stroke-dasharray", |v| {
+            parse_dasharray(v, percent_base, font_size)
+        }) {
+            Some(d) => d,
+            None => self.dasharray.clone(),
         };
         Self {
             transform,
@@ -179,23 +329,231 @@ impl SvgInherited {
                 current_color,
                 self.stroke,
             ),
-            stroke_width: el
-                .attributes
-                .get("stroke-width")
-                .and_then(|v| v.parse::<f64>().ok())
+            fill_opacity: declared(el, "fill-opacity", parse_alpha).unwrap_or(self.fill_opacity),
+            stroke_opacity: declared(el, "stroke-opacity", parse_alpha)
+                .unwrap_or(self.stroke_opacity),
+            // A negative width is an error, so the declaration is ignored.
+            stroke_width: declared(el, "stroke-width", |v| length(v).filter(|w| *w >= 0.0))
                 .unwrap_or(self.stroke_width),
-            linecap: el
-                .attributes
-                .get("stroke-linecap")
-                .map(|v| parse_linecap(v))
-                .unwrap_or(self.linecap),
-            linejoin: el
-                .attributes
-                .get("stroke-linejoin")
-                .map(|v| parse_linejoin(v))
-                .unwrap_or(self.linejoin),
+            linecap: declared(el, "stroke-linecap", parse_linecap).unwrap_or(self.linecap),
+            linejoin: declared(el, "stroke-linejoin", parse_linejoin).unwrap_or(self.linejoin),
+            // A limit below 1 is an error.
+            miter_limit: declared(el, "stroke-miterlimit", |v| {
+                parse_svg_number_whole(v).filter(|m| *m >= 1.0)
+            })
+            .unwrap_or(self.miter_limit),
+            dasharray,
+            dashoffset: declared(el, "stroke-dashoffset", length).unwrap_or(self.dashoffset),
+            stroke_first: declared(el, "paint-order", parse_paint_order)
+                .unwrap_or(self.stroke_first),
         }
     }
+
+    /// The `kurbo::Stroke` to draw with, its lengths times `unit` (`1` in
+    /// user space, the device scale for a non-scaling stroke).
+    fn kurbo_stroke(&self, unit: f64) -> Stroke {
+        let stroke = Stroke::new(self.stroke_width * unit)
+            .with_caps(self.linecap)
+            .with_join(self.linejoin)
+            .with_miter_limit(self.miter_limit);
+        match &self.dasharray {
+            Some(d) => {
+                // The offset brought into the first period, so a negative
+                // one means the same to both painters.
+                let period: f64 = d.iter().sum();
+                let offset = self.dashoffset.rem_euclid(period);
+                stroke.with_dashes(offset * unit, d.iter().map(|v| v * unit))
+            }
+            None => stroke,
+        }
+    }
+}
+
+/// A property `el` declares, parsed by `parse`: its inline `style`
+/// declaration, which beats the presentation attribute, else the attribute;
+/// every `var()` substituted from the element's computed custom properties
+/// (as `declared_paint`). `None` — take the parent's value — for no
+/// declaration, for `inherit`/`unset`/`initial` (the last approximated as
+/// `inherit`, as for paints), for a `var()` that resolves to nothing usable
+/// (invalid at computed-value time), and for an attribute that does not
+/// parse (ignored, as SVG ignores a bad presentation attribute). A literal
+/// `style` value that does not parse is dropped as a browser drops it while
+/// parsing, so the attribute applies.
+///
+/// rinch's Stylo build has none of these properties (they are Gecko-only
+/// there), so a stylesheet rule is not read.
+fn declared<T>(node: &Node, name: &str, parse: impl Fn(&str) -> Option<T>) -> Option<T> {
+    if let Some(style) = node.attributes.get("style")
+        && style.contains(name)
+        && let Some(value) = rinch_core::dom::split_declarations(style)
+            .into_iter()
+            .find_map(|(k, v)| (k == name).then_some(v))
+    {
+        let value = strip_important(&value).trim();
+        if has_var(value) {
+            return substitute_vars(node, value, 0).and_then(|v| parse(v.trim()));
+        }
+        if is_css_wide_keyword(value) {
+            return None;
+        }
+        if let Some(v) = parse(value) {
+            return Some(v);
+        }
+    }
+    let attr = node.attributes.get(name)?;
+    if has_var(attr) {
+        substitute_vars(node, attr, 0).and_then(|v| parse(v.trim()))
+    } else {
+        parse(attr.trim())
+    }
+}
+
+/// Whether `node`'s inline `style` declares `name`.
+fn declares_in_style(node: &Node, name: &str) -> bool {
+    node.attributes.get("style").is_some_and(|style| {
+        style.contains(name)
+            && rinch_core::dom::split_declarations(style)
+                .iter()
+                .any(|(k, _)| k == name)
+    })
+}
+
+fn is_css_wide_keyword(v: &str) -> bool {
+    ["inherit", "unset", "initial", "revert", "revert-layer"]
+        .iter()
+        .any(|k| v.eq_ignore_ascii_case(k))
+}
+
+/// A shape's or group's `opacity`. Stylo resolves the CSS property (a
+/// stylesheet rule or the `style` attribute) into `computed_style.opacity`;
+/// the presentation attribute applies under neither. A CSS declaration of
+/// exactly `1` in a stylesheet cannot be told from none, so the attribute
+/// wins there.
+fn element_opacity(node: &Node) -> f32 {
+    let css = node.computed_style.opacity;
+    if css < 1.0 || declares_in_style(node, "opacity") {
+        return css;
+    }
+    declared(node, "opacity", parse_alpha).unwrap_or(1.0)
+}
+
+/// Whether a shape declares `vector-effect: non-scaling-stroke` (the other
+/// SVG 2 values, which Chrome does not implement either, are `none`). The
+/// property does not inherit.
+fn non_scaling_stroke(node: &Node) -> bool {
+    declared(node, "vector-effect", |v| {
+        if v.eq_ignore_ascii_case("non-scaling-stroke") {
+            Some(true)
+        } else if v.eq_ignore_ascii_case("none") {
+            Some(false)
+        } else {
+            None
+        }
+    })
+    .unwrap_or(false)
+}
+
+/// An `<alpha-value>` (`fill-opacity`, `stroke-opacity`, `opacity`): a
+/// number or a percentage, clamped to `0..=1`.
+fn parse_alpha(v: &str) -> Option<f32> {
+    let (n, rest) = parse_svg_number(v)?;
+    let n = match rest {
+        "" => n,
+        "%" => n / 100.0,
+        _ => return None,
+    };
+    n.is_finite().then(|| n.clamp(0.0, 1.0) as f32)
+}
+
+/// A whole value that is one SVG number and nothing else.
+fn parse_svg_number_whole(v: &str) -> Option<f64> {
+    match parse_svg_number(v)? {
+        (n, "") if n.is_finite() => Some(n),
+        _ => None,
+    }
+}
+
+/// A `<length-percentage>` in user units: a number (user units), a number
+/// with an absolute unit (`px`, `in`, `cm`, `mm`, `q`, `pt`, `pc`) or `em`
+/// (`font_size`, the element's), or a percentage of the viewport's
+/// normalized diagonal (`percent_base` is one percent of it).
+fn parse_svg_length(v: &str, percent_base: f64, font_size: f64) -> Option<f64> {
+    let (n, unit) = parse_svg_number(v)?;
+    let per = match unit.to_ascii_lowercase().as_str() {
+        "" | "px" => 1.0,
+        "%" => percent_base,
+        "em" => font_size,
+        "in" => 96.0,
+        "cm" => 96.0 / 2.54,
+        "mm" => 96.0 / 25.4,
+        "q" => 96.0 / 101.6,
+        "pt" => 96.0 / 72.0,
+        "pc" => 16.0,
+        _ => return None,
+    };
+    let len = n * per;
+    len.is_finite().then_some(len)
+}
+
+/// `stroke-dasharray`: `none`, or a list of non-negative lengths separated by
+/// commas and/or whitespace. `Some(None)` draws solid — `none`, and a list
+/// whose values are all zero; `None` (the declaration is ignored) for a
+/// negative value or one that is no length, as Chrome 152 does. An odd list
+/// is repeated to make it even, as SVG says.
+fn parse_dasharray(v: &str, percent_base: f64, font_size: f64) -> Option<Option<Rc<[f64]>>> {
+    if v.eq_ignore_ascii_case("none") {
+        return Some(None);
+    }
+    let mut dashes = Vec::new();
+    for part in v
+        .split(|c: char| c == ',' || c.is_ascii_whitespace())
+        .filter(|p| !p.is_empty())
+    {
+        let d = parse_svg_length(part, percent_base, font_size)?;
+        if d < 0.0 {
+            return None;
+        }
+        dashes.push(d);
+    }
+    if dashes.is_empty() {
+        return None;
+    }
+    let sum: f64 = dashes.iter().sum();
+    if !(sum > 0.0 && sum.is_finite()) {
+        return Some(None);
+    }
+    if dashes.len() % 2 == 1 {
+        dashes.extend_from_within(..);
+    }
+    Some(Some(dashes.into()))
+}
+
+/// `paint-order`: whether the stroke paints before the fill. `normal` is
+/// fill, stroke, markers; a list names some of the three once each, the
+/// unnamed ones following in that order. `None` when it is no such list.
+fn parse_paint_order(v: &str) -> Option<bool> {
+    if v.eq_ignore_ascii_case("normal") {
+        return Some(false);
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for t in v.split_ascii_whitespace() {
+        let t = ["fill", "stroke", "markers"]
+            .into_iter()
+            .find(|k| t.eq_ignore_ascii_case(k))?;
+        if seen.contains(&t) {
+            return None;
+        }
+        seen.push(t);
+    }
+    if seen.is_empty() {
+        return None;
+    }
+    let at = |k| seen.iter().position(|t| *t == k);
+    Some(match (at("fill"), at("stroke")) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(f), Some(s)) => s < f,
+    })
 }
 
 /// A numeric geometry attribute (`x`, `cx`, `r`, …); `None` when absent or
@@ -741,22 +1099,28 @@ impl InheritedPaint {
     }
 }
 
-/// Parse SVG stroke-linecap attribute.
-pub(super) fn parse_linecap(v: &str) -> Cap {
-    match v {
-        "round" => Cap::Round,
-        "square" => Cap::Square,
-        _ => Cap::Butt,
-    }
+/// `stroke-linecap`; `None` for anything else (the declaration is ignored).
+pub(super) fn parse_linecap(v: &str) -> Option<Cap> {
+    [
+        ("butt", Cap::Butt),
+        ("round", Cap::Round),
+        ("square", Cap::Square),
+    ]
+    .into_iter()
+    .find_map(|(k, c)| v.eq_ignore_ascii_case(k).then_some(c))
 }
 
-/// Parse SVG stroke-linejoin attribute.
-pub(super) fn parse_linejoin(v: &str) -> Join {
-    match v {
-        "round" => Join::Round,
-        "bevel" => Join::Bevel,
-        _ => Join::Miter,
-    }
+/// `stroke-linejoin`; `None` for anything else (the declaration is ignored).
+/// SVG 2's `miter-clip` and `arcs` are ignored too, as Chrome 152 ignores
+/// them: neither has a join in kurbo or tiny-skia.
+pub(super) fn parse_linejoin(v: &str) -> Option<Join> {
+    [
+        ("miter", Join::Miter),
+        ("round", Join::Round),
+        ("bevel", Join::Bevel),
+    ]
+    .into_iter()
+    .find_map(|(k, j)| v.eq_ignore_ascii_case(k).then_some(j))
 }
 
 /// Parse SVG polyline/polygon points attribute into a BezPath.
