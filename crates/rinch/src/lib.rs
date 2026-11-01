@@ -149,6 +149,14 @@ pub mod video {
     pub use rinch_video::*;
 }
 
+/// Node-and-wire editors: the graph model (`graph::model`) and the canvas
+/// (`graph::graph_canvas`, `graph::GraphView`). Enable with the `graph`
+/// feature; see `docs/src/guide/node-graphs.md`.
+#[cfg(feature = "graph")]
+pub mod graph {
+    pub use rinch_graph_view::*;
+}
+
 /// File and message dialogs: natively behind the `file-dialogs` feature
 /// (`rfd`); in the browser (wasm32) the message dialogs need no feature (#1821).
 #[cfg(any(feature = "file-dialogs", target_arch = "wasm32"))]
