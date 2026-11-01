@@ -52,9 +52,18 @@ const SAFE: &[(&str, &str)] = &[
     ("data-stepper-settled", "Stepper's steps"),
     ("data-value", "Tree's rows"),
     // Written by the graph canvas on its own parts; nothing reads them back.
-    ("data-edge", "the graph canvas's edge paths, a marker nothing reads"),
-    ("data-node", "the graph canvas's node frames, a marker nothing reads"),
-    ("data-port", "the graph canvas's port dots, a marker nothing reads"),
+    (
+        "data-edge",
+        "the graph canvas's edge paths, a marker nothing reads",
+    ),
+    (
+        "data-node",
+        "the graph canvas's node frames, a marker nothing reads",
+    ),
+    (
+        "data-port",
+        "the graph canvas's port dots, a marker nothing reads",
+    ),
 ];
 
 fn workspace_crates() -> PathBuf {
