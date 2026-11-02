@@ -15,8 +15,8 @@ const VALUE: &str = "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b\u{2764}\u{FE0
 const STYLE: &str =
     "display: block; width: 700px; font: 32px/40px sans-serif; padding: 0; border: 0";
 
-fn page(tag: &'static str) -> (RinchApp, usize) {
-    let id = Rc::new(Cell::new(0usize));
+fn page(tag: &'static str) -> (RinchApp, u64) {
+    let id = Rc::new(Cell::new(0u64));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -32,7 +32,7 @@ fn page(tag: &'static str) -> (RinchApp, usize) {
     (app, id.get())
 }
 
-fn sweep(app: &mut RinchApp, field: usize) -> Vec<usize> {
+fn sweep(app: &mut RinchApp, field: u64) -> Vec<usize> {
     let (bx, by, bw, _) = {
         let d = app.doc.as_ref().unwrap().borrow();
         painted_element_box(&d.tree, field)
@@ -122,7 +122,7 @@ fn the_snap_takes_the_nearer_edge_1684() {
 #[cfg(feature = "desktop")]
 #[test]
 fn a_press_in_the_editor_lands_on_a_cluster_edge_1684() {
-    let slot: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let slot: Rc<Cell<u64>> = Rc::new(Cell::new(0));
     let slot_in = slot.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

@@ -25,7 +25,7 @@ use std::cell::Cell;
 fn focused_node_app() -> (RinchApp, Rc<Cell<usize>>) {
     let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let clicks_in = clicks.clone();
-    let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

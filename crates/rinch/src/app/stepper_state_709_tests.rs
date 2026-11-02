@@ -52,8 +52,8 @@ fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchA
 /// detaches it without freeing its slab entry, so a scan of the arena still
 /// finds every alternate this component dropped and would report the promotion
 /// as having happened when it had not.
-fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
-    fn walk(d: &RinchDocument, id: usize, class: &str, out: &mut Vec<usize>) {
+fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<u64> {
+    fn walk(d: &RinchDocument, id: u64, class: &str, out: &mut Vec<u64>) {
         let Some(node) = d.tree.get(id) else { return };
         if node
             .attributes
@@ -73,7 +73,7 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
     out
 }
 
-fn background_of(app: &RinchApp, id: usize) -> Option<peniko::Color> {
+fn background_of(app: &RinchApp, id: u64) -> Option<peniko::Color> {
     let doc = app.doc.as_ref().expect("a mounted document");
     let d = doc.borrow();
     d.tree
@@ -83,7 +83,7 @@ fn background_of(app: &RinchApp, id: usize) -> Option<peniko::Color> {
         .background_color()
 }
 
-fn display_of(app: &RinchApp, id: usize) -> DisplayValue {
+fn display_of(app: &RinchApp, id: u64) -> DisplayValue {
     let doc = app.doc.as_ref().expect("a mounted document");
     let d = doc.borrow();
     d.tree

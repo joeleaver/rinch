@@ -1,4 +1,4 @@
-//! Event handler registry for click, input, and file-drop events.
+//! Event handler registry for click, input, file-drop, key and wheel events.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -228,6 +228,94 @@ impl std::fmt::Debug for KeyCallback {
     }
 }
 
+/// A wheel turn (or trackpad scroll, or pinch) over an element — the payload
+/// handed to an element's `onwheel` handler.
+///
+/// The deltas have the DOM's sign and unit on every backend
+/// (`WheelEvent.deltaX/deltaY`): **logical pixels**, positive `delta_y` when
+/// the content would move up (the wheel turned towards the user, a two-finger
+/// swipe up), positive `delta_x` when it would move left. A notched wheel's
+/// lines are 40 px each, as the desktop scrolls them; a page is the window's
+/// height.
+///
+/// A trackpad **pinch** arrives as a wheel with `modifiers.ctrl` set, as a
+/// browser reports it: spreading the fingers is a negative `delta_y`, and
+/// [`zoom_factor`](Self::zoom_factor) turns either a pinch or a Ctrl+wheel
+/// into the same scale.
+///
+/// `#[non_exhaustive]`: build one with [`WheelEvent::new`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct WheelEvent {
+    /// Horizontal distance in logical pixels; positive scrolls right.
+    pub delta_x: f32,
+    /// Vertical distance in logical pixels; positive scrolls down.
+    pub delta_y: f32,
+    /// The pointer, in logical window pixels (the frame of
+    /// [`ClickContext::mouse_x`](super::ClickContext::mouse_x)).
+    pub x: f32,
+    /// The pointer, in logical window pixels.
+    pub y: f32,
+    /// Shift / Ctrl / Alt / Meta at the time of the wheel. Ctrl is set for a
+    /// trackpad pinch.
+    pub modifiers: super::ModifierState,
+}
+
+impl WheelEvent {
+    /// A wheel event with these deltas at `(x, y)`, no modifiers held.
+    pub fn new(delta_x: f32, delta_y: f32, x: f32, y: f32) -> Self {
+        Self {
+            delta_x,
+            delta_y,
+            x,
+            y,
+            modifiers: super::ModifierState::default(),
+        }
+    }
+
+    /// The same event with these modifiers.
+    pub fn with_modifiers(mut self, modifiers: super::ModifierState) -> Self {
+        self.modifiers = modifiers;
+        self
+    }
+
+    /// The scale this wheel zooms by when it is read as a zoom (a pinch, or
+    /// Ctrl/Cmd+wheel): 100 px of `delta_y` is a factor of *e*, the curve
+    /// browsers and most canvas apps use. Above 1 zooms in.
+    pub fn zoom_factor(&self) -> f32 {
+        (-self.delta_y / 100.0).exp()
+    }
+}
+
+/// Cloneable callback for an element's `onwheel`.
+///
+/// Receives the [`WheelEvent`] and answers whether it **consumed** it: `true`
+/// stops the wheel — no ancestor's `onwheel` is offered it and no scroll
+/// container scrolls (the browser's `preventDefault()`). `false` lets it go on
+/// as if the handler were not there.
+#[derive(Clone)]
+pub struct WheelCallback(pub Rc<dyn Fn(&WheelEvent) -> bool>);
+
+impl WheelCallback {
+    /// Create a new wheel callback from a function.
+    pub fn new<F: Fn(&WheelEvent) -> bool + 'static>(f: F) -> Self {
+        Self(Rc::new(f))
+    }
+
+    /// Invoke the callback; answers whether it consumed the wheel.
+    ///
+    /// Runs untracked (issue #285), like every other app callback.
+    pub fn invoke(&self, event: &WheelEvent) -> bool {
+        crate::reactive::untracked_handler(|| (self.0)(event))
+    }
+}
+
+impl std::fmt::Debug for WheelCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WheelCallback(...)")
+    }
+}
+
 /// Global counter for generating unique event handler IDs.
 static NEXT_HANDLER_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -275,6 +363,8 @@ pub fn unregister_handler(id: EventHandlerId) {
     drop(scroll);
     let key = KEY_REGISTRY.with(|r| r.borrow_mut().remove(&id));
     drop(key);
+    let wheel = WHEEL_REGISTRY.with(|r| r.borrow_mut().remove(&id));
+    drop(wheel);
 }
 
 /// Whether a click handler is still registered under this id.
@@ -327,6 +417,9 @@ thread_local! {
         RefCell::new(HashMap::new());
     /// `onkeydown` / `onkeyup` handlers (issue #1678).
     static KEY_REGISTRY: RefCell<HashMap<EventHandlerId, KeyCallback>> = RefCell::new(HashMap::new());
+    /// `onwheel` handlers.
+    static WHEEL_REGISTRY: RefCell<HashMap<EventHandlerId, WheelCallback>> =
+        RefCell::new(HashMap::new());
     // Not const-evaluable: goes through the non-const `Default` trait method.
     static INPUT_CONTEXT: RefCell<InputContext> = RefCell::new(InputContext::default());
     /// Flag to signal that an input event was handled and a re-render may be needed.
@@ -339,7 +432,7 @@ pub struct InputContext {
     /// The current value of the input field.
     pub value: String,
     /// The node ID of the input element.
-    pub node_id: usize,
+    pub node_id: u64,
 }
 
 /// Registry that maps event handler IDs to callbacks.
@@ -763,6 +856,58 @@ pub fn dispatch_key_handler_chain(
     ids.into_iter().any(|id| dispatch_key_handler(id, key))
 }
 
+/// Register an element wheel handler (`onwheel`) and return its ID, to be
+/// written to the element's `data-onwheel` attribute.
+///
+/// Owned by the scope registering it, and re-enters that scope and context
+/// root on dispatch (issues #136, #141), like every other handler.
+#[doc(hidden)]
+pub fn register_wheel_handler(callback: WheelCallback) -> EventHandlerId {
+    let id = next_handler_id();
+    let root = crate::context::current_context_root();
+    crate::reactive::record_handler(id);
+    let owner = crate::reactive::Owner::current();
+    let callback = WheelCallback::new(move |event| {
+        let _root = crate::context::push_context_root(root);
+        let _owner = owner.push();
+        callback.invoke(event)
+    });
+    WHEEL_REGISTRY.with(|registry| {
+        registry.borrow_mut().insert(id, callback);
+    });
+    id
+}
+
+/// Whether a wheel handler is still registered under this id. See
+/// [`has_click_handler`].
+pub fn has_wheel_handler(id: EventHandlerId) -> bool {
+    WHEEL_REGISTRY.with(|registry| registry.borrow().contains_key(&id))
+}
+
+/// Offer a wheel to the `onwheel` handler with the given ID, as one
+/// transaction (`batch`). Answers whether it **consumed** the wheel; a missing
+/// handler (freed with its scope, #141) consumed nothing.
+pub fn dispatch_wheel_handler(id: EventHandlerId, event: &WheelEvent) -> bool {
+    let handler: Option<WheelCallback> =
+        WHEEL_REGISTRY.with(|registry| registry.borrow().get(&id).cloned());
+    match handler {
+        Some(h) => crate::reactive::batch(|| h.invoke(event)),
+        None => false,
+    }
+}
+
+/// Offer a wheel to a chain of `onwheel` handlers, nearest first — the ids a
+/// backend read off the element under the pointer and its ancestors **before**
+/// calling any of them (a handler may change the tree; the path is the one the
+/// wheel turned over). Stops at the first handler that consumes it and answers
+/// whether one did; a consumed wheel scrolls nothing.
+pub fn dispatch_wheel_handler_chain(
+    ids: impl IntoIterator<Item = EventHandlerId>,
+    event: &WheelEvent,
+) -> bool {
+    ids.into_iter().any(|id| dispatch_wheel_handler(id, event))
+}
+
 /// Check if an input event was handled since last check, and clear the flag.
 ///
 /// This allows the shell to know if a re-render is needed after processing
@@ -795,6 +940,9 @@ pub fn clear_handlers() {
         registry.borrow_mut().clear();
     });
     KEY_REGISTRY.with(|registry| {
+        registry.borrow_mut().clear();
+    });
+    WHEEL_REGISTRY.with(|registry| {
         registry.borrow_mut().clear();
     });
     reset_handler_ids();

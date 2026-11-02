@@ -52,13 +52,13 @@ const CSS: &str = "
 /// The fixture's nodes, by role.
 #[derive(Clone, Copy, Default)]
 struct Ids {
-    sel: usize,
-    focusable: usize,
-    field: usize,
-    src: usize,
-    a: usize,
-    b: usize,
-    far_row: usize,
+    sel: u64,
+    focusable: u64,
+    field: u64,
+    src: u64,
+    a: u64,
+    b: u64,
+    far_row: u64,
 }
 
 fn mount() -> (RinchApp, Ids) {
@@ -172,17 +172,17 @@ fn whole() -> (i32, i32, i32, i32) {
     (0, 0, SIZE.0 as i32, SIZE.1 as i32)
 }
 
-fn box_of(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn box_of(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     hit_testing::painted_element_box(&d.tree, id)
 }
 
-fn center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn center(app: &RinchApp, id: u64) -> (f32, f32) {
     let (x, y, w, h) = box_of(app, id);
     (x + w / 2.0, y + h / 2.0)
 }
 
-fn rect_around(app: &RinchApp, id: usize, grow: i32) -> (i32, i32, i32, i32) {
+fn rect_around(app: &RinchApp, id: u64, grow: i32) -> (i32, i32, i32, i32) {
     let (x, y, w, h) = box_of(app, id);
     (
         x as i32 - grow,

@@ -11,12 +11,12 @@ use std::cell::Cell;
 /// Node ids captured at mount, in DOM order.
 #[derive(Clone, Copy)]
 struct Ids {
-    a: usize,
-    b: usize,
+    a: u64,
+    b: u64,
     /// A generic `tabindex="0"` div — focusable, but not a text control:
     /// `node_takes_text_focus` refuses it, so it never reaches
     /// `try_focus_input`'s stash-consuming branch (review of #1325, finding 3).
-    generic: usize,
+    generic: u64,
 }
 
 /// Two plain `<input>`s, `a` carrying `value="ab🙂"` (3 chars / 6 bytes / 4
@@ -62,7 +62,7 @@ fn mount_fixture() -> (RinchApp, Ids) {
 /// A `NodeHandle` for a mounted node, through the same `Rc::downgrade(..) as
 /// _` unsizing every other fixture in this crate uses to reach `NodeHandle`
 /// from a concrete `RinchDocument`.
-fn handle_for(app: &RinchApp, node_id: usize) -> NodeHandle {
+fn handle_for(app: &RinchApp, node_id: u64) -> NodeHandle {
     let doc = app.doc.clone().expect("mounted");
     let weak: std::rc::Weak<RefCell<dyn DomDocument>> = Rc::downgrade(&doc) as _;
     NodeHandle::new(rinch_core::dom::NodeId(node_id), weak)
@@ -186,7 +186,7 @@ fn mouse_click(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn abs_center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn abs_center(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (ax, ay, aw, ah) = crate::app::hit_testing::painted_element_box(&d.tree, id);
     (ax + aw / 2.0, ay + ah / 2.0)

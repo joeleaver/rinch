@@ -73,6 +73,8 @@ rinch-editor-core = { workspace = true, optional = true }
 # — so default builds (desktop AND web) link zero CRDT code.
 rinch-editor-view = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
+# Node-and-wire editor canvas (graph feature).
+rinch-graph-view = { workspace = true, optional = true }
 # HTTP client for the network image loader (image-network). Standalone, opt-in:
 # nothing else in the facade depends on it, so default builds link no HTTP stack.
 rinch-http = { workspace = true, optional = true }
@@ -289,6 +291,8 @@ theme = ["dep:rinch-theme", "rinch-core/theme"]
 components = ["theme", "dep:rinch-components"]
 debug = ["dep:rinch-debug"]
 video = ["dep:rinch-video"]
+# Node-and-wire editors: the graph model and canvas (docs/design/node-graph.md).
+graph = ["dep:rinch-graph-view"]
 image-network = ["dep:rinch-http"]
 # Editor accessibility (M7b): derive an accesskit TreeUpdate from EditorState and
 # push it through a per-platform adapter. Linux uses accesskit_unix (AT-SPI); other

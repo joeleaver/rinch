@@ -70,13 +70,11 @@ impl Page {
         let (block, byte) = self.handle.caret_address(Pos(i + 1)).unwrap();
         let doc = self.app.doc.as_ref().unwrap().borrow();
         let (bx, by, _, _) = painted_element_box(&doc.tree, block);
-        let (x, _) = doc
-            .query_caret_position(block as u64, byte)
-            .expect("laid out");
+        let (x, _) = doc.query_caret_position(block, byte).expect("laid out");
         ((bx + x) as f64, (by + LINE / 2.0) as f64)
     }
 
-    fn node_with(&self, attr: &str) -> Option<usize> {
+    fn node_with(&self, attr: &str) -> Option<u64> {
         let d = self.app.doc.as_ref().unwrap().borrow();
         d.tree
             .nodes
@@ -96,7 +94,7 @@ impl Page {
         Some(painted_element_box(&d.tree, id))
     }
 
-    fn container(&self) -> usize {
+    fn container(&self) -> u64 {
         self.node_with("data-pm-editor").unwrap()
     }
 

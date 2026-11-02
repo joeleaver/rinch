@@ -51,10 +51,10 @@ fn mount(build: impl Fn(&mut RenderScope) -> NodeHandle + 'static) -> RinchApp {
     app
 }
 
-fn class_node(app: &RinchApp, class: &str) -> usize {
+fn class_node(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let found: Vec<usize> = d
+    let found: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -71,7 +71,7 @@ fn class_node(app: &RinchApp, class: &str) -> usize {
 
 /// The node's border box in window px (static flow: the sum of the
 /// parent-relative offsets).
-fn window_rect(app: &RinchApp, node: usize) -> (u32, u32, u32, u32) {
+fn window_rect(app: &RinchApp, node: u64) -> (u32, u32, u32, u32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let l = d.tree.nodes[node].layout;
@@ -86,7 +86,7 @@ fn window_rect(app: &RinchApp, node: usize) -> (u32, u32, u32, u32) {
 }
 
 /// Advance the node's animation to `ms` after its start, and paint a full frame.
-fn frame_at(app: &mut RinchApp, node: usize, ms: f64) -> Vec<u8> {
+fn frame_at(app: &mut RinchApp, node: u64, ms: f64) -> Vec<u8> {
     {
         let doc = app.doc.as_ref().unwrap().clone();
         let mut d = doc.borrow_mut();

@@ -80,7 +80,7 @@ fn color_bbox(px: &[u8], rgb: (u8, u8, u8)) -> Option<(u32, u32, u32, u32)> {
     }
 }
 
-fn ifc_root_of(doc: &RinchDocument, node: NodeId) -> Option<usize> {
+fn ifc_root_of(doc: &RinchDocument, node: NodeId) -> Option<u64> {
     doc.tree.get(node.0).unwrap().ifc_root
 }
 
@@ -92,7 +92,7 @@ fn role_of(doc: &RinchDocument, node: NodeId) -> InlineFlowRole {
 /// range (text nodes, `<br>`) or a positioned inline child (inline elements,
 /// inline-blocks). This is the walk's output, so it is the ground truth for
 /// "the IFC lays this box out".
-fn flowed_by(doc: &RinchDocument, root: usize, node: usize) -> bool {
+fn flowed_by(doc: &RinchDocument, root: u64, node: u64) -> bool {
     let Some(layout) = doc.tree.get(root).and_then(|n| n.text_layout.as_ref()) else {
         return false;
     };
@@ -295,7 +295,7 @@ fn a_block_inside_an_inline_splits_it_rather_than_stopping_the_walk() {
     );
 
     assert_marks_match_flow(&doc);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     assert!(
         doc.taffy_tree_violations().is_empty(),
         "nothing is stranded any more: {:?}",
@@ -381,7 +381,7 @@ fn mark_and_walk_agree_on_all_three_cases_of_the_rule() {
     );
 
     assert_marks_match_flow(&doc);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     assert!(
         doc.taffy_tree_violations().is_empty(),
         "{:?}",
@@ -498,7 +498,7 @@ fn a_hidden_block_sibling_neither_splits_the_line_nor_mints_a_box() {
          the run"
     );
     assert_marks_match_flow(&doc);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 
     let px = rasterize(&mut doc);
     let bbox = color_bbox(&px, (200, 0, 40)).expect("the text is painted at all");
@@ -555,7 +555,7 @@ fn a_hidden_absolute_child_is_no_box_before_it_is_out_of_flow() {
         "the root's own measure fires (one line); got {h}"
     );
     assert_marks_match_flow(&doc);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 }
 
 /// A `display: contents` wrapper that also declares `position: absolute` is
@@ -634,7 +634,7 @@ fn an_absolute_contents_wrapper_is_boxless_first_so_its_block_still_splits() {
          one-line fixed point (20), which is what position-first would give."
     );
     assert_marks_match_flow(&doc);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 }
 
 /// Guard rail: everything the classifier calls `Inline` still flows — text,
@@ -680,7 +680,7 @@ fn every_inline_role_kind_still_flows_and_is_marked() {
         );
     }
     assert_marks_match_flow(&doc);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 }
 
 // ── #615: the two `break` arms, reached through a detached subtree ──────────
@@ -860,7 +860,7 @@ fn assert_both_passes_stop_at_the_block(
     // The invariant the arms are one half of, plus the validators, so a future
     // change cannot buy this behaviour with a stranded box.
     assert_marks_match_flow(doc);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let verdict = doc.tree_check_verdict();
     assert!(
         verdict.fatal.is_empty(),
@@ -1105,7 +1105,7 @@ fn a_detached_contents_wrapper_answers_transparent_inside_a_detached_inline() {
     );
 
     assert_marks_match_flow(&doc);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let verdict = doc.tree_check_verdict();
     assert!(
         verdict.fatal.is_empty(),

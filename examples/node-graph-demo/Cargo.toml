@@ -1,0 +1,8 @@
+[package]
+name = "node-graph-demo"
+version.workspace = true
+edition.workspace = true
+description = "The two first consumers of rinch's node-graph canvas: a typed shader graph and an org chart with tree layout."
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "components", "theme", "debug", "graph"] }

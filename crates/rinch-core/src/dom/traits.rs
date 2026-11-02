@@ -332,17 +332,24 @@ pub trait DomDocument {
     ///
     /// No backend hands a **discarded** id to a later node: `rinch-web`'s
     /// counter is a monotonic `fetch_add` with no free list, and `rinch-dom`
-    /// frees nothing on this route. So a stale *discard* handle can only ever
-    /// name nothing, never somebody else, and registries keyed by node id
+    /// frees nothing on this route yet. So a stale *discard* handle can only
+    /// ever name nothing, never somebody else, and registries keyed by node id
     /// (focus, the mounted-editor registry) cannot be aimed at the wrong node by
     /// a discard.
     ///
     /// That is a claim about **this route only**. `rinch-dom` does free slab
     /// keys elsewhere — `set_inner_html` and pseudo-element pruning on restyle
-    /// both reach `NodeTree::remove_subtree` — and `slab::Slab` has a free list,
-    /// so an id freed *that* way is handed to a different node (measured:
-    /// `NodeId(4)`). #304's recycled-slot hazard is live on desktop today,
-    /// independently of this method, and belongs to #723's audit.
+    /// both reach `NodeTree::remove_subtree` — and the slab has a free list, so
+    /// a slot freed *that* way is handed to a different node (measured:
+    /// `NodeId(4)`), still at generation 0. #304's recycled-slot hazard is live
+    /// on desktop today, independently of this method.
+    ///
+    /// What will keep the promise once `rinch-dom` frees on discard (#723,
+    /// PR 2) is the [`NodeId`] **generation**: a freed slot is reused under a
+    /// higher generation, so the old id still names nothing — `rinch-dom`'s
+    /// node storage checks the generation on every lookup of an id from
+    /// outside the tree, and its `DomDocument` verbs are no-ops for an id that
+    /// names no live node. The slot is re-issued; the id is not.
     ///
     /// The default is `remove_node`: correct but reclaiming nothing, which is
     /// what a backend whose bookkeeping dies with the document wants.

@@ -117,7 +117,7 @@ fn a_groups_fill_is_inherited_and_a_child_overrides_it() {
     );
 }
 
-/// The stroke, its width (10, where the painter's own default is 2) and its
+/// The stroke, its width (10, where SVG's initial width is 1) and its
 /// cap all come from the group.
 #[test]
 fn a_groups_stroke_width_and_cap_are_inherited() {

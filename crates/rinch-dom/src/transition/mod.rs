@@ -239,7 +239,10 @@ pub(crate) fn visibility_is_inherited(tree: &NodeTree, node_id: RawNodeId) -> bo
     // the common case without reading a single rule; the rule walk below is
     // for a node that declared some other property of the struct, or whose
     // parent was re-cascaded into a fresh struct without it.
-    if let Some(parent) = tree.nodes[node_id].parent.and_then(|p| tree.nodes.get(p)) {
+    if let Some(parent) = tree.nodes[node_id]
+        .parent
+        .and_then(|p| tree.nodes.get_live(p))
+    {
         let parent_data = parent.stylo_element_data.borrow();
         if let Some(parent_primary) = parent_data.as_ref().and_then(|d| d.styles.get_primary())
             && std::ptr::eq(

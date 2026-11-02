@@ -208,7 +208,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     // The IME's composing region, and the field it belongs to. See
     // `shell::android_ime` for why the region is mirrored on this side at all.
     let mut composition = ImeComposition::new();
-    let mut composing_field: Option<usize> = None;
+    let mut composing_field: Option<u64> = None;
     let mut backgrounded = false;
     // A window-focus change seen inside `poll_events`, dispatched after it
     // returns (`app` is not reachable from the callback). `None` = no change
@@ -225,6 +225,10 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     // When the current iteration's *work* began. Reset just after the poll
     // returns, so the sleep is never counted against the frame it preceded.
     let mut frame_start = Instant::now();
+    // When to look again for Vello's counters of a frame the GPU has not
+    // finished (#2071). A third clock with no producer to ring the waker.
+    #[cfg_attr(not(feature = "android-gpu"), allow(unused_mut))]
+    let mut vello_check_in: Option<Duration> = None;
     // Whether the previous iteration put pixels on the glass. This is the
     // whole of the loop's pacing state — see `android_frame::poll_timeout` for
     // why it is the right predicate and why it is deliberately the *narrow*
@@ -259,8 +263,11 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             // unobserved unless the loop comes back for it (issue #813; see
             // `TouchGesture::long_press_due`). See `android_frame::poll_timeout`.
             earliest_due(
-                rinch_core::reactive::next_poll_due(),
-                gesture.long_press_due(Instant::now()),
+                earliest_due(
+                    rinch_core::reactive::next_poll_due(),
+                    gesture.long_press_due(Instant::now()),
+                ),
+                vello_check_in,
             ),
         );
         android_app.poll_events(timeout, |event| match event {
@@ -852,6 +859,21 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             app.end_perf_frame();
         }
 
+        // A frame that overflowed Vello's buffers went out undrawn, and nothing
+        // else would draw it again on a screen at rest (#2071). This path
+        // renders the whole scene every time, so a redraw is all it takes.
+        #[cfg(feature = "android-gpu")]
+        if let (Some(ctx), Some(s)) = (&mut gpu, &surface) {
+            vello_check_in = None;
+            match ctx.renderer.check_frames(&s.device) {
+                vello::FrameCheck::Settled => {}
+                vello::FrameCheck::Pending => {
+                    vello_check_in = Some(VELLO_CHECK_INTERVAL);
+                }
+                vello::FrameCheck::Lost => REDRAW_PENDING.store(true, Ordering::Release),
+            }
+        }
+
         // The frame was owed and did not reach the glass, so ask for it again
         // (issue #563). Nothing else will: `redraw` was swapped out of
         // `REDRAW_PENDING` above, the layout `pending` named was resolved by
@@ -883,6 +905,11 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         }
     }
 }
+
+/// How soon the loop looks again for Vello's counters of a frame the GPU has
+/// not finished (#2071).
+#[cfg(feature = "android-gpu")]
+const VELLO_CHECK_INTERVAL: Duration = Duration::from_millis(8);
 
 // ── IME ──────────────────────────────────────────────────────────────────────
 

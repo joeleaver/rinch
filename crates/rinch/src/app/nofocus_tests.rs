@@ -20,21 +20,21 @@ use std::cell::Cell;
 #[derive(Clone, Copy)]
 struct Ids {
     /// A `tabindex` button inside a `data-nofocus` toolbar.
-    guarded_btn: usize,
+    guarded_btn: u64,
     /// The toolbar's own blank chrome, outside any button.
-    toolbar: usize,
+    toolbar: u64,
     /// The same button shape, with no `data-nofocus` anywhere above it.
-    plain_btn: usize,
+    plain_btn: u64,
     /// `data-nofocus` written directly on the focusable.
-    self_guarded_btn: usize,
+    self_guarded_btn: u64,
     /// `data-nofocus="false"` — the documented opt-out.
-    opted_out_btn: usize,
+    opted_out_btn: u64,
     /// A text field inside the `data-nofocus` toolbar.
-    toolbar_input: usize,
+    toolbar_input: u64,
     /// An ordinary text field outside it.
-    plain_input: usize,
+    plain_input: u64,
     /// The editor's container.
-    editor: usize,
+    editor: u64,
 }
 
 fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
@@ -115,7 +115,7 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
     (app, ids, log)
 }
 
-fn abs_box(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn abs_box(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     painted_element_box(&d.tree, id)
 }
@@ -141,7 +141,7 @@ fn press_at(app: &mut RinchApp, x: f32, y: f32) {
     );
 }
 
-fn press(app: &mut RinchApp, id: usize) {
+fn press(app: &mut RinchApp, id: u64) {
     let (x, y, w, h) = abs_box(app, id);
     press_at(app, x + w / 2.0, y + h / 2.0);
 }
@@ -350,8 +350,8 @@ fn the_press_resolution_reports_preserve() {
 /// Its own mount rather than `mount_fixture`'s: adding inline content to that
 /// toolbar would make it mixed and move every button the other ten tests
 /// measure.
-fn mount_mixed_toolbar() -> (RinchApp, usize, usize) {
-    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+fn mount_mixed_toolbar() -> (RinchApp, u64, u64) {
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

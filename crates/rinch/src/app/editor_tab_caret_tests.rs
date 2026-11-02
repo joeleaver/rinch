@@ -79,7 +79,7 @@ fn page(html: &str) -> Page {
 }
 
 impl Page {
-    fn block(&self) -> usize {
+    fn block(&self) -> u64 {
         self.handle.caret_address(Pos(1)).unwrap().0
     }
     fn block_box(&self) -> (f32, f32, f32, f32) {
@@ -103,8 +103,7 @@ impl Page {
     fn local(&self, i: usize) -> (f32, f32) {
         let (block, byte) = self.handle.caret_address(Pos(i + 1)).unwrap();
         let doc = self.app.doc.as_ref().unwrap().borrow();
-        doc.query_caret_position(block as u64, byte)
-            .expect("laid out")
+        doc.query_caret_position(block, byte).expect("laid out")
     }
     /// The painted boxes of the visible selection-highlight rects.
     fn highlights(&self) -> Vec<(f32, f32, f32, f32)> {

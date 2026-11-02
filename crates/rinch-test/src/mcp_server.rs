@@ -95,7 +95,7 @@ impl RinchTestServer {
         description = "Get detailed information about a specific DOM node by its ID, including tag, attributes, layout bounds, children, and text content."
     )]
     async fn get_node(&self, params: Parameters<NodeIdParams>) -> Result<CallToolResult, McpError> {
-        self.execute_json_command(TestCommandKind::GetNode(params.0.id as usize))
+        self.execute_json_command(TestCommandKind::GetNode(params.0.id))
             .await
     }
 
@@ -104,7 +104,7 @@ impl RinchTestServer {
         &self,
         params: Parameters<NodeIdParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.execute_json_command(TestCommandKind::GetTextContent(params.0.id as usize))
+        self.execute_json_command(TestCommandKind::GetTextContent(params.0.id))
             .await
     }
 

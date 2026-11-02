@@ -42,7 +42,7 @@ const VIEWPORT: (f32, f32) = (800.0, 600.0);
 
 /// One `div` scroll container under `<body>`, holding one `div` per entry of
 /// `children`, laid out at the viewport.
-fn scroller(container_style: &str, children: &[&str]) -> (RinchDocument, usize) {
+fn scroller(container_style: &str, children: &[&str]) -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");

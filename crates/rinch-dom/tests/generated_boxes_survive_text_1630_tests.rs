@@ -73,7 +73,7 @@ fn shape(doc: &RinchDocument, p: NodeId) -> String {
         .collect()
 }
 
-fn children(doc: &RinchDocument, p: NodeId) -> Vec<usize> {
+fn children(doc: &RinchDocument, p: NodeId) -> Vec<u64> {
     doc.tree.get(p.0).unwrap().children.clone()
 }
 

@@ -1354,7 +1354,7 @@ mod tests {
     }
 
     /// The node id of every mounted row, in sibling order.
-    fn mounted_row_ids(parent: &NodeHandle) -> Vec<usize> {
+    fn mounted_row_ids(parent: &NodeHandle) -> Vec<u64> {
         parent
             .children()
             .into_iter()
@@ -1456,7 +1456,7 @@ mod tests {
             },
         ];
         #[allow(clippy::type_complexity)]
-        let seen: Rc<RefCell<Vec<(String, Option<Owner>, usize)>>> =
+        let seen: Rc<RefCell<Vec<(String, Option<Owner>, u64)>>> =
             Rc::new(RefCell::new(Vec::new()));
 
         let log = seen.clone();
@@ -1492,7 +1492,7 @@ mod tests {
         }
 
         let mut mounted = mounted_row_ids(&parent);
-        let mut rendered: Vec<usize> = seen.iter().map(|(_, _, id)| *id).collect();
+        let mut rendered: Vec<u64> = seen.iter().map(|(_, _, id)| *id).collect();
         mounted.sort_unstable();
         rendered.sort_unstable();
         assert_eq!(

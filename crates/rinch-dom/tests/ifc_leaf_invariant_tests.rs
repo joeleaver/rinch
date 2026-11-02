@@ -100,7 +100,7 @@ fn all_inline_root_carries_the_context_on_a_childless_taffy_node() {
         "inline detachment must leave the IFC root's Taffy node childless — \
          Taffy never consults the measure of a node with children"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let h = height_of(&doc, container);
     assert!(
         (h - 20.0).abs() < 2.0,
@@ -144,7 +144,7 @@ fn mixed_content_hands_the_context_to_a_childless_anonymous_box() {
         !carries_inline_root(&doc, container),
         "the container is not an IFC root — the anonymous box took the run"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let h = height_of(&doc, container);
     assert!(
         (h - 50.0).abs() < 2.0,
@@ -182,7 +182,7 @@ fn contents_only_inline_root_is_a_childless_carrier() {
         0,
         "the flattened inline grandchild must be detached from the carrier"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let h = height_of(&doc, container);
     assert!(
         (h - 20.0).abs() < 2.0,
@@ -227,7 +227,7 @@ fn a_container_that_stops_being_a_root_loses_its_stale_context() {
         "the sweep must clear the stale InlineRoot off the now-non-leaf container"
     );
     assert!(taffy_child_count(&doc, container) > 0);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let h = height_of(&doc, container);
     assert!(
         (h - 50.0).abs() < 2.0,
@@ -267,7 +267,7 @@ fn the_sweep_leaves_a_childless_stale_carrier_alone() {
         "a childless stale carrier is left alone — its measure is reachable, \
          so clearing it would not be neutral"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 }
 
 // ── The validator discriminates ─────────────────────────────────────────────
@@ -291,7 +291,7 @@ fn the_predicate_reports_a_context_carrying_non_leaf() {
     );
     text_in(&mut doc, container, "hello world");
     doc.resolve_layout(VW, VH);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 
     // Doctor the accident: attach a bare Taffy child to the carrier.
     let container_taffy = taffy_id_of(&doc, container);
@@ -379,7 +379,7 @@ fn a_comment_beside_a_block_child_does_not_make_the_container_a_root() {
         1,
         "the block child stays attached — which is why the mark is withheld"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let h = height_of(&doc, container);
     assert!(
         (h - 30.0).abs() < 0.5,
@@ -412,7 +412,7 @@ fn a_comment_only_container_is_still_a_marked_leaf() {
         "comment-only keeps the root+measure path"
     );
     assert_eq!(taffy_child_count(&doc, container), 0);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     assert_eq!(
         height_of(&doc, container),
         0.0,
@@ -460,7 +460,7 @@ fn contents_wrapped_text_beside_a_comment_matches_its_comment_free_twin() {
     }
 
     let (doc, container, block) = build(true);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let h = height_of(&doc, container);
     assert!(
         (h - 50.0).abs() < 2.0,
@@ -512,7 +512,7 @@ fn an_empty_container_is_not_a_marked_root_and_is_zero_tall() {
         !carries_inline_root(&doc, container),
         "an empty div establishes no IFC"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     assert_eq!(height_of(&doc, container), 0.0, "Chrome 153: 0");
 }
 
@@ -553,7 +553,7 @@ fn a_display_none_child_no_longer_collapses_the_ifc_root() {
         "the hidden child must be detached — one attached Taffy child makes \
          the measure unreachable"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let h = height_of(&doc, container);
     assert!(
         (h - 20.0).abs() < 2.0,
@@ -576,7 +576,7 @@ fn a_display_none_child_no_longer_collapses_the_ifc_root() {
 
     assert!(carries_inline_root(&doc2, container2));
     assert_eq!(taffy_child_count(&doc2, container2), 0);
-    assert_eq!(doc2.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc2.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let h2 = height_of(&doc2, container2);
     assert!((h2 - 20.0).abs() < 2.0, "got {h2}");
 }
@@ -614,7 +614,7 @@ fn a_detached_hidden_child_comes_back_when_it_turns_visible() {
         !carries_inline_root(&doc, container),
         "a contents wrapper holding a block box is not IFC-transparent"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let h = height_of(&doc, container);
     assert!(
         (h - 50.0).abs() < 2.0,
@@ -626,7 +626,7 @@ fn a_detached_hidden_child_comes_back_when_it_turns_visible() {
     doc.resolve_layout(VW, VH);
     assert!(carries_inline_root(&doc, container));
     assert_eq!(taffy_child_count(&doc, container), 0);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let h = height_of(&doc, container);
     assert!((h - 20.0).abs() < 2.0, "got {h}");
 }

@@ -85,7 +85,7 @@ fn flags(doc: &RinchDocument, id: NodeId) -> Flags {
 ///
 /// Plain recursion against the production pass's iterative post-order, so the
 /// two share no control flow to be wrong in the same way.
-fn oracle(doc: &RinchDocument, id: usize) -> bool {
+fn oracle(doc: &RinchDocument, id: u64) -> bool {
     let node = doc.tree.get(id).expect("node in slab");
     let role = node.inline_flow_role();
     if role == InlineFlowRole::InFlowBlock {
@@ -108,7 +108,7 @@ fn oracle(doc: &RinchDocument, id: usize) -> bool {
 fn assert_memo_matches_oracle(doc: &RinchDocument, what: &str) {
     // Reachable from the document root through `children` — the walk the
     // recompute pass does.
-    let mut reachable: Vec<usize> = Vec::new();
+    let mut reachable: Vec<u64> = Vec::new();
     let mut stack = vec![doc.tree.root_id];
     while let Some(id) = stack.pop() {
         let Some(node) = doc.tree.get(id) else {

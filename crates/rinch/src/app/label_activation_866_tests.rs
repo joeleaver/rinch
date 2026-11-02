@@ -203,7 +203,7 @@ fn mount() -> Fixture {
     Fixture { app, log }
 }
 
-fn node_by_id(app: &RinchApp, wanted: &str) -> usize {
+fn node_by_id(app: &RinchApp, wanted: &str) -> u64 {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .nodes
@@ -232,7 +232,7 @@ fn click(app: &mut RinchApp, id: &str) {
     press(app, p, MouseButton::Left);
 }
 
-fn focused(app: &RinchApp) -> Option<usize> {
+fn focused(app: &RinchApp) -> Option<u64> {
     match app.focus_target {
         FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
         _ => None,

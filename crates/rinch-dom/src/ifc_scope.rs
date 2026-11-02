@@ -236,7 +236,7 @@ impl RinchDocument {
                     break known;
                 }
                 path.push(c);
-                cur = nodes.get(c).and_then(|n| n.parent);
+                cur = nodes.get_live(c).and_then(|n| n.parent);
             };
             for p in path {
                 connected.insert(p, answer);
@@ -247,7 +247,7 @@ impl RinchDocument {
         let fc = |id: RawNodeId| -> Option<RawNodeId> {
             let mut cur = Some(id);
             while let Some(c) = cur {
-                let n = nodes.get(c)?;
+                let n = nodes.get_live(c)?;
                 if is_formatting_container(n) {
                     return Some(c);
                 }

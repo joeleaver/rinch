@@ -25,10 +25,10 @@ const VIEWPORT: (f32, f32) = (800.0, 600.0);
 const OVAL: &str = "rinch-loader__oval";
 
 /// The one node carrying `class` exactly, as a raw node id.
-fn node_with_class(app: &RinchApp, class: &str) -> usize {
+fn node_with_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -48,13 +48,13 @@ fn node_with_class(app: &RinchApp, class: &str) -> usize {
     matches[0]
 }
 
-fn running(app: &RinchApp, node: usize) -> usize {
+fn running(app: &RinchApp, node: u64) -> usize {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.active_animations.get(&node).map_or(0, |a| a.len())
 }
 
-fn start_time(app: &RinchApp, node: usize) -> f64 {
+fn start_time(app: &RinchApp, node: u64) -> f64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -68,7 +68,7 @@ fn start_time(app: &RinchApp, node: usize) -> f64 {
 /// A restart writes the wall clock of the restyle, which is ~`ms` later — far
 /// enough apart that the assertion cannot be satisfied by two registrations
 /// microseconds apart.
-fn backdate(app: &mut RinchApp, node: usize, ms: f64) -> f64 {
+fn backdate(app: &mut RinchApp, node: u64, ms: f64) -> f64 {
     let doc = app.doc.as_ref().unwrap();
     let mut d = doc.borrow_mut();
     let anim = &mut d

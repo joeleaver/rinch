@@ -76,7 +76,7 @@ fn mount() -> RinchApp {
     app
 }
 
-fn by_class(app: &RinchApp, class: &str) -> usize {
+fn by_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -92,7 +92,7 @@ fn by_class(app: &RinchApp, class: &str) -> usize {
 }
 
 /// Press 4px inside `node`'s left edge — on the label's text.
-fn press(app: &mut RinchApp, node: usize) {
+fn press(app: &mut RinchApp, node: u64) {
     let (x, y) = {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
@@ -117,7 +117,7 @@ fn press(app: &mut RinchApp, node: usize) {
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
 }
 
-fn focused(app: &RinchApp) -> Option<usize> {
+fn focused(app: &RinchApp) -> Option<u64> {
     match app.focus_target {
         FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
         _ => None,

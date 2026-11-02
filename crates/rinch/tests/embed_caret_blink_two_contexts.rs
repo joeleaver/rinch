@@ -41,7 +41,7 @@ fn caret_hidden(ctx: &RinchContext) -> Option<bool> {
 }
 
 /// The editor container's node id.
-fn editor_id(ctx: &RinchContext) -> usize {
+fn editor_id(ctx: &RinchContext) -> u64 {
     let doc = ctx.app().doc().expect("mounted").borrow();
     doc.query_selector_all("[data-pm-editor]")
         .into_iter()

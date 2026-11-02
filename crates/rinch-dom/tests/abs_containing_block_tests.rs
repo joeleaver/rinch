@@ -35,7 +35,7 @@ const ABS: &str = "position: absolute;";
 
 struct Case {
     doc: RinchDocument,
-    cb: usize,
+    cb: u64,
     relayouts: u32,
 }
 
@@ -71,7 +71,7 @@ impl Case {
         Self::scaffold("", "", &abs("abs", abs_style, ""))
     }
 
-    fn id(&self, m: &str) -> usize {
+    fn id(&self, m: &str) -> u64 {
         one(&self.doc, &format!("[data-m={m}]"))
     }
 
@@ -102,7 +102,7 @@ impl Case {
     }
 }
 
-fn one(doc: &RinchDocument, selector: &str) -> usize {
+fn one(doc: &RinchDocument, selector: &str) -> u64 {
     let found = query_selector(&doc.tree, selector);
     assert_eq!(found.len(), 1, "{selector} names exactly one node");
     found[0]

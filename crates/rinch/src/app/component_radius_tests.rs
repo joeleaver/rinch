@@ -75,7 +75,7 @@ fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchA
 fn corners(app: &RinchApp, class: &str) -> [f32; 4] {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()

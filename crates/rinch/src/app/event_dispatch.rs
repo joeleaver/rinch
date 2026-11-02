@@ -57,6 +57,62 @@ impl RinchApp {
         !ids.is_empty() && events::dispatch_key_handler_chain(ids, data)
     }
 
+    /// Offer a wheel to the `onwheel` handler of the element under the
+    /// pointer (`hit`) and then its ancestors', nearest first, stopping at the
+    /// first that consumes it. Answers whether one did — the caller then
+    /// scrolls no container. The ids are read before any handler runs, so a
+    /// handler that changes the tree does not change who is asked.
+    pub(super) fn offer_element_wheel(&mut self, hit: u64, event: &events::WheelEvent) -> bool {
+        let ids: Vec<events::EventHandlerId> = {
+            let Some(doc) = self.doc.as_ref() else {
+                return false;
+            };
+            let d = doc.borrow();
+            let mut ids = Vec::new();
+            let mut cur = Some(hit);
+            while let Some(id) = cur {
+                let Some(node) = d.tree.get(id) else { break };
+                if let Some(h) = node
+                    .attributes
+                    .get("data-onwheel")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    ids.push(events::EventHandlerId(h));
+                }
+                cur = node.parent;
+            }
+            ids
+        };
+        !ids.is_empty() && events::dispatch_wheel_handler_chain(ids, event)
+    }
+
+    /// A trackpad pinch no render surface took (macOS, Wayland): offered to
+    /// the `onwheel` chain under the pointer as a wheel with Ctrl held, the
+    /// way a browser reports a pinch. `delta` is winit's scale change (0.1 is
+    /// 10% larger); the wheel's `delta_y` is chosen so
+    /// [`events::WheelEvent::zoom_factor`] gives back `1 + delta`.
+    ///
+    /// Only the desktop shell and the tests call it, so embed and Android
+    /// builds compile no caller.
+    #[allow(dead_code)]
+    pub(crate) fn pinch_as_wheel(&mut self, delta: f32) -> bool {
+        let Some((x, y)) = self.cursor_pos else {
+            return false;
+        };
+        let scale = 1.0 + delta;
+        if !(scale.is_finite() && scale > 0.0) {
+            return false;
+        }
+        let Some(hit) = self.move_hit(x, y) else {
+            return false;
+        };
+        let mut modifiers = self.modifier_state();
+        modifiers.ctrl = true;
+        let event =
+            events::WheelEvent::new(0.0, -100.0 * scale.ln(), x, y).with_modifiers(modifiers);
+        self.offer_element_wheel(hit, &event)
+    }
+
     /// Offer a key to the app-wide listeners (`rinch_core::on_app_key`, issue
     /// #1784) — after the interceptor, the key entries, the dismiss stack and a
     /// focused render surface's claim, before the focused element's default.
@@ -1315,7 +1371,23 @@ impl RinchApp {
                     false
                 };
 
-                if !surface_consumed && let Some(doc) = &self.doc {
+                // The element's own `onwheel`, then its ancestors', nearest
+                // first; one that consumes the wheel scrolls nothing. The
+                // handlers get the DOM's sign, the opposite of winit's.
+                let wheel_consumed = !surface_consumed
+                    && hit.is_some_and(|hit| {
+                        let event = events::WheelEvent::new(-delta_x as f32, -delta_y as f32, x, y)
+                            .with_modifiers(self.modifier_state());
+                        self.offer_element_wheel(hit, &event)
+                    });
+                if wheel_consumed {
+                    actions.push(AppAction::RequestRedraw);
+                }
+
+                if !surface_consumed
+                    && !wheel_consumed
+                    && let Some(doc) = &self.doc
+                {
                     if let Some(hit_node) = hit {
                         let mut doc_mut = doc.borrow_mut();
                         // (container, handler) per container that actually moved.
@@ -1328,7 +1400,7 @@ impl RinchApp {
                         // vertically". The payload is read back off the node once
                         // both axes have been applied, so a diagonal's single
                         // event carries both new offsets.
-                        let mut scrolled: Vec<(usize, usize)> = Vec::new();
+                        let mut scrolled: Vec<(u64, usize)> = Vec::new();
 
                         // Vertical scrolling
                         // First try the hit node's ancestor chain. If the hit node is in
@@ -1760,6 +1832,7 @@ impl RinchApp {
                                     ctrl,
                                     alt,
                                     modifiers,
+                                    (vp_w, vp_h),
                                 );
                             }
                             // Position the caret against the current layout (dirtying
@@ -2493,7 +2566,7 @@ impl RinchApp {
     /// document is held.
     pub(crate) fn scroll_vertically_by(
         doc_mut: &mut RinchDocument,
-        id: usize,
+        id: u64,
         dy: f64,
     ) -> (bool, Option<usize>) {
         let nid = rinch_core::dom::NodeId(id);
@@ -2633,10 +2706,10 @@ impl RinchApp {
     /// the viewport; the body's on the viewport.
     fn drag_auto_scroll_container(
         d: &RinchDocument,
-        hit: usize,
+        hit: u64,
         y: f32,
         vp_h: f32,
-    ) -> Option<(usize, f32)> {
+    ) -> Option<(u64, f32)> {
         use rinch_dom::paint::scrollbar::{ScrollbarAxis, overflows};
         let tree = &d.tree;
         let chain = std::iter::successors(Some(hit), |&id| tree.get(id).and_then(|n| n.parent))
@@ -2936,7 +3009,7 @@ impl RinchApp {
     ///
     /// Walks up from `hit_id` looking for a `data-onenter` attribute. If found,
     /// dispatches the registered event handler. Used for menu hover-to-switch.
-    pub(super) fn dispatch_onenter(doc: &Rc<RefCell<RinchDocument>>, hit_id: usize) {
+    pub(super) fn dispatch_onenter(doc: &Rc<RefCell<RinchDocument>>, hit_id: u64) {
         let handler_id = {
             let d = doc.borrow();
             let mut current = Some(hit_id);
@@ -2972,7 +3045,7 @@ impl RinchApp {
     ///
     /// Walks up from `old_id` looking for a `data-onleave` attribute. If found,
     /// dispatches the registered event handler. Used for tooltip hover-out.
-    pub(super) fn dispatch_onleave(doc: &Rc<RefCell<RinchDocument>>, old_id: usize) {
+    pub(super) fn dispatch_onleave(doc: &Rc<RefCell<RinchDocument>>, old_id: u64) {
         let handler_id = {
             let d = doc.borrow();
             let mut current = Some(old_id);
@@ -3112,7 +3185,7 @@ impl RinchApp {
     /// element carrying the attribute; a stale one claims nothing.
     pub(super) fn oncontextmenu_handler_at(
         doc: &Rc<RefCell<RinchDocument>>,
-        hit_id: usize,
+        hit_id: u64,
     ) -> Option<(usize, f32, f32, f32, f32)> {
         let d = doc.borrow();
         let mut current = Some(hit_id);
@@ -3186,10 +3259,10 @@ impl RinchApp {
     /// enough to be worth the agreement.
     pub(crate) fn collect_click_ancestors(
         tree: &rinch_dom::NodeTree,
-        hit_id: usize,
+        hit_id: u64,
     ) -> Vec<events::AncestorBounds> {
         // Chain from hit upward: [hit, parent, grandparent, ..., root]
-        let mut chain: Vec<usize> = Vec::new();
+        let mut chain: Vec<u64> = Vec::new();
         let mut cur = Some(hit_id);
         while let Some(nid) = cur {
             chain.push(nid);
@@ -3224,7 +3297,7 @@ impl RinchApp {
 
     /// Walk up from `hit_id` looking for a `draggable="true"` attribute.
     /// Returns the node ID of the first draggable ancestor (or self).
-    pub(crate) fn find_draggable(tree: &rinch_dom::NodeTree, hit_id: usize) -> Option<usize> {
+    pub(crate) fn find_draggable(tree: &rinch_dom::NodeTree, hit_id: u64) -> Option<u64> {
         let mut current = Some(hit_id);
         while let Some(nid) = current {
             if let Some(node) = tree.get(nid) {
@@ -3241,7 +3314,7 @@ impl RinchApp {
 
     /// Walk up from `hit_id` looking for a `data-ondrop` attribute.
     /// Returns the node ID of the first drop target ancestor (or self).
-    pub(crate) fn find_drop_target(tree: &rinch_dom::NodeTree, hit_id: usize) -> Option<usize> {
+    pub(crate) fn find_drop_target(tree: &rinch_dom::NodeTree, hit_id: u64) -> Option<u64> {
         let mut current = Some(hit_id);
         while let Some(nid) = current {
             if let Some(node) = tree.get(nid) {
@@ -3261,7 +3334,7 @@ impl RinchApp {
     /// to know the cursor position relative to the target.
     pub(crate) fn dispatch_drag_attr_with_context(
         doc: &Rc<RefCell<RinchDocument>>,
-        node_id: usize,
+        node_id: u64,
         attr: &str,
         cursor_x: f32,
         cursor_y: f32,
@@ -3316,7 +3389,7 @@ impl RinchApp {
 
     /// Dispatch a drag event attribute (data-ondragstart, data-ondrop, etc.)
     /// by walking up from `node_id` looking for the specified attribute.
-    pub(crate) fn dispatch_drag_attr(doc: &Rc<RefCell<RinchDocument>>, node_id: usize, attr: &str) {
+    pub(crate) fn dispatch_drag_attr(doc: &Rc<RefCell<RinchDocument>>, node_id: u64, attr: &str) {
         let handler_id = {
             let d = doc.borrow();
             let mut current = Some(node_id);
@@ -3408,7 +3481,7 @@ impl RinchApp {
     /// `handle_event(AboutToWait)` and nothing in that arm hit-tests, so no answer
     /// from before a tick is ever reused. A hit test added after the ticks there
     /// would have to drop the memo first.
-    pub(crate) fn shared_hit(&self, d: &RinchDocument, x: f32, y: f32) -> Option<usize> {
+    pub(crate) fn shared_hit(&self, d: &RinchDocument, x: f32, y: f32) -> Option<u64> {
         let doc_key = d.doc_key();
         let generation = d.tree.hit_cache.generation();
         let (xb, yb) = (x.to_bits(), y.to_bits());
@@ -3434,7 +3507,7 @@ impl RinchApp {
     }
 
     /// [`Self::shared_hit`] against this app's own document.
-    pub(super) fn move_hit(&self, x: f32, y: f32) -> Option<usize> {
+    pub(super) fn move_hit(&self, x: f32, y: f32) -> Option<u64> {
         let doc = self.doc.as_ref()?;
         self.shared_hit(&doc.borrow(), x, y)
     }
@@ -3444,7 +3517,7 @@ impl RinchApp {
     pub(super) fn dispatch_mouse_attr_at(
         &self,
         attr: &str,
-        hit: Option<usize>,
+        hit: Option<u64>,
         x: f32,
         y: f32,
         button: events::MouseButton,
@@ -3506,10 +3579,7 @@ impl RinchApp {
     /// Walk up from `hit_id` looking for a `data-onfiledrop` or
     /// `data-ondropfiles` attribute. Returns the node ID of the first
     /// file-drop target ancestor (or self).
-    pub(crate) fn find_file_drop_target(
-        tree: &rinch_dom::NodeTree,
-        hit_id: usize,
-    ) -> Option<usize> {
+    pub(crate) fn find_file_drop_target(tree: &rinch_dom::NodeTree, hit_id: u64) -> Option<u64> {
         let mut current = Some(hit_id);
         while let Some(nid) = current {
             if let Some(node) = tree.get(nid) {
@@ -3537,7 +3607,7 @@ impl RinchApp {
     /// the frame every other handler's context is in.
     pub(crate) fn dispatch_file_drop(
         doc: &Rc<RefCell<RinchDocument>>,
-        hit_id: usize,
+        hit_id: u64,
         paths: Vec<std::path::PathBuf>,
         (x, y, viewport_width, viewport_height, modifiers): (
             f32,
@@ -3623,7 +3693,7 @@ impl RinchApp {
     /// up the active drag state.
     pub(crate) fn activate_drag(
         &mut self,
-        node_id: usize,
+        node_id: u64,
         mousedown_pos: (f32, f32),
         cursor: (f32, f32),
         scale_factor: f64,
@@ -3661,6 +3731,14 @@ impl RinchApp {
             let mut painter = VelloPainter::new();
             let mut d = doc.borrow_mut();
             let d = &mut *d;
+            // Its clips reach the frame's count through `append_scene`: an
+            // unbounded layer must not count the whole plane.
+            painter.set_tile_target(peniko::kurbo::Rect::new(
+                0.0,
+                0.0,
+                d.tree.viewport.width as f64 * scale_factor,
+                d.tree.viewport.height as f64 * scale_factor,
+            ));
 
             rinch_dom::paint::paint_subtree(
                 &d.tree,
@@ -4037,6 +4115,7 @@ impl RinchApp {
         ctrl: bool,
         alt: bool,
         modifiers: Modifiers,
+        viewport: (f32, f32),
     ) -> bool {
         // 1. Cursor movement / selection extension — geometry-dependent (visual lines,
         //    goal column), so it stays view-owned and never touches the keymap. Which
@@ -4050,14 +4129,33 @@ impl RinchApp {
                 self.editor_goal_x = None;
                 return false;
             }
+            // macOS Page Up / Down: a page of scroll, the caret left (#2020).
+            Some(TextKeyAction::ScrollPage { down }) => {
+                self.page_editor(handle, down, false, true, viewport);
+                return false;
+            }
             _ => None,
         };
-        // The vertical "goal column" survives only a run of Up/Down — any other key
-        // (typing, horizontal arrows, Home/End, edits) abandons it.
-        if !matches!(motion, Some((TextMotion::LineUp | TextMotion::LineDown, _))) {
+        // The vertical "goal column" survives only a run of Up/Down and Page
+        // Up/Down — any other key (typing, horizontal arrows, Home/End, edits)
+        // abandons it.
+        if !matches!(
+            motion,
+            Some((
+                TextMotion::LineUp
+                    | TextMotion::LineDown
+                    | TextMotion::PageUp
+                    | TextMotion::PageDown,
+                _
+            ))
+        ) {
             self.editor_goal_x = None;
         }
         if let Some((motion, extend)) = motion {
+            if let TextMotion::PageUp | TextMotion::PageDown = motion {
+                let down = motion == TextMotion::PageDown;
+                return self.page_editor(handle, down, extend, false, viewport);
+            }
             let motion = match motion {
                 TextMotion::CharLeft => Motion::CharLeft,
                 TextMotion::CharRight => Motion::CharRight,
@@ -4069,6 +4167,7 @@ impl RinchApp {
                 TextMotion::LineDown => Motion::LineDown,
                 TextMotion::DocStart => Motion::DocStart,
                 TextMotion::DocEnd => Motion::DocEnd,
+                TextMotion::PageUp | TextMotion::PageDown => unreachable!("paged above"),
             };
             return self.move_editor(handle, motion, extend);
         }
@@ -4254,6 +4353,189 @@ impl RinchApp {
         }
     }
 
+    /// Page Up (`down = false`) or Page Down in the focused editor (#2020).
+    ///
+    /// The page is Chrome's: 0.875 of the scrollport's height
+    /// (`ScrollableArea::MinFractionToStepWhenPaging`), the scrollport being
+    /// the editor's nearest scroll container's padding box — the editor's own
+    /// when it scrolls — at most the viewport, or the viewport when nothing
+    /// scrolls. Chrome measures the focused editable element instead; for an
+    /// editor inside a taller scroller that pages past what is on screen, and
+    /// Firefox (like this) measures the scroller.
+    ///
+    /// The scroller is [`page_scroller`]'s: one a `lock_scroll` overlay
+    /// leaves alone is skipped, and the walk stops at a `position: fixed` box
+    /// (a modal), whose place no scroller outside it changes.
+    ///
+    /// The scroller moves a page first and is laid out — so a virtualized
+    /// editor materializes the blocks the page lands in — and the caret goes
+    /// to the point a page below (above) where it is now, measured after the
+    /// scroll, at the goal column Up/Down keep: with the caret in view it
+    /// keeps its place on screen, as in Firefox and native text views. The
+    /// target is a page from the caret, not from the view: when the user has
+    /// scrolled away from the caret (the wheel), the point a page from it is
+    /// outside the scrollport, and the scroller is moved again to bring that
+    /// point in before it is hit-tested — Chrome 155 and Firefox 155 both
+    /// move the caret a page from where it is, wherever the view is, and the
+    /// caret's reveal then shows it. Only a page that reaches the document's
+    /// last (first) line, or runs past the editor, puts the caret at the
+    /// document's end (start), as Chrome does. `extend` (Shift) keeps the
+    /// anchor.
+    ///
+    /// `scroll_only` (macOS's plain Page Up / Down), a read-only editor (as
+    /// Chrome's read-only `<textarea>`) and a caret with no geometry scroll a
+    /// page and leave the selection. Returns whether the selection changed.
+    fn page_editor(
+        &mut self,
+        handle: &crate::editor::EditorHandle,
+        down: bool,
+        extend: bool,
+        scroll_only: bool,
+        (vp_w, vp_h): (f32, f32),
+    ) -> bool {
+        use rinch_core::dom::NodeId;
+        use rinch_editor_core::{CursorMotion, Selection};
+        let FocusTarget::Editor(container) = self.focus_target else {
+            return false;
+        };
+        let Some(doc) = self.doc.clone() else {
+            return false;
+        };
+        // The scroller, its scrollport's height (the page is 0.875 of it) and
+        // the scrollport's band in window space, inside the viewport: where a
+        // point must be for the hit test to find what is there.
+        let (scroller, page, band) = {
+            let d = doc.borrow();
+            let scroller = page_scroller(&d.tree, container);
+            let view = (0.0, vp_h);
+            let (port, band) = scroller.map_or((f64::from(vp_h), view), |s| {
+                let cs = &d.tree.nodes[s].computed_style;
+                let port = d.client_height(NodeId(s))
+                    + f64::from(cs.padding_top.to_px())
+                    + f64::from(cs.padding_bottom.to_px());
+                if s == d.tree.body_id {
+                    return (port, view);
+                }
+                let (_, top, _, _) = painted_element_box(&d.tree, s);
+                let top = top + cs.border_top_width.to_px();
+                (port, (top.max(0.0), (top + port as f32).min(vp_h)))
+            });
+            (scroller, (port.min(f64::from(vp_h)) * 0.875).max(1.0), band)
+        };
+        let step = if down { page } else { -page };
+        let head = handle.selection().head();
+        let from = if scroll_only || handle.refuses_edits() {
+            None
+        } else {
+            self.editor_caret_point(handle, head)
+        };
+        // A page of scroll, with the scroller's `onscroll`, as the wheel.
+        let scrolled = scroller.map_or(0.0, |s| self.page_scroll_by(&doc, s, step));
+        let Some((cx, cy, ch)) = from else {
+            return false;
+        };
+        // Lay the scrolled content out: the hit test below reads it, and a
+        // virtualized editor materializes the blocks now on screen.
+        self.resolve_and_repaint(vp_w, vp_h);
+        let goal_x = self.editor_goal_x.unwrap_or(cx);
+        self.editor_goal_x = Some(goal_x);
+        // A page from the caret's middle, where the caret is drawn now —
+        // measured, so a scroller that did not carry the editor moves nothing.
+        let now_y = self
+            .editor_caret_point(handle, head)
+            .map_or(f64::from(cy) - scrolled, |(_, y, _)| f64::from(y));
+        let mut ty = (now_y + f64::from(ch * 0.5) + step) as f32;
+        // The caret scrolled out of view (#2028 review F1): the point a page
+        // from it is outside the scrollport too, where the hit test finds
+        // nothing. Bring the point inside first — half a caret in from the
+        // edge it is past — and lay out again.
+        let (lo, hi) = (band.0 + ch * 0.5, band.1 - ch * 0.5);
+        let over = if ty < lo {
+            ty - lo
+        } else if ty > hi {
+            ty - hi
+        } else {
+            0.0
+        };
+        if over != 0.0
+            && lo <= hi
+            && let Some(s) = scroller
+        {
+            let moved = self.page_scroll_by(&doc, s, f64::from(over));
+            if moved != 0.0 {
+                self.resolve_and_repaint(vp_w, vp_h);
+                ty -= moved as f32;
+            }
+        }
+        let edge = || {
+            let doc = handle.doc();
+            if down {
+                Selection::at_end(&doc).head()
+            } else {
+                Selection::at_start(&doc).head()
+            }
+        };
+        // What is there: the hit test first. A point the hit test does not
+        // find in this editor — off screen where no scroller could bring it
+        // in (past the window's edge, on a locked page), under a box that
+        // covers it, or past the editor's end (start), where a neighbouring
+        // editor or a modal's backdrop is — is resolved from the layout;
+        // past the end (start) that is the last (first) line, which the rule
+        // below turns into the end (start).
+        let target = self
+            .editor_point(goal_x, ty)
+            .filter(|hit| hit.container == container)
+            .or_else(|| self.editor_point_by_geometry(container, goal_x, ty))
+            .and_then(|hit| hit.pos(handle))
+            .map(|p| {
+                let (affinity, rect) = self.editor_hit_affinity(handle, p, ty);
+                (p, affinity, rect)
+            })
+            // On the document's last (first) line: Chrome goes to its end.
+            .filter(|&(_, _, rect)| {
+                let end = self.editor_caret_point(handle, edge());
+                !matches!((rect, end), (Some((_, py, ph)), Some((_, ey, _)))
+                    if (py - ey).abs() < ph * 0.5)
+            });
+        let Some((p, affinity, _)) = target else {
+            let motion = if down {
+                CursorMotion::DocEnd
+            } else {
+                CursorMotion::DocStart
+            };
+            return handle.move_cursor(motion, extend);
+        };
+        let sel = if extend {
+            Selection::text(handle.selection().anchor(), p)
+        } else {
+            Selection::cursor(p)
+        };
+        handle.set_selection_with_affinity(sel, affinity);
+        true
+    }
+
+    /// Scroll `s` by `dy` for a page key and fire its `onscroll`, as the wheel
+    /// does. Returns how far it actually moved.
+    fn page_scroll_by(&mut self, doc: &Rc<RefCell<RinchDocument>>, s: u64, dy: f64) -> f64 {
+        use rinch_core::dom::NodeId;
+        let (scrolled, fired) = {
+            let mut d = doc.borrow_mut();
+            let before = d.scroll_top(NodeId(s));
+            let (moved, handler) = Self::scroll_vertically_by(&mut d, s, dy);
+            if moved {
+                self.scene_dirty = true;
+            }
+            (
+                d.scroll_top(NodeId(s)) - before,
+                handler.map(|h| (h, Self::scroll_event_for(&d.tree, s))),
+            )
+        };
+        if let Some((h, event)) = fired {
+            rinch_core::events::dispatch_scroll_event(rinch_core::events::EventHandlerId(h), event);
+        }
+        scrolled
+    }
+
     // ── IME (input method editor) ──────────────────────────────────────
     // Both targets consume the same portable `ImeEvent`; only the rendering of
     // the preedit differs (the editor's decoration overlay vs the `<input>`'s
@@ -4296,7 +4578,7 @@ impl RinchApp {
     /// `pub(super)` so the focus arbiter can flush a pending composition as an
     /// implicit commit when the input blurs (issue #226) — the browser's
     /// compositionend-before-blur.
-    pub(super) fn dispatch_input_ime(&mut self, node_id: usize, ime: ImeEvent) {
+    pub(super) fn dispatch_input_ime(&mut self, node_id: u64, ime: ImeEvent) {
         match ime {
             ImeEvent::Enabled => {}
             ImeEvent::Preedit { text, cursor } => {
@@ -4347,7 +4629,7 @@ impl RinchApp {
 
     /// Write (or clear) the focused `<input>`'s `data-preedit` attribute so the
     /// paint path renders the composition string inline at the caret.
-    fn sync_input_preedit_to_dom(&self, node_id: usize) {
+    fn sync_input_preedit_to_dom(&self, node_id: u64) {
         let Some(doc) = &self.doc else { return };
         let mut d = doc.borrow_mut();
         if let Some(node) = d.tree.nodes.get_mut(node_id) {
@@ -4382,7 +4664,7 @@ impl RinchApp {
     /// document already borrowed answers the text origin, full height
     /// ([`Self::input_text_origin_area`]).
     #[cfg(any(feature = "desktop", feature = "embed", test))]
-    pub(crate) fn input_caret_area(&self, node_id: usize) -> Option<(f32, f32, f32, f32)> {
+    pub(crate) fn input_caret_area(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
         let doc = self.doc.as_ref()?;
         if let Ok(mut d) = doc.try_borrow_mut() {
             let d = &mut *d;
@@ -4402,12 +4684,12 @@ impl RinchApp {
     /// `rinch_dom::form_control::text_column`), full height, in logical window
     /// space: the text context menu's anchor for an empty field, and the IME
     /// area's fallback.
-    pub(crate) fn input_text_origin_area(&self, node_id: usize) -> Option<(f32, f32, f32, f32)> {
+    pub(crate) fn input_text_origin_area(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
         let node = d.tree.get(node_id)?;
         let (pad_l, _) = rinch_dom::form_control::text_column(node);
-        let (_, _, _, h) = d.query_node_layout(node_id as u64)?;
+        let (_, _, _, h) = d.query_node_layout(node_id)?;
         // The candidate box goes where the field is *painted*, so the text
         // origin is pushed forward through the composed transform rather than
         // added to an untransformed parent-chain sum (#203).
@@ -4984,7 +5266,7 @@ impl RinchApp {
         x: f32,
         y: f32,
     ) -> Option<(
-        usize,
+        u64,
         crate::editor::EditorHandle,
         rinch_editor_core::Pos,
         rinch_core::dom::CaretAffinity,
@@ -5041,6 +5323,30 @@ impl RinchApp {
             None if allow_nearest => Self::nearest_textblock_in(&d.tree, cont, x, y)?,
             None => return None,
         };
+        Self::point_in_textblock(&d, cont, tb, x, y)
+    }
+
+    /// Resolve window point `(x, y)` in `container`'s editor by geometry
+    /// alone — the textblock whose painted band holds `y`, else the nearest
+    /// ([`Self::nearest_textblock_in`]), with no hit test — so a point that
+    /// is laid out but not on screen (scrolled past the window's edge, or
+    /// under a box that covers it) still resolves. A point below (above) the
+    /// editor resolves on its last (first) line.
+    fn editor_point_by_geometry(&self, container: u64, x: f32, y: f32) -> Option<EditorPoint> {
+        let doc = self.doc.clone()?;
+        let d = doc.borrow();
+        let tb = Self::nearest_textblock_in(&d.tree, container, x, y)?;
+        Self::point_in_textblock(&d, container, tb, x, y)
+    }
+
+    /// Window point `(x, y)` resolved inside textblock `tb` of editor `cont`.
+    fn point_in_textblock(
+        d: &RinchDocument,
+        cont: u64,
+        tb: u64,
+        x: f32,
+        y: f32,
+    ) -> Option<EditorPoint> {
         let node = d.tree.get(tb)?;
         // An empty textblock has no inline content and so no Parley layout — the
         // only cursor position in it is offset 0.
@@ -5072,8 +5378,7 @@ impl RinchApp {
         );
         // Parley steps over an inline box to the byte after it, which is the
         // byte of both of the box's sides: name the box and the half instead.
-        let inline_box = rinch_dom::text_query::inline_box_at_point(&layout.layout, rel_x, rel_y)
-            .map(|(id, after)| (id as usize, after));
+        let inline_box = rinch_dom::text_query::inline_box_at_point(&layout.layout, rel_x, rel_y);
         Some(point(ifc_byte, inline_box))
     }
 
@@ -5137,7 +5442,7 @@ impl RinchApp {
     /// blockquote / the editor root, which carry schema-node element children) or a
     /// void leaf (image / hr / hard break). Recognizes **empty** textblocks too,
     /// which have no Parley `text_layout`, by structure rather than layout.
-    fn is_editor_textblock(tree: &rinch_dom::NodeTree, id: usize) -> bool {
+    fn is_editor_textblock(tree: &rinch_dom::NodeTree, id: u64) -> bool {
         let Some(node) = tree.get(id) else {
             return false;
         };
@@ -5171,11 +5476,11 @@ impl RinchApp {
     /// unrelated one above/below. Considers empty textblocks (no `text_layout`) too.
     fn nearest_textblock_in(
         tree: &rinch_dom::NodeTree,
-        container: usize,
+        container: u64,
         x: f32,
         y: f32,
-    ) -> Option<usize> {
-        let mut best: Option<(usize, f32)> = None;
+    ) -> Option<u64> {
+        let mut best: Option<(u64, f32)> = None;
         let mut stack = vec![container];
         while let Some(id) = stack.pop() {
             let Some(node) = tree.get(id) else { continue };
@@ -5393,7 +5698,7 @@ impl RinchApp {
             let leaf = handle
                 .caret_inline_box(pos, aff)
                 .filter(|&(leaf_tb, _, _)| leaf_tb == tb)
-                .map(|(_, leaf, _)| leaf as u64);
+                .map(|(_, leaf, _)| leaf);
             let d = doc.borrow();
             let layout = &d.tree.get(tb)?.text_layout.as_ref()?.layout;
             leaf.and_then(|leaf| line_index_of(layout, LineOf::InlineBox(leaf)))
@@ -5417,7 +5722,7 @@ impl RinchApp {
             caret_on_line(&layout.layout, &layout.text_content, target, rel_x)?
         };
         let p = inline_box
-            .and_then(|(leaf, after)| handle.pos_beside_inline_leaf(leaf as usize, after))
+            .and_then(|(leaf, after)| handle.pos_beside_inline_leaf(leaf, after))
             .or_else(|| handle.pos_at(tb, byte))?;
         // The side of a soft wrap that is on the target line; neither means
         // the column resolved somewhere else, and the hit test decides.
@@ -5449,7 +5754,7 @@ impl RinchApp {
             use rinch_dom::text_query::{LineOf, visual_line_edges_for_node};
             let doc = self.doc.clone()?;
             let d = doc.borrow();
-            let id = tb as u64;
+            let id = tb;
             // The line the caret is DRAWN on: beside an image that is the
             // image's line, which the byte query cannot tell (between two
             // images a soft wrap separates, the byte's caret is on the upper
@@ -5459,7 +5764,7 @@ impl RinchApp {
                 .caret_inline_box(head, affinity)
                 .filter(|&(leaf_tb, _, _)| leaf_tb == tb)
                 .and_then(|(_, leaf, _)| {
-                    visual_line_edges_for_node(&d, id, LineOf::InlineBox(leaf as u64))
+                    visual_line_edges_for_node(&d, id, LineOf::InlineBox(leaf))
                 })
                 .or_else(|| visual_line_edges_for_node(&d, id, LineOf::Caret(flat, affinity)))?
         };
@@ -5483,7 +5788,7 @@ impl RinchApp {
         } else {
             edges.first_box
         };
-        if let Some(p) = edge_box.and_then(|id| handle.pos_beside_inline_leaf(id as usize, end)) {
+        if let Some(p) = edge_box.and_then(|id| handle.pos_beside_inline_leaf(id, end)) {
             return Some(p);
         }
         // At a soft wrap the end-of-line position is the same model position as
@@ -5503,7 +5808,7 @@ impl RinchApp {
     /// `(x, y)`, if the click landed inside any editor — independent of whether it
     /// hit a textblock. Used so a click on the editor's padding / empty area still
     /// takes (or keeps) focus rather than blurring it.
-    pub(crate) fn editor_container_at(&self, x: f32, y: f32) -> Option<usize> {
+    pub(crate) fn editor_container_at(&self, x: f32, y: f32) -> Option<u64> {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
         let hit = self.shared_hit(&d, x, y)?;
@@ -5530,14 +5835,14 @@ impl RinchApp {
     /// accepts a selectable leaf atom (an image, a horizontal rule, an `embed`, or
     /// an app schema's own) and nothing else, so a paragraph's host answers `None`
     /// and the press places a caret. The click→node-select path.
-    pub(super) fn editor_leaf_at(&self, x: f32, y: f32) -> Option<usize> {
+    pub(super) fn editor_leaf_at(&self, x: f32, y: f32) -> Option<u64> {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
         let hit = self.shared_hit(&d, x, y)?;
         if Self::in_node_view(&d.tree, hit) {
             return None;
         }
-        let mut leaf: Option<usize> = None;
+        let mut leaf: Option<u64> = None;
         let mut cur = Some(hit);
         while let Some(id) = cur {
             let node = d.tree.get(id)?;
@@ -5556,17 +5861,14 @@ impl RinchApp {
     /// element carrying [`NODE_VIEW_ATTR`](crate::editor::NODE_VIEW_ATTR) that sits
     /// in an editor. A press or a key there is the component's; a press on the
     /// view's host itself (its frame) is the editor's, and node-selects it.
-    pub(crate) fn in_node_view(tree: &rinch_dom::NodeTree, hit: usize) -> bool {
+    pub(crate) fn in_node_view(tree: &rinch_dom::NodeTree, hit: u64) -> bool {
         Self::node_view_around(tree, hit).is_some()
     }
 
     /// `(editor container, view host)` when `node` is inside a node view's
     /// component (see [`Self::in_node_view`]).
-    pub(crate) fn node_view_around(
-        tree: &rinch_dom::NodeTree,
-        node: usize,
-    ) -> Option<(usize, usize)> {
-        let mut host: Option<usize> = None;
+    pub(crate) fn node_view_around(tree: &rinch_dom::NodeTree, node: u64) -> Option<(u64, u64)> {
+        let mut host: Option<u64> = None;
         let mut cur = tree.get(node)?.parent;
         while let Some(id) = cur {
             let n = tree.get(id)?;
@@ -5591,11 +5893,11 @@ impl RinchApp {
     /// one hit test with hover and cursor (update-path audit F2.1).
     pub(crate) fn editor_link_at_hit(
         &self,
-        hit: usize,
+        hit: u64,
         x: f32,
         y: f32,
     ) -> Option<(
-        usize,
+        u64,
         crate::editor::EditorHandle,
         rinch_editor_core::LinkSpan,
     )> {
@@ -5718,7 +6020,7 @@ impl RinchApp {
     /// the pointer move's shared hit test. The caller has checked
     /// [`crate::editor::link_hover_wanted`], so an app without a hover
     /// callback never gets here.
-    pub(crate) fn update_editor_link_hover(&self, hit: Option<usize>, x: f32, y: f32) {
+    pub(crate) fn update_editor_link_hover(&self, hit: Option<u64>, x: f32, y: f32) {
         let hovered =
             hit.and_then(|hit| self.editor_link_at_hit(hit, x, y))
                 .map(|(_, handle, link)| {
@@ -5734,7 +6036,7 @@ impl RinchApp {
     /// transform, as `bounds_signal` reports it).
     fn editor_image_at_hit(
         &self,
-        hit: usize,
+        hit: u64,
     ) -> Option<(crate::editor::EditorHandle, crate::editor::ImageHover)> {
         let doc = self.doc.clone()?;
         let (container, image, rect) = {
@@ -5964,10 +6266,10 @@ impl RinchApp {
 /// whether the point is on its right half.
 #[cfg(feature = "desktop")]
 pub(crate) struct EditorPoint {
-    pub(crate) container: usize,
-    pub(crate) textblock: usize,
+    pub(crate) container: u64,
+    pub(crate) textblock: u64,
     pub(crate) byte: usize,
-    pub(crate) inline_box: Option<(usize, bool)>,
+    pub(crate) inline_box: Option<(u64, bool)>,
 }
 
 #[cfg(feature = "desktop")]

@@ -219,7 +219,7 @@ fn a_structural_query_records_no_selector_flags() {
     let mut doc = doc_with_markup();
     doc.resolve_layout(400.0, 300.0);
     let host = by_id(&doc, "host");
-    let flags = |doc: &RinchDocument| -> Vec<(usize, usize)> {
+    let flags = |doc: &RinchDocument| -> Vec<(u64, usize)> {
         doc.tree
             .nodes
             .iter()

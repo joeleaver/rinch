@@ -311,13 +311,13 @@ fn lay_out(html: &str, height: f32) -> RinchDocument {
     doc
 }
 
-fn one(doc: &RinchDocument, selector: &str) -> usize {
+fn one(doc: &RinchDocument, selector: &str) -> u64 {
     let found = query_selector(&doc.tree, selector);
     assert_eq!(found.len(), 1, "{selector} names exactly one node");
     found[0]
 }
 
-fn screen(doc: &RinchDocument, id: usize) -> (f32, f32) {
+fn screen(doc: &RinchDocument, id: u64) -> (f32, f32) {
     let (x, y) = rinch_dom::paint::compute_absolute_position(&doc.tree, id, 1.0);
     (x as f32, y as f32)
 }

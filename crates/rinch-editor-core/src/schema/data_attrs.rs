@@ -88,6 +88,7 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-oninput",
     "data-onchange",
     "data-onscroll",
+    "data-onwheel",
     "data-onsubmit",
     "data-onfiledrop",
     "data-ondropfiles",

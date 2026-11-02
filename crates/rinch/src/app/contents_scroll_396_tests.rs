@@ -38,10 +38,10 @@ fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchA
 /// straight into an element is *not* wrapped (its rows are the element's own
 /// children, which were always measured), so a fixture that did not check
 /// this could pass unfixed.
-fn scroller(app: &RinchApp) -> (usize, bool) {
+fn scroller(app: &RinchApp) -> (u64, bool) {
     let doc = app.doc.as_ref().expect("a mounted document");
     let d = doc.borrow();
-    let with_class = |class: &str| -> Vec<usize> {
+    let with_class = |class: &str| -> Vec<u64> {
         d.tree
             .nodes
             .iter()
@@ -59,7 +59,7 @@ fn scroller(app: &RinchApp) -> (usize, bool) {
     (id, wrapped)
 }
 
-fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+fn scroll_top(app: &RinchApp, id: u64) -> f64 {
     let doc = app.doc.as_ref().expect("a mounted document");
     doc.borrow().scroll_top(rinch_core::dom::NodeId(id))
 }
