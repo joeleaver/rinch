@@ -382,12 +382,15 @@ fn tiles_under_two_clippers(pairs: u32) -> u64 {
     clip_tiles(&mut doc)
 }
 
-/// A finding, joeleaver/rinch#1645, not a fix: every entry closes one pane's
-/// clip and opens the other's, 25x38 = 950 tiles each (x 8..400 and x 400..792
-/// are 25 columns), so a window's worth of tiles per pair of rows, for rows
-/// that fill 20 of a pane's 600 pixels. A fix must lower this number.
+/// joeleaver/rinch#1645: rows of two panes alternating by `z-index` used to close
+/// one pane's clip and open the other's per entry, 25x38 = 950 tiles each (x
+/// 8..400 and x 400..792 are 25 columns): 19000 at 10 pairs, 38000 at 20. The
+/// panes share no pixel, so the rows are gathered by pane, and the number no
+/// longer grows with them. It is three clips and not two because pane B's own
+/// entry sits between row `z-index: 0` and the rest: it has no clip to prove it
+/// clear of A, so A's first row keeps its side of it.
 #[test]
-fn tile_cost_of_entries_under_two_unrelated_clippers_grows_with_every_entry() {
-    assert_eq!(tiles_under_two_clippers(10), 20 * 950);
-    assert_eq!(tiles_under_two_clippers(20), 40 * 950);
+fn tile_cost_of_entries_under_two_unrelated_clippers_does_not_grow_with_them() {
+    assert_eq!(tiles_under_two_clippers(10), 3 * 950);
+    assert_eq!(tiles_under_two_clippers(20), 3 * 950);
 }
