@@ -50,6 +50,11 @@ list_bench!(
     setup_flex_label_hover,
     op_flex_label_hover
 );
+list_bench!(
+    animated_list_color,
+    setup_animated_list_color,
+    op_animated_list_color
+);
 
 #[library_benchmark]
 #[bench::list_500_closed(setup = setup_drawer_toggle)]
@@ -82,6 +87,14 @@ fn abs_badge_relayout(f: BadgeFixture) -> BadgeFixture {
 #[bench::ancestor_500(setup = setup_badges_ancestor)]
 fn abs_badge_scroll(f: BadgeFixture) -> BadgeFixture {
     black_box(measure(black_box(f), op_badge_scroll))
+}
+
+#[library_benchmark]
+#[bench::direct_500(setup = setup_badges_direct)]
+#[bench::ancestor_500(setup = setup_badges_ancestor)]
+#[bench::icb_500(setup = setup_badges_icb)]
+fn abs_badge_extents(f: BadgeFixture) -> BadgeFixture {
+    black_box(measure(black_box(f), op_badge_extents))
 }
 
 #[library_benchmark]
@@ -156,7 +169,9 @@ library_benchmark_group!(
         resize_1px,
         set_text_content,
         flex_label_hover,
+        animated_list_color,
         drawer_toggle,
+        abs_badge_extents,
         inset_move,
         abs_badge_relayout,
         abs_badge_scroll,

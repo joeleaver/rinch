@@ -953,6 +953,77 @@ fn gpu_split_runtime_controls() {
     crate::shell::renderer::set_gpu_presenting(false);
 }
 
+/// #2071: a slice rendered on its own overflows Vello's buffers and is kept,
+/// undrawn, while the UI texture under it is fine. Nothing on the page has
+/// changed, so only the full frame a lost frame asks for paints it again.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_an_overflowed_slice_is_painted_again() {
+    const WHOLE: &str = "position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+                         box-sizing: border-box";
+    const OVER: &str = "position: absolute; left: 2px; top: 2px; width: 396px; height: 296px; \
+                        background: rgb(20, 20, 20)";
+    let _p = presenting_lock();
+    let gpu = test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    use crate::shell::desktop::UiTextureState;
+    let base = vello::peniko::Color::WHITE;
+    // What the desktop loop does: the answer goes to the UI texture's state,
+    // and that says whether the next frame is full.
+    let check = |win: &mut Window, ui: &mut UiTextureState| loop {
+        let check = win.vello.check_frames(&gpu.device);
+        ui.note_check(check);
+        if check != vello::FrameCheck::Pending {
+            return check;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    let mut ui = UiTextureState::default();
+    // Enough boxes over the surface, at 25 by 19 tiles each, for one above
+    // slice to pass Vello's 2^21 tiles. The badge is the last thing painted.
+    let mut parts: Vec<Part> = vec![(WHOLE, Some(red()))];
+    parts.extend(std::iter::repeat_n((OVER, None), 5_000));
+    parts.push((BADGE, None));
+    let mut page = page(&parts);
+    let mut win = Window::new(true);
+    let at = |shown: &Shown| shown.pixels[(50 * W + 65) as usize];
+
+    let first = win.frame(&mut page.app, true, Fault::None);
+    ui.rendered(base);
+    assert_eq!(first.split_ids.len(), 1, "the surface is split");
+    assert_ne!(at(&first), [250, 250, 250, 255], "or this proves nothing");
+
+    let idle = win.frame(&mut page.app, false, Fault::None);
+    assert_eq!(idle.kind, "unchanged");
+    assert_ne!(at(&idle), [250, 250, 250, 255], "nothing else draws it");
+
+    assert_eq!(
+        check(&mut win, &mut ui),
+        vello::FrameCheck::Lost,
+        "it overflows"
+    );
+    let mut healed = None;
+    for _ in 0..4 {
+        let full = ui.invalid_reason(base).is_some();
+        assert!(
+            full,
+            "only a lost frame gets here, and it asks for a full one"
+        );
+        healed = Some(win.frame(&mut page.app, full, Fault::None));
+        ui.rendered(base);
+        if check(&mut win, &mut ui) == vello::FrameCheck::Settled {
+            break;
+        }
+    }
+    let healed = healed.unwrap();
+    assert_eq!(ui.invalid_reason(base), None, "still overflowing");
+    assert_eq!(at(&healed), [250, 250, 250, 255], "the slice is back");
+    for s in &page.surfaces {
+        unregister_render_surface(s.id());
+    }
+    crate::shell::renderer::set_gpu_presenting(false);
+}
+
 // ---------------------------------------------------------------------------
 // Review probes (#1899 adversarial review). Pixels only: which surfaces end
 // up split is reported, not asserted.

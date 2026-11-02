@@ -140,8 +140,12 @@ impl ListFixture {
 }
 
 fn build_list() -> ListFixture {
+    build_list_with(LIST_CSS)
+}
+
+fn build_list_with(css: &str) -> ListFixture {
     let mut doc = new_document();
-    doc.load_css(LIST_CSS);
+    doc.load_css(css);
     let body = doc.body();
     let list = doc.create_element("div");
     doc.set_attribute(list, "class", "list");
@@ -197,6 +201,38 @@ pub fn setup_hover() -> ListFixture {
 pub fn op_hover(mut f: ListFixture) -> ListFixture {
     let r = f.rows[10];
     f.hover(Some(r));
+    f.layout();
+    f
+}
+
+/// The list with every row running an infinite `transform` spin, and a class
+/// on the list that changes the colour every row inherits.
+const ANIMATED_LIST_CSS: &str = "
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .row { animation: spin 1s linear infinite; }
+    .list.alt { color: rgb(0, 0, 200); }
+";
+
+/// The list with all 500 rows animated, and its colour class toggled on and
+/// off once.
+pub fn setup_animated_list_color() -> ListFixture {
+    let mut f = build_list_with(&format!("{LIST_CSS}{ANIMATED_LIST_CSS}"));
+    let list = f.list;
+    f.doc.set_attribute(list, "class", "list alt");
+    f.layout();
+    f.doc.set_attribute(list, "class", "list");
+    f.layout();
+    f
+}
+
+/// A colour change on the list, which every row inherits while it runs a
+/// `to { transform: … }` animation, then layout: 500 cascades of an animated
+/// node. The spin's stops read neither `color` nor `font-size`, so none of
+/// those cascades extracts its keyframe stops again (review of #2049: before
+/// the stops were keyed on what they read, each one did).
+pub fn op_animated_list_color(mut f: ListFixture) -> ListFixture {
+    let list = f.list;
+    f.doc.set_attribute(list, "class", "list alt");
     f.layout();
     f
 }
@@ -554,10 +590,12 @@ fn build_badges(variant: &str) -> BadgeFixture {
         scroller,
         leaf: leaf.expect("row 7 exists"),
     };
-    // Warm both operations once.
+    // Warm the operations once — the bars too, as the paint after that
+    // scroll has read them by the time the pointer next moves.
     f.doc.set_style(f.leaf, "margin-left", "1px");
     f.doc.resolve_layout(VP.0, VP.1);
     f.doc.set_scroll_top(f.scroller, 7.0);
+    f = op_badge_extents(f);
     f
 }
 
@@ -587,6 +625,24 @@ pub fn op_badge_relayout(mut f: BadgeFixture) -> BadgeFixture {
 /// The scroller scrolls by one notch's worth; no layout runs.
 pub fn op_badge_scroll(mut f: BadgeFixture) -> BadgeFixture {
     f.doc.set_scroll_top(f.scroller, 60.0);
+    f
+}
+
+/// The bars of the scroller and of the body, as every paint and every
+/// pointer move's hit test asks for them (`scrollbars` runs `content_extents`,
+/// which counts each badge in the scroller its containing block sits in, #770).
+pub fn op_badge_extents(f: BadgeFixture) -> BadgeFixture {
+    let body = f.doc.body();
+    std::hint::black_box(rinch_dom::paint::scrollbar::scrollbars(
+        &f.doc.tree,
+        f.scroller.0,
+        1.0,
+    ));
+    std::hint::black_box(rinch_dom::paint::scrollbar::scrollbars(
+        &f.doc.tree,
+        body.0,
+        1.0,
+    ));
     f
 }
 

@@ -91,6 +91,44 @@
 //! against its real containing block (#386); this is the paint half of that
 //! shape, and needs the clip moved off the bracket to fix.
 //!
+//! # Clip groups
+//!
+//! Entries under one chain share one push, but the sort by `z-index` can
+//! alternate two unrelated panes' rows, `[A], [B], [A], [B], …`, and each switch
+//! closes one pane's clip and opens the other's. Vello allocates a clip's tiles
+//! over its whole bounds (#1645). [`PaintOrder::grouped_by_clip`] gives paint the
+//! same entries with such a run brought together.
+//!
+//! **Moving an entry is proved safe.** An entry is only moved past entries it
+//! is proved apart from. It is painted inside its chain's clips on the painter's
+//! own stack, so nothing it draws, a fixed descendant or a shadow included,
+//! reaches outside them (a fixed box inside it is lifted out of its own root's
+//! bracket and no further, #549). Two entries whose chains share no device pixel
+//! touch no pixel in common, so neither one's move changes the other. That proof
+//! reads only the clip rects. Every pair that may share a pixel keeps its order,
+//! and hit testing keeps walking the true sequence.
+//!
+//! **Merging is not free of pixels.** Gathering also puts entries of one chain
+//! into **one clip layer**, and on Vello a clip is an isolated layer on every
+//! tile its edge crosses, so what is inside that layer decides the result there.
+//! Pixels at clip edges can change on the GPU. Each of these is an accepted cost
+//! (#2074):
+//!
+//! - **Rounded edges.** Entries in separate layers each take the edge's coverage,
+//!   so an earlier entry's colour fringes a later one's; in one layer the edge
+//!   applies once.
+//! - **`filter: grayscale`.** Its `Saturation` layer blends against what is in
+//!   the isolated layer. Alone in its clip it sees nothing, so a tile-wide ring
+//!   inside the clip edge is left unfiltered; with the entries below it in the
+//!   same layer, the ring goes.
+//! - **An in-scene `GameViewport` clear**, the same way: it erases what is in
+//!   the layer, so with the entries below it there, it clears the ring as well.
+//!
+//! The software painter has no such layer and its pixels do not change. Which
+//! picture Vello gives already depended on how entries interleaved, and it still
+//! does: an unrelated pane moving can start or end a grouping, and with it change
+//! those edge pixels.
+//!
 //! # Transforms
 //!
 //! The accumulated offsets never cross a CSS transform, so an entry always lands
@@ -165,11 +203,11 @@
 
 use std::ops::Deref;
 
-use peniko::kurbo::Rect;
+use peniko::kurbo::{Affine, Rect};
 
 use crate::paint::radii::BorderRadii;
 
-use crate::computed_style::PositionValue;
+use crate::computed_style::{DisplayValue, PositionValue};
 use crate::node::{Node, NodeTree, RawNodeId};
 use crate::paint::clip_shape;
 
@@ -250,6 +288,30 @@ impl ClipSpan {
 /// painter can leave open going from one entry to the next.
 pub fn shared_clip_prefix(a: &[ClipRect], b: &[ClipRect]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
+}
+
+/// How many of the newest groups [`PaintOrder::grouped_by_clip`] looks through
+/// for an entry's chain. It bounds the pass at this many comparisons an entry
+/// when every entry has a chain of its own: a list of cards that each clip one
+/// positioned child. An entry it does not reach simply opens a group of its own,
+/// which is the order it had.
+const CLIP_GROUP_LOOKBACK: usize = 8;
+
+/// The run of a sequence's entries that paint under one chain, while
+/// [`PaintOrder::grouped_by_clip`] builds it. A list threaded through a side
+/// table, so that gathering a run allocates nothing per group.
+struct ClipGroup {
+    chain: ClipSpan,
+    /// The device pixels the chain lets anything reach.
+    pixels: Rect,
+    first: u32,
+    last: u32,
+}
+
+/// Whether two device-pixel rects share no pixel. Spelled as a proof of
+/// separation so that a NaN, which proves nothing, answers `false`.
+fn pixels_apart(a: Rect, b: Rect) -> bool {
+    a.x1 <= b.x0 || b.x1 <= a.x0 || a.y1 <= b.y0 || b.y1 <= a.y0
 }
 
 /// One child of a stacking-context root, in paint order.
@@ -337,6 +399,115 @@ impl PaintOrder {
     /// The clip chain a [`ClipSpan`] names, outermost first.
     pub fn clips_for_span(&self, span: ClipSpan) -> &[ClipRect] {
         &self.clips[span.start as usize..span.end as usize]
+    }
+
+    /// Every device pixel the clips of `span` let anything reach: their
+    /// intersection under `to_device`, rounded out to whole pixels because a
+    /// clip's edge antialiases the pixel it crosses, and two clips meeting
+    /// inside one pixel both draw into it. An empty chain reaches everywhere.
+    fn clip_pixels(&self, span: ClipSpan, to_device: Affine) -> Rect {
+        let Some((first, rest)) = self.clips_for_span(span).split_first() else {
+            return Rect::new(
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::INFINITY,
+            );
+        };
+        let r = rest.iter().fold(first.rect, |r, c| r.intersect(c.rect));
+        let d = to_device.transform_rect_bbox(r);
+        Rect::new(d.x0.floor(), d.y0.floor(), d.x1.ceil(), d.y1.ceil())
+    }
+
+    /// The order to paint [`Self::entries`] in, as indices into them, when it
+    /// differs from theirs: entries under one chain brought together across
+    /// entries whose chains share no device pixel with it (see **Clip groups**
+    /// in the module docs, which says what merging them into one clip layer
+    /// does to pixels at clip edges on Vello). `to_device` is the transform
+    /// paint pushes the chains under, and it must be the final one: "whole
+    /// pixel" means nothing in a space a fractional transform is applied to
+    /// afterwards, which is why a drag ghost's paint does not ask.
+    /// `None` means paint them as they stand, the usual answer, and it takes
+    /// one pass over the entries and allocates nothing.
+    ///
+    /// An entry joins the newest group of its chain if every group after that
+    /// one is pixels apart from the chain, and opens a new group otherwise. So
+    /// it never passes anything it may overlap, and it stays behind everything
+    /// in the group it joins. Grouping can only remove clip switches: an entry
+    /// leaves the neighbours it had for one under its own chain.
+    ///
+    /// The entries up to each [`DeferredBars::after`] keep their place ahead
+    /// of it, so that a bar is drawn at the position `after` names, with
+    /// exactly the entries before it that it always had. A bar is drawn outside
+    /// its scroller's clip, so no chain says where it reaches.
+    pub fn grouped_by_clip(&self, to_device: Affine) -> Option<Vec<u32>> {
+        // An entry can only move back to its chain over at least one other
+        // group, and returning is a second change of chain.
+        let changes = self
+            .entries
+            .windows(2)
+            .filter(|w| {
+                let (a, b) = (w[0].clips, w[1].clips);
+                a != b
+                    && !a.is_empty()
+                    && !b.is_empty()
+                    && self.clips_for_span(a) != self.clips_for_span(b)
+            })
+            .count();
+        if changes < 2 {
+            return None;
+        }
+
+        let mut groups: Vec<ClipGroup> = Vec::new();
+        let mut next = vec![u32::MAX; self.entries.len()];
+        // The first group the next entry may join.
+        let mut segment = 0;
+        let mut bars = self.bars.iter().map(|b| b.after).peekable();
+        let mut last_chain = (
+            ClipSpan::EMPTY,
+            self.clip_pixels(ClipSpan::EMPTY, to_device),
+        );
+        for (i, entry) in self.entries.iter().enumerate() {
+            if entry.clips != last_chain.0 {
+                last_chain = (entry.clips, self.clip_pixels(entry.clips, to_device));
+            }
+            let (chain, pixels) = last_chain;
+            let mut home = None;
+            for group in groups[segment..].iter_mut().rev().take(CLIP_GROUP_LOOKBACK) {
+                if self.clips_for_span(group.chain) == self.clips_for_span(chain) {
+                    home = Some(group);
+                    break;
+                }
+                if !pixels_apart(group.pixels, pixels) {
+                    break;
+                }
+            }
+            match home {
+                Some(group) => {
+                    next[group.last as usize] = i as u32;
+                    group.last = i as u32;
+                }
+                None => groups.push(ClipGroup {
+                    chain,
+                    pixels,
+                    first: i as u32,
+                    last: i as u32,
+                }),
+            }
+            while bars.next_if_eq(&i).is_some() {
+                segment = groups.len();
+            }
+        }
+
+        let mut order = Vec::with_capacity(self.entries.len());
+        for group in &groups {
+            let mut at = group.first;
+            while at != u32::MAX {
+                order.push(at);
+                at = next[at as usize];
+            }
+        }
+        Some(order)
     }
 }
 
@@ -667,6 +838,17 @@ impl<const BARS: bool> Collector<'_, BARS> {
             let Some(child) = self.tree.get_live(child_id) else {
                 continue;
             };
+            // Nothing under `display: none` renders, positioned and fixed
+            // descendants included. Descending into such a subtree hoisted
+            // every positioned box or stacking context in it (a dimmed toolbar
+            // button is one: `opacity < 1`) into this sequence, where paint
+            // entered each and, finding no area, pushed an opacity layer over
+            // the whole plane: Pimble's hidden toolbars and closed menus put 64
+            // such layers in every frame, 2.04M of the 2.81M tiles its 4K window
+            // asked Vello for, past Vello's fixed buffer.
+            if matches!(child.computed_style.display, DisplayValue::None) {
+                continue;
+            }
             let dom_order = self.order;
             self.order += 1;
 
@@ -805,6 +987,209 @@ impl<const BARS: bool> Collector<'_, BARS> {
         if pushed {
             self.live.pop();
         }
+    }
+}
+
+#[cfg(test)]
+mod clip_group_tests {
+    use super::{
+        ClipRect, ClipSpan, DeferredBars, PaintEntry, PaintKind, PaintOrder, RawNodeId,
+        pixels_apart,
+    };
+    use crate::paint::radii::BorderRadii;
+    use peniko::kurbo::{Affine, Rect};
+
+    fn clip(x0: f64, x1: f64) -> ClipRect {
+        ClipRect {
+            rect: Rect::new(x0, 7.0, x1, 311.0),
+            radii: BorderRadii::ZERO,
+        }
+    }
+
+    /// A sequence of one entry per chain named, each chain a list of clips.
+    fn order(chains: &[&[ClipRect]]) -> PaintOrder {
+        let mut o = PaintOrder::default();
+        for chain in chains {
+            let start = o.clips.len() as u32;
+            o.clips.extend_from_slice(chain);
+            o.entries.push(PaintEntry {
+                node_id: RawNodeId::default(),
+                kind: PaintKind::PositionedAuto,
+                offset_x: 0.0,
+                offset_y: 0.0,
+                z_index: 0,
+                clips: ClipSpan {
+                    start,
+                    end: o.clips.len() as u32,
+                },
+            });
+        }
+        o
+    }
+
+    fn bar_after(o: &mut PaintOrder, after: usize) {
+        o.bars.push(DeferredBars {
+            node_id: RawNodeId::default(),
+            after,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            clips: ClipSpan::EMPTY,
+        });
+    }
+
+    fn grouped(o: &PaintOrder) -> Vec<u32> {
+        o.grouped_by_clip(Affine::IDENTITY)
+            .unwrap_or_else(|| (0..o.len() as u32).collect())
+    }
+
+    #[test]
+    fn alternating_entries_under_clips_apart_are_gathered() {
+        let (a, b) = (clip(13.0, 101.0), clip(103.0, 211.0));
+        let o = order(&[&[a], &[b], &[a], &[b], &[a]]);
+        assert_eq!(grouped(&o), [0, 2, 4, 1, 3]);
+    }
+
+    /// Clips that meet on a whole pixel share none.
+    #[test]
+    fn clips_meeting_on_a_pixel_edge_are_apart() {
+        let (a, b) = (clip(13.0, 101.0), clip(101.0, 211.0));
+        assert_eq!(grouped(&order(&[&[a], &[b], &[a]])), [0, 2, 1]);
+    }
+
+    #[test]
+    fn overlapping_clips_keep_their_order() {
+        let (a, b) = (clip(13.0, 101.0), clip(100.0, 211.0));
+        assert_eq!(grouped(&order(&[&[a], &[b], &[a], &[b]])), [0, 1, 2, 3]);
+    }
+
+    /// Both clips antialias the pixel they meet inside, so it is shared.
+    #[test]
+    fn clips_meeting_inside_a_pixel_keep_their_order() {
+        let (a, b) = (clip(13.0, 101.5), clip(101.5, 211.0));
+        assert_eq!(grouped(&order(&[&[a], &[b], &[a]])), [0, 1, 2]);
+    }
+
+    /// Whole pixels in the root's space are not whole pixels on the device.
+    #[test]
+    fn apartness_is_judged_on_the_device() {
+        let (a, b) = (clip(13.0, 101.0), clip(101.0, 211.0));
+        let o = order(&[&[a], &[b], &[a]]);
+        assert_eq!(
+            o.grouped_by_clip(Affine::translate((0.25, 0.0))),
+            Some(vec![0, 1, 2])
+        );
+        assert_eq!(
+            o.grouped_by_clip(Affine::translate((3.0, 0.0))),
+            Some(vec![0, 2, 1])
+        );
+        assert_eq!(
+            o.grouped_by_clip(Affine::scale(1.5)),
+            Some(vec![0, 1, 2]),
+            "101 lands on 151.5"
+        );
+    }
+
+    /// A transform can swing two rects apart in the root into one another's
+    /// device bounds: a chain is only as apart as its bounding box.
+    #[test]
+    fn a_rotation_is_judged_by_device_bounds() {
+        let (a, b) = (clip(13.0, 101.0), clip(103.0, 211.0));
+        let o = order(&[&[a], &[b], &[a]]);
+        assert_eq!(o.grouped_by_clip(Affine::rotate(0.3)), Some(vec![0, 1, 2]));
+    }
+
+    /// The chain reaches only where all its clips do: the outer clip alone
+    /// overlaps everything here.
+    #[test]
+    fn a_chain_reaches_the_intersection_of_its_clips() {
+        let outer = clip(0.0, 400.0);
+        let (a, b) = (clip(13.0, 101.0), clip(103.0, 211.0));
+        let o = order(&[&[outer, a], &[outer, b], &[outer, a]]);
+        assert_eq!(grouped(&o), [0, 2, 1]);
+    }
+
+    /// An inner clip can reach past its outer one (a chain is nested in the
+    /// tree, not in its rects): no one link of it says where it reaches.
+    #[test]
+    fn neither_end_of_a_chain_bounds_it_alone() {
+        let (narrow, wide) = (clip(13.0, 101.0), clip(50.0, 400.0));
+        let other = clip(103.0, 211.0);
+        let o = order(&[&[narrow, wide], &[other], &[narrow, wide]]);
+        assert_eq!(grouped(&o), [0, 2, 1]);
+    }
+
+    /// An entry with no chain can draw anywhere under the root.
+    #[test]
+    fn an_entry_with_no_clips_is_passed_by_nothing() {
+        let (a, b) = (clip(13.0, 101.0), clip(103.0, 211.0));
+        let o = order(&[&[a], &[b], &[], &[a], &[b], &[a]]);
+        assert_eq!(grouped(&o), [0, 1, 2, 3, 5, 4]);
+    }
+
+    /// `[A] [B] [C] [A]` with C over A: the last entry stops at C, though B is
+    /// clear of it and the group it would join is further back.
+    #[test]
+    fn an_entry_does_not_pass_a_group_it_overlaps_on_the_way_to_its_own() {
+        let (a, b, c) = (clip(13.0, 101.0), clip(103.0, 211.0), clip(90.0, 102.0));
+        let o = order(&[&[a], &[b], &[c], &[a]]);
+        assert_eq!(grouped(&o), [0, 1, 2, 3]);
+    }
+
+    /// One chain written twice in the side table is one chain.
+    #[test]
+    fn chains_are_compared_by_their_clips_not_their_spans() {
+        let (a, b) = (clip(13.0, 101.0), clip(103.0, 211.0));
+        let o = order(&[&[a], &[b], &[a]]);
+        assert_ne!(o[0].clips, o[2].clips);
+        assert_eq!(grouped(&o), [0, 2, 1]);
+    }
+
+    /// Nothing crosses a position a bar is drawn at.
+    #[test]
+    fn entries_stay_on_their_side_of_a_bar() {
+        let (a, b) = (clip(13.0, 101.0), clip(103.0, 211.0));
+        let mut o = order(&[&[a], &[b], &[a], &[b], &[a], &[b]]);
+        bar_after(&mut o, 2);
+        assert_eq!(grouped(&o), [0, 2, 1, 3, 5, 4]);
+    }
+
+    /// The lookback is a bound on the work: an entry past it opens a group.
+    #[test]
+    fn an_entry_past_the_lookback_opens_a_group() {
+        let clips: Vec<ClipRect> = (0..10)
+            .map(|i| clip(i as f64 * 10.0, i as f64 * 10.0 + 9.0))
+            .collect();
+        let then = |late: usize| {
+            let chains: Vec<&[ClipRect]> = clips
+                .iter()
+                .chain([&clips[late]])
+                .map(std::slice::from_ref)
+                .collect();
+            grouped(&order(&chains))
+        };
+        // Clip 2's group is the eighth back, clip 1's the ninth.
+        assert_eq!(then(2), [0, 1, 2, 10, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(then(1), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    }
+
+    /// The common shapes take the path that allocates nothing.
+    #[test]
+    fn a_sequence_with_nothing_to_gather_has_no_grouping() {
+        let (a, b) = (clip(13.0, 101.0), clip(103.0, 211.0));
+        for chains in [
+            &[][..],
+            &[&[a][..], &[a], &[a]],
+            &[&[a], &[a], &[b], &[b]],
+            &[&[a], &[], &[b]],
+        ] {
+            assert_eq!(order(chains).grouped_by_clip(Affine::IDENTITY), None);
+        }
+    }
+
+    #[test]
+    fn a_nan_is_not_a_proof_of_separation() {
+        let nan = Rect::new(f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+        assert!(!pixels_apart(nan, Rect::new(0.0, 0.0, 9.0, 9.0)));
     }
 }
 

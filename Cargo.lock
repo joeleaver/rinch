@@ -3713,6 +3713,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "node-graph-demo"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+]
+
+[[package]]
 name = "nokhwa"
 version = "0.10.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5387,6 +5394,7 @@ dependencies = [
  "rinch-editable",
  "rinch-editor-core",
  "rinch-editor-view",
+ "rinch-graph-view",
  "rinch-http",
  "rinch-macros",
  "rinch-platform",
@@ -5592,6 +5600,23 @@ dependencies = [
  "rinch-editor-core",
  "web-time",
  "yrs",
+]
+
+[[package]]
+name = "rinch-graph-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rinch-graph-view"
+version = "0.1.0"
+dependencies = [
+ "rinch-core",
+ "rinch-graph-core",
+ "rinch-macros",
 ]
 
 [[package]]
@@ -7807,7 +7832,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=c6b2e61558962d0074a98f46d55a435c06901865#c6b2e61558962d0074a98f46d55a435c06901865"
+source = "git+https://github.com/joeleaver/vello-fork?rev=7a511341325479f8dbbf0b6f71d9f7f29483d5c0#7a511341325479f8dbbf0b6f71d9f7f29483d5c0"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -7825,7 +7850,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=c6b2e61558962d0074a98f46d55a435c06901865#c6b2e61558962d0074a98f46d55a435c06901865"
+source = "git+https://github.com/joeleaver/vello-fork?rev=7a511341325479f8dbbf0b6f71d9f7f29483d5c0#7a511341325479f8dbbf0b6f71d9f7f29483d5c0"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -7837,7 +7862,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=c6b2e61558962d0074a98f46d55a435c06901865#c6b2e61558962d0074a98f46d55a435c06901865"
+source = "git+https://github.com/joeleaver/vello-fork?rev=7a511341325479f8dbbf0b6f71d9f7f29483d5c0#7a511341325479f8dbbf0b6f71d9f7f29483d5c0"
 dependencies = [
  "bytemuck",
  "log",
