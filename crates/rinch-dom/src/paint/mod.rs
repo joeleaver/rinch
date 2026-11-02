@@ -2887,6 +2887,7 @@ pub fn paint_subtree(
     };
     let offset_x = -(node.layout.x as f64 * scale);
     let offset_y = -(node.layout.y as f64 * scale);
+    let _snapshot = SnapshotPaintScope::enter();
     ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,
@@ -2990,11 +2991,34 @@ thread_local! {
     /// sequence pushes its [`crate::stacking::PaintOrder::bars`] and truncates
     /// on the way out.
     static DEFERRED_BARS: RefCell<Vec<RawNodeId>> = const { RefCell::new(Vec::new()) };
+
+    /// A [`paint_subtree`] is running. Its scene is appended at the drag's
+    /// offset, which is fractional, so the device pixels
+    /// [`PaintOrder::grouped_by_clip`](crate::stacking::PaintOrder::grouped_by_clip)
+    /// would judge are not the ones it lands on: clips meeting on a whole pixel
+    /// here can share one there. A ghost keeps the true sequence.
+    static SNAPSHOT_PAINT: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Whether the sequence being painted draws `node_id`'s bars itself.
 fn bars_deferred(node_id: RawNodeId) -> bool {
     DEFERRED_BARS.with(|d| d.borrow().contains(&node_id))
+}
+
+/// Marks a [`paint_subtree`] for the length of its paint.
+struct SnapshotPaintScope;
+
+impl SnapshotPaintScope {
+    fn enter() -> Self {
+        SNAPSHOT_PAINT.set(true);
+        Self
+    }
+}
+
+impl Drop for SnapshotPaintScope {
+    fn drop(&mut self) {
+        SNAPSHOT_PAINT.set(false);
+    }
 }
 
 /// Pushes a sequence's deferred scrollers and takes them back off on drop.
@@ -3153,6 +3177,9 @@ fn paint_scrollbars(
 /// after the common prefix is popped and pushed. On vello every clip layer
 /// allocates tiles over its whole bounds, so re-pushing a window-sized outer
 /// clip for each positioned box is what overflows its fixed tile buffer.
+/// Entries with no prefix to share, rows of two panes whose `z-index`es
+/// alternate, are brought together where their clips share no pixel
+/// ([`PaintOrder::grouped_by_clip`](crate::stacking::PaintOrder::grouped_by_clip)).
 #[allow(clippy::too_many_arguments)]
 fn paint_children_with_stacking(
     tree: &NodeTree,
@@ -3230,7 +3257,14 @@ fn paint_children_with_stacking(
         let _deferred = DeferredBarsScope::enter(&order.bars);
         let mut open = ClipSpan::EMPTY;
         let mut bars = order.bars.iter().peekable();
-        for (index, entry) in order.iter().enumerate() {
+        let grouped = if SNAPSHOT_PAINT.get() {
+            None
+        } else {
+            order.grouped_by_clip(node_transform)
+        };
+        for position in 0..order.len() {
+            let index = grouped.as_ref().map_or(position, |g| g[position] as usize);
+            let entry = &order[index];
             paint_sequence_entry(
                 tree,
                 &order,
@@ -3245,7 +3279,9 @@ fn paint_children_with_stacking(
             );
             // The bars of the scrollers whose last contained entry this was,
             // under the clips the scroller itself is drawn under (#1717).
-            while let Some(bar) = bars.next_if(|b| b.after == index) {
+            // Grouping keeps every entry up to `after` ahead of it, so this is
+            // that entry's position whichever entry fills it.
+            while let Some(bar) = bars.next_if(|b| b.after == position) {
                 switch_clip_chain(&order, bar.clips, &mut open, painter, node_transform);
                 if let Some(owner) = tree.get(bar.node_id)
                     && !matches!(
