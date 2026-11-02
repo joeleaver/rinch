@@ -1730,3 +1730,47 @@ fn a_fieldset_disabled_false_styles_its_subtree_except_the_legend() {
         "and the first <legend>'s carve-out survives the \"false\" spelling"
     );
 }
+
+// ===== Stylo preferences (#680) =====
+
+/// `set_stylo_prefs` holds stylo 0.22's preferences at what 0.11 answered:
+/// `@property` registers nothing, `@supports at-rule()` and typed `calc()`
+/// arithmetic do not parse, and `:nth-child(… of S)` is dropped. Each rule
+/// below is one that 0.22's defaults would apply.
+#[test]
+fn stylo_prefs_keep_the_syntax_stylo_0_11_did_not_parse_off() {
+    let cases = [
+        (
+            "@property",
+            "@property --x { syntax: '<length>'; inherits: false; initial-value: 7px; } \
+             .t { width: var(--x, 3px); }",
+            3.0,
+        ),
+        (
+            "@supports at-rule()",
+            "@supports at-rule(@media) { .t { width: 7px; } }",
+            800.0,
+        ),
+        (
+            "typed calc()",
+            ".t { width: calc(7px * (2px / 2px)); }",
+            800.0,
+        ),
+        (
+            ":nth-child(of)",
+            ".t:nth-child(1 of .t) { width: 7px; }",
+            800.0,
+        ),
+    ];
+    for (name, css, want) in cases {
+        let mut doc = RinchDocument::new();
+        doc.load_css(&format!("div {{ height: 1px }} {css}"));
+        let body = doc.body();
+        let t = doc.create_element("div");
+        doc.set_attribute(t, "class", "t");
+        doc.append_child(body, t);
+        doc.resolve_layout(800.0, 600.0);
+        let got = doc.tree.get(t.0).unwrap().layout.width;
+        assert_eq!(got, want, "{name}: stylo 0.11's answer");
+    }
+}

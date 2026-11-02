@@ -237,11 +237,17 @@ pub(super) fn flex_direction_from_stylo(
 pub(super) fn flex_wrap_from_stylo(
     wrap: &style::properties::longhands::flex_wrap::computed_value::T,
 ) -> FlexWrapValue {
+    // A bitflag set since stylo 0.21 (`nowrap | [wrap | wrap-reverse] ||
+    // balance`). `balance` (which `wrap balance` computes to) parses only
+    // under the `layout.flexbox.balance` pref, which rinch leaves off; it
+    // wraps, so it reads as `wrap` if ever turned on.
     use style::properties::longhands::flex_wrap::computed_value::T as FlexWr;
-    match *wrap {
-        FlexWr::Nowrap => FlexWrapValue::NoWrap,
-        FlexWr::Wrap => FlexWrapValue::Wrap,
-        FlexWr::WrapReverse => FlexWrapValue::WrapReverse,
+    if wrap.contains(FlexWr::WRAP_REVERSE) {
+        FlexWrapValue::WrapReverse
+    } else if wrap.intersects(FlexWr::WRAP | FlexWr::BALANCE) {
+        FlexWrapValue::Wrap
+    } else {
+        FlexWrapValue::NoWrap
     }
 }
 

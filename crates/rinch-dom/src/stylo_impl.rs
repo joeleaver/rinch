@@ -5,14 +5,11 @@
 
 use std::sync::atomic::Ordering;
 
-use atomic_refcell::{AtomicRef, AtomicRefMut};
 // Use selectors re-exported from style to ensure version compatibility
 use style::applicable_declarations::ApplicableDeclarationBlock;
 use style::context::{QuirksMode, SharedStyleContext};
-use style::dom::{
-    AttributeProvider, LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode,
-    TShadowRoot,
-};
+use style::data::{ElementDataMut, ElementDataRef};
+use style::dom::{LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
 use style::properties::{ComputedValues, PropertyDeclarationBlock};
 use style::selector_parser::{NonTSPseudoClass, PseudoElement, SelectorImpl};
 use style::servo_arc::{Arc, ArcBorrow};
@@ -117,14 +114,6 @@ impl NodeInfo for RinchNode<'_> {
 
     fn is_text_node(&self) -> bool {
         matches!(self.node().kind, NodeKind::Text(_))
-    }
-}
-
-// === AttributeProvider trait ===
-
-impl AttributeProvider for RinchNode<'_> {
-    fn get_attr(&self, attr: &LocalName) -> Option<String> {
-        self.node().attributes.get(attr.as_ref()).cloned()
     }
 }
 
@@ -329,7 +318,7 @@ impl<'a> Element for RinchNode<'a> {
     fn has_local_name(&self, local_name: &BorrowedLocalName) -> bool {
         self.node()
             .tag()
-            .map(|tag| tag == local_name.as_ref())
+            .map(|tag| tag == AsRef::<str>::as_ref(local_name))
             .unwrap_or(false)
     }
 
@@ -348,7 +337,7 @@ impl<'a> Element for RinchNode<'a> {
         local_name: &LocalName,
         operation: &AttrSelectorOperation<&AtomString>,
     ) -> bool {
-        let Some(attr_value) = self.node().attributes.get(local_name.as_ref()) else {
+        let Some(attr_value) = self.node().attributes.get::<str>(local_name.as_ref()) else {
             return false;
         };
         // The selectors crate's own evaluator: the same one Stylo's
@@ -736,38 +725,38 @@ impl<'a> TElement for RinchNode<'a> {
         0
     }
 
-    unsafe fn ensure_data(&self) -> AtomicRefMut<'_, style::data::ElementData> {
-        let mut stylo_data = self.node().stylo_element_data.borrow_mut();
-        if stylo_data.is_none() {
-            *stylo_data = Some(style::data::ElementData::default());
-        }
-        AtomicRefMut::map(stylo_data, |sd| sd.as_mut().unwrap())
+    unsafe fn ensure_data(&self) -> ElementDataMut<'_> {
+        self.node().stylo_element_data.ensure()
     }
 
     unsafe fn clear_data(&self) {
-        *self.node().stylo_element_data.borrow_mut() = None;
+        self.node().stylo_element_data.clear();
     }
 
     fn has_data(&self) -> bool {
-        self.node().stylo_element_data.borrow().is_some()
+        self.node().stylo_element_data.has_data()
     }
 
-    fn borrow_data(&self) -> Option<AtomicRef<'_, style::data::ElementData>> {
-        let stylo_data = self.node().stylo_element_data.borrow();
-        if stylo_data.is_some() {
-            Some(AtomicRef::map(stylo_data, |sd| sd.as_ref().unwrap()))
-        } else {
-            None
-        }
+    fn borrow_data(&self) -> Option<ElementDataRef<'_>> {
+        self.node().stylo_element_data.borrow()
     }
 
-    fn mutate_data(&self) -> Option<AtomicRefMut<'_, style::data::ElementData>> {
-        let stylo_data = self.node().stylo_element_data.borrow_mut();
-        if stylo_data.is_some() {
-            Some(AtomicRefMut::map(stylo_data, |sd| sd.as_mut().unwrap()))
-        } else {
-            None
-        }
+    fn mutate_data(&self) -> Option<ElementDataMut<'_>> {
+        self.node().stylo_element_data.borrow_mut()
+    }
+
+    /// The value of an attribute, for CSS `attr()`, which stylo substitutes
+    /// in the cascade (since 0.21, in any property). The cascade asking means
+    /// this element's style or a `::before`/`::after` of it depends on its
+    /// attributes, so the element is flagged for
+    /// `invalidation::note_attribute_change` (`content_reads_attrs`).
+    ///
+    /// Rinch's attributes have no namespaces, so the namespace is not
+    /// consulted (stylo 0.11's `AttributeProvider::get_attr` passed none).
+    fn get_attr(&self, attr: &LocalName, _namespace: &Namespace) -> Option<String> {
+        let node = self.node();
+        node.content_reads_attrs.set(true);
+        node.attributes.get::<str>(attr.as_ref()).cloned()
     }
 
     fn skip_item_display_fixup(&self) -> bool {
@@ -865,7 +854,7 @@ impl<'a> TElement for RinchNode<'a> {
         if let Some(block) = &self.node().presentational_hints {
             hints.push(ApplicableDeclarationBlock::from_declarations(
                 block.clone(),
-                style::rule_tree::CascadeLevel::PresHints,
+                style::rule_tree::CascadeLevel::new(style::rule_tree::CascadeOrigin::PresHints),
                 style::stylesheets::layer_rule::LayerOrder::root(),
             ));
         }

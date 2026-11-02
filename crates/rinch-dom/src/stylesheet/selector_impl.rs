@@ -94,8 +94,6 @@ impl ToCss for RinchPseudoClass {
 }
 
 impl NonTSPseudoClass for RinchPseudoClass {
-    type Impl = RinchSelectorImpl;
-
     fn is_active_or_hover(&self) -> bool {
         matches!(self, Self::Hover | Self::Active)
     }
@@ -126,9 +124,7 @@ impl ToCss for RinchPseudoElement {
     }
 }
 
-impl PseudoElement for RinchPseudoElement {
-    type Impl = RinchSelectorImpl;
-}
+impl PseudoElement for RinchPseudoElement {}
 
 impl SelectorImpl for RinchSelectorImpl {
     type ExtraMatchingData<'a> = ();
@@ -148,13 +144,12 @@ pub(super) struct RinchSelectorParser;
 
 impl<'i> sel_parser::Parser<'i> for RinchSelectorParser {
     type Impl = RinchSelectorImpl;
-    type Error = sel_parser::SelectorParseErrorKind<'i>;
+    type Error = sel_parser::SelectorParseErrorKind;
 
     fn parse_non_ts_pseudo_class(
         &self,
-        _location: cssparser::SourceLocation,
         name: CowRcStr<'i>,
-    ) -> Result<RinchPseudoClass, ParseError<'i, Self::Error>> {
+    ) -> Result<RinchPseudoClass, ParseError<Self::Error>> {
         match &*name.to_ascii_lowercase() {
             "hover" => Ok(RinchPseudoClass::Hover),
             "focus" => Ok(RinchPseudoClass::Focus),
@@ -166,30 +161,23 @@ impl<'i> sel_parser::Parser<'i> for RinchSelectorParser {
             "checked" => Ok(RinchPseudoClass::Checked),
             "empty" => Ok(RinchPseudoClass::Empty),
             "root" => Ok(RinchPseudoClass::Root),
-            _ => Err(cssparser::ParseError {
-                kind: cssparser::ParseErrorKind::Custom(
-                    sel_parser::SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name),
-                ),
-                location: _location,
-            }),
+            _ => Err(ParseError::custom(
+                sel_parser::SelectorParseErrorKind::UnsupportedPseudoClassOrElement,
+            )),
         }
     }
 
     fn parse_pseudo_element(
         &self,
-        location: cssparser::SourceLocation,
         name: CowRcStr<'i>,
-    ) -> Result<RinchPseudoElement, ParseError<'i, Self::Error>> {
+    ) -> Result<RinchPseudoElement, ParseError<Self::Error>> {
         match &*name.to_ascii_lowercase() {
             "before" => Ok(RinchPseudoElement::Before),
             "after" => Ok(RinchPseudoElement::After),
             "placeholder" => Ok(RinchPseudoElement::Placeholder),
-            _ => Err(cssparser::ParseError {
-                kind: cssparser::ParseErrorKind::Custom(
-                    sel_parser::SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name),
-                ),
-                location,
-            }),
+            _ => Err(ParseError::custom(
+                sel_parser::SelectorParseErrorKind::UnsupportedPseudoClassOrElement,
+            )),
         }
     }
 

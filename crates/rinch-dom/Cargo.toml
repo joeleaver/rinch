@@ -56,18 +56,18 @@ stylo = { workspace = true }
 stylo_traits = { workspace = true }
 stylo_dom = { workspace = true }
 stylo_atoms = { workspace = true }
-stylo_config = { workspace = true }
+stylo_static_prefs = { workspace = true }
 servo_arc = { workspace = true }
 
-# Keep cssparser/selectors for compatibility during migration
-# Use versions that match stylo 0.11's dependencies
-cssparser = "0.36"
-selectors = "0.35"
+# cssparser and selectors at the versions stylo 0.22 builds with (a mismatch
+# is a second copy and a type error at every boundary; see dependencies.md).
+cssparser = "0.38"
+selectors = "0.41"
 precomputed-hash = "0.1"
 # A fast hasher for the scoped IFC pass's node-id sets: SipHash was ~1.5% of
 # a keyed-for reverse (#895). Already in the graph via stylo.
 rustc-hash = "2"
-web_atoms = "0.2"
+web_atoms = "0.3"
 
 tiny-skia = { version = "0.11", optional = true }
 swash = { version = "0.2", optional = true }
