@@ -129,7 +129,7 @@ it as of any child, walking its DOM ancestors up to the host: under a
 `position: relative` span the span is the containing block and the host's
 content, so the box counts when the scroller **is** the block holding the
 span's line (#1049), at the span's fragment (#631); with another block between
-the scroller and the line it counts nowhere (#770).
+the scroller and the line it is measured through `overflow_absolutes` (#770, below).
 `DomDocument::scroll_height` /
 `scroll_width` — what the wheel and `scroll_into_view` clamp to — **are**
 `content_extents`, and so is layout's own clamp of a scrolled container
@@ -142,15 +142,90 @@ the box tree is `children` (no anonymous box, no hoist, no split inline child)
 and takes `box_tree_children` whole otherwise: `box_tree_children`'s own
 borrow test is a second pass over every child, +37% per call on 500 rows.
 
-Limits, all pre-existing and none introduced by that filter. The walk
-stops at the first **box**, so an absolute whose containing block is a **non-parent**
-ancestor contributes to no box's range at all — unless everything between it
-and a block container above is non-positioned flowed inline elements and
-`display: contents` wrappers, which hoist it into that block container's box
-list (#591, reached since #995; under a positioned span it counts there too, #1049) — Chrome gives it to that
-ancestor (measured: a 700x1500 absolute under a static `overflow: auto` div
-lands on `documentElement.scrollHeight`), and rinch used to give it to the
-wrong box, which is what grew the phantom bar (**#770**). **#769 is fixed**:
+**Absolutes below the first box (#770).** The walk stops at the first
+**box**, so an absolute laid out in any box but its scroll container — under a
+`position: relative` wrapper that is no scroll container, a level below its
+containing block, or escaping a scroller between it and a containing block
+further up — was in no box's range (before #765, in the wrong box's: the
+phantom bar). css-overflow-3 gives it to the **nearest scroll container at or
+above its containing block** (Chrome 156: a scroller between the box and its
+containing block gets nothing, one above the first gets nothing, a
+non-scrolling box between passes it up transformed). The layout read-back
+lists every laid-out absolute box with its kind (`NodeTree::overflow_absolutes`,
+one push), and the container each belongs to is `out_of_flow::overflow_scroller`'s:
+from the
+containing block — the layout parent, an ancestor further up, or for a
+positioned span the block holding its line (`chain_end`) — up the
+**containing-block chain** (an in-flow box to its parent, an `absolute` box on
+the way to its own containing block, a `fixed` one to the viewport: none) to the
+first box that clips; a scroll container (`overflow` `hidden`/`scroll`/`auto`) takes it,
+an `overflow: clip` box drops it (it clips what overflows it; not modelled:
+`clip` on one axis with `visible` on the other). The initial containing block's
+scroll is the page's, which in rinch is the `<body>`'s (UA `overflow-y: auto`;
+its scroll carries an ICB box, `chain_to_containing_block`), and the `<html>`
+box's when the body does not scroll or does not hold the box. A box its layout
+parent already measures (`contributes_to_scrollable_overflow`) is left out.
+`content_extents` ends with `extend_with_overflow_absolutes`, which reads a
+**memo**, `paint::scrollbar::OverflowAbsolutes` (beside the list):
+the first range asked for after the geometry changed walks each listed box up
+once (`place_listed`: it finds the container as `overflow_scroller` does and
+sums the offsets on the way — each box's layout offset less its scroll, since
+`replace_after_scroll` writes an escaped scroller's scroll into the box's
+`layout`), and keeps one `(container, right, bottom)` per container; every
+later call is one binary search. It is keyed on `HitCache::shape_generation`,
+which every invalidation moves — a layout, a mutation, a restyle, a tick that
+changes a `HitStyleKey`, and `out_of_flow::replace_all` (it moves boxes after
+the clamp below measured them) — and a scroll moves only when it reaches an
+extent (a box that does not clip on both axes): a scroll of a clipping box
+leaves every listed box's measure where it was. A box with a **transform** on
+its way (its own or any box's to the container, identity included) is listed
+`live` instead and measured by every call (`border_box_in`, transforms composed
+as paint composes them), because a tick writes a transform's value without an
+invalidation; so is a box whose way up the walk does not follow (an `absolute`
+box between its containing block and the container). Either way, less the
+container's end padding, as an `absolute` child counts. **Cost:** a document
+with no absolute box pays an `is_empty` per call; with 500 badges a warm call
+is a binary search (`abs_badge_extents`), and the read-back pays one push per
+box. Layout's clamp first asks `content_extents_in_flow` — the range without
+the listed boxes, which only add to it — and measures them only for an offset
+past that, so a relayout of a long list scrolled anywhere but its end measures
+none of them (`abs_badge_relayout`). An absolute box with no area counts nothing, here and as a child (Chrome
+156: `0x500`, `10x0`, `0x0` boxes scroll nothing). Rows:
+`tests/abs_scroll_range_770_tests.rs`. Still not counted: an **in-flow**
+descendant's overflow below the first box (#2054), so a box that
+overflows its `height: 50px` parent scrolls nothing where its absolute twin
+now does.
+
+**A range that moves damages the bars.** A bar is drawn from its container's
+range, and the range moves with content the container's own box does not
+change for — a box moved past its edge, a row grown, a child removed — so
+nothing named the bar: a partial frame kept no thumb where one had appeared,
+or the old thumb's length. It was reachable with a narrow in-flow row before
+#770; #770 made it reachable from every absolute box on a page (the split
+runtime's random sequence moved a 200px bar to `left: 210px` in a 400px page,
+and the partial frame drew no page bar where the full frame did — batch
+#2062). Now `NodeTree::painted_bars` holds each scroll container's
+`Scrollbars` (scale 1) as the last paint consumed it, and
+`paint::bar_watch_scrollers` names the containers to check: every scroll
+container that is an ancestor of a paint-dirty node whose **geometry** may
+have moved (never painted, `prev_layout != layout`, its `position` changed, or
+a transform on it now or when painted) or of a parent a subtree left
+(`NodeTree::bar_check_parents`, pushed by `mark_subtree_paint_dirty` for the
+subtree's root), and every dirty container itself. Any container whose range
+a box reaches is its ancestor (an absolute box's is at or above its
+containing block). A dirty node whose geometry held — a colour, a caret blink
+— measures no range. `compute_damage` names, for each whose bars differ from
+the record, the strip of each axis whose track changed (10px along that edge:
+the 6px bar 2px in, and its anti-aliased edge; both strips when anything but
+the tracks differs), clipped by its clip chain and attributed to no node (a
+bar is drawn by its container's paint or after its last positioned
+descendant, #1717). The two strips share one rounded edge, so they stay two
+rects instead of merging into the container's box. `consume_paint_dirty`
+records the same set, and after a whole-document restyle (which pushes
+nothing) re-reads every scroll container, so a container with no record
+painted no bar. Pins: `crates/rinch/src/app/scrollbar_range_damage_tests.rs`.
+
+Limits, all pre-existing. **#769 is fixed**:
 the wheel's finders — `find_scroll_container` / `find_horizontal_scroll_container`,
 their `_at_point` twins, and the body fallback the two walks share — used to
 compare the content extent against the container's **border**-box size where

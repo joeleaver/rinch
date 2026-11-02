@@ -842,6 +842,18 @@ impl RinchDocument {
     /// Saves the absolute rect of each node because the nodes will be deleted
     /// from the tree before `compute_dirty_region` runs.
     pub(crate) fn mark_subtree_paint_dirty(&mut self, node_id: RawNodeId) {
+        // The range of a scroll container above the subtree may shrink with
+        // it gone, moving that container's bars with nothing of its own
+        // dirty (`paint::bar_watch_scrollers`). Its root's parent only: the
+        // boxes below leave with it.
+        if let Some(parent) = self.tree.get(node_id).and_then(|n| n.parent) {
+            self.tree.bar_check_parents.push(parent);
+        }
+        self.mark_subtree_paint_dirty_below(node_id);
+    }
+
+    /// [`Self::mark_subtree_paint_dirty`]'s walk.
+    fn mark_subtree_paint_dirty_below(&mut self, node_id: RawNodeId) {
         if self.tree.contains(node_id) {
             // Save the rect the node's pixels are in before it leaves the
             // tree: compute_dirty_region won't be able to reach it after.
@@ -898,7 +910,7 @@ impl RinchDocument {
             // node's painted state, which is forgotten below.
             let children = self.tree.nodes[node_id].children.clone();
             for child_id in children {
-                self.mark_subtree_paint_dirty(child_id);
+                self.mark_subtree_paint_dirty_below(child_id);
             }
             // Its old pixels are accounted for, and after the next paint it
             // has none: a detached node re-inserted later must not carry a
@@ -906,6 +918,11 @@ impl RinchDocument {
             let node = &mut self.tree.nodes[node_id];
             node.painted = None;
             node.prev_layout = node.layout;
+            // Its own bars, if it is a scroll container, are forgotten with
+            // the rest of its painted state.
+            if node.scrolls_x() || node.scrolls_y() {
+                self.tree.painted_bars.remove(&node_id);
+            }
         }
     }
 

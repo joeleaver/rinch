@@ -131,43 +131,56 @@ fn a_fixed_child_does_not_give_the_body_a_scrollbar() {
 }
 
 /// A `position: absolute` direct child of `<body>` belongs to the initial
-/// containing block, not to `<body>`, so it gives `<body>` no scroll range.
+/// containing block, not to `<body>`: a `static` body is not its containing
+/// block, and in rinch the initial containing block is `<html>`, the arm
+/// `an_absolute_child_of_html_resolves_against_html_and_counts` pins from the
+/// positive side. Chrome 150, same markup: `<body>` reports `scrollHeight ==
+/// clientHeight`, and the 1500px lands on `documentElement.scrollHeight` —
+/// the **viewport** scrolls 900 to reach it.
 ///
-/// `<body>` is `static` under the UA sheet, so it is not the box's containing
-/// block, and it is not the initial containing block either — in rinch that is
-/// `<html>`, the arm `an_absolute_child_of_html_resolves_against_html_and_counts`
-/// pins from the positive side. Nothing pinned the negative side, and an
-/// overlay mounted straight under `<body>` is the shape #765 is about. Chrome
-/// 150, same markup: `<body>` reports `scrollHeight == clientHeight`, and the
-/// 1500px lands on `documentElement.scrollHeight` instead.
+/// rinch's viewport scroll is the body's own (the UA sheet gives it
+/// `overflow-y: auto`, and its scroll carries an initial-containing-block box),
+/// so since #770 the body scrolls the 900 Chrome's viewport does — not as the
+/// box's containing block, but as the page's scroll container
+/// (`out_of_flow::overflow_scroller`). With a body that does not scroll, the
+/// box is `<html>`'s alone and the body measures nothing: before #770 the body
+/// measured nothing in both, and the page never scrolled to the box.
 ///
 /// Off the fixed point by construction: the box is 1500px tall against a 600px
-/// viewport, so counting it would give the body a bar with 900px of travel.
-///
-/// Kills the mutant that widens the initial-containing-block arm of
+/// viewport. The non-scrolling half kills the mutant that widens the
+/// initial-containing-block arm of
 /// `out_of_flow::contributes_to_scrollable_overflow` with `|| parent_id ==
-/// tree.body_id` (measured: content 700x1500, vertical `max_scroll` 900), which
-/// every other fixture here passes.
+/// tree.body_id` (measured before #770: content 700x1500, vertical
+/// `max_scroll` 900), which every other fixture here passes.
 #[test]
-fn an_absolute_child_of_body_gives_the_body_no_scroll_range() {
-    let mut doc = RinchDocument::new();
-    let body = doc.body();
-    let child = doc.create_element("div");
-    doc.set_attribute(
-        child,
-        "style",
-        "position: absolute; left: 0; top: 0; width: 700px; height: 1500px",
-    );
-    doc.append_child(body, child);
-    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+fn an_absolute_child_of_body_is_the_pages_not_the_bodys_as_its_block() {
+    let build = |body_style: &str| {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", body_style);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 700px; height: 1500px",
+        );
+        doc.append_child(body, child);
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        (doc, body)
+    };
+    let (doc, body) = build("margin: 0; overflow: visible");
     assert_eq!(
         content_extents(&doc.tree, body.0),
         (0.0, 0.0),
         "a static <body> is not the containing block of its absolute child"
     );
-    assert!(
-        scrollbars(&doc.tree, body.0, 1.0).vertical.is_none(),
-        "Chrome: body scrollHeight == clientHeight; the box is <html>'s"
+    assert_eq!(content_extents(&doc.tree, doc.tree.html_id).1, 1500.0);
+
+    let (doc, body) = build("margin: 0");
+    assert_eq!(
+        max_scroll(&scrollbars(&doc.tree, body.0, 1.0)),
+        (None, Some(900.0)),
+        "Chrome's viewport scrolls 1500 - 600; rinch's viewport scroll is the body's"
     );
 }
 
