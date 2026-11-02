@@ -196,6 +196,8 @@ mod game_viewport_base_layer_1866_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod game_viewport_inline_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_bump_overflow_2071_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_clip_groups_1645_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_partial_frame_1718_tests;

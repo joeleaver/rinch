@@ -274,6 +274,37 @@ fn a_target_that_lost_its_frame_is_repainted_in_full() {
     );
 }
 
+/// #2071: nothing in the document changed, and the frame Vello lost is the
+/// reason this one is full, through the state `paint_gpu` reads.
+#[test]
+fn a_lost_vello_frame_makes_the_next_frame_full() {
+    use crate::shell::desktop::UiTextureState;
+    use rinch_dom::perf::{Counter, FullRepaintReason};
+    let white = vello::peniko::Color::WHITE;
+    let mut app = settled();
+    let mut ui = UiTextureState::default();
+    ui.rendered(white);
+    assert!(matches!(
+        app.build_gpu_frame(1.0, (W, H), ui.invalid_reason(white)),
+        GpuFrame::Unchanged
+    ));
+    ui.note_check(vello::FrameCheck::Lost);
+    assert!(matches!(
+        app.build_gpu_frame(1.0, (W, H), ui.invalid_reason(white)),
+        GpuFrame::Full(_)
+    ));
+    assert_eq!(
+        ui.invalid_reason(white),
+        Some(FullRepaintReason::Invalidated)
+    );
+    assert_eq!(
+        app.end_perf_frame()
+            .unwrap()
+            .get(Counter::RepaintFullInvalidated),
+        1
+    );
+}
+
 #[test]
 fn build_scene_after_a_partial_frame_encodes_the_whole_document() {
     let mut app = settled();
