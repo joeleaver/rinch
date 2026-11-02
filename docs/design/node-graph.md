@@ -239,7 +239,7 @@ misses a body whose height changes on its own (an expanding text area).
 |---|---|---|
 | Drag a node (and the selection) | `Drag::absolute`, divide deltas by zoom | live signal writes, one `MoveNodes` on release, `on_cancel` restores |
 | Pan | `Drag` on the canvas background; wheel/trackpad scroll | middle-button and space+drag too |
-| Zoom | ctrl+wheel and pinch, centred on the pointer | needs a wheel event (prerequisite) |
+| Zoom | ctrl+wheel and pinch, centred on the pointer | the canvas's `onwheel` (#2063) |
 | Draw a wire | `Drag` from a port; candidates lit by `Rules::can_connect` | drop on a port commits; drop on empty canvas fires `on_connect_to_empty` (the "add node here" menu) |
 | Re-route a wire | drag from an occupied input picks up the existing wire | |
 | Marquee select | `Drag` on background with shift, or a mode | rectangle in graph space, intersect node rects |
@@ -279,19 +279,15 @@ second consumer needs them:
 
 Found while drafting. Each is its own issue, and none is specific to graphs.
 
-1. **An element-level wheel event.** Rinch delivers `onscroll` (a container
-   moved) but no `onwheel` carrying deltas and modifiers, so an app cannot
-   zoom on ctrl+wheel or pan a non-scrolling canvas with a trackpad. Needed
-   for zoom. Pinch on touch and trackpads would follow the same event.
-2. **Notification when an element's box changes size** (a `ResizeObserver`
+1. **Notification when an element's box changes size** (a `ResizeObserver`
    equivalent, desktop and web). Needed to place wires on ports when a node's
    body changes size by itself. The workaround above covers v1.
-3. **Hit-testing an SVG path by its stroke.** An `<svg>` is hit-tested as its
+2. **Hit-testing an SVG path by its stroke.** An `<svg>` is hit-tested as its
    box today, so a click anywhere in an edge's bounding rectangle would select
    it. To check: whether hit-testing descends into SVG shapes at all. The
    fallback is an invisible wide-stroke path per edge, or a distance test in
    the canvas's click handler against each edge's curve.
-4. **Measure, don't guess:** `bounding_rect()` under a scaled ancestor answers
+3. **Measure, don't guess:** `bounding_rect()` under a scaled ancestor answers
    the on-screen (scaled) box. The view divides by zoom to get graph space.
    Worth a test in the crate so a change to that rule is caught.
 
@@ -326,8 +322,9 @@ xyflow (React Flow) to rinch. What to keep and what not:
 6. **Web.** The same examples under `rinch-web`, with browser tests for drag,
    wire drawing and zoom in Chrome and Firefox.
 
-Prerequisites 1 (wheel) and 3 (edge hit-testing) are needed by milestone 3;
-2 (resize notification) can follow.
+Prerequisite 2 (edge hit-testing) is needed by milestone 3; 1 (resize
+notification) can follow. An element wheel event, listed first here when this
+was drafted, has landed as `onwheel` (#2063).
 
 ## Open questions
 
@@ -347,15 +344,17 @@ Prerequisites 1 (wheel) and 3 (edge hit-testing) are needed by milestone 3;
 Recorded after v1 (milestones 1–5) was built and driven in the running demo
 (`examples/node-graph-demo`). The user guide is `docs/src/guide/node-graphs.md`.
 
-- **Prerequisite 2 already existed.** `NodeHandle::bounds_signal()` is a
+- **Prerequisite 1 already existed.** `NodeHandle::bounds_signal()` is a
   reactive on-screen box refreshed after every layout (#30, #145, #203). The
   view measures each port dot with it, relative to its node frame's box, and
   each frame's size the same way. There is no workaround.
-- **Prerequisite 3 is not needed.** Edges are picked by distance to the drawn
+- **Prerequisite 2 is not needed.** Edges are picked by distance to the drawn
   curve in the canvas's own press handler (`geometry::distance_to_edge`,
   8 screen pixels); the edge `<svg>` is `pointer-events: none`.
-- **Prerequisite 1 is still open.** With no element wheel event, zoom is by the
-  corner controls, `+`/`-`/`0` and the API. Wheel and pinch zoom wait on it.
+- **Wheel and pinch.** The canvas's `onwheel` (#2063) zooms around the
+  pointer on Ctrl/Cmd+wheel and pinch (a pinch arrives as a Ctrl wheel on both
+  backends) and pans on any other wheel, and consumes every wheel so the page
+  does not scroll or zoom under it.
 - **`GraphView` is `Copy`.** Its state lives in the reactive store (a `Signal`
   holding an `Rc`), so it can be captured by any number of rsx closures, the
   way `Signal` is. A reactive child in rsx (`{move || …}`) is rebuilt inside an
