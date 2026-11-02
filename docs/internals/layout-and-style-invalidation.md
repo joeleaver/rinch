@@ -140,6 +140,19 @@ box:
   whole subtree — read as a display change and ran the whole-document
   `ifc_dirty` pass: 91ms for a colour-only hover over 2000 rows, 0.18ms after.
   `frozen_box_remeasure_tests` pins both halves through `tree.ifc_setup_passes`.
+- **A `Calc` layout value is compared resolved.** The stored Taffy style holds
+  the length `resolve_layout_calcs` resolved a mixed `calc()` to; a style
+  rebuilt from computed values carries only its length part (the seed). The
+  same three passes resolve the rebuilt style with `patch_layout_calcs` (the
+  per-node step of `resolve_layout_calcs`, against the last layout's bases)
+  before they compare. Unresolved, a new `calc()` whose length part equalled
+  the old resolved length compared equal and the layout was skipped:
+  `calc(50% + 10px)` → `calc(10% + 160px)` stayed 160 wide in 300px, and an
+  animation frame `calc(6.25% + 150px)` after a frame resolved to 150 stayed
+  at 150 (#767; `calc_width_restyle_to_a_length_part_equal_to_the_old_width`,
+  `a_calc_frame_whose_length_part_is_the_last_resolved_width_lays_out`). No
+  transition produces a `Calc` frame yet (#2051), so the transition tick's
+  copy has no fixture of its own.
 
 `RinchDocument::invalidate_text_measure_for_node` is the one place that knows
 what a typography change owes: the IFC's Parley layout, the box of any atomic
