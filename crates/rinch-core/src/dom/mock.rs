@@ -272,7 +272,7 @@ impl MockDomDocument {
     }
 
     fn next_id(&mut self) -> NodeId {
-        let id = NodeId(self.next_id);
+        let id = NodeId::from_index(self.next_id);
         self.next_id += 1;
         id
     }
@@ -805,7 +805,7 @@ impl DomDocument for MockDomDocument {
     fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
         // `None` unless a test injected a box with `__set_node_layout` — the mock
         // does not lay anything out.
-        self.layout.get(&NodeId(node_id as usize)).copied()
+        self.layout.get(&NodeId(node_id)).copied()
     }
 
     fn request_scroll_into_view(&mut self, node: NodeId) {

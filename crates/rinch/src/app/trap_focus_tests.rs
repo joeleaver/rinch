@@ -94,7 +94,7 @@ fn shift_tab(app: &mut RinchApp) {
 }
 
 /// The node the arbiter currently holds, whichever target kind it is.
-fn focused(app: &RinchApp) -> Option<usize> {
+fn focused(app: &RinchApp) -> Option<u64> {
     match app.focus_target {
         FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
         _ => None,
@@ -102,7 +102,7 @@ fn focused(app: &RinchApp) -> Option<usize> {
 }
 
 /// Tab `n` times, recording where the arbiter lands each time.
-fn tab_tour(app: &mut RinchApp, n: usize) -> Vec<Option<usize>> {
+fn tab_tour(app: &mut RinchApp, n: u64) -> Vec<Option<u64>> {
     (0..n)
         .map(|_| {
             tab(app);
@@ -135,12 +135,12 @@ fn text_input(scope: &mut RenderScope, id: &str) -> NodeHandle {
 /// Node ids captured at mount, by the name the fixture gave them.
 #[derive(Clone, Copy, Default)]
 struct Ids {
-    before: usize,
-    after: usize,
-    inside_first: usize,
-    inside_middle: usize,
-    inside_last: usize,
-    root: usize,
+    before: u64,
+    after: u64,
+    inside_first: u64,
+    inside_middle: u64,
+    inside_last: u64,
+    root: u64,
 }
 
 /// A page with a control either side of a `Modal`, and three controls inside
@@ -478,7 +478,7 @@ fn closing_removes_the_attribute_rather_than_writing_false() {
 /// its *other* guard, so it needs a fixture that keeps the attribute on purpose.
 #[test]
 fn an_invisible_trap_is_not_a_trap() {
-    let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+    let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
     let out = ids.clone();
     let mut app = mount(move |scope: &mut RenderScope| {
         let page = scope.create_element("div");
@@ -521,7 +521,7 @@ fn an_invisible_trap_is_not_a_trap() {
 #[test]
 fn the_false_escape_opts_out_and_zero_does_not() {
     for (value, traps) in [("false", false), ("FALSE", false), ("0", true)] {
-        let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+        let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
         let out = ids.clone();
         let mut app = mount(move |scope: &mut RenderScope| {
             let page = scope.create_element("div");
@@ -556,10 +556,10 @@ fn the_false_escape_opts_out_and_zero_does_not() {
 /// Node ids for the two-modal fixture.
 #[derive(Clone, Copy, Default)]
 struct Nested {
-    outer_a: usize,
-    outer_b: usize,
-    inner_a: usize,
-    inner_b: usize,
+    outer_a: u64,
+    outer_b: u64,
+    inner_a: u64,
+    inner_b: u64,
 }
 
 /// An inner `Modal` mounted inside an outer one's body, each with two controls.
@@ -712,10 +712,10 @@ fn closing_a_nested_trap_hands_containment_back_to_the_outer_one() {
 fn focus_inside_one_of_two_sibling_traps_stays_in_that_one() {
     #[derive(Clone, Copy, Default)]
     struct Pair {
-        a1: usize,
-        a2: usize,
-        b1: usize,
-        b2: usize,
+        a1: u64,
+        a2: u64,
+        b1: u64,
+        b2: u64,
     }
 
     let build = || {

@@ -338,7 +338,10 @@ fn a_painted_state_older_than_a_whole_document_restyle_is_not_trusted() {
         let mut d = doc.borrow_mut();
         let body = d.body();
         let s = d.create_element("style");
-        let t = d.create_text(".clipper { overflow: visible; }");
+        // `:root` is a rule Stylo cannot bucket by id, class or tag, which
+        // is what makes the sheet a whole-document restyle (#884: `.clipper`
+        // alone restyles only the clipper).
+        let t = d.create_text(":root { --late: 1; } .clipper { overflow: visible; }");
         d.append_child(s, t);
         d.append_child(body, s);
     }

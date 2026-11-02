@@ -60,7 +60,7 @@ fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchA
 fn margins(app: &RinchApp, class: &str) -> (f32, f32, f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -255,7 +255,7 @@ fn the_other_five_list_and_figure_components_are_unmoved() {
 fn font_size_of_tag(app: &RinchApp, tag: &str) -> f32 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()

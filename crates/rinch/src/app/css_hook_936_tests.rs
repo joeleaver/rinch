@@ -69,10 +69,10 @@ fn finish_transitions(app: &mut RinchApp) {
     app.resolve_and_repaint(VIEWPORT.0 + 0.5, VIEWPORT.1);
 }
 
-fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
+fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<u64> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let mut found: Vec<usize> = d
+    let mut found: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -87,17 +87,17 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
     found
 }
 
-fn one_with_class(app: &RinchApp, class: &str) -> usize {
+fn one_with_class(app: &RinchApp, class: &str) -> u64 {
     let found = nodes_with_class(app, class);
     assert_eq!(found.len(), 1, "expected one `{class}`");
     found[0]
 }
 
 /// The one node carrying `data-probe="{marker}"`.
-fn probe(app: &RinchApp, marker: &str) -> usize {
+fn probe(app: &RinchApp, marker: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let found: Vec<usize> = d
+    let found: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -108,7 +108,7 @@ fn probe(app: &RinchApp, marker: &str) -> usize {
     found[0]
 }
 
-fn visibility_of(app: &RinchApp, node: usize) -> VisibilityValue {
+fn visibility_of(app: &RinchApp, node: u64) -> VisibilityValue {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.visibility

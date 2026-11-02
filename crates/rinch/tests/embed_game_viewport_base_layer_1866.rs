@@ -237,6 +237,68 @@ fn gpu_game_viewport_base_layer_on_the_embed_overlay() {
     assert!(bad.is_empty(), "(what, point, got, want): {bad:?}");
 }
 
+/// #2071: a host that renders only when the context says so. A slice over the
+/// viewport overflows Vello's buffers, and nothing in the document changes, so
+/// `needs_update` stays false: the overlay's own check has to bring the frame
+/// back, slices included.
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_an_event_driven_host_gets_a_lost_overlay_frame_back_2071() {
+    const HUD: [u8; 4] = [250, 250, 250, 255];
+    let mut boxes = String::new();
+    // At 25 by 19 tiles each, past Vello's 2^21 tiles, over the viewport.
+    for _ in 0..5_000 {
+        boxes.push_str(
+            "<div style=\"position: absolute; left: 2px; top: 2px; width: 396px; \
+             height: 296px; background: rgb(20,20,20)\"></div>",
+        );
+    }
+    let mut ctx = context(format!(
+        "<div data-viewport=\"embed-lost\" style=\"position: absolute; left: 0; top: 0; \
+         width: 400px; height: 300px\"></div>{boxes}\
+         <div style=\"position: absolute; left: 60px; top: 48px; width: 20px; height: 12px; \
+         background: rgb(250,250,250)\"></div>"
+    ));
+    let (device, queue) = gpu();
+    let mut overlay =
+        rinch::embed::RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
+    let at = |px: &[[u8; 4]]| px[(50 * W + 65) as usize];
+
+    let _ = overlay.render(&device, &queue, &mut ctx);
+    assert_ne!(
+        at(&read_back(&device, &queue, overlay.texture())),
+        HUD,
+        "the frame went out undrawn, or this test proves nothing"
+    );
+    assert!(!ctx.needs_update(), "the context cannot know");
+
+    let mut renders = 1;
+    loop {
+        let check = overlay.check_frames(&device);
+        if check.needs_render {
+            renders += 1;
+            assert!(renders <= 5, "still overflowing");
+            let _ = overlay.render(&device, &queue, &mut ctx);
+        } else if let Some(at) = check.check_again_at {
+            assert!(at > rinch_platform::Instant::now() - std::time::Duration::from_secs(1));
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        } else {
+            break;
+        }
+    }
+    assert!(renders > 1, "the overflow was seen");
+    assert_eq!(at(&read_back(&device, &queue, overlay.texture())), HUD);
+    assert_eq!(
+        overlay.check_frames(&device),
+        rinch::embed::OverlayCheck {
+            needs_render: false,
+            check_again_at: None
+        },
+        "and that is the end of it: a host at rest stays at rest"
+    );
+}
+
 /// Review of #1883, D1, on the embed overlay: under a clipping ancestor that
 /// paints a background — square (content overflowing, so the clip is kept),
 /// rounded, and a scroller with the viewport part-scrolled out — every pixel

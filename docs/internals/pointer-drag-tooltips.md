@@ -1,6 +1,6 @@
 # Drag and drop, pointer capture, title tooltips
 
-Read this page when your task touches: DnD attributes, Drag builder, missed releases, right/middle press, file drop, title tooltips.
+Read this page when your task touches: DnD attributes, Drag builder, missed releases, right/middle press, file drop, the element wheel event (`onwheel`), title tooltips.
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
@@ -303,9 +303,19 @@ unless it is the node the press already dispatched. Chrome 156's sequence for
 a press on a label is `click@label | focus@control | click@control`; a browser
 would run a handler above both twice (the second click bubbles back), and
 rinch runs it once, as rinch-web's #272 duplicate rule does. A press that
-claims `data-drag-window` activates no label. Known divergence: on the web a
-label with its own `data-rid` suppresses a *different* `data-rid` above the
-control (#2033); desktop runs both. Pins:
+claims `data-drag-window` activates no label. rinch-web applies the same rule
+(#2033): a gesture records the `data-rid`s its press ran (`GESTURE_RAN`, in
+`dispatch_click_at`) and, when it suppresses the trailing click on or inside a
+`<label>`, that label's `control` (`GESTURE_LABEL_CONTROL`; not when that
+click was `preventDefault`ed, since the label then forwards nothing). The record
+is consumed by the forward, which the browser dispatches synchronously in the
+same task; an unconsumed one is cleared by a `setTimeout(0)`, one task later
+(on a real click a microtask checkpoint runs after each listener, before the
+forward, so a microtask clear would be too early). The forwarded click at that control dispatches its nearest live
+`data-rid` if the press did not run it, and is suppressed if it did or if the
+press ran nothing (an activated drag); a trailing click outside any label stays
+suppressed. Web pins: `crates/rinch-web/tests/label_onclick_2033.rs`. Desktop
+pins:
 `app/label_activation_866_tests.rs`.
 
 ### File Drop (OS → App)
@@ -407,6 +417,45 @@ FIFO or device is refused, `metadata().is_file()`), whole. Pins add
 `tests/support/run_real_keys.sh`). Playwright's Firefox grants every page
 activation, so the test's no-gesture phase runs only when
 `navigator.userActivation.isActive` is false.
+
+## The element wheel event (`onwheel`)
+
+`onwheel` is written to `data-onwheel` and registered with
+`register_wheel_handler` (`Fn(&WheelEvent) -> bool`, its own `WHEEL_REGISTRY`
+in `rinch-core/src/events/handlers.rs`, freed with its scope like every
+handler). Both backends collect the `data-onwheel` ids from the element under
+the pointer up to the root **before** calling any (a handler may change the
+tree), then `dispatch_wheel_handler_chain` offers them nearest first and stops
+at the first `true`, each call in its own `batch`.
+
+- **Desktop** (`app/event_dispatch.rs`, the `PlatformEvent::MouseWheel` arm):
+  one shared hit test; a render surface under the pointer takes the wheel
+  first, unchanged; otherwise `offer_element_wheel` runs the chain, and a
+  consumed wheel skips both scroll-container halves (vertical and horizontal)
+  and requests a redraw. `PlatformEvent::MouseWheel` has winit's sign (positive
+  `delta_y` = wheel away from the user), so the `WheelEvent` is built with
+  both deltas negated into the DOM's sign. Lines are already 40 px in the
+  runtime, pixel deltas already logical (#299). A `WindowEvent::PinchGesture`
+  no surface takes goes to `RinchApp::pinch_as_wheel`: a Ctrl wheel with
+  `delta_y = -100 ln(1 + delta)`, so `WheelEvent::zoom_factor()` gives back
+  winit's `1 + delta` — the same e-per-100-px curve as
+  `render_surface::wheel_zoom_scale`. Touch pans from `shell/touch_gesture.rs`
+  are `MouseWheel`s too and reach `onwheel` (a browser sends no wheel for a
+  touch pan); `PlatformEvent::MouseWheel` carries no source to tell them apart.
+- **Web** (`rinch-web/src/event_delegation.rs`, `install_wheel`): one
+  document-level `wheel` listener, bubble phase, **`passive: false`** — Chrome
+  treats a document-level wheel listener as passive by default, and a passive
+  one cannot `preventDefault()`. A consumed wheel is `preventDefault()`ed (no
+  scroll, no page zoom for a pinch, which browsers send as `ctrlKey` wheel).
+  `deltaMode` lines are ×40, pages × the viewport height; `x`/`y` are client
+  px. A render surface's canvas listener `stopPropagation()`s, so a surface
+  still takes the wheel first, as on desktop. Not passed through
+  `add_capture`: that helper registers with a `bool` and cannot ask for a
+  non-passive listener.
+
+Tests: `rinch/src/app/element_wheel_tests.rs` (order, consumption stopping the
+scroll, modifiers and sign, pinch) and `rinch-web/tests/element_wheel.rs`
+(order, `defaultPrevented`, line deltas, Ctrl).
 
 ## `title` tooltips (desktop)
 

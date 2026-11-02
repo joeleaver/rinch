@@ -41,7 +41,7 @@ const C_STATIC: &str = "width: 400px; font: 16px/20px ProbeFace; \
 
 struct Case {
     doc: RinchDocument,
-    c: usize,
+    c: u64,
     relayouts: u32,
 }
 
@@ -83,7 +83,7 @@ impl Case {
         Self::build(C, "", inner, "")
     }
 
-    fn id(&self, m: &str) -> usize {
+    fn id(&self, m: &str) -> u64 {
         one(&self.doc, &format!("[data-m={m}]"))
     }
 
@@ -130,7 +130,7 @@ impl Case {
     }
 }
 
-fn one(doc: &RinchDocument, selector: &str) -> usize {
+fn one(doc: &RinchDocument, selector: &str) -> u64 {
     let found = query_selector(&doc.tree, selector);
     assert_eq!(found.len(), 1, "{selector} names exactly one node");
     found[0]

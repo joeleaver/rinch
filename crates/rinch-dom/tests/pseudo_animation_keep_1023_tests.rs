@@ -65,7 +65,7 @@ fn doc_with(class: &str) -> (RinchDocument, NodeId, NodeId) {
 }
 
 /// The generated box of the given kind (`after == false` for `::before`).
-fn generated(doc: &RinchDocument, owner: NodeId, after: bool) -> Option<usize> {
+fn generated(doc: &RinchDocument, owner: NodeId, after: bool) -> Option<u64> {
     let children = &doc.tree.get(owner.0).unwrap().children;
     let pick = if after {
         children.last()
@@ -76,11 +76,11 @@ fn generated(doc: &RinchDocument, owner: NodeId, after: bool) -> Option<usize> {
         .filter(|&c| doc.tree.get(c).unwrap().is_pseudo_element)
 }
 
-fn before(doc: &RinchDocument, owner: NodeId) -> usize {
+fn before(doc: &RinchDocument, owner: NodeId) -> u64 {
     generated(doc, owner, false).expect("the element generates a ::before")
 }
 
-fn start_time(doc: &RinchDocument, node: usize) -> f64 {
+fn start_time(doc: &RinchDocument, node: u64) -> f64 {
     doc.tree
         .active_animations
         .get(&node)
@@ -88,7 +88,7 @@ fn start_time(doc: &RinchDocument, node: usize) -> f64 {
         .start_time_ms
 }
 
-fn backdate(doc: &mut RinchDocument, node: usize, ms: f64) -> f64 {
+fn backdate(doc: &mut RinchDocument, node: u64, ms: f64) -> f64 {
     let anim = &mut doc
         .tree
         .active_animations
@@ -98,13 +98,13 @@ fn backdate(doc: &mut RinchDocument, node: usize, ms: f64) -> f64 {
     anim.start_time_ms
 }
 
-fn anim_name(doc: &RinchDocument, node: usize) -> String {
+fn anim_name(doc: &RinchDocument, node: u64) -> String {
     doc.tree.active_animations.get(&node).expect("animation")[0]
         .name
         .clone()
 }
 
-fn text_of(doc: &RinchDocument, node: usize) -> String {
+fn text_of(doc: &RinchDocument, node: u64) -> String {
     doc.tree
         .get(node)
         .unwrap()
@@ -431,7 +431,7 @@ fn a_root_font_size_change_keeps_the_before_and_its_clock() {
     assert_eq!(start_time(&doc, b), started, "the clock is kept");
 }
 
-fn pseudo_children(doc: &RinchDocument, n: NodeId) -> Vec<usize> {
+fn pseudo_children(doc: &RinchDocument, n: NodeId) -> Vec<u64> {
     doc.tree
         .get(n.0)
         .unwrap()

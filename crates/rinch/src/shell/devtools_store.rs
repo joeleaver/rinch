@@ -30,7 +30,7 @@ pub struct MainDocRef(pub Rc<RefCell<RinchDocument>>);
 /// A node in the flattened DOM tree for display in the Elements panel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DomTreeNode {
-    pub id: usize,
+    pub id: u64,
     pub tag: String,
     pub id_attr: Option<String>,
     pub classes: Vec<String>,
@@ -86,9 +86,9 @@ pub struct DevToolsStore {
     /// The active tab.
     pub active_tab: Signal<DevToolsTab>,
     /// The selected node ID (from clicking in tree or inspect mode).
-    pub selected_node_id: Signal<Option<usize>>,
+    pub selected_node_id: Signal<Option<u64>>,
     /// The hovered node ID (for inspect highlight in main window).
-    pub hovered_node_id: Signal<Option<usize>>,
+    pub hovered_node_id: Signal<Option<u64>>,
     /// Whether inspect mode is active.
     pub inspect_mode: Signal<bool>,
     /// Current FPS.

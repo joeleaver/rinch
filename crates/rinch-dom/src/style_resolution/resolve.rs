@@ -9,6 +9,7 @@ use style::invalidation::element::restyle_hints::RestyleHint;
 
 use crate::RinchDocument;
 use crate::node::DirtyFlags;
+use crate::node::RawNodeId;
 
 /// Whether `style`'s **inside** is a flex or grid formatting context, by
 /// either outside — `flex`/`inline-flex`/`grid`/`inline-grid` all answer
@@ -120,15 +121,9 @@ impl RinchDocument {
     }
 
     fn resolve_styles_inner(&mut self) {
-        use crate::stylo_impl::RinchNode;
-        use style::shared_lock::StylesheetGuards;
-
-        // Flush any pending stylesheet changes
-        {
-            let guard = self.tree.guard.read();
-            let guards = StylesheetGuards::same(&guard);
-            self.stylist.flush::<RinchNode>(&guards, None, None);
-        }
+        // Flush any pending stylesheet changes, restyling what they reach
+        // (#884, `sheets.rs`).
+        self.flush_stylist();
         self.refresh_pseudo_rule_presence();
         // Attribute and state changes since the last resolve: Stylo's
         // invalidator turns their snapshots into restyle hints and style
@@ -236,7 +231,7 @@ impl RinchDocument {
         // a root an earlier walk already reached — every node a walk cascades
         // has its hint and dirty-descendants bit cleared — is skipped as
         // having nothing left to do.
-        let mut sorted: Vec<(usize, usize)> = roots
+        let mut sorted: Vec<(RawNodeId, usize)> = roots
             .into_iter()
             .filter_map(|id| Some((id, self.depth_if_connected(id)?)))
             .collect();
@@ -259,7 +254,7 @@ impl RinchDocument {
     /// list, not `dirty_nodes`: the walk runs inside `resolve_layout`, after
     /// the shell has taken `dirty_nodes`, and an entry left there would read as
     /// "something is pending" and ask the next idle frame for a redraw.
-    pub(crate) fn mark_restyled_for_paint(&mut self, node_id: usize) {
+    pub(crate) fn mark_restyled_for_paint(&mut self, node_id: RawNodeId) {
         if let Some(node) = self.tree.nodes.get_mut(node_id) {
             node.dirty.insert(DirtyFlags::STYLE | DirtyFlags::PAINT);
             self.tree.paint_dirty_nodes.push(node_id);
@@ -282,10 +277,19 @@ impl RinchDocument {
     ///   would cascade against an ancestor style this frame is about to
     ///   replace, and its next cascade would then read as a *change* — a
     ///   transition on a node that was only just inserted.
-    pub(crate) fn resolve_inserted_subtree(&mut self, node_id: usize) -> bool {
-        use crate::stylo_impl::RinchNode;
-        use style::shared_lock::StylesheetGuards;
-
+    pub(crate) fn resolve_inserted_subtree(&mut self, node_id: RawNodeId) -> bool {
+        // Flush pending sheet changes (a `<style>` this insertion connected, a
+        // `load_css` since the last resolve) first, so the subtree cascades
+        // against the rules the next resolve will use: otherwise that
+        // resolve's flush would invalidate the just-styled subtree, and its
+        // second cascade would read as a change (#884). What the flush queues
+        // needs no check of its own: a whole-document restyle sets
+        // `full_style_walk` (below), and a targeted one marks every element
+        // whose style changes with a restyle hint and its ancestors with
+        // `style_dirty_descendants`, which the ancestor walk below declines
+        // on. A sheet that restyles only elements elsewhere leaves this
+        // subtree's cascade correct, and those wait for the next resolve.
+        self.flush_stylist();
         if self.tree.full_style_walk {
             return false;
         }
@@ -311,11 +315,6 @@ impl RinchDocument {
         self.tree.hit_cache.invalidate();
         let t = web_time::Instant::now();
         self.tree.perf.bump(crate::perf::Counter::StyleResolves);
-        {
-            let guard = self.tree.guard.read();
-            let guards = StylesheetGuards::same(&guard);
-            self.stylist.flush::<RinchNode>(&guards, None, None);
-        }
         self.refresh_pseudo_rule_presence();
         let parent_style = self.find_parent_computed_style(node_id);
         self.fill_style_bloom_for(node_id);
@@ -334,7 +333,7 @@ impl RinchDocument {
 
     /// Whether the style walk has anything to do at `node_id`: it has no
     /// style yet, carries a restyle hint, or some descendant does.
-    fn node_needs_style_visit(&self, node_id: usize) -> bool {
+    fn node_needs_style_visit(&self, node_id: RawNodeId) -> bool {
         let Some(node) = self.tree.nodes.get(node_id) else {
             return false;
         };
@@ -361,7 +360,7 @@ impl RinchDocument {
     /// `clear()` zeroed all 4096 of them — on every hover and every
     /// insertion. The recorded hashes are removed, not recomputed, so an
     /// ancestor whose attributes changed since cannot unbalance a counter.
-    fn fill_style_bloom_for(&mut self, node_id: usize) {
+    fn fill_style_bloom_for(&mut self, node_id: RawNodeId) {
         use selectors::bloom::BLOOM_HASH_MASK;
         for hash in self.style_bloom_filled.drain(..) {
             self.style_bloom.remove_hash(hash);
@@ -387,7 +386,7 @@ impl RinchDocument {
     /// Add `node_id`'s tag, id, classes and attribute names to the style bloom
     /// filter, which descendant-combinator matching consults to reject a
     /// selector whose ancestor compounds no ancestor can satisfy.
-    fn push_style_bloom(&mut self, node_id: usize) {
+    fn push_style_bloom(&mut self, node_id: RawNodeId) {
         use selectors::bloom::BLOOM_HASH_MASK;
         let bloom = &mut self.style_bloom;
         style::bloom::each_relevant_element_hash(
@@ -398,7 +397,7 @@ impl RinchDocument {
 
     /// Undo [`Self::push_style_bloom`] for `node_id` (its hashes are recomputed
     /// from the same, unchanged attributes).
-    fn pop_style_bloom(&mut self, node_id: usize) {
+    fn pop_style_bloom(&mut self, node_id: RawNodeId) {
         use selectors::bloom::BLOOM_HASH_MASK;
         let bloom = &mut self.style_bloom;
         style::bloom::each_relevant_element_hash(
@@ -412,12 +411,12 @@ impl RinchDocument {
     /// only those [`Self::node_needs_style_visit`] names.
     fn resolve_style_children(
         &mut self,
-        node_id: usize,
+        node_id: RawNodeId,
         style: &ServoArc<ComputedValues>,
         cascade: ChildCascade,
         visit_all: bool,
     ) {
-        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
+        let children: Vec<RawNodeId> = self.tree.nodes[node_id].children.clone();
         let mut pushed = false;
         for child_id in children {
             let visit = visit_all
@@ -453,10 +452,10 @@ impl RinchDocument {
     }
 
     /// Walk up to find the nearest ancestor with a valid computed style.
-    fn find_parent_computed_style(&self, node_id: usize) -> Option<ServoArc<ComputedValues>> {
+    fn find_parent_computed_style(&self, node_id: RawNodeId) -> Option<ServoArc<ComputedValues>> {
         let mut current = self.tree.nodes.get(node_id)?.parent;
         while let Some(pid) = current {
-            let node = self.tree.nodes.get(pid)?;
+            let node = self.tree.nodes.get_live(pid)?;
             let data = node.stylo_element_data.borrow();
             if let Some(style) = data.as_ref().and_then(|d| d.styles.primary.clone()) {
                 return Some(style);
@@ -484,7 +483,7 @@ impl RinchDocument {
     /// walk writes before it descends, so they are this pass's.
     pub(crate) fn layout_parent_style(
         &self,
-        node_id: usize,
+        node_id: RawNodeId,
         parent_style: Option<&ServoArc<ComputedValues>>,
     ) -> Option<ServoArc<ComputedValues>> {
         let parent = parent_style?;
@@ -500,11 +499,11 @@ impl RinchDocument {
     /// not `display: contents`.
     pub(crate) fn nearest_non_contents_style(
         &self,
-        start: Option<usize>,
+        start: Option<RawNodeId>,
     ) -> Option<ServoArc<ComputedValues>> {
         let mut current = start;
         while let Some(id) = current {
-            let node = self.tree.nodes.get(id)?;
+            let node = self.tree.nodes.get_live(id)?;
             let style = node
                 .stylo_element_data
                 .borrow()
@@ -547,7 +546,7 @@ impl RinchDocument {
     /// A `None` also covers an id that is no longer in the slab, or whose
     /// ancestor chain leaves it — a `style_roots` entry outlives the node it
     /// names.
-    pub(crate) fn depth_if_connected(&self, node_id: usize) -> Option<usize> {
+    pub(crate) fn depth_if_connected(&self, node_id: RawNodeId) -> Option<usize> {
         if node_id == self.tree.root_id {
             return self.tree.nodes.get(node_id).map(|_| 0);
         }
@@ -558,7 +557,7 @@ impl RinchDocument {
             if pid == self.tree.root_id {
                 return Some(depth);
             }
-            current = self.tree.nodes.get(pid)?.parent;
+            current = self.tree.nodes.get_live(pid)?.parent;
         }
         None
     }
@@ -572,7 +571,7 @@ impl RinchDocument {
     /// something below is marked (`style_dirty_descendants`).
     pub(crate) fn resolve_styles_recursive(
         &mut self,
-        node_id: usize,
+        node_id: RawNodeId,
         parent_style: Option<ServoArc<ComputedValues>>,
         inherited: ChildCascade,
         visit_all: bool,
@@ -671,7 +670,7 @@ impl RinchDocument {
         let mut kept_before = None;
         let mut kept_after = None;
         {
-            let mut markers: Vec<usize> = Vec::new();
+            let mut markers: Vec<RawNodeId> = Vec::new();
             let had_pseudo = self.tree.nodes[node_id].children.iter().any(|&cid| {
                 self.tree
                     .nodes
@@ -680,7 +679,7 @@ impl RinchDocument {
             });
             if had_pseudo {
                 for &cid in &self.tree.nodes[node_id].children {
-                    let Some(n) = self.tree.nodes.get(cid) else {
+                    let Some(n) = self.tree.nodes.get_live(cid) else {
                         continue;
                     };
                     if !n.is_pseudo_element {

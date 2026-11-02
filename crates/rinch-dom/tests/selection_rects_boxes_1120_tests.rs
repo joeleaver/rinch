@@ -39,7 +39,7 @@ fn doc_with(before: &str, after: &str) -> (RinchDocument, u64, u64, usize) {
     let t = doc.create_text(after);
     doc.append_child(p, t);
     doc.resolve_layout(600.0, 600.0);
-    (doc, p.0 as u64, img.0 as u64, before.len())
+    (doc, p.0, img.0, before.len())
 }
 
 /// The image's box `(left, right)`, paragraph-local: the caret on each side.

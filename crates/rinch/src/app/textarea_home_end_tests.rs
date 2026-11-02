@@ -22,9 +22,9 @@ use std::cell::Cell;
 
 const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 
-fn mount(tag: &'static str, width: u32) -> (RinchApp, usize) {
+fn mount(tag: &'static str, width: u32) -> (RinchApp, u64) {
     let input_id = register_input_handler(InputCallback::new(|_v: String| {}));
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -107,7 +107,7 @@ fn type_str(app: &mut RinchApp, text: &str) {
     }
 }
 
-fn focus(app: &mut RinchApp, id: usize) {
+fn focus(app: &mut RinchApp, id: u64) {
     let (cx, cy) = {
         let d = app.doc.as_ref().unwrap().borrow();
         let (ax, ay, w, h) = painted_element_box(&d.tree, id);
@@ -130,7 +130,7 @@ fn focus(app: &mut RinchApp, id: usize) {
     assert_eq!(app.focused_input_node_id, Some(id), "the field took focus");
 }
 
-fn attr(app: &RinchApp, id: usize, name: &str) -> String {
+fn attr(app: &RinchApp, id: u64, name: &str) -> String {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -138,19 +138,19 @@ fn attr(app: &RinchApp, id: usize, name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn value(app: &RinchApp, id: usize) -> String {
+fn value(app: &RinchApp, id: u64) -> String {
     attr(app, id, "value")
 }
 
 /// `(anchor, head)` as written to the DOM for the paint layer.
-fn sel(app: &RinchApp, id: usize) -> (usize, usize) {
+fn sel(app: &RinchApp, id: u64) -> (usize, usize) {
     (
         attr(app, id, "data-selection-start").parse().unwrap(),
         attr(app, id, "data-cursor-pos").parse().unwrap(),
     )
 }
 
-fn caret(app: &RinchApp, id: usize) -> usize {
+fn caret(app: &RinchApp, id: u64) -> usize {
     sel(app, id).1
 }
 
@@ -162,7 +162,7 @@ fn caret_to(app: &mut RinchApp, at: usize) {
     }
 }
 
-fn caret_rect(app: &mut RinchApp, id: usize, offset: usize) -> (f32, f32, f32, f32) {
+fn caret_rect(app: &mut RinchApp, id: u64, offset: usize) -> (f32, f32, f32, f32) {
     let doc = app.doc.clone().unwrap();
     let d = doc.borrow();
     RinchApp::input_caret_rect_for_offset(
@@ -177,7 +177,7 @@ fn caret_rect(app: &mut RinchApp, id: usize, offset: usize) -> (f32, f32, f32, f
 
 /// The rect of the field's caret as paint draws it: its head, with the
 /// affinity the runtime wrote beside it (#941).
-fn head_rect(app: &mut RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn head_rect(app: &mut RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let head = caret(app, id);
     let doc = app.doc.clone().unwrap();
     let d = doc.borrow();

@@ -155,7 +155,7 @@ fn has_class(n: &rinch_dom::Node, class: &str) -> bool {
         .is_some_and(|c| c.split_whitespace().any(|one| one == class))
 }
 
-fn find(app: &RinchApp, pred: impl Fn(&rinch_dom::Node) -> bool) -> usize {
+fn find(app: &RinchApp, pred: impl Fn(&rinch_dom::Node) -> bool) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -167,14 +167,14 @@ fn find(app: &RinchApp, pred: impl Fn(&rinch_dom::Node) -> bool) -> usize {
 }
 
 /// The li of `value` (connected to the document).
-fn li(app: &RinchApp, value: &str) -> usize {
+fn li(app: &RinchApp, value: &str) -> u64 {
     find(app, |n| {
         n.attributes.get("data-value").map(String::as_str) == Some(value) && n.parent.is_some()
     })
 }
 
 /// The content box (the row) of `value`.
-fn row(app: &RinchApp, value: &str) -> usize {
+fn row(app: &RinchApp, value: &str) -> u64 {
     let li = li(app, value);
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
@@ -186,13 +186,13 @@ fn row(app: &RinchApp, value: &str) -> usize {
         .unwrap()
 }
 
-fn attr(app: &RinchApp, id: usize, name: &str) -> Option<String> {
+fn attr(app: &RinchApp, id: u64, name: &str) -> Option<String> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.nodes[id].attributes.get(name).cloned()
 }
 
-fn centre(app: &RinchApp, id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, id: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let (x, y, w, h) = hit_testing::painted_element_box(&d.tree, id);
@@ -237,7 +237,7 @@ fn press(f: &mut F, key: KeyCode, text: Option<&str>) {
     f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
 }
 
-fn focused(app: &RinchApp) -> Option<usize> {
+fn focused(app: &RinchApp) -> Option<u64> {
     match app.focus_target {
         FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
         _ => None,

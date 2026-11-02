@@ -80,7 +80,7 @@ fn labelled<'a>(label: &'a str, t: &'a str) -> Opt<'a> {
     }
 }
 
-fn build(select_css: &str, options: &[Opt]) -> (RinchDocument, usize) {
+fn build(select_css: &str, options: &[Opt]) -> (RinchDocument, u64) {
     let mut doc = document();
     let body = doc.body();
     let sel = doc.create_element("select");

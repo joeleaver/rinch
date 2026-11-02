@@ -130,16 +130,19 @@ fn key(app: &mut RinchApp, key: KeyCode) {
     key_mod(app, key, None, Modifiers::default());
 }
 
-fn box_of(page: &Page, id: usize) -> (f32, f32, f32, f32) {
+fn box_of(page: &Page, id: u64) -> (f32, f32, f32, f32) {
     let doc = page.app.doc.as_ref().unwrap();
     painted_element_box(&doc.borrow().tree, id)
 }
 
 /// The element carrying `data-pm-type="image"` and a mounted view.
-fn span(page: &Page) -> usize {
+fn span(page: &Page) -> u64 {
     let doc = page.app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    (0..d.tree.nodes.len())
+    d.tree
+        .nodes
+        .iter()
+        .map(|(id, _)| id)
         .find(|&id| {
             d.tree.nodes.get(id).is_some_and(|n| {
                 n.attributes.get("data-pm-type").map(String::as_str) == Some("image")
@@ -244,7 +247,7 @@ fn keys_in_a_views_input_reach_on_key_then_the_input() {
     }
     key(&mut p.app, KeyCode::ArrowLeft);
     key_mod(&mut p.app, KeyCode::KeyX, Some("x"), Modifiers::default());
-    let value = |p: &Page, id: usize| {
+    let value = |p: &Page, id: u64| {
         p.app
             .doc
             .as_ref()
@@ -410,7 +413,10 @@ fn review_1595_control_unclaimed_image_at_the_end_of_its_line() {
     let ib = {
         let doc = p.app.doc.as_ref().unwrap();
         let d = doc.borrow();
-        (0..d.tree.nodes.len())
+        d.tree
+            .nodes
+            .iter()
+            .map(|(id, _)| id)
             .find(|&id| {
                 d.tree.nodes.get(id).is_some_and(|n| {
                     n.attributes.get("data-pm-type").map(String::as_str) == Some("image")

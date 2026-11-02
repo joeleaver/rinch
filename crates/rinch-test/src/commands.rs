@@ -42,9 +42,9 @@ pub enum TestCommandKind {
     /// Query for nodes matching a selector.
     QuerySelector(String),
     /// Get details of a specific node by ID.
-    GetNode(usize),
+    GetNode(u64),
     /// Get text content of a node subtree.
-    GetTextContent(usize),
+    GetTextContent(u64),
     /// Inject a mouse click at (x, y).
     Click(f32, f32),
     /// Inject keyboard text input.

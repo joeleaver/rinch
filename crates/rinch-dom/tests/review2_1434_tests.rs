@@ -33,7 +33,7 @@ fn document() -> RinchDocument {
     doc
 }
 
-fn one(doc: &RinchDocument, m: &str) -> usize {
+fn one(doc: &RinchDocument, m: &str) -> u64 {
     let found = query_selector(&doc.tree, &format!("[data-m={m}]"));
     assert_eq!(found.len(), 1, "[data-m={m}] names exactly one node");
     found[0]

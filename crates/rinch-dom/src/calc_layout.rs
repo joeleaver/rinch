@@ -70,6 +70,7 @@ use crate::RinchDocument;
 use crate::computed_style::{
     ComputedStyle, DimensionValue, LengthPercentageAutoValue, LengthPercentageValue, PositionValue,
 };
+use crate::node::RawNodeId;
 
 impl ComputedStyle {
     /// Whether any Taffy-consumed field of this style carries a mixed calc
@@ -164,10 +165,10 @@ impl RinchDocument {
     /// The rinch node whose Taffy node is `node_id`'s Taffy parent: the
     /// nearest ancestor that owns a Taffy node (`display: contents` ancestors
     /// generate none and their children are reparented in Taffy).
-    fn taffy_parent_rinch(&self, node_id: usize) -> Option<usize> {
+    fn taffy_parent_rinch(&self, node_id: RawNodeId) -> Option<RawNodeId> {
         let mut current = self.tree.get(node_id)?.parent?;
         loop {
-            let node = self.tree.get(current)?;
+            let node = self.tree.get_live(current)?;
             if node.taffy_id.is_some() {
                 return Some(current);
             }
@@ -183,7 +184,7 @@ impl RinchDocument {
     /// than the flexbox spec's full definiteness rules (a definite-flex-basis
     /// main axis, an inset-derived absolute size and grid axes all answer
     /// "indefinite" here).
-    fn calc_axis_definite(&self, node_id: usize, axis: Axis, depth: u32) -> bool {
+    fn calc_axis_definite(&self, node_id: RawNodeId, axis: Axis, depth: u32) -> bool {
         if depth > 64 {
             return false;
         }
@@ -221,7 +222,7 @@ impl RinchDocument {
                 // What Taffy does with the auto depends on the parent's
                 // layout mode — read the parent's *Taffy* style, which
                 // carries rinch's element-default display/direction.
-                let Some(p_taffy) = self.tree.get(p).and_then(|n| n.taffy_id) else {
+                let Some(p_taffy) = self.tree.get_live(p).and_then(|n| n.taffy_id) else {
                     return false;
                 };
                 let Ok(p_style) = self.tree.taffy.style(p_taffy) else {
@@ -268,7 +269,7 @@ impl RinchDocument {
     /// Returns whether anything changed — the caller re-runs the compute
     /// until this answers `false` (see `resolve_layout`).
     pub(crate) fn resolve_layout_calcs(&mut self) -> bool {
-        let mut targets: Vec<(usize, taffy::NodeId)> = Vec::new();
+        let mut targets: Vec<(RawNodeId, taffy::NodeId)> = Vec::new();
         for (id, node) in &self.tree.nodes {
             if let Some(taffy_id) = node.taffy_id
                 && node.computed_style.has_layout_calc()

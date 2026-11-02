@@ -61,18 +61,18 @@ fn typed(app: &mut RinchApp, t: &str) {
     );
 }
 
-fn attr(app: &RinchApp, id: usize, name: &str) -> Option<String> {
+fn attr(app: &RinchApp, id: u64, name: &str) -> Option<String> {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree.get(id).and_then(|n| n.attributes.get(name).cloned())
 }
 
-fn set_value(app: &RinchApp, id: usize, v: &str) {
+fn set_value(app: &RinchApp, id: u64, v: &str) {
     let doc = app.doc.as_ref().unwrap().clone();
     doc.borrow_mut()
         .set_attribute(rinch_core::dom::NodeId(id), "value", v);
 }
 
-fn focus(app: &mut RinchApp, id: usize) {
+fn focus(app: &mut RinchApp, id: u64) {
     let (bx, by, _, bh) = {
         let d = app.doc.as_ref().unwrap().borrow();
         painted_element_box(&d.tree, id)
@@ -84,13 +84,13 @@ fn focus(app: &mut RinchApp, id: usize) {
 }
 
 /// One `<input>` (or `tag`) holding `value`, logging its `oninput`.
-fn page(tag: &'static str, value: &'static str) -> (RinchApp, usize, Log) {
+fn page(tag: &'static str, value: &'static str) -> (RinchApp, u64, Log) {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let l = log.clone();
     let h = register_input_handler(InputCallback::new(move |v: String| {
         l.borrow_mut().push(v);
     }));
-    let id = Rc::new(Cell::new(0usize));
+    let id = Rc::new(Cell::new(0u64));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -138,8 +138,15 @@ fn an_inputs_line_breaks_are_not_painted_below_its_box() {
     assert_eq!(below, 0, "nothing below the field's box");
 
     // Positive control for the oracle: a textarea keeps its line breaks, and
-    // its second and third lines are below 30px.
-    let (mut app, _id, _log) = page("textarea", "ab\ncd\nef");
+    // given room below 30px its second and third lines are painted there. (In
+    // its 30px box they are clipped to it and scrolled to, #827.)
+    let (mut app, id, _log) = page("textarea", "ab\ncd\nef");
+    rinch_core::dom::DomDocument::set_attribute(
+        &mut *app.doc.as_ref().unwrap().borrow_mut(),
+        rinch_core::dom::NodeId(id),
+        "style",
+        &format!("{FIELD_STYLE}; height: 80px"),
+    );
     assert!(painted(&mut app).1 > 0, "a textarea's lines do reach below");
 }
 

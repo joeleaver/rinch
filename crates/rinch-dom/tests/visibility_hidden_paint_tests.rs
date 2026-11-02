@@ -90,7 +90,7 @@ fn red_of(html: &str, css: &str) -> usize {
 
 /// The id of the one element carrying `id="…"`.
 fn by_id(doc: &RinchDocument, id: &str) -> NodeId {
-    let found: Vec<usize> = doc
+    let found: Vec<u64> = doc
         .tree
         .nodes
         .iter()

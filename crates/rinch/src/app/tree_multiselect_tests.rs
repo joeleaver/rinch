@@ -129,7 +129,7 @@ fn has_class(n: &rinch_dom::Node, class: &str) -> bool {
 }
 
 /// The connected content box of `value`.
-fn row(app: &RinchApp, value: &str) -> usize {
+fn row(app: &RinchApp, value: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let li = d
@@ -149,7 +149,7 @@ fn row(app: &RinchApp, value: &str) -> usize {
         .unwrap()
 }
 
-fn centre(app: &RinchApp, id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, id: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let (x, y, w, h) = hit_testing::painted_element_box(&d.tree, id);

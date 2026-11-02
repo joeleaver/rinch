@@ -76,7 +76,7 @@ pub fn start_animations(
         let parent_color = tree
             .get(node_id)
             .and_then(|n| n.parent)
-            .and_then(|parent| tree.get(parent))
+            .and_then(|parent| tree.get_live(parent))
             .and_then(|parent| parent.computed_style.color);
         // `rem` in a keyframe stop resolves against the root's font
         // size, the same base the cascade uses.
