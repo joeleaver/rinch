@@ -60,14 +60,15 @@ rinch-android = { path = "crates/rinch-android" }
 # with no image, gradient or glyph run wiped the persistent atlas (every
 # resident image then drew transparent), and an image stayed resident for two
 # renders after its last use, so the atlas had to hold three scenes' images and
-# large or many images went undrawn. And one to `render_to_texture`
-# (joeleaver/vello-fork#1): a frame that overflows Vello's fixed bump buffers
-# (a large window with several window-sized clips needs more than its 2M tiles
-# and 8M command words) grows them and is drawn again, where it used to be
-# dropped and a transparent window went blank. A dependency, not a [patch], so an app on
-# rinch gets it with nothing to copy; apps use `rinch::vello`. Pinned by rev
-# so a push to the fork's branch never changes rinch.
-vello = { git = "https://github.com/joeleaver/vello-fork", rev = "3cc4cd85cf9d7bebcb57c4856802fe495670923a" }
+# large or many images went undrawn. And its bump buffers
+# (joeleaver/vello-fork#1, #3, #4): they have floors that follow the target, and a
+# frame that overflows them anyway grows them and is reported through
+# `Renderer::check_frames` without `render_to_texture` waiting for the GPU, so
+# the shell draws it again. It used to be dropped, and a transparent window went
+# blank. A dependency, not a [patch], so an app on rinch gets it with nothing to
+# copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
+# never changes rinch.
+vello = { git = "https://github.com/joeleaver/vello-fork", rev = "7a511341325479f8dbbf0b6f71d9f7f29483d5c0" }
 wgpu = "30"
 
 # Windowing and input: winit 0.31.0-beta.4 from joeleaver/winit-fork, branch
