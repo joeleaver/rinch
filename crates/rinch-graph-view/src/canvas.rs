@@ -2,7 +2,7 @@
 //! up every pointer and key interaction.
 //!
 //! ```text
-//! div.rinch-graph            (focusable; pan, marquee, edge picking, keys)
+//! div.rinch-graph            (focusable; pan, marquee, edge picking, keys, wheel)
 //! ├── style
 //! ├── div.rinch-graph-world  (one transform: the viewport)
 //! │   ├── svg.rinch-graph-edges   (pointer-events: none)
@@ -18,7 +18,9 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Drag, KeyEventData, batch, for_each_dom_typed, get_click_context, untracked};
+use rinch_core::{
+    Drag, KeyEventData, WheelEvent, batch, for_each_dom_typed, get_click_context, untracked,
+};
 use rinch_graph_core::{EdgeId, NodeId, Point, PortDir, PortId, Rect, Selection, Size};
 
 use crate::geometry::{Viewport, edge_path};
@@ -183,6 +185,13 @@ where
         root.set_attribute("data-onkeydown", &handler.0.to_string());
     }
 
+    // ---- wheel: zoom on ctrl/cmd+wheel and pinch, pan otherwise ----------
+    {
+        let v = *view;
+        let handler = scope.register_wheel_handler(move |w: &WheelEvent| canvas_wheel(&v, w));
+        root.set_attribute("data-onwheel", &handler.0.to_string());
+    }
+
     // Port dots look up the drop callback through the view.
     *view.i().connect_to_empty.borrow_mut() = options.on_connect_to_empty.clone();
     *view.i().canvas_origin.borrow_mut() = Some(root_bounds);
@@ -270,6 +279,31 @@ fn canvas_press<N: Clone, P: Clone, E: Clone>(view: &GraphView<N, P, E>) {
             }
         })
         .start();
+}
+
+/// A wheel over the canvas. Ctrl/Cmd+wheel and a trackpad pinch (which
+/// arrives as a Ctrl wheel) zoom around the pointer; any other wheel or
+/// two-finger scroll pans, Shift turning a vertical wheel sideways. Every
+/// wheel is consumed, so the page around the canvas neither scrolls nor
+/// zooms.
+fn canvas_wheel<N: Clone, P: Clone, E: Clone>(view: &GraphView<N, P, E>, w: &WheelEvent) -> bool {
+    if w.modifiers.ctrl || w.modifiers.meta {
+        view.zoom_around(w.zoom_factor(), canvas_point(view, w.x, w.y));
+        return true;
+    }
+    let (dx, dy) = if w.modifiers.shift && w.delta_x == 0.0 {
+        (w.delta_y, 0.0)
+    } else {
+        (w.delta_x, w.delta_y)
+    };
+    let vp = untracked(|| view.viewport());
+    // A positive delta scrolls down / right: the content moves up / left.
+    view.set_viewport(Viewport {
+        x: vp.x - dx,
+        y: vp.y - dy,
+        zoom: vp.zoom,
+    });
+    true
 }
 
 fn canvas_key<N: Clone, P: Clone, E: Clone>(view: &GraphView<N, P, E>, k: &KeyEventData) -> bool {
@@ -799,4 +833,73 @@ fn build_controls<N: Clone, P: Clone, E: Clone>(
         bar.append_child(&b);
     }
     bar
+}
+
+#[cfg(test)]
+mod wheel_tests {
+    //! The canvas's wheel on an unmounted view: the canvas origin falls back to
+    //! (0, 0), so the pointer is in canvas pixels.
+
+    use super::*;
+    use rinch_core::ModifierState;
+    use rinch_graph_core::{AnyConnection, GraphState};
+
+    type View = GraphView<&'static str, (), ()>;
+
+    fn view() -> View {
+        GraphView::new(GraphState::new(), AnyConnection)
+    }
+
+    fn mods(ctrl: bool, meta: bool, shift: bool) -> ModifierState {
+        ModifierState {
+            ctrl,
+            meta,
+            shift,
+            ..ModifierState::default()
+        }
+    }
+
+    #[test]
+    fn a_plain_wheel_pans_and_is_consumed() {
+        let v = view();
+        assert!(canvas_wheel(&v, &WheelEvent::new(10.0, 40.0, 50.0, 50.0)));
+        let vp = untracked(|| v.viewport());
+        assert_eq!((vp.x, vp.y, vp.zoom), (-10.0, -40.0, 1.0));
+    }
+
+    #[test]
+    fn shift_turns_a_vertical_wheel_sideways() {
+        let v = view();
+        let w = WheelEvent::new(0.0, 40.0, 0.0, 0.0).with_modifiers(mods(false, false, true));
+        canvas_wheel(&v, &w);
+        let vp = untracked(|| v.viewport());
+        assert_eq!((vp.x, vp.y), (-40.0, 0.0));
+    }
+
+    #[test]
+    fn ctrl_or_cmd_wheel_and_pinch_zoom_around_the_pointer() {
+        for (ctrl, meta) in [(true, false), (false, true)] {
+            let v = view();
+            let anchor = Point::new(120.0, 80.0);
+            let before = untracked(|| v.viewport()).to_graph(anchor);
+            // Wheel turned away from the user (negative delta_y): zoom in.
+            let w = WheelEvent::new(0.0, -50.0, anchor.x, anchor.y)
+                .with_modifiers(mods(ctrl, meta, false));
+            assert!(canvas_wheel(&v, &w));
+            let vp = untracked(|| v.viewport());
+            assert!(
+                (vp.zoom - w.zoom_factor()).abs() < 1e-5 && vp.zoom > 1.0,
+                "{}",
+                vp.zoom
+            );
+            // The viewport is pixel-aligned, so the anchor holds to half a
+            // screen pixel.
+            let after = vp.to_graph(anchor);
+            let tol = 0.5 / vp.zoom;
+            assert!(
+                (after.x - before.x).abs() <= tol && (after.y - before.y).abs() <= tol,
+                "the point under the pointer stays put: {before:?} -> {after:?}"
+            );
+        }
+    }
 }
