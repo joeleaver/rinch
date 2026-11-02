@@ -50,6 +50,11 @@ list_bench!(
     setup_flex_label_hover,
     op_flex_label_hover
 );
+list_bench!(
+    animated_list_color,
+    setup_animated_list_color,
+    op_animated_list_color
+);
 
 #[library_benchmark]
 #[bench::list_500_closed(setup = setup_drawer_toggle)]
@@ -164,6 +169,7 @@ library_benchmark_group!(
         resize_1px,
         set_text_content,
         flex_label_hover,
+        animated_list_color,
         drawer_toggle,
         abs_badge_extents,
         inset_move,
