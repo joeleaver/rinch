@@ -1695,6 +1695,15 @@ impl RinchDocument {
                 taffy_style.size.height = taffy::Dimension::length(est_h);
             }
 
+            // A `Calc` layout value is stored resolved (`resolve_layout_calcs`)
+            // but rebuilt here as its length part, so it is resolved the same
+            // way before the comparison below: unresolved, a new `calc()`
+            // whose length part equalled the old resolved length compared
+            // equal and its layout was skipped (#767).
+            if self.tree.nodes[node_id].computed_style.has_layout_calc() {
+                self.patch_layout_calcs(node_id, taffy_id, &mut taffy_style);
+            }
+
             // A spliced `display: contents` wrapper's Taffy style is not built
             // from its computed values: `sync_display_contents` owns it and
             // writes `Display::None`, while `to_taffy_style` maps `contents` to

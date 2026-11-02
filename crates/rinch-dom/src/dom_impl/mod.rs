@@ -1226,6 +1226,12 @@ impl RinchDocument {
                     taffy_style.size.height = taffy::Dimension::length(est_h);
                 }
 
+                // A `Calc` is compared resolved, as it is stored (#767; see
+                // `patch_layout_calcs`).
+                if node.computed_style.has_layout_calc() {
+                    self.patch_layout_calcs(node_id, taffy_id, &mut taffy_style);
+                }
+
                 // A `display: contents` wrapper's Taffy style belongs to
                 // `sync_display_contents`, as in `apply_stylo_styles_to_taffy`;
                 // rebuilding it from the computed values would give the wrapper
@@ -1427,6 +1433,12 @@ impl RinchDocument {
                 // estimated height apply_stylo_styles_to_taffy would have set.
                 if let Some(est_h) = node.estimated_height {
                     taffy_style.size.height = taffy::Dimension::length(est_h);
+                }
+
+                // A `Calc` is compared resolved, as it is stored (#767; see
+                // `patch_layout_calcs`).
+                if node.computed_style.has_layout_calc() {
+                    self.patch_layout_calcs(node_id, taffy_id, &mut taffy_style);
                 }
 
                 // Same ownership rule as `tick_transitions`.
