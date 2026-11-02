@@ -106,6 +106,10 @@ rinch-components = { workspace = true }
 # per-step icon with. The facade deliberately does not depend on this crate — the
 # icon enum is not in the prelude — so it is a dev-dependency.
 rinch-tabler-icons = { workspace = true }
+# Test-only: `app::graph_canvas_wheel_tests` drives the node-graph canvas's wheel
+# through the real desktop wheel path, without the optional `graph` feature (so
+# the test runs under `cargo test -p rinch` with no flags).
+rinch-graph-view = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }

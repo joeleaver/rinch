@@ -5617,6 +5617,7 @@ dependencies = [
  "rinch-core",
  "rinch-graph-core",
  "rinch-macros",
+ "web-time",
 ]
 
 [[package]]
@@ -5817,6 +5818,7 @@ dependencies = [
  "rinch-editor-collab",
  "rinch-editor-core",
  "rinch-editor-view",
+ "rinch-graph-view",
  "rinch-http",
  "tracing",
  "wasm-bindgen",

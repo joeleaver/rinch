@@ -202,6 +202,8 @@ mod gpu_clip_groups_1645_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_partial_frame_1718_tests;
 #[cfg(test)]
+mod graph_canvas_wheel_tests;
+#[cfg(test)]
 mod hidden_animation_frames_tests;
 #[cfg(test)]
 mod hidpi_pointer_tests;
@@ -384,6 +386,8 @@ mod viewport_inputs_349_tests;
 mod viewport_ready_348_tests;
 #[cfg(all(test, software_shell))]
 mod visibility_hidden_overlay_paint_tests;
+#[cfg(test)]
+mod wheel_scroll_chaining_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod zero_box_overlay_1696_tests;
 
@@ -9419,11 +9423,14 @@ mod wheel_scroll_dispatch_tests {
         );
     }
 
-    /// The two axes need not resolve to the same element: a sideways strip
-    /// inside a vertically scrolling page is the ordinary case. Each container
-    /// scrolled, so each is owed its own event, with its own top.
+    /// A diagonal wheel over a sideways strip inside a vertically scrolling
+    /// page goes to one container, the nearest that can move toward it: the
+    /// strip, which takes the sideways part and drops the rest — measured in
+    /// Chrome and Firefox (Playwright builds), a `(30, 40)` wheel over such a
+    /// strip moves it `(30, 0)` and the page not at all. Until the review of
+    /// #2084 the two axes went to two containers here, each with its event.
     #[test]
-    fn a_diagonal_scroll_across_two_containers_dispatches_to_each() {
+    fn a_diagonal_scroll_over_two_containers_goes_to_the_nearer_one() {
         let outer_fired: Rc<RefCell<Vec<ScrollEvent>>> = Rc::new(RefCell::new(Vec::new()));
         let inner_fired: Rc<RefCell<Vec<ScrollEvent>>> = Rc::new(RefCell::new(Vec::new()));
         let outer_in = outer_fired.clone();
@@ -9466,18 +9473,19 @@ mod wheel_scroll_dispatch_tests {
 
         wheel(&mut app, point, -30.0, -40.0);
 
-        assert_eq!(offsets(&app, page_id).1, 40.0);
-        assert_eq!(offsets(&app, strip_id).0, 30.0);
-        assert_eq!(
-            *outer_fired.borrow(),
-            vec![ScrollEvent::new(40.0, 0.0)],
-            "the page scrolled down"
-        );
+        assert_eq!(offsets(&app, strip_id).0, 30.0, "the strip took the wheel");
+        assert_eq!(offsets(&app, page_id).1, 0.0, "the page did not move");
+        assert_eq!(*outer_fired.borrow(), vec![], "the page did not scroll");
         assert_eq!(
             *inner_fired.borrow(),
             vec![ScrollEvent::new(0.0, 30.0)],
             "the strip scrolled sideways, and reports its own offsets"
         );
+
+        // A vertical wheel, which the strip cannot follow, scrolls the page.
+        wheel(&mut app, point, 0.0, -40.0);
+        assert_eq!(offsets(&app, page_id).1, 40.0);
+        assert_eq!(*outer_fired.borrow(), vec![ScrollEvent::new(40.0, 0.0)]);
     }
 
     /// `virtual_list` is the in-tree consumer that *keys off* the payload: it

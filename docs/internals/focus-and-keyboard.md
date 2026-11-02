@@ -635,9 +635,11 @@ register_focus_target(
   just a bool, because desktop has to know which subtree may still scroll.
   Desktop records the locking roots on `NodeTree` and refuses a container
   outside every one of them (`NodeTree::scroll_locked_out`) at two input sites:
-  the **wheel arm** in `event_dispatch.rs` (both axes, both the ancestor walk
-  and the geometric fallback — an open overlay is exactly the shape that
-  fallback exists for) and **`find_scrollbar_hit`**, so the page's #178 thumb
+  the **wheel arm** in `event_dispatch.rs` (`hit_testing::wheel_scroll_target`:
+  a locked-out container cannot move under `scrollbar::can_scroll_toward`, on
+  both the ancestor walk and the geometric fallback — an open overlay is
+  exactly the shape that fallback exists for — and a walk that met one does not
+  fall back around it) and **`find_scrollbar_hit`**, so the page's #178 thumb
   cannot be dragged either. Nothing is restyled: the page does not reflow and
   keeps its `scroll_offset`. Web sets `overflow: hidden` on the real `<html>`
   (page-global and counted in `web_document.rs`, previous inline value saved and
