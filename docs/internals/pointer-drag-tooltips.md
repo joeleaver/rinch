@@ -461,27 +461,59 @@ A pinch carries it too. With **`NodeHandle::handle_for(id)`** a handler turns
 it into a handle on its own element's document and walks up, and
 **`NodeHandle::can_scroll_toward(dx, dy)`** (`DomDocument::can_scroll_toward`)
 answers whether the default scroll would move that element by a wheel of
-those signs: desktop by the wheel's own rule (`scrollbar::overflows` on the
-axis, `scroll_locked_out`, room up to the range's end on the device grid, the
-drag auto-scroll test); the web by computed `overflow-x/y` `auto`/`scroll`,
-`scroll_locked_out`, and an unrounded `scrollTop`/`scrollLeft` against the
-rounded range with a pixel of slack (RTL's `scrollLeft` runs `-max..0`). A
-handler that holds scrollable content uses the pair to decline the wheels that
-content can take — the node-graph canvas does (`docs/design/node-graph.md`).
+those signs. Desktop answers with `rinch_dom::paint::scrollbar::
+can_scroll_toward` — the very rule the wheel picks its container by (below):
+`overflows` on an axis with a non-zero delta, not `scroll_locked_out`, room up
+to the range's end on the device grid (#1543, drag auto-scroll's test). The
+web answers by computed `overflow-x/y` `auto`/`scroll`, `scroll_locked_out`,
+and the unrounded `scrollTop`/`scrollLeft` against the browser's own end:
+Firefox's `scrollTopMax`/`scrollLeftMax` (fractional, to 0.05px), else
+`scrollHeight - clientHeight` with a slack of one device pixel (+0.01) above a
+device scale of 1 and half a pixel at 1 — at 1.5 Chrome and Firefox stop a
+200.4px list of 800px at 599.33 where the sizes say 600 (measured, Chrome 153
+`--force-device-scale-factor=1.5` and Firefox 155 `layout.css.devPixelsPerPx
+1.5`), and at 1 the end is whole, so a list a pixel short of it still has
+room. RTL's `scrollLeft` runs `-span..0`. A handler that holds scrollable
+content uses the pair to decline the wheels that content can take — the
+node-graph canvas does (`docs/design/node-graph.md`).
 
-**Shift turns the default scroll sideways on desktop**: in the
-`PlatformEvent::MouseWheel` arm, after the `onwheel` chain, a wheel with Shift
-held and `delta_x == 0` scrolls horizontally by its `delta_y`, as Chrome and
-Firefox do on Linux and Windows (macOS sends it horizontal already). The
-`onwheel` payload is not turned. Desktop's default scroll does **not** chain:
-it moves the nearest container that overflows on the axis, even at its end
-(a browser goes on to the next one for a new gesture).
+**Which container the desktop wheel scrolls** (review of #2084,
+`hit_testing::wheel_scroll_target`): the nearest of the hit and its
+ancestors, then the body, that `can_scroll_toward` the wheel — **one**
+container for the whole wheel. So a list at its end chains to the scroller
+around it, as a browser does for a new gesture, and a diagonal wheel over a
+strip that scrolls only sideways moves the strip and drops the vertical part
+rather than scrolling the page with it (measured with trusted wheels in
+Chrome 153 and Firefox 155 via Playwright: a `(40, 6)` and a `(30, 40)` wheel
+over such a strip move it `(40, 0)` / `(30, 0)` and the page not at all;
+until this change the two axes went to two containers). Only the axes the
+container overflows on move. A walk that met no container overflowing on a
+wheel axis falls back to the container under the point
+(`find_scroll_container_at_point` and its horizontal twin, the fixed-overlay
+case); one that met containers which could not move (at their end, or locked
+out) does not, so a locked page is not reached around the lock. Not
+modelled: a browser **latches** a gesture to its scroller, so the rest of a
+flick that brings a list to its end does not scroll the page; desktop chains
+per wheel (the node-graph canvas latches its own gestures).
+
+**Shift turns the default scroll sideways** where the platform does
+(`events::shift_wheel_turns_sideways`, `WheelEvent::scroll_deltas`): a wheel
+with Shift held and `delta_x == 0` scrolls horizontally by its `delta_y` on
+Linux and Windows, as Chrome and Firefox do there, and not on macOS, where the
+system turns a Shift mouse wheel itself and a trackpad with Shift held stays
+vertical. Native builds take it from `cfg!(target_os = "macos")`; rinch-web
+sets it per wheel from `navigator.platform` (the browser does its own turning
+for its default scroll; the setting is for a handler that reads
+`scroll_deltas`, such as the node-graph canvas). The `onwheel` payload's
+deltas are not turned.
 
 Tests: `rinch/src/app/element_wheel_tests.rs` (order, consumption stopping the
-scroll, modifiers and sign, pinch, `target`, `can_scroll_toward`, Shift),
+scroll, modifiers and sign, pinch, `target`, `can_scroll_toward`, Shift on
+both platforms), `rinch/src/app/wheel_scroll_chaining_tests.rs` (chaining,
+one container per wheel, the device grid at 1.25, `lock_scroll`),
 `rinch/src/app/graph_canvas_wheel_tests.rs` (the canvas over scrollable node
 bodies), and `rinch-web/tests/element_wheel.rs` (order, `defaultPrevented`,
-line deltas, Ctrl, `target`, `can_scroll_toward`) and
+line deltas, Ctrl, `target`, `can_scroll_toward` and its end) and
 `rinch-web/tests/graph_canvas_wheel.rs`.
 
 ## `title` tooltips (desktop)

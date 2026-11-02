@@ -1392,12 +1392,16 @@ impl RinchApp {
                     actions.push(AppAction::RequestRedraw);
                 }
 
-                // Shift turns a plain vertical wheel sideways, as Chrome and
-                // Firefox scroll it on Linux and Windows (macOS sends such a
-                // wheel as horizontal already). Only the default scroll: the
-                // `onwheel` payload above keeps the deltas as they came, with
-                // `shift` set, for a handler to read its own way.
-                let (delta_x, delta_y) = if self.modifiers.shift && delta_x == 0.0 {
+                // Shift turns a plain vertical wheel sideways where the
+                // platform does (`WheelEvent::scroll_deltas`: Linux and
+                // Windows, as Chrome and Firefox scroll there; not macOS,
+                // which sends a Shift mouse wheel sideways itself and keeps a
+                // trackpad with Shift held vertical). Only the default scroll:
+                // the `onwheel` payload above keeps the deltas as they came.
+                let (delta_x, delta_y) = if self.modifiers.shift
+                    && delta_x == 0.0
+                    && events::shift_wheel_turns_sideways()
+                {
                     (delta_y, 0.0)
                 } else {
                     (delta_x, delta_y)
@@ -1409,35 +1413,38 @@ impl RinchApp {
                 {
                     if let Some(hit_node) = hit {
                         let mut doc_mut = doc.borrow_mut();
-                        // (container, handler) per container that actually moved.
-                        // A list because the two axes can resolve to different
-                        // containers — a horizontally scrolling strip inside a
-                        // vertically scrolling page — and each is owed its own
-                        // event. Keyed by container so a diagonal that moves one
-                        // container on both axes still fires once: `onscroll` is
-                        // "this element scrolled", not "this element scrolled
-                        // vertically". The payload is read back off the node once
-                        // both axes have been applied, so a diagonal's single
-                        // event carries both new offsets.
+                        // One container takes the whole wheel
+                        // (`wheel_scroll_target`): the nearest from the hit up
+                        // that can still move toward it, so a list at its end
+                        // chains to the scroller around it, and a diagonal
+                        // wheel is not split across two containers (Chrome and
+                        // Firefox send it to one). The walk falls back to the
+                        // container under the point when the hit is in another
+                        // branch (a fixed overlay). `lock_scroll` (#474) is in
+                        // the rule: a container outside an open `Modal`/
+                        // `Drawer` cannot move, on either route — it gates
+                        // here, at the *arm*, rather than restyling the body
+                        // (see `RinchDocument::set_scroll_locked`).
+                        //
+                        // `scrolled` keeps (container, handler) for the
+                        // container if it moved; the payload is read back off
+                        // the node once both axes have been applied, so a
+                        // diagonal's single `onscroll` carries both offsets.
                         let mut scrolled: Vec<(u64, usize)> = Vec::new();
+                        let target =
+                            wheel_scroll_target(&doc_mut.tree, hit_node, x, y, -delta_x, -delta_y);
+                        let moves_on = |doc: &RinchDocument, axis| {
+                            target.filter(|&id| {
+                                rinch_dom::paint::scrollbar::overflows(&doc.tree, id, axis)
+                            })
+                        };
 
                         // Vertical scrolling
-                        // First try the hit node's ancestor chain. If the hit node is in
-                        // a different DOM branch (e.g., an absolutely-positioned overlay),
-                        // fall back to finding the scroll container geometrically at (x, y).
-                        // `scroll_locked_out` is `lock_scroll` (#474): an open
-                        // `Modal`/`Drawer` refuses a gesture whose container is
-                        // outside it. It gates here, at the *arm*, rather than
-                        // restyling the body — see
-                        // `RinchDocument::set_scroll_locked`. Both resolution
-                        // routes are covered, including the geometric fallback,
-                        // because a fixed overlay is exactly the shape that
-                        // fallback exists for.
                         if delta_y.abs() > 0.0
-                            && let Some(scroll_node_id) =
-                                find_scroll_container(&doc_mut.tree, hit_node)
-                                    .or_else(|| find_scroll_container_at_point(&doc_mut.tree, x, y))
-                            && !doc_mut.tree.scroll_locked_out(scroll_node_id)
+                            && let Some(scroll_node_id) = moves_on(
+                                &doc_mut,
+                                rinch_dom::paint::scrollbar::ScrollbarAxis::Vertical,
+                            )
                         {
                             let (moved, handler_id) =
                                 Self::scroll_vertically_by(&mut doc_mut, scroll_node_id, -delta_y);
@@ -1451,14 +1458,10 @@ impl RinchApp {
 
                         // Horizontal scrolling
                         if delta_x.abs() > 0.0
-                            && let Some(scroll_node_id) = find_horizontal_scroll_container(
-                                &doc_mut.tree,
-                                hit_node,
+                            && let Some(scroll_node_id) = moves_on(
+                                &doc_mut,
+                                rinch_dom::paint::scrollbar::ScrollbarAxis::Horizontal,
                             )
-                            .or_else(|| {
-                                find_horizontal_scroll_container_at_point(&doc_mut.tree, x, y)
-                            })
-                            && !doc_mut.tree.scroll_locked_out(scroll_node_id)
                         {
                             let nid = rinch_core::dom::NodeId(scroll_node_id);
                             let content_width = doc_mut.scroll_width(nid);

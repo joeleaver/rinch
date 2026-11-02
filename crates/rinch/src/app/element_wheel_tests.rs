@@ -375,10 +375,12 @@ fn can_scroll_toward_follows_the_overflow_and_the_room_left() {
 }
 
 /// The default scroll turns a plain vertical wheel sideways under Shift, as
-/// Chrome and Firefox do on Linux and Windows; the `onwheel` payload keeps
-/// the deltas it came with.
+/// Chrome and Firefox do on Linux and Windows, and not on macOS; the `onwheel`
+/// payload keeps the deltas it came with.
 #[test]
 fn shift_turns_the_default_scroll_sideways() {
+    // Linux and Windows (set, so the test says the same on a macOS build).
+    rinch_core::events::set_shift_wheel_turns_sideways(true);
     let handles: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let seen: Rc<Cell<Option<WheelEvent>>> = Rc::new(Cell::new(None));
     let (handles_in, seen_in) = (handles.clone(), seen.clone());
@@ -437,4 +439,12 @@ fn shift_turns_the_default_scroll_sideways() {
         "the payload is as sent"
     );
     assert!(w.modifiers.shift);
+
+    // macOS (the rule set the way a macOS build has it): the system turns a
+    // Shift mouse wheel itself, so a vertical wheel with Shift held, such as
+    // a trackpad's, scrolls down.
+    rinch_core::events::set_shift_wheel_turns_sideways(false);
+    wheel(&mut app);
+    rinch_core::events::set_shift_wheel_turns_sideways(!cfg!(target_os = "macos"));
+    assert_eq!(offset(&app), (40.0, 80.0), "down, not sideways");
 }

@@ -2066,38 +2066,11 @@ impl DomDocument for RinchDocument {
         crate::paint::scrollbar::visible_extents(&self.tree, node.0).0
     }
 
-    /// The wheel's own rule: [`crate::paint::scrollbar::overflows`] on the
-    /// axis (what `find_scroll_container` picks a container by), not locked
-    /// out by a `lock_scroll` overlay, and room left toward the delta, the end
-    /// being the range's end on the device pixel grid where the wheel's write
-    /// stops (#1543) — drag auto-scroll's "can still move toward that edge".
+    /// [`crate::paint::scrollbar::can_scroll_toward`]: the rule the desktop
+    /// wheel picks its container by, so the answer is what the default scroll
+    /// will do.
     fn can_scroll_toward(&self, node: NodeId, dx: f64, dy: f64) -> bool {
-        use crate::paint::scrollbar::{ScrollbarAxis, overflows};
-        let id = node.0;
-        if self.tree.get(id).is_none() || self.tree.scroll_locked_out(id) {
-            return false;
-        }
-        let room = |at: f64, extent: f64, visible: f64, d: f64| {
-            let max = self.tree.snap_scroll_offset((extent - visible).max(0.0));
-            (d < 0.0 && at > 0.0) || (d > 0.0 && at < max)
-        };
-        let vertical = dy != 0.0
-            && overflows(&self.tree, id, ScrollbarAxis::Vertical)
-            && room(
-                self.scroll_top(node),
-                self.scroll_height(node),
-                self.client_height(node),
-                dy,
-            );
-        let horizontal = dx != 0.0
-            && overflows(&self.tree, id, ScrollbarAxis::Horizontal)
-            && room(
-                self.scroll_left(node),
-                self.scroll_width(node),
-                self.client_width(node),
-                dx,
-            );
-        vertical || horizontal
+        crate::paint::scrollbar::can_scroll_toward(&self.tree, node.0, dx, dy)
     }
 
     fn request_scroll_into_view(&mut self, node: NodeId) {

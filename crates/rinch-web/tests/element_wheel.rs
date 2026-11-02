@@ -286,6 +286,10 @@ fn can_scroll_toward_follows_the_overflow_and_the_room_left() {
                         style: "direction: rtl; width: 100px; height: 50px; overflow-x: auto",
                         div { style: "width: 400px; height: 10px" }
                     }
+                    div {
+                        style: "width: 100px; height: 200.4px; overflow-y: auto",
+                        div { style: "height: 800px" }
+                    }
                 }
             };
             let kids = root.children();
@@ -294,12 +298,13 @@ fn can_scroll_toward_follows_the_overflow_and_the_room_left() {
                 kids[0].children()[0].clone(),
                 kids[1].clone(),
                 kids[2].clone(),
+                kids[3].clone(),
             ];
             root
         },
     );
     let h = handles.borrow().clone();
-    let (scroller, content, hidden, rtl) = (&h[0], &h[1], &h[2], &h[3]);
+    let (scroller, content, hidden, rtl, frac) = (&h[0], &h[1], &h[2], &h[3], &h[4]);
 
     assert!(scroller.can_scroll_toward(0.0, 1.0));
     assert!(!scroller.can_scroll_toward(0.0, -1.0));
@@ -318,6 +323,37 @@ fn can_scroll_toward_follows_the_overflow_and_the_room_left() {
     // RTL starts at its right edge: scrollLeft 0, room to the left only.
     assert!(rtl.can_scroll_toward(-1.0, 0.0));
     assert!(!rtl.can_scroll_toward(1.0, 0.0));
+
+    // The far end is the browser's own. A 200.4px list of 800px: put at the
+    // end the browser allows (at a device scale of 1.5 Chrome stops at
+    // 599.33, where `scrollHeight - clientHeight` says 600), it cannot move
+    // down; a pixel short of that end, it can.
+    let el = document()
+        .query_selector(&format!("[{HOST_MARKER}] div > div:nth-child(4)"))
+        .unwrap()
+        .unwrap();
+    el.set_scroll_top(100_000);
+    let end = js_sys::Reflect::get(&el, &"scrollTop".into())
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    let span = f64::from(el.scroll_height() - el.client_height());
+    assert!(end > 500.0 && end <= span, "end {end}, span {span}");
+    assert!(
+        !frac.can_scroll_toward(0.0, 1.0),
+        "at the end {end} ({span})"
+    );
+    assert!(frac.can_scroll_toward(0.0, -1.0));
+    js_sys::Reflect::set(&el, &"scrollTop".into(), &(end - 1.0).into()).unwrap();
+    let short = js_sys::Reflect::get(&el, &"scrollTop".into())
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    assert!(short < end - 0.5, "moved off the end: {short}");
+    assert!(
+        frac.can_scroll_toward(0.0, 1.0),
+        "a pixel short of the end ({short} of {end}) has room"
+    );
 
     root.unmount();
     host.remove();

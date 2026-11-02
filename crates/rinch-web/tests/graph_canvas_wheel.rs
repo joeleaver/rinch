@@ -79,6 +79,8 @@ impl Fixture {
                     tx.add_node(Point::new(20.0, 20.0), "list", [])?;
                     tx.add_node(Point::new(240.0, 20.0), "opted", [])?;
                     tx.add_node(Point::new(20.0, 160.0), "plain", [])?;
+                    tx.add_node(Point::new(240.0, 160.0), "strip", [])?;
+                    tx.add_node(Point::new(420.0, 20.0), "nested", [])?;
                     Ok(())
                 })
                 .unwrap();
@@ -108,6 +110,36 @@ impl Fixture {
                         opted.append_child(&div(scope, "g-opted-child", "height: 30px"));
                         opted
                     }
+                    "strip" => {
+                        let strip = div(
+                            scope,
+                            "g-strip",
+                            "width: 120px; height: 40px; overflow-x: auto",
+                        );
+                        strip.append_child(&div(
+                            scope,
+                            "g-strip-wide",
+                            "width: 400px; height: 20px",
+                        ));
+                        strip
+                    }
+                    "nested" => {
+                        let outer = div(
+                            scope,
+                            "g-outer",
+                            "width: 120px; height: 80px; overflow-y: auto",
+                        );
+                        outer.append_child(&div(scope, "g-outer-top", "height: 20px"));
+                        let inner = div(
+                            scope,
+                            "g-inner",
+                            "width: 100px; height: 40px; overflow-y: auto",
+                        );
+                        inner.append_child(&div(scope, "g-inner-row", "height: 200px"));
+                        outer.append_child(&inner);
+                        outer.append_child(&div(scope, "g-outer-bottom", "height: 100px"));
+                        outer
+                    }
                     _ => div(scope, "g-plain", "width: 120px; height: 40px"),
                 };
                 let canvas = graph_canvas(
@@ -124,6 +156,9 @@ impl Fixture {
             },
         );
         let view = out.take().expect("mounted");
+        // The gesture clock at 0 ms; tests move it with `__set_wheel_clock`.
+        rinch_graph_view::__set_wheel_clock(Some(0));
+        rinch_web::__set_mac_platform(Some(false));
         Self { root, host, view }
     }
 
@@ -139,6 +174,8 @@ impl Fixture {
     fn teardown(self) {
         self.root.unmount();
         self.host.remove();
+        rinch_web::__set_mac_platform(None);
+        rinch_graph_view::__set_wheel_clock(None);
     }
 }
 
@@ -156,17 +193,6 @@ fn wheel_at(id: &str, delta_x: f64, delta_y: f64, ctrl: bool) -> bool {
     let ev = web_sys::WheelEvent::new_with_event_init_dict("wheel", &init).unwrap();
     by_id(id).dispatch_event(&ev).unwrap();
     ev.default_prevented()
-}
-
-/// Resolve after `ms` of wall clock.
-async fn sleep_ms(ms: i32) {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(resolve.unchecked_ref(), ms)
-            .unwrap();
-    });
-    wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
 }
 
 /// A wheel over a list row the list can follow is the browser's: not
@@ -188,7 +214,7 @@ fn a_list_in_a_node_takes_the_wheel_it_can_follow() {
 /// At its end mid-gesture the list keeps the rest of the gesture: cancelled
 /// (nothing else scrolls) and no pan. A new wheel pans.
 #[wasm_bindgen_test]
-async fn at_the_end_the_gesture_stops_and_a_new_wheel_pans() {
+fn at_the_end_the_gesture_stops_and_a_new_wheel_pans() {
     let f = Fixture::mount();
     assert!(!wheel_at("g-row", 0.0, 40.0, false));
     let list = by_id("g-list");
@@ -196,7 +222,7 @@ async fn at_the_end_the_gesture_stops_and_a_new_wheel_pans() {
     assert!(wheel_at("g-row", 0.0, 40.0, false), "cancelled");
     assert_eq!(f.pan(), (0.0, 0.0), "the rest of the gesture does not pan");
 
-    sleep_ms(600).await;
+    rinch_graph_view::__set_wheel_clock(Some(600));
     assert!(wheel_at("g-row", 0.0, 40.0, false));
     assert_eq!(f.pan(), (0.0, -40.0), "a new wheel pans");
     f.teardown();
@@ -232,5 +258,80 @@ fn a_plain_body_and_the_background_pan() {
     assert!(wheel_at("g-plain", 0.0, 40.0, false));
     assert!(wheel_at("g-canvas", 25.0, 0.0, false));
     assert_eq!(f.pan(), (-25.0, -40.0));
+    f.teardown();
+}
+
+/// A gesture the canvas pans with stays the canvas's: a wheel 40 ms later
+/// over a list is not left to the list (review of #2084). A new gesture is.
+#[wasm_bindgen_test]
+fn a_panning_gesture_is_not_taken_over_by_a_list() {
+    let f = Fixture::mount();
+    assert!(wheel_at("g-canvas", 40.0, 0.0, false));
+    rinch_graph_view::__set_wheel_clock(Some(40));
+    assert!(wheel_at("g-row", 0.0, 40.0, false), "the canvas kept it");
+    assert_eq!(f.pan(), (-40.0, -40.0));
+    rinch_graph_view::__set_wheel_clock(Some(600));
+    assert!(
+        !wheel_at("g-row", 0.0, 40.0, false),
+        "a new gesture: the list's"
+    );
+    assert_eq!(f.pan(), (-40.0, -40.0));
+    f.teardown();
+}
+
+/// A diagonal wheel over a strip that scrolls only sideways is left to the
+/// browser, which gives it to the strip whole (Chrome and Firefox, measured
+/// with trusted wheels: the page does not move).
+#[wasm_bindgen_test]
+fn a_diagonal_wheel_over_a_strip_is_the_strips() {
+    let f = Fixture::mount();
+    assert!(by_id("g-strip").scroll_width() > by_id("g-strip").client_width());
+    assert!(!wheel_at("g-strip-wide", 40.0, 6.0, false));
+    assert_eq!(f.pan(), (0.0, 0.0));
+    f.teardown();
+}
+
+/// A list at its end inside a scroller that can still move: the canvas
+/// leaves the wheel to the browser, which chains it to the outer scroller.
+#[wasm_bindgen_test]
+fn a_list_at_its_end_inside_a_movable_scroller_is_left_to_the_browser() {
+    let f = Fixture::mount();
+    let inner = by_id("g-inner");
+    inner.set_scroll_top(inner.scroll_height());
+    assert!(!wheel_at("g-inner-row", 0.0, 40.0, false));
+    assert_eq!(f.pan(), (0.0, 0.0));
+    // With the outer one at its end too, a new wheel pans the canvas.
+    let outer = by_id("g-outer");
+    outer.set_scroll_top(outer.scroll_height());
+    rinch_graph_view::__set_wheel_clock(Some(600));
+    assert!(wheel_at("g-inner-row", 0.0, 40.0, false));
+    assert_eq!(f.pan(), (0.0, -40.0));
+    f.teardown();
+}
+
+/// Shift turns a vertical wheel sideways off macOS only
+/// (`WheelEvent::scroll_deltas`, set from `navigator.platform`): on macOS
+/// the canvas pans down, elsewhere sideways.
+#[wasm_bindgen_test]
+fn shift_turns_the_canvas_pan_sideways_off_macos_only() {
+    let shift_wheel = |id: &str| {
+        let init = web_sys::WheelEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_delta_y(40.0);
+        init.set_shift_key(true);
+        let ev = web_sys::WheelEvent::new_with_event_init_dict("wheel", &init).unwrap();
+        by_id(id).dispatch_event(&ev).unwrap();
+    };
+    let f = Fixture::mount();
+    shift_wheel("g-canvas");
+    assert_eq!(f.pan(), (-40.0, 0.0), "Linux / Windows: sideways");
+    f.teardown();
+
+    let f = Fixture::mount();
+    rinch_web::__set_mac_platform(Some(true));
+    shift_wheel("g-canvas");
+    rinch_web::__set_mac_platform(None);
+    assert_eq!(f.pan(), (0.0, -40.0), "macOS: down");
     f.teardown();
 }

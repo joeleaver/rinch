@@ -359,20 +359,26 @@ Recorded after v1 (milestones 1–5) was built and driven in the running demo
   scroll and a consumed wheel scrolls nothing. Now the handler walks from the
   wheel's `target` (`WheelEvent::target`, added for this) up to the canvas
   element and asks each element `NodeHandle::can_scroll_toward(dx, dy)` with
-  the Shift-turned deltas; if one can still move, it declines the plain wheel
-  and the backend's default scroll moves it (browser scroll chaining). It
-  latches like a browser: once a gesture has gone to a scroller, wheels
-  within 500 ms of the last one (`WHEEL_GESTURE_GAP`, Chrome's window for
-  phaseless wheels; Firefox's transaction is 1.5 s) are consumed and move
-  nothing when that scroller is at its end, so momentum does not spill into a
-  pan; a new wheel pans. Ctrl/Cmd+wheel and pinch still zoom over scrollers.
-  An element marked `data-graph-nowheel` (`NO_WHEEL_ATTR`, React Flow's
-  `nowheel`) and everything inside it makes the canvas decline every wheel,
-  zoom included. Every wheel the canvas takes is still consumed, so the page
-  never scrolls or zooms under it. Desktop's default scroll learned Shift's
-  sideways turn at the same time (browsers do it on Linux and Windows), or a
-  Shift+wheel the canvas declined for a horizontal scroller would have moved
-  nothing.
+  the deltas the default scroll would use (`WheelEvent::scroll_deltas`:
+  Shift turns a vertical wheel sideways off macOS); if one can still move, it
+  declines the plain wheel and the backend's default scroll moves it (browser
+  scroll chaining). For that answer to be what the default scroll does, the
+  desktop wheel now picks its container by the same rule
+  (`rinch_dom::paint::scrollbar::can_scroll_toward`): the nearest that can
+  move, chaining past a list at its end, and one container for the whole
+  wheel, as Chrome and Firefox do (a diagonal wheel over a sideways strip used
+  to send its vertical part past the canvas to the page). It latches like a
+  browser: a gesture (wheels within 500 ms of the last, `WHEEL_GESTURE_GAP`,
+  Chrome's window for phaseless wheels; Firefox's transaction is 1.5 s)
+  belongs to whoever took its first wheel. A content gesture whose scroller
+  reaches its end is consumed and moves nothing, so momentum does not spill
+  into a pan; a panning gesture keeps panning even as it slides a list or a
+  `data-graph-nowheel` element under the still pointer. Ctrl/Cmd+wheel and
+  pinch still zoom over scrollers. An element marked `data-graph-nowheel`
+  (`NO_WHEEL_ATTR`, React Flow's `nowheel`) and everything inside it makes
+  the canvas decline every wheel that starts a gesture, zoom included. Every
+  wheel the canvas takes is still consumed, so the page never scrolls or
+  zooms under it.
 - **`GraphView` is `Copy`.** Its state lives in the reactive store (a `Signal`
   holding an `Rc`), so it can be captured by any number of rsx closures, the
   way `Signal` is. A reactive child in rsx (`{move || …}`) is rebuilt inside an

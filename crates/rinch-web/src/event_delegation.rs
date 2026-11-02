@@ -2821,6 +2821,12 @@ fn install_wheel(doc: &web_sys::Document) {
         if ids.is_empty() {
             return;
         }
+        // The platform rule `WheelEvent::scroll_deltas` follows: the browser
+        // turns a Shift wheel sideways itself on Linux and Windows, and macOS
+        // does it in the system, so a handler mirroring the default scroll
+        // turns it only off macOS. Read per wheel, so `__set_mac_platform`
+        // reaches it.
+        events::set_shift_wheel_turns_sideways(!crate::editor_input::is_mac());
         let mut data = wheel_event_data(&event);
         data.target = target;
         if events::dispatch_wheel_handler_chain(ids, &data) {

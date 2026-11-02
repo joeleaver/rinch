@@ -38,6 +38,10 @@ struct Fixture {
     /// A plain body, marked `data-graph-nowheel="false"` (the escape: not
     /// opted out).
     plain: NodeHandle,
+    /// An 80px scroller (160px of content) holding `inner`, a 40px list
+    /// (200px of rows).
+    outer: NodeHandle,
+    inner: NodeHandle,
 }
 
 fn el(scope: &mut RenderScope, style: &str) -> NodeHandle {
@@ -50,7 +54,7 @@ fn el(scope: &mut RenderScope, style: &str) -> NodeHandle {
 /// canvas, whose four nodes are the list, the strip, the opted-out element
 /// and the plain body.
 fn mount() -> Fixture {
-    type Out = (View, [NodeHandle; 6]);
+    type Out = (View, [NodeHandle; 8]);
     let out: Rc<RefCell<Option<Out>>> = Rc::new(RefCell::new(None));
     let out_in = out.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -60,6 +64,7 @@ fn mount() -> Fixture {
             tx.add_node(Point::new(240.0, 20.0), "strip", [])?;
             tx.add_node(Point::new(20.0, 160.0), "opted", [])?;
             tx.add_node(Point::new(240.0, 160.0), "plain", [])?;
+            tx.add_node(Point::new(420.0, 20.0), "nested", [])?;
             Ok(())
         })
         .unwrap();
@@ -88,6 +93,17 @@ fn mount() -> Fixture {
                     opted.append_child(&child);
                     parts_in.borrow_mut().push(("opted_child", child));
                     opted
+                }
+                "nested" => {
+                    let outer = el(scope, "width: 120px; height: 80px; overflow-y: auto");
+                    outer.append_child(&el(scope, "height: 20px"));
+                    let inner = el(scope, "width: 100px; height: 40px; overflow-y: auto");
+                    inner.append_child(&el(scope, "height: 200px"));
+                    outer.append_child(&inner);
+                    outer.append_child(&el(scope, "height: 100px"));
+                    parts_in.borrow_mut().push(("outer", outer.clone()));
+                    parts_in.borrow_mut().push(("inner", inner));
+                    outer
                 }
                 _ => {
                     let plain = el(scope, "width: 120px; height: 40px");
@@ -126,13 +142,20 @@ fn mount() -> Fixture {
                 find("strip"),
                 find("opted_child"),
                 find("plain"),
+                find("outer"),
+                find("inner"),
             ],
         ));
         page
     });
+    // Every test runs on the test clock, from 0 ms; `Fixture::at` moves it.
+    rinch_graph_view::__set_wheel_clock(Some(0));
+    // Shift turns a wheel sideways, as on Linux and Windows (set, so a macOS
+    // build runs the same tests).
+    rinch_core::events::set_shift_wheel_turns_sideways(true);
     app.mount_component(VP.0 as f32, VP.1 as f32);
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
-    let (view, [page, canvas, list, strip, opted_child, plain]) =
+    let (view, [page, canvas, list, strip, opted_child, plain, outer, inner]) =
         out.borrow_mut().take().expect("mounted");
     Fixture {
         app,
@@ -143,6 +166,8 @@ fn mount() -> Fixture {
         strip,
         opted_child,
         plain,
+        outer,
+        inner,
     }
 }
 
@@ -158,6 +183,11 @@ impl Fixture {
         let d = self.app.doc.as_ref().unwrap().borrow();
         let (x, y, _, _) = painted_element_box(&d.tree, self.canvas.node_id().0);
         (x + 520.0, y + 360.0)
+    }
+
+    /// Put the canvas's gesture clock at `ms` (from the mount's 0).
+    fn at(&self, ms: u64) {
+        rinch_graph_view::__set_wheel_clock(Some(ms));
     }
 
     fn modifiers(&mut self, m: Modifiers) {
@@ -276,11 +306,13 @@ fn at_the_end_the_gesture_stops_and_a_new_wheel_pans() {
     assert_eq!(f.offset(&f.page), (0.0, 0.0), "nor scroll the page");
 
     // A new gesture.
-    std::thread::sleep(std::time::Duration::from_millis(600));
+    f.at(600);
     f.wheel(at, 0.0, 40.0);
     assert_eq!(f.pan(), (0.0, -40.0), "a new wheel pans the canvas");
     assert_eq!(f.offset(&f.page), (0.0, 0.0));
-    // And the list can still be scrolled back the other way at once.
+    // That pan is a gesture of its own; after it, a new wheel scrolls the
+    // list back up.
+    f.at(1200);
     f.wheel(f.center(&f.list), 0.0, -40.0);
     assert_eq!(f.offset(&f.list).1, 200.0);
     assert_eq!(f.pan(), (0.0, -40.0));
@@ -394,4 +426,64 @@ fn the_page_around_the_canvas_never_scrolls_from_a_wheel_it_takes() {
     f.wheel(bg, 25.0, 0.0);
     assert_eq!(f.pan(), (-25.0, -80.0));
     assert_eq!(f.offset(&f.page), (0.0, 0.0), "the page never scrolled");
+}
+
+/// Review of #2084, finding 1: a diagonal wheel the canvas declines goes to
+/// one scroller, whole, as Chrome and Firefox send it (measured: a strip that
+/// scrolls only sideways takes a `(40, 6)` wheel as `(40, 0)` and the page
+/// does not move). It used to split by axis on desktop, and the vertical part
+/// walked past the canvas to the page.
+#[test]
+fn a_diagonal_wheel_over_a_strip_does_not_leak_to_the_page() {
+    let mut f = mount();
+    let at = f.center(&f.strip);
+    f.wheel(at, 40.0, 6.0);
+    assert_eq!(f.offset(&f.strip), (40.0, 0.0), "the strip took the wheel");
+    assert_eq!(f.offset(&f.page), (0.0, 0.0), "the page did not move");
+    assert_eq!(f.pan(), (0.0, 0.0));
+}
+
+/// Review of #2084, finding 2: a gesture the canvas pans with stays the
+/// canvas's. Panning slides nodes under a still pointer, so a trackpad pan
+/// would otherwise be taken over by the first list that arrives under it.
+#[test]
+fn a_panning_gesture_is_not_taken_over_by_a_list_it_slides_under_the_pointer() {
+    let mut f = mount();
+    let bg = f.background();
+    f.wheel(bg, 40.0, 0.0);
+    assert_eq!(f.pan(), (-40.0, 0.0));
+    // 40 ms later, the pointer is over the list.
+    f.at(40);
+    let list = f.center(&f.list);
+    f.wheel(list, 0.0, 40.0);
+    assert_eq!(f.offset(&f.list), (0.0, 0.0), "the list was not taken");
+    assert_eq!(f.pan(), (-40.0, -40.0), "the canvas kept panning");
+
+    // A new gesture over the list scrolls it.
+    f.at(600);
+    let list = f.center(&f.list);
+    f.wheel(list, 0.0, 40.0);
+    assert_eq!(f.offset(&f.list), (0.0, 40.0));
+    assert_eq!(f.pan(), (-40.0, -40.0));
+}
+
+/// Review of #2084, finding 3: a list at its end inside a scroller that can
+/// still move: the wheel scrolls the outer one (a browser chains a new
+/// gesture to the nearest ancestor that can move), not nothing.
+#[test]
+fn a_list_at_its_end_chains_to_the_scroller_around_it() {
+    let mut f = mount();
+    f.inner.set_scroll_top(1000.0);
+    f.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    assert_eq!(
+        f.offset(&f.inner).1,
+        160.0,
+        "precondition: inner at its end"
+    );
+    let at = f.center(&f.inner);
+    f.wheel(at, 0.0, 30.0);
+    assert_eq!(f.offset(&f.inner).1, 160.0);
+    assert_eq!(f.offset(&f.outer).1, 30.0, "the outer scroller took it");
+    assert_eq!(f.pan(), (0.0, 0.0));
+    assert_eq!(f.offset(&f.page), (0.0, 0.0));
 }
