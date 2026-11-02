@@ -322,9 +322,10 @@ narrower than the box it holds. Pins:
 widest line (**#1276**: the issue's own example is 390x40, was 130x80, Chrome
 394x40), and the static position in a grid container that is not the
 containing block (its content edge in Chrome).
-**Not covered:** a box whose containing block is a non-parent **scroll
-container** is placed in it but still counted in no scroll range (**#770**);
-`position: fixed` takes none of the margin and padding rules above (its
+A box whose containing block is a non-parent ancestor is counted in the scroll
+range of the nearest scroll container at or above that block since #770
+(`out_of_flow::overflow_scroller`; paint-and-damage.md, "Absolutes below the
+first box"). **Not covered:** `position: fixed` takes none of the margin and padding rules above (its
 margins take nothing out of its room and are not added to its position),
 keeps the Taffy parent as its `calc()` basis (**#1980**), and is not contained
 by a transformed ancestor (**#1372**) — the `AncestorAbsolute` machinery is

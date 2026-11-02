@@ -379,7 +379,10 @@ const B: &str = "position: absolute; box-sizing: border-box;";
 fn painted_at(html: &str, w: u32, h: u32) -> TinySkiaPainter {
     let mut doc = RinchDocument::new();
     let body = doc.body();
-    doc.set_attribute(body, "style", "margin: 0");
+    // A box past the small window's edge scrolls the page (#770), as in
+    // Chrome, and the page's bar is not what these renders compare: the
+    // body paints none.
+    doc.set_attribute(body, "style", "margin: 0; --rinch-scrollbar-width: none");
     let wrap = doc.create_element("div");
     doc.set_inner_html(wrap, html);
     doc.append_child(body, wrap);
