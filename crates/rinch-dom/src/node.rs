@@ -1421,6 +1421,10 @@ pub struct Node {
     /// `RinchDocument::sync_presentational_hints` on each write or removal of
     /// a mapped attribute; `None` when no attribute maps to anything.
     pub presentational_hints: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
+    /// This cell's or caption's place in its table (`table_layout`).
+    pub table_cell: Option<Box<crate::table_layout::TableCell>>,
+    /// This table's columns and spacing (`table_layout`).
+    pub table_box: Option<Box<crate::table_layout::TableBox>>,
     /// An `<option>`'s **live selectedness**, once something has set it (#692).
     ///
     /// HTML gives an `<option>` two states, and they come apart. The `selected`
@@ -1779,6 +1783,8 @@ impl Node {
             guard,
             style_attribute_cache: None,
             presentational_hints: None,
+            table_cell: None,
+            table_box: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -1861,6 +1867,8 @@ impl Node {
             guard,
             style_attribute_cache: None,
             presentational_hints: None,
+            table_cell: None,
+            table_box: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -1942,6 +1950,8 @@ impl Node {
             guard,
             style_attribute_cache: None,
             presentational_hints: None,
+            table_cell: None,
+            table_box: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2021,6 +2031,8 @@ impl Node {
             guard,
             style_attribute_cache: None,
             presentational_hints: None,
+            table_cell: None,
+            table_box: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2869,14 +2881,15 @@ pub struct NodeTree {
     pub inline_text_shadows: bool,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
-    /// Tables and row groups whose flex direction may have moved with their
-    /// children (#1083): a child inserted, removed or restyled into or out of
-    /// being a row. Drained once per layout by
-    /// `RinchDocument::resolve_table_directions`, which rewrites only the
-    /// Taffy `flex_direction`, and only where it changed — so a reorder or a
-    /// bulk removal under a table costs one walk of its children per frame,
-    /// not a Taffy re-sync per move.
-    pub table_direction_owed: Vec<RawNodeId>,
+    /// Tables owed a `RinchDocument::resolve_tables` rebuild: a part restyled,
+    /// a child inserted, moved or removed.
+    pub tables_owed: Vec<RawNodeId>,
+    /// Parsed `legacy_hints::cell_hints_css` blocks, by their CSS text.
+    pub cell_hints: std::sync::Mutex<HashMap<String, ServoArc<Locked<PropertyDeclarationBlock>>>>,
+    /// Cells read back this layout and owed their `vertical-align`.
+    pub cells_to_align: Vec<RawNodeId>,
+    /// Every table rebuilt so far; dead ids are dropped before each layout.
+    pub tables: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
     /// `resolve_styles()` resolves only these subtrees instead of the
     /// full tree — turning O(tree) into O(changed_subtree).
@@ -3585,7 +3598,10 @@ impl NodeTree {
             whole_document_damaged: false,
             inline_text_shadows: false,
             style_dirty_nodes: Vec::new(),
-            table_direction_owed: Vec::new(),
+            tables_owed: Vec::new(),
+            tables: Vec::new(),
+            cells_to_align: Vec::new(),
+            cell_hints: Default::default(),
             style_roots: Vec::new(),
             full_style_walk: true, // The first resolve styles everything
             styles_dirty: true,    // Initial render needs styles

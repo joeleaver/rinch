@@ -4741,6 +4741,21 @@ fn paint_node_unmasked(
                     );
                 }
 
+                // A row's and row group's backgrounds, which have no box of
+                // their own to paint on (`table_layout`).
+                if let Some(cell) = &node.table_cell {
+                    for color in cell.under.iter().flatten() {
+                        if color.components[3] > 0.0 {
+                            painter.fill_color(
+                                Fill::NonZero,
+                                node_transform,
+                                *color,
+                                &radii.shape(rect),
+                            );
+                        }
+                    }
+                }
+
                 // Get background from computed style (solid color or gradient).
                 if paints_a_background {
                     background::paint_background(

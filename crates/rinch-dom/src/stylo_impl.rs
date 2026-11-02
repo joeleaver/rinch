@@ -58,6 +58,33 @@ impl<'a> RinchNode<'a> {
         &self.tree.nodes[self.id]
     }
 
+    /// The declarations this cell's table maps onto it, one parsed block per
+    /// distinct mapping for the life of the document.
+    fn table_cell_hints(&self) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
+        let mut p = self.node().parent;
+        let table = loop {
+            let n = self.tree.nodes.get(p?)?;
+            if n.tag() == Some("table") {
+                break n;
+            }
+            p = n.parent;
+        };
+        let css = crate::legacy_hints::cell_hints_css(table)?;
+        let mut cache = self.tree.cell_hints.lock().unwrap();
+        Some(
+            cache
+                .entry(css)
+                .or_insert_with_key(|css| {
+                    Arc::new(
+                        self.tree
+                            .guard
+                            .wrap(crate::dom_impl::parse_inline_style(css)),
+                    )
+                })
+                .clone(),
+        )
+    }
+
     /// Create a RinchNode for a different node in the same tree.
     pub fn with(&self, id: RawNodeId) -> Self {
         Self {
@@ -859,9 +886,16 @@ impl<'a> TElement for RinchNode<'a> {
     ) where
         V: Push<ApplicableDeclarationBlock>,
     {
-        // `width` / `height` on an `<img>`, `<video>` or `<iframe>` (#684).
-        // The other legacy attributes (`align`, `bgcolor`, `hspace`, a
-        // table's …) map to nothing yet.
+        // What a cell's table maps onto it (`legacy_hints`), under its own.
+        if matches!(self.node().tag(), Some("td" | "th"))
+            && let Some(block) = self.table_cell_hints()
+        {
+            hints.push(ApplicableDeclarationBlock::from_declarations(
+                block,
+                style::rule_tree::CascadeLevel::PresHints,
+                style::stylesheets::layer_rule::LayerOrder::root(),
+            ));
+        }
         if let Some(block) = &self.node().presentational_hints {
             hints.push(ApplicableDeclarationBlock::from_declarations(
                 block.clone(),
