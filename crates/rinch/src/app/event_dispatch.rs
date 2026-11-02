@@ -62,7 +62,12 @@ impl RinchApp {
     /// first that consumes it. Answers whether one did — the caller then
     /// scrolls no container. The ids are read before any handler runs, so a
     /// handler that changes the tree does not change who is asked.
+    ///
+    /// The event's [`target`](events::WheelEvent::target) is set here: the
+    /// nearest element at or above `hit` (a text node's parent, as the DOM's
+    /// `event.target` is).
     pub(super) fn offer_element_wheel(&mut self, hit: u64, event: &events::WheelEvent) -> bool {
+        let mut event = *event;
         let ids: Vec<events::EventHandlerId> = {
             let Some(doc) = self.doc.as_ref() else {
                 return false;
@@ -72,6 +77,9 @@ impl RinchApp {
             let mut cur = Some(hit);
             while let Some(id) = cur {
                 let Some(node) = d.tree.get(id) else { break };
+                if event.target.is_none() && node.is_element() {
+                    event.target = Some(rinch_core::dom::NodeId(id));
+                }
                 if let Some(h) = node
                     .attributes
                     .get("data-onwheel")
@@ -83,7 +91,7 @@ impl RinchApp {
             }
             ids
         };
-        !ids.is_empty() && events::dispatch_wheel_handler_chain(ids, event)
+        !ids.is_empty() && events::dispatch_wheel_handler_chain(ids, &event)
     }
 
     /// A trackpad pinch no render surface took (macOS, Wayland): offered to
@@ -1383,6 +1391,17 @@ impl RinchApp {
                 if wheel_consumed {
                     actions.push(AppAction::RequestRedraw);
                 }
+
+                // Shift turns a plain vertical wheel sideways, as Chrome and
+                // Firefox scroll it on Linux and Windows (macOS sends such a
+                // wheel as horizontal already). Only the default scroll: the
+                // `onwheel` payload above keeps the deltas as they came, with
+                // `shift` set, for a handler to read its own way.
+                let (delta_x, delta_y) = if self.modifiers.shift && delta_x == 0.0 {
+                    (delta_y, 0.0)
+                } else {
+                    (delta_x, delta_y)
+                };
 
                 if !surface_consumed
                     && !wheel_consumed

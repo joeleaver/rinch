@@ -2258,6 +2258,59 @@ impl DomDocument for WebDocument {
             .unwrap_or(0.0)
     }
 
+    /// A computed `overflow-x`/`overflow-y` of `auto`/`scroll` with content
+    /// overflowing the box, not locked out by a `lock_scroll` overlay
+    /// ([`scroll_locked_out`]), and room left toward the delta. The offset is
+    /// read unrounded against a range of rounded sizes, with a pixel of slack,
+    /// as drag auto-scroll reads it: at a fractional device scale the browser
+    /// stops a little short of `scrollHeight - clientHeight` (a 200.4px list
+    /// at 1.5 stops at 599.33 where the sizes say 600), and that container is
+    /// at its end. An RTL box's `scrollLeft` runs from `-max` to 0.
+    fn can_scroll_toward(&self, node: NodeId, dx: f64, dy: f64) -> bool {
+        let Some(el) = self
+            .nodes
+            .get(&node.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+        else {
+            return false;
+        };
+        let overflow_y = dy != 0.0 && el.scroll_height() > el.client_height();
+        let overflow_x = dx != 0.0 && el.scroll_width() > el.client_width();
+        if !(overflow_x || overflow_y) || scroll_locked_out(&el) {
+            return false;
+        }
+        let Some(style) = web_sys::window().and_then(|w| w.get_computed_style(&el).ok().flatten())
+        else {
+            return false;
+        };
+        let scrolls = |prop: &str| {
+            matches!(
+                style.get_property_value(prop).unwrap_or_default().as_str(),
+                "auto" | "scroll"
+            )
+        };
+        let unrounded = |prop: &str, fallback: i32| {
+            js_sys::Reflect::get(&el, &prop.into())
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(f64::from(fallback))
+        };
+        let room = |at: f64, lo: f64, hi: f64, d: f64| {
+            (d < 0.0 && at > lo + 1.0) || (d > 0.0 && at < hi - 1.0)
+        };
+        let vertical = overflow_y && scrolls("overflow-y") && {
+            let max = f64::from(el.scroll_height() - el.client_height());
+            room(unrounded("scrollTop", el.scroll_top()), 0.0, max, dy)
+        };
+        let horizontal = overflow_x && scrolls("overflow-x") && {
+            let max = f64::from(el.scroll_width() - el.client_width());
+            let rtl = style.get_property_value("direction").unwrap_or_default() == "rtl";
+            let (lo, hi) = if rtl { (-max, 0.0) } else { (0.0, max) };
+            room(unrounded("scrollLeft", el.scroll_left()), lo, hi, dx)
+        };
+        vertical || horizontal
+    }
+
     /// Scroll `node` into view **now**, rather than queueing the request the way
     /// the desktop backend does. The trait defers because Taffy layout has to be
     /// resolved before an element's position relative to its scroll container is

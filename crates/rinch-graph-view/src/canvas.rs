@@ -17,10 +17,12 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::dom::{NodeHandle, RenderScope, data_attr_is_on};
 use rinch_core::{
     Drag, KeyEventData, WheelEvent, batch, for_each_dom_typed, get_click_context, untracked,
 };
+use web_time::{Duration, Instant};
+
 use rinch_graph_core::{EdgeId, NodeId, Point, PortDir, PortId, Rect, Selection, Size};
 
 use crate::geometry::{Viewport, edge_path};
@@ -188,7 +190,9 @@ where
     // ---- wheel: zoom on ctrl/cmd+wheel and pinch, pan otherwise ----------
     {
         let v = *view;
-        let handler = scope.register_wheel_handler(move |w: &WheelEvent| canvas_wheel(&v, w));
+        let gesture = WheelGesture::new(Some(root.clone()));
+        let handler = scope
+            .register_wheel_handler(move |w: &WheelEvent| gesture.wheel(&v, w, Instant::now()));
         root.set_attribute("data-onwheel", &handler.0.to_string());
     }
 
@@ -281,29 +285,136 @@ fn canvas_press<N: Clone, P: Clone, E: Clone>(view: &GraphView<N, P, E>) {
         .start();
 }
 
-/// A wheel over the canvas. Ctrl/Cmd+wheel and a trackpad pinch (which
-/// arrives as a Ctrl wheel) zoom around the pointer; any other wheel or
-/// two-finger scroll pans, Shift turning a vertical wheel sideways. Every
-/// wheel is consumed, so the page around the canvas neither scrolls nor
-/// zooms.
-fn canvas_wheel<N: Clone, P: Clone, E: Clone>(view: &GraphView<N, P, E>, w: &WheelEvent) -> bool {
-    if w.modifiers.ctrl || w.modifiers.meta {
-        view.zoom_around(w.zoom_factor(), canvas_point(view, w.x, w.y));
-        return true;
+/// The attribute that takes an element of a node body, and everything inside
+/// it, out of the canvas's wheel: a wheel or pinch over it neither pans nor
+/// zooms the canvas and goes on as if the canvas were not there (the element
+/// or a scroller around it scrolls; with nothing to scroll, the page may).
+/// Present means on, unless its value is `false` (rinch's rule for its own
+/// `data-` flags, [`rinch_core::dom::data_attr_is_on`]). React Flow's
+/// `nowheel` class is the same idea.
+pub const NO_WHEEL_ATTR: &str = "data-graph-nowheel";
+
+/// How long after a wheel that went to a scroller inside a node the next one
+/// still belongs to the same gesture. Measured from the last wheel of the
+/// gesture, so a trackpad's momentum tail stays in it however long it runs.
+/// Chrome's latching window for a wheel without phase information is the
+/// same 500 ms.
+const WHEEL_GESTURE_GAP: Duration = Duration::from_millis(500);
+
+/// The canvas's wheel, with what it remembers between wheels: whether the
+/// current gesture is scrolling content inside a node.
+struct WheelGesture {
+    /// The canvas element, the end of the walk up from the wheel's target.
+    /// `None` (the unit tests' unmounted view) asks nothing of the content.
+    root: Option<NodeHandle>,
+    /// When the last wheel that a scroller inside a node took arrived.
+    latched: Cell<Option<Instant>>,
+}
+
+impl WheelGesture {
+    fn new(root: Option<NodeHandle>) -> Self {
+        Self {
+            root,
+            latched: Cell::new(None),
+        }
     }
-    let (dx, dy) = if w.modifiers.shift && w.delta_x == 0.0 {
-        (w.delta_y, 0.0)
-    } else {
-        (w.delta_x, w.delta_y)
-    };
-    let vp = untracked(|| view.viewport());
-    // A positive delta scrolls down / right: the content moves up / left.
-    view.set_viewport(Viewport {
-        x: vp.x - dx,
-        y: vp.y - dy,
-        zoom: vp.zoom,
-    });
-    true
+
+    /// A wheel over the canvas at `now`; answers whether the canvas took it.
+    ///
+    /// - Over an element marked [`NO_WHEEL_ATTR`] (or inside one): declined,
+    ///   whatever the modifiers.
+    /// - Ctrl/Cmd+wheel and a trackpad pinch (which arrives as a Ctrl wheel):
+    ///   zoom around the pointer, even over a scroller.
+    /// - Any other wheel or two-finger scroll, Shift turning a vertical wheel
+    ///   sideways: declined when a scroll container between the target and the
+    ///   canvas can still move that way, so it scrolls (scroll chaining, as a
+    ///   browser does it); otherwise the canvas pans.
+    /// - A scroller that reaches its end mid-gesture does not hand the rest of
+    ///   the gesture to the canvas: those wheels are consumed and move
+    ///   nothing, as a browser latches a scroll gesture to its scroller. A new
+    ///   wheel ([`WHEEL_GESTURE_GAP`] later) pans.
+    ///
+    /// Every wheel the canvas takes is consumed, so the page around it neither
+    /// scrolls nor zooms.
+    fn wheel<N: Clone, P: Clone, E: Clone>(
+        &self,
+        view: &GraphView<N, P, E>,
+        w: &WheelEvent,
+        now: Instant,
+    ) -> bool {
+        let zoom = w.modifiers.ctrl || w.modifiers.meta;
+        let (dx, dy) = if w.modifiers.shift && w.delta_x == 0.0 {
+            (w.delta_y, 0.0)
+        } else {
+            (w.delta_x, w.delta_y)
+        };
+        let inside = self.content_under(w, (!zoom).then_some((dx, dy)));
+        if inside.no_wheel {
+            return false;
+        }
+        if zoom {
+            view.zoom_around(w.zoom_factor(), canvas_point(view, w.x, w.y));
+            return true;
+        }
+        if inside.scrolls {
+            self.latched.set(Some(now));
+            return false;
+        }
+        if let Some(last) = self.latched.get()
+            && now.saturating_duration_since(last) < WHEEL_GESTURE_GAP
+        {
+            // The rest of a gesture whose scroller reached its end.
+            self.latched.set(Some(now));
+            return true;
+        }
+        self.latched.set(None);
+        let vp = untracked(|| view.viewport());
+        // A positive delta scrolls down / right: the content moves up / left.
+        view.set_viewport(Viewport {
+            x: vp.x - dx,
+            y: vp.y - dy,
+            zoom: vp.zoom,
+        });
+        true
+    }
+
+    /// What the elements from the wheel's target up to (not including) the
+    /// canvas say: whether one opts out ([`NO_WHEEL_ATTR`]) and whether one is
+    /// a scroller that can still move by `scroll` (not asked without one). A
+    /// target that is not
+    /// inside the canvas says nothing.
+    fn content_under(&self, w: &WheelEvent, scroll: Option<(f32, f32)>) -> ContentUnder {
+        let (Some(root), Some(target)) = (self.root.as_ref(), w.target) else {
+            return ContentUnder::default();
+        };
+        let mut found = ContentUnder::default();
+        let mut cur = Some(root.handle_for(target));
+        while let Some(el) = cur {
+            if el.node_id() == root.node_id() {
+                return found;
+            }
+            if el
+                .get_attribute(NO_WHEEL_ATTR)
+                .is_some_and(|v| data_attr_is_on(&v))
+            {
+                found.no_wheel = true;
+                return found;
+            }
+            if !found.scrolls
+                && scroll.is_some_and(|(dx, dy)| el.can_scroll_toward(f64::from(dx), f64::from(dy)))
+            {
+                found.scrolls = true;
+            }
+            cur = el.parent_node();
+        }
+        ContentUnder::default()
+    }
+}
+
+#[derive(Default)]
+struct ContentUnder {
+    no_wheel: bool,
+    scrolls: bool,
 }
 
 fn canvas_key<N: Clone, P: Clone, E: Clone>(view: &GraphView<N, P, E>, k: &KeyEventData) -> bool {
@@ -848,6 +959,12 @@ mod wheel_tests {
 
     fn view() -> View {
         GraphView::new(GraphState::new(), AnyConnection)
+    }
+
+    /// A wheel over a canvas with no element to ask (an unmounted view), at
+    /// once.
+    fn canvas_wheel(v: &View, w: &WheelEvent) -> bool {
+        WheelGesture::new(None).wheel(v, w, Instant::now())
     }
 
     fn mods(ctrl: bool, meta: bool, shift: bool) -> ModifierState {

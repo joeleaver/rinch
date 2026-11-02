@@ -453,9 +453,36 @@ at the first `true`, each call in its own `batch`.
   `add_capture`: that helper registers with a `bool` and cannot ask for a
   non-passive listener.
 
+**`WheelEvent::target`** is the element under the pointer, the DOM's
+`event.target`: desktop takes the nearest element at or above the hit (a text
+node's parent) in `offer_element_wheel`'s walk, the web the nearest element
+with a `__nid` at or above `event.target` (raw HTML an app injected has none).
+A pinch carries it too. With **`NodeHandle::handle_for(id)`** a handler turns
+it into a handle on its own element's document and walks up, and
+**`NodeHandle::can_scroll_toward(dx, dy)`** (`DomDocument::can_scroll_toward`)
+answers whether the default scroll would move that element by a wheel of
+those signs: desktop by the wheel's own rule (`scrollbar::overflows` on the
+axis, `scroll_locked_out`, room up to the range's end on the device grid, the
+drag auto-scroll test); the web by computed `overflow-x/y` `auto`/`scroll`,
+`scroll_locked_out`, and an unrounded `scrollTop`/`scrollLeft` against the
+rounded range with a pixel of slack (RTL's `scrollLeft` runs `-max..0`). A
+handler that holds scrollable content uses the pair to decline the wheels that
+content can take — the node-graph canvas does (`docs/design/node-graph.md`).
+
+**Shift turns the default scroll sideways on desktop**: in the
+`PlatformEvent::MouseWheel` arm, after the `onwheel` chain, a wheel with Shift
+held and `delta_x == 0` scrolls horizontally by its `delta_y`, as Chrome and
+Firefox do on Linux and Windows (macOS sends it horizontal already). The
+`onwheel` payload is not turned. Desktop's default scroll does **not** chain:
+it moves the nearest container that overflows on the axis, even at its end
+(a browser goes on to the next one for a new gesture).
+
 Tests: `rinch/src/app/element_wheel_tests.rs` (order, consumption stopping the
-scroll, modifiers and sign, pinch) and `rinch-web/tests/element_wheel.rs`
-(order, `defaultPrevented`, line deltas, Ctrl).
+scroll, modifiers and sign, pinch, `target`, `can_scroll_toward`, Shift),
+`rinch/src/app/graph_canvas_wheel_tests.rs` (the canvas over scrollable node
+bodies), and `rinch-web/tests/element_wheel.rs` (order, `defaultPrevented`,
+line deltas, Ctrl, `target`, `can_scroll_toward`) and
+`rinch-web/tests/graph_canvas_wheel.rs`.
 
 ## `title` tooltips (desktop)
 

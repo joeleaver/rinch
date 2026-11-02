@@ -255,3 +255,186 @@ fn without_a_handler_the_wheel_scrolls_as_before() {
     let d = app.doc.as_ref().unwrap().borrow();
     assert!(d.tree.get(scroller.node_id().0).unwrap().scroll_offset.1 > 0.0);
 }
+
+/// `target` is the element under the pointer (the DOM's `event.target`), here
+/// the leaf, which has no handler of its own; a pinch reports it too. A handle
+/// made from it walks up to the handler's element.
+#[test]
+fn the_wheel_names_its_target() {
+    let mut f = mount();
+    f.wheel(0.0, -40.0);
+    let w = f.take_events()[0];
+    assert_eq!(w.target, Some(f.leaf.node_id()));
+    let target = f.scroller.handle_for(w.target.unwrap());
+    let inner = target.parent_node().expect("the leaf's parent");
+    assert_eq!(inner.parent_node().unwrap().node_id(), f.scroller.node_id());
+
+    let mut f = mount();
+    let (x, y) = f.leaf_center();
+    f.app
+        .handle_event(PlatformEvent::MouseMove { x, y }, VP, 1.0);
+    f.app.pinch_as_wheel(0.25);
+    assert_eq!(f.take_events()[0].target, Some(f.leaf.node_id()));
+}
+
+/// Over a text node the target is the element holding it, as in the DOM.
+#[test]
+fn a_wheel_over_text_targets_its_element() {
+    let seen: Rc<Cell<Option<rinch_core::dom::NodeId>>> = Rc::new(Cell::new(None));
+    let handles: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let (seen_in, handles_in) = (seen.clone(), handles.clone());
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        let seen = seen_in.clone();
+        let root = rsx! {
+            div {
+                style: "width: 300px; font-size: 20px; line-height: 40px",
+                onwheel: move |w: &WheelEvent| {
+                    seen.set(w.target);
+                    true
+                },
+                p { style: "margin: 0", "Some text to wheel over" }
+            }
+        };
+        *handles_in.borrow_mut() = Some(root.children()[0].clone());
+        root
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let p = handles.borrow_mut().take().unwrap();
+    let (x, y) = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let (x, y, _, h) = painted_element_box(&d.tree, p.node_id().0);
+        (x + 10.0, y + h / 2.0)
+    };
+    app.handle_event(PlatformEvent::MouseMove { x, y }, VP, 1.0);
+    app.handle_event(
+        PlatformEvent::MouseWheel {
+            x,
+            y,
+            delta_x: 0.0,
+            delta_y: -40.0,
+        },
+        VP,
+        1.0,
+    );
+    assert_eq!(seen.get(), Some(p.node_id()));
+}
+
+/// `NodeHandle::can_scroll_toward`: a scroller answers by its overflow axis
+/// and the room left toward the delta's sign; an element that is not a
+/// scroller (or clips with `overflow: hidden`) never does.
+#[test]
+fn can_scroll_toward_follows_the_overflow_and_the_room_left() {
+    let handles: Rc<RefCell<Option<[NodeHandle; 3]>>> = Rc::new(RefCell::new(None));
+    let handles_in = handles.clone();
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        let root = rsx! {
+            div {
+                div {
+                    style: "width: 300px; height: 100px; overflow-y: auto",
+                    div { style: "height: 400px" }
+                }
+                div {
+                    style: "width: 300px; height: 100px; overflow: hidden",
+                    div { style: "height: 400px" }
+                }
+            }
+        };
+        let kids = root.children();
+        *handles_in.borrow_mut() = Some([
+            kids[0].clone(),
+            kids[0].children()[0].clone(),
+            kids[1].clone(),
+        ]);
+        root
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let [scroller, content, hidden] = handles.borrow_mut().take().unwrap();
+
+    // At the top: down yes, up no; no sideways overflow.
+    assert!(scroller.can_scroll_toward(0.0, 1.0));
+    assert!(!scroller.can_scroll_toward(0.0, -1.0));
+    assert!(!scroller.can_scroll_toward(1.0, 0.0));
+    assert!(!scroller.can_scroll_toward(-1.0, 0.0));
+    assert!(!scroller.can_scroll_toward(0.0, 0.0));
+    // Either axis is enough.
+    assert!(scroller.can_scroll_toward(1.0, 1.0));
+    assert!(!content.can_scroll_toward(0.0, 1.0), "not a scroller");
+    assert!(!hidden.can_scroll_toward(0.0, 1.0), "overflow: hidden");
+
+    // Part way: both ways.
+    scroller.set_scroll_top(120.0);
+    assert!(scroller.can_scroll_toward(0.0, 1.0));
+    assert!(scroller.can_scroll_toward(0.0, -1.0));
+
+    // At the end (400 - 100): up only.
+    scroller.set_scroll_top(300.0);
+    assert!(!scroller.can_scroll_toward(0.0, 1.0));
+    assert!(scroller.can_scroll_toward(0.0, -1.0));
+}
+
+/// The default scroll turns a plain vertical wheel sideways under Shift, as
+/// Chrome and Firefox do on Linux and Windows; the `onwheel` payload keeps
+/// the deltas it came with.
+#[test]
+fn shift_turns_the_default_scroll_sideways() {
+    let handles: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let seen: Rc<Cell<Option<WheelEvent>>> = Rc::new(Cell::new(None));
+    let (handles_in, seen_in) = (handles.clone(), seen.clone());
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        let seen = seen_in.clone();
+        let root = rsx! {
+            div {
+                style: "width: 300px; height: 100px; overflow: auto",
+                onwheel: move |w: &WheelEvent| {
+                    seen.set(Some(*w));
+                    false
+                },
+                div { style: "width: 900px; height: 400px" }
+            }
+        };
+        *handles_in.borrow_mut() = Some(root.clone());
+        root
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let scroller = handles.borrow_mut().take().unwrap();
+    let wheel = |app: &mut RinchApp| {
+        app.handle_event(
+            PlatformEvent::MouseWheel {
+                x: 20.0,
+                y: 20.0,
+                delta_x: 0.0,
+                delta_y: -40.0,
+            },
+            VP,
+            1.0,
+        );
+    };
+    let offset = |app: &RinchApp| {
+        let d = app.doc.as_ref().unwrap().borrow();
+        d.tree.get(scroller.node_id().0).unwrap().scroll_offset
+    };
+    // The control: unshifted, it scrolls down.
+    wheel(&mut app);
+    assert_eq!(offset(&app), (0.0, 40.0));
+
+    app.handle_event(
+        PlatformEvent::ModifiersChanged(Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        }),
+        VP,
+        1.0,
+    );
+    wheel(&mut app);
+    assert_eq!(offset(&app), (40.0, 40.0), "sideways, not down");
+    let w = seen.get().unwrap();
+    assert_eq!(
+        (w.delta_x, w.delta_y),
+        (0.0, 40.0),
+        "the payload is as sent"
+    );
+    assert!(w.modifiers.shift);
+}

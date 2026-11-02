@@ -259,6 +259,22 @@ pub struct WheelEvent {
     /// Shift / Ctrl / Alt / Meta at the time of the wheel. Ctrl is set for a
     /// trackpad pinch.
     pub modifiers: super::ModifierState,
+    /// The element under the pointer, the DOM's `event.target`: the deepest
+    /// element the wheel is over (over text, the element holding it), which
+    /// is the handler's own element or one inside it. On the web, under an
+    /// element rinch did not create (raw HTML), the nearest one it did. `None`
+    /// for an event built by hand.
+    ///
+    /// Turn it into a handle with [`NodeHandle::handle_for`] on any handle
+    /// of the same document (the handler's own element, typically) to walk
+    /// up from it — for instance to ask which scroll container inside the
+    /// handler's element a plain wheel would move
+    /// ([`NodeHandle::can_scroll_toward`]) before taking the wheel for
+    /// itself.
+    ///
+    /// [`NodeHandle::handle_for`]: crate::dom::NodeHandle::handle_for
+    /// [`NodeHandle::can_scroll_toward`]: crate::dom::NodeHandle::can_scroll_toward
+    pub target: Option<crate::dom::NodeId>,
 }
 
 impl WheelEvent {
@@ -270,12 +286,19 @@ impl WheelEvent {
             x,
             y,
             modifiers: super::ModifierState::default(),
+            target: None,
         }
     }
 
     /// The same event with these modifiers.
     pub fn with_modifiers(mut self, modifiers: super::ModifierState) -> Self {
         self.modifiers = modifiers;
+        self
+    }
+
+    /// The same event over this element ([`target`](Self::target)).
+    pub fn with_target(mut self, target: crate::dom::NodeId) -> Self {
+        self.target = Some(target);
         self
     }
 

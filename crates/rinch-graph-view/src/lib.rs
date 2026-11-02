@@ -26,7 +26,7 @@ mod geometry;
 mod style;
 mod view;
 
-pub use canvas::{CanvasOptions, ConnectToEmpty, graph_canvas};
+pub use canvas::{CanvasOptions, ConnectToEmpty, NO_WHEEL_ATTR, graph_canvas};
 pub use geometry::{EdgeShape, Flow, Viewport, distance_to_edge, edge_path};
 pub use rinch_graph_core as model;
 pub use rinch_graph_core::{

@@ -140,8 +140,9 @@ takes the press, so it does not start a node drag.
 | Drop a wire on empty canvas | calls `CanvasOptions::on_connect_to_empty(port, point)` (offer a menu of nodes there) |
 | Click near a wire | selects it |
 | Drag the background | pans; a click without dragging clears the selection |
-| Wheel or two-finger trackpad scroll | pans (Shift turns a vertical wheel sideways) |
-| Ctrl/Cmd+wheel, trackpad pinch | zooms around the pointer |
+| Wheel or two-finger trackpad scroll | pans (Shift turns a vertical wheel sideways) — unless it is over a scroll container in a node body that can still move that way, which scrolls instead (see below) |
+| Ctrl/Cmd+wheel, trackpad pinch | zooms around the pointer, over node bodies too |
+| Any wheel inside a `data-graph-nowheel` element | left alone: the canvas neither pans nor zooms |
 | Shift+drag the background | box selection |
 | Delete / Backspace | removes the selection |
 | Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y | undo, redo |
@@ -154,9 +155,40 @@ The canvas takes keys while it (or something in it without its own key
 handling) has focus; pressing anywhere on it focuses it.
 
 Zooming is by Ctrl/Cmd+wheel and pinch (around the pointer), the controls, the
-keys and `view.zoom_by`/`zoom_around`/`fit_view`/`set_viewport`. The canvas
-consumes every wheel over it (its `onwheel`), so the page around it neither
-scrolls nor zooms while the pointer is on the canvas.
+keys and `view.zoom_by`/`zoom_around`/`fit_view`/`set_viewport`.
+
+#### Wheels over node bodies that scroll
+
+A node body can hold its own scroll container: a list, a log, a `<textarea>`,
+a code view. A plain wheel or two-finger scroll over it scrolls it as long as
+it can still move that way (per axis, after Shift's sideways turn), and the
+canvas does not pan; the canvas asks every element from the one under the
+pointer up to itself (`NodeHandle::can_scroll_toward`), so a scroller anywhere
+in the body counts. Where it cannot move (a list at its top, wheeled up), the
+canvas pans at once. This is a browser's scroll chaining, with its latching:
+when the list reaches its end in the middle of a gesture, the rest of that
+gesture (a trackpad's momentum included) moves nothing, and only a **new**
+wheel — 500 ms after the last one — pans the canvas. So flicking a list to
+its end does not throw the canvas sideways.
+
+Ctrl/Cmd+wheel and a pinch zoom the canvas over a scrollable body too.
+
+To take an element out of the canvas's wheel altogether, mark it
+`data-graph-nowheel` (`rinch::graph::NO_WHEEL_ATTR`; any value but
+`"false"`): a wheel or pinch over it or anything inside it neither pans nor
+zooms the canvas and goes on as if the canvas were not there — the element (or
+a scroller around it in the body) scrolls, and with nothing to scroll the page
+may. React Flow's `nowheel` class is the same idea.
+
+```rust
+let log = scope.create_element("div");
+log.set_attribute("style", "height: 120px; overflow-y: auto");
+// Optional: never pan from here, even at the log's ends.
+log.set_attribute(rinch::graph::NO_WHEEL_ATTR, "");
+```
+
+Every other wheel over the canvas is consumed (its `onwheel`), so the page
+around it neither scrolls nor zooms while the pointer is on the canvas.
 
 ### Settings
 
