@@ -56,7 +56,11 @@ const PARENT: &str = "width: 800px; font: italic bold 20px/40px serif; letter-sp
      word-spacing: 7px; text-transform: uppercase; text-align: right; white-space: pre; \
      overflow-wrap: anywhere";
 
-const SMALL_CONTROL: f32 = 13.333_333;
+/// The UA sheet's `13.333333px` as stylo computes it. Chrome's is 13.3333px;
+/// stylo 0.21 and later round every computed `font-size` to 11 significant
+/// bits (`specified::FontSize::quantize_font_size`, Gecko's rule, no pref), so
+/// it is 853/64 = 13.328125 here.
+const SMALL_CONTROL: f32 = 13.328_125;
 const GREY: [u8; 3] = [118, 118, 118];
 
 fn el(doc: &mut RinchDocument, parent: NodeId, tag: &str, attrs: &[(&str, &str)]) -> NodeId {
@@ -121,7 +125,7 @@ fn setup() -> (RinchDocument, NodeId) {
 fn assert_control_font(s: &ComputedStyle, what: &str, family: &str) {
     assert!(
         close(s.font_size, SMALL_CONTROL),
-        "{what}: font-size {} (expected Chrome's 13.3333px)",
+        "{what}: font-size {} (expected 13.328125, Chrome's 13.3333px quantized by stylo)",
         s.font_size
     );
     assert!(

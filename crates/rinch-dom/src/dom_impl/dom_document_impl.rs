@@ -11,7 +11,7 @@ use style::properties::{
     LonghandId, PropertyDeclaration, PropertyDeclarationBlock, PropertyDeclarationId, PropertyId,
 };
 use style::values::generics::position::GenericInset;
-use style::values::specified::{LengthPercentage, NoCalcLength};
+use style::values::specified::LengthPercentage;
 
 use crate::computed_style::{LengthPercentageAutoValue, PositionValue};
 use crate::ifc_scope::IfcSeed;
@@ -2131,13 +2131,13 @@ fn plain_inset(
     };
     match inset {
         GenericInset::Auto => Some(LengthPercentageAutoValue::Auto),
-        GenericInset::LengthPercentage(LengthPercentage::Length(NoCalcLength::Absolute(len))) => {
-            let px = len.to_px();
+        GenericInset::LengthPercentage(LengthPercentage::Length(len)) => {
+            let px = len.to_px_if_absolute()?;
             px.is_finite()
                 .then_some(LengthPercentageAutoValue::Length(px))
         }
         GenericInset::LengthPercentage(LengthPercentage::Percentage(pct)) => {
-            Some(LengthPercentageAutoValue::Percent(pct.0))
+            Some(LengthPercentageAutoValue::Percent(pct.get()))
         }
         _ => None,
     }

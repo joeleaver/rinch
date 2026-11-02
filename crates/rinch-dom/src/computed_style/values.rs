@@ -328,12 +328,11 @@ pub enum DimensionValue {
     /// `clamp(min-content, <lp>, max-content)`, a different value from the bare
     /// keyword, so it stays `Auto` and is reported separately.
     ///
-    /// None of them is gated, which is less obvious than it looks: Stylo guards
-    /// `stretch`, `-webkit-fill-available` and `fit-content()` on
-    /// `static_prefs::pref!(…)`, which is **not** the runtime preference store
-    /// `RinchDocument::new` pokes (`stylo_config`, which answers `false` for
-    /// every unset key). It is a compile-time macro in `stylo_static_prefs`
-    /// that hard-codes those keys to `true`.
+    /// None of them is gated: Stylo guards `stretch`, `-webkit-fill-available`
+    /// and `fit-content()` on `layout.css.stretch-size-keyword.enabled`,
+    /// `layout.css.webkit-fill-available.enabled` and
+    /// `layout.css.fit-content-function.enabled`, which `stylo_static_prefs`
+    /// defaults to `true` and `set_stylo_prefs` leaves alone.
     Intrinsic(IntrinsicSize),
 }
 
@@ -748,13 +747,12 @@ impl ScrollbarWidthValue {
 ///
 /// # Why this is not `scrollbar-color`
 ///
-/// The real property is **gecko-only in Stylo** (`engines="gecko"` on the
-/// longhand in `properties/longhands/inherited_ui.mako.rs`), and that is a
-/// codegen-time filter, not a `#[cfg]`: the servo build rinch uses emits no
-/// `LonghandId` for it, no parser entry and no field on any style struct, so
-/// `scrollbar-color: red blue` in a stylesheet is an unknown declaration and
-/// Stylo drops it. Grepping this repo's own generated `properties.rs` for
-/// `scrollbar_color` finds nothing.
+/// With stylo 0.11 the real property was **gecko-only** (`engines="gecko"`,
+/// a codegen-time filter): the servo build emitted no `LonghandId`, parser
+/// entry or style-struct field for it, so `scrollbar-color: red blue` was an
+/// unknown declaration and was dropped. Since stylo 0.21 the servo build
+/// parses it (behind `layout.unimplemented`, which rinch turns on), but
+/// nothing in rinch reads it.
 ///
 /// So the value arrives through a **custom property**, `--rinch-scrollbar-color`,
 /// which the servo build does support fully: it cascades, it inherits, and it
