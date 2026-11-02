@@ -196,6 +196,35 @@ descendant's overflow below the first box (#2054), so a box that
 overflows its `height: 50px` parent scrolls nothing where its absolute twin
 now does.
 
+**A range that moves damages the bars.** A bar is drawn from its container's
+range, and the range moves with content the container's own box does not
+change for — a box moved past its edge, a row grown, a child removed — so
+nothing named the bar: a partial frame kept no thumb where one had appeared,
+or the old thumb's length. It was reachable with a narrow in-flow row before
+#770; #770 made it reachable from every absolute box on a page (the split
+runtime's random sequence moved a 200px bar to `left: 210px` in a 400px page,
+and the partial frame drew no page bar where the full frame did — batch
+#2062). Now `NodeTree::painted_bars` holds each scroll container's
+`Scrollbars` (scale 1) as the last paint consumed it, and
+`paint::bar_watch_scrollers` names the containers to check: every scroll
+container that is an ancestor of a paint-dirty node whose **geometry** may
+have moved (never painted, `prev_layout != layout`, its `position` changed, or
+a transform on it now or when painted) or of a parent a subtree left
+(`NodeTree::bar_check_parents`, pushed by `mark_subtree_paint_dirty` for the
+subtree's root), and every dirty container itself. Any container whose range
+a box reaches is its ancestor (an absolute box's is at or above its
+containing block). A dirty node whose geometry held — a colour, a caret blink
+— measures no range. `compute_damage` names, for each whose bars differ from
+the record, the strip of each axis whose track changed (10px along that edge:
+the 6px bar 2px in, and its anti-aliased edge; both strips when anything but
+the tracks differs), clipped by its clip chain and attributed to no node (a
+bar is drawn by its container's paint or after its last positioned
+descendant, #1717). The two strips share one rounded edge, so they stay two
+rects instead of merging into the container's box. `consume_paint_dirty`
+records the same set, and after a whole-document restyle (which pushes
+nothing) re-reads every scroll container, so a container with no record
+painted no bar. Pins: `crates/rinch/src/app/scrollbar_range_damage_tests.rs`.
+
 Limits, all pre-existing. **#769 is fixed**:
 the wheel's finders — `find_scroll_container` / `find_horizontal_scroll_container`,
 their `_at_point` twins, and the body fallback the two walks share — used to
