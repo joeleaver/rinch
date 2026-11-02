@@ -69,7 +69,11 @@ fn animated_with(base: &str, keyframes: &str, timing: &str) -> (RinchDocument, N
     doc.append_child(body, c);
     let div = doc.create_element("div");
     doc.set_attribute(div, "class", "b");
-    doc.set_attribute(div, "style", &format!("{base}; animation: k 1000ms {timing}"));
+    doc.set_attribute(
+        div,
+        "style",
+        &format!("{base}; animation: k 1000ms {timing}"),
+    );
     doc.append_child(c, div);
     doc.tree.transitions_enabled = true;
     doc.resolve_layout(800.0, 600.0);

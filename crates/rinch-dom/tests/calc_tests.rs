@@ -128,10 +128,18 @@ fn calc_width_restyle_to_a_length_part_equal_to_the_old_width() {
     doc.set_attribute(a, "style", "width: calc(50% + 10px); height: 10px;");
     doc.append_child(c, a);
     doc.resolve_layout(800.0, 600.0);
-    assert_near(doc.tree.get(a.0).unwrap().layout.width, 160.0, "width before");
+    assert_near(
+        doc.tree.get(a.0).unwrap().layout.width,
+        160.0,
+        "width before",
+    );
     doc.set_attribute(a, "style", "width: calc(10% + 160px); height: 10px;");
     doc.resolve_layout(800.0, 600.0);
-    assert_near(doc.tree.get(a.0).unwrap().layout.width, 190.0, "width after");
+    assert_near(
+        doc.tree.get(a.0).unwrap().layout.width,
+        190.0,
+        "width after",
+    );
 }
 
 /// `height: calc(50% - 20px)` against a definite 200px parent → 80 (Chrome: 80).
