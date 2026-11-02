@@ -3,11 +3,13 @@
 //! counters afterwards. What it left must not stay: the frame after it, full
 //! and at the grown sizes, repairs everything. These tests look for that the
 //! way the desktop loop does, with `check_frames` and never a blocking poll.
-//! The caller's half, `WgpuRenderer::check_frames` and the loop's timed wake,
-//! needs a window. They need an adapter:
+//! `UiTextureState` is what `WgpuRenderer` keeps, so a repair here is full for
+//! the reason it is there. The loop's timed wake needs a window. These need an
+//! adapter:
 //! `cargo test -p rinch --features gpu --lib -- --ignored gpu_bump --test-threads=1`.
 use super::gpu_partial_frame_1718_tests::readback;
 use super::*;
+use crate::shell::desktop::UiTextureState;
 use rinch_dom::perf::FullRepaintReason;
 use std::time::{Duration, Instant};
 use vello::FrameCheck;
@@ -23,6 +25,7 @@ struct Gpu {
     queue: wgpu::Queue,
     renderer: vello::Renderer,
     ui: wgpu::Texture,
+    state: UiTextureState,
 }
 
 impl Gpu {
@@ -66,16 +69,55 @@ impl Gpu {
             queue,
             renderer,
             ui,
+            state: UiTextureState::default(),
         }
     }
 
+    /// A storage texture to render into, at any size.
+    fn target(&self, width: u32, height: u32) -> wgpu::Texture {
+        self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
+    }
+
+    /// `scene` over transparent, into `target`.
+    fn render_scene(&mut self, scene: &vello::Scene, target: &wgpu::Texture) {
+        self.renderer
+            .render_to_texture(
+                &self.device,
+                &self.queue,
+                scene,
+                &target.create_view(&Default::default()),
+                &vello::RenderParams {
+                    base_color: vello::peniko::Color::TRANSPARENT,
+                    width: target.width(),
+                    height: target.height(),
+                    antialiasing_method: vello::AaConfig::Msaa16,
+                },
+            )
+            .unwrap();
+    }
+
     /// What `WgpuRenderer` renders a frame with, over a transparent window's
-    /// base: a frame that goes undrawn there is a blank window.
-    fn render(&mut self, app: &mut RinchApp, target: Option<FullRepaintReason>) -> &'static str {
+    /// base: a frame that goes undrawn there is a blank window. A frame is full
+    /// because `forced` says so or because the UI texture's state does.
+    fn render(&mut self, app: &mut RinchApp, forced: Option<FullRepaintReason>) -> &'static str {
         use crate::shell::desktop::{PartialFrame, render_partial};
         let base = vello::peniko::Color::TRANSPARENT;
         let mut partial_target = None;
-        match app.build_gpu_frame(1.0, (W, H), target) {
+        let target = forced.or(self.state.invalid_reason(base));
+        let kind = match app.build_gpu_frame(1.0, (W, H), target) {
             GpuFrame::Full(scene) => {
                 self.renderer
                     .render_to_texture(
@@ -111,15 +153,20 @@ impl Gpu {
                 "partial"
             }
             GpuFrame::Unchanged => "unchanged",
-        }
+        };
+        self.state.rendered(base);
+        kind
     }
 
     /// The first answer that is not `Pending`, asked the way the desktop loop
-    /// asks: without ever blocking on the device.
+    /// asks: without ever blocking on the device, the answer going to the UI
+    /// texture's state.
     fn settled_check(&mut self) -> FrameCheck {
         let start = Instant::now();
         loop {
-            match self.renderer.check_frames(&self.device) {
+            let check = self.renderer.check_frames(&self.device);
+            self.state.note_check(check);
+            match check {
                 FrameCheck::Pending => {
                     assert!(
                         start.elapsed() < Duration::from_secs(120),
@@ -132,14 +179,26 @@ impl Gpu {
         }
     }
 
-    /// Full frames until one is not lost, as the loop asks for them, and how
-    /// many it took. A frame can overflow a second buffer once the first is
-    /// grown: stages after one that failed stop short of saying what they need.
+    /// Whether any frame still out turns out lost, once every one is in. Each
+    /// frame in flight can answer `Lost` on its own, for sizes since grown.
+    fn drain(&mut self) -> bool {
+        let mut lost = false;
+        while self.settled_check() == FrameCheck::Lost {
+            lost = true;
+        }
+        lost
+    }
+
+    /// Frames until one is not lost, as the loop asks for them, and how many
+    /// it took: whatever is in flight is counted out first, then a frame can
+    /// still overflow a second buffer once the first is grown, since stages
+    /// after one that failed stop short of saying what they need.
     fn heal(&mut self, app: &mut RinchApp) -> u32 {
+        self.drain();
         for tries in 1..=4 {
-            let kind = self.render(app, Some(FullRepaintReason::Invalidated));
-            assert_eq!(kind, "full", "a lost frame is repainted in full");
-            if self.settled_check() == FrameCheck::Settled {
+            let kind = self.render(app, None);
+            assert_eq!(kind, "full", "a lost frame asks for a full one");
+            if !self.drain() {
                 return tries;
             }
         }
@@ -224,6 +283,65 @@ fn gpu_bump_overflow_a_lost_frame_is_found_and_the_next_full_one_repairs_it() {
     gpu.render(&mut app, Some(FullRepaintReason::Invalidated));
     assert_eq!(gpu.settled_check(), FrameCheck::Settled);
     assert_drawn(&gpu);
+}
+
+/// Window-sized layers, one after another, each filled: the scenes the two
+/// tests below are about. `nested` piles them up instead.
+fn layers(count: usize, width: u32, height: u32, nested: bool) -> vello::Scene {
+    use vello::kurbo::{Affine, Rect};
+    use vello::peniko::{Color, Fill, Mix};
+    let r = Rect::new(0.0, 0.0, width as f64, height as f64);
+    let mut scene = vello::Scene::new();
+    for _ in 0..count {
+        scene.push_layer(Fill::NonZero, Mix::Normal, 0.5, Affine::IDENTITY, &r);
+        let red = Color::from_rgb8(200, 30, 40);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, red, None, &r);
+        if !nested {
+            scene.pop_layer();
+        }
+    }
+    if nested {
+        (0..count).for_each(|_| scene.pop_layer());
+    }
+    scene
+}
+
+/// The page that set the ptcl floor: at 256 words per target tile it overflows
+/// a new renderer's first frame.
+#[test]
+#[ignore]
+fn gpu_bump_eight_full_window_layers_at_4k_draw_first_time() {
+    let mut gpu = Gpu::new();
+    let target = gpu.target(3840, 2160);
+    gpu.render_scene(&layers(8, 3840, 2160, false), &target);
+    assert_eq!(gpu.settled_check(), FrameCheck::Settled);
+    let px = readback(&gpu.device, &gpu.queue, &target, 3840, 2160);
+    let at = ((1000 * 3840 + 2000) * 4) as usize;
+    assert!(
+        px[at + 3] > 200,
+        "the layers are there: {:?}",
+        &px[at..at + 4]
+    );
+}
+
+/// A frame pushed out of the queue of counters is never read, so nothing says
+/// it fitted. Later frames do not redraw a kept slice, so it has to count as
+/// lost. The overflowing frame is what the light one pushes out: its counters
+/// are not back by the light one's submit, the GPU having two heavy frames to
+/// do first.
+#[test]
+#[ignore]
+fn gpu_bump_overflow_a_frame_pushed_out_of_the_queue_is_not_forgotten() {
+    let mut gpu = Gpu::new();
+    let big = gpu.target(3840, 2160);
+    let small = gpu.target(W, H);
+    gpu.render_scene(&layers(12, 3840, 2160, false), &big);
+    assert_eq!(gpu.settled_check(), FrameCheck::Settled, "these fit");
+    gpu.renderer.set_bump_readback_limit(1);
+    gpu.render_scene(&layers(12, 3840, 2160, false), &big);
+    gpu.render_scene(&layers(800, W, H, true), &small);
+    gpu.render_scene(&vello::Scene::new(), &small);
+    assert!(gpu.drain(), "the overflow went unseen");
 }
 
 #[test]

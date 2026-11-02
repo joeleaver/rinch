@@ -4175,6 +4175,12 @@ fn black_backdrop_layer(
 
 // ── Renderer choice ──────────────────────────────────────────────────────────
 
+/// How soon the loop looks again for Vello's counters of a frame the GPU has
+/// not finished (#2071): half a 60 Hz frame. A window that overflowed is drawn
+/// again this much after the GPU finishes, at the worst.
+#[cfg(feature = "gpu")]
+const VELLO_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
+
 /// The GPU renderer for `window`, or `None` to present with software: when
 /// software was chosen (and the app did not configure the GPU device itself,
 /// see `renderer::tries_gpu`), or when the GPU would not start under
@@ -4185,12 +4191,6 @@ fn black_backdrop_layer(
 ///
 /// When the GPU would not start and the choice does not allow a fallback
 /// (`Renderer::Gpu`, or a device the app configured itself).
-/// How soon the loop looks again for Vello's counters of a frame the GPU has
-/// not finished (#2071): half a 60 Hz frame. A window that overflowed is drawn
-/// again this much after the GPU finishes, at the worst.
-#[cfg(feature = "gpu")]
-const VELLO_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
-
 #[cfg(feature = "gpu")]
 fn start_gpu_renderer(
     window: &dyn winit::window::Window,

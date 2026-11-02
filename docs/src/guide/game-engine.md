@@ -591,6 +591,18 @@ that does not hold the context's last painted frame has that frame painted
 again for it. Steady state (one renderer, one context) paints only when the
 document changes.
 
+**A frame that does not fit.** `render` does not wait for the GPU, so a frame
+too large for Vello's buffers goes out undrawn and is found out a frame or so
+later; the buffers grow and the frame is drawn again. A host rendering every
+frame gets this from the next `render`. A host that renders only when
+`needs_update` says so does not: a lost frame is about the renderer's buffers,
+and the context cannot know of it. After each `render`, call
+`overlay.check_frames(&device)`, again at `check_again_at` until that is `None`,
+and `render` when `needs_render` is true. It never waits. (A lost device is
+different: wgpu's `Device::poll` panics on one rather than returning an error,
+so a call that polls cannot be your way of finding out. `set_device_lost_callback`
+is; stop calling into the renderer once it fires.)
+
 ### RinchContext
 
 `RinchContext` is the main handle. Create it during initialization, call

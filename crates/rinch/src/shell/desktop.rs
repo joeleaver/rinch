@@ -300,13 +300,9 @@ pub struct WgpuRenderer {
     /// Composited output texture (layers + UI) for screenshot capture.
     /// Created lazily, invalidated on resize.
     pub(crate) composited_texture: Option<Texture>,
-    /// What `render_texture` holds (#1718): `None` before the first frame
-    /// and after a resize or a failed render, else the base colour Vello
-    /// rendered it over. A partial frame updates it in place only while it
-    /// holds a frame over the base colour this frame needs.
-    pub(crate) ui_base: Option<Color>,
-    /// Why `ui_base` was last cleared, for the full frame that repairs it.
-    pub(crate) ui_lost: rinch_dom::perf::FullRepaintReason,
+    /// What `render_texture` holds (#1718). A partial frame updates it in
+    /// place only while it holds a frame over the base colour this frame needs.
+    ui_state: UiTextureState,
     /// The target a partial frame is rendered into, reused while it is big
     /// enough (sizes rounded up to [`PARTIAL_TARGET_STEP`]).
     pub(crate) partial_target: Option<Texture>,
@@ -576,8 +572,7 @@ impl WgpuRenderer {
             split_compositor: None,
             gpu_layers: Vec::new(),
             composited_texture: None,
-            ui_base: None,
-            ui_lost: rinch_dom::perf::FullRepaintReason::FirstFrame,
+            ui_state: UiTextureState::default(),
             partial_target: None,
         })
     }
@@ -649,12 +644,8 @@ impl WgpuRenderer {
         &self,
         transparent: bool,
     ) -> Option<rinch_dom::perf::FullRepaintReason> {
-        let base = self.vello_base_color(Self::window_base_color(transparent));
-        match self.ui_base {
-            Some(b) if b == base => None,
-            Some(_) => Some(rinch_dom::perf::FullRepaintReason::Invalidated),
-            None => Some(self.ui_lost),
-        }
+        self.ui_state
+            .invalid_reason(self.vello_base_color(Self::window_base_color(transparent)))
     }
 
     /// What has become of the frames Vello was given (#2071), without waiting
@@ -666,10 +657,7 @@ impl WgpuRenderer {
     /// [`Pending`](vello::FrameCheck::Pending) looks again later.
     pub fn check_frames(&mut self) -> vello::FrameCheck {
         let check = self.renderer.check_frames(&self.device);
-        if check == vello::FrameCheck::Lost {
-            self.ui_base = None;
-            self.ui_lost = rinch_dom::perf::FullRepaintReason::Invalidated;
-        }
+        self.ui_state.note_check(check);
         check
     }
 
@@ -709,8 +697,7 @@ impl WgpuRenderer {
         let view = self
             .render_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.ui_base = None;
-        self.ui_lost = rinch_dom::perf::FullRepaintReason::Invalidated;
+        self.ui_state.begin_render();
         self.renderer
             .render_to_texture(
                 &self.device,
@@ -725,7 +712,7 @@ impl WgpuRenderer {
                 },
             )
             .map_err(|e| RenderError::Internal(format!("render_to_texture failed: {:?}", e)))?;
-        self.ui_base = Some(base);
+        self.ui_state.rendered(base);
         Ok(())
     }
 
@@ -739,12 +726,11 @@ impl WgpuRenderer {
     ) -> Result<(), RenderError> {
         let base = self.vello_base_color(base_color);
         debug_assert_eq!(
-            self.ui_base,
-            Some(base),
+            self.ui_state.invalid_reason(base),
+            None,
             "a partial frame over an invalid UI texture"
         );
-        self.ui_base = None;
-        self.ui_lost = rinch_dom::perf::FullRepaintReason::Invalidated;
+        self.ui_state.begin_render();
         render_partial(
             &self.device,
             &self.queue,
@@ -758,8 +744,65 @@ impl WgpuRenderer {
                 base,
             },
         )?;
-        self.ui_base = Some(base);
+        self.ui_state.rendered(base);
         Ok(())
+    }
+}
+
+/// Whether the UI texture holds the last frame painted, which a partial or
+/// unchanged frame builds on (#1718), and if not, why not.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UiTextureState {
+    /// The colour the frame it holds was rendered over; `None` when it holds
+    /// no good frame.
+    base: Option<Color>,
+    /// Why `base` was last cleared, for the full frame that repairs it.
+    lost: rinch_dom::perf::FullRepaintReason,
+}
+
+impl Default for UiTextureState {
+    fn default() -> Self {
+        Self {
+            base: None,
+            lost: rinch_dom::perf::FullRepaintReason::FirstFrame,
+        }
+    }
+}
+
+impl UiTextureState {
+    /// Why it cannot take a partial frame over `base`: it holds no frame, or
+    /// one rendered over another base colour (layers came or went).
+    pub(crate) fn invalid_reason(&self, base: Color) -> Option<rinch_dom::perf::FullRepaintReason> {
+        match self.base {
+            Some(b) if b == base => None,
+            Some(_) => Some(rinch_dom::perf::FullRepaintReason::Invalidated),
+            None => Some(self.lost),
+        }
+    }
+
+    /// A render into it starts; a failure leaves it holding no good frame.
+    pub(crate) fn begin_render(&mut self) {
+        self.base = None;
+        self.lost = rinch_dom::perf::FullRepaintReason::Invalidated;
+    }
+
+    /// A render over `base` was submitted.
+    pub(crate) fn rendered(&mut self, base: Color) {
+        self.base = Some(base);
+    }
+
+    /// The texture was replaced at a new size.
+    fn resized(&mut self) {
+        self.base = None;
+        self.lost = rinch_dom::perf::FullRepaintReason::Resize;
+    }
+
+    /// What Vello said of the frames it was given (#2071): a lost one went
+    /// out undrawn, here or in a slice, so the next frame has to be full.
+    pub(crate) fn note_check(&mut self, check: vello::FrameCheck) {
+        if check == vello::FrameCheck::Lost {
+            self.begin_render();
+        }
     }
 }
 
@@ -1189,8 +1232,7 @@ impl PlatformRenderer for WgpuRenderer {
         self.render_texture =
             Self::create_render_texture(&self.device, TextureFormat::Rgba8Unorm, width, height);
         self.composited_texture = None;
-        self.ui_base = None;
-        self.ui_lost = rinch_dom::perf::FullRepaintReason::Resize;
+        self.ui_state.resized();
     }
 
     fn render_scene(
@@ -1475,6 +1517,36 @@ mod alpha_mode_tests {
     use super::{PresentStep, present_step, surface_alpha_mode};
     use crate::shell::compositor::PresentAlpha as P;
     use wgpu::CompositeAlphaMode as A;
+
+    #[test]
+    fn a_lost_frame_invalidates_the_ui_texture_and_nothing_else_does() {
+        use super::{Color, UiTextureState};
+        use rinch_dom::perf::FullRepaintReason as Reason;
+        use vello::FrameCheck;
+        let white = Color::WHITE;
+        let mut ui = UiTextureState::default();
+        assert_eq!(ui.invalid_reason(white), Some(Reason::FirstFrame));
+        ui.begin_render();
+        ui.rendered(white);
+        assert_eq!(ui.invalid_reason(white), None);
+        ui.note_check(FrameCheck::Pending);
+        ui.note_check(FrameCheck::Settled);
+        assert_eq!(ui.invalid_reason(white), None, "these repaint nothing");
+        ui.note_check(FrameCheck::Lost);
+        assert_eq!(ui.invalid_reason(white), Some(Reason::Invalidated));
+        // Settling later does not forgive it.
+        ui.note_check(FrameCheck::Settled);
+        assert_eq!(ui.invalid_reason(white), Some(Reason::Invalidated));
+        ui.rendered(white);
+        assert_eq!(ui.invalid_reason(white), None, "the full frame repairs it");
+        // The other reasons are unchanged.
+        assert_eq!(
+            ui.invalid_reason(Color::TRANSPARENT),
+            Some(Reason::Invalidated)
+        );
+        ui.resized();
+        assert_eq!(ui.invalid_reason(white), Some(Reason::Resize));
+    }
 
     #[test]
     fn an_opaque_window_keeps_auto() {
