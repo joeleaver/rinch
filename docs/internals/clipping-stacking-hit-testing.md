@@ -672,14 +672,35 @@ opened another. `paint_children_with_stacking` paints the permutation
 `grouped_by_clip` returns instead. Hit testing keeps the true sequence: nothing it
 reads changed.
 
-**Why no pixel moves.** An entry paints inside its chain's clips on the painter's
-own stack, so whatever it draws stays inside them, shadows and a fixed descendant
-included (a lifted fixed entry leaves only its own root's bracket, #549). The proof reads only
-the clip rects and never an entry's ink. Two chains are apart when their
-intersected rects, under `node_transform` and rounded out to whole device pixels,
-share no pixel. The rounding is what makes it exact: clips meeting inside a pixel
-both antialias it, so a seam at 100.5 keeps its order and a seam at 100 does not
-have to.
+**What is proved.** An entry is only moved past entries it is proved apart from.
+It paints inside its chain's clips on the painter's own stack, so whatever it draws
+stays inside them, shadows and a fixed descendant included (a lifted fixed entry
+leaves only its own root's bracket, #549). So the *move* needs only the clip rects,
+never an entry's ink. Two chains are apart when their intersected rects, under
+`node_transform` and rounded out to whole device pixels, share no pixel. The
+rounding matters: clips meeting inside a pixel both antialias it, so a seam at
+100.5 keeps its order and a seam at 100 does not have to.
+
+**What is not: merging changes pixels at clip edges on Vello.** Gathering also puts
+entries of one chain into one clip layer, and on Vello a clip is an isolated layer
+on every tile its edge crosses. An accepted cost (#2074). Measured on RADV 890M at
+Msaa16, A1 z1, B z2, A2 z3 with pane B clear of A; tiny-skia was byte-identical in
+all three:
+
+| Case | Pixels | Up to | What changes |
+|---|---|---|---|
+| Rounded pane, two opaque rows | 194 | 61 levels | Ungrouped applies edge coverage once per clip layer, grouped once |
+| A2 `filter: grayscale(1)` (`BlendMode::Saturation`) | 3072 | 48 levels | The 16px tile ring inside the clip edge goes |
+| In-scene `GameViewport` clear (`clear_viewport_box`) | 3072 | 235 levels | Grouped clears the ring |
+
+The result already depended on how entries interleave. It still does: an unrelated
+pane moving can start or end a grouping, and those edge pixels change with it.
+`gpu_clip_groups_1645_tests` pins the first two.
+
+**A drag ghost is not grouped.** `paint_subtree` paints under `Affine::IDENTITY` and
+its scene is appended at a fractional `translate`, so its device pixels are not the
+ones `grouped_by_clip` would judge: panes meeting on a whole pixel could swap and
+share a pixel. `SnapshotPaintScope` keeps the true sequence for it.
 
 **The rule.** An entry joins the newest group of its chain only if every group
 after it is apart from the chain. An empty chain can reach everywhere, so nothing
@@ -697,8 +718,8 @@ compares an entry otherwise. No subtree is walked.
 
 **Ruled out.** Narrowing or eliding the clip to the entry's extent would need
 `layer_bounds` to bound ink, which it does not: glyph ink past a line box is not
-caught, and #550's absolutes are under-measured for its bounds callers. That is a
-visible change on both renderers, where grouping cannot change a pixel.
+caught, and #550's absolutes are under-measured for its bounds callers. That loses
+ink on both renderers, where grouping's changes are confined to clip edges on Vello.
 
 **What it does not gather.** Chains that differ only in an inner link (`[A, r1]`,
 `[B, s1]`, `[A, r2]`) are different chains, so each still reopens `A`. An entry

@@ -2887,6 +2887,7 @@ pub fn paint_subtree(
     };
     let offset_x = -(node.layout.x as f64 * scale);
     let offset_y = -(node.layout.y as f64 * scale);
+    let _snapshot = SnapshotPaintScope::enter();
     ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,
@@ -2990,11 +2991,34 @@ thread_local! {
     /// sequence pushes its [`crate::stacking::PaintOrder::bars`] and truncates
     /// on the way out.
     static DEFERRED_BARS: RefCell<Vec<RawNodeId>> = const { RefCell::new(Vec::new()) };
+
+    /// A [`paint_subtree`] is running. Its scene is appended at the drag's
+    /// offset, which is fractional, so the device pixels
+    /// [`PaintOrder::grouped_by_clip`](crate::stacking::PaintOrder::grouped_by_clip)
+    /// would judge are not the ones it lands on: clips meeting on a whole pixel
+    /// here can share one there. A ghost keeps the true sequence.
+    static SNAPSHOT_PAINT: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Whether the sequence being painted draws `node_id`'s bars itself.
 fn bars_deferred(node_id: RawNodeId) -> bool {
     DEFERRED_BARS.with(|d| d.borrow().contains(&node_id))
+}
+
+/// Marks a [`paint_subtree`] for the length of its paint.
+struct SnapshotPaintScope;
+
+impl SnapshotPaintScope {
+    fn enter() -> Self {
+        SNAPSHOT_PAINT.set(true);
+        Self
+    }
+}
+
+impl Drop for SnapshotPaintScope {
+    fn drop(&mut self) {
+        SNAPSHOT_PAINT.set(false);
+    }
 }
 
 /// Pushes a sequence's deferred scrollers and takes them back off on drop.
@@ -3233,7 +3257,11 @@ fn paint_children_with_stacking(
         let _deferred = DeferredBarsScope::enter(&order.bars);
         let mut open = ClipSpan::EMPTY;
         let mut bars = order.bars.iter().peekable();
-        let grouped = order.grouped_by_clip(node_transform);
+        let grouped = if SNAPSHOT_PAINT.get() {
+            None
+        } else {
+            order.grouped_by_clip(node_transform)
+        };
         for position in 0..order.len() {
             let index = grouped.as_ref().map_or(position, |g| g[position] as usize);
             let entry = &order[index];

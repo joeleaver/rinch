@@ -1,6 +1,8 @@
 //! Entries under clippers that share no pixel are gathered by clipper (#1645):
-//! the picture must be the one the true sequence paints. `PaintOrder`'s own
-//! tests pin the permutation; these pin what reaches a painter from a document.
+//! on the software painter the picture must be the one the true sequence paints.
+//! `PaintOrder`'s own tests pin the permutation; these pin what reaches a painter
+//! from a document. Vello's picture does change at clip edges: see
+//! `gpu_clip_groups_1645_tests` in `rinch`.
 
 #![cfg(feature = "software-renderer")]
 
@@ -173,6 +175,40 @@ fn panes_meeting_inside_a_device_pixel_are_not_gathered() {
     let mut doc = alternating((13.0, 54.0), (67.0, 101.0));
     assert_eq!(clips(&mut doc, 1.5), 3, "the seam is shared at 1.5x");
     assert_eq!(clips(&mut doc, 2.0), 2, "the seam is not shared at 2x");
+}
+
+/// A drag ghost's scene is appended at a fractional offset, so "whole device
+/// pixel" means nothing while it is painted: panes meeting on a whole pixel here
+/// may share one on screen. Its stacking root is a context of its own so that
+/// the panes are a sequence in it. The document's paint after it still groups.
+#[test]
+fn a_drag_ghost_keeps_the_true_sequence() {
+    let (mut doc, body) = page();
+    let root = el(
+        &mut doc,
+        body,
+        "position: relative; z-index: 0; width: 300px; height: 200px",
+    );
+    let pa = pane(&mut doc, root, 13.0, 84.0);
+    let pb = pane(&mut doc, root, 97.0, 101.0);
+    band(&mut doc, pa, 1, RED);
+    band(&mut doc, pb, 2, GREEN);
+    band(&mut doc, pa, 3, BLUE);
+    assert_eq!(clips(&mut doc, 1.0), 2, "control: the document groups");
+
+    let mut c = Clips::default();
+    let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_subtree(
+        &doc.tree,
+        &mut c,
+        root.0,
+        1.0,
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    assert_eq!(c.0, 3, "A, B and A again");
+
+    assert_eq!(clips(&mut doc, 1.0), 2, "the document groups afterwards");
 }
 
 /// A scroller's bars are drawn after its last entry (#1717), and an earlier

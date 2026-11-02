@@ -99,13 +99,35 @@
 //! over its whole bounds (#1645). [`PaintOrder::grouped_by_clip`] gives paint the
 //! same entries with such a run brought together.
 //!
-//! That cannot change a pixel, and the reason needs no knowledge of what an entry
-//! draws: an entry is painted inside its chain's clips on the painter's own
-//! stack, so nothing it draws, a fixed descendant or a shadow included, reaches
-//! outside them (a fixed box inside it is lifted out of its own root's bracket
-//! and no further, #549). Two entries whose chains share no device pixel touch no
-//! pixel in common, so they composite the same in either order. Every pair that
-//! may share one keeps its order. Hit testing keeps walking the true sequence.
+//! **Moving an entry is proved safe.** An entry is only moved past entries it
+//! is proved apart from. It is painted inside its chain's clips on the painter's
+//! own stack, so nothing it draws, a fixed descendant or a shadow included,
+//! reaches outside them (a fixed box inside it is lifted out of its own root's
+//! bracket and no further, #549). Two entries whose chains share no device pixel
+//! touch no pixel in common, so neither one's move changes the other. That proof
+//! reads only the clip rects. Every pair that may share a pixel keeps its order,
+//! and hit testing keeps walking the true sequence.
+//!
+//! **Merging is not free of pixels.** Gathering also puts entries of one chain
+//! into **one clip layer**, and on Vello a clip is an isolated layer on every
+//! tile its edge crosses, so what is inside that layer decides the result there.
+//! Pixels at clip edges can change on the GPU. Each of these is an accepted cost
+//! (#2074):
+//!
+//! - **Rounded edges.** Entries in separate layers each take the edge's coverage,
+//!   so an earlier entry's colour fringes a later one's; in one layer the edge
+//!   applies once.
+//! - **`filter: grayscale`.** Its `Saturation` layer blends against what is in
+//!   the isolated layer. Alone in its clip it sees nothing, so a tile-wide ring
+//!   inside the clip edge is left unfiltered; with the entries below it in the
+//!   same layer, the ring goes.
+//! - **An in-scene `GameViewport` clear**, the same way: it erases what is in
+//!   the layer, so with the entries below it there, it clears the ring as well.
+//!
+//! The software painter has no such layer and its pixels do not change. Which
+//! picture Vello gives already depended on how entries interleaved, and it still
+//! does: an unrelated pane moving can start or end a grouping, and with it change
+//! those edge pixels.
 //!
 //! # Transforms
 //!
@@ -400,9 +422,13 @@ impl PaintOrder {
     /// The order to paint [`Self::entries`] in, as indices into them, when it
     /// differs from theirs: entries under one chain brought together across
     /// entries whose chains share no device pixel with it (see **Clip groups**
-    /// in the module docs). `to_device` is the transform paint pushes the
-    /// chains under. `None` means paint them as they stand, the usual answer,
-    /// and it takes one pass over the entries and allocates nothing.
+    /// in the module docs, which says what merging them into one clip layer
+    /// does to pixels at clip edges on Vello). `to_device` is the transform
+    /// paint pushes the chains under, and it must be the final one: "whole
+    /// pixel" means nothing in a space a fractional transform is applied to
+    /// afterwards, which is why a drag ghost's paint does not ask.
+    /// `None` means paint them as they stand, the usual answer, and it takes
+    /// one pass over the entries and allocates nothing.
     ///
     /// An entry joins the newest group of its chain if every group after that
     /// one is pixels apart from the chain, and opens a new group otherwise. So
