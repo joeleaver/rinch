@@ -15,6 +15,14 @@ pub use values::*;
 
 use serde::Serialize;
 
+/// A Taffy keyword, which has no `Serialize`, as its name.
+fn serialize_debug<T: std::fmt::Debug, S: serde::Serializer>(
+    v: &T,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&format!("{v:?}"))
+}
+
 /// Pre-parsed CSS properties for efficient layout and paint.
 #[derive(Debug, Clone, Serialize)]
 pub struct ComputedStyle {
@@ -42,6 +50,12 @@ pub struct ComputedStyle {
     #[serde(skip)]
     pub inline_level_before_blockify: bool,
     pub position: PositionValue,
+    /// `float`. Read by Taffy's block layout only (`floats`).
+    #[serde(serialize_with = "serialize_debug")]
+    pub float: taffy::Float,
+    /// `clear`.
+    #[serde(serialize_with = "serialize_debug")]
+    pub clear: taffy::Clear,
     /// `vertical-align` (#724): non-inherited, not carried to an anonymous
     /// box (see [`ComputedStyle::for_anonymous_box`]).
     pub vertical_align: VerticalAlignValue,
@@ -310,6 +324,8 @@ impl Default for ComputedStyle {
             caption_bottom: false,
             inline_level_before_blockify: false,
             position: PositionValue::default(),
+            float: taffy::Float::None,
+            clear: taffy::Clear::None,
             vertical_align: VerticalAlignValue::default(),
             overflow_x: OverflowValue::default(),
             overflow_y: OverflowValue::default(),

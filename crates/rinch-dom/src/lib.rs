@@ -15,6 +15,7 @@ pub mod attr_name;
 mod calc_layout;
 pub mod computed_style;
 mod dom_impl;
+mod floats;
 pub mod fonts;
 pub mod form_control;
 pub mod hit_cache;

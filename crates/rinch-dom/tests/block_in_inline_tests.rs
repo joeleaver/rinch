@@ -612,29 +612,15 @@ fn an_absolutely_positioned_child_does_not_split_an_inline() {
     assert_consistent(&w.doc, "absolute inside an inline");
 }
 
-/// rinch implements **no floats** (there is no `float` handling anywhere in
-/// `rinch-dom`), so a floated child is laid out as an ordinary in-flow block —
-/// which means a floated child of an inline **splits** it, and the container is
-/// three bands tall where Chrome says one.
+/// A floated child of an inline takes no line of its own (it is out of flow),
+/// but rinch still splits the run around it: the text before the float and the
+/// text after it are two anonymous boxes, so two lines, where Chrome puts both
+/// on one line and the container is 20px (`floats` module docs: a float
+/// splits an inline run). Before floats landed this was 70px, the float
+/// stacked as a block between them.
 ///
-/// # This fixture used to assert 20 and that was right by accident
-///
-/// Chrome says 20: the float is out of flow, so it adds no line. rinch said 20
-/// too, and for a completely different reason — the floated child and `tail`
-/// after it were **drawn nowhere at all**, so 20px was what was left rather than
-/// what was computed. Two wrongs cancelling is a fixed point, and this one hid a
-/// pre-existing divergence behind the very defect #513 was about.
-///
-/// The unwrapped twin is the measurement that settles it: **`text<blk float>tail`
-/// with no wrapper is 70px on this base too**, and always was. So the wrapper was
-/// never the thing costing 50px — the missing float implementation was, and the
-/// wrapper was concealing it by losing content. Asserting the twin equality keeps
-/// the property this file is built on (a bare inline wrapper changes nothing)
-/// while stating the divergence from Chrome plainly instead of pocketing it.
-///
-/// So this is no longer a Chrome oracle at all; it is a self-consistency oracle
-/// with a known, stated gap. When floats land, both twins should become 20 and
-/// this fixture should fail — which is exactly the notice it ought to give.
+/// What this pins is the property this file is built on: a bare inline
+/// wrapper changes nothing, so the wrapped twin matches the unwrapped one.
 #[test]
 fn a_floated_child_of_an_inline_matches_its_wrapper_free_twin() {
     let w = build("float", true, "a");
@@ -644,18 +630,14 @@ fn a_floated_child_of_an_inline_matches_its_wrapper_free_twin() {
     // would pass by agreeing with Chrome and prove nothing about the wrapper.
     assert_eq!(
         height_of(&p.doc, p.container),
-        LINE + BLK_H + LINE,
-        "control: with no floats implemented, an unwrapped floated block stacks \
-         like any other block — 70px, not Chrome\u{2019}s 20. If this is 20, floats \
-         have been implemented and this whole fixture should be rewritten \
-         against Chrome.",
+        LINE + LINE,
+        "control: the float adds no line, but splits the run into two lines \
+         (Chrome\u{2019}s 20 when a float no longer splits it).",
     );
     assert_eq!(
         height_of(&w.doc, w.container),
         height_of(&p.doc, p.container),
-        "a bare inline wrapper around a floated block must change nothing. Both \
-         twins diverge from Chrome (20px) because rinch implements no floats; \
-         what this pins is that they diverge *identically*.",
+        "a bare inline wrapper around a floated block must change nothing.",
     );
     assert_consistent(&w.doc, "float inside an inline");
     assert_consistent(&p.doc, "float inside an inline, unwrapped");

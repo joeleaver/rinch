@@ -2888,6 +2888,13 @@ pub struct NodeTree {
     pub cell_hints: std::sync::Mutex<HashMap<String, ServoArc<Locked<PropertyDeclarationBlock>>>>,
     /// Cells read back this layout and owed their `vertical-align`.
     pub cells_to_align: Vec<RawNodeId>,
+    /// Boxes the cascade computed as floated; dead or unfloated ones are
+    /// dropped before each layout (`floats`).
+    pub floats: Vec<RawNodeId>,
+    /// The boxes `floats` gave containment, to take it back.
+    pub float_avoiders: Vec<RawNodeId>,
+    /// The blank anonymous boxes beside floats that `floats` hid.
+    pub float_blank_runs: Vec<RawNodeId>,
     /// Every table rebuilt so far; dead ids are dropped before each layout.
     pub tables: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
@@ -3600,6 +3607,9 @@ impl NodeTree {
             style_dirty_nodes: Vec::new(),
             tables_owed: Vec::new(),
             tables: Vec::new(),
+            floats: Vec::new(),
+            float_avoiders: Vec::new(),
+            float_blank_runs: Vec::new(),
             cells_to_align: Vec::new(),
             cell_hints: Default::default(),
             style_roots: Vec::new(),

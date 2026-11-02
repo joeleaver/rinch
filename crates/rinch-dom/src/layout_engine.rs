@@ -415,6 +415,7 @@ impl RinchDocument {
         };
 
         self.measure_table_columns();
+        self.sync_float_avoidance();
         let mut text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
 
         // #120: an inline-block with a percentage main size is pre-measured detached
