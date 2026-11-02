@@ -712,10 +712,10 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`c6b2e61558962d0074a98f46d55a435c06901865`, branch `rinch-patch`): one commit
-on the vello `v0.11.0` tag, touching only
-`research/vello_encoding/src/{image_cache,resolve}.rs`. The fork's `vello` takes
-`vello_encoding` and `vello_shaders` by path, so all three come from the fork.
+(`f2bb29b2ccb7f3dac07e94792ec19bf776b753bd`, branch `rinch-patch`): the vello
+`v0.11.0` tag plus the image atlas below and **Bump buffers** after it. The
+fork's `vello` takes `vello_encoding` and `vello_shaders` by path, so all three
+come from the fork.
 It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
 with nothing to copy; apps build Vello types from `rinch::vello` (a second
 `vello` from crates.io would be an unpatched copy whose types do not match).
@@ -769,10 +769,61 @@ repainted unchanged stays resident and is not uploaded again, and keeps a
 `RenderSurface` texture it draws into in place fresh with
 `mark_override_image_dirty` (`SurfaceImages::sync`).
 
+**Bump buffers (#2066, #2071).** Vello's GPU stages allocate tiles, command
+lists and the like from fixed buffers of hand-picked sizes (2^21 tiles, 2^23
+ptcl words), and a frame that needs more is not drawn, which on a transparent
+window is a blank window. The fork does three things about it.
+
+1. *Floors.* `BumpSizes::floors` gives tiles 32 and ptcl 256 words per target
+   tile, or Vello's size where that is larger, capped at the device's limit
+   after the pool's rounding. They change nothing up to 4K and cost nothing
+   there; at 8K they cost 112 MiB. They come from a busy UI after #2069, which
+   used 9 to 14 tiles and 65 to 72 ptcl words per target tile (twice the worst,
+   rounded up). The peaks in #2066 (2.79M tiles, 15.5M ptcl words) were from
+   before #2069 stopped pushing clips that cut nothing.
+2. *No wait.* `render_to_texture` submits and returns. Its counters are mapped
+   after submit and collected with `PollType::Poll`. From #2066 until #2071 it
+   waited for the GPU after every frame, once per split slice, and on a shared
+   device for the embedder's work too: a 110 ms GPU frame held the main thread
+   110 ms, where it now holds it 1.7 ms (Radeon 890M, 4K). Do not add back
+   a blocking poll here; `device.poll(wait_indefinitely)` waits for everything on
+   the device.
+3. *Recovery.* A frame that overflowed has gone out undrawn by the time its
+   counters arrive, along with any frame submitted meanwhile. The buffers grow,
+   and `Renderer::check_frames` answers `Lost`. It is the caller's job to draw
+   again, because the frame's damage is long spent:
+   - `RinchRuntime::check_vello_frames` runs in `about_to_wait`, where
+     `WgpuRenderer::check_frames` clears `ui_base`, so `ui_invalid_reason` makes
+     the next frame full (`repaint_full_invalidated`). A full frame paints every
+     kept split slice again, and repairs a lost partial frame's rects. Then it
+     requests the redraw. On `Pending` it arms a `WaitUntil` every 8 ms, so a
+     window at rest is back on `Wait` soon after the GPU finishes.
+   - `RinchOverlayRenderer::render` checks first and sets `fed` to 0, which
+     repaints the slices; the host calls it every frame, so the UI repairs
+     itself. Android's loop asks for a redraw and has a timed wake as the
+     desktop does.
+   - A test or tool calling `render_to_texture` directly gets none of this:
+     after it, `check_frames` until not `Pending`, and render again on `Lost`.
+
+An overflow costs a visible frame, or one per buffer that runs out, since a stage
+after one that failed stops short of saying what it needs: 400 window-sized
+layers at 1024x768 took three frames to draw. A frame that needs more than the
+device's largest buffer stays undrawn, logged, and is not reported as lost, or
+the shell would repaint it forever. `Limits::default()` caps a buffer at 128 MiB
+unless the app asks for more (`GpuInit`). Growth is not undone, and the pool keeps
+a buffer of each size class it has used.
+
+Pins: `app::gpu_bump_overflow_2071_tests` (full frame, frames in flight, partial
+frame) and `gpu_split_runtime_an_overflowed_slice_is_painted_again`, all without
+a blocking poll before the decision; the fork's `bump_sizes_tests` for the floors.
+The shell's half needs a window, so nothing in CI runs `check_vello_frames`: to
+check it, run a page of 400 layers in a nested compositor with `RINCH_PERF=1`
+and see the frames repeat with no input.
+
 **Downstream apps copy nothing for Vello**, and delete the five wgpu-fork
-patch lines they used to copy. On a Vello bump, rebase the commit onto the new
+patch lines they used to copy. On a Vello bump, rebase the commits onto the new
 tag (or go back to crates.io if upstream behaves the same), move the pinned rev,
-and rerun the three pins.
+and rerun the pins.
 
 ### Bounds signals on the web (#1781)
 

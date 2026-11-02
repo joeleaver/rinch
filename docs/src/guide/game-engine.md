@@ -884,6 +884,13 @@ replaced under the viewport's visible part, edges included, on all three.
 > Vello and has no band. The desktop GPU window falls back to the same
 > in-scene clear for a frame in which the viewport sits in a group effect or
 > under a rotation (below), which the debug warnings name.
+>
+> Such a host also keeps its own Vello's buffers honest. `render_to_texture`
+> does not wait for the GPU, so a frame too large for its buffers goes out
+> undrawn and is found out a frame or so later. A host that renders every frame
+> repairs it by rendering the next one; one that stops rendering when nothing
+> changes calls `Renderer::check_frames` until it stops answering `Pending`, and
+> renders again on `Lost`.
 
 **The game fills the viewport's border box.** The viewport is a base layer,
 not a framed element: the game's layer (or, on the software window, its

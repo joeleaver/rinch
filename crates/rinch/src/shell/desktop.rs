@@ -657,6 +657,22 @@ impl WgpuRenderer {
         }
     }
 
+    /// What has become of the frames Vello was given (#2071), without waiting
+    /// for the GPU. A frame that overflowed Vello's buffers reached the UI
+    /// texture or a slice undrawn, so [`Self::ui_invalid_reason`] then asks for
+    /// a full frame, which paints every split slice again as well. It takes a
+    /// redraw to get one: the caller requests that on
+    /// [`Lost`](vello::FrameCheck::Lost), and on
+    /// [`Pending`](vello::FrameCheck::Pending) looks again later.
+    pub fn check_frames(&mut self) -> vello::FrameCheck {
+        let check = self.renderer.check_frames(&self.device);
+        if check == vello::FrameCheck::Lost {
+            self.ui_base = None;
+            self.ui_lost = rinch_dom::perf::FullRepaintReason::Invalidated;
+        }
+        check
+    }
+
     /// Render and present a frame [`crate::app::RinchApp::build_gpu_frame`]
     /// built (#1718). A full frame renders the whole UI texture; a partial
     /// one renders its scene into a target the size of its damage and copies

@@ -1027,12 +1027,22 @@ impl RinchOverlayRenderer {
     /// hold the context's last painted frame has it painted again, so its
     /// first `render` is complete with nothing changed in the document
     /// (#1976). Nothing needs marking dirty.
+    ///
+    /// This does not wait for the GPU. A frame that overflowed Vello's buffers
+    /// goes out undrawn and is found out from its counters a frame or so
+    /// later (#2071): the next `render` then draws it again, slices included,
+    /// so an overflow shows as a frame or two without the UI.
     pub fn render(
         &mut self,
         device: &Device,
         queue: &Queue,
         ctx: &mut RinchContext,
     ) -> TextureView {
+        // The scene below is rendered whatever this says. The slices are not:
+        // 0 is a stamp no frame has, which has them painted again.
+        if self.renderer.check_frames(device) == vello::FrameCheck::Lost {
+            self.fed = 0;
+        }
         if let Some((stamp, slices)) = ctx.sliced_frame(self.fed) {
             self.fed = stamp;
             if let Err(e) = self.split.apply(
