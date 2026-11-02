@@ -1256,8 +1256,13 @@ impl RinchDocument {
                 // the entire ancestor chain — unconditional calls here were causing
                 // 70%+ of Taffy nodes to lose their cache on every frame with
                 // active transitions, even when only paint-only properties changed.
+                // A `Calc` is compared resolved, as it is stored (#767; see
+                // `taffy_style_for_compare`).
+                let compared = self.taffy_style_for_compare(node_id, taffy_id, &taffy_style);
                 let taffy_style_changed = match self.tree.taffy.style(taffy_id) {
-                    Ok(old_taffy_style) => old_taffy_style != &taffy_style,
+                    Ok(old_taffy_style) => {
+                        old_taffy_style != compared.as_ref().unwrap_or(&taffy_style)
+                    }
                     // No style to compare against: treat it as changed, which is
                     // what the `else` arm this replaced did.
                     Err(_) => true,
@@ -1451,8 +1456,13 @@ impl RinchDocument {
                     taffy_style = crate::node::display_contents_taffy_style();
                 }
 
+                // A `Calc` is compared resolved, as it is stored (#767; see
+                // `taffy_style_for_compare`).
+                let compared = self.taffy_style_for_compare(node_id, taffy_id, &taffy_style);
                 let taffy_style_changed = match self.tree.taffy.style(taffy_id) {
-                    Ok(old_taffy_style) => old_taffy_style != &taffy_style,
+                    Ok(old_taffy_style) => {
+                        old_taffy_style != compared.as_ref().unwrap_or(&taffy_style)
+                    }
                     // No style to compare against: treat it as changed, which is
                     // what the `else` arm this replaced did.
                     Err(_) => true,

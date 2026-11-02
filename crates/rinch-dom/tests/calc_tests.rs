@@ -115,6 +115,33 @@ fn calc_width() {
     assert_near(doc.tree.get(a.0).unwrap().layout.width, 175.0, "width");
 }
 
+/// A restyle from `calc(50% + 10px)` (160 in 300) to `calc(10% + 160px)`
+/// (190; Chrome: 190). The new Taffy style carries a `Calc` as its length part,
+/// 160, until the layout resolves it, and the old one holds the resolved 160:
+/// compared as they were, the change was judged layout-neutral, the layout
+/// was skipped, and the box stayed 160 wide.
+#[test]
+fn calc_width_restyle_to_a_length_part_equal_to_the_old_width() {
+    let mut doc = RinchDocument::new();
+    let c = container(&mut doc);
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "style", "width: calc(50% + 10px); height: 10px;");
+    doc.append_child(c, a);
+    doc.resolve_layout(800.0, 600.0);
+    assert_near(
+        doc.tree.get(a.0).unwrap().layout.width,
+        160.0,
+        "width before",
+    );
+    doc.set_attribute(a, "style", "width: calc(10% + 160px); height: 10px;");
+    doc.resolve_layout(800.0, 600.0);
+    assert_near(
+        doc.tree.get(a.0).unwrap().layout.width,
+        190.0,
+        "width after",
+    );
+}
+
 /// `height: calc(50% - 20px)` against a definite 200px parent → 80 (Chrome: 80).
 #[test]
 fn calc_height() {

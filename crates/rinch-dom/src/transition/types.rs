@@ -724,10 +724,9 @@ impl AnimatableValue {
             (AnimatableValue::Visibility(a), AnimatableValue::Visibility(b)) => Some(
                 AnimatableValue::Visibility(interpolate_visibility(*a, *b, t)),
             ),
-            // Each axis as a length-percentage, on its own: an axis that
-            // cannot interpolate (a length against a percentage) snaps to its
-            // end value as a lone `LengthPercentage` does, and the other axis
-            // still animates.
+            // Each axis as a length-percentage, on its own. Every pair of
+            // length-percentages interpolates (a mixed pair as a `calc()`,
+            // #767); the fallback to the end value is kept for safety.
             (AnimatableValue::CornerRadius(ax, ay), AnimatableValue::CornerRadius(bx, by)) => {
                 let lp = |a: &LengthPercentageValue, b: &LengthPercentageValue| {
                     match AnimatableValue::LengthPercentage(*a)
@@ -739,13 +738,31 @@ impl AnimatableValue {
                 };
                 Some(AnimatableValue::CornerRadius(lp(ax, bx), lp(ay, by)))
             }
-            // Incompatible types — snap immediately.
-            //
-            // A length against a percentage lands here on purpose: CSS
-            // interpolates that pair as a `calc()`, and there is no value in
-            // `ComputedStyle` that can hold one. Snapping is wrong, but it is
-            // the same wrong the transition path has always been, and
-            // inventing a resolution here would need the containing block.
+            // A length against a percentage (or a `calc()`) interpolates as a
+            // `calc()`: its length and percentage parts each go their own way
+            // (css-values-4 §3.4.3; #767). Every pair of the same kind was
+            // matched above, so these arms see only mixed ones.
+            (AnimatableValue::Dimension(a), AnimatableValue::Dimension(b)) => {
+                let (px, pct) = lerp_mixed(dimension_parts(a)?, dimension_parts(b)?, t);
+                Some(AnimatableValue::Dimension(DimensionValue::Calc { px, pct }))
+            }
+            (AnimatableValue::LengthPercentage(a), AnimatableValue::LengthPercentage(b)) => {
+                let (px, pct) = lerp_mixed(lp_parts(a), lp_parts(b), t);
+                Some(AnimatableValue::LengthPercentage(
+                    LengthPercentageValue::Calc { px, pct },
+                ))
+            }
+            (
+                AnimatableValue::LengthPercentageAuto(a),
+                AnimatableValue::LengthPercentageAuto(b),
+            ) => {
+                let (px, pct) = lerp_mixed(lpa_parts(a)?, lpa_parts(b)?, t);
+                Some(AnimatableValue::LengthPercentageAuto(
+                    LengthPercentageAutoValue::Calc { px, pct },
+                ))
+            }
+            // Incompatible types — `auto`, a sizing keyword, or two different
+            // value kinds — are discrete: the caller flips at the midpoint.
             _ => None,
         }
     }
@@ -823,6 +840,41 @@ pub fn interpolate_visibility(
     } else {
         to
     }
+}
+
+/// A length-percentage's `(px, fraction)` parts, the shape a `calc()` holds.
+fn lp_parts(v: &LengthPercentageValue) -> (f32, f32) {
+    match *v {
+        LengthPercentageValue::Zero => (0.0, 0.0),
+        LengthPercentageValue::Length(px) => (px, 0.0),
+        LengthPercentageValue::Percent(p) => (0.0, p),
+        LengthPercentageValue::Calc { px, pct } => (px, pct),
+    }
+}
+
+/// [`lp_parts`] for a size; `None` for `auto` and the sizing keywords, which do
+/// not interpolate with a length.
+fn dimension_parts(v: &DimensionValue) -> Option<(f32, f32)> {
+    match *v {
+        DimensionValue::Length(px) => Some((px, 0.0)),
+        DimensionValue::Percent(p) => Some((0.0, p)),
+        DimensionValue::Calc { px, pct } => Some((px, pct)),
+        DimensionValue::Auto | DimensionValue::Intrinsic(_) => None,
+    }
+}
+
+/// [`lp_parts`] for a margin or inset; `None` for `auto`.
+fn lpa_parts(v: &LengthPercentageAutoValue) -> Option<(f32, f32)> {
+    match *v {
+        LengthPercentageAutoValue::Length(px) => Some((px, 0.0)),
+        LengthPercentageAutoValue::Percent(p) => Some((0.0, p)),
+        LengthPercentageAutoValue::Calc { px, pct } => Some((px, pct)),
+        LengthPercentageAutoValue::Auto => None,
+    }
+}
+
+fn lerp_mixed(a: (f32, f32), b: (f32, f32), t: f32) -> (f32, f32) {
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
 }
 
 fn dimension_eq(a: &DimensionValue, b: &DimensionValue) -> bool {
