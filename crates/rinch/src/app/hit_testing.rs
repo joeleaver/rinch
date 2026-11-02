@@ -900,6 +900,37 @@ pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: u64) -> O
     None
 }
 
+/// The scroller a Page Up / Page Down in an editor moves (#2020): the nearest
+/// ancestor of `start` (or `start`) that overflows vertically and that no
+/// `lock_scroll` overlay locks out ([`rinch_dom::NodeTree::scroll_locked_out`],
+/// the wheel's and drag auto-scroll's rule) — else the body, on the same
+/// terms.
+///
+/// The walk stops at a `position: fixed` box (checked itself first): the
+/// viewport holds it, so no scroller outside it moves it, and paging one would
+/// scroll the page behind a modal and leave the caret where it was. Then
+/// nothing scrolls (`None`).
+#[cfg(feature = "desktop")]
+pub(crate) fn page_scroller(tree: &rinch_dom::NodeTree, start: u64) -> Option<u64> {
+    let usable = |id: u64| {
+        rinch_dom::paint::scrollbar::overflows(tree, id, ScrollbarAxis::Vertical)
+            && !tree.scroll_locked_out(id)
+    };
+    let mut current = Some(start);
+    while let Some(node_id) = current {
+        let node = tree.get(node_id)?;
+        if usable(node_id) {
+            return Some(node_id);
+        }
+        if node.box_position() == rinch_dom::computed_style::PositionValue::Fixed {
+            return None;
+        }
+        current = node.parent;
+    }
+    tree.get(tree.body_id)?;
+    usable(tree.body_id).then_some(tree.body_id)
+}
+
 /// Find the nearest ancestor (or self) that is a horizontal scroll container.
 pub(crate) fn find_horizontal_scroll_container(
     tree: &rinch_dom::NodeTree,

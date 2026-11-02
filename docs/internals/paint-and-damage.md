@@ -447,9 +447,9 @@ unchanged set costs nothing. The GPU shell's own call site
 groups to any depth (#1539) iteratively, in document order. Each element
 derives an `SvgInherited` from its parent's: `fill`/`stroke`
 (`InheritedPaint`; `currentcolor` stays symbolic, as CSS inherits the
-keyword, and resolves against each shape's own `color`), `stroke-width`,
-`stroke-linecap`, `stroke-linejoin` (a usable declaration replaces the
-inherited value; the `<svg>` starts from black / none / 2 / butt / miter), and
+keyword, and resolves against each shape's own `color`), the inherited
+stroke properties (see **SVG strokes** below; a usable declaration replaces
+the inherited value), and
 the transform: the parent's times the element's own `transform` attribute
 (`parse_svg_transform`, SVG's grammar — `translate(10-5)` is two numbers —
 and an unparsable list is ignored whole, as Chrome does; the `<svg>`'s own
@@ -477,8 +477,103 @@ from the element's computed custom properties (#1800,
 fallback is invalid at computed-value time, so the shape takes the `<svg>`'s
 paint; a literal `style` value that is no paint is dropped and the attribute
 applies, as Chrome 155 does. Not read: a `fill`/`stroke` in a stylesheet
-rule, and `stroke-width`/`stroke-linecap`/`stroke-linejoin` in `style` (still
-attributes only). Pins: `crates/rinch-dom/tests/svg_paint_var_1800_tests.rs`.
+rule. Pins: `crates/rinch-dom/tests/svg_paint_var_1800_tests.rs`.
+
+**SVG strokes.** Every stroke property of the SVG 2 painting chapter is read
+by `SvgInherited::derive` through `declared` (the same rule as
+`declared_paint`: the inline `style` declaration, then the presentation
+attribute, `var()` substituted; a bad attribute is ignored and the parent's
+value applies; a bad literal `style` value is dropped so the attribute
+applies; `initial` reads as `inherit`). None of them is a property in
+rinch's Stylo build (Gecko-only there), so a **stylesheet rule is not read**
+for any of them; `opacity` is the exception, below. All inherit through `<g>`
+except `opacity` and `vector-effect`. Initial values are SVG's: `stroke-width`
+**1** (it was 2 before; every built-in icon sets its width), butt, miter,
+miter limit 4, no dashes, opacities 1.
+- `stroke-width`, `stroke-dasharray`, `stroke-dashoffset` are
+  `<length-percentage>`s (`parse_svg_length`: a number, `px`, `em` of the
+  element's font size, the absolute units; a percentage is of the viewport's
+  normalized diagonal, `sqrt((vbw² + vbh²) / 2)` of the viewBox), resolved to
+  user units where declared. A negative width is ignored; a zero width
+  strokes nothing (tiny-skia would draw a hairline).
+- `stroke-dasharray`: an odd list is repeated (tiny-skia's `StrokeDash`
+  takes only even ones); all zero, or `none`, is solid; a negative or
+  unparsable value makes the declaration invalid, so the parent's applies
+  (Chrome 152: alone it is solid, under a dashed `<g>` it is the group's
+  dashes). The offset is brought into the first period (`rem_euclid`) so
+  kurbo (Vello) and tiny-skia agree on a negative one.
+- `stroke-miterlimit` below 1 is ignored. `stroke-linejoin` `miter-clip` and
+  `arcs`, and any unknown cap or join keyword, are ignored (Chrome 152 does
+  not implement the two SVG 2 joins; an unknown keyword used to *replace*
+  the inherited join with miter).
+- `stroke-opacity`/`fill-opacity` (number or percentage, clamped) multiply
+  the paint's alpha.
+- `opacity` (not inherited) on a shape or `<g>` is a layer, so a stroke over
+  its own fill, or overlapping children, are composited whole. It is read
+  from `computed_style.opacity` (Stylo resolves it from a rule or `style`),
+  else the attribute; a rule saying exactly `1` cannot be told from none, so
+  there the attribute wins. A shape's layer is its ink box; a group's is the
+  `<svg>` box (its content is not measured first), which a browser clips to
+  anyway. The `<svg>`'s own CSS opacity is `paint_node`'s; its `opacity`
+  attribute is a layer here.
+- `paint-order` (inherited): only whether the stroke precedes the fill
+  matters (no markers are drawn).
+- `vector-effect: non-scaling-stroke` (not inherited): the outline is
+  transformed into device space (`shape_path` + `apply_affine`) and stroked
+  with the identity transform, its width and dashes times the device scale,
+  so they are CSS px on screen whatever the SVG and CSS transforms. The fill
+  is unaffected. The other values are `none`, as in Chrome.
+- Not drawn: markers (`marker-*`). A dash pattern far shorter than a pixel is drawn as
+  asked, however many dashes that makes.
+
+Both painters take the `kurbo::Stroke` (`to_skia_stroke` already carried
+dashes and the miter limit into tiny-skia). Ink bounds: tiny-skia's draw and
+damage-mask bounds already grow by `width / 2 * max(miter_limit, 1.5)`;
+Vello's routing bounds used `width` times the transform's stretch, which a
+miter limit above 4 outgrew, and now use `stroke_outset` (half width times
+the miter limit at a miter join, `√2` at a square cap). The `<svg>` box is
+still what damages SVG content, so a thick stroke past it is unclipped and
+undamaged as before. Pins:
+`crates/rinch-dom/tests/svg_stroke_properties_tests.rs`, one table of
+Chrome 152 pixel answers (canvas `getImageData`) run on tiny-skia and, in
+the `#[ignore]`d `gpu_*` test, on Vello.
+
+### `vello_clip_tiles`: what a frame asks Vello for
+
+`VelloPainter::clip_tiles` estimates the tiles a frame's clips and layers cost;
+the shell adds it to `Counter::VelloClipTiles`. The guide has the meaning and the
+limits (`docs/src/guide/performance.md`, *Vello's tiles*); this is the mechanism.
+
+- **The arithmetic** is `vello_painter::tile_cost(bounds, target)`, a pure
+  function: `tile_alloc.wgsl`'s rounding (floor the near edges, ceil the far
+  ones, 16px, empty is 0) applied to the box cut by the target. Vello's
+  `draw_bboxes` are also cut by the enclosing clips' bounds (`clip_leaf.wgsl`);
+  the estimate is not, by definition, so a nested clip reads high.
+- **The window's scene** is counted in `VelloPainter::opened`, the one place
+  every clip and layer that reaches it passes through, split path included. An
+  elided clip never gets there.
+- **The split path** adds the rest in `Slicing::kept_tiles`, read by
+  `take_slices`: the inverse clip per open, the mask scenes, and each above
+  scene, whose mirrored and replayed pushes are tallied per scene and dropped
+  when the scene has no draw (`finish` drops it, so it is never rendered). A
+  slice's target is R's far corner (`Slice::tile_target`), not the scratch
+  texture `render_slice` rounds it up to.
+- **The target** comes from the shell, `set_tile_target`, after `reset` and
+  `begin_slicing`. `paint_frame_scene` sets the damage's far corner on a partial
+  frame, because that is the target `GpuFrame::Partial` renders to; S4's
+  `below_kept` shrinks that target after the paint, so such a frame reads high.
+  With none set, nothing is cut: a drag snapshot, whose count `append_scene` adds.
+- **Reporting.** `reset` zeroes it, so of a frame's several paints (taint, the
+  memory cap, a damage grown over a region) the last, the rendered one, is what
+  `build_gpu_frame_split` and `build_scene_with` add. `build_gpu_frame_split` adds
+  nothing when it painted nothing: the painter still holds the previous scene.
+
+The fixtures in `crates/rinch-dom/tests/window_tiles_tests.rs` were each checked
+by removing the fix they pin. Two traps found doing that: `opacity_layer_shape`
+proves a hidden dimmed box empty, so the `display: none` guard moves no tile
+unless the box holds something that defeats the proof (a fixed descendant); and
+paint opens no clip around content that fits it, so a clip fixture needs an
+entry crossing the clip's edge, or the elision has nothing to elide.
 
 ### Split GPU surfaces in the Vello painter (#1865)
 

@@ -964,7 +964,24 @@ pub struct RinchOverlayRenderer {
     /// Where Vello renders the UI while a viewport is split: the split
     /// compositor then writes `render_texture` from it.
     below: Option<Texture>,
+    /// A frame went out undrawn and no `render` has followed (#2071).
+    render_owed: bool,
 }
+
+/// What became of the frames a [`RinchOverlayRenderer`] rendered, from
+/// [`RinchOverlayRenderer::check_frames`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverlayCheck {
+    /// A frame overflowed Vello's buffers and went out undrawn, so the
+    /// texture is wrong until the next [`RinchOverlayRenderer::render`].
+    pub needs_render: bool,
+    /// When to check again, until this is `None`: not every frame's counters
+    /// are back from the GPU.
+    pub check_again_at: Option<rinch_platform::Instant>,
+}
+
+/// How soon a host looks again for Vello's counters: half a 60 Hz frame.
+const OVERLAY_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
 
 impl RinchOverlayRenderer {
     /// Create a new overlay renderer from the game engine's wgpu device.
@@ -999,6 +1016,32 @@ impl RinchOverlayRenderer {
             fed: 0,
             slice_error_logged: false,
             below: None,
+            render_owed: false,
+        }
+    }
+
+    /// What became of the frames [`Self::render`] submitted (#2071). This
+    /// never waits for the GPU.
+    ///
+    /// A host rendering every frame need not call this: `render` does. A host
+    /// that renders only when [`RinchContext::needs_update`] says so does: a
+    /// lost frame is a fact about this renderer's buffers, so the context
+    /// cannot know of it, and the texture would stay wrong until something
+    /// else changed. After each `render`, call this at `check_again_at` until
+    /// it is `None`, and `render` when `needs_render` is true.
+    ///
+    /// Do not call it after a device loss: see [`vello::Renderer::check_frames`].
+    pub fn check_frames(&mut self, device: &Device) -> OverlayCheck {
+        let check = self.renderer.check_frames(device);
+        if check == vello::FrameCheck::Lost {
+            // A stamp no frame has: the next `render` paints the slices again.
+            self.fed = 0;
+            self.render_owed = true;
+        }
+        OverlayCheck {
+            needs_render: self.render_owed,
+            check_again_at: (check != vello::FrameCheck::Settled)
+                .then(|| rinch_platform::Instant::now() + OVERLAY_CHECK_INTERVAL),
         }
     }
 
@@ -1027,12 +1070,20 @@ impl RinchOverlayRenderer {
     /// hold the context's last painted frame has it painted again, so its
     /// first `render` is complete with nothing changed in the document
     /// (#1976). Nothing needs marking dirty.
+    ///
+    /// This does not wait for the GPU. A frame that overflowed Vello's buffers
+    /// goes out undrawn and is found out from its counters a frame or so
+    /// later (#2071): the next `render` then draws it again, slices included,
+    /// so an overflow shows as a frame or two without the UI. A host that does
+    /// not render every frame asks [`Self::check_frames`] when to.
     pub fn render(
         &mut self,
         device: &Device,
         queue: &Queue,
         ctx: &mut RinchContext,
     ) -> TextureView {
+        self.check_frames(device);
+        self.render_owed = false;
         if let Some((stamp, slices)) = ctx.sliced_frame(self.fed) {
             self.fed = stamp;
             if let Err(e) = self.split.apply(

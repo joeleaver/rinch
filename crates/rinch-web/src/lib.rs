@@ -110,6 +110,10 @@ pub use event_delegation::{
 // Whether a right-click anywhere suppresses the browser's own menu. Off by
 // default: an island mounted into somebody else's page must not take the
 // right-click away from the rest of it.
+/// Test-only: take the page as macOS, or not, for the editor's key bindings
+/// (`navigator.platform` otherwise), so their macOS half runs in CI.
+#[doc(hidden)]
+pub use editor_input::__set_mac_platform;
 pub use event_delegation::{set_suppress_native_context_menu, suppresses_native_context_menu};
 #[doc(hidden)]
 pub use images::__reset_image_sources;
