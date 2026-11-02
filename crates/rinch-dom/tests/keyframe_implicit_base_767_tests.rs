@@ -51,6 +51,11 @@ use rinch_dom::transition::{AnimatableValue, TransitionProperty};
 /// `@keyframes k { keyframes }`, inside a 400px-wide container whose
 /// `font-size` is 10px. Laid out once, so the animation is minted.
 fn animated(base: &str, keyframes: &str) -> (RinchDocument, NodeId) {
+    animated_with(base, keyframes, "linear")
+}
+
+/// [`animated`] with the animation's timing function `timing`.
+fn animated_with(base: &str, keyframes: &str, timing: &str) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
     doc.load_css(&format!(
         "html, body {{ margin: 0; }}
@@ -64,7 +69,7 @@ fn animated(base: &str, keyframes: &str) -> (RinchDocument, NodeId) {
     doc.append_child(body, c);
     let div = doc.create_element("div");
     doc.set_attribute(div, "class", "b");
-    doc.set_attribute(div, "style", &format!("{base}; animation: k 1000ms linear"));
+    doc.set_attribute(div, "style", &format!("{base}; animation: k 1000ms {timing}"));
     doc.append_child(c, div);
     doc.tree.transitions_enabled = true;
     doc.resolve_layout(800.0, 600.0);
@@ -198,6 +203,29 @@ fn an_em_base_width_animates_from_its_computed_length() {
 #[test]
 fn a_percentage_base_width_interpolates_against_a_length_stop() {
     let (mut doc, div) = animated("width: 25%", "to { width: 200px; }");
+    for (ms, want) in [(250.0, 125.0), (500.0, 150.0), (750.0, 175.0)] {
+        close(
+            layout_at(&mut doc, div, ms).0,
+            want,
+            &format!("width at {ms}ms"),
+        );
+    }
+}
+
+/// The same `calc()` frame by frame, with the frames held on exact values by
+/// `steps(4)` (Chrome: 125, 150, 175 at 250, 500 and 750ms — the linear
+/// numbers, as the samples fall on step boundaries).
+///
+/// At 750ms the frame is `calc(6.25% + 150px)`, whose length part is the
+/// 150px the 500ms frame *resolved* to. The tick compared the new Taffy style,
+/// which carries a `Calc` as its length part until the layout resolves it,
+/// against the old one, which held the resolved length: equal, so the frame
+/// was judged layout-neutral and the box stayed at 150. With `linear` timing
+/// the wall clock's microseconds made the two differ in the last bit most of
+/// the time, and the case above failed about one run in ten.
+#[test]
+fn a_calc_frame_whose_length_part_is_the_last_resolved_width_lays_out() {
+    let (mut doc, div) = animated_with("width: 25%", "to { width: 200px; }", "steps(4)");
     for (ms, want) in [(250.0, 125.0), (500.0, 150.0), (750.0, 175.0)] {
         close(
             layout_at(&mut doc, div, ms).0,
