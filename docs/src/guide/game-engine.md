@@ -591,6 +591,18 @@ that does not hold the context's last painted frame has that frame painted
 again for it. Steady state (one renderer, one context) paints only when the
 document changes.
 
+**A frame that does not fit.** `render` does not wait for the GPU, so a frame
+too large for Vello's buffers goes out undrawn and is found out a frame or so
+later; the buffers grow and the frame is drawn again. A host rendering every
+frame gets this from the next `render`. A host that renders only when
+`needs_update` says so does not: a lost frame is about the renderer's buffers,
+and the context cannot know of it. After each `render`, call
+`overlay.check_frames(&device)`, again at `check_again_at` until that is `None`,
+and `render` when `needs_render` is true. It never waits. (A lost device is
+different: wgpu's `Device::poll` panics on one rather than returning an error,
+so a call that polls cannot be your way of finding out. `set_device_lost_callback`
+is; stop calling into the renderer once it fires.)
+
 ### RinchContext
 
 `RinchContext` is the main handle. Create it during initialization, call
@@ -884,6 +896,13 @@ replaced under the viewport's visible part, edges included, on all three.
 > Vello and has no band. The desktop GPU window falls back to the same
 > in-scene clear for a frame in which the viewport sits in a group effect or
 > under a rotation (below), which the debug warnings name.
+>
+> Such a host also keeps its own Vello's buffers honest. `render_to_texture`
+> does not wait for the GPU, so a frame too large for its buffers goes out
+> undrawn and is found out a frame or so later. A host that renders every frame
+> repairs it by rendering the next one; one that stops rendering when nothing
+> changes calls `Renderer::check_frames` until it stops answering `Pending`, and
+> renders again on `Lost`.
 
 **The game fills the viewport's border box.** The viewport is a base layer,
 not a framed element: the game's layer (or, on the software window, its

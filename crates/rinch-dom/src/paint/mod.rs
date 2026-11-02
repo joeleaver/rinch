@@ -2887,6 +2887,7 @@ pub fn paint_subtree(
     };
     let offset_x = -(node.layout.x as f64 * scale);
     let offset_y = -(node.layout.y as f64 * scale);
+    let _snapshot = SnapshotPaintScope::enter();
     ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,
@@ -2990,11 +2991,34 @@ thread_local! {
     /// sequence pushes its [`crate::stacking::PaintOrder::bars`] and truncates
     /// on the way out.
     static DEFERRED_BARS: RefCell<Vec<RawNodeId>> = const { RefCell::new(Vec::new()) };
+
+    /// A [`paint_subtree`] is running. Its scene is appended at the drag's
+    /// offset, which is fractional, so the device pixels
+    /// [`PaintOrder::grouped_by_clip`](crate::stacking::PaintOrder::grouped_by_clip)
+    /// would judge are not the ones it lands on: clips meeting on a whole pixel
+    /// here can share one there. A ghost keeps the true sequence.
+    static SNAPSHOT_PAINT: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Whether the sequence being painted draws `node_id`'s bars itself.
 fn bars_deferred(node_id: RawNodeId) -> bool {
     DEFERRED_BARS.with(|d| d.borrow().contains(&node_id))
+}
+
+/// Marks a [`paint_subtree`] for the length of its paint.
+struct SnapshotPaintScope;
+
+impl SnapshotPaintScope {
+    fn enter() -> Self {
+        SNAPSHOT_PAINT.set(true);
+        Self
+    }
+}
+
+impl Drop for SnapshotPaintScope {
+    fn drop(&mut self) {
+        SNAPSHOT_PAINT.set(false);
+    }
 }
 
 /// Pushes a sequence's deferred scrollers and takes them back off on drop.
@@ -3153,6 +3177,9 @@ fn paint_scrollbars(
 /// after the common prefix is popped and pushed. On vello every clip layer
 /// allocates tiles over its whole bounds, so re-pushing a window-sized outer
 /// clip for each positioned box is what overflows its fixed tile buffer.
+/// Entries with no prefix to share, rows of two panes whose `z-index`es
+/// alternate, are brought together where their clips share no pixel
+/// ([`PaintOrder::grouped_by_clip`](crate::stacking::PaintOrder::grouped_by_clip)).
 #[allow(clippy::too_many_arguments)]
 fn paint_children_with_stacking(
     tree: &NodeTree,
@@ -3230,7 +3257,14 @@ fn paint_children_with_stacking(
         let _deferred = DeferredBarsScope::enter(&order.bars);
         let mut open = ClipSpan::EMPTY;
         let mut bars = order.bars.iter().peekable();
-        for (index, entry) in order.iter().enumerate() {
+        let grouped = if SNAPSHOT_PAINT.get() {
+            None
+        } else {
+            order.grouped_by_clip(node_transform)
+        };
+        for position in 0..order.len() {
+            let index = grouped.as_ref().map_or(position, |g| g[position] as usize);
+            let entry = &order[index];
             paint_sequence_entry(
                 tree,
                 &order,
@@ -3245,7 +3279,9 @@ fn paint_children_with_stacking(
             );
             // The bars of the scrollers whose last contained entry this was,
             // under the clips the scroller itself is drawn under (#1717).
-            while let Some(bar) = bars.next_if(|b| b.after == index) {
+            // Grouping keeps every entry up to `after` ahead of it, so this is
+            // that entry's position whichever entry fills it.
+            while let Some(bar) = bars.next_if(|b| b.after == position) {
                 switch_clip_chain(&order, bar.clips, &mut open, painter, node_transform);
                 if let Some(owner) = tree.get(bar.node_id)
                     && !matches!(
@@ -3339,6 +3375,32 @@ fn paint_sequence_entry(
     let child = tree.get(entry.node_id);
     if let Some(child) = child
         && drawn_by_its_ifc(tree, child)
+    {
+        return;
+    }
+    // An entry whose subtree provably draws nothing (a closed menu sized to
+    // nothing) is skipped before its clip chain is switched to. The cull below
+    // can only be asked once the chain is open, and a fixed entry's chain is
+    // empty: switching to it closed every clip the entries around it share,
+    // and the next entry opened them all again. The walk is clip-independent
+    // and capped (`MAX_VISITS`): an entry that paints nothing paints nothing
+    // under any clip. In Pimble at 4K this is 58K of a 523K-tile frame.
+    // Asked only when the switch would close a clip that is open: an entry
+    // under the same chain costs nothing to enter, and the walk is not free
+    // over a long paragraph.
+    if let Some(child) = child
+        && entry.clips != *open
+        && {
+            let open_chain = order.clips_for_span(*open);
+            shared_clip_prefix(open_chain, order.clips_for_span(entry.clips)) < open_chain.len()
+        }
+        && layer_bounds::paints_nothing_at_all(
+            tree,
+            entry.node_id,
+            scale,
+            entry.offset_x + child.layout.x as f64 * scale,
+            entry.offset_y + child.layout.y as f64 * scale,
+        )
     {
         return;
     }
@@ -4036,9 +4098,10 @@ fn paint_node_unmasked(
                 // The element's own rect is zero-area and Vello clips a layer
                 // to its bounds shape, which would blank the subtree. The
                 // subtree's own extent is the right answer here as it is
-                // everywhere else, and [`opacity_layer_bounds`] falls back to
-                // the conservative `UNBOUNDED` rect this branch used to pass
-                // whenever it cannot work one out (card K36).
+                // everywhere else; `opacity_layer_shape` gives a subtree that
+                // draws nothing an empty rect, and falls back to the
+                // conservative `UNBOUNDED` this branch used to pass whenever it
+                // cannot work one out (card K36).
                 let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
                 painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
             }

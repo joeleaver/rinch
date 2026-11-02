@@ -1502,6 +1502,7 @@ fn full_repaint_gpu() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
+            (VelloClipTiles, 186),
         ],
     );
 }

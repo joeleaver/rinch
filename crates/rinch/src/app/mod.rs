@@ -196,6 +196,10 @@ mod game_viewport_base_layer_1866_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod game_viewport_inline_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_bump_overflow_2071_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_clip_groups_1645_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_partial_frame_1718_tests;
 #[cfg(test)]
 mod hidden_animation_frames_tests;
@@ -2132,6 +2136,12 @@ impl RinchApp {
                     (size.1 as f64 * scale).round(),
                 ));
             }
+            self.painter.set_tile_target(peniko::kurbo::Rect::new(
+                0.0,
+                0.0,
+                (size.0 as f64 * scale).round(),
+                (size.1 as f64 * scale).round(),
+            ));
             rinch_dom::paint::set_bases_without_game(sliced);
             if let Some(doc) = &self.doc {
                 let mut d = doc.borrow_mut();
@@ -2158,14 +2168,8 @@ impl RinchApp {
                     // Logical anchor/cursor, device-pixel snapshot — see
                     // `ActiveDrag::ghost_translate` (#299).
                     let (tx, ty) = drag.ghost_translate(scale);
-                    if sliced {
-                        self.painter
-                            .append_scene(&drag.snapshot, Affine::translate((tx, ty)));
-                    } else {
-                        self.painter
-                            .scene_mut()
-                            .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
-                    }
+                    self.painter
+                        .append_scene(&drag.snapshot, Affine::translate((tx, ty)));
                 }
             }
 
@@ -2204,6 +2208,7 @@ impl RinchApp {
             perf.full_repaint(FullRepaintReason::Gpu);
             perf.add(Counter::RepaintedPx, surface_px);
             perf.add(Counter::SurfacePx, surface_px);
+            perf.add(Counter::VelloClipTiles, self.painter.clip_tiles());
             perf.add_elapsed(Counter::TimePaintNs, paint_start);
         }
 
@@ -2244,6 +2249,23 @@ impl RinchApp {
             self.painter.begin_slicing(window);
             self.painter.refuse_split(&self.split.capped);
         }
+        // The target a partial frame is rendered to reaches the damage's far
+        // corner (`build_gpu_frame_split`); `S4` can shrink it after this paint.
+        let (w, h) = (
+            (size.0 as f64 * scale).round(),
+            (size.1 as f64 * scale).round(),
+        );
+        let far = |edge: fn(&peniko::kurbo::Rect) -> f64, whole: f64| {
+            rects.map_or(whole, |rects| {
+                rects.iter().map(edge).fold(0.0, f64::max).ceil().min(whole)
+            })
+        };
+        self.painter.set_tile_target(peniko::kurbo::Rect::new(
+            0.0,
+            0.0,
+            far(|r| r.x1, w),
+            far(|r| r.y1, h),
+        ));
         if let Some(rects) = rects {
             rinch_dom::paint::set_dirty_rects(Some(rects));
         }
@@ -2739,6 +2761,11 @@ impl RinchApp {
                     perf.add(Counter::DamageRects, damage.rects().len() as u64);
                     perf.add(Counter::RepaintedPx, (damage.area() as u64).min(surface_px));
                 }
+            }
+            // The last pass over the scene, the one that is rendered; none
+            // when nothing was painted, and the painter still holds an old one.
+            if full.is_some() || partial {
+                perf.add(Counter::VelloClipTiles, self.painter.clip_tiles());
             }
             perf.add_elapsed(Counter::TimePaintNs, paint_start);
         }
@@ -3737,7 +3764,7 @@ impl RinchApp {
                     (true, true) => EditCommand::DeleteToLineEnd,
                 })
             }
-            TextKeyAction::Inert => {}
+            TextKeyAction::Inert | TextKeyAction::ScrollPage { .. } => {}
         }
     }
     /// Whether the focused text field is an `<input type="password">`.
@@ -3778,6 +3805,9 @@ impl RinchApp {
             TextMotion::DocEnd => self.handle_line_edge(true, extend, true),
             TextMotion::LineUp => self.handle_vertical_arrow(false, extend),
             TextMotion::LineDown => self.handle_vertical_arrow(true, extend),
+            // A field is not routed Page Up / Down (`handle_text_key`'s
+            // callers name its keys); only the rich editor pages (#2020).
+            TextMotion::PageUp | TextMotion::PageDown => {}
         }
     }
     /// Enter in a focused text control.
@@ -12385,6 +12415,9 @@ mod click_viewport_tests {
 
 #[cfg(test)]
 mod editor_enter_scroll_tests;
+
+#[cfg(test)]
+mod editor_page_keys_2020_tests;
 #[cfg(test)]
 mod editor_scroll_gate_tests;
 #[cfg(test)]

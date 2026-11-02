@@ -448,6 +448,21 @@ define_counters! {
     /// find a negatively z-indexed descendant hoisted out of a changed box
     /// (at most 256 a changed box, on frames with a surface kept split).
     SplitHoistWalkNodes = "split_hoist_walk_nodes",
+    /// GPU only: an estimate of the tiles this frame's clips and layers ask
+    /// Vello for, in its 16px tiles. Vello allocates them over a clip's or
+    /// layer's whole bounds, whatever it holds, and its tile and ptcl buffers
+    /// are fixed: past them the frame is dropped, and a transparent window goes
+    /// blank (Pimble's nearly empty window asked for 2.8M). The sum, over each
+    /// clip and layer encoded into a scene, of the tiles its device bounding
+    /// box covers inside that scene's render target. A clip the painter elided
+    /// costs nothing. **Not Vello's `bump.tile`**: fills and glyphs are left
+    /// out, and a clip nested in a smaller one is overstated, since Vello cuts
+    /// it by its parents' bounds and this does not
+    /// (`VelloPainter::clip_tiles`). Added once for each frame that encodes a
+    /// scene, by the pass whose scene is rendered. `0` on a software frame
+    /// (tiny-skia has no tiles; `clip_mask_px` and `layer_px` are its cost) and
+    /// on a cached redraw, which encodes nothing.
+    VelloClipTiles = "vello_clip_tiles",
 
     // ── Input ──────────────────────────────────────────────────────────
     /// Hit tests run (`RinchApp::hit_test`).
