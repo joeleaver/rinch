@@ -51,7 +51,7 @@ fn doc() -> RinchDocument {
     d
 }
 
-fn text_nodes(d: &RinchDocument, id: usize, out: &mut Vec<usize>) {
+fn text_nodes(d: &RinchDocument, id: u64, out: &mut Vec<u64>) {
     let n = d.tree.get(id).unwrap();
     if matches!(n.kind, rinch_dom::node::NodeKind::Text(_)) {
         out.push(id);
@@ -100,7 +100,7 @@ fn carets(style: &str, html: &str) -> Vec<(f32, f32)> {
         };
         for o in 0..=len {
             let flat = dom_cursor_to_ifc_offset(&il.text_ranges, t, o).unwrap();
-            out.push(d.query_caret_position(c.0 as u64, flat).unwrap());
+            out.push(d.query_caret_position(c.0, flat).unwrap());
         }
     }
     out
@@ -343,7 +343,7 @@ fn a_press_on_a_tab_lands_on_its_nearer_side() {
 #[test]
 fn a_selected_tab_is_highlighted_to_its_stop() {
     let (d, c) = block("white-space: pre", "a\tb");
-    let rects = d.query_selection_rects(c.0 as u64, 1, 2);
+    let rects = d.query_selection_rects(c.0, 1, 2);
     assert_eq!(rects.len(), 1, "{rects:?}");
     let (x, _, w, _) = rects[0];
     assert!(

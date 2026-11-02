@@ -28,10 +28,10 @@ fn end_of(i: usize) -> Pos {
 struct Page {
     app: RinchApp,
     handle: crate::editor::EditorHandle,
-    scroller: usize,
-    editor: usize,
+    scroller: u64,
+    editor: u64,
     /// A `tabindex` box outside the editor that can hold the keyboard.
-    other: usize,
+    other: u64,
 }
 
 /// `blocks` paragraphs in a 160px scroller. `editor_is_scroller` makes the
@@ -43,7 +43,7 @@ fn page_with(blocks: usize, editor_is_scroller: bool) -> Page {
 
 /// [`page_with`], with `extra` appended to the scroller's style.
 fn page_styled(blocks: usize, editor_is_scroller: bool, extra: &'static str) -> Page {
-    let ids: Rc<Cell<(usize, usize, usize)>> = Rc::default();
+    let ids: Rc<Cell<(u64, u64, u64)>> = Rc::default();
     let ids_in = ids.clone();
     let handle = crate::editor::create_editor();
     let html: String = (0..blocks).map(|i| format!("<p>line {i:03}</p>")).collect();

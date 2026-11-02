@@ -1295,6 +1295,26 @@ claim, the table above decides.
 > `click.link.href` yourself (for example on `click.primary`, the Ctrl/Cmd+click
 > convention). Desktop never navigates: there is no browser to follow the link.
 
+**Decorating links with CSS generated content.** A stylesheet rule may add text
+around a mark, for example a small "opens outside" arrow after web links:
+
+```css
+[data-pm-editor] a[href^="http"]::after { content: "\2197"; font-size: 0.7em; }
+```
+
+That text is not in the document, and the caret and a press step over it. The
+caret right after the link is drawn before the arrow, as a browser draws it, and
+a press on the arrow puts the caret there; a character typed there still goes
+after the link (a link does not continue past its end), so it appears after the
+arrow. When the arrow wraps onto the next line, the caret after the link stays
+at the end of the link's line. A padded link is the exception on desktop: the
+caret after it is drawn past its padding, and so past the arrow too, unless the
+arrow wrapped. `::before` works the mirror way, on a mark or on a block: the
+caret before a link is drawn before its `::before` text, and a caret inside an
+inclusive mark (such as bold) at its start after it. On desktop the selection
+highlight leaves the generated text out; in the browser the highlight is drawn
+from the browser's own `Range` rectangles.
+
 ### Autocomplete popups: keys, selection and caret geometry
 
 Four handle methods are what an app needs to run a popup off the editor, like a
@@ -1498,6 +1518,7 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 | Tab / Shift+Tab | Move between table cells, else indent / outdent a list item. Consumed even where neither applies, so Tab never leaves an editable editor; an app that wants it to claims it in `on_key`. In a [read-only](#read-only) editor: move the focus to the next / previous Tab stop |
 | Backspace / Delete | Delete backward / forward |
 | Ctrl+Backspace / Ctrl+Delete (Alt on macOS) | Delete the word backward / forward |
+| Page Up / Page Down (Option+ on macOS) | Move the caret about a page (0.875 of the scroller's height) up / down at its column, scrolling the same amount; Shift extends. At the first / last line: the document's start / end. Read-only: scroll only. Plain Page Up / Down on macOS: scroll only |
 
 The four alignment chords are the Google Docs ones, and some of them are also
 chords of the browser or the platform, which may take the key before the editor
@@ -1514,6 +1535,29 @@ Cmd+Up / Cmd+Down to the document's, and Home / End leave the caret where it is
 (Shift+Home / Shift+End extend to the document's ends) — the same keys a desktop
 `<input>` or `<textarea>` takes (issue #951). On the web the word modifier is Ctrl
 or Cmd on every platform.
+
+Page Up and Page Down (issue #2020) follow Chrome's editing keys. The page is
+0.875 of the editor's nearest scroll container's height — the editor's own when it
+scrolls, at most the window's, the window's when nothing scrolls. The scroller
+moves a page and the caret moves to the point a page below (above) where it is,
+at the column Up and Down keep, so a caret on screen stays where it was there.
+The page is measured from the caret, not from the view: after scrolling away
+from the caret with the wheel, Page Down still moves it a page below where it
+is, and the view follows it (as in Chrome and Firefox). A scroller a
+`lock_scroll` overlay holds still is not paged, and nothing outside a
+`position: fixed` box (a modal) is: an editor in a modal pages only scrollers
+inside the modal. A page that reaches the document's last (first) line, or runs
+past the editor, puts the caret at the document's end (start), Shift extends
+the selection, and a [read-only](#read-only) editor
+scrolls a page and leaves the caret, as a read-only `<textarea>` does in Chrome.
+On macOS (desktop, and the web on a Mac) plain Page Up / Page Down scroll and
+leave the caret, Option+Page Up / Page Down move it and Shift+Page Up / Page Down
+extend. Chrome measures the page on the editable element rather than its
+scroller, so an editor inside a taller scroller pages further there than here,
+where the page is what is on screen (as in Firefox); and Chrome scrolls the
+caret's line to the top, where here the caret keeps its place on screen (as in
+Firefox). A virtualized editor pages into blocks it has not laid out yet: the
+page scrolls first, and the caret lands once they are.
 
 The word-delete chord is the one binding whose modifier differs by platform: on macOS Cmd+Backspace
 is the line delete, so the word deletes are Alt(Option)+Backspace / Alt+Delete

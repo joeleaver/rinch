@@ -111,7 +111,7 @@ fn painted_at(doc: &RinchDocument, id: NodeId, container: NodeId) -> (f32, f32) 
 }
 
 /// The DOM node whose Taffy child list holds `id`'s Taffy node.
-fn taffy_parent_dom(doc: &RinchDocument, id: NodeId) -> Option<usize> {
+fn taffy_parent_dom(doc: &RinchDocument, id: NodeId) -> Option<u64> {
     let t = doc.tree.get(id.0)?.taffy_id?;
     let p = doc.tree.taffy.parent(t)?;
     doc.tree.taffy_map.get(&p).copied()

@@ -230,6 +230,7 @@ Supported HTML-element event attributes:
 | `ondropfiles` | OS → app file drop on the desktop **and** the web (issue #1771): the files as `LocalFile`s (name, size, path where there is one, bytes read on demand). See [Files From the User](./platform.md#files-from-the-user-web-and-desktop) | `Fn(Vec<LocalFile>)` |
 | `onsubmit` | Enter in an `<input>` or `<textarea>` (Shift+Enter in a `<textarea>` inserts a line break instead), read from the control and then up its ancestors — see [Enter in a `<textarea>`](#enter-in-a-textarea) | `Fn()` |
 | `onkeydown` / `onkeyup` | A key pressed / released while the element, or a text control or focusable element inside it, holds the keyboard — see [Keys on an element](#keys-on-an-element) | `Fn(&KeyEventData) -> bool` — `true` consumes the key |
+| `onwheel` | A mouse wheel, trackpad scroll or trackpad pinch over the element or inside it — see [The wheel on an element](#the-wheel-on-an-element) | `Fn(&WheelEvent) -> bool` — `true` consumes the wheel, and nothing scrolls |
 
 That list is closed. Any other `on*` name on an HTML element — `onfocus`,
 `onblur`, a typo such as `onclik` — is a compile error that lists the
@@ -296,6 +297,50 @@ of a `[[`, so the popup stays put as the query is typed) answer where the caret
 is drawn, in logical window px on desktop and client px on the web, the space
 `EditorHandle::caret_rect` answers in. See [Reading the selection and the
 caret](./focus.md#reading-the-selection-and-the-caret).
+
+### The wheel on an element
+
+`onwheel` hears a wheel turn, a two-finger trackpad scroll and a trackpad
+pinch over the element, before any scroll container moves. It answers whether
+it **consumed** the wheel: `true` is the browser's `preventDefault()` — no
+ancestor's `onwheel` is offered it and no container scrolls. `false` lets it go
+on as if the handler were not there. The element under the pointer is asked
+first, then its ancestors, nearest first, until one consumes it.
+
+The [`WheelEvent`] has the DOM's sign and unit on both backends: `delta_x` and
+`delta_y` in logical pixels, positive when the content would move left / up (a
+wheel turned towards you scrolls down: a positive `delta_y`). A notched wheel
+is 40 px a line, a page the window's height. `x` and `y` are the pointer in
+the frame of `get_click_context().mouse_x`, and `modifiers` holds Shift, Ctrl,
+Alt and Meta.
+
+A **pinch** arrives as a wheel with `modifiers.ctrl` set, the way browsers
+report one (desktop turns a macOS or Wayland pinch gesture into the same
+thing), and `zoom_factor()` reads Ctrl+wheel and pinch alike as a scale (100 px
+of `delta_y` is a factor of *e*; above 1 zooms in). A canvas that zooms around
+the pointer on Ctrl/Cmd+wheel and pinch, and pans on a plain wheel:
+
+```rust
+div {
+    style: "overflow: hidden; width: 600px; height: 400px",
+    onwheel: move |w: &WheelEvent| {
+        if w.modifiers.ctrl || w.modifiers.meta {
+            zoom_around(w.zoom_factor(), w.x, w.y);
+        } else {
+            pan_by(-w.delta_x, -w.delta_y);
+        }
+        true // the page does not scroll, nor zoom for a pinch
+    },
+}
+```
+
+A render surface under the pointer takes the wheel first (its own
+`SurfaceEvent::MouseWheel`, or a `Pinch`), and no `onwheel` hears it. A touch
+pan on a touchscreen is not a wheel in a browser; on desktop and Android
+rinch's touch recogniser scrolls through the same path, so an `onwheel` there
+hears a touch pan too.
+
+[`WheelEvent`]: https://docs.rs/rinch/latest/rinch/prelude/struct.WheelEvent.html
 
 ### Pointer moves are coalesced
 
@@ -446,14 +491,16 @@ repeat). On web, two routes cover the two kinds of element:
   it does not activate the clickable around them.
 
 Neither route double-fires with the mouse: a pointer press dispatches from
-`pointerdown`, and the trailing `click` of that same gesture — including the
-extra click a `<label>` fires at its control — is suppressed, even if a key
-was pressed while the button was held. A press that dispatched nothing has
+`pointerdown`, and the trailing `click` of that same gesture is suppressed,
+even if a key was pressed while the button was held. So is the extra click a
+`<label>` fires at its control when it reaches a handler the press already ran;
+one that reaches a different handler runs it, once (see [Labels](#labels)
+below). A press that dispatched nothing has
 nothing to duplicate, so its clicks are not suppressed: a `<label for="x">`
 **outside** every handler, whose `<input id="x">` sits inside a clickable
 wrapper, activates that wrapper once by mouse as it does by keyboard (issue
-#272, web only — the desktop backend does not follow `for`, so there the
-press does nothing). The same rule lets a click through when something else
+#272; desktop runs the same label activation itself, #866 — see
+[Labels](#labels) below). The same rule lets a click through when something else
 swallowed the press: a third-party widget (a map, a chart) inside a clickable
 card that stops its own `pointerdown` from propagating now activates the card
 on release, as a browser's own `click` would — stop `click` too if the widget
@@ -473,6 +520,39 @@ browser — so a clicked `tabindex` element owns Enter/Space straight away,
 without having to be reached by Tab first. A component that wants the keys for
 itself (a code editor, a keyboard-driven grid) registers for them; see
 [Keyboard Focus](./focus.md).
+
+### Labels
+
+A press on a `<label>` activates the control it labels, on both backends, as a
+browser does: the control is **focused** and then **clicked**. The control is
+the element the label's `for` names (`label { "for": "email", "Email" }`, then
+`input { id: "email" }`), or, with no `for`, the first labelable element inside
+the label (`button`, `input` other than `hidden`, `meter`, `output`,
+`progress`, `select`, `textarea`). A `for` naming nothing labelable labels
+nothing — it does not fall back to a descendant. Focusing a text field puts the
+caret where `focus()` would; a `<select>` is focused closed. "Clicked" means
+the nearest `onclick` above the control runs, after the label's own, so
+`label { "for": "c" }` beside `div { onclick: …, input { r#type: "checkbox",
+id: "c" } }` runs that `onclick` once per press — and so does a label with an
+`onclick` of its own: the label's runs, then the control's (issue #2033).
+On desktop the activation runs on the **press**, as every desktop `onclick`
+does, where a browser waits for the click (press and release on the label): a
+press that is dragged off the label, or that starts a text selection in a
+`user-select: text` label, still activates the control on desktop. Only the
+nearest `onclick` above the control runs; a browser's forwarded click bubbles
+through all of the control's ancestors.
+
+Not activated: a press on interactive content inside the label (a `button`,
+a link, the control itself — that press is the element's own), a right or
+middle press, and a disabled control (its own `disabled`, or a
+`<fieldset disabled>` around it). A handler the press already ran is not run
+again by the label's click: `Checkbox`, `Radio` and `Switch` put their
+`onchange` on the `<label>` that wraps their `<input>`, and one press toggles
+them once. A browser runs such a handler twice; rinch-web suppresses the
+second as the gesture's duplicate (#272, #2033) and desktop never raises it
+(#866).
+`TextInput`'s and `Textarea`'s labels are not yet associated with their field,
+so a press on them focuses nothing on either backend (#2034).
 
 ### Enter in a `<textarea>`
 
@@ -496,7 +576,12 @@ keep the caret in view. Moving the caret or typing past an edge scrolls by the
 least that shows it, focusing a field whose caret is out of view centres it,
 and losing focus scrolls back to the start (Chrome 155's behaviour). Clicks,
 the selection highlight, the caret, `NodeHandle::caret_rect` and the IME
-candidate box all follow the scroll. A `<textarea>` wraps at its width.
+candidate box all follow the scroll. A `<textarea>` wraps at its content
+width and scrolls vertically (#827): its text is clipped to the field, a caret
+moved or typed past the top or bottom scrolls by the least that shows it, the
+mouse wheel and the overlay scrollbar scroll it when its text is taller than
+the box, and it keeps its scroll position when it loses focus, as in a
+browser.
 
 `onsubmit` is read the way `onchange` is: from the control, then up its
 ancestors, so an `onsubmit` on the wrapper around a field submits that field.

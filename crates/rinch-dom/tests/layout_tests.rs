@@ -1009,7 +1009,7 @@ fn test_blockified_input_keeps_its_height_when_focused() {
 /// The two ticks get a test apiece rather than one test that calls both: both
 /// rebuild the *whole* style, so whichever runs last decides the outcome, and a
 /// combined test passes with the earlier tick's call deleted.
-fn blockified_input_one_line_tall() -> (RinchDocument, usize) {
+fn blockified_input_one_line_tall() -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let input = doc.create_element("input");
@@ -1027,7 +1027,7 @@ fn blockified_input_one_line_tall() -> (RinchDocument, usize) {
 }
 
 /// The next layout after a tick must not find the control collapsed.
-fn assert_height_survived_relayout(doc: &mut RinchDocument, input: usize, what: &str) {
+fn assert_height_survived_relayout(doc: &mut RinchDocument, input: u64, what: &str) {
     doc.tree.layout_dirty = true;
     doc.resolve_layout(800.0, 600.0);
 
@@ -1072,7 +1072,7 @@ fn test_blockified_input_height_survives_an_animation_tick() {
 ///
 /// One document holds both cases; the split is by tick, for the reason
 /// `blockified_input_one_line_tall` records — whichever tick runs last decides.
-fn out_of_flow_boxes_sized_from_the_viewport() -> (RinchDocument, usize, usize) {
+fn out_of_flow_boxes_sized_from_the_viewport() -> (RinchDocument, u64, u64) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
 
@@ -1120,8 +1120,8 @@ fn out_of_flow_boxes_sized_from_the_viewport() -> (RinchDocument, usize, usize) 
 
 fn assert_viewport_size_survived_relayout(
     doc: &mut RinchDocument,
-    fixed_child: usize,
-    absolute_child: usize,
+    fixed_child: u64,
+    absolute_child: u64,
     what: &str,
 ) {
     doc.tree.layout_dirty = true;
@@ -1145,7 +1145,7 @@ fn assert_viewport_size_survived_relayout(
 fn test_out_of_flow_viewport_size_survives_a_transition_tick() {
     let (mut doc, fixed_child, absolute_child) = out_of_flow_boxes_sized_from_the_viewport();
 
-    let parents: Vec<usize> = [fixed_child, absolute_child]
+    let parents: Vec<u64> = [fixed_child, absolute_child]
         .iter()
         .map(|&n| doc.tree.get(n).unwrap().parent.unwrap())
         .collect();
@@ -1166,7 +1166,7 @@ fn test_out_of_flow_viewport_size_survives_a_transition_tick() {
 fn test_out_of_flow_viewport_size_survives_an_animation_tick() {
     let (mut doc, fixed_child, absolute_child) = out_of_flow_boxes_sized_from_the_viewport();
 
-    let parents: Vec<usize> = [fixed_child, absolute_child]
+    let parents: Vec<u64> = [fixed_child, absolute_child]
         .iter()
         .map(|&n| doc.tree.get(n).unwrap().parent.unwrap())
         .collect();

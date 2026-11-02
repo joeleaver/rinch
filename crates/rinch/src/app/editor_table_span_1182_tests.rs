@@ -67,8 +67,8 @@ fn table_doc(handle: &crate::editor::EditorHandle, rows: &[Vec<(i64, i64)>]) -> 
 }
 
 /// Mount an editor holding `rows` in a 400px column and lay it out.
-fn mounted(rows: &[Vec<(i64, i64)>]) -> (RinchApp, Vec<usize>, usize) {
-    let editor_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+fn mounted(rows: &[Vec<(i64, i64)>]) -> (RinchApp, Vec<u64>, u64) {
+    let editor_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let editor_in = editor_id.clone();
     let handle = crate::editor::create_editor();
     // As an app's own transaction: a load would cap the 1,000,000 colspans
@@ -95,13 +95,21 @@ fn mounted(rows: &[Vec<(i64, i64)>]) -> (RinchApp, Vec<usize>, usize) {
     let _ = editor_id.get().unwrap();
     let doc = app.doc.as_ref().unwrap().clone();
     let d = doc.borrow();
-    let cells: Vec<usize> = (0..d.tree.nodes.len())
+    let cells: Vec<u64> = d
+        .tree
+        .nodes
+        .iter()
+        .map(|(id, _)| id)
         .filter(|&id| {
             d.tree.nodes.get(id).is_some()
                 && d.get_attribute(NodeId(id), "data-pm-type").as_deref() == Some("table_cell")
         })
         .collect();
-    let table = (0..d.tree.nodes.len())
+    let table = d
+        .tree
+        .nodes
+        .iter()
+        .map(|(id, _)| id)
         .find(|&id| {
             d.tree.nodes.get(id).is_some()
                 && d.get_attribute(NodeId(id), "data-pm-type").as_deref() == Some("table")
@@ -111,7 +119,7 @@ fn mounted(rows: &[Vec<(i64, i64)>]) -> (RinchApp, Vec<usize>, usize) {
     (app, cells, table)
 }
 
-fn rect(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn rect(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let l = app.doc.as_ref().unwrap().borrow().tree.nodes[id].layout;
     (l.x, l.y, l.width, l.height)
 }
@@ -279,7 +287,7 @@ fn row_spans_lay_out_as_the_row_lines_they_replace() {
             .collect();
         let (mut app, cells, table) = mounted(&rows);
         let doc = app.doc.as_ref().unwrap().clone();
-        let style = |id: usize| {
+        let style = |id: u64| {
             doc.borrow()
                 .get_attribute(NodeId(id), "style")
                 .unwrap_or_default()

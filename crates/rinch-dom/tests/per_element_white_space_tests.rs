@@ -41,7 +41,7 @@ fn doc() -> RinchDocument {
     d
 }
 
-fn find(d: &RinchDocument, id: usize, want: &str) -> Option<usize> {
+fn find(d: &RinchDocument, id: u64, want: &str) -> Option<u64> {
     let n = d.tree.get(id)?;
     if n.attributes.get("id").map(String::as_str) == Some(want) {
         return Some(id);
@@ -339,7 +339,7 @@ fn offsets_across_mixed_modes_round_trip() {
     assert_eq!(d2f(t1, 4), vec![0, 1, 2, 2, 2]);
     assert_eq!(d2f(t2, 3), vec![2, 3, 4, 5]);
     assert_eq!(d2f(t3, 3), vec![5, 6, 6, 7]);
-    let f2d: Vec<(usize, usize)> = (0..=7)
+    let f2d: Vec<(u64, usize)> = (0..=7)
         .map(|f| {
             let (node, off) = ifc_offset_to_dom_cursor(&il.text_ranges, f, false).unwrap();
             (node, off)
@@ -473,7 +473,7 @@ fn pre_line_offsets_skip_the_spaces_around_a_newline() {
     // the two after it are gone; the held one after `b` goes at t2's newline.
     assert_eq!(d2f(t1, 8), vec![0, 1, 1, 1, 2, 2, 2, 3, 3]);
     assert_eq!(d2f(t2, 2), vec![3, 4, 5]);
-    let f2d: Vec<(usize, usize)> = (0..=5)
+    let f2d: Vec<(u64, usize)> = (0..=5)
         .map(|f| ifc_offset_to_dom_cursor(&il.text_ranges, f, false).unwrap())
         .collect();
     assert_eq!(f2d[1], (t1.0, 3));

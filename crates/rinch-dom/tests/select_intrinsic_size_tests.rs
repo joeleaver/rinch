@@ -63,7 +63,7 @@ fn document() -> RinchDocument {
 
 /// `div(font: 16px/20px ProbeFace; width: 600px) > select(style) > options`,
 /// laid out. Returns the document and the select.
-fn select_in(select_css: &str, options: &[&str]) -> (RinchDocument, usize) {
+fn select_in(select_css: &str, options: &[&str]) -> (RinchDocument, u64) {
     let mut doc = document();
     let body = doc.body();
     let div = doc.create_element("div");

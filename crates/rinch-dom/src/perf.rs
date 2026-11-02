@@ -97,7 +97,10 @@ define_counters! {
     /// ...because the theme or another whole-document style input changed
     /// (`recompute_all_styles_full`).
     FullRestyleTheme = "full_restyle_theme",
-    /// ...because a `<style>` element's text changed (`maybe_load_style_css`).
+    /// ...because a stylesheet was added, replaced or removed (`load_css`, a
+    /// `<style>` element) with a rule Stylo's stylesheet invalidation cannot
+    /// target by id, class or tag (`flush_stylist`, #884). A sheet it can
+    /// target restyles only the elements it names and counts nothing here.
     FullRestyleStylesheet = "full_restyle_stylesheet",
     /// ...because the device pixel ratio changed.
     FullRestyleDpr = "full_restyle_dpr",
@@ -175,11 +178,15 @@ define_counters! {
     /// weight, style, letter-spacing or word-spacing changes; a restyle that
     /// moves none of them shapes none.
     ShapeFormControlLabel = "shape_form_control_label",
-    /// Parley layouts built to scroll a focused single-line `<input>`
-    /// (#1721): its displayed text, unwrapped, to find the caret's x and the
-    /// line's width. One per change of that text, its caret or its font; paint,
-    /// the IME poll, a click and the caret rect at an unchanged state reuse it
-    /// (`form_control::displayed_line_metrics`).
+    /// Parley layouts built to scroll a text control: a focused single-line
+    /// `<input>`'s displayed text, unwrapped, for the caret's x and the line's
+    /// width (#1721), and a `<textarea>`'s, wrapped, for the caret's line and
+    /// the text's height — its scroll extent (#827). One per change of that
+    /// text, its wrap width or its font; paint, the IME poll, a click, the
+    /// wheel and the caret rect at an unchanged state reuse it, and a caret
+    /// move in the focused field reads the caret off its kept layout
+    /// (`form_control::displayed_metrics`). An unfocused field keeps no layout,
+    /// so a caret write to one shapes.
     ShapeInputScroll = "shape_input_scroll",
     /// IFC measures served from `ifc_measure_cache` without shaping.
     IfcMeasureCacheHits = "ifc_measure_cache_hits",
@@ -441,6 +448,21 @@ define_counters! {
     /// find a negatively z-indexed descendant hoisted out of a changed box
     /// (at most 256 a changed box, on frames with a surface kept split).
     SplitHoistWalkNodes = "split_hoist_walk_nodes",
+    /// GPU only: an estimate of the tiles this frame's clips and layers ask
+    /// Vello for, in its 16px tiles. Vello allocates them over a clip's or
+    /// layer's whole bounds, whatever it holds, and its tile and ptcl buffers
+    /// are fixed: past them the frame is dropped, and a transparent window goes
+    /// blank (Pimble's nearly empty window asked for 2.8M). The sum, over each
+    /// clip and layer encoded into a scene, of the tiles its device bounding
+    /// box covers inside that scene's render target. A clip the painter elided
+    /// costs nothing. **Not Vello's `bump.tile`**: fills and glyphs are left
+    /// out, and a clip nested in a smaller one is overstated, since Vello cuts
+    /// it by its parents' bounds and this does not
+    /// (`VelloPainter::clip_tiles`). Added once for each frame that encodes a
+    /// scene, by the pass whose scene is rendered. `0` on a software frame
+    /// (tiny-skia has no tiles; `clip_mask_px` and `layer_px` are its cost) and
+    /// on a cached redraw, which encodes nothing.
+    VelloClipTiles = "vello_clip_tiles",
 
     // ── Input ──────────────────────────────────────────────────────────
     /// Hit tests run (`RinchApp::hit_test`).

@@ -34,7 +34,7 @@ fn pseudo_count(doc: &RinchDocument) -> usize {
         .count()
 }
 
-fn generated(doc: &RinchDocument, owner: NodeId) -> Option<usize> {
+fn generated(doc: &RinchDocument, owner: NodeId) -> Option<u64> {
     doc.tree
         .get(owner.0)
         .unwrap()

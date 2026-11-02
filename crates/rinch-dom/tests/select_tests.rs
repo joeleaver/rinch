@@ -9,7 +9,7 @@ type OptSpec<'a> = (Option<&'a str>, &'a str, &'a [(&'a str, &'a str)]);
 
 /// Build a `<select>` with the given options and an optional `value` attribute on
 /// the select itself. Returns (doc, select_id).
-fn build_select(select_value: Option<&str>, options: &[OptSpec]) -> (RinchDocument, usize) {
+fn build_select(select_value: Option<&str>, options: &[OptSpec]) -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let sel = doc.create_element("select");

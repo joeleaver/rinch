@@ -77,6 +77,10 @@ impl std::str::FromStr for NumberInputSize {
 pub struct NumberInput {
     /// Input label.
     pub label: String,
+    /// The field's `id` (Mantine's `id`): its label's `for` names it, and the
+    /// description and error are `{id}-description` / `{id}-error`. Empty
+    /// generates a unique one per render (issue #2034).
+    pub id: String,
     /// Description text.
     pub description: String,
     /// Error message.
@@ -134,6 +138,7 @@ impl std::fmt::Debug for NumberInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NumberInput")
             .field("label", &self.label)
+            .field("id", &self.id)
             .field("description", &self.description)
             .field("error", &self.error)
             .field("placeholder", &self.placeholder)
@@ -235,19 +240,24 @@ impl Component for NumberInput {
         container.set_attribute("class", &self.class_string());
 
         // Label
+        let ids = crate::field_ids::FieldIds::new(&self.id);
+        let mut label_node = None;
         if !self.label.is_empty() {
             let label_text = &self.label;
             let required_mark = if self.required { " *" } else { "" };
             let label = rinch_macros::rsx! { label { class: "rinch-number-input__label", {format!("{}{}", label_text, required_mark)} } };
             container.append_child(&label);
+            label_node = Some(label);
         }
 
         // Description
+        let mut desc_node = None;
         if !self.description.is_empty() {
             let desc = &self.description;
             let desc_div =
                 rinch_macros::rsx! { div { class: "rinch-number-input__description", {desc} } };
             container.append_child(&desc_div);
+            desc_node = Some(desc_div);
         }
 
         // Input wrapper
@@ -510,11 +520,22 @@ impl Component for NumberInput {
         container.append_child(&wrapper);
 
         // Error message
+        let mut err_node = None;
         if !self.error.is_empty() {
             let err = &self.error;
             let err_div = rinch_macros::rsx! { div { class: "rinch-number-input__error", {err} } };
             container.append_child(&err_div);
+            err_node = Some(err_div);
         }
+
+        // The label names the field (#2034).
+        ids.wire(
+            &input,
+            true,
+            label_node.as_ref(),
+            desc_node.as_ref(),
+            err_node.as_ref(),
+        );
 
         container
     }

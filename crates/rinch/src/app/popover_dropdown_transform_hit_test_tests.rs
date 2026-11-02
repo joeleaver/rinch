@@ -86,7 +86,7 @@ fn mount(opened: bool, onclose: Callback) -> RinchApp {
     app
 }
 
-fn find_by_class(app: &RinchApp, class: &str) -> usize {
+fn find_by_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree

@@ -130,7 +130,7 @@ fn escape(app: &mut RinchApp) {
 ///
 /// Iterated with `Slab::iter`, not `0..nodes.len()`: a slab's `len()` is its
 /// *occupied* count, so a freed node anywhere makes an index range miss.
-fn find_by_class(app: &RinchApp, class: &str) -> usize {
+fn find_by_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -145,7 +145,7 @@ fn find_by_class(app: &RinchApp, class: &str) -> usize {
         .unwrap_or_else(|| panic!("no node carries the class {class}"))
 }
 
-fn has_class(app: &RinchApp, node_id: usize, class: &str) -> bool {
+fn has_class(app: &RinchApp, node_id: u64, class: &str) -> bool {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -154,7 +154,7 @@ fn has_class(app: &RinchApp, node_id: usize, class: &str) -> bool {
         .is_some_and(|c| c.split_whitespace().any(|one| one == class))
 }
 
-fn box_of(app: &RinchApp, node_id: usize) -> (f32, f32, f32, f32) {
+fn box_of(app: &RinchApp, node_id: u64) -> (f32, f32, f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let (x, y, w, h) = painted_element_box(&d.tree, node_id);
@@ -165,7 +165,7 @@ fn covers(b: (f32, f32, f32, f32), x: f32, y: f32) -> bool {
     x >= b.0 && x < b.2 && y >= b.1 && y < b.3
 }
 
-fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, node_id: u64) -> (f32, f32) {
     let (x0, y0, x1, y1) = box_of(app, node_id);
     assert!(
         x1 > x0 && y1 > y0,
@@ -179,7 +179,7 @@ struct Field {
     app: RinchApp,
     /// The clipping shell, so a test can prove a sample point is outside it
     /// rather than assert that from the style string.
-    shell: usize,
+    shell: u64,
     /// Every colour the input reported, so "the tap reached the picker" is an
     /// observation rather than an inference from "it stayed open".
     picks: Rc<RefCell<Vec<String>>>,
@@ -189,7 +189,7 @@ struct Field {
 }
 
 impl Field {
-    fn root(&self) -> usize {
+    fn root(&self) -> u64 {
         find_by_class(&self.app, "rinch-color-input")
     }
 
@@ -215,7 +215,7 @@ impl Field {
 /// viewport, with one preset swatch in its picker.
 fn mount_field(close_on_click_outside: bool) -> Field {
     let picks: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let shell_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let shell_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
 
     let shell_presses: Rc<Cell<usize>> = Rc::new(Cell::new(0));
 
@@ -568,7 +568,7 @@ fn escape_passes_a_picker_its_closed_modal_no_longer_renders() {
 /// so the fixture does not depend on a 300ms transition.
 #[test]
 fn escape_passes_a_picker_under_a_visibility_hidden_ancestor() {
-    let wrapper_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let wrapper_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let wrapper_in = wrapper_id.clone();
     let mut app = mount(move |scope: &mut RenderScope| {
         let wrapper = scope.create_element("div");
@@ -897,7 +897,7 @@ struct Flanked {
 
 fn mount_flanked() -> Flanked {
     let picks: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let shell_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let shell_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let after_slot: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
 
     let picks_in = picks.clone();
@@ -946,7 +946,7 @@ fn mount_flanked() -> Flanked {
 }
 
 impl Flanked {
-    fn input(&self) -> usize {
+    fn input(&self) -> u64 {
         find_by_class(&self.field.app, "rinch-color-input__input")
     }
 
@@ -995,7 +995,7 @@ impl Flanked {
         self.field.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
     }
 
-    fn after_id(&self) -> usize {
+    fn after_id(&self) -> u64 {
         self.after.node_id().0
     }
 }

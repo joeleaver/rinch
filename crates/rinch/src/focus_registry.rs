@@ -210,7 +210,7 @@ impl FocusEntry {
 /// One registered focus target.
 struct Registered {
     doc_key: u64,
-    node_id: usize,
+    node_id: u64,
     /// Names the `register_focus_target` call that made this entry
     /// (issue #1490).
     token: u64,
@@ -247,7 +247,7 @@ impl FreedFocusLost {
 }
 
 impl Registered {
-    fn is_at(&self, doc_key: u64, node_id: usize) -> bool {
+    fn is_at(&self, doc_key: u64, node_id: u64) -> bool {
         self.doc_key == doc_key && self.node_id == node_id
     }
 }
@@ -270,11 +270,11 @@ thread_local! {
     /// The node each document's arbiter claim is on, as `FocusTarget::Node`
     /// (kept by [`note_claim`]). Lets [`forget_freed_nodes`] tell the one
     /// freed target still owed an `on_focus_lost` from the rest (#1509).
-    static CLAIMED: RefCell<HashMap<u64, usize>> = RefCell::new(HashMap::new());
+    static CLAIMED: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
 
     /// Targets freed while they held their document's claim, until the arbiter
     /// releases it (at most one per document).
-    static FREED: RefCell<Vec<(u64, usize, FreedFocusLost)>> = const { RefCell::new(Vec::new()) };
+    static FREED: RefCell<Vec<(u64, u64, FreedFocusLost)>> = const { RefCell::new(Vec::new()) };
 
     /// The next registration token. Never reused.
     static NEXT_TOKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -329,7 +329,7 @@ pub fn register_focus_target(node: &NodeHandle, entry: FocusEntry) {
 
 /// Forget the target `token` registered at `(doc_key, node_id)`, if it is
 /// still the one registered there (issue #1490).
-fn unregister_focus_target(doc_key: u64, node_id: usize, token: u64) {
+fn unregister_focus_target(doc_key: u64, node_id: u64, token: u64) {
     TARGETS.with(|t| {
         t.borrow_mut()
             .retain(|r| !(r.is_at(doc_key, node_id) && r.token == token))
@@ -356,7 +356,7 @@ fn has_targets() -> bool {
 /// all if the component is disposed by then. Every other freed entry is
 /// dropped silently. Linear in `ids` plus the registered targets.
 fn forget_freed_nodes(doc_key: u64, ids: &[NodeId]) {
-    let freed: HashSet<usize> = ids.iter().map(|id| id.0).collect();
+    let freed: HashSet<u64> = ids.iter().map(|id| id.0).collect();
     let claimed = CLAIMED.with(|c| c.borrow().get(&doc_key).copied());
     let removed: Vec<Registered> = TARGETS.with(|t| {
         let mut t = t.borrow_mut();
@@ -385,7 +385,7 @@ fn forget_freed_nodes(doc_key: u64, ids: &[NodeId]) {
 /// `FocusTarget::Node`). Called on every arbiter transition, after the
 /// previous owner's teardown has taken what it was owed, so a parked freed
 /// target that is no longer the claim is dropped here.
-pub(crate) fn note_claim(doc_key: u64, node_id: Option<usize>) {
+pub(crate) fn note_claim(doc_key: u64, node_id: Option<u64>) {
     CLAIMED.with(|c| {
         let mut c = c.borrow_mut();
         match node_id {
@@ -406,13 +406,13 @@ pub(crate) fn note_claim(doc_key: u64, node_id: Option<usize>) {
 
 /// The claim [`note_claim`] last recorded for `doc_key`.
 #[cfg(test)]
-pub(crate) fn claimed_for_tests(doc_key: u64) -> Option<usize> {
+pub(crate) fn claimed_for_tests(doc_key: u64) -> Option<u64> {
     CLAIMED.with(|c| c.borrow().get(&doc_key).copied())
 }
 
 /// Whether the claim on `(doc_key, node_id)` is a target `set_inner_html`
 /// freed (#1509): the arbiter must release it, whatever node now has the id.
-pub(crate) fn was_freed(doc_key: u64, node_id: usize) -> bool {
+pub(crate) fn was_freed(doc_key: u64, node_id: u64) -> bool {
     FREED.with(|f| {
         f.borrow()
             .iter()
@@ -422,7 +422,7 @@ pub(crate) fn was_freed(doc_key: u64, node_id: usize) -> bool {
 
 /// Take the `on_focus_lost` owed to a target freed while it held the claim
 /// on `(doc_key, node_id)`, for the arbiter's teardown of that claim.
-pub(crate) fn take_freed(doc_key: u64, node_id: usize) -> Option<FreedFocusLost> {
+pub(crate) fn take_freed(doc_key: u64, node_id: u64) -> Option<FreedFocusLost> {
     FREED.with(|f| {
         let mut f = f.borrow_mut();
         let i = f
@@ -435,12 +435,12 @@ pub(crate) fn take_freed(doc_key: u64, node_id: usize) -> Option<FreedFocusLost>
 /// The entry registered at `(doc_key, node_id)`, if any. Cloned out of the
 /// registry so the callback runs with no borrow held — it is user code and may
 /// register or unregister targets itself.
-fn entry_for(doc_key: u64, node_id: usize) -> Option<Rc<FocusEntry>> {
+fn entry_for(doc_key: u64, node_id: u64) -> Option<Rc<FocusEntry>> {
     framed_entry_for(doc_key, node_id).map(|(entry, _)| entry)
 }
 
 /// [`entry_for`] with the frame its callbacks run in (issue #1032).
-fn framed_entry_for(doc_key: u64, node_id: usize) -> Option<(Rc<FocusEntry>, CallbackFrame)> {
+fn framed_entry_for(doc_key: u64, node_id: u64) -> Option<(Rc<FocusEntry>, CallbackFrame)> {
     TARGETS.with(|t| {
         t.borrow()
             .iter()
@@ -461,7 +461,7 @@ fn framed_entry_for(doc_key: u64, node_id: usize) -> Option<(Rc<FocusEntry>, Cal
 /// before `rinch-dom` can mint another node on its id (#1509). A freed target
 /// that held the claim is still owed `on_focus_lost` — see
 /// [`forget_freed_nodes`].
-pub(crate) fn is_registered(doc_key: u64, node_id: usize) -> bool {
+pub(crate) fn is_registered(doc_key: u64, node_id: u64) -> bool {
     TARGETS.with(|t| t.borrow().iter().any(|r| r.is_at(doc_key, node_id)))
 }
 
@@ -478,14 +478,14 @@ pub(crate) fn is_registered(doc_key: u64, node_id: usize) -> bool {
 /// the runtime's own activation path. `false` for an unregistered node (the
 /// plain-button case) and for a registered one that only asked for
 /// focus/blur/IME notifications, not keys.
-pub(crate) fn wants_key_routing(doc_key: u64, node_id: usize) -> bool {
+pub(crate) fn wants_key_routing(doc_key: u64, node_id: u64) -> bool {
     entry_for(doc_key, node_id).is_some_and(|entry| entry.on_key.is_some())
 }
 
 /// Fire `on_focus_gained` for a registered target. A no-op for an unregistered
 /// node — every generic `tabindex` node takes `FocusTarget::Node`, only some of
 /// them registered for the news.
-pub(crate) fn notify_focus_gained(doc_key: u64, node_id: usize) {
+pub(crate) fn notify_focus_gained(doc_key: u64, node_id: u64) {
     if let Some((entry, frame)) = framed_entry_for(doc_key, node_id)
         && let Some(cb) = entry.on_focus_gained.clone()
     {
@@ -497,7 +497,7 @@ pub(crate) fn notify_focus_gained(doc_key: u64, node_id: usize) {
 
 /// Fire `on_focus_lost` for a registered target. Callers must have completed
 /// the focus transition first — this is user code (see [`FocusEntry::on_focus_lost`]).
-pub(crate) fn notify_focus_lost(doc_key: u64, node_id: usize) {
+pub(crate) fn notify_focus_lost(doc_key: u64, node_id: u64) {
     if let Some((entry, frame)) = framed_entry_for(doc_key, node_id)
         && let Some(cb) = entry.on_focus_lost.clone()
     {
@@ -508,7 +508,7 @@ pub(crate) fn notify_focus_lost(doc_key: u64, node_id: usize) {
 
 /// Offer `key` to the target focused at `(doc_key, node_id)`. `true` means the
 /// target consumed it and the runtime must not handle it further.
-pub(crate) fn offer_key(doc_key: u64, node_id: usize, key: &KeyEventData) -> bool {
+pub(crate) fn offer_key(doc_key: u64, node_id: u64, key: &KeyEventData) -> bool {
     framed_entry_for(doc_key, node_id)
         .and_then(|(entry, frame)| Some((entry.on_key.clone()?, frame)))
         .is_some_and(|(cb, frame)| {
@@ -525,7 +525,7 @@ pub(crate) fn offer_key(doc_key: u64, node_id: usize, key: &KeyEventData) -> boo
 /// toolbar button), so focusing those does not switch the OS input method on.
 /// An unmounted target answers `false` for free — its registration is gone.
 #[cfg(any(feature = "desktop", feature = "embed", test))] // read only by `RinchApp::ime_state`
-pub(crate) fn wants_ime(doc_key: u64, node_id: usize) -> bool {
+pub(crate) fn wants_ime(doc_key: u64, node_id: u64) -> bool {
     entry_for(doc_key, node_id).is_some_and(|entry| entry.on_ime.is_some())
 }
 
@@ -533,7 +533,7 @@ pub(crate) fn wants_ime(doc_key: u64, node_id: usize) -> bool {
 /// from its [`FocusEntry::caret_rect`] provider. `None` when it has none, or
 /// when it has no caret right now.
 #[cfg(any(feature = "desktop", feature = "embed", test))] // read only by `RinchApp::ime_state`
-pub(crate) fn caret_rect_of(doc_key: u64, node_id: usize) -> Option<(f32, f32, f32, f32)> {
+pub(crate) fn caret_rect_of(doc_key: u64, node_id: u64) -> Option<(f32, f32, f32, f32)> {
     entry_for(doc_key, node_id)
         .and_then(|entry| entry.caret_rect.clone())
         .and_then(|cb| cb())
@@ -542,7 +542,7 @@ pub(crate) fn caret_rect_of(doc_key: u64, node_id: usize) -> Option<(f32, f32, f
 /// Deliver `ime` to the target focused at `(doc_key, node_id)`. Returns whether
 /// anything consumed it — `false` for an unregistered, unmounted, or non-text
 /// target, which is the same silence rule the focus callbacks obey.
-pub(crate) fn offer_ime(doc_key: u64, node_id: usize, ime: &ImeEvent) -> bool {
+pub(crate) fn offer_ime(doc_key: u64, node_id: u64, ime: &ImeEvent) -> bool {
     match framed_entry_for(doc_key, node_id)
         .and_then(|(entry, frame)| Some((entry.on_ime.clone()?, frame)))
     {

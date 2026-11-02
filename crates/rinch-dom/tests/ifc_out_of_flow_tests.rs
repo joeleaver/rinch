@@ -128,7 +128,7 @@ fn text_either_side_of_an_absolute_child_stays_on_one_line_with_no_anon_box() {
         (h - 20.0).abs() < 1.0,
         "both text runs share one line box, so the row is one line tall, got {h}"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 }
 
 // ── the trap: fixing `has_block` alone strands the text ─────────────────────
@@ -320,7 +320,7 @@ fn a_text_plus_absolute_container_gets_its_line_height() {
         );
         doc.resolve_layout(VW, VH);
 
-        assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+        assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
         let h = height_of(&doc, container);
         assert!(
             (h - 30.0).abs() < 2.0,
@@ -394,7 +394,7 @@ fn the_measure_child_carries_the_moved_context() {
         ),
         "a move, not a copy: the container (a non-leaf) must not keep the context"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 }
 
 /// The absolute child is laid out by Taffy — and **painted** — at its
@@ -550,7 +550,7 @@ fn a_runtime_position_toggle_reruns_ifc_setup() {
         (x - 5.0).abs() < 0.5 && (y - 5.0).abs() < 0.5,
         "the toggled child is laid out at its insets, got ({x}, {y})"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 
     // absolute → static: the anonymous box must come back, the leaf must go.
     doc.set_attribute(child, "style", "width: 50px; height: 30px");
@@ -566,7 +566,7 @@ fn a_runtime_position_toggle_reruns_ifc_setup() {
     );
     let h = height_of(&doc, container);
     assert!((h - 50.0).abs() < 2.0, "line + block again, got {h}");
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 }
 
 /// A text edit reaches the measure through Taffy's per-node cache: marking the
@@ -685,7 +685,7 @@ fn a_late_inserted_absolute_child_is_attached_by_canonicalization() {
         (x1 - 200.0).abs() < 0.5 && (y1 - 0.0).abs() < 0.5,
         "the original absolute child keeps its own insets, got ({x1}, {y1})"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 }
 
 /// Block virtualization rides the same leaf: a collapsed `text + absolute`
@@ -750,7 +750,7 @@ fn a_virtualized_text_plus_absolute_root_collapses_to_its_estimate() {
         "the collapsed block must take its 24px estimate, got {collapsed_h} \
          (full height was {full_h})"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 }
 
 /// The invariant predicate covers the measure leaves — PR 1's coverage note
@@ -779,7 +779,7 @@ fn the_predicate_reports_a_doctored_measure_child() {
         "position: absolute; left: 5px; top: 5px; width: 10px; height: 10px",
     );
     doc.resolve_layout(VW, VH);
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 
     let &leaf = doc.tree.ifc_measure_leaves.get(&container.0).unwrap();
     let extra = doc.tree.taffy.new_leaf(Default::default()).unwrap();
@@ -868,7 +868,7 @@ fn a_root_that_gains_an_absolute_child_hands_its_context_to_the_leaf() {
         ),
         "the old context must be cleared off the now-non-leaf root"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     let h = height_of(&doc, container);
     assert!((h - 20.0).abs() < 2.0, "still one measured line, got {h}");
 }
@@ -991,7 +991,7 @@ fn an_absolutely_positioned_contents_wrapper_still_counts_as_block_content() {
         "precondition: the position predicate alone calls it out of flow"
     );
 
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     assert_eq!(
         anon_box_count(&doc),
         2,
@@ -1061,7 +1061,7 @@ fn text_behind_a_contents_wrapper_flows_and_its_absolute_grandchild_paints() {
     text_in(&mut doc, wrapper, "BBBB");
     doc.resolve_layout(VW, VH);
 
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     assert_eq!(
         anon_box_count(&doc),
         0,
@@ -1124,7 +1124,7 @@ fn a_contents_wrapped_absolute_grandchild_gets_the_measure_leaf() {
     );
     doc.resolve_layout(VW, VH);
 
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     assert_eq!(
         doc.tree.get(wrapper.0).unwrap().ifc_root,
         Some(container.0),
@@ -1208,7 +1208,7 @@ fn an_absolutely_positioned_contents_wrapper_recurses_display_first_in_the_scan(
         doc.tree.get(wrapper.0).unwrap().is_out_of_flow(),
         "precondition: the position predicate alone calls the wrapper out of flow"
     );
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     assert_eq!(
         doc.tree.get(a.0).unwrap().ifc_root,
         Some(container.0),
@@ -1252,7 +1252,7 @@ fn a_wrapper_mixing_text_and_an_in_flow_block_stays_opaque() {
     );
     doc.resolve_layout(VW, VH);
 
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     assert_eq!(
         doc.tree.get(wrapper.0).unwrap().ifc_root,
         None,
@@ -1319,7 +1319,7 @@ fn a_nested_transparent_wrapper_still_hands_its_absolute_box_to_taffy() {
     text_in(&mut doc, inner, "world");
     doc.resolve_layout(VW, VH);
 
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     assert!(
         doc.tree.ifc_measure_leaves.contains_key(&container.0),
         "the container gets its measure leaf"
@@ -1425,7 +1425,7 @@ fn an_absolutely_positioned_nested_wrapper_still_hands_its_absolute_box_to_taffy
         "precondition: the position predicate alone calls it out of flow"
     );
 
-    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
     assert!(
         doc.tree.ifc_measure_leaves.contains_key(&container.0),
         "the container gets its measure leaf"

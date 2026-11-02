@@ -17,7 +17,7 @@ pub struct VelloPainter {
     /// Open on a frame the runtime paints for the split-layer path (#1865).
     slicing: Option<Slicing>,
     /// See [`Self::node_starts`].
-    node_starts: std::collections::HashMap<usize, usize>,
+    node_starts: std::collections::HashMap<crate::node::RawNodeId, usize>,
     /// This scene holds a layer that blends with its backdrop (grayscale's
     /// saturation): appended over a split surface, it taints it (D5a).
     reads_backdrop: bool,
@@ -26,6 +26,90 @@ pub struct VelloPainter {
     /// otherwise the draw itself (#1899 review: the routing generic cost
     /// 8.1k instructions a text page with no surface).
     routing: bool,
+    /// The clips and layers open, each with whether its pop reaches the scene
+    /// and the region drawing is confined to with it open: see
+    /// [`Painter::push_clip`] here.
+    open: Vec<OpenLayer>,
+    /// The render target tiles are counted inside: see [`Self::set_tile_target`].
+    tile_target: Rect,
+    /// See [`Self::clip_tiles`].
+    clip_tiles: u64,
+}
+
+/// One clip or layer [`VelloPainter`] has open.
+#[derive(Clone, Copy)]
+struct OpenLayer {
+    /// Its pop has something to pop; `false` for a clip elided as cutting nothing.
+    pushed: bool,
+    /// Device bounds drawing is confined to while this is open.
+    region: Rect,
+    /// `region` is exactly what the open clips leave, not just its bounds:
+    /// every one of them is an axis-aligned rect. Only then is a clip judged
+    /// against it: a rounded clip leaves less than its bounds.
+    exact: bool,
+}
+
+/// No confinement: before any clip is open.
+const EVERYWHERE: Rect = Rect::new(
+    f64::NEG_INFINITY,
+    f64::NEG_INFINITY,
+    f64::INFINITY,
+    f64::INFINITY,
+);
+
+/// Vello's tile edge (`TILE_WIDTH`, `TILE_HEIGHT` in its shaders), in device
+/// pixels.
+const VELLO_TILE_PX: f64 = 16.0;
+
+/// The tiles a clip or layer with device bounds `bounds` costs in a render to
+/// `target`: the 16px tiles its bounds cover once clipped to the target, as
+/// `tile_alloc.wgsl` rounds them (down at the near edges, up at the far ones).
+/// An empty box, in or clipped by the target, costs none.
+///
+/// An estimate of what a clip or layer costs, not Vello's `bump.tile`: see
+/// [`VelloPainter::clip_tiles`].
+pub(crate) fn tile_cost(bounds: Rect, target: Rect) -> u64 {
+    let b = bounds.intersect(target);
+    if b.width() <= 0.0 || b.height() <= 0.0 {
+        return 0;
+    }
+    let span = |near: f64, far: f64| {
+        ((far / VELLO_TILE_PX).ceil() - (near / VELLO_TILE_PX).floor()) as u64
+    };
+    span(b.x0, b.x1).saturating_mul(span(b.y0, b.y1))
+}
+
+/// Whether clipping to `shape` under `transform` can remove nothing from
+/// `region` (device bounds drawing is already confined to): an axis-aligned
+/// rect, or rounded rect, that holds all of it. Conservative: `false` for any
+/// other shape or transform.
+fn clip_holds(transform: Affine, shape: &PaintShape, region: Rect) -> bool {
+    let [sx, b, c, sy, _, _] = transform.as_coeffs();
+    if b != 0.0 || c != 0.0 || !region.is_finite() {
+        return false;
+    }
+    let holds = |outer: Rect, inner: Rect| {
+        outer.x0 <= inner.x0 && outer.y0 <= inner.y0 && outer.x1 >= inner.x1 && outer.y1 >= inner.y1
+    };
+    match shape {
+        PaintShape::Rect(r) => holds(transform.transform_rect_bbox(*r), region),
+        PaintShape::RoundedRect(rr) => {
+            // A point of the rect lies outside the rounded shape only inside a
+            // corner square of the radius' size: a region clear of the corners
+            // in either axis is inside.
+            let outer = transform.transform_rect_bbox(rr.rect());
+            let radii = rr.radii();
+            let r = radii
+                .top_left
+                .max(radii.top_right)
+                .max(radii.bottom_left)
+                .max(radii.bottom_right)
+                * sx.abs().max(sy.abs());
+            holds(outer, region)
+                && (holds(outer.inset((-r, 0.0)), region) || holds(outer.inset((0.0, -r)), region))
+        }
+        _ => false,
+    }
 }
 
 /// Paint `$body` (with `$s` the scene) where it belongs: on a frame with no
@@ -54,7 +138,74 @@ impl VelloPainter {
             node_starts: Default::default(),
             reads_backdrop: false,
             routing: false,
+            open: Vec::new(),
+            tile_target: EVERYWHERE,
+            clip_tiles: 0,
         }
+    }
+
+    /// The render target this frame's scene will be drawn to, in device
+    /// pixels: [`Self::clip_tiles`] counts inside it. Call after
+    /// [`Painter::reset`], which forgets it, and after
+    /// [`Self::begin_slicing`], before painting. With none, nothing is cut:
+    /// a snapshot, which is drawn into someone else's frame later.
+    pub fn set_tile_target(&mut self, target: Rect) {
+        self.tile_target = target;
+        if let Some(slicing) = &mut self.slicing {
+            slicing.tile_target = target;
+        }
+    }
+
+    /// An estimate of the tiles the clips and layers encoded for this frame
+    /// ask Vello for: [`tile_cost`] of each one's device bounding box, summed.
+    /// Vello allocates a clip's or layer's tiles over its whole bounds,
+    /// whatever it holds, its tile and ptcl buffers are fixed, and a frame
+    /// past them is dropped (`perf::Counter::VelloClipTiles`).
+    ///
+    /// Counted: what reaches the window's scene, the inverse clip of the split
+    /// path each time it opens, and what a slice keeps: its above scenes that
+    /// have draws, replayed clips included, and its mask scenes. Not counted: a
+    /// clip [`Painter::push_clip`] elides, and the above scene of a slice
+    /// nothing was drawn over, neither of which is rendered. A surface's slices
+    /// are separate Vello renders, each with those buffers to itself, added
+    /// here as a frame's total cost.
+    ///
+    /// **Not Vello's `bump.tile`.** Fills and glyph runs are left out, and
+    /// their tiles are in `bump.tile`. A box is cut by the target only, where
+    /// Vello also cuts it by the bounds of the clips around it, so a clip
+    /// nested in a smaller one is overstated; a curved shape's bounds are its
+    /// control points'. An appended scene adds what its own painter counted,
+    /// not cut by this target.
+    ///
+    /// Read after [`Self::take_slices`], which adds the split path's part.
+    /// [`Painter::reset`] zeroes it.
+    pub fn clip_tiles(&self) -> u64 {
+        self.clip_tiles
+    }
+
+    /// The region drawing is confined to now, and whether it is exact.
+    fn region(&self) -> (Rect, bool) {
+        self.open
+            .last()
+            .map_or((EVERYWHERE, true), |o| (o.region, o.exact))
+    }
+
+    /// Record a clip or layer pushed into the window's scene, confining
+    /// drawing to `shape` under `transform` as well.
+    fn opened(&mut self, transform: Affine, shape: &PaintShape) {
+        let (region, exact) = self.region();
+        let bounds = shape_bounds(transform, shape);
+        let region = region.intersect(bounds);
+        self.clip_tiles = self
+            .clip_tiles
+            .saturating_add(tile_cost(bounds, self.tile_target));
+        let [_, b, c, _, _, _] = transform.as_coeffs();
+        let exact = exact && matches!(shape, PaintShape::Rect(_)) && b == 0.0 && c == 0.0;
+        self.open.push(OpenLayer {
+            pushed: true,
+            region,
+            exact,
+        });
     }
 
     /// Open this frame for the split-layer path (#1865): GPU surfaces offered
@@ -81,6 +232,7 @@ impl VelloPainter {
         self.routing = false;
         match self.slicing.take() {
             Some(mut slicing) => {
+                self.clip_tiles = self.clip_tiles.saturating_add(slicing.kept_tiles());
                 self.node_starts = std::mem::take(&mut slicing.starts);
                 slicing.finish(&mut self.scene)
             }
@@ -96,7 +248,7 @@ impl VelloPainter {
     /// before its first start (#1865 S4): a node started after the `i`th
     /// split (0-based) has a count past `i`, every time it starts, since the
     /// count only grows through a paint. Filled by [`Self::take_slices`].
-    pub fn node_starts(&self) -> &std::collections::HashMap<usize, usize> {
+    pub fn node_starts(&self) -> &std::collections::HashMap<crate::node::RawNodeId, usize> {
         &self.node_starts
     }
 
@@ -110,6 +262,7 @@ impl VelloPainter {
         {
             slicing.taint_all();
         }
+        self.clip_tiles = self.clip_tiles.saturating_add(other.clip_tiles);
         route!(self, || None, |s| s.append(&other.scene, Some(transform)));
     }
 
@@ -394,13 +547,16 @@ pub(crate) fn push_layer_into(
 }
 
 /// The device bounds of `shape` under `transform`.
-fn shape_bounds(transform: Affine, shape: &PaintShape) -> Option<Rect> {
-    Some(transform.transform_rect_bbox(shape.control_bounds()))
+pub(crate) fn shape_bounds(transform: Affine, shape: &PaintShape) -> Rect {
+    transform.transform_rect_bbox(shape.control_bounds())
 }
 
 impl Painter for VelloPainter {
     fn reset(&mut self) {
         self.scene.reset();
+        self.open.clear();
+        self.tile_target = EVERYWHERE;
+        self.clip_tiles = 0;
         self.slicing = None;
         self.routing = false;
         self.reads_backdrop = false;
@@ -415,7 +571,7 @@ impl Painter for VelloPainter {
             .then(|| centre_sampling(transform, Affine::IDENTITY));
         route!(
             self,
-            || shape_bounds(transform, shape),
+            || Some(shape_bounds(transform, shape)),
             |scene| dispatch_fill!(scene, fill, transform, brush, bt, shape)
         );
     }
@@ -430,11 +586,14 @@ impl Painter for VelloPainter {
         route!(
             self,
             || {
-                // Half the width each side, under the transform's largest
-                // stretch.
+                // The stroke's reach past its path (half the width, more at
+                // a miter join or a square cap), under a bound on the
+                // transform's largest stretch.
                 let [a, b, c, d, _, _] = transform.as_coeffs();
-                let grow = stroke.width * (a.abs() + b.abs() + c.abs() + d.abs()) + 1.0;
-                shape_bounds(transform, shape).map(|r| r.inflate(grow, grow))
+                let grow = super::svg::stroke_outset(stroke)
+                    * (a.abs() + b.abs() + c.abs() + d.abs())
+                    + 1.0;
+                Some(shape_bounds(transform, shape).inflate(grow, grow))
             },
             |scene| dispatch_stroke!(scene, stroke, transform, brush, shape)
         );
@@ -575,19 +734,51 @@ impl Painter for VelloPainter {
         let brush_transform = Some(tile_transform);
         route!(
             self,
-            || shape_bounds(transform, shape),
+            || Some(shape_bounds(transform, shape)),
             |scene| dispatch_fill!(scene, fill, transform, &brush, brush_transform, shape)
         );
     }
 
+    /// A clip that holds the whole region drawing is already confined to cuts
+    /// nothing, and is not pushed (judged only while every open clip is an
+    /// axis-aligned rect, so the region is exact). Vello allocates a clip's
+    /// tiles over its whole bounds and blends every one of them twice, whatever
+    /// it removes; a nested paint sequence re-opening a window-sized clip of an
+    /// outer one (a pane inside panes inside a window, each its own stacking
+    /// context) paid a window of tiles each time, cutting nothing. Its pop is
+    /// matched, and pops nothing. On the split-layer path it is still handed to
+    /// the split, which reasons over the whole chain, and only the window's
+    /// scene skips it, so a frame opened for slicing that splits nothing
+    /// encodes as an unsliced one does.
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
+        let (region, exact) = self.region();
+        let elide = exact && clip_holds(transform, shape, region);
         if self.slicing.is_none() {
+            if elide {
+                self.open.push(OpenLayer {
+                    pushed: false,
+                    region,
+                    exact,
+                });
+                return;
+            }
+            self.opened(transform, shape);
             return push_clip_into(&mut self.scene, fill, transform, shape);
+        }
+        if elide {
+            self.open.push(OpenLayer {
+                pushed: true,
+                region,
+                exact,
+            });
+        } else {
+            self.opened(transform, shape);
         }
         self.push_sliced(|| Open::Clip {
             fill,
             transform,
             shape: shape.clone(),
+            below: !elide,
         });
     }
 
@@ -601,6 +792,7 @@ impl Painter for VelloPainter {
         if matches!(blend, BlendMode::Saturation) {
             self.reads_backdrop = true;
         }
+        self.opened(transform, bounds);
         if self.slicing.is_none() {
             return push_layer_into(&mut self.scene, blend, opacity, transform, bounds);
         }
@@ -613,6 +805,7 @@ impl Painter for VelloPainter {
     }
 
     fn push_isolated_layer(&mut self, opacity: f32, transform: Affine, bounds: &PaintShape) {
+        self.opened(transform, bounds);
         if self.slicing.is_none() {
             return push_layer_into(
                 &mut self.scene,
@@ -630,6 +823,10 @@ impl Painter for VelloPainter {
     }
 
     fn pop_layer(&mut self) {
+        // An elided clip's pop pops nothing.
+        if !self.open.pop().is_none_or(|o| o.pushed) {
+            return;
+        }
         if self.slicing.is_none() {
             return self.scene.pop_layer();
         }
@@ -648,7 +845,7 @@ impl Painter for VelloPainter {
         verdict
     }
 
-    fn note_node_start(&mut self, node: usize) {
+    fn note_node_start(&mut self, node: crate::node::RawNodeId) {
         if let Some(slicing) = &mut self.slicing {
             // The first start is the earliest: the count only grows.
             let n = slicing.slices.len();
@@ -664,6 +861,7 @@ impl Painter for VelloPainter {
         {
             slicing.taint_all();
         }
+        self.clip_tiles = self.clip_tiles.saturating_add(other.clip_tiles);
         let scene = &other.scene;
         route!(self, || None, |s| s.append(scene, None));
     }
@@ -1028,5 +1226,406 @@ mod blob_identity_tests {
             opaque: true,
         };
         assert_ne!(paint(image()), paint(image()));
+    }
+}
+
+#[cfg(test)]
+mod clip_elision_in_painter_tests {
+    use super::*;
+    use peniko::kurbo::RoundedRect;
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> PaintShape {
+        PaintShape::Rect(Rect::new(x0, y0, x1, y1))
+    }
+
+    fn pushed(p: &VelloPainter) -> Vec<bool> {
+        p.open.iter().map(|o| o.pushed).collect()
+    }
+
+    /// A clip holding the whole region drawing is already confined to is not
+    /// pushed, and its pop pops nothing.
+    #[test]
+    fn a_clip_that_cuts_nothing_is_not_pushed_and_its_pop_balances() {
+        let mut p = VelloPainter::new();
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(-10.0, -10.0, 900.0, 900.0),
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(100.0, 100.0, 200.0, 200.0),
+        );
+        assert_eq!(pushed(&p), vec![true, false, false, true]);
+        assert_eq!(
+            p.scene.encoding().n_clips,
+            2,
+            "two clips begun on the scene"
+        );
+        for _ in 0..4 {
+            p.pop_layer();
+        }
+        assert!(p.open.is_empty());
+        assert_eq!(p.scene.encoding().n_clips, 4, "two begun, two ended");
+    }
+
+    /// A rounded clip cuts its corners: elided only when the region is clear
+    /// of them. A rotated clip is never judged, and nothing is judged inside a
+    /// clip that leaves less than its bounds.
+    #[test]
+    fn rounded_and_rotated_clips_are_judged_conservatively() {
+        let rounded = PaintShape::RoundedRect(RoundedRect::new(0.0, 0.0, 800.0, 600.0, 20.0));
+        let mut p = VelloPainter::new();
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        p.push_clip(Fill::NonZero, Affine::IDENTITY, &rounded);
+        assert_eq!(
+            pushed(&p),
+            vec![true, true],
+            "the region reaches the corners"
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        assert_eq!(
+            pushed(&p),
+            vec![true, true, true],
+            "inside a rounded clip nothing is judged"
+        );
+
+        let mut p = VelloPainter::new();
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(100.0, 100.0, 200.0, 200.0),
+        );
+        p.push_clip(Fill::NonZero, Affine::IDENTITY, &rounded);
+        assert_eq!(
+            pushed(&p),
+            vec![true, false],
+            "a region clear of the corners"
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::rotate(0.3),
+            &rect(-5000.0, -5000.0, 5000.0, 5000.0),
+        );
+        assert_eq!(
+            pushed(&p),
+            vec![true, false, true],
+            "a rotated clip is pushed"
+        );
+        p.push_layer(
+            BlendMode::Normal,
+            0.5,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        assert_eq!(
+            pushed(&p),
+            vec![true, false, true, true],
+            "a layer is always pushed"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tile_cost_tests {
+    use super::*;
+    use crate::paint::painter::{Refusal, SplitVerdict, SurfaceSplit};
+
+    const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> PaintShape {
+        PaintShape::Rect(Rect::new(x0, y0, x1, y1))
+    }
+
+    fn painter() -> VelloPainter {
+        let mut p = VelloPainter::new();
+        p.set_tile_target(WINDOW);
+        p
+    }
+
+    /// Off the tile grid on every side: 15..33 touches columns 0, 1 and 2.
+    /// On it, a far edge at a tile's end does not touch the next.
+    #[test]
+    fn a_box_costs_every_tile_it_touches() {
+        let cost = |x0, y0, x1, y1| tile_cost(Rect::new(x0, y0, x1, y1), WINDOW);
+        assert_eq!(cost(15.0, 31.0, 33.0, 33.0), 3 * 2);
+        assert_eq!(cost(16.0, 32.0, 32.0, 48.0), 1);
+        assert_eq!(cost(16.5, 32.5, 31.5, 47.5), 1);
+    }
+
+    /// The target cuts first, so a box only part on it pays only that part,
+    /// and the plane pays the target, which is 50x38 here.
+    #[test]
+    fn the_target_cuts_a_box() {
+        assert_eq!(tile_cost(EVERYWHERE, WINDOW), 1900);
+        assert_eq!(tile_cost(Rect::new(-40.0, -40.0, 17.0, 17.0), WINDOW), 4);
+        // Past the far corner of an 809x601 target, whose last tiles are short.
+        let target = Rect::new(0.0, 0.0, 809.0, 601.0);
+        assert_eq!(tile_cost(Rect::new(790.0, 592.0, 900.0, 700.0), target), 2);
+    }
+
+    #[test]
+    fn a_box_with_no_area_costs_nothing() {
+        let cost = |r| tile_cost(r, WINDOW);
+        assert_eq!(cost(Rect::new(20.0, 20.0, 20.0, 400.0)), 0);
+        assert_eq!(cost(Rect::new(20.0, 20.0, 400.0, 20.0)), 0);
+        assert_eq!(cost(Rect::new(900.0, 0.0, 1000.0, 100.0)), 0, "off target");
+        assert_eq!(tile_cost(Rect::new(0.0, 0.0, 100.0, 100.0), Rect::ZERO), 0);
+    }
+
+    /// With no target nothing is cut, and the plane saturates.
+    #[test]
+    fn with_no_target_a_plane_saturates() {
+        assert_eq!(tile_cost(EVERYWHERE, EVERYWHERE), u64::MAX);
+    }
+
+    /// A clip and each kind of layer pay for their device bounds; an elided
+    /// clip pays nothing, and a scale reaches the bounds.
+    #[test]
+    fn the_painter_counts_what_it_pushes_and_not_what_it_elides() {
+        let mut p = painter();
+        let t = Affine::IDENTITY;
+        p.push_clip(Fill::NonZero, t, &rect(8.0, 8.0, 408.0, 208.0));
+        assert_eq!(p.clip_tiles(), 26 * 13, "x tiles 0..26, y tiles 0..13");
+        p.push_clip(Fill::NonZero, t, &rect(0.0, 0.0, 800.0, 600.0));
+        assert_eq!(p.clip_tiles(), 26 * 13, "the elided clip is free");
+        p.push_layer(BlendMode::Normal, 0.5, t, &rect(0.0, 0.0, 32.0, 16.0));
+        assert_eq!(p.clip_tiles(), 26 * 13 + 2);
+        p.push_isolated_layer(0.5, t, &rect(0.0, 16.0, 16.0, 32.0));
+        assert_eq!(p.clip_tiles(), 26 * 13 + 2 + 1);
+        for _ in 0..4 {
+            p.pop_layer();
+        }
+        p.push_clip(Fill::NonZero, Affine::scale(2.0), &rect(0.0, 0.0, 8.5, 8.5));
+        assert_eq!(p.clip_tiles(), 26 * 13 + 2 + 1 + 4, "17 device px: 2x2");
+        p.pop_layer();
+        p.reset();
+        assert_eq!(p.clip_tiles(), 0);
+    }
+
+    /// A rotated clip pays for its axis-aligned device box: a 32-square turned
+    /// 45 degrees about its centre at (64, 64) spans 45.25 pixels.
+    #[test]
+    fn a_rotated_clip_pays_for_its_device_box() {
+        let mut p = painter();
+        let t = Affine::rotate_about(std::f64::consts::FRAC_PI_4, (64.0, 64.0));
+        p.push_clip(Fill::NonZero, t, &rect(48.0, 48.0, 80.0, 80.0));
+        // 41.37..86.63: tiles 2..6 on each axis.
+        assert_eq!(p.clip_tiles(), 4 * 4);
+    }
+
+    /// An appended scene (a drag ghost) adds what its painter counted.
+    #[test]
+    fn an_appended_scene_brings_its_count() {
+        let mut ghost = VelloPainter::new();
+        ghost.push_clip(Fill::NonZero, Affine::IDENTITY, &rect(0.0, 0.0, 16.0, 32.0));
+        ghost.pop_layer();
+        let mut p = painter();
+        p.append_scene(&ghost, Affine::translate((5.0, 5.0)));
+        assert_eq!(p.clip_tiles(), 2);
+        p.append(&ghost);
+        assert_eq!(p.clip_tiles(), 4);
+    }
+
+    fn split(p: &mut VelloPainter, content: Rect) {
+        let verdict = p.split_surface(&SurfaceSplit {
+            surface_id: 1,
+            content,
+            node_transform: Affine::IDENTITY,
+            inner: None,
+            clip_to_content: false,
+            image_transform: Affine::translate((content.x0, content.y0)),
+            extents: (content.width() as u32, content.height() as u32),
+            straight_alpha: false,
+            ink: content,
+            base: None,
+        });
+        assert_eq!(verdict, SplitVerdict::Split);
+    }
+
+    fn solid() -> Brush {
+        Brush::Solid(peniko::Color::WHITE)
+    }
+
+    /// Opened for slicing with nothing to split, a frame counts as an unsliced
+    /// one does: an elided clip stays out of the window's scene.
+    #[test]
+    fn a_sliced_frame_counts_only_the_clips_in_its_scene() {
+        let mut p = VelloPainter::new();
+        p.begin_slicing(WINDOW);
+        p.set_tile_target(WINDOW);
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(8.0, 8.0, 408.0, 208.0),
+        );
+        p.push_clip(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &rect(0.0, 0.0, 800.0, 600.0),
+        );
+        p.pop_layer();
+        p.pop_layer();
+        assert!(p.take_slices().is_empty());
+        assert_eq!(p.clip_tiles(), 26 * 13);
+    }
+
+    /// The inverse clip costs the target each time a draw across a surface's
+    /// region opens it: it reaches past the window, and its hole saves nothing.
+    #[test]
+    fn the_inverse_clip_costs_the_target_each_time_it_opens() {
+        let mut p = VelloPainter::new();
+        p.begin_slicing(WINDOW);
+        p.set_tile_target(WINDOW);
+        split(&mut p, Rect::new(160.0, 160.0, 320.0, 320.0));
+        let across = rect(100.0, 100.0, 200.0, 200.0);
+        for _ in 0..2 {
+            p.fill(Fill::NonZero, Affine::IDENTITY, &solid(), &across);
+            // A push closes the inverse clip, so the next draw opens it again.
+            p.push_clip(Fill::NonZero, Affine::IDENTITY, &rect(0.0, 0.0, 16.0, 16.0));
+            p.pop_layer();
+        }
+        let slices = p.take_slices();
+        assert_eq!(slices.len(), 1);
+        // Two inverse clips, two clips in below, and the two pushes mirrored
+        // into `above_in` (which keeps the draws): tile (0, 0) each.
+        assert_eq!(p.clip_tiles(), 2 * 1900 + 2 + 2);
+        // A partial target cuts the inverse clip.
+        let mut p = VelloPainter::new();
+        p.begin_slicing(WINDOW);
+        p.set_tile_target(Rect::new(0.0, 0.0, 320.0, 320.0));
+        split(&mut p, Rect::new(160.0, 160.0, 320.0, 320.0));
+        p.fill(Fill::NonZero, Affine::IDENTITY, &solid(), &across);
+        p.take_slices();
+        assert_eq!(p.clip_tiles(), 20 * 20);
+    }
+
+    /// A slice's above scene nothing was drawn in is dropped, not rendered, so
+    /// the pushes mirrored into it cost nothing; one with a draw pays, cut by
+    /// the target it is rendered to: R's far corner, not the window.
+    #[test]
+    fn a_slice_pays_only_for_a_scene_it_keeps() {
+        let region = Rect::new(160.0, 160.0, 320.0, 320.0);
+        let big = rect(8.0, 8.0, 780.0, 580.0);
+        let mut p = VelloPainter::new();
+        p.begin_slicing(WINDOW);
+        p.set_tile_target(WINDOW);
+        split(&mut p, region);
+        p.push_clip(Fill::NonZero, Affine::IDENTITY, &big);
+        p.pop_layer();
+        let window_cost = tile_cost(Rect::new(8.0, 8.0, 780.0, 580.0), WINDOW);
+        p.take_slices();
+        assert_eq!(p.clip_tiles(), window_cost, "above_in has no draw");
+
+        let mut p = VelloPainter::new();
+        p.begin_slicing(WINDOW);
+        p.set_tile_target(WINDOW);
+        split(&mut p, region);
+        p.push_clip(Fill::NonZero, Affine::IDENTITY, &big);
+        p.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &solid(),
+            &rect(200.0, 200.0, 210.0, 210.0),
+        );
+        p.pop_layer();
+        p.take_slices();
+        assert_eq!(p.clip_tiles(), window_cost + 20 * 20);
+    }
+
+    /// What closes after the split starts `above_out` with what is still open
+    /// replayed, an elided clip included: the slices render it as before.
+    #[test]
+    fn a_replayed_clip_pays_in_above_out() {
+        let mut p = VelloPainter::new();
+        p.begin_slicing(WINDOW);
+        p.set_tile_target(WINDOW);
+        let outer = rect(0.0, 0.0, 800.0, 600.0);
+        p.push_clip(Fill::NonZero, Affine::IDENTITY, &outer);
+        p.push_clip(Fill::NonZero, Affine::IDENTITY, &outer);
+        p.push_clip(Fill::NonZero, Affine::IDENTITY, &outer);
+        assert_eq!(p.clip_tiles(), 1900, "the two inside it are elided");
+        split(&mut p, Rect::new(160.0, 160.0, 320.0, 320.0));
+        p.pop_layer();
+        p.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &solid(),
+            &rect(200.0, 200.0, 210.0, 210.0),
+        );
+        p.pop_layer();
+        p.pop_layer();
+        let slices = p.take_slices();
+        assert!(slices[0].above_out.is_some());
+        assert_eq!(
+            p.clip_tiles(),
+            1900 + 2 * 20 * 20,
+            "two replayed, in 320x320"
+        );
+    }
+
+    /// A clip that is not a whole-pixel rect makes the ancestors a mask scene,
+    /// which is rendered too.
+    #[test]
+    fn a_mask_scene_pays_for_its_clips() {
+        let mut p = VelloPainter::new();
+        p.begin_slicing(WINDOW);
+        p.set_tile_target(WINDOW);
+        let ring = PaintShape::RoundedRect(peniko::kurbo::RoundedRect::new(
+            150.0, 150.0, 330.0, 330.0, 8.0,
+        ));
+        p.push_clip(Fill::NonZero, Affine::IDENTITY, &ring);
+        let in_scene = 12 * 12;
+        assert_eq!(p.clip_tiles(), in_scene, "tiles 9..21");
+        split(&mut p, Rect::new(160.0, 160.0, 320.0, 320.0));
+        p.pop_layer();
+        p.take_slices();
+        // In the mask, cut by R's far corner: tiles 9..20.
+        assert_eq!(p.clip_tiles(), in_scene + 11 * 11);
+    }
+
+    /// A split the painter refuses leaves the surface in the scene, and adds
+    /// no mask.
+    #[test]
+    fn a_refused_split_adds_nothing() {
+        let mut p = VelloPainter::new();
+        p.begin_slicing(WINDOW);
+        p.set_tile_target(WINDOW);
+        p.refuse_split(&[1]);
+        let content = Rect::new(160.0, 160.0, 320.0, 320.0);
+        let verdict = p.split_surface(&SurfaceSplit {
+            surface_id: 1,
+            content,
+            node_transform: Affine::IDENTITY,
+            inner: None,
+            clip_to_content: false,
+            image_transform: Affine::translate((160.0, 160.0)),
+            extents: (160, 160),
+            straight_alpha: false,
+            ink: content,
+            base: None,
+        });
+        assert_eq!(verdict, SplitVerdict::InScene(Refusal::MemoryCap));
+        assert!(p.take_slices().is_empty());
+        assert_eq!(p.clip_tiles(), 0);
     }
 }

@@ -21,7 +21,7 @@ use super::devtools_store::{
 /// A flattened row for the tree view.
 #[derive(Debug, Clone, PartialEq)]
 struct FlatTreeRow {
-    id: usize,
+    id: u64,
     depth: usize,
     tag: String,
     id_attr: Option<String>,
@@ -33,7 +33,7 @@ struct FlatTreeRow {
     is_expanded: bool,
 }
 
-fn flatten_tree(nodes: &[DomTreeNode], expanded: &HashSet<usize>) -> Vec<FlatTreeRow> {
+fn flatten_tree(nodes: &[DomTreeNode], expanded: &HashSet<u64>) -> Vec<FlatTreeRow> {
     let mut rows = Vec::new();
     for node in nodes {
         flatten_node(node, expanded, &mut rows);
@@ -41,7 +41,7 @@ fn flatten_tree(nodes: &[DomTreeNode], expanded: &HashSet<usize>) -> Vec<FlatTre
     rows
 }
 
-fn flatten_node(node: &DomTreeNode, expanded: &HashSet<usize>, rows: &mut Vec<FlatTreeRow>) {
+fn flatten_node(node: &DomTreeNode, expanded: &HashSet<u64>, rows: &mut Vec<FlatTreeRow>) {
     let is_expanded = expanded.contains(&node.id);
     rows.push(FlatTreeRow {
         id: node.id,
@@ -77,7 +77,7 @@ fn make_text(doc: &Weak<RefCell<dyn DomDocument>>, text: &str) -> NodeHandle {
 }
 
 /// Collect all ancestor node IDs for a given node (excluding the node itself).
-fn collect_ancestors(doc: &rinch_dom::RinchDocument, node_id: usize) -> Vec<usize> {
+fn collect_ancestors(doc: &rinch_dom::RinchDocument, node_id: u64) -> Vec<u64> {
     let mut ancestors = Vec::new();
     let mut current = node_id;
     while let Some(node) = doc.tree.get(current) {
@@ -197,7 +197,7 @@ fn is_lpa_auto(v: &rinch_dom::computed_style::LengthPercentageAutoValue) -> bool
 
 fn extract_style_properties_from_doc(
     doc: &rinch_dom::RinchDocument,
-    node_id: usize,
+    node_id: u64,
 ) -> Vec<StyleProperty> {
     let Some(node) = doc.tree.get(node_id) else {
         return vec![];
@@ -510,7 +510,7 @@ fn render_toolbar(scope: &mut RenderScope, store: DevToolsStore) -> NodeHandle {
 fn render_elements_panel(scope: &mut RenderScope, store: DevToolsStore) -> NodeHandle {
     // Use Rc<RefCell> for expanded state to avoid re-entrancy panics.
     // A version signal triggers the effect to rebuild when expanded changes.
-    let expanded: Rc<RefCell<HashSet<usize>>> = Rc::new(RefCell::new({
+    let expanded: Rc<RefCell<HashSet<u64>>> = Rc::new(RefCell::new({
         let mut s = HashSet::new();
         s.insert(0);
         s
@@ -529,7 +529,7 @@ fn render_elements_panel(scope: &mut RenderScope, store: DevToolsStore) -> NodeH
     let doc_weak = scope.doc_weak();
 
     // Track the previous selected_node_id so we only auto-expand on changes.
-    let prev_selected: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+    let prev_selected: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
 
     scope.create_effect({
         let container = container.clone();

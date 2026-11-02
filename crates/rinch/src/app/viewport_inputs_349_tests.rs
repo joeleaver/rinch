@@ -42,8 +42,8 @@ fn is(p: [u8; 4], rgb: [u8; 3]) -> bool {
 /// the window's corner (so its box is not at an origin), holding a full-size
 /// `data-viewport` node named `name`; and a 60x20 label far below, standing in
 /// for anything that ticks. Returns the app and the label's node id.
-fn mount(name: &'static str, card: (u32, u32), ready: bool) -> (RinchApp, usize) {
-    let label_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+fn mount(name: &'static str, card: (u32, u32), ready: bool) -> (RinchApp, u64) {
+    let label_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let captured = label_id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -100,7 +100,7 @@ fn paint(app: &mut RinchApp) -> FrameStats {
     paint_with(app, collect_viewport_frames_by_name())
 }
 
-fn dirty(app: &mut RinchApp, label: usize) {
+fn dirty(app: &mut RinchApp, label: u64) {
     app.doc
         .as_ref()
         .unwrap()

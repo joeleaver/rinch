@@ -52,13 +52,13 @@ const CSS: &str = "
 /// The fixture's nodes, by role.
 #[derive(Clone, Copy, Default)]
 struct Ids {
-    sel: usize,
-    focusable: usize,
-    field: usize,
-    src: usize,
-    a: usize,
-    b: usize,
-    far_row: usize,
+    sel: u64,
+    focusable: u64,
+    field: u64,
+    src: u64,
+    a: u64,
+    b: u64,
+    far_row: u64,
 }
 
 fn mount() -> (RinchApp, Ids) {
@@ -172,17 +172,17 @@ fn whole() -> (i32, i32, i32, i32) {
     (0, 0, SIZE.0 as i32, SIZE.1 as i32)
 }
 
-fn box_of(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn box_of(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     hit_testing::painted_element_box(&d.tree, id)
 }
 
-fn center(app: &RinchApp, id: usize) -> (f32, f32) {
+fn center(app: &RinchApp, id: u64) -> (f32, f32) {
     let (x, y, w, h) = box_of(app, id);
     (x + w / 2.0, y + h / 2.0)
 }
 
-fn rect_around(app: &RinchApp, id: usize, grow: i32) -> (i32, i32, i32, i32) {
+fn rect_around(app: &RinchApp, id: u64, grow: i32) -> (i32, i32, i32, i32) {
     let (x, y, w, h) = box_of(app, id);
     (
         x as i32 - grow,
@@ -528,9 +528,11 @@ fn two_distant_changes_repaint_their_sum_not_their_span() {
 
 // ── What still repaints in full, and why ───────────────────────────────────
 
-/// A stylesheet added after mount restyles the whole document without naming
-/// a node: that is a full repaint, counted as `repaint_full_restyle`, and the
-/// frame shows the new rule everywhere.
+/// A stylesheet added after mount whose rule Stylo cannot bucket by id, class
+/// or tag (`:root`) restyles the whole document without naming a node: that is
+/// a full repaint, counted as `repaint_full_restyle`, and the frame shows the
+/// new rule everywhere. (A sheet of `.a` rules alone restyles `.a` and is
+/// repainted where it is — the next test, #884.)
 #[test]
 fn a_stylesheet_append_repaints_in_full() {
     let (mut app, ids) = mount();
@@ -540,13 +542,34 @@ fn a_stylesheet_append_repaints_in_full() {
         let doc = app.doc.clone().unwrap();
         let mut d = doc.borrow_mut();
         let style = d.create_element("style");
-        let css = d.create_text(".a { background: rgb(0, 200, 0) !important; }");
+        let css = d.create_text(
+            ":root { --late: rgb(0, 200, 0); } .a { background: var(--late) !important; }",
+        );
         d.append_child(style, css);
         let body = d.body();
         d.append_child(body, style);
     }
     let (after, stats) = frame(&mut app);
     assert_eq!(stats.get(Counter::RepaintFullRestyle), 1, "{stats:?}");
+    assert!(diff_in(&before, &after, a) > 0, "the new rule is drawn");
+    assert_eq!(diff_in(&after, &full_frame(&mut app), whole()), 0);
+}
+
+/// A stylesheet loaded after mount whose rules Stylo can bucket (`.a`)
+/// restyles the elements they match and nothing else (#884), so it is a
+/// partial repaint of those elements, and the frame is the full frame.
+#[test]
+fn a_targeted_stylesheet_repaints_what_it_restyles() {
+    let (mut app, ids) = mount();
+    let a = rect_around(&app, ids.a, 0);
+    let (before, _) = frame(&mut app);
+    app.doc
+        .clone()
+        .unwrap()
+        .borrow_mut()
+        .load_css(".a { background: rgb(0, 200, 0) !important; }");
+    let (after, stats) = frame(&mut app);
+    assert_partial_and_small(&stats);
     assert!(diff_in(&before, &after, a) > 0, "the new rule is drawn");
     assert_eq!(diff_in(&after, &full_frame(&mut app), whole()), 0);
 }

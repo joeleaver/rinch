@@ -131,7 +131,7 @@ fn type_x(app: &mut RinchApp) {
 
 impl Page {
     /// The paragraph's host id.
-    fn block(&self) -> usize {
+    fn block(&self) -> u64 {
         self.handle.caret_address(Pos(1)).unwrap().0
     }
 
@@ -139,7 +139,7 @@ impl Page {
     /// default Parley answer, the measuring stick.
     fn local(&self, i: u32) -> (f32, f32) {
         let doc = self.app.doc.as_ref().unwrap().borrow();
-        doc.query_caret_position(self.block() as u64, i as usize)
+        doc.query_caret_position(self.block(), i as usize)
             .expect("laid out")
     }
 
@@ -424,7 +424,7 @@ fn an_edit_above_keeps_the_caret_on_its_line() {
     let local = |app: &RinchApp, i: usize| {
         let (tb, _) = handle.caret_address(Pos(base + i)).unwrap();
         let doc = app.doc.as_ref().unwrap().borrow();
-        doc.query_caret_position(tb as u64, i).unwrap()
+        doc.query_caret_position(tb, i).unwrap()
     };
     let mut starts = vec![0usize];
     let mut y = local(&app, 0).1;

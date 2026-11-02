@@ -20,9 +20,9 @@ const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 
 /// One focusable control of tag `tag` (and `type` attribute `ty`, if any),
 /// `width` px wide, in Inter at 16px. Returns the app and the control's id.
-fn mount(tag: &'static str, ty: Option<&'static str>, width: u32) -> (RinchApp, usize) {
+fn mount(tag: &'static str, ty: Option<&'static str>, width: u32) -> (RinchApp, u64) {
     let input_id = register_input_handler(InputCallback::new(|_v: String| {}));
-    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let id_in = id.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -97,7 +97,7 @@ fn type_str(app: &mut RinchApp, text: &str) {
     }
 }
 
-fn focus(app: &mut RinchApp, id: usize) {
+fn focus(app: &mut RinchApp, id: u64) {
     let (cx, cy) = {
         let d = app.doc.as_ref().unwrap().borrow();
         let (ax, ay, w, h) = painted_element_box(&d.tree, id);
@@ -120,7 +120,7 @@ fn focus(app: &mut RinchApp, id: usize) {
     assert_eq!(app.focused_input_node_id, Some(id), "the field took focus");
 }
 
-fn attr(app: &RinchApp, id: usize, name: &str) -> String {
+fn attr(app: &RinchApp, id: u64, name: &str) -> String {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -128,24 +128,24 @@ fn attr(app: &RinchApp, id: usize, name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn value(app: &RinchApp, id: usize) -> String {
+fn value(app: &RinchApp, id: u64) -> String {
     attr(app, id, "value")
 }
 
 /// `(anchor, head)` as written to the DOM for the paint layer.
-fn sel(app: &RinchApp, id: usize) -> (usize, usize) {
+fn sel(app: &RinchApp, id: u64) -> (usize, usize) {
     (
         attr(app, id, "data-selection-start").parse().unwrap(),
         attr(app, id, "data-cursor-pos").parse().unwrap(),
     )
 }
 
-fn caret(app: &RinchApp, id: usize) -> usize {
+fn caret(app: &RinchApp, id: u64) -> usize {
     sel(app, id).1
 }
 
 /// The caret rect for `offset`, over the same layout paint and hit testing use.
-fn caret_rect(app: &mut RinchApp, id: usize, offset: usize) -> (f32, f32, f32, f32) {
+fn caret_rect(app: &mut RinchApp, id: u64, offset: usize) -> (f32, f32, f32, f32) {
     let doc = app.doc.clone().unwrap();
     let d = doc.borrow();
     RinchApp::input_caret_rect_for_offset(
@@ -365,7 +365,7 @@ fn a_number_input_is_left_alone() {
 /// top of offset 0)` in the layout's own space: the head read back from the
 /// DOM with the affinity the runtime wrote beside it (`data-cursor-affinity`,
 /// #941), which is what paint reads.
-fn head_line_y(app: &mut RinchApp, id: usize) -> (f32, f32) {
+fn head_line_y(app: &mut RinchApp, id: u64) -> (f32, f32) {
     use rinch_core::dom::CaretAffinity;
     let head = caret(app, id);
     let affinity = if attr(app, id, "data-cursor-affinity") == "upstream" {
@@ -394,8 +394,8 @@ fn head_line_y(app: &mut RinchApp, id: usize) -> (f32, f32) {
 /// pixel oracle for what paint does with the affinity, not what the runtime
 /// computes.
 #[cfg(software_shell)]
-fn painted_caret_rows(app: &mut RinchApp, id: usize) -> std::ops::RangeInclusive<usize> {
-    fn frame(app: &mut RinchApp, id: usize, visible: &str) -> (Vec<u8>, u32) {
+fn painted_caret_rows(app: &mut RinchApp, id: u64) -> std::ops::RangeInclusive<usize> {
+    fn frame(app: &mut RinchApp, id: u64, visible: &str) -> (Vec<u8>, u32) {
         {
             let doc = app.doc.clone().unwrap();
             let mut d = doc.borrow_mut();

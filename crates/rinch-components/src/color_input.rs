@@ -25,6 +25,10 @@ const OPENED_CLASS: &str = "rinch-color-input--opened";
 pub struct ColorInput {
     /// Input label.
     pub label: String,
+    /// The field's `id` (Mantine's `id`): its label's `for` names it, and the
+    /// description and error are `{id}-description` / `{id}-error`. Empty
+    /// generates a unique one per render (issue #2034).
+    pub id: String,
     /// Description text below the input.
     pub description: String,
     /// Error message (shows error styling when present).
@@ -108,6 +112,7 @@ impl Default for ColorInput {
     fn default() -> Self {
         Self {
             label: String::new(),
+            id: String::new(),
             description: String::new(),
             error: String::new(),
             placeholder: String::new(),
@@ -198,6 +203,7 @@ impl std::fmt::Debug for ColorInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ColorInput")
             .field("label", &self.label)
+            .field("id", &self.id)
             .field("value", &self.value)
             .field("format", &self.format)
             .field("disabled", &self.disabled)
@@ -237,9 +243,12 @@ impl Component for ColorInput {
         }
 
         // Label
+        let ids = crate::field_ids::FieldIds::new(&self.id);
+        let mut label_node = None;
         if !self.label.is_empty() {
             let label_el = rinch_macros::rsx! { label { class: "rinch-color-input__label", {self.label.clone()} } };
             root.append_child(&label_el);
+            label_node = Some(label_el);
         }
 
         // Wrapper (position: relative for dropdown)
@@ -639,16 +648,29 @@ impl Component for ColorInput {
         }
 
         // Description
+        let mut desc_node = None;
         if !self.description.is_empty() {
             let desc = rinch_macros::rsx! { div { class: "rinch-color-input__description", {self.description.clone()} } };
             root.append_child(&desc);
+            desc_node = Some(desc);
         }
 
         // Error
+        let mut err_node = None;
         if !self.error.is_empty() {
             let err = rinch_macros::rsx! { div { class: "rinch-color-input__error", {self.error.clone()} } };
             root.append_child(&err);
+            err_node = Some(err);
         }
+
+        // The label names the field (#2034).
+        ids.wire(
+            &text_input,
+            true,
+            label_node.as_ref(),
+            desc_node.as_ref(),
+            err_node.as_ref(),
+        );
 
         root
     }

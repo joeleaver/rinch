@@ -63,10 +63,10 @@ const ROOT: &str = "rinch-drawer__root";
 const CLOSE: &str = "rinch-drawer__close";
 
 /// The one node carrying `class` exactly, as a raw node id.
-fn node_with_class(app: &RinchApp, class: &str) -> usize {
+fn node_with_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -86,7 +86,7 @@ fn node_with_class(app: &RinchApp, class: &str) -> usize {
     matches[0]
 }
 
-fn running(app: &RinchApp, node: usize) -> usize {
+fn running(app: &RinchApp, node: u64) -> usize {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -96,13 +96,13 @@ fn running(app: &RinchApp, node: usize) -> usize {
         .unwrap_or(0)
 }
 
-fn display_of(app: &RinchApp, node: usize) -> rinch_dom::computed_style::DisplayValue {
+fn display_of(app: &RinchApp, node: u64) -> rinch_dom::computed_style::DisplayValue {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.display
 }
 
-fn visibility_of(app: &RinchApp, node: usize) -> rinch_dom::computed_style::VisibilityValue {
+fn visibility_of(app: &RinchApp, node: u64) -> rinch_dom::computed_style::VisibilityValue {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().computed_style.visibility
@@ -115,7 +115,7 @@ fn visibility_of(app: &RinchApp, node: usize) -> rinch_dom::computed_style::Visi
 /// entirely in `pct_translate_w`, which is exactly the Drawer's closed state. So
 /// the comparison has to be on the fields, and `pct_translate_w` is the one that
 /// moves here.
-fn transform_of(app: &RinchApp, node: usize) -> ([f64; 6], [f64; 2], [f64; 2]) {
+fn transform_of(app: &RinchApp, node: u64) -> ([f64; 6], [f64; 2], [f64; 2]) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let t = &d.tree.get(node).unwrap().computed_style.transform;
@@ -125,7 +125,7 @@ fn transform_of(app: &RinchApp, node: usize) -> ([f64; 6], [f64; 2], [f64; 2]) {
 /// How many `transition` declarations the cascade found on the node. Zero would
 /// mean the fixture is measuring a component that declares no animation at all,
 /// which is the fixed point every assertion here has to be kept off.
-fn transition_specs(app: &RinchApp, node: usize) -> usize {
+fn transition_specs(app: &RinchApp, node: u64) -> usize {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree.get(node).unwrap().transition_specs.len()

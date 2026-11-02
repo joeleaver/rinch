@@ -111,7 +111,7 @@ fn mount_styled(
     app
 }
 
-fn find(app: &RinchApp, class: &str) -> usize {
+fn find(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -330,7 +330,7 @@ fn a_nested_menu_opens_below_its_own_trigger_when_the_outer_flipped() {
     app.resolve_and_repaint(VW, VH);
     let doc = app.doc.as_ref().unwrap();
     let mut d = doc.borrow_mut();
-    let panels: Vec<usize> = d
+    let panels: Vec<u64> = d
         .tree
         .nodes
         .iter()

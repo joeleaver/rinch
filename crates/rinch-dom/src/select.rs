@@ -275,11 +275,11 @@ pub fn resolve_select_model(tree: &NodeTree, select_id: RawNodeId) -> SelectMode
 
 /// Walk `<option>` children in document order, descending into `<optgroup>`.
 fn collect_options(tree: &NodeTree, parent_id: RawNodeId, out: &mut Vec<SelectOption>) {
-    let Some(parent) = tree.get(parent_id) else {
+    let Some(parent) = tree.get_live(parent_id) else {
         return;
     };
     for &child_id in &parent.children {
-        let Some(child) = tree.get(child_id) else {
+        let Some(child) = tree.get_live(child_id) else {
             continue;
         };
         match child.tag() {
@@ -570,11 +570,11 @@ pub(crate) fn options_inserted(tree: &mut NodeTree, inserted: RawNodeId) {
 /// anywhere else.
 fn owning_select(tree: &NodeTree, option_id: RawNodeId) -> Option<RawNodeId> {
     let parent = tree.get(option_id)?.parent?;
-    match tree.get(parent)?.tag() {
+    match tree.get_live(parent)?.tag() {
         Some("select") => Some(parent),
         Some("optgroup") => {
-            let grandparent = tree.get(parent)?.parent?;
-            (tree.get(grandparent)?.tag() == Some("select")).then_some(grandparent)
+            let grandparent = tree.get_live(parent)?.parent?;
+            (tree.get_live(grandparent)?.tag() == Some("select")).then_some(grandparent)
         }
         _ => None,
     }
@@ -583,11 +583,11 @@ fn owning_select(tree: &NodeTree, option_id: RawNodeId) -> Option<RawNodeId> {
 /// The ids of `parent`'s `<option>` descendants in document order, flattening
 /// `<optgroup>` exactly as [`collect_options`] does.
 fn collect_option_ids(tree: &NodeTree, parent_id: RawNodeId, out: &mut Vec<RawNodeId>) {
-    let Some(parent) = tree.get(parent_id) else {
+    let Some(parent) = tree.get_live(parent_id) else {
         return;
     };
     for &child_id in &parent.children {
-        let Some(child) = tree.get(child_id) else {
+        let Some(child) = tree.get_live(child_id) else {
             continue;
         };
         match child.tag() {
