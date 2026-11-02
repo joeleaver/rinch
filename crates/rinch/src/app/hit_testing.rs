@@ -3332,3 +3332,8 @@ mod tests {
 #[cfg(test)]
 #[path = "hidden_ancestor_hit_review_2008_tests.rs"]
 mod review_2008_probe_tests;
+
+// Paints with the software painter, which `embed` alone does not build.
+#[cfg(all(test, software_shell))]
+#[path = "fixed_over_scroller_2038_tests.rs"]
+mod fixed_over_scroller_2038_tests;
