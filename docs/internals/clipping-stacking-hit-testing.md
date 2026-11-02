@@ -641,3 +641,87 @@ comments' mechanism wrong.
 - `crates/rinch-dom/src/paint/skia_painter.rs` — Software backend
 - `crates/rinch-dom/src/paint/mod.rs` — `paint_document()`, dirty region computation, subtree pruning
 - `crates/rinch/src/app/mod.rs` — `build_scene()` (GPU) / `build_pixels()` (software)
+
+## What a frame asks Vello for
+
+Vello allocates tiles over a clip's or a layer's whole bounds, whatever they hold,
+so a window-sized clip or layer around nothing still costs a window of tiles
+(#2069). Five rules keep that out of the scene:
+
+- `Collector::collect_hoisted` does not enter a `display: none` subtree.
+- `opacity_layer_shape` gives a subtree proved to paint nothing an empty rect.
+  `opacity_layer_bounds`, which damage reads, keeps answering `UNBOUNDED` there.
+- `paint_sequence_entry` skips an entry that paints nothing before it switches
+  clip chains, and asks only when the switch would close an open clip.
+- `VelloPainter::push_clip` leaves out a clip that holds the whole region, judged
+  only while every open clip is an axis-aligned rect. On the split path the clip
+  is still recorded and mirrored into slices.
+- `PaintOrder::grouped_by_clip` gathers entries under one chain across entries
+  whose chains share no device pixel (#1645), below.
+
+The first two callers to **trust** `Extent::Nothing` are `opacity_layer_shape` and
+`paints_nothing_at_all`, so the walk must see everything paint draws. A box
+collapsed to no area still draws its own inline content, which overflows it:
+`Walk::inline_extent` is read by both arms of `Walk::node` for that reason.
+
+### Entries gathered by clip chain
+
+`z-index` can alternate two panes' rows, `[A], [B], [A], [B], …`, with no prefix
+for `switch_clip_chain` to keep open, so each entry closed one pane-sized clip and
+opened another. `paint_children_with_stacking` paints the permutation
+`grouped_by_clip` returns instead. Hit testing keeps the true sequence: nothing it
+reads changed.
+
+**What is proved.** An entry is only moved past entries it is proved apart from.
+It paints inside its chain's clips on the painter's own stack, so whatever it draws
+stays inside them, shadows and a fixed descendant included (a lifted fixed entry
+leaves only its own root's bracket, #549). So the *move* needs only the clip rects,
+never an entry's ink. Two chains are apart when their intersected rects, under
+`node_transform` and rounded out to whole device pixels, share no pixel. The
+rounding matters: clips meeting inside a pixel both antialias it, so a seam at
+100.5 keeps its order and a seam at 100 does not have to.
+
+**What is not: merging changes pixels at clip edges on Vello.** Gathering also puts
+entries of one chain into one clip layer, and on Vello a clip is an isolated layer
+on every tile its edge crosses. An accepted cost (#2074). Measured on RADV 890M at
+Msaa16, A1 z1, B z2, A2 z3 with pane B clear of A; tiny-skia was byte-identical in
+all three:
+
+| Case | Pixels | Up to | What changes |
+|---|---|---|---|
+| Rounded pane, two opaque rows | 194 | 61 levels | Ungrouped applies edge coverage once per clip layer, grouped once |
+| A2 `filter: grayscale(1)` (`BlendMode::Saturation`) | 3072 | 48 levels | The 16px tile ring inside the clip edge goes |
+| In-scene `GameViewport` clear (`clear_viewport_box`) | 3072 | 235 levels | Grouped clears the ring |
+
+The result already depended on how entries interleave. It still does: an unrelated
+pane moving can start or end a grouping, and those edge pixels change with it.
+`gpu_clip_groups_1645_tests` pins the first two.
+
+**A drag ghost is not grouped.** `paint_subtree` paints under `Affine::IDENTITY` and
+its scene is appended at a fractional `translate`, so its device pixels are not the
+ones `grouped_by_clip` would judge: panes meeting on a whole pixel could swap and
+share a pixel. `SnapshotPaintScope` keeps the true sequence for it.
+
+**The rule.** An entry joins the newest group of its chain only if every group
+after it is apart from the chain. An empty chain can reach everywhere, so nothing
+passes it. Chains are compared by content, since one chain can sit twice in
+`PaintOrder::clips`.
+
+**Bars.** Deferred scrollbars are drawn outside their scroller's clip, so no chain
+says where they reach. Nothing crosses a `DeferredBars::after`, and the loop
+matches `after` against the **position** painted, not the entry's index: a
+gathered entry can fill a different place in its segment.
+
+**Cost.** One pass over the entries when fewer than two changes of chain make
+grouping impossible, with no allocation, and at most `CLIP_GROUP_LOOKBACK` chain
+compares an entry otherwise. No subtree is walked.
+
+**Ruled out.** Narrowing or eliding the clip to the entry's extent would need
+`layer_bounds` to bound ink, which it does not: glyph ink past a line box is not
+caught, and #550's absolutes are under-measured for its bounds callers. That loses
+ink on both renderers, where grouping's changes are confined to clip edges on Vello.
+
+**What it does not gather.** Chains that differ only in an inner link (`[A, r1]`,
+`[B, s1]`, `[A, r2]`) are different chains, so each still reopens `A`. An entry
+with no chain between two others is a wall, even if it draws nothing; the
+`window_tiles_tests` finding stays at 3 clips rather than 2 for that reason.

@@ -122,6 +122,72 @@ fn settled() -> RinchApp {
     app
 }
 
+/// A clipped pane, and in it a row the test can change and one that overflows
+/// (paint opens no clip around what fits): the clip is x 8..408, y 8..308,
+/// 26x20 tiles.
+fn clipped_pane() -> (RinchApp, NodeHandle) {
+    let row: std::rc::Rc<std::cell::RefCell<Option<NodeHandle>>> = Default::default();
+    let kept = row.clone();
+    let mut app = super::perf_expect::new_app(move |scope: &mut RenderScope| {
+        let pane = scope.create_element("div");
+        pane.set_attribute(
+            "style",
+            "position: absolute; left: 8px; top: 8px; width: 400px; height: 300px; \
+             overflow: hidden",
+        );
+        let first = scope.create_element("div");
+        first.set_attribute("style", "height: 10px; background-color: red");
+        pane.append_child(&first);
+        let wide = scope.create_element("div");
+        wide.set_attribute(
+            "style",
+            "width: 500px; height: 10px; background-color: blue",
+        );
+        pane.append_child(&wide);
+        *kept.borrow_mut() = Some(first);
+        pane
+    });
+    app.mount_component(W as f32, H as f32);
+    app.resolve_and_repaint(W as f32, H as f32);
+    let row = row.borrow().clone().expect("mounted");
+    (app, row)
+}
+
+/// `vello_clip_tiles` end to end: a full frame pays the clip over the window, a
+/// redraw with nothing dirty pays nothing, and a partial frame's target stops
+/// at the damage's far corner.
+#[test]
+fn vello_clip_tiles_are_counted_per_encoded_frame_inside_its_target() {
+    use rinch_dom::perf::{Counter, FullRepaintReason};
+    let tiles = |app: &mut RinchApp| {
+        app.end_perf_frame()
+            .expect("a document")
+            .get(Counter::VelloClipTiles)
+    };
+    let (mut app, row) = clipped_pane();
+    let frame = app.build_gpu_frame(1.0, (W, H), Some(FullRepaintReason::FirstFrame));
+    assert!(matches!(frame, GpuFrame::Full(_)));
+    assert_eq!(tiles(&mut app), 26 * 20);
+
+    assert!(matches!(
+        app.build_gpu_frame(1.0, (W, H), None),
+        GpuFrame::Unchanged
+    ));
+    assert_eq!(tiles(&mut app), 0, "nothing was encoded");
+
+    row.set_attribute("style", "height: 10px; background-color: green");
+    app.handle_event(PlatformEvent::AboutToWait, (W, H), 1.0);
+    app.resolve_and_repaint(W as f32, H as f32);
+    let (_, size, _) = partial(app.build_gpu_frame(1.0, (W, H), None));
+    assert_eq!(size, (408, 22), "the damage, grown a little");
+    assert_eq!(tiles(&mut app), 26 * 2, "y tiles 0..2 of a 22px target");
+
+    // `build_scene` (embed, Android, DevTools) reports the same way.
+    let (mut app, _) = clipped_pane();
+    let _ = app.build_scene(1.0, (W, H));
+    assert_eq!(tiles(&mut app), 26 * 20);
+}
+
 #[test]
 fn a_hover_repaints_the_two_rows_it_moved_between_not_the_window() {
     let mut app = settled();
@@ -200,6 +266,37 @@ fn a_target_that_lost_its_frame_is_repainted_in_full() {
         app.build_gpu_frame(1.0, (W, H), Some(FullRepaintReason::Invalidated)),
         GpuFrame::Full(_)
     ));
+    assert_eq!(
+        app.end_perf_frame()
+            .unwrap()
+            .get(Counter::RepaintFullInvalidated),
+        1
+    );
+}
+
+/// #2071: nothing in the document changed, and the frame Vello lost is the
+/// reason this one is full, through the state `paint_gpu` reads.
+#[test]
+fn a_lost_vello_frame_makes_the_next_frame_full() {
+    use crate::shell::desktop::UiTextureState;
+    use rinch_dom::perf::{Counter, FullRepaintReason};
+    let white = vello::peniko::Color::WHITE;
+    let mut app = settled();
+    let mut ui = UiTextureState::default();
+    ui.rendered(white);
+    assert!(matches!(
+        app.build_gpu_frame(1.0, (W, H), ui.invalid_reason(white)),
+        GpuFrame::Unchanged
+    ));
+    ui.note_check(vello::FrameCheck::Lost);
+    assert!(matches!(
+        app.build_gpu_frame(1.0, (W, H), ui.invalid_reason(white)),
+        GpuFrame::Full(_)
+    ));
+    assert_eq!(
+        ui.invalid_reason(white),
+        Some(FullRepaintReason::Invalidated)
+    );
     assert_eq!(
         app.end_perf_frame()
             .unwrap()
@@ -505,7 +602,7 @@ fn gpu_hover_probe() {
     );
 }
 
-fn readback(
+pub(super) fn readback(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     tex: &wgpu::Texture,

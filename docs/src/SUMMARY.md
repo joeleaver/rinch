@@ -30,6 +30,7 @@
 - [Game Engine Integration](./guide/game-engine.md)
 - [ContentEditable API](./guide/contenteditable.md)
 - [Rich-Text Editor](./guide/editor.md)
+- [Node Graphs](./guide/node-graphs.md)
 - [Measuring Performance](./guide/performance.md)
 
 # Architecture

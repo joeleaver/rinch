@@ -56,7 +56,7 @@ fn shape_coverage(transform: Affine, shape: &PaintShape, r: Rect) -> SliceCovera
         }
     }
 }
-use super::vello_painter::centre_sampling;
+use super::vello_painter::{centre_sampling, shape_bounds, tile_cost};
 
 /// A surface the painter took out of the scene, and what the compositor
 /// needs to draw it (`rinch::shell::split_compositor`).
@@ -122,6 +122,11 @@ pub(crate) enum Open {
         fill: Fill,
         transform: Affine,
         shape: PaintShape,
+        /// Written into the window's scene (`below`). `false` for a clip that
+        /// cuts nothing there (the painter's elision): kept here so the split
+        /// reasons over the same chain, and mirrored into the slices as before,
+        /// but the window's scene encodes as an unsliced frame's does.
+        below: bool,
     },
     Layer {
         blend: BlendMode,
@@ -147,6 +152,10 @@ pub(crate) struct Slice {
     pub(crate) above_out_draws: usize,
     /// How many of the entries open at the split are still open.
     pub(crate) remaining: usize,
+    /// Tiles of the clips and layers in `above_in` and `above_out`
+    /// ([`Slicing::kept_tiles`]).
+    above_in_tiles: u64,
+    above_out_tiles: u64,
 }
 
 impl Slice {
@@ -156,6 +165,24 @@ impl Slice {
             Some(out) => out,
             None => &mut self.above_in,
         }
+    }
+
+    /// Where this slice's scenes are rendered: R's far corner from the window's
+    /// origin (`split_frame::render_slice`, which may round it up to a step of
+    /// its shared scratch), nothing for an R that is not rendered at all.
+    fn tile_target(&self) -> Rect {
+        Rect::new(0.0, 0.0, self.r.x1, self.r.y1)
+    }
+
+    /// Mirror `entry` into the scene a push lands in now.
+    fn push(&mut self, entry: &Open) {
+        let tiles = tile_cost(open_bounds(entry), self.tile_target());
+        push_open(self.current(), entry);
+        let total = match self.above_out {
+            Some(_) => &mut self.above_out_tiles,
+            None => &mut self.above_in_tiles,
+        };
+        *total = total.saturating_add(tiles);
     }
 }
 
@@ -171,6 +198,12 @@ pub(crate) struct Slicing {
     /// Watched nodes' starts against the splits (S4): see
     /// `VelloPainter::node_starts`.
     pub(crate) starts: std::collections::HashMap<crate::node::RawNodeId, usize>,
+    /// The target the window's scene is rendered to, which a partial frame
+    /// makes smaller than `window` (`VelloPainter::set_tile_target`).
+    pub(crate) tile_target: Rect,
+    /// Tiles of the inverse clip each time it opened, and of the mask scenes:
+    /// see [`Self::kept_tiles`].
+    tiles: u64,
 }
 
 /// Whether two rects share any area.
@@ -245,6 +278,21 @@ fn spill(b: Rect) -> Rect {
     }
 }
 
+/// The device bounds of an open entry.
+fn open_bounds(entry: &Open) -> Rect {
+    match entry {
+        Open::Clip {
+            transform, shape, ..
+        } => shape_bounds(*transform, shape),
+        Open::Layer {
+            transform, bounds, ..
+        }
+        | Open::Isolated {
+            transform, bounds, ..
+        } => shape_bounds(*transform, bounds),
+    }
+}
+
 pub(crate) fn push_open(scene: &mut Scene, entry: &Open) {
     use super::vello_painter::{push_clip_into, push_layer_into};
     match entry {
@@ -252,6 +300,7 @@ pub(crate) fn push_open(scene: &mut Scene, entry: &Open) {
             fill,
             transform,
             shape,
+            ..
         } => push_clip_into(scene, *fill, *transform, shape),
         Open::Layer {
             blend,
@@ -276,7 +325,29 @@ impl Slicing {
             inverse_open: false,
             refused: Vec::new(),
             starts: Default::default(),
+            tile_target: window,
+            tiles: 0,
         }
+    }
+
+    /// What the split path adds to `VelloPainter::clip_tiles`, past the clips
+    /// and layers the painter counted into the window's scene: the inverse
+    /// clip, each time it opened; the masks; and each slice's above scenes
+    /// that will be rendered ([`Self::finish`] drops one nothing was drawn in).
+    pub(crate) fn kept_tiles(&self) -> u64 {
+        self.slices.iter().fold(self.tiles, |total, s| {
+            let above_in = if s.above_in_draws > 0 {
+                s.above_in_tiles
+            } else {
+                0
+            };
+            let above_out = if s.above_out_draws > 0 {
+                s.above_out_tiles
+            } else {
+                0
+            };
+            total.saturating_add(above_in).saturating_add(above_out)
+        })
     }
 
     /// The window with every non-empty R cut out, holes wound backwards. The
@@ -303,8 +374,13 @@ impl Slicing {
 
     pub(crate) fn open_inverse(&mut self, below: &mut Scene) {
         if !self.inverse_open {
-            below.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &self.inverse_path());
+            let path = self.inverse_path();
+            below.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &path);
             self.inverse_open = true;
+            // Its bounds are the window's, 64px out; its holes save no tile.
+            self.tiles = self
+                .tiles
+                .saturating_add(tile_cost(path.bounding_box(), self.tile_target));
         }
     }
 
@@ -365,7 +441,9 @@ impl Slicing {
     /// Mirror a push into every above scene and record it.
     pub(crate) fn push(&mut self, below: &mut Scene, entry: Open) {
         self.close_inverse(below);
-        push_open(below, &entry);
+        if !matches!(entry, Open::Clip { below: false, .. }) {
+            push_open(below, &entry);
+        }
         if let Open::Layer {
             blend,
             bounds,
@@ -391,14 +469,16 @@ impl Slicing {
             }
         }
         for s in &mut self.slices {
-            push_open(s.current(), &entry);
+            s.push(&entry);
         }
         self.open.push(entry);
     }
 
     pub(crate) fn pop(&mut self, below: &mut Scene) {
         self.close_inverse(below);
-        below.pop_layer();
+        if !matches!(self.open.last(), Some(Open::Clip { below: false, .. })) {
+            below.pop_layer();
+        }
         let index = self.open.len().saturating_sub(1);
         for s in &mut self.slices {
             if index >= s.remaining {
@@ -410,11 +490,10 @@ impl Slicing {
                 s.remaining = index;
                 match &mut s.above_out {
                     None => {
-                        let mut out = Scene::new();
+                        s.above_out = Some(Scene::new());
                         for o in &self.open[..index] {
-                            push_open(&mut out, o);
+                            s.push(o);
                         }
-                        s.above_out = Some(out);
                     }
                     // A later one: the top of what was replayed.
                     Some(out) => out.pop_layer(),
@@ -555,6 +634,27 @@ impl Slicing {
             black_backdrop: b.black_backdrop,
         });
 
+        // What the masks above pushed: each is rendered, to the slice's target.
+        let slice_target = Rect::new(0.0, 0.0, r.x1, r.y1);
+        if matches!(own, SliceCoverage::Mask(_)) {
+            let cost = |bounds| tile_cost(bounds, slice_target);
+            if let Some(inner) = &split.inner {
+                self.tiles = self
+                    .tiles
+                    .saturating_add(cost(shape_bounds(split.node_transform, inner)));
+            }
+            if split.clip_to_content {
+                self.tiles = self.tiles.saturating_add(cost(b));
+            }
+        }
+        if matches!(ancestors, SliceCoverage::Mask(_)) {
+            for c in self.open.iter().filter(|o| matches!(o, Open::Clip { .. })) {
+                self.tiles = self
+                    .tiles
+                    .saturating_add(tile_cost(open_bounds(c), slice_target));
+            }
+        }
+
         let t = split.image_transform;
         self.slices.push(Slice {
             out: SurfaceSlice {
@@ -582,6 +682,8 @@ impl Slicing {
             above_out: None,
             above_out_draws: 0,
             remaining: self.open.len(),
+            above_in_tiles: 0,
+            above_out_tiles: 0,
         });
         SplitVerdict::Split
     }
