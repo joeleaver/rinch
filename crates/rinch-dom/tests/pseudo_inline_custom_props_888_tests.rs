@@ -20,19 +20,19 @@ use rinch_dom::computed_style::DimensionValue;
 const VW: f32 = 400.0;
 const VH: f32 = 200.0;
 
-fn rgb(doc: &RinchDocument, n: usize) -> (u8, u8, u8) {
+fn rgb(doc: &RinchDocument, n: u64) -> (u8, u8, u8) {
     let c = doc.tree.get(n).unwrap().computed_style.color;
     let rgba = c.expect("color should resolve").to_rgba8();
     (rgba.r, rgba.g, rgba.b)
 }
 
-fn width(doc: &RinchDocument, n: usize) -> DimensionValue {
-    doc.tree.get(n).unwrap().computed_style.width.clone()
+fn width(doc: &RinchDocument, n: u64) -> DimensionValue {
+    doc.tree.get(n).unwrap().computed_style.width
 }
 
 /// The generated box: first pseudo child for `::before`, last for `::after`.
-fn generated(doc: &RinchDocument, owner: NodeId, before: bool) -> usize {
-    let kids: Vec<usize> = doc
+fn generated(doc: &RinchDocument, owner: NodeId, before: bool) -> u64 {
+    let kids: Vec<u64> = doc
         .tree
         .get(owner.0)
         .unwrap()
@@ -45,7 +45,7 @@ fn generated(doc: &RinchDocument, owner: NodeId, before: bool) -> usize {
     *b.expect("the element generates its pseudo box")
 }
 
-fn assert_33(doc: &RinchDocument, n: usize, what: &str) {
+fn assert_33(doc: &RinchDocument, n: u64, what: &str) {
     assert!(
         matches!(width(doc, n), DimensionValue::Length(w) if w == 33.0),
         "{what}: width, got {:?}",
@@ -78,7 +78,11 @@ fn inline_custom_properties_reach_before_and_after() {
         let what = if before { "::before" } else { "::after" };
         assert_eq!(rgb(&doc, g), (1, 2, 3), "{what}: color");
         assert_33(&doc, g, what);
-        assert_eq!(doc.tree.get(g).unwrap().layout.width, 33.0, "{what}: laid-out width");
+        assert_eq!(
+            doc.tree.get(g).unwrap().layout.width,
+            33.0,
+            "{what}: laid-out width"
+        );
     }
 }
 
