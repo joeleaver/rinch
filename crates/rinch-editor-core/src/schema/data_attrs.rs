@@ -71,7 +71,9 @@ pub const RESERVED_DATA_ATTR_PREFIXES: &[&str] = &[
 ///   `data-online` stay an app's);
 /// - what the runtime reads on any element: focus and pointer handling
 ///   (`data-nofocus`, `data-disabled`, `data-trap-focus`, `data-backdrop`,
-///   `data-scroll-lock-exempt`, `data-drag-window`), compositing holes
+///   `data-scroll-lock-exempt`, `data-drag-window`), the node-graph canvas's
+///   wheel opt-out (`data-graph-nowheel`, read on every element from the one
+///   under the pointer up), compositing holes
 ///   (`data-viewport`, `data-viewport-ready`, `data-render-surface`,
 ///   `data-video-player`), rinch-rtc's `MediaView` element (`data-rtc-view`:
 ///   the web backend finds its `<video>` by it and sets the track as its
@@ -115,6 +117,7 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-backdrop",
     "data-scroll-lock-exempt",
     "data-drag-window",
+    "data-graph-nowheel",
     "data-viewport",
     "data-viewport-ready",
     "data-render-surface",
