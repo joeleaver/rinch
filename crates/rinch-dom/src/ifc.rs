@@ -6,6 +6,7 @@ use peniko::Brush;
 
 use crate::RinchDocument;
 use crate::computed_style::VerticalAlignValue;
+use crate::float_wrap::FloatBands;
 use crate::layout;
 use crate::node::RawNodeId;
 use crate::node::{
@@ -462,15 +463,25 @@ pub(crate) fn break_lines_hanging_spaces(
     count_trailing: bool,
     justify: bool,
     align_width: Option<AlignWidth>,
-) -> HangStats {
+    floats: Option<&FloatBands>,
+) -> Broken {
     // #1237: a paragraph that does not wrap, aligned within the box.
     if let Some(align) =
         align_width.filter(|a| max_width.is_none() && a.width.is_finite() && a.width > 0.0)
     {
-        return break_unwrapped_aligned(layout, text, align, preserves_spaces, unhung);
+        return Broken::plain(break_unwrapped_aligned(
+            layout,
+            text,
+            align,
+            preserves_spaces,
+            unhung,
+        ));
     }
     layout.break_all_lines(max_width);
     let max = max_width.filter(|max| max.is_finite());
+    // Lines beside a float are each given their own room, which only the
+    // line-by-line pass does.
+    let floats = floats.filter(|f| max.is_some() && !f.is_empty());
     // #1243: whether the seams are in force for `pre` spaces depends on
     // where parley broke the paragraph.
     unhung
@@ -488,8 +499,10 @@ pub(crate) fn break_lines_hanging_spaces(
     // test sent the paragraph through it: a line [`unglue`] moves an NBSP onto
     // can come out ending in spaces parley did not hang.
     let fix = max.filter(|&max| {
-        (preserves_spaces
-            && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung)))
+        floats.is_some()
+            || (preserves_spaces
+                && (any_unhung_line(layout, text)
+                    || any_unhung_trailing_line(layout, text, unhung)))
             || any_hung_nbsp_line(layout, text, max)
             || any_emergency_box_line_before_white_space(layout, text)
             || (count_trailing && any_counted_trailing_line(layout, text, preserves_spaces))
@@ -498,6 +511,7 @@ pub(crate) fn break_lines_hanging_spaces(
             || unhung.active_seams().is_some()
     });
     let fix = fix.map(|max| (max, preserves_spaces));
+    let mut float_drop = 0.0f32;
     let mut stats = match fix {
         Some((max, hang_spaces)) => hang_pass(
             layout,
@@ -508,6 +522,8 @@ pub(crate) fn break_lines_hanging_spaces(
             hang_spaces,
             count_trailing,
             justify,
+            floats,
+            &mut float_drop,
         ),
         None => HangStats::default(),
     };
@@ -526,13 +542,39 @@ pub(crate) fn break_lines_hanging_spaces(
                     hang_spaces,
                     count_trailing,
                     justify,
+                    floats,
+                    &mut float_drop,
                 )
             }
             None => break_lines_up_to(layout, max_width, keep),
         }
         stats.phantom_rebreaks = 1;
     }
-    stats
+    Broken {
+        hang: stats,
+        float_drop,
+    }
+}
+
+/// What [`break_lines_hanging_spaces`] did to a layout.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Broken {
+    /// The work it took.
+    pub(crate) hang: HangStats,
+    /// How far lines were moved down to clear floats they did not fit beside
+    /// ([`place_line_beside_floats`]), in all: parley's `height` sums the
+    /// lines' heights and does not count it, so a layout's content height is
+    /// its `height` plus this.
+    pub(crate) float_drop: f32,
+}
+
+impl Broken {
+    fn plain(hang: HangStats) -> Self {
+        Self {
+            hang,
+            float_drop: 0.0,
+        }
+    }
 }
 
 /// How many times `resolve_layout` runs `resolve_percentage_inline_blocks`
@@ -834,7 +876,10 @@ pub(crate) fn shape_text_leaf(
         false,
         false,
         None,
-    );
+        // A text leaf is a flex or grid item, never beside a float.
+        None,
+    )
+    .hang;
     // A flex or grid container's text that is all white space is not
     // rendered, whatever its `white-space` (css-flexbox-1 §4, css-grid-1
     // §6): Chrome 155 lays `"   "` out as nothing under `pre-wrap` too. Here
@@ -1695,9 +1740,10 @@ pub(crate) fn resolve_out_of_flow_marks(
         // before the box, or — with the two the same — the start of a line
         // nothing precedes it on.
         let at_line_start = |index: usize| {
-            layout
-                .get(index)
-                .map(|line| (line.metrics().offset, top(index), top(index)))
+            layout.get(index).map(|line| {
+                let m = line.metrics();
+                (m.inline_min_coord + m.offset, top(index), top(index))
+            })
         };
         let found = if let Some(&(index, right)) = after_box(mark).and_then(|id| boxes.get(&id)) {
             Some((right, top(index), top(index + 1)))
@@ -1713,18 +1759,19 @@ pub(crate) fn resolve_out_of_flow_marks(
                     // final break has none (`phantom_last_line`); the box
                     // still goes below this one.
                     return at_line_start(index + 1).unwrap_or((
-                        m.offset,
+                        m.inline_min_coord + m.offset,
                         top(index + 1),
                         top(index + 1),
                     ));
                 }
-                let start = cluster.visual_offset().unwrap_or(m.offset);
+                let line_start = m.inline_min_coord + m.offset;
+                let start = crate::float_wrap::cluster_x(&cluster).unwrap_or(line_start);
                 let x = if cluster.is_rtl() {
                     start
                 } else {
                     // Not past the line's content: a space hung at a soft
                     // wrap takes no room there.
-                    (start + cluster.advance()).min(m.offset + m.advance - m.trailing_whitespace)
+                    (start + cluster.advance()).min(line_start + m.advance - m.trailing_whitespace)
                 };
                 (x, top(index), top(index + 1))
             })
@@ -1854,15 +1901,18 @@ fn break_unwrapped(
 fn hang_pass(
     layout: &mut parley::Layout<Brush>,
     text: &str,
-    max: f32,
+    full: f32,
     limit: Option<usize>,
     unhung: &UnhungSpaces,
     hang_spaces: bool,
     count_trailing: bool,
     justify: bool,
+    floats: Option<&FloatBands>,
+    float_drop: &mut f32,
 ) -> HangStats {
     use parley::layout::{BreakReason, YieldData};
     let mut stats = HangStats::default();
+    *float_drop = 0.0;
     let units = logical_units(layout, text, unhung);
     let has_edges = units.iter().any(|u| u.edge != 0);
     // #1238: parley's breaks next to atomic inlines are not CSS's here.
@@ -1883,8 +1933,20 @@ fn hang_pass(
         if limit == Some(committed) {
             break;
         }
+        // The room this line has: all of it, or what the floats beside it
+        // leave. Every rebreak of the line below starts from `line_start`,
+        // which carries the line's place.
+        let max = match floats {
+            Some(floats) => {
+                let (room, drop) = place_line_beside_floats(&mut breaker, floats, full);
+                *float_drop += drop;
+                line_start = breaker.state().clone();
+                room
+            }
+            _ => full,
+        };
         let state = breaker.state_mut();
-        state.set_layout_max_advance(max);
+        state.set_layout_max_advance(full);
         state.set_line_max_advance(max);
         let Some(yielded) = breaker.break_next() else {
             break;
@@ -2112,6 +2174,67 @@ fn hang_pass(
     }
     breaker.finish();
     stats
+}
+
+/// Put the breaker's next line beside the floats (`floats`) of a paragraph
+/// `full` wide, and return the width it has there and how far it was moved
+/// down to get it.
+///
+/// The room a line has depends on its height, which is known only once it is
+/// broken, so it is broken once on trial with the room where it starts: if
+/// its whole height overlaps a float that leaves less, it gets that. A line
+/// whose content does not fit even its first piece in the room beside a float
+/// (parley's emergency break) is moved down to where the room changes, until
+/// it fits or no float is beside it (CSS 2.2 §9.5).
+fn place_line_beside_floats(
+    breaker: &mut parley::layout::BreakLines<'_, Brush>,
+    floats: &FloatBands,
+    full: f32,
+) -> (f32, f32) {
+    use parley::layout::{BreakReason, YieldData};
+    let from = breaker.committed_y() as f32;
+    let mut top = from;
+    // One move per band boundary at most; the guard is against a band that
+    // does not end.
+    for _ in 0..1024 {
+        let (x, width) = floats.room(top, top, full);
+        let state = breaker.state_mut();
+        state.set_line_y(top as f64);
+        state.set_line_x(x);
+        state.set_layout_max_advance(full);
+        state.set_line_max_advance(width);
+        let start = breaker.state().clone();
+        // The end of the paragraph: nothing to place. Not reverted, which
+        // would clear the breaker's "done" and have it yield empty lines for
+        // ever.
+        let Some(trial) = breaker.break_next() else {
+            return (width, top - from);
+        };
+        breaker.revert_to(start);
+        let YieldData::LineBreak(line) = trial else {
+            return (width, top - from);
+        };
+        let bottom = top + (line.line_y_end - line.line_y_start) as f32;
+        let (x, room) = floats.room(top, bottom, full);
+        // Its content does not fit: its first piece is wider than the room.
+        // parley breaks such a line as an emergency, or, when the piece ends
+        // the paragraph or a forced break follows it, keeps it whole past the
+        // room. A line it wrapped (`Regular`) fit, but for the space it hangs.
+        let overflows = line.reason == BreakReason::Emergency
+            || (line.reason != BreakReason::Regular && line.advance > room + 0.01);
+        if overflows
+            && room < full
+            && let Some(below) = floats.next_change_below(top)
+        {
+            top = below;
+            continue;
+        }
+        let state = breaker.state_mut();
+        state.set_line_x(x);
+        state.set_line_max_advance(room);
+        return (room, top - from);
+    }
+    (full, top - from)
 }
 
 /// Break again a line that ends in an inline box parley placed by its
@@ -4082,6 +4205,7 @@ impl RinchDocument {
                     };
                     if same(existing.max_width, max_width.unwrap_or(f32::INFINITY))
                         && same(existing.align_width, new_align)
+                        && existing.float_bands.as_ref() == self.tree.ifc_float_bands.get(&root_id)
                     {
                         continue; // Skip — text_layout is still valid
                     }
@@ -4180,6 +4304,7 @@ impl RinchDocument {
             &mut self.font_cx,
             paint_layout_cx,
             None,
+            self.tree.ifc_float_bands.get(&root_id),
         );
         self.tree.perf.add(
             crate::perf::Counter::InlineFontFamilyResolves,
@@ -8147,11 +8272,20 @@ impl RinchDocument {
         // paint (#904) — see `NodeTree::atomic_leaf_layouts`.
         let mut leaf_layouts: HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>> =
             HashMap::new();
+        // The bands the box's own IFC roots were laid out beside, as the
+        // root compute keeps them (`NodeTree::ifc_float_bands`): `None` for a
+        // root laid out with none.
+        let mut float_bands: HashMap<RawNodeId, Option<crate::float_wrap::FloatBands>> =
+            HashMap::new();
         perf.bump(crate::perf::Counter::InlineBlockComputes);
-        let _ = tree.taffy.compute_layout_with_measure(
+        let _ = tree.taffy.compute_layout_with_block_measure(
             taffy_id,
             avail,
-            |inputs, _node_id, context, style| {
+            |inputs, _node_id, context, style, block_ctx| {
+                let floats = block_ctx
+                    .filter(|_| matches!(context, Some(NodeContext::InlineRoot(_))))
+                    .map(|ctx| crate::float_wrap::FloatBands::of_leaf(ctx, &inputs, style))
+                    .filter(|bands| !bands.is_empty());
                 // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
                 // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
                 // `TaffyView` ran around the size this body returns, with the
@@ -8179,6 +8313,9 @@ impl RinchDocument {
                                     };
                                 }
                                 perf.bump(crate::perf::Counter::ShapeAtomicInline);
+                                if inputs.run_mode == taffy::RunMode::PerformLayout {
+                                    float_bands.insert(root_id, floats.clone());
+                                }
                                 let atomic = AtomicContributions {
                                     wrap_width: max_width,
                                     min_content,
@@ -8195,6 +8332,7 @@ impl RinchDocument {
                                         font_cx,
                                         layout_cx,
                                         Some(&atomic),
+                                        floats.as_ref(),
                                     );
                                 perf.add(
                                     crate::perf::Counter::InlineFontFamilyResolves,
@@ -8208,7 +8346,7 @@ impl RinchDocument {
                                         .unwrap_or(inline_layout.measured_width()),
                                     height: known_dims
                                         .height
-                                        .unwrap_or(inline_layout.layout.height()),
+                                        .unwrap_or(inline_layout.content_height()),
                                 }
                             }
                             Some(NodeContext::Text(text)) => {
@@ -8289,6 +8427,16 @@ impl RinchDocument {
             },
         );
         tree.atomic_leaf_layouts.extend(leaf_layouts);
+        for (root, bands) in float_bands {
+            match bands {
+                Some(bands) => {
+                    tree.ifc_float_bands.insert(root, bands);
+                }
+                None => {
+                    tree.ifc_float_bands.remove(&root);
+                }
+            }
+        }
     }
 
     /// Measure a set of detached atomic inlines (`inline-block`, `inline-flex`,
@@ -9361,6 +9509,7 @@ impl RinchDocument {
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<Brush>,
         atomic: Option<&AtomicContributions<'_>>,
+        floats: Option<&FloatBands>,
     ) -> (InlineLayout, u64) {
         // Get root style properties from typed ComputedStyle
         let root_computed = &nodes[root_id].computed_style;
@@ -9678,6 +9827,7 @@ impl RinchDocument {
         let justify = matches!(alignment, parley::layout::Alignment::Justify)
             && css_direction_is_ltr(nodes, root_id);
         let mut hang = HangStats::default();
+        let mut float_drop: f32;
         let mut builds = 0u32;
         let (text_layout, text_content) = loop {
             let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
@@ -9687,7 +9837,7 @@ impl RinchDocument {
             if (needs_seams || pre_candidate) && unhung.seams.is_none() {
                 unhung.seams = Some(WrapSeams::of(nodes, root_id, &text_ranges, &text_layout));
             }
-            hang.add(break_lines_hanging_spaces(
+            let broken = break_lines_hanging_spaces(
                 &mut text_layout,
                 &text_content,
                 effective_max_width,
@@ -9696,7 +9846,10 @@ impl RinchDocument {
                 count_trailing,
                 justify,
                 align_width.filter(|_| count_trailing),
-            ));
+                floats,
+            );
+            hang.add(broken.hang);
+            float_drop = broken.float_drop;
             let Some(stops) = &stops else {
                 break (text_layout, text_content);
             };
@@ -9733,6 +9886,8 @@ impl RinchDocument {
                 span_fragments: Default::default(),
                 out_of_flow,
                 ellipsis: None,
+                float_drop,
+                float_bands: floats.filter(|f| !f.is_empty()).cloned(),
             },
             font_family_resolves.get(),
         )
@@ -9946,7 +10101,10 @@ impl RinchDocument {
             items.clear();
             clusters.clear();
             for run in line.runs() {
-                let Some(mut x) = run.visual_clusters().next().and_then(|c| c.visual_offset())
+                let Some(mut x) = run
+                    .visual_clusters()
+                    .next()
+                    .and_then(|c| crate::float_wrap::cluster_x(&c))
                 else {
                     continue;
                 };
@@ -10032,8 +10190,11 @@ impl RinchDocument {
             let x = match (kept, at_left) {
                 (Some(edge), false) => edge,
                 (Some(edge), true) => edge - ellipsis_width,
-                (None, false) => m.offset.max(0.0),
-                (None, true) => (m.offset + m.advance).min(container_width) - ellipsis_width,
+                (None, false) => (m.inline_min_coord + m.offset).max(0.0),
+                (None, true) => {
+                    (m.inline_min_coord + m.offset + m.advance).min(container_width)
+                        - ellipsis_width
+                }
             };
             marks.push(crate::node::EllipsisMark {
                 line: index,

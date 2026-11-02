@@ -3,19 +3,18 @@
 //! Taffy 0.14's block layout places floats (its `float_layout` feature): a
 //! floated child of a block container goes to the left or right of its block
 //! formatting context, and a box that establishes a formatting context of its
-//! own is narrowed to the room beside it. What Taffy cannot do is wrap *lines*
-//! around a float, because a rinch IFC is a Taffy leaf whose measure gets no
-//! float context, and parley 0.11 has no per-line horizontal offset to start a
-//! line after a left float.
+//! own is narrowed to the room beside it. A paragraph's lines wrap around the
+//! floats beside it line by line: its IFC root is a Taffy leaf, which rinch's
+//! Taffy fork hands the block context it is laid out in (`float_wrap`).
 //!
-//! So a box that holds inline content and follows a float in the same
-//! container is made to avoid the float as a whole: it is given paint
-//! containment, which makes Taffy treat it as its own formatting context and
-//! place it in the slot beside the float. Its lines fit that slot, which is
-//! what a browser draws beside the float; where the text is longer than the
-//! float, a browser flows the remaining lines back under it at full width and
-//! rinch keeps them in the narrower column. Containment is set only on those
-//! boxes, so nowhere else loses its baseline or scrollable overflow.
+//! What is left here is what Taffy does not know about rinch's boxes. A
+//! block-level replaced element or form control is a Taffy leaf in the same
+//! formatting context, which Taffy lets overlap a float, where CSS 2.2 §9.5
+//! has its border box avoid the float as a box that establishes a formatting
+//! context does: it is given paint containment, which makes Taffy place it
+//! in the room beside the float. And the white space around a float, which
+//! is a line of its own once the float splits its run into two anonymous
+//! boxes where a browser's collapses to nothing, is hidden.
 
 use crate::RinchDocument;
 use crate::computed_style::values::{DisplayValue, PositionValue};
@@ -29,8 +28,9 @@ impl RinchDocument {
         }
     }
 
-    /// Give every box that must avoid a float its containment, and take it
-    /// from every box that no longer must. Run before each layout compute.
+    /// Give every replaced box that must avoid a float its containment, take
+    /// it from every one that no longer must, and hide the blank runs beside
+    /// floats. Run before each layout compute.
     pub(crate) fn sync_float_avoidance(&mut self) {
         if self.tree.floats.is_empty()
             && self.tree.float_avoiders.is_empty()
@@ -77,7 +77,7 @@ impl RinchDocument {
             for &k in after {
                 if let Some(&a) = self.tree.taffy_map.get(&k)
                     && !avoiders.contains(&a)
-                    && self.holds_lines(k)
+                    && self.is_replaced_in_flow(k)
                 {
                     avoiders.push(a);
                 }
@@ -134,10 +134,10 @@ impl RinchDocument {
         }
     }
 
-    /// Whether the box behind Taffy node `t` is in flow, not floated, and
-    /// lays out lines itself: an anonymous block box, a block whose own
-    /// children are inline content, or a leaf such as an image.
-    fn holds_lines(&self, t: taffy::NodeId) -> bool {
+    /// Whether Taffy node `t` is a block-level replaced element or form
+    /// control in flow: a leaf measured as a box, not as lines.
+    fn is_replaced_in_flow(&self, t: taffy::NodeId) -> bool {
+        use crate::node::NodeContext;
         let Some(&id) = self.tree.taffy_map.get(&t) else {
             return false;
         };
@@ -151,16 +151,14 @@ impl RinchDocument {
         {
             return false;
         }
-        if n.is_anonymous_block_box || self.tree.taffy.children(t).is_ok_and(|c| c.is_empty()) {
-            return true;
-        }
-        n.children.iter().any(|&c| {
-            let c = &self.tree.nodes[c];
-            match c.text_content() {
-                Some(text) => !text.trim().is_empty(),
-                None => c.display_mode.is_inline_level(),
-            }
-        })
+        matches!(
+            self.tree.taffy.get_node_context(t),
+            Some(
+                NodeContext::Image { .. }
+                    | NodeContext::Replaced { .. }
+                    | NodeContext::FormControl { .. }
+            )
+        )
     }
 
     /// Set `id`'s Taffy containment, if it still has a box.

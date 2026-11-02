@@ -691,7 +691,7 @@ fn measure_span_fragments(
     let mut lines: Vec<(f32, f32)> = Vec::new();
     for (index, line) in layout.lines().enumerate() {
         let metrics = line.metrics();
-        lines.push((metrics.baseline, metrics.offset));
+        lines.push((metrics.baseline, metrics.inline_min_coord + metrics.offset));
         // A run is handed out once per style it holds; its clusters are
         // walked once, from where its first piece starts.
         let mut last_run = None;

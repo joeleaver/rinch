@@ -778,14 +778,24 @@ impl RinchDocument {
         // Persistent IFC measure cache — survives across frames.
         // Only invalidated when an IFC root's text content changes.
         let ifc_measure_cache = RefCell::new(std::mem::take(&mut self.tree.ifc_measure_cache));
+        // The bands each IFC root was finally laid out beside, for the paint
+        // layout; a root laid out with no float beside it drops its entry.
+        let ifc_float_bands = RefCell::new(std::mem::take(&mut self.tree.ifc_float_bands));
 
         let t = web_time::Instant::now();
         self.tree
             .taffy
-            .compute_layout_with_measure(
+            .compute_layout_with_block_measure(
                 root_taffy,
                 available_space,
-                |inputs, _node_id, context, style| {
+                |inputs, _node_id, context, style, block_ctx| {
+                    // The room the floats of the leaf's block formatting
+                    // context leave it, read before the leaf algorithm takes
+                    // `inputs` (an IFC root's lines wrap around them).
+                    let floats = block_ctx
+                        .filter(|_| matches!(context, Some(NodeContext::InlineRoot(_))))
+                        .map(|ctx| crate::float_wrap::FloatBands::of_leaf(ctx, &inputs, style))
+                        .filter(|bands| !bands.is_empty());
                     // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
                     // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
                     // `TaffyView` ran around the size this body returns, with the
@@ -902,9 +912,23 @@ impl RinchDocument {
                                     let wrap_bits =
                                         max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
 
+                                    if inputs.run_mode == taffy::RunMode::PerformLayout {
+                                        let mut bands = ifc_float_bands.borrow_mut();
+                                        match &floats {
+                                            Some(f) => {
+                                                bands.insert(root_id, f.clone());
+                                            }
+                                            None => {
+                                                bands.remove(&root_id);
+                                            }
+                                        }
+                                    }
+
                                     // Check persistent IFC measure cache — skip expensive
                                     // Parley rebuild if this root's text hasn't changed.
-                                    {
+                                    // Its sizes are of lines with the whole width: a root
+                                    // beside a float is broken afresh, and not kept.
+                                    if floats.is_none() {
                                         let cached = ifc_measure_cache
                                             .borrow()
                                             .get(&root_id)
@@ -936,15 +960,23 @@ impl RinchDocument {
                                         font_cx,
                                         layout_cx,
                                         Some(&atomic),
+                                        floats.as_ref(),
                                     );
                                     font_family_resolves.set(font_family_resolves.get() + resolved);
                                     let mut h = hang.get();
                                     h.add(inline_layout.hang);
                                     hang.set(h);
                                     let w = inline_layout.measured_width();
-                                    let h = inline_layout.layout.height();
+                                    let h = inline_layout.content_height();
                                     first_baseline =
                                         crate::ifc::first_line_baseline(&inline_layout.layout);
+
+                                    if floats.is_some() {
+                                        return taffy::Size {
+                                            width: known_dims.width.unwrap_or(w),
+                                            height: known_dims.height.unwrap_or(h),
+                                        };
+                                    }
 
                                     // Store in persistent cache
                                     ifc_measure_cache
@@ -998,6 +1030,7 @@ impl RinchDocument {
 
         // Restore the persistent IFC measure cache (dirty_ifc_text_roots cleared after build_ifc)
         self.tree.ifc_measure_cache = ifc_measure_cache.into_inner();
+        self.tree.ifc_float_bands = ifc_float_bands.into_inner();
 
         let perf = &self.tree.perf;
         perf.add(Counter::TaffyMeasureCalls, measure_calls.get());

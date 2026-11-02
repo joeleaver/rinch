@@ -224,7 +224,9 @@ fn the_linear_pass_commits_the_lines_the_restarting_loop_did() {
             false,
             false,
             None,
-        );
+            None,
+        )
+        .hang;
         fixed += stats.passes;
         lines_fixed += stats.lines;
         assert!(stats.passes <= 1, "case {case}: {stats:?}");
@@ -293,7 +295,9 @@ fn with_inline_boxes_every_line_is_in_step_and_none_is_left_unhung() {
             false,
             false,
             None,
-        );
+            None,
+        )
+        .hang;
         fixed_lines += stats.lines;
         // Review of #1077: parley's trailing line after an overflowing last box
         // (#1050) is never left behind, on the hang route either.

@@ -669,6 +669,13 @@ pub struct InlineLayout {
     /// themselves are not changed: paint hides what is past each cut and
     /// draws a "…" there.
     pub ellipsis: Option<Box<EllipsisCut>>,
+    /// How far lines were moved down to clear floats beside the root that
+    /// they did not fit beside ([`crate::ifc::Broken::float_drop`]); `0` for
+    /// nearly every layout. [`Self::content_height`] counts it.
+    pub float_drop: f32,
+    /// The room the floats beside the root left its lines when they were
+    /// broken, `None` for lines given the whole width.
+    pub(crate) float_bands: Option<crate::float_wrap::FloatBands>,
 }
 
 /// Where `text-overflow: ellipsis` cuts an IFC root's lines (#1100): what
@@ -744,6 +751,13 @@ pub(crate) struct OutOfFlowMark {
 }
 
 impl InlineLayout {
+    /// The height of the lines: parley's layout height, which sums the
+    /// lines' heights, and the gaps left above lines moved down below a
+    /// float.
+    pub(crate) fn content_height(&self) -> f32 {
+        self.layout.height() + self.float_drop
+    }
+
     /// The width of what paint draws of the lines, for the clip proof: the
     /// layout's width, or no wider than the box for lines cut by
     /// `text-overflow: ellipsis` (#1100), whose glyphs past the box are not
@@ -2895,6 +2909,10 @@ pub struct NodeTree {
     pub float_avoiders: Vec<RawNodeId>,
     /// The blank anonymous boxes beside floats that `floats` hid.
     pub float_blank_runs: Vec<RawNodeId>,
+    /// The room the floats beside an IFC root leave its lines, for every
+    /// root the last layout laid out beside one (`float_wrap`). The paint
+    /// layout is broken around the same bands the measure was.
+    pub(crate) ifc_float_bands: rustc_hash::FxHashMap<RawNodeId, crate::float_wrap::FloatBands>,
     /// Every table rebuilt so far; dead ids are dropped before each layout.
     pub tables: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
@@ -3610,6 +3628,7 @@ impl NodeTree {
             floats: Vec::new(),
             float_avoiders: Vec::new(),
             float_blank_runs: Vec::new(),
+            ifc_float_bands: Default::default(),
             cells_to_align: Vec::new(),
             cell_hints: Default::default(),
             style_roots: Vec::new(),
