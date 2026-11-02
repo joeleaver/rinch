@@ -596,11 +596,18 @@ as in Chrome without `transform-style: preserve-3d` (#997).
 
 One thing rinch does **not** implement from §3: the **transitionability**
 precondition, which appears in item 1 and again in item 4.2: a pair of values
-that cannot be interpolated — a length against a percentage, which needs a
-`calc()` that `ComputedStyle` cannot hold — still gets an `ActiveTransition`,
-which then idles for its whole duration because `AnimatableValue::interpolate`
-answers `None` for it. The property snaps either way; cancelling instead would
-only save the idle ticks.
+that cannot be interpolated — `auto` against a length, or a sizing keyword —
+still gets an `ActiveTransition`, which then idles for its whole duration
+because `AnimatableValue::interpolate` answers `None` for it. The property snaps
+either way; cancelling instead would only save the idle ticks. A length against
+a percentage **is** interpolable, as a `calc()` whose length and percentage
+parts each go their own way (#767; `ComputedStyle` holds that `Calc` for sizes,
+margins and length-percentages alike). Whether a transition *starts* for such a
+pair is the differ's call (`transition/diff.rs`): `background-position`
+compares the computed values (`diff_lp_exact`), `padding-*` compares pixels with
+a percentage read as 0 (`diff_lp`), and `width`, `height` and `margin-*` start
+one only between two lengths (`diff_dimension`, `diff_lpa`), so a
+length-to-percentage change there applies at once.
 
 **Item 3** is implemented (issue #693): a running transition whose property has
 stopped matching `transition-property` is cancelled on the next cascade of its
@@ -872,11 +879,12 @@ An **implicit keyframe** — the `from` or `to` Stylo generates for a rule that
 lacks one, and any property an authored `from`/`to` leaves out — is the
 element's base value for exactly the properties the rule animates (Web
 Animations' neutral keyframe), and it is re-read from the base style on every
-cascade (`keyframes::refresh_implicit_values`). Until #767 (PR #2050) lands, the
-base value is available for opacity, background colour and position, colour
-and transform only; an implicit stop for another animated property is left
-out, so `to { width: 110px }` holds 110px throughout. It used to carry a fixed list
-(opacity, background colour and position, colour, transform), so a `to`-only
+cascade (`keyframes::refresh_implicit_values`), the layout properties among
+them (`width`, `height`, `padding-*`, `margin-*`, `border-*-width`,
+`font-size`, the border colours: #767), so `to { width: 200px }` on a 100px box
+gives 150px at 50%, and 150px at 75% once the base is set to 0 mid-animation.
+It used to carry a fixed list (opacity, background colour and position,
+colour, transform), so a `to`-only
 `transform` spin pinned the element's `color` at the value it had when the spin
 started, and a `to { background-color }` fade kept fading from the background
 the element no longer had.

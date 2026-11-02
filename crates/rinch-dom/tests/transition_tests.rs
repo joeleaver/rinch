@@ -670,7 +670,7 @@ fn transform_interpolation_carries_the_percentage_coefficients() {
 /// implicit keyframe stop stylo synthesises for an animation that does not
 /// declare `transform` itself.
 ///
-/// `extract_base_style_values` builds that stop from the computed style, and a
+/// `base_style_value` builds that stop from the computed style, and a
 /// stop that carries only `matrix` zeroes the percentage translate for the
 /// whole animation. So a centred popup with `animation: fade …` on it jumped
 /// half its own width the moment the animation started — with nothing in the

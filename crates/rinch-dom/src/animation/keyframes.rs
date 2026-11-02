@@ -209,10 +209,9 @@ pub(crate) fn refresh_implicit_values(stops: &mut [KeyframeStop], base_style: &C
 }
 
 /// The element's base value for one animatable property, for an implicit
-/// keyframe stop. `None` for a property the base style does not carry here,
-/// which the stop then leaves out: until #767 (PR #2050) that is every
-/// property but the six below, so a `to { width: 110px }` rule has no implicit
-/// `from` and holds 110px throughout.
+/// keyframe stop. `None` for a property the base style does not carry here
+/// (a background that is not a plain colour, an unset `color` or border
+/// colour), which the stop then leaves out.
 fn base_style_value(
     style: &ComputedStyle,
     property: TransitionProperty,
@@ -226,6 +225,43 @@ fn base_style_value(
             _ => return None,
         },
         TransitionProperty::Color => AnimatableValue::Color(style.color?),
+        TransitionProperty::BorderTopColor => AnimatableValue::Color(style.border_top_color?),
+        TransitionProperty::BorderRightColor => AnimatableValue::Color(style.border_right_color?),
+        TransitionProperty::BorderBottomColor => AnimatableValue::Color(style.border_bottom_color?),
+        TransitionProperty::BorderLeftColor => AnimatableValue::Color(style.border_left_color?),
+        // The layout properties (#767). Without them a `to`-only `width` stop
+        // had nothing to start from and snapped to its end value on the first
+        // frame. An `auto` base is carried as `auto`: it does not interpolate
+        // with a length, so the animation flips at the midpoint, as in Chrome.
+        TransitionProperty::Width => AnimatableValue::Dimension(style.width),
+        TransitionProperty::Height => AnimatableValue::Dimension(style.height),
+        TransitionProperty::PaddingTop => AnimatableValue::LengthPercentage(style.padding_top),
+        TransitionProperty::PaddingRight => AnimatableValue::LengthPercentage(style.padding_right),
+        TransitionProperty::PaddingBottom => {
+            AnimatableValue::LengthPercentage(style.padding_bottom)
+        }
+        TransitionProperty::PaddingLeft => AnimatableValue::LengthPercentage(style.padding_left),
+        TransitionProperty::BorderTopWidth => {
+            AnimatableValue::LengthPercentage(style.border_top_width)
+        }
+        TransitionProperty::BorderRightWidth => {
+            AnimatableValue::LengthPercentage(style.border_right_width)
+        }
+        TransitionProperty::BorderBottomWidth => {
+            AnimatableValue::LengthPercentage(style.border_bottom_width)
+        }
+        TransitionProperty::BorderLeftWidth => {
+            AnimatableValue::LengthPercentage(style.border_left_width)
+        }
+        TransitionProperty::MarginTop => AnimatableValue::LengthPercentageAuto(style.margin_top),
+        TransitionProperty::MarginRight => {
+            AnimatableValue::LengthPercentageAuto(style.margin_right)
+        }
+        TransitionProperty::MarginBottom => {
+            AnimatableValue::LengthPercentageAuto(style.margin_bottom)
+        }
+        TransitionProperty::MarginLeft => AnimatableValue::LengthPercentageAuto(style.margin_left),
+        TransitionProperty::FontSize => AnimatableValue::Float(style.font_size),
         TransitionProperty::BackgroundPositionX => {
             AnimatableValue::LengthPercentage(style.background_position_x)
         }

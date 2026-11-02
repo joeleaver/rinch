@@ -819,12 +819,7 @@ Animations' neutral keyframe) — no other property, so a `to`-only `transform`
 spin never writes `color` — and that value follows the base style. Which
 properties those are is settled once at extraction (`KeyframeStop::implicit`),
 and a cascade reads just those from the base style
-(`keyframes::base_style_value`). Until #767 (PR #2050) lands, that function
-carries opacity, background colour and position, colour and transform only, so
-an implicit stop for any other animated property is left out rather than
-filled from the base, and the authored value holds throughout
-(`to { width: 110px }` gives 110px at 30% where Chrome gives 40px from a 10px
-base). A paused
+(`keyframes::base_style_value`), layout properties included (#767, below). A paused
 animation keeps its frozen elapsed *time* across a re-timing, as Chrome keeps
 `currentTime`. Repeated names match by position from the end (`k 10s, k 20s`
 stays two animations); `ActiveAnimation::position` orders entries split between
@@ -852,6 +847,26 @@ on a class write that restyles it), and the refresh there re-extracts the stops.
 `full_restyle_animation_refresh_tests.rs` and
 `animation_restyle_refresh_tests.rs` are the pins, with the Chrome
 measurements and mutant-by-fixture tables in their module docs.
+
+**A `@keyframes` rule without a `from` or `to` stop starts (or ends) at the
+element's own computed value, layout properties included** (#767). Stylo hands
+the missing stop over as `KeyframesStepValue::ComputedValues`, and
+`animation::keyframes::base_style_value` fills it from `ComputedStyle`, one
+property at a time: opacity, the background, text and border colours,
+background position, transform, `width`, `height`, `padding-*`, `margin-*`,
+`border-*-width` and `font-size`. `refresh_implicit_values` fills only the
+properties the rule's authored stops animate (css-animations-1 §4, "the
+properties being animated"), so a transform-only spinner writes no width or
+margin on its ticks and costs no layout. Before, the implicit stop had no `width`, and `to { width: 200px }` on a
+100px box sat at 200 from the first frame (Chrome: 150 at 50%). A percentage
+base against a length stop interpolates as a `calc()`
+(`AnimatableValue::interpolate`, the mixed arms); an `auto` base or margin, or a
+sizing keyword, does not interpolate and flips at the midpoint, which is
+Chrome 156's answer with `interpolate-size` at its default. Pins:
+`crates/rinch-dom/tests/keyframe_implicit_base_767_tests.rs` (Chrome 156 table
+in its module doc). The implicit stop is re-read on every cascade of the node
+(#781, above), so a base width changed mid-animation is followed
+(`a_base_width_changed_mid_animation_is_re_read`).
 
 **A `transform` transitions and animates by function list, not matrix entry by
 entry** (#414). `TransformValue` keeps the list it was composed from
