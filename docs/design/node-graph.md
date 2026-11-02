@@ -238,8 +238,8 @@ misses a body whose height changes on its own (an expanding text area).
 | Gesture | Built on | Notes |
 |---|---|---|
 | Drag a node (and the selection) | `Drag::absolute`, divide deltas by zoom | live signal writes, one `MoveNodes` on release, `on_cancel` restores |
-| Pan | `Drag` on the canvas background; wheel/trackpad scroll | middle-button and space+drag too |
-| Zoom | ctrl+wheel and pinch, centred on the pointer | the canvas's `onwheel` (#2063) |
+| Pan | `Drag` on the canvas background; wheel/trackpad scroll | middle-button and space+drag too; a wheel a scroller in a node body can follow scrolls it instead (`WheelEvent::target` + `NodeHandle::can_scroll_toward`), latched per gesture |
+| Zoom | ctrl+wheel and pinch, centred on the pointer | the canvas's `onwheel` (#2063); not inside `data-graph-nowheel` |
 | Draw a wire | `Drag` from a port; candidates lit by `Rules::can_connect` | drop on a port commits; drop on empty canvas fires `on_connect_to_empty` (the "add node here" menu) |
 | Re-route a wire | drag from an occupied input picks up the existing wire | |
 | Marquee select | `Drag` on background with shift, or a mode | rectangle in graph space, intersect node rects |
@@ -353,8 +353,32 @@ Recorded after v1 (milestones 1–5) was built and driven in the running demo
   8 screen pixels); the edge `<svg>` is `pointer-events: none`.
 - **Wheel and pinch.** The canvas's `onwheel` (#2063) zooms around the
   pointer on Ctrl/Cmd+wheel and pinch (a pinch arrives as a Ctrl wheel on both
-  backends) and pans on any other wheel, and consumes every wheel so the page
-  does not scroll or zoom under it.
+  backends) and pans on any other wheel. As first landed (#2064) it consumed
+  every wheel, so a scroll container in a node body (a list, a log, a
+  textarea) could never be wheel-scrolled: `onwheel` runs before the default
+  scroll and a consumed wheel scrolls nothing. Now the handler walks from the
+  wheel's `target` (`WheelEvent::target`, added for this) up to the canvas
+  element and asks each element `NodeHandle::can_scroll_toward(dx, dy)` with
+  the deltas the default scroll would use (`WheelEvent::scroll_deltas`:
+  Shift turns a vertical wheel sideways off macOS); if one can still move, it
+  declines the plain wheel and the backend's default scroll moves it (browser
+  scroll chaining). For that answer to be what the default scroll does, the
+  desktop wheel now picks its container by the same rule
+  (`rinch_dom::paint::scrollbar::can_scroll_toward`): the nearest that can
+  move, chaining past a list at its end, and one container for the whole
+  wheel, as Chrome and Firefox do (a diagonal wheel over a sideways strip used
+  to send its vertical part past the canvas to the page). It latches like a
+  browser: a gesture (wheels within 500 ms of the last, `WHEEL_GESTURE_GAP`,
+  Chrome's window for phaseless wheels; Firefox's transaction is 1.5 s)
+  belongs to whoever took its first wheel. A content gesture whose scroller
+  reaches its end is consumed and moves nothing, so momentum does not spill
+  into a pan; a panning gesture keeps panning even as it slides a list or a
+  `data-graph-nowheel` element under the still pointer. Ctrl/Cmd+wheel and
+  pinch still zoom over scrollers. An element marked `data-graph-nowheel`
+  (`NO_WHEEL_ATTR`, React Flow's `nowheel`) and everything inside it makes
+  the canvas decline every wheel that starts a gesture, zoom included. Every
+  wheel the canvas takes is still consumed, so the page never scrolls or
+  zooms under it.
 - **`GraphView` is `Copy`.** Its state lives in the reactive store (a `Signal`
   holding an `Rc`), so it can be captured by any number of rsx closures, the
   way `Signal` is. A reactive child in rsx (`{move || …}`) is rebuilt inside an

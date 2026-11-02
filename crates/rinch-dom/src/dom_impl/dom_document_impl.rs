@@ -2066,6 +2066,13 @@ impl DomDocument for RinchDocument {
         crate::paint::scrollbar::visible_extents(&self.tree, node.0).0
     }
 
+    /// [`crate::paint::scrollbar::can_scroll_toward`]: the rule the desktop
+    /// wheel picks its container by, so the answer is what the default scroll
+    /// will do.
+    fn can_scroll_toward(&self, node: NodeId, dx: f64, dy: f64) -> bool {
+        crate::paint::scrollbar::can_scroll_toward(&self.tree, node.0, dx, dy)
+    }
+
     fn request_scroll_into_view(&mut self, node: NodeId) {
         self.tree.scroll_into_view_requests.push(node.0);
     }

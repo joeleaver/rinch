@@ -226,7 +226,7 @@ nothing) re-reads every scroll container, so a container with no record
 painted no bar. Pins: `crates/rinch/src/app/scrollbar_range_damage_tests.rs`.
 
 Limits, all pre-existing. **#769 is fixed**:
-the wheel's finders — `find_scroll_container` / `find_horizontal_scroll_container`,
+the wheel's finders — `find_scroll_container` / `find_horizontal_scroll_container` (test-only since #2084's review; the wheel now walks with `wheel_scroll_target` over `scrollbar::can_scroll_toward`, itself on `overflows`),
 their `_at_point` twins, and the body fallback the two walks share — used to
 compare the content extent against the container's **border**-box size where
 `scrollbars` compares it against the content box, so a padded or bordered

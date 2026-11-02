@@ -9,6 +9,9 @@ description = "Canvas for node-and-wire editors on rinch: pan and zoom, node dra
 rinch-core = { workspace = true }
 rinch-macros = { workspace = true }
 rinch-graph-core = { workspace = true }
+# The wheel's gesture clock (scroll latching); `web_time` so it is `std::time`
+# on native and `performance.now()` on wasm (a bare `Instant::now` panics there).
+web-time = "1"
 
 [features]
 serde = ["rinch-graph-core/serde"]

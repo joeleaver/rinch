@@ -1077,6 +1077,42 @@ pub fn overflows(tree: &NodeTree, node_id: RawNodeId, axis: ScrollbarAxis) -> bo
     }
 }
 
+/// Whether the wheel can move `node_id` toward `(dx, dy)` (the DOM's signs:
+/// positive scrolls down / right; only the signs count): on an axis whose
+/// delta is non-zero it [`overflows`], and its offset is short of the end of
+/// its range in that direction — the end being the range's end on the device
+/// pixel grid, where the wheel's write stops (#1543) — and no `lock_scroll`
+/// overlay locks it out ([`NodeTree::scroll_locked_out`]). Either axis is
+/// enough.
+///
+/// The one rule for "can this container take the wheel": the desktop wheel
+/// picks its container by it (the nearest one from the pointer up), and
+/// `DomDocument::can_scroll_toward` answers with it, so a wheel handler that
+/// asks before declining gets what the default scroll will do.
+pub fn can_scroll_toward(tree: &NodeTree, node_id: RawNodeId, dx: f64, dy: f64) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    if tree.scroll_locked_out(node_id) {
+        return false;
+    }
+    let (at_x, at_y) = node.scroll_offset;
+    let room = |axis: ScrollbarAxis, at: f64, d: f64| {
+        if d == 0.0 || !overflows(tree, node_id, axis) {
+            return false;
+        }
+        let (content_w, content_h) = content_extents(tree, node_id);
+        let (visible_w, visible_h) = visible_extents(tree, node_id);
+        let span = match axis {
+            ScrollbarAxis::Vertical => content_h - visible_h,
+            ScrollbarAxis::Horizontal => content_w - visible_w,
+        };
+        let max = tree.snap_scroll_offset(span.max(0.0));
+        (d < 0.0 && at > 0.0) || (d > 0.0 && at < max)
+    };
+    room(ScrollbarAxis::Vertical, at_y, dy) || room(ScrollbarAxis::Horizontal, at_x, dx)
+}
+
 /// The overlay scrollbars of `node_id`, at `scale`.
 ///
 /// A bar exists on an axis when that axis is scrollable **and** overflowing.
