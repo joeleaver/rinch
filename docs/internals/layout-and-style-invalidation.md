@@ -143,9 +143,13 @@ box:
 - **A `Calc` layout value is compared resolved.** The stored Taffy style holds
   the length `resolve_layout_calcs` resolved a mixed `calc()` to; a style
   rebuilt from computed values carries only its length part (the seed). The
-  same three passes resolve the rebuilt style with `patch_layout_calcs` (the
-  per-node step of `resolve_layout_calcs`, against the last layout's bases)
-  before they compare. Unresolved, a new `calc()` whose length part equalled
+  same three passes compare a copy of the rebuilt style resolved by
+  `patch_layout_calcs` (the per-node step of `resolve_layout_calcs`, against
+  the last layout's bases; `taffy_style_for_compare`), and store the seeded
+  style as before. Storing the resolved copy instead laid a box out unlike a
+  fresh layout where `resolve_layout_calcs` does not reach it (inside an atomic
+  inline, #1412; `review_1477_fixtures`' H5 `calc(5px + 2%)` margin).
+  Unresolved, a new `calc()` whose length part equalled
   the old resolved length compared equal and the layout was skipped:
   `calc(50% + 10px)` → `calc(10% + 160px)` stayed 160 wide in 300px, and an
   animation frame `calc(6.25% + 150px)` after a frame resolved to 150 stayed

@@ -1226,12 +1226,6 @@ impl RinchDocument {
                     taffy_style.size.height = taffy::Dimension::length(est_h);
                 }
 
-                // A `Calc` is compared resolved, as it is stored (#767; see
-                // `patch_layout_calcs`).
-                if node.computed_style.has_layout_calc() {
-                    self.patch_layout_calcs(node_id, taffy_id, &mut taffy_style);
-                }
-
                 // A `display: contents` wrapper's Taffy style belongs to
                 // `sync_display_contents`, as in `apply_stylo_styles_to_taffy`;
                 // rebuilding it from the computed values would give the wrapper
@@ -1245,8 +1239,13 @@ impl RinchDocument {
                 // the entire ancestor chain — unconditional calls here were causing
                 // 70%+ of Taffy nodes to lose their cache on every frame with
                 // active transitions, even when only paint-only properties changed.
+                // A `Calc` is compared resolved, as it is stored (#767; see
+                // `taffy_style_for_compare`).
+                let compared = self.taffy_style_for_compare(node_id, taffy_id, &taffy_style);
                 let taffy_style_changed = match self.tree.taffy.style(taffy_id) {
-                    Ok(old_taffy_style) => old_taffy_style != &taffy_style,
+                    Ok(old_taffy_style) => {
+                        old_taffy_style != compared.as_ref().unwrap_or(&taffy_style)
+                    }
                     // No style to compare against: treat it as changed, which is
                     // what the `else` arm this replaced did.
                     Err(_) => true,
@@ -1435,19 +1434,18 @@ impl RinchDocument {
                     taffy_style.size.height = taffy::Dimension::length(est_h);
                 }
 
-                // A `Calc` is compared resolved, as it is stored (#767; see
-                // `patch_layout_calcs`).
-                if node.computed_style.has_layout_calc() {
-                    self.patch_layout_calcs(node_id, taffy_id, &mut taffy_style);
-                }
-
                 // Same ownership rule as `tick_transitions`.
                 if node.taffy_style_owned_by_contents_splice() {
                     taffy_style = crate::node::display_contents_taffy_style();
                 }
 
+                // A `Calc` is compared resolved, as it is stored (#767; see
+                // `taffy_style_for_compare`).
+                let compared = self.taffy_style_for_compare(node_id, taffy_id, &taffy_style);
                 let taffy_style_changed = match self.tree.taffy.style(taffy_id) {
-                    Ok(old_taffy_style) => old_taffy_style != &taffy_style,
+                    Ok(old_taffy_style) => {
+                        old_taffy_style != compared.as_ref().unwrap_or(&taffy_style)
+                    }
                     // No style to compare against: treat it as changed, which is
                     // what the `else` arm this replaced did.
                     Err(_) => true,

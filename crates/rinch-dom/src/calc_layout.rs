@@ -297,16 +297,39 @@ impl RinchDocument {
         changed
     }
 
+    /// What a Taffy style `ts` rebuilt from node `id`'s computed values is
+    /// compared with the stored one as: `ts` with its `Calc` layout values
+    /// resolved by [`Self::patch_layout_calcs`], or `None` — compare `ts`
+    /// itself — when the node has none (or its style belongs to the
+    /// `display: contents` splice).
+    ///
+    /// The rebuilt style carries each `Calc` as its length part (the seed);
+    /// the stored one, the length `resolve_layout_calcs` resolved that seed
+    /// to. Compared unresolved, a new `calc()` whose length part equalled the
+    /// old resolved length was judged unchanged and its layout skipped (#767).
+    /// Only the comparison sees the resolved copy: a changed style is stored
+    /// seeded, as before, for `resolve_layout_calcs` to resolve after the
+    /// compute — a box laid out in a detached compute (inside an atomic
+    /// inline, #1412) is not reached by that pass, and a restyle that stored
+    /// the resolved copy laid it out unlike a fresh layout of the same style.
+    pub(crate) fn taffy_style_for_compare(
+        &self,
+        id: RawNodeId,
+        taffy_id: taffy::NodeId,
+        ts: &taffy::Style,
+    ) -> Option<taffy::Style> {
+        let node = &self.tree.nodes[id];
+        if !node.computed_style.has_layout_calc() || node.taffy_style_owned_by_contents_splice() {
+            return None;
+        }
+        let mut resolved = ts.clone();
+        self.patch_layout_calcs(id, taffy_id, &mut resolved);
+        Some(resolved)
+    }
+
     /// Write into `ts` — node `id`'s Taffy style — the lengths its `Calc`
     /// layout values resolve to against the sizes the last Taffy compute
     /// produced: the per-node step of [`Self::resolve_layout_calcs`].
-    ///
-    /// Also what a Taffy style rebuilt from the computed values is resolved
-    /// with before it is compared with the stored one (`taffy_style_changed`):
-    /// the rebuilt style carries each `Calc` as its length part (the seed),
-    /// the stored one the length that seed was resolved to, so comparing them
-    /// unresolved judged a new `calc()` whose length part happened to equal the
-    /// old resolved length unchanged, and its layout was skipped.
     pub(crate) fn patch_layout_calcs(
         &self,
         id: RawNodeId,

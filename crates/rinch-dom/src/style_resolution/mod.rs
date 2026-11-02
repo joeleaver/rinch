@@ -1695,15 +1695,6 @@ impl RinchDocument {
                 taffy_style.size.height = taffy::Dimension::length(est_h);
             }
 
-            // A `Calc` layout value is stored resolved (`resolve_layout_calcs`)
-            // but rebuilt here as its length part, so it is resolved the same
-            // way before the comparison below: unresolved, a new `calc()`
-            // whose length part equalled the old resolved length compared
-            // equal and its layout was skipped (#767).
-            if self.tree.nodes[node_id].computed_style.has_layout_calc() {
-                self.patch_layout_calcs(node_id, taffy_id, &mut taffy_style);
-            }
-
             // A spliced `display: contents` wrapper's Taffy style is not built
             // from its computed values: `sync_display_contents` owns it and
             // writes `Display::None`, while `to_taffy_style` maps `contents` to
@@ -1721,8 +1712,13 @@ impl RinchDocument {
             // Only call set_style if the Taffy style actually changed.
             // This avoids marking the Taffy tree dirty for paint-only changes
             // (e.g. background-color on hover) which don't affect layout.
+            //
+            // A `Calc` layout value is stored resolved (`resolve_layout_calcs`)
+            // but rebuilt here as its length part, so it is compared resolved
+            // the same way (#767; see `taffy_style_for_compare`).
+            let compared = self.taffy_style_for_compare(node_id, taffy_id, &taffy_style);
             if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
-                if old_taffy_style != &taffy_style {
+                if old_taffy_style != compared.as_ref().unwrap_or(&taffy_style) {
                     // Only set ifc_dirty when display or position changes —
                     // that's what affects IFC structure. Display covers
                     // inline/block mixing, display:contents and display:none;
