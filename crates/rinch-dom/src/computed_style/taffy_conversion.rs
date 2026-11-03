@@ -48,6 +48,14 @@ impl ComputedStyle {
         };
 
         Style {
+            // `box-sizing` (#1278): Taffy's default is `border-box`, which
+            // used to size every box whatever its CSS said; the initial value
+            // is `content-box`. The theme sets `* { box-sizing: border-box }`.
+            box_sizing: if self.box_sizing_border_box {
+                BoxSizing::BorderBox
+            } else {
+                BoxSizing::ContentBox
+            },
             display: self.display.to_taffy(),
             position: self.position.to_taffy(),
             float: self.float,

@@ -759,7 +759,8 @@ fn the_hit_test_follows_a_contents_flip_of_a_positioned_wrapper() {
 /// holds a static 200x100 `overflow: auto` scroller with 500px of content,
 /// which holds the box at `left: 300px; top: 200px`. Its containing block is
 /// `outer` (padded by 10px, which keeps the scroller's margin from collapsing
-/// through it and moves no absolute box), so it sits at (300, 200) on screen
+/// through it and moves no absolute box; `border-box`, so it still fits the
+/// 600x400 viewport and gives the root no scrollbars), so it sits at (300, 200) on screen
 /// — not (330, 230), 300/200 from the scroller it is written in — outside the
 /// scroller's box and unclipped by it. A wheel over the scroller scrolls the content and leaves the box where
 /// it is (Chrome 153: an absolute box whose containing block is above a
@@ -775,7 +776,8 @@ fn an_absolute_box_under_a_static_scroller_stays_in_its_containing_block() {
     let (mut app, h) = mount_with(Box::new(|scope, outer| {
         outer.set_attribute(
             "style",
-            "width: 600px; height: 400px; position: relative; padding: 10px",
+            "box-sizing: border-box; width: 600px; height: 400px; position: relative; \
+             padding: 10px",
         );
         let scroller = el(
             scope,

@@ -1,7 +1,8 @@
 //! #769: every scroll finder (the wheel's routing), the body fallback and
 //! layout's own clamp agree with the painted bar about a padded or bordered
-//! container's overflow, on both axes. (rinch sizes every box border-box,
-//! #1278, so `box-sizing: content-box` is not exercised here.)
+//! container's overflow, on both axes. The containers are `box-sizing:
+//! border-box`, so their declared size is the border box the comments count
+//! from.
 
 use super::hit_testing::{
     find_horizontal_scroll_container, find_horizontal_scroll_container_at_point,
@@ -43,9 +44,8 @@ fn a_bordered_containers_overflow_matches_its_painted_bar() {
     );
 }
 
-/// Padding AND a border together (rinch sizes every box border-box, #1278, so
-/// `box-sizing: content-box` cannot be exercised here): 200x100 less 20px
-/// padding and 5px border is a 150x50 content box. An 80px child overflows it
+/// Padding AND a border together: a `border-box` 200x100 less 20px padding and
+/// 5px border is a 150x50 content box. An 80px child overflows it
 /// and not the 100px border box.
 #[test]
 fn a_padded_and_bordered_containers_overflow_matches_its_painted_bar() {
@@ -54,7 +54,8 @@ fn a_padded_and_bordered_containers_overflow_matches_its_painted_bar() {
     let c = child_of(
         &mut doc,
         body,
-        "width: 200px; height: 100px; padding: 20px; border: 5px solid black; overflow: auto",
+        "box-sizing: border-box; width: 200px; height: 100px; padding: 20px; \
+         border: 5px solid black; overflow: auto",
     );
     let child = child_of(&mut doc, c, "width: 50px; height: 80px");
     doc.resolve_layout(800.0, 600.0);
@@ -76,8 +77,8 @@ fn a_padded_and_bordered_containers_horizontal_overflow_matches_its_bar() {
     let c = child_of(
         &mut doc,
         body,
-        "width: 200px; height: 100px; padding: 20px; border: 5px solid black; \
-         overflow-x: auto; overflow-y: hidden",
+        "box-sizing: border-box; width: 200px; height: 100px; padding: 20px; \
+         border: 5px solid black; overflow-x: auto; overflow-y: hidden",
     );
     let child = child_of(&mut doc, c, "flex-shrink: 0; width: 180px; height: 10px");
     doc.resolve_layout(800.0, 600.0);
@@ -258,7 +259,8 @@ fn layouts_clamp_uses_the_padded_and_bordered_content_box() {
     let c = child_of(
         &mut doc,
         body,
-        "width: 200px; height: 100px; padding: 20px; border: 5px solid black; overflow: auto",
+        "box-sizing: border-box; width: 200px; height: 100px; padding: 20px; \
+         border: 5px solid black; overflow: auto",
     );
     let child = child_of(&mut doc, c, "width: 50px; height: 300px");
     doc.resolve_layout(800.0, 600.0);

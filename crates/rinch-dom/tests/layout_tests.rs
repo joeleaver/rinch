@@ -928,7 +928,7 @@ fn test_blockified_textarea_honors_min_height() {
 
     let style = doc.create_element("style");
     let css = doc
-        .create_text(".wrap { display: flex; flex-direction: column; } .ta { min-height: 80px; }");
+        .create_text(".wrap { display: flex; flex-direction: column; } .ta { box-sizing: border-box; min-height: 80px; }");
     doc.append_child(style, css);
     doc.append_child(body, style);
 
@@ -1323,7 +1323,7 @@ fn test_textarea_larger_min_height_beats_rows() {
     doc.set_attribute(
         ta,
         "style",
-        "font-size: 10px; line-height: 20px; min-height: 300px",
+        "font-size: 10px; line-height: 20px; min-height: 300px; box-sizing: border-box",
     );
     doc.append_child(body, ta);
 
@@ -1345,7 +1345,7 @@ fn test_textarea_explicit_height_beats_rows() {
     doc.set_attribute(
         ta,
         "style",
-        "font-size: 10px; line-height: 20px; height: 55px",
+        "font-size: 10px; line-height: 20px; height: 55px; box-sizing: border-box",
     );
     doc.append_child(body, ta);
 
@@ -1692,6 +1692,7 @@ fn test_fixed_block_auto_height_sums_children() {
 
 /// The same fixed box clamps to its `max-height` (and scrolls the overflow)
 /// rather than growing past the cap.
+/// `border-box`, so the 120px cap includes the padding.
 #[test]
 fn test_fixed_block_auto_height_clamps_to_max_height() {
     let mut doc = RinchDocument::new();
@@ -1700,7 +1701,7 @@ fn test_fixed_block_auto_height_clamps_to_max_height() {
     doc.set_attribute(
         panel,
         "style",
-        "position: fixed; left: 10px; top: 10px; max-height: 120px; overflow-y: auto; padding: 4px;",
+        "position: fixed; left: 10px; top: 10px; max-height: 120px; overflow-y: auto; padding: 4px; box-sizing: border-box;",
     );
     doc.append_child(body, panel);
     for _ in 0..8 {
@@ -1717,7 +1718,8 @@ fn test_fixed_block_auto_height_clamps_to_max_height() {
 }
 
 /// The percentage resolves against the containing block's *content* box, so
-/// horizontal padding on the containing block shrinks it.
+/// horizontal padding on the containing block shrinks it. (The cell is `border-box`:
+/// 700px includes the padding.)
 #[test]
 fn test_inline_block_percent_width_excludes_container_padding() {
     let mut doc = RinchDocument::new();
@@ -1726,7 +1728,7 @@ fn test_inline_block_percent_width_excludes_container_padding() {
     doc.set_attribute(
         cell,
         "style",
-        "width: 700px; height: 40px; padding: 0 20px;",
+        "width: 700px; height: 40px; padding: 0 20px; box-sizing: border-box;",
     );
     doc.append_child(body, cell);
     let ib = doc.create_element("div");

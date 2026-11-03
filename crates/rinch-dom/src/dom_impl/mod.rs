@@ -597,6 +597,16 @@ impl RinchDocument {
                 display: none !important;
             }
 
+            /* The controls Chrome 156 sizes as border boxes (`box-sizing`,
+               read since #1278; every other element is `content-box`, the
+               initial value, and `table` is above). */
+            select, button, meter, progress,
+            input:is([type=button i], [type=submit i], [type=reset i],
+                     [type=checkbox i], [type=radio i], [type=color i],
+                     [type=search i]) {
+                box-sizing: border-box;
+            }
+
             select {
                 padding: 0;
                 border: 1px solid rgb(118, 118, 118);

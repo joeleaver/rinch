@@ -44,6 +44,8 @@ const VIEWPORT: (f32, f32) = (800.0, 600.0);
 /// `children`, laid out at the viewport.
 fn scroller(container_style: &str, children: &[&str]) -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     let container = doc.create_element("div");
     doc.set_attribute(container, "style", container_style);
@@ -110,6 +112,8 @@ fn a_fixed_child_is_no_part_of_its_parents_scroll_range() {
 #[test]
 fn a_fixed_child_does_not_give_the_body_a_scrollbar() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     let fixed = doc.create_element("div");
     doc.set_attribute(
@@ -156,6 +160,8 @@ fn a_fixed_child_does_not_give_the_body_a_scrollbar() {
 fn an_absolute_child_of_body_is_the_pages_not_the_bodys_as_its_block() {
     let build = |body_style: &str| {
         let mut doc = RinchDocument::new();
+        // The Chrome numbers were measured under this rule (file docs).
+        doc.load_css("* { box-sizing: border-box; }");
         let body = doc.body();
         doc.set_attribute(body, "style", body_style);
         let child = doc.create_element("div");
@@ -218,6 +224,8 @@ fn an_absolute_child_of_a_static_container_escapes_its_scroll_range() {
 #[test]
 fn an_absolute_child_whose_containing_block_is_an_ancestor_escapes_too() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     let wrapper = doc.create_element("div");
     doc.set_attribute(wrapper, "style", "position: relative");
@@ -298,6 +306,8 @@ fn a_transformed_container_is_a_containing_block_too() {
 #[test]
 fn an_absolute_child_of_html_resolves_against_html_and_counts() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let html = NodeId(doc.tree.html_id);
     let child = doc.create_element("div");
     doc.set_attribute(

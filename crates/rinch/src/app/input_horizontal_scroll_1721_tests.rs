@@ -11,8 +11,9 @@
 //! whatever lay above and below it, unclipped.
 //!
 //! Text is set in the bundled Inter (`sans-serif`), the field is
-//! `border: 3px` + `padding: 0 6px`, so its content box is `x ∈ [9, 111)`
-//! inside a 120px border box — off the `left == padding` fixed point the old
+//! `box-sizing: border-box` (a text `<input>` is `content-box` by default, in
+//! Chrome as here) with `border: 3px` + `padding: 0 6px`, so its content box
+//! is `x ∈ [9, 111)` inside a 120px border box — off the `left == padding` fixed point the old
 //! text origin sat on.
 
 use super::*;
@@ -27,7 +28,7 @@ const CONTENT_LEFT: f32 = 9.0;
 const CONTENT_RIGHT: f32 = 111.0;
 const FIELD_BOTTOM: usize = 30;
 
-const FIELD_STYLE: &str = "display: block; width: 120px; height: 30px; padding: 0 6px; margin: 0; \
+const FIELD_STYLE: &str = "display: block; box-sizing: border-box; width: 120px; height: 30px; padding: 0 6px; margin: 0; \
      border: 3px solid transparent; font-size: 16px; line-height: 20px; \
      font-family: sans-serif; color: rgb(255, 0, 0); background: transparent";
 

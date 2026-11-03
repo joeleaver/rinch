@@ -1025,8 +1025,10 @@ mod painted {
         doc.set_attribute(
             container,
             "style",
-            "width: 100px; height: 100px; border: 10px solid rgb(0, 0, 255); \
-             overflow: hidden",
+            // border-box: the 100x100 includes the border, which puts the
+            // right/bottom strips at 90..100.
+            "box-sizing: border-box; width: 100px; height: 100px; \
+             border: 10px solid rgb(0, 0, 255); overflow: hidden",
         );
         doc.append_child(body, container);
         let child = doc.create_element("div");
@@ -1092,7 +1094,9 @@ mod painted {
         doc.set_attribute(
             container,
             "style",
-            "width: 100px; height: 100px; overflow: hidden; \
+            // border-box: the 100x100 includes the borders, so the right
+            // strip is 94..100 and the bottom strip 92..100.
+            "box-sizing: border-box; width: 100px; height: 100px; overflow: hidden; \
              border-left: 2px solid rgb(0, 0, 255); \
              border-top: 4px solid rgb(0, 0, 255); \
              border-right: 6px solid rgb(0, 0, 255); \

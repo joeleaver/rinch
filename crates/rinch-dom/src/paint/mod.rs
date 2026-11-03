@@ -5926,10 +5926,10 @@ mod tests {
     /// exactly what the next paint clips with"; this is the fixture that
     /// claim rests on.
     ///
-    /// The container is the issue's own repro geometry (100x100, `border:
-    /// 10px solid`, `overflow: hidden`, with a 300x300 overflowing child) so
-    /// the expected rect is the same `10..90` square #536's pixel oracle
-    /// pins by colour.
+    /// The container is the issue's own repro geometry (a 100x100
+    /// `box-sizing: border-box` box, `border: 10px solid`, `overflow:
+    /// hidden`, with a 300x300 overflowing child) so the expected rect is the
+    /// same `10..90` square #536's pixel oracle pins by colour.
     ///
     /// Mutant this kills: reverting the `padding_box_insets_for_size` inset
     /// in `clip_chain_bounds_counted` back to the plain border-box rect
@@ -5942,7 +5942,8 @@ mod tests {
         let container = child_of(
             &mut doc,
             body,
-            "width: 100px; height: 100px; border: 10px solid blue; overflow: hidden",
+            "box-sizing: border-box; width: 100px; height: 100px; \
+             border: 10px solid blue; overflow: hidden",
         );
         let child = child_of(
             &mut doc,
@@ -5957,7 +5958,7 @@ mod tests {
         assert_eq!(
             expected_rect,
             peniko::kurbo::Rect::new(10.0, 10.0, 90.0, 90.0),
-            "sanity: the padding box of a 100x100 box with a 10px border"
+            "sanity: the padding box of a 100x100 border box with a 10px border"
         );
 
         let chain = super::clip_chain_bounds(&doc.tree, child, 1.0, false)
@@ -6023,7 +6024,8 @@ mod tests {
         let container = child_of(
             &mut doc,
             body,
-            "width: 100px; height: 100px; overflow: hidden; \
+            // border-box: the 100x100 includes the borders.
+            "box-sizing: border-box; width: 100px; height: 100px; overflow: hidden; \
              border-left-width: 2px; border-top-width: 4px; \
              border-right-width: 6px; border-bottom-width: 8px; border-style: solid;",
         );

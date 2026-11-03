@@ -14,6 +14,11 @@
 //! this file's (44 over 212): they're the same formula seen through 1px of
 //! antialiasing, not a different one. `ua_hr_paint_tests.rs` carries that
 //! 1px case and is updated by this PR to match the real (bevelled) output.
+//!
+//! Every box is `box-sizing: border-box` so its 200x200 `width`/`height` is
+//! the whole border box and the sample coordinates below (bands at 0..20 and
+//! 180..200) stay where they were written; under the CSS initial
+//! `content-box` the border would sit outside the 200px.
 
 use peniko::Brush;
 use rinch_core::dom::{DomDocument, NodeId};
@@ -63,7 +68,7 @@ fn assert_pixel(px: &[u8], x: u32, y: u32, rgb: (u8, u8, u8), tol: i32, what: &s
     );
 }
 
-/// `border: 20px inset gray` on a 200x200 box: top and left are darkened to
+/// `border: 20px inset gray` on a 200x200 border-box box: top and left are darkened to
 /// (44,44,44), bottom and right are lightened to (212,212,212). Values are
 /// Chromium's `CalculateInsetOutsetColor` applied to `rgb(128,128,128)`
 /// (computed independently in Python against the same formula this PR's
@@ -77,7 +82,7 @@ fn inset_darkens_top_left_and_lightens_bottom_right() {
         &mut doc,
         body,
         "div",
-        "width: 200px; height: 200px; margin: 0; border: 20px inset gray;",
+        "box-sizing: border-box; width: 200px; height: 200px; margin: 0; border: 20px inset gray;",
     );
     doc.resolve_layout(VW, VH);
     let px = rasterize(&mut doc);
@@ -105,7 +110,7 @@ fn outset_is_the_reverse_of_inset() {
         &mut doc,
         body,
         "div",
-        "width: 200px; height: 200px; margin: 0; border: 20px outset gray;",
+        "box-sizing: border-box; width: 200px; height: 200px; margin: 0; border: 20px outset gray;",
     );
     doc.resolve_layout(VW, VH);
     let px = rasterize(&mut doc);
@@ -134,7 +139,7 @@ fn groove_splits_each_edge_into_two_shaded_halves() {
         &mut doc,
         body,
         "div",
-        "width: 200px; height: 200px; margin: 0; border: 40px groove gray;",
+        "box-sizing: border-box; width: 200px; height: 200px; margin: 0; border: 40px groove gray;",
     );
     doc.resolve_layout(VW, VH);
     let px = rasterize(&mut doc);
@@ -171,7 +176,7 @@ fn ridge_is_the_reverse_split_of_groove() {
         &mut doc,
         body,
         "div",
-        "width: 200px; height: 200px; margin: 0; border: 40px ridge gray;",
+        "box-sizing: border-box; width: 200px; height: 200px; margin: 0; border: 40px ridge gray;",
     );
     doc.resolve_layout(VW, VH);
     let px = rasterize(&mut doc);
@@ -203,7 +208,7 @@ fn black_inset_border_shows_grey_on_both_sides_never_pure_black() {
         &mut doc,
         body,
         "div",
-        "width: 200px; height: 200px; margin: 0; border: 20px inset black;",
+        "box-sizing: border-box; width: 200px; height: 200px; margin: 0; border: 20px inset black;",
     );
     doc.resolve_layout(VW, VH);
     let px = rasterize(&mut doc);
@@ -230,7 +235,7 @@ fn white_inset_border_keeps_the_light_side_pure_white() {
         &mut doc,
         body,
         "div",
-        "width: 200px; height: 200px; margin: 0; border: 20px inset white;",
+        "box-sizing: border-box; width: 200px; height: 200px; margin: 0; border: 20px inset white;",
     );
     doc.resolve_layout(VW, VH);
     let px = rasterize(&mut doc);
@@ -251,7 +256,7 @@ fn currentcolor_resolves_before_shading() {
         &mut doc,
         body,
         "div",
-        "width: 200px; height: 200px; margin: 0; color: #888888; \
+        "box-sizing: border-box; width: 200px; height: 200px; margin: 0; color: #888888; \
          border-width: 20px; border-style: inset;",
     );
     doc.resolve_layout(VW, VH);
@@ -281,7 +286,7 @@ fn mixed_per_side_styles_use_the_correct_side_for_each_edge() {
         &mut doc,
         body,
         "div",
-        "width: 200px; height: 200px; margin: 0; border-color: gray; \
+        "box-sizing: border-box; width: 200px; height: 200px; margin: 0; border-color: gray; \
          border-top-width: 20px; border-top-style: inset; \
          border-right-width: 20px; border-right-style: outset; \
          border-bottom-width: 20px; border-bottom-style: solid; \

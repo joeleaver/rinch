@@ -27,9 +27,9 @@
 //! Every position is **off** zero on purpose: at `0 0` with `auto` size the
 //! tile is the box and the unfixed paint (the gradient stretched over the
 //! box) is already right, so a fixture there passes with the fix absent.
-//! Samples sit mid-run, clear of the anti-aliased stop edges. rinch sizes
-//! every box `border-box` (it reads no `box-sizing`), so the bordered fixtures
-//! spell Chrome's content-box `80x10 + 10px border` as `100x30`.
+//! Samples sit mid-run, clear of the anti-aliased stop edges. The bordered
+//! fixtures use Chrome's own markup, a content-box `80x10 + 10px border`
+//! (a 100x30 border box).
 //!
 //! `a_border_box_origin_sizes_the_tile_to_the_border_box` passes on the
 //! unfixed code too — stretching over the border box is what it used to do —
@@ -300,10 +300,9 @@ fn a_background_position_tick_dirties_paint_only() {
 /// A box whose whole style is `style`, at the viewport's top-left, with
 /// [`IMAGE`] in the image cache.
 ///
-/// rinch sizes every box as `box-sizing: border-box` (it reads no
-/// `box-sizing`), so where the Chrome oracle wrote `width: 80px; height: 10px;
-/// border: 10px` these write the same 100x30 border box as `width: 100px;
-/// height: 30px`.
+/// The bordered fixtures write the Chrome oracle's markup as is: `width:
+/// 80px; height: 10px; border: 10px` under the initial `box-sizing:
+/// content-box`, a 100x30 border box.
 fn styled_box(style: &str) -> TinySkiaPainter {
     let mut doc = RinchDocument::new();
     doc.load_css("html, body { margin: 0; background: rgb(255, 255, 255); }");
@@ -333,7 +332,7 @@ fn row_at(painter: &TinySkiaPainter, y: u32, xs: &[u32]) -> String {
 #[test]
 fn an_auto_sized_tile_is_the_padding_box() {
     let p = styled_box(&format!(
-        "width: 100px; height: 30px; border: 10px solid transparent; {GRADIENT}; \
+        "width: 80px; height: 10px; border: 10px solid transparent; {GRADIENT}; \
          background-repeat: no-repeat"
     ));
     assert_eq!(
@@ -350,7 +349,7 @@ fn an_auto_sized_tile_is_the_padding_box() {
 #[test]
 fn a_repeating_tile_paints_under_the_border() {
     let p = styled_box(&format!(
-        "width: 100px; height: 30px; border: 10px solid transparent; {GRADIENT}"
+        "width: 80px; height: 10px; border: 10px solid transparent; {GRADIENT}"
     ));
     assert_eq!(row_at(&p, 5, &[5, 30, 70, 95]), "BRBR");
     assert_eq!(row_at(&p, 15, &[5, 30, 70, 95]), "BRBR");
@@ -361,7 +360,7 @@ fn a_repeating_tile_paints_under_the_border() {
 #[test]
 fn a_border_box_origin_sizes_the_tile_to_the_border_box() {
     let p = styled_box(&format!(
-        "width: 100px; height: 30px; border: 10px solid transparent; {GRADIENT}; \
+        "width: 80px; height: 10px; border: 10px solid transparent; {GRADIENT}; \
          background-origin: border-box; background-repeat: no-repeat"
     ));
     assert_eq!(row_at(&p, 5, &[5, 45, 55, 95]), "RRBB");
