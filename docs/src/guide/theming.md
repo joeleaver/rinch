@@ -775,10 +775,8 @@ block:
 | `min-height` | none | correct | **wrong** — should fill the containing block |
 | `max-height` | none | correct | correct |
 
-A browser shrink-wraps a float too. rinch does not, because **rinch implements
-no CSS float at all** — measured, `float: left` on the same box gives 800, the
-full containing block, where a browser gives 300. So a float is not a way to
-shrink-wrap a box here; `width: fit-content` (or `display: inline-block`) is.
+A float shrink-wraps too, as in a browser: `float: left` on the same box gives
+300.
 
 Where a `min-*`/`max-*` keyword is wrong, a declared length or percentage is
 the workaround: `min-height: 100%` gives `min-height: stretch`'s used size as

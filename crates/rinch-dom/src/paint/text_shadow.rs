@@ -297,7 +297,11 @@ fn text_extent(
                 continue;
             }
             let whole = valign.is_none() && mask.is_none_or(|m| m.shows_all(range.clone()));
-            let Some(mut x) = run.visual_clusters().next().and_then(|c| c.visual_offset()) else {
+            let Some(mut x) = run
+                .visual_clusters()
+                .next()
+                .and_then(|c| crate::float_wrap::cluster_x(&c))
+            else {
                 continue;
             };
             let mut shown = false;

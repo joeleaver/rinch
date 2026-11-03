@@ -50,6 +50,8 @@ impl ComputedStyle {
         Style {
             display: self.display.to_taffy(),
             position: self.position.to_taffy(),
+            float: self.float,
+            clear: self.clear,
             overflow: taffy::Point {
                 x: self.overflow_x.to_taffy(),
                 y: self.overflow_y.to_taffy(),

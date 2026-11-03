@@ -482,9 +482,10 @@ pub(super) fn inline_background_rects<'a>(
                 if let (Some(sc), Some(ec)) = (
                     Cluster::from_byte_index(layout, overlap_start),
                     Cluster::from_byte_index(layout, end_byte),
-                ) && let (Some(x_start), Some(ec_offset)) =
-                    (sc.visual_offset(), ec.visual_offset())
-                {
+                ) && let (Some(x_start), Some(ec_offset)) = (
+                    crate::float_wrap::cluster_x(&sc),
+                    crate::float_wrap::cluster_x(&ec),
+                ) {
                     let x_end = ec_offset + ec.advance();
                     text_extent = Some((x_start.min(x_end) as f64, x_start.max(x_end) as f64));
                 }
@@ -1155,7 +1156,10 @@ impl<'a> TextFragment<'a> {
                 (m.baseline + m.descent) as f64,
             );
             for run in line.runs() {
-                let Some(mut x) = run.visual_clusters().next().and_then(|c| c.visual_offset())
+                let Some(mut x) = run
+                    .visual_clusters()
+                    .next()
+                    .and_then(|c| crate::float_wrap::cluster_x(&c))
                 else {
                     continue;
                 };
@@ -1507,7 +1511,7 @@ pub(super) fn shown_clusters<'r>(
         Some(_) => run
             .visual_clusters()
             .next()
-            .and_then(|c| c.visual_offset())
+            .and_then(|c| crate::float_wrap::cluster_x(&c))
             .unwrap_or(0.0),
         None => 0.0,
     };
@@ -1542,7 +1546,11 @@ fn visual_segments(
         }
         // One O(line) offset lookup per run, then accumulate: `visual_offset`
         // per cluster would make a long line quadratic.
-        let Some(mut x) = run.visual_clusters().next().and_then(|c| c.visual_offset()) else {
+        let Some(mut x) = run
+            .visual_clusters()
+            .next()
+            .and_then(|c| crate::float_wrap::cluster_x(&c))
+        else {
             continue;
         };
         for cluster in run.visual_clusters() {
