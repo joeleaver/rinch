@@ -1947,6 +1947,11 @@ impl Painter for TinySkiaPainter {
         };
 
         self.touch_local(0.0, 0.0, image.width as f32, image.height as f32, ts);
+        // `PixmapPaint::default()` samples `FilterQuality::Nearest`: what
+        // `image-rendering: pixelated`/`crisp-edges` asks for (#2098), and
+        // also what `ImageSampling::Auto` has always drawn here (Chrome's
+        // `auto` is smooth; this painter's is not). So `image.sampling`
+        // changes nothing, and the opaque copy above stays exact for both.
         let paint = PixmapPaint::default();
         let mask = self.clip_mask.as_ref().map(|m| &m.mask);
         self.pixmap.draw_pixmap(0, 0, src, &paint, ts, mask);

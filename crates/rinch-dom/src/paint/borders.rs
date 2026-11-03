@@ -1240,6 +1240,7 @@ pub(super) fn paint_inset_box_shadow(
                             decoded: None,
                             frame: None,
                             opaque: false,
+                            sampling: Default::default(),
                         },
                         transform * Affine::translate(*origin),
                     );

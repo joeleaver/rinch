@@ -1693,16 +1693,17 @@ impl RinchDocument {
         // For each newly decoded image, find <img> nodes referencing it
         // and update their intrinsic dimensions
         for src in &newly_decoded {
-            // `background-image: url(src)` users: no intrinsic size feeds
-            // layout, but their pixels changed, so they must be in the dirty
-            // region the next paint clears and redraws.
+            // `background-image: url(src)` and `mask-image: url(src)` users
+            // (#2099): no intrinsic size feeds layout, but their pixels
+            // changed, so they must be in the dirty region the next paint
+            // clears and redraws.
             let bg_ids: Vec<RawNodeId> = self
                 .tree
                 .nodes
                 .iter()
                 .filter_map(|(id, node)| {
                     node.computed_style
-                        .background_image_urls()
+                        .paint_image_urls()
                         .any(|url| url == src)
                         .then_some(id)
                 })

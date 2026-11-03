@@ -1222,6 +1222,39 @@ impl ObjectFitValue {
     }
 }
 
+/// CSS `image-rendering` (css-images-3 §5.3, #2098): how an image drawn at
+/// another size than its own is sampled. Inherited. Stylo's servo build
+/// parses `auto`, `crisp-edges` (and `-moz-crisp-edges`) and `pixelated`;
+/// `smooth` and the legacy `optimizeSpeed`/`optimizeQuality` are gecko-only
+/// there, so such a declaration is dropped and the inherited value stays.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum ImageRenderingValue {
+    /// The backend's own filter (bilinear on the GPU; see
+    /// [`ImageSampling::Auto`](crate::paint::painter::ImageSampling::Auto)).
+    #[default]
+    Auto,
+    /// Nearest-neighbour, up and down: Chrome 156 draws both keywords so.
+    CrispEdges,
+    /// Nearest-neighbour, up and down (Chrome 156; the spec lets a
+    /// downscale stay smooth, Chrome does not).
+    Pixelated,
+}
+
+impl ImageRenderingValue {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::CrispEdges => "crisp-edges",
+            Self::Pixelated => "pixelated",
+        }
+    }
+
+    /// Whether the value asks for nearest-neighbour sampling.
+    pub fn is_nearest(self) -> bool {
+        !matches!(self, Self::Auto)
+    }
+}
+
 /// CSS `aspect-ratio` (css-sizing-4 §2, #1286): `auto`, `<ratio>`, or
 /// `auto <ratio>`. `ratio` is width / height, `None` for `auto` alone and for
 /// a degenerate ratio (`0 / 1`, `1 / 0`), which behaves as `auto`.

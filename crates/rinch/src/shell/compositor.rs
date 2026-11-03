@@ -1102,6 +1102,7 @@ mod gpu_alpha_tests {
                 decoded: None,
                 frame: None,
                 opaque: true,
+                sampling: Default::default(),
             },
             transform,
         );
@@ -1140,6 +1141,7 @@ mod gpu_alpha_tests {
                 decoded: Some(&decoded),
                 frame: None,
                 opaque: true,
+                sampling: Default::default(),
             },
             Affine::IDENTITY,
         );
@@ -1196,6 +1198,7 @@ mod gpu_alpha_tests {
                         decoded: None,
                         frame: None,
                         opaque: true,
+                        sampling: Default::default(),
                     },
                     Affine::translate((i as f64, 0.0))
                         * Affine::scale_non_uniform(1.0 / SIDE as f64, H as f64 / SIDE as f64),

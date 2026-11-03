@@ -45,6 +45,7 @@ fn painter(reference: bool) -> TinySkiaPainter {
             decoded: None,
             frame: None,
             opaque: false,
+            sampling: Default::default(),
         },
         Affine::IDENTITY,
     );
@@ -94,6 +95,7 @@ fn check(label: &str, w: u32, h: u32, ts: Affine, clip: Clip) -> u64 {
                 decoded: None,
                 frame: None,
                 opaque: true,
+                sampling: Default::default(),
             },
             ts,
         );
@@ -220,6 +222,7 @@ fn an_image_not_vouched_opaque_is_never_copied() {
             decoded: None,
             frame: None,
             opaque: false,
+            sampling: Default::default(),
         },
         Affine::translate((5.0, 5.0)),
     );
@@ -247,6 +250,7 @@ fn a_copy_inside_an_opacity_layer_is_composited_like_a_draw() {
                 decoded: None,
                 frame: None,
                 opaque: true,
+                sampling: Default::default(),
             },
             Affine::translate((40.0, 30.0)),
         );

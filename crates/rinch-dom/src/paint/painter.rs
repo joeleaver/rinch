@@ -149,6 +149,34 @@ pub enum BlendMode {
 
 // ── Image data ──────────────────────────────────────────────────────────────
 
+/// How an image's texels are sampled when it is drawn at another size or a
+/// fractional place (#2098). It decides only the filter, never the pixels
+/// handed over, so nothing that caches an image's pixels is keyed on it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageSampling {
+    /// The backend's own filter, as before #2098: Vello's default image
+    /// quality (`ImageQuality::Medium`, bilinear) and tiny-skia's
+    /// `PixmapPaint` default (`FilterQuality::Nearest` — the software
+    /// painter has always drawn an `<img>` nearest, where Chrome's `auto`
+    /// is smooth).
+    #[default]
+    Auto,
+    /// Nearest-neighbour (`image-rendering: pixelated` / `crisp-edges`):
+    /// Vello `ImageQuality::Low`, tiny-skia `FilterQuality::Nearest`.
+    Nearest,
+}
+
+impl ImageSampling {
+    /// The sampling `image-rendering` asks for.
+    pub fn of(rendering: crate::computed_style::ImageRenderingValue) -> Self {
+        if rendering.is_nearest() {
+            Self::Nearest
+        } else {
+            Self::Auto
+        }
+    }
+}
+
 /// Decoded image data ready for painting.
 ///
 /// Always RGBA8 with straight (non-premultiplied) alpha.
@@ -173,6 +201,8 @@ pub struct PaintImage<'a> {
     /// them, and may copy them straight into the surface when the draw has
     /// no rotation or skew, a positive scale, destination edges on whole pixels, and a clip that is fully on or fully off wherever the frame lands (#361). `false` promises nothing.
     pub opaque: bool,
+    /// How the texels are sampled (#2098, `image-rendering`).
+    pub sampling: ImageSampling,
 }
 
 /// An RGBA8 image, premultiplied or straight ([`Self::premultiplied`]), tiled
@@ -387,6 +417,7 @@ pub trait Painter {
                 decoded: None,
                 frame: None,
                 opaque: false,
+                sampling: Default::default(),
             },
             transform,
         );
@@ -426,6 +457,7 @@ pub trait Painter {
             decoded: None,
             frame: None,
             opaque: false,
+            sampling: Default::default(),
         };
         // The shape's bounds in tile-grid space: which repetitions touch it.
         let bb = tile

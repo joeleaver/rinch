@@ -100,6 +100,7 @@ fn run(
             decoded: None,
             frame: None,
             opaque: false,
+            sampling: Default::default(),
         },
         Affine::IDENTITY,
     );
@@ -119,6 +120,7 @@ fn run(
             decoded: None,
             frame: None,
             opaque,
+            sampling: Default::default(),
         },
         ts,
     );
@@ -132,6 +134,7 @@ fn run(
             decoded: None,
             frame: None,
             opaque: false,
+            sampling: Default::default(),
         },
         Affine::translate((150.0, 110.0)),
     );

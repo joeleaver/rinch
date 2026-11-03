@@ -29,6 +29,18 @@ pub(super) fn object_fit_from_stylo(
     }
 }
 
+/// `image-rendering` (#2098). Stylo's servo build has three keywords.
+pub(super) fn image_rendering_from_stylo(
+    v: &style::properties::longhands::image_rendering::computed_value::T,
+) -> ImageRenderingValue {
+    use style::properties::longhands::image_rendering::computed_value::T as R;
+    match *v {
+        R::Auto => ImageRenderingValue::Auto,
+        R::CrispEdges => ImageRenderingValue::CrispEdges,
+        R::Pixelated => ImageRenderingValue::Pixelated,
+    }
+}
+
 pub(super) fn aspect_ratio_from_stylo(
     ar: &style::values::computed::position::AspectRatio,
 ) -> AspectRatioValue {
@@ -338,22 +350,49 @@ fn background_image_from_stylo(
     }
 }
 
-/// `mask-image`'s gradient layers (#1798); see `ComputedStyle::mask_image`.
+/// `mask-image`'s layers (#1798, #2099), each with its entries of
+/// `mask-size`, `mask-position`, `mask-repeat` and `mask-origin`, a shorter
+/// list repeating to the image count as the background lists do; see
+/// `ComputedStyle::mask_image`. A layer with nothing to paint (`none`, a
+/// conic gradient) is left out.
 pub(super) fn mask_image_from_stylo(
-    images: &style::properties::longhands::mask_image::computed_value::T,
+    svg: &style::properties::style_structs::SVG,
     text_color: &style::color::AbsoluteColor,
-) -> Vec<BackgroundValue> {
-    images
+) -> Vec<BackgroundLayer> {
+    svg.mask_image
         .0
         .iter()
-        .filter_map(|i| background_image_from_stylo(i, text_color))
-        .filter(|b| {
-            matches!(
-                b,
-                BackgroundValue::LinearGradient { .. } | BackgroundValue::RadialGradient { .. }
-            )
+        .enumerate()
+        .filter_map(|(i, image)| {
+            let image = background_image_from_stylo(image, text_color)?;
+            let (repeat_x, repeat_y) = background_repeat_from_stylo(&svg.mask_repeat.0, i);
+            Some(BackgroundLayer {
+                image,
+                geometry: BackgroundLayerGeometry {
+                    size: background_size_from_stylo(&svg.mask_size.0, i),
+                    position_x: background_position_from_stylo(&svg.mask_position_x.0, i),
+                    position_y: background_position_from_stylo(&svg.mask_position_y.0, i),
+                    repeat_x,
+                    repeat_y,
+                    origin: mask_origin_from_stylo(svg, i),
+                },
+            })
         })
         .collect()
+}
+
+/// Layer `i`'s `mask-origin` (#2099; initial `border-box`, where
+/// `background-origin`'s is `padding-box`).
+fn mask_origin_from_stylo(
+    svg: &style::properties::style_structs::SVG,
+    i: usize,
+) -> BackgroundOriginValue {
+    use style::properties::longhands::mask_origin::single_value::computed_value::T;
+    match nth(&svg.mask_origin.0, i) {
+        Some(T::PaddingBox) => BackgroundOriginValue::PaddingBox,
+        Some(T::ContentBox) => BackgroundOriginValue::ContentBox,
+        _ => BackgroundOriginValue::BorderBox,
+    }
 }
 
 /// The first background layer's image, else the `background-color`.
@@ -430,9 +469,9 @@ pub(super) fn background_geometry_from_stylo(
     bg: &style::properties::style_structs::Background,
     i: usize,
 ) -> BackgroundLayerGeometry {
-    let (repeat_x, repeat_y) = background_repeat_from_stylo(bg, i);
+    let (repeat_x, repeat_y) = background_repeat_from_stylo(&bg.background_repeat.0, i);
     BackgroundLayerGeometry {
-        size: background_size_from_stylo(bg, i),
+        size: background_size_from_stylo(&bg.background_size.0, i),
         position_x: background_position_from_stylo(&bg.background_position_x.0, i),
         position_y: background_position_from_stylo(&bg.background_position_y.0, i),
         repeat_x,
@@ -449,7 +488,7 @@ fn nth<T>(list: &[T], i: usize) -> Option<&T> {
 /// Layer `i`'s `background-size` (#468). A `NonNegativeLengthPercentage`
 /// that is a genuine mixed `calc()` keeps its affine pair.
 fn background_size_from_stylo(
-    bg: &style::properties::style_structs::Background,
+    list: &[style::values::computed::background::BackgroundSize],
     i: usize,
 ) -> BackgroundSizeValue {
     use style::values::generics::background::BackgroundSize;
@@ -468,7 +507,7 @@ fn background_size_from_stylo(
             }
         }
     };
-    match nth(&bg.background_size.0, i) {
+    match nth(list, i) {
         Some(BackgroundSize::ExplicitSize { width, height }) => BackgroundSizeValue::Explicit {
             width: axis(width),
             height: axis(height),
@@ -499,7 +538,7 @@ fn background_position_from_stylo(
 
 /// Layer `i`'s `background-repeat`, per axis (#468).
 fn background_repeat_from_stylo(
-    bg: &style::properties::style_structs::Background,
+    list: &[style::values::computed::BackgroundRepeat],
     i: usize,
 ) -> (BackgroundRepeatValue, BackgroundRepeatValue) {
     use style::values::specified::background::BackgroundRepeatKeyword as K;
@@ -509,7 +548,7 @@ fn background_repeat_from_stylo(
         K::Round => BackgroundRepeatValue::Round,
         K::NoRepeat => BackgroundRepeatValue::NoRepeat,
     };
-    match nth(&bg.background_repeat.0, i) {
+    match nth(list, i) {
         Some(r) => (one(r.0), one(r.1)),
         None => (BackgroundRepeatValue::Repeat, BackgroundRepeatValue::Repeat),
     }
