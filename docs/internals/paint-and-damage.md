@@ -325,11 +325,29 @@ ten positions and three scales; the half-pixel thresholds on both sides; the
 horizontal axis). On the web the browser decides, and these are its answers
 for the same markup.
 
-Two limits. Only a box Taffy laid out directly in the scroller is read
-unrounded: an absolute, hoisted or `sticky` box (whose `layout` is written
-after Taffy) and an inline one placed by its line are still read at their
-rounded rects, against the unrounded client box, so their sub-pixel overflow
-can still decide a pixel the wrong way. And only the *difference* is Chrome's:
+**Cost.** Only the in-flow boxes' margin boxes are read unrounded (the walk
+keeps them apart from its other contributions, `Measured::flow`), and that
+walk is memoized per container (`scrollbar::ExactFlow`) keyed on
+`NodeTree::layout_epoch` — moved by a layout pass, a text-only IFC rebuild,
+`out_of_flow::replace_all` and a subtree's removal, and deliberately not by a
+paint-only restyle or a scroll (`HitCache::shape_generation` moves on every
+paint-dirty push, so a hover frame walked every row unrounded: +3.8% on
+`shell::hover_frame`). Every call makes the rounded walk it made before,
+monomorphized so it has no per-box unrounded branch
+(`extend_with_children::<false>`), and then a lookup. Layout's clamp first
+asks the rounded in-flow measure (`content_extents_in_flow_rounded`) and
+skips any offset more than `ROUNDED_RANGE_SLACK` (4px) inside it, so a
+relayout of a long list scrolled anywhere but its end measures nothing
+unrounded. Callgrind against main (`abs_badge_extents`, 500 rows): 143904 →
+142082; `abs_badge_relayout` unchanged.
+
+Two limits. Only an in-flow box Taffy laid out directly in the scroller is
+read unrounded: an absolute, hoisted, `sticky` or `relative`-offset or
+transformed box *where it is drawn* (whose `layout` is written after Taffy,
+or which is measured with the rounded walk's other contributions) and an
+inline one placed by its line are still read at their rounded rects, against
+the unrounded client box, so their sub-pixel overflow can still decide a
+pixel the wrong way. And only the *difference* is Chrome's:
 `scrollHeight`/`clientHeight` (`content_extents`/`visible_extents`) are the
 content-box measures, each of which can be a pixel off Chrome's rounded value
 while the range between them is right.

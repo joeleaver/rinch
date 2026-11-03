@@ -3145,6 +3145,17 @@ pub struct NodeTree {
     /// beside the list. Boxed: a document is moved by value, and this is
     /// one pointer of it.
     pub(crate) overflow_absolutes: Box<crate::paint::scrollbar::OverflowAbsolutes>,
+    /// Each scroll container's in-flow reach measured unrounded, for the
+    /// current geometry (#2116): `content_extents`' memo of the one walk that
+    /// reads Taffy's unrounded rects. Boxed for the reason above.
+    pub(crate) exact_flow: Box<crate::paint::scrollbar::ExactFlow>,
+    /// Moved by every layout pass (and a text-only IFC rebuild), by
+    /// `out_of_flow::replace_all` and by a subtree's removal: everything that
+    /// can move a box's rect, and nothing that only restyles or scrolls. What
+    /// [`Self::exact_flow`] is keyed on — `HitCache::shape_generation` also
+    /// moves on every paint-only restyle (a hover), and the unrounded walk
+    /// it would then repeat is the cost #2116's memo is there to save.
+    pub(crate) layout_epoch: u64,
     /// The placed boxes among those that are **shrunk to fit from their
     /// static position** (#1404): an `auto` (or `fit-content`) width and both
     /// inline insets `auto`. What
@@ -3775,6 +3786,8 @@ impl NodeTree {
             ancestor_absolutes: BTreeSet::new(),
             placed_absolutes: Vec::new(),
             overflow_absolutes: Default::default(),
+            exact_flow: Default::default(),
+            layout_epoch: 0,
             abs_static_fits: Vec::new(),
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
@@ -4313,6 +4326,7 @@ impl NodeTree {
     /// free-on-discard must go through it, or repeat both.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
         self.hit_cache.invalidate();
+        self.layout_epoch = self.layout_epoch.wrapping_add(1);
         // Collect all descendant IDs first
         let mut to_remove = Vec::new();
         self.collect_descendants(id, &mut to_remove);
