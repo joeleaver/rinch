@@ -183,10 +183,10 @@ fn main() {
     };
 
     let gpu = RinchGpuConfig {
-        required_features: wgpu::Features::empty(),
         required_limits: required_limits(),
         // Asked for, not required: an adapter without it still starts (#2085).
         optional_features: wgpu::Features::TIMESTAMP_QUERY,
+        ..Default::default()
     };
 
     match std::env::var("RINCH_GPU_MODE").as_deref() {

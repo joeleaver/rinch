@@ -145,11 +145,19 @@ pub struct RinchGpuConfig {
     /// without where it does not (#2085): `TIMESTAMP_QUERY` for timing GPU
     /// frames, say. What the device got is
     /// [`GpuHandle::granted_optional_features`] (or `device.features()`).
+    ///
+    /// Experimental features (`Features::all_experimental_mask()`, such as
+    /// `EXPERIMENTAL_RAY_QUERY`) are never requested from this set: wgpu
+    /// refuses them without an `ExperimentalFeatures` opt-in, which rinch
+    /// does not give, so asking would fail the device on an adapter that has
+    /// them. `Features::all()` here is therefore safe.
     pub optional_features: Features,
 }
 
 /// The features rinch requests its device with (#2085): the `required` ones,
-/// the `optional` ones the adapter has, and `BGRA8UNORM_STORAGE` where the
+/// the `optional` ones the adapter has (never an experimental one: wgpu
+/// refuses those without an opt-in rinch does not give), and
+/// `BGRA8UNORM_STORAGE` where the
 /// surface is `Bgra8Unorm` and the adapter has it (any storage use of that
 /// surface format needs it). `Err` holds the required features the adapter
 /// lacks.
@@ -163,6 +171,7 @@ pub(crate) fn device_features(
     if !missing.is_empty() {
         return Err(missing);
     }
+    let optional = optional.difference(Features::all_experimental_mask());
     let mut features = required | optional.intersection(adapter);
     if bgra_surface && adapter.contains(Features::BGRA8UNORM_STORAGE) {
         features |= Features::BGRA8UNORM_STORAGE;
@@ -237,20 +246,21 @@ pub(crate) fn request_rinch_device(
 // ── Present mode (#2095) ─────────────────────────────────────────────────────
 
 /// The present mode a surface offering `offered` is configured with: with
-/// vsync, `FifoRelaxed` where offered, else `Fifo` (what wgpu's `AutoVsync`
-/// picks); without, `Immediate`, else `Mailbox`, else the vsync choice (what
-/// `AutoNoVsync` picks). Resolved here rather than left to wgpu's `Auto*`, so
+/// vsync, `FifoRelaxed` where offered, else `Fifo` (wgpu's `AutoVsync`
+/// order); without, `Immediate`, else `Mailbox`, else `Fifo` (wgpu's
+/// `AutoNoVsync` order). Resolved here rather than left to wgpu's `Auto*`, so
 /// the shell can say what the surface does. `Fifo` is the one mode every
 /// surface supports.
 pub(crate) fn choose_present_mode(vsync: bool, offered: &[PresentMode]) -> PresentMode {
     let has = |m: PresentMode| offered.contains(&m);
     if !vsync {
-        if has(PresentMode::Immediate) {
-            return PresentMode::Immediate;
-        }
-        if has(PresentMode::Mailbox) {
-            return PresentMode::Mailbox;
-        }
+        return if has(PresentMode::Immediate) {
+            PresentMode::Immediate
+        } else if has(PresentMode::Mailbox) {
+            PresentMode::Mailbox
+        } else {
+            PresentMode::Fifo
+        };
     }
     if has(PresentMode::FifoRelaxed) {
         PresentMode::FifoRelaxed
@@ -284,6 +294,28 @@ pub(crate) fn retarget_present_mode(
     let changed = wanted != *mode;
     *mode = wanted;
     (presentation_of(wanted), changed)
+}
+
+/// A surface whose vsync the runtime switches (#2095): the GPU renderer, or a
+/// fake in a test.
+pub(crate) trait VsyncTarget {
+    fn set_vsync(&mut self, on: bool) -> crate::window::Presentation;
+}
+
+impl VsyncTarget for WgpuRenderer {
+    fn set_vsync(&mut self, on: bool) -> crate::window::Presentation {
+        WgpuRenderer::set_vsync(self, on)
+    }
+}
+
+/// Apply a vsync request to each of a runtime's surfaces that exists.
+pub(crate) fn apply_vsync_to<'a, T: VsyncTarget + 'a>(
+    on: bool,
+    targets: impl IntoIterator<Item = Option<&'a mut T>>,
+) {
+    for target in targets.into_iter().flatten() {
+        target.set_vsync(on);
+    }
 }
 
 /// What a surface offering `offered` does with vsync on and with it off.
@@ -651,7 +683,10 @@ impl WgpuRenderer {
             width,
             height,
             // Vsync on unless the app turned it off (#2095).
-            present_mode: choose_present_mode(crate::window::vsync(), &caps.present_modes),
+            present_mode: choose_present_mode(
+                crate::window::vsync_requested(),
+                &caps.present_modes,
+            ),
             desired_maximum_frame_latency: 2,
             alpha_mode,
             view_formats: vec![],
@@ -1867,14 +1902,13 @@ mod pacing_and_features_tests {
     }
 
     /// A surface offering only `FifoRelaxed` beside `Fifo` keeps vsync off
-    /// paced: relaxed FIFO still waits for a refresh when the frame is on
-    /// time, so it is not an uncapped mode.
+    /// paced, on plain `Fifo` as wgpu's `AutoNoVsync` falls back: relaxed
+    /// FIFO still waits for a refresh when the frame is on time, so it is not
+    /// an uncapped mode.
     #[test]
     fn fifo_relaxed_is_not_uncapped() {
-        assert_eq!(
-            choose_present_mode(false, &[Fifo, FifoRelaxed]),
-            FifoRelaxed
-        );
+        assert_eq!(choose_present_mode(false, &[Fifo, FifoRelaxed]), Fifo);
+        assert_eq!(choose_present_mode(true, &[Fifo, FifoRelaxed]), FifoRelaxed);
         assert!(!presentation_of(FifoRelaxed).is_uncapped());
         assert!(Presentation::Mailbox.is_uncapped() && Presentation::Immediate.is_uncapped());
     }
@@ -1910,6 +1944,34 @@ mod pacing_and_features_tests {
         );
     }
 
+    /// A surface that records what it was asked.
+    #[derive(Default)]
+    struct FakeSurface {
+        asked: Vec<bool>,
+    }
+
+    impl VsyncTarget for FakeSurface {
+        fn set_vsync(&mut self, on: bool) -> Presentation {
+            self.asked.push(on);
+            if on {
+                Presentation::Vsync
+            } else {
+                Presentation::Immediate
+            }
+        }
+    }
+
+    /// The runtime's `apply_vsync` hands the request to the main window's
+    /// surface and the DevTools window's, whichever exist.
+    #[test]
+    fn a_vsync_request_reaches_every_surface_that_exists() {
+        let (mut main, mut devtools) = (FakeSurface::default(), FakeSurface::default());
+        apply_vsync_to(false, [Some(&mut main), Some(&mut devtools)]);
+        apply_vsync_to(true, [Some(&mut main), None]);
+        assert_eq!(main.asked, [false, true]);
+        assert_eq!(devtools.asked, [false]);
+    }
+
     /// An adapter with some features and not others, off the empty set.
     fn adapter() -> Features {
         Features::TIMESTAMP_QUERY
@@ -1943,6 +2005,26 @@ mod pacing_and_features_tests {
             device_features(required, Features::TIMESTAMP_QUERY, adapter(), false),
             Err(Features::SHADER_F16 | Features::MULTIVIEW),
             "exactly the ones the adapter lacks"
+        );
+    }
+
+    /// An adapter that has an experimental feature: asked for as optional
+    /// (`Features::all()` included) it is still not requested, since wgpu
+    /// refuses one without an opt-in and the device would fail (review of
+    /// #2104).
+    #[test]
+    fn an_experimental_optional_feature_is_never_requested() {
+        let experimental = Features::EXPERIMENTAL_RAY_QUERY;
+        assert!(Features::all_experimental_mask().contains(experimental));
+        let adapter = adapter() | experimental;
+        assert_eq!(
+            device_features(Features::empty(), experimental, adapter, false),
+            Ok(Features::empty())
+        );
+        assert_eq!(
+            device_features(Features::empty(), Features::all(), adapter, false),
+            Ok(adapter - experimental),
+            "everything the adapter has but the experimental one"
         );
     }
 
@@ -1996,6 +2078,26 @@ mod pacing_and_features_tests {
                 .expect("optional features never fail the device");
         assert!(device.features().contains(present), "{present:?} granted");
         assert!(!device.features().contains(lacks), "{lacks:?} left out");
+
+        // Everything as optional, experimental features included (an adapter
+        // that has one, RADV and llvmpipe among them, refused the device when
+        // one was requested without an opt-in): the device starts, with every
+        // feature the adapter has but the experimental ones.
+        let everything = RinchGpuConfig {
+            optional_features: Features::all(),
+            ..Default::default()
+        };
+        let (device, _queue) =
+            request_rinch_device(&adapter, TextureFormat::Rgba8Unorm, Some(&everything))
+                .expect("Features::all() as optional never fails the device");
+        assert_eq!(
+            device.features() & !Features::all_experimental_mask(),
+            has & !Features::all_experimental_mask()
+        );
+        assert!(
+            (device.features() & Features::all_experimental_mask()).is_empty(),
+            "no experimental feature requested"
+        );
 
         let required = RinchGpuConfig {
             required_features: lacks,

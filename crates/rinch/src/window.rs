@@ -420,13 +420,24 @@ impl PacingOutcomes {
 /// May be called from any thread on the desktop. [`presentation`] reads the
 /// result reactively.
 pub fn set_vsync(on: bool) -> Presentation {
-    platform::set_vsync(on)
+    let honoured = platform::set_vsync(on);
+    // The calling thread's readers hear it now: on the UI thread, those are
+    // the app's. A request from another thread reaches the UI thread's when
+    // the shell applies it (`publish_pacing`).
+    vsync_signal().set_if_changed(platform::vsync());
+    honoured
 }
 
 /// Whether vsync is asked for: `true` unless [`set_vsync`] (or
 /// [`App::vsync`](crate::App::vsync)) turned it off. What the surface does is
 /// [`presentation`].
+///
+/// Reactive on the UI thread: a reader there re-runs when the request
+/// changes — at once for a [`set_vsync`] made on the UI thread, and when the
+/// shell applies it for one made on another thread. The value it answers is
+/// the request itself, on any thread.
 pub fn vsync() -> bool {
+    vsync_signal().get();
     platform::vsync()
 }
 
@@ -436,12 +447,36 @@ pub fn vsync() -> bool {
 ///
 /// [`Presentation::Pending`] until the desktop shell has made its renderer;
 /// [`Presentation::Unsupported`] on the web, Android and in a native embed.
+///
+/// **UI thread only.** The answer is a signal of the UI thread's, which the
+/// shell publishes; read on another thread it stays at that thread's initial
+/// value (`Pending` on the desktop). Off the UI thread, keep what
+/// [`set_vsync`] returned.
 pub fn presentation() -> Presentation {
     presentation_signal().get()
 }
 
 thread_local! {
     static PRESENTATION: Cell<Option<Signal<Presentation>>> = const { Cell::new(None) };
+    static VSYNC: Cell<Option<Signal<bool>>> = const { Cell::new(None) };
+}
+
+/// The vsync request, read without subscribing: for the shell's GPU
+/// renderer.
+#[cfg(feature = "gpu")]
+pub(crate) fn vsync_requested() -> bool {
+    platform::vsync()
+}
+
+/// The thread's copy of the vsync request, for [`vsync`]'s readers to
+/// subscribe to.
+fn vsync_signal() -> Signal<bool> {
+    if let Some(s) = VSYNC.with(Cell::get) {
+        return s;
+    }
+    let s = rinch_core::unowned(|| Signal::new(platform::vsync()));
+    VSYNC.with(|c| c.set(Some(s)));
+    s
 }
 
 fn presentation_signal() -> Signal<Presentation> {
@@ -462,8 +497,28 @@ fn presentation_signal() -> Signal<Presentation> {
 ))]
 pub(crate) fn publish_pacing(outcomes: Option<PacingOutcomes>) {
     *PACING.lock().unwrap_or_else(|e| e.into_inner()) = outcomes;
-    let now = outcomes.map_or(Presentation::Pending, |o| o.for_vsync(vsync()));
-    presentation_signal().set_if_changed(now);
+    let on = platform::vsync();
+    let now = outcomes.map_or(Presentation::Pending, |o| o.for_vsync(on));
+    rinch_core::batch(|| {
+        vsync_signal().set_if_changed(on);
+        presentation_signal().set_if_changed(now);
+    });
+}
+
+/// Serialises the tests that write the process-wide vsync request and
+/// outcomes.
+#[cfg(all(test, feature = "desktop"))]
+pub(crate) static VSYNC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Forget the main window's outcomes when the shell shuts down, so a later
+/// [`set_vsync`] answers `Pending`. Writes no signal: the reactive runtime
+/// may be going away with the shell.
+#[cfg(all(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    feature = "desktop"
+))]
+pub(crate) fn clear_pacing() {
+    *PACING.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -754,6 +809,9 @@ mod tests {
     #[cfg(feature = "desktop")]
     #[test]
     fn set_vsync_answers_what_the_surface_will_do() {
+        let _lock = VSYNC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_vsync(true);
+        publish_pacing(None);
         assert!(vsync(), "on by default");
         assert_eq!(presentation(), Presentation::Pending);
         assert_eq!(set_vsync(false), Presentation::Pending, "no window yet");
@@ -777,6 +835,21 @@ mod tests {
         // Hidden: nothing presents until it is shown.
         publish_pacing(None);
         assert_eq!(presentation(), Presentation::Pending);
+        assert_eq!(set_vsync(true), Presentation::Pending);
+
+        // `vsync()` is reactive (review of #2104): an effect reading it runs
+        // again on a request made on the UI thread.
+        let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = seen.clone();
+        let _effect = rinch_core::Effect::new(move || log.borrow_mut().push(vsync()));
+        set_vsync(false);
+        set_vsync(false);
+        set_vsync(true);
+        assert_eq!(*seen.borrow(), [true, false, true]);
+
+        // Shutdown forgets the outcomes.
+        publish_pacing(Some(PacingOutcomes::UNSUPPORTED));
+        clear_pacing();
         assert_eq!(set_vsync(true), Presentation::Pending);
     }
 

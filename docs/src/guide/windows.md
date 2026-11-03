@@ -1063,7 +1063,7 @@ let honoured: Presentation = set_vsync(true);
 | `Pending` | No window renderer yet (before the event loop, or while the window is hidden); the setting is stored and the window takes it |
 | `Unsupported` | Nothing to switch: the software renderer, the web, Android |
 
-`rinch::window::presentation()` reads the same answer reactively, and `rinch::window::vsync()` whether vsync is asked for, so a settings toggle can show both and grey itself out on `Unsupported`.
+`rinch::window::presentation()` reads the same answer reactively, and `rinch::window::vsync()` whether vsync is asked for (also reactive), so a settings toggle can show both and grey itself out on `Unsupported`. Both are for the UI thread: `presentation()` read on another thread stays `Pending` (keep what `set_vsync` returned there), and a `set_vsync` made on another thread reaches the UI thread's readers when the shell applies it, on the event loop's next turn.
 
 **Vsync off does not make an idle window spin.** rinch draws a frame when something asks for one — a continuous `RenderSurface`, a running animation or transition, a texture source's new frame, input — and with vsync off those frames follow each other as fast as they can be drawn. A window with nothing to draw still sleeps.
 

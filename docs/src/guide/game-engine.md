@@ -211,13 +211,15 @@ let gpu = RinchGpuConfig {
     },
     // Nice to have: requested only where the adapter supports it.
     optional_features: wgpu::Features::TIMESTAMP_QUERY,
+    // Keeps this compiling when RinchGpuConfig gains a field.
+    ..Default::default()
 };
 App::new(app).gpu_config(gpu).run();
 ```
 
 After startup, `gpu_handle()` returns the shared `device`, `queue`, **and `adapter`** (use `adapter.limits()` to clamp, e.g. `max_buffer_size = min(adapter, 2 GiB)`). The required features and limits are passed through verbatim — if the adapter can't satisfy them, device creation fails loudly, naming the missing features, rather than silently dropping a capability.
 
-**Optional features** are the ones you can do without: rinch requests those the adapter has and leaves out the rest, and the device still starts. `TIMESTAMP_QUERY` for timing GPU frames is the usual one. Ask the handle what you got:
+**Optional features** are the ones you can do without: rinch requests those the adapter has and leaves out the rest, and the device still starts. Experimental features (`Features::all_experimental_mask()`) are never requested from this set, since wgpu refuses them without an opt-in rinch does not give, so even `Features::all()` is safe here. `TIMESTAMP_QUERY` for timing GPU frames is the usual one. Ask the handle what you got:
 
 ```rust
 let handle = gpu_handle().unwrap();
