@@ -1303,7 +1303,14 @@ mod tests {
         }
 
         let lines = Arc::new(Mutex::new(Vec::new()));
-        tracing::subscriber::with_default(Capture(lines.clone()), f);
+        tracing::subscriber::with_default(Capture(lines.clone()), || {
+            // Another test thread can cache a callsite's interest as "never"
+            // (no subscriber there) while this scoped subscriber is being
+            // registered, and the event is then skipped here too. Rebuilding
+            // the cache inside the scope counts this subscriber's `always`.
+            tracing::callsite::rebuild_interest_cache();
+            f()
+        });
         lines.lock().unwrap().clone()
     }
 }
