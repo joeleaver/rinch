@@ -640,11 +640,11 @@ fn internal_table_boxes_take_no_ratio() {
             (0.0, 40.0),
         ),
         (
-            r#"<div style="display:table;width:100px"><div id=t style="display:table-row;aspect-ratio:2"><div style="display:table-cell">x</div></div></div>"#,
+            r#"<div style="display:table;width:100px"><div style="display:table-row;aspect-ratio:2"><div id=t style="display:table-cell">x</div></div></div>"#,
             (100.0, 20.0),
         ),
         (
-            r#"<div style="display:table;width:100px"><div id=t style="display:table-row-group;aspect-ratio:2"><div style="display:table-row"><div style="display:table-cell">x</div></div></div></div>"#,
+            r#"<div style="display:table;width:100px"><div style="display:table-row-group;aspect-ratio:2"><div style="display:table-row"><div id=t style="display:table-cell">x</div></div></div></div>"#,
             (100.0, 20.0),
         ),
         // Not internal: a caption and the table itself keep the ratio.

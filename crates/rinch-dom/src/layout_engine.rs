@@ -158,6 +158,7 @@ impl RinchDocument {
         let style_before = self.tree.perf.get(Counter::TimeStyleNs);
         self.tree.perf.bump(Counter::LayoutResolves);
         self.resolve_layout_inner(width, height);
+        self.align_table_cells();
         let total = t0.elapsed().as_nanos() as u64;
         let style = self
             .tree
@@ -215,8 +216,8 @@ impl RinchDocument {
             self.tree.styles_dirty = false;
         }
         // A table whose rows came or went with no restyle — a removal, a row
-        // moved in from elsewhere — still owes its direction (#1083).
-        self.resolve_table_directions();
+        // moved in from elsewhere — still owes a rebuild.
+        self.resolve_tables();
         // Everything styled so far is rendered by this frame; a later
         // cascade has a before-change style to transition from.
         for id in std::mem::take(&mut self.tree.styled_unrendered) {
@@ -413,6 +414,7 @@ impl RinchDocument {
             height: taffy::AvailableSpace::Definite(height),
         };
 
+        self.measure_table_columns();
         let mut text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
 
         // #120: an inline-block with a percentage main size is pre-measured detached
@@ -727,7 +729,7 @@ impl RinchDocument {
     /// `(node_id, wrap_width_bits)`, so paint can reuse the exact layouts that
     /// measurement produced. Safe to call more than once per frame — see the
     /// percentage inline-block second pass in `resolve_layout`.
-    fn run_taffy_compute(
+    pub(crate) fn run_taffy_compute(
         &mut self,
         root_taffy: taffy::NodeId,
         available_space: taffy::Size<taffy::AvailableSpace>,
@@ -1680,6 +1682,7 @@ impl RinchDocument {
         for child_id in children {
             self.read_layout_results(child_id);
         }
+        self.note_table_cell_read(node_id);
     }
 
     /// Handle display:contents nodes by reparenting their taffy children

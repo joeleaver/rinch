@@ -100,13 +100,11 @@ pub enum DisplayValue {
     ListItem,
 }
 
-/// Which part of a CSS table a box is, from its computed `display` (#1083).
+/// Which part of a CSS table a box is, from its computed `display`.
 ///
-/// rinch has no table formatting context: `display_from_stylo` maps a table,
-/// a row and a row group to [`DisplayValue::Flex`] and a cell or caption to
-/// [`DisplayValue::Block`]. That loses the one fact a flex approximation needs
-/// to be the right *flex*: whether a table (or row group) holds rows, which
-/// stack, or bare cells, which share one anonymous row. This keeps it.
+/// `display_from_stylo` maps a table to [`DisplayValue::Grid`], a row or row
+/// group to [`DisplayValue::Contents`] and a cell or caption to
+/// [`DisplayValue::Block`], so `display` alone cannot say. See `table_layout`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub enum TablePart {
     /// Not a table part.
@@ -114,27 +112,30 @@ pub enum TablePart {
     None,
     /// `table` / `inline-table`.
     Table,
-    /// `table-row-group`, `table-header-group`, `table-footer-group`.
+    /// `table-row-group`.
     RowGroup,
+    /// `table-header-group`: its rows come first, wherever it stands.
+    HeaderGroup,
+    /// `table-footer-group`: its rows come last, wherever it stands.
+    FooterGroup,
     /// `table-row`.
     Row,
-    /// Any other table-internal box: a cell, a column or a column group.
+    /// `table-cell`.
+    Cell,
+    /// A column or a column group.
     Other,
     /// `table-caption`: a table part, but not an internal table box.
     Caption,
 }
 
 impl TablePart {
-    /// Whether this box is a flex container whose direction depends on its
-    /// children (`RinchDocument::table_flex_direction`).
-    pub fn holds_rows(self) -> bool {
-        matches!(self, Self::Table | Self::RowGroup)
-    }
-
-    /// Whether a box of this part, as a child of a table or row group, is a
-    /// row of its own — stacked, not sharing an anonymous row with bare cells.
+    /// Whether a box of this part, as a child of a table, is a row of its
+    /// own or a group of them.
     pub fn is_row_like(self) -> bool {
-        matches!(self, Self::RowGroup | Self::Row)
+        matches!(
+            self,
+            Self::RowGroup | Self::HeaderGroup | Self::FooterGroup | Self::Row
+        )
     }
 
     /// Whether this is an internal table box (css-tables-3: a row, a row
@@ -142,7 +143,7 @@ impl TablePart {
     /// caption). `aspect-ratio` does not apply to one (css-sizing-4 §5.1,
     /// #1286; Chrome 155).
     pub fn is_internal(self) -> bool {
-        matches!(self, Self::RowGroup | Self::Row | Self::Other)
+        self.is_row_like() || matches!(self, Self::Cell | Self::Other)
     }
 }
 

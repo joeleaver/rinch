@@ -322,7 +322,7 @@ impl RinchDocument {
 
             html, body, div, section, article, aside, header, footer, main, nav,
             h1, h2, h3, h4, h5, h6, p, blockquote, pre, figure, figcaption,
-            ul, ol, menu, dir, dl, dt, dd, table, form, fieldset, legend, hr,
+            ul, ol, menu, dir, dl, dt, dd, form, fieldset, legend, hr,
             address, details, summary {
                 display: block;
             }
@@ -387,13 +387,7 @@ impl RinchDocument {
                 font-weight: bold;
             }
 
-            /* A browser also gives `<th>` `display: table-cell`, and this rule
-               deliberately does not: rinch has no table formatting context at
-               all — `DisplayValue` carries no table variant, `table` is
-               `display: block` above, and `tr`/`td`/`th`/`thead` keep Stylo's
-               default `inline`. Declaring a display the layout engine cannot
-               honour would buy nothing and mislead.
-               `the_th_rule_does_not_claim_a_table_display` is the pin.
+            /* A `<th>` is bold, and centred under a parent of no alignment.
 
                `font-weight` is plainly real. `text-align` is real as a computed
                value everywhere, and takes visible effect wherever the cell is
@@ -433,6 +427,26 @@ impl RinchDocument {
                 font-weight: bold;
                 text-align: -moz-center-or-inherit;
             }
+
+            center { display: block; text-align: -moz-center-or-inherit; }
+
+            /* The HTML Standard's tables section (rendering 15.3.8). */
+            table {
+                display: table;
+                box-sizing: border-box;
+                border-spacing: 2px;
+                border-collapse: separate;
+                text-indent: initial;
+            }
+            caption { display: table-caption; text-align: center; }
+            colgroup { display: table-column-group; }
+            col { display: table-column; }
+            thead { display: table-header-group; vertical-align: middle; }
+            tbody { display: table-row-group; vertical-align: middle; }
+            tfoot { display: table-footer-group; vertical-align: middle; }
+            tr { display: table-row; vertical-align: inherit; }
+            table > tr { vertical-align: middle; }
+            td, th { display: table-cell; vertical-align: inherit; padding: 1px; }
 
             u, ins {
                 text-decoration-line: underline;
@@ -844,19 +858,35 @@ impl RinchDocument {
     /// maps nothing for. The restyle that re-reads them is
     /// `note_attribute_change`'s.
     pub(crate) fn sync_presentational_hints(&mut self, node_id: RawNodeId, name: &str) {
-        if !matches!(name, "width" | "height") {
+        let node = &self.tree.nodes[node_id];
+        let Some(tag) = node.tag() else {
+            return;
+        };
+        // A cell's spans are read when its table is placed (`table_layout`),
+        // which nothing else owes it when only they change.
+        if matches!(tag, "td" | "th")
+            && matches!(name, "colspan" | "rowspan")
+            && let Some(parent) = node.parent
+        {
+            self.note_table_children_changed(parent);
             return;
         }
         let node = &self.tree.nodes[node_id];
-        if !node
-            .tag()
-            .is_some_and(crate::replaced::maps_dimension_attributes)
+        let Some(tag) = node.tag() else {
+            return;
+        };
+        let replaced = crate::replaced::maps_dimension_attributes(tag);
+        if !(replaced && matches!(name, "width" | "height"))
+            && !crate::legacy_hints::maps_attribute(tag, name)
         {
             return;
         }
-        let css = crate::replaced::dimension_hints_css(node);
-        self.tree.nodes[node_id].presentational_hints =
-            css.map(|css| ServoArc::new(self.tree.guard.wrap(parse_inline_style(&css))));
+        let mut css = crate::legacy_hints::hints_css(node).unwrap_or_default();
+        if replaced && let Some(dims) = crate::replaced::dimension_hints_css(node) {
+            css.push_str(&dims);
+        }
+        self.tree.nodes[node_id].presentational_hints = (!css.is_empty())
+            .then(|| ServoArc::new(self.tree.guard.wrap(parse_inline_style(&css))));
     }
 
     /// Cache a parsed inline `style` block on the node for Stylo's next
@@ -1786,7 +1816,7 @@ impl RinchDocument {
 /// way author content wants it: `about:blank`, no quirks, no error reporting.
 /// One place, so `set_attribute("style")`, `set_styles` and the inset fast
 /// path can't drift.
-pub(super) fn parse_inline_style(css: &str) -> PropertyDeclarationBlock {
+pub(crate) fn parse_inline_style(css: &str) -> PropertyDeclarationBlock {
     style::properties::parse_style_attribute(
         css,
         &crate::layout::BLANK_URL_DATA,

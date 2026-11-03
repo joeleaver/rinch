@@ -309,7 +309,7 @@ fn the_th_alignment_condition_reads_the_parent_not_an_ancestor() {
 /// value would fall back to something arbitrary rather than laying a table out.
 /// If rinch ever grows tables, this test is the one to delete on purpose.
 #[test]
-fn the_th_rule_does_not_claim_a_table_display() {
+fn a_th_and_a_td_are_both_table_cells() {
     use rinch_dom::computed_style::values::DisplayValue;
     let mut doc = RinchDocument::new();
     let body = doc.body();
@@ -323,8 +323,8 @@ fn the_th_rule_does_not_claim_a_table_display() {
     assert_eq!(disp(th), disp(td), "<th> and <td> still lay out alike");
     assert_eq!(
         disp(th),
-        DisplayValue::Inline,
-        "rinch leaves table cells at Stylo's default `inline`"
+        DisplayValue::Block,
+        "a table cell is a block container"
     );
 }
 
