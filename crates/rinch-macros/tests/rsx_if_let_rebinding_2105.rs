@@ -181,6 +181,8 @@ fn a_match_on_literals_rebuilds_only_when_the_arm_changes() {
 // Patterns that bind nothing keep building once
 // ============================================================
 
+// `if let Some(_)` is what is under test; clippy would have it `is_some()`.
+#[allow(clippy::redundant_pattern_matching)]
 #[component]
 fn wildcard(user: Signal<Option<String>>) -> NodeHandle {
     rsx! {
