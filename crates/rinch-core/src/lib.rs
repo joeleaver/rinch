@@ -65,8 +65,8 @@ pub use for_loop::{
     FineForBuilder, KeySource, for_each_dom, for_each_dom_typed,
     for_each_dom_typed_with_key_source, for_each_dom_with_key_source, to_for_items,
 };
-pub use match_dom::match_dom;
-pub use show::{FineShowBuilder, show_dom};
+pub use match_dom::{match_dom, match_dom_rebinding};
+pub use show::{FineShowBuilder, show_dom, show_dom_rebinding};
 pub use virtual_list::virtual_list;
 
 // Re-export reconciliation types

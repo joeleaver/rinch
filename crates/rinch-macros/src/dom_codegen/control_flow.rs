@@ -130,9 +130,25 @@ pub fn generate_if_block(
         }
     };
 
+    // An `if let` whose pattern binds a name re-reads that value in its branch,
+    // so the branch is rebuilt when the condition re-runs and still matches
+    // (issue #2105). A plain `if`, or a pattern that binds nothing, keeps the
+    // build-once-per-show `show_dom`, and so does `#[once]`.
+    let show_fn = if if_block.is_if_let
+        && !if_block.once
+        && if_block
+            .pattern
+            .as_ref()
+            .is_some_and(super::captures::pattern_binds_a_value)
+    {
+        quote! { rinch::core::show_dom_rebinding }
+    } else {
+        quote! { rinch::core::show_dom }
+    };
+
     quote! {
         {
-            rinch::core::show_dom(
+            #show_fn(
                 __scope,
                 &#parent_var,
                 #when_closure,
@@ -830,6 +846,31 @@ pub fn generate_match_block(
         })
         .collect();
 
+    // An arm whose pattern binds a name is rebuilt when the discriminant
+    // re-runs and picks it again (issue #2105). When no arm binds, or `#[once]`
+    // is on the `match` or on every arm that binds, the plain `match_dom` is
+    // emitted, unchanged.
+    let rebinding: Vec<bool> = match_block
+        .arms
+        .iter()
+        .map(|arm| {
+            !match_block.once && !arm.once && super::captures::pattern_binds_a_value(&arm.pattern)
+        })
+        .collect();
+    if rebinding.iter().any(|b| *b) {
+        return quote! {
+            {
+                rinch::core::match_dom_rebinding(
+                    __scope,
+                    &#parent_var,
+                    #discriminant,
+                    ::std::vec::Vec::from([#(#branch_closures),*]),
+                    ::std::vec::Vec::from([#(#rebinding),*])
+                );
+            }
+        };
+    }
+
     quote! {
         {
             rinch::core::match_dom(
@@ -1165,5 +1206,134 @@ mod shadow_tests {
             }
         });
         assert!(!code.contains(&shadow("item")), "{code}");
+    }
+
+    // ---- issue #2105: which branches follow their bound value ----
+
+    #[test]
+    fn an_if_let_that_binds_emits_the_rebinding_show() {
+        let code = if_code(quote! {
+            if let Some(name) = user.get() { p { {name} } }
+        });
+        assert!(code.contains("rinch::core::show_dom_rebinding("), "{code}");
+    }
+
+    #[test]
+    fn an_if_let_that_binds_nothing_and_a_plain_if_emit_the_plain_show() {
+        for code in [
+            if_code(quote! { if let Some(_) = user.get() { p { "x" } } }),
+            if_code(quote! { if let None = user.get() { p { "x" } } }),
+            if_code(quote! { if user.get().is_some() { p { "x" } } }),
+        ] {
+            assert!(code.contains("rinch::core::show_dom("), "{code}");
+            assert!(!code.contains("show_dom_rebinding"), "{code}");
+        }
+    }
+
+    #[test]
+    fn an_else_if_let_that_binds_gets_its_own_rebinding_show() {
+        let code = if_code(quote! {
+            if flag.get() { p { "a" } } else if let Some(v) = other.get() { p { {v} } }
+        });
+        assert!(code.contains("rinch::core::show_dom("), "outer: {code}");
+        assert!(
+            code.contains("rinch::core::show_dom_rebinding("),
+            "inner: {code}"
+        );
+    }
+
+    #[test]
+    fn a_match_marks_the_arms_that_bind() {
+        let code = match_code(quote! {
+            match sel.get() {
+                Some(n) if n > 3 => p { {n.to_string()} },
+                Some(_) => p { "small" },
+                None => p { "none" },
+            }
+        });
+        assert!(code.contains("rinch::core::match_dom_rebinding("), "{code}");
+        assert!(
+            code.contains("::std::vec::Vec::from([true,false,false])"),
+            "{code}"
+        );
+    }
+
+    #[test]
+    fn a_match_whose_arms_bind_nothing_emits_the_plain_match() {
+        let code = match_code(quote! {
+            match tab.get() {
+                0 => p { "home" },
+                Tab::About => p { "about" },
+                _ => p { "other" },
+            }
+        });
+        assert!(code.contains("rinch::core::match_dom("), "{code}");
+        assert!(!code.contains("match_dom_rebinding"), "{code}");
+    }
+
+    // ---- issue #2105: the `#[once]` opt-out ----
+
+    #[test]
+    fn once_on_an_if_let_emits_the_plain_show_for_the_whole_chain() {
+        let code = if_code(quote! {
+            #[once]
+            if let Some(a) = x.get() { p { {a} } } else if let Some(b) = y.get() { p { {b} } }
+        });
+        assert!(code.contains("rinch::core::show_dom("), "{code}");
+        assert!(!code.contains("show_dom_rebinding"), "{code}");
+    }
+
+    #[test]
+    fn once_on_a_match_or_on_an_arm_clears_its_flag() {
+        let whole = match_code(quote! {
+            #[once]
+            match sel.get() {
+                Some(n) => p { {n.to_string()} },
+                None => p { "none" },
+            }
+        });
+        assert!(whole.contains("rinch::core::match_dom("), "{whole}");
+        assert!(!whole.contains("match_dom_rebinding"), "{whole}");
+
+        let one_arm = match_code(quote! {
+            match sel.get() {
+                #[once]
+                Ok(n) => p { {n.to_string()} },
+                Err(e) => p { {e} },
+            }
+        });
+        assert!(
+            one_arm.contains("::std::vec::Vec::from([false,true])"),
+            "{one_arm}"
+        );
+    }
+
+    #[test]
+    fn once_is_seen_through_a_transparent_brace() {
+        let node: crate::node::RsxNode = syn::parse2(quote! {
+            { #[once] match sel.get() { Some(n) => p { {n.to_string()} }, None => p { "-" } } }
+        })
+        .expect("parse");
+        match node {
+            crate::node::RsxNode::MatchBlock(m) => assert!(m.once),
+            _ => panic!("a braced `#[once] match` is still a reactive match"),
+        }
+    }
+
+    #[test]
+    fn an_attribute_other_than_once_is_an_error() {
+        let err = syn::parse2::<crate::node::RsxNode>(quote! {
+            #[cached] if let Some(n) = sel.get() { p { "x" } }
+        })
+        .err()
+        .expect("unknown attribute");
+        assert!(err.to_string().contains("`#[once]`"), "{err}");
+
+        let err = syn::parse2::<crate::node::RsxNode>(quote! {
+            #[once] div { "x" }
+        })
+        .err()
+        .expect("`#[once]` on an element");
+        assert!(err.to_string().contains("`if`, a `match`"), "{err}");
     }
 }
