@@ -146,3 +146,38 @@ fn a_changed_row_moves_its_cells_and_stays_stable_across_layouts() {
         40.0
     );
 }
+
+/// A cell's `colspan` or `rowspan` set or removed after the table was laid
+/// out takes effect: the table is placed again, as one built with the span
+/// from the start is (a review of #2079 found the span read only on a
+/// rebuild some other change owed).
+#[test]
+fn a_span_changed_after_layout_places_the_table_again() {
+    const ROWS: &str = "<table id=t style='border-spacing:0'>\
+        <tr><td id=a>aaaa</td><td id=b>b</td></tr>\
+        <tr><td id=c>c</td><td id=d>dddddddd</td></tr></table>";
+    let fresh = doc(&ROWS.replace("<td id=a>", "<td id=a colspan=2>"));
+    let mut edited = doc(ROWS);
+    let a = edited.query_selector("#a").unwrap();
+    edited.set_attribute(a, "colspan", "2");
+    edited.resolve_layout(600.0, 800.0);
+    assert_eq!(abs(&edited, "a"), abs(&fresh, "a"));
+    assert_eq!(abs(&edited, "t"), abs(&fresh, "t"));
+
+    let c = edited.query_selector("#c").unwrap();
+    edited.set_attribute(c, "rowspan", "2");
+    edited.resolve_layout(600.0, 800.0);
+    let fresh = doc(&ROWS
+        .replace("<td id=a>", "<td id=a colspan=2>")
+        .replace("<td id=c>", "<td id=c rowspan=2>"));
+    assert_eq!(abs(&edited, "c"), abs(&fresh, "c"));
+    assert_eq!(abs(&edited, "d"), abs(&fresh, "d"));
+
+    edited.remove_attribute(a, "colspan");
+    edited.remove_attribute(c, "rowspan");
+    edited.resolve_layout(600.0, 800.0);
+    let fresh = doc(ROWS);
+    for id in ["a", "b", "c", "d", "t"] {
+        assert_eq!(abs(&edited, id), abs(&fresh, id), "#{id}");
+    }
+}

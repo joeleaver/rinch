@@ -872,6 +872,19 @@ impl RinchDocument {
         let Some(tag) = node.tag() else {
             return;
         };
+        // A cell's spans are read when its table is placed (`table_layout`),
+        // which nothing else owes it when only they change.
+        if matches!(tag, "td" | "th")
+            && matches!(name, "colspan" | "rowspan")
+            && let Some(parent) = node.parent
+        {
+            self.note_table_children_changed(parent);
+            return;
+        }
+        let node = &self.tree.nodes[node_id];
+        let Some(tag) = node.tag() else {
+            return;
+        };
         let replaced = crate::replaced::maps_dimension_attributes(tag);
         if !(replaced && matches!(name, "width" | "height"))
             && !crate::legacy_hints::maps_attribute(tag, name)

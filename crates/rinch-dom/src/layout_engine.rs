@@ -922,6 +922,15 @@ impl RinchDocument {
                                         max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
 
                                     let beside_floats = floats.is_some() || places_floats;
+                                    // Laid out with no float beside it, the root's paint
+                                    // layout has the whole width again: its old bands go
+                                    // before the cache below can answer (the bands of a
+                                    // root beside floats are recorded after its build).
+                                    if inputs.run_mode == taffy::RunMode::PerformLayout
+                                        && !beside_floats
+                                    {
+                                        ifc_float_bands.borrow_mut().remove(&root_id);
+                                    }
 
                                     // Check persistent IFC measure cache — skip expensive
                                     // Parley rebuild if this root's text hasn't changed.

@@ -332,3 +332,88 @@ fn a_padded_box_holding_only_floats_keeps_its_bottom_padding() {
     assert_eq!(rect(&d, "bar").3, 38.0);
     assert_eq!(rect(&d, "next").1, 38.0);
 }
+
+fn nowrap_doc(align: &str) -> RinchDocument {
+    let mut d = RinchDocument::new();
+    d.load_css("body { margin: 0; font: 16px/20px sans-serif; }");
+    let body = d.body();
+    d.set_inner_html(
+        body,
+        &format!(
+            "<div style='width:400px'><div style='float:left;width:100px;height:50px'></div>\
+             <p id=n style='margin:0;white-space:nowrap;text-align:{align}'>x</p></div>"
+        ),
+    );
+    d.resolve_layout(800.0, 600.0);
+    d
+}
+
+/// A paragraph that does not wrap starts its line beside a float too, and
+/// one aligned is aligned within the room the float leaves (Chrome 156: the
+/// line at x 100; centred, within 100..400).
+#[test]
+fn a_line_that_does_not_wrap_starts_beside_a_float() {
+    let l = lines(&nowrap_doc("left"), "n");
+    assert_eq!(l.len(), 1, "{l:?}");
+    assert_eq!(l[0].1, 100.0, "{l:?}");
+    let l = lines(&nowrap_doc("center"), "n");
+    assert_eq!((l[0].1, l[0].2), (100.0, 400.0), "{l:?}");
+}
+
+/// A float that comes and goes: the paragraph is laid out with no float (its
+/// measure cache keeps that size), beside one, and with it gone again, when
+/// it takes the whole width back and is broken that way for paint too (a
+/// review of #2080: the measure answered from its cache before it dropped the
+/// bands it had recorded beside the float, so paint kept breaking the lines
+/// around the float's old room).
+#[test]
+fn lines_take_the_whole_width_back_when_the_float_goes() {
+    let mut d = RinchDocument::new();
+    d.load_css("body { margin: 0; font: 16px/20px sans-serif; }");
+    let body = d.body();
+    let words = "x ".repeat(120);
+    d.set_inner_html(
+        body,
+        &format!("<div id=w style='width:400px'><p id=p style='margin:0'>{words}</p></div>"),
+    );
+    d.resolve_layout(800.0, 600.0);
+    let before = lines(&d, "p");
+    let w = d.query_selector("#w").unwrap();
+    let p = d.query_selector("#p").unwrap();
+    let f = d.create_element("div");
+    d.set_attribute(f, "style", "float:left;width:100px;height:50px");
+    d.insert_before(w, f, p);
+    d.resolve_layout(800.0, 600.0);
+    assert_eq!(lines(&d, "p")[0].1, 100.0);
+    d.remove_child(w, f);
+    d.resolve_layout(800.0, 600.0);
+    let after = lines(&d, "p");
+    assert_eq!(after, before);
+    assert_eq!(rect(&d, "p").3, 20.0 * before.len() as f32);
+}
+
+/// Text edited in a paragraph beside a float lays the page out again: the
+/// paragraph grows from one line to three and the paragraph after it moves
+/// down (a review of #2080: a box beside a float kept no cache entry, so
+/// marking it dirty stopped there and its parent's cached layout was served).
+#[test]
+fn text_edited_beside_a_float_moves_what_follows() {
+    let mut d = RinchDocument::new();
+    d.load_css("body { margin: 0; font: 16px/20px sans-serif; }");
+    let body = d.body();
+    d.set_inner_html(
+        body,
+        "<div style='width:400px'><div style='float:left;width:100px;height:50px'></div>\
+         <p id=p style='margin:0'>short</p><p id=q style='margin:0'>after</p></div>",
+    );
+    d.resolve_layout(800.0, 600.0);
+    assert_eq!(rect(&d, "q").1, 20.0);
+    let p = d.query_selector("#p").unwrap();
+    let text = d.tree.get(p.0).unwrap().children[0];
+    d.set_text_content(NodeId(text), &"x ".repeat(110));
+    d.resolve_layout(800.0, 600.0);
+    let n = lines(&d, "p").len();
+    assert!(n >= 3, "{n} lines");
+    assert_eq!(rect(&d, "p").3, 20.0 * n as f32);
+    assert_eq!(rect(&d, "q").1, 20.0 * n as f32);
+}

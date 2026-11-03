@@ -530,6 +530,9 @@ pub(crate) fn break_lines_hanging_spaces<'p>(
     floats: Option<&FloatBands>,
     placer: Option<&mut (dyn PlaceFloats + 'p)>,
 ) -> Broken {
+    // A paragraph that does not wrap still starts each line beside the
+    // floats (`break_unwrapped`).
+    let unwrapped_floats = floats.filter(|f| max_width.is_none() && !f.is_empty());
     // #1237: a paragraph that does not wrap, aligned within the box.
     if let Some(align) =
         align_width.filter(|a| max_width.is_none() && a.width.is_finite() && a.width > 0.0)
@@ -540,7 +543,12 @@ pub(crate) fn break_lines_hanging_spaces<'p>(
             align,
             preserves_spaces,
             unhung,
+            unwrapped_floats,
         ));
+    }
+    if let Some(floats) = unwrapped_floats {
+        break_unwrapped(layout, floats.width(), None, None, Some(floats));
+        return Broken::default();
     }
     // A paragraph holding floats' boxes is broken by a loop that consumes
     // them (parley's own `break_all_lines` would get the first one back for
@@ -1924,8 +1932,9 @@ fn break_unwrapped_aligned(
     align: AlignWidth,
     preserves_spaces: bool,
     unhung: &UnhungSpaces,
+    floats: Option<&FloatBands>,
 ) -> HangStats {
-    break_unwrapped(layout, align.width, None, None);
+    break_unwrapped(layout, align.width, None, None, floats);
     let mut stats = HangStats::default();
     let own = crate::node::measured_width_of(
         layout,
@@ -1948,7 +1957,7 @@ fn break_unwrapped_aligned(
     let keep = phantom_last_line(layout);
     if widened || trailing || keep.is_some() {
         let units = trailing.then(|| logical_units(layout, text, unhung));
-        break_unwrapped(layout, width, units.as_deref(), keep);
+        break_unwrapped(layout, width, units.as_deref(), keep, floats);
         stats.passes = u32::from(widened || trailing);
         stats.phantom_rebreaks = u32::from(keep.is_some());
     }
@@ -1966,6 +1975,7 @@ fn break_unwrapped(
     width: f32,
     units: Option<&[LineUnit]>,
     limit: Option<usize>,
+    floats: Option<&FloatBands>,
 ) {
     use parley::layout::YieldData;
     let mut breaker = layout.break_lines();
@@ -1974,9 +1984,20 @@ fn break_unwrapped(
     let mut cursor = units.map(|_| 0usize);
     let mut committed = 0usize;
     while limit != Some(committed) {
+        // Beside a float a line starts after it, and is aligned within the
+        // room the floats leave (where its top is: an unwrapped line is not
+        // moved down to fit).
+        let (x, width) = match floats {
+            Some(floats) => {
+                let top = breaker.committed_y() as f32;
+                floats.room(top, top, width)
+            }
+            None => (0.0, width),
+        };
         let state = breaker.state_mut();
         state.set_layout_max_advance(f32::MAX);
         state.set_line_max_advance(f32::MAX);
+        state.set_line_x(x);
         let Some(yielded) = skip_float_boxes(&mut breaker) else {
             break;
         };

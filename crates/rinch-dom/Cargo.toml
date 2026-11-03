@@ -9,7 +9,7 @@ license.workspace = true
 rinch-words.workspace = true
 rinch-core = { workspace = true }
 slab = "0.4"
-# Taffy 0.14 from joeleaver/taffy-fork, branch `rinch-patch`: v0.14.0 plus four
+# Taffy 0.14 from joeleaver/taffy-fork, branch `rinch-patch`: v0.14.0 plus five
 # commits for floats. `TaffyTree::compute_layout_with_block_measure` hands a
 # leaf's measure the `BlockContext` it is laid out in, so an IFC root wraps its
 # lines around the floats beside it (`float_wrap.rs`), and a box laid out while
@@ -17,9 +17,10 @@ slab = "0.4"
 # they are; `find_content_slot` gives a slot its real height rather than
 # infinity; and the floats right before an IFC root's measure leaf are left to
 # it to place, at the lines they stand in (`PendingFloat`); a formatting-context
-# root that holds floats keeps its bottom padding and border below them. A dependency, not a [patch], so an app on rinch gets it with
+# root that holds floats keeps its bottom padding and border below them; and
+# marking a box dirty climbs past a box laid out beside floats. A dependency, not a [patch], so an app on rinch gets it with
 # nothing to copy. Pinned by rev so a push to the fork's branch never changes
-# rinch; moving it is a rinch PR, and a Taffy bump rebases the four commits.
+# rinch; moving it is a rinch PR, and a Taffy bump rebases the five commits.
 #
 # Taffy's default features minus the four rinch never reads (#1260), which
 # cost instructions in every compute whether read or not:
@@ -37,7 +38,7 @@ slab = "0.4"
 # structural edit (append, remove, set_text_content). The dev-dependency below
 # must carry the same list, or `cargo test` unifies the defaults back in and
 # the suite runs a different Taffy than the build.
-taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "c89dfd158fcd77bd378b1263eef6d05bd81042e7", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "fa0fd0de0fc221742eb6ca8ca11143cffdcac8d4", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
 bitflags = "2"
 # Monotonic/wall clock usable on wasm32-unknown-unknown (layout perf timers + CSS
 # transition/animation clocks). Re-exports std::time on native — zero cost off web.
@@ -96,4 +97,4 @@ pollster = "0.4"
 # Integration tests name taffy types (the IFC leaf invariant tests, #466,
 # inspect `NodeTree::taffy` directly). The same fork and rev, with the same
 # features, as the dependency above (see there).
-taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "c89dfd158fcd77bd378b1263eef6d05bd81042e7", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "fa0fd0de0fc221742eb6ca8ca11143cffdcac8d4", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
