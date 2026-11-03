@@ -1340,12 +1340,14 @@ are font data that declares nothing. Each is reachable by its own family name
 (`font-family: "Liberation Sans"`), joins the last-resort fallback chain for
 every script, and fills the generic slots of its own class — `sans-serif` and
 `system-ui` for a sans-serif face, `serif` for a serif one, `monospace` for a
-fixed-pitch one, none for a script or symbol face — **only where the slot is
-empty**. On wasm, where there are no platform fonts, the first sans-serif face
+fixed-pitch one, none for a script, symbol, icon or color-emoji face — **only
+where the plain slot is empty**. On wasm, where there are no platform fonts, the first sans-serif face
 you register is what `font-family: sans-serif` means, whatever else you
 register before or after it. On a desktop, where the platform fills every
-slot, registering data changes no generic: `sans-serif` stays the platform's
-face. A face you want to *be* a generic there is claimed explicitly with
+slot, registering data changes no generic slot (`ui-monospace` and the other
+`ui-*` slots included): `sans-serif` stays the platform's face. An embed that
+used its registered face as `sans-serif` before this change keeps it by
+claiming it or by naming its family (see [Fonts](./fonts.md#migrating-from-before-2102)). A face you want to *be* a generic there is claimed explicitly with
 `register_app_font(AppFont::sans_serif(BYTES))` (or
 `AppFont::from_data(bytes).with_generics(AppFont::SANS_SERIF)`); a claim goes
 ahead of the platform's face. Before issue #2102 every registered face was

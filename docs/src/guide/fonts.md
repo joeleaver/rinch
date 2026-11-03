@@ -163,23 +163,40 @@ a fallback. That case wants a face in the last-resort fallback chain as well as
 in a generic slot, which is what [`RinchApp::register_font_data`] and
 [`RinchContextConfig::fonts`] do, and what `AppFont::script_fallback` turns on.
 
-Font data registered that way declares nothing about what it is for, so it
-fills a generic slot **only where the slot is empty**, and only one of its own
-class, read from the font's own OS/2 and `post` tables: a sans-serif face fills
-`sans-serif`, `system-ui` and `ui-sans-serif`; a serif face `serif` and
-`ui-serif`; a fixed-pitch face `monospace` and `ui-monospace`; a script,
-decorative or symbol face none (a face that declares no class counts as sans
-serif). The first such face keeps the slot: a later one never replaces it. So
-on wasm the first sans-serif face you register is what `sans-serif` means,
-whatever you register after it; and on a desktop, where the platform fills
-every slot, registering font data changes no generic at all — `sans-serif` is
-still the platform's sans-serif face. To make a face *the* `sans-serif` there,
-claim it (`AppFont::sans_serif`, or `register_app_font` in an embed; see
+Font data registered that way declares nothing about what it is for. It fills
+a generic only where the **plain** slot (`sans-serif`, `serif`, `monospace`)
+is empty, and only the slots of its own class, read from the font's own
+tables:
+
+| The face | Fills, when the plain slot is empty |
+| --- | --- |
+| sans serif, or no declared class | `sans-serif`, `system-ui`, `ui-sans-serif` |
+| serif | `serif`, `ui-serif` |
+| fixed pitch | `monospace`, `ui-monospace` |
+| script, decorative or symbol class; color emoji (`COLR`, `CBDT`, `sbix` or `SVG ` tables); no `A` or `a` in its cmap (icon fonts) | nothing |
+
+The `ui-*` and `system-ui` slots are filled only together with their plain
+slot, never on their own, and a slot already holding a face is never
+changed. So on wasm the first sans-serif text face you register is what
+`sans-serif` means, whatever you register before or after it. On a desktop
+the platform maps the plain generics (fontconfig maps no `ui-*` slot, but
+those are left empty as well), so **registering font data changes no generic
+slot**: `sans-serif` is the platform's sans-serif face, and the theme's
+monospace stack, which starts with `ui-monospace`, still reaches the
+platform's `monospace`. To make a face *the* `sans-serif` there, claim it
+(`AppFont::sans_serif`, or `register_app_font` in an embed; see
 [Game engine integration](./game-engine.md)).
+
+### Migrating from before #2102
 
 Until issue #2102 every such face was put at the head of `sans-serif` and
 `system-ui`, so the face registered **last** — a script face as easily as a
-text face — was what every `sans-serif` element drew in.
+text face — was what every `sans-serif` element drew in. An app that relied
+on that, on a platform with fonts, now gets the platform's face instead. To
+keep a registered face as a generic, either claim it —
+`ctx.register_app_font(AppFont::sans_serif(BYTES))` in an embed, or
+`App::fonts(&[AppFont::sans_serif(BYTES)])` — or name its family in the stack
+(`font-family: "Liberation Sans", sans-serif`).
 
 Do **not** turn it on where the platform does have fonts. The text stack
 resolves a script's fallback from the app's own list first and the platform's

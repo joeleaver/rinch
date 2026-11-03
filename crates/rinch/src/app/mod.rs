@@ -1479,10 +1479,10 @@ impl RinchApp {
 
     /// Register one font on one `FontContext` (internal helper).
     fn register_font_on_context(font_cx: &mut parley::FontContext, pending: &PendingFont) {
-        use parley::fontique::{Blob, FallbackKey, Script, ScriptExt};
+        use parley::fontique::{FallbackKey, Script, ScriptExt};
 
         let font = &pending.font;
-        let blob = Blob::new(font.data.to_arc());
+        let blob = font.data.to_blob();
         let families = font_cx.collection.register_fonts(blob, None);
         // Registration alone is what makes `font-family: <family name>` find
         // the face; everything below is about the names it did not come with.

@@ -795,6 +795,69 @@ fn registering_data_never_changes_what_sans_serif_means_on_a_desktop() {
     }
 }
 
+/// Every generic slot, `ui-*` and `system-ui` included, by family name.
+fn every_slot(font_cx: &mut parley::FontContext) -> Vec<(GenericFamily, Vec<String>)> {
+    GenericFamily::all()
+        .iter()
+        .map(|g| (*g, slot_names(font_cx, *g)))
+        .collect()
+}
+
+/// On a desktop, registering font data changes **no** generic slot — not the
+/// plain ones the platform maps, and not the `ui-*` ones it leaves empty
+/// (fontconfig maps no `ui-*` generic, and the #322 repair runs on Android
+/// only). Review of PR #2122: a fixed-pitch data face filled the empty
+/// `ui-monospace`, which the theme's monospace stack starts with, so every
+/// themed code element switched to it. Both contexts, after each face.
+#[test]
+fn registering_data_changes_no_generic_slot_on_a_desktop() {
+    let mut app = app_with(&[]);
+    for generic in [
+        GenericFamily::SansSerif,
+        GenericFamily::Serif,
+        GenericFamily::Monospace,
+    ] {
+        assert!(
+            !slot_names(&mut app.hit_test_font_cx, generic).is_empty(),
+            "precondition: this host maps {generic:?} to a platform face"
+        );
+    }
+    let doc_slots = |app: &RinchApp| {
+        let doc = app.doc().expect("mounted");
+        let mut d = doc.borrow_mut();
+        every_slot(&mut d.font_cx)
+    };
+    let before = doc_slots(&app);
+    let before_hit = every_slot(&mut app.hit_test_font_cx);
+    for (name, class) in [
+        ("Monoa", Declared::Monospace),
+        ("Sansa", Declared::SansSerif),
+        ("Serfa", Declared::Serif),
+        ("Scrpt", Declared::Script),
+        ("Unkno", Declared::Unclassified),
+    ] {
+        app.register_font_data(variant(name, class));
+        let changed = |now: Vec<(GenericFamily, Vec<String>)>,
+                       was: &[(GenericFamily, Vec<String>)]| {
+            now.into_iter()
+                .zip(was)
+                .filter(|(a, b)| a != *b)
+                .map(|(a, _)| a)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            changed(doc_slots(&app), &before),
+            [],
+            "document slots changed by {name}"
+        );
+        assert_eq!(
+            changed(every_slot(&mut app.hit_test_font_cx), &before_hit),
+            [],
+            "hit-test slots changed by {name}"
+        );
+    }
+}
+
 // ── Owned font bytes are not leaked (#2101) ──────────────────────────────────
 
 /// Owned bytes handed to the app — as data and as a claimed face — are held
@@ -880,4 +943,30 @@ fn a_late_registration_resizes_a_text_control() {
     late.resolve_and_repaint(800.0, 600.0);
     assert_ne!(before, 248.0, "the fallback face is not Inter");
     assert_eq!(input_width(&late), 248.0);
+}
+
+/// A `Blob` handed over as font data keeps its id in every font context:
+/// the id is what parley's and Vello's caches key a font on (review of PR
+/// #2122; it was rebuilt around the same bytes with a fresh id).
+#[test]
+fn a_blob_keeps_its_id() {
+    let blob = peniko::Blob::from(variant("Blobb", Declared::SansSerif));
+    let mut app = app_with(&[]);
+    app.register_font_data(blob.clone());
+    let doc = app.doc().expect("mounted").clone();
+    let mut d = doc.borrow_mut();
+    let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+    for font_cx in [&mut d.font_cx, &mut app.hit_test_font_cx] {
+        let mut builder = layout_cx.ranged_builder(font_cx, LATIN, 1.0, true);
+        builder.push_default(parley::style::StyleProperty::FontFamily(
+            parley::style::FontFamily::Source("Blobb".into()),
+        ));
+        let mut layout = builder.build(LATIN);
+        layout.break_all_lines(None);
+        let line = layout.lines().next().expect("a line");
+        let Some(parley::layout::PositionedLayoutItem::GlyphRun(run)) = line.items().next() else {
+            panic!("a glyph run");
+        };
+        assert_eq!(run.run().font().data.id(), blob.id());
+    }
 }

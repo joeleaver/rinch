@@ -838,19 +838,32 @@ declares nothing — `RinchApp::register_font_data`, the embed's
 `sans-serif` and `system-ui` (`claim_generic_families`, a prepend), so the face
 registered **last** headed the slot: a game's script face took over every
 `sans-serif` element. Now each registered family is classified from its own
-tables — `post.isFixedPitch` → monospace; OS/2 IBM class 1–5/7 → serif, 8 →
-sans, 9/10/12 → display; else PANOSE family 2 (proportion 9 → monospace, serif
-style 2–10 → serif, else sans), family 3–5 → display; unclassified → sans — and
-appended to that class's slots (`FaceClass::generics`) **only where the slot is
-empty** (`generic_families(g).next().is_none()`, platform map included). A
-display face fills none. So on wasm the first sans face is `sans-serif` for
-good, and on a desktop (fontconfig fills every slot) data changes no generic.
+tables — color tables (`COLR`, `CBDT`, `sbix`, `SVG `) → display (Noto Color
+Emoji declares `isFixedPitch` 1 and PANOSE proportion 9); no `A` and no `a` in
+the cmap → display (icon and symbol fonts, which declare no class);
+`post.isFixedPitch` → monospace; OS/2 IBM class 1–5/7 → serif, 8 → sans,
+9/10/12 → display; else PANOSE family 2 (proportion 9 → monospace, serif style
+2–10 → serif, else sans), family 3–5 → display; unclassified → sans. The class
+names a plain generic and its companions (`FaceClass::generics`: `sans-serif`
+with `system-ui` and `ui-sans-serif`, `serif` with `ui-serif`, `monospace`
+with `ui-monospace`), and they are filled **only when the plain slot is
+empty** (platform map included), each companion only where it is empty too.
+A display face fills none. The companion rule matters on a desktop:
+fontconfig maps the plain generics and `system-ui` but no `ui-*` one
+(fontique `backend/fontconfig.rs`), and the #322 repair runs on Android only,
+so filling an empty `ui-monospace` changed the face of the theme's monospace
+stack, which starts with `ui-monospace` (review of PR #2122). So on wasm the
+first sans text face is `sans-serif` for good, and on a desktop data changes
+no generic slot at all (`registering_data_changes_no_generic_slot_on_a_desktop`
+compares every `GenericFamily::all()` slot in both contexts).
 An explicit claim (`AppFont::sans_serif`, `with_generics`) still prepends. The
 pins are in `crates/rinch/src/app/font_tests.rs` (bare no-system-fonts
 contexts, plus the desktop shape against the platform's map),
-`crates/rinch/tests/embed_fonts_2101_2102.rs` and, in Chrome,
-`embed_web_fonts_2102.rs`; their fixtures are Inter with its `name` table and
-class rewritten (`crates/rinch/tests/support/font_variants.rs`).
+`crates/rinch/tests/embed_fonts_2101_2102.rs`, `rinch-dom`'s
+`fonts::tests::data_fill` (the emoji fixture, and a symbol face cut from it)
+and, in Chrome, `embed_web_fonts_2102.rs` (in both CI wasm embed steps);
+their text fixtures are Inter with its `name` table and class rewritten
+(`crates/rinch/tests/support/font_variants.rs`).
 
 **A font stack that resolves to nothing ends in the primary `sans-serif` face**
 (`rinch_dom::fonts::parley_font_family`, #1198). parley queries a cluster with

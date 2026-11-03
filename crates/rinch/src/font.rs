@@ -75,6 +75,10 @@ pub struct FontData(FontDataRepr);
 enum FontDataRepr {
     Static(&'static [u8]),
     Shared(std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>),
+    /// A `Blob` kept whole, so its id — what parley's and Vello's caches key
+    /// a font on — is the app's own.
+    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    Blob(peniko::Blob<u8>),
 }
 
 impl FontData {
@@ -94,6 +98,8 @@ impl FontData {
         match &self.0 {
             FontDataRepr::Static(data) => data,
             FontDataRepr::Shared(data) => (**data).as_ref(),
+            #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+            FontDataRepr::Blob(blob) => blob.data(),
         }
     }
 
@@ -102,13 +108,15 @@ impl FontData {
         matches!(self.0, FontDataRepr::Static(_))
     }
 
-    /// The shared handle a font context's `Blob` is built over: the static
-    /// slice behind a fresh `Arc`, or a clone of the owned one.
+    /// The `Blob` a font context registers: a `Blob` given as one keeps its
+    /// id; otherwise a new one over the static slice, or over a clone of the
+    /// owned handle (so every context shares the one allocation).
     #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
-    pub(crate) fn to_arc(&self) -> std::sync::Arc<dyn AsRef<[u8]> + Send + Sync> {
+    pub(crate) fn to_blob(&self) -> peniko::Blob<u8> {
         match &self.0 {
-            FontDataRepr::Static(data) => std::sync::Arc::new(*data),
-            FontDataRepr::Shared(data) => data.clone(),
+            FontDataRepr::Static(data) => peniko::Blob::new(std::sync::Arc::new(*data)),
+            FontDataRepr::Shared(data) => peniko::Blob::new(data.clone()),
+            FontDataRepr::Blob(blob) => blob.clone(),
         }
     }
 }
@@ -146,6 +154,9 @@ impl From<Box<[u8]>> for FontData {
     }
 }
 
+/// One `Arc` around the caller's, made here once: an `Arc<[u8]>` is unsized,
+/// so it cannot itself become the `Arc<dyn AsRef<[u8]>>` a `Blob` holds.
+/// Every font context then clones that one handle.
 impl From<std::sync::Arc<[u8]>> for FontData {
     fn from(data: std::sync::Arc<[u8]>) -> Self {
         Self::shared(std::sync::Arc::new(data))
@@ -161,7 +172,7 @@ impl From<std::sync::Arc<Vec<u8>>> for FontData {
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 impl From<peniko::Blob<u8>> for FontData {
     fn from(data: peniko::Blob<u8>) -> Self {
-        Self::shared(data.into_raw_parts().0)
+        Self(FontDataRepr::Blob(data))
     }
 }
 
