@@ -135,6 +135,11 @@ pub fn nav_links<F: Fn() + 'static>(
                 active_fn: move || current_section.get() == 19,
                 onclick: nav(19)
             }
+            NavLink {
+                label: "Sortable",
+                active_fn: move || current_section.get() == 20,
+                onclick: nav(20)
+            }
         }
     }
 }
@@ -203,6 +208,7 @@ pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>
                 17 => { av_section(__scope) },
                 18 => { webrtc_section(__scope) },
                 19 => { virtual_list_section(__scope) },
+                20 => { sortable_section(__scope) },
                 _ => div { },
             }
         }

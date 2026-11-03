@@ -19,6 +19,7 @@
 - [Keyboard Focus](./guide/focus.md)
 - [Components Library](./guide/components.md)
   - [Component Props Reference](./guide/component-props.md)
+  - [Sortable Lists](./guide/sortable.md)
 - [Theming](./guide/theming.md)
 - [Fonts](./guide/fonts.md)
 - [WASM: Running in the Browser](./guide/wasm.md)

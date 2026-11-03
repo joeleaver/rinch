@@ -411,7 +411,10 @@ fn scan(keys: bool, doc: Option<Option<u64>>, ask: impl Fn(&Handler) -> bool) ->
 /// `try_borrow_mut` because this runs from [`DismissHandle`]'s `Drop`, which a
 /// panic can drive while the stack is already borrowed.
 fn remove(id: u64) {
-    let reaped = STACK.with(|s| {
+    // `try_with`: a handle held in another thread-local (a component's drag
+    // state) can be dropped at thread exit, after the stack is gone; there is
+    // nothing left to release then (#2091).
+    let reaped = STACK.try_with(|s| {
         let Ok(mut stack) = s.try_borrow_mut() else {
             // Unreachable today: every mutable borrow of `STACK` either runs no
             // user code under it (`push`) or moves entries out rather than
@@ -428,7 +431,7 @@ fn remove(id: u64) {
             .position(|e| e.id == id)
             .map(|i| stack.remove(i))
     });
-    drop(reaped);
+    drop(reaped.ok().flatten());
 }
 
 /// How many handlers are registered on this thread. Diagnostics and tests only.

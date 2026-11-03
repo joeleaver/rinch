@@ -1,9 +1,11 @@
 //! Auto-scroll during an element drag: the speed curve both backends share.
 //!
 //! While a `draggable="true"` drag is live and the pointer rests within
-//! [`DRAG_AUTO_SCROLL_EDGE`] of the top or bottom edge of a scroll container
-//! under it, that container scrolls, faster the closer the pointer is to the
-//! edge, for as long as the pointer stays there. Desktop drives it from its
+//! [`DRAG_AUTO_SCROLL_EDGE`] of an edge of a scroll container under it, that
+//! container scrolls toward that edge, faster the closer the pointer is to it,
+//! for as long as the pointer stays there — each axis on its own (#2091): the
+//! nearest container a top or bottom band can move scrolls vertically, the
+//! nearest a left or right band can move horizontally. Desktop drives it from its
 //! frame clock (`AboutToWait`), rinch-web from `requestAnimationFrame`; both
 //! ask this module how fast. A drop target under a still pointer hears
 //! `data-ondragover` again after every frame that scrolled, since what is

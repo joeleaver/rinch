@@ -62,6 +62,13 @@ pub struct KeyEventData {
     /// delivered, so a consumer had no way to see a key let go — and no way to
     /// ask, either, since every event was implicitly a press.
     pub kind: KeyEventKind,
+    /// The element the key was sent to — the focused element, `KeyboardEvent.
+    /// target` on the web — when the backend knows it (#2091). An element
+    /// handler (`onkeydown`) hears keys from its descendants too; this tells a
+    /// key meant for the element itself from one typed in a field inside it.
+    /// Set on the keys offered to element handlers; `None` elsewhere, and from
+    /// a host that does not say.
+    pub target: Option<crate::dom::NodeId>,
 }
 
 impl KeyEventData {
@@ -82,7 +89,14 @@ impl KeyEventData {
             alt: false,
             meta: false,
             kind: KeyEventKind::Down,
+            target: None,
         }
+    }
+
+    /// Name the element the key was sent to ([`Self::target`]).
+    pub fn with_target(mut self, target: Option<crate::dom::NodeId>) -> Self {
+        self.target = target;
+        self
     }
 
     /// Set all four modifiers at once, in the order they are declared:
