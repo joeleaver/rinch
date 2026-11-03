@@ -296,3 +296,94 @@ fn motion_that_changes_the_document_asks_for_a_frame() {
     assert_eq!(turned.get(), 3.0);
     assert!(actions.contains(&AppAction::RequestRedraw));
 }
+
+fn escape_with(app: &mut RinchApp, repeat: KeyRepeat) -> Vec<AppAction> {
+    ev(
+        app,
+        PlatformEvent::KeyDown {
+            key: KeyCode::Escape,
+            logical_key: Some("Escape".into()),
+            text: None,
+            modifiers: Modifiers::default(),
+            repeat,
+        },
+    )
+}
+
+/// A held Escape that ended the lock is the lock's until it is let go: its
+/// auto-repeats close nothing. The next fresh press is the app's.
+#[test]
+fn the_escape_that_ends_a_lock_keeps_its_repeats() {
+    let mut f = mount();
+    let _log = install(Ok(Some(PointerLockMode::Locked)));
+    let dismissed = Rc::new(Cell::new(0));
+    let _entry = {
+        let dismissed = dismissed.clone();
+        push_dismiss_handler(f.app.doc_key(), move || {
+            dismissed.set(dismissed.get() + 1);
+            true
+        })
+    };
+    f.surface.request_pointer_lock().unwrap();
+    escape_with(&mut f.app, KeyRepeat::Fresh);
+    assert_eq!(pointer_lock(), None);
+    escape_with(&mut f.app, KeyRepeat::Repeat);
+    escape_with(&mut f.app, KeyRepeat::Repeat);
+    escape_with(&mut f.app, KeyRepeat::Unknown);
+    assert_eq!(
+        dismissed.get(),
+        0,
+        "the held Escape's repeats (and a press that may be one) close nothing"
+    );
+    ev(
+        &mut f.app,
+        PlatformEvent::KeyUp {
+            key: KeyCode::Escape,
+            logical_key: Some("Escape".into()),
+            modifiers: Modifiers::default(),
+        },
+    );
+    // A backend that cannot tell a repeat (Android) says `Unknown`: after
+    // the release it is a new press.
+    escape_with(&mut f.app, KeyRepeat::Unknown);
+    assert_eq!(
+        dismissed.get(),
+        1,
+        "a new press after the release dismisses"
+    );
+    escape_with(&mut f.app, KeyRepeat::Repeat);
+    assert_eq!(dismissed.get(), 2, "and its repeats are the app's");
+    set_pointer_lock_host(None);
+}
+
+/// Two apps on one thread (two embedded contexts): the lock is the
+/// requesting app's, and the other's focus loss or Escape leaves it alone.
+#[test]
+fn another_apps_focus_loss_or_escape_leaves_the_lock_alone() {
+    let mut f = mount();
+    let mut other = RinchApp::new(|scope: &mut RenderScope| scope.create_element("div"));
+    other.mount_component(VP.0 as f32, VP.1 as f32);
+    assert_ne!(other.doc_key(), f.app.doc_key());
+    let log = install(Ok(Some(PointerLockMode::Locked)));
+
+    // A surface's lock, and a window lock asked while `f.app` dispatches.
+    for window_lock in [false, true] {
+        if window_lock {
+            let _dispatching = rinch_core::push_dispatching_doc(f.app.doc_key());
+            request_pointer_lock().unwrap();
+        } else {
+            f.surface.request_pointer_lock().unwrap();
+        }
+        ev(&mut other, PlatformEvent::WindowFocus(false));
+        escape(&mut other);
+        assert_eq!(
+            pointer_lock(),
+            Some(PointerLockMode::Locked),
+            "the other app's blur and Escape are not this lock's (window lock: {window_lock})"
+        );
+        ev(&mut f.app, PlatformEvent::WindowFocus(false));
+        assert_eq!(pointer_lock(), None, "its own app's blur ends it");
+    }
+    assert_eq!(unlocks(&log), 2);
+    set_pointer_lock_host(None);
+}

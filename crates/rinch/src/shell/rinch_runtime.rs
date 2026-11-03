@@ -557,6 +557,10 @@ pub struct RinchRuntime {
     /// The device's raw motion not yet handed to the app, summed (#2092). See
     /// [`Self::flush_pointer_motion`].
     pending_motion: super::pointer_lock::MotionSum,
+    /// The newest pointer position winit reported while a lock held it still
+    /// (a confined pointer on X11 moves): handed over as a move when the lock
+    /// ends. See [`Self::restore_held_pointer_move`].
+    held_pointer_move: Option<(f32, f32, SurfacePointer)>,
     /// The OS file drag over the main window, from winit's data transfer
     /// events (#1962).
     os_file_drag: super::os_file_drag::OsFileDrag,
@@ -736,6 +740,7 @@ impl RinchRuntime {
             draining_native_events: false,
             pending_pointer_move: None,
             pending_motion: Default::default(),
+            held_pointer_move: None,
             os_file_drag: Default::default(),
             pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
@@ -2979,14 +2984,20 @@ impl ApplicationHandler for RinchRuntime {
             // conversion for the whole pointer stream: `MouseDown`, `MouseUp`
             // and `MouseWheel` below all read the position back out of
             // `app.cursor_pos`, which the flushed move sets.
+            let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
             // While the pointer is locked or confined (#2092) its position is
             // held where the lock found it, as a browser holds it: a confined
             // cursor (X11) still moves, and must not move hover under a
             // camera the mouse is turning. The motion arrives as raw deltas.
+            // Where it really is is kept for when the lock ends
+            // (`restore_held_pointer_move`), so hover is not left stale.
             if crate::pointer_lock::is_locked() {
+                let id = pointer_id_of(source);
+                let down = self.pressed_pointers.is_down(id);
+                let pointer = surface_pointer_of(source, *primary, down);
+                self.held_pointer_move = Some((lx as f32, ly as f32, pointer));
                 return;
             }
-            let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
             // A layer surface's move or resize (#1523) takes the pointer, as
             // a compositor move does.
             if self.update_layer_gesture((lx, ly), event_loop) {
@@ -3439,6 +3450,7 @@ impl ApplicationHandler for RinchRuntime {
         // The batch's raw motion and last pointer move, before anything is
         // laid out.
         self.flush_pointer_motion(event_loop);
+        self.restore_held_pointer_move();
         self.flush_pointer_move(event_loop);
         self.about_to_wait_inner(event_loop);
     }
@@ -3493,6 +3505,20 @@ impl RinchRuntime {
     fn flush_pointer_motion(&mut self, event_loop: &dyn ActiveEventLoop) {
         if let Some(motion) = self.take_pointer_motion() {
             self.dispatch_main_event(motion, event_loop);
+        }
+    }
+
+    /// Once no lock holds the pointer, the position it reached meanwhile is
+    /// the move the app is owed (unless a newer one is already waiting): the
+    /// document's hover catches up with the pointer.
+    fn restore_held_pointer_move(&mut self) {
+        if crate::pointer_lock::is_locked() {
+            return;
+        }
+        if let Some(held) = self.held_pointer_move.take()
+            && self.pending_pointer_move.is_none()
+        {
+            self.pending_pointer_move = Some(held);
         }
     }
 
@@ -6344,6 +6370,26 @@ mod pointer_lock_2092_tests {
         assert!(runtime.take_pointer_motion().is_none(), "taken once");
         runtime.app.handle_event(motion, (640, 480), 1.0);
         assert_eq!(*heard.borrow(), [(-6.5, 1.25)]);
+        crate::window::set_pointer_lock_host(None);
+    }
+
+    /// A confined pointer that moved while locked: when the lock ends, its
+    /// real position is the app's next move, so hover is not left stale.
+    #[test]
+    fn the_position_a_lock_held_back_is_restored_when_it_ends() {
+        let (mut runtime, surface, _heard) = runtime();
+        let _log = install(Ok(Some(PointerLockMode::Confined)));
+        surface.request_pointer_lock().unwrap();
+        runtime.held_pointer_move = Some((310.0, 205.0, SurfacePointer::mouse(false)));
+        runtime.restore_held_pointer_move();
+        assert!(runtime.pending_pointer_move.is_none(), "still locked: held");
+        crate::window::exit_pointer_lock();
+        runtime.restore_held_pointer_move();
+        assert_eq!(
+            runtime.pending_pointer_move.map(|(x, y, _)| (x, y)),
+            Some((310.0, 205.0))
+        );
+        assert!(runtime.held_pointer_move.is_none());
         crate::window::set_pointer_lock_host(None);
     }
 

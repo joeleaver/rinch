@@ -65,10 +65,12 @@ async fn mount() -> Mounted {
     let surface = create_render_surface();
     let log: Log = Rc::default();
     let sink = log.clone();
-    surface.set_event_handler(move |e| {
-        if let SurfaceEvent::PointerMotion { dx, dy } = e {
-            sink.borrow_mut().push(format!("surface {dx},{dy}"));
+    surface.set_event_handler(move |e| match e {
+        SurfaceEvent::PointerMotion { dx, dy } => {
+            sink.borrow_mut().push(format!("surface {dx},{dy}"))
         }
+        SurfaceEvent::MouseMove { .. } => sink.borrow_mut().push("surface move".into()),
+        _ => {}
     });
     let host = document().create_element("div").unwrap();
     host.set_attribute(
@@ -249,9 +251,8 @@ async fn exit_and_unmount_release_through_the_browser() {
     let m = mount().await;
     let exits = spy_exit();
 
-    // Held already (the browser says so): the request answers at once.
-    browser_holds(Some(&m.canvas));
     m.surface.request_pointer_lock().unwrap();
+    browser_holds(Some(&m.canvas));
     assert_eq!(pointer_lock(), Some(PointerLockMode::Locked));
     exit_pointer_lock();
     assert_eq!(exits.get(), 1);
@@ -259,8 +260,8 @@ async fn exit_and_unmount_release_through_the_browser() {
     exit_pointer_lock();
     assert_eq!(exits.get(), 1, "nothing held, nothing asked");
 
-    browser_holds(Some(&m.canvas));
     m.surface.request_pointer_lock().unwrap();
+    browser_holds(Some(&m.canvas));
     assert_eq!(m.shown(), "Some(Locked)");
     let Mounted { root, host, .. } = m;
     root.unmount();
@@ -269,4 +270,77 @@ async fn exit_and_unmount_release_through_the_browser() {
     host.remove();
     unspy_exit();
     browser_restored();
+}
+
+fn pointer_move(target: &web_sys::Element) {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_pointer_type("mouse");
+    init.set_pointer_id(1);
+    init.set_is_primary(true);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointermove", &init).unwrap();
+    target.dispatch_event(&ev).unwrap();
+}
+
+/// While locked the surface hears no position moves (they would all be at
+/// the frozen position), only `PointerMotion`, as on desktop.
+#[wasm_bindgen_test]
+async fn a_locked_surface_hears_no_position_moves() {
+    let m = mount().await;
+    pointer_move(&m.canvas);
+    assert_eq!(
+        m.take(),
+        ["surface move"],
+        "positive control: unlocked, it moves"
+    );
+    m.surface.request_pointer_lock().unwrap();
+    browser_holds(Some(&m.canvas));
+    assert_eq!(pointer_lock(), Some(PointerLockMode::Locked));
+    pointer_move(&m.canvas);
+    assert!(m.take().is_empty(), "locked: no position moves");
+    exit_pointer_lock();
+    browser_restored();
+    m.teardown();
+}
+
+/// Press-to-look with a quick click: the request is withdrawn before the
+/// browser answers, and the late grant is given back, not adopted.
+#[wasm_bindgen_test]
+async fn a_grant_after_the_request_was_withdrawn_is_given_back() {
+    let m = mount().await;
+    let exits = spy_exit();
+    m.surface.request_pointer_lock().unwrap();
+    exit_pointer_lock();
+    assert_eq!(exits.get(), 0, "nothing granted yet, nothing to exit");
+    // The browser's late grant.
+    browser_holds(Some(&m.canvas));
+    assert_eq!(exits.get(), 1, "the late grant is given back");
+    assert_eq!(pointer_lock(), None);
+    assert_eq!(m.shown(), "None");
+    assert!(!m.surface.has_pointer_lock());
+    unspy_exit();
+    browser_restored();
+    m.teardown();
+}
+
+/// A refused move from A (granted) to B: the browser still holds A, which
+/// rinch no longer has on record, so it is given back and nothing is
+/// reported as B's.
+#[wasm_bindgen_test]
+async fn a_refused_move_gives_the_old_lock_back() {
+    let m = mount().await;
+    let exits = spy_exit();
+    m.surface.request_pointer_lock().unwrap();
+    browser_holds(Some(&m.canvas));
+    assert_eq!(pointer_lock(), Some(PointerLockMode::Locked));
+    // Move it to the window; the browser refuses, keeping the canvas locked.
+    rinch::window::request_pointer_lock().unwrap();
+    let ev = web_sys::Event::new("pointerlockerror").unwrap();
+    document().dispatch_event(&ev).unwrap();
+    assert_eq!(exits.get(), 1, "the canvas's lock is given back");
+    assert_eq!(pointer_lock(), None);
+    assert!(!m.surface.has_pointer_lock());
+    unspy_exit();
+    browser_restored();
+    m.teardown();
 }

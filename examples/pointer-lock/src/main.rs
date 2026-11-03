@@ -7,8 +7,9 @@
 //! `cargo run -p pointer-lock`
 //!
 //! `POINTER_LOCK_LOG=1` prints each request, lock change and motion step to
-//! stdout; `POINTER_LOCK_AUTO=1` asks for the lock 500 ms after start, with no
-//! click (a desktop grants it without a gesture). Both are what the live check
+//! stdout; `POINTER_LOCK_AUTO=1` asks for the lock 500 ms (or
+//! `POINTER_LOCK_AUTO_MS`) after start, with no click (a desktop grants it
+//! without a gesture, to a focused window). Both are what the live check
 //! of #2092 drives.
 
 use rinch::prelude::*;
@@ -44,7 +45,11 @@ fn app() -> NodeHandle {
     let _ = rinch::Effect::new(|| log(format!("lock {:?}", pointer_lock())));
     if std::env::var_os("POINTER_LOCK_AUTO").is_some() {
         let auto = surface.clone();
-        set_timeout(500, move || {
+        let delay = std::env::var("POINTER_LOCK_AUTO_MS")
+            .ok()
+            .and_then(|ms| ms.parse().ok())
+            .unwrap_or(500);
+        set_timeout(delay, move || {
             let result = auto.request_pointer_lock();
             log(format!("request {result:?}"));
         });

@@ -652,7 +652,12 @@ Wayland, Windows, macOS) and, where the platform refuses it, for a confinement
 either. `pointer_lock()` says which it got. The answer is immediate on the
 desktop: after `Ok`, `pointer_lock()` already says `Some(…)`. Under either the
 document's pointer position is held where the lock found it — hover does not
-move, and a press lands there — and the motion arrives only as deltas.
+move, and a press lands there — and the motion arrives only as deltas; when
+the lock ends, hover catches up with where the pointer really is. **The
+window must have the focus**: an unfocused window's request is refused with
+`PointerLockError::NotFocused` (an X11 confinement would otherwise catch the
+pointer over a window a click cannot focus). A click in the window gives it
+the focus, which is why a click is the usual moment to ask.
 
 **In the browser** the lock is the Pointer Lock API: `requestPointerLock` on the
 element (the page's root element for `request_pointer_lock`, the surface's
@@ -660,13 +665,18 @@ element (the page's root element for `request_pointer_lock`, the surface's
 — call it from a click, press or key handler; from a timer or at startup it is
 refused. It also answers later: `Ok` means asked, and `pointer_lock()` turns
 `Some(Locked)` when the browser has locked (or stays `None` if it refused).
+`exit_pointer_lock()` while the answer is pending withdraws the request: a
+grant that arrives afterwards is given straight back (a quick press-to-look
+click leaves nothing locked), as is any lock rinch did not ask for.
 
 **Release.** A lock ends on `exit_pointer_lock()`; when the window loses focus
 (alt-tab, another window, a tab switch); on **Escape**; when the element or
 surface that holds it unmounts; and when the desktop window is hidden. An
 Escape that ends a lock is the lock's alone: it closes no modal, popup or menu
-and reaches no key handler, as in a browser — the next Escape is the app's as
-usual. In the browser the browser itself handles Escape and a focus loss, and
+and reaches no key handler, as in a browser, and neither do its auto-repeats
+while it is held — the next press is the app's as usual. With several apps on
+one thread (embedded contexts), a lock is the requesting app's: only its own
+focus loss and Escape end it. In the browser the browser itself handles Escape and a focus loss, and
 `pointer_lock()` follows. Read `pointer_lock()` in a `{|| …}` or an effect to
 hear any of these.
 
@@ -677,7 +687,10 @@ sensitivity of your own. (On X11 winit currently reports each motion twice, so
 the deltas there read double: #2114.) On the desktop `on_pointer_motion` also hears motion
 while nothing is locked (whenever the window has focus, wherever the cursor
 is), which is enough for a drag-to-orbit camera; a burst within one turn of the
-event loop arrives summed as one step. In the browser it hears `mousemove`s
+event loop arrives summed as one step. Called while a component renders, the
+handler goes with the component; called from an event handler, it lives as
+long as the returned `PointerMotionSubscription` (dropping it removes the
+handler), so keep that value. In the browser it hears `mousemove`s
 over the page, and every motion while locked.
 
 **Where there is none.** Android, a WASI guest, and a native embed host that

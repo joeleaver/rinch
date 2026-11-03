@@ -18,11 +18,15 @@ use crate::window::{PointerLockError, PointerLockHost, PointerLockMode, PointerL
 /// The two calls a pointer lock makes on a window, apart so a test can stand
 /// in for winit.
 pub(crate) trait CursorGrab {
+    fn focused(&self) -> bool;
     fn grab(&self, mode: CursorGrabMode) -> Result<(), String>;
     fn show_cursor(&self, visible: bool);
 }
 
 impl CursorGrab for dyn Window {
+    fn focused(&self) -> bool {
+        self.has_focus()
+    }
     fn grab(&self, mode: CursorGrabMode) -> Result<(), String> {
         self.set_cursor_grab(mode).map_err(|e| e.to_string())
     }
@@ -33,9 +37,18 @@ impl CursorGrab for dyn Window {
 
 /// Lock `window`'s pointer: `Locked`, else `Confined`, and hide the cursor.
 /// Answers what was granted, or why neither was.
+///
+/// Refused while the window does not have the keyboard focus, as a browser
+/// refuses: X11's confinement is an active pointer grab, which the server
+/// grants an unfocused window too — the pointer would be caught and hidden
+/// over a window a click cannot focus, Escape would go to another
+/// application, and no focus loss would ever come to end it.
 pub(crate) fn grab<W: CursorGrab + ?Sized>(
     window: &W,
 ) -> Result<PointerLockMode, PointerLockError> {
+    if !window.focused() {
+        return Err(PointerLockError::NotFocused);
+    }
     let mode = match window.grab(CursorGrabMode::Locked) {
         Ok(()) => PointerLockMode::Locked,
         Err(locked) => match window.grab(CursorGrabMode::Confined) {
@@ -114,11 +127,15 @@ mod tests {
 
     /// A window that refuses the grab modes it is told to, and logs the calls.
     struct FakeWindow {
+        focused: bool,
         refuse: Vec<CursorGrabMode>,
         calls: RefCell<Vec<String>>,
     }
 
     impl CursorGrab for FakeWindow {
+        fn focused(&self) -> bool {
+            self.focused
+        }
         fn grab(&self, mode: CursorGrabMode) -> Result<(), String> {
             self.calls.borrow_mut().push(format!("grab {mode:?}"));
             if self.refuse.contains(&mode) {
@@ -134,6 +151,7 @@ mod tests {
 
     fn window(refuse: &[CursorGrabMode]) -> FakeWindow {
         FakeWindow {
+            focused: true,
             refuse: refuse.to_vec(),
             calls: RefCell::new(Vec::new()),
         }
@@ -164,6 +182,16 @@ mod tests {
         assert!(matches!(&err, PointerLockError::Refused(why)
             if why.contains("Locked not supported") && why.contains("Confined not supported")));
         assert_eq!(*w.calls.borrow(), ["grab Locked", "grab Confined"]);
+    }
+
+    /// An unfocused window grabs nothing (X11 would trap the pointer over
+    /// it), and says why.
+    #[test]
+    fn an_unfocused_window_is_refused_without_a_grab() {
+        let mut w = window(&[]);
+        w.focused = false;
+        assert_eq!(grab(&w), Err(PointerLockError::NotFocused));
+        assert!(w.calls.borrow().is_empty(), "{:?}", w.calls.borrow());
     }
 
     #[test]

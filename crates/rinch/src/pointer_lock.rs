@@ -65,6 +65,12 @@ pub enum PointerLockError {
     Unsupported,
     /// The element is not in a document (not mounted yet, or removed).
     NotConnected,
+    /// The window does not have the keyboard focus. Desktop: a lock is
+    /// granted only to the focused window, as a browser grants one only to
+    /// the focused page; ask again once [`window_focused`](crate::window::window_focused)
+    /// is `true` (a click in the window gives it focus and is the usual
+    /// moment to ask).
+    NotFocused,
     /// The platform refused both the lock and the confinement; the text says
     /// why.
     Refused(String),
@@ -75,6 +81,7 @@ impl std::fmt::Display for PointerLockError {
         match self {
             PointerLockError::Unsupported => f.write_str("pointer lock is not available here"),
             PointerLockError::NotConnected => f.write_str("the element is not in a document"),
+            PointerLockError::NotFocused => f.write_str("the window does not have the focus"),
             PointerLockError::Refused(why) => write!(f, "the platform refused the lock: {why}"),
         }
     }
@@ -134,6 +141,11 @@ struct Held {
     /// The `RenderSurface` that asked, which hears the motion as
     /// `SurfaceEvent::PointerMotion`.
     surface: Option<usize>,
+    /// The document of the app that asked (`doc_key`): only that app's
+    /// focus loss and Escape end the lock, when several `RinchApp`s share
+    /// the thread (embedded contexts). `None`: asked from outside any app's
+    /// dispatch (a timer), so any app's ends it.
+    doc: Option<u64>,
 }
 
 type MotionHandler = Rc<RefCell<dyn FnMut(PointerMotion)>>;
@@ -146,6 +158,9 @@ thread_local! {
     static MODE_SIGNAL: Cell<Option<Signal<Option<PointerLockMode>>>> = const { Cell::new(None) };
     static HANDLERS: RefCell<Vec<(u64, MotionHandler)>> = const { RefCell::new(Vec::new()) };
     static NEXT_HANDLER: Cell<u64> = const { Cell::new(1) };
+    /// The app whose fresh Escape just ended a lock, while that Escape is
+    /// held: its auto-repeats are the lock's too.
+    static ESCAPE_HELD: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
 /// Install (or, with `None`, remove) this thread's [`PointerLockHost`].
@@ -224,7 +239,17 @@ pub(crate) fn request(
         return Err(PointerLockError::NotConnected);
     }
     let granted = with_host(|host| host.lock(&target)).ok_or(PointerLockError::Unsupported)??;
-    HELD.with(|h| *h.borrow_mut() = Some(Held { target, surface }));
+    let doc = match &target {
+        PointerLockTarget::Element(element) => rinch_core::doc_identity(element.doc_key()),
+        _ => rinch_core::current_dispatching_doc(),
+    };
+    HELD.with(|h| {
+        *h.borrow_mut() = Some(Held {
+            target,
+            surface,
+            doc,
+        })
+    });
     if let Some(mode) = granted {
         set_mode(Some(mode));
     }
@@ -267,23 +292,49 @@ pub fn pointer_lock() -> Option<PointerLockMode> {
 /// For a [`PointerLockHost`] whose platform granted or ended a lock on its
 /// own: the browser's `pointerlockchange` (a granted request, Escape, a tab
 /// switch), or an embed host's window losing its grab. `None` ends the lock
-/// without asking the host to unlock; `Some` marks it granted (a lock the
-/// host reports with no request on record is taken as the window's).
-pub fn pointer_lock_changed(mode: Option<PointerLockMode>) {
+/// without asking the host to unlock; `Some` marks a requested lock granted.
+///
+/// A grant with no request on record changes nothing and answers `false`:
+/// the request was withdrawn ([`exit_pointer_lock`] before the platform
+/// answered) or never made here, and the host should give that grab back.
+pub fn pointer_lock_changed(mode: Option<PointerLockMode>) -> bool {
     match mode {
         None => {
             HELD.with(|h| h.borrow_mut().take());
             set_mode(None);
+            true
         }
         Some(mode) => {
-            HELD.with(|h| {
-                h.borrow_mut().get_or_insert(Held {
-                    target: PointerLockTarget::Window,
-                    surface: None,
-                });
-            });
+            if HELD.with(|h| h.borrow().is_none()) {
+                return false;
+            }
             set_mode(Some(mode));
+            true
         }
+    }
+}
+
+/// Whether the lock on record is `doc_key`'s app's to end (or nobody's in
+/// particular). `false` without one.
+fn held_for(doc_key: u64) -> bool {
+    HELD.with(|h| {
+        h.borrow()
+            .as_ref()
+            .is_some_and(|held| held.doc.is_none_or(|d| d == doc_key))
+    })
+}
+
+/// App `doc_key`'s window lost focus: a lock it asked for ends.
+#[cfg_attr(
+    not(any(feature = "desktop", feature = "android", feature = "embed")),
+    allow(dead_code)
+)]
+pub(crate) fn window_blurred(doc_key: u64) {
+    if ESCAPE_HELD.with(Cell::get) == Some(doc_key) {
+        ESCAPE_HELD.with(|e| e.set(None));
+    }
+    if held_for(doc_key) {
+        release();
     }
 }
 
@@ -305,15 +356,40 @@ pub(crate) fn wants_motion() -> bool {
     is_locked() || HANDLERS.with(|h| !h.borrow().is_empty())
 }
 
-/// An Escape was pressed: a held lock ends, and the key is consumed (the
-/// answer is `true`), as a browser consumes the Escape that exits its pointer
-/// lock. Without a lock the key goes on as usual.
+/// An Escape was pressed in app `doc_key`: a granted lock it asked for ends,
+/// and the key is consumed (the answer is `true`), as a browser consumes the
+/// Escape that exits its pointer lock. So are that Escape's auto-repeats
+/// (`fresh == false`: a repeat, or a press the backend cannot tell from one)
+/// until it is released ([`escape_released`]), the window loses focus, or a
+/// press the backend calls fresh comes. Without a lock the key goes on as usual.
 #[cfg_attr(
     not(any(feature = "desktop", feature = "android", feature = "embed")),
     allow(dead_code)
 )]
-pub(crate) fn escape() -> bool {
-    is_locked() && release()
+pub(crate) fn escape(doc_key: u64, fresh: bool) -> bool {
+    let held_escape = ESCAPE_HELD.with(Cell::get) == Some(doc_key);
+    if held_escape && !fresh {
+        return true;
+    }
+    if held_escape {
+        ESCAPE_HELD.with(|e| e.set(None));
+    }
+    if is_locked() && held_for(doc_key) && release() {
+        ESCAPE_HELD.with(|e| e.set(Some(doc_key)));
+        return true;
+    }
+    false
+}
+
+/// App `doc_key`'s Escape was released: its next press is the app's.
+#[cfg_attr(
+    not(any(feature = "desktop", feature = "android", feature = "embed")),
+    allow(dead_code)
+)]
+pub(crate) fn escape_released(doc_key: u64) {
+    if ESCAPE_HELD.with(Cell::get) == Some(doc_key) {
+        ESCAPE_HELD.with(|e| e.set(None));
+    }
 }
 
 /// End a lock whose element left the document. Called on every event the
@@ -403,15 +479,33 @@ pub fn dispatch_pointer_motion(dx: f64, dy: f64) {
 }
 
 /// A registration made by [`on_pointer_motion`].
+///
+/// Made while a component renders, the component owns the handler: it goes
+/// when the component unmounts, and dropping this does nothing. Made where
+/// nothing owns it (an event handler, a timer), **this value is the
+/// handler's lifetime**: dropping it removes the handler, so keep it as long
+/// as the motion is wanted. (Dropping does not cancel in a component because
+/// `let _ = on_pointer_motion(..)` there is the ordinary spelling.)
 #[derive(Debug)]
+#[must_use = "outside a component, dropping the subscription removes the handler at once"]
 pub struct PointerMotionSubscription {
     id: u64,
+    /// A component's scope removes the handler: dropping this does not.
+    owned: bool,
 }
 
 impl PointerMotionSubscription {
     /// Stop delivering motion to the handler now, before its component goes.
     pub fn cancel(self) {
         remove_handler(self.id);
+    }
+}
+
+impl Drop for PointerMotionSubscription {
+    fn drop(&mut self) {
+        if !self.owned {
+            remove_handler(self.id);
+        }
     }
 }
 
@@ -434,8 +528,10 @@ fn remove_handler(id: u64) {
 ///   of motion within one turn of the desktop event loop is summed into one
 ///   step, as a browser sends one `mousemove` per frame.
 /// - **Lifetime.** Registered with the component being rendered: the handler
-///   is removed when that component unmounts. Outside a component it lives
-///   until [`PointerMotionSubscription::cancel`].
+///   is removed when that component unmounts. Outside a component (an event
+///   handler) it lives as long as the returned [`PointerMotionSubscription`]:
+///   dropping it, or [`cancel`](PointerMotionSubscription::cancel), removes
+///   it.
 ///
 /// The handler runs untracked and in a batch, like an event handler.
 pub fn on_pointer_motion(
@@ -448,8 +544,8 @@ pub fn on_pointer_motion(
     });
     let handler: MotionHandler = Rc::new(RefCell::new(handler));
     HANDLERS.with(|h| h.borrow_mut().push((id, handler)));
-    rinch_core::reactive::on_cleanup(move || remove_handler(id));
-    PointerMotionSubscription { id }
+    let owned = rinch_core::reactive::on_cleanup(move || remove_handler(id));
+    PointerMotionSubscription { id, owned }
 }
 
 #[cfg(test)]
@@ -550,7 +646,7 @@ mod tests {
         let log = install(Ok(None));
         assert_eq!(request_pointer_lock(), Ok(()));
         assert_eq!(pointer_lock(), None, "pending");
-        assert!(!escape(), "Escape ends no pending lock");
+        assert!(!escape(0, true), "Escape ends no pending lock");
         pointer_lock_changed(Some(PointerLockMode::Locked));
         assert_eq!(pointer_lock(), Some(PointerLockMode::Locked));
         pointer_lock_changed(None);
@@ -575,6 +671,31 @@ mod tests {
         dispatch_pointer_motion(1.0, 1.0);
         assert_eq!(*got.borrow(), [(3.5, -2.0)]);
         assert!(!wants_motion());
+    }
+
+    /// Registered where no component owns it (an event handler), the
+    /// subscription is the handler's lifetime: dropping it stops the motion.
+    #[test]
+    fn an_unowned_subscription_ends_when_dropped() {
+        set_pointer_lock_host(None);
+        let got = Rc::new(Cell::new(0));
+        {
+            let got = got.clone();
+            let _sub = on_pointer_motion(move |_| got.set(got.get() + 1));
+            dispatch_pointer_motion(1.0, 0.0);
+        }
+        dispatch_pointer_motion(1.0, 0.0);
+        assert_eq!(got.get(), 1);
+        assert!(!wants_motion(), "nothing left listening");
+    }
+
+    /// A host reporting a lock nobody asked for does not make one up.
+    #[test]
+    fn a_grant_with_no_request_invents_no_lock() {
+        set_pointer_lock_host(None);
+        pointer_lock_changed(Some(PointerLockMode::Locked));
+        assert_eq!(pointer_lock(), None);
+        assert!(!is_locked());
     }
 
     #[test]

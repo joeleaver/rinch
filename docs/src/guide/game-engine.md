@@ -831,7 +831,9 @@ context (#2092) needs three things from the host, and without the first
    hold the pointer still, an `Err` when it refused, or `Ok(None)` when the
    platform answers later — then call `rinch::window::pointer_lock_changed`
    when it does); `unlock` gives the pointer back. With winit it is
-   `set_cursor_grab(Locked)`, else `Confined`, and `set_cursor_visible`. Call
+   `set_cursor_grab(Locked)`, else `Confined`, and `set_cursor_visible`;
+   refuse with `PointerLockError::NotFocused` while the window has no focus
+   (X11's confinement is an active grab an unfocused window also gets). Call
    `pointer_lock_changed(None)` too when the platform takes the grab away on
    its own.
 2. **The raw motion**, as `PlatformEvent::PointerMotion { dx, dy }` in
@@ -839,9 +841,13 @@ context (#2092) needs three things from the host, and without the first
    Summing a burst into one event per frame is fine and cheaper.
 3. **Focus loss and Escape**, which the host already forwards:
    `PlatformEvent::WindowFocus(false)` releases the lock, and an Escape
-   `KeyDown` while it holds releases it and is consumed (route it to rinch, not
-   to your game, while `pointer_lock()` is `Some`). An element holding the lock
-   that leaves the document releases it on the next `update`.
+   `KeyDown` while it holds releases it and is consumed, with its repeats until
+   the `KeyUp` (route it to rinch, not to your game, while `pointer_lock()` is
+   `Some`). An element holding the lock that leaves the document releases it
+   on the next `update`. With several contexts on one thread the lock belongs
+   to the context that asked (the one dispatching, or the element's): only its
+   focus loss and Escape end it, so feed those to every context as usual, and
+   feed `PointerMotion` to one.
 
 A WASI guest (`wasm32-wasip1`, rinch built with `components,theme`) has the
 same API and no `RinchApp` to feed events to, so it has no host either until

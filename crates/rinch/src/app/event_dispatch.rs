@@ -274,18 +274,28 @@ impl RinchApp {
         // not to the dismiss stack, a key handler or a drag — as the browser
         // consumes the Escape that exits its lock. Raw motion goes to the lock
         // and the motion handlers, and is nothing else's.
+        // Only a lock this app asked for: several apps can share the thread
+        // (embedded contexts), and another's blur or Escape is not this one's.
+        // The Escape's auto-repeats are the lock's too, until it is released:
+        // a press that may be a repeat (`Unknown`, Android) counts as one
+        // until the `KeyUp` (or a focus loss) says the key went up.
         crate::pointer_lock::prune();
         match &event {
             PlatformEvent::WindowFocus(false) => {
-                crate::pointer_lock::release();
+                crate::pointer_lock::window_blurred(self.doc_key());
             }
             PlatformEvent::KeyDown {
                 key: KeyCode::Escape,
+                repeat,
                 ..
-            } if crate::pointer_lock::escape() => {
+            } if crate::pointer_lock::escape(self.doc_key(), *repeat == KeyRepeat::Fresh) => {
                 actions.push(AppAction::RequestRedraw);
                 return actions;
             }
+            PlatformEvent::KeyUp {
+                key: KeyCode::Escape,
+                ..
+            } => crate::pointer_lock::escape_released(self.doc_key()),
             PlatformEvent::PointerMotion { dx, dy } => {
                 crate::pointer_lock::dispatch_pointer_motion(*dx, *dy);
                 if self.has_pending_layout() {

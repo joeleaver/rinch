@@ -465,6 +465,13 @@ impl NodeHandle {
     /// the root ([`DomDocument::is_connected`]). `false` once the document is
     /// gone. Runs no pending effects, unlike the accessors that read the
     /// document for an operation.
+    ///
+    /// It asks about the node this handle's id names, and an id carries its
+    /// slot's generation ([`NodeId::new`]): a backend that bumps the
+    /// generation when it reuses a slot answers `false` for a handle to the
+    /// slot's earlier node. The desktop backend reuses slots at generation 0
+    /// today (#723's second half), so there a handle to a freed node whose
+    /// slot went to a new, attached node answers `true`.
     pub fn is_connected(&self) -> bool {
         self.doc
             .upgrade()

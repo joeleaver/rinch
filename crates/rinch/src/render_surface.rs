@@ -3049,9 +3049,13 @@ fn setup_canvas_events(
         pointer_listeners.push(("pointercancel", closure));
     }
 
-    // pointermove
+    // pointermove — none while the pointer is locked (#2092): its position
+    // is held, and the motion arrives as `PointerMotion`, as on desktop.
     {
         let closure = only::<web_sys::PointerEvent>(move |event: web_sys::PointerEvent| {
+            if crate::pointer_lock::is_locked() {
+                return;
+            }
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             dispatch_surface_pointer(surface_id, PointerPhase::Move, x, y, pointer_of(&event));

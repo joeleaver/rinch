@@ -20,7 +20,8 @@ after it hears the press. Offered to the arbiter's `FocusTarget::Input` /
 `Node` node (web: the event target) and its ancestors, nearest first, stopping
 at the first that consumes (`dispatch_key_handler_chain`; ids read before any
 runs). Order, both backends: (desktop and embed) an Escape while the pointer
-is locked, which ends the lock and goes nowhere else (#2092: `handle_event`'s
+is locked, which ends the lock and goes nowhere else, nor do its repeats until
+its release (#2092, the requesting app's only: `handle_event`'s
 first step, ahead of DnD's Escape; the desktop shell also skips the menu chords
 for it; the browser handles its own) → menu chords → the editor's / a node view's
 `on_key` → **element handlers** → `set_keyboard_interceptor` → key entries →
