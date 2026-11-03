@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use cssparser::{
-    AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserInput, ParserState,
+    AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserState,
     QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser,
 };
 
@@ -21,12 +21,12 @@ impl<'i> DeclarationParser<'i> for RinchDeclarationParser {
     type Declaration = ParsedDeclaration;
     type Error = ();
 
-    fn parse_value<'t>(
+    fn parse_value(
         &mut self,
         name: CowRcStr<'i>,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser<'i>,
         _start: &ParserState,
-    ) -> Result<Self::Declaration, ParseError<'i, Self::Error>> {
+    ) -> Result<Self::Declaration, ParseError<Self::Error>> {
         let start_pos = input.position();
         while input.next_including_whitespace().is_ok() {}
         let raw = input.slice_from(start_pos).trim();
@@ -34,7 +34,7 @@ impl<'i> DeclarationParser<'i> for RinchDeclarationParser {
         let (value, important) = if let Some(pos) = raw.rfind("!important") {
             let before = raw[..pos].trim_end();
             if before.is_empty() {
-                return Err(input.new_custom_error(()));
+                return Err(ParseError::custom(()));
             }
             (before.to_string(), true)
         } else {
@@ -42,7 +42,7 @@ impl<'i> DeclarationParser<'i> for RinchDeclarationParser {
         };
 
         if value.is_empty() {
-            return Err(input.new_custom_error(()));
+            return Err(ParseError::custom(()));
         }
 
         Ok(ParsedDeclaration {
@@ -94,26 +94,26 @@ impl<'i> QualifiedRuleParser<'i> for RinchRuleParser {
     type QualifiedRule = RawCssRule;
     type Error = ();
 
-    fn parse_prelude<'t>(
+    fn parse_prelude(
         &mut self,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self::Prelude, ParseError<'i, Self::Error>> {
+        input: &mut Parser<'i>,
+    ) -> Result<Self::Prelude, ParseError<Self::Error>> {
         // Collect the entire prelude as a string (selector text)
         let start = input.position();
         while input.next_including_whitespace().is_ok() {}
         let selector = input.slice_from(start).trim().to_string();
         if selector.is_empty() {
-            return Err(input.new_custom_error(()));
+            return Err(ParseError::custom(()));
         }
         Ok(selector)
     }
 
-    fn parse_block<'t>(
+    fn parse_block(
         &mut self,
         prelude: Self::Prelude,
         _start: &ParserState,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self::QualifiedRule, ParseError<'i, Self::Error>> {
+        input: &mut Parser<'i>,
+    ) -> Result<Self::QualifiedRule, ParseError<Self::Error>> {
         // Parse declarations inside the block
         let mut properties = HashMap::new();
         let mut decl_parser = RinchDeclarationParser;
@@ -130,8 +130,7 @@ impl<'i> QualifiedRuleParser<'i> for RinchRuleParser {
 
 /// Parse CSS property declarations from a string (used for inline styles).
 pub(super) fn parse_properties(body: &str) -> HashMap<String, (String, bool)> {
-    let mut input = ParserInput::new(body);
-    let mut parser = Parser::new(&mut input);
+    let mut parser = Parser::new(body);
     let mut decl_parser = RinchDeclarationParser;
     let mut result = HashMap::new();
     for decl in RuleBodyParser::new(&mut parser, &mut decl_parser).flatten() {

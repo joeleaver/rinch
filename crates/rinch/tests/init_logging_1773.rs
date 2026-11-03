@@ -1,6 +1,6 @@
 //! `rinch::init_logging` natively (issue #1773). Its own test binary: it sets
 //! the process's global subscriber, which no other test may see.
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 
 use tracing::level_filters::LevelFilter;
 

@@ -149,6 +149,20 @@ fn input_color(g: &Graph<Op, Slot, ()>, node: NodeId) -> [f32; 3] {
         .unwrap_or([0.0; 3])
 }
 
+/// How many shades from black the output node lists.
+const STEPS: u32 = 16;
+
+/// Step `i` of [`STEPS`] from black to `c`.
+fn step_color(c: [f32; 3], i: u32) -> [f32; 3] {
+    let t = i as f32 / STEPS as f32;
+    [c[0] * t, c[1] * t, c[2] * t]
+}
+
+fn hex(c: [f32; 3]) -> String {
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", b(c[0]), b(c[1]), b(c[2]))
+}
+
 fn add_node(view: &View, op: Op, at: Point) -> Option<NodeId> {
     view.edit(|tx| tx.add_node(at, op.clone(), op.ports())).ok()
 }
@@ -349,7 +363,30 @@ fn node_body(__scope: &mut RenderScope, view: View, id: NodeId) -> NodeHandle {
             }
         }
         Op::Output => {
-            rsx! {
+            // A scroll container inside a node: the wheel scrolls the steps
+            // while they can move, and pans the canvas once they cannot.
+            let colour = Memo::new(move || view.graph(|g| input_color(g, id)));
+            let steps = __scope.create_element("div");
+            steps.set_attribute("class", "output-steps");
+            steps.set_attribute(
+                "style",
+                "margin-top: 6px; width: 120px; height: 96px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 6px;",
+            );
+            for i in 1..=STEPS {
+                let row = rsx! {
+                    div { style: "display: flex; align-items: center; gap: 6px; height: 20px; padding: 0 6px; font-family: monospace; font-size: 11px;",
+                        div {
+                            style: {move || {
+                                let c = step_color(colour.get(), i);
+                                format!("width: 12px; height: 12px; border-radius: 3px; background-color: {};", css(c))
+                            }},
+                        }
+                        span { {move || hex(step_color(colour.get(), i))} }
+                    }
+                };
+                steps.append_child(&row);
+            }
+            let out = rsx! {
                 div { style: "padding: 2px 10px;",
                     div {
                         style: {move || {
@@ -358,7 +395,9 @@ fn node_body(__scope: &mut RenderScope, view: View, id: NodeId) -> NodeHandle {
                         }},
                     }
                 }
-            }
+            };
+            out.append_child(&steps);
+            out
         }
         _ => __scope.create_element("div"),
     };

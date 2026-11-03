@@ -229,8 +229,8 @@ fn a_finished_font_size_fill_owes_no_layout() {
 /// makes it run again, and `settled` has to be recomputed against the
 /// timing that restyle just gave it.
 ///
-/// #771 refreshes a kept animation's keyframes, duration and delay inside
-/// `recompute_all_styles_full` (outside it a new duration is ignored, #780).
+/// A kept animation takes its keyframes, duration and delay afresh on every
+/// cascade (#771 on this path, #780 on the others).
 /// Asking "is it still filling?" *before* that refresh asks against the old
 /// timing, which for this shape answers "yes": the entry stays settled, so
 /// `has_running_animations()` says `false` for an animation that is running,

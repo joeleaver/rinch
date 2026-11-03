@@ -358,14 +358,14 @@ jobs:
             fi
           }
           # The render-surface, compositor and partial-frame fixtures, and
-          # the split oracles (`gpu_split_*`, #1865: 25 compositor, 33 runtime,
-          # 2 pages), and #1866's GameViewport base layer (7).
-          run 91 -p rinch --features gpu,video --lib -- \
+          # the split oracles (`gpu_split_*`, #1865: 25 compositor, 34 runtime,
+          # 2 pages), #1866's GameViewport base layer (7), and #2071's bump overflow (5).
+          run 97 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --test-threads=1
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves),
-          # and #1976's renderer replaced or taking turns (2).
-          run 7 -p rinch --features gpu,video --test embed_game_viewport_base_layer_1866 -- \
+          # #1976's renderer replaced or taking turns (2), and #2071's lost frame (1).
+          run 8 -p rinch --features gpu,video --test embed_game_viewport_base_layer_1866 -- \
             --ignored --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
@@ -505,7 +505,7 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           components: clippy
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,wasm32-wasip1
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -547,6 +547,21 @@ jobs:
           cargo clippy -p rinch-rtc --features media --target wasm32-unknown-unknown \
             --all-targets -- -D warnings
           echo "::endgroup::"
+
+      # A WASI guest (`wasm32-wasip1`) that embeds rinch's components runs in a
+      # host that is not a browser. The browser halves of the facade are gated
+      # on `target_os = "unknown"`, so such a build links no wasm-bindgen, whose
+      # imports are stubs that panic outside a browser. Lint that configuration
+      # and fail if a browser crate comes back into its tree.
+      - name: Run clippy (wasm32-wasip1 guest)
+        run: |
+          cargo clippy -p rinch --no-default-features --features components,theme \
+            --target wasm32-wasip1 -- -D warnings
+          if cargo tree -p rinch --no-default-features --features components,theme \
+               --target wasm32-wasip1 -e normal | grep -E 'wasm-bindgen|js-sys|web-sys'; then
+            echo "a wasm32-wasip1 build of rinch links a browser crate" >&2
+            exit 1
+          fi
 
       # The web examples are excluded from the workspace (they pin their own
       # `Cargo.lock` and must build for wasm32 alone), so nothing above reaches

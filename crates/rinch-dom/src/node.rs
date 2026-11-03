@@ -30,6 +30,69 @@ use crate::computed_style::ComputedStyle;
 /// takes [`crate::node_slab::slot_of`].
 pub type RawNodeId = u64;
 
+/// A node's Stylo `ElementData`, present or absent.
+///
+/// Stylo 0.22's `TElement::borrow_data`/`mutate_data`/`ensure_data` return
+/// `ElementDataRef`/`ElementDataMut`, which only an `ElementDataWrapper` can
+/// hand out (it replaced the `AtomicRefCell<ElementData>` of 0.11; its borrow
+/// checks run in debug builds only). The wrapper is kept for the node's whole
+/// life and `present` says whether it holds data, so "no data" reads as `None`
+/// exactly as the `Option<ElementData>` this replaces did; clearing resets the
+/// data to its default, dropping the styles it held.
+#[derive(Default)]
+pub struct StyloData {
+    data: style::data::ElementDataWrapper,
+    present: AtomicBool,
+}
+
+impl StyloData {
+    /// Whether the node has element data (it may still hold no primary style).
+    #[inline]
+    pub fn has_data(&self) -> bool {
+        self.present.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The node's element data, if it has any.
+    #[inline]
+    pub fn borrow(&self) -> Option<style::data::ElementDataRef<'_>> {
+        self.has_data().then(|| self.data.borrow())
+    }
+
+    /// The node's element data, mutably, if it has any.
+    #[inline]
+    pub fn borrow_mut(&self) -> Option<style::data::ElementDataMut<'_>> {
+        self.has_data().then(|| self.data.borrow_mut())
+    }
+
+    /// The node's element data, created (default) if it had none.
+    #[inline]
+    pub fn ensure(&self) -> style::data::ElementDataMut<'_> {
+        let mut data = self.data.borrow_mut();
+        if !self.has_data() {
+            *data = style::data::ElementData::default();
+            self.present
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        data
+    }
+
+    /// Replace the node's element data.
+    pub fn set(&self, value: style::data::ElementData) {
+        *self.data.borrow_mut() = value;
+        self.present
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Drop the node's element data (the next style pass recascades it).
+    pub fn clear(&self) {
+        if self.has_data() {
+            *self.data.borrow_mut() = style::data::ElementData::default();
+            self.present
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
 bitflags! {
     /// Tracks what needs updating for a node.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1417,7 +1480,7 @@ pub struct Node {
     // === Stylo CSS engine fields ===
     /// Stylo element data containing computed CSS values.
     /// This is the primary source of truth for CSS after Stylo migration.
-    pub stylo_element_data: AtomicRefCell<Option<style::data::ElementData>>,
+    pub stylo_element_data: StyloData,
     /// Selector flags set during CSS matching.
     pub selector_flags: AtomicRefCell<ElementSelectorFlags>,
     /// Whether this node has a snapshot for animation/transition.
@@ -1516,10 +1579,11 @@ pub struct Node {
     /// descendant it invalidated (`TElement::set_dirty_descendants`), and the
     /// one `resolve_styles` follows. Cleared as the resolve walks it.
     pub style_dirty_descendants: Cell<bool>,
-    /// This element's `::before` / `::after` content uses `attr()`: any
-    /// attribute write restyles it, whether or not a generated box exists
-    /// yet (`invalidation::note_attribute_change`). Set by the pseudo
-    /// resolution at each cascade of the element.
+    /// This element's style, or its `::before` / `::after` content, uses
+    /// `attr()`: any attribute write restyles it, whether or not a generated
+    /// box exists yet (`invalidation::note_attribute_change`). Cleared before
+    /// each cascade of the element and set when that cascade, or a pseudo
+    /// resolution after it, asks `TElement::get_attr` for an attribute.
     pub content_reads_attrs: Cell<bool>,
     /// A closed `<select>`'s widest option label width in CSS px, with the
     /// hash of what it was shaped from (the labels and the font) — so a
@@ -1792,7 +1856,7 @@ impl Node {
             has_been_styled: false,
             styled_unrendered: false,
             // Stylo fields
-            stylo_element_data: AtomicRefCell::new(None),
+            stylo_element_data: StyloData::default(),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
@@ -1876,7 +1940,7 @@ impl Node {
             has_been_styled: false,
             styled_unrendered: false,
             // Stylo fields
-            stylo_element_data: AtomicRefCell::new(None),
+            stylo_element_data: StyloData::default(),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
@@ -1959,7 +2023,7 @@ impl Node {
             has_been_styled: false,
             styled_unrendered: false,
             // Stylo fields
-            stylo_element_data: AtomicRefCell::new(None),
+            stylo_element_data: StyloData::default(),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
@@ -2040,7 +2104,7 @@ impl Node {
             has_been_styled: false,
             styled_unrendered: false,
             // Stylo fields
-            stylo_element_data: AtomicRefCell::new(None),
+            stylo_element_data: StyloData::default(),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
@@ -2882,6 +2946,20 @@ pub struct NodeTree {
     /// Stored at removal time because the nodes are deleted from the tree
     /// before `compute_dirty_region` runs.
     pub paint_dirty_removed_rects: Vec<(f64, f64, f64, f64)>,
+    /// The parents the removed and moved subtrees left (#770's follow-up):
+    /// a scroll container above one may have lost range, and its bars move
+    /// with no node of its own dirty. Read by
+    /// [`crate::paint::bar_watch_scrollers`], cleared by
+    /// [`NodeTree::consume_paint_dirty`].
+    pub(crate) bar_check_parents: Vec<RawNodeId>,
+    /// Each scroll container's bars as the last paint consumed them, at
+    /// scale 1 ([`crate::paint::scrollbar::scrollbars`]), for the containers
+    /// [`crate::paint::bar_watch_scrollers`] has named. A bar is drawn from
+    /// the container's **range**, which a change below it moves without
+    /// making it dirty (a box moved past its edge, a row grown or removed),
+    /// so the damage compares the bars now against these and names the
+    /// container's bar strips when they differ — or when it has none here.
+    pub(crate) painted_bars: HashMap<RawNodeId, crate::paint::scrollbar::Scrollbars>,
     /// Set when the whole document was restyled (a stylesheet, the theme, the
     /// viewport, the device pixel ratio or the root font-size changed —
     /// [`NodeTree::note_full_restyle`]). Such a restyle can change the paint of
@@ -2997,6 +3075,18 @@ pub struct NodeTree {
     /// `replace_after_scroll` iterate. Rebuilt by every layout
     /// (`out_of_flow::begin_read`).
     pub(crate) placed_absolutes: Vec<(RawNodeId, crate::out_of_flow::OutOfFlowKind)>,
+    /// Every `absolute` box the layout read back, with its
+    /// [`crate::out_of_flow::out_of_flow_kind`] (`listed`): the boxes whose
+    /// **scrollable overflow** may belong to a scroll container that is not
+    /// the box they are laid out in (#770) — the nearest scroll container at or
+    /// above the containing block (`out_of_flow::overflow_scroller`).
+    /// Rebuilt by every layout read-back (`out_of_flow::begin_read`), and only
+    /// listed there: which container each box belongs to, and where it is in
+    /// that container's frame, is worked out once per geometry, by the first
+    /// scroll range asked for after it changed — `content_extents`' memo,
+    /// beside the list. Boxed: a document is moved by value, and this is
+    /// one pointer of it.
+    pub(crate) overflow_absolutes: Box<crate::paint::scrollbar::OverflowAbsolutes>,
     /// The placed boxes among those that are **shrunk to fit from their
     /// static position** (#1404): an `auto` (or `fit-content`) width and both
     /// inline insets `auto`. What
@@ -3205,28 +3295,6 @@ pub struct NodeTree {
     /// the first layout happened" proxy that chose the whole-document walk
     /// for every resolve and insertion before the first layout.
     pub transitions_enabled: bool,
-    /// Whether `recompute_all_styles_full` is re-cascading the document, so a
-    /// running animation that survives the cascade by name takes its keyframes,
-    /// stops and timing afresh and keeps only its clock (see
-    /// `animation::start_animations`).
-    ///
-    /// **A flag of its own, not `!transitions_enabled`.** That flag is also
-    /// false for every cascade before the first layout, and the two questions
-    /// have nothing to do with each other — asking one flag both is what #762
-    /// was. Scoped to `recompute_all_styles_full` because that is the pass a
-    /// theme toggle takes and it runs rarely; a refresh on every cascade would
-    /// cost a keyframes lookup and a stop extraction per animated node per
-    /// hover.
-    ///
-    /// It is **not** the only pass that re-cascades the whole document. A
-    /// stylesheet change Stylo cannot target (a sheet with a `@keyframes`
-    /// rule is one; `RinchDocument::flush_stylist`, #884) and a viewport
-    /// change in `resolve_layout` drop every node's cached style too, and do not set this
-    /// flag, so a running animation keeps stale stops and timing across them —
-    /// measured, a `<style>` appended after the first layout that redefines a
-    /// running `@keyframes` leaves the animation on its old body. Tracked on
-    /// #781.
-    pub refreshing_animations: bool,
     /// Cache of loaded and decoded images.
     pub image_cache: ImageCache,
     /// Image loader for fetching image data (file, network, etc.).
@@ -3622,6 +3690,8 @@ impl NodeTree {
             dirty_nodes: HashSet::new(),
             paint_dirty_nodes: Vec::new(),
             paint_dirty_removed_rects: Vec::new(),
+            bar_check_parents: Vec::new(),
+            painted_bars: HashMap::new(),
             whole_document_damaged: false,
             inline_text_shadows: false,
             style_dirty_nodes: Vec::new(),
@@ -3645,6 +3715,7 @@ impl NodeTree {
             atomic_inline_registry: BTreeSet::new(),
             ancestor_absolutes: BTreeSet::new(),
             placed_absolutes: Vec::new(),
+            overflow_absolutes: Default::default(),
             abs_static_fits: Vec::new(),
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
@@ -3670,7 +3741,6 @@ impl NodeTree {
             finished_animations: HashMap::new(),
             ended_animations: Vec::new(),
             transitions_enabled: false,
-            refreshing_animations: false,
             image_cache: ImageCache::new(),
             image_loader: None,
             pending_background_urls: Vec::new(),
@@ -4018,6 +4088,10 @@ impl NodeTree {
     /// [`Node::painted`] — own ink reach and own transform — which is O(1) per
     /// node: nothing here walks a subtree.
     pub fn consume_paint_dirty(&mut self) {
+        // The containers whose bars this paint may have moved, asked before
+        // the painted boxes below are rewritten (`bar_watch_scrollers` reads
+        // `prev_layout`), and their bars recorded after.
+        let watched = crate::paint::bar_watch_scrollers(self);
         let members = self.inline_text_shadows;
         let nodes = &mut self.nodes;
         // Each state is read with the slab borrowed shared (an IFC root's ink
@@ -4093,6 +4167,31 @@ impl NodeTree {
         dirty.clear();
         self.paint_dirty_nodes = dirty;
         self.paint_dirty_removed_rects.clear();
+        // The bars as this paint drew them. A whole-document restyle may have
+        // changed any box's (made it a scroll container, changed its
+        // `scrollbar-width` or its palette) with none of them pushed, so every
+        // scroll container is read then — the record must hold every bar on
+        // screen, since the damage takes a container with none for one that
+        // painted none. O(n), on a frame that repainted all n.
+        let mut record: Vec<RawNodeId> = watched;
+        if self.whole_document_damaged {
+            self.painted_bars.clear();
+            record.extend(
+                self.nodes
+                    .iter()
+                    .filter(|(_, n)| n.scrolls_x() || n.scrolls_y())
+                    .map(|(id, _)| id),
+            );
+        }
+        for id in record {
+            if self.nodes.get(id).is_some() {
+                let bars = crate::paint::scrollbar::scrollbars(self, id, 1.0);
+                self.painted_bars.insert(id, bars);
+            } else {
+                self.painted_bars.remove(&id);
+            }
+        }
+        self.bar_check_parents.clear();
         self.whole_document_damaged = false;
     }
 

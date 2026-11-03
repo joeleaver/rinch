@@ -224,3 +224,137 @@ fn the_wheel_carries_logical_deltas_the_pointer_and_modifiers() {
     assert_eq!(f.take_log(), ["inner"]);
     f.teardown();
 }
+
+/// The `__nid` rinch gave the element with this id.
+fn nid_of(id: &str) -> rinch_core::dom::NodeId {
+    let el = document().get_element_by_id(id).unwrap();
+    let n = js_sys::Reflect::get(&el, &"__nid".into())
+        .unwrap()
+        .as_f64()
+        .expect("a rinch element");
+    rinch_core::dom::NodeId(n as u64)
+}
+
+/// `target` is the element the wheel is dispatched at; under an element rinch
+/// did not create (no `__nid`), the nearest one rinch did.
+#[wasm_bindgen_test]
+fn the_wheel_names_its_target() {
+    let f = Fixture::mount();
+    wheel_at("w-leaf", Wheel::default());
+    let w = f.take_events()[0];
+    assert_eq!(w.target, Some(nid_of("w-leaf")));
+
+    let raw = document().create_element("span").unwrap();
+    raw.set_id("w-raw");
+    document()
+        .get_element_by_id("w-leaf")
+        .unwrap()
+        .append_child(&raw)
+        .unwrap();
+    wheel_at("w-raw", Wheel::default());
+    assert_eq!(f.take_events()[0].target, Some(nid_of("w-leaf")));
+    raw.remove();
+    f.teardown();
+}
+
+/// `NodeHandle::can_scroll_toward` in a real browser: a scroller answers by
+/// its computed overflow and the room left toward the delta's sign (with a
+/// pixel of slack at the ends); `overflow: hidden` and a non-scroller never;
+/// an RTL box's sideways range runs negative.
+#[wasm_bindgen_test]
+fn can_scroll_toward_follows_the_overflow_and_the_room_left() {
+    let host = document().create_element("div").unwrap();
+    host.set_attribute(HOST_MARKER, "").unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let handles: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+    let handles_in = handles.clone();
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |__scope: &mut RenderScope| {
+            let root = rsx! {
+                div {
+                    div {
+                        style: "width: 300px; height: 100px; overflow-y: auto",
+                        div { style: "height: 400px" }
+                    }
+                    div {
+                        style: "width: 300px; height: 100px; overflow: hidden",
+                        div { style: "height: 400px" }
+                    }
+                    div {
+                        style: "direction: rtl; width: 100px; height: 50px; overflow-x: auto",
+                        div { style: "width: 400px; height: 10px" }
+                    }
+                    div {
+                        style: "width: 100px; height: 200.4px; overflow-y: auto",
+                        div { style: "height: 800px" }
+                    }
+                }
+            };
+            let kids = root.children();
+            *handles_in.borrow_mut() = vec![
+                kids[0].clone(),
+                kids[0].children()[0].clone(),
+                kids[1].clone(),
+                kids[2].clone(),
+                kids[3].clone(),
+            ];
+            root
+        },
+    );
+    let h = handles.borrow().clone();
+    let (scroller, content, hidden, rtl, frac) = (&h[0], &h[1], &h[2], &h[3], &h[4]);
+
+    assert!(scroller.can_scroll_toward(0.0, 1.0));
+    assert!(!scroller.can_scroll_toward(0.0, -1.0));
+    assert!(!scroller.can_scroll_toward(1.0, 0.0));
+    assert!(scroller.can_scroll_toward(1.0, 1.0), "either axis");
+    assert!(!content.can_scroll_toward(0.0, 1.0), "not a scroller");
+    assert!(!hidden.can_scroll_toward(0.0, 1.0), "overflow: hidden");
+
+    scroller.set_scroll_top(120.0);
+    assert!(scroller.can_scroll_toward(0.0, 1.0));
+    assert!(scroller.can_scroll_toward(0.0, -1.0));
+    scroller.set_scroll_top(300.0);
+    assert!(!scroller.can_scroll_toward(0.0, 1.0), "at the end");
+    assert!(scroller.can_scroll_toward(0.0, -1.0));
+
+    // RTL starts at its right edge: scrollLeft 0, room to the left only.
+    assert!(rtl.can_scroll_toward(-1.0, 0.0));
+    assert!(!rtl.can_scroll_toward(1.0, 0.0));
+
+    // The far end is the browser's own. A 200.4px list of 800px: put at the
+    // end the browser allows (at a device scale of 1.5 Chrome stops at
+    // 599.33, where `scrollHeight - clientHeight` says 600), it cannot move
+    // down; a pixel short of that end, it can.
+    let el = document()
+        .query_selector(&format!("[{HOST_MARKER}] div > div:nth-child(4)"))
+        .unwrap()
+        .unwrap();
+    el.set_scroll_top(100_000);
+    let end = js_sys::Reflect::get(&el, &"scrollTop".into())
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    let span = f64::from(el.scroll_height() - el.client_height());
+    assert!(end > 500.0 && end <= span, "end {end}, span {span}");
+    assert!(
+        !frac.can_scroll_toward(0.0, 1.0),
+        "at the end {end} ({span})"
+    );
+    assert!(frac.can_scroll_toward(0.0, -1.0));
+    js_sys::Reflect::set(&el, &"scrollTop".into(), &(end - 1.0).into()).unwrap();
+    let short = js_sys::Reflect::get(&el, &"scrollTop".into())
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    assert!(short < end - 0.5, "moved off the end: {short}");
+    assert!(
+        frac.can_scroll_toward(0.0, 1.0),
+        "a pixel short of the end ({short} of {end}) has room"
+    );
+
+    root.unmount();
+    host.remove();
+}

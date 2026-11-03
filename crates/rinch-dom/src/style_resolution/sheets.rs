@@ -199,15 +199,17 @@ impl RinchDocument {
             doc.tree.nodes[html_id]
                 .stylo_element_data
                 .borrow()
-                .as_ref()
                 .map_or(RestyleHint::empty(), |d| d.hint)
         };
         let whole_before = html_hint(self).contains(RestyleHint::RESTYLE_DESCENDANTS);
         let invalidated = {
             let guard = self.tree.guard.read();
             let guards = StylesheetGuards::same(&guard);
+            let invalidations = self.stylist.flush(&guards);
+            // 0.22 returns the set after a forced-dirty flush (viewport, DPR,
+            // theme) too; only a sheet change here is ours to apply.
             let root = invalidate.then(|| RinchNode::new(html_id, &self.tree));
-            self.stylist.flush::<RinchNode>(&guards, root, None)
+            root.is_some_and(|r| invalidations.process_style(r, None))
         };
         if !invalidated {
             return false;
@@ -218,7 +220,7 @@ impl RinchDocument {
             self.tree
                 .note_full_restyle(crate::perf::FullRestyleReason::Stylesheet);
             for (nid, _) in self.tree.nodes.iter() {
-                *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
+                self.tree.nodes[nid].stylo_element_data.clear();
             }
             self.tree.style_roots.clear();
             self.tree.full_style_walk = true;

@@ -574,7 +574,7 @@ fn the_document_nodes_own_entry_is_resolved() {
     // What `set_attribute` on the document node used to do: drop every
     // element's cached style under it, and record the document node itself.
     for id in [doc.tree.html_id, doc.tree.body_id, kid.0] {
-        *doc.tree.nodes[id].stylo_element_data.borrow_mut() = None;
+        doc.tree.nodes[id].stylo_element_data.clear();
     }
     doc.tree.style_roots.push(doc.tree.root_id);
     doc.tree.styles_dirty = true;

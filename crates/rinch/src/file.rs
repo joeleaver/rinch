@@ -31,14 +31,17 @@
 
 pub use rinch_core::file::{FileSource, LocalFile, ReadFuture};
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use web::from_web_file;
 
 /// A file picker: one or more files, read on demand.
 ///
 /// Start it from an event handler with [`pick`](Self::pick) (await the files)
 /// or [`open`](Self::open) (a callback). Cancelling the picker gives no files.
-#[cfg(any(target_arch = "wasm32", feature = "file-dialogs"))]
+#[cfg(any(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    feature = "file-dialogs"
+))]
 #[derive(Debug, Clone, Default)]
 pub struct FilePicker {
     filters: Vec<(String, Vec<String>)>,
@@ -47,12 +50,18 @@ pub struct FilePicker {
 }
 
 /// [`FilePicker::new`].
-#[cfg(any(target_arch = "wasm32", feature = "file-dialogs"))]
+#[cfg(any(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    feature = "file-dialogs"
+))]
 pub fn pick_files() -> FilePicker {
     FilePicker::new()
 }
 
-#[cfg(any(target_arch = "wasm32", feature = "file-dialogs"))]
+#[cfg(any(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    feature = "file-dialogs"
+))]
 impl FilePicker {
     /// A picker for one file of any type.
     pub fn new() -> Self {
@@ -118,7 +127,10 @@ impl FilePicker {
         rinch_core::task::spawn_local(async move { on_picked(picked.await) });
     }
 
-    #[cfg(all(not(target_arch = "wasm32"), feature = "file-dialogs"))]
+    #[cfg(all(
+        not(all(target_arch = "wasm32", target_os = "unknown")),
+        feature = "file-dialogs"
+    ))]
     fn start(self) -> std::future::Ready<Vec<LocalFile>> {
         let mut dialog = rfd::FileDialog::new();
         if let Some(title) = &self.title {
@@ -140,7 +152,7 @@ impl FilePicker {
         )
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     fn start(self) -> impl std::future::Future<Output = Vec<LocalFile>> + 'static {
         let accept = self
             .filters
@@ -153,7 +165,7 @@ impl FilePicker {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web {
     //! The browser half: a hidden `<input type=file>` for the picker, a
     //! `FileReader` for a read.
@@ -606,7 +618,7 @@ mod web {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[doc(hidden)]
 pub use web::{
     __force_focus_return_watch, __last_picker_outcome, __set_require_user_activation,

@@ -3592,10 +3592,46 @@ impl RinchRuntime {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
+        // Vello's counters on their way back from the GPU (#2071): the fifth.
+        // Armed only until they arrive, so a window at rest goes back to `Wait`.
+        #[cfg(feature = "gpu")]
+        let wake = match (wake, self.check_vello_frames()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         match wake {
             Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
+    }
+
+    /// See what became of the frames the windows gave Vello (#2071). A frame
+    /// that overflowed Vello's buffers went out undrawn, and on a window at rest
+    /// nothing else would ever draw it, so this asks for the redraw that does:
+    /// [`WgpuRenderer::check_frames`] has made the next frame a full one, at the
+    /// buffers' new sizes. Answers when to look again, `None` once every frame
+    /// is accounted for.
+    #[cfg(feature = "gpu")]
+    fn check_vello_frames(&mut self) -> Option<std::time::Instant> {
+        use vello::FrameCheck;
+        let main = self.renderer.as_mut().map(WgpuRenderer::check_frames);
+        if main == Some(FrameCheck::Lost)
+            && let Some(w) = &self.window
+        {
+            w.request_redraw();
+        }
+        let devtools = self
+            .devtools_renderer
+            .as_mut()
+            .map(WgpuRenderer::check_frames);
+        if devtools == Some(FrameCheck::Lost)
+            && let Some(w) = &self.devtools_window
+        {
+            w.request_redraw();
+        }
+        [main, devtools]
+            .contains(&Some(FrameCheck::Pending))
+            .then(|| std::time::Instant::now() + VELLO_CHECK_INTERVAL)
     }
 
     /// Push the focus arbiter's desired IME state to the window. Enables IME with
@@ -4138,6 +4174,12 @@ fn black_backdrop_layer(
 }
 
 // ── Renderer choice ──────────────────────────────────────────────────────────
+
+/// How soon the loop looks again for Vello's counters of a frame the GPU has
+/// not finished (#2071): half a 60 Hz frame. A window that overflowed is drawn
+/// again this much after the GPU finishes, at the worst.
+#[cfg(feature = "gpu")]
+const VELLO_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
 
 /// The GPU renderer for `window`, or `None` to present with software: when
 /// software was chosen (and the app did not configure the GPU device itself,
