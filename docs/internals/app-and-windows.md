@@ -34,7 +34,7 @@ fn main() {
 | `App::new(component)` | Start configuring around the root component |
 | `.title(title)` / `.size(w, h)` | Window title and initial logical size |
 | `.theme(ThemeProviderProps)` | Colors, radius, dark mode |
-| `.fonts(&[AppFont])` | Typefaces the build carries in its own binary (issue #286) |
+| `.fonts(&[AppFont])` | Typefaces the build carries, `'static` or owned (`AppFont::from_data`; issues #286, #2101) |
 | `.menu(Vec<(&str, Menu)>)` | Native menu bar |
 | `.window_props(WindowProps)` | Borderless, transparent, icon, `app_id`, `on_close_requested`, … |
 | `.renderer(Renderer)` | `Auto` (GPU, falling back to software), `Gpu` or `Software`; `RINCH_RENDERER` overrides it |
@@ -137,6 +137,30 @@ the bundled face at **glyph 0** (`.notdef`), where without it the platform's CJK
 face answers with real glyphs. It is on for `RinchApp::register_font_data`, the
 wasm/embed front door, because wasm has no system fonts and a last-resort face
 is the only thing that renders a character the author did not name a font for.
+
+**`register_font_data` claims no generic** (#2102). It used to claim
+`sans-serif` and `system-ui` for every face, so the last face registered won
+them. It now fills only an *empty* slot of the face's own class
+(`rinch_dom::fonts::fill_empty_generics`; the classification is on the
+platform page, "Registered font data fills only empty generic slots"). The
+registration is kept as a `PendingFont { font, fill_empty_generics }` so the
+mount replays the same policy onto the document's context that the hit-test
+context got.
+
+**Font bytes are `FontData`, owned or `'static`** (#2101). `AppFont::data` is a
+`FontData` (`&'static [u8]` or an `Arc<dyn AsRef<[u8]> + Send + Sync>`, from
+`Vec<u8>`, `Box<[u8]>`, `Arc<[u8]>`, `Arc<Vec<u8>>` or `peniko::Blob<u8>`), so
+`AppFont` is `Clone`, not `Copy`; the `const` constructors still take
+`&'static [u8]`, and `AppFont::from_data` / `with_generics` cover owned bytes.
+Each font context's `Blob` is built over a clone of the one `Arc`, so the
+references are exactly: the app's `pending_fonts`, the hit-test context and
+the document's context (plus whatever a live layout or scene holds). All go
+with the app; `owned_font_bytes_are_released_when_the_app_is_dropped` and the
+embed's `owned_font_bytes_are_released_with_the_context` pin the count back to
+1 after a mount, layout and paint. **No unregistering:** fontique has
+`Collection::unregister_font(family, width, style, weight)`, but the face is
+also in the document's shaped layouts, text caches and glyph caches; dropping
+the app (or `RinchContext`) is the only release.
 
 Guide: `docs/src/guide/fonts.md`. Fixtures live in `crates/rinch/assets/fonts/`
 and `crates/rinch-dom/assets/fonts/` rather than under `examples/`, because

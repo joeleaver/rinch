@@ -430,7 +430,30 @@ use rinch_core::events;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::Painter;
 
-use crate::font::{AppFont, GenericFamily};
+use crate::font::{AppFont, FontData};
+
+/// A registered font, kept for the next mount: the face, and whether it is
+/// data that declared nothing ([`RinchApp::register_font_data`]), which fills
+/// only empty generic slots of its own class (#2102).
+#[derive(Clone, Debug)]
+pub(crate) struct PendingFont {
+    pub(crate) font: AppFont,
+    pub(crate) fill_empty_generics: bool,
+}
+
+impl PendingFont {
+    /// Font data that declares nothing: no claimed generic, every script's
+    /// fallback, and the empty slots of its own class.
+    pub(crate) fn data(data: impl Into<FontData>) -> Self {
+        Self {
+            font: AppFont {
+                script_fallback: true,
+                ..AppFont::from_data(data)
+            },
+            fill_empty_generics: true,
+        }
+    }
+}
 // Painter selection is ADDITIVE (issue #140): the software painter is compiled
 // whenever a native shell can present via TinySkia (`software_shell`, emitted
 // by build.rs = every desktop build, and android without android-gpu), and the
@@ -1190,7 +1213,7 @@ pub struct RinchApp {
     /// `mount_component` builds a *new* document with its own font context and
     /// registers this list onto it, so the list outlives the mount that used
     /// it.
-    pub(crate) pending_fonts: Vec<AppFont>,
+    pub(crate) pending_fonts: Vec<PendingFont>,
     /// When true, `mount_component` namespaces stores/contexts under the
     /// document's `doc_key` (set by embed `RinchContext`s, issue #136). Shell
     /// roots leave this false and keep writing to the thread-global root 0.
@@ -1382,24 +1405,14 @@ impl RinchApp {
     /// enough for `font-family: <its own name>`, and nothing else. A generic
     /// like `monospace` is a slot, not a name, and is only answered by a face
     /// that asked to fill it.
+    ///
+    /// The bytes may be owned ([`AppFont::from_data`]); the app keeps them for
+    /// as long as it lives and drops them with it (#2101).
     pub fn register_app_font(&mut self, font: AppFont) {
-        self.pending_fonts.push(font);
-        // The hit-test context is a second, independent `FontContext` used to
-        // re-measure text for caret placement. It has to agree with the render
-        // one glyph for glyph or a tap lands on the wrong character (issue
-        // #492), so every registration goes to both.
-        Self::register_font_on_context(&mut self.hit_test_font_cx, font);
-        // A font registered after the mount still belongs to the document that
-        // is already on screen; without this it would reach only the *next*
-        // one, which for a shell app is never.
-        if let Some(doc) = &self.doc {
-            let mut doc = doc.borrow_mut();
-            Self::register_font_on_context(&mut doc.font_cx, font);
-            // A text control is sized from its font's metrics, cached against
-            // the font properties; a new face can change which face that is
-            // (#1177).
-            doc.note_fonts_registered();
-        }
+        self.register_pending(PendingFont {
+            font,
+            fill_empty_generics: false,
+        });
     }
 
     /// Register every face a build bundled, in order.
@@ -1410,39 +1423,66 @@ impl RinchApp {
     /// claiming one generic resolve in registration order.
     pub fn register_app_fonts(&mut self, fonts: &[AppFont]) {
         for font in fonts {
-            self.register_app_font(*font);
+            self.register_app_font(font.clone());
         }
     }
 
-    /// Register font data for text rendering, wasm-style.
+    /// Register font data for text rendering, wasm-style: a face that says
+    /// nothing about what it is for.
     ///
-    /// Equivalent to [`register_app_font`](Self::register_app_font) with a face
-    /// that answers `sans-serif` and `system-ui` and joins the last-resort
-    /// fallback chain for every script — which is what a platform with **no**
-    /// system fonts needs, and is why this is the shape the wasm and embed
-    /// paths have always used. The default theme's font stack ends in
-    /// `sans-serif`, so without the generic there would be nothing to render a
-    /// themed app with.
+    /// The face answers its own family name, joins the last-resort fallback
+    /// chain for every script (what a platform with **no** system fonts needs,
+    /// and why this is the shape the wasm and embed paths have always used),
+    /// and fills the generic slots of its own class — `sans-serif` and
+    /// `system-ui` for a sans-serif face, `serif` for a serif, `monospace` for
+    /// a fixed-pitch one, none for a script or symbol face — **only where the
+    /// slot is empty** ([`rinch_dom::fonts::fill_empty_generics`]). So on wasm
+    /// the default theme's stack, which ends in `sans-serif`, has a face to
+    /// render with, and on a desktop, where the platform fills every slot,
+    /// registering data changes no generic at all (#2102). A later face never
+    /// replaces an earlier one in a slot. To put a face in a slot the platform
+    /// already fills, claim it: [`register_app_font`](Self::register_app_font)
+    /// with [`AppFont::sans_serif`] or [`AppFont::with_generics`].
     ///
     /// On a platform that does have system fonts, prefer `register_app_font`:
     /// see [`AppFont::script_fallback`] for what claiming every script's
     /// fallback costs there.
     ///
-    /// The data should be a TrueType (.ttf) or OpenType (.otf) font file.
-    pub fn register_font_data(&mut self, data: &'static [u8]) {
-        self.register_app_font(AppFont {
-            generics: &[GenericFamily::SansSerif, GenericFamily::SystemUi],
-            script_fallback: true,
-            ..AppFont::new(data)
-        });
+    /// The data should be a TrueType (.ttf) or OpenType (.otf) font file:
+    /// `&'static` bytes, or owned ones ([`FontData`]), which the app drops
+    /// when it is dropped (#2101).
+    pub fn register_font_data(&mut self, data: impl Into<FontData>) {
+        self.register_pending(PendingFont::data(data));
+    }
+
+    /// Register `font` on every font context the app has, and keep it for the
+    /// next mount.
+    fn register_pending(&mut self, font: PendingFont) {
+        // The hit-test context is a second, independent `FontContext` used to
+        // re-measure text for caret placement. It has to agree with the render
+        // one glyph for glyph or a tap lands on the wrong character (issue
+        // #492), so every registration goes to both.
+        Self::register_font_on_context(&mut self.hit_test_font_cx, &font);
+        // A font registered after the mount still belongs to the document that
+        // is already on screen; without this it would reach only the *next*
+        // one, which for a shell app is never.
+        if let Some(doc) = &self.doc {
+            let mut doc = doc.borrow_mut();
+            Self::register_font_on_context(&mut doc.font_cx, &font);
+            // A text control is sized from its font's metrics, cached against
+            // the font properties; a new face can change which face that is
+            // (#1177).
+            doc.note_fonts_registered();
+        }
+        self.pending_fonts.push(font);
     }
 
     /// Register one font on one `FontContext` (internal helper).
-    fn register_font_on_context(font_cx: &mut parley::FontContext, font: AppFont) {
+    fn register_font_on_context(font_cx: &mut parley::FontContext, pending: &PendingFont) {
         use parley::fontique::{Blob, FallbackKey, Script, ScriptExt};
-        use std::sync::Arc;
 
-        let blob = Blob::new(Arc::new(font.data));
+        let font = &pending.font;
+        let blob = Blob::new(font.data.to_arc());
         let families = font_cx.collection.register_fonts(blob, None);
         // Registration alone is what makes `font-family: <family name>` find
         // the face; everything below is about the names it did not come with.
@@ -1458,6 +1498,16 @@ impl RinchApp {
                 &mut font_cx.collection,
                 *generic,
                 family_ids.iter().copied(),
+            );
+        }
+
+        // Data that declared nothing fills only the empty slots of its own
+        // class, and never displaces what a slot already holds (#2102).
+        if pending.fill_empty_generics {
+            rinch_dom::fonts::fill_empty_generics(
+                &mut font_cx.collection,
+                font.data.as_bytes(),
+                &families,
             );
         }
 
@@ -1602,7 +1652,7 @@ impl RinchApp {
         if !self.pending_fonts.is_empty() {
             let mut d = doc.borrow_mut();
             for font in &self.pending_fonts {
-                Self::register_font_on_context(&mut d.font_cx, *font);
+                Self::register_font_on_context(&mut d.font_cx, font);
             }
         }
 

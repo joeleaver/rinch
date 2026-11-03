@@ -50,8 +50,10 @@ Configuring them on the builder leaves no ordering to get wrong.
 Calling `.fonts()` more than once registers all of them, in call order — unlike
 `.title()` or `.menu()`, a second call adds rather than replaces.
 
-`AppFont::data` is `&'static [u8]`, which is what `include_bytes!` gives you.
 The file is a TrueType (`.ttf`), OpenType (`.otf`) or collection (`.ttc`).
+The constructors above take `&'static [u8]`, which is what `include_bytes!`
+gives you; a face whose bytes arrive while the app runs is owned instead (see
+[Where the bytes come from](#where-the-bytes-come-from)).
 
 ## What a face is reachable *as*
 
@@ -82,14 +84,14 @@ The constructors say which slot a face is claiming:
 | `AppFont::sans_serif` | `sans-serif`, `system-ui`, `ui-sans-serif` |
 | `AppFont::monospace` | `monospace`, `ui-monospace` |
 
-Anything else is a struct literal, over the full set of CSS generics:
+Anything else names its generics, over the full set of CSS generics:
 
 ```rust,ignore
-AppFont {
-    generics: &[GenericFamily::Cursive, GenericFamily::Fantasy],
-    ..AppFont::new(bytes)
-}
+AppFont::new(bytes).with_generics(&[GenericFamily::Cursive, GenericFamily::Fantasy])
 ```
+
+(`AppFont::SERIF`, `AppFont::SANS_SERIF` and `AppFont::MONOSPACE` are the lists
+the three constructors claim.)
 
 A bundled face goes **ahead of** the platform's own entry for a slot —
 including the face rinch's Android repair filled an empty slot with (below).
@@ -161,6 +163,24 @@ a fallback. That case wants a face in the last-resort fallback chain as well as
 in a generic slot, which is what [`RinchApp::register_font_data`] and
 [`RinchContextConfig::fonts`] do, and what `AppFont::script_fallback` turns on.
 
+Font data registered that way declares nothing about what it is for, so it
+fills a generic slot **only where the slot is empty**, and only one of its own
+class, read from the font's own OS/2 and `post` tables: a sans-serif face fills
+`sans-serif`, `system-ui` and `ui-sans-serif`; a serif face `serif` and
+`ui-serif`; a fixed-pitch face `monospace` and `ui-monospace`; a script,
+decorative or symbol face none (a face that declares no class counts as sans
+serif). The first such face keeps the slot: a later one never replaces it. So
+on wasm the first sans-serif face you register is what `sans-serif` means,
+whatever you register after it; and on a desktop, where the platform fills
+every slot, registering font data changes no generic at all — `sans-serif` is
+still the platform's sans-serif face. To make a face *the* `sans-serif` there,
+claim it (`AppFont::sans_serif`, or `register_app_font` in an embed; see
+[Game engine integration](./game-engine.md)).
+
+Until issue #2102 every such face was put at the head of `sans-serif` and
+`system-ui`, so the face registered **last** — a script face as easily as a
+text face — was what every `sans-serif` element drew in.
+
 Do **not** turn it on where the platform does have fonts. The text stack
 resolves a script's fallback from the app's own list first and the platform's
 second — as an alternative, not a chain — so an entry in the app's list
@@ -179,12 +199,32 @@ nobody tested.
 ## Where the bytes come from
 
 `include_bytes!` puts the file in the binary — in the `.so`, for an Android
-build — and needs no packaging. On Android the more idiomatic alternative is to
-put the files in the APK's `assets/` and read them through `AndroidApp`'s asset
-manager, which keeps the shared object smaller; it is also more machinery, it
-is Android-only, and the bytes it produces are owned rather than `'static`. The
-API here takes `&'static [u8]`, so `include_bytes!` is the supported route
-today.
+build — and needs no packaging. Bytes that arrive while the app runs — a font
+the user imports, a game's own fonts, a file read from the APK's `assets/`
+through `AndroidApp`'s asset manager — are owned, and every registration takes
+them as [`FontData`]: a `Vec<u8>`, a `Box<[u8]>`, an `Arc<[u8]>` or a parley
+`Blob<u8>`, each with `.into()`, as well as `&'static [u8]`:
+
+```rust,ignore
+let bytes: Vec<u8> = std::fs::read("UserFont.ttf")?;
+let face = AppFont::from_data(bytes).with_generics(AppFont::SANS_SERIF);
+App::new(app).fonts(&[face]).run();
+```
+
+Owned bytes are **not leaked**: rinch keeps a reference for as long as an app
+(or an embed's `RinchContext`) that registered them lives, and drops it with
+that app. The tests pin it by the `Arc`'s count after a mount that laid out and
+painted text in the face (issue #2101). Before that, the API took only
+`&'static [u8]`, and an app with run-time fonts had to leak each one.
+
+A registered face cannot be **unregistered** from a running app. fontique has
+`Collection::unregister_font` (per family, width, style and weight), but the
+face also lives in every layout, shaping and glyph cache that used it, so
+removing it means relaying out and repainting everything; rinch does not do
+that. A face's bytes are freed when the app or context that registered them is
+dropped, so an app whose fonts change for good builds a new context.
+
+[`FontData`]: https://docs.rs/rinch/latest/rinch/font/struct.FontData.html
 
 [`App`]: ./windows.md
 [`RinchApp::register_font_data`]: https://docs.rs/rinch/latest/rinch/app/struct.RinchApp.html#method.register_font_data

@@ -384,6 +384,113 @@ pub fn claim_generic_families(
     collection.set_generic_families(generic, families.chain(incumbents));
 }
 
+/// The CSS generic class a face declares for itself, read from its own tables
+/// (#2102). What a browser's generic matching keys on, and the only basis
+/// [`fill_empty_generics`] puts a face in a slot on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaceClass {
+    /// A sans-serif text face, or one that declares no class at all.
+    SansSerif,
+    /// A serif text face.
+    Serif,
+    /// A fixed-pitch face.
+    Monospace,
+    /// A face that declares itself something no text generic means: script,
+    /// handwritten, decorative, ornamental or symbol.
+    Display,
+}
+
+impl FaceClass {
+    /// The generic slots a face of this class can fill when they are empty.
+    /// `Display` fills none.
+    pub fn generics(self) -> &'static [GenericFamily] {
+        match self {
+            // `system-ui` with it: a theme's stack that names no family ends
+            // in one of the two, and on wasm there is nothing else for either
+            // to mean (what `register_font_data` always claimed).
+            FaceClass::SansSerif => &[
+                GenericFamily::SansSerif,
+                GenericFamily::SystemUi,
+                GenericFamily::UiSansSerif,
+            ],
+            FaceClass::Serif => &[GenericFamily::Serif, GenericFamily::UiSerif],
+            FaceClass::Monospace => &[GenericFamily::Monospace, GenericFamily::UiMonospace],
+            FaceClass::Display => &[],
+        }
+    }
+}
+
+/// The class face `index` of the font file `data` declares, from `post`'s
+/// `isFixedPitch`, the OS/2 IBM family class (`sFamilyClass`) and the OS/2
+/// PANOSE classification, in that order; [`FaceClass::SansSerif`] when it
+/// declares none (or cannot be read).
+///
+/// Fixed pitch first, so a monospaced slab serif is `Monospace`. Then the IBM
+/// class: 1–5 and 7 are serif classes, 8 sans serif, 9 ornamental, 10
+/// script and 12 symbolic. Then PANOSE, whose family kind is 2 for Latin text
+/// (its serif-style digit 11–15 is a sans, 2–10 a serif; its proportion 9 is
+/// monospaced) and 3, 4 and 5 for handwritten, decorative and symbol faces.
+/// Many fonts leave both at 0 ("no classification"), and those are treated as
+/// sans serif, the class every face registered as data had before #2102.
+pub fn classify_face(data: &[u8], index: u32) -> FaceClass {
+    use skrifa::raw::TableProvider;
+    let Ok(face) = skrifa::FontRef::from_index(data, index) else {
+        return FaceClass::SansSerif;
+    };
+    if face.post().is_ok_and(|post| post.is_fixed_pitch() != 0) {
+        return FaceClass::Monospace;
+    }
+    let Ok(os2) = face.os2() else {
+        return FaceClass::SansSerif;
+    };
+    match (os2.s_family_class() >> 8) & 0xff {
+        1..=5 | 7 => return FaceClass::Serif,
+        8 => return FaceClass::SansSerif,
+        9 | 10 | 12 => return FaceClass::Display,
+        _ => {}
+    }
+    let panose = os2.panose_10();
+    match panose.first().copied() {
+        Some(2) => match (panose.get(3).copied(), panose.get(1).copied()) {
+            (Some(9), _) => FaceClass::Monospace,
+            (_, Some(2..=10)) => FaceClass::Serif,
+            _ => FaceClass::SansSerif,
+        },
+        Some(3..=5) => FaceClass::Display,
+        _ => FaceClass::SansSerif,
+    }
+}
+
+/// Put each family registered from `data` into the generic slots its class
+/// can fill ([`classify_face`], [`FaceClass::generics`]), **only where the
+/// slot is empty** (#2102).
+///
+/// For font data an app hands over without saying what it is
+/// (`RinchApp::register_font_data`, the embed's fonts): on a platform with no
+/// fonts of its own (wasm, an embed with none), `font-family: sans-serif` has
+/// to mean something, and the first face of the right class is it. A slot
+/// that is already filled — the platform's mapping on a desktop, or an
+/// earlier face — is left as it is, so a later registration never changes
+/// what a generic means. It used to prepend every face to `sans-serif`, so
+/// the last one registered, a script face as easily as a text face, became
+/// what every `sans-serif` element drew in. A face meant for a slot that is
+/// already filled is claimed explicitly (`AppFont::sans_serif`,
+/// [`claim_generic_families`]).
+pub fn fill_empty_generics(
+    collection: &mut Collection,
+    data: &[u8],
+    families: &[(FamilyId, Vec<parley::fontique::FontInfo>)],
+) {
+    for (family, fonts) in families {
+        let index = fonts.first().map_or(0, |font| font.index());
+        for generic in classify_face(data, index).generics() {
+            if collection.generic_families(*generic).next().is_none() {
+                collection.append_generic_families(*generic, core::iter::once(*family));
+            }
+        }
+    }
+}
+
 /// Monospace candidates, in preference order.
 ///
 /// `Roboto Mono` first because it is the face that matches the Roboto UI font

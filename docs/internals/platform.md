@@ -831,6 +831,27 @@ glyph or a tap lands on the wrong character. The repair fills `monospace`,
 empty; `ui-rounded` and `fangsong` are deliberately left alone (Android has no
 face for either).
 
+**Registered font data fills only empty generic slots, by its own class**
+(`rinch_dom::fonts::fill_empty_generics` / `classify_face`, #2102). Data that
+declares nothing — `RinchApp::register_font_data`, the embed's
+`RinchContextConfig::fonts` and `register_font` — used to be *claimed* for
+`sans-serif` and `system-ui` (`claim_generic_families`, a prepend), so the face
+registered **last** headed the slot: a game's script face took over every
+`sans-serif` element. Now each registered family is classified from its own
+tables — `post.isFixedPitch` → monospace; OS/2 IBM class 1–5/7 → serif, 8 →
+sans, 9/10/12 → display; else PANOSE family 2 (proportion 9 → monospace, serif
+style 2–10 → serif, else sans), family 3–5 → display; unclassified → sans — and
+appended to that class's slots (`FaceClass::generics`) **only where the slot is
+empty** (`generic_families(g).next().is_none()`, platform map included). A
+display face fills none. So on wasm the first sans face is `sans-serif` for
+good, and on a desktop (fontconfig fills every slot) data changes no generic.
+An explicit claim (`AppFont::sans_serif`, `with_generics`) still prepends. The
+pins are in `crates/rinch/src/app/font_tests.rs` (bare no-system-fonts
+contexts, plus the desktop shape against the platform's map),
+`crates/rinch/tests/embed_fonts_2101_2102.rs` and, in Chrome,
+`embed_web_fonts_2102.rs`; their fixtures are Inter with its `name` table and
+class rewritten (`crates/rinch/tests/support/font_variants.rs`).
+
 **A font stack that resolves to nothing ends in the primary `sans-serif` face**
 (`rinch_dom::fonts::parley_font_family`, #1198). parley queries a cluster with
 the Unicode `Emoji` property — the ASCII digits, `#` and `*` have it, as keycap
