@@ -136,35 +136,37 @@ where
         }
     }
 
-    // Initial render
-    let initial_idx = discriminant();
-    if initial_idx < branches.len() {
-        *current_index.borrow_mut() = initial_idx;
-        render_branch(
-            &doc_weak,
-            parent_id,
-            &marker,
-            branches[initial_idx].as_ref(),
-            &current_content,
-            &current_scope,
-            creator_scope_id,
-        );
-    }
-
     // Create Effect that swaps branches when discriminant changes
     let idx_clone = current_index.clone();
     let content_clone = current_content.clone();
     let scope_clone = current_scope.clone();
     let doc_weak_clone = doc_weak.clone();
+    let branches_init = branches.clone();
     let branches_clone = branches;
     let marker_effect = marker_clone;
     // The effect's first run only subscribes: the arm was built above.
     let first_run = std::cell::Cell::new(true);
 
+    // Created before the initial arm is built, for the same reason and with
+    // the same `pending` replay as `show_dom` (issue #2105).
+    let building = Rc::new(std::cell::Cell::new(true));
+    let pending = Rc::new(std::cell::Cell::new(false));
+    let building_effect = building.clone();
+    let pending_effect = pending.clone();
+
     let effect = Effect::new(move || {
         let new_idx = discriminant();
-        let old_idx = *idx_clone.borrow();
         let first = first_run.replace(false);
+        if first {
+            // Subscribe and record the arm; the initial build follows below.
+            *idx_clone.borrow_mut() = new_idx;
+            return;
+        }
+        if building_effect.get() {
+            pending_effect.set(true);
+            return;
+        }
+        let old_idx = *idx_clone.borrow();
 
         // Swap when the arm changed. An arm that binds a name is also rebuilt
         // when the discriminant re-ran and chose it again: a value the
@@ -241,6 +243,25 @@ where
             }
         }
     });
+
+    // Initial render, after the effect exists (see `building` above).
+    let initial_idx = *current_index.borrow();
+    if initial_idx < branches_init.len() {
+        render_branch(
+            &doc_weak,
+            parent_id,
+            &marker,
+            branches_init[initial_idx].as_ref(),
+            &current_content,
+            &current_scope,
+            creator_scope_id,
+        );
+    }
+
+    building.set(false);
+    if pending.replace(false) {
+        effect.run();
+    }
 
     scope.create_effect_from(effect);
 

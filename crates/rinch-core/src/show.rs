@@ -194,47 +194,40 @@ where
         }
     }
 
-    // Initial render
-    {
-        let is_showing = *showing.borrow();
-        if is_showing {
-            insert_content_after_marker(
-                &doc_weak,
-                parent_id,
-                &marker,
-                then_fn.as_ref(),
-                &current_content,
-                &current_scope,
-                creator_scope_id,
-            );
-        } else if let Some(ref else_fn) = else_fn {
-            insert_content_after_marker(
-                &doc_weak,
-                parent_id,
-                &marker,
-                else_fn.as_ref(),
-                &current_content,
-                &current_scope,
-                creator_scope_id,
-            );
-        }
-    }
-
     // Create Effect that swaps content when condition changes
     let showing_clone = showing.clone();
     let current_content_clone = current_content.clone();
     let current_scope_clone = current_scope.clone();
     let doc_weak_clone = doc_weak.clone();
+    let then_fn_init = then_fn.clone();
+    let else_fn_init = else_fn.clone();
     let then_fn_clone = then_fn;
     let else_fn_clone = else_fn;
     let marker_effect = marker_clone.clone();
-    // The effect's first run only subscribes: the branch was built above.
+    // The effect's first run only subscribes: the initial branch is built
+    // after it, below.
     let first_run = std::cell::Cell::new(true);
+    // The effect is created *before* the initial branch is built, so it
+    // subscribes to the condition's signals ahead of every effect the branch
+    // creates and so runs first on a write (effects run in creation order,
+    // issue #154). A nested `if let` on the same signal is then disposed by
+    // this effect's rebuild before it can rebuild itself for nothing (issue
+    // #2105). A write that lands *during* the initial build (the branch writing
+    // a signal the condition reads) is parked in `pending` and replayed once
+    // the build is in place, so it cannot swap content that is half-built.
+    let building = Rc::new(std::cell::Cell::new(true));
+    let pending = Rc::new(std::cell::Cell::new(false));
+    let building_effect = building.clone();
+    let pending_effect = pending.clone();
 
     let effect = Effect::new(move || {
         let new_showing = when();
         let old_showing = *showing_clone.borrow();
         let first = first_run.replace(false);
+        if building_effect.get() && !first {
+            pending_effect.set(true);
+            return;
+        }
 
         // Swap when the condition flipped. A rebinding then-branch is also
         // rebuilt when `when` re-ran and still holds: a value it read changed,
@@ -340,6 +333,37 @@ where
             }
         }
     });
+
+    // Initial render, after the effect exists (see `building` above).
+    {
+        let is_showing = *showing.borrow();
+        if is_showing {
+            insert_content_after_marker(
+                &doc_weak,
+                parent_id,
+                &marker,
+                then_fn_init.as_ref(),
+                &current_content,
+                &current_scope,
+                creator_scope_id,
+            );
+        } else if let Some(ref else_fn) = else_fn_init {
+            insert_content_after_marker(
+                &doc_weak,
+                parent_id,
+                &marker,
+                else_fn.as_ref(),
+                &current_content,
+                &current_scope,
+                creator_scope_id,
+            );
+        }
+    }
+
+    building.set(false);
+    if pending.replace(false) {
+        effect.run();
+    }
 
     // Attach the toggle effect to the parent scope so it lives as long as
     // the Show's container node. Previously stored globally which leaked.

@@ -516,3 +516,54 @@ fn an_if_let_in_a_keyed_row_survives_a_reorder_and_follows_its_row() {
     assert_eq!(text(&root), "2:y;1:z;");
     assert_eq!(renders(), 3);
 }
+
+// ============================================================
+// A write during the initial build
+// ============================================================
+
+/// A branch body that, the first time, writes the very signal its condition
+/// reads.
+fn bump(__scope: &mut RenderScope, count: Signal<Option<u32>>, n: u32) -> NodeHandle {
+    if n == 0 {
+        count.set(Some(1));
+    }
+    mark(__scope, &format!("n{n};"))
+}
+
+fn flip_off(__scope: &mut RenderScope, flag: Signal<bool>) -> NodeHandle {
+    flag.set(false);
+    mark(__scope, "on;")
+}
+
+#[component]
+fn self_writing(count: Signal<Option<u32>>, flag: Signal<bool>) -> NodeHandle {
+    rsx! {
+        div {
+            if let Some(n) = count.get() {
+                { bump(__scope, count, n) }
+            }
+            if flag.get() {
+                { flip_off(__scope, flag) }
+            } else {
+                { mark(__scope, "off;") }
+            }
+        }
+    }
+}
+
+/// The condition's effect exists before the initial build (so it runs ahead of
+/// effects the branch creates); a write the build itself makes is replayed
+/// after the build, not applied to half-built content.
+#[test]
+fn a_write_during_the_initial_build_is_replayed_after_it() {
+    let count = Signal::new(Some(0u32));
+    let flag = Signal::new(true);
+    let (_doc, _scope, root) = mount(|s| self_writing(s, count, flag));
+    assert_eq!(text(&root), "n1;off;");
+    let content: Vec<_> = root
+        .children()
+        .into_iter()
+        .filter(|n| n.node_type() != Some(8))
+        .collect();
+    assert_eq!(content.len(), 2, "one node per construct: {content:?}");
+}
