@@ -330,13 +330,33 @@ fn an_else_if_let_follows_its_own_binding() {
     assert_eq!(text(&root), "neither");
 }
 
-/// A rebuild disposes the old branch: an effect it created stops running.
+thread_local! {
+    static CLEANUPS: Cell<u32> = const { Cell::new(0) };
+    static TICK_RUNS: Cell<u32> = const { Cell::new(0) };
+}
+
+/// A branch body that registers a cleanup on the branch's own scope and an
+/// effect that counts its runs.
+fn disposable(__scope: &mut RenderScope, name: &str, tick: Signal<u32>) -> NodeHandle {
+    __scope.on_cleanup(|| CLEANUPS.with(|c| c.set(c.get() + 1)));
+    let p = __scope.create_element("p");
+    let t = __scope.create_text(name);
+    p.append_child(&t);
+    __scope.create_effect(move || {
+        TICK_RUNS.with(|r| r.set(r.get() + 1));
+        let _ = tick.get();
+    });
+    p
+}
+
+/// A rebuild disposes the old branch's scope: its cleanup runs, and an effect
+/// it created stops running.
 #[component]
 fn inner_effect(user: Signal<Option<String>>, tick: Signal<u32>) -> NodeHandle {
     rsx! {
         div {
             if let Some(name) = user.get() {
-                p { {name} ":" {move || tick.get().to_string()} }
+                { disposable(__scope, &name, tick) }
             }
         }
     }
@@ -347,13 +367,96 @@ fn a_rebuild_disposes_the_old_branch() {
     let user = Signal::new(Some("A".to_string()));
     let tick = Signal::new(0u32);
     let (_doc, _scope, root) = mount(|s| inner_effect(s, user, tick));
-    assert_eq!(text(&root), "A:0");
+    assert_eq!(text(&root), "A");
+    assert_eq!(TICK_RUNS.with(Cell::get), 1);
+    assert_eq!(CLEANUPS.with(Cell::get), 0);
+
     user.set(Some("B".into()));
+    assert_eq!(text(&root), "B");
+    assert_eq!(CLEANUPS.with(Cell::get), 1, "the old branch's scope was disposed");
+    assert_eq!(TICK_RUNS.with(Cell::get), 2, "the new branch's effect ran once");
+
     tick.set(4);
-    assert_eq!(text(&root), "B:4");
-    let div = root.children();
-    let ps: Vec<_> = div.iter().filter(|n| n.node_type() != Some(8)).collect();
+    assert_eq!(
+        TICK_RUNS.with(Cell::get),
+        3,
+        "only the live branch's effect re-runs; the old one is disposed"
+    );
+    let ps: Vec<_> = root
+        .children()
+        .into_iter()
+        .filter(|n| n.node_type() != Some(8))
+        .collect();
     assert_eq!(ps.len(), 1, "the old branch's markup is gone: {ps:?}");
+}
+
+// ============================================================
+// Nested binding branches on one signal
+// ============================================================
+
+#[component]
+fn nested(user: Signal<Option<String>>) -> NodeHandle {
+    rsx! {
+        div {
+            if let Some(a) = user.get() {
+                div {
+                    { mark(__scope, &format!("o{a};")) }
+                    if let Some(b) = user.get() {
+                        { mark(__scope, &format!("i{b};")) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn nested_binding_branches_on_one_signal_build_once_per_write() {
+    let user = Signal::new(Some("a".to_string()));
+    let (_doc, _scope, root) = mount(|s| nested(s, user));
+    assert_eq!(text(&root), "oa;ia;");
+    assert_eq!(renders(), 2);
+
+    // The outer branch rebuilds and takes the inner one with it. The inner
+    // branch must not first rebuild on its own and then again inside the
+    // outer's rebuild.
+    user.set(Some("b".into()));
+    assert_eq!(text(&root), "ob;ib;");
+    assert_eq!(renders(), 4, "outer once, inner once");
+    user.set(Some("c".into()));
+    assert_eq!(renders(), 6);
+}
+
+// ============================================================
+// Guards
+// ============================================================
+
+#[component]
+fn guarded(sel: Signal<Option<u32>>, limit: Signal<u32>) -> NodeHandle {
+    rsx! {
+        div {
+            match sel.get() {
+                Some(n) if n > limit.get() => { mark(__scope, &format!("big {n}")) },
+                Some(n) => { mark(__scope, &format!("item {n}")) },
+                None => { mark(__scope, "none") },
+            }
+        }
+    }
+}
+
+#[test]
+fn an_earlier_guard_s_read_rebuilds_a_later_binding_arm() {
+    let sel = Signal::new(Some(5u32));
+    let limit = Signal::new(10u32);
+    let (_doc, _scope, root) = mount(|s| guarded(s, sel, limit));
+    assert_eq!(text(&root), "item 5");
+    assert_eq!(renders(), 1);
+    // The first arm's guard read `limit`; the second arm still wins.
+    limit.set(20);
+    assert_eq!(text(&root), "item 5");
+    assert_eq!(renders(), 2, "the discriminant re-ran: the binding arm rebuilds");
+    limit.set(2);
+    assert_eq!(text(&root), "big 5");
 }
 
 // ============================================================
