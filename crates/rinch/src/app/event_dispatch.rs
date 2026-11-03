@@ -3690,7 +3690,7 @@ impl RinchApp {
         // out of the `LocalFile`s; the paths handler still gets every path.
         // On wasm32 (an embed build in a browser) there is no file system to
         // read a path from, so the handler gets no files.
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         let files: Vec<rinch_core::file::LocalFile> = if file_handler.is_some() {
             paths
                 .iter()
@@ -3699,7 +3699,7 @@ impl RinchApp {
         } else {
             Vec::new()
         };
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let files: Vec<rinch_core::file::LocalFile> = Vec::new();
         if let Some(id) = path_handler {
             events::set_click_context(context);

@@ -39,10 +39,10 @@
 //! }
 //! ```
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use native::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod native {
     use rfd::{FileDialog, MessageButtons, MessageDialog};
     use std::path::{Path, PathBuf};
@@ -349,11 +349,11 @@ mod native {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use web::*;
 
 /// The browser's message dialogs: `window.alert` / `window.confirm`.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web {
     /// The severity of a message. Natively it picks the dialog's icon; the
     /// browser draws none, so on the web it is accepted and ignored.

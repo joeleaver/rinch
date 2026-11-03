@@ -1586,7 +1586,10 @@ impl RinchApp {
         });
 
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
-        #[cfg(all(feature = "image-network", not(target_arch = "wasm32")))]
+        #[cfg(all(
+            feature = "image-network",
+            not(all(target_arch = "wasm32", target_os = "unknown"))
+        ))]
         {
             doc.borrow_mut().tree.image_loader =
                 Some(std::sync::Arc::new(crate::image_loader::NetworkImageLoader));
