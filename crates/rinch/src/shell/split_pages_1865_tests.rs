@@ -708,6 +708,28 @@ fn gpu_split_pages_random() {
     );
 }
 
+/// #2103: random seed 9, shrunk. A glyph's antialiased edge ("Ag Jy") and a
+/// later sibling's blurred box-shadow tail meet over the surface; the split
+/// composite was two levels off in-scene at (176,100), past D10.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_pages_2103_glyph_edge_shadow_tail() {
+    let html = r#"<div style="position:absolute;left:0;top:0;width:200px;height:120px"><div style="position:absolute;left:111px;top:82px;width:53px;height:12px;border-radius:5px;"><div data-render-surface="1" style="position:absolute;left:41px;top:4.75px;width:54px;height:39px;"></div><div style="position:absolute;left:12px;top:6px;width:88px;height:15px;box-shadow:14px -14px 11px rgba(83,160,180,0.56);"><span style="font-size:26px;line-height:13px;color:rgba(26,94,162,1)">Ag Jy</span></div></div><div style="position:absolute;left:146px;top:78px;width:71px;height:16px;border-radius:6px;box-shadow:-5px 3px 10px rgba(161,180,177,1);"></div></div>"#;
+    let (_, frames) = generate(9);
+    let frames: Vec<Frame> = frames.into_iter().filter(|f| f.id == 1).collect();
+    assert_eq!(frames.len(), 1, "seed 9 makes surface 1's frame");
+    let o = oracle(html, &frames);
+    eprintln!("CASE {}", o.summary("2103"));
+    assert_eq!(o.regions.len(), 1, "the surface splits");
+    assert!(!o.tainted[0], "the slice is not tainted");
+    let past = o.over_classes();
+    assert!(
+        past.is_empty(),
+        "past D10: {:?}",
+        &past[..past.len().min(8)]
+    );
+}
+
 fn enc_fingerprint(s: &vello::Scene) -> String {
     let e = s.encoding();
     let mut out = format!(
