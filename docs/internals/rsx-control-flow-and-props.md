@@ -105,6 +105,28 @@ changes. The branch destructures the scrutinee when it is built, so before
 - Inside a keyed `for` row, an `if let` on the row's own signal rebuilds only
   that row's branch, and a reorder rebuilds none. An `if let` *around* a keyed
   `for` rebuilds the whole list (fresh rows) when its bound value changes.
+- **`#[once]`** (parsed by `node::parse_once_marker`) on an `if` sets `once` on
+  it and every `else if` of its chain; on a `match` it sets `RsxMatchBlock::once`;
+  on an arm `RsxMatchArm::once`. A `once` branch gets `false` for "binds", so
+  it takes the plain `show_dom` / a `false` flag. Any other attribute is an
+  error; `#[once]` before something that is not an `if`/`match` is an error at
+  the attribute (`parse_marked_control_flow`). A transparent brace and a braced
+  arm body look past a leading attribute. Pinned by
+  `rsx_if_let_once_2105.rs` and, for focus in a browser,
+  `crates/rinch-web/tests/if_let_focus_2105.rs`.
+- **The condition/discriminant effect is created before the initial branch is
+  built** (`show_dom_impl`, `match_dom_impl`). Effects run in creation order
+  (#154), so the outer effect now runs ahead of every effect its branch
+  creates; a nested binding `if let` on the same signal is disposed by the
+  outer rebuild before it can rebuild itself (before this, one write built the
+  outer once and the inner twice). A write the initial build itself makes to a
+  signal the condition reads would otherwise reach the effect mid-build and
+  swap half-built content; it is parked (`building`/`pending`) and replayed by
+  `effect.run()` once the build is in place. The effect's first run only
+  subscribes and records the arm.
+- An uppercase bare binding (`Some(N)`) is classified as a path and never
+  rebuilt: syntax cannot tell it from a `const N`. Documented beside `#[once]`
+  in the guide.
 
 **A braced arm body is decided by how it starts** (issue #395). It holds rsx
 children — several nodes, like an `if`/`for` body — when it starts with `let`,

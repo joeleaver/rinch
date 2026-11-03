@@ -1333,14 +1333,10 @@ What to know about the rebuild:
 
 - **It is a rebuild, not an update.** The branch's own state goes with it:
   focus inside it, its scroll position, the rows of a keyed `for` inside it.
-  When the value changes often and the branch holds such state, bind nothing
-  and read the value reactively inside the branch instead:
-
-  ```rust
-  if current_user.get().is_some() {
-      p { "Welcome, " {|| current_user.get().unwrap_or_default()} "!" }
-  }
-  ```
+  A branch whose own controls write the value it bound — a form whose inputs
+  edit the record it shows, a panel of sliders over the material it shows —
+  would be rebuilt on every keystroke or tick, and its control would lose
+  focus. Mark such a branch [`#[once]`](#once-build-a-branch-once-per-selection).
 
 - **There is no equality check.** The branch cannot compare old and new values
   (they need be neither `PartialEq` nor `'static`), so it rebuilds whenever
@@ -1364,7 +1360,52 @@ What to know about the rebuild:
 
 - **Telling a binding from a constant.** `name` binds; `None`, `Mode::Edit`,
   `0`, `_` do not. A bare identifier that starts with an uppercase letter is
-  read as a constant or unit variant, as Rust's naming convention has it.
+  read as a constant or unit variant, as Rust's naming convention has it — the
+  macro sees only syntax and cannot tell `Some(N)` binding `N` from `Some(N)`
+  matching a `const N`. So an uppercase binding is never rebuilt, exactly as if
+  the branch carried `#[once]`. Name bindings in snake_case.
+- **Nested branches on one signal** are built once per write: the outer
+  branch's rebuild replaces the inner one, which does not also rebuild itself.
+
+#### `#[once]`: build a branch once per selection
+
+`#[once]` before an `if` or a `match` keeps the behaviour rsx had before issue
+#2105: each branch is built when it is selected and keeps the value it bound
+then, however that value changes while it stays selected. Switching branches
+(`Some` → `None`, one arm to another) still rebuilds.
+
+```rust
+let material = Signal::new(Some(Material::default()));
+
+rsx! {
+    #[once]
+    if let Some(m) = material.get() {
+        // The sliders write `material` on every tick; without `#[once]` each
+        // tick would rebuild the panel and drop the drag.
+        Slider { value_fn: move || material.get().map(|m| m.roughness).unwrap_or(0.0),
+                 onchange: move |v| material.update(|m| if let Some(m) = m { m.roughness = v }) }
+        p { "Created " {m.created.to_string()} }   // read once: fine for a value that does not change
+    }
+}
+```
+
+- On an `if`, `#[once]` covers the whole `else if` chain.
+- On a `match`, it covers every arm. It can also go on **one arm**, which is
+  useful when only one arm holds a form:
+
+  ```rust
+  match mode.get() {
+      #[once]
+      Mode::Editing(draft) => { EditForm { draft } },   // its inputs write `mode`
+      Mode::Viewing(item) => { ItemView { item } },     // follows `item`
+  }
+  ```
+
+- Inside a `#[once]` branch, read anything that changes through a reactive
+  closure (`{|| …}`, `value_fn`), not through the binding: the binding is the
+  value at the time the branch was built.
+- `#[once]` is the only attribute rsx accepts there; on an element, or with
+  another name, it is a compile error.
 
 #### How `if` works internally
 

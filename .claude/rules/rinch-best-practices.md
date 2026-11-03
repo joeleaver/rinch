@@ -117,8 +117,9 @@ There are two drag systems. The HTML5-port instinct of `draggable: true` + `ondr
 
 `if let Some(page) = state.page.get() { … {page.title} … }` follows the page: each time the scrutinee's reactive reads change while the pattern still matches, the branch is disposed and built again from the new value (issue #2105). A branch that binds nothing (`Some(_)`, `None`, `0 =>`, `_`, a plain `if`) is built once per selection. Consequences:
 
-- A rebuild drops the branch's local state (focus, scroll, an inner keyed `for`'s rows). To keep it, bind nothing and read the value reactively inside: `if page.get().is_some() { p { {|| page.get().map(|p| p.title).unwrap_or_default()} } }`.
+- A rebuild drops the branch's local state (focus, scroll, an inner keyed `for`'s rows). **A branch whose own controls write its scrutinee (a form, a panel of sliders) must opt out with `#[once]`**, or every keystroke or slider tick rebuilds it and the control loses focus: `#[once] if let Some(info) = mat.get() { … }`, `#[once] match … { … }`, or `#[once]` on one match arm. `#[once]` keeps today's build-once-per-selection behaviour; the branch keeps the value it bound when it was built, so read live values reactively inside it (`{|| …}`, `value_fn`).
 - There is no `PartialEq` check: `Signal::set` of an equal value rebuilds. Put the value behind a `Memo` (its equality cut-off stops the re-run) or write with `set_if_changed`.
+- An uppercase bare binding (`Some(N)`) is read as a constant or unit variant, so it is never rebuilt (as if `#[once]`). Name bindings in snake_case.
 
 ## Iterating & Debugging: rinch-debug + MCP server
 
