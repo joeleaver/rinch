@@ -209,11 +209,24 @@ let gpu = RinchGpuConfig {
         max_storage_buffers_per_shader_stage: 32, // wgpu default is 8
         ..Default::default()
     },
+    // Nice to have: requested only where the adapter supports it.
+    optional_features: wgpu::Features::TIMESTAMP_QUERY,
 };
 App::new(app).gpu_config(gpu).run();
 ```
 
-After startup, `gpu_handle()` returns the shared `device`, `queue`, **and `adapter`** (use `adapter.limits()` to clamp, e.g. `max_buffer_size = min(adapter, 2 GiB)`). The requested features/limits are passed through verbatim — if the adapter can't satisfy them, device creation fails loudly rather than silently dropping a capability.
+After startup, `gpu_handle()` returns the shared `device`, `queue`, **and `adapter`** (use `adapter.limits()` to clamp, e.g. `max_buffer_size = min(adapter, 2 GiB)`). The required features and limits are passed through verbatim — if the adapter can't satisfy them, device creation fails loudly, naming the missing features, rather than silently dropping a capability.
+
+**Optional features** are the ones you can do without: rinch requests those the adapter has and leaves out the rest, and the device still starts. `TIMESTAMP_QUERY` for timing GPU frames is the usual one. Ask the handle what you got:
+
+```rust
+let handle = gpu_handle().unwrap();
+if handle.granted_optional_features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+    // create the query set
+}
+```
+
+`granted_optional_features()` is empty when you asked for none, and with `App::external_gpu`, whose device is yours (read `device.features()` there). Build `RinchGpuConfig` with `..Default::default()` so a field added later does not break your code. In the browser rinch makes no device of its own — your canvas code requests its device — so the same idea is one line there: `required_features: adapter.features() & wanted`.
 
 **Bring your own device.** If you must keep your renderer's exact `DeviceDescriptor`, build the whole GPU stack and hand it to rinch. rinch creates only the window surface (from your `instance`), validates that your adapter can present to it, and composites directly onto your device — no `request_device`, no CPU readback:
 

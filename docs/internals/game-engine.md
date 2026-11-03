@@ -275,7 +275,7 @@ the runtime's own steps against an in-scene window.
 
 | Entry point | Ownership | Use when |
 |---|---|---|
-| `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits })` | rinch creates the device (surface-compatible adapter) with your extra features/limits | You just need more capability — **recommended**, always presents correctly |
+| `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits, optional_features })` | rinch creates the device (surface-compatible adapter) with your extra features/limits, and the optional features the adapter has | You just need more capability — **recommended**, always presents correctly |
 | `App::new(component).external_gpu(ExternalGpu { instance, adapter, device, queue })` | You create the whole stack; rinch makes only the surface, validates present-support, composites onto your device | You must keep your exact `DeviceDescriptor` |
 
 Construct `wgpu` types from **`rinch::wgpu`** (wgpu 30; a separately pinned `wgpu` of another major won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
@@ -315,6 +315,19 @@ nothing.
 - `crates/rinch/src/render_surface.rs` — All RenderSurface types and registry (incl. the wasm32 canvas path: `canvas_element`, `set_resize_callback`, `setup_canvas_events`, `setup_resize_observer`, `WebSurfaceCleanup`)
 - `crates/rinch-web/src/event_delegation.rs` — document-level keyboard/focus routing into the surface (`KeyDown`/`KeyUp`/`TextInput`, focus-clear on outside click)
 - `crates/rinch/src/shell/desktop.rs` — `GpuHandle`, `RinchGpuConfig`, `ExternalGpu`, `WgpuRenderer::new` device injection
+
+**Optional device features (#2085).** `request_rinch_device` (`shell/desktop.rs`) asks for
+`device_features(required, optional, adapter.features(), bgra_surface)`: the required features,
+`optional & adapter`, and `BGRA8UNORM_STORAGE` for a `Bgra8Unorm` surface where the adapter has it.
+A required feature the adapter lacks is an `Err` naming it, before `request_device` (which used to
+report it as a generic failure); a `gpu_config` app panics on it at startup as before.
+`GpuHandle::granted_optional_features()` is `device.features() & optional` (empty for
+`external_gpu`). The shared paths are untouched: a later window, the DevTools window and a
+`RenderSurface` reuse the one device, and `external_gpu` and the embed API never request one. The
+web has no rinch-made device (the app requests its own for a canvas), and Android's shell requests
+every adapter feature but the experimental ones. Pins: `pacing_and_features_tests` (pure), and
+`gpu_optional_features_follow_the_adapter_2085` (`#[ignore]`d, lavapipe in CI: a feature the
+adapter has is granted, one it lacks is left out, and the same one required fails, named).
 - `crates/rinch/src/app_builder.rs` — the `App` builder (incl. `gpu_config` / `external_gpu`); `crates/rinch/src/shell/mod.rs` holds the deprecated shims
 
 ### Embed API

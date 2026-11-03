@@ -278,6 +278,8 @@ pub enum RinchNativeEvent {
     SetWindowSize(f64, f64),
     /// Apply the title `rinch::window::set_window_title` stored (#1770).
     ApplyWindowTitle,
+    /// Apply the vsync setting `rinch::window::set_vsync` stored (#2095).
+    ApplyVsync,
     /// Show a Wayland layer-shell window on this output (#1523).
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).
@@ -611,6 +613,9 @@ pub struct RinchRuntime {
     devtools_renderer: Option<WgpuRenderer>,
     /// DevTools software renderer (used whenever `devtools_renderer` is `None`).
     devtools_soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
+    /// What the main window's surface does with vsync on and off (#2095),
+    /// while it has a renderer; `None` while it is hidden or not yet made.
+    pacing: Option<crate::window::PacingOutcomes>,
     /// DevTools keyboard modifier state.
     devtools_modifiers: winit::keyboard::ModifiersState,
     /// Previous hovered node ID (for detecting changes).
@@ -751,6 +756,7 @@ impl RinchRuntime {
             #[cfg(feature = "gpu")]
             devtools_renderer: None,
             devtools_soft_renderer: None,
+            pacing: None,
             devtools_modifiers: winit::keyboard::ModifiersState::empty(),
             devtools_prev_hovered: None,
             last_paint_time: None,
@@ -1566,6 +1572,9 @@ impl RinchRuntime {
         }
         #[cfg(not(feature = "gpu"))]
         announce_software_renderer();
+        if !hidden {
+            self.note_renderer_pacing();
+        }
 
         // Attach native menu bar to the window if configured
         if let Some(menu) = &self.native_menu {
@@ -1648,6 +1657,9 @@ impl RinchRuntime {
         drop(self.renderer.take());
         drop(self.soft_renderer.take());
         drop(self.window.take());
+        // Nothing presents until it is shown again (#2095).
+        self.pacing = None;
+        crate::window::publish_pacing(None);
         // Its position stays in `saved_geometry`; a gesture ends with it.
         self.layer = None;
         // A re-created window starts on the default cursor.
@@ -1687,6 +1699,7 @@ impl RinchRuntime {
         {
             self.renderer = start_gpu_renderer(&*window, self.gpu_surface_transparent());
         }
+        self.note_renderer_pacing();
 
         // The new window gets the menu bar the first one had (#1533: on
         // Windows the bar is per HWND, so a re-created window had none, and
@@ -1719,6 +1732,50 @@ impl RinchRuntime {
     }
 
     /// Paint the current scene to the window.
+    /// Note what the main window's new renderer does with vsync on and off,
+    /// and publish what it does now (#2095): the GPU renderer's surface
+    /// says; the software renderer has no present mode to switch.
+    fn note_renderer_pacing(&mut self) {
+        #[cfg(feature = "gpu")]
+        let outcomes = self
+            .renderer
+            .as_ref()
+            .map_or(crate::window::PacingOutcomes::UNSUPPORTED, |r| {
+                r.pacing_outcomes()
+            });
+        #[cfg(not(feature = "gpu"))]
+        let outcomes = crate::window::PacingOutcomes::UNSUPPORTED;
+        self.pacing = Some(outcomes);
+        crate::window::publish_pacing(self.pacing);
+    }
+
+    /// Apply `rinch::window::set_vsync` (#2095) to every GPU surface this
+    /// runtime presents to — the main window's and the DevTools window's, so
+    /// a DevTools window repainting beside an uncapped main window does not
+    /// pace the loop to its refresh — publish what the main window's does,
+    /// and redraw both, so the new mode takes effect without waiting for
+    /// something else to ask for a frame. Each surface is configured at its
+    /// next present ([`WgpuRenderer::set_vsync`]).
+    fn apply_vsync(&mut self) {
+        #[cfg(feature = "gpu")]
+        {
+            let on = crate::window::vsync();
+            for renderer in [self.renderer.as_mut(), self.devtools_renderer.as_mut()]
+                .into_iter()
+                .flatten()
+            {
+                renderer.set_vsync(on);
+            }
+        }
+        crate::window::publish_pacing(self.pacing);
+        for window in [self.window.as_ref(), self.devtools_window.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            window.request_redraw();
+        }
+    }
+
     fn paint(&mut self) -> Result<(), String> {
         // Update inspect highlight rect from DevTools store before painting
         self.update_inspect_highlight();
@@ -3836,6 +3893,10 @@ impl RinchRuntime {
             }
             RinchNativeEvent::ApplyWindowTitle => {
                 self.take_stored_title();
+                return;
+            }
+            RinchNativeEvent::ApplyVsync => {
+                self.apply_vsync();
                 return;
             }
             RinchNativeEvent::SetWindowOutput(output) => {

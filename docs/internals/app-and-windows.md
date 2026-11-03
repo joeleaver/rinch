@@ -39,6 +39,7 @@ fn main() {
 | `.window_props(WindowProps)` | Borderless, transparent, icon, `app_id`, `on_close_requested`, … |
 | `.renderer(Renderer)` | `Auto` (GPU, falling back to software), `Gpu` or `Software`; `RINCH_RENDERER` overrides it |
 | `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu` feature) |
+| `.vsync(bool)` | Start with vsync on (default) or off (#2095; `rinch::window::set_vsync` at run time) |
 | `.run()` | Start on desktop; runs until the event loop exits |
 | `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
 | `rinch_web::AppExt::run()` | Start in the browser (`wasm32`, #1769) |
