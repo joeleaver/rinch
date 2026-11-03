@@ -221,7 +221,7 @@ fn a_removed_absolute_damages_the_page_bar() {
 const PAGE_RIGHT: (i32, i32, i32, i32) = (384, 130, 400, 300);
 
 /// The scroller's bar strip: its right 16px.
-const SCROLLER_STRIP: (i32, i32, i32, i32) = (374, 20, 390, 120);
+const SCROLLER_STRIP: (i32, i32, i32, i32) = (374, 20, 390, 121);
 
 /// A row of a scroller grows (in flow, narrow, so nothing it damages reaches
 /// the bar): the range grows and the thumb shortens. Reachable before #770.
@@ -263,4 +263,76 @@ fn a_removed_row_damages_its_scrollers_bar() {
         "positive control: the thumb changed"
     );
     assert_eq!(diff_in(&removed, &want, SCROLLER_STRIP), 0);
+}
+
+/// A 150x100 scroller at `top: 20.3px` holding a 10.3px row and a 90.1px one
+/// (narrow, so neither reaches the bar strip): 100.4px of content in 100px,
+/// which rounds to no range (#2116). Returns the app and the second row.
+fn mount_subpixel() -> (RinchApp, u64) {
+    let row_id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+    let out = row_id.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute(
+            "style",
+            "position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+             background: rgb(60, 70, 90)",
+        );
+        let scroller = scope.create_element("div");
+        scroller.set_attribute(
+            "style",
+            "position: absolute; left: 240px; top: 20.3px; width: 150px; height: 100px; \
+             overflow-y: auto; background: rgb(240, 240, 240)",
+        );
+        for h in ["10.3px", "90.1px"] {
+            let row = scope.create_element("div");
+            row.set_attribute(
+                "style",
+                &format!("width: 60px; height: {h}; background: rgb(0, 160, 0)"),
+            );
+            scroller.append_child(&row);
+            out.set(row.node_id().0);
+        }
+        root.append_child(&scroller);
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    let row = row_id.get();
+    frame(&mut app);
+    frame(&mut app);
+    frame(&mut app);
+    (app, row)
+}
+
+/// The row grows by a sub-pixel amount that crosses the whole-pixel range
+/// (100.4 → 100.55: none → 1px, Chrome's rounding, #2116) while every rounded
+/// rect holds — the row stays `{y: 10, h: 90}`. The bar appears all the same,
+/// so a geometry change is read from the unrounded layout too.
+#[test]
+fn a_sub_pixel_growth_that_crosses_the_whole_pixel_range_damages_the_bar() {
+    let (mut app, row) = mount_subpixel();
+    let (before, _) = frame(&mut app);
+    let layout_before = {
+        let doc = app.doc.clone().unwrap();
+        let d = doc.borrow();
+        d.tree.get(row).unwrap().layout
+    };
+    set_style(&app, row, "height", "90.25px");
+    let (grown, stats) = frame(&mut app);
+    {
+        let doc = app.doc.clone().unwrap();
+        let d = doc.borrow();
+        assert_eq!(
+            d.tree.get(row).unwrap().layout,
+            layout_before,
+            "fixture: the rounded rect holds"
+        );
+    }
+    assert_partial(&stats);
+    let want = full_frame(&mut app);
+    assert!(
+        diff_in(&before, &want, SCROLLER_STRIP) > 0,
+        "positive control: the bar appeared"
+    );
+    assert_eq!(diff_in(&grown, &want, SCROLLER_STRIP), 0);
 }

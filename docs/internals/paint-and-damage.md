@@ -256,7 +256,7 @@ and the partial frame drew no page bar where the full frame did — batch
 `Scrollbars` (scale 1) as the last paint consumed it, and
 `paint::bar_watch_scrollers` names the containers to check: every scroll
 container that is an ancestor of a paint-dirty node whose **geometry** may
-have moved (never painted, `prev_layout != layout`, its `position` changed, or
+have moved (never painted, `prev_layout != layout`, its unrounded Taffy rect changed (#2116), its `position` changed, or
 a transform on it now or when painted) or of a parent a subtree left
 (`NodeTree::bar_check_parents`, pushed by `mark_subtree_paint_dirty` for the
 subtree's root), and every dirty container itself. Any container whose range
@@ -295,6 +295,71 @@ in Chrome). The body fallback now also asks `scrolls_y()`/`scrolls_x()`, so an
 beside it: `clamp_scroll_offsets` never clamps the x offset (**#1368**).
 (`apply_scroll_into_view` measured a scroller's band from its border-box top
 against its content-box height until #842 made it the padding box, #1367.)
+
+**A scroller's range is Chrome's whole-pixel range (#2116).** Taffy rounds
+a box's *location* on its own and its *size* from its absolute edges, so the
+rounded rects of a container's children need not add up to its rounded size:
+the in-window menu bar's two-item dropdown (border 1, padding 4, two 32.8px
+rows and a separator) fits exactly and measured a pixel past its content box at
+some vertical positions, so it painted a bar and took the wheel. An IFC root
+did the same from the other side: its lines are unrounded (three 24.8px lines
+are 74.4px) and its box rounded to 74. Chrome 156 rounds the scrollable
+overflow and the padding box each to a whole CSS pixel (from 1/64px layout
+units), independently of the box's position and of the device scale (measured
+at 1, 1.25 and 1.5), and shows a bar when the first is larger: 0.4px of
+overflow is none, 0.5px is a pixel's range. So for a box that scrolls on either
+axis, `content_extents` (`scroller_extents`) measures from Taffy's
+**unrounded** layout — the container's size, and the rect of every box Taffy
+laid out directly in it (`child_rect`; a box whose `layout` is not a rounding
+of its unrounded rect, such as an absolute one moved by a scroll, is read
+rounded) — and an overflowing scrolling axis reports the content box plus that
+whole-pixel range, so the bar, `overflows`, `can_scroll_toward`, the wheel's
+walks, layout's clamp and `scrollHeight` all read one number; an axis that
+fits keeps its measure, capped at the content box. The rounded rects also
+mis-sized real overflow: a 100.4px box with 2.3px padding and ten pixels of
+overflow measured a range of 8.3 at some positions (Chrome: 10). The range
+then lands on the device grid as before (#1543). Pins:
+`rinch-dom/tests/subpixel_overflow_2116_tests.rs` (the dropdown, an IFC root,
+Chrome's threshold at three client heights, and whole-pixel overflow, each at
+ten positions and three scales; the half-pixel thresholds on both sides; the
+horizontal axis). On the web the browser decides, and these are its answers
+for the same markup.
+
+**Cost.** Only the in-flow boxes' margin boxes are read unrounded (the walk
+keeps them apart from its other contributions, `Measured::flow`), and that
+walk is memoized per container (`scrollbar::ExactFlow`) keyed on
+`NodeTree::layout_epoch` — moved by a layout pass, a text-only IFC rebuild,
+`out_of_flow::replace_all` and a subtree's removal, and deliberately not by a
+paint-only restyle or a scroll (`HitCache::shape_generation` moves on every
+paint-dirty push, so a hover frame walked every row unrounded: +3.8% on
+`shell::hover_frame`). Every call makes the rounded walk it made before,
+monomorphized so it has no per-box unrounded branch
+(`extend_with_children::<false>`), and then a lookup. Layout's clamp first
+asks the rounded in-flow measure (`content_extents_in_flow_rounded`) and
+skips any offset more than `ROUNDED_RANGE_SLACK` (4px) inside it, so a
+relayout of a long list scrolled anywhere but its end measures nothing
+unrounded. Callgrind against main (`abs_badge_extents`, 500 rows): 143904 →
+142082; `abs_badge_relayout` unchanged.
+
+Two limits. Only an in-flow box Taffy laid out directly in the scroller is
+read unrounded: an absolute, hoisted, `sticky` or `relative`-offset or
+transformed box *where it is drawn* (whose `layout` is written after Taffy,
+or which is measured with the rounded walk's other contributions) and an
+inline one placed by its line are still read at their rounded rects, against
+the unrounded client box, so their sub-pixel overflow can still decide a
+pixel the wrong way. And only the *difference* is Chrome's:
+`scrollHeight`/`clientHeight` (`content_extents`/`visible_extents`) are the
+content-box measures, each of which can be a pixel off Chrome's rounded value
+while the range between them is right.
+
+**A sub-pixel change that moves the range damages the bar.** The range is
+measured unrounded, so content growing from 100.4 to 100.55px in a 100px
+scroller gives it a pixel's range while every rounded rect holds (the row stays
+`{y: 10, h: 90}`). `PaintedState::unrounded` records each node's unrounded
+Taffy rect at `consume_paint_dirty`, and `geometry_may_have_moved` compares it
+last, after the rounded checks, so a dirty node whose box held at both
+precisions still measures no range. Pin:
+`scrollbar_range_damage_tests::a_sub_pixel_growth_that_crosses_the_whole_pixel_range_damages_the_bar`.
 
 **How each box counts (#776, #775).** `extend_with_child` gives every box two
 contributions, as Chrome 156 measures them. An **in-flow** box (anything but
