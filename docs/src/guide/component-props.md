@@ -1476,7 +1476,8 @@ write `judge_drop: Some(Rc::new(|drop: &TreeDrop| …))`.
 - `DragValues` = `Rc<dyn Fn(&str) -> Vec<String>>`, `JudgeDrop` = `Rc<dyn Fn(&TreeDrop) -> DropVerdict>`, `AcceptsChildren` = `Rc<dyn Fn(&TreeNodeData) -> bool>`.
 
 A draggable row's click (select, expand) runs on the release, once the drag
-has failed to start, on both backends.
+has failed to start, on both backends. It is the click of what was pressed:
+the chevron expands without selecting the row.
 
 **Keyboard types:**
 
