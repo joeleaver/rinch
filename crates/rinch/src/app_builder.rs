@@ -312,7 +312,7 @@ where
     /// On `wasm32` it returns an `App<F, WithMenuBar>` rather than `Self`, so
     /// that only an app that has a menu bar links it (see [`NoMenuBar`]); a
     /// chain reads the same either way.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn menu(mut self, menus: Vec<(&str, crate::menu::Menu)>) -> Self {
         self.menus = Some(owned_menus(menus));
         self
@@ -320,7 +320,7 @@ where
 
     /// See the non-`wasm32` [`menu`](App::menu): the same, in the
     /// [`WithMenuBar`] state.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub fn menu(self, menus: Vec<(&str, crate::menu::Menu)>) -> App<F, WithMenuBar> {
         App {
             component: self.component,

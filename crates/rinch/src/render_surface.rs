@@ -369,7 +369,7 @@ impl SurfacePointer {
     feature = "desktop",
     feature = "android",
     feature = "embed",
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PointerPhase {
@@ -384,7 +384,7 @@ pub(crate) enum PointerPhase {
     feature = "desktop",
     feature = "android",
     feature = "embed",
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 #[derive(Debug, Default)]
 pub(crate) struct PinchTracker {
@@ -399,7 +399,7 @@ pub(crate) struct PinchTracker {
     feature = "desktop",
     feature = "android",
     feature = "embed",
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 impl PinchTracker {
     fn spread(&self) -> Option<(f32, f32, f32)> {
@@ -483,7 +483,10 @@ pub(crate) struct SurfaceBuffer {
 pub struct SurfaceWriter {
     buffer: Arc<Mutex<SurfaceBuffer>>,
     needs_redraw: Arc<AtomicBool>,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    #[cfg_attr(
+        not(all(target_arch = "wasm32", target_os = "unknown")),
+        allow(dead_code)
+    )]
     surface_id: usize,
 }
 
@@ -532,7 +535,7 @@ impl SurfaceWriter {
             request_repaint();
         }
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
             web_blit_surface(self.surface_id, &self.buffer);
         }
@@ -588,10 +591,10 @@ pub struct RenderSurfaceHandle {
     /// Layout position in logical pixels (window coordinates), updated each frame.
     pub(crate) layout_position: Arc<Mutex<(f32, f32)>>,
     /// The underlying canvas element (web only).
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub(crate) canvas: std::rc::Rc<RefCell<Option<web_sys::HtmlCanvasElement>>>,
     /// The 2D rendering context for the canvas (web only).
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub(crate) canvas_ctx: std::rc::Rc<RefCell<Option<web_sys::CanvasRenderingContext2d>>>,
     /// Per-frame render callback invoked each animation frame.
     #[allow(clippy::type_complexity)]
@@ -630,12 +633,12 @@ pub struct RenderSurfaceHandle {
     pub(crate) gpu_frame_fresh: std::rc::Rc<Cell<bool>>,
     /// Web teardown state — the `ResizeObserver` and canvas event listeners, kept
     /// alive here (not leaked) so they can be disconnected/removed on unmount.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub(crate) web_cleanup: std::rc::Rc<RefCell<Option<WebSurfaceCleanup>>>,
     /// Whether a `requestAnimationFrame` loop is currently driving this surface's
     /// render callback (web only). Prevents double-starting a loop and lets a
     /// remount restart one after the previous loop self-terminated on unmount.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub(crate) raf_running: std::rc::Rc<Cell<bool>>,
 }
 
@@ -790,7 +793,7 @@ impl RenderSurfaceHandle {
     ///
     /// Returns `(0.0, 0.0, 0, 0)` before the first paint.
     pub fn layout_rect(&self) -> (f32, f32, u32, u32) {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         if let Some(canvas) = self.canvas.borrow().as_ref() {
             let r = canvas.get_bounding_client_rect();
             *self.layout_position.lock().unwrap() = (r.left() as f32, r.top() as f32);
@@ -827,7 +830,7 @@ impl RenderSurfaceHandle {
     ///
     /// Events, layout size, and the resize observer work regardless of
     /// which context type is used.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub fn canvas_element(&self) -> Option<web_sys::HtmlCanvasElement> {
         self.canvas.borrow().clone()
     }
@@ -842,7 +845,7 @@ impl RenderSurfaceHandle {
     pub fn set_render_callback(&self, callback: impl FnMut(&SurfaceWriter, u32, u32) + 'static) {
         *self.render_callback.borrow_mut() = Some(Box::new(callback));
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         start_raf_loop(self.id, self.raf_running.clone());
     }
 
@@ -903,7 +906,7 @@ impl RenderSurfaceHandle {
 
     /// Whether a `requestAnimationFrame` loop is driving this surface (web
     /// only). For tests of the loop's pacing.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[doc(hidden)]
     pub fn __render_loop_running(&self) -> bool {
         self.raf_running.get()
@@ -956,7 +959,7 @@ impl RenderSurfaceHandle {
         request_repaint();
         // Inside the render callback its cell is borrowed, and the loop that is
         // running it reads the request when the callback returns.
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         if self
             .render_callback
             .try_borrow()
@@ -982,7 +985,7 @@ fn wants_next_frame(continuous: Option<bool>, requested_since: bool) -> bool {
     continuous == Some(true) || requested_since
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn is_registered(id: usize) -> bool {
     SURFACE_REGISTRY.with(|reg| reg.borrow().iter().any(|s| s.id == id))
 }
@@ -1105,9 +1108,9 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
         is_video,
         layout_size: Arc::new(Mutex::new((0, 0))),
         layout_position: Arc::new(Mutex::new((0.0, 0.0))),
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         canvas: std::rc::Rc::new(RefCell::new(None)),
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         canvas_ctx: std::rc::Rc::new(RefCell::new(None)),
         render_callback: std::rc::Rc::new(RefCell::new(None)),
         resize_callback: std::rc::Rc::new(RefCell::new(None)),
@@ -1119,9 +1122,9 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
         gpu_target: std::rc::Rc::new(RefCell::new(None)),
         #[cfg(feature = "gpu")]
         gpu_frame_fresh: std::rc::Rc::new(Cell::new(false)),
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         web_cleanup: std::rc::Rc::new(RefCell::new(None)),
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         raf_running: std::rc::Rc::new(Cell::new(false)),
     }
 }
@@ -1282,7 +1285,7 @@ pub fn unregister_render_surface(id: usize) {
         feature = "desktop",
         feature = "android",
         feature = "embed",
-        target_arch = "wasm32"
+        all(target_arch = "wasm32", target_os = "unknown")
     ))]
     let _ = PINCHES.try_with(|p| p.borrow_mut().retain(|(s, _)| *s != id));
 }
@@ -1739,7 +1742,7 @@ fn set_and_notify_size(surface: &RenderSurfaceHandle, width: u32, height: u32) {
             }
             // The web's loop stops while the surface has no size; a size
             // starts it again (a no-op while it runs).
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             if surface.render_callback.borrow().is_some() {
                 start_raf_loop(surface.id, surface.raf_running.clone());
             }
@@ -2311,7 +2314,7 @@ thread_local! {
     feature = "desktop",
     feature = "android",
     feature = "embed",
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 thread_local! {
     /// Each surface's touches, for [`SurfaceEvent::Pinch`].
@@ -2349,7 +2352,7 @@ pub(crate) fn surface_is_registered(id: usize) -> bool {
     feature = "desktop",
     feature = "android",
     feature = "embed",
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 fn wants_pointer_events(id: usize) -> bool {
     SURFACE_REGISTRY.with(|reg| {
@@ -2367,7 +2370,7 @@ fn wants_pointer_events(id: usize) -> bool {
     feature = "desktop",
     feature = "android",
     feature = "embed",
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 pub(crate) fn dispatch_surface_pointer(
     id: usize,
@@ -2427,7 +2430,7 @@ pub(crate) fn dispatch_surface_pointer(
     feature = "desktop",
     feature = "android",
     feature = "embed",
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 pub(crate) fn dispatch_surface_pointer_cancel(id: usize, x: f32, y: f32, pointer: SurfacePointer) {
     if !wants_pointer_events(id) {
@@ -2447,7 +2450,7 @@ pub(crate) fn dispatch_surface_pointer_cancel(id: usize, x: f32, y: f32, pointer
     feature = "desktop",
     feature = "android",
     feature = "embed",
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 pub(crate) fn dispatch_surface_zoom(id: usize, x: f32, y: f32, scale: f32) -> bool {
     if !wants_pointer_events(id) || !scale.is_finite() || scale <= 0.0 {
@@ -2465,7 +2468,7 @@ pub(crate) fn dispatch_surface_zoom(id: usize, x: f32, y: f32, scale: f32) -> bo
     feature = "desktop",
     feature = "android",
     feature = "embed",
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 pub(crate) fn wheel_zoom_scale(delta_y: f32) -> f32 {
     (-delta_y / 100.0).exp()
@@ -2475,7 +2478,7 @@ pub(crate) fn wheel_zoom_scale(delta_y: f32) -> f32 {
     feature = "desktop",
     feature = "android",
     feature = "embed",
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 fn with_pinch<R>(id: usize, f: impl FnOnce(&mut PinchTracker) -> R) -> R {
     PINCHES.with(|p| {
@@ -2568,12 +2571,12 @@ impl Component for RenderSurface {
             let surface = surface.clone();
             scope.on_cleanup(move || {
                 unregister_render_surface(surface.id);
-                #[cfg(target_arch = "wasm32")]
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                 teardown_web_surface(&surface);
             });
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         {
             let div = scope.create_element("div");
 
@@ -2586,7 +2589,7 @@ impl Component for RenderSurface {
             div
         }
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
             let canvas = scope.create_element("canvas");
             // `touch-action: none` so a touch/pen drag on the surface drives its
@@ -2616,7 +2619,7 @@ impl Component for RenderSurface {
 ///
 /// The `Closure`s are kept alive here (not `forget()`-leaked) — dropping this
 /// struct after removing the listeners frees them and their captures.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct WebSurfaceCleanup {
     canvas: web_sys::HtmlCanvasElement,
     observer: web_sys::ResizeObserver,
@@ -2634,7 +2637,7 @@ pub(crate) struct WebSurfaceCleanup {
         wasm_bindgen::closure::Closure<dyn FnMut(js_sys::Array, wasm_bindgen::JsValue)>,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl WebSurfaceCleanup {
     /// Disconnect the observer and remove every canvas listener, then drop the
     /// closures (freeing their captures).
@@ -2656,7 +2659,7 @@ impl WebSurfaceCleanup {
 ///
 /// Called from the [`RenderSurface`] component's cleanup when the scope is
 /// disposed. Idempotent — safe to call even if the canvas never initialized.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn teardown_web_surface(surface: &RenderSurfaceHandle) {
     if let Some(cleanup) = surface.web_cleanup.borrow_mut().take() {
         cleanup.teardown();
@@ -2676,10 +2679,10 @@ fn teardown_web_surface(surface: &RenderSurfaceHandle) {
 /// render-callback surface would stay blank after a hide→show cycle.
 /// A `requestAnimationFrame` callback that has to reference itself in order to
 /// re-schedule, so it can only be built as a cell filled in after construction.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 type RafClosure = std::rc::Rc<RefCell<Option<wasm_bindgen::prelude::Closure<dyn FnMut()>>>>;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn start_raf_loop(surface_id: usize, running: std::rc::Rc<Cell<bool>>) {
     use std::rc::Rc;
     use wasm_bindgen::prelude::*;
@@ -2751,7 +2754,7 @@ fn start_raf_loop(surface_id: usize, running: std::rc::Rc<Cell<bool>>) {
     std::mem::forget(closure);
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn web_blit_surface(surface_id: usize, buffer: &Arc<Mutex<SurfaceBuffer>>) {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
@@ -2805,7 +2808,7 @@ fn web_blit_surface(surface_id: usize, buffer: &Arc<Mutex<SurfaceBuffer>>) {
     });
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn schedule_canvas_init(surface: RenderSurfaceHandle) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
@@ -2850,7 +2853,7 @@ fn schedule_canvas_init(surface: RenderSurfaceHandle) {
     closure.forget();
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn pointer_of(event: &web_sys::PointerEvent) -> SurfacePointer {
     let kind = match event.pointer_type().as_str() {
         "mouse" => SurfacePointerKind::Mouse,
@@ -2869,7 +2872,7 @@ fn pointer_of(event: &web_sys::PointerEvent) -> SurfacePointer {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn mouse_button_from_i16(button: i16) -> SurfaceMouseButton {
     match button {
         0 => SurfaceMouseButton::Left,
@@ -2887,7 +2890,7 @@ fn mouse_button_from_i16(button: i16) -> SurfaceMouseButton {
 /// number read under wasm-bindgen's debug glue) or reached the surface as input
 /// at (0, 0). An event of another interface is not pointer input, so it is
 /// ignored.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn only<E: wasm_bindgen::JsCast + 'static>(
     mut handler: impl FnMut(E) + 'static,
 ) -> wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)> {
@@ -2899,7 +2902,7 @@ fn only<E: wasm_bindgen::JsCast + 'static>(
     }) as Box<dyn FnMut(web_sys::Event)>)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[allow(clippy::type_complexity)]
 fn setup_canvas_events(
     canvas: &web_sys::HtmlCanvasElement,
@@ -3079,7 +3082,7 @@ fn setup_canvas_events(
     (pointer_listeners, wheel_listener)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[allow(clippy::type_complexity)]
 fn setup_resize_observer(
     canvas: &web_sys::HtmlCanvasElement,

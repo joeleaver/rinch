@@ -505,7 +505,7 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           components: clippy
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,wasm32-wasip1
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -547,6 +547,21 @@ jobs:
           cargo clippy -p rinch-rtc --features media --target wasm32-unknown-unknown \
             --all-targets -- -D warnings
           echo "::endgroup::"
+
+      # A WASI guest (`wasm32-wasip1`) that embeds rinch's components runs in a
+      # host that is not a browser. The browser halves of the facade are gated
+      # on `target_os = "unknown"`, so such a build links no wasm-bindgen, whose
+      # imports are stubs that panic outside a browser. Lint that configuration
+      # and fail if a browser crate comes back into its tree.
+      - name: Run clippy (wasm32-wasip1 guest)
+        run: |
+          cargo clippy -p rinch --no-default-features --features components,theme \
+            --target wasm32-wasip1 -- -D warnings
+          if cargo tree -p rinch --no-default-features --features components,theme \
+               --target wasm32-wasip1 -e normal | grep -E 'wasm-bindgen|js-sys|web-sys'; then
+            echo "a wasm32-wasip1 build of rinch links a browser crate" >&2
+            exit 1
+          fi
 
       # The web examples are excluded from the workspace (they pin their own
       # `Cargo.lock` and must build for wasm32 alone), so nothing above reaches
