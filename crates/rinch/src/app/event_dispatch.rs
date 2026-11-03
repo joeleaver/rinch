@@ -1463,47 +1463,18 @@ impl RinchApp {
                                 rinch_dom::paint::scrollbar::ScrollbarAxis::Horizontal,
                             )
                         {
-                            let nid = rinch_core::dom::NodeId(scroll_node_id);
-                            let content_width = doc_mut.scroll_width(nid);
-                            let visible_width = doc_mut.client_width(nid);
-                            let max_scroll = (content_width - visible_width).max(0.0);
-
-                            // Read before the mutable node borrow, as the
-                            // vertical half does.
-                            let handler_id = doc_mut
-                                .tree
-                                .nodes
-                                .get(scroll_node_id)
-                                .and_then(|n| n.attributes.get("data-onscroll"))
-                                .and_then(|s| s.parse::<usize>().ok());
-                            let mut moved = false;
-                            let device_scale = doc_mut.tree.device_scale;
-                            if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
-                                // On the device pixel grid, keeping what falls
-                                // below it, as the vertical half does (#1543).
-                                let precise = (node.scroll_offset.0 + node.scroll_remainder.0
-                                    - delta_x)
-                                    .clamp(0.0, max_scroll);
-                                let new_x = rinch_dom::node::snap_to_device(precise, device_scale);
-                                let remainder = (precise - new_x, node.scroll_remainder.1);
-                                if new_x != node.scroll_offset.0 {
-                                    node.scroll_offset.0 = new_x;
-                                    doc_mut.tree.mark_scrolled(scroll_node_id);
-                                    self.scene_dirty = true;
-                                    moved = true;
+                            let (moved, handler_id) = Self::scroll_horizontally_by(
+                                &mut doc_mut,
+                                scroll_node_id,
+                                -delta_x,
+                            );
+                            if moved {
+                                self.scene_dirty = true;
+                                if let Some(hid) = handler_id
+                                    && !scrolled.iter().any(|(n, _)| *n == scroll_node_id)
+                                {
+                                    scrolled.push((scroll_node_id, hid));
                                 }
-                                // After `mark_scrolled`, which zeroes both:
-                                // this axis keeps its new remainder, and the
-                                // vertical half's, set this event, is kept.
-                                if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
-                                    node.scroll_remainder = remainder;
-                                }
-                            }
-                            if moved
-                                && let Some(hid) = handler_id
-                                && !scrolled.iter().any(|(n, _)| *n == scroll_node_id)
-                            {
-                                scrolled.push((scroll_node_id, hid));
                             }
                         }
 
@@ -2628,18 +2599,60 @@ impl RinchApp {
         (moved, handler_id.filter(|_| moved))
     }
 
+    /// Move `id`'s horizontal scroll offset by `dx` content pixels (positive
+    /// scrolls right), clamped to its range: the horizontal twin of
+    /// [`Self::scroll_vertically_by`], the wheel's and a drag's auto-scroll
+    /// alike. On the device pixel grid, keeping what falls below it (#1543);
+    /// the vertical remainder is kept.
+    pub(crate) fn scroll_horizontally_by(
+        doc_mut: &mut RinchDocument,
+        id: u64,
+        dx: f64,
+    ) -> (bool, Option<usize>) {
+        let nid = rinch_core::dom::NodeId(id);
+        let max_scroll = (doc_mut.scroll_width(nid) - doc_mut.client_width(nid)).max(0.0);
+        let handler_id = doc_mut
+            .tree
+            .nodes
+            .get(id)
+            .and_then(|n| n.attributes.get("data-onscroll"))
+            .and_then(|s| s.parse::<usize>().ok());
+        let device_scale = doc_mut.tree.device_scale;
+        let mut moved = false;
+        if let Some(node) = doc_mut.tree.nodes.get_mut(id) {
+            let precise =
+                (node.scroll_offset.0 + node.scroll_remainder.0 + dx).clamp(0.0, max_scroll);
+            let new_x = rinch_dom::node::snap_to_device(precise, device_scale);
+            let remainder = (precise - new_x, node.scroll_remainder.1);
+            if new_x != node.scroll_offset.0 {
+                node.scroll_offset.0 = new_x;
+                doc_mut.tree.mark_scrolled(id);
+                moved = true;
+            }
+            // After `mark_scrolled`, which zeroes both: this axis keeps its new
+            // remainder, the vertical one is kept.
+            if let Some(node) = doc_mut.tree.nodes.get_mut(id) {
+                node.scroll_remainder = remainder;
+            }
+        }
+        (moved, handler_id.filter(|_| moved))
+    }
+
     /// One frame of drag auto-scroll, run by the `AboutToWait` frame clock.
     ///
-    /// While an element drag is live and its pointer is in the band along the
-    /// top or bottom edge of a scroll container under it
+    /// While an element drag is live and its pointer is in the band along an
+    /// edge of a scroll container under it
     /// ([`events::drag_auto_scroll_velocity`]), that container scrolls by the
     /// band's speed times the time since the last tick (capped; a first tick
     /// counts one frame), fires its `data-onscroll`, and — since the content
     /// under the still pointer moved — the drag is resolved again
     /// ([`Self::track_drag_pointer`]), so the drop target there hears
-    /// `data-ondragover`. The nearest container that can still move that way
-    /// is the one that scrolls: a list at its top lets the page around it take
-    /// over.
+    /// `data-ondragover`. Each axis on its own (#2091): the nearest container
+    /// that can still move vertically toward a top or bottom band scrolls
+    /// vertically, and the nearest that can still move horizontally toward a
+    /// left or right band scrolls horizontally — a column's list and the board
+    /// row around it, in one frame, with the pointer in a corner of both. A
+    /// list at its end lets the container around it take over.
     ///
     /// Answers whether the pointer is in such a band, which is whether the
     /// clock must keep turning.
@@ -2657,6 +2670,7 @@ impl RinchApp {
         vp_h: f32,
         motion: bool,
     ) -> bool {
+        use rinch_dom::paint::scrollbar::ScrollbarAxis;
         // An element drag, or an OS file drag showing a drop caret (#1649):
         // a file dragged over a long note scrolls it as an element drag does.
         let element = self.active_dnd.as_ref().map(|drag| drag.cursor);
@@ -2679,28 +2693,57 @@ impl RinchApp {
             // `shared_hit` checks the generation and the point itself.
             self.hit_memo.set(self.drag_hit_memo);
         }
-        let pick = {
+        let (vertical, horizontal) = {
             let d = doc.borrow();
-            self.shared_hit(&d, x, y)
-                .and_then(|hit| Self::drag_auto_scroll_container(&d, hit, y, vp_h))
+            match self.shared_hit(&d, x, y) {
+                Some(hit) => (
+                    Self::drag_auto_scroll_container(&d, hit, ScrollbarAxis::Vertical, y, vp_h),
+                    Self::drag_auto_scroll_container(&d, hit, ScrollbarAxis::Horizontal, x, vp_w),
+                ),
+                None => (None, None),
+            }
         };
         // A hit test made afresh here (after motion) is the newest answer.
         if element.is_some() {
             self.drag_hit_memo = self.hit_memo.get();
         }
-        let Some((container, velocity)) = pick else {
+        if vertical.is_none() && horizontal.is_none() {
             self.drag_auto_scroll_at = None;
             return false;
-        };
+        }
         let elapsed = self
             .drag_auto_scroll_at
             .map(|then| now.duration_since(then).as_secs_f32());
         self.drag_auto_scroll_at = Some(now);
-        let dy = f64::from(velocity * events::drag_auto_scroll_step(elapsed));
-        let (moved, handler_id) = Self::scroll_vertically_by(&mut doc.borrow_mut(), container, dy);
-        if moved {
+        let step = events::drag_auto_scroll_step(elapsed);
+        let mut scrolled: Vec<(u64, usize)> = Vec::new();
+        let mut any_moved = false;
+        {
+            let mut doc_mut = doc.borrow_mut();
+            if let Some((container, velocity)) = vertical {
+                let dy = f64::from(velocity * step);
+                let (moved, handler) = Self::scroll_vertically_by(&mut doc_mut, container, dy);
+                any_moved |= moved;
+                if let Some(handler) = handler {
+                    scrolled.push((container, handler));
+                }
+            }
+            if let Some((container, velocity)) = horizontal {
+                let dx = f64::from(velocity * step);
+                let (moved, handler) = Self::scroll_horizontally_by(&mut doc_mut, container, dx);
+                any_moved |= moved;
+                if let Some(handler) = handler
+                    && !scrolled.iter().any(|(c, _)| *c == container)
+                {
+                    scrolled.push((container, handler));
+                }
+            }
+        }
+        if any_moved {
             self.scene_dirty = true;
-            if let Some(handler_id) = handler_id {
+            // Payloads read once both axes moved, so a container scrolled on
+            // both fires once with both offsets.
+            for (container, handler_id) in scrolled {
                 let event = Self::scroll_event_for(&doc.borrow().tree, container);
                 rinch_core::events::dispatch_scroll_event(
                     rinch_core::events::EventHandlerId(handler_id),
@@ -2720,49 +2763,59 @@ impl RinchApp {
         true
     }
 
-    /// The container a drag's pointer at height `y` over `hit` auto-scrolls,
-    /// and how fast: the nearest ancestor of `hit` (or `hit`, or the body) that
-    /// overflows vertically, is not locked out (`lock_scroll`), has the
-    /// pointer in one of its bands and can still move toward that band's edge.
-    /// A container's bands are measured on the part of its painted box inside
-    /// the viewport; the body's on the viewport.
+    /// The container a drag's pointer at `at` (its `y` for the vertical axis,
+    /// its `x` for the horizontal) over `hit` auto-scrolls on `axis`, and how
+    /// fast: the nearest ancestor of `hit` (or `hit`, or the body) that
+    /// overflows on that axis, is not locked out (`lock_scroll`), has the
+    /// pointer in one of its bands on that axis and can still move toward that
+    /// band's edge. A container's bands are measured on the part of its painted
+    /// box inside the viewport (`viewport` long on that axis); the body's on
+    /// the viewport.
     fn drag_auto_scroll_container(
         d: &RinchDocument,
         hit: u64,
-        y: f32,
-        vp_h: f32,
+        axis: rinch_dom::paint::scrollbar::ScrollbarAxis,
+        at: f32,
+        viewport: f32,
     ) -> Option<(u64, f32)> {
         use rinch_dom::paint::scrollbar::{ScrollbarAxis, overflows};
+        let vertical = axis == ScrollbarAxis::Vertical;
         let tree = &d.tree;
         let chain = std::iter::successors(Some(hit), |&id| tree.get(id).and_then(|n| n.parent))
             .chain(std::iter::once(tree.body_id));
         for id in chain {
-            if tree.get(id).is_none()
-                || !overflows(tree, id, ScrollbarAxis::Vertical)
-                || tree.scroll_locked_out(id)
-            {
+            if tree.get(id).is_none() || !overflows(tree, id, axis) || tree.scroll_locked_out(id) {
                 continue;
             }
-            let (top, bottom) = if id == tree.body_id {
-                (0.0, vp_h)
+            let (start, end) = if id == tree.body_id {
+                (0.0, viewport)
             } else {
-                let (_, top, _, height) = painted_element_box(tree, id);
-                (top.max(0.0), (top + height).min(vp_h))
+                let (bx, by, bw, bh) = painted_element_box(tree, id);
+                let (start, len) = if vertical { (by, bh) } else { (bx, bw) };
+                (start.max(0.0), (start + len).min(viewport))
             };
-            let velocity = events::drag_auto_scroll_velocity(y, top, bottom);
+            let velocity = events::drag_auto_scroll_velocity(at, start, end);
             if velocity == 0.0 {
                 continue;
             }
             let nid = rinch_core::dom::NodeId(id);
-            let at = d.scroll_top(nid);
+            let (offset, range) = if vertical {
+                (
+                    d.scroll_top(nid),
+                    d.scroll_height(nid) - d.client_height(nid),
+                )
+            } else {
+                (
+                    d.scroll_left(nid),
+                    d.scroll_width(nid) - d.client_width(nid),
+                )
+            };
             // The end the offset can reach, which is the range's end on the
             // device pixel grid (#1543): at a fractional scale the last
             // fraction of a device pixel of a range off the grid is never
-            // reached, and `at < max` held for ever there.
-            let max = d
-                .tree
-                .snap_scroll_offset((d.scroll_height(nid) - d.client_height(nid)).max(0.0));
-            if (velocity < 0.0 && at > 0.0) || (velocity > 0.0 && at < max) {
+            // reached, and `offset < max` held for ever there.
+            let max = d.tree.snap_scroll_offset(range.max(0.0));
+            if (velocity < 0.0 && offset > 0.0) || (velocity > 0.0 && offset < max) {
                 return Some((id, velocity));
             }
         }

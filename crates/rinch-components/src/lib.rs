@@ -80,6 +80,7 @@
 //! - [`NavLink`] - Navigation link with active state
 //! - [`Stepper`] - Step progress + [`StepperStep`], [`StepperCompleted`]
 //! - [`Tree`] - Hierarchical tree view + [`TreeNodeData`], [`UseTreeReturn`]
+//! - [`SortableList`] - Lists whose items drag within and between them + [`SortableItem`], [`SortableHandle`]
 //!
 //! # Example
 //!
@@ -173,6 +174,7 @@ pub mod select;
 pub mod simple_grid;
 pub mod skeleton;
 pub mod slider;
+pub mod sortable;
 pub mod space;
 pub mod stack;
 pub mod stepper;
@@ -228,6 +230,10 @@ pub use select::{Select, SelectOption};
 pub use simple_grid::SimpleGrid;
 pub use skeleton::Skeleton;
 pub use slider::Slider;
+pub use sortable::{
+    SortAxis, SortJudge, SortKeys, SortMove, SortPlace, SortVerdict, SortableHandle, SortableItem,
+    SortableList, sortable_drag_group,
+};
 pub use space::Space;
 pub use stack::Stack;
 pub use stepper::{Stepper, StepperCompleted, StepperStep};
