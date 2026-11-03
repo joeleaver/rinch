@@ -267,6 +267,46 @@ impl RinchApp {
         // `resolve_and_repaint` below.
         let (vp_w, vp_h) = Self::layout_viewport(window_size, scale_factor);
 
+        // Pointer lock (#2092). A lock whose element left the document ends
+        // here, on whatever event comes next (`AboutToWait` ends every turn of
+        // the desktop loop); a window that lost focus gives the pointer back,
+        // as a browser does; and Escape ends a held lock and goes no further —
+        // not to the dismiss stack, a key handler or a drag — as the browser
+        // consumes the Escape that exits its lock. Raw motion goes to the lock
+        // and the motion handlers, and is nothing else's.
+        // Only a lock this app asked for: several apps can share the thread
+        // (embedded contexts), and another's blur or Escape is not this one's.
+        // The Escape's auto-repeats are the lock's too, until it is released:
+        // a press that may be a repeat (`Unknown`, Android) counts as one
+        // until the `KeyUp` (or a focus loss) says the key went up.
+        crate::pointer_lock::prune();
+        match &event {
+            PlatformEvent::WindowFocus(false) => {
+                crate::pointer_lock::window_blurred(self.doc_key());
+            }
+            PlatformEvent::KeyDown {
+                key: KeyCode::Escape,
+                repeat,
+                ..
+            } if crate::pointer_lock::escape(self.doc_key(), *repeat == KeyRepeat::Fresh) => {
+                actions.push(AppAction::RequestRedraw);
+                return actions;
+            }
+            PlatformEvent::KeyUp {
+                key: KeyCode::Escape,
+                ..
+            } => crate::pointer_lock::escape_released(self.doc_key()),
+            PlatformEvent::PointerMotion { dx, dy } => {
+                crate::pointer_lock::dispatch_pointer_motion(*dx, *dy);
+                if self.has_pending_layout() {
+                    self.resolve_and_repaint(vp_w, vp_h);
+                    actions.push(AppAction::RequestRedraw);
+                }
+                return actions;
+            }
+            _ => {}
+        }
+
         // A drag move deferred its layout to the frame. Anything but another
         // move is settled against it first: a press, release, wheel or drop
         // hit-tests, and must see the dragged box where the last move put it,

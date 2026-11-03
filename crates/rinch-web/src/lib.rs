@@ -90,6 +90,7 @@ mod editor_input;
 mod event_delegation;
 mod images;
 mod menu_bar;
+mod pointer_lock;
 pub mod web_document;
 
 use std::cell::{Cell, RefCell};
@@ -325,6 +326,8 @@ fn ensure_event_delegation(doc: &WebDocument) {
         }
         f.set(true);
         setup_event_delegation(doc);
+        // The browser's pointer lock behind `rinch::window`'s (#2092).
+        pointer_lock::install();
     });
 }
 

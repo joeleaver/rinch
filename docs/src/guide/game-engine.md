@@ -312,7 +312,7 @@ no rinch API takes a winit type. rinch is on winit 0.31.0-beta.4 (#1962);
 naming the same dependency keeps one winit in the build:
 
 ```toml
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "34f153bd6e523de53f9da67c6db58bd1f8732542" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "d99384edd804a20e737c013b5f57b56ab931a611" }
 ```
 
 From beta.2, winit's public enums are `#[non_exhaustive]` (a `match` on
@@ -349,6 +349,7 @@ Events are dispatched to the handler set via `set_event_handler()`. Coordinates 
 | `TextInput` | `String` | Text input (when focused) |
 | `FocusGained` | — | Surface received keyboard focus |
 | `FocusLost` | — | Surface lost keyboard focus |
+| `PointerMotion` | `dx, dy` | Raw mouse motion while the surface holds the pointer lock (below) |
 
 **A press keeps the pointer.** From a press on the surface until the release of the button
 that started it, every move and release of that pointer go to the surface wherever it is
@@ -420,6 +421,33 @@ way — it already sees every key before a focused surface does, on both backend
 Space, PageUp/Down and the arrow keys can scroll the page, and Tab leaves the canvas. A web
 game steering with any of those must claim them via `set_key_handler`, or the page scrolls
 under it.
+
+### Mouse look (pointer lock)
+
+`surface.request_pointer_lock()` hides the cursor, keeps it in the window, and
+sends the mouse's raw motion to the surface as `SurfaceEvent::PointerMotion { dx,
+dy }`: deltas in the platform's units that do not stop at the window's or the
+screen's edge, for a first-person camera or an editor's fly camera (issue #2092).
+`rinch::window::pointer_lock()` says, reactively, whether it holds and how
+(`Locked`, or `Confined` on X11); `has_pointer_lock()` asks the surface. Call it
+from the surface's `MouseDown` (in a browser a lock needs a user gesture), and
+let go with `exit_pointer_lock()`:
+
+```rust
+let s = surface.clone();
+surface.set_event_handler(move |event| match event {
+    SurfaceEvent::MouseDown { .. } if pointer_lock().is_none() => {
+        let _ = s.request_pointer_lock();
+    }
+    SurfaceEvent::PointerMotion { dx, dy } => camera.turn(dx, dy),
+    _ => {}
+});
+```
+
+The lock ends on Escape (consumed: it closes nothing else), when the window
+loses focus, and when the surface unmounts. The whole API, the units and each
+platform's behaviour: [Pointer Lock and Raw Mouse Motion](windows.md#pointer-lock-and-raw-mouse-motion).
+`examples/pointer-lock` is a working mouse-look surface.
 
 ### How often the render callback runs
 
@@ -804,6 +832,46 @@ to rinch — call `ctx.pointer_left()`; there is no `PlatformEvent` for it, and 
 tooltip showing at the time otherwise stays until the next press, key or move.
 It answers whether a frame is owed. `ctx.app_mut().set_title_tooltips(false)`
 turns tooltips off for a HUD that does not want them.
+
+#### Pointer lock in a context
+
+Your engine owns the window, so it owns the cursor grab too. Pointer lock in a
+context (#2092) needs three things from the host, and without the first
+`request_pointer_lock` answers `PointerLockError::Unsupported`:
+
+1. **A `PointerLockHost`**, installed on the UI thread with
+   `rinch::window::set_pointer_lock_host(Some(Box::new(host)))`. Its `lock`
+   grabs the pointer and hides the cursor and answers what it got
+   (`Ok(Some(PointerLockMode::Locked))`, `Confined` where the platform cannot
+   hold the pointer still, an `Err` when it refused, or `Ok(None)` when the
+   platform answers later — then call `rinch::window::pointer_lock_changed`
+   when it does); `unlock` gives the pointer back. With winit it is
+   `set_cursor_grab(Locked)`, else `Confined`, and `set_cursor_visible`;
+   refuse with `PointerLockError::NotFocused` while the window has no focus
+   (X11's confinement is an active grab an unfocused window also gets). Call
+   `pointer_lock_changed(None)` too when the platform takes the grab away on
+   its own.
+2. **The raw motion**, as `PlatformEvent::PointerMotion { dx, dy }` in
+   `ctx.update` (winit's `DeviceEvent::PointerMotion`, SDL's relative motion).
+   Summing a burst into one event per frame is fine and cheaper.
+3. **Focus loss and Escape**, which the host already forwards:
+   `PlatformEvent::WindowFocus(false)` releases the lock, and an Escape
+   `KeyDown` while it holds releases it and is consumed, with its repeats until
+   the `KeyUp` (route it to rinch, not to your game, while `pointer_lock()` is
+   `Some`). An element holding the lock that leaves the document releases it
+   on the next `update`. With several contexts on one thread the lock belongs
+   to the context that asked (the one dispatching, or the element's): only its
+   focus loss and Escape end it, so feed those to every context as usual, and
+   feed `PointerMotion` to one.
+
+A WASI guest (`wasm32-wasip1`, rinch built with `components,theme`) has the
+same API and no `RinchApp` to feed events to, so it has no host either until
+the guest installs one: a `PointerLockHost` that forwards the grab across the
+plugin boundary to the real window. The guest's glue then calls
+`rinch::window::dispatch_pointer_motion(dx, dy)` with the motion the host sends
+it, and `pointer_lock_changed(None)` when the host reports the lock gone — on
+its Escape and its focus loss, which the host decides there, since nothing in
+the guest sees them. Or keep mouse look on the host's side of the boundary.
 
 ### Input methods (IME)
 

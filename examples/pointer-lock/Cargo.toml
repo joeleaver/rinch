@@ -1,0 +1,11 @@
+[package]
+name = "pointer-lock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Mouse look on a RenderSurface: pointer lock and raw motion (#2092)"
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "debug", "components", "theme"] }
+rinch-core = { workspace = true }
