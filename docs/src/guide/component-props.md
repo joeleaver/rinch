@@ -1491,6 +1491,63 @@ has failed to start, on both backends.
 
 **TreeNodeData:** `value: String`, `label: String`, `children: Vec<TreeNodeData>`, `disabled: bool`, `icon: Option<TablerIcon>`, `payload: Option<Rc<dyn Any>>`.
 
+### SortableList, SortableItem, SortableHandle
+
+Lists whose items drag within and between lists of the same `group`, by
+pointer or keyboard (guide: [Sortable Lists](sortable.md)).
+
+**SortableList** — a flex row or column of items.
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `group` | `String` | `""` | The kind of thing the list holds. A drag only targets lists of its own group, so nested lists of other groups never fight |
+| `id` | `String` | `""` | The list's id, as `SortMove::from_list` / `to_list` name it |
+| `axis` | `SortAxis` | `Vertical` | `Vertical` or `Horizontal`: which way the items run, and which axis the place is read along |
+| `label` | `String` | `""` | The list's name in keyboard announcements (its `id` when empty) |
+| `disabled` | `bool` | `false` | Read-only: no drag starts from its items, none lands in it, no lift |
+| `lift_keys` | `Vec<String>` | `[]` | The `KeyEventData::key` values that lift and drop; Space and Enter when empty (`vec![" ".into()]` leaves Enter to the app) |
+| `judge` | `Option<SortJudge>` | `None` | Whether a move into this list may happen, asked live for every place on offer and again at the drop; a refusal's reason is drawn at the caret. Accepted when not given |
+| `ondrop` | `Option<ValueCallback<SortMove>>` | `None` | An accepted drop into this list. The component moves nothing: the app applies it to its data |
+| `ondropchange` | `Option<ValueCallback<Option<(SortMove, SortVerdict)>>>` | `None` | For a drag that started in this list: the move on offer and its verdict each time it changes; `None` when nothing is on offer and when the drag ends |
+| `drag_keys` | `Option<SortKeys>` | `None` | What a drag from an item of this list carries, in order (a selection). The item alone when not given, or when the answer leaves the item out. Not checked against any list; `from_list` names the pressed item's list only |
+
+**SortableItem** — one item; focusable (`tabindex="0"`).
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `value` | `String` | `""` | The item's key. (In a `for`, `key:` is the loop's key; give both) |
+| `handle` | `bool` | `false` | Drag only by a `SortableHandle` inside the item. The whole item drags otherwise |
+| `label` | `String` | `""` | The item's name in keyboard announcements (its key when empty) |
+| `disabled` | `bool` | `false` | No drag source (no `draggable`, no lift); it keeps its place and takes drops around it |
+
+**SortableHandle** — the part of a `handle: true` item a pointer drags it by. No props.
+
+`judge` and `drag_keys` are `Rc` closures, not `on*` props: write
+`judge: Some(Rc::new(|m: &SortMove| …) as SortJudge)`.
+
+**Types:**
+
+- `SortMove { group, keys: Vec<String>, from_list, to_list, place: SortPlace }`.
+- `SortPlace { after: Option<String>, before: Option<String>, index: usize }` — the carried items' neighbours by key once they are taken out of `to_list`; `is_first()` (no `after`), `is_last()` (no `before`); both `None` in an empty list. Settled again at the drop: found by `after`, with `before` and `index` read off the list as it is then.
+- `SortVerdict` — `Accept` or `Refuse(reason)`; `is_accept()`.
+- `SortAxis` — `Vertical` (default), `Horizontal`.
+- `SortJudge` = `Rc<dyn Fn(&SortMove) -> SortVerdict>`, `SortKeys` = `Rc<dyn Fn(&str) -> Vec<String>>`.
+- `sortable_drag_group() -> Option<String>` — the group of the drag in progress, pointer or keyboard.
+
+**Custom properties** (inherited, with fallbacks; set them inline on a list —
+see [Sortable Lists](sortable.md#styling)): `--rinch-sortable-gap`,
+`-caret-color`, `-caret-size`, `-refused-color`, `-dragging-opacity`,
+`-reason-bg`, `-reason-color`, `-reason-font-size`, `-reason-radius`,
+`-reason-inset`, `-reason-padding`, `-reason-white-space`, `-reason-max-width`
+(each `--rinch-sortable-…`).
+
+**Classes**:
+`rinch-sortable` (`--vertical` / `--horizontal`, `--drop-into` and
+`--refused` on an empty list on offer), `rinch-sortable__item` (`--grab`,
+`--dragging`, `--lifted`, `--drop-before`, `--drop-after`,
+`--drop-horizontal`, `--refused`), `rinch-sortable__reason`
+(`--shown`, `--above`), `rinch-sortable__handle`, `rinch-sortable__live`.
+
 ---
 
 ## Window

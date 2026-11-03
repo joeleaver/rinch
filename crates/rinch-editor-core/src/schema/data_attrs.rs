@@ -54,7 +54,8 @@ pub const MAX_DATA_ATTR_NAME: usize = 64;
 /// anything rinch names after itself (`data-rinch-*`), and the shell's
 /// families of state attributes — the read-only text selection
 /// (`data-text-sel*`), an input's caret and selection (`data-cursor-*`,
-/// `data-selection-*`) and the text context menu's rows (`data-tcm-*`).
+/// `data-selection-*`), the text context menu's rows (`data-tcm-*`) and
+/// `SortableList`'s markers (`data-sortable-*`, read from a drag's hit up).
 pub const RESERVED_DATA_ATTR_PREFIXES: &[&str] = &[
     "data-pm-",
     "data-rinch-",
@@ -62,6 +63,7 @@ pub const RESERVED_DATA_ATTR_PREFIXES: &[&str] = &[
     "data-cursor-",
     "data-selection-",
     "data-tcm-",
+    "data-sortable-",
 ];
 
 /// Whole names rinch reserves:
@@ -71,7 +73,8 @@ pub const RESERVED_DATA_ATTR_PREFIXES: &[&str] = &[
 ///   `data-online` stay an app's);
 /// - what the runtime reads on any element: focus and pointer handling
 ///   (`data-nofocus`, `data-disabled`, `data-trap-focus`, `data-backdrop`,
-///   `data-scroll-lock-exempt`, `data-drag-window`), the node-graph canvas's
+///   `data-scroll-lock-exempt`, `data-drag-window`, `data-drag-ghost`, read from
+///   the drag source up), the node-graph canvas's
 ///   wheel opt-out (`data-graph-nowheel`, read on every element from the one
 ///   under the pointer up), compositing holes
 ///   (`data-viewport`, `data-viewport-ready`, `data-render-surface`,
@@ -117,6 +120,7 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-backdrop",
     "data-scroll-lock-exempt",
     "data-drag-window",
+    "data-drag-ghost",
     "data-graph-nowheel",
     "data-viewport",
     "data-viewport-ready",

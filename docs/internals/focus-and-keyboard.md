@@ -37,7 +37,11 @@ or `key == "Process"`; known gap: Safari's composition-confirming Enter —
 refusing every 229 Enter would refuse an Android soft keyboard's plain
 Enter). `onkeyup`'s consumption stops only its ancestors: the
 interceptor hears every release. `KeyEventData` and `KeyEventKind` are in the
-prelude. Pins: `app/element_key_1678_tests.rs`,
+prelude. The keys offered to element handlers carry `KeyEventData::target` (#2091):
+the arbiter's node on desktop, `event.target`'s node on the web — so a
+handler on a container can tell a key sent to itself from one typed in a
+field inside it (`SortableItem` does). `None` on every other path.
+Pins: `app/element_key_1678_tests.rs`,
 `rinch-web/tests/element_key_1678.rs`.
 
 **App-wide key listeners** (#1784, `rinch_core::events::app_key`):
