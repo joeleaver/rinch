@@ -296,6 +296,34 @@ beside it: `clamp_scroll_offsets` never clamps the x offset (**#1368**).
 (`apply_scroll_into_view` measured a scroller's band from its border-box top
 against its content-box height until #842 made it the padding box, #1367.)
 
+**A scroller's range is Chrome's whole-pixel range (#2116).** Taffy rounds
+a box's *location* on its own and its *size* from its absolute edges, so the
+rounded rects of a container's children need not add up to its rounded size:
+the in-window menu bar's two-item dropdown (border 1, padding 4, two 32.8px
+rows and a separator) fits exactly and measured a pixel past its content box at
+some vertical positions, so it painted a bar and took the wheel. An IFC root
+did the same from the other side: its lines are unrounded (three 24.8px lines
+are 74.4px) and its box rounded to 74. Chrome 156 rounds the scrollable
+overflow and the padding box each to a whole CSS pixel (from 1/64px layout
+units), independently of the box's position and of the device scale (measured
+at 1, 1.25 and 1.5), and shows a bar when the first is larger: 0.4px of
+overflow is none, 0.5px is a pixel's range. So for a box that scrolls on either
+axis, `content_extents` (`scroller_extents`) measures from Taffy's
+**unrounded** layout — the container's size, and the rect of every box Taffy
+laid out directly in it (`child_rect`; a box whose `layout` is not a rounding
+of its unrounded rect, such as an absolute one moved by a scroll, is read
+rounded) — and an overflowing scrolling axis reports the content box plus that
+whole-pixel range, so the bar, `overflows`, `can_scroll_toward`, the wheel's
+walks, layout's clamp and `scrollHeight` all read one number; an axis that
+fits keeps its measure, capped at the content box. The rounded rects also
+mis-sized real overflow: a 100.4px box with 2.3px padding and ten pixels of
+overflow measured a range of 8.3 at some positions (Chrome: 10). The range
+then lands on the device grid as before (#1543). Pins:
+`rinch-dom/tests/subpixel_overflow_2116_tests.rs` (the dropdown, an IFC root,
+Chrome's threshold at three client heights, and whole-pixel overflow, each at
+ten positions and three scales). On the web the browser decides, and these are
+its answers for the same markup.
+
 **How each box counts (#776, #775).** `extend_with_child` gives every box two
 contributions, as Chrome 156 measures them. An **in-flow** box (anything but
 `absolute`) counts its **margin box** at its *static* position — the layout

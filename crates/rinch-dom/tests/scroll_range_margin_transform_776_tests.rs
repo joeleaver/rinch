@@ -9,8 +9,8 @@
 //! border-width: 0 }` and `::-webkit-scrollbar { width: 0; height: 0 }`, as
 //! `scrollWidth - clientWidth` x `scrollHeight - clientHeight`. That quantity
 //! is what `ScrollbarTrack::max_scroll` is. Chrome's numbers are integers
-//! (snapped); where the box has fractional edges the expected value below is
-//! the exact one, and the comment gives Chrome's.
+//! (snapped), and since #2116 rinch's range is too: the table gives the exact
+//! value in brackets where the content has fractional edges.
 //!
 //! Most rows use the padded, bordered container `PB` — every padding and every
 //! border different (`border-width: 2px 5px 4px 3px; padding: 7px 11px 13px
@@ -196,13 +196,14 @@ fn a_negative_end_margin_does_not_shrink_the_border_box() {
 }
 
 /// A percentage margin resolves against the containing block's width — the
-/// container's 164px content box: 100 + 0.6 * 164 = 198.4, so 34.4 of travel
-/// (Chrome: 34).
+/// container's 164px content box: 100 + 0.6 * 164 = 198.4, so 34.4 of travel,
+/// which Chrome rounds to 34 (#2116: the scrollable overflow and the client box
+/// each to a whole pixel).
 #[test]
 fn a_percentage_end_margin_resolves_against_the_content_box() {
     assert_range(
         max_scroll(PB, &["width: 100px; height: 50px; margin-right: 60%"]),
-        (34.4, 0.0),
+        (34.0, 0.0),
     );
 }
 
@@ -241,7 +242,8 @@ fn a_translated_child_is_scrollable_where_it_is_drawn() {
 /// A rotation that is not a multiple of 90°: the transformed box's bounding
 /// box is 187.94 x 119.64 about the 180x80 box's centre. Horizontally the
 /// untransformed in-flow box (180, extended by the end padding) wins, 16;
-/// vertically the rotated one, 119.64 - 13 - 74 = 32.64 (Chrome: 33).
+/// vertically the rotated one, 119.64 - 13 - 74 = 32.64, which Chrome rounds
+/// to 33 (#2116).
 #[test]
 fn a_rotated_childs_bounding_box_is_scrollable() {
     assert_range(
@@ -249,7 +251,7 @@ fn a_rotated_childs_bounding_box_is_scrollable() {
             PB,
             &["width: 180px; height: 80px; transform: rotate(30deg)"],
         ),
-        (16.0, 32.64),
+        (16.0, 33.0),
     );
 }
 
