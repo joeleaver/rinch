@@ -461,6 +461,16 @@ impl NodeHandle {
         self.doc.upgrade().is_some()
     }
 
+    /// Whether this node is in its document's tree: its parent chain reaches
+    /// the root ([`DomDocument::is_connected`]). `false` once the document is
+    /// gone. Runs no pending effects, unlike the accessors that read the
+    /// document for an operation.
+    pub fn is_connected(&self) -> bool {
+        self.doc
+            .upgrade()
+            .is_some_and(|doc| doc.borrow().is_connected(self.node_id))
+    }
+
     /// This node's document identity (see [`DomDocument::doc_key`]), or `0` if
     /// the document is already gone.
     ///

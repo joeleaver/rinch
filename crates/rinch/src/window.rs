@@ -42,10 +42,25 @@
 //!
 //! [`Memo`]: rinch_core::Memo
 //! [`Effect`]: rinch_core::Effect
+//!
+//! # Pointer lock (#2092)
+//!
+//! [`request_pointer_lock`] / [`request_pointer_lock_on`] hide the pointer
+//! and keep it in the window, [`on_pointer_motion`] hears the mouse's raw
+//! motion as deltas, [`pointer_lock`] says reactively whether (and how) the
+//! pointer is locked, and [`exit_pointer_lock`] lets it go. A host that does
+//! the grabbing itself (a native embed) installs a [`PointerLockHost`].
 
 use std::cell::Cell;
 
 use rinch_core::Signal;
+
+pub use crate::pointer_lock::{
+    PointerLockError, PointerLockHost, PointerLockMode, PointerLockTarget, PointerMotion,
+    PointerMotionSubscription, dispatch_pointer_motion, exit_pointer_lock, on_pointer_motion,
+    pointer_lock, pointer_lock_changed, request_pointer_lock, request_pointer_lock_on,
+    set_pointer_lock_host,
+};
 
 /// Why [`open_url`] did not open the URL.
 #[derive(Debug, Clone, PartialEq, Eq)]

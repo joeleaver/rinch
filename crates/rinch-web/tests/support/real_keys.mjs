@@ -8,6 +8,9 @@
 // - a mouse click: `RINCH-REAL-CLICK:<n>:<x>,<y>` → `RINCH-REAL-CLICK-SENT:<n>`, the
 //   primary button pressed and released at that point (viewport CSS px), which
 //   gives the page a user activation (`clipboard_copy_then.rs`);
+// - mouse moves: `RINCH-REAL-MOVE:<n>:<x>,<y>[;<x>,<y>…]` → `RINCH-REAL-MOVE-SENT:<n>`,
+//   the mouse moved to each point in turn with no button down
+//   (`pointer_lock_real_2092.rs`, whose locked page reads them as `movementX`/`Y`);
 // - a clipboard grant: `RINCH-GRANT-CLIPBOARD:<n>` → `RINCH-GRANT-CLIPBOARD-SENT:<n>`,
 //   `Browser.grantPermissions` of clipboard read and write to the page's origin, so
 //   the page can read back what it copied (`clipboard_copy_then.rs`).
@@ -95,6 +98,12 @@ async function touch(s, points) {
   await s.send("Emulation.setTouchEmulationEnabled", { enabled: false });
 }
 
+async function moves(s, points) {
+  for (const { x, y } of points) {
+    await s.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  }
+}
+
 async function click(s, x, y) {
   const base = { x, y, button: "left", clickCount: 1 };
   await s.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
@@ -134,6 +143,17 @@ async function serve(p, s) {
     await click(s, Number(c[2]), Number(c[3]));
     await s.send("Runtime.evaluate", { expression: `document.title = "RINCH-REAL-CLICK-SENT:${c[1]}"` });
     log(`clicked #${c[1]} ${c[2]},${c[3]}`);
+  }
+  const mv = /^RINCH-REAL-MOVE:(\d+):([-0-9.,;]+)$/.exec(title);
+  if (mv && !done.has(`${p.id}:move:${mv[1]}`)) {
+    done.add(`${p.id}:move:${mv[1]}`);
+    const points = mv[2].split(";").map((xy) => {
+      const [x, y] = xy.split(",").map(Number);
+      return { x, y };
+    });
+    await moves(s, points);
+    await s.send("Runtime.evaluate", { expression: `document.title = "RINCH-REAL-MOVE-SENT:${mv[1]}"` });
+    log(`moved #${mv[1]} ${mv[2]}`);
   }
   const g = /^RINCH-GRANT-CLIPBOARD:(\d+)$/.exec(title);
   if (g && !done.has(`${p.id}:grant:${g[1]}`)) {

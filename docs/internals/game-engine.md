@@ -58,6 +58,15 @@ tablet tool `2`, fingers above `1 << 32`; the web passes `pointerId` through; An
 embed report every pointer as the mouse. Pins: `app/surface_pointer_tests.rs`,
 `shell/rinch_runtime.rs` `pointer_source_tests`, `rinch-web/tests/render_surface_pointer_events.rs`.
 
+**Pointer lock on a surface** (#2092). `RenderSurfaceHandle::request_pointer_lock`
+is the window's lock held by the surface's element (`element`, set by
+`RenderSurface::render` — the desktop `<div>`, the web `<canvas>` — and cleared
+at its cleanup), with the surface id recorded so `dispatch_pointer_motion` sends
+it `SurfaceEvent::PointerMotion` while the lock is granted;
+`unregister_render_surface` releases it. An embed host installs a
+`PointerLockHost` and forwards `PlatformEvent::PointerMotion`; mechanism and
+pins: `app-and-windows.md`, "Pointer lock and raw motion (#2092)".
+
 **A focused surface only swallows the keys it claims (issue #482).** `set_event_handler`
 still receives every `KeyDown`/`KeyUp` while the surface is focused — that delivery is
 unaffected. `set_key_handler(|key: &SurfaceKeyData| -> bool)` answers a separate, additive

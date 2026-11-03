@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, Position, Size};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::{WindowAttributes, WindowId};
 
@@ -554,6 +554,9 @@ pub struct RinchRuntime {
     /// been handed yet (logical px), and which pointer it is. See
     /// [`Self::flush_pointer_move`].
     pending_pointer_move: Option<(f32, f32, SurfacePointer)>,
+    /// The device's raw motion not yet handed to the app, summed (#2092). See
+    /// [`Self::flush_pointer_motion`].
+    pending_motion: super::pointer_lock::MotionSum,
     /// The OS file drag over the main window, from winit's data transfer
     /// events (#1962).
     os_file_drag: super::os_file_drag::OsFileDrag,
@@ -732,6 +735,7 @@ impl RinchRuntime {
             native_menu: None,
             draining_native_events: false,
             pending_pointer_move: None,
+            pending_motion: Default::default(),
             os_file_drag: Default::default(),
             pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
@@ -1582,6 +1586,7 @@ impl RinchRuntime {
         crate::render_surface::set_redraw_callback(Arc::new(move || {
             window_arc.request_redraw();
         }));
+        self.install_pointer_lock_host();
 
         // Mount the component at the *logical* viewport size — `size` above is
         // the physical surface size (see `to_logical`). The display scale goes
@@ -1643,6 +1648,9 @@ impl RinchRuntime {
         });
         // Clear the direct redraw callback before dropping the window.
         crate::render_surface::clear_redraw_callback();
+        // A lock ends with its window (#2092): released through the window,
+        // then no host until one is shown again.
+        crate::window::set_pointer_lock_host(None);
         // Drop renderer first — it holds a reference to the window surface.
         #[cfg(feature = "gpu")]
         drop(self.renderer.take());
@@ -1711,6 +1719,7 @@ impl RinchRuntime {
         crate::render_surface::set_redraw_callback(Arc::new(move || {
             window_arc.request_redraw();
         }));
+        self.install_pointer_lock_host();
 
         // Trigger a full repaint of the existing DOM: a new surface, and
         // nothing named what it should show.
@@ -2947,6 +2956,8 @@ impl ApplicationHandler for RinchRuntime {
         // event that names none (a key, an injected debug `mouse_down`) is
         // never read as the last pen or finger.
         let _forget_pointer = ForgetCurrentPointer;
+        // Raw motion that came before this event reaches the app first.
+        self.flush_pointer_motion(event_loop);
 
         // Pointer moves are coalesced (update-path audit F2.2): a high-rate
         // mouse reports several per frame, and each used to run hover, the
@@ -2968,6 +2979,13 @@ impl ApplicationHandler for RinchRuntime {
             // conversion for the whole pointer stream: `MouseDown`, `MouseUp`
             // and `MouseWheel` below all read the position back out of
             // `app.cursor_pos`, which the flushed move sets.
+            // While the pointer is locked or confined (#2092) its position is
+            // held where the lock found it, as a browser holds it: a confined
+            // cursor (X11) still moves, and must not move hover under a
+            // camera the mouse is turning. The motion arrives as raw deltas.
+            if crate::pointer_lock::is_locked() {
+                return;
+            }
             let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
             // A layer surface's move or resize (#1523) takes the pointer, as
             // a compositor move does.
@@ -3307,7 +3325,11 @@ impl ApplicationHandler for RinchRuntime {
                 // this physical key, ignoring Shift — issue #1170's letter
                 // chords match it before falling back to the physical key.
                 let mods = self.translate_modifiers();
-                if self.app.try_menu_shortcut(mods, key_code, win_kwm) {
+                // Escape while the pointer is locked is the lock's (#2092):
+                // `handle_event` ends it and consumes the key.
+                let lock_escape = key_code == winit::keyboard::KeyCode::Escape
+                    && crate::pointer_lock::is_locked();
+                if !lock_escape && self.app.try_menu_shortcut(mods, key_code, win_kwm) {
                     // Shortcut matched and callback dispatched; request redraw
                     if let Some(w) = &self.window {
                         w.request_redraw();
@@ -3404,8 +3426,19 @@ impl ApplicationHandler for RinchRuntime {
         self.dispatch_main_event(platform_event, event_loop);
     }
 
+    fn device_event(
+        &mut self,
+        _event_loop: &dyn ActiveEventLoop,
+        _device_id: Option<winit::event::DeviceId>,
+        event: DeviceEvent,
+    ) {
+        self.note_device_event(&event);
+    }
+
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
-        // The batch's last pointer move, before anything is laid out.
+        // The batch's raw motion and last pointer move, before anything is
+        // laid out.
+        self.flush_pointer_motion(event_loop);
         self.flush_pointer_move(event_loop);
         self.about_to_wait_inner(event_loop);
     }
@@ -3428,6 +3461,46 @@ impl RinchRuntime {
         for event in host.events {
             self.dispatch_main_event(event, event_loop);
         }
+    }
+
+    /// The main window's pointer lock goes through this window (#2092).
+    fn install_pointer_lock_host(&mut self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        crate::window::set_pointer_lock_host(Some(Box::new(
+            super::pointer_lock::WindowPointerLock {
+                window: Arc::downgrade(&window.window),
+            },
+        )));
+    }
+
+    /// One device motion (#2092): summed into the turn's motion when it has
+    /// anywhere to go (a lock is held, or an `on_pointer_motion` handler
+    /// listens), dropped otherwise, so an app that never asks pays nothing.
+    fn note_device_event(&mut self, event: &DeviceEvent) {
+        if let DeviceEvent::PointerMotion { delta } = event
+            && crate::pointer_lock::wants_motion()
+        {
+            tracing::trace!(dx = delta.0, dy = delta.1, "device motion");
+            self.pending_motion.add(delta.0, delta.1);
+        }
+    }
+
+    /// Hand the app the motion summed since the last flush, as one
+    /// `PointerMotion`: before any other event (so a press or a key comes
+    /// after the motion that preceded it) and when the turn ends.
+    fn flush_pointer_motion(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if let Some(motion) = self.take_pointer_motion() {
+            self.dispatch_main_event(motion, event_loop);
+        }
+    }
+
+    /// The motion [`Self::flush_pointer_motion`] hands the app, taken.
+    fn take_pointer_motion(&mut self) -> Option<PlatformEvent> {
+        self.pending_motion
+            .take()
+            .map(|(dx, dy)| PlatformEvent::PointerMotion { dx, dy })
     }
 
     /// Hand the app the pointer move [`Self::window_event`] held back, if any.
@@ -6193,6 +6266,98 @@ mod pointer_source_tests {
             surface_pointer_of_button(&ButtonSource::Mouse(MouseButton::Left), true, false);
         assert_eq!(released.pressure, 0.0);
         assert_eq!(released.id, 1);
+    }
+}
+
+#[cfg(test)]
+mod pointer_lock_2092_tests {
+    //! The shell's half of a pointer lock (#2092): winit's device motion,
+    //! summed over a turn and handed to the app as one `PointerMotion` only
+    //! when something listens, and the lock a hidden window gives back.
+    use super::*;
+    use crate::pointer_lock::test_host::install;
+    use crate::render_surface::{RenderSurfaceHandle, SurfaceEvent, create_render_surface};
+    use crate::window::{PointerLockError, PointerLockMode, pointer_lock, request_pointer_lock};
+    use rinch_core::Component;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    thread_local! {
+        static SURFACE: RefCell<Option<RenderSurfaceHandle>> = const { RefCell::new(None) };
+    }
+
+    fn component(scope: &mut RenderScope) -> NodeHandle {
+        let root = scope.create_element("div");
+        let surface = SURFACE.with(|s| s.borrow().clone()).unwrap();
+        let canvas = crate::render_surface::RenderSurface {
+            surface: Some(surface),
+        }
+        .render(scope, &[]);
+        root.append_child(&canvas);
+        root
+    }
+
+    /// The `PointerMotion` steps a surface heard.
+    type Heard = Rc<RefCell<Vec<(f32, f32)>>>;
+
+    fn device_motion(dx: f64, dy: f64) -> DeviceEvent {
+        DeviceEvent::PointerMotion { delta: (dx, dy) }
+    }
+
+    /// A runtime whose app has mounted a surface, and what the surface heard.
+    fn runtime() -> (RinchRuntime, RenderSurfaceHandle, Heard) {
+        crate::window::set_pointer_lock_host(None);
+        let surface = create_render_surface();
+        SURFACE.with(|s| *s.borrow_mut() = Some(surface.clone()));
+        let mut runtime = RinchRuntime::new("t", 640, 480, component, &[]);
+        runtime.app.mount_component(640.0, 480.0);
+        let heard: Heard = Rc::default();
+        let h = heard.clone();
+        surface.set_event_handler(move |e| {
+            if let SurfaceEvent::PointerMotion { dx, dy } = e {
+                h.borrow_mut().push((dx, dy));
+            }
+        });
+        (runtime, surface, heard)
+    }
+
+    #[test]
+    fn device_motion_nobody_wants_is_dropped() {
+        let (mut runtime, _surface, _heard) = runtime();
+        runtime.note_device_event(&device_motion(5.0, 5.0));
+        assert!(runtime.take_pointer_motion().is_none());
+    }
+
+    #[test]
+    fn device_motion_is_summed_and_reaches_the_locked_surface() {
+        let (mut runtime, surface, heard) = runtime();
+        let _log = install(Ok(Some(PointerLockMode::Locked)));
+        surface.request_pointer_lock().unwrap();
+        for (dx, dy) in [(3.0, -1.0), (0.5, 2.25), (-10.0, 0.0)] {
+            runtime.note_device_event(&device_motion(dx, dy));
+        }
+        // Not motion: ignored.
+        runtime.note_device_event(&DeviceEvent::MouseWheel {
+            delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+        });
+        let motion = runtime.take_pointer_motion().expect("the turn's motion");
+        assert!(runtime.take_pointer_motion().is_none(), "taken once");
+        runtime.app.handle_event(motion, (640, 480), 1.0);
+        assert_eq!(*heard.borrow(), [(-6.5, 1.25)]);
+        crate::window::set_pointer_lock_host(None);
+    }
+
+    /// Hiding the window destroys it: the lock is given back first, through
+    /// it, and nothing can lock until a window is shown again.
+    #[test]
+    fn hiding_the_window_releases_the_lock() {
+        let (mut runtime, _surface, _heard) = runtime();
+        let log = install(Ok(Some(PointerLockMode::Locked)));
+        request_pointer_lock().unwrap();
+        runtime.hide_window();
+        assert_eq!(pointer_lock(), None);
+        assert_eq!(log.borrow().unlocks, 1);
+        assert_eq!(request_pointer_lock(), Err(PointerLockError::Unsupported));
     }
 }
 

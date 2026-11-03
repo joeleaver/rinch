@@ -267,6 +267,36 @@ impl RinchApp {
         // `resolve_and_repaint` below.
         let (vp_w, vp_h) = Self::layout_viewport(window_size, scale_factor);
 
+        // Pointer lock (#2092). A lock whose element left the document ends
+        // here, on whatever event comes next (`AboutToWait` ends every turn of
+        // the desktop loop); a window that lost focus gives the pointer back,
+        // as a browser does; and Escape ends a held lock and goes no further —
+        // not to the dismiss stack, a key handler or a drag — as the browser
+        // consumes the Escape that exits its lock. Raw motion goes to the lock
+        // and the motion handlers, and is nothing else's.
+        crate::pointer_lock::prune();
+        match &event {
+            PlatformEvent::WindowFocus(false) => {
+                crate::pointer_lock::release();
+            }
+            PlatformEvent::KeyDown {
+                key: KeyCode::Escape,
+                ..
+            } if crate::pointer_lock::escape() => {
+                actions.push(AppAction::RequestRedraw);
+                return actions;
+            }
+            PlatformEvent::PointerMotion { dx, dy } => {
+                crate::pointer_lock::dispatch_pointer_motion(*dx, *dy);
+                if self.has_pending_layout() {
+                    self.resolve_and_repaint(vp_w, vp_h);
+                    actions.push(AppAction::RequestRedraw);
+                }
+                return actions;
+            }
+            _ => {}
+        }
+
         // A drag move deferred its layout to the frame. Anything but another
         // move is settled against it first: a press, release, wheel or drop
         // hit-tests, and must see the dragged box where the last move put it,
