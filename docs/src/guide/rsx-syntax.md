@@ -1319,6 +1319,97 @@ rsx! {
 }
 ```
 
+`current_user.set(Some("Bob".into()))` redraws the greeting. A branch whose
+pattern **binds a name** follows that value: whenever a reactive value the
+scrutinee reads changes and the pattern still matches, the branch is disposed
+and built again, so `name` is the new value. A branch that binds nothing —
+`Some(_)`, `None`, a plain `if` — is built once each time it is shown, since
+nothing in it can be stale. The same rule applies to [`match`
+arms](#how-match-works-internally). (Before issue #2105 a binding branch was
+rebuilt only when the pattern started or stopped matching, so `Some("Alice")`
+→ `Some("Bob")` kept showing Alice.)
+
+What to know about the rebuild:
+
+- **It is a rebuild, not an update.** The branch's own state goes with it:
+  focus inside it, its scroll position, the rows of a keyed `for` inside it.
+  A branch whose own controls write the value it bound — a form whose inputs
+  edit the record it shows, a panel of sliders over the material it shows —
+  would be rebuilt on every keystroke or tick, and its control would lose
+  focus. Mark such a branch [`#[once]`](#once-build-a-branch-once-per-selection).
+
+- **There is no equality check.** The branch cannot compare old and new values
+  (they need be neither `PartialEq` nor `'static`), so it rebuilds whenever
+  the scrutinee re-runs, which is whenever a signal it read was written —
+  `Signal::set` with an equal value included. To skip equal values, put the
+  value behind a `Memo`, whose equality cut-off stops the re-run, or write with
+  `Signal::set_if_changed`:
+
+  ```rust
+  let user_name = Memo::new(move || session.get().map(|s| s.user_name));
+  rsx! {
+      if let Some(name) = user_name.get() {   // rebuilt only when the name changes
+          p { "Welcome, " {name} "!" }
+      }
+  }
+  ```
+
+  The same goes for a scrutinee that reads more than the value it binds:
+  `if let Some(row) = rows.get().get(i).cloned()` rebuilds on any change to
+  `rows`; a `Memo` over the row narrows it to changes of that row.
+
+- **Telling a binding from a constant.** `name` binds; `None`, `Mode::Edit`,
+  `0`, `_` do not. A bare identifier that starts with an uppercase letter is
+  read as a constant or unit variant, as Rust's naming convention has it — the
+  macro sees only syntax and cannot tell `Some(N)` binding `N` from `Some(N)`
+  matching a `const N`. So an uppercase binding is never rebuilt, exactly as if
+  the branch carried `#[once]`. Name bindings in snake_case.
+- **Nested branches on one signal** are built once per write: the outer
+  branch's rebuild replaces the inner one, which does not also rebuild itself.
+
+#### `#[once]`: build a branch once per selection
+
+`#[once]` before an `if` or a `match` keeps the behaviour rsx had before issue
+#2105: each branch is built when it is selected and keeps the value it bound
+then, however that value changes while it stays selected. Switching branches
+(`Some` → `None`, one arm to another) still rebuilds.
+
+```rust
+let draft = Signal::new(Some(Contact::default()));
+
+rsx! {
+    #[once]
+    if let Some(contact) = draft.get() {
+        // The field writes `draft` on every keystroke; without `#[once]` each
+        // keystroke would rebuild the branch and the field would lose focus.
+        TextInput {
+            label: "Name",
+            value_fn: move || draft.get().map(|c| c.name).unwrap_or_default(),
+            oninput: move |v: String| draft.update(|d| if let Some(d) = d { d.name = v }),
+        }
+        p { "Contact #" {contact.id.to_string()} }   // read once: the id does not change
+    }
+}
+```
+
+- On an `if`, `#[once]` covers the whole `else if` chain.
+- On a `match`, it covers every arm. It can also go on **one arm**, which is
+  useful when only one arm holds a form:
+
+  ```rust
+  match mode.get() {
+      #[once]
+      Mode::Editing(draft) => { EditForm { draft } },   // its inputs write `mode`
+      Mode::Viewing(item) => { ItemView { item } },     // follows `item`
+  }
+  ```
+
+- Inside a `#[once]` branch, read anything that changes through a reactive
+  closure (`{|| …}`, `value_fn`), not through the binding: the binding is the
+  value at the time the branch was built.
+- `#[once]` is the only attribute rsx accepts there; on an element, or with
+  another name, it is a compile error.
+
 #### How `if` works internally
 
 The `if` block desugars to `show_dom()` — the same runtime function used by the `Show` component. The condition is auto-wrapped in a `move || { ... }` closure, creating an Effect that watches the signals read inside it. When the condition changes:
@@ -1602,7 +1693,9 @@ rsx! {
 
 #### Match with pattern bindings
 
-Patterns that bind variables work — each arm re-evaluates the scrutinee to extract the bound values:
+Patterns that bind variables work — each arm re-evaluates the scrutinee to extract the bound values,
+and an arm that binds is rebuilt when the value changes while the arm still matches, so
+`Ok("Hello")` → `Ok("Bye")` redraws (see [`if let`](#if-let) for what a rebuild costs):
 
 ```rust
 let result = Signal::new(Ok::<String, String>("Hello".into()));
@@ -1679,6 +1772,14 @@ path such as `geom::Point { x: 1 }`, which is not an element name.
 #### How `match` works internally
 
 The `match` block desugars to `match_dom()`, which generalizes `show_dom()` to N branches. A discriminant closure returns the index of the active branch (0, 1, 2, ...). When the discriminant changes, the old branch is disposed and the new branch is rendered.
+
+An arm whose pattern binds a name (`Some(n) => …`, `Msg::Text(body) => …`) is
+also rebuilt when the discriminant re-runs and picks the same arm again, so it
+always shows the current value; that desugars to `match_dom_rebinding()`, and
+an `if let` that binds desugars to `show_dom_rebinding()`. Arms that bind
+nothing (`0 =>`, `Tab::About =>`, `None =>`, `_ =>`) are built once per
+selection. The [`if let`](#if-let) section above lists what a rebuild costs and
+how a `Memo` scrutinee avoids rebuilding for an equal value.
 
 ### Programmatic Conditional Rendering (show_dom)
 

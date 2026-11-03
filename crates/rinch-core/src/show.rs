@@ -95,6 +95,52 @@ where
     T: Fn(&mut RenderScope) -> NodeHandle + 'static,
     E: Fn(&mut RenderScope) -> NodeHandle + 'static,
 {
+    show_dom_impl(scope, parent, when, then_fn, else_fn, false)
+}
+
+/// [`show_dom`] for a then-branch that reads a value out of the condition:
+/// the target of an rsx `if let` whose pattern binds a name (issue #2105).
+///
+/// Everything [`show_dom`] does, plus one thing: while the condition stays
+/// `true`, every re-run of `when` — that is, every change to a reactive value
+/// it read — **rebuilds** the then-branch (old scope disposed, old markup
+/// removed, `then_fn` run again), because `then_fn` re-reads the value the
+/// pattern bound and the branch it built from the old one is stale.
+///
+/// There is no value comparison: `when` returns only a `bool`, and the value
+/// it matched need not be `PartialEq`, `Clone` or `'static`. The equality
+/// cut-off is upstream — a [`Memo`](crate::reactive::Memo) scrutinee does not
+/// re-run `when` when its value is equal, and neither does
+/// [`Signal::set_if_changed`](crate::reactive::Signal::set_if_changed). The
+/// else branch is never rebuilt by a re-run (it binds nothing).
+pub fn show_dom_rebinding<W, T, E>(
+    scope: &mut RenderScope,
+    parent: &NodeHandle,
+    when: W,
+    then_fn: T,
+    else_fn: Option<E>,
+) -> NodeHandle
+where
+    W: Fn() -> bool + 'static,
+    T: Fn(&mut RenderScope) -> NodeHandle + 'static,
+    E: Fn(&mut RenderScope) -> NodeHandle + 'static,
+{
+    show_dom_impl(scope, parent, when, then_fn, else_fn, true)
+}
+
+fn show_dom_impl<W, T, E>(
+    scope: &mut RenderScope,
+    parent: &NodeHandle,
+    when: W,
+    then_fn: T,
+    else_fn: Option<E>,
+    rebind_then: bool,
+) -> NodeHandle
+where
+    W: Fn() -> bool + 'static,
+    T: Fn(&mut RenderScope) -> NodeHandle + 'static,
+    E: Fn(&mut RenderScope) -> NodeHandle + 'static,
+{
     // Create comment marker and insert into parent
     let marker = scope.create_comment("show");
     parent.append_child(&marker);
@@ -148,47 +194,46 @@ where
         }
     }
 
-    // Initial render
-    {
-        let is_showing = *showing.borrow();
-        if is_showing {
-            insert_content_after_marker(
-                &doc_weak,
-                parent_id,
-                &marker,
-                then_fn.as_ref(),
-                &current_content,
-                &current_scope,
-                creator_scope_id,
-            );
-        } else if let Some(ref else_fn) = else_fn {
-            insert_content_after_marker(
-                &doc_weak,
-                parent_id,
-                &marker,
-                else_fn.as_ref(),
-                &current_content,
-                &current_scope,
-                creator_scope_id,
-            );
-        }
-    }
-
     // Create Effect that swaps content when condition changes
     let showing_clone = showing.clone();
     let current_content_clone = current_content.clone();
     let current_scope_clone = current_scope.clone();
     let doc_weak_clone = doc_weak.clone();
+    let then_fn_init = then_fn.clone();
+    let else_fn_init = else_fn.clone();
     let then_fn_clone = then_fn;
     let else_fn_clone = else_fn;
     let marker_effect = marker_clone.clone();
+    // The effect's first run only subscribes: the initial branch is built
+    // after it, below.
+    let first_run = std::cell::Cell::new(true);
+    // The effect is created *before* the initial branch is built, so it
+    // subscribes to the condition's signals ahead of every effect the branch
+    // creates and so runs first on a write (effects run in creation order,
+    // issue #154). A nested `if let` on the same signal is then disposed by
+    // this effect's rebuild before it can rebuild itself for nothing (issue
+    // #2105). A write that lands *during* the initial build (the branch writing
+    // a signal the condition reads) is parked in `pending` and replayed once
+    // the build is in place, so it cannot swap content that is half-built.
+    let building = Rc::new(std::cell::Cell::new(true));
+    let pending = Rc::new(std::cell::Cell::new(false));
+    let building_effect = building.clone();
+    let pending_effect = pending.clone();
 
     let effect = Effect::new(move || {
         let new_showing = when();
         let old_showing = *showing_clone.borrow();
+        let first = first_run.replace(false);
+        if building_effect.get() && !first {
+            pending_effect.set(true);
+            return;
+        }
 
-        // Only update if condition actually changed
-        if new_showing != old_showing {
+        // Swap when the condition flipped. A rebinding then-branch is also
+        // rebuilt when `when` re-ran and still holds: a value it read changed,
+        // and the branch destructured the old one (issue #2105).
+        let rebind = rebind_then && new_showing && old_showing && !first;
+        if new_showing != old_showing || rebind {
             *showing_clone.borrow_mut() = new_showing;
 
             // The `take()` is deliberately a separate statement: an `if let`
@@ -288,6 +333,37 @@ where
             }
         }
     });
+
+    // Initial render, after the effect exists (see `building` above).
+    {
+        let is_showing = *showing.borrow();
+        if is_showing {
+            insert_content_after_marker(
+                &doc_weak,
+                parent_id,
+                &marker,
+                then_fn_init.as_ref(),
+                &current_content,
+                &current_scope,
+                creator_scope_id,
+            );
+        } else if let Some(ref else_fn) = else_fn_init {
+            insert_content_after_marker(
+                &doc_weak,
+                parent_id,
+                &marker,
+                else_fn.as_ref(),
+                &current_content,
+                &current_scope,
+                creator_scope_id,
+            );
+        }
+    }
+
+    building.set(false);
+    if pending.replace(false) {
+        effect.run();
+    }
 
     // Attach the toggle effect to the parent scope so it lives as long as
     // the Show's container node. Previously stored globally which leaked.

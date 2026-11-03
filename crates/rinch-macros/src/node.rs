@@ -33,6 +33,8 @@ impl Parse for RsxNode {
         } else if input.peek(Token![|]) || input.peek(Token![move]) {
             // Parse bare closure as expression (for For component view functions)
             Ok(RsxNode::Expr(input.parse()?))
+        } else if input.peek(Token![#]) {
+            parse_marked_control_flow(input)
         } else if input.peek(Token![if]) {
             Ok(RsxNode::IfBlock(input.parse()?))
         } else if input.peek(Token![for]) {
@@ -43,6 +45,48 @@ impl Parse for RsxNode {
             Ok(RsxNode::Element(input.parse()?))
         }
     }
+}
+
+/// `#[once] if …` / `#[once] match …` in node position (issue #2105).
+///
+/// The attribute is parsed by the `if`/`match` itself; this only checks that
+/// one of them follows, so `#[once] div { … }` is an error at the attribute
+/// rather than a confusing one further on.
+fn parse_marked_control_flow(input: ParseStream) -> Result<RsxNode> {
+    let ahead = input.fork();
+    ahead.call(syn::Attribute::parse_outer)?;
+    if ahead.peek(Token![if]) {
+        Ok(RsxNode::IfBlock(input.parse()?))
+    } else if ahead.peek(Token![match]) {
+        Ok(RsxNode::MatchBlock(input.parse()?))
+    } else {
+        Err(input.error(
+            "an attribute in rsx goes on an `if`, a `match` or a match arm: \
+             `#[once] if let … { … }`, `#[once] match … { … }`",
+        ))
+    }
+}
+
+/// Parse the outer attributes rsx accepts on an `if`, a `match` or a match arm,
+/// and return whether `#[once]` was among them (issue #2105).
+///
+/// `#[once]` keeps a branch whose pattern binds a value **built once per
+/// selection**: it keeps the value it bound when it was built instead of being
+/// rebuilt when that value changes. Any other attribute is an error.
+fn parse_once_marker(input: ParseStream) -> Result<bool> {
+    let mut once = false;
+    for attr in input.call(syn::Attribute::parse_outer)? {
+        if attr.path().is_ident("once") && matches!(attr.meta, syn::Meta::Path(_)) {
+            once = true;
+        } else {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "rsx accepts only `#[once]` here: it keeps a branch that binds a value \
+                 built once per selection instead of rebuilding it when the value changes",
+            ));
+        }
+    }
+    Ok(once)
 }
 
 /// The kind of control flow found inside a braced node, if any.
@@ -89,11 +133,14 @@ fn parse_braced_node(input: ParseStream) -> Result<RsxNode> {
     let inner;
     syn::braced!(inner in ahead);
 
-    let kind = if inner.peek(Token![if]) {
+    // Look past a leading `#[once]` (issue #2105) to the keyword.
+    let probe = inner.fork();
+    let _ = probe.call(syn::Attribute::parse_outer);
+    let kind = if probe.peek(Token![if]) {
         Some(ControlFlowKind::If)
-    } else if inner.peek(Token![for]) {
+    } else if probe.peek(Token![for]) {
         Some(ControlFlowKind::For)
-    } else if inner.peek(Token![match]) {
+    } else if probe.peek(Token![match]) {
         Some(ControlFlowKind::Match)
     } else {
         None
@@ -170,6 +217,20 @@ pub struct RsxIfBlock {
     pub then_children: Vec<RsxNode>,
     /// Optional else branch.
     pub else_branch: Option<RsxElseBranch>,
+    /// `#[once]` on the `if`: no branch of the chain is rebuilt when the value
+    /// its pattern bound changes (issue #2105). Set on every `else if` of a
+    /// chain whose head carries it.
+    pub once: bool,
+}
+
+impl RsxIfBlock {
+    /// Apply `#[once]` to this `if` and every `else if` after it.
+    fn mark_once(&mut self) {
+        self.once = true;
+        if let Some(RsxElseBranch::ElseIf(inner)) = &mut self.else_branch {
+            inner.mark_once();
+        }
+    }
 }
 
 /// The else branch of an if block.
@@ -182,6 +243,7 @@ pub enum RsxElseBranch {
 
 impl Parse for RsxIfBlock {
     fn parse(input: ParseStream) -> Result<Self> {
+        let once = parse_once_marker(input)?;
         input.parse::<Token![if]>()?;
 
         // Check for `if let`
@@ -220,13 +282,18 @@ impl Parse for RsxIfBlock {
             None
         };
 
-        Ok(RsxIfBlock {
+        let mut block = RsxIfBlock {
             condition,
             is_if_let,
             pattern,
             then_children,
             else_branch,
-        })
+            once: false,
+        };
+        if once {
+            block.mark_once();
+        }
+        Ok(block)
     }
 }
 
@@ -279,10 +346,16 @@ pub struct RsxMatchBlock {
     pub scrutinee: Expr,
     /// The match arms.
     pub arms: Vec<RsxMatchArm>,
+    /// `#[once]` on the `match`: no arm is rebuilt when the value its pattern
+    /// bound changes (issue #2105).
+    pub once: bool,
 }
 
 /// A single arm in an RSX `match` block.
 pub struct RsxMatchArm {
+    /// `#[once]` on this arm: it is not rebuilt when the value it bound
+    /// changes (issue #2105).
+    pub once: bool,
     /// The match pattern (e.g., `0`, `Some(x)`, `_`).
     pub pattern: Pat,
     /// Optional `if` guard expression.
@@ -295,6 +368,7 @@ pub struct RsxMatchArm {
 
 impl Parse for RsxMatchBlock {
     fn parse(input: ParseStream) -> Result<Self> {
+        let once = parse_once_marker(input)?;
         input.parse::<Token![match]>()?;
 
         // Parse scrutinee expression (stop before the opening brace)
@@ -308,12 +382,17 @@ impl Parse for RsxMatchBlock {
             arms.push(content.parse()?);
         }
 
-        Ok(RsxMatchBlock { scrutinee, arms })
+        Ok(RsxMatchBlock {
+            scrutinee,
+            arms,
+            once,
+        })
     }
 }
 
 impl Parse for RsxMatchArm {
     fn parse(input: ParseStream) -> Result<Self> {
+        let once = parse_once_marker(input)?;
         // Parse pattern (with | alternatives)
         let pattern = Pat::parse_multi_with_leading_vert(input)?;
 
@@ -340,6 +419,7 @@ impl Parse for RsxMatchArm {
         }
 
         Ok(RsxMatchArm {
+            once,
             pattern,
             guard,
             children,
@@ -389,6 +469,7 @@ fn parse_braced_arm_body(input: ParseStream) -> Result<Vec<RsxNode>> {
     }
     let rsx_head = inner.peek(LitStr) || (inner.peek(syn::Ident) && inner.peek2(token::Brace));
     let other_head = inner.peek(Token![if])
+        || inner.peek(Token![#])
         || inner.peek(Token![for])
         || inner.peek(Token![match])
         || inner.peek(token::Brace);

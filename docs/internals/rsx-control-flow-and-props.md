@@ -74,6 +74,60 @@ rsx! {
 
 Pattern bindings and guards are supported — each arm re-evaluates the scrutinee to extract bound values.
 
+**A branch that binds a value follows it (issue #2105).** The condition of an
+`if let` is `matches!(expr, pat)`, a `bool`, and a `match`'s discriminant is
+an arm index; `show_dom`/`match_dom` swap content only when that answer
+changes. The branch destructures the scrutinee when it is built, so before
+#2105 `Some(a)` → `Some(b)` left the branch showing `a` forever. Now:
+
+- The macro asks, per branch, whether the pattern binds a name
+  (`captures::pattern_binds_a_value`). A bare identifier starting with an
+  uppercase letter and without `ref`/`mut`/`@` counts as a path (`None`, an
+  imported unit variant, a constant); a macro pattern counts as binding.
+- A binding `if let` emits `show_dom_rebinding`; a `match` with any binding
+  arm emits `match_dom_rebinding` with one `bool` per arm. Everything else
+  emits the plain `show_dom`/`match_dom`, unchanged.
+- At runtime the condition/discriminant effect, on any re-run after its first
+  (which only subscribes) that leaves the same binding branch selected,
+  rebuilds that branch through the same dispose/discard/re-render path a flip
+  takes. The else branch and non-binding arms are never rebuilt by a re-run.
+- **No value comparison**, deliberately. Comparing needs the scrutinee to be
+  `PartialEq + Clone + 'static`, and many are not: `if let Some(i) = &icon`,
+  `items.first()` (borrows of a capture), `Option<Rc<dyn Trait>>`. Requiring it
+  would break those at compile time, and autoref specialization cannot fall
+  back on the `'static` bound (rustc picks the impl and then fails borrowck).
+  So a re-run is the trigger, and the cut-off lives upstream: a `Memo`
+  scrutinee (equality cut-off) or `Signal::set_if_changed`. A plain
+  `Signal::set` of an equal value rebuilds. Pinned by
+  `crates/rinch-macros/tests/rsx_if_let_rebinding_2105.rs`.
+- A guard's reads are part of the discriminant, so a binding arm whose guard
+  reads a signal is rebuilt when that signal changes and the arm still wins.
+- Inside a keyed `for` row, an `if let` on the row's own signal rebuilds only
+  that row's branch, and a reorder rebuilds none. An `if let` *around* a keyed
+  `for` rebuilds the whole list (fresh rows) when its bound value changes.
+- **`#[once]`** (parsed by `node::parse_once_marker`) on an `if` sets `once` on
+  it and every `else if` of its chain; on a `match` it sets `RsxMatchBlock::once`;
+  on an arm `RsxMatchArm::once`. A `once` branch gets `false` for "binds", so
+  it takes the plain `show_dom` / a `false` flag. Any other attribute is an
+  error; `#[once]` before something that is not an `if`/`match` is an error at
+  the attribute (`parse_marked_control_flow`). A transparent brace and a braced
+  arm body look past a leading attribute. Pinned by
+  `rsx_if_let_once_2105.rs` and, for focus in a browser,
+  `crates/rinch-web/tests/if_let_focus_2105.rs`.
+- **The condition/discriminant effect is created before the initial branch is
+  built** (`show_dom_impl`, `match_dom_impl`). Effects run in creation order
+  (#154), so the outer effect now runs ahead of every effect its branch
+  creates; a nested binding `if let` on the same signal is disposed by the
+  outer rebuild before it can rebuild itself (before this, one write built the
+  outer once and the inner twice). A write the initial build itself makes to a
+  signal the condition reads would otherwise reach the effect mid-build and
+  swap half-built content; it is parked (`building`/`pending`) and replayed by
+  `effect.run()` once the build is in place. The effect's first run only
+  subscribes and records the arm.
+- An uppercase bare binding (`Some(N)`) is classified as a path and never
+  rebuilt: syntax cannot tell it from a `const N`. Documented beside `#[once]`
+  in the guide.
+
 **A braced arm body is decided by how it starts** (issue #395). It holds rsx
 children — several nodes, like an `if`/`for` body — when it starts with `let`,
 or with an rsx *head* (`Name {`, a string literal, `if`/`for`/`match`, or a
