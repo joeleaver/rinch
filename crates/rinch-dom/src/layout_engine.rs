@@ -226,6 +226,8 @@ impl RinchDocument {
         }
 
         // Trigger loads for any background-image URLs not yet in the cache
+        // (on wasm32 only queued: the host runs them outside this borrow,
+        // `image_cache::run_queued_loads`).
         self.request_background_image_loads();
 
         // Skip full layout recompute when no layout-affecting properties changed.

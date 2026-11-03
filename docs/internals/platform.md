@@ -6,7 +6,7 @@ Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New
 
 ### Image Support
 
-Images render on **both** desktop backends — GPU (Vello, an image-brush `scene.fill`) and software (tiny-skia, `draw_pixmap`) — via `<img>` elements and `background-image: url(...)` CSS. Remote/file images load asynchronously on background threads; `data:` URIs (e.g. base64 PNG) are decoded synchronously and inserted straight into the cache (`request_image_load_for_node`).
+Images render on **both** desktop backends — GPU (Vello, an image-brush `scene.fill`) and software (tiny-skia, `draw_pixmap`) — via `<img>` elements and `background-image: url(...)` CSS. Remote/file images load asynchronously on background threads; `data:` URIs (e.g. base64 PNG) are decoded synchronously and inserted straight into the cache, for `<img>` (`request_image_load_for_node`) and `background-image` (`request_background_image_loads`) alike, never offered to a loader (`decode_data_url_in_place`, #2100). **On wasm32** (rinch-dom painted into an embed's canvas, or a WASI guest — not rinch-web, where the browser loads `<img>`) `request_image_load` only **queues** the load (`QUEUED_LOADS`), because it is reached inside the document's borrow (`NodeHandle::set_attribute`, `resolve_layout`) and a loader is app code that may write a signal whose effect writes the DOM (`RefCell already borrowed`, review of #2107). The host runs the queue with no document borrowed, `image_cache::run_queued_loads()`: loader (under `untracked_handler`) and decode on the UI thread, the answer pushed onto the same `PENDING_IMAGES` queue a native load thread uses, so the drain, the dirty flags, `reload_image` and its retries are shared code. `RinchContext::new` runs it after the mount and `update` before its layout and again after it (a background is requested by the cascade inside layout), laying out once more when anything ran, so a scheme answer lands in the frame that asked. `has_pending` counts queued loads, so a load requested from an event handler opens the frame gate. A host driving a `RinchDocument` itself on wasm32 must call `run_queued_loads` (a no-op on native). Before #2100 it was a no-op there: no scheme loader was asked and no background loaded. No `http(s)` on wasm32 (the default loader reads files) and no async decode: the cost is the frame's. Pins: `crates/rinch-dom/tests/background_data_url_2100_tests.rs` (native), `crates/rinch/tests/embed_web_images_2100.rs` (wasm, `--features embed`).
 
 **Architecture:**
 ```
@@ -23,8 +23,8 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 
 **How it works:**
 1. `set_attribute("src", ...)` on `<img>` or `BackgroundValue::Image` during style resolution triggers a load
-2. `ImageCache` checks if already cached; if not, spawns a background thread via `request_image_load()`
-3. The background thread calls `ImageLoader::load()` then decodes with the `image` crate to RGBA8
+2. `ImageCache` checks if already cached; if not, spawns a background thread via `request_image_load()` (on wasm32: runs it in place, above)
+3. The load (`load_and_decode`) calls `ImageLoader::load()` then decodes with the `image` crate to RGBA8
 4. Results go to a static `Mutex<Vec<PendingImage>>` queue
 5. `drain_pending_images()` at the start of layout picks up decoded images, updates Taffy intrinsic dims
 6. `paint_image()` renders via `Painter::draw_image` with proper affine transforms. Vello samples an image at each pixel's centre, as tiny-skia does (#1027), so `VelloPainter::draw_image` and `fill_repeating` draw it with its own transform. (Vello 0.7 sampled from the pixel's top-left **corner** — an image at a whole-pixel origin came out averaged with its neighbours — and rinch moved the image half a device pixel up-left, `vello_painter::centre_sampling`, to compensate; Vello 0.9 moved the sample to the centre, so the shift was dropped for images with the Vello 0.11 upgrade, #1955. Gradients still take it: Vello evaluates them at the corner.) Pins: `vello_painter::sampling_tests` (a CPU model of the shader arm) and the `#[ignore]`d `compositor::gpu_alpha_tests::gpu_alpha_vello_draw_image_*` (real GPU)
@@ -278,8 +278,9 @@ builds) and pushes it as a failure (`image loader panicked: …`); a load that p
 source in flight for the life of the document, which a reload only waits on. The key
 is the source as spelled (`reload_image("x:a")` does not reach `X:a`). `data` cannot
 be registered (`register_image_scheme` panics), so no app loader is offered a `data:`
-URL; the document's own loader still is, for a background `data:` URL and an
-undecodable `<img>` one (#1464). `rinch_core::image::scheme_of(src)` is the parser
+URL, and since #2100 neither is the document's own loader (a background `data:` URL
+used to reach it, and an undecodable `<img>` one, #1464; an undecodable one is now
+cached as failed). `rinch_core::image::scheme_of(src)` is the parser
 (named apart from `App::image_scheme`, which registers).
 `crates/rinch-dom/tests/image_scheme_reload_tests.rs` and `review_1429_tests.rs` are
 the pins, and `crates/rinch/src/app/review_1429_pimble_tests.rs` drives the whole
