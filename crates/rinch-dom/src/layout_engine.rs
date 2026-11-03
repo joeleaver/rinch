@@ -926,10 +926,15 @@ impl RinchDocument {
                                     // layout has the whole width again: its old bands go
                                     // before the cache below can answer (the bands of a
                                     // root beside floats are recorded after its build).
+                                    // (Most documents have no floats: an empty map is
+                                    // not hashed into.)
                                     if inputs.run_mode == taffy::RunMode::PerformLayout
                                         && !beside_floats
                                     {
-                                        ifc_float_bands.borrow_mut().remove(&root_id);
+                                        let mut bands = ifc_float_bands.borrow_mut();
+                                        if !bands.is_empty() {
+                                            bands.remove(&root_id);
+                                        }
                                     }
 
                                     // Check persistent IFC measure cache — skip expensive
@@ -996,9 +1001,10 @@ impl RinchDocument {
                                             Some(last) => {
                                                 bands.insert(root_id, last);
                                             }
-                                            None => {
+                                            None if !bands.is_empty() => {
                                                 bands.remove(&root_id);
                                             }
+                                            None => {}
                                         }
                                     }
                                     let mut h = hang.get();
