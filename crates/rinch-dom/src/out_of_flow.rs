@@ -1269,16 +1269,25 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     // Taffy would take from the direct parent. Unpaired, a missing inset
     // counts as zero — Taffy's `resolve_absolute_sizing_keywords` rule, and
     // Chrome 153's answer (`left: 10px` in an 800px viewport gives 790).
-    // A width that fills the room between the insets is the border box's:
-    // a `content-box` box's `width` is that less its padding and border
-    // (#1278), or it overflows the room by them.
-    let inset_x = if taffy_style.box_sizing == taffy::BoxSizing::ContentBox {
-        cs.padding_left.resolve(cw)
-            + cs.padding_right.resolve(cw)
-            + cs.border_left_width.to_px()
-            + cs.border_right_width.to_px()
+    // A size that fills the room between the insets is the border box's: a
+    // `content-box` box's `width` or `height` is that less its padding and
+    // border (#1278), or it overflows the room by them. Read from the
+    // computed style: the Taffy style handed here need not carry its
+    // `box_sizing` yet. A percentage padding resolves against the block's
+    // width on both axes.
+    let (inset_x, inset_y) = if cs.box_sizing_border_box {
+        (0.0, 0.0)
     } else {
-        0.0
+        (
+            cs.padding_left.resolve(cw)
+                + cs.padding_right.resolve(cw)
+                + cs.border_left_width.to_px()
+                + cs.border_right_width.to_px(),
+            cs.padding_top.resolve(cw)
+                + cs.padding_bottom.resolve(cw)
+                + cs.border_top_width.to_px()
+                + cs.border_bottom_width.to_px(),
+        )
     };
     if taffy_style.size.width.is_stretch() {
         let l = cs.left.resolve(cw).unwrap_or(0.0);
@@ -1329,12 +1338,14 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     if taffy_style.size.height.is_stretch() {
         let t = cs.top.resolve(ch).unwrap_or(0.0);
         let b = cs.bottom.resolve(ch).unwrap_or(0.0);
-        taffy_style.size.height = taffy::Dimension::length((ch - t - b - mt - mb).max(0.0));
+        taffy_style.size.height =
+            taffy::Dimension::length((ch - t - b - mt - mb - inset_y).max(0.0));
     } else if taffy_style.size.height == taffy::Dimension::auto() {
         // Between two insets it fills the space; otherwise it is its
         // content's (CSS 2.1 §10.6.4), a fixed box's too (#893).
         if let (Some(t), Some(b)) = (cs.top.resolve(ch), cs.bottom.resolve(ch)) {
-            taffy_style.size.height = taffy::Dimension::length((ch - t - b - mt - mb).max(0.0));
+            taffy_style.size.height =
+                taffy::Dimension::length((ch - t - b - mt - mb - inset_y).max(0.0));
         }
     } else if absolute {
         match cs.height {

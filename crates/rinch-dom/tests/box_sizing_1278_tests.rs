@@ -83,3 +83,32 @@ fn a_padded_body_is_as_wide_as_the_viewport() {
     d.resolve_layout(800.0, 600.0);
     assert_eq!(d.tree.get(body.0).unwrap().layout.width, 800.0);
 }
+
+/// An absolute box held by all four insets, or `width`/`height: stretch`,
+/// fills its containing block with its border box on both axes, the block
+/// being an ancestor further up than its parent (Chrome 156: 300x200 for
+/// both, padding 10 and a 5px border; a review of #2090 found 330x230).
+#[test]
+fn an_absolute_box_filling_a_grandparent_block_fills_it_with_its_border_box() {
+    let d = doc(
+        "<div style='position:relative;width:300px;height:200px'><div>\
+                 <div id=a style='position:absolute;top:0;right:0;bottom:0;left:0;padding:10px;border:5px solid'></div>\
+                 <div id=b style='position:absolute;left:0;top:0;width:stretch;height:stretch;padding:10px;border:5px solid'></div>\
+                 </div></div>",
+    );
+    assert_eq!(rect(&d, "a"), (0.0, 0.0, 300.0, 200.0));
+    assert_eq!(rect(&d, "b"), (0.0, 0.0, 300.0, 200.0));
+}
+
+/// An auto-width `<body>` with padding and a `max-width` is sized as the
+/// content box it is: `max-width: 600px` caps its content at 600, its border
+/// box at 640 (Chrome 156; a review of #2090 found it forced to border-box,
+/// 560 of content).
+#[test]
+fn a_padded_bodys_max_width_caps_its_content_box() {
+    let mut d = RinchDocument::new();
+    d.load_css("body { margin: 0; padding: 20px; max-width: 600px; }");
+    let body = d.body();
+    d.resolve_layout(800.0, 600.0);
+    assert_eq!(d.tree.get(body.0).unwrap().layout.width, 640.0);
+}
