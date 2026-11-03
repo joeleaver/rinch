@@ -622,8 +622,8 @@ let window_props = WindowProps {
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`34f153bd6e523de53f9da67c6db58bd1f8732542`,
-#1962). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`d99384edd804a20e737c013b5f57b56ab931a611`,
+#1962, moved for #2114). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -631,9 +631,10 @@ API) declares its own dependency, and naming this git rev keeps one winit in
 its build. The rev is pinned so a push to the fork's branch
 never changes rinch; moving it is a commit here.
 
-The branch is upstream's `v0.31.0-beta.4` tag plus five commits: four in
-`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597), and one
-taking crates.io `dpi` (below):
+The branch is upstream's `v0.31.0-beta.4` tag plus six commits: four in
+`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597), one
+taking crates.io `dpi` (below), and one in `winit-x11` for raw pointer events
+under a grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`):
 
 - `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
   window a `zwlr_layer_surface_v1` (layer, keyboard interactivity, anchors,
@@ -654,6 +655,26 @@ taking crates.io `dpi` (below):
   `wl_display.sync`, so an app following the pointer with the surface knows
   which origin each pointer position is relative to (#1597;
   `shell::layer_shell`).
+- **X11: one `DeviceEvent` per raw pointer event under a grab** (#2114).
+  While a window holds `CursorGrabMode::Confined` (an `XGrabPointer` on the
+  window with `owner_events`; X11 has no `Locked`, so rinch's pointer lock
+  ends up here), the X server delivers each `XI_RawMotion` /
+  `XI_RawButtonPress` / `XI_RawButtonRelease` twice to winit's raw selection
+  on the root. `dix` `DeliverRawEvent` delivers once through the grab's
+  owner-events path, which walks up to the root, and once more in its loop
+  over root windows, because `FilterRawEvents` skips the grabbing client only
+  when the grab window is the root. The two copies are identical and
+  adjacent, so `PointerMotion`, raw `Button` and valuator `MouseWheel` came
+  doubled. Mouse-look turned twice as far as on Wayland, Windows or macOS.
+  The fork's `XConnection` records which window holds the client's pointer grab
+  (cleared by every ungrab, unmap and destroy), and while one is held
+  `winit-x11/src/raw_duplicate.rs` passes the first of each identical
+  back-to-back pair and drops the second. It pairs rather than dropping every
+  repeat, so genuine identical events in one millisecond survive; without a
+  grab it filters nothing. Raw keys arrive once (winit never grabs the
+  keyboard) and are not filtered. Measured in Xwayland under a nested
+  `kwin_wayland --virtual` with XTest, before and after; not measured on a
+  real X.Org server with a physical mouse (it shares the `dix` code).
 
 The beta.2 branch (`rinch-patch`, kept for apps still on it) also carried
 Wayland drag and drop (SCTK's `DataDeviceManager`) and its fix to report DnD
@@ -672,7 +693,7 @@ crates.io `dpi` itself never meets "expected `dpi::PhysicalSize`, found
 `dpi::PhysicalSize`". `cargo tree -d` shows no second `dpi`; keep it so on a
 bump.
 
-On a winit bump: rebase the five commits onto the new tag on a new branch
+On a winit bump: rebase the six commits onto the new tag on a new branch
 (apps on the old one keep building), move the rev here, and read upstream's
 changelog for API breaks (beta.3 made most public enums `#[non_exhaustive]`;
 beta.3/4 replaced the path-carrying `DragEntered`/`DragMoved`/`DragDropped`

@@ -8823,7 +8823,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=34f153bd6e523de53f9da67c6db58bd1f8732542#34f153bd6e523de53f9da67c6db58bd1f8732542"
+source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
 dependencies = [
  "bitflags 2.10.0",
  "cfg_aliases",
@@ -8849,7 +8849,7 @@ dependencies = [
 [[package]]
 name = "winit-android"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=34f153bd6e523de53f9da67c6db58bd1f8732542#34f153bd6e523de53f9da67c6db58bd1f8732542"
+source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
 dependencies = [
  "android-activity",
  "bitflags 2.10.0",
@@ -8864,7 +8864,7 @@ dependencies = [
 [[package]]
 name = "winit-appkit"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=34f153bd6e523de53f9da67c6db58bd1f8732542#34f153bd6e523de53f9da67c6db58bd1f8732542"
+source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
 dependencies = [
  "bitflags 2.10.0",
  "block2 0.6.2",
@@ -8886,7 +8886,7 @@ dependencies = [
 [[package]]
 name = "winit-common"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=34f153bd6e523de53f9da67c6db58bd1f8732542#34f153bd6e523de53f9da67c6db58bd1f8732542"
+source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
 dependencies = [
  "block2 0.6.2",
  "dpi",
@@ -8904,7 +8904,7 @@ dependencies = [
 [[package]]
 name = "winit-core"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=34f153bd6e523de53f9da67c6db58bd1f8732542#34f153bd6e523de53f9da67c6db58bd1f8732542"
+source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
 dependencies = [
  "bitflags 2.10.0",
  "cursor-icon",
@@ -8918,7 +8918,7 @@ dependencies = [
 [[package]]
 name = "winit-orbital"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=34f153bd6e523de53f9da67c6db58bd1f8732542#34f153bd6e523de53f9da67c6db58bd1f8732542"
+source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
 dependencies = [
  "bitflags 2.10.0",
  "dpi",
@@ -8934,7 +8934,7 @@ dependencies = [
 [[package]]
 name = "winit-uikit"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=34f153bd6e523de53f9da67c6db58bd1f8732542#34f153bd6e523de53f9da67c6db58bd1f8732542"
+source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
 dependencies = [
  "bitflags 2.10.0",
  "block2 0.6.2",
@@ -8954,7 +8954,7 @@ dependencies = [
 [[package]]
 name = "winit-wayland"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=34f153bd6e523de53f9da67c6db58bd1f8732542#34f153bd6e523de53f9da67c6db58bd1f8732542"
+source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
 dependencies = [
  "bitflags 2.10.0",
  "calloop",
@@ -8981,7 +8981,7 @@ dependencies = [
 [[package]]
 name = "winit-web"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=34f153bd6e523de53f9da67c6db58bd1f8732542#34f153bd6e523de53f9da67c6db58bd1f8732542"
+source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
 dependencies = [
  "atomic-waker",
  "bitflags 2.10.0",
@@ -9003,7 +9003,7 @@ dependencies = [
 [[package]]
 name = "winit-win32"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=34f153bd6e523de53f9da67c6db58bd1f8732542#34f153bd6e523de53f9da67c6db58bd1f8732542"
+source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
 dependencies = [
  "bitflags 2.10.0",
  "cursor-icon",
@@ -9021,7 +9021,7 @@ dependencies = [
 [[package]]
 name = "winit-x11"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=34f153bd6e523de53f9da67c6db58bd1f8732542#34f153bd6e523de53f9da67c6db58bd1f8732542"
+source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
 dependencies = [
  "bitflags 2.10.0",
  "bytemuck",

@@ -312,7 +312,7 @@ no rinch API takes a winit type. rinch is on winit 0.31.0-beta.4 (#1962);
 naming the same dependency keeps one winit in the build:
 
 ```toml
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "34f153bd6e523de53f9da67c6db58bd1f8732542" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "d99384edd804a20e737c013b5f57b56ab931a611" }
 ```
 
 From beta.2, winit's public enums are `#[non_exhaustive]` (a `match` on
