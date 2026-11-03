@@ -190,3 +190,69 @@ fn a_data_url_background_loads_in_an_embedded_context() {
         "background-image: url(data:)"
     );
 }
+
+/// A loader is called with no document borrowed (review of #2107). One that
+/// tells the app a picture was asked for by writing a signal — `send`, the
+/// portable way, which on wasm32 runs at once — flushes an effect that writes
+/// the DOM. Called inside `set_attribute` or `resolve_layout`, that write
+/// re-borrowed the document and panicked `RefCell already borrowed`.
+fn mount_signalling(scheme: &'static str, src: &'static str, as_bg: bool) -> RinchContext {
+    RinchContext::new(cfg(), move |scope: &mut RenderScope| -> NodeHandle {
+        let asked: rinch_core::reactive::Signal<u32> = rinch_core::reactive::Signal::new(0);
+        register_image_scheme(scheme, move |_src: &str| {
+            asked.send(1);
+            ImageLoadResult::Loaded(RED_3X2_PNG.to_vec())
+        });
+        let root = scope.create_element("div");
+        root.set_attribute("data-asked", "0");
+        let r = root.clone();
+        std::mem::forget(rinch_core::reactive::Effect::new(move || {
+            r.set_attribute("data-asked", &asked.get().to_string());
+        }));
+        let el = if as_bg {
+            let div = scope.create_element("div");
+            div.set_attribute(
+                "style",
+                &format!("width: 7px; height: 5px; background-image: url({src})"),
+            );
+            div
+        } else {
+            let img = scope.create_element("img");
+            img.set_attribute("src", src);
+            img
+        };
+        root.append_child(&el);
+        root
+    })
+}
+
+fn asked_attr(ctx: &RinchContext) -> Option<String> {
+    let doc = ctx.app().doc()?.borrow();
+    let body = doc
+        .tree
+        .nodes
+        .iter()
+        .find_map(|(_, n)| n.attributes.get("data-asked").map(|v| v.to_string()));
+    body
+}
+
+#[wasm_bindgen_test]
+fn a_loader_that_writes_a_signal_from_an_img_src() {
+    let mut ctx = mount_signalling("embed2100sig", "embed2100sig:x", false);
+    ctx.update(&[]);
+    assert_eq!(decoded(&ctx, "embed2100sig:x"), Some((3, 2)));
+    assert_eq!(asked_attr(&ctx).as_deref(), Some("1"), "the effect ran");
+    drop(ctx);
+    rinch_core::image::unregister_image_scheme("embed2100sig");
+}
+
+#[wasm_bindgen_test]
+fn a_loader_that_writes_a_signal_from_a_background() {
+    let mut ctx = mount_signalling("embed2100sigbg", "embed2100sigbg:x", true);
+    // Same frame: the mount loads it.
+    assert_eq!(decoded(&ctx, "embed2100sigbg:x"), Some((3, 2)));
+    ctx.update(&[]);
+    assert_eq!(asked_attr(&ctx).as_deref(), Some("1"), "the effect ran");
+    drop(ctx);
+    rinch_core::image::unregister_image_scheme("embed2100sigbg");
+}
