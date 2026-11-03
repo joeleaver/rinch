@@ -1627,19 +1627,18 @@ impl RinchDocument {
     }
 
     /// Start the loads of the background-image URLs the cascade produced
-    /// since the last call. Returns whether it started any.
+    /// since the last call.
     ///
     /// A `data:` URL is decoded here, in place, as an `<img>`'s is: it is in
     /// the cache before this frame paints, and needs no loader (#2100; it
     /// used to go to the document's loader, which read it as a file name).
-    pub fn request_background_image_loads(&mut self) -> bool {
+    pub fn request_background_image_loads(&mut self) {
         // Only URLs a cascade produced since the last call (see
         // `NodeTree::pending_background_urls`), never a walk of the slab.
         if self.tree.pending_background_urls.is_empty() {
-            return false;
+            return;
         }
         let loader = self.tree.image_loader.clone();
-        let mut started = false;
         let mut kept = Vec::new();
         for url in std::mem::take(&mut self.tree.pending_background_urls) {
             // A URL two nodes share, or one that finished loading since it
@@ -1658,10 +1657,8 @@ impl RinchDocument {
             };
             self.tree.image_cache.mark_loading(url.clone());
             crate::image_cache::request_image_load(self.doc_key, url, loader);
-            started = true;
         }
         self.tree.pending_background_urls = kept;
-        started
     }
 
     /// Drain completed image loads and update Taffy nodes with intrinsic dimensions.

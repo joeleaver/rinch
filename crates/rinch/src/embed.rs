@@ -255,6 +255,17 @@ impl RinchContext {
         app.set_device_pixel_ratio(scale_factor);
         let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
         app.mount_component(logical_w as f32, logical_h as f32);
+        // On wasm32 the mount's image loads were only queued (a loader is app
+        // code, not run inside the document's borrow): run them now, and lay
+        // out again so the pictures they answer are in the first frame. A
+        // background is requested by that layout's cascade, hence the loop.
+        // Nothing is queued on native, where loads have threads of their own.
+        for _ in 0..2 {
+            if !rinch_dom::image_cache::run_queued_loads() {
+                break;
+            }
+            app.resolve_and_repaint(logical_w as f32, logical_h as f32);
+        }
 
         // Subscribe to signal changes so the game loop can detect dirty state.
         // A guard-based subscription (not the legacy single slot): each context
@@ -342,10 +353,22 @@ impl RinchContext {
             all_actions.push(AppAction::RequestRedraw);
         }
 
+        // Image loads queued since the last frame (wasm32 runs them here, on
+        // this thread, with no document borrowed: a loader may write
+        // signals). Their answers are drained by the layout below.
+        rinch_dom::image_cache::run_queued_loads();
+
         // If signals changed, resolve layout
         if self.dirty.swap(false, Ordering::AcqRel) || deferred_ran || self.app.has_dirty_nodes() {
             let (w, h) = self.logical_size();
-            if self.app.resolve_and_repaint(w, h) {
+            let mut repainted = self.app.resolve_and_repaint(w, h);
+            // That layout's cascade may have requested background images:
+            // run them and lay out once more, so a loader that answers at once
+            // is shown in this frame. (Never on native.)
+            if rinch_dom::image_cache::run_queued_loads() {
+                repainted |= self.app.resolve_and_repaint(w, h);
+            }
+            if repainted {
                 // Deduplicate RequestRedraw
                 if !all_actions.contains(&AppAction::RequestRedraw) {
                     all_actions.push(AppAction::RequestRedraw);

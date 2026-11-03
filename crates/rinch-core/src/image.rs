@@ -47,9 +47,10 @@ pub enum ImageLoadResult {
 /// arrive, rather than park a thread per missing picture.
 ///
 /// On `wasm32` (an embedded `RinchContext` in the browser, a WASI guest) there
-/// are no threads to spawn: the loader is called on the UI thread, inside the
-/// frame that first names the source, and its bytes are decoded there. It
-/// must answer from memory, never wait; a source it has to fetch first is
+/// are no threads to spawn: the loader is called on the UI thread, by the
+/// frame (`RinchContext::update`) that first names the source, with no
+/// document borrowed, so it may write signals; its bytes are decoded there.
+/// It must answer from memory, never wait; a source it has to fetch first is
 /// answered [`ImageLoadResult::Failed`] and reloaded when the bytes arrive.
 ///
 /// On desktop (any native target built with unwinding), a loader that
@@ -58,7 +59,9 @@ pub enum ImageLoadResult {
 /// source can be reloaded like any other failure. In the browser, and on a
 /// native build with `panic = "abort"`, a panic aborts the whole app. A loader
 /// must not call `reload_image` for the source it is being asked for: that
-/// discards the answer it is about to give and asks again, for ever.
+/// discards the answer it is about to give and asks again, for ever, and keeps
+/// a reload of it queued every frame, so a host that idles when nothing is
+/// pending never idles.
 ///
 /// # Closures
 ///

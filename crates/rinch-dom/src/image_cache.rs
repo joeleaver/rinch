@@ -446,7 +446,10 @@ fn load_and_decode(src: &str, loader: Arc<dyn ImageLoader>) -> Result<DecodedIma
         if src.starts_with("data:") {
             return decode_data_url_image(src);
         }
-        match loader.load(src) {
+        // App code: untracked, so a signal it reads subscribes no effect
+        // that happens to be running (CLAUDE.md, "Every app-callback invoke
+        // runs untracked").
+        match rinch_core::untracked_handler(|| loader.load(src)) {
             ImageLoadResult::Loaded(bytes) => decode_image_bytes(&bytes),
             ImageLoadResult::Failed(e) => Err(e),
         }
@@ -481,29 +484,69 @@ fn queue_answer(doc_key: u64, src: String, result: Result<DecodedImage, String>)
     true
 }
 
-/// Load and decode an image **on the calling thread**, and queue the answer
-/// for the document's next [`ImageCache::drain_pending`] (wasm32).
+/// The loads [`request_image_load`] queued on wasm32, waiting for
+/// [`run_queued_loads`]: `(doc_key, src, loader)`.
+#[cfg(target_arch = "wasm32")]
+type QueuedLoad = (u64, String, Arc<dyn ImageLoader>);
+#[cfg(target_arch = "wasm32")]
+static QUEUED_LOADS: Mutex<Vec<QueuedLoad>> = Mutex::new(Vec::new());
+
+/// Queue a load for [`run_queued_loads`] (wasm32).
 ///
 /// `wasm32` has no OS threads (`std::thread::spawn` panics on
-/// `wasm32-unknown-unknown` and fails on `wasm32-wasip1`), so the loader — the
-/// app's scheme loader for a registered scheme, else the document's — is asked
-/// here and its bytes decoded here, on the UI thread. The answer goes through
-/// the same queue a desktop load thread pushes to, so the drain publishes it
-/// the same way: an `<img>` takes its decoded size, a `background-image`'s
-/// users are repainted, and [`reload_image`] and its retries behave as on the
-/// desktop. [`RinchDocument::resolve_layout`](crate::RinchDocument) drains
-/// again after it requests the frame's background images on this target, so
-/// a picture a loader can answer at once shows in the frame that asked for it
-/// (#2100). Before #2100 this was a no-op: no scheme loader was asked and no
+/// `wasm32-unknown-unknown` and fails on `wasm32-wasip1`), so a load runs on
+/// the UI thread. Not here, though: this is reached from inside the
+/// document's borrow (`NodeHandle::set_attribute`, `resolve_layout`), and a
+/// loader is app code that may write a signal, whose effects write the DOM
+/// and would borrow the document again (review of #2107). The host runs the
+/// queue between its borrows: `RinchContext::update` and `RinchContext::new`
+/// do. Before #2100 this was a no-op: no scheme loader was asked and no
 /// `background-image` loaded in an embedded context in the browser.
-///
-/// The cost is the frame's: a loader here must answer from memory (it cannot
-/// block on a fetch — there is no thread to block), and the decode of a large
-/// picture is paid inside the frame that asks for it.
 #[cfg(target_arch = "wasm32")]
 pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader>) {
-    let result = load_and_decode(&src, loader);
-    queue_answer(doc_key, src, result);
+    QUEUED_LOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((doc_key, src, loader));
+}
+
+/// Run every image load requested since the last call, on this thread, and
+/// queue each answer for its document's next layout. Returns whether any ran.
+///
+/// On wasm32 a load is not run where it is requested (see
+/// [`request_image_load`]): a host that drives a [`RinchDocument`](crate::RinchDocument)
+/// itself calls this **with no document borrowed**, before the layout that
+/// should show the pictures, and lays out again when it returns `true` and
+/// the layout requested more (a background's URL is requested by the cascade
+/// inside layout). `RinchContext` does this in `new` and every `update`, so a
+/// loader that answers at once is shown in the frame that asked.
+///
+/// The loader (the app's scheme loader, else the document's) and the decode
+/// run here, so the cost is the frame's: a loader must answer from memory, and
+/// a large picture is decoded inside the frame. A loader may write signals.
+///
+/// On native targets loads run on their own threads and this does nothing.
+pub fn run_queued_loads() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut ran = false;
+        loop {
+            // Taken before running: a loader may (through an effect) request
+            // another load, which waits for the next round.
+            let loads =
+                std::mem::take(&mut *QUEUED_LOADS.lock().unwrap_or_else(|e| e.into_inner()));
+            if loads.is_empty() {
+                return ran;
+            }
+            for (doc_key, src, loader) in loads {
+                let result = load_and_decode(&src, loader);
+                queue_answer(doc_key, src, result);
+                ran = true;
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    false
 }
 
 /// Spawn a background thread to load and decode an image (native).
@@ -544,6 +587,15 @@ pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader
 /// skips the drain and the image never gets its intrinsic size. Anything that
 /// gates layout on dirtiness has to ask this too.
 pub fn has_pending(doc_key: u64) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    if QUEUED_LOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|load| load.0 == doc_key)
+    {
+        return true;
+    }
     PENDING_IMAGES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -680,6 +732,11 @@ pub fn purge_pending(doc_key: u64) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&doc_key);
+    #[cfg(target_arch = "wasm32")]
+    QUEUED_LOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|load| load.0 != doc_key);
 }
 
 /// Decode a `data:` URI into raw bytes.

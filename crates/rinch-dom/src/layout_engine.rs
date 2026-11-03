@@ -225,20 +225,10 @@ impl RinchDocument {
             }
         }
 
-        // Trigger loads for any background-image URLs not yet in the cache.
-        //
-        // On wasm32 a load runs on this thread (there are none to spawn) and
-        // its answer is already queued when the request returns, so it is
-        // drained now: a picture an app's scheme loader answers at once shows
-        // in the frame that asked for it, not the next (#2100). Its users were
-        // just restyled, so they are in this frame's paint anyway. On the
-        // desktop the answer comes from a load thread and the next layout
-        // drains it.
-        let _started = self.request_background_image_loads();
-        #[cfg(target_arch = "wasm32")]
-        if _started && self.drain_pending_images() {
-            self.tree.layout_dirty = true;
-        }
+        // Trigger loads for any background-image URLs not yet in the cache
+        // (on wasm32 only queued: the host runs them outside this borrow,
+        // `image_cache::run_queued_loads`).
+        self.request_background_image_loads();
 
         // Skip full layout recompute when no layout-affecting properties changed.
         // Paint-only changes (background-color, opacity, cursor on hover) set

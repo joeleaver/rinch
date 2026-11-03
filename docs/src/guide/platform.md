@@ -271,7 +271,8 @@ one has decoded. A window that never named the source is not woken by the call.
   for after the last `reload_image`, and ten reloads during one slow load cost
   one more load, not ten.
 - **Do not call `reload_image(src)` from inside the loader's answer for `src`**:
-  each call discards the answer being given and asks again.
+  each call discards the answer being given and asks again, and keeps a reload
+  of `src` queued every frame, so the app never goes idle.
 
 
 #### In the browser

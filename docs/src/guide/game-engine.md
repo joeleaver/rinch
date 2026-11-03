@@ -1130,10 +1130,12 @@ src>` and `background-image: url(…)` alike:
   host preopened. In the browser it has no files to read.
 
 On **wasm32** (the browser, or a `wasm32-wasip1` guest) there are no load
-threads, so the loader is called **on the UI thread**, inside the frame that
-first names the source, and its bytes are decoded there too (#2100). A loader
-that answers from memory shows its picture in that same frame. What that costs
-and rules out:
+threads, so the loader is called **on the UI thread**, by the `update()` (or
+`RinchContext::new`) of the frame that first names the source, and its bytes
+are decoded there too (#2100). It is called with no document borrowed, never
+inside a DOM write or a layout, so it may write signals. A loader that answers
+from memory shows its picture in that same frame. What that costs and rules
+out:
 
 - **It must not block.** There is no `http(s)` loader on wasm32 (the default
   loader only reads files), so a URL fails. To show a remote
