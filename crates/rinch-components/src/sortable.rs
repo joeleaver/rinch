@@ -2,15 +2,18 @@
 //!
 //! [`SortableList`] is a list of one *group* (cards, columns, lanes…) and
 //! [`SortableItem`] an item in it, named by a key. A drag — by pointer, or by
-//! keyboard (Space/Enter to lift, arrows to move, Space/Enter to drop, Escape
-//! to cancel) — only ever targets lists of its own group, so lists nest without
-//! fighting: a card dragged over a column's header offers nothing, and a column
-//! dragged over its own cards is placed among the columns.
+//! keyboard (Space/Enter to lift — [`SortableList::lift_keys`] —, arrows to
+//! move, the lift key again to drop, Escape to cancel) — only ever targets
+//! lists of its own group, so lists nest without fighting: a card dragged over
+//! a column's header offers nothing, and a column dragged over its own cards is
+//! placed among the columns.
 //!
 //! The component never reorders anything. While a drag is on offer it draws an
 //! insertion caret, asks the target list's `judge`, and shows a refusal's
-//! reason beside the caret; on an accepted drop it calls the target list's
-//! `ondrop` with a key-relative [`SortPlace`], and the app moves its own data.
+//! reason at the caret; at the drop it settles the place again against the
+//! lists as they are then, judges it again, and on an accepted drop calls the
+//! target list's `ondrop` with a key-relative [`SortPlace`]; the app moves its
+//! own data.
 //!
 //! The pointer side rides the DOM drag suite (`draggable` + `data-ondrag*`), as
 //! `Tree`'s drag does, so the threshold (a shorter press stays a click), touch
@@ -69,6 +72,12 @@ const LIST_REFUSED_CLASS: &str = "rinch-sortable--refused";
 const REASON_CLASS: &str = "rinch-sortable__reason";
 const REASON_SHOWN_CLASS: &str = "rinch-sortable__reason--shown";
 const REASON_ABOVE_CLASS: &str = "rinch-sortable__reason--above";
+const DISABLED_ATTR: &str = "data-sortable-disabled";
+/// The keys that lift and drop when a list names none.
+const DEFAULT_LIFT_KEYS: [&str; 2] = [" ", "Enter"];
+/// Inline style that keeps the live region off screen without the stylesheet.
+const LIVE_STYLE: &str = "position: absolute; width: 1px; height: 1px; margin: -1px; \
+     padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap";
 
 // =============================================================================
 // Public types
@@ -122,9 +131,11 @@ pub struct SortMove {
     /// The group both lists belong to.
     pub group: String,
     /// The keys carried, in order: the dragged item's, or what the source
-    /// list's `drag_keys` named for it.
+    /// list's `drag_keys` named for it — as given, not checked against any
+    /// list.
     pub keys: Vec<String>,
-    /// The `id` of the list the drag started in.
+    /// The `id` of the list the drag started in: the pressed item's list,
+    /// even when `drag_keys` carries items of other lists too.
     pub from_list: String,
     /// The `id` of the list the drop lands in.
     pub to_list: String,
@@ -137,8 +148,8 @@ pub struct SortMove {
 pub enum SortVerdict {
     /// The drop may happen.
     Accept,
-    /// It may not; the reason is shown beside the caret while the drag is
-    /// over the place (an empty reason shows the refused caret alone).
+    /// It may not; the reason is shown at the caret while the drag is over
+    /// the place (an empty reason shows the refused caret alone).
     Refuse(String),
 }
 
@@ -165,6 +176,8 @@ struct ListConfig {
     id: String,
     axis: SortAxis,
     label: String,
+    disabled: bool,
+    lift_keys: Vec<String>,
     judge: Option<SortJudge>,
     ondrop: Option<ValueCallback<SortMove>>,
     ondropchange: Option<ValueCallback<Option<(SortMove, SortVerdict)>>>,
@@ -174,6 +187,26 @@ struct ListConfig {
     reason: NodeHandle,
     /// The `aria-live` region the keyboard flow announces in.
     live: NodeHandle,
+}
+
+impl ListConfig {
+    fn name(&self) -> String {
+        if self.label.is_empty() {
+            self.id.clone()
+        } else {
+            self.label.clone()
+        }
+    }
+
+    /// Whether `ev` is one of this list's lift keys.
+    fn is_lift_key(&self, ev: &KeyEventData) -> bool {
+        let matches = |k: &str| k == ev.key || (k == " " && ev.is_space());
+        if self.lift_keys.is_empty() {
+            DEFAULT_LIFT_KEYS.iter().any(|k| matches(k))
+        } else {
+            self.lift_keys.iter().any(|k| matches(k))
+        }
+    }
 }
 
 /// Where the caret is drawn.
@@ -198,7 +231,8 @@ impl Mark {
 }
 
 struct Offer {
-    token: u64,
+    /// The target list, by id (a re-render issues it a new token).
+    list_id: String,
     slot: usize,
     mv: SortMove,
     verdict: SortVerdict,
@@ -207,9 +241,9 @@ struct Offer {
     horizontal: bool,
 }
 
-/// A keyboard lift: the list and slot the caret is at.
+/// A keyboard lift: the list (by id) and slot the caret is at.
 struct Lift {
-    token: u64,
+    list_id: String,
     slot: usize,
     _keys: Option<DismissHandle>,
 }
@@ -218,12 +252,13 @@ struct Lift {
 struct Active {
     group: String,
     keys: Vec<String>,
-    from_token: u64,
     /// The source list, held: a re-render may unregister it mid-drag, and its
     /// `ondropchange` still hears the drag out.
     from: Rc<ListConfig>,
     from_list: String,
+    doc: u64,
     source: NodeHandle,
+    source_key: String,
     carried: Vec<NodeHandle>,
     offer: Option<Offer>,
     /// Whether the source list's `ondropchange` last heard a move.
@@ -233,15 +268,22 @@ struct Active {
     pending_none: bool,
     lift: Option<Lift>,
     /// The source item's node went away mid-drag (the app re-rendered it):
-    /// the runtime's drag moves and end go to the gone node, so a left target
-    /// withdraws at once, and nothing waits on the end.
+    /// the runtime's drag moves go to the gone node, so a left target
+    /// withdraws at once. The end is the runtime's ([`on_drag_end`]).
     source_gone: bool,
 }
+
+/// (document, group, key, the list it was dropped in).
+type PendingFocus = (u64, String, String, Option<String>);
 
 thread_local! {
     static LISTS: RefCell<HashMap<u64, Rc<ListConfig>>> = RefCell::new(HashMap::new());
     static NEXT_TOKEN: Cell<u64> = const { Cell::new(1) };
     static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(None) };
+    /// The item to focus once it is drawn: (document, group, key, the list it
+    /// was dropped in).
+    static PENDING_FOCUS: RefCell<Option<PendingFocus>> = const { RefCell::new(None) };
+    static DRAG_END_HOOKED: Cell<bool> = const { Cell::new(false) };
 }
 
 fn list_config(token: u64) -> Option<Rc<ListConfig>> {
@@ -252,7 +294,7 @@ fn token_of(node: &NodeHandle) -> Option<u64> {
     node.get_attribute(LIST_ATTR)?.parse().ok()
 }
 
-/// The nearest list at or above `node` (an item's own list).
+/// The nearest list above `node` (an item's own list).
 fn list_of(node: &NodeHandle) -> Option<Rc<ListConfig>> {
     let mut at = node.parent_node();
     while let Some(n) = at {
@@ -264,8 +306,14 @@ fn list_of(node: &NodeHandle) -> Option<Rc<ListConfig>> {
     None
 }
 
-fn token_of_config(cfg: &ListConfig) -> u64 {
-    token_of(&cfg.node).unwrap_or(0)
+/// The list of `group` named `id` in `doc`, as it is drawn now.
+fn list_by_id(group: &str, id: &str, doc: u64) -> Option<Rc<ListConfig>> {
+    LISTS.with(|l| {
+        l.borrow()
+            .values()
+            .find(|c| c.group == group && c.id == id && c.node.doc_key() == doc)
+            .cloned()
+    })
 }
 
 /// A list's own items in order: the descendants carrying a key, not looking
@@ -285,44 +333,89 @@ fn items_of(list: &NodeHandle) -> Vec<(NodeHandle, String)> {
     out
 }
 
-/// Every registered list of `group` in `doc`, in registration order.
-fn lists_of_group(group: &str, doc: u64) -> Vec<(u64, Rc<ListConfig>)> {
-    let mut lists: Vec<(u64, Rc<ListConfig>)> = LISTS.with(|l| {
-        l.borrow()
+/// `node`'s position in its document: the child index at every level from the
+/// root, so two of them compare in document order.
+fn doc_path(node: &NodeHandle) -> Vec<usize> {
+    let mut path = Vec::new();
+    let mut at = node.clone();
+    while let Some(parent) = at.parent_node() {
+        let index = parent
+            .children()
             .iter()
-            .filter(|(_, c)| c.group == group && c.node.doc_key() == doc && c.node.is_valid())
-            .map(|(t, c)| (*t, c.clone()))
-            .collect()
-    });
-    lists.sort_by_key(|(t, _)| *t);
-    lists
+            .position(|c| c.node_id() == at.node_id())
+            .unwrap_or(0);
+        path.push(index);
+        at = parent;
+    }
+    path.reverse();
+    path
 }
 
+/// Every registered list of `group` in `doc`, in document order.
+fn lists_of_group(group: &str, doc: u64) -> Vec<Rc<ListConfig>> {
+    let lists: Vec<Rc<ListConfig>> = LISTS.with(|l| {
+        l.borrow()
+            .values()
+            .filter(|c| c.group == group && c.node.doc_key() == doc && c.node.is_valid())
+            .cloned()
+            .collect()
+    });
+    let mut keyed: Vec<(Vec<usize>, Rc<ListConfig>)> =
+        lists.into_iter().map(|c| (doc_path(&c.node), c)).collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    keyed.into_iter().map(|(_, c)| c).collect()
+}
+
+/// Whether `node` is inside an item of `group` that the drag carries: a list
+/// there is the carried item's own and can take nothing from the drag.
+fn inside_carried(node: &NodeHandle, group: &str, keys: &[String]) -> bool {
+    let mut at = node.parent_node();
+    while let Some(n) = at {
+        if n.get_attribute(KEY_ATTR).is_some_and(|k| keys.contains(&k))
+            && list_of(&n).is_some_and(|c| c.group == group)
+        {
+            return true;
+        }
+        at = n.parent_node();
+    }
+    false
+}
+
+/// A target list and the item of it under the pointer, if any.
+type Target = (Rc<ListConfig>, Option<(NodeHandle, String)>);
+
 /// The list of the dragged group a drag over `node` targets, and the item of
-/// that list under the pointer, if any: walking up, an item is remembered, a
-/// list of another group forgets it, and the first list of `group` answers.
-fn resolve_target(node: &NodeHandle, group: &str) -> Option<(u64, Option<(NodeHandle, String)>)> {
+/// that list under the pointer, if any. Walking up, an item is remembered, a
+/// list of another group (or a disabled one) forgets it, and the first list of
+/// `group` answers — unless an item the drag carries is further up between
+/// that list and an outer list of the group: a list inside the carried item is
+/// its own, so the outer list answers, over the carried item (its place).
+fn resolve_target(node: &NodeHandle, group: &str, keys: &[String]) -> Option<Target> {
     let mut item: Option<(NodeHandle, String)> = None;
+    let mut found: Option<Target> = None;
     let mut at = Some(node.clone());
     while let Some(n) = at {
         if let Some(key) = n.get_attribute(KEY_ATTR) {
             item = Some((n.clone(), key));
         } else if let Some(token) = token_of(&n) {
-            if list_config(token).is_some_and(|c| c.group == group) {
-                return Some((token, item));
+            if let Some(cfg) = list_config(token).filter(|c| c.group == group && !c.disabled) {
+                let over_carried = item.as_ref().is_some_and(|(_, k)| keys.contains(k));
+                if found.is_none() || over_carried {
+                    found = Some((cfg, item.clone()));
+                }
             }
             item = None;
         }
         at = n.parent_node();
     }
-    None
+    found
 }
 
 // =============================================================================
 // Places, judging and drawing
 // =============================================================================
 
-/// The list's items with the carried ones left out.
+/// The list's items with the carried ones left out, and every key in order.
 fn rest_of(list: &NodeHandle, carried: &[String]) -> (Vec<(NodeHandle, String)>, Vec<String>) {
     let all = items_of(list);
     let keys: Vec<String> = all.iter().map(|(_, k)| k.clone()).collect();
@@ -358,29 +451,26 @@ fn span(b: &ElementBounds, axis: SortAxis) -> (f32, f32) {
     }
 }
 
-/// Make `slot` of `token`'s list the place on offer for the active drag
-/// (`None` withdraws it), judging it and drawing the caret.
-fn offer_slot(token: u64, slot: Option<usize>) {
-    let Some(cfg) = list_config(token) else {
-        set_offer(None);
-        return;
-    };
-    let Some(slot) = slot else {
-        set_offer(None);
-        return;
-    };
-    let Some((group, keys, from_list)) = ACTIVE.with(|a| {
+/// A place worked out against a list as it is drawn now.
+struct Placed {
+    slot: usize,
+    mv: SortMove,
+    mark: Mark,
+    reason: NodeHandle,
+}
+
+/// The move `slot` of `cfg` would be for the active drag; `None` when there is
+/// no drag or the place would leave the list as it is.
+fn place_in(cfg: &ListConfig, slot: usize) -> Option<Placed> {
+    let (group, keys, from_list) = ACTIVE.with(|a| {
         a.borrow()
             .as_ref()
             .map(|a| (a.group.clone(), a.keys.clone(), a.from_list.clone()))
-    }) else {
-        return;
-    };
+    })?;
     let (rest, all) = rest_of(&cfg.node, &keys);
     let slot = slot.min(rest.len());
     if is_no_op(&all, &rest, &keys, slot) {
-        set_offer(None);
-        return;
+        return None;
     }
     let (mark, reason) = if rest.is_empty() {
         (Mark::Into(cfg.node.clone()), cfg.reason.clone())
@@ -391,41 +481,93 @@ fn offer_slot(token: u64, slot: Option<usize>) {
         let reason = reason_slot(&item);
         (Mark::After(item), reason)
     };
+    let place = SortPlace {
+        after: slot.checked_sub(1).map(|i| rest[i].1.clone()),
+        before: rest.get(slot).map(|(_, k)| k.clone()),
+        index: slot,
+    };
+    Some(Placed {
+        slot,
+        mv: SortMove {
+            group,
+            keys,
+            from_list,
+            to_list: cfg.id.clone(),
+            place,
+        },
+        mark,
+        reason,
+    })
+}
+
+fn judge(cfg: &ListConfig, mv: &SortMove) -> SortVerdict {
+    cfg.judge.as_ref().map_or(SortVerdict::Accept, |judge| {
+        rinch_core::untracked_handler(|| judge(mv))
+    })
+}
+
+/// Make `slot` of `cfg` the place on offer for the active drag, judging it
+/// and drawing the caret.
+fn offer_slot(cfg: &ListConfig, slot: usize) {
+    let Some(placed) = place_in(cfg, slot) else {
+        set_offer(None);
+        return;
+    };
     // The same place drawn on the same node: nothing to judge or redraw. (A
     // re-render that replaced the node draws it again.)
     let unchanged = ACTIVE.with(|a| {
         a.borrow()
             .as_ref()
             .and_then(|a| a.offer.as_ref())
-            .is_some_and(|o| o.token == token && o.slot == slot && o.mark.same(&mark))
+            .is_some_and(|o| {
+                o.list_id == cfg.id && o.slot == placed.slot && o.mark.same(&placed.mark)
+            })
     });
     if unchanged {
         return;
     }
-    let place = SortPlace {
-        after: slot.checked_sub(1).map(|i| rest[i].1.clone()),
-        before: rest.get(slot).map(|(_, k)| k.clone()),
-        index: slot,
-    };
-    let mv = SortMove {
-        group,
-        keys,
-        from_list,
-        to_list: cfg.id.clone(),
-        place,
-    };
-    let verdict = cfg.judge.as_ref().map_or(SortVerdict::Accept, |judge| {
-        rinch_core::untracked_handler(|| judge(&mv))
-    });
+    let verdict = judge(cfg, &placed.mv);
     set_offer(Some(Offer {
-        token,
-        slot,
-        mv,
+        list_id: cfg.id.clone(),
+        slot: placed.slot,
+        mv: placed.mv,
         verdict,
-        mark,
-        reason: Some(reason),
+        mark: placed.mark,
+        reason: Some(placed.reason),
         horizontal: cfg.axis == SortAxis::Horizontal,
     }));
+}
+
+/// The drop: the place on offer worked out again against the lists as they
+/// are now — the target list looked up by id, the slot found again by the
+/// place's keys (after `after`; first when there was none) — and judged
+/// again. The offer was made against the lists as they were at the last
+/// move; a re-render since (a collaborator's edit) can have moved, removed or
+/// changed what it named. `None` when nothing is on offer, the place is gone
+/// (its `after` item left the list), it is now a no-op, or it is refused.
+fn settle() -> Option<(Rc<ListConfig>, SortMove)> {
+    let (group, doc, list_id, place, keys) = ACTIVE.with(|a| {
+        let a = a.borrow();
+        let a = a.as_ref()?;
+        let o = a.offer.as_ref()?;
+        Some((
+            a.group.clone(),
+            a.doc,
+            o.list_id.clone(),
+            o.mv.place.clone(),
+            a.keys.clone(),
+        ))
+    })?;
+    let cfg = list_by_id(&group, &list_id, doc).filter(|c| !c.disabled)?;
+    let (rest, _) = rest_of(&cfg.node, &keys);
+    let slot = match &place.after {
+        None => 0,
+        Some(after) => rest.iter().position(|(_, k)| k == after)? + 1,
+    };
+    let placed = place_in(&cfg, slot)?;
+    judge(&cfg, &placed.mv)
+        .is_accept()
+        .then_some((cfg, placed.mv))
 }
 
 /// An item's reason slot: its last child carrying the class.
@@ -469,6 +611,7 @@ fn draw(offer: &Offer) {
     {
         slot.set_text(reason);
         slot.add_class(REASON_SHOWN_CLASS);
+        slot.set_style("display", "block");
         if matches!(offer.mark, Mark::Before(_)) {
             slot.add_class(REASON_ABOVE_CLASS);
         }
@@ -497,6 +640,7 @@ fn erase(offer: &Offer) {
     {
         slot.remove_class(REASON_SHOWN_CLASS);
         slot.remove_class(REASON_ABOVE_CLASS);
+        slot.set_style("display", "none");
         slot.set_text("");
     }
 }
@@ -545,10 +689,26 @@ fn end_active() {
     }
 }
 
-/// Mark the carried items (in any list of the group) and remember them.
+/// The runtime ended an element drag (dropped or cancelled): a pointer drag of
+/// ours ends with it, whatever became of the source node its `data-ondragend`
+/// was sent to.
+fn on_drag_end() {
+    let pointer = ACTIVE.with(|a| a.borrow().as_ref().is_some_and(|a| a.lift.is_none()));
+    if pointer {
+        end_active();
+    }
+}
+
+fn hook_drag_end() {
+    if !DRAG_END_HOOKED.with(|h| h.replace(true)) {
+        rinch_core::on_element_drag_end(on_drag_end);
+    }
+}
+
+/// The carried items (in any list of the group).
 fn carried_nodes(group: &str, doc: u64, keys: &[String]) -> Vec<NodeHandle> {
     let mut out = Vec::new();
-    for (_, cfg) in lists_of_group(group, doc) {
+    for cfg in lists_of_group(group, doc) {
         for (node, key) in items_of(&cfg.node) {
             if keys.contains(&key) {
                 out.push(node);
@@ -572,14 +732,20 @@ fn keys_for(cfg: &ListConfig, key: &str) -> Vec<String> {
     }
 }
 
-/// Start a drag of `item` (pointer or keyboard).
+/// Start a drag of `item` (pointer or keyboard). Refused for a disabled item
+/// or list.
 fn begin(item: &NodeHandle, key: &str, keyboard: bool) -> bool {
     end_active();
-    let Some(cfg) = list_of(item) else {
+    PENDING_FOCUS.with(|p| p.borrow_mut().take());
+    if item.get_attribute(DISABLED_ATTR).is_some() {
+        return false;
+    }
+    let Some(cfg) = list_of(item).filter(|c| !c.disabled) else {
         return false;
     };
     let keys = keys_for(&cfg, key);
-    let carried = carried_nodes(&cfg.group, item.doc_key(), &keys);
+    let doc = item.doc_key();
+    let carried = carried_nodes(&cfg.group, doc, &keys);
     for node in &carried {
         node.add_class(if keyboard {
             LIFTED_CLASS
@@ -587,15 +753,15 @@ fn begin(item: &NodeHandle, key: &str, keyboard: bool) -> bool {
             DRAGGING_CLASS
         });
     }
-    let from_token = token_of_config(&cfg);
     ACTIVE.with(|a| {
         *a.borrow_mut() = Some(Active {
             group: cfg.group.clone(),
             keys,
-            from_token,
             from: cfg.clone(),
             from_list: cfg.id.clone(),
+            doc,
             source: item.clone(),
+            source_key: key.to_string(),
             carried,
             offer: None,
             told: false,
@@ -615,6 +781,15 @@ fn active_group() -> Option<(String, bool)> {
     })
 }
 
+fn active_keys() -> Vec<String> {
+    ACTIVE.with(|a| {
+        a.borrow()
+            .as_ref()
+            .map(|a| a.keys.clone())
+            .unwrap_or_default()
+    })
+}
+
 // =============================================================================
 // Pointer handlers
 // =============================================================================
@@ -625,19 +800,11 @@ fn drag_over(target: &NodeHandle) {
     let Some((group, false)) = active_group() else {
         return;
     };
-    let Some((token, item)) = resolve_target(target, &group) else {
+    let keys = active_keys();
+    let Some((cfg, item)) = resolve_target(target, &group, &keys) else {
         set_offer(None);
         return;
     };
-    let Some(cfg) = list_config(token) else {
-        return;
-    };
-    let keys = ACTIVE.with(|a| {
-        a.borrow()
-            .as_ref()
-            .map(|a| a.keys.clone())
-            .unwrap_or_default()
-    });
     let ctx = get_click_context();
     let pointer = match cfg.axis {
         SortAxis::Vertical => ctx.mouse_y,
@@ -661,19 +828,29 @@ fn drag_over(target: &NodeHandle) {
     let mut slot = 0;
     match item {
         Some((node, key)) => {
+            let mut carried_before = false;
             for (_, k) in &all {
                 if *k == key {
                     break;
                 }
-                if !keys.contains(k) {
+                if keys.contains(k) {
+                    carried_before = true;
+                } else {
                     slot += 1;
                 }
             }
             if !keys.contains(&key) {
-                let past_middle = bounds_of(&node).is_some_and(|b| {
-                    let (start, len) = span(&b, cfg.axis);
-                    pointer >= start + len / 2.0
-                });
+                let past_middle = match bounds_of(&node) {
+                    Some(b) => {
+                        let (start, len) = span(&b, cfg.axis);
+                        pointer >= start + len / 2.0
+                    }
+                    // No box to measure by (a host that cannot answer
+                    // `bounding_rect`): over an item the carried ones are
+                    // before, after it — the drag is moving forward past it —
+                    // else before it.
+                    None => carried_before,
+                };
                 if past_middle {
                     slot += 1;
                 }
@@ -702,7 +879,7 @@ fn drag_over(target: &NodeHandle) {
             a.pending_none = false;
         }
     });
-    offer_slot(token, Some(slot));
+    offer_slot(&cfg, slot);
 }
 
 fn drag_leave() {
@@ -731,20 +908,17 @@ fn drag_move() {
     }
 }
 
-/// The release: deliver an accepted offer to its list, then end.
+/// The release: settle the offer against the lists as they are, deliver it if
+/// still accepted, then end.
 fn drop_here() {
-    let delivered = ACTIVE.with(|a| {
-        let a = a.borrow();
-        let a = a.as_ref()?;
-        if a.lift.is_some() {
-            return None;
-        }
-        let o = a.offer.as_ref()?;
-        o.verdict.is_accept().then(|| (o.token, o.mv.clone()))
-    });
+    let pointer = ACTIVE.with(|a| a.borrow().as_ref().is_some_and(|a| a.lift.is_none()));
+    if !pointer {
+        return;
+    }
+    let delivered = settle();
     end_active();
-    if let Some((token, mv)) = delivered
-        && let Some(cb) = list_config(token).and_then(|c| c.ondrop.clone())
+    if let Some((cfg, mv)) = delivered
+        && let Some(cb) = cfg.ondrop.clone()
     {
         cb.invoke(mv);
     }
@@ -770,28 +944,26 @@ fn center(b: &ElementBounds) -> (f32, f32) {
 }
 
 /// The nearest list of the group from `from` in direction `dir`, by on-screen
-/// boxes; without boxes, the previous or next in registration order.
-fn neighbour(from: u64, dir: (i32, i32), group: &str, doc: u64) -> Option<u64> {
-    let lists = lists_of_group(group, doc);
-    let here = lists
-        .iter()
-        .find(|(t, _)| *t == from)?
-        .1
-        .node
-        .bounding_rect();
-    let Some(here) = here else {
-        let at = lists.iter().position(|(t, _)| *t == from)?;
+/// boxes; without boxes, the previous or next in document order. Disabled
+/// lists and lists inside a carried item are not places.
+fn neighbour(from: &ListConfig, dir: (i32, i32), keys: &[String]) -> Option<Rc<ListConfig>> {
+    let lists: Vec<Rc<ListConfig>> = lists_of_group(&from.group, from.node.doc_key())
+        .into_iter()
+        .filter(|c| c.id == from.id || (!c.disabled && !inside_carried(&c.node, &from.group, keys)))
+        .collect();
+    let at = lists.iter().position(|c| c.id == from.id)?;
+    let Some(here) = from.node.bounding_rect() else {
         let forward = dir.0 + dir.1 > 0;
         return if forward {
-            lists.get(at + 1).map(|(t, _)| *t)
+            lists.get(at + 1).cloned()
         } else {
-            at.checked_sub(1).map(|i| lists[i].0)
+            at.checked_sub(1).map(|i| lists[i].clone())
         };
     };
     let (hx, hy) = center(&here);
-    let mut best: Option<(f32, u64)> = None;
-    for (token, cfg) in &lists {
-        if *token == from {
+    let mut best: Option<(f32, Rc<ListConfig>)> = None;
+    for cfg in &lists {
+        if cfg.id == from.id {
             continue;
         }
         let Some(b) = cfg.node.bounding_rect() else {
@@ -810,11 +982,11 @@ fn neighbour(from: u64, dir: (i32, i32), group: &str, doc: u64) -> Option<u64> {
             continue;
         }
         let score = along + 2.0 * across;
-        if best.is_none_or(|(s, _)| score < s) {
-            best = Some((score, *token));
+        if best.as_ref().is_none_or(|(s, _)| score < *s) {
+            best = Some((score, cfg.clone()));
         }
     }
-    best.map(|(_, t)| t)
+    best.map(|(_, c)| c)
 }
 
 /// Lift `item` for a keyboard move.
@@ -825,38 +997,58 @@ fn lift(item: &NodeHandle, key: &str) {
     let Some(cfg) = list_of(item) else {
         return;
     };
-    let token = token_of_config(&cfg);
-    let keys = ACTIVE.with(|a| {
-        a.borrow()
-            .as_ref()
-            .map(|a| a.keys.clone())
-            .unwrap_or_default()
-    });
-    let all = items_of(&cfg.node);
-    let home = all
+    let keys = active_keys();
+    let home = items_of(&cfg.node)
         .iter()
         .take_while(|(_, k)| *k != key)
         .filter(|(_, k)| !keys.contains(k))
         .count();
-    // Focus leaving the lifted item cancels the lift.
-    let entry = rinch_core::push_key_handler(item, |_| false, || cancel_lift(true));
+    let entry = focus_leave_entry(item);
     ACTIVE.with(|a| {
         if let Some(a) = a.borrow_mut().as_mut() {
             a.lift = Some(Lift {
-                token,
+                list_id: cfg.id.clone(),
                 slot: home,
                 _keys: Some(entry),
             });
         }
     });
     let label = label_of(item, key);
-    announce(
-        &cfg,
-        &format!(
-            "Picked up {label}. Use the arrow keys to move it, Space or Enter to drop it, \
-             Escape to cancel."
-        ),
-    );
+    announce(&format!(
+        "Picked up {label}. Use the arrow keys to move it, the same key to drop it, \
+         Escape to cancel."
+    ));
+}
+
+/// A key entry (taking no key) whose focus-leave cancels the lift of `item`:
+/// when the focus is now on another element. A focus that went nowhere known
+/// (the lifted node was re-rendered away) is not a leave.
+fn focus_leave_entry(item: &NodeHandle) -> DismissHandle {
+    let owner = item.clone();
+    rinch_core::push_key_handler(
+        item,
+        |_| false,
+        move || {
+            let lifted = ACTIVE.with(|a| {
+                a.borrow()
+                    .as_ref()
+                    .filter(|a| a.lift.is_some())
+                    .map(|a| a.source.clone())
+            });
+            let Some(source) = lifted else { return };
+            let Some(focus) = owner.active_element() else {
+                return;
+            };
+            let mut at = Some(focus);
+            while let Some(n) = at {
+                if n.node_id() == source.node_id() {
+                    return;
+                }
+                at = n.parent_node();
+            }
+            cancel_lift(true);
+        },
+    )
 }
 
 fn label_of(item: &NodeHandle, key: &str) -> String {
@@ -865,45 +1057,63 @@ fn label_of(item: &NodeHandle, key: &str) -> String {
         .unwrap_or_else(|| key.to_string())
 }
 
-fn announce(cfg: &ListConfig, text: &str) {
-    cfg.live.set_text(text);
+/// Say `text` in the live region of the drag's source list, as it is drawn
+/// now (a re-render of its lane gives it a new region), and say it even when
+/// it repeats the last (an alternating trailing no-break space changes it).
+fn announce(text: &str) {
+    let region = ACTIVE.with(|a| {
+        a.borrow().as_ref().map(|a| {
+            list_by_id(&a.group, &a.from_list, a.doc)
+                .map_or_else(|| a.from.live.clone(), |c| c.live.clone())
+        })
+    });
+    if let Some(region) = region {
+        announce_in(&region, text);
+    }
 }
 
-/// The source list's config (announcements go there).
-fn source_config() -> Option<Rc<ListConfig>> {
-    ACTIVE.with(|a| a.borrow().as_ref().map(|a| a.from.clone()))
+fn announce_in(region: &NodeHandle, text: &str) {
+    // The same sentence twice in a row (an arrow at the end of the lists) is
+    // a change a screen reader still hears: a trailing no-break space, on
+    // every other repeat.
+    let current = region.text_content().unwrap_or_default();
+    let text = if current.trim_end_matches('\u{a0}') == text && !current.ends_with('\u{a0}') {
+        format!("{text}\u{a0}")
+    } else {
+        text.to_string()
+    };
+    region.set_text(&text);
+}
+
+/// The list a keyboard lift's caret is in, as drawn now.
+fn lift_list() -> Option<(Rc<ListConfig>, usize)> {
+    let (group, doc, list_id, slot) = ACTIVE.with(|a| {
+        let a = a.borrow();
+        let a = a.as_ref()?;
+        let lift = a.lift.as_ref()?;
+        Some((a.group.clone(), a.doc, lift.list_id.clone(), lift.slot))
+    })?;
+    Some((list_by_id(&group, &list_id, doc)?, slot))
 }
 
 /// Move a keyboard lift one step in `dir`.
 fn move_lift(dir: (i32, i32)) {
-    let Some((token, slot, group, keys, doc)) = ACTIVE.with(|a| {
-        let a = a.borrow();
-        let a = a.as_ref()?;
-        let lift = a.lift.as_ref()?;
-        Some((
-            lift.token,
-            lift.slot,
-            a.group.clone(),
-            a.keys.clone(),
-            a.source.doc_key(),
-        ))
-    }) else {
+    let Some((cfg, slot)) = lift_list() else {
         return;
     };
-    let Some(cfg) = list_config(token) else {
-        return;
-    };
+    let keys = active_keys();
     let len = rest_of(&cfg.node, &keys).0.len();
+    let slot = slot.min(len);
     let (forward, along) = match cfg.axis {
         SortAxis::Vertical => (dir.1 > 0, dir.0 == 0),
         SortAxis::Horizontal => (dir.0 > 0, dir.1 == 0),
     };
-    let (token, slot) = if along && forward && slot < len {
-        (token, slot + 1)
+    let (cfg, slot) = if along && forward && slot < len {
+        (cfg, slot + 1)
     } else if along && !forward && slot > 0 {
-        (token, slot - 1)
-    } else if let Some(next) = neighbour(token, dir, &group, doc) {
-        let next_len = list_config(next).map_or(0, |c| rest_of(&c.node, &keys).0.len());
+        (cfg, slot - 1)
+    } else if let Some(next) = neighbour(&cfg, dir, &keys) {
+        let next_len = rest_of(&next.node, &keys).0.len();
         let slot = if along {
             if forward { 0 } else { next_len }
         } else {
@@ -911,29 +1121,26 @@ fn move_lift(dir: (i32, i32)) {
         };
         (next, slot)
     } else {
-        (token, slot)
+        (cfg, slot)
     };
     ACTIVE.with(|a| {
         if let Some(lift) = a.borrow_mut().as_mut().and_then(|a| a.lift.as_mut()) {
-            lift.token = token;
+            lift.list_id = cfg.id.clone();
             lift.slot = slot;
         }
     });
-    offer_slot(token, Some(slot));
-    describe_lift(token, slot);
+    offer_slot(&cfg, slot);
+    describe_lift(&cfg, slot);
 }
 
 /// Scroll the caret into view and announce where the lift is.
-fn describe_lift(token: u64, slot: usize) {
-    let Some(cfg) = list_config(token) else {
-        return;
-    };
+fn describe_lift(cfg: &ListConfig, slot: usize) {
     let (label, verdict, mark) = ACTIVE.with(|a| {
         let a = a.borrow();
         let Some(a) = a.as_ref() else {
             return (String::new(), None, None);
         };
-        let label = label_of(&a.source, a.keys.first().map_or("", |k| k.as_str()));
+        let label = label_of(&a.source, &a.source_key);
         let label = if a.keys.len() > 1 {
             format!("{label} and {} more", a.keys.len() - 1)
         } else {
@@ -946,14 +1153,10 @@ fn describe_lift(token: u64, slot: usize) {
             offer.map(|o| o.mark.clone()),
         )
     });
-    if let Some(Mark::Before(n) | Mark::After(n) | Mark::Into(n)) = &mark {
-        n.scroll_into_view();
+    if let Some(mark) = &mark {
+        mark.node().scroll_into_view();
     }
-    let list = if cfg.label.is_empty() {
-        cfg.id.clone()
-    } else {
-        cfg.label.clone()
-    };
+    let list = cfg.name();
     let text = match verdict {
         None => format!("{label}: back where it was."),
         Some(SortVerdict::Accept) => format!("{label}: {list}, position {}.", slot + 1),
@@ -964,70 +1167,71 @@ fn describe_lift(token: u64, slot: usize) {
             )
         }
     };
-    if let Some(source) = source_config() {
-        announce(&source, &text);
-    }
+    announce(&text);
 }
 
-/// Drop a keyboard lift where its caret is.
+/// Drop a keyboard lift where its caret is: settled and judged again first.
 fn drop_lift() {
-    let Some((delivered, source_node, first)) = ACTIVE.with(|a| {
+    let Some((group, doc, first)) = ACTIVE.with(|a| {
         let a = a.borrow();
         let a = a.as_ref()?;
         a.lift.as_ref()?;
-        let delivered = a
-            .offer
-            .as_ref()
-            .filter(|o| o.verdict.is_accept())
-            .map(|o| (o.token, o.mv.clone()));
-        Some((delivered, a.source.clone(), a.keys.first().cloned()))
+        Some((a.group.clone(), a.doc, a.keys.first().cloned()))
     }) else {
         return;
     };
-    let source = source_config();
+    let delivered = settle();
+    match &delivered {
+        Some((cfg, mv)) => announce(&format!(
+            "Dropped in {}, position {}.",
+            cfg.name(),
+            mv.place.index + 1
+        )),
+        None => announce("Not moved."),
+    }
     end_active();
-    let Some((token, mv)) = delivered else {
-        if let Some(source) = &source {
-            announce(source, "Not moved.");
-        }
+    let Some((cfg, mv)) = delivered else {
         return;
     };
-    let group = mv.group.clone();
-    if let Some(source) = &source {
-        let list = list_config(token)
-            .map(|c| {
-                if c.label.is_empty() {
-                    c.id.clone()
-                } else {
-                    c.label.clone()
-                }
-            })
-            .unwrap_or_default();
-        announce(
-            source,
-            &format!("Dropped in {list}, position {}.", mv.place.index + 1),
-        );
-    }
-    if let Some(cb) = list_config(token).and_then(|c| c.ondrop.clone()) {
+    let cfg_id = Some(cfg.id.clone());
+    if let Some(cb) = cfg.ondrop.clone() {
         cb.invoke(mv);
     }
-    // The app re-renders from its data once this handler's batch flushes; the
-    // moved item (a new node, when it changed lists) takes the focus back.
-    let Some(first) = first else { return };
-    let doc = source_node.doc_key();
+    // The app re-renders from its data — in this handler's batch, or later —
+    // and the moved item (a new node, when it changed lists) takes the focus
+    // back once it is drawn.
+    if let Some(first) = first {
+        request_focus(doc, group, first, cfg_id);
+    }
+}
+
+/// Focus the item `key` of `group` once it is drawn in `list`: at every
+/// render of it, and on the next turn of the event loop (timers permitting)
+/// if it is already there. Forgotten at the next drag.
+fn request_focus(doc: u64, group: String, key: String, list: Option<String>) {
+    PENDING_FOCUS.with(|p| *p.borrow_mut() = Some((doc, group, key, list)));
     // Unowned: the item that parked it is usually the node the re-render
-    // replaced, and a parked callback of a disposed owner is dropped.
-    rinch_core::unowned(|| {
-        set_timeout(0, move || {
-            for (_, cfg) in lists_of_group(&group, doc) {
-                if let Some((node, _)) = items_of(&cfg.node).into_iter().find(|(_, k)| *k == first)
-                {
-                    node.focus();
-                    return;
-                }
-            }
-        })
-    });
+    // replaced, and a parked callback of a disposed owner is dropped. Where
+    // no timer runs, the render of the item is the only place it is focused.
+    rinch_core::unowned(|| set_timeout(0, try_pending_focus));
+}
+
+fn try_pending_focus() {
+    let Some((doc, group, key, list)) = PENDING_FOCUS.with(|p| p.borrow().clone()) else {
+        return;
+    };
+    // Not yet where it was dropped (the app re-renders later): its render
+    // there focuses it.
+    for cfg in lists_of_group(&group, doc)
+        .into_iter()
+        .filter(|c| list.as_ref().is_none_or(|l| *l == c.id))
+    {
+        if let Some((node, _)) = items_of(&cfg.node).into_iter().find(|(_, k)| *k == key) {
+            PENDING_FOCUS.with(|p| p.borrow_mut().take());
+            node.focus();
+            return;
+        }
+    }
 }
 
 /// Cancel a keyboard lift (`focus_left`: the focus moved away).
@@ -1036,13 +1240,10 @@ fn cancel_lift(focus_left: bool) {
     if !lifted {
         return;
     }
-    let source = source_config();
-    end_active();
-    if let Some(source) = source
-        && !focus_left
-    {
-        announce(&source, "Cancelled. Not moved.");
+    if !focus_left {
+        announce("Cancelled. Not moved.");
     }
+    end_active();
 }
 
 /// An item's `onkeydown`.
@@ -1051,20 +1252,27 @@ fn item_key(item: &NodeHandle, key: &str, ev: &KeyEventData) -> bool {
         return false;
     }
     // Only for the item itself: a key in a field or a button inside it is
-    // that control's.
-    if item
-        .active_element()
-        .is_some_and(|f| f.node_id() != item.node_id())
-    {
+    // that control's. The event names its target where the backend knows it;
+    // else the document's focus.
+    let elsewhere = match ev.target {
+        Some(target) => target != item.node_id(),
+        None => item
+            .active_element()
+            .is_some_and(|f| f.node_id() != item.node_id()),
+    };
+    if elsewhere {
         return false;
     }
+    let Some(cfg) = list_of(item) else {
+        return false;
+    };
     let lifted_here = ACTIVE.with(|a| {
         a.borrow()
             .as_ref()
             .is_some_and(|a| a.lift.is_some() && a.source.node_id() == item.node_id())
     });
     let modified = ev.ctrl || ev.alt || ev.meta;
-    let activate = (ev.is_space() || ev.key == "Enter") && !modified;
+    let activate = cfg.is_lift_key(ev) && !modified;
     if lifted_here {
         if let Some(dir) = arrow(&ev.key) {
             move_lift(dir);
@@ -1088,9 +1296,9 @@ fn item_key(item: &NodeHandle, key: &str, ev: &KeyEventData) -> bool {
             .as_ref()
             .is_some_and(|a| a.lift.is_none() && !a.source_gone)
     });
-    if activate && !pointer_drag && !ev.shift {
+    if activate && !pointer_drag && !ev.shift && !cfg.disabled {
         lift(item, key);
-        return true;
+        return ACTIVE.with(|a| a.borrow().is_some());
     }
     false
 }
@@ -1103,9 +1311,12 @@ fn item_key(item: &NodeHandle, key: &str, ev: &KeyEventData) -> bool {
 ///
 /// A drag from one of its items can land in any list of the same group; the
 /// list it lands in judges it (`judge`) and delivers it (`ondrop`). Lists of
-/// other groups — nested inside its items, or around it — are never targeted.
-/// Lays its children out as a flex row or column (`axis`), with
-/// `--rinch-sortable-gap` between them; `class:` and `style:` override it.
+/// other groups — nested inside its items, or around it — are never targeted,
+/// and nor is a list of the same group inside a carried item. Lays its
+/// children out as a flex row or column (`axis`), with `--rinch-sortable-gap`
+/// between them; `class:` and `style:` override it.
+///
+/// Within a group, list `id`s are unique in a document, and so are item keys.
 pub struct SortableList {
     /// The kind of thing the list holds ("cards", "columns", …). A drag only
     /// targets lists of its own group.
@@ -1116,9 +1327,17 @@ pub struct SortableList {
     pub axis: SortAxis,
     /// The list's name in keyboard announcements (its `id` when empty).
     pub label: String,
+    /// A read-only list: no drag starts from its items and none lands in it.
+    /// Its items still draw; give them `disabled` too to take their drag
+    /// source away entirely (a press then never becomes a drag).
+    pub disabled: bool,
+    /// The keys (`KeyEventData::key`) that lift a focused item and drop it:
+    /// Space and Enter when empty. `vec![" ".into()]` leaves Enter to the app
+    /// (an item that opens on Enter).
+    pub lift_keys: Vec<String>,
     /// Whether a move into this list may happen, asked for every place on
-    /// offer, live; a refusal's reason is shown by the caret. Accepted when
-    /// not given.
+    /// offer, live, and again at the drop; a refusal's reason is shown at the
+    /// caret. Accepted when not given.
     pub judge: Option<SortJudge>,
     /// An accepted drop into this list: apply it to the app's data.
     pub ondrop: Option<ValueCallback<SortMove>>,
@@ -1128,7 +1347,8 @@ pub struct SortableList {
     pub ondropchange: Option<ValueCallback<Option<(SortMove, SortVerdict)>>>,
     /// What a drag from an item of this list carries (the item alone when not
     /// given, or when the answer leaves the item out): a selection moved
-    /// together, in order.
+    /// together, in order. The keys are not checked: one that names no item
+    /// is passed on as given.
     pub drag_keys: Option<SortKeys>,
 }
 
@@ -1138,6 +1358,7 @@ impl std::fmt::Debug for SortableList {
             .field("group", &self.group)
             .field("id", &self.id)
             .field("axis", &self.axis)
+            .field("disabled", &self.disabled)
             .finish()
     }
 }
@@ -1149,6 +1370,8 @@ impl Default for SortableList {
             id: String::new(),
             axis: SortAxis::Vertical,
             label: String::new(),
+            disabled: false,
+            lift_keys: Vec::new(),
             judge: None,
             ondrop: None,
             ondropchange: None,
@@ -1168,8 +1391,19 @@ fn wire_target(scope: &mut RenderScope, node: &NodeHandle) {
     node.set_attribute("data-ondrop", &drop.0.to_string());
 }
 
+/// A hidden reason slot (hidden inline, so it stays out of the way where the
+/// component stylesheet is missing).
+fn reason_node(scope: &mut RenderScope) -> NodeHandle {
+    let reason = scope.create_element("div");
+    reason.set_attribute("class", REASON_CLASS);
+    reason.set_attribute("aria-hidden", "true");
+    reason.set_attribute("style", "position: absolute; display: none");
+    reason
+}
+
 impl Component for SortableList {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+        hook_drag_end();
         let list = __scope.create_element("div");
         list.set_attribute(
             "class",
@@ -1178,6 +1412,9 @@ impl Component for SortableList {
                 SortAxis::Horizontal => "rinch-sortable rinch-sortable--horizontal",
             },
         );
+        if self.disabled {
+            list.add_class("rinch-sortable--disabled");
+        }
         let token = NEXT_TOKEN.with(|n| {
             let t = n.get();
             n.set(t + 1);
@@ -1188,14 +1425,13 @@ impl Component for SortableList {
         for child in children {
             list.append_child(child);
         }
-        let reason = __scope.create_element("div");
-        reason.set_attribute("class", REASON_CLASS);
-        reason.set_attribute("aria-hidden", "true");
+        let reason = reason_node(__scope);
         list.append_child(&reason);
         let live = __scope.create_element("div");
         live.set_attribute("class", "rinch-sortable__live");
         live.set_attribute("aria-live", "assertive");
-        live.set_attribute("role", "status");
+        live.set_attribute("aria-atomic", "true");
+        live.set_attribute("style", LIVE_STYLE);
         list.append_child(&live);
 
         wire_target(__scope, &list);
@@ -1204,6 +1440,8 @@ impl Component for SortableList {
             id: self.id.clone(),
             axis: self.axis,
             label: self.label.clone(),
+            disabled: self.disabled,
+            lift_keys: self.lift_keys.clone(),
             judge: self.judge.clone(),
             ondrop: self.ondrop.clone(),
             ondropchange: self.ondropchange.clone(),
@@ -1214,18 +1452,9 @@ impl Component for SortableList {
         });
         LISTS.with(|l| l.borrow_mut().insert(token, cfg));
         __scope.on_cleanup(move || {
+            // A drag goes on through a re-render of any list (a co-edited
+            // board re-renders under it): lists are found again by id.
             LISTS.with(|l| l.borrow_mut().remove(&token));
-            // A lift whose list went away ends with it; a pointer drag goes on
-            // (a co-edited board re-renders under it) and drops by the
-            // target's handlers.
-            let orphaned = ACTIVE.with(|a| {
-                a.borrow()
-                    .as_ref()
-                    .is_some_and(|a| a.from_token == token && a.lift.is_some())
-            });
-            if orphaned {
-                end_active();
-            }
         });
         list
     }
@@ -1234,8 +1463,9 @@ impl Component for SortableList {
 /// An item of a [`SortableList`], named by `value`.
 ///
 /// The whole item drags, or with `handle` only a [`SortableHandle`] inside it.
-/// A press that never passes the drag threshold stays a click. Focused, Space
-/// or Enter lifts it for a keyboard move.
+/// A press that never passes the drag threshold stays a click. Focused, a lift
+/// key (Space or Enter, [`SortableList::lift_keys`]) lifts it for a keyboard
+/// move.
 #[derive(Debug, Default)]
 pub struct SortableItem {
     /// The item's key, as `SortMove::keys` and `SortPlace` name it.
@@ -1244,10 +1474,13 @@ pub struct SortableItem {
     pub handle: bool,
     /// The item's name in keyboard announcements (its key when empty).
     pub label: String,
+    /// Not draggable, by pointer or keyboard (it still takes drops around it).
+    pub disabled: bool,
 }
 
 impl Component for SortableItem {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+        hook_drag_end();
         let item = __scope.create_element("div");
         item.set_attribute("class", ITEM_CLASS);
         item.set_attribute(KEY_ATTR, &self.value);
@@ -1255,16 +1488,26 @@ impl Component for SortableItem {
             item.set_attribute("data-sortable-label", &self.label);
         }
         item.set_attribute("tabindex", "0");
-        if !self.handle {
-            item.set_attribute("draggable", "true");
-            item.add_class("rinch-sortable__item--grab");
+        // The component draws the drag itself: a host that paints a drag
+        // ghost reads this (the desktop runtime does).
+        item.set_attribute("data-drag-ghost", "false");
+        if self.disabled {
+            item.set_attribute(DISABLED_ATTR, "");
+        } else {
+            item.set_attribute("aria-roledescription", "sortable item");
+            item.set_attribute(
+                "aria-description",
+                "Press Space to lift, the arrow keys to move, Space to drop, Escape to cancel.",
+            );
+            if !self.handle {
+                item.set_attribute("draggable", "true");
+                item.add_class("rinch-sortable__item--grab");
+            }
         }
         for child in children {
             item.append_child(child);
         }
-        let reason = __scope.create_element("div");
-        reason.set_attribute("class", REASON_CLASS);
-        reason.set_attribute("aria-hidden", "true");
+        let reason = reason_node(__scope);
         item.append_child(&reason);
 
         let (node, key) = (item.clone(), self.value.clone());
@@ -1273,7 +1516,7 @@ impl Component for SortableItem {
             begin(&node, &key, false);
         });
         item.set_attribute("data-ondragstart", &start.0.to_string());
-        let end = __scope.register_handler(end_active);
+        let end = __scope.register_handler(on_drag_end);
         item.set_attribute("data-ondragend", &end.0.to_string());
         let moved = __scope.register_handler(drag_move);
         item.set_attribute("data-ondragmove", &moved.0.to_string());
@@ -1283,25 +1526,69 @@ impl Component for SortableItem {
         let keys = __scope.register_key_handler(move |ev| item_key(&node, &key, ev));
         item.set_attribute("data-onkeydown", &keys.0.to_string());
 
+        adopt(&item, &self.value);
+
         let id = item.node_id();
         __scope.on_cleanup(move || {
             // The dragged item went away (deleted, or re-rendered as a new
-            // node). A lift ends: nothing is left holding the focus. A pointer
-            // drag goes on (a co-edited list re-renders under it), knowing its
-            // source's moves and end will not come.
-            let lifted = ACTIVE.with(|a| {
-                let mut a = a.borrow_mut();
-                let Some(a) = a.as_mut().filter(|a| a.source.node_id() == id) else {
-                    return false;
-                };
-                a.source_gone = true;
-                a.lift.is_some()
+            // node, which `adopt` takes up). The runtime's moves for a pointer
+            // drag go to the gone node; its end still comes (`on_drag_end`).
+            ACTIVE.with(|a| {
+                if let Some(a) = a.borrow_mut().as_mut()
+                    && a.source.node_id() == id
+                {
+                    a.source_gone = true;
+                }
             });
-            if lifted {
-                end_active();
-            }
         });
         item
+    }
+}
+
+/// A freshly drawn item `key` of a drag in progress (a re-render mid-drag):
+/// dim or ring it as the carried items are, and when it is the lifted item,
+/// make it the lift's source, holding the keyboard. And focus it if a drop
+/// asked for it.
+fn adopt(item: &NodeHandle, key: &str) {
+    let doc = item.doc_key();
+    let lifted = ACTIVE.with(|a| {
+        let mut a = a.borrow_mut();
+        let a = a.as_mut().filter(|a| a.doc == doc)?;
+        if !a.keys.iter().any(|k| k == key) {
+            return None;
+        }
+        item.add_class(if a.lift.is_some() {
+            LIFTED_CLASS
+        } else {
+            DRAGGING_CLASS
+        });
+        a.carried.push(item.clone());
+        if a.lift.is_some() && a.source_key == key {
+            a.source = item.clone();
+            a.source_gone = false;
+            Some(a.group.clone())
+        } else {
+            None
+        }
+    });
+    if let Some(group) = &lifted {
+        let entry = focus_leave_entry(item);
+        ACTIVE.with(|a| {
+            if let Some(lift) = a.borrow_mut().as_mut().and_then(|a| a.lift.as_mut()) {
+                lift._keys = Some(entry);
+            }
+        });
+        PENDING_FOCUS.with(|p| *p.borrow_mut() = Some((doc, group.clone(), key.to_string(), None)));
+        item.focus();
+        rinch_core::unowned(|| set_timeout(0, try_pending_focus));
+    }
+    let wanted = PENDING_FOCUS.with(|p| {
+        p.borrow()
+            .as_ref()
+            .is_some_and(|(d, _, k, _)| *d == doc && k == key)
+    });
+    if wanted && lifted.is_none() {
+        item.focus();
     }
 }
 

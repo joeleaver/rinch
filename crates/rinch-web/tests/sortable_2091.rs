@@ -438,3 +438,46 @@ async fn a_drag_near_the_edges_scrolls_the_row_sideways_and_the_column_down() {
     assert!(top > 5, "the column scrolled down: {top}");
     release(((l.left() + 10.0) as i32, (l.bottom() - 3.0) as i32));
 }
+
+/// Whether a drag resting at the window's right edge scrolls the page
+/// sideways, with `<html>`'s `overflow-x` set to `overflow_x`, over content
+/// wider than the window.
+async fn page_slides_sideways(overflow_x: &str) -> f64 {
+    let _board = mount();
+    let win = web_sys::window().unwrap();
+    let html: web_sys::HtmlElement = document().document_element().unwrap().dyn_into().unwrap();
+    html.style().set_property("overflow-x", overflow_x).unwrap();
+    let wide = document().create_element("div").unwrap();
+    wide.set_attribute("style", "width: 4000px; height: 10px")
+        .unwrap();
+    document().body().unwrap().append_child(&wide).unwrap();
+    win.scroll_to_with_x_and_y(0.0, 0.0);
+    start(point(&item("a"), 0.5, 0.5));
+    let vw = win.inner_width().unwrap().as_f64().unwrap() as i32;
+    // The window's right edge, below the board (no container there).
+    move_to((vw - 3, 200));
+    let mut x = 0.0;
+    for _ in 0..12 {
+        sleep_ms(25).await;
+        x = win.scroll_x().unwrap();
+    }
+    release((vw - 3, 200));
+    win.scroll_to_with_x_and_y(0.0, 0.0);
+    wide.remove();
+    html.style().remove_property("overflow-x").unwrap();
+    x
+}
+
+#[wasm_bindgen_test]
+async fn a_page_that_hides_sideways_overflow_does_not_slide_during_a_drag() {
+    // Positive control: a page that lets it scroll does scroll.
+    assert!(
+        page_slides_sideways("auto").await > 0.0,
+        "the band scrolls a scrollable page"
+    );
+    assert_eq!(
+        page_slides_sideways("hidden").await,
+        0.0,
+        "overflow-x: hidden holds"
+    );
+}

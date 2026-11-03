@@ -1351,6 +1351,8 @@ fn finish_active_drag(state: &WebDragState, x: f32, y: f32, do_drop: bool) {
         dispatch_plain_attr(t, "data-ondragleave");
     }
     dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
+    // The runtime's end, whatever happened to the source node (#2091).
+    events::notify_element_drag_ended();
 }
 
 // ── Drag auto-scroll ──────────────────────────────────────────────────────────
@@ -1533,6 +1535,26 @@ fn drag_auto_scroll_container(
         (velocity < 0.0 && offset > min + 1.0) || (velocity > 0.0 && offset < max - 1.0)
     };
     let overflow_property = if vertical { "overflow-y" } else { "overflow-x" };
+    // The page scrolls on this axis unless the viewport's overflow hides it:
+    // `<html>`'s computed value, or `<body>`'s when `<html>` is `visible` (it
+    // propagates to the viewport). A `scrollTop`/`scrollLeft` write ignores
+    // `overflow: hidden`, so a page that hides its sideways overflow would
+    // otherwise slide during a drag near the window's edge (desktop asks
+    // `scrolls_x`/`scrolls_y`).
+    let page_scrolls = {
+        let value = |el: Option<web_sys::Element>| -> String {
+            el.and_then(|el| win.get_computed_style(&el).ok().flatten())
+                .and_then(|style| style.get_property_value(overflow_property).ok())
+                .unwrap_or_default()
+        };
+        let html = value(doc.document_element());
+        let viewport = if html == "visible" || html.is_empty() {
+            value(doc.body().map(Into::into))
+        } else {
+            html
+        };
+        !matches!(viewport.as_str(), "hidden" | "clip")
+    };
     let mut node = Some(hit.clone());
     while let Some(el) = node {
         let is_scrolling = scrolling.as_ref().is_some_and(|s| same_element(s, &el));
@@ -1541,8 +1563,9 @@ fn drag_auto_scroll_container(
         } else {
             el.scroll_width() > el.client_width()
         };
-        let scrolls = is_scrolling
-            || (longer
+        let scrolls = (is_scrolling && page_scrolls)
+            || (!is_scrolling
+                && longer
                 && win
                     .get_computed_style(&el)
                     .ok()
@@ -1584,7 +1607,7 @@ fn drag_auto_scroll_container(
     // `hit` was outside the scrolling element's subtree (it never is in a
     // document; kept so a detached hit still ends here).
     let el = scrolling?;
-    if crate::web_document::scroll_locked_out(&el) {
+    if !page_scrolls || crate::web_document::scroll_locked_out(&el) {
         return None;
     }
     let velocity = events::drag_auto_scroll_velocity(at, 0.0, viewport);
@@ -2357,6 +2380,7 @@ fn offer_element_key(
     if el.has_attribute("data-pm-capture") || editor_owning(&el).is_some() {
         return false;
     }
+    let data = &data.clone().with_target(crate::web_document::get_nid(&el));
     let mut ids = Vec::new();
     let mut cur = Some(el);
     while let Some(e) = cur {

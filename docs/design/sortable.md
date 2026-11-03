@@ -47,12 +47,14 @@ SortableList {
 ```
 
 - `SortableList` — `group`, `id`, `axis` (`Vertical` | `Horizontal`),
-  `judge`, `ondrop`, `ondropchange`, `drag_keys`, `label`, `class`, `style`.
+  `judge`, `ondrop`, `ondropchange`, `drag_keys`, `label`, `disabled`,
+  `lift_keys`, `class`, `style`.
   Its element carries `data-sortable-list` (a per-render token) and the
   `rinch-sortable` classes; an `aria-live` region inside it announces the
   keyboard flow.
 - `SortableItem` — `value` (the key), `handle` (drag only by a
-  `SortableHandle` inside), `label` (for announcements), `class`, `style`. Its
+  `SortableHandle` inside), `label` (for announcements), `disabled`, `class`,
+  `style`. Its
   element carries `data-sortable-key`, `tabindex="0"` and the drag handlers.
 - `SortableHandle` — `draggable="true"` and nothing else: the handlers are the
   item's, found by the runtime's walk up from the draggable node.
@@ -130,6 +132,27 @@ left/right band (same curve, `drag_auto_scroll_velocity`). Desktop
 (`tick_drag_auto_scroll`, with the wheel's horizontal write shared as
 `scroll_horizontally_by`) and rinch-web (`AutoScrollLoop`, a remainder and a
 `stuck` mark per axis).
+
+## After review (#2093)
+
+A co-edited board re-renders whole lanes under a drag, so nothing may hang on
+a node or a registration token surviving:
+
+- the drag ends with the runtime's element drag
+  (`rinch_core::on_element_drag_end`, called by both backends), not with the
+  dragged node's `data-ondragend`;
+- offers and lifts name their list by group and id and look it up again;
+- a re-rendered carried item is dimmed again, and a re-rendered lifted item
+  takes over the lift and the focus;
+- the drop settles the place again by its `after` key and judges it again;
+- a list inside a carried item of the same group is never a target;
+- without `bounding_rect`, over an item the drag passes it in the direction
+  it is moving, and lists follow document order;
+- a key counts only when sent to the item itself (`KeyEventData::target`);
+- the dropped item is focused at its render in its new list (no timer needed);
+- styling is inherited custom properties (a guest's only lever), and the
+  parts stay quiet without the stylesheet;
+- `data-drag-ghost="false"` lets a painting host hide its ghost.
 
 ## Not built
 

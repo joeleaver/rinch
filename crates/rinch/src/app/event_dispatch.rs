@@ -22,6 +22,9 @@ impl RinchApp {
             FocusTarget::Node(id) if self.node_target_is_live(id) => id,
             _ => return false,
         };
+        let data = &data
+            .clone()
+            .with_target(Some(rinch_core::dom::NodeId(start)));
         let attr = if data.is_up() {
             "data-onkeyup"
         } else {
@@ -2997,6 +3000,8 @@ impl RinchApp {
             });
             Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
         }
+        // The runtime's end, whatever happened to the source node (#2091).
+        events::notify_element_drag_ended();
         events::reset_drag_ghost_visibility();
         self.drag_auto_scroll_at = None;
         self.drag_hit_memo = None;
@@ -3878,6 +3883,20 @@ impl RinchApp {
         // Before `data-ondragstart` fires, so a source that hides the ghost
         // there still does.
         events::reset_drag_ghost_visibility();
+        // `data-drag-ghost="false"` on the source or an ancestor hides it
+        // (#2091): an attribute a component sets at render, which a host
+        // applying a sandboxed guest's DOM reads like any other, where the
+        // guest's own `suppress_drag_ghost()` reaches nothing that paints.
+        let no_ghost = self.doc.as_ref().is_some_and(|doc| {
+            let d = doc.borrow();
+            std::iter::successors(Some(node_id), |&id| d.tree.get(id).and_then(|n| n.parent))
+                .filter_map(|id| d.tree.get(id))
+                .find_map(|n| n.attributes.get("data-drag-ghost"))
+                .is_some_and(|v| v.eq_ignore_ascii_case("false"))
+        });
+        if no_ghost {
+            events::suppress_drag_ghost();
+        }
         // The ghost appears now, not on the next move: `build_pixels` names
         // its rect as the frame's damage.
         self.scene_dirty = true;

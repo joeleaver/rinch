@@ -39,11 +39,15 @@ fn apply(columns: Signal<Vec<Column>>, m: SortMove) {
         for c in cols.iter_mut() {
             c.cards.retain(|k| !m.keys.contains(k));
         }
-        let to = cols.iter_mut().find(|c| c.id == m.to_list).unwrap();
-        // Insert by key: after `after`, else first.
-        let at = m.place.after.as_ref()
-            .and_then(|a| to.cards.iter().position(|k| k == a))
-            .map_or(0, |i| i + 1);
+        let Some(to) = cols.iter_mut().find(|c| c.id == m.to_list) else { return };
+        // Insert by key: right after `after`; right before `before`; `index`
+        // only when neither names an item the list still has.
+        let at = match (&m.place.after, &m.place.before) {
+            (None, _) => 0,
+            (Some(a), b) => to.cards.iter().position(|k| k == a).map(|i| i + 1)
+                .or_else(|| b.as_ref().and_then(|b| to.cards.iter().position(|k| k == b)))
+                .unwrap_or(m.place.index.min(to.cards.len())),
+        };
         for (i, k) in m.keys.iter().enumerate() {
             to.cards.insert(at + i, k.clone());
         }
@@ -91,7 +95,12 @@ and those inside the items of a `SortableList { group: "lanes" }`:
   list of cards);
 - a column dragged over cards is placed among the columns, before or after the
   column the cards are in;
-- a press on a card drags the card, never its column.
+- a press on a card drags the card, never its column;
+- in an outline, where an item holds a list of its own group (a list of
+  sections whose sections hold sections), a drag never lands in a list inside
+  an item it carries — not by pointer, not by keyboard.
+
+Within a group, list `id`s are unique in a document, and so are item keys.
 
 Give an item `handle: true` to drag it only by a `SortableHandle` inside it —
 a column by its header, a lane by a grip:
@@ -111,15 +120,15 @@ A press that never passes the drag threshold (5 px) stays a click, so an
 ```rust
 pub struct SortMove {
     pub group: String,
-    pub keys: Vec<String>,     // what is carried, in order
-    pub from_list: String,     // the id of the list the drag started in
+    pub keys: Vec<String>,     // what is carried, in order (as drag_keys gave them)
+    pub from_list: String,     // the id of the pressed item's list
     pub to_list: String,       // the id of the list it lands in
     pub place: SortPlace,
 }
 pub struct SortPlace {
     pub after: Option<String>,  // the item before the drop; None: first
     pub before: Option<String>, // the item after it; None: last
-    pub index: usize,           // the position, at the time of the offer
+    pub index: usize,           // the position, as the list is at the drop
 }
 ```
 
@@ -133,15 +142,26 @@ stale when something else reorders the list between the offer and your write
 A place that would leave the list as it is (an item over its own position) is
 not offered, and nothing is delivered for it.
 
+**At the drop the place is settled again.** The offer was worked out at the
+last pointer move or key press; the lists may have been re-rendered since (a
+collaborator's edit). So at the release (or the keyboard drop) the target list
+is found again by its id, the place again by its `after` key (first when it had
+none) — `before` and `index` are read off the list as it is then — and the
+`judge` is asked again. A place whose `after` item has left the list, one that
+became a no-op, or one now refused is not delivered. Your `ondrop` still runs
+later than that check, against your data rather than the DOM: **judge the move
+again there** before you write it.
+
 ## Judging
 
 `judge` belongs to the list a move would land in. It is called synchronously,
-untracked, for every place on offer as it changes — not only at the release —
-so the UI shows the verdict before the user lets go:
+untracked, for every place on offer as it changes, and again at the drop, so
+the UI shows the verdict before the user lets go:
 
 - a refused place draws the caret in `--rinch-sortable-refused-color`, and the
   reason (`SortVerdict::Refuse(reason)`, when not empty) in a
-  `.rinch-sortable__reason` box at the caret's edge of the item — restyle that class;
+  `.rinch-sortable__reason` box at the caret's edge, inside the item (see
+  [Styling](#styling));
 - the source list's `ondropchange` hears `Some((move, verdict))` each time the
   offer changes and `None` when nothing is on offer, for an app that describes
   the drop elsewhere;
@@ -160,7 +180,10 @@ drag_keys: Some(Rc::new(move |key: &str| {
 
 The keys arrive in `SortMove::keys` in the order you returned them; an answer
 that leaves the pressed item out carries the item alone. Every carried item is
-dimmed during the drag.
+dimmed during the drag, a re-rendered one included. **The keys are not
+checked**: one that names no item is passed on as it is, and when the
+selection spans several lists `from_list` still names only the pressed item's
+list — your `ondrop` takes each key out of wherever it is.
 
 ## Keyboard
 
@@ -168,15 +191,31 @@ A `SortableItem` is focusable. With the item itself focused:
 
 | Key | Does |
 |-----|------|
-| Space or Enter | Lift the item (and what `drag_keys` carries) |
+| A lift key: Space or Enter | Lift the item (and what `drag_keys` carries) |
 | Arrow along the list | Move the caret one place; past either end, into the next list of the group that way |
 | Arrow across the list | Move to the nearest list of the group that way, at the same position |
-| Space or Enter (lifted) | Drop where the caret is (an accepted place calls `ondrop`); the moved item gets the focus back once your re-render has drawn it |
+| A lift key (lifted) | Drop where the caret is, settled and judged again; the moved item gets the focus back once your re-render draws it in its new list, now or later |
 | Escape | Cancel |
 
-Moving the focus away (Tab, a click elsewhere) cancels the lift. Each step is
-announced in an `aria-live` region inside the list it started from, with the
-list's `label` and the item's `label` (their ids when empty).
+`lift_keys` on a list chooses the keys (`KeyEventData::key` values): an app
+that opens an item on Enter writes `lift_keys: vec![" ".into()]`. Only a key
+sent to the item itself counts; one typed in a field inside it is the field's.
+
+A lift goes on through re-renders: of the list it is over (found again by id)
+and of the lifted item itself (the new node takes the ring and the focus).
+Moving the focus to another element (Tab, a click elsewhere) cancels it. Each
+step is announced in the `aria-live` region of the list it started from, as
+drawn now, with the list's `label` and the item's `label` (their ids when
+empty); the same sentence twice in a row is still announced. Items carry
+`aria-roledescription="sortable item"` and an `aria-description` with the
+keys.
+
+## Read-only
+
+`disabled: true` on a `SortableList` makes it read-only: no drag starts from
+its items, none lands in it, no lift. Give the items `disabled: true` too and
+they lose their drag source altogether (a press is only ever a press). A
+disabled item in a live list keeps its place and takes drops around it.
 
 ## Scrolling
 
@@ -190,7 +229,35 @@ auto-scroll every element drag (`draggable` + `data-ondrag*`) gets.
 The list is a flex column (`Vertical`) or row (`Horizontal`) with
 `--rinch-sortable-gap` between items; override with `class:` / `style:`.
 Items are `position: relative` (the caret and the reason are drawn against
-them). The classes, all restylable:
+them).
+
+The look is custom properties read with fallbacks and never defined by the
+stylesheet, so they inherit: set them inline on a `SortableList` (or on
+anything around it). That is the one lever a sandboxed plugin, which cannot
+add a stylesheet, has.
+
+| Property | Default |
+|----------|---------|
+| `--rinch-sortable-gap` | `--rinch-spacing-xs` |
+| `--rinch-sortable-caret-color` | `--rinch-primary-color` |
+| `--rinch-sortable-caret-size` | `2px` (the caret line, and an empty list's outline) |
+| `--rinch-sortable-refused-color` | `--rinch-color-red-6` |
+| `--rinch-sortable-dragging-opacity` | `0.4` |
+| `--rinch-sortable-reason-bg` | the refused colour |
+| `--rinch-sortable-reason-color` | white |
+| `--rinch-sortable-reason-font-size` | `--rinch-font-size-xs` |
+| `--rinch-sortable-reason-radius` | `--rinch-radius-sm` |
+| `--rinch-sortable-reason-inset` | `4px` (from the caret's edge and the item's right) |
+| `--rinch-sortable-reason-padding` | `2px 6px` |
+| `--rinch-sortable-reason-white-space` | `nowrap` |
+| `--rinch-sortable-reason-max-width` | the item's width less 8px |
+
+Without the component stylesheet (a host pinned to an older rinch) the parts
+stay quiet: the live region and the reason slots carry inline styles that keep
+them out of the flow and out of sight, and the caret is not drawn.
+
+The classes, all restylable (the reason's `display` is set inline, to show and
+hide it):
 
 | Class | On |
 |-------|----|
@@ -210,10 +277,35 @@ Everything runs from element handler attributes — `data-ondragstart`,
 `data-ondragover`, `data-ondragleave`, `data-ondrop`, `data-ondragmove`,
 `data-ondragend` and `data-onkeydown` — with no pointer capture and no
 window-level hook, so a host that proxies those attributes (a plugin sandbox)
-drives it unchanged. The place under the pointer is read from the click
-context's pointer and element box; resolving a drag delegated to an outer list
-(a column dragged over its cards) and the keyboard's moves between lists use
-`NodeHandle::bounding_rect`.
+drives it. What such a host must also give the guest:
+
+- **The click context** for `data-ondragover`: the pointer and the box of the
+  element carrying the handler, as the runtime sets it.
+- **`NodeHandle::bounding_rect`**, for a drag delegated to an outer list (a
+  column dragged over its own cards), a pointer over a list's padding, and the
+  keyboard's moves between lists. It is the element's **painted box in the
+  viewport's frame** — the frame of the click context's pointer — not a
+  parent-relative layout box. Without it: over an item the drag is moving
+  past, after it, else before it; over padding, the end; between lists,
+  document order.
+- **`KeyEventData::target`** (the element a key was sent to), or the
+  document's active element, so a key typed in a field inside an item is not
+  taken for the item's.
+- **Timers**, to give the focus back after a keyboard drop when the item is
+  already drawn; without them it is focused only at its next render.
+- **The drag ghost.** Items carry `data-drag-ghost="false"`: the component
+  draws the drag itself, and a host that paints a ghost should read the
+  attribute (the desktop runtime does) — or forward the guest's
+  `suppress_drag_ghost()`, which otherwise reaches nothing that paints.
+- **The end of a drag.** Each backend tells `rinch_core::on_element_drag_end`
+  listeners when an element drag ends, which is what ends a drag whose dragged
+  item was re-rendered away (its own `data-ondragend` goes to the gone node).
+  A host should call `notify_element_drag_ended()` in the guest when its drag
+  ends.
+
+Not in a guest: the focus-leave cancel of a keyboard lift (it rides the
+host-side dismiss stack's focus notifications); Escape, Tab and the arrows all
+work.
 
 ## Not built
 

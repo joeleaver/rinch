@@ -1,17 +1,18 @@
 //! Sortable list styles (#2091).
+//!
+//! Every value an app may want to change is a custom property read with a
+//! fallback, never defined here, so it inherits: set it inline on a
+//! `SortableList` (or any ancestor) — the one lever a sandboxed plugin guest,
+//! which cannot add a stylesheet, has.
 
 pub fn styles() -> String {
     r#"
 /* A sortable list lays its items out along its axis. Override with class:
    or style: (a grid, a wrap) — the drag reads positions along the axis. */
 .rinch-sortable {
-    --rinch-sortable-gap: var(--rinch-spacing-xs);
-    --rinch-sortable-caret-color: var(--rinch-primary-color);
-    --rinch-sortable-refused-color: var(--rinch-color-red-6);
-    --rinch-sortable-caret-size: 2px;
     position: relative;
     display: flex;
-    gap: var(--rinch-sortable-gap);
+    gap: var(--rinch-sortable-gap, var(--rinch-spacing-xs));
 }
 .rinch-sortable--vertical {
     flex-direction: column;
@@ -28,12 +29,16 @@ pub fn styles() -> String {
 .rinch-sortable__handle {
     cursor: grab;
 }
+.rinch-sortable--disabled .rinch-sortable__item--grab,
+.rinch-sortable--disabled .rinch-sortable__handle {
+    cursor: default;
+}
 /* What a drag carries fades; a keyboard lift is ringed. */
 .rinch-sortable__item--dragging {
-    opacity: 0.4;
+    opacity: var(--rinch-sortable-dragging-opacity, 0.4);
 }
 .rinch-sortable__item--lifted {
-    outline: 2px solid var(--rinch-sortable-caret-color);
+    outline: 2px solid var(--rinch-sortable-caret-color, var(--rinch-primary-color));
     outline-offset: 2px;
 }
 
@@ -46,9 +51,9 @@ pub fn styles() -> String {
     position: absolute;
     left: 0;
     right: 0;
-    height: var(--rinch-sortable-caret-size);
+    height: var(--rinch-sortable-caret-size, 2px);
     border-radius: 1px;
-    background-color: var(--rinch-sortable-caret-color);
+    background-color: var(--rinch-sortable-caret-color, var(--rinch-primary-color));
     pointer-events: none;
     z-index: 2;
 }
@@ -64,7 +69,7 @@ pub fn styles() -> String {
     left: auto;
     right: auto;
     height: auto;
-    width: var(--rinch-sortable-caret-size);
+    width: var(--rinch-sortable-caret-size, 2px);
 }
 .rinch-sortable__item--drop-horizontal.rinch-sortable__item--drop-before::after {
     left: 0;
@@ -73,48 +78,53 @@ pub fn styles() -> String {
     right: 0;
 }
 .rinch-sortable__item--refused::after {
-    background-color: var(--rinch-sortable-refused-color);
+    background-color: var(--rinch-sortable-refused-color, var(--rinch-color-red-6));
 }
 /* A drop into an empty list outlines the list. */
 .rinch-sortable--drop-into {
-    outline: 2px dashed var(--rinch-sortable-caret-color);
+    outline: var(--rinch-sortable-caret-size, 2px) dashed
+        var(--rinch-sortable-caret-color, var(--rinch-primary-color));
     outline-offset: -2px;
 }
 .rinch-sortable--drop-into.rinch-sortable--refused {
-    outline-color: var(--rinch-sortable-refused-color);
+    outline-color: var(--rinch-sortable-refused-color, var(--rinch-color-red-6));
 }
 
 /* Why a drop is refused, at the caret's edge of the item, inside its box: a
    box hanging outside it would grow a scrolling list's scrollable overflow and
-   scroll it. Restyle .rinch-sortable__reason. */
-.rinch-sortable__reason {
-    display: none;
-}
+   scroll it. Shown and hidden by an inline `display`; everything else here is
+   a --rinch-sortable-reason-* property. */
 .rinch-sortable__reason--shown {
-    display: block;
     position: absolute;
-    right: 4px;
-    bottom: 4px;
+    right: var(--rinch-sortable-reason-inset, 4px);
+    bottom: var(--rinch-sortable-reason-inset, 4px);
     z-index: 3;
     pointer-events: none;
-    padding: 2px 6px;
-    border-radius: var(--rinch-radius-sm);
-    background-color: var(--rinch-sortable-refused-color);
-    color: var(--rinch-color-white, #ffffff);
-    font-size: var(--rinch-font-size-xs);
+    max-width: var(--rinch-sortable-reason-max-width, calc(100% - 8px));
+    padding: var(--rinch-sortable-reason-padding, 2px 6px);
+    border-radius: var(--rinch-sortable-reason-radius, var(--rinch-radius-sm));
+    background-color: var(
+        --rinch-sortable-reason-bg,
+        var(--rinch-sortable-refused-color, var(--rinch-color-red-6))
+    );
+    color: var(--rinch-sortable-reason-color, var(--rinch-color-white, #ffffff));
+    font-size: var(--rinch-sortable-reason-font-size, var(--rinch-font-size-xs));
     line-height: 1.4;
-    white-space: nowrap;
+    white-space: var(--rinch-sortable-reason-white-space, nowrap);
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .rinch-sortable__reason--above {
     bottom: auto;
-    top: 4px;
+    top: var(--rinch-sortable-reason-inset, 4px);
 }
 .rinch-sortable > .rinch-sortable__reason--shown {
     bottom: auto;
-    top: 4px;
+    top: var(--rinch-sortable-reason-inset, 4px);
 }
 
-/* The keyboard flow's announcements: read, not shown. */
+/* The keyboard flow's announcements: read, not shown (the element carries the
+   same rules inline, for a document without this stylesheet). */
 .rinch-sortable__live {
     position: absolute;
     width: 1px;
