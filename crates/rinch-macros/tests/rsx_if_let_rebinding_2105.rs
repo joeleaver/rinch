@@ -214,9 +214,24 @@ fn counted(user: Signal<Option<String>>) -> NodeHandle {
         div {
             if let Some(name) = user.get() {
                 { mark(__scope, &name) }
+            } else {
+                { mark(__scope, "nobody") }
             }
         }
     }
+}
+
+#[test]
+fn the_else_branch_of_a_rebinding_if_let_is_not_rebuilt() {
+    let user = Signal::new(None::<String>);
+    let (_doc, _scope, root) = mount(|s| counted(s, user));
+    assert_eq!(text(&root), "nobody");
+    user.set(None);
+    user.set(None);
+    assert_eq!(renders(), 1, "the else branch binds nothing");
+    user.set(Some("Ann".into()));
+    assert_eq!(text(&root), "Ann");
+    assert_eq!(renders(), 2);
 }
 
 #[test]
