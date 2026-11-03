@@ -91,6 +91,11 @@ impl FloatBands {
         }
     }
 
+    /// The content-box width the bands were read at.
+    pub(crate) fn width(&self) -> f32 {
+        self.width
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.bands.is_empty()
     }

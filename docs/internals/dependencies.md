@@ -290,12 +290,12 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`c89dfd158fcd77bd378b1263eef6d05bd81042e7`, branch `rinch-patch`): four
+(`fa0fd0de0fc221742eb6ca8ca11143cffdcac8d4`, branch `rinch-patch`): five
 commits on the taffy `v0.14.0` tag. It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the four commits onto the new tag. All are upstream
+and a Taffy bump rebases the five commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -332,6 +332,13 @@ candidates.
    margin edge, losing its bottom padding, border and scrollbar gutter: a
    padded `overflow: hidden` bar holding only floats was 30px tall where
    Chrome makes it 38. CSS 2.2 §10.6.7 grows the content box to include them.
+5. **Dirty marking past uncached boxes.** A box laid out beside active floats
+   keeps no cache entry, so `Cache::clear` answered `AlreadyEmpty` and
+   `mark_dirty` stopped at it: text edited in a paragraph beside a float left
+   its parent's cached layout in place. And an entry stored before the floats
+   came was served again once they went, though the box's children had been
+   laid out since. The bypass now clears the cache and counts the node
+   computed (`Cache::clear_for_uncached_compute`), so marking climbs on.
 
 The fork's own tests (`tests/block_measure.rs`) cover both; Taffy's suite
 passes unchanged.
