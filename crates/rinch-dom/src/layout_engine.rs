@@ -1379,7 +1379,11 @@ impl RinchDocument {
 
     /// Recursively read Taffy layout results into node LayoutResult fields.
     pub(crate) fn read_layout_results(&mut self, node_id: RawNodeId) {
-        let children: Vec<RawNodeId> = self.tree.nodes[node_id].children.clone();
+        let node = &self.tree.nodes[node_id];
+        let children: Vec<RawNodeId> = node.children.clone();
+        // Read here, where the node is in hand: most nodes are not table
+        // cells, and this runs for every node.
+        let is_table_cell = node.table_cell.is_some();
 
         // A `display: contents` element generates no box. Force its layout to the
         // origin so every parent-chain accumulation (paint tree-walk, hit-testing,
@@ -1764,7 +1768,9 @@ impl RinchDocument {
         for child_id in children {
             self.read_layout_results(child_id);
         }
-        self.note_table_cell_read(node_id);
+        if is_table_cell {
+            self.note_table_cell_read(node_id);
+        }
     }
 
     /// Handle display:contents nodes by reparenting their taffy children
