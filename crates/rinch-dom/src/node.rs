@@ -436,8 +436,8 @@ pub enum InlineFlowRole {
     /// 2.1 §9.3). Not inline content, yet it neither forces anonymous boxes
     /// (§9.2.1.1) nor breaks an inline formatting context (§9.4.2): inline
     /// siblings carry on across it, on the same line. A float stays a Taffy
-    /// child of its IFC root, before the root's measure leaf, so Taffy places
-    /// it at the root's top and the lines wrap around it (`float_wrap`).
+    /// child of its IFC root, before the root's measure leaf, which places it
+    /// at the top of the line it stands in (`float_wrap`).
     OutOfFlow,
     /// An in-flow block-level box — the one thing that breaks the inline
     /// flow.

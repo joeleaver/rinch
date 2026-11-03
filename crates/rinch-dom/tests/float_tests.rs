@@ -266,3 +266,48 @@ fn a_float_in_the_middle_of_a_line_keeps_the_line_whole() {
     assert_eq!(l.len(), 1, "{l:?}");
     assert_eq!((l[0].1, l[0].2), (0.0, 300.0));
 }
+
+fn later_line_doc() -> RinchDocument {
+    let mut d = RinchDocument::new();
+    d.load_css("body { margin: 0; font: 16px/20px sans-serif; }");
+    let body = d.body();
+    d.set_inner_html(
+        body,
+        "<div style='width:400px'><p id=p9 style='margin:0'>aaa<br>bbb \
+         <span id=f9 style='float:right;width:100px;height:30px'></span>ccc</p></div>\
+         <div style='width:400px'><p id=p10 style='margin:0'>\
+         <span style='display:inline-block;width:350px;height:10px'></span>\
+         <span id=f10 style='float:right;width:100px;height:30px'></span> after</p></div>",
+    );
+    d.resolve_layout(800.0, 600.0);
+    d
+}
+
+/// A float standing on a later line of its paragraph goes to that line's
+/// top, and only lines from there on make room for it (Chrome 156: `#f9` at
+/// 300,20; the first line full width, the second ending at 300).
+#[test]
+fn a_float_on_a_later_line_goes_to_that_lines_top() {
+    let d = later_line_doc();
+    assert_eq!(rect(&d, "p9"), (0.0, 0.0, 400.0, 40.0));
+    assert_eq!(rect(&d, "f9"), (300.0, 20.0, 100.0, 30.0));
+    let l = lines(&d, "p9");
+    assert_eq!(l.len(), 2, "{l:?}");
+    assert!((400.0..=401.0).contains(&l[0].2), "{l:?}");
+    assert_eq!((l[1].0, l[1].1, l[1].2), (20.0, 0.0, 300.0));
+}
+
+/// A float that does not fit beside what its line already holds goes below
+/// that line (Chrome 156: the 350px box leaves 50px, the float needs 100, so
+/// it starts at the line's bottom, which is the paragraph's: `#f10` at
+/// 300,70 under a 30px line).
+#[test]
+fn a_float_that_does_not_fit_beside_its_line_goes_below_it() {
+    let d = later_line_doc();
+    let (_, py, _, ph) = rect(&d, "p10");
+    let (fx, fy, fw, fh) = rect(&d, "f10");
+    assert_eq!((fx, fw, fh), (300.0, 100.0, 30.0));
+    assert_eq!(fy, py + ph, "the float starts where its line ends");
+    let l = lines(&d, "p10");
+    assert_eq!(l.len(), 1, "{l:?}");
+}

@@ -85,26 +85,10 @@ impl FloatBands {
         inputs: &taffy::LayoutInput,
         style: &taffy::Style,
     ) -> Self {
-        use taffy::{CoreStyle, ResolveOrZero};
-        if !ctx.has_active_floats(0.0) {
-            return Self::default();
+        match LeafBox::of(inputs, style) {
+            Some(leaf) if ctx.has_active_floats(0.0) => leaf.bands(ctx),
+            _ => Self::default(),
         }
-        let cb = inputs.parent_size.width;
-        let padding = style.padding().resolve_or_zero(cb, |_, _| 0.0);
-        let border = style.border().resolve_or_zero(cb, |_, _| 0.0);
-        let width = inputs
-            .known_dimensions
-            .width
-            .or(match inputs.available_space.width {
-                taffy::AvailableSpace::Definite(w) => Some(w),
-                _ => None,
-            });
-        let Some(width) = width else {
-            return Self::default();
-        };
-        let left = padding.left + border.left;
-        let content_width = width - left - padding.right - border.right;
-        Self::of(ctx, left, padding.top + border.top, content_width.max(0.0))
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -140,6 +124,93 @@ impl FloatBands {
             .map(|b| b.bottom)
             .filter(|&bottom| bottom > y + 0.001)
             .reduce(f32::min)
+    }
+}
+
+/// Where a leaf's content box is in its border box, and how wide it is: what
+/// turns the block context's coordinates into the lines'.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LeafBox {
+    left: f32,
+    top: f32,
+    width: f32,
+}
+
+impl LeafBox {
+    /// The content box of a leaf with `style`, laid out with `inputs`;
+    /// `None` when its width is not known yet.
+    pub(crate) fn of(inputs: &taffy::LayoutInput, style: &taffy::Style) -> Option<Self> {
+        use taffy::{CoreStyle, ResolveOrZero};
+        let cb = inputs.parent_size.width;
+        let padding = style.padding().resolve_or_zero(cb, |_, _| 0.0);
+        let border = style.border().resolve_or_zero(cb, |_, _| 0.0);
+        let width = inputs
+            .known_dimensions
+            .width
+            .or(match inputs.available_space.width {
+                taffy::AvailableSpace::Definite(w) => Some(w),
+                _ => None,
+            })?;
+        let left = padding.left + border.left;
+        Some(Self {
+            left,
+            top: padding.top + border.top,
+            width: (width - left - padding.right - border.right).max(0.0),
+        })
+    }
+
+    /// The room the floats in `ctx` leave this leaf's lines.
+    pub(crate) fn bands(&self, ctx: &taffy::BlockContext<'_>) -> FloatBands {
+        FloatBands::of(ctx, self.left, self.top, self.width)
+    }
+}
+
+/// Whether Taffy leaf `leaf` is an IFC root's measure leaf: the leaf an IFC
+/// root lays its lines out in when it keeps out-of-flow children (floats
+/// among them) as Taffy children. The floats right before such a leaf are
+/// its root's own, which its line breaker places at the lines they stand in;
+/// an IFC root that is its own leaf has no float children, so the floats
+/// before it are its siblings, placed where they stand.
+pub(crate) fn is_measure_leaf(
+    nodes: &crate::node_slab::NodeSlab,
+    leaf: taffy::NodeId,
+    context: Option<&crate::node::NodeContext>,
+) -> bool {
+    matches!(context, Some(crate::node::NodeContext::InlineRoot(root))
+        if nodes.get(*root).is_some_and(|n| n.taffy_id != Some(leaf)))
+}
+
+/// [`crate::ifc::PlaceFloats`] over the block context a paragraph is laid
+/// out in: its pending floats (`BlockContext::pending_floats`, the floats
+/// right before its measure leaf, which rinch's Taffy fork leaves for the
+/// leaf to place) are placed where the line breaker reaches them.
+pub(crate) struct BlockFloats<'c, 'b> {
+    pub(crate) ctx: &'c mut taffy::BlockContext<'b>,
+    pub(crate) nodes: &'c crate::node_slab::NodeSlab,
+    pub(crate) leaf: LeafBox,
+}
+
+impl BlockFloats<'_, '_> {
+    /// The pending float for node `float`, if it is one and still waits.
+    fn waiting(&self, float: crate::node::RawNodeId) -> Option<usize> {
+        let taffy_id = self.nodes.get(float)?.taffy_id?;
+        self.ctx
+            .pending_floats()
+            .iter()
+            .position(|p| p.node_id == taffy_id && p.placed().is_none())
+    }
+}
+
+impl crate::ifc::PlaceFloats for BlockFloats<'_, '_> {
+    fn width(&self, float: crate::node::RawNodeId) -> Option<f32> {
+        let index = self.waiting(float)?;
+        Some(self.ctx.pending_floats()[index].size.width)
+    }
+
+    fn place(&mut self, float: crate::node::RawNodeId, y: f32) -> Option<FloatBands> {
+        let index = self.waiting(float)?;
+        self.ctx.place_pending_float(index, y + self.leaf.top);
+        Some(self.leaf.bands(self.ctx))
     }
 }
 

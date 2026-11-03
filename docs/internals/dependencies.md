@@ -248,12 +248,12 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`b9c9f973b5c7abf6fa9d789d1753e243d67c2816`, branch `rinch-patch`): two
+(`fd1ceb8276d7b86f1e2ae5fb688af8fa10e05239`, branch `rinch-patch`): three
 commits on the taffy `v0.14.0` tag. It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the two commits onto the new tag. Both are upstream
+and a Taffy bump rebases the three commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -276,6 +276,15 @@ candidates.
    the floats next changes. It is now the distance to the end of the slot's
    segment (still infinity with no float beside it), which is how
    `FloatBands::of` walks a paragraph's height.
+3. **Pending floats.** The block-measure method takes a second callback,
+   `places_floats(leaf, context)`: a float right before a childless in-flow
+   leaf that it accepts is sized but not placed. The leaf's measure finds it in
+   `BlockContext::pending_floats()` and places it with
+   `place_pending_float(index, min_y)` at the height it chooses; one it leaves
+   unplaced is placed after it, where it stood. rinch accepts measure leaves
+   only (`float_wrap::is_measure_leaf`): the floats before an IFC root's
+   measure leaf are that root's own, placed at the top of the line each stands
+   in (CSS 2.2 §9.5.1). A leaf with pending floats bypasses the layout cache too.
 
 The fork's own tests (`tests/block_measure.rs`) cover both; Taffy's suite
 passes unchanged.

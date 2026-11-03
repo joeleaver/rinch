@@ -18,11 +18,12 @@
 //!
 //! A float among inline content does not split the run around it (CSS 2.1
 //! §9.2.1.1): it is out of flow (`InlineFlowRole::OutOfFlow`), stays a Taffy
-//! child of its IFC root, and goes before the root's measure leaf, so Taffy
-//! places it at the root's top and the lines wrap around it. A browser
-//! places a float at the top of the line it stands in, which is the same
-//! place for a float on a paragraph's first line; one on a later line goes
-//! up to the first here.
+//! child of its IFC root, and goes before the root's measure leaf. Taffy
+//! sizes it and leaves it to the leaf (rinch's fork: `PendingFloat`), whose
+//! line breaker places it at the top of the line it stands in, or of the next
+//! line when it does not fit beside what its line holds (CSS 2.2 §9.5.1):
+//! where it stands in the text is a box of no size (`ifc::FLOAT_BOX`), at
+//! which parley's breaker pauses (`InlineBoxKind::CustomOutOfFlow`).
 
 use crate::RinchDocument;
 use crate::computed_style::values::{DisplayValue, PositionValue};

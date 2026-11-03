@@ -225,6 +225,7 @@ fn the_linear_pass_commits_the_lines_the_restarting_loop_did() {
             false,
             None,
             None,
+            None,
         )
         .hang;
         fixed += stats.passes;
@@ -294,6 +295,7 @@ fn with_inline_boxes_every_line_is_in_step_and_none_is_left_unhung() {
             &super::UnhungSpaces::default(),
             false,
             false,
+            None,
             None,
             None,
         )
