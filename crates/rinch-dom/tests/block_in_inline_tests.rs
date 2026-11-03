@@ -612,12 +612,11 @@ fn an_absolutely_positioned_child_does_not_split_an_inline() {
     assert_consistent(&w.doc, "absolute inside an inline");
 }
 
-/// A floated child of an inline takes no line of its own (it is out of flow),
-/// but rinch still splits the run around it: the text before the float and the
-/// text after it are two anonymous boxes, so two lines, where Chrome puts both
-/// on one line and the container is 20px (`floats` module docs: a float
-/// splits an inline run). Before floats landed this was 70px, the float
-/// stacked as a block between them.
+/// A floated child of an inline takes no line of its own (it is out of flow)
+/// and does not split the run around it (CSS 2.1 §9.2.1.1): the text before
+/// and after it share one line, as in Chrome, and the container is 20px.
+/// Before floats landed this was 70px, the float stacked as a block between
+/// them; with floats but the run split around them, 40.
 ///
 /// What this pins is the property this file is built on: a bare inline
 /// wrapper changes nothing, so the wrapped twin matches the unwrapped one.
@@ -630,9 +629,8 @@ fn a_floated_child_of_an_inline_matches_its_wrapper_free_twin() {
     // would pass by agreeing with Chrome and prove nothing about the wrapper.
     assert_eq!(
         height_of(&p.doc, p.container),
-        LINE + LINE,
-        "control: the float adds no line, but splits the run into two lines \
-         (Chrome\u{2019}s 20 when a float no longer splits it).",
+        LINE,
+        "control: the float adds no line and splits no run (Chrome\u{2019}s 20).",
     );
     assert_eq!(
         height_of(&w.doc, w.container),

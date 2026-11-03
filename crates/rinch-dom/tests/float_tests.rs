@@ -91,18 +91,21 @@ fn text_beside_floats_starts_after_them() {
     assert_eq!(lines(&d, "p1"), vec![(0.0, 160.0, 320.0)]);
 }
 
-/// An image floated inside a line of text: the text's anonymous box keeps
-/// the full width and its line starts past the image's margin (Chrome:
-/// "hello" at x 110).
+/// An image floated inside a line of text: the float does not split the
+/// run, so the container holds the text's line itself, at the full width,
+/// starting past the image's margin (Chrome: "hello" at x 110).
 #[test]
 fn a_floated_image_pushes_its_line_aside() {
     let d = doc();
     assert_eq!(rect(&d, "im"), (0.0, 125.0, 100.0, 60.0));
-    let w3 = d.query_selector("#w3").unwrap();
-    let anon = d.tree.get(w3.0).unwrap().run_boxes.clone();
-    assert_eq!(anon.len(), 1, "the text has one anonymous box");
-    assert_eq!(rect_of(&d, NodeId(anon[0])).0, 0.0);
-    assert_eq!(lines_of(&d, NodeId(anon[0]))[0].1, 110.0);
+    assert!(
+        d.tree
+            .get(d.query_selector("#w3").unwrap().0)
+            .unwrap()
+            .run_boxes
+            .is_empty()
+    );
+    assert_eq!(lines(&d, "w3")[0].1, 110.0);
 }
 
 /// The white space before a float collapses to nothing, so the text starts
@@ -113,48 +116,20 @@ fn white_space_around_a_float_takes_no_line() {
     let d = doc();
     let im = rect(&d, "im2");
     assert_eq!(im, (110.0, 145.0, 50.0, 50.0));
-    let w4 = d.query_selector("#w4").unwrap();
-    let boxes: Vec<_> = d
-        .tree
-        .get(w4.0)
-        .unwrap()
-        .run_boxes
-        .iter()
-        .map(|&a| rect_of(&d, NodeId(a)))
-        .filter(|r| r.3 > 0.0)
-        .collect();
-    assert_eq!(boxes.len(), 1, "{boxes:?}");
-    assert_eq!((boxes[0].0, boxes[0].1), (0.0, im.1));
-    let run = d.tree.get(w4.0).unwrap().run_boxes.clone();
-    let text = run
-        .into_iter()
-        .find(|&a| rect_of(&d, NodeId(a)).3 > 0.0)
-        .unwrap();
-    assert_eq!(lines_of(&d, NodeId(text))[0].1, 160.0);
+    let l = lines(&d, "w4");
+    assert_eq!(l.len(), 1, "{l:?}");
+    assert_eq!((l[0].0, l[0].1), (0.0, 160.0));
+    assert_eq!(rect(&d, "w4").1, im.1);
 }
 
-/// A float that stops floating gives its neighbour's line the full width
-/// back.
+/// A float that stops floating gives the line the full width back.
 #[test]
 fn unfloating_restores_the_line() {
     let mut d = doc();
     let f = d.query_selector("#im").unwrap();
     d.set_attribute(f, "style", "width:100px;height:60px");
     d.resolve_layout(800.0, 600.0);
-    let w3 = d.query_selector("#w3").unwrap();
-    let anon = d.tree.get(w3.0).unwrap().run_boxes.clone();
-    for a in anon {
-        if let Some(first) = d.tree.get(a).unwrap().text_layout.as_ref() {
-            let x = first
-                .layout
-                .lines()
-                .next()
-                .unwrap()
-                .metrics()
-                .inline_min_coord;
-            assert_eq!(x, 0.0);
-        }
-    }
+    assert!(lines(&d, "w3").iter().all(|l| l.1 == 0.0));
 }
 
 const WRAP: &str = "<div style='width:400px'>\
@@ -266,4 +241,28 @@ fn carets_and_hit_tests_beside_a_float_find_the_moved_line() {
     let rects = q::selection_rects_for_layout(layout, 0, 1);
     assert_eq!(rects.len(), 1, "{rects:?}");
     assert_eq!(rects[0].0, 160.0);
+}
+
+/// A float in the middle of a line splits neither the line nor the
+/// paragraph: "aaa " and "bbb" share one line before the right float, and the
+/// paragraph is one line tall, the float overhanging it (Chrome 156: `#p8`
+/// 0,0 400x20, `#f8` 300,0 100x40, the next box at y 20).
+#[test]
+fn a_float_in_the_middle_of_a_line_keeps_the_line_whole() {
+    let mut d = RinchDocument::new();
+    d.load_css("body { margin: 0; font: 16px/20px sans-serif; }");
+    let body = d.body();
+    d.set_inner_html(
+        body,
+        "<div style='width:400px'><p id=p8 style='margin:0'>aaa \
+         <span id=f8 style='float:right;width:100px;height:40px'></span>bbb</p>\
+         <div id=after8 style='height:5px'></div></div>",
+    );
+    d.resolve_layout(800.0, 600.0);
+    assert_eq!(rect(&d, "p8"), (0.0, 0.0, 400.0, 20.0));
+    assert_eq!(rect(&d, "f8"), (300.0, 0.0, 100.0, 40.0));
+    assert_eq!(rect(&d, "after8").1, 20.0);
+    let l = lines(&d, "p8");
+    assert_eq!(l.len(), 1, "{l:?}");
+    assert_eq!((l[0].1, l[0].2), (0.0, 300.0));
 }

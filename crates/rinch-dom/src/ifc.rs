@@ -6279,10 +6279,24 @@ impl RinchDocument {
                 // below-the-line static position for auto-inset absolute
                 // children. Appending it would silently move them to
                 // content-top.
-                let _ = self
-                    .tree
-                    .taffy
-                    .set_children(root_taffy, &out_of_flow_children);
+                //
+                // Floats are the exception: they go **before** the leaf, so
+                // Taffy places them at the root's top and the leaf's lines
+                // wrap around them (`float_wrap`), where a browser places a
+                // float at the top of the line it stands in. The same for
+                // a float on the first line; one standing on a later line
+                // goes up to the first.
+                let (floats, absolute): (Vec<_>, Vec<_>) =
+                    out_of_flow_children.iter().partition(|&&t| {
+                        self.tree
+                            .taffy_map
+                            .get(&t)
+                            .and_then(|&id| self.tree.nodes.get_live(id))
+                            .is_some_and(|n| n.computed_style.float.is_floated())
+                    });
+                let leaf_index = floats.len();
+                let ordered: Vec<taffy::NodeId> = floats.into_iter().chain(absolute).collect();
+                let _ = self.tree.taffy.set_children(root_taffy, &ordered);
                 let Ok(leaf) = self.tree.taffy.new_leaf_with_context(
                     taffy::Style {
                         display: taffy::Display::Block,
@@ -6292,7 +6306,10 @@ impl RinchDocument {
                 ) else {
                     continue;
                 };
-                let _ = self.tree.taffy.insert_child_at_index(root_taffy, 0, leaf);
+                let _ = self
+                    .tree
+                    .taffy
+                    .insert_child_at_index(root_taffy, leaf_index, leaf);
                 self.tree.ifc_measure_leaves.insert(root_id, leaf);
 
                 // The context is a **move**, not a copy: the root itself has
@@ -11221,7 +11238,7 @@ impl RinchDocument {
                     // the member before it (the first one, when none is).
                     // (`is_out_of_flow` first: it is one compare, and this
                     // arm is asked of every block child of every parent.)
-                    None if child.is_out_of_flow()
+                    None if (child.is_out_of_flow() || child.computed_style.float.is_floated())
                         && child.inline_flow_role() == InlineFlowRole::OutOfFlow =>
                     {
                         let found = near.or_else(|| {

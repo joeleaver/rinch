@@ -432,10 +432,12 @@ pub enum InlineFlowRole {
     /// Inline-level content: a text node, or an element with display
     /// `inline` / `inline-block` / `inline-flex`.
     Inline,
-    /// An out-of-flow box — `position: absolute`/`fixed` (CSS 2.1 §9.3).
-    /// Not inline content, yet it neither forces anonymous boxes (§9.2.1.1)
-    /// nor breaks an inline formatting context (§9.4.2): inline siblings
-    /// carry on across it, on the same line.
+    /// An out-of-flow box — `position: absolute`/`fixed`, or a float (CSS
+    /// 2.1 §9.3). Not inline content, yet it neither forces anonymous boxes
+    /// (§9.2.1.1) nor breaks an inline formatting context (§9.4.2): inline
+    /// siblings carry on across it, on the same line. A float stays a Taffy
+    /// child of its IFC root, before the root's measure leaf, so Taffy places
+    /// it at the root's top and the lines wrap around it (`float_wrap`).
     OutOfFlow,
     /// An in-flow block-level box — the one thing that breaks the inline
     /// flow.
@@ -2623,8 +2625,8 @@ impl Node {
     ///    flattened in-flow boxes stayed attached — the non-leaf carrier the
     ///    #466 validator exists to catch.
     /// 4. Inline-level content is [`InlineFlowRole::Inline`].
-    /// 5. Only now does `position` speak: `absolute`/`fixed` is
-    ///    [`InlineFlowRole::OutOfFlow`].
+    /// 5. Only now do `position` and `float` speak: `absolute`/`fixed`, or a
+    ///    float, is [`InlineFlowRole::OutOfFlow`].
     /// 6. Everything left is an in-flow block-level box,
     ///    [`InlineFlowRole::InFlowBlock`].
     ///
@@ -2645,7 +2647,7 @@ impl Node {
         if self.is_inline() {
             return InlineFlowRole::Inline;
         }
-        if self.is_out_of_flow() {
+        if self.is_out_of_flow() || self.computed_style.float.is_floated() {
             return InlineFlowRole::OutOfFlow;
         }
         InlineFlowRole::InFlowBlock

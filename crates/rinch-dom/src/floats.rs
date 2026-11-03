@@ -12,9 +12,17 @@
 //! formatting context, which Taffy lets overlap a float, where CSS 2.2 §9.5
 //! has its border box avoid the float as a box that establishes a formatting
 //! context does: it is given paint containment, which makes Taffy place it
-//! in the room beside the float. And the white space around a float, which
-//! is a line of its own once the float splits its run into two anonymous
-//! boxes where a browser's collapses to nothing, is hidden.
+//! in the room beside the float. And an anonymous box holding nothing but
+//! the white space around a float, between two block boxes, is hidden, as a
+//! browser's collapses to nothing.
+//!
+//! A float among inline content does not split the run around it (CSS 2.1
+//! §9.2.1.1): it is out of flow (`InlineFlowRole::OutOfFlow`), stays a Taffy
+//! child of its IFC root, and goes before the root's measure leaf, so Taffy
+//! places it at the root's top and the lines wrap around it. A browser
+//! places a float at the top of the line it stands in, which is the same
+//! place for a float on a paragraph's first line; one on a later line goes
+//! up to the first here.
 
 use crate::RinchDocument;
 use crate::computed_style::values::{DisplayValue, PositionValue};
@@ -63,8 +71,8 @@ impl RinchDocument {
                 continue;
             }
             let kids = self.tree.taffy.children(parent).unwrap_or_default();
-            // The white space around a float is a line of its own once the
-            // float splits the run, where a browser's collapses to nothing.
+            // A run of nothing but the white space around a float, between
+            // two block boxes, takes no line: a browser's collapses to nothing.
             for &k in &kids {
                 if let Some(&a) = self.tree.taffy_map.get(&k)
                     && !blank.contains(&a)
