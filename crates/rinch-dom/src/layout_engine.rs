@@ -926,10 +926,15 @@ impl RinchDocument {
                                     // layout has the whole width again: its old bands go
                                     // before the cache below can answer (the bands of a
                                     // root beside floats are recorded after its build).
+                                    // (Most documents have no floats: an empty map is
+                                    // not hashed into.)
                                     if inputs.run_mode == taffy::RunMode::PerformLayout
                                         && !beside_floats
                                     {
-                                        ifc_float_bands.borrow_mut().remove(&root_id);
+                                        let mut bands = ifc_float_bands.borrow_mut();
+                                        if !bands.is_empty() {
+                                            bands.remove(&root_id);
+                                        }
                                     }
 
                                     // Check persistent IFC measure cache — skip expensive
@@ -996,9 +1001,10 @@ impl RinchDocument {
                                             Some(last) => {
                                                 bands.insert(root_id, last);
                                             }
-                                            None => {
+                                            None if !bands.is_empty() => {
                                                 bands.remove(&root_id);
                                             }
+                                            None => {}
                                         }
                                     }
                                     let mut h = hang.get();
@@ -1373,7 +1379,11 @@ impl RinchDocument {
 
     /// Recursively read Taffy layout results into node LayoutResult fields.
     pub(crate) fn read_layout_results(&mut self, node_id: RawNodeId) {
-        let children: Vec<RawNodeId> = self.tree.nodes[node_id].children.clone();
+        let node = &self.tree.nodes[node_id];
+        let children: Vec<RawNodeId> = node.children.clone();
+        // Read here, where the node is in hand: most nodes are not table
+        // cells, and this runs for every node.
+        let is_table_cell = node.table_cell.is_some();
 
         // A `display: contents` element generates no box. Force its layout to the
         // origin so every parent-chain accumulation (paint tree-walk, hit-testing,
@@ -1758,7 +1768,9 @@ impl RinchDocument {
         for child_id in children {
             self.read_layout_results(child_id);
         }
-        self.note_table_cell_read(node_id);
+        if is_table_cell {
+            self.note_table_cell_read(node_id);
+        }
     }
 
     /// Handle display:contents nodes by reparenting their taffy children
