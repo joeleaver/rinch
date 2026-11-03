@@ -78,9 +78,8 @@ samples a mask image by it too. A `url()` is loaded as a background url is
 `drain_pending_images`). So its decode pushes the masked node paint-dirty, and an
 unloaded or failed image draws nothing into the mask, which hides the box
 (css-masking-1 §7.1, as Chrome does). No SVG file decodes (the image cache has no SVG
-decoder), so an `.svg` mask hides the box. A `data:` url loads only once #2100 decodes
-background urls in place (`image_rendering_mask_2098_2099_tests::a_data_url_mask_image_loads`
-is `#[ignore]`d until then). A
+decoder), so an `.svg` mask hides the box. A `data:` url is decoded in place, as a
+background's is (#2100; `image_rendering_mask_2098_2099_tests::a_data_url_mask_image_loads`). A
 masked box is a stacking context, so its hoisted descendants paint inside the
 layer. The software painter composites a `DestinationIn` layer over everything
 its parent layer holds, not only what the mask drew, so an empty or

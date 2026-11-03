@@ -158,8 +158,8 @@ Not read on desktop:
 
 rinch decodes no SVG *file* as an image, so `mask-image: url(icon.svg)` masks
 the element away (an `<img src="icon.svg">` shows nothing either). Use a
-PNG or another raster format. A `data:` URL loads only once data-URL
-backgrounds do (#2100). On the web, the browser reads all of these itself.
+PNG or another raster format. A `data:` URL works, as it does for
+`background-image`. On the web, the browser reads all of these itself.
 
 ### `image-rendering`
 

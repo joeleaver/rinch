@@ -394,11 +394,9 @@ fn a_mask_image_from_an_app_scheme_loads_and_repaints_its_node() {
 
 /// A `data:` mask image (the icon-tint case written inline) loads. A mask
 /// url is loaded exactly as a `background-image` url is (the cascade notes it
-/// in `pending_background_urls`), and on `main` a `data:` background url is
-/// handed to the document's loader, which reads it as a file name and fails.
-/// #2100 decodes such a url in place; un-ignore this once it has landed.
+/// in `pending_background_urls`), and since #2100 a `data:` url there is
+/// decoded in place rather than handed to the document's loader.
 #[test]
-#[ignore = "a data: background or mask url loads once #2100 decodes it in place"]
 fn a_data_url_mask_image_loads() {
     const HALF: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAGUlEQVR4nGNgYGD4D8UMDAwMDEwMaICwAAB8lAIFSJaEeAAAAABJRU5ErkJggg==";
     let mut doc = RinchDocument::new();
