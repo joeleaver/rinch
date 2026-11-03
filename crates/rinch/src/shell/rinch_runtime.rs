@@ -5728,7 +5728,7 @@ mod bundled_font_tests {
             .app
             .pending_fonts
             .iter()
-            .map(|f| f.generics[0])
+            .map(|f| f.font.generics[0])
             .collect();
         assert_eq!(
             generics,
@@ -5901,7 +5901,7 @@ mod bundled_font_tests {
             "the bundled face must reach the app the window will mount"
         );
         assert_eq!(
-            runtime.app.pending_fonts[0].generics[0],
+            runtime.app.pending_fonts[0].font.generics[0],
             parley::fontique::GenericFamily::Monospace,
             "and reach it with the generic it declared"
         );
