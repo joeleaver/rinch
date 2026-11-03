@@ -244,7 +244,7 @@ impl RinchContext {
         // `rinch-web`. Before the mount, so the component's own timers are
         // scheduled. Not the poll drain: `update()` does that once a frame,
         // and a second drain would sample every-frame polls twice.
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         crate::web_runtime::install_web_scheduling();
 
         // Mount the component (builds DOM, runs initial layout) at the
