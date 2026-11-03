@@ -4152,6 +4152,7 @@ impl NodeTree {
         // `prev_layout`), and their bars recorded after.
         let watched = crate::paint::bar_watch_scrollers(self);
         let members = self.inline_text_shadows;
+        let taffy = &self.taffy;
         let nodes = &mut self.nodes;
         // Each state is read with the slab borrowed shared (an IFC root's ink
         // reads its inline elements' styles, #1048), then written.
@@ -4159,7 +4160,8 @@ impl NodeTree {
             let Some(node) = nodes.get(id) else {
                 return;
             };
-            let state = PaintedState::of_in(node, members, |i| nodes.get(i));
+            let mut state = PaintedState::of_in(node, members, |i| nodes.get(i));
+            state.unrounded = unrounded_rect(taffy, node);
             let node = &mut nodes[id];
             if layout {
                 node.prev_layout = node.layout;
@@ -4596,6 +4598,22 @@ pub struct PaintedState {
     /// A node whose answer has changed since owes the damage everything its
     /// subtree paints, not only its own rect (#1384).
     pub order: crate::stacking::PaintOrderKey,
+    /// Its unrounded Taffy rect `[x, y, width, height]` when painted
+    /// ([`unrounded_rect`]; `None` for a box with no Taffy node), written by
+    /// [`NodeTree::consume_paint_dirty`]. A scroller's range is measured from
+    /// it (#2116), so a change that leaves the rounded `layout` alone can
+    /// still move a bar: `paint::bar_watch_scrollers` compares it.
+    pub unrounded: Option<[f32; 4]>,
+}
+
+/// `node`'s unrounded Taffy rect `[x, y, width, height]`, in its Taffy
+/// parent's frame — what a scroller's range is measured from (#2116).
+pub(crate) fn unrounded_rect(
+    taffy: &taffy::TaffyTree<NodeContext>,
+    node: &Node,
+) -> Option<[f32; 4]> {
+    let u = taffy.unrounded_layout(node.taffy_id?);
+    Some([u.location.x, u.location.y, u.size.width, u.size.height])
 }
 
 /// A painted transform: the value and its resolved origin, in CSS px.
@@ -4641,6 +4659,7 @@ impl PaintedState {
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
             order: crate::stacking::PaintOrderKey::of(node),
+            unrounded: None,
         }
     }
 }

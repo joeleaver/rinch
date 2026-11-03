@@ -245,3 +245,96 @@ fn an_emptier_scroller_reports_what_it_holds() {
         }
     }
 }
+
+/// The thresholds themselves, on both sides (Chrome 156, every position and
+/// scale): content that rounds up from exactly half a pixel is a range of
+/// one, a hundredth less is none. `(H, content, bar)`, written as CSS so no
+/// float sum lands beside the half. Round-half-down, round-half-to-even and a
+/// `> 0.5` compare each fail a row here.
+const THRESHOLDS: [(&str, &str, bool); 6] = [
+    ("100", "100.49", false),
+    ("100", "100.5", true),
+    ("100.3", "100.49", false),
+    ("100.3", "100.5", true),
+    ("100.7", "101.49", false),
+    ("100.7", "101.5", true),
+];
+
+fn want(bar: bool) -> Answer {
+    if bar {
+        Answer {
+            bar: true,
+            wheel: true,
+            overflows: true,
+            range: 1.0,
+        }
+    } else {
+        FITS
+    }
+}
+
+#[test]
+fn the_half_pixel_threshold_is_exact() {
+    let mut wrong = Vec::new();
+    for scale in SCALES {
+        for f in OFFSETS {
+            for (h, content, bar) in THRESHOLDS {
+                let (doc, c) = build(
+                    f,
+                    scale,
+                    &format!("overflow-y: auto; width: 200px; height: {h}px"),
+                    &[&format!("height: {content}px")],
+                );
+                let got = answer(&doc, c, scale);
+                if got != want(bar) {
+                    wrong.push(format!("scale {scale} offset {f} H {h} {content}: {got:?}"));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The same thresholds across: a `W` wide `overflow-x: auto` box, `10 + f`
+/// px from the left, holding a `content` wide child. Chrome 156 answers as it
+/// does vertically (`scrollWidth`/`clientWidth` 101/100, 102/101 at the bar),
+/// at every position and scale.
+#[test]
+fn the_horizontal_axis_follows_the_same_rule() {
+    let mut wrong = Vec::new();
+    for scale in SCALES {
+        for f in OFFSETS {
+            for (w, content, bar) in THRESHOLDS {
+                let mut doc = RinchDocument::new();
+                doc.set_device_pixel_ratio(scale as f32);
+                let body = doc.body();
+                let c = doc.create_element("div");
+                doc.set_attribute(
+                    c,
+                    "style",
+                    &format!(
+                        "margin-left: {}px; overflow-x: auto; overflow-y: hidden; \
+                         width: {w}px; height: 50px",
+                        10.0 + f
+                    ),
+                );
+                doc.append_child(body, c);
+                let child = doc.create_element("div");
+                doc.set_attribute(child, "style", &format!("width: {content}px; height: 20px"));
+                doc.append_child(c, child);
+                doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+                let tree = &doc.tree;
+                let got = Answer {
+                    bar: scrollbars(tree, c.0, scale).horizontal.is_some(),
+                    wheel: can_scroll_toward(tree, c.0, 1.0, 0.0),
+                    overflows: overflows(tree, c.0, ScrollbarAxis::Horizontal),
+                    range: (doc.scroll_width(c) - doc.client_width(c)).max(0.0),
+                };
+                if got != want(bar) {
+                    wrong.push(format!("scale {scale} offset {f} W {w} {content}: {got:?}"));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
