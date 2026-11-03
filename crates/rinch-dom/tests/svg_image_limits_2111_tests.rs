@@ -94,7 +94,7 @@ fn nested_entities_are_refused() {
     let t = Instant::now();
     let err = decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused");
     // Refused by rinch's own check, before roxmltree expands anything.
-    assert!(err.contains("refers to another entity"), "{err}");
+    assert!(err.contains("refers to another"), "{err}");
     assert!(t.elapsed() < Duration::from_millis(500));
 }
 
@@ -171,7 +171,7 @@ fn use_fan_out_past_the_node_limit_is_refused_at_decode() {
         format!(r##"<svg {NS} width="10" height="10"><defs>{defs}</defs><use href="#l5"/></svg>"##);
     assert!(10u64.pow(5) < 2 * MAX_NODES);
     let err = decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused");
-    assert!(err.contains("elements"), "{err}");
+    assert!(err.contains("expands to"), "{err}");
 }
 
 /// The pixel cap is applied to the pixels allocated, after rounding up: a
@@ -335,4 +335,257 @@ fn a_deep_data_url_svg_fails_on_the_ui_thread_without_crashing() {
 #[test]
 fn garbage_fails() {
     assert!(decode_image_bytes(b"<svg").is_err());
+}
+
+/// What each filter costs resvg per pixel of its region, for calibrating
+/// the work budget. `#[ignore]`d; `--release -- --ignored --nocapture
+/// filter_cost_probe`.
+#[test]
+#[ignore = "a timing probe"]
+fn filter_cost_probe() {
+    let cases: &[(&str, &str)] = &[
+        ("fill", ""),
+        ("blur 3", r#"<feGaussianBlur stdDeviation="3"/>"#),
+        ("blur 1e4", r#"<feGaussianBlur stdDeviation="10000"/>"#),
+        ("blur 1.5 (iir)", r#"<feGaussianBlur stdDeviation="1.5"/>"#),
+        ("shadow 1e4", r#"<feDropShadow stdDeviation="10000"/>"#),
+        ("morph 2", r#"<feMorphology radius="2"/>"#),
+        ("morph 8", r#"<feMorphology radius="8"/>"#),
+        ("turb 1", r#"<feTurbulence numOctaves="1"/>"#),
+        ("turb 8", r#"<feTurbulence numOctaves="8"/>"#),
+        (
+            "conv 3",
+            r#"<feConvolveMatrix order="3" kernelMatrix="1 1 1 1 1 1 1 1 1"/>"#,
+        ),
+        (
+            "conv 9",
+            format!(
+                r#"<feConvolveMatrix order="9" kernelMatrix="{}"/>"#,
+                "1 ".repeat(81)
+            )
+            .leak(),
+        ),
+        (
+            "diffuse",
+            r#"<feDiffuseLighting><feDistantLight/></feDiffuseLighting>"#,
+        ),
+        (
+            "specular",
+            r#"<feSpecularLighting specularExponent="20"><fePointLight x="5" y="5" z="5"/></feSpecularLighting>"#,
+        ),
+        (
+            "displace",
+            r#"<feTurbulence result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="20"/>"#,
+        ),
+        ("tile", r#"<feOffset dx="5" result="o"/><feTile in="o"/>"#),
+        (
+            "colormatrix",
+            r#"<feColorMatrix type="hueRotate" values="30"/>"#,
+        ),
+    ];
+    for (name, fe) in cases {
+        let filter = if fe.is_empty() {
+            String::new()
+        } else {
+            format!(r#"<filter id="f" x="0" y="0" width="1" height="1">{fe}</filter>"#)
+        };
+        let attr = if fe.is_empty() {
+            ""
+        } else {
+            r#" filter="url(#f)""#
+        };
+        let svg = format!(
+            r##"<svg {NS} width="400" height="400">{filter}<rect width="400" height="400" fill="#f80"{attr}/></svg>"##
+        );
+        let v = decode_svg(svg.as_bytes()).unwrap();
+        let t = Instant::now();
+        let r = v.raster(400.0, 400.0);
+        eprintln!(
+            "{name}: {:?} ({:.1} ns/px), estimated {:.2e}, drawn {}",
+            t.elapsed(),
+            t.elapsed().as_nanos() as f64 / 160_000.0,
+            v.estimated_work(400, 400),
+            r.is_some()
+        );
+    }
+    // Dashes: 100 paths of length 1,000 dashed every 0.1.
+    let paths: String = (0..100)
+        .map(|i| {
+            format!(r##"<path d="M0 {i} H1000" stroke="#000" stroke-dasharray="0.05 0.05"/>"##)
+        })
+        .collect();
+    let svg = format!(r#"<svg {NS} width="1000" height="100">{paths}</svg>"#);
+    let v = decode_svg(svg.as_bytes()).unwrap();
+    let t = Instant::now();
+    v.raster(1000.0, 100.0);
+    eprintln!("dashes 1e6: {:?}", t.elapsed());
+}
+
+// ---- Second review of #2125: seven ways past the first limits, each under
+// 80 KB, each proved in release. Each test asserts a refusal (or a fast
+// draw) well inside the time the attack took.
+
+fn quick<T>(limit_ms: u64, f: impl FnOnce() -> T) -> T {
+    let t = Instant::now();
+    let out = f();
+    assert!(
+        t.elapsed() < Duration::from_millis(limit_ms),
+        "took {:?}",
+        t.elapsed()
+    );
+    out
+}
+
+/// A name declared twice: roxmltree keeps the first declaration, so a
+/// reader that kept the last counted 1 byte where 64 KB was expanded (78 KB
+/// file: 1.59 s, 529 MB). A duplicate refuses the file.
+#[test]
+fn a_duplicate_entity_is_refused() {
+    let svg = format!(
+        r#"<!DOCTYPE svg [<!ENTITY a "{}"><!ENTITY a "x">]><svg {NS} width="10" height="10"><desc>{}</desc></svg>"#,
+        "A".repeat(65536),
+        "&a;".repeat(4096)
+    );
+    let err = quick(300, || {
+        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
+    });
+    assert!(err.contains("twice"), "{err}");
+}
+
+/// A processing instruction in the internal subset whose text holds `]>`:
+/// a reader that did not know PIs ended the subset there and never saw the
+/// nested entities after it (5.6 KB: 415 MB). Anything but a flat entity in
+/// the subset refuses the file.
+#[test]
+fn a_processing_instruction_in_the_subset_is_refused() {
+    let mut dtd = format!(r#"<?x ]>?><!ENTITY a0 "{}">"#, "x".repeat(64));
+    for i in 1..3 {
+        dtd.push_str(&format!(
+            r#"<!ENTITY a{i} "{}">"#,
+            format!("&a{};", i - 1).repeat(64)
+        ));
+    }
+    let svg = format!(
+        r#"<!DOCTYPE svg [{dtd}]><svg {NS} width="10" height="10"><desc>{}</desc></svg>"#,
+        "&a2;".repeat(4)
+    );
+    let err = quick(300, || {
+        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
+    });
+    assert!(
+        err.contains("holds something other than flat entities"),
+        "{err}"
+    );
+}
+
+fn filtered(fe: &str, size: u32) -> String {
+    format!(
+        r##"<svg {NS} width="{size}" height="{size}"><filter id="f">{fe}</filter><rect width="{size}" height="{size}" fill="#f80" filter="url(#f)"/></svg>"##
+    )
+}
+
+/// `feMorphology radius="50"` on 100x100: its cost per pixel grows with the
+/// radius squared, so 256 px took 1.32 s. Refused there, drawn small.
+#[test]
+fn a_large_morphology_radius_is_refused() {
+    let v = decode_svg(filtered(r#"<feMorphology radius="50"/>"#, 100).as_bytes()).unwrap();
+    assert!(quick(300, || v.raster(256.0, 256.0)).is_none());
+    assert!(v.raster(16.0, 16.0).is_some());
+}
+
+/// The morphology charge and cap, apart: radius 60 over 512x512 is under
+/// the radius cap but its cost per pixel (121² samples) passes the budget;
+/// radius 100 over 64x64 is cheap but past the cap of 64 device pixels.
+#[test]
+fn morphology_is_charged_by_its_radius_and_capped() {
+    let v = decode_svg(filtered(r#"<feMorphology radius="60"/>"#, 512).as_bytes()).unwrap();
+    assert!(quick(300, || v.raster(512.0, 512.0)).is_none(), "charged");
+    let v = decode_svg(filtered(r#"<feMorphology radius="100"/>"#, 64).as_bytes()).unwrap();
+    assert!(v.raster(64.0, 64.0).is_none(), "capped");
+    assert!(v.raster(32.0, 32.0).is_some(), "50 px is under the cap");
+}
+
+/// `feTurbulence numOctaves="1e5"` took over 2 s; its octaves are clamped
+/// to a browser's 10, so it draws, quickly.
+#[test]
+fn turbulence_octaves_are_clamped() {
+    let v = decode_svg(
+        filtered(
+            r#"<feTurbulence baseFrequency="0.05" numOctaves="1e5"/>"#,
+            100,
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    assert!(quick(300, || v.raster(100.0, 100.0)).is_some());
+}
+
+/// `feConvolveMatrix order="64"` (8.4 KB; 1.72 s at 400x400) is refused.
+#[test]
+fn a_large_convolve_matrix_is_refused() {
+    let fe = format!(
+        r#"<feConvolveMatrix order="64" kernelMatrix="{}"/>"#,
+        "1 ".repeat(64 * 64)
+    );
+    let err = decode_svg(filtered(&fe, 400).as_bytes())
+        .map(|_| ())
+        .expect_err("refused");
+    assert!(err.contains("ConvolveMatrix"), "{err}");
+}
+
+/// Dense dashes: a dash every 0.005 over 100 lines of 1,000 is 20 million
+/// dashes. Charged per dash, the raster is refused.
+#[test]
+fn dense_dashes_are_charged() {
+    let paths: String = (0..100)
+        .map(|i| {
+            format!(r##"<path d="M0 {i} H1000" stroke="#000" stroke-dasharray="0.005 0.005"/>"##)
+        })
+        .collect();
+    let svg = format!(r#"<svg {NS} width="1000" height="100">{paths}</svg>"#);
+    let v = decode_svg(svg.as_bytes()).unwrap();
+    assert!(quick(300, || v.raster(1000.0, 100.0)).is_none());
+}
+
+/// A huge blur deviation costs what a small one does (resvg's box blur):
+/// drawn, quickly.
+#[test]
+fn a_huge_blur_draws_quickly() {
+    let v = decode_svg(filtered(r#"<feGaussianBlur stdDeviation="1000000"/>"#, 400).as_bytes())
+        .unwrap();
+    assert!(quick(500, || v.raster(400.0, 400.0)).is_some());
+}
+
+/// A filter region far past the canvas makes resvg allocate up to five
+/// times the canvas each way per pixmap: past the layer cap, refused.
+#[test]
+fn a_huge_filter_region_is_refused() {
+    let fe = r##"<feFlood flood-color="#f00"/>"##;
+    let svg = format!(
+        r##"<svg {NS} width="100" height="100"><filter id="f" filterUnits="userSpaceOnUse" x="-100000" y="-100000" width="200000" height="200000">{fe}</filter><rect width="100" height="100" filter="url(#f)"/></svg>"##
+    );
+    let v = decode_svg(svg.as_bytes()).unwrap();
+    assert!(quick(300, || v.raster(1024.0, 1024.0)).is_none());
+    assert!(v.raster(100.0, 100.0).is_some());
+}
+
+/// A stylesheet's `marker-mid: url(#m)` reaches every vertex of every path,
+/// which usvg expands while it builds the tree: counted from the sheet
+/// before usvg runs, and refused.
+#[test]
+fn stylesheet_references_are_counted_before_usvg_expands_them() {
+    let rects: String = (0..100)
+        .map(|i| format!(r#"<rect x="{i}" width="1" height="1"/>"#))
+        .collect();
+    let d: String = (0..5000)
+        .map(|i| format!(" L{} {}", i % 100, i / 100))
+        .collect();
+    let svg = format!(
+        r#"<svg {NS} width="100" height="100"><style>path {{ marker-mid: url(#m) }}</style><marker id="m">{rects}</marker><path d="M0 0{d}" stroke="black"/></svg>"#
+    );
+    let err = quick(300, || {
+        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
+    });
+    // Refused before usvg built anything (usvg's own count says "built").
+    assert!(err.contains("expands to"), "{err}");
 }

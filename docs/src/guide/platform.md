@@ -57,9 +57,13 @@ freeze the app; it then draws nothing and logs why. The limits: elements
 nested at most 128 deep (counting each `<use>` as a level), at most 100,000
 elements once `<use>` and other references are expanded, a DTD with flat
 entities only (Illustrator's `&ns_svg;` is fine; an entity that refers to
-another is not) expanding to at most 1 MB, and a raster estimated at more than
-about a second of work (a full-window SVG of thousands of canvas-sized
-translucent shapes at 2x) is not drawn at that size.
+another, a duplicate, or any other DTD declaration is not) expanding to at
+most 1 MB, an `feConvolveMatrix` order of at most 16, and a raster estimated
+at more than about a second of work (a full-window SVG of thousands of
+canvas-sized translucent shapes at 2x, heavy filters, millions of dashes) is
+not drawn at that size, nor one needing an `feMorphology` radius over 64
+device pixels or a filter layer over 16M pixels. `feTurbulence` octaves are
+clamped to 10, as browsers clamp them.
 
 Two differences from Chrome: rinch rounds a layout to whole pixels (an SVG of
 `width="10.5"` is 11 wide), and an *inline* `<img>` of an SVG with only a

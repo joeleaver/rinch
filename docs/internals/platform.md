@@ -88,16 +88,34 @@ cover`, a transform animated in scale) rasterises at each new size. **Limits** (
 binary of its own because a stack overflow aborts it): an SVG file is untrusted input.
 `svg_image::prescan` reads the bytes before any parser: element nesting at most `MAX_DEPTH`
 (128; roxmltree up to 0.21.1 and usvg recurse per level, and 1,000 levels overflowed a 2 MB
-debug stack, 4,000 a release one: an abort `catch_unwind` cannot catch), and an internal DTD
-may hold only flat internal entities (a value with `&` or `%`, a parameter or an external
-entity is refused) whose references expand to at most `MAX_ENTITY_EXPANSION` (1 MB) in all;
-Illustrator's `<!ENTITY ns_svg "…">` passes. `check_expansion` walks roxmltree's document as
+debug stack, 4,000 a release one: an abort `catch_unwind` cannot catch). A doctype is read
+by a strict grammar (`read_doctype`): its internal subset may hold only flat
+`<!ENTITY name "value">` declarations, each name once, values without `&`, `%` or `<`;
+anything else (a PI, a comment, a parameter or external entity, `<!ELEMENT>`, a duplicate)
+refuses the file. The references expand to at most `MAX_ENTITY_EXPANSION` (1 MB) in all, and
+roxmltree's parsed text and attribute values are checked against the same bound afterwards.
+Illustrator's `<!ENTITY ns_svg "…">` passes. (The second review of #2125 got past a lenient
+reader twice: a duplicate declaration, which roxmltree resolves to the first and a map to the
+last, and a `]>` inside a PI in the subset; a strict grammar has one reading.) `check_expansion` walks roxmltree's document as
 usvg expands it (`href` and `url(#id)` references counted as copies, a marker once per vertex)
 and refuses an expanded depth past `MAX_DEPTH` or an element count past `MAX_NODES` (100,000),
 before usvg builds the tree; usvg's tree is counted again (`Tally`). Each raster has a work
 budget, `MAX_RASTER_WORK` (1e9): the device pixels its paths' and isolated layers' bounding
 boxes cover (clip, mask and pattern contents as often as used), scaled to the raster, plus
-`WORK_PER_ELEMENT` (1e4) an element; over it, nothing is drawn and a warning is logged once
+`WORK_PER_ELEMENT` (1e4) an element, `WORK_PER_DASH` (100) a dash of a dashed stroke (control
+polygon length over the dash period, a path's capped at tiny-skia's million), and each filter
+primitive's cost per pixel of its region (the group's layer box clamped to resvg's
+`max_filter_bbox`, five canvases each way), measured with `filter_cost_probe` (release, ns
+per pixel at 400x400 / 1.5): box blur 60 (any deviation; `stdDeviation="1e6"` costs what 3
+does), IIR blur (both deviations under 2) and drop shadow 250, turbulence 30 + 30 an octave,
+convolve 20 + 2 a kernel cell, specular lighting and displacement 60, the rest 20, morphology
+20 + 0.3 x (2rx+1)(2ry+1) in device px. Caps: `feTurbulence` octaves clamped to
+`MAX_TURBULENCE_OCTAVES` (10, in the text usvg is given; `numOctaves="1e5"` took over 2 s),
+`feConvolveMatrix` order past `MAX_CONVOLVE_ORDER` (16) refuses the file, an `feMorphology`
+radius past `MAX_MORPHOLOGY_RADIUS` (64 device px) or an isolated layer past `MAX_LAYER_PX`
+(16M px) refuses the raster. `<style>` sheets' `url(#id)`s (`sheet_references`) are counted
+as references of every element before usvg runs; usvg's own tree is counted after. Over the
+budget, nothing is drawn and a warning is logged once
 (1e9 is about a second of resvg here; four levels of tenfold `<use>` fan-out, a 1.2 KB file,
 took 12 s at 1200x800 before). Parsing and rasterising run under `catch_unwind` (`guarded`;
 a raster that panicked marks the image broken). Native load threads have an 8 MB stack.

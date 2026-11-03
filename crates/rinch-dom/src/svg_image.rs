@@ -14,10 +14,14 @@
 //! one from crashing the app or holding its UI thread:
 //! - [`prescan`] reads the bytes before any parser does: element nesting is
 //!   at most [`MAX_DEPTH`] (roxmltree and usvg recurse once per level, and a
-//!   stack overflow aborts the process, which `catch_unwind` cannot stop); an
-//!   internal DTD may declare only flat entities (no `&` or `%` in a value,
-//!   no external entity), and all references to them together expand to at
-//!   most [`MAX_ENTITY_EXPANSION`] bytes. Illustrator's `&ns_svg;` is fine.
+//!   stack overflow aborts the process, which `catch_unwind` cannot stop); a
+//!   doctype's internal subset is read by a strict grammar and may hold only
+//!   flat `<!ENTITY name "value">` declarations, each name once (Illustrator's
+//!   `&ns_svg;` shape; a processing instruction, comment, parameter or
+//!   external entity, a value with `&`, `%` or `<`, or a duplicate refuses the
+//!   file), and all references to them together expand to at most
+//!   [`MAX_ENTITY_EXPANSION`] bytes — checked again from what roxmltree
+//!   actually holds after it parses.
 //! - `check_expansion` then walks the parsed XML the way usvg will expand
 //!   it — every `<use>`/`href` and `url(#id)` reference counted as a copy of
 //!   what it names (a marker once per vertex) — and refuses a file whose
@@ -27,8 +31,16 @@
 //! - Each raster has a budget of [`MAX_RASTER_WORK`], an estimate of resvg's
 //!   time: the device pixels painted, from the bounding boxes of everything
 //!   resvg will fill (each layer and clip/mask/pattern subtree included)
-//!   scaled to the drawn size, plus [`WORK_PER_ELEMENT`] per element. A file
-//!   over it at that size draws nothing and logs why, once.
+//!   scaled to the drawn size, plus [`WORK_PER_ELEMENT`] per element,
+//!   [`WORK_PER_DASH`] per dash of a dashed stroke, and each filter
+//!   primitive's measured cost per pixel of its region (`filter_cost`; a
+//!   morphology's grows with its radius squared). A file over it at that size
+//!   draws nothing and logs why, once. Also per raster: an isolated layer is
+//!   at most [`MAX_LAYER_PX`], an `feMorphology` radius at most
+//!   [`MAX_MORPHOLOGY_RADIUS`] device pixels. Per file: `feTurbulence`
+//!   octaves are clamped to [`MAX_TURBULENCE_OCTAVES`], and an
+//!   `feConvolveMatrix` order past [`MAX_CONVOLVE_ORDER`] is refused.
+//!   `<style>` sheets' `url(#id)` references are counted for every element.
 //! - Parsing and rasterising run under `catch_unwind`: a panic in usvg or
 //!   resvg fails that image (and it is not rasterised again), not the app.
 //! - Rasters are kept per drawn size in one cache per thread, at most
@@ -108,6 +120,30 @@ pub const RASTER_BUDGET_BYTES: usize = 64 << 20;
 /// Painted frames a raster may go unused before it is let go.
 pub const RASTER_IDLE_FRAMES: u64 = 60;
 
+/// The most device pixels one isolated layer may have (a group with a
+/// filter, mask, clip or opacity is drawn into a pixmap of its own, and a
+/// filter region may reach five times the canvas each way, as resvg clamps
+/// it): 16M px, 64 MB a pixmap.
+pub const MAX_LAYER_PX: f64 = 16.0 * 1024.0 * 1024.0;
+
+/// The most octaves an `feTurbulence` is rendered with; more are clamped to
+/// this, as browsers clamp them (each octave is another noise evaluation per
+/// pixel, and usvg takes `numOctaves="1e5"` as written).
+pub const MAX_TURBULENCE_OCTAVES: u32 = 10;
+
+/// The largest `feConvolveMatrix` `order` (each side of its kernel) a file
+/// may use; a larger one is refused. Real kernels are 3 to 5 wide.
+pub const MAX_CONVOLVE_ORDER: u32 = 16;
+
+/// The largest `feMorphology` radius, in device pixels, a raster may draw;
+/// a draw that would need more is refused (its cost grows with the square
+/// of the radius per pixel).
+pub const MAX_MORPHOLOGY_RADIUS: f64 = 64.0;
+
+/// What one dash of a dashed stroke costs, as pixels painted (about 140 ns a
+/// dash, measured).
+pub const WORK_PER_DASH: f64 = 100.0;
+
 /// What an image says about its own size: CSS's natural width, height and
 /// ratio, each of which an SVG may lack. A raster image has all three.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -156,6 +192,7 @@ fn skip_non_element(s: &[u8]) -> Option<usize> {
             match s[i] {
                 q @ (b'"' | b'\'') => i += s[i + 1..].iter().position(|&b| b == q)? + 2,
                 b'<' if subset && s[i..].starts_with(b"<!--") => i = past(i + 4, b"-->")?,
+                b'<' if subset && s[i..].starts_with(b"<?") => i = past(i + 2, b"?>")?,
                 b'[' if !subset => {
                     subset = true;
                     i += 1;
@@ -246,9 +283,7 @@ pub fn prescan(bytes: &[u8]) -> Result<(), String> {
         i += lt;
         let s = &bytes[i..];
         if s.len() >= 9 && s[..9].eq_ignore_ascii_case(b"<!DOCTYPE") {
-            let len = skip_non_element(s).ok_or("SVG refused: an unterminated doctype")?;
-            read_entities(&s[..len], &mut entities)?;
-            i += len;
+            i += read_doctype(s, &mut entities)?;
         } else if s.starts_with(b"<!") || s.starts_with(b"<?") {
             i += skip_non_element(s).ok_or("SVG refused: unterminated markup")?;
         } else {
@@ -284,43 +319,94 @@ pub fn prescan(bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// The `<!ENTITY>` declarations of a doctype into `entities` (name → value
-/// length). Refuses a parameter entity, an external one, and a value that
-/// refers to another entity: nesting is what makes expansion exponential.
-fn read_entities<'a>(
-    doctype: &'a [u8],
-    entities: &mut HashMap<&'a [u8], usize>,
-) -> Result<(), String> {
-    let refuse = |why: &str| Err(format!("SVG refused: a DTD entity {why}"));
-    let mut rest = doctype;
-    while let Some(at) = rest.windows(8).position(|w| w == b"<!ENTITY") {
-        rest = rest[at + 8..].trim_ascii_start();
-        let name_len = rest
-            .iter()
-            .position(|b| b.is_ascii_whitespace())
-            .unwrap_or(rest.len());
-        let name = &rest[..name_len];
-        if name.is_empty() {
-            return refuse("has no name");
+/// Read a `<!DOCTYPE …>` at the start of `s` strictly, returning its length
+/// and its entities (name → value length) in `entities`. Its internal subset
+/// may hold only what Illustrator writes: `<!ENTITY name "value">`, a flat
+/// value (no `&`, `%` or `<`), each name declared once. Anything else in it
+/// — a parameter or external entity, a duplicate, a processing instruction,
+/// a comment, an `<!ELEMENT>` or `<!ATTLIST>` — refuses the file. (Review of
+/// #2125: a lenient reader was tricked twice, by a duplicate declaration —
+/// roxmltree keeps the first, a map the last — and by a `]>` inside a
+/// processing instruction ending the subset early for it but not for
+/// roxmltree; a strict grammar leaves no reading of the subset but one.)
+fn read_doctype<'a>(s: &'a [u8], entities: &mut HashMap<&'a [u8], usize>) -> Result<usize, String> {
+    let refuse = |why: &str| Err(format!("SVG refused: its DTD {why}"));
+    let mut i = 9;
+    // The name and an external id: words and quoted strings, up to `[` or
+    // `>`.
+    loop {
+        match s.get(i) {
+            None => return refuse("is unterminated"),
+            Some(b'>') => return Ok(i + 1),
+            Some(b'[') => break,
+            Some(&q @ (b'"' | b'\'')) => {
+                let Some(end) = s[i + 1..].iter().position(|&b| b == q) else {
+                    return refuse("is unterminated");
+                };
+                i += end + 2;
+            }
+            Some(b'<' | b'&' | b'%') => return refuse("is malformed"),
+            Some(_) => i += 1,
         }
-        if name == b"%" {
-            return refuse("is a parameter entity");
-        }
-        let value = rest[name_len..].trim_ascii_start();
-        let Some(&q @ (b'"' | b'\'')) = value.first() else {
-            return refuse("is external (SYSTEM or PUBLIC)");
-        };
-        let Some(end) = value[1..].iter().position(|&b| b == q) else {
-            return refuse("value is unterminated");
-        };
-        let text = &value[1..1 + end];
-        if text.contains(&b'&') || text.contains(&b'%') {
-            return refuse("refers to another entity");
-        }
-        entities.insert(name, text.len());
-        rest = &value[1 + end..];
     }
-    Ok(())
+    i += 1;
+    let is_name = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':');
+    loop {
+        while s.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+            i += 1;
+        }
+        if s.get(i) == Some(&b']') {
+            i += 1;
+            while s.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+                i += 1;
+            }
+            return if s.get(i) == Some(&b'>') {
+                Ok(i + 1)
+            } else {
+                refuse("is malformed after its internal subset")
+            };
+        }
+        if !s[i..].starts_with(b"<!ENTITY") {
+            return refuse("holds something other than flat entities");
+        }
+        i += 8;
+        let ws = s[i..]
+            .iter()
+            .take_while(|b| b.is_ascii_whitespace())
+            .count();
+        let name_len = s[i + ws..].iter().take_while(|&&b| is_name(b)).count();
+        if ws == 0 || name_len == 0 {
+            return refuse("declares a parameter entity or an unnamed one");
+        }
+        let name = &s[i + ws..i + ws + name_len];
+        i += ws + name_len;
+        let ws = s[i..]
+            .iter()
+            .take_while(|b| b.is_ascii_whitespace())
+            .count();
+        i += ws;
+        let Some(&q @ (b'"' | b'\'')) = s.get(i).filter(|_| ws > 0) else {
+            return refuse("declares an external entity");
+        };
+        let Some(end) = s[i + 1..].iter().position(|&b| b == q) else {
+            return refuse("is unterminated");
+        };
+        let value = &s[i + 1..i + 1 + end];
+        if value.iter().any(|b| matches!(b, b'&' | b'%' | b'<')) {
+            return refuse("has an entity that refers to another");
+        }
+        if entities.insert(name, value.len()).is_some() {
+            return refuse("declares an entity twice");
+        }
+        i += end + 2;
+        while s.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+            i += 1;
+        }
+        if s.get(i) != Some(&b'>') {
+            return refuse("is malformed");
+        }
+        i += 1;
+    }
 }
 
 /// The `#id`s an element refers to, and how many copies of each usvg makes:
@@ -328,7 +414,10 @@ fn read_entities<'a>(
 /// every `url(#id)` in an attribute or its `style`, once each, except a
 /// marker, drawn at each vertex of the path (estimated as one per two numbers
 /// in its `d` or `points`).
-fn references<'a, 'i>(node: usvg::roxmltree::Node<'a, 'i>) -> Vec<(&'a str, u64)> {
+fn references<'a, 'i>(
+    node: usvg::roxmltree::Node<'a, 'i>,
+    sheet: &[(&'a str, bool)],
+) -> Vec<(&'a str, u64)> {
     let vertices = || {
         let data = node
             .attribute("d")
@@ -341,6 +430,10 @@ fn references<'a, 'i>(node: usvg::roxmltree::Node<'a, 'i>) -> Vec<(&'a str, u64)
         numbers / 2 + 1
     };
     let mut out = Vec::new();
+    // A stylesheet's references may apply to any element: counted for all.
+    for &(id, marker) in sheet {
+        out.push((id, if marker { vertices() } else { 1 }));
+    }
     for attr in node.attributes() {
         let v = attr.value();
         if attr.name() == "href" {
@@ -367,6 +460,31 @@ fn references<'a, 'i>(node: usvg::roxmltree::Node<'a, 'i>) -> Vec<(&'a str, u64)
     out
 }
 
+/// Every `url(#id)` in the document's `<style>` sheets, and whether the
+/// property naming it is a marker (drawn per vertex).
+fn sheet_references<'a>(doc: &'a usvg::roxmltree::Document) -> Vec<(&'a str, bool)> {
+    let mut out = Vec::new();
+    for style in doc.descendants().filter(|n| n.has_tag_name("style")) {
+        for text in style.children().filter_map(|c| c.text()) {
+            let mut at = 0;
+            while let Some(u) = text[at..].find("url(") {
+                let start = at + u + 4;
+                let property = text[..at + u].rsplit([';', '{']).next().unwrap_or("");
+                let inner = text[start..].split(')').next().unwrap_or("");
+                let id = inner
+                    .trim()
+                    .trim_matches(['"', '\''])
+                    .trim_start_matches('#');
+                if !id.is_empty() {
+                    out.push((id, property.contains("marker")));
+                }
+                at = start;
+            }
+        }
+    }
+    out
+}
+
 /// Walk the parsed XML as usvg will expand it (see the module doc): refuse a
 /// file whose expanded depth passes [`MAX_DEPTH`] or whose element count
 /// passes [`MAX_NODES`]. Memoised per element, and its own recursion stops at
@@ -381,6 +499,7 @@ fn check_expansion(doc: &usvg::roxmltree::Document) -> Result<(), String> {
     }
     fn expand<'a, 'i>(
         ids: &HashMap<&'a str, Node<'a, 'i>>,
+        sheet: &[(&'a str, bool)],
         memo: &mut Memo,
         node: Node<'a, 'i>,
         depth: usize,
@@ -402,13 +521,13 @@ fn check_expansion(doc: &usvg::roxmltree::Document) -> Result<(), String> {
         }
         memo.insert(node.id(), None);
         let (mut count, mut height) = (1u64, 0usize);
-        let refs: Vec<(Node<'a, 'i>, u64)> = references(node)
+        let refs: Vec<(Node<'a, 'i>, u64)> = references(node, sheet)
             .into_iter()
             .filter_map(|(id, n)| ids.get(id).map(|&t| (t, n)))
             .collect();
         let children = node.children().filter(|c| c.is_element()).map(|c| (c, 1));
         for (target, copies) in refs.into_iter().chain(children) {
-            let (c, h) = expand(ids, memo, target, depth + 1)?;
+            let (c, h) = expand(ids, sheet, memo, target, depth + 1)?;
             count = count.saturating_add(c.saturating_mul(copies));
             height = height.max(h + 1);
             if count > MAX_NODES {
@@ -424,7 +543,8 @@ fn check_expansion(doc: &usvg::roxmltree::Document) -> Result<(), String> {
         .descendants()
         .filter_map(|n| n.attribute("id").map(|id| (id, n)))
         .collect();
-    expand(&ids, &mut Memo::new(), doc.root_element(), 0).map(|_| ())
+    let sheet = sheet_references(doc);
+    expand(&ids, &sheet, &mut Memo::new(), doc.root_element(), 0).map(|_| ())
 }
 
 /// Run `f`, turning a panic into an error naming `what`: usvg and resvg are
@@ -463,6 +583,15 @@ pub struct VectorImage {
     work_per_pixel: f64,
     /// The elements usvg built (each copy of a reference counted).
     elements: u64,
+    /// The dashes its dashed strokes are cut into (each path's capped at
+    /// tiny-skia's million).
+    dashes: f64,
+    /// The tree's own size, which the drawn size scales.
+    canvas: (f64, f64),
+    /// Each filter primitive's region and cost per pixel.
+    filters: Vec<FilterWork>,
+    /// The largest isolated layer, in tree units squared.
+    max_layer: f64,
     /// Process-unique: the raster cache's key.
     id: u64,
     made: AtomicU64,
@@ -598,6 +727,75 @@ fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
         return Err("Failed to parse SVG: the root element is not <svg>".into());
     }
     check_expansion(&doc)?;
+    // What roxmltree actually expanded: the text and attribute values it
+    // holds, which entities can only have grown, bounded by the file plus
+    // the entity allowance (a check of the prescan by roxmltree's own
+    // reading of the DTD).
+    let held: usize = doc
+        .descendants()
+        .map(|n| {
+            if n.is_text() {
+                n.text().map_or(0, str::len)
+            } else {
+                n.attributes().map(|a| a.value().len()).sum::<usize>()
+            }
+        })
+        .sum();
+    if held > bytes.len() + MAX_ENTITY_EXPANSION {
+        return Err(format!(
+            "SVG refused: its entities expand past {MAX_ENTITY_EXPANSION} bytes"
+        ));
+    }
+    // Filters with a cost per pixel that a file sets: `feTurbulence`'s
+    // octaves are clamped (in the text usvg is given), an `feConvolveMatrix`
+    // past [`MAX_CONVOLVE_ORDER`] refuses the file.
+    let mut clamps: Vec<std::ops::Range<usize>> = Vec::new();
+    for n in doc.descendants() {
+        match n.tag_name().name() {
+            "feTurbulence" => {
+                if let Some(a) = n.attribute_node("numOctaves")
+                    && a.value()
+                        .trim()
+                        .parse::<f64>()
+                        .is_ok_and(|v| v > f64::from(MAX_TURBULENCE_OCTAVES))
+                {
+                    clamps.push(a.range_value());
+                }
+            }
+            "feConvolveMatrix" => {
+                let order = n.attribute("order").unwrap_or("3");
+                if order
+                    .split(|c: char| c.is_ascii_whitespace() || c == ',')
+                    .filter(|o| !o.is_empty())
+                    .any(|o| {
+                        o.parse::<f64>()
+                            .map_or(true, |o| o > f64::from(MAX_CONVOLVE_ORDER))
+                    })
+                {
+                    return Err(format!(
+                        "SVG refused: an feConvolveMatrix order past {MAX_CONVOLVE_ORDER}"
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    let clamped;
+    let text = if clamps.is_empty() {
+        text
+    } else {
+        let mut out = String::with_capacity(text.len());
+        let mut at = 0;
+        clamps.sort_by_key(|r| r.start);
+        for r in &clamps {
+            out.push_str(&text[at..r.start]);
+            out.push_str(&MAX_TURBULENCE_OCTAVES.to_string());
+            at = r.end;
+        }
+        out.push_str(&text[at..]);
+        clamped = out;
+        clamped.as_str()
+    };
     let view_box = root
         .attribute("viewBox")
         .and_then(|v| v.parse::<svgtypes::ViewBox>().ok())
@@ -642,6 +840,9 @@ fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
         nodes: 0,
         area: 0.0,
         canvas,
+        dashes: 0.0,
+        filters: Vec::new(),
+        max_layer: 0.0,
     };
     tally.group(tree.root(), 0)?;
     Ok(VectorImage {
@@ -654,6 +855,10 @@ fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
         },
         work_per_pixel: tally.area / (canvas.0 * canvas.1),
         elements: tally.nodes,
+        dashes: tally.dashes,
+        canvas,
+        filters: tally.filters,
+        max_layer: tally.max_layer,
         id: {
             static NEXT: AtomicU64 = AtomicU64::new(1);
             NEXT.fetch_add(1, Ordering::Relaxed)
@@ -671,9 +876,56 @@ struct Tally {
     nodes: u64,
     area: f64,
     canvas: (f64, f64),
+    dashes: f64,
+    filters: Vec<FilterWork>,
+    max_layer: f64,
+}
+
+/// One filter primitive's work: its region (the filter's, in tree units
+/// squared, clamped as resvg clamps it), its cost per pixel of that region
+/// (in pixels painted, measured per filter), and a morphology's radius in
+/// tree units, whose cost grows with its square per pixel.
+struct FilterWork {
+    area: f64,
+    per_pixel: f64,
+    morphology: Option<(f64, f64)>,
+}
+
+/// What each filter primitive costs per pixel of its region, in pixels
+/// painted (one is about 1.5 ns; measured with `filter_cost_probe`, release).
+fn filter_cost(kind: &usvg::filter::Kind) -> f64 {
+    use usvg::filter::Kind as K;
+    match kind {
+        // Box blur (3 passes, any deviation) or IIR (below 2, slower).
+        K::GaussianBlur(b) => {
+            if b.std_dev_x().get() < 2.0 && b.std_dev_y().get() < 2.0 {
+                250.0
+            } else {
+                60.0
+            }
+        }
+        K::DropShadow(_) => 250.0,
+        K::Turbulence(t) => 30.0 + 30.0 * f64::from(t.num_octaves().min(MAX_TURBULENCE_OCTAVES)),
+        K::ConvolveMatrix(c) => {
+            20.0 + 2.0 * f64::from(c.matrix().columns()) * f64::from(c.matrix().rows())
+        }
+        K::SpecularLighting(_) | K::DisplacementMap(_) => 60.0,
+        // The radius term is added per raster ([`VectorImage::estimated_work`]).
+        K::Morphology(_) => 20.0,
+        _ => 20.0,
+    }
 }
 
 impl Tally {
+    /// The area of `r` clamped to resvg's largest filter region (the
+    /// canvas, and twice it beyond each edge).
+    fn clamped_area(&self, r: usvg::Rect) -> f64 {
+        let (w, h) = self.canvas;
+        let x = (f64::from(r.right()).min(3.0 * w) - f64::from(r.left()).max(-2.0 * w)).max(0.0);
+        let y = (f64::from(r.bottom()).min(3.0 * h) - f64::from(r.top()).max(-2.0 * h)).max(0.0);
+        x * y
+    }
+
     fn rect(&mut self, r: usvg::Rect) {
         let w = (f64::from(r.right()).min(self.canvas.0) - f64::from(r.left()).max(0.0)).max(0.0);
         let h = (f64::from(r.bottom()).min(self.canvas.1) - f64::from(r.top()).max(0.0)).max(0.0);
@@ -684,7 +936,7 @@ impl Tally {
         self.nodes += 1;
         if self.nodes > MAX_NODES {
             return Err(format!(
-                "SVG refused: it expands to more than {MAX_NODES} elements"
+                "SVG refused: usvg built more than {MAX_NODES} elements"
             ));
         }
         if depth > 2 * MAX_DEPTH {
@@ -702,12 +954,48 @@ impl Tally {
         match node {
             usvg::Node::Group(g) => {
                 if g.should_isolate() {
-                    self.rect(g.abs_layer_bounding_box().to_rect());
+                    let layer = g.abs_layer_bounding_box().to_rect();
+                    self.rect(layer);
+                    let area = self.clamped_area(layer);
+                    self.max_layer = self.max_layer.max(area);
+                    let t = g.abs_transform();
+                    let scale = f64::from((t.sx * t.sy - t.kx * t.ky).abs()).sqrt();
+                    for filter in g.filters() {
+                        for primitive in filter.primitives() {
+                            let kind = primitive.kind();
+                            if let usvg::filter::Kind::Image(image) = kind {
+                                self.group(image.root(), depth + 1)?;
+                            }
+                            let morphology = match kind {
+                                usvg::filter::Kind::Morphology(m) => Some((
+                                    f64::from(m.radius_x().get()) * scale,
+                                    f64::from(m.radius_y().get()) * scale,
+                                )),
+                                _ => None,
+                            };
+                            self.filters.push(FilterWork {
+                                area,
+                                per_pixel: filter_cost(kind),
+                                morphology,
+                            });
+                        }
+                    }
                 }
                 self.group(g, depth + 1)
             }
             usvg::Node::Path(p) => {
                 self.rect(p.abs_stroke_bounding_box());
+                if let Some(dashes) = p.stroke().and_then(|s| s.dasharray()) {
+                    let period: f64 = dashes.iter().map(|d| f64::from(*d)).sum();
+                    let points = p.data().points();
+                    let length: f64 = points
+                        .windows(2)
+                        .map(|w| f64::from((w[1].x - w[0].x).hypot(w[1].y - w[0].y)))
+                        .sum();
+                    if period > 0.0 {
+                        self.dashes += (length / period * dashes.len() as f64).min(1_000_000.0);
+                    }
+                }
                 Ok(())
             }
             usvg::Node::Image(i) => {
@@ -807,7 +1095,51 @@ impl VectorImage {
     /// The device pixels a `w` x `h` raster is estimated to paint, which
     /// [`MAX_RASTER_WORK`] bounds.
     pub fn estimated_work(&self, w: u32, h: u32) -> f64 {
-        self.work_per_pixel * f64::from(w) * f64::from(h) + self.elements as f64 * WORK_PER_ELEMENT
+        let (sx, sy) = (f64::from(w) / self.canvas.0, f64::from(h) / self.canvas.1);
+        let filters: f64 = self
+            .filters
+            .iter()
+            .map(|f| {
+                let radius = f.morphology.map_or(0.0, |(rx, ry)| {
+                    0.3 * (2.0 * rx * sx + 1.0) * (2.0 * ry * sy + 1.0)
+                });
+                f.area * sx * sy * (f.per_pixel + radius)
+            })
+            .sum();
+        self.work_per_pixel * f64::from(w) * f64::from(h)
+            + self.elements as f64 * WORK_PER_ELEMENT
+            + self.dashes * WORK_PER_DASH
+            + filters
+    }
+
+    /// Why a `w` x `h` raster may not be drawn, if it may not.
+    fn refusal(&self, w: u32, h: u32) -> Option<String> {
+        let (sx, sy) = (f64::from(w) / self.canvas.0, f64::from(h) / self.canvas.1);
+        let work = self.estimated_work(w, h);
+        if work > MAX_RASTER_WORK {
+            return Some(format!(
+                "rasterising it at {w}x{h} would paint about {work:.1e} pixels, past the \
+                 limit of {MAX_RASTER_WORK:.1e}"
+            ));
+        }
+        let layer = self.max_layer * sx * sy;
+        if layer > MAX_LAYER_PX {
+            return Some(format!(
+                "at {w}x{h} it needs a {layer:.1e} px layer, past {MAX_LAYER_PX:.1e}"
+            ));
+        }
+        let radius = self
+            .filters
+            .iter()
+            .filter_map(|f| f.morphology)
+            .map(|(rx, ry)| (rx * sx).max(ry * sy))
+            .fold(0.0, f64::max);
+        if radius > MAX_MORPHOLOGY_RADIUS {
+            return Some(format!(
+                "at {w}x{h} an feMorphology radius is {radius:.0} px, past {MAX_MORPHOLOGY_RADIUS}"
+            ));
+        }
+        None
     }
 
     fn warn_once(&self, why: &str) {
@@ -853,12 +1185,8 @@ impl VectorImage {
             return hit;
         }
         let (w, h) = (whole(dw) as u32, whole(dh) as u32);
-        let work = self.estimated_work(w, h);
-        if work > MAX_RASTER_WORK {
-            self.warn_once(&format!(
-                "rasterising it at {w}x{h} would paint about {work:.1e} pixels, past the \
-                 limit of {MAX_RASTER_WORK:.1e}"
-            ));
+        if let Some(why) = self.refusal(w, h) {
+            self.warn_once(&why);
             return None;
         }
         let size = self.tree.size();
