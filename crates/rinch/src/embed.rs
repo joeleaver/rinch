@@ -72,6 +72,7 @@ use rinch_platform::{AppAction, PlatformEvent};
 use crate::app::RinchApp;
 use crate::app::hit_testing::hit_test;
 pub use crate::app::{ImeChange, ImeState};
+use crate::font::{AppFont, FontData};
 /// The rect type of [`ImeState::cursor_area`].
 pub use rinch_core::ElementBounds;
 
@@ -107,7 +108,20 @@ pub struct RinchContextConfig {
     /// font and text would otherwise render as zero glyphs. (Registering a font
     /// *after* [`RinchContext::new`] via [`register_font`](RinchContext::register_font)
     /// is too late for the initial mount.)
-    pub fonts: Vec<&'static [u8]>,
+    ///
+    /// Each is font data that declares nothing
+    /// ([`RinchApp::register_font_data`]): reachable by its own family name,
+    /// a last-resort fallback for every script, and the answer to the generic
+    /// slots of its own class **only where the platform left them empty** —
+    /// on wasm, the first sans-serif face becomes `sans-serif`; on a desktop,
+    /// whose platform fills every slot, no generic changes (#2102). A face
+    /// meant to answer a generic the platform already fills is claimed with
+    /// [`RinchContext::register_app_font`].
+    ///
+    /// The bytes may be `'static` (`BYTES.into()`) or owned — a `Vec<u8>`, an
+    /// `Arc<[u8]>`, a `Blob<u8>` ([`FontData`]) — and an owned face is dropped
+    /// with the context (#2101).
+    pub fonts: Vec<FontData>,
 }
 
 // ── RinchContext ──────────────────────────────────────────────────────────────
@@ -204,7 +218,7 @@ impl RinchContext {
         // pass has glyphs (essential on wasm, which has no system fonts). These are
         // drained onto the document's render font context during mount_component.
         for font in &config.fonts {
-            app.register_font_data(font);
+            app.register_font_data(font.clone());
         }
 
         let width = config.width.max(1);
@@ -763,9 +777,27 @@ impl RinchContext {
     /// system fallback font — supply the font via
     /// [`RinchContextConfig::fonts`] instead.
     ///
-    /// The data should be a TrueType (`.ttf`) or OpenType (`.otf`) font file.
-    pub fn register_font(&mut self, data: &'static [u8]) {
+    /// The data should be a TrueType (`.ttf`) or OpenType (`.otf`) font file,
+    /// `'static` or owned ([`FontData`]); an owned face lives as long as this
+    /// context and is dropped with it (#2101). What the face answers to is
+    /// as for [`RinchContextConfig::fonts`]: it changes no generic slot the
+    /// platform (or an earlier face) already fills (#2102).
+    pub fn register_font(&mut self, data: impl Into<FontData>) {
         self.app.register_font_data(data);
+    }
+
+    /// Register a face and the generics it **claims** ([`AppFont`]): the
+    /// embed's form of [`App::fonts`](crate::App::fonts), for a face that is
+    /// to answer `sans-serif` (or `serif`, `monospace`) ahead of what the
+    /// platform maps there. The claim is explicit; plain font data never
+    /// takes a generic slot from the platform.
+    ///
+    /// Like [`register_font`](RinchContext::register_font), it reaches the
+    /// mounted document and applies to the layout passes after it; text laid
+    /// out by the mount inside [`new`](RinchContext::new) is re-measured
+    /// against it then.
+    pub fn register_app_font(&mut self, font: AppFont) {
+        self.app.register_app_font(font);
     }
 
     /// Whether the UI needs a repaint.

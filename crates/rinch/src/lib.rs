@@ -238,7 +238,7 @@ pub mod prelude {
         all(target_arch = "wasm32", target_os = "unknown")
     ))]
     pub use crate::app_builder::App;
-    pub use crate::font::{AppFont, GenericFamily};
+    pub use crate::font::{AppFont, FontData, GenericFamily};
     #[cfg(feature = "desktop")]
     pub use crate::shell::activation::ActivationPolicy;
     #[cfg(all(feature = "android", target_os = "android"))]

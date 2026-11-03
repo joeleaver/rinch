@@ -136,7 +136,7 @@ fn app_with(fonts: &[AppFont]) -> RinchApp {
         root
     });
     for font in fonts {
-        app.register_app_font(*font);
+        app.register_app_font(font.clone());
     }
     app.mount_component(800.0, 600.0);
     app
@@ -218,18 +218,19 @@ fn the_hit_test_context_resolves_the_registered_face() {
     assert_eq!(from_hit_test, from_document);
 }
 
-/// Registration is not only about the family *name*. `register_font_on_context`
-/// also claims the `sans-serif` and `system-ui` generic slots, which is what
-/// makes a bundled face reachable from a theme stack — and on WASM, where no
-/// system fonts exist and the default stack ends in `sans-serif`, it is the
-/// only thing standing between the app and no text at all.
+/// Registration is not only about the family *name*. A face that claims
+/// `sans-serif` and `system-ui` (`AppFont::sans_serif`) has to head the slot
+/// in **both** contexts, which is what makes a bundled face reachable from a
+/// theme stack.
 ///
 /// Pinning it here rather than only for `Inter` is what makes the generic
 /// mapping, and the `family_ids` plumbing that feeds it, non-deletable: both
-/// survive a test that asks only for the family by name.
+/// survive a test that asks only for the family by name. (It used
+/// `register_font_data`, which claimed the slot too until #2102: data now
+/// fills only an *empty* slot, and on this host the platform fills it.)
 #[test]
 fn both_contexts_resolve_the_generic_the_face_claimed() {
-    let mut app = mounted_app();
+    let mut app = app_with(&[AppFont::sans_serif(FACE)]);
 
     let from_document = {
         let doc = app.doc().expect("mounted");
@@ -536,32 +537,364 @@ fn register_font_data_joins_the_fallback_chain_notdef_and_all() {
     );
 }
 
-/// `register_font_data` claims `sans-serif` **and** `system-ui`, and both
-/// halves are load-bearing.
+/// `register_font_data` heads `sans-serif` **and** `system-ui` where they are
+/// empty, and both halves are load-bearing.
 ///
 /// The default theme's stack ends in `sans-serif`; `system-ui` is the same
 /// request phrased as "whatever this platform uses for its own UI", and a
 /// theme that names neither a family nor a generic ends up asking for one of
 /// the two. On wasm — which is the front door this function exists for —
 /// there is no platform face behind either slot, so a registration that
-/// quietly stopped claiming them would not fall back to something worse, it
-/// would fall back to nothing. The sibling pins above cover what
-/// `register_font_data` does to the *fallback* chain; this covers what it
-/// answers to by name.
+/// quietly stopped filling them would not fall back to something worse, it
+/// would fall back to nothing. Measured on a context with no system fonts,
+/// which is that platform's shape on any host (#2102: on a desktop the
+/// platform fills both, and data no longer displaces it).
 #[test]
 fn register_font_data_answers_sans_serif_and_system_ui() {
-    let app = mounted_app();
+    let mut font_cx = bare_context();
+    register_data(&mut font_cx, FACE);
+    // The slots themselves: on a bare context an empty `sans-serif` would
+    // still *resolve* to the face, through the script fallback it also joins.
     assert_eq!(
-        doc_statics(&app, "sans-serif"),
+        slot_names(&mut font_cx, GenericFamily::SansSerif),
+        ["Inter"]
+    );
+    assert_eq!(slot_names(&mut font_cx, GenericFamily::SystemUi), ["Inter"]);
+    assert_eq!(
+        resolved_statics(&mut font_cx, "sans-serif"),
         vec![FACE.as_ptr() as usize],
-        "the registered face must head `sans-serif`, which is where the \
-         default theme's stack ends up"
+        "the registered face must head an empty `sans-serif`, which is where \
+         the default theme's stack ends up"
     );
     assert_eq!(
-        doc_statics(&app, "system-ui"),
+        resolved_statics(&mut font_cx, "system-ui"),
         vec![FACE.as_ptr() as usize],
         "and `system-ui` with it — on wasm there is no system UI face for it \
          to mean instead"
+    );
+}
+
+// ── Data fonts never change what a generic means (#2102) ─────────────────────
+//
+// `register_font_data` (the embed's `RinchContextConfig::fonts` and
+// `register_font`) used to *claim* `sans-serif` and `system-ui` for every
+// face: a prepend, so the face registered **last** headed the slot, a script
+// face as easily as a text face, and every `sans-serif` element drew in it.
+// Data now fills only an empty slot, only one of its own class, and never
+// displaces what is there. The fixtures are Inter with its family name and
+// declared class rewritten (`tests/support/font_variants.rs`), so each is a
+// distinct family whose class the test chooses.
+
+#[path = "../../tests/support/font_variants.rs"]
+mod font_variants;
+use font_variants::{Declared, variant};
+
+/// A variant leaked to `'static`: the shape an app had to use before #2101,
+/// so the desktop pin below runs unchanged against the old API.
+fn leaked(name: &str, class: Declared) -> &'static [u8] {
+    Box::leak(variant(name, class).into_boxed_slice())
+}
+
+/// A context with no system fonts: every generic slot starts empty, the
+/// shape of wasm and of an embed on a platform with none, on any host.
+fn bare_context() -> parley::FontContext {
+    use parley::fontique::{Collection, CollectionOptions};
+    parley::FontContext {
+        collection: Collection::new(CollectionOptions {
+            shared: false,
+            system_fonts: false,
+        }),
+        ..Default::default()
+    }
+}
+
+/// What `register_font_data` does to one context.
+fn register_data(font_cx: &mut parley::FontContext, data: impl Into<FontData>) {
+    RinchApp::register_font_on_context(font_cx, &PendingFont::data(data));
+}
+
+/// The families in `generic`'s slot, by name.
+fn slot_names(font_cx: &mut parley::FontContext, generic: GenericFamily) -> Vec<String> {
+    let ids: Vec<_> = font_cx.collection.generic_families(generic).collect();
+    ids.into_iter()
+        .filter_map(|id| font_cx.collection.family_name(id).map(str::to_owned))
+        .collect()
+}
+
+use crate::font::GenericFamily;
+
+/// The classes the fixtures declare are the classes the classifier reads,
+/// so the slot tests below are about the slot, not the fixture.
+#[test]
+fn the_classifier_reads_each_fixtures_declared_class() {
+    use rinch_dom::fonts::{FaceClass, classify_face};
+    for (class, expected) in [
+        (Declared::SansSerif, FaceClass::SansSerif),
+        (Declared::Serif, FaceClass::Serif),
+        (Declared::Script, FaceClass::Display),
+        (Declared::Monospace, FaceClass::Monospace),
+        (Declared::Unclassified, FaceClass::SansSerif),
+    ] {
+        assert_eq!(
+            classify_face(&variant("Probe", class), 0),
+            expected,
+            "{class:?}"
+        );
+    }
+}
+
+/// The issue's shape on an empty slot (wasm): a sans face, then a script
+/// face, in either order. `sans-serif` is the sans face both ways — not the
+/// last registered, and not the script face even when it came first.
+#[test]
+fn an_empty_sans_serif_is_the_first_sans_face_whatever_came_before_or_after() {
+    let sans = leaked("Sansa", Declared::SansSerif);
+    let script = leaked("Scrpt", Declared::Script);
+    for order in [[sans, script], [script, sans]] {
+        let mut font_cx = bare_context();
+        for data in order {
+            register_data(&mut font_cx, data);
+        }
+        assert_eq!(
+            resolved_statics(&mut font_cx, "sans-serif"),
+            vec![sans.as_ptr() as usize],
+            "`sans-serif` must be the sans face, registered {}",
+            if order[0] == sans { "first" } else { "second" }
+        );
+        assert_eq!(slot_names(&mut font_cx, GenericFamily::SystemUi), ["Sansa"]);
+        // The script face is reachable by its own name all the same.
+        assert_eq!(
+            resolved_statics(&mut font_cx, "Scrpt"),
+            vec![script.as_ptr() as usize]
+        );
+    }
+}
+
+/// Once a slot holds a face, later data never changes it — a second sans
+/// face included. After each registration, not just at the end.
+#[test]
+fn later_data_never_displaces_a_filled_slot() {
+    let first = leaked("Sansa", Declared::SansSerif);
+    let mut font_cx = bare_context();
+    register_data(&mut font_cx, first);
+    for (name, class) in [
+        ("Sansb", Declared::SansSerif),
+        ("Serfa", Declared::Serif),
+        ("Scrpt", Declared::Script),
+        ("Unkno", Declared::Unclassified),
+    ] {
+        register_data(&mut font_cx, variant(name, class));
+        assert_eq!(
+            slot_names(&mut font_cx, GenericFamily::SansSerif),
+            ["Sansa"],
+            "after registering {name}"
+        );
+        assert_eq!(
+            resolved_statics(&mut font_cx, "sans-serif"),
+            vec![first.as_ptr() as usize],
+            "after registering {name}"
+        );
+    }
+}
+
+/// Each class fills its own slots and no other; a script face fills none.
+#[test]
+fn each_class_fills_only_its_own_empty_slots() {
+    let mut font_cx = bare_context();
+    register_data(&mut font_cx, variant("Scrpt", Declared::Script));
+    for generic in [
+        GenericFamily::SansSerif,
+        GenericFamily::Serif,
+        GenericFamily::Monospace,
+        GenericFamily::SystemUi,
+    ] {
+        assert!(
+            slot_names(&mut font_cx, generic).is_empty(),
+            "a script face must not answer {generic:?}"
+        );
+    }
+    register_data(&mut font_cx, variant("Serfa", Declared::Serif));
+    register_data(&mut font_cx, variant("Monoa", Declared::Monospace));
+    register_data(&mut font_cx, variant("Unkno", Declared::Unclassified));
+    let expected = [
+        (GenericFamily::Serif, "Serfa"),
+        (GenericFamily::UiSerif, "Serfa"),
+        (GenericFamily::Monospace, "Monoa"),
+        (GenericFamily::UiMonospace, "Monoa"),
+        (GenericFamily::SansSerif, "Unkno"),
+        (GenericFamily::SystemUi, "Unkno"),
+        (GenericFamily::UiSansSerif, "Unkno"),
+    ];
+    for (generic, name) in expected {
+        assert_eq!(slot_names(&mut font_cx, generic), [name], "{generic:?}");
+    }
+}
+
+/// The explicit way in still works: a face *claimed* for `sans-serif` heads
+/// the slot, ahead of the data face that filled it. That is how an app says
+/// it wants its face to be the generic.
+#[test]
+fn a_claimed_face_still_heads_the_slot() {
+    let mut font_cx = bare_context();
+    register_data(&mut font_cx, variant("Sansa", Declared::SansSerif));
+    let claimed = PendingFont {
+        font: AppFont::from_data(variant("Scrpt", Declared::Script))
+            .with_generics(AppFont::SANS_SERIF),
+        fill_empty_generics: false,
+    };
+    RinchApp::register_font_on_context(&mut font_cx, &claimed);
+    assert_eq!(
+        slot_names(&mut font_cx, GenericFamily::SansSerif),
+        ["Scrpt", "Sansa"]
+    );
+}
+
+/// The issue as reported (desktop, platform fonts present): register a sans
+/// face and then a script face as data, through the app, and `sans-serif`
+/// still means what the platform maps it to — in the document's context and
+/// the hit-test one, after each registration. Before #2102 the script face,
+/// registered last, headed `sans-serif` and this failed at the second face.
+#[test]
+fn registering_data_never_changes_what_sans_serif_means_on_a_desktop() {
+    let mut app = app_with(&[]);
+    assert!(
+        app.hit_test_font_cx
+            .collection
+            .generic_families(GenericFamily::SansSerif)
+            .next()
+            .is_some(),
+        "precondition: this host maps `sans-serif` to a platform face"
+    );
+    let doc_lens = |app: &RinchApp| {
+        let doc = app.doc().expect("mounted");
+        let mut d = doc.borrow_mut();
+        resolved_blob_lens(&mut d.font_cx, "sans-serif")
+    };
+    let before = doc_lens(&app);
+    let before_hit = resolved_blob_lens(&mut app.hit_test_font_cx, "sans-serif");
+    let faces = [
+        leaked("Sansa", Declared::SansSerif),
+        leaked("Scrpt", Declared::Script),
+        leaked("Serfa", Declared::Serif),
+    ];
+    for face in faces {
+        app.register_font_data(face);
+        assert_eq!(doc_lens(&app), before, "the document's `sans-serif`");
+        assert_eq!(
+            resolved_blob_lens(&mut app.hit_test_font_cx, "sans-serif"),
+            before_hit,
+            "the hit-test context's `sans-serif`"
+        );
+        let statics = doc_statics(&app, "sans-serif");
+        assert!(
+            faces
+                .iter()
+                .all(|f| !statics.contains(&(f.as_ptr() as usize))),
+            "no registered data face may answer `sans-serif` here: {statics:?}"
+        );
+    }
+}
+
+/// Every generic slot, `ui-*` and `system-ui` included, by family name.
+fn every_slot(font_cx: &mut parley::FontContext) -> Vec<(GenericFamily, Vec<String>)> {
+    GenericFamily::all()
+        .iter()
+        .map(|g| (*g, slot_names(font_cx, *g)))
+        .collect()
+}
+
+/// On a desktop, registering font data changes **no** generic slot — not the
+/// plain ones the platform maps, and not the `ui-*` ones it leaves empty
+/// (fontconfig maps no `ui-*` generic, and the #322 repair runs on Android
+/// only). Review of PR #2122: a fixed-pitch data face filled the empty
+/// `ui-monospace`, which the theme's monospace stack starts with, so every
+/// themed code element switched to it. Both contexts, after each face.
+#[test]
+fn registering_data_changes_no_generic_slot_on_a_desktop() {
+    let mut app = app_with(&[]);
+    for generic in [
+        GenericFamily::SansSerif,
+        GenericFamily::Serif,
+        GenericFamily::Monospace,
+    ] {
+        assert!(
+            !slot_names(&mut app.hit_test_font_cx, generic).is_empty(),
+            "precondition: this host maps {generic:?} to a platform face"
+        );
+    }
+    let doc_slots = |app: &RinchApp| {
+        let doc = app.doc().expect("mounted");
+        let mut d = doc.borrow_mut();
+        every_slot(&mut d.font_cx)
+    };
+    let before = doc_slots(&app);
+    let before_hit = every_slot(&mut app.hit_test_font_cx);
+    for (name, class) in [
+        ("Monoa", Declared::Monospace),
+        ("Sansa", Declared::SansSerif),
+        ("Serfa", Declared::Serif),
+        ("Scrpt", Declared::Script),
+        ("Unkno", Declared::Unclassified),
+    ] {
+        app.register_font_data(variant(name, class));
+        let changed = |now: Vec<(GenericFamily, Vec<String>)>,
+                       was: &[(GenericFamily, Vec<String>)]| {
+            now.into_iter()
+                .zip(was)
+                .filter(|(a, b)| a != *b)
+                .map(|(a, _)| a)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            changed(doc_slots(&app), &before),
+            [],
+            "document slots changed by {name}"
+        );
+        assert_eq!(
+            changed(every_slot(&mut app.hit_test_font_cx), &before_hit),
+            [],
+            "hit-test slots changed by {name}"
+        );
+    }
+}
+
+// ── Owned font bytes are not leaked (#2101) ──────────────────────────────────
+
+/// Owned bytes handed to the app — as data and as a claimed face — are held
+/// while the app lives and released when it is dropped, after a mount that
+/// laid out and painted text in that face. Measured by the `Arc`'s count:
+/// anything rinch kept (a font context, a pending list, a text or glyph
+/// cache) would hold a reference past the drop.
+#[test]
+fn owned_font_bytes_are_released_when_the_app_is_dropped() {
+    let bytes: std::sync::Arc<[u8]> = variant("Ownad", Declared::SansSerif).into();
+    {
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("p");
+            root.set_attribute("style", "font-family: Ownad; font-size: 16px");
+            root.append_child(&scope.create_text("Owned bytes"));
+            root
+        });
+        app.register_font_data(bytes.clone());
+        app.register_app_font(AppFont::from_data(bytes.clone()).with_generics(AppFont::SERIF));
+        app.mount_component(400.0, 200.0);
+        app.resolve_and_repaint(400.0, 200.0);
+        #[cfg(software_shell)]
+        let _ = app.build_pixels(1.0, (400, 200), false);
+        assert!(
+            std::sync::Arc::strong_count(&bytes) > 1,
+            "positive control: the app holds the bytes while it lives"
+        );
+        assert_eq!(
+            doc_statics(&app, "Ownad"),
+            vec![bytes.as_ptr() as usize],
+            "positive control: text resolves to the owned bytes themselves"
+        );
+    }
+    assert_eq!(
+        std::sync::Arc::strong_count(&bytes),
+        1,
+        "every reference rinch took must be gone with the app"
     );
 }
 
@@ -584,7 +917,7 @@ fn a_late_registration_resizes_a_text_control() {
             root
         });
         for font in fonts {
-            app.register_app_font(*font);
+            app.register_app_font(font.clone());
         }
         app.mount_component(800.0, 600.0);
         app.resolve_and_repaint(800.0, 600.0);
@@ -610,4 +943,30 @@ fn a_late_registration_resizes_a_text_control() {
     late.resolve_and_repaint(800.0, 600.0);
     assert_ne!(before, 248.0, "the fallback face is not Inter");
     assert_eq!(input_width(&late), 248.0);
+}
+
+/// A `Blob` handed over as font data keeps its id in every font context:
+/// the id is what parley's and Vello's caches key a font on (review of PR
+/// #2122; it was rebuilt around the same bytes with a fresh id).
+#[test]
+fn a_blob_keeps_its_id() {
+    let blob = peniko::Blob::from(variant("Blobb", Declared::SansSerif));
+    let mut app = app_with(&[]);
+    app.register_font_data(blob.clone());
+    let doc = app.doc().expect("mounted").clone();
+    let mut d = doc.borrow_mut();
+    let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+    for font_cx in [&mut d.font_cx, &mut app.hit_test_font_cx] {
+        let mut builder = layout_cx.ranged_builder(font_cx, LATIN, 1.0, true);
+        builder.push_default(parley::style::StyleProperty::FontFamily(
+            parley::style::FontFamily::Source("Blobb".into()),
+        ));
+        let mut layout = builder.build(LATIN);
+        layout.break_all_lines(None);
+        let line = layout.lines().next().expect("a line");
+        let Some(parley::layout::PositionedLayoutItem::GlyphRun(run)) = line.items().next() else {
+            panic!("a glyph run");
+        };
+        assert_eq!(run.run().font().data.id(), blob.id());
+    }
 }
