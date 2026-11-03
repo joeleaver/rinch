@@ -492,6 +492,12 @@ mod tests {
             "Mode::Edit",
             "Mode::Edit { .. }",
             "Some(Mode::Edit)",
+            // An uppercase bare identifier is read as a constant or unit
+            // variant: syntax alone cannot tell `Some(N)` binding `N` from
+            // matching a `const N`, and rustc's own lints treat the uppercase
+            // form as the constant. Such a branch keeps the build-once
+            // behaviour (documented with `#[once]`).
+            "Some(N)",
             "Ok(_) | Err(_)",
             "(None, _)",
             "\"lit\"",

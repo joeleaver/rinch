@@ -1270,4 +1270,70 @@ mod shadow_tests {
         assert!(code.contains("rinch::core::match_dom("), "{code}");
         assert!(!code.contains("match_dom_rebinding"), "{code}");
     }
+
+    // ---- issue #2105: the `#[once]` opt-out ----
+
+    #[test]
+    fn once_on_an_if_let_emits_the_plain_show_for_the_whole_chain() {
+        let code = if_code(quote! {
+            #[once]
+            if let Some(a) = x.get() { p { {a} } } else if let Some(b) = y.get() { p { {b} } }
+        });
+        assert!(code.contains("rinch::core::show_dom("), "{code}");
+        assert!(!code.contains("show_dom_rebinding"), "{code}");
+    }
+
+    #[test]
+    fn once_on_a_match_or_on_an_arm_clears_its_flag() {
+        let whole = match_code(quote! {
+            #[once]
+            match sel.get() {
+                Some(n) => p { {n.to_string()} },
+                None => p { "none" },
+            }
+        });
+        assert!(whole.contains("rinch::core::match_dom("), "{whole}");
+        assert!(!whole.contains("match_dom_rebinding"), "{whole}");
+
+        let one_arm = match_code(quote! {
+            match sel.get() {
+                #[once]
+                Ok(n) => p { {n.to_string()} },
+                Err(e) => p { {e} },
+            }
+        });
+        assert!(
+            one_arm.contains("::std::vec::Vec::from([false,true])"),
+            "{one_arm}"
+        );
+    }
+
+    #[test]
+    fn once_is_seen_through_a_transparent_brace() {
+        let node: crate::node::RsxNode = syn::parse2(quote! {
+            { #[once] match sel.get() { Some(n) => p { {n.to_string()} }, None => p { "-" } } }
+        })
+        .expect("parse");
+        match node {
+            crate::node::RsxNode::MatchBlock(m) => assert!(m.once),
+            _ => panic!("a braced `#[once] match` is still a reactive match"),
+        }
+    }
+
+    #[test]
+    fn an_attribute_other_than_once_is_an_error() {
+        let err = syn::parse2::<crate::node::RsxNode>(quote! {
+            #[cached] if let Some(n) = sel.get() { p { "x" } }
+        })
+        .err()
+        .expect("unknown attribute");
+        assert!(err.to_string().contains("`#[once]`"), "{err}");
+
+        let err = syn::parse2::<crate::node::RsxNode>(quote! {
+            #[once] div { "x" }
+        })
+        .err()
+        .expect("`#[once]` on an element");
+        assert!(err.to_string().contains("`if`, a `match`"), "{err}");
+    }
 }
