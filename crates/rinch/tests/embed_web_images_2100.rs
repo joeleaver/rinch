@@ -228,12 +228,10 @@ fn mount_signalling(scheme: &'static str, src: &'static str, as_bg: bool) -> Rin
 
 fn asked_attr(ctx: &RinchContext) -> Option<String> {
     let doc = ctx.app().doc()?.borrow();
-    let body = doc
-        .tree
+    doc.tree
         .nodes
         .iter()
-        .find_map(|(_, n)| n.attributes.get("data-asked").map(|v| v.to_string()));
-    body
+        .find_map(|(_, n)| n.attributes.get("data-asked").cloned())
 }
 
 #[wasm_bindgen_test]
