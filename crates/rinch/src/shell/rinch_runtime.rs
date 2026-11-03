@@ -278,6 +278,8 @@ pub enum RinchNativeEvent {
     SetWindowSize(f64, f64),
     /// Apply the title `rinch::window::set_window_title` stored (#1770).
     ApplyWindowTitle,
+    /// Apply the vsync setting `rinch::window::set_vsync` stored (#2095).
+    ApplyVsync,
     /// Show a Wayland layer-shell window on this output (#1523).
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).
@@ -611,6 +613,9 @@ pub struct RinchRuntime {
     devtools_renderer: Option<WgpuRenderer>,
     /// DevTools software renderer (used whenever `devtools_renderer` is `None`).
     devtools_soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
+    /// What the main window's surface does with vsync on and off (#2095),
+    /// while it has a renderer; `None` while it is hidden or not yet made.
+    pacing: Option<crate::window::PacingOutcomes>,
     /// DevTools keyboard modifier state.
     devtools_modifiers: winit::keyboard::ModifiersState,
     /// Previous hovered node ID (for detecting changes).
@@ -751,6 +756,7 @@ impl RinchRuntime {
             #[cfg(feature = "gpu")]
             devtools_renderer: None,
             devtools_soft_renderer: None,
+            pacing: None,
             devtools_modifiers: winit::keyboard::ModifiersState::empty(),
             devtools_prev_hovered: None,
             last_paint_time: None,
@@ -789,6 +795,10 @@ impl RinchRuntime {
 
         // 5. Window can now be dropped safely.
         drop(self.window.take());
+
+        // 6. Nothing presents any more: `set_vsync` answers `Pending` (#2095).
+        self.pacing = None;
+        crate::window::clear_pacing();
     }
 
     // ── DevTools window management ──────────────────────────────────────────
@@ -1562,10 +1572,15 @@ impl RinchRuntime {
         // creates.
         #[cfg(feature = "gpu")]
         if !hidden {
-            self.renderer = start_gpu_renderer(&*window, self.gpu_surface_transparent());
+            self.renderer_started(start_gpu_renderer(&*window, self.gpu_surface_transparent()));
         }
         #[cfg(not(feature = "gpu"))]
-        announce_software_renderer();
+        {
+            announce_software_renderer();
+            if !hidden {
+                self.note_renderer_pacing();
+            }
+        }
 
         // Attach native menu bar to the window if configured
         if let Some(menu) = &self.native_menu {
@@ -1648,6 +1663,9 @@ impl RinchRuntime {
         drop(self.renderer.take());
         drop(self.soft_renderer.take());
         drop(self.window.take());
+        // Nothing presents until it is shown again (#2095).
+        self.pacing = None;
+        crate::window::publish_pacing(None);
         // Its position stays in `saved_geometry`; a gesture ends with it.
         self.layer = None;
         // A re-created window starts on the default cursor.
@@ -1684,9 +1702,9 @@ impl RinchRuntime {
         self.note_surface_kind(&*window, first_show);
 
         #[cfg(feature = "gpu")]
-        {
-            self.renderer = start_gpu_renderer(&*window, self.gpu_surface_transparent());
-        }
+        self.renderer_started(start_gpu_renderer(&*window, self.gpu_surface_transparent()));
+        #[cfg(not(feature = "gpu"))]
+        self.note_renderer_pacing();
 
         // The new window gets the menu bar the first one had (#1533: on
         // Windows the bar is per HWND, so a re-created window had none, and
@@ -1716,6 +1734,54 @@ impl RinchRuntime {
         // nothing named what it should show.
         self.app.mark_scene_dirty();
         self.window.as_ref().unwrap().request_redraw();
+    }
+
+    /// Take the main window's new renderer (`None`: it presents with
+    /// software), note what it does with vsync on and off, and publish what
+    /// it does now (#2095): the GPU renderer's surface says; the software
+    /// renderer has no present mode to switch.
+    #[cfg(feature = "gpu")]
+    fn renderer_started(&mut self, renderer: Option<WgpuRenderer>) {
+        self.renderer = renderer;
+        self.note_renderer_pacing();
+    }
+
+    /// [`Self::renderer_started`]'s second half; a build without `gpu` has
+    /// only the software renderer, and calls it alone.
+    fn note_renderer_pacing(&mut self) {
+        #[cfg(feature = "gpu")]
+        let outcomes = self
+            .renderer
+            .as_ref()
+            .map_or(crate::window::PacingOutcomes::UNSUPPORTED, |r| {
+                r.pacing_outcomes()
+            });
+        #[cfg(not(feature = "gpu"))]
+        let outcomes = crate::window::PacingOutcomes::UNSUPPORTED;
+        self.pacing = Some(outcomes);
+        crate::window::publish_pacing(self.pacing);
+    }
+
+    /// Apply `rinch::window::set_vsync` (#2095) to every GPU surface this
+    /// runtime presents to — the main window's and the DevTools window's, so
+    /// a DevTools window repainting beside an uncapped main window does not
+    /// pace the loop to its refresh — publish what the main window's does,
+    /// and redraw both, so the new mode takes effect without waiting for
+    /// something else to ask for a frame. Each surface is configured at its
+    /// next present ([`WgpuRenderer::set_vsync`]).
+    fn apply_vsync(&mut self) {
+        #[cfg(feature = "gpu")]
+        super::desktop::apply_vsync_to(
+            crate::window::vsync_requested(),
+            [self.renderer.as_mut(), self.devtools_renderer.as_mut()],
+        );
+        crate::window::publish_pacing(self.pacing);
+        for window in [self.window.as_ref(), self.devtools_window.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            window.request_redraw();
+        }
     }
 
     /// Paint the current scene to the window.
@@ -3836,6 +3902,10 @@ impl RinchRuntime {
             }
             RinchNativeEvent::ApplyWindowTitle => {
                 self.take_stored_title();
+                return;
+            }
+            RinchNativeEvent::ApplyVsync => {
+                self.apply_vsync();
                 return;
             }
             RinchNativeEvent::SetWindowOutput(output) => {
@@ -6471,6 +6541,48 @@ mod window_restore_tests {
     fn attributes(runtime: &mut RinchRuntime, first_appearance: bool) -> WindowAttributes {
         let steps = runtime.main_window_steps(Backend::X11, true);
         runtime.main_window_attributes(steps, Backend::X11, false, first_appearance)
+    }
+
+    /// #2095's runtime wiring, without a surface: a renderer that starts
+    /// publishes what it does (software: `Unsupported`), `apply_vsync`
+    /// publishes the request against it, hiding and shutting down return to
+    /// `Pending`.
+    #[test]
+    fn the_runtime_publishes_its_windows_pacing_2095() {
+        use crate::window::{Presentation, presentation, set_vsync};
+        let _lock = crate::window::VSYNC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set_vsync(true);
+        crate::window::publish_pacing(None);
+        let mut rt = runtime(WindowProps::default());
+        assert_eq!(presentation(), Presentation::Pending);
+
+        // The software renderer (no GPU renderer started).
+        #[cfg(feature = "gpu")]
+        rt.renderer_started(None);
+        #[cfg(not(feature = "gpu"))]
+        rt.note_renderer_pacing();
+        assert_eq!(presentation(), Presentation::Unsupported);
+        assert_eq!(set_vsync(false), Presentation::Unsupported);
+
+        // A GPU surface with Mailbox, as `pacing_outcomes` reports one.
+        rt.pacing = Some(crate::window::PacingOutcomes {
+            on: Presentation::Vsync,
+            off: Presentation::Mailbox,
+        });
+        rt.apply_vsync();
+        assert_eq!(presentation(), Presentation::Mailbox, "off, as applied");
+
+        rt.hide_window();
+        assert_eq!(presentation(), Presentation::Pending, "hidden");
+        assert_eq!(set_vsync(true), Presentation::Pending);
+
+        rt.pacing = Some(crate::window::PacingOutcomes::UNSUPPORTED);
+        crate::window::publish_pacing(rt.pacing);
+        drop(rt);
+        assert_eq!(set_vsync(true), Presentation::Pending, "shut down");
+        crate::window::publish_pacing(None);
     }
 
     impl RinchRuntime {

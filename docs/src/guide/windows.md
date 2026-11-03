@@ -1039,3 +1039,32 @@ It accepts `auto`, `gpu`, `software`, and `cpu` (an alias of `software`), trimme
 - a `Software` choice, whether from `App::renderer` or from a user's `RINCH_RENDERER=cpu`, is logged as a warning and ignored.
 
 Everywhere else, `gpu_handle()` returns `None` for the whole session while the software renderer presents, so code that reads it should handle `None`.
+
+### Vsync on and off
+
+The GPU renderer presents with vsync on: each frame waits for the display's next refresh, so on a 60 Hz panel frame-to-frame times never read below 16.7 ms, however cheap the frame. To see what a frame costs — profiling, a benchmark, comparing against another engine — or to offer it as a player setting, turn vsync off, at startup or while the app runs:
+
+```rust
+use rinch::prelude::*;
+
+App::new(app).vsync(false).run(); // start with vsync off
+
+// Later, from a handler (or any thread):
+let honoured: Presentation = set_vsync(true);
+```
+
+`set_vsync` answers what the window's surface does with the request, worked out from the present modes the surface offers:
+
+| `Presentation` | Meaning |
+|---|---|
+| `Vsync` | Paced to the refresh (`Fifo`, or `FifoRelaxed` where offered). Vsync on, or off on a surface with no uncapped mode |
+| `Immediate` | Uncapped; a frame goes to the display as soon as it is drawn, and may tear |
+| `Mailbox` | Uncapped without tearing: the display shows the newest frame at each refresh. Used when the surface has no `Immediate` |
+| `Pending` | No window renderer yet (before the event loop, or while the window is hidden); the setting is stored and the window takes it |
+| `Unsupported` | Nothing to switch: the software renderer, the web, Android |
+
+`rinch::window::presentation()` reads the same answer reactively, and `rinch::window::vsync()` whether vsync is asked for (also reactive), so a settings toggle can show both and grey itself out on `Unsupported`. Both are for the UI thread: `presentation()` read on another thread stays `Pending` (keep what `set_vsync` returned there), and a `set_vsync` made on another thread reaches the UI thread's readers when the shell applies it, on the event loop's next turn.
+
+**Vsync off does not make an idle window spin.** rinch draws a frame when something asks for one — a continuous `RenderSurface`, a running animation or transition, a texture source's new frame, input — and with vsync off those frames follow each other as fast as they can be drawn. A window with nothing to draw still sleeps.
+
+The setting applies to the main window's surface and to the DevTools window's, and a window re-created by hide/show takes it. **The software renderer ignores it**: softbuffer has no present mode, so its pacing is the windowing system's (on Wayland a frame waits until the compositor has released the buffer it reuses). The `gpu-device-config` example's `RINCH_GPU_MODE=frames` shows the frame time with a vsync button; `RINCH_MEASURE_FRAMES=300` makes it print a summary of each mode and exit.

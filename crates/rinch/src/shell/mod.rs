@@ -271,6 +271,7 @@ pub fn run_with_window_props_and_menu<F>(
 ///     .gpu_config(RinchGpuConfig {
 ///         required_features: wgpu::Features::FLOAT32_FILTERABLE,
 ///         required_limits: limits,
+///         ..Default::default()
 ///     })
 ///     .run();
 /// ```

@@ -42,6 +42,54 @@ for the whole session while software presents. Whether the GPU compositor is
 presenting is a run-time question on a `gpu` build
 (`renderer::gpu_presenting()`), never `cfg!(not(software_shell))`.
 
+**Present mode and vsync (#2095).** `WgpuRenderer` resolves its present mode
+itself (`choose_present_mode`, `shell/desktop.rs`) rather than passing wgpu's
+`AutoVsync`, so the shell can say what the surface does: vsync on is
+`FifoRelaxed` where offered, else `Fifo` (what `AutoVsync` picked before);
+off is `Immediate`, else `Mailbox`, else `Fifo` (`AutoNoVsync`'s order). The request lives in `rinch::window` (`VSYNC_OFF`, any thread;
+`App::vsync` stores it before the loop); a renderer reads it when it is made,
+so a hide/show re-creation and the DevTools window take it. `set_vsync` while
+the loop runs sends `RinchNativeEvent::ApplyVsync`; `RinchRuntime::apply_vsync`
+calls `WgpuRenderer::set_vsync` on the main and DevTools renderers (an
+uncapped main window beside a FIFO DevTools window that repaints with it would
+be paced by the DevTools present), publishes, and requests a redraw of both.
+`set_vsync` only sets `surface_config.present_mode` and a `reconfigure` flag
+(`retarget_present_mode`: no flag when the mode is unchanged); `present()`
+configures the surface before `get_current_texture`, so no surface texture is
+held when it changes, and `resize` (which configures anyway) clears the flag.
+The UI texture, `UiTextureState`, the split slices and Vello's in-flight frames
+(`check_frames`, #2077) are untouched: the next present copies the UI texture
+as it stands. What the app reads: `set_vsync` answers from `PACING`, the main
+window's `PacingOutcomes` (both answers, computed from the surface's present
+modes when its renderer is made: `renderer_started` / `note_renderer_pacing`
+at create and show; `UNSUPPORTED` for the software renderer; `None`, read as
+`Pending`, while hidden and after shutdown, `clear_pacing`), and
+`rinch::window::presentation()` is a thread-local signal the runtime
+republishes on each of those — so it is UI-thread only; off it, a thread
+reads its own `Pending`. `rinch::window::vsync()` reads a thread-local signal
+too (for subscribing) and answers the `VSYNC_OFF` atomic: `set_vsync` updates
+the calling thread's copy, and `publish_pacing` the UI thread's, so an
+off-thread request reaches UI readers when the shell applies it. The shell
+reads the request with `vsync_requested()`, which subscribes nothing.
+Experimental features are never requested as optional ones
+(`device_features` subtracts `Features::all_experimental_mask()`; wgpu
+refuses them without an `ExperimentalFeatures` opt-in, as Android's shell
+already handles). The frame loop itself is unchanged: it
+paints on request (`AboutToWait`, render-surface pacing, input), so with an
+uncapped mode a continuous surface draws back to back and an idle window
+still waits (`ControlFlow::Wait`); nothing calls `pre_present_notify`, so
+winit does not hold redraws for Wayland frame callbacks. Software (softbuffer)
+has no present mode; Android presents `Fifo` and does not read the setting.
+Pins: `pacing_and_features_tests` (`shell/desktop.rs`, including the
+`apply_vsync_to` fan-out over fake surfaces),
+`window::tests::set_vsync_answers_what_the_surface_will_do`,
+`rinch_runtime::window_restore_tests::the_runtime_publishes_its_windows_pacing_2095`
+(renderer start, apply, hide and shutdown without a surface). Not pinned by
+a test: the reconfigure call in `present()`, and the call sites in
+`create_window`/`show_window` (they need a real surface); the uncapped
+frame rate itself was measured by hand (`gpu-device-config`,
+`RINCH_GPU_MODE=frames RINCH_MEASURE_FRAMES=N`), as no CI job has a window.
+
 Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):
 - `VelloPainter` — records commands into `vello::Scene`
 - `TinySkiaPainter` — rasterizes directly to RGBA pixmap
