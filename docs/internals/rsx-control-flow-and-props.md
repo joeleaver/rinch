@@ -74,6 +74,38 @@ rsx! {
 
 Pattern bindings and guards are supported — each arm re-evaluates the scrutinee to extract bound values.
 
+**A branch that binds a value follows it (issue #2105).** The condition of an
+`if let` is `matches!(expr, pat)`, a `bool`, and a `match`'s discriminant is
+an arm index; `show_dom`/`match_dom` swap content only when that answer
+changes. The branch destructures the scrutinee when it is built, so before
+#2105 `Some(a)` → `Some(b)` left the branch showing `a` forever. Now:
+
+- The macro asks, per branch, whether the pattern binds a name
+  (`captures::pattern_binds_a_value`). A bare identifier starting with an
+  uppercase letter and without `ref`/`mut`/`@` counts as a path (`None`, an
+  imported unit variant, a constant); a macro pattern counts as binding.
+- A binding `if let` emits `show_dom_rebinding`; a `match` with any binding
+  arm emits `match_dom_rebinding` with one `bool` per arm. Everything else
+  emits the plain `show_dom`/`match_dom`, unchanged.
+- At runtime the condition/discriminant effect, on any re-run after its first
+  (which only subscribes) that leaves the same binding branch selected,
+  rebuilds that branch through the same dispose/discard/re-render path a flip
+  takes. The else branch and non-binding arms are never rebuilt by a re-run.
+- **No value comparison**, deliberately. Comparing needs the scrutinee to be
+  `PartialEq + Clone + 'static`, and many are not: `if let Some(i) = &icon`,
+  `items.first()` (borrows of a capture), `Option<Rc<dyn Trait>>`. Requiring it
+  would break those at compile time, and autoref specialization cannot fall
+  back on the `'static` bound (rustc picks the impl and then fails borrowck).
+  So a re-run is the trigger, and the cut-off lives upstream: a `Memo`
+  scrutinee (equality cut-off) or `Signal::set_if_changed`. A plain
+  `Signal::set` of an equal value rebuilds. Pinned by
+  `crates/rinch-macros/tests/rsx_if_let_rebinding_2105.rs`.
+- A guard's reads are part of the discriminant, so a binding arm whose guard
+  reads a signal is rebuilt when that signal changes and the arm still wins.
+- Inside a keyed `for` row, an `if let` on the row's own signal rebuilds only
+  that row's branch, and a reorder rebuilds none. An `if let` *around* a keyed
+  `for` rebuilds the whole list (fresh rows) when its bound value changes.
+
 **A braced arm body is decided by how it starts** (issue #395). It holds rsx
 children — several nodes, like an `if`/`for` body — when it starts with `let`,
 or with an rsx *head* (`Name {`, a string literal, `if`/`for`/`match`, or a

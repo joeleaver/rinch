@@ -113,6 +113,13 @@ There are two drag systems. The HTML5-port instinct of `draggable: true` + `ondr
 
 - **Element-to-element DnD (drag a card into a list):** use the data-attribute drag system. **`data-ondragmove` fires on the source every motion event**; **`data-ondragover` fires on the drop target every motion event** — both are per-frame, not just at endpoints. `data-ondragstart` / `data-ondragend` fire at endpoints; `data-ondragenter` / `data-ondragleave` fire on target boundary crossings.
 
+### 12. An `if let` / `match` branch that binds a value is rebuilt when that value changes
+
+`if let Some(page) = state.page.get() { … {page.title} … }` follows the page: each time the scrutinee's reactive reads change while the pattern still matches, the branch is disposed and built again from the new value (issue #2105). A branch that binds nothing (`Some(_)`, `None`, `0 =>`, `_`, a plain `if`) is built once per selection. Consequences:
+
+- A rebuild drops the branch's local state (focus, scroll, an inner keyed `for`'s rows). To keep it, bind nothing and read the value reactively inside: `if page.get().is_some() { p { {|| page.get().map(|p| p.title).unwrap_or_default()} } }`.
+- There is no `PartialEq` check: `Signal::set` of an equal value rebuilds. Put the value behind a `Memo` (its equality cut-off stops the re-run) or write with `set_if_changed`.
+
 ## Iterating & Debugging: rinch-debug + MCP server
 
 Rinch ships a debug bridge that lets an AI assistant **see and drive a running app** — screenshots, live DOM inspection (layout bounds + computed styles), and input injection. Use it to *visually verify* changes instead of guessing.
