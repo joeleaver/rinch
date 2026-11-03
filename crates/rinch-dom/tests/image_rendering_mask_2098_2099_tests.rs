@@ -506,3 +506,61 @@ fn a_url_mask_is_positioned_from_its_mask_origin() {
     expect(&p, &row(109, 10, &[WH, half_r, R, R, R, WH]), 1);
     expect(&p, &row(109, 11, &[WH, R, WH, WH, R, WH]), 0);
 }
+
+/// A mask image whose loader answers *failed* (not merely one never asked):
+/// once the failure is drained the box stays masked away (css-masking-1
+/// §7.1, as Chrome hides it), and later layouts and paints do not ask the
+/// loader again.
+#[test]
+fn a_url_mask_whose_load_fails_hides_the_box_and_is_not_retried() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let mut doc = RinchDocument::new();
+    doc.tree.image_loader = Some(Arc::new(move |_: &str| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        rinch_core::image::ImageLoadResult::Failed("refused by the test loader".into())
+    }));
+    doc.load_css("html, body { margin: 0; background: #fff; }");
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "position: absolute; left: 0; top: 0; width: 40px; height: 40px; \
+         background: red; mask-image: url(failing-2099.png); mask-size: 100% 100%",
+    );
+    doc.append_child(body, div);
+    let _ = paint(&mut doc);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !doc.tree.image_cache.is_failed("failing-2099.png") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the failure never drained"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        doc.resolve_layout(W as f32, H as f32);
+    }
+    // Positive control: the loader was asked, exactly once.
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let p = paint(&mut doc);
+    expect(&p, &[((5, 20), WH), ((35, 20), WH), ((20, 1), WH)], 0);
+    // More frames, a restyle of the box included: no second request.
+    doc.set_attribute(
+        div,
+        "style",
+        "position: absolute; left: 0; top: 0; width: 40px; height: 40px; \
+         background: blue; mask-image: url(failing-2099.png); mask-size: 100% 100%",
+    );
+    for _ in 0..5 {
+        let p = paint(&mut doc);
+        expect(&p, &[((5, 20), WH), ((35, 20), WH)], 0);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a failed mask image is not requested again"
+    );
+}
