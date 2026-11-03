@@ -804,6 +804,10 @@ mod activation {
 struct WebDragState {
     /// The `draggable="true"` source element.
     source: web_sys::Element,
+    /// The element the press landed on: the source or a descendant. A press
+    /// that never becomes a drag clicks here, so a child's own `data-rid` runs
+    /// (#2133), as desktop clicks at the press point.
+    pressed: web_sys::Element,
     /// The `PointerEvent.pointerId` that owns this drag. Only events carrying this
     /// id drive it (the multi-touch guard — secondary contacts are ignored).
     pointer_id: i32,
@@ -3159,6 +3163,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 WEB_DRAG.with(|d| {
                     *d.borrow_mut() = Some(WebDragState {
                         source: source.clone(),
+                        pressed: el.clone(),
                         pointer_id: event.pointer_id(),
                         kind,
                         start_x: event.client_x() as f32,
@@ -3459,11 +3464,21 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 let y = event.client_y() as f32;
                 finish_active_drag(&state, x, y, true);
             } else {
-                // Never activated (a quick tap / sub-threshold press) — treat as a
-                // click on the draggable, which only the primary button makes
-                // (issue #1093), as on the pointerdown path.
+                // Never activated (a quick tap / sub-threshold press) — a click
+                // on what was pressed, which only the primary button makes
+                // (issue #1093), as on the pointerdown path. Desktop clicks at
+                // the press point (#2133): the pressed element, or, when a
+                // re-render took it out of the document, whatever is at that
+                // point now.
                 if event.button() == 0 {
-                    dispatch_click_at(&state.source, &browser_doc_for_up, event);
+                    let target = if state.pressed.is_connected() {
+                        Some(state.pressed.clone())
+                    } else {
+                        element_from_point(state.start_x, state.start_y)
+                    };
+                    if let Some(target) = target {
+                        dispatch_click_at(&target, &browser_doc_for_up, event);
+                    }
                 }
             }
         }
