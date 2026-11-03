@@ -333,13 +333,19 @@ fn an_else_if_let_follows_its_own_binding() {
 thread_local! {
     static CLEANUPS: Cell<u32> = const { Cell::new(0) };
     static TICK_RUNS: Cell<u32> = const { Cell::new(0) };
+    /// Whether the branch's own node was still in the tree when its cleanup ran.
+    static CLEANUP_SAW_NODE: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
 /// A branch body that registers a cleanup on the branch's own scope and an
 /// effect that counts its runs.
 fn disposable(__scope: &mut RenderScope, name: &str, tick: Signal<u32>) -> NodeHandle {
-    __scope.on_cleanup(|| CLEANUPS.with(|c| c.set(c.get() + 1)));
     let p = __scope.create_element("p");
+    let mine = p.clone();
+    __scope.on_cleanup(move || {
+        CLEANUPS.with(|c| c.set(c.get() + 1));
+        CLEANUP_SAW_NODE.with(|s| s.set(Some(mine.parent_node().is_some())));
+    });
     let t = __scope.create_text(name);
     p.append_child(&t);
     __scope.create_effect(move || {
@@ -374,6 +380,11 @@ fn a_rebuild_disposes_the_old_branch() {
     user.set(Some("B".into()));
     assert_eq!(text(&root), "B");
     assert_eq!(CLEANUPS.with(Cell::get), 1, "the old branch's scope was disposed");
+    assert_eq!(
+        CLEANUP_SAW_NODE.with(Cell::get),
+        Some(true),
+        "the scope is disposed before its markup is discarded, so a cleanup still sees its node"
+    );
     assert_eq!(TICK_RUNS.with(Cell::get), 2, "the new branch's effect ran once");
 
     tick.set(4);
