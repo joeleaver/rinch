@@ -89,7 +89,11 @@ fn if_let_follows_the_bound_value() {
     assert_eq!(text(&root), "Welcome, Alice!");
 
     user.set(Some("Bob".into()));
-    assert_eq!(text(&root), "Welcome, Bob!", "Some(a) -> Some(b) must redraw");
+    assert_eq!(
+        text(&root),
+        "Welcome, Bob!",
+        "Some(a) -> Some(b) must redraw"
+    );
 
     user.set(None);
     assert_eq!(text(&root), "Please log in");
@@ -198,7 +202,11 @@ fn a_pattern_that_binds_nothing_is_not_rebuilt() {
     assert_eq!(text(&root), "someoneplain");
     assert_eq!(renders(), 2);
     user.set(Some("Bob".into()));
-    assert_eq!(renders(), 2, "`Some(_)` and a plain `if` build once per show");
+    assert_eq!(
+        renders(),
+        2,
+        "`Some(_)` and a plain `if` build once per show"
+    );
     user.set(None);
     user.set(Some("Carol".into()));
     assert_eq!(renders(), 4, "a flip still rebuilds both");

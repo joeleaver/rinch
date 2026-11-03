@@ -1232,7 +1232,10 @@ mod shadow_tests {
             if flag.get() { p { "a" } } else if let Some(v) = other.get() { p { {v} } }
         });
         assert!(code.contains("rinch::core::show_dom("), "outer: {code}");
-        assert!(code.contains("rinch::core::show_dom_rebinding("), "inner: {code}");
+        assert!(
+            code.contains("rinch::core::show_dom_rebinding("),
+            "inner: {code}"
+        );
     }
 
     #[test]

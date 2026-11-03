@@ -170,9 +170,8 @@ where
         // when the discriminant re-ran and chose it again: a value the
         // scrutinee read changed, and the arm destructured the old one
         // (issue #2105).
-        let rebind = new_idx == old_idx
-            && !first
-            && rebinding.get(new_idx).copied().unwrap_or(false);
+        let rebind =
+            new_idx == old_idx && !first && rebinding.get(new_idx).copied().unwrap_or(false);
         if new_idx != old_idx || rebind {
             *idx_clone.borrow_mut() = new_idx;
 
