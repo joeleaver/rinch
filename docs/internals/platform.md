@@ -30,6 +30,62 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 6. `paint_image()` renders via `Painter::draw_image` with proper affine transforms. Vello samples an image at each pixel's centre, as tiny-skia does (#1027), so `VelloPainter::draw_image` and `fill_repeating` draw it with its own transform. (Vello 0.7 sampled from the pixel's top-left **corner** — an image at a whole-pixel origin came out averaged with its neighbours — and rinch moved the image half a device pixel up-left, `vello_painter::centre_sampling`, to compensate; Vello 0.9 moved the sample to the centre, so the shift was dropped for images with the Vello 0.11 upgrade, #1955. Gradients still take it: Vello evaluates them at the corner.) Pins: `vello_painter::sampling_tests` (a CPU model of the shader arm) and the `#[ignore]`d `compositor::gpu_alpha_tests::gpu_alpha_vello_draw_image_*` (real GPU)
 7. **`image-rendering`** (#2098): `ComputedStyle::image_rendering` (inherited; Stylo's servo build parses `auto`, `crisp-edges`/`-moz-crisp-edges`, `pixelated`, not `smooth`) becomes `painter::ImageSampling` on `PaintImage::sampling`, handed through `image::paint_image` by the `<img>` paint and by `background::paint_layer` (backgrounds and url masks). `Nearest` is Vello `ImageQuality::Low` (`vello_painter::image_brush`; `Auto` keeps the brush's default `Medium`, the old brush exactly) and makes a repeating pattern's `RepeatTile::smooth` false. Both keywords are nearest up and down, as Chrome 156 draws them (the spec lets `pixelated` downscale smoothly). **tiny-skia's `draw_image` was already nearest under `auto`** (`PixmapPaint::default()`), unlike Chrome's smooth `auto`. That is unchanged, so in software the keywords change only patterns sampled at a fractional phase. Sampling is a brush or pattern parameter, not image content: Vello's atlas (keyed by blob) needs no key for it, and a rasterised background tile is the same pixels either way (its cache key mixes in `Nearest` only so the two stay apart if `Auto` ever filters; an `auto` layer's key is unchanged). Not read by: `RenderSurface`/`<video>` frames (`paint_frame_data`, `draw_gpu_image`, the split-surface compositor) or `<canvas>`. Rinch paints no SVG `<image>`. Pins: `image_rendering_mask_2098_2099_tests`, `gpu_image_rendering_mask_2098`.
 
+**SVG files as images** (#2111, `crates/rinch-dom/src/svg_image.rs`). An SVG *file* — an
+`<img>`'s, a background's or mask's `url()`, an app scheme's bytes — decodes to a
+`DecodedImage` with no pixels (`data` empty) and a `VectorImage` (`DecodedImage::vector`):
+the usvg tree, the root's `viewBox`/`preserveAspectRatio`, its `NaturalSize`, and a raster
+cache. It is recognised by content (`svg_image::sniff_svg`: the first element after a BOM,
+XML declaration, comments and doctype is `svg`), so a scheme's `blob:x` holding SVG bytes
+is one; a source that says SVG (`.svg`, `data:image/svg+xml`) and is not raster is parsed
+as SVG too, so its error says why (`decode_image_bytes_for`). The parse runs where a raster
+decode runs (the load thread natively, the #2100 queue on wasm32, in place for `data:`).
+**Rasterising is per drawn size, at paint**: `image::paint_vector_image` places the image's
+`concrete()` box by `object-fit` (`fit_image`), takes the device size that box covers under
+the full transform (`VectorImage::raster_for`: the box's sides scaled by the transform's
+column lengths, so the DPI scale, a CSS `transform` and `background-size` all count) and
+draws the raster made for it (`VectorImage::raster`) with
+`img_transform * scale(iw / dw, ih / dh)`, so its pixels are the device's (copied, not
+resampled, on a whole-pixel origin). The raster is `ceil(dw)` x `ceil(dh)` with the drawing
+mapped onto exactly `dw` x `dh` (a fraction of the last column is transparent), keyed by the
+drawn size in 1/64 px, at most `MAX_RASTERS` (4) per image (least recently used goes), each
+at most `MAX_RASTER_PX` (4M px; a larger draw is rasterised smaller and scaled up). Each
+raster is a `DecodedImage`, so it has one Vello blob (the atlas keeps it) and one
+premultiplied copy, like any image. The background paths reach it through `draw_tile` →
+`paint_image` (the software pattern raster draws the tile through a transform of its device
+size, so the tile is rasterised at that size; the tile cache's key already has the size). A
+build without the software painter (`embed`) hands the pattern a raster of `ceil` of the
+tile's device size (`pattern_source`), its drawing stretched by under a pixel. The drawing
+is mapped into the drawn box by the root's `viewBox` and `preserveAspectRatio`
+(`view_box_transform` applied after undoing usvg's own mapping into its `tree.size()`); a
+file without a `viewBox` is stretched. Chrome 156 does both (an `<img>` 40x40 of a 16x8
+`viewBox` icon is a centred 40x20 picture; without the `viewBox`, 40x40). **Sizing**: an
+`<img>`'s context is `NodeContext::Image { natural: Option<NaturalSize>, .. }` (`None`
+while loading or failed); `replaced::image_natural_size` runs `replaced::default_sized`,
+the table an `<svg>` element uses (`width=30` alone 30x150, a `viewBox` alone fills the
+containing block's width, nothing 300x150), with the natural ratio both attributes', else
+the `viewBox`'s. Natural lengths are absolute ones only (`em` is 16px; `%` and `ex` are
+none). A background's `auto` size is css-images-3's default sizing against the
+positioning area (`background::vector_size`; a ratio alone is `contain`). `concrete()` (the
+`object-fit` box and `DecodedImage::width/height`) is the natural size with a ratio alone
+contained in 300x150, Chrome's `naturalWidth`. **The boundary**: no script; nothing outside
+the file is read (both of usvg's `<image>` resolvers answer `None`, so no `<image>` draws,
+`data:` included; `resources_dir` is unset); usvg's `text` feature is off, so `<text>` is not
+drawn (no font database). **Cost**: parsing is off the UI thread natively, but each new
+drawn size is rasterised on the UI thread inside the paint that needs it. Measured with
+`svg_images_2111_tests::svg_raster_cost_probe` (release, a loaded host): a 16px icon 16–33 µs;
+1200x800 of 2,000 small opaque paths 31 ms (72 ms at 2400x1600); 2,000 half-transparent paths
+each spanning the canvas 0.65 s (1.8 s). Moving that onto the native load threads would
+need a request per size and a frame drawn without the picture (or with a stale raster)
+meanwhile; not done. A size that keeps changing (a window resize under `background-size:
+cover`, a transform animated in scale) rasterises at each new size (the cache holds 4). Percent-encoded `data:` URLs decode since #2111
+(`decode_data_uri`; only base64 did, so `data:image/svg+xml,%3Csvg…` failed). Known gaps,
+pinned in `svg_images_2111_tests.rs`: layout rounds to whole pixels (`width="10.5"` is 11),
+and an **inline** `<img>` with a ratio alone is 300 wide where Chrome fills its containing
+block (the inline `<svg>` gap, `SVG_FILL_WIDTH`). Pins: `rinch-dom/tests/svg_images_2111_tests.rs`
+(Chrome 156 pixels at 1x and 2x, sizes, failure, data URLs, the raster cache, the boundary),
+its GPU twin `rinch/tests/gpu_svg_images_2111.rs`, and
+`background_tiling_embed_tests::an_svg_background_and_img_are_drawn_without_the_software_painter`.
+
 **Background layers** (#468, `crates/rinch-dom/src/paint/background.rs`):
 **every** layer of `background-image` (#1142) is sized, positioned and tiled by
 its entry of `background-size`/`-position`/`-repeat`/`-origin`, a shorter list
@@ -77,8 +133,8 @@ samples a mask image by it too. A `url()` is loaded as a background url is
 (`ComputedStyle::paint_image_urls` feeds `note_background_image` and
 `drain_pending_images`). So its decode pushes the masked node paint-dirty, and an
 unloaded or failed image draws nothing into the mask, which hides the box
-(css-masking-1 §7.1, as Chrome does). No SVG file decodes (the image cache has no SVG
-decoder), so an `.svg` mask hides the box. A `data:` url is decoded in place, as a
+(css-masking-1 §7.1, as Chrome does). An SVG file is a mask image like any other since
+#2111 (below; it hid the box before). A `data:` url is decoded in place, as a
 background's is (#2100; `image_rendering_mask_2098_2099_tests::a_data_url_mask_image_loads`). A
 masked box is a stacking context, so its hoisted descendants paint inside the
 layer. The software painter composites a `DestinationIn` layer over everything

@@ -873,19 +873,15 @@ impl RinchDocument {
                                     }
                                 }
                                 Some(NodeContext::Image {
-                                    width,
-                                    height,
-                                    aspect,
-                                    ..
+                                    natural, aspect, ..
                                 }) => {
                                     // A loaded image's own ratio unless `aspect-ratio`
                                     // declares one without `auto`; before it loads (or when
                                     // it failed), the declared one, which is the one its
                                     // `width` and `height` attributes map to (#684) unless an
                                     // author rule replaced it (#1286); with neither, none.
-                                    let (natural, ratio) = crate::replaced::image_natural_size(
-                                        *width, *height, *aspect,
-                                    );
+                                    let (natural, ratio) =
+                                        crate::replaced::image_natural_size(*natural, *aspect);
                                     // A replaced element with a natural size and
                                     // ratio (#788, #1150): a style width or height
                                     // gives the other through the ratio, and so do

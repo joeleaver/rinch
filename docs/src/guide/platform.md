@@ -28,7 +28,43 @@ fn app() -> NodeHandle {
 }
 ```
 
-Supported formats: PNG, JPEG, GIF, WebP.
+Supported formats: PNG, JPEG, GIF, WebP, and SVG.
+
+**SVG files** (#2111) work wherever an image does — `<img src="icon.svg">`,
+`background-image`, `mask-image`, an app scheme's bytes, and a `data:` URL in
+either form (`data:image/svg+xml;base64,…` or the percent-encoded
+`data:image/svg+xml,%3Csvg…`). One is recognised by its content (an `<svg>`
+root element), whatever the source is called. It is drawn **at the size it
+covers on the screen**, DPI scale and CSS transforms included, so an icon stays
+sharp at any size; its rasters are kept per size (a few per image). It is laid
+out as a browser lays it out: its natural size is the root's `width` and
+`height` when they are absolute lengths, a missing one follows from the
+`viewBox`'s ratio, and an SVG with only a `viewBox` and no CSS size fills its
+container's width (an inline one is 300px wide; see below). Drawn into a box of
+another shape, the `viewBox` is fitted by the file's `preserveAspectRatio`
+(centred, by default); a file with no `viewBox` is stretched.
+
+What an SVG file may not do: it runs no script, and it reads **nothing outside
+itself** — an `<image>` inside it draws nothing (a file, a URL or a `data:`
+URL alike), and no external reference is followed. **Text in an SVG file is
+not drawn**: rinch gives the SVG renderer no fonts, so convert text to paths
+for an icon that needs it. Inline `<svg>` elements in the DOM are a different
+path and are unaffected.
+
+Two differences from Chrome: rinch rounds a layout to whole pixels (an SVG of
+`width="10.5"` is 11 wide), and an *inline* `<img>` of an SVG with only a
+`viewBox` is 300px wide where Chrome fills its container (a block one fills it
+in both).
+
+**Cost.** The file is parsed on the load thread, but it is rasterised on the UI
+thread, inside the paint that first draws it at each size. An icon costs tens
+of microseconds. A full-window illustration costs what its shapes cover:
+measured (release build, one core of a loaded desktop), 2,000 small opaque
+shapes took 31 ms at 1200x800 and 72 ms at 2x; 2,000 half-transparent shapes
+each spanning the canvas took 0.65 s and 1.8 s. An SVG drawn at a size that
+keeps changing — a full-window `background-size: cover` while the window is
+resized, a scale animation — is rasterised again at each new size, so keep
+large or complex SVG backgrounds at a fixed size, or use a raster image.
 
 An `<img>` is sized as a browser sizes a replaced element: with no CSS size it
 is its natural size — `display: block` included, so `margin: 0 auto` centres
@@ -156,9 +192,9 @@ Not read on desktop:
   `mask-type`.
 - A `url(#id)` reference to an SVG `<mask>` element.
 
-rinch decodes no SVG *file* as an image, so `mask-image: url(icon.svg)` masks
-the element away (an `<img src="icon.svg">` shows nothing either). Use a
-PNG or another raster format. A `data:` URL works, as it does for
+An SVG file is a mask image like any other (#2111): `background-color` under
+`mask-image: url(icon.svg)` is the usual way to tint an icon, and the icon is
+rasterised at the size the mask draws it. A `data:` URL works, as it does for
 `background-image`. On the web, the browser reads all of these itself.
 
 ### `image-rendering`
@@ -266,7 +302,7 @@ closure, or a type that implements `rinch::image::ImageLoader`.
 
 What a loader must know:
 
-- **It returns encoded bytes**: the contents of a PNG, JPEG, GIF or WebP file.
+- **It returns encoded bytes**: the contents of a PNG, JPEG, GIF, WebP or SVG file.
   rinch decodes them. It never returns decoded pixels.
 - **On native targets it runs on a background thread** spawned for that one
   load, never the UI thread, so it may block on I/O. Several loads run at once.

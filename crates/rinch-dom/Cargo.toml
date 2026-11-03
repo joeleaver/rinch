@@ -64,6 +64,18 @@ app_units = "0.7"
 url = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 base64 = "0.22"
+# SVG files as images (#2111): usvg parses one into a tree, resvg rasterises it
+# at the size it is drawn at (`svg_image.rs`). 0.49 because its tiny-skia is
+# 0.12, the one below and the one winit's sctk-adwaita already builds, and its
+# kurbo (0.13), roxmltree (0.21) and base64 are the graph's own: eight small new
+# crates, no second copy of anything (`cargo tree -d`). Default features off:
+# no `text` (a font database and shaping; SVG text is not drawn), no
+# `system-fonts`/`memmap-fonts`, no `raster-images` (an `<image>` inside the
+# file draws nothing anyway), no `svgz`.
+resvg = { version = "0.49", default-features = false }
+# The root's `viewBox`, `preserveAspectRatio` and lengths, read for an SVG
+# file's natural size (#2111). The version usvg itself builds.
+svgtypes = "0.16"
 
 # CSS engine (Stylo from Firefox/Servo)
 stylo = { workspace = true }
@@ -83,7 +95,7 @@ precomputed-hash = "0.1"
 rustc-hash = "2"
 web_atoms = "0.3"
 
-tiny-skia = { version = "0.11", optional = true }
+tiny-skia = { version = "0.12", optional = true }
 swash = { version = "0.2", optional = true }
 
 [features]
