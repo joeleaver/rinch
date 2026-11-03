@@ -231,7 +231,7 @@ fn signals() -> WindowSignals {
         feature = "desktop",
         feature = "android",
         feature = "embed",
-        target_arch = "wasm32"
+        all(target_arch = "wasm32", target_os = "unknown")
     )),
     allow(dead_code)
 )]
@@ -250,7 +250,7 @@ pub(crate) struct WindowFacts {
         feature = "desktop",
         feature = "android",
         feature = "embed",
-        target_arch = "wasm32"
+        all(target_arch = "wasm32", target_os = "unknown")
     )),
     allow(dead_code)
 )]
@@ -279,11 +279,17 @@ struct Initial {
 
 /// The title [`set_window_title`] stored on the desktop (#1770): taken by the
 /// shell when it creates its window and on each `ApplyWindowTitle`.
-#[cfg(all(not(target_arch = "wasm32"), feature = "desktop"))]
+#[cfg(all(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    feature = "desktop"
+))]
 static STORED_TITLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Take the title [`set_window_title`] stored, if any.
-#[cfg(all(not(target_arch = "wasm32"), feature = "desktop"))]
+#[cfg(all(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    feature = "desktop"
+))]
 pub(crate) fn take_stored_title() -> Option<String> {
     STORED_TITLE
         .lock()
@@ -291,7 +297,7 @@ pub(crate) fn take_stored_title() -> Option<String> {
         .take()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod platform {
     use super::{Initial, OpenUrlError};
 
@@ -392,7 +398,7 @@ mod platform {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod platform {
     use super::{Initial, OpenUrlError, WindowFacts, publish};
     use wasm_bindgen::JsCast;

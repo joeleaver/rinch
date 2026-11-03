@@ -958,6 +958,15 @@ impl NodeHandle {
         Some(NodeHandle::new(parent_id, self.doc.clone()))
     }
 
+    /// A handle to another node of this handle's document, by id — for an id
+    /// an event reported, such as [`WheelEvent::target`]. Like any handle, it
+    /// answers as an absent node does if no node has that id.
+    ///
+    /// [`WheelEvent::target`]: crate::events::WheelEvent::target
+    pub fn handle_for(&self, id: NodeId) -> NodeHandle {
+        NodeHandle::new(id, self.doc.clone())
+    }
+
     /// Get the next sibling node.
     pub fn next_sibling(&self) -> Option<NodeHandle> {
         let doc = self.accessed_doc()?;
@@ -1188,6 +1197,25 @@ impl NodeHandle {
         self.accessed_doc()
             .map(|doc| doc.borrow().client_width(self.node_id))
             .unwrap_or(0.0)
+    }
+
+    /// Whether a wheel moving `(dx, dy)` would scroll this element itself: it
+    /// is a scroll container on an axis whose delta is non-zero (a computed
+    /// `overflow` of `auto`/`scroll` with content overflowing its box), no
+    /// `lock_scroll` overlay locks it out, and its offset is not yet at the end
+    /// of its range in that direction. Only the signs count, the DOM's way
+    /// round: positive scrolls down / right, as
+    /// [`WheelEvent`](crate::events::WheelEvent)'s deltas do. Either axis
+    /// answering yes is a yes. `false` once the document is gone.
+    ///
+    /// A wheel handler on an element that holds scrollable content (a canvas
+    /// whose nodes hold lists) asks it of each element from
+    /// [`WheelEvent::target`](crate::events::WheelEvent::target) up to its
+    /// own, and declines the wheel when one can move, so that scroller
+    /// scrolls — the browser's scroll chaining. See [`DomDocument::can_scroll_toward`].
+    pub fn can_scroll_toward(&self, dx: f64, dy: f64) -> bool {
+        self.accessed_doc()
+            .is_some_and(|doc| doc.borrow().can_scroll_toward(self.node_id, dx, dy))
     }
 
     /// Scroll this element so its bottom content is visible.

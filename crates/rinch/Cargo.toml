@@ -106,6 +106,10 @@ rinch-components = { workspace = true }
 # per-step icon with. The facade deliberately does not depend on this crate — the
 # icon enum is not in the prelude — so it is a dev-dependency.
 rinch-tabler-icons = { workspace = true }
+# Test-only: `app::graph_canvas_wheel_tests` drives the node-graph canvas's wheel
+# through the real desktop wheel path, without the optional `graph` feature (so
+# the test runs under `cargo test -p rinch` with no flags).
+rinch-graph-view = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
@@ -133,10 +137,13 @@ futures-lite = { version = "2", optional = true }
 # Native file and message dialogs. The browser's message dialogs need no crate
 # and no feature (`dialogs::web`, #1821), and a browser file picker gives no
 # path (#1773).
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 rfd = { workspace = true, optional = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The browser: `wasm32-unknown-unknown`, not every `wasm32`. A WASI guest
+# (`wasm32-wasip1`) that embeds rinch's components runs inside a host that is
+# not a browser, where these crates are stubs that panic when reached.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
@@ -165,7 +172,7 @@ web-sys = { version = "0.3", features = [
 
 # Test-only: the browser tests under `tests/` that need `rinch` alone (no
 # `rinch-web`), e.g. `embed_web_runtime_1956.rs` (`--features embed`).
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 wasm-bindgen-futures = "0.4"
 

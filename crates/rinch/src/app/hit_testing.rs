@@ -883,6 +883,11 @@ pub(super) fn cursor_value_to_style(
 /// Only `overflow: scroll` and `overflow: auto` are considered scrollable.
 /// `overflow: hidden` clips content but should NOT consume mousewheel events —
 /// the wheel should bubble up to the nearest actual scroll container.
+///
+/// Test-only since the review of #2084: the wheel picks its container with
+/// [`wheel_scroll_target`] (the nearest that can still move toward it, not the
+/// nearest that overflows). The `overflows` tests (#769, #474) still ask this.
+#[cfg(test)]
 pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: u64) -> Option<u64> {
     let mut current = Some(start);
     while let Some(node_id) = current {
@@ -932,6 +937,9 @@ pub(crate) fn page_scroller(tree: &rinch_dom::NodeTree, start: u64) -> Option<u6
 }
 
 /// Find the nearest ancestor (or self) that is a horizontal scroll container.
+///
+/// Test-only since the review of #2084, like [`find_scroll_container`].
+#[cfg(test)]
 pub(crate) fn find_horizontal_scroll_container(
     tree: &rinch_dom::NodeTree,
     start: u64,
@@ -950,6 +958,64 @@ pub(crate) fn find_horizontal_scroll_container(
         return Some(tree.body_id);
     }
     None
+}
+
+/// The one container a wheel of `(dx, dy)` (the DOM's signs) at `(x, y)` over
+/// `hit` scrolls: the nearest of `hit` and its ancestors, then the body, that
+/// can still move toward the wheel
+/// ([`rinch_dom::paint::scrollbar::can_scroll_toward`], which takes in
+/// `lock_scroll`). The whole wheel goes to it: a diagonal wheel over a strip
+/// that scrolls only sideways moves the strip and drops the rest, as Chrome
+/// and Firefox do — it is not split into one container per axis.
+///
+/// A container at its end in that direction is passed over, so the wheel
+/// chains to the one around it, as a browser does for a new gesture.
+///
+/// Only when nothing on that walk **overflows** on an axis the wheel moves on
+/// (the hit is in another branch than its scroller: an absolutely positioned
+/// overlay, a `position: fixed` modal's backdrop) is the container found
+/// geometrically at the point (`find_scroll_container_at_point` and its
+/// horizontal twin). A walk that met a container which could not move —
+/// at its end, or locked out — does not fall back, so a locked page behind a
+/// modal is not reached around the lock.
+pub(crate) fn wheel_scroll_target(
+    tree: &rinch_dom::NodeTree,
+    hit: u64,
+    x: f32,
+    y: f32,
+    dx: f64,
+    dy: f64,
+) -> Option<u64> {
+    use rinch_dom::paint::scrollbar::{can_scroll_toward, overflows};
+    let overflows_on_wheel = |id: u64| {
+        (dy != 0.0 && overflows(tree, id, ScrollbarAxis::Vertical))
+            || (dx != 0.0 && overflows(tree, id, ScrollbarAxis::Horizontal))
+    };
+    let mut met = false;
+    let chain = std::iter::successors(Some(hit), |&id| tree.get(id).and_then(|n| n.parent))
+        .chain(tree.get(tree.body_id).map(|_| tree.body_id));
+    for id in chain {
+        if tree.get(id).is_none() {
+            continue;
+        }
+        if can_scroll_toward(tree, id, dx, dy) {
+            return Some(id);
+        }
+        met |= overflows_on_wheel(id);
+    }
+    if met {
+        return None;
+    }
+    let vertical = (dy != 0.0)
+        .then(|| find_scroll_container_at_point(tree, x, y))
+        .flatten();
+    let horizontal = (dx != 0.0)
+        .then(|| find_horizontal_scroll_container_at_point(tree, x, y))
+        .flatten();
+    [vertical, horizontal]
+        .into_iter()
+        .flatten()
+        .find(|&id| can_scroll_toward(tree, id, dx, dy))
 }
 
 /// Find a vertical scroll container at (x, y) by geometric search.
@@ -3332,3 +3398,8 @@ mod tests {
 #[cfg(test)]
 #[path = "hidden_ancestor_hit_review_2008_tests.rs"]
 mod review_2008_probe_tests;
+
+// Paints with the software painter, which `embed` alone does not build.
+#[cfg(all(test, software_shell))]
+#[path = "fixed_over_scroller_2038_tests.rs"]
+mod fixed_over_scroller_2038_tests;

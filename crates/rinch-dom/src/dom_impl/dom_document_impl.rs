@@ -11,7 +11,7 @@ use style::properties::{
     LonghandId, PropertyDeclaration, PropertyDeclarationBlock, PropertyDeclarationId, PropertyId,
 };
 use style::values::generics::position::GenericInset;
-use style::values::specified::{LengthPercentage, NoCalcLength};
+use style::values::specified::LengthPercentage;
 
 use crate::computed_style::{LengthPercentageAutoValue, PositionValue};
 use crate::ifc_scope::IfcSeed;
@@ -2066,6 +2066,13 @@ impl DomDocument for RinchDocument {
         crate::paint::scrollbar::visible_extents(&self.tree, node.0).0
     }
 
+    /// [`crate::paint::scrollbar::can_scroll_toward`]: the rule the desktop
+    /// wheel picks its container by, so the answer is what the default scroll
+    /// will do.
+    fn can_scroll_toward(&self, node: NodeId, dx: f64, dy: f64) -> bool {
+        crate::paint::scrollbar::can_scroll_toward(&self.tree, node.0, dx, dy)
+    }
+
     fn request_scroll_into_view(&mut self, node: NodeId) {
         self.tree.scroll_into_view_requests.push(node.0);
     }
@@ -2131,13 +2138,13 @@ fn plain_inset(
     };
     match inset {
         GenericInset::Auto => Some(LengthPercentageAutoValue::Auto),
-        GenericInset::LengthPercentage(LengthPercentage::Length(NoCalcLength::Absolute(len))) => {
-            let px = len.to_px();
+        GenericInset::LengthPercentage(LengthPercentage::Length(len)) => {
+            let px = len.to_px_if_absolute()?;
             px.is_finite()
                 .then_some(LengthPercentageAutoValue::Length(px))
         }
         GenericInset::LengthPercentage(LengthPercentage::Percentage(pct)) => {
-            Some(LengthPercentageAutoValue::Percent(pct.0))
+            Some(LengthPercentageAutoValue::Percent(pct.get()))
         }
         _ => None,
     }

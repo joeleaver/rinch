@@ -2802,8 +2802,14 @@ fn install_wheel(doc: &web_sys::Document) {
             return;
         };
         let mut ids = Vec::new();
+        // `target`: the nearest element rinch created at or above the DOM's
+        // target (one an app's raw HTML made carries no `__nid`).
+        let mut target = None;
         let mut cur = Some(el);
         while let Some(e) = cur {
+            if target.is_none() {
+                target = crate::web_document::get_nid(&e);
+            }
             if let Some(id) = e
                 .get_attribute("data-onwheel")
                 .and_then(|v| v.parse::<usize>().ok())
@@ -2815,7 +2821,15 @@ fn install_wheel(doc: &web_sys::Document) {
         if ids.is_empty() {
             return;
         }
-        if events::dispatch_wheel_handler_chain(ids, &wheel_event_data(&event)) {
+        // The platform rule `WheelEvent::scroll_deltas` follows: the browser
+        // turns a Shift wheel sideways itself on Linux and Windows, and macOS
+        // does it in the system, so a handler mirroring the default scroll
+        // turns it only off macOS. Read per wheel, so `__set_mac_platform`
+        // reaches it.
+        events::set_shift_wheel_turns_sideways(!crate::editor_input::is_mac());
+        let mut data = wheel_event_data(&event);
+        data.target = target;
+        if events::dispatch_wheel_handler_chain(ids, &data) {
             event.prevent_default();
         }
     }) as Box<dyn FnMut(web_sys::Event)>);

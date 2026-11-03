@@ -11,17 +11,26 @@
 // Network image loading is a native concern: image loads run on a background
 // thread via `std::thread::spawn` (a no-op on wasm, where the browser fetches
 // `<img>` itself), and the shared blocking client lives on the native target.
-#[cfg(all(feature = "image-network", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "image-network",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 
 /// Image loader that supports both local files and HTTP(S) URLs.
 ///
 /// Enabled with the `image-network` feature flag.
 /// Falls back to filesystem loading for non-URL paths.
-#[cfg(all(feature = "image-network", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "image-network",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 pub struct NetworkImageLoader;
 
-#[cfg(all(feature = "image-network", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "image-network",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 impl ImageLoader for NetworkImageLoader {
     fn load(&self, src: &str) -> ImageLoadResult {
         if src.starts_with("http://") || src.starts_with("https://") {

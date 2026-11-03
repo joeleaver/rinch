@@ -23,19 +23,18 @@
 //!
 //! # All four spellings really do parse
 //!
-//! Worth stating because it is not obvious from the source and it was got wrong
-//! once while writing this file. Stylo guards `stretch`,
-//! `-webkit-fill-available` and `fit-content(<length-percentage>)` on
-//! `static_prefs::pref!("layout.css.stretch-size-keyword.enabled")` and two
-//! siblings, which *looks* like the runtime preference store rinch pokes in
-//! `RinchDocument::new` (`stylo_config::set_bool`, which answers `false` for
-//! every key nobody set). It is not: `static_prefs` is the separate
-//! `stylo_static_prefs` crate, and its `pref!` is a **compile-time macro** that
-//! hard-codes those three keys — and `layout.css.fit-content-function.enabled` —
-//! to `true`, falling through to `false` only for a key it does not list.
+//! Worth stating because it is not obvious from the source. Stylo guards
+//! `stretch`, `-webkit-fill-available` and `fit-content(<length-percentage>)`
+//! on `layout.css.stretch-size-keyword.enabled`,
+//! `layout.css.webkit-fill-available.enabled` (and its
+//! `.all-size-properties` sibling) and `layout.css.fit-content-function.enabled`.
+//! With stylo 0.11 those were arms of a compile-time macro in
+//! `stylo_static_prefs` hard-coded to `true`; since stylo 0.21 every preference
+//! is a runtime atomic in that crate, and these four default to `true`, which
+//! `RinchDocument::new` (`set_stylo_prefs`) leaves alone.
 //!
 //! So nothing is gated here, and `the_keyword_survives_into_the_computed_style`
-//! is what fails if a stylo bump ever flips one of those macro arms.
+//! is what fails if a stylo bump ever flips one of those defaults.
 //!
 //! # The oracle
 //!

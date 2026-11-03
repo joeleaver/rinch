@@ -1478,6 +1478,19 @@ pub trait DomDocument {
         0.0
     }
 
+    /// Whether a wheel moving `(dx, dy)` would scroll `node` itself: on an
+    /// axis whose delta is non-zero, `node` is a scroll container (a computed
+    /// `overflow` of `auto` or `scroll` with content overflowing its box, the
+    /// rule the wheel follows), no `lock_scroll` overlay locks it out, and its
+    /// offset is not yet at the end of its range in that direction. Only the
+    /// signs count, in the DOM's sense (positive scrolls down / right). Either
+    /// axis answering yes is a yes.
+    ///
+    /// The default (a document that does not scroll) is `false`.
+    fn can_scroll_toward(&self, _node: NodeId, _dx: f64, _dy: f64) -> bool {
+        false
+    }
+
     /// Request that the given node be scrolled into view after the next layout.
     ///
     /// The scroll is deferred because layout must be resolved first to know
