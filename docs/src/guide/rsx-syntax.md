@@ -1375,16 +1375,19 @@ then, however that value changes while it stays selected. Switching branches
 (`Some` → `None`, one arm to another) still rebuilds.
 
 ```rust
-let material = Signal::new(Some(Material::default()));
+let draft = Signal::new(Some(Contact::default()));
 
 rsx! {
     #[once]
-    if let Some(m) = material.get() {
-        // The sliders write `material` on every tick; without `#[once]` each
-        // tick would rebuild the panel and drop the drag.
-        Slider { value_fn: move || material.get().map(|m| m.roughness).unwrap_or(0.0),
-                 onchange: move |v| material.update(|m| if let Some(m) = m { m.roughness = v }) }
-        p { "Created " {m.created.to_string()} }   // read once: fine for a value that does not change
+    if let Some(contact) = draft.get() {
+        // The field writes `draft` on every keystroke; without `#[once]` each
+        // keystroke would rebuild the branch and the field would lose focus.
+        TextInput {
+            label: "Name",
+            value_fn: move || draft.get().map(|c| c.name).unwrap_or_default(),
+            oninput: move |v: String| draft.update(|d| if let Some(d) = d { d.name = v }),
+        }
+        p { "Contact #" {contact.id.to_string()} }   // read once: the id does not change
     }
 }
 ```
