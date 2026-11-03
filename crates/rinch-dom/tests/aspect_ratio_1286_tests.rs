@@ -109,11 +109,24 @@ fn a_block_takes_its_other_dimension_from_the_ratio() {
     check("width: 100px; aspect-ratio: 0/1", (100.0, 0.0));
 }
 
-/// A declared ratio relates the sizes of the `box-sizing` box. (rinch
-/// sizes every box as `border-box`, #1278: the `content-box` row is in
-/// [`known_differences_from_chrome`].)
+/// A declared ratio relates the sizes of the `box-sizing` box.
 #[test]
 fn the_ratio_is_of_the_box_sizing_box() {
+    // `content-box` (the initial value): the ratio sizes the content box and
+    // the padding goes outside it (#1278).
+    check(
+        "width: 100px; padding: 10px; aspect-ratio: 2",
+        (120.0, 70.0),
+    );
+    // A replaced box too: an `<iframe>`'s 2px UA border goes outside the
+    // 100x50 content box.
+    check_in(
+        "",
+        "iframe",
+        &[],
+        "width: 100px; aspect-ratio: 2",
+        (104.0, 54.0),
+    );
     check(
         "width: 100px; padding: 10px; box-sizing: border-box; aspect-ratio: 2",
         (100.0, 50.0),
@@ -479,14 +492,6 @@ type KnownRow = (&'static str, &'static str, (f32, f32), (f32, f32), u32);
 fn known_differences_from_chrome() {
     // (style, container, rinch, Chrome, issue)
     let rows: &[KnownRow] = &[
-        // `box-sizing` is never read: every box is `border-box` (#1278).
-        (
-            "width: 100px; padding: 10px; aspect-ratio: 2",
-            "",
-            (100.0, 50.0),
-            (120.0, 70.0),
-            1278,
-        ),
         // Taffy transfers the other axis's min/max onto a definite size.
         (
             "width: 100px; aspect-ratio: 2; max-height: 30px",
@@ -521,7 +526,7 @@ fn known_differences_from_chrome() {
         // Taffy applies `auto <ratio>` to a non-replaced box's border box
         // like a plain `<ratio>`; Chrome uses the content box (120 x
         // 56.65625). Only visible with padding or a border under
-        // `border-box`, which is every rinch box (#1278).
+        // `border-box`.
         (
             "width: 120px; padding: 10px 30px 20px 10px; box-sizing: border-box; aspect-ratio: auto 3",
             "",
@@ -547,9 +552,6 @@ fn known_differences_from_chrome() {
             "{style} in \"{container}\": rinch's known answer (Chrome 155: {chrome:?}, #{issue})"
         );
     }
-    let (doc, _, e) = build("", "iframe", &[], "width: 100px; aspect-ratio: 2", "");
-    // Chrome 155: 104x54 (content-box: the 2px border outside 100x50). #1278.
-    assert_eq!(size(&doc, e), (100.0, 50.0));
     // Content taller than the ratio: Chrome 155 grows a visible box to its
     // three 20px lines, 100x60, block and inline-block alike. #1562.
     for style in [

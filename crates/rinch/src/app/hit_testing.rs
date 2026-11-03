@@ -1294,7 +1294,7 @@ mod tests {
         doc.set_attribute(
             container,
             "style",
-            "width: 100px; height: 100px; border: 10px solid blue; overflow: hidden",
+            "box-sizing: border-box; width: 100px; height: 100px; border: 10px solid blue; overflow: hidden",
         );
         doc.append_child(body, container);
         let child = doc.create_element("div");
@@ -2700,7 +2700,7 @@ mod tests {
         let container = child_of(
             &mut doc,
             body,
-            "width: 200px; height: 100px; padding: 20px; overflow: auto",
+            "box-sizing: border-box; width: 200px; height: 100px; padding: 20px; overflow: auto",
         );
         let child = child_of(&mut doc, container, "width: 160px; height: 80px");
         doc.resolve_layout(800.0, 600.0);
@@ -2734,7 +2734,7 @@ mod tests {
         let container = child_of(
             &mut doc,
             body,
-            "width: 100px; height: 200px; padding: 20px; overflow-x: auto",
+            "box-sizing: border-box; width: 100px; height: 200px; padding: 20px; overflow-x: auto",
         );
         let child = child_of(&mut doc, container, "width: 80px; height: 160px");
         doc.resolve_layout(800.0, 600.0);
@@ -2767,7 +2767,7 @@ mod tests {
         let container = child_of(
             &mut doc,
             body,
-            "width: 200px; height: 100px; padding: 20px; overflow: auto",
+            "box-sizing: border-box; width: 200px; height: 100px; padding: 20px; overflow: auto",
         );
         let child = child_of(&mut doc, container, "width: 160px; height: 60px");
         doc.resolve_layout(800.0, 600.0);

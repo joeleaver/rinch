@@ -1176,17 +1176,30 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     // Taffy would take from the direct parent. Unpaired, a missing inset
     // counts as zero — Taffy's `resolve_absolute_sizing_keywords` rule, and
     // Chrome 153's answer (`left: 10px` in an 800px viewport gives 790).
+    // A width that fills the room between the insets is the border box's:
+    // a `content-box` box's `width` is that less its padding and border
+    // (#1278), or it overflows the room by them.
+    let inset_x = if taffy_style.box_sizing == taffy::BoxSizing::ContentBox {
+        cs.padding_left.resolve(cw)
+            + cs.padding_right.resolve(cw)
+            + cs.border_left_width.to_px()
+            + cs.border_right_width.to_px()
+    } else {
+        0.0
+    };
     if taffy_style.size.width.is_stretch() {
         let l = cs.left.resolve(cw).unwrap_or(0.0);
         let r = cs.right.resolve(cw).unwrap_or(0.0);
-        taffy_style.size.width = taffy::Dimension::length((cw - l - r - ml - mr).max(0.0));
+        taffy_style.size.width =
+            taffy::Dimension::length((cw - l - r - ml - mr - inset_x).max(0.0));
     } else if taffy_style.size.width == taffy::Dimension::auto()
         || taffy_style.size.width == taffy::Dimension::fit_content()
     {
         let auto = taffy_style.size.width == taffy::Dimension::auto();
         match (cs.left.resolve(cw), cs.right.resolve(cw)) {
             (Some(l), Some(r)) if auto => {
-                taffy_style.size.width = taffy::Dimension::length((cw - l - r - ml - mr).max(0.0));
+                taffy_style.size.width =
+                    taffy::Dimension::length((cw - l - r - ml - mr - inset_x).max(0.0));
             }
             // Otherwise the box shrinks to fit (CSS 2.1 §10.3.7) — in what
             // its **containing block** leaves it: that block's width less the

@@ -119,9 +119,9 @@ fn a_right_anchored_absolute_in_a_padded_panel_paints_where_it_is_laid_out() {
     let panel = child_of(
         &mut doc,
         body,
-        "position: absolute; right: 16px; top: 58px; bottom: 16px; width: 724px; \
-         padding: 16px 18px; border: 1px solid rgb(0, 0, 255); \
-         background-color: rgb(0, 255, 0)",
+        "position: absolute; right: 16px; top: 58px; bottom: 16px; \
+         box-sizing: border-box; width: 724px; padding: 16px 18px; \
+         border: 1px solid rgb(0, 0, 255); background-color: rgb(0, 255, 0)",
     );
     let btn = child_of(
         &mut doc,
@@ -131,8 +131,8 @@ fn a_right_anchored_absolute_in_a_padded_panel_paints_where_it_is_laid_out() {
     );
     doc.resolve_layout(VW, VH);
 
-    // rinch sets a global `box-sizing: border-box`, so `width: 724px` IS the
-    // panel's border box; `right: 16px` puts its left edge at 800-16-724.
+    // The panel is `box-sizing: border-box`, so `width: 724px` IS its border
+    // box; `right: 16px` puts its left edge at 800-16-724.
     let panel_layout = doc.tree.get(panel.0).unwrap().layout;
     assert_eq!(
         (panel_layout.x, panel_layout.y, panel_layout.width),
@@ -207,7 +207,8 @@ fn an_absolute_only_row_does_not_inflate_its_parents_flow() {
     let panel = child_of(
         &mut doc,
         body,
-        "position: absolute; right: 16px; top: 58px; width: 724px; padding: 16px 18px",
+        "position: absolute; right: 16px; top: 58px; box-sizing: border-box; \
+         width: 724px; padding: 16px 18px",
     );
     // The offending row: a declared height, no inline content, one absolute child.
     let row0 = child_of(&mut doc, panel, "position: relative; height: 20px");
@@ -249,8 +250,9 @@ fn an_absolute_only_row_does_not_inflate_its_parents_flow() {
         );
     }
 
-    // Paint: the panel's border box starts at (60, 58), so the rows are drawn
-    // at y = 94, 110, 126, 142 — one `layout.y` below it, each.
+    // Paint: the panel's (border-box, 724px) border box starts at (60, 58), so
+    // the rows are drawn at y = 94, 110, 126, 142 — one `layout.y` below it,
+    // each.
     let px = rasterize(&mut doc);
     for (i, _) in rows.iter().enumerate() {
         let y = 94 + 16 * i as u32;
@@ -303,7 +305,8 @@ fn a_row_mixing_inline_text_with_an_absolute_child_paints_where_it_is_laid_out()
     let panel = child_of(
         &mut doc,
         body,
-        "position: absolute; right: 16px; top: 58px; width: 724px; padding: 16px 18px",
+        "position: absolute; right: 16px; top: 58px; box-sizing: border-box; \
+         width: 724px; padding: 16px 18px",
     );
     let mut rows = Vec::new();
     for i in 0..3u8 {
@@ -326,7 +329,8 @@ fn a_row_mixing_inline_text_with_an_absolute_child_paints_where_it_is_laid_out()
     doc.resolve_layout(VW, VH);
 
     let px = rasterize(&mut doc);
-    // The panel's border box, hand-computed: right 16, width 724, top 58.
+    // The panel's border box, hand-computed: right 16, border-box width 724,
+    // top 58.
     let (px0, py0) = (60.0_f32, 58.0_f32);
     for (i, (row, btn)) in rows.iter().enumerate() {
         // Taffy's answer for the button: the row's padding box, i.e. its

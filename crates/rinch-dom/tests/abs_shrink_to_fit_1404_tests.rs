@@ -430,6 +430,8 @@ const KNOWN: &[(&str, &str, &str)] = &[
 fn document() -> RinchDocument {
     use parley::fontique::{Blob, FontInfoOverride};
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let registered = doc.font_cx.collection.register_fonts(
         Blob::new(std::sync::Arc::new(FACE)),
         Some(FontInfoOverride {

@@ -555,8 +555,8 @@ fn calc_size_pct_against_indefinite_behaves_as_auto() {
 /// An absolutely positioned child's percentages resolve against its
 /// containing block's *padding box*, not its content box — Taffy subtracts
 /// only the border (flexbox.rs:2166, block.rs:580) and so does CSS. On a
-/// 300×200 container with padding 20 (border-box 300 under Taffy's
-/// box-sizing), Chrome gives left 140 and width 160; resolving against the
+/// 300×200 `box-sizing: border-box` container with padding 20 (padding box
+/// 300), Chrome gives left 140 and width 160; resolving against the
 /// content box would give 120/140, off by exactly the parent padding and
 /// inconsistent with the plain-% twin (150/150) on the same box.
 #[test]
@@ -566,7 +566,7 @@ fn calc_abs_child_resolves_against_padding_box() {
     doc.set_attribute(
         c,
         "style",
-        "position: relative; width: 300px; height: 200px; padding: 20px;",
+        "position: relative; width: 300px; height: 200px; padding: 20px; box-sizing: border-box;",
     );
     let a = doc.create_element("div");
     doc.set_attribute(

@@ -1624,7 +1624,7 @@ pub(crate) fn display_contents_taffy_style() -> taffy::Style {
 /// is set once, in [`NodeTree::new`], and never rebuilt from its computed
 /// style) and `<body>` is the only child rinch gives it. So `<body>` grows to
 /// fill the viewport (`flex-grow` is at least 1) and is as wide as it
-/// (`width: 100%`).
+/// (`width: 100%` of its border box).
 ///
 /// **And when nothing about `<body>`'s own height depends on its content, its
 /// flex basis is `0`** (#1260). That is the UA sheet's `overflow-y: auto`
@@ -1648,6 +1648,16 @@ pub(crate) fn body_taffy_overrides(style: &mut taffy::Style) {
     }
     if style.size.width == taffy::Dimension::auto() {
         style.size.width = taffy::Dimension::percent(1.0);
+        // As wide as `<html>` is the border box's width, as a browser's auto
+        // body fills it: a `content-box` body with padding or a border would
+        // overflow the viewport by them (#1278). `box-sizing` is read for
+        // both axes, so only where no height of the body's is declared.
+        if style.size.height.is_auto()
+            && style.min_size.height.is_auto()
+            && style.max_size.height.is_auto()
+        {
+            style.box_sizing = taffy::BoxSizing::BorderBox;
+        }
     }
     if style.flex_basis == taffy::Dimension::auto()
         && style.size.height == taffy::Dimension::auto()

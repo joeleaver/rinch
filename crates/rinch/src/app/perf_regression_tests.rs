@@ -44,7 +44,8 @@ const ROW_CSS: &str = "
     body { font-size: 14px; line-height: 20px; }
     .row { height: 20px; }
     .row:hover { background-color: rgb(200, 0, 0); }
-    .field { position: absolute; left: 300px; top: 300px; width: 200px; height: 24px; }
+    .field { position: absolute; left: 300px; top: 300px; width: 200px; height: 24px;
+             box-sizing: border-box; }
     .scroller { width: 300px; height: 400px; overflow-y: auto; }
     .big { width: 800px; height: 600px; }
     .big.on { background-color: rgb(0, 0, 200); }
@@ -53,6 +54,12 @@ const ROW_CSS: &str = "
 ";
 
 /// Ten static rows, a text `<input>`, and a 200-row scroller off to the side.
+///
+/// `.field` is `box-sizing: border-box`, so its UA padding and border sit
+/// inside its 200×24 box: the scenarios' areas were recorded when rinch sized
+/// every box that way (#1278), and a text `<input>` is `content-box` by
+/// default, in Chrome as here — 208×30 without the declaration, which grows
+/// every repaint and clip that covers the field without costing more work.
 fn static_page() -> RinchApp {
     mount_settled(|scope: &mut RenderScope| {
         let root = scope.create_element("div");

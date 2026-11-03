@@ -212,6 +212,8 @@ pub fn styles() -> String {
     height: var(--rinch-popover-arrow-size, 8px);
     background-color: var(--rinch-color-body);
     border: 1px solid var(--rinch-color-border);
+    /* The arrow is its size, border included, themed or not (#1278). */
+    box-sizing: border-box;
     transform: rotate(45deg);
 }
 

@@ -44,6 +44,8 @@ impl Case {
     /// element carrying `data-cb`.
     fn new(html: &str) -> Self {
         let mut doc = RinchDocument::new();
+        // The Chrome numbers were measured under this rule (file docs).
+        doc.load_css("* { box-sizing: border-box; }");
         let body = doc.body();
         let wrap = doc.create_element("div");
         doc.set_inner_html(wrap, html);
@@ -903,6 +905,8 @@ fn computes(doc: &mut RinchDocument, f: impl FnOnce(&mut RinchDocument)) -> u64 
 fn the_second_compute_is_paid_only_when_the_containing_block_resizes() {
     // Position only: one compute, ever.
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     let wrap = doc.create_element("div");
     doc.set_inner_html(

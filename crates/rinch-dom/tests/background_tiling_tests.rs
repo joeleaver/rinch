@@ -366,11 +366,13 @@ fn with_image(style: &str, w: u32, h: u32) -> TinySkiaPainter {
 }
 
 /// Chrome 153: content box 70x20 at (15,15): y=25 W 0-15, R 15-50, B 50-85, W 85-100; y=12 W.
+/// `border-box` makes the 100x50 the border box (re-measured in Chrome with
+/// that same markup: identical rows).
 #[test]
 fn f1_content_box_origin() {
     let (mut doc, _) = mount(
         &format!(
-            "width: 100px; height: 50px; border: 10px solid transparent; padding: 5px; {RB}; background-repeat: no-repeat; background-origin: content-box"
+            "box-sizing: border-box; width: 100px; height: 50px; border: 10px solid transparent; padding: 5px; {RB}; background-repeat: no-repeat; background-origin: content-box"
         ),
         200.0,
         100.0,

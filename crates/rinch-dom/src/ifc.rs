@@ -8782,7 +8782,12 @@ impl RinchDocument {
                 // not fit in (a 580.37px line pinned at 580 re-broke).
                 let used = self.tree.taffy.unrounded_layout(taffy_id).size.width;
                 let mut style = original.clone();
-                style.size.width = taffy::Dimension::length(used);
+                style.size.width = taffy::Dimension::length(self.sizing_box_width(
+                    taffy_id,
+                    &original,
+                    used,
+                    available_width,
+                ));
                 let _ = self.tree.taffy.set_style(taffy_id, style);
                 pinned = true;
                 Self::compute_atomic_inline_root(
@@ -8838,9 +8843,11 @@ impl RinchDocument {
     ///   [`Self::resolve_percentage_inline_blocks`] measures them again once
     ///   the containing block has a width.
     ///
-    /// Widths are the unrounded border-box widths: a rounded-down width is one
-    /// the content does not fit in (a 580.37px line pinned at 580 re-broke).
-    /// (rinch hands Taffy no `box-sizing`, so every box is border-box to it.)
+    /// Widths are measured as unrounded border-box widths: a rounded-down
+    /// width is one the content does not fit in (a 580.37px line pinned at 580
+    /// re-broke). The length returned is for the box's own `box-sizing` box
+    /// ([`Self::sizing_box_width`]): it goes into the box's `width`, which
+    /// Taffy reads as a content width for a `content-box` box (#1278).
     fn resolve_root_width_keyword(
         &mut self,
         taffy_id: taffy::NodeId,
@@ -8999,7 +9006,43 @@ impl RinchDocument {
             // `fit-content(<length-percentage>)` — rinch never produces one.
             _ => None,
         };
-        Some(resolved.map_or(taffy::Dimension::auto(), taffy::Dimension::length))
+        Some(resolved.map_or(taffy::Dimension::auto(), |w| {
+            taffy::Dimension::length(self.sizing_box_width(taffy_id, declared, w, available_width))
+        }))
+    }
+
+    /// The `width` that makes Taffy node `taffy_id`, styled `style`,
+    /// `border_box` wide: the border-box width itself for a `border-box` box,
+    /// less its horizontal padding and border for a `content-box` one. A
+    /// measured width written back as a border-box width made a padded
+    /// `content-box` box grow by its padding, and again on every layout
+    /// (#1278). The padding is resolved against `cb_width`, the containing
+    /// block's width, when it is known; otherwise the box's last layout's is
+    /// taken (a percentage padding resolves against the containing block,
+    /// which a detached atomic inline's own compute does not have).
+    fn sizing_box_width(
+        &self,
+        taffy_id: taffy::NodeId,
+        style: &taffy::Style,
+        border_box: f32,
+        cb_width: Option<f32>,
+    ) -> f32 {
+        use taffy::ResolveOrZero;
+        if style.box_sizing == taffy::BoxSizing::BorderBox {
+            return border_box;
+        }
+        let inset = match cb_width {
+            Some(cb) => {
+                let padding = style.padding.resolve_or_zero(Some(cb), |_, _| 0.0);
+                let border = style.border.resolve_or_zero(Some(cb), |_, _| 0.0);
+                padding.left + padding.right + border.left + border.right
+            }
+            None => {
+                let l = self.tree.taffy.unrounded_layout(taffy_id);
+                l.padding.left + l.padding.right + l.border.left + l.border.right
+            }
+        };
+        (border_box - inset).max(0.0)
     }
 
     /// Whether a box in `root`'s own Taffy subtree (not `root` itself, and not
@@ -9667,7 +9710,8 @@ impl RinchDocument {
         };
         let w = self.tree.taffy.unrounded_layout(taffy_id).size.width;
         let mut pinned = declared.clone();
-        pinned.size.width = taffy::Dimension::length(w);
+        pinned.size.width =
+            taffy::Dimension::length(self.sizing_box_width(taffy_id, &declared, w, None));
         let _ = self.tree.taffy.set_style(taffy_id, pinned);
         self.measure_inline_blocks(&[(taffy_id, Some(w))]);
         let _ = self.tree.taffy.set_style(taffy_id, declared);

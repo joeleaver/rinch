@@ -11,8 +11,9 @@
 //! padding and border ate the line it guaranteed.
 //!
 //! Every number is measured in Chrome 153 on the same markup, with
-//! `* { box-sizing: border-box; margin: 0 }` to match rinch's global
-//! `border-box`, and `line-height` declared so no glyph metric enters it.
+//! `* { box-sizing: border-box; margin: 0 }` (rinch sized every box as a
+//! border box until #1278; each document here loads the same rule), and
+//! `line-height` declared so no glyph metric enters it.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -52,6 +53,8 @@ fn height(doc: &RinchDocument, id: NodeId) -> f32 {
 #[test]
 fn an_inline_input_is_one_line_plus_its_padding_and_border() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let padded = el(&mut doc, c, "input", &format!("{PADDED}; width: 100px"));
     let c2 = container(&mut doc, "");
@@ -69,6 +72,8 @@ fn an_inline_input_is_one_line_plus_its_padding_and_border() {
 #[test]
 fn a_blockified_padded_input_keeps_its_whole_line() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let row = container(&mut doc, "display: flex");
     let item = el(&mut doc, row, "input", &format!("{PADDED}; flex: 1"));
     let c = container(&mut doc, "");
@@ -89,6 +94,8 @@ fn a_blockified_padded_input_keeps_its_whole_line() {
 #[test]
 fn an_author_min_height_is_a_floor_under_the_control_not_over_it() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let zero = el(
         &mut doc,
@@ -116,6 +123,8 @@ fn an_author_min_height_is_a_floor_under_the_control_not_over_it() {
 #[test]
 fn a_column_flex_item_with_min_height_zero_shrinks_below_its_line() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let col = container(
         &mut doc,
         "display: flex; flex-direction: column; height: 10px",
@@ -149,6 +158,8 @@ fn a_column_flex_item_with_min_height_zero_shrinks_below_its_line() {
 #[test]
 fn a_max_height_caps_the_control() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let input = el(
         &mut doc,
@@ -176,6 +187,8 @@ fn a_max_height_caps_the_control() {
 #[test]
 fn a_textarea_is_rows_lines_tall() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let three = el(
         &mut doc,
@@ -217,6 +230,8 @@ fn a_textarea_is_rows_lines_tall() {
 #[test]
 fn rows_is_parsed_as_an_html_non_negative_integer() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let mut ta = |rows: &str| {
         let t = el(&mut doc, c, "textarea", &format!("display: block; {BARE}"));
@@ -254,6 +269,8 @@ fn rows_is_parsed_as_an_html_non_negative_integer() {
 #[test]
 fn a_restyle_or_a_rows_change_re_measures_the_control() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let input = el(
         &mut doc,
@@ -298,6 +315,8 @@ fn a_restyle_or_a_rows_change_re_measures_the_control() {
 #[test]
 fn a_transition_tick_re_measures_the_control() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let input = el(
         &mut doc,
@@ -320,6 +339,8 @@ fn a_transition_tick_re_measures_the_control() {
 #[test]
 fn an_animation_tick_re_measures_the_control() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let input = el(
         &mut doc,
@@ -345,6 +366,8 @@ fn an_animation_tick_re_measures_the_control() {
 #[test]
 fn the_text_like_types_are_measured_and_a_checkbox_is_not() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let number = el(
         &mut doc,
@@ -391,6 +414,8 @@ fn the_text_like_types_are_measured_and_a_checkbox_is_not() {
 #[test]
 fn a_textarea_with_a_text_child_is_rows_lines_across_a_restyle() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let two = el(&mut doc, c, "textarea", &format!("display: block; {BARE}"));
     doc.set_text_content(two, "abc");
@@ -423,6 +448,8 @@ fn a_textarea_with_a_text_child_is_rows_lines_across_a_restyle() {
 #[test]
 fn a_blockified_br_is_one_line() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let flex = container(&mut doc, "display: flex");
     el(&mut doc, flex, "br", "");
     let block = container(&mut doc, "");
@@ -441,6 +468,8 @@ fn a_blockified_br_is_one_line() {
 #[test]
 fn every_input_type_but_six_is_a_line() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let mut ids = Vec::new();
     for t in [
@@ -491,6 +520,8 @@ fn every_input_type_but_six_is_a_line() {
 #[test]
 fn a_type_change_alone_resizes_the_control() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let body = doc.body();
     let i = el(
         &mut doc,
@@ -522,6 +553,8 @@ fn a_type_change_alone_resizes_the_control() {
 fn a_text_child_control_is_sized_as_an_empty_one() {
     fn build(child: bool) -> (RinchDocument, Vec<NodeId>) {
         let mut doc = RinchDocument::new();
+        // The Chrome numbers were measured under this rule (file docs).
+        doc.load_css("* { box-sizing: border-box; margin: 0 }");
         let set = |doc: &mut RinchDocument, id: NodeId, t: &str| {
             if child {
                 doc.set_text_content(id, t);
@@ -586,6 +619,8 @@ fn a_text_child_control_is_sized_as_an_empty_one() {
 #[test]
 fn a_text_child_input_that_becomes_a_checkbox_is_sized_as_an_empty_one() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; margin: 0 }");
     let c = container(&mut doc, "");
     let style = format!("display: block; width: 30px; {BARE}");
     let i = el(&mut doc, c, "input", &style);
