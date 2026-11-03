@@ -817,6 +817,7 @@ fn build_table(n: usize, rows: bool) -> Fixture {
 
 /// Reverse 200 table rows, moving each with `append_child` as a keyed `for`
 /// reorder does. The table's direction cannot change, and it costs **no**
+/// Each cell moved, so each changes its grid row (`taffy_style_changes` 200).
 /// Taffy style sync (`taffy_style_syncs` 0): each move owes the table one
 /// direction check, deduplicated and answered once for the frame. The review
 /// of #1097 measured 200 syncs here — one per move — before the owed set.
@@ -837,11 +838,12 @@ fn table_reverse_200_rows() {
         "table: reverse 200 rows",
         &s,
         &[
+            (TaffyStyleChanges, 200),
             (IfcMeasureInvalidations, 200),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
             (IfcScopedPasses, 1),
-            (IfcScopeContainers, 601),
+            (IfcScopeContainers, 401),
             (IfcScopeNodes, 602),
             (TaffyRootComputes, 1),
             (PaintNodesVisited, 105),
@@ -865,6 +867,7 @@ fn table_remove_499_of_500_cells() {
         "table: remove 499 of 500 cells",
         &s,
         &[
+            (TaffyStyleChanges, 1),
             (IfcMeasureInvalidations, 499),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),

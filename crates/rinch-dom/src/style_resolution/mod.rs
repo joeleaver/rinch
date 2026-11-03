@@ -1434,16 +1434,6 @@ impl RinchDocument {
             }
             self.tree.nodes[node_id].has_been_styled = true;
 
-            // A table or row group lays out by its children's table parts
-            // (#1083), and a child's part can change on this same pass, after
-            // the container was synced (parents cascade first): re-derive the
-            // container this node is a layout child of after the loop, when
-            // this node's part changed or it crossed `display: contents` (its
-            // children became, or stopped being, the container's). A child
-            // inserted or removed queues the container itself
-            // (`note_table_children_changed`), and a restyle of the container
-            // alone derives it in the sync below from children that did not
-            // move.
             // An out-of-flow box that was inline-level keeps its static
             // position in its line, a block-level one below it (#634) — and
             // which it was is no Taffy value: `position` blockified both to
@@ -1459,14 +1449,32 @@ impl RinchDocument {
             }
 
             {
+                // A restyle wrote the cascade's values back over what the
+                // table's last rebuild left there, and any part's style can
+                // move the table.
+                let node = &mut self.tree.nodes[node_id];
+                if let Some(c) = node.table_cell.as_mut() {
+                    c.base = None;
+                    c.shift = 0.0;
+                }
+                if self.tree.nodes[node_id].computed_style.float.is_floated() {
+                    self.note_float(node_id);
+                }
                 let new = &self.tree.nodes[node_id].computed_style;
-                let contents = crate::computed_style::DisplayValue::Contents;
-                if (old_table_part != new.table_part
-                    || (old_display == contents) != (new.display == contents))
-                    && let Some(p) = self.tree.nodes[node_id].parent
-                    && let Some(table) = Self::table_container_of(&self.tree, p)
+                if new.table_part != crate::computed_style::values::TablePart::None
+                    || old_table_part != new.table_part
                 {
-                    self.tree.table_direction_owed.push(table);
+                    let from = if new.table_part == crate::computed_style::values::TablePart::Table
+                    {
+                        Some(node_id)
+                    } else {
+                        self.tree.nodes[node_id].parent
+                    };
+                    if let Some(table) = from.and_then(|p| Self::table_of(&self.tree, p))
+                        && self.tree.tables_owed.last() != Some(&table)
+                    {
+                        self.tree.tables_owed.push(table);
+                    }
                 }
             }
 
@@ -1773,7 +1781,7 @@ impl RinchDocument {
             }
         }
         // Children restyled on this pass carry their new table part now.
-        self.resolve_table_directions();
+        self.resolve_tables();
 
         let perf = &self.tree.perf;
         perf.add(
@@ -1856,115 +1864,11 @@ impl RinchDocument {
         }
     }
 
-    /// The flex direction a table or row group lays its children out in
-    /// (#1083), or `None` for any other box.
-    ///
-    /// rinch has no table formatting context; a table and a row group are
-    /// flex containers (`display_from_stylo`). CSS stacks a table's rows and
-    /// row groups, and puts a run of bare cells in one anonymous row, so the
-    /// container is a flex **column** when any of its layout children is a
-    /// row or a row group, and a flex **row** otherwise — a table of bare
-    /// cells, the old column idiom, keeps its cells side by side. The
-    /// children are read through `display: contents` wrappers, which generate
-    /// no box: every `for` in `rsx!` emits one. Chrome's own answer for a
-    /// table mixing the two (each run of bare cells a row of its own, between
-    /// the stacked rows) is approximated by stacking every child.
-    pub(crate) fn table_flex_direction(
-        tree: &crate::node::NodeTree,
-        node_id: RawNodeId,
-    ) -> Option<taffy::FlexDirection> {
-        let node = tree.nodes.get(node_id)?;
-        if !node.computed_style.table_part.holds_rows() {
-            return None;
-        }
-        fn any_row(tree: &crate::node::NodeTree, id: RawNodeId) -> bool {
-            tree.nodes[id].children.iter().any(|&c| {
-                let child = &tree.nodes[c];
-                child.is_element()
-                    && match child.computed_style.display {
-                        crate::computed_style::DisplayValue::Contents => any_row(tree, c),
-                        crate::computed_style::DisplayValue::None => false,
-                        _ => child.computed_style.table_part.is_row_like(),
-                    }
-            })
-        }
-        Some(if any_row(tree, node_id) {
-            taffy::FlexDirection::Column
-        } else {
-            taffy::FlexDirection::Row
-        })
-    }
-
-    /// The table or row group whose layout children include `node_id`'s own
-    /// (its nearest ancestor-or-self that is not `display: contents`), when
-    /// that box is one.
-    pub(crate) fn table_container_of(
-        tree: &crate::node::NodeTree,
-        node_id: RawNodeId,
-    ) -> Option<RawNodeId> {
-        let mut id = node_id;
-        loop {
-            let node = tree.nodes.get(id)?;
-            if node.computed_style.display != crate::computed_style::DisplayValue::Contents {
-                return node.computed_style.table_part.holds_rows().then_some(id);
-            }
-            id = node.parent?;
-        }
-    }
-
-    /// Owe `parent`'s table container a direction check after its child list
-    /// changed (#1083): which way it lays out depends on whether its children
-    /// are rows, and neither a removal nor a move of an already-styled row
-    /// restyles anything that would say so. Consecutive changes under one
-    /// container are pushed once.
-    pub(crate) fn note_table_children_changed(&mut self, parent: RawNodeId) {
-        if let Some(table) = Self::table_container_of(&self.tree, parent)
-            && self.tree.table_direction_owed.last() != Some(&table)
-        {
-            self.tree.table_direction_owed.push(table);
-            self.tree.layout_dirty = true;
-        }
-    }
-
-    /// Re-derive the flex direction of every table and row group owed one
-    /// ([`NodeTree::table_direction_owed`]) and write it to the Taffy style
-    /// where it moved — nothing else of the style, so this is no Taffy
-    /// re-sync. Run after the style sync and before every layout compute.
-    pub(crate) fn resolve_table_directions(&mut self) {
-        if self.tree.table_direction_owed.is_empty() {
-            return;
-        }
-        let mut owed = std::mem::take(&mut self.tree.table_direction_owed);
-        owed.sort_unstable();
-        owed.dedup();
-        for id in owed {
-            if !self.tree.contains(id) {
-                continue;
-            }
-            let Some(dir) = Self::table_flex_direction(&self.tree, id) else {
-                continue;
-            };
-            let Some(t) = self.tree.nodes[id].taffy_id else {
-                continue;
-            };
-            if let Ok(old) = self.tree.taffy.style(t)
-                && old.flex_direction != dir
-            {
-                let mut st = old.clone();
-                st.flex_direction = dir;
-                let _ = self.tree.taffy.set_style(t, st);
-                self.tree.layout_dirty = true;
-                self.mark_atomic_inline_dirty(id);
-                self.tree.perf.bump(crate::perf::Counter::TaffyStyleChanges);
-            }
-        }
-    }
-
     /// The Taffy style `node_id`'s computed values produce — the one
     /// rebuild every site that re-syncs a node's Taffy style from
     /// `computed_style` starts from (the cascade's sync and both tick
     /// re-syncs). It carries what the computed values alone cannot: a table's
-    /// or row group's direction, read from its children (#1083).
+    /// part's place, from its table's last rebuild (`table_layout`).
     pub(crate) fn taffy_style_from_computed(&self, node_id: RawNodeId) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
@@ -1990,9 +1894,7 @@ impl RinchDocument {
         {
             style.aspect_ratio = None;
         }
-        if let Some(dir) = Self::table_flex_direction(&self.tree, node_id) {
-            style.flex_direction = dir;
-        }
+        self.apply_table_style(node_id, &mut style);
         style
     }
 

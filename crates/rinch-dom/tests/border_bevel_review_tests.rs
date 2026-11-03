@@ -101,7 +101,10 @@ fn current_behaviour_top_right_corner_is_not_mitred_like_chrome() {
         &mut doc,
         body,
         "div",
-        "width: 200px; height: 200px; margin: 0; border: 20px inset gray;",
+        // border-box: the 200px include the border, so the TR corner square
+        // is x:[180,200) y:[0,20).
+        "box-sizing: border-box; width: 200px; height: 200px; margin: 0; \
+         border: 20px inset gray;",
     );
     doc.resolve_layout(VW, VH);
     let px = rasterize(&mut doc);

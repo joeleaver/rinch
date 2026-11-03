@@ -256,6 +256,12 @@ impl RinchDocument {
             (Some(tag), "width" | "height") if crate::replaced::maps_dimension_attributes(tag) => {
                 self.mark_restyle(node, false)
             }
+            (Some(tag), name) if crate::legacy_hints::reaches_cells(tag, name) => {
+                self.mark_restyle(node, true)
+            }
+            (Some(tag), name) if crate::legacy_hints::maps_attribute(tag, name) => {
+                self.mark_restyle(node, false)
+            }
             (Some("ol"), "start") => self.mark_element_children(node, false),
             (Some("li"), "value") => {
                 self.mark_restyle(node, false);

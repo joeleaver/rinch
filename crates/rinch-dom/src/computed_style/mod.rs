@@ -15,14 +15,32 @@ pub use values::*;
 
 use serde::Serialize;
 
+/// A Taffy keyword, which has no `Serialize`, as its name.
+fn serialize_debug<T: std::fmt::Debug, S: serde::Serializer>(
+    v: &T,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&format!("{v:?}"))
+}
+
 /// Pre-parsed CSS properties for efficient layout and paint.
 #[derive(Debug, Clone, Serialize)]
 pub struct ComputedStyle {
     // Display/position
     pub display: DisplayValue,
-    /// Which part of a CSS table this box is (#1083): `display` maps every
+    /// Which part of a CSS table this box is: `display` maps every
     /// table part to a flex or block container and cannot say.
     pub table_part: TablePart,
+    /// `box-sizing: border-box`.
+    pub box_sizing_border_box: bool,
+    /// `border-collapse: collapse`.
+    pub border_collapse: bool,
+    /// `border-spacing`, horizontal then vertical, in px.
+    pub border_spacing: (f32, f32),
+    /// `table-layout: fixed`.
+    pub table_layout_fixed: bool,
+    /// `caption-side: bottom`.
+    pub caption_bottom: bool,
     /// Whether the box was **inline-level before `position` blockified it**
     /// (Stylo's `original_display`): a `<span style="position: absolute">`,
     /// an `inline-block` one. `display` cannot say — an out-of-flow box
@@ -32,6 +50,12 @@ pub struct ComputedStyle {
     #[serde(skip)]
     pub inline_level_before_blockify: bool,
     pub position: PositionValue,
+    /// `float`. Read by Taffy's block layout only (`floats`).
+    #[serde(serialize_with = "serialize_debug")]
+    pub float: taffy::Float,
+    /// `clear`.
+    #[serde(serialize_with = "serialize_debug")]
+    pub clear: taffy::Clear,
     /// `vertical-align` (#724): non-inherited, not carried to an anonymous
     /// box (see [`ComputedStyle::for_anonymous_box`]).
     pub vertical_align: VerticalAlignValue,
@@ -300,8 +324,15 @@ impl Default for ComputedStyle {
         Self {
             display: DisplayValue::default(),
             table_part: TablePart::None,
+            box_sizing_border_box: false,
+            border_collapse: false,
+            border_spacing: (0.0, 0.0),
+            table_layout_fixed: false,
+            caption_bottom: false,
             inline_level_before_blockify: false,
             position: PositionValue::default(),
+            float: taffy::Float::None,
+            clear: taffy::Clear::None,
             vertical_align: VerticalAlignValue::default(),
             overflow_x: OverflowValue::default(),
             overflow_y: OverflowValue::default(),

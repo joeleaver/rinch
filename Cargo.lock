@@ -7097,8 +7097,7 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "639627c87f43b9181c811f40a6296409e093a17bc761214cba3c15df74f86b99"
+source = "git+https://github.com/joeleaver/taffy-fork?rev=fa0fd0de0fc221742eb6ca8ca11143cffdcac8d4#fa0fd0de0fc221742eb6ca8ca11143cffdcac8d4"
 dependencies = [
  "arrayvec",
  "serde",
@@ -7834,7 +7833,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=7a511341325479f8dbbf0b6f71d9f7f29483d5c0#7a511341325479f8dbbf0b6f71d9f7f29483d5c0"
+source = "git+https://github.com/joeleaver/vello-fork?rev=f010985c43f499f76e7d587e2c5ee3c6f0877817#f010985c43f499f76e7d587e2c5ee3c6f0877817"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -7852,7 +7851,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=7a511341325479f8dbbf0b6f71d9f7f29483d5c0#7a511341325479f8dbbf0b6f71d9f7f29483d5c0"
+source = "git+https://github.com/joeleaver/vello-fork?rev=f010985c43f499f76e7d587e2c5ee3c6f0877817#f010985c43f499f76e7d587e2c5ee3c6f0877817"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -7864,7 +7863,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=7a511341325479f8dbbf0b6f71d9f7f29483d5c0#7a511341325479f8dbbf0b6f71d9f7f29483d5c0"
+source = "git+https://github.com/joeleaver/vello-fork?rev=f010985c43f499f76e7d587e2c5ee3c6f0877817#f010985c43f499f76e7d587e2c5ee3c6f0877817"
 dependencies = [
  "bytemuck",
  "log",

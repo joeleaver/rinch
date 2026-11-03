@@ -493,18 +493,14 @@ fn hr_inline_margins_are_auto_and_centre_a_narrowed_rule() {
         "<hr> takes `margin-inline: auto` in Chrome, got ({left:?}, {right:?})"
     );
 
-    // 800px container, 100px rule → (800-100)/2. The equivalent Chrome number
-    // is 331px of margin over a 764px body, i.e. the same centring around a
-    // **102px** box: Chrome adds the 1px side borders outside the declared
-    // `width` (content-box), where rinch applies a global `box-sizing:
-    // border-box` (Taffy's default, noted in `style_resolution/mod.rs`). That
-    // 2px is a pre-existing, workspace-wide difference, not something the
-    // `<hr>` rule introduces; the property under test is that the rule centres
-    // at all, which it did not before `margin-inline: auto`.
+    // `<hr>` is `content-box`, so its 1px inset side borders go outside the
+    // declared `width`: a 102px box, centred in the 800px container at
+    // (800-102)/2 = 349. Chrome 156.0.8078.79 (body margin 0, the same
+    // container): x 349, width 102.
     let n = &doc.tree.get(narrow.0).unwrap().layout;
     assert!(
-        close(n.width, 100.0) && close(n.x, 350.0),
-        "a narrowed <hr> centres itself: expected a 100px box at x = 350, got {n:?}"
+        close(n.width, 102.0) && close(n.x, 349.0),
+        "a narrowed <hr> centres itself: expected a 102px box at x = 349, got {n:?}"
     );
 }
 

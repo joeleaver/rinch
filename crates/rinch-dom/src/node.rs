@@ -495,10 +495,12 @@ pub enum InlineFlowRole {
     /// Inline-level content: a text node, or an element with display
     /// `inline` / `inline-block` / `inline-flex`.
     Inline,
-    /// An out-of-flow box — `position: absolute`/`fixed` (CSS 2.1 §9.3).
-    /// Not inline content, yet it neither forces anonymous boxes (§9.2.1.1)
-    /// nor breaks an inline formatting context (§9.4.2): inline siblings
-    /// carry on across it, on the same line.
+    /// An out-of-flow box — `position: absolute`/`fixed`, or a float (CSS
+    /// 2.1 §9.3). Not inline content, yet it neither forces anonymous boxes
+    /// (§9.2.1.1) nor breaks an inline formatting context (§9.4.2): inline
+    /// siblings carry on across it, on the same line. A float stays a Taffy
+    /// child of its IFC root, before the root's measure leaf, which places it
+    /// at the top of the line it stands in (`float_wrap`).
     OutOfFlow,
     /// An in-flow block-level box — the one thing that breaks the inline
     /// flow.
@@ -732,6 +734,13 @@ pub struct InlineLayout {
     /// themselves are not changed: paint hides what is past each cut and
     /// draws a "…" there.
     pub ellipsis: Option<Box<EllipsisCut>>,
+    /// How far lines were moved down to clear floats beside the root that
+    /// they did not fit beside ([`crate::ifc::Broken::float_drop`]); `0` for
+    /// nearly every layout. [`Self::content_height`] counts it.
+    pub float_drop: f32,
+    /// The room the floats beside the root left its lines when they were
+    /// broken, `None` for lines given the whole width.
+    pub(crate) float_bands: Option<crate::float_wrap::FloatBands>,
 }
 
 /// Where `text-overflow: ellipsis` cuts an IFC root's lines (#1100): what
@@ -807,6 +816,13 @@ pub(crate) struct OutOfFlowMark {
 }
 
 impl InlineLayout {
+    /// The height of the lines: parley's layout height, which sums the
+    /// lines' heights, and the gaps left above lines moved down below a
+    /// float.
+    pub(crate) fn content_height(&self) -> f32 {
+        self.layout.height() + self.float_drop
+    }
+
     /// The width of what paint draws of the lines, for the clip proof: the
     /// layout's width, or no wider than the box for lines cut by
     /// `text-overflow: ellipsis` (#1100), whose glyphs past the box are not
@@ -1484,6 +1500,10 @@ pub struct Node {
     /// `RinchDocument::sync_presentational_hints` on each write or removal of
     /// a mapped attribute; `None` when no attribute maps to anything.
     pub presentational_hints: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
+    /// This cell's or caption's place in its table (`table_layout`).
+    pub table_cell: Option<Box<crate::table_layout::TableCell>>,
+    /// This table's columns and spacing (`table_layout`).
+    pub table_box: Option<Box<crate::table_layout::TableBox>>,
     /// An `<option>`'s **live selectedness**, once something has set it (#692).
     ///
     /// HTML gives an `<option>` two states, and they come apart. The `selected`
@@ -1668,7 +1688,7 @@ pub(crate) fn display_contents_taffy_style() -> taffy::Style {
 /// is set once, in [`NodeTree::new`], and never rebuilt from its computed
 /// style) and `<body>` is the only child rinch gives it. So `<body>` grows to
 /// fill the viewport (`flex-grow` is at least 1) and is as wide as it
-/// (`width: 100%`).
+/// (`width: 100%` of its border box, [`body_fills_with_its_border_box`]).
 ///
 /// **And when nothing about `<body>`'s own height depends on its content, its
 /// flex basis is `0`** (#1260). That is the UA sheet's `overflow-y: auto`
@@ -1686,12 +1706,70 @@ pub(crate) fn display_contents_taffy_style() -> taffy::Style {
 /// `<html>` — reachable only by appending to the raw `NodeTree::html_id` —
 /// would share the column with `<body>` by basis, and there the fold would
 /// change the split.)
+/// As wide as `<html>` is the border box's width, as a browser's auto body
+/// fills it: a `content-box` body given `width: 100%` would overflow the
+/// viewport by its padding and border (#1278). So the body is made a border
+/// box, with each of its own length sizes grown by its padding and border to
+/// stay the content-box size it says (`padding: 20px; max-width: 600px` caps
+/// the border box at 640, as in Chrome). Only where every one of them is a
+/// length or `auto`: a percentage padding or size would need `calc()`, and
+/// such a body stays `content-box`. (`width: stretch` sizes it the same way
+/// but measures its whole content once more in every compute.)
+fn body_fills_with_its_border_box(style: &mut taffy::Style) {
+    use taffy::style::CompactLength;
+    if style.box_sizing == taffy::BoxSizing::BorderBox {
+        return;
+    }
+    let px = |raw: CompactLength| (raw.tag() == CompactLength::LENGTH_TAG).then(|| raw.value());
+    let side = |p: taffy::LengthPercentage, b: taffy::LengthPercentage| {
+        Some(px(p.into_raw())? + px(b.into_raw())?)
+    };
+    let (Some(l), Some(r), Some(t), Some(b)) = (
+        side(style.padding.left, style.border.left),
+        side(style.padding.right, style.border.right),
+        side(style.padding.top, style.border.top),
+        side(style.padding.bottom, style.border.bottom),
+    ) else {
+        return;
+    };
+    let grown = |d: taffy::Dimension, by: f32| -> Option<taffy::Dimension> {
+        if d.is_auto() {
+            Some(d)
+        } else {
+            px(d.into_raw()).map(|v| taffy::Dimension::length(v + by))
+        }
+    };
+    let grown_limit = |d: taffy::LengthPercentageAuto, by: f32| {
+        if d.is_auto() {
+            Some(d)
+        } else {
+            px(d.into_raw()).map(|v| taffy::LengthPercentageAuto::length(v + by))
+        }
+    };
+    let (Some(min_w), Some(max_w), Some(h), Some(min_h), Some(max_h)) = (
+        grown_limit(style.min_size.width, l + r),
+        grown_limit(style.max_size.width, l + r),
+        grown(style.size.height, t + b),
+        grown_limit(style.min_size.height, t + b),
+        grown_limit(style.max_size.height, t + b),
+    ) else {
+        return;
+    };
+    style.min_size.width = min_w;
+    style.max_size.width = max_w;
+    style.size.height = h;
+    style.min_size.height = min_h;
+    style.max_size.height = max_h;
+    style.box_sizing = taffy::BoxSizing::BorderBox;
+}
+
 pub(crate) fn body_taffy_overrides(style: &mut taffy::Style) {
     if style.flex_grow == 0.0 {
         style.flex_grow = 1.0;
     }
     if style.size.width == taffy::Dimension::auto() {
         style.size.width = taffy::Dimension::percent(1.0);
+        body_fills_with_its_border_box(style);
     }
     if style.flex_basis == taffy::Dimension::auto()
         && style.size.height == taffy::Dimension::auto()
@@ -1843,6 +1921,8 @@ impl Node {
             guard,
             style_attribute_cache: None,
             presentational_hints: None,
+            table_cell: None,
+            table_box: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -1925,6 +2005,8 @@ impl Node {
             guard,
             style_attribute_cache: None,
             presentational_hints: None,
+            table_cell: None,
+            table_box: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2006,6 +2088,8 @@ impl Node {
             guard,
             style_attribute_cache: None,
             presentational_hints: None,
+            table_cell: None,
+            table_box: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2085,6 +2169,8 @@ impl Node {
             guard,
             style_attribute_cache: None,
             presentational_hints: None,
+            table_cell: None,
+            table_box: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2661,8 +2747,8 @@ impl Node {
     ///    flattened in-flow boxes stayed attached — the non-leaf carrier the
     ///    #466 validator exists to catch.
     /// 4. Inline-level content is [`InlineFlowRole::Inline`].
-    /// 5. Only now does `position` speak: `absolute`/`fixed` is
-    ///    [`InlineFlowRole::OutOfFlow`].
+    /// 5. Only now do `position` and `float` speak: `absolute`/`fixed`, or a
+    ///    float, is [`InlineFlowRole::OutOfFlow`].
     /// 6. Everything left is an in-flow block-level box,
     ///    [`InlineFlowRole::InFlowBlock`].
     ///
@@ -2683,7 +2769,7 @@ impl Node {
         if self.is_inline() {
             return InlineFlowRole::Inline;
         }
-        if self.is_out_of_flow() {
+        if self.is_out_of_flow() || self.computed_style.float.is_floated() {
             return InlineFlowRole::OutOfFlow;
         }
         InlineFlowRole::InFlowBlock
@@ -2947,14 +3033,26 @@ pub struct NodeTree {
     pub inline_text_shadows: bool,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
-    /// Tables and row groups whose flex direction may have moved with their
-    /// children (#1083): a child inserted, removed or restyled into or out of
-    /// being a row. Drained once per layout by
-    /// `RinchDocument::resolve_table_directions`, which rewrites only the
-    /// Taffy `flex_direction`, and only where it changed — so a reorder or a
-    /// bulk removal under a table costs one walk of its children per frame,
-    /// not a Taffy re-sync per move.
-    pub table_direction_owed: Vec<RawNodeId>,
+    /// Tables owed a `RinchDocument::resolve_tables` rebuild: a part restyled,
+    /// a child inserted, moved or removed.
+    pub tables_owed: Vec<RawNodeId>,
+    /// Parsed `legacy_hints::cell_hints_css` blocks, by their CSS text.
+    pub cell_hints: std::sync::Mutex<HashMap<String, ServoArc<Locked<PropertyDeclarationBlock>>>>,
+    /// Cells read back this layout and owed their `vertical-align`.
+    pub cells_to_align: Vec<RawNodeId>,
+    /// Boxes the cascade computed as floated; dead or unfloated ones are
+    /// dropped before each layout (`floats`).
+    pub floats: Vec<RawNodeId>,
+    /// The boxes `floats` gave containment, to take it back.
+    pub float_avoiders: Vec<RawNodeId>,
+    /// The blank anonymous boxes beside floats that `floats` hid.
+    pub float_blank_runs: Vec<RawNodeId>,
+    /// The room the floats beside an IFC root leave its lines, for every
+    /// root the last layout laid out beside one (`float_wrap`). The paint
+    /// layout is broken around the same bands the measure was.
+    pub(crate) ifc_float_bands: rustc_hash::FxHashMap<RawNodeId, crate::float_wrap::FloatBands>,
+    /// Every table rebuilt so far; dead ids are dropped before each layout.
+    pub tables: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
     /// `resolve_styles()` resolves only these subtrees instead of the
     /// full tree — turning O(tree) into O(changed_subtree).
@@ -3656,7 +3754,14 @@ impl NodeTree {
             whole_document_damaged: false,
             inline_text_shadows: false,
             style_dirty_nodes: Vec::new(),
-            table_direction_owed: Vec::new(),
+            tables_owed: Vec::new(),
+            tables: Vec::new(),
+            floats: Vec::new(),
+            float_avoiders: Vec::new(),
+            float_blank_runs: Vec::new(),
+            ifc_float_bands: Default::default(),
+            cells_to_align: Vec::new(),
+            cell_hints: Default::default(),
             style_roots: Vec::new(),
             full_style_walk: true, // The first resolve styles everything
             styles_dirty: true,    // Initial render needs styles

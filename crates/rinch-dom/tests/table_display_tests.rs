@@ -138,7 +138,24 @@ fn cell(doc: &mut RinchDocument, parent: NodeId, w: u32, h: u32) -> NodeId {
     c
 }
 
+/// A box's rectangle; a row or row group generates no box, so its rectangle
+/// is the one its cells cover, which is what Chrome reports for it.
 fn abs(doc: &RinchDocument, n: NodeId) -> (f32, f32, f32, f32) {
+    let node = doc.tree.get(n.0).unwrap();
+    if node.computed_style.display == rinch_dom::computed_style::DisplayValue::Contents {
+        let boxes: Vec<_> = node
+            .children
+            .iter()
+            .filter(|&&c| doc.tree.get(c).unwrap().is_element())
+            .map(|&c| abs(doc, NodeId(c)))
+            .collect();
+        let (x, y) = boxes
+            .iter()
+            .fold((f32::MAX, f32::MAX), |a, b| (a.0.min(b.0), a.1.min(b.1)));
+        let right = boxes.iter().map(|b| b.0 + b.2).fold(0.0, f32::max);
+        let bottom = boxes.iter().map(|b| b.1 + b.3).fold(0.0, f32::max);
+        return (x, y, right - x, bottom - y);
+    }
     let (x, y) = rinch_dom::paint::compute_absolute_position(&doc.tree, n.0, 1.0);
     let l = &doc.tree.get(n.0).unwrap().layout;
     (x as f32, y as f32, l.width, l.height)
@@ -178,7 +195,8 @@ fn a_tables_rows_stack_and_each_rows_cells_sit_side_by_side() {
     let (ax, ay, ..) = abs(&doc, a);
     let (bx, by, ..) = abs(&doc, b);
     assert_eq!((ax, ay), (0.0, 0.0), "a");
-    assert_eq!((bx, by), (30.0, 0.0), "b sits right of a");
+    // Column widths are shared: `c` is 60 wide, so `a`'s column is (Chrome).
+    assert_eq!((bx, by), (60.0, 0.0), "b sits right of a's column");
     let (cx, cy, ..) = abs(&doc, c);
     let (dx, dy, ..) = abs(&doc, d);
     assert_eq!((cx, cy), (0.0, 20.0), "c");

@@ -8,8 +8,9 @@
 //! loses focus. The desktop textarea painted every line from the top of its
 //! box down, over whatever lay below it, and nothing scrolled it.
 //!
-//! Text is set in the bundled Inter (`sans-serif`). The field has a 3px
-//! border and 5px/7px padding, so its content box `x ∈ [10, 210), y ∈ [8, 62)`
+//! Text is set in the bundled Inter (`sans-serif`). The field is a 220×70
+//! `box-sizing: border-box` box (a `<textarea>` is `content-box` by default,
+//! in Chrome as here) with a 3px border and 5px/7px padding, so its content box `x ∈ [10, 210), y ∈ [8, 62)`
 //! and padding box `x ∈ [3, 217), y ∈ [3, 67)` sit off the border-box origin,
 //! and the content box (54px) holds two and a fraction of a line — off every
 //! whole-line fixed point.
@@ -28,7 +29,7 @@ const CONTENT_BOTTOM: f32 = 62.0;
 /// The padding box, which a scroll container clips its content to.
 const PAD: (f32, f32, f32, f32) = (3.0, 3.0, 217.0, 67.0);
 
-const AREA_STYLE: &str = "display: block; width: 220px; height: 70px; padding: 5px 7px; \
+const AREA_STYLE: &str = "display: block; box-sizing: border-box; width: 220px; height: 70px; padding: 5px 7px; \
      margin: 0; border: 3px solid transparent; font-size: 16px; line-height: 20px; \
      font-family: sans-serif; color: rgb(255, 0, 0); background: transparent; resize: none";
 
@@ -560,7 +561,7 @@ fn a_two_line_selection_is_partial_on_its_first_and_last_lines() {
 #[test]
 fn a_scrolled_inputs_selection_is_under_its_text() {
     const LONG: &str = "The quick brown fox jumps over the lazy dog, again and again!";
-    const STYLE: &str = "display: block; width: 120px; height: 30px; padding: 0 6px; margin: 0; \
+    const STYLE: &str = "display: block; box-sizing: border-box; width: 120px; height: 30px; padding: 0 6px; margin: 0; \
          border: 3px solid transparent; font-size: 16px; line-height: 20px; \
          font-family: sans-serif; color: rgb(255, 0, 0); background: transparent";
     let (mut app, id, field) = page("input", STYLE, LONG);

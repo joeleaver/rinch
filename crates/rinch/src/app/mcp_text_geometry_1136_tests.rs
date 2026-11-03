@@ -557,7 +557,9 @@ fn r1745_password_mid_char() {
 }
 
 /// A focused single-line input scrolled horizontally (#1723): the glyph box
-/// at the last character sits between the painted carets.
+/// at the last character sits between the painted carets. The field is a
+/// border box, 90px with its 13px padding (a text input is `content-box` by
+/// default, #1278), so its value overflows it and scrolls.
 #[test]
 fn r1745_scrolled_input_glyph() {
     let v = "wax was a vow a raw saw a war wax";
@@ -565,7 +567,7 @@ fn r1745_scrolled_input_glyph() {
         "input",
         None,
         format!(
-            "position: absolute; left: 41px; top: 33px; width: 90px; height: 30px; padding: 0 0 0 13px; {FIELD}"
+            "position: absolute; left: 41px; top: 33px; width: 90px; height: 30px; padding: 0 0 0 13px; box-sizing: border-box; {FIELD}"
         ),
         v,
     );

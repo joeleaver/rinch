@@ -337,8 +337,11 @@ fn a_padded_ifc_roots_text_does_not_escape_through_an_elided_clip() {
     doc.set_attribute(
         c,
         "style",
-        "position: absolute; left: 0; top: 0; width: 40px; padding-left: 100px; \
-         overflow: hidden; color: rgb(255, 0, 0); font-size: 20px; line-height: 24px",
+        // border-box: the padding swallows the 40px width, so the box is
+        // 100px wide with a zero-width content box at x = 100.
+        "position: absolute; left: 0; top: 0; box-sizing: border-box; width: 40px; \
+         padding-left: 100px; overflow: hidden; color: rgb(255, 0, 0); \
+         font-size: 20px; line-height: 24px",
     );
     doc.append_child(body, c);
     let t = doc.create_text("MMMM");
