@@ -111,7 +111,11 @@ fn a_rebuilt_field_loses_focus() {
     let draft = Signal::new(Some("h".to_string()));
     mount(move |s| follow_form(s, draft));
     let before = focus_and_type("he");
-    assert_eq!(draft.get().as_deref(), Some("he"), "the input reached rinch");
+    assert_eq!(
+        draft.get().as_deref(),
+        Some("he"),
+        "the input reached rinch"
+    );
     let after = field();
     assert!(
         !before.is_same_node(Some(&after)),
@@ -129,7 +133,11 @@ fn a_once_field_keeps_focus() {
     let draft = Signal::new(Some("h".to_string()));
     mount(move |s| once_form(s, draft));
     let before = focus_and_type("he");
-    assert_eq!(draft.get().as_deref(), Some("he"), "the input reached rinch");
+    assert_eq!(
+        draft.get().as_deref(),
+        Some("he"),
+        "the input reached rinch"
+    );
     assert!(
         before.is_same_node(Some(&field())),
         "`#[once]` keeps the same <input>"

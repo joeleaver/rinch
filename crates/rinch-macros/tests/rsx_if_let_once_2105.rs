@@ -157,7 +157,11 @@ fn once_on_one_arm_leaves_the_others_following() {
     let sel = Signal::new(Ok::<u32, String>(1));
     let (_doc, _scope, root) = mount(|s| once_arm(s, sel));
     sel.set(Ok(2));
-    assert_eq!(text(&root), "ok 1", "the `#[once]` arm keeps its first binding");
+    assert_eq!(
+        text(&root),
+        "ok 1",
+        "the `#[once]` arm keeps its first binding"
+    );
     assert_eq!(renders(), 1);
     sel.set(Err("x".into()));
     sel.set(Err("y".into()));
@@ -210,4 +214,3 @@ fn a_rebuild_replaces_an_input_and_once_keeps_it() {
         "`#[once]` keeps the same <input>"
     );
 }
-

@@ -379,13 +379,21 @@ fn a_rebuild_disposes_the_old_branch() {
 
     user.set(Some("B".into()));
     assert_eq!(text(&root), "B");
-    assert_eq!(CLEANUPS.with(Cell::get), 1, "the old branch's scope was disposed");
+    assert_eq!(
+        CLEANUPS.with(Cell::get),
+        1,
+        "the old branch's scope was disposed"
+    );
     assert_eq!(
         CLEANUP_SAW_NODE.with(Cell::get),
         Some(true),
         "the scope is disposed before its markup is discarded, so a cleanup still sees its node"
     );
-    assert_eq!(TICK_RUNS.with(Cell::get), 2, "the new branch's effect ran once");
+    assert_eq!(
+        TICK_RUNS.with(Cell::get),
+        2,
+        "the new branch's effect ran once"
+    );
 
     tick.set(4);
     assert_eq!(
@@ -465,7 +473,11 @@ fn an_earlier_guard_s_read_rebuilds_a_later_binding_arm() {
     // The first arm's guard read `limit`; the second arm still wins.
     limit.set(20);
     assert_eq!(text(&root), "item 5");
-    assert_eq!(renders(), 2, "the discriminant re-ran: the binding arm rebuilds");
+    assert_eq!(
+        renders(),
+        2,
+        "the discriminant re-ran: the binding arm rebuilds"
+    );
     limit.set(2);
     assert_eq!(text(&root), "big 5");
 }
