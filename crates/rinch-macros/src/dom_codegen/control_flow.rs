@@ -133,8 +133,9 @@ pub fn generate_if_block(
     // An `if let` whose pattern binds a name re-reads that value in its branch,
     // so the branch is rebuilt when the condition re-runs and still matches
     // (issue #2105). A plain `if`, or a pattern that binds nothing, keeps the
-    // build-once-per-show `show_dom`.
+    // build-once-per-show `show_dom`, and so does `#[once]`.
     let show_fn = if if_block.is_if_let
+        && !if_block.once
         && if_block
             .pattern
             .as_ref()
@@ -846,12 +847,15 @@ pub fn generate_match_block(
         .collect();
 
     // An arm whose pattern binds a name is rebuilt when the discriminant
-    // re-runs and picks it again (issue #2105). When no arm binds, the plain
-    // `match_dom` is emitted, unchanged.
+    // re-runs and picks it again (issue #2105). When no arm binds, or `#[once]`
+    // is on the `match` or on every arm that binds, the plain `match_dom` is
+    // emitted, unchanged.
     let rebinding: Vec<bool> = match_block
         .arms
         .iter()
-        .map(|arm| super::captures::pattern_binds_a_value(&arm.pattern))
+        .map(|arm| {
+            !match_block.once && !arm.once && super::captures::pattern_binds_a_value(&arm.pattern)
+        })
         .collect();
     if rebinding.iter().any(|b| *b) {
         return quote! {

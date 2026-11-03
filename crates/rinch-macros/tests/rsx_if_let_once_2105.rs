@@ -174,11 +174,11 @@ fn form(draft: Signal<Option<String>>) -> NodeHandle {
     rsx! {
         div {
             if let Some(text) = draft.get() {
-                input { class: "follow", value: {text} }
+                input { class: "follow", value: text.clone() }
             }
             #[once]
             if let Some(text) = draft.get() {
-                input { class: "once", value: {text} }
+                input { class: "once", value: text.clone() }
             }
         }
     }
