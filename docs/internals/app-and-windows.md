@@ -558,9 +558,9 @@ it. winit delivers device events only while the window is focused
 (`DeviceEvents::WhenFocused`, the default; rinch does not change it). Measured
 live in a private nested KWin (`kwin_wayland --virtual --xwayland`, XDG dirs
 pointed at a temp dir): Wayland grants `Locked`, Xwayland `Confined`, and
-under Xwayland XTest's relative moves arrive as raw motion and Escape releases;
-**each raw motion is reported twice by winit-x11** (two `device_event`s for
-one motion, so X11 deltas read double, #2114 — winit-fork's, not fixed here).
+under Xwayland XTest's relative moves arrive as raw motion and Escape releases.
+Each raw motion arrives once under the X11 grab since the winit-fork fix for #2114
+(see "winit Fork" below); before it, the server's second copy doubled the deltas.
 
 Web (`crates/rinch-web/src/pointer_lock.rs`, installed by
 `ensure_event_delegation`): `BrowserPointerLock` resolves the target

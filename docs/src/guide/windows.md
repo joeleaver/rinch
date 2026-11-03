@@ -683,8 +683,7 @@ hear any of these.
 **Motion units.** `dx`/`dy` are the platform's own, not logical pixels:
 unaccelerated device counts on X11 and Windows, unaccelerated surface units on
 Wayland, points on macOS, `movementX`/`movementY` in the browser. Multiply by a
-sensitivity of your own. (On X11 winit currently reports each motion twice, so
-the deltas there read double: #2114.) On the desktop `on_pointer_motion` also hears motion
+sensitivity of your own. On the desktop `on_pointer_motion` also hears motion
 while nothing is locked (whenever the window has focus, wherever the cursor
 is), which is enough for a drag-to-orbit camera; a burst within one turn of the
 event loop arrives summed as one step. Called while a component renders, the
