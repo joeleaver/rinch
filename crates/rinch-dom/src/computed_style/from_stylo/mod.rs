@@ -86,11 +86,24 @@ impl ComputedStyle {
         // percentage basis can never disagree with the element's own computed
         // font-size.
         let font_size_px = font.font_size.computed_size().px();
+        let inherited_table = cv.get_inherited_table();
 
         Self {
             // Display/position
             display: display_from_stylo(&box_style.display),
             table_part: table_part_from_stylo(&box_style.display),
+            box_sizing_border_box: cv.get_position().box_sizing
+                == style::computed_values::box_sizing::T::BorderBox,
+            border_collapse: inherited_table.border_collapse
+                == style::computed_values::border_collapse::T::Collapse,
+            border_spacing: (
+                inherited_table.border_spacing.0.width().px(),
+                inherited_table.border_spacing.0.height().px(),
+            ),
+            table_layout_fixed: cv.get_table().table_layout
+                == style::computed_values::table_layout::T::Fixed,
+            caption_bottom: inherited_table.caption_side
+                == style::computed_values::caption_side::T::Bottom,
             inline_level_before_blockify: box_style.original_display.outside()
                 == style::values::specified::box_::DisplayOutside::Inline,
             position: position_from_stylo(&box_style.position),

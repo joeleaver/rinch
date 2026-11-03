@@ -38,9 +38,16 @@ fn cell(doc: &mut RinchDocument, parent: NodeId) -> NodeId {
     el(doc, c, "b");
     c
 }
+/// Where a box is; for a row or row group, which generates none, where its
+/// first cell is.
 fn pos(doc: &RinchDocument, n: NodeId) -> (f32, f32) {
-    let l = &doc.tree.get(n.0).unwrap().layout;
-    (l.x, l.y)
+    let node = doc.tree.get(n.0).unwrap();
+    if node.computed_style.display == rinch_dom::computed_style::DisplayValue::Contents
+        && let Some(&c) = node.children.first()
+    {
+        return pos(doc, NodeId(c));
+    }
+    (node.layout.x, node.layout.y)
 }
 fn relayout(doc: &mut RinchDocument, w: f32) {
     doc.resolve_layout(w, 600.0);
@@ -197,13 +204,14 @@ fn p3_row_changes_to_block_and_back() {
     let c2 = cell(&mut doc, t);
     let r = row(&mut doc, t);
     relayout(&mut doc, 800.0);
-    assert_eq!(pos(&doc, c2).1, 20.0, "stacked while mixed");
+    // Bare cells share an anonymous row, which the row follows (Chrome).
+    assert_eq!(pos(&doc, c2).1, 0.0, "c1 and c2 share a row");
     doc.set_attribute(r, "class", "c");
     relayout(&mut doc, 801.0);
     assert_eq!(pos(&doc, c2).1, 0.0, "cells again");
     doc.set_attribute(r, "class", "r");
     relayout(&mut doc, 802.0);
-    assert_eq!(pos(&doc, c2).1, 20.0, "mixed again");
+    assert_eq!(pos(&doc, r).1, 20.0, "mixed again: the row follows");
     let _ = c1;
 }
 
@@ -220,8 +228,7 @@ fn p3_set_inner_html_rows() {
     );
     relayout(&mut doc, 801.0);
     let r2 = doc.tree.get(t.0).unwrap().children[1];
-    let l = doc.tree.get(r2).unwrap().layout;
-    assert_eq!((l.x, l.y), (0.0, 20.0));
+    assert_eq!(pos(&doc, NodeId(r2)), (0.0, 20.0));
 }
 
 #[test]
@@ -254,13 +261,14 @@ fn p3_rows_in_a_wrapper_appended_and_wrapper_removed() {
     assert_eq!(pos(&doc, c2).1, 0.0);
     let r = row(&mut doc, w);
     relayout(&mut doc, 801.0);
-    assert_eq!(pos(&doc, c2).1, 20.0, "row in wrapper stacks all");
+    assert_eq!(pos(&doc, c2).1, 0.0, "the bare cells keep their row");
+    assert_eq!(pos(&doc, r).1, 20.0, "the wrapper's row follows it");
     doc.remove_node(r);
     relayout(&mut doc, 802.0);
     assert_eq!(pos(&doc, c2).1, 0.0, "row gone");
     let r = row(&mut doc, w);
     relayout(&mut doc, 803.0);
-    assert_eq!(pos(&doc, c2).1, 20.0, "row back");
+    assert_eq!(pos(&doc, r).1, 20.0, "row back");
     doc.remove_node(w);
     relayout(&mut doc, 804.0);
     assert_eq!(pos(&doc, c2).1, 0.0, "wrapper gone");

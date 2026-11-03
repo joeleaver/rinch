@@ -13,9 +13,8 @@
 //! [`EditorHandle::set_dark_mode`](super::EditorHandle::set_dark_mode)); the dark
 //! rules below carry that extra attribute so they win by specificity.
 //!
-//! **Tables:** rinch-dom has no `display: table`, so tables are laid out with
-//! flexbox (`table` = column, `row` = row, cells = equal-width flex items). This
-//! is why the default stylesheet is load-bearing for tables, not just cosmetic.
+//! **Tables:** the editor lays its tables out with CSS grid (below), not as CSS
+//! tables, so the stylesheet is load-bearing for them, not just cosmetic.
 //!
 //! **Inline decorations:** a
 //! [`Decoration::Inline`](rinch_editor_core::decoration::Decoration::Inline)
@@ -168,7 +167,7 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
    no frame (a press beside it places the caret, an arrow steps over it). */
 [data-pm-editor] [data-pm-type="image"][data-pm-node-view] { padding: 0; border-radius: 0; }
 
-/* ── Tables (CSS grid — rinch-dom has no display:table) ─────────────────
+/* ── Tables (CSS grid, placed from the TableMap) ─────────────────
    The <table> is a grid; the view sets `grid-template-columns: repeat(N, …)`
    inline (N = column count). <tr> is `display: contents`, so its cells become
    the grid's direct items, and each cell carries an inline
