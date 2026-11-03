@@ -140,6 +140,23 @@ box:
   whole subtree — read as a display change and ran the whole-document
   `ifc_dirty` pass: 91ms for a colour-only hover over 2000 rows, 0.18ms after.
   `frozen_box_remeasure_tests` pins both halves through `tree.ifc_setup_passes`.
+- **A `Calc` layout value is compared resolved.** The stored Taffy style holds
+  the length `resolve_layout_calcs` resolved a mixed `calc()` to; a style
+  rebuilt from computed values carries only its length part (the seed). The
+  same three passes compare a copy of the rebuilt style resolved by
+  `patch_layout_calcs` (the per-node step of `resolve_layout_calcs`, against
+  the last layout's bases; `taffy_style_for_compare`), and store the seeded
+  style as before. Storing the resolved copy instead laid a box out unlike a
+  fresh layout where `resolve_layout_calcs` does not reach it (inside an atomic
+  inline, #1412; `review_1477_fixtures`' H5 `calc(5px + 2%)` margin).
+  Unresolved, a new `calc()` whose length part equalled
+  the old resolved length compared equal and the layout was skipped:
+  `calc(50% + 10px)` → `calc(10% + 160px)` stayed 160 wide in 300px, and an
+  animation frame `calc(6.25% + 150px)` after a frame resolved to 150 stayed
+  at 150 (#767; `calc_width_restyle_to_a_length_part_equal_to_the_old_width`,
+  `a_calc_frame_whose_length_part_is_the_last_resolved_width_lays_out`). No
+  transition produces a `Calc` frame yet (#2051), so the transition tick's
+  copy has no fixture of its own.
 
 `RinchDocument::invalidate_text_measure_for_node` is the one place that knows
 what a typography change owes: the IFC's Parley layout, the box of any atomic
@@ -215,8 +232,12 @@ went stale on class toggles, insertions and removals. Now:
   (`stylo_impl::element_state`); `:disabled`/`:enabled`/`:link` are read from
   attributes, so `disabled` and `href` force self + subtree + later siblings.
   `style`, `rows` (textarea), `start` (ol), `value` (li) and any attribute on an
-  element with generated content (`content: attr()` now works) force what they
-  feed. `:nth-child(… of S)` needs nothing extra: Stylo's maps record the
+  element with generated content force what they feed. So does any attribute on
+  an element whose style or `::before`/`::after` substitutes `attr()`: since
+  stylo 0.21 `attr()` is a substitution function (in any property, not only
+  `content`) that the cascade resolves through `TElement::get_attr`, and that
+  call flags the element (`Node::content_reads_attrs`, cleared before each
+  cascade of the element). `:nth-child(… of S)` needs nothing extra: Stylo's maps record the
   selectors inside `of S`.
 - **Stylesheet changes use Stylo's stylesheet invalidation** (#884,
   `style_resolution/sheets.rs`). `load_css`, `set_theme_css` and a `<style>`

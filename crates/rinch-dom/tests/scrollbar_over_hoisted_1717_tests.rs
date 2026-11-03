@@ -227,6 +227,11 @@ fn the_selected_row_does_not_cover_the_left_of_the_thumb() {
 
 /// An absolute box whose containing block is a positioned wrapper inside the
 /// scroller is contained by it, and the bar is drawn over it.
+///
+/// The box ends at the scroller's right edge (140 + 60 = 200), under the bar.
+/// Past it, it would overflow the scroller since #770 — a browser scrolls to
+/// it — and add a horizontal bar that its in-flow twin (an in-flow grandchild
+/// overflowing its parent, which rinch does not count yet, #2054) does not.
 #[test]
 fn the_bar_is_drawn_over_a_contained_absolute() {
     let mk = |abs: bool| {
@@ -234,9 +239,9 @@ fn the_bar_is_drawn_over_a_contained_absolute() {
             let rows = doc.get_children(s);
             doc.set_style(rows[1], "position", "relative");
             let pos = if abs {
-                "position: absolute; left: 150px; top: 0"
+                "position: absolute; left: 140px; top: 0"
             } else {
-                "margin-left: 150px"
+                "margin-left: 140px"
             };
             child(
                 doc,

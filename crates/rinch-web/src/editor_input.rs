@@ -899,7 +899,7 @@ pub fn __set_mac_platform(mac: Option<bool>) {
 
 /// Whether the page runs on macOS, where a Control-click is the context click
 /// (CodeMirror 5 asks `navigator.platform` the same question).
-fn is_mac() -> bool {
+pub(crate) fn is_mac() -> bool {
     if let Some(mac) = MAC_OVERRIDE.with(std::cell::Cell::get) {
         return mac;
     }

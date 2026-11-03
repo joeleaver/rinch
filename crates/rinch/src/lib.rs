@@ -63,7 +63,7 @@ pub use rinch_dom::perf;
 #[cfg(any(
     feature = "desktop",
     all(feature = "android", target_os = "android"),
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 pub mod app_builder;
 
@@ -118,9 +118,9 @@ mod logging;
 pub use logging::{init_logging, init_logging_with_filter};
 
 /// The browser's timer backend, task scheduler and poll drain (issue #1956).
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web_runtime;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use web_runtime::install_web_runtime;
 
 /// Install the browser's runtime (timers, tasks, poll drain) for a page that
@@ -128,7 +128,15 @@ pub use web_runtime::install_web_runtime;
 /// timer thread, the main-thread queue and the host's per-frame poll drain are
 /// built in — so this is a no-op, there so a cross-platform app can call it at
 /// startup with no `#[cfg(target_arch = "wasm32")]` of its own.
-#[cfg(not(target_arch = "wasm32"))]
+///
+/// A WASI guest (`wasm32-wasip1`) is not a browser either: rinch's browser
+/// halves are gated on `target_os = "unknown"`, so a guest that embeds rinch's
+/// components links no wasm-bindgen, and this is a no-op there too. Its host
+/// has no rinch frame loop of its own to lend, so the guest installs the hooks
+/// itself, through `rinch_core::set_timer_backend`,
+/// `rinch_core::task::set_task_scheduler` and
+/// `rinch_core::reactive::set_poll_waker`, as the web runtime does.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn install_web_runtime() {}
 
 /// Image loading: the [`ImageLoader`](image::ImageLoader) an app implements to
@@ -159,7 +167,10 @@ pub mod graph {
 
 /// File and message dialogs: natively behind the `file-dialogs` feature
 /// (`rfd`); in the browser (wasm32) the message dialogs need no feature (#1821).
-#[cfg(any(feature = "file-dialogs", target_arch = "wasm32"))]
+#[cfg(any(
+    feature = "file-dialogs",
+    all(target_arch = "wasm32", target_os = "unknown")
+))]
 pub mod dialogs;
 
 #[cfg(feature = "clipboard")]
@@ -221,7 +232,7 @@ pub mod prelude {
     #[cfg(any(
         feature = "desktop",
         all(feature = "android", target_os = "android"),
-        target_arch = "wasm32"
+        all(target_arch = "wasm32", target_os = "unknown")
     ))]
     pub use crate::app_builder::App;
     pub use crate::font::{AppFont, GenericFamily};
@@ -405,7 +416,7 @@ pub use rinch_core::element::{
 #[cfg(any(
     feature = "desktop",
     all(feature = "android", target_os = "android"),
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 pub use app_builder::App;
 pub use rinch_core::{

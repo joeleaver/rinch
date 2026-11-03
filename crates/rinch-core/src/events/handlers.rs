@@ -259,6 +259,22 @@ pub struct WheelEvent {
     /// Shift / Ctrl / Alt / Meta at the time of the wheel. Ctrl is set for a
     /// trackpad pinch.
     pub modifiers: super::ModifierState,
+    /// The element under the pointer, the DOM's `event.target`: the deepest
+    /// element the wheel is over (over text, the element holding it), which
+    /// is the handler's own element or one inside it. On the web, under an
+    /// element rinch did not create (raw HTML), the nearest one it did. `None`
+    /// for an event built by hand.
+    ///
+    /// Turn it into a handle with [`NodeHandle::handle_for`] on any handle
+    /// of the same document (the handler's own element, typically) to walk
+    /// up from it — for instance to ask which scroll container inside the
+    /// handler's element a plain wheel would move
+    /// ([`NodeHandle::can_scroll_toward`]) before taking the wheel for
+    /// itself.
+    ///
+    /// [`NodeHandle::handle_for`]: crate::dom::NodeHandle::handle_for
+    /// [`NodeHandle::can_scroll_toward`]: crate::dom::NodeHandle::can_scroll_toward
+    pub target: Option<crate::dom::NodeId>,
 }
 
 impl WheelEvent {
@@ -270,6 +286,7 @@ impl WheelEvent {
             x,
             y,
             modifiers: super::ModifierState::default(),
+            target: None,
         }
     }
 
@@ -279,12 +296,55 @@ impl WheelEvent {
         self
     }
 
+    /// The same event over this element ([`target`](Self::target)).
+    pub fn with_target(mut self, target: crate::dom::NodeId) -> Self {
+        self.target = Some(target);
+        self
+    }
+
+    /// The deltas the default scroll moves by: these deltas, except that with
+    /// Shift held a wheel with no sideways part scrolls sideways by its
+    /// vertical one where the platform does that ([`shift_wheel_turns_sideways`]:
+    /// Linux and Windows, as Chrome and Firefox scroll there; not macOS, whose
+    /// mouse wheel already arrives sideways under Shift and whose trackpad
+    /// with Shift held stays vertical). A handler that wants to know where
+    /// the default scroll would go — or to scroll the way it does — reads this.
+    pub fn scroll_deltas(&self) -> (f32, f32) {
+        if self.modifiers.shift && self.delta_x == 0.0 && shift_wheel_turns_sideways() {
+            (self.delta_y, 0.0)
+        } else {
+            (self.delta_x, self.delta_y)
+        }
+    }
+
     /// The scale this wheel zooms by when it is read as a zoom (a pinch, or
     /// Ctrl/Cmd+wheel): 100 px of `delta_y` is a factor of *e*, the curve
     /// browsers and most canvas apps use. Above 1 zooms in.
     pub fn zoom_factor(&self) -> f32 {
         (-self.delta_y / 100.0).exp()
     }
+}
+
+thread_local! {
+    static SHIFT_WHEEL_SIDEWAYS: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(!cfg!(target_os = "macos")) };
+}
+
+/// Whether Shift turns a vertical-only wheel sideways for the default scroll
+/// on this platform ([`WheelEvent::scroll_deltas`]): yes on Linux and Windows
+/// (Chrome's and Firefox's behaviour there), no on macOS, where the system
+/// does it for a mouse wheel itself. Native builds answer by the target OS;
+/// rinch-web sets it from `navigator.platform` when it installs its wheel
+/// listener.
+pub fn shift_wheel_turns_sideways() -> bool {
+    SHIFT_WHEEL_SIDEWAYS.with(std::cell::Cell::get)
+}
+
+/// Set [`shift_wheel_turns_sideways`] for this thread: the web backend's
+/// platform answer, and tests of the macOS half. Not app API.
+#[doc(hidden)]
+pub fn set_shift_wheel_turns_sideways(on: bool) {
+    SHIFT_WHEEL_SIDEWAYS.with(|c| c.set(on));
 }
 
 /// Cloneable callback for an element's `onwheel`.

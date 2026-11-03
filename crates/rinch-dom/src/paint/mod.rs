@@ -525,6 +525,97 @@ fn compute_damage_impl(
     }
 
     // A removed node's old pixels are placed by no paint.
+    if let Some(out) = by_node.as_deref_mut() {
+        let rects = std::mem::take(&mut *named_rects.borrow_mut());
+        if !rects.is_empty() {
+            out.push(NodeDamage { node: None, rects });
+        }
+    }
+
+    // A scroll container whose bars moved with its range: the strip of each
+    // axis whose bar changed, which holds the bar where it was and where it
+    // is (see `bar_watch_scrollers`).
+    for scroller in bar_watch_scrollers(tree) {
+        let now = scrollbar::scrollbars(tree, scroller, 1.0);
+        // A container with no record painted no bar: every scroll container
+        // a paint draws is recorded (`NodeTree::consume_paint_dirty`).
+        let was = tree
+            .painted_bars
+            .get(&scroller)
+            .copied()
+            .unwrap_or(scrollbar::Scrollbars {
+                vertical: None,
+                horizontal: None,
+                ..now
+            });
+        if was == now {
+            continue;
+        }
+        // Only the tracks differ: the axes whose track did (a bar that
+        // appears on one axis shortens the other's track, so that one
+        // differs too). Drawn otherwise: both.
+        let tracks_only = scrollbar::Scrollbars {
+            vertical: now.vertical,
+            horizontal: now.horizontal,
+            ..was
+        } == now;
+        let (vertical, horizontal) = if tracks_only {
+            (
+                was.vertical != now.vertical,
+                was.horizontal != now.horizontal,
+            )
+        } else {
+            (true, true)
+        };
+        let Some(node) = tree.get(scroller) else {
+            continue;
+        };
+        let (w, h) = (node.layout.width as f64, node.layout.height as f64);
+        if w <= 0.0 || h <= 0.0 {
+            continue;
+        }
+        let (ax, ay, transform) = compute_absolute_position_and_transform(tree, scroller, scale);
+        let clip = clip_chain_bounds(tree, scroller, scale, false);
+        // The widest bar's footprint from the edge (a 6px bar 2px in), and
+        // its anti-aliased edge.
+        let strip = (scrollbar::THICKNESS + 2.0 * scrollbar::MARGIN)
+            .min(w)
+            .min(h);
+        // In device pixels, the outer edges snapped out and the edge the two
+        // strips share rounded once: two strips that touch stay two rects
+        // (`DamageRegion` merges any two that overlap, and the union of the
+        // two is the container's whole box).
+        let (x0, y0) = (ax.floor(), ay.floor());
+        let (x1, y1) = ((ax + w * scale).ceil(), (ay + h * scale).ceil());
+        let inner_x = (ax + (w - strip) * scale).round();
+        let inner_y = (ay + (h - strip) * scale).round();
+        let mut strips = Vec::with_capacity(2);
+        if vertical {
+            let bottom = if horizontal { inner_y } else { y1 };
+            strips.push(Rect::new(inner_x, y0, x1, bottom));
+        }
+        if horizontal {
+            strips.push(Rect::new(x0, inner_y, x1, y1));
+        }
+        for r in strips {
+            let r = transform.transform_rect_bbox(r);
+            let r = match clip {
+                Some(c) => r.intersect(c),
+                None => r,
+            };
+            if !(r.width() > 0.0 && r.height() > 0.0) {
+                continue;
+            }
+            if attributing {
+                named_rects.borrow_mut().push(r);
+            }
+            if region.add(r) {
+                return DamageRegion::full(viewport_w, viewport_h);
+            }
+        }
+    }
+    // Bars are drawn by the container's paint or after its last positioned
+    // descendant (#1717): placed by no one node's start.
     if let Some(out) = by_node {
         let rects = std::mem::take(&mut *named_rects.borrow_mut());
         if !rects.is_empty() {
@@ -534,6 +625,84 @@ fn compute_damage_impl(
 
     // Every rect was clamped to the surface as it was added.
     region
+}
+
+/// The scroll containers whose bars may have moved since the last paint
+/// consumed the tree, with none of their own boxes dirty (#770's follow-up,
+/// batch #2062).
+///
+/// A container's bars are drawn from its scroll **range**, which its content
+/// sets: a box moved past its edge, a row grown, a child removed. None of
+/// those makes the container dirty — its box did not move — so a partial frame
+/// kept the old bar: no thumb where one had appeared, a thumb of the old
+/// length. Since #770 every absolute box counts in the range of the scroll
+/// container at its containing block (the page's is the `<body>`'s), so any
+/// absolute box moved past the window's edge changed the page's bars.
+///
+/// The answer: every scroll container (`overflow` `auto` or `scroll` on an
+/// axis) that is an ancestor of a paint-dirty node whose **geometry** may have
+/// changed — never painted, its box moved or resized since, its `position`
+/// changed, or a transform on it now or when painted — or of a parent a
+/// subtree was removed or moved from (`NodeTree::bar_check_parents`). Any box
+/// whose range a node can reach is an ancestor of it: an absolute box's
+/// container is at or above its containing block. A dirty node whose geometry
+/// held (a colour, a caret blink) asks nothing, so it measures no range. Each
+/// ancestor is walked once.
+///
+/// The damage compares each one's bars now against `NodeTree::painted_bars`
+/// and names its two bar strips when they differ (or were never recorded);
+/// `NodeTree::consume_paint_dirty` records them.
+pub(crate) fn bar_watch_scrollers(tree: &NodeTree) -> Vec<RawNodeId> {
+    let mut out = Vec::new();
+    if tree.paint_dirty_nodes.is_empty() && tree.bar_check_parents.is_empty() {
+        return out;
+    }
+    let mut seen: HashSet<RawNodeId> = HashSet::new();
+    let mut climb = |from: Option<RawNodeId>, out: &mut Vec<RawNodeId>| {
+        let mut current = from;
+        while let Some(id) = current {
+            if !seen.insert(id) {
+                break;
+            }
+            let Some(node) = tree.get_live(id) else {
+                break;
+            };
+            if node.scrolls_x() || node.scrolls_y() {
+                out.push(id);
+            }
+            current = node.parent;
+        }
+    };
+    for &id in &tree.paint_dirty_nodes {
+        let Some(node) = tree.get_live(id) else {
+            continue;
+        };
+        // The node itself, when it is a container: its bars are recorded
+        // with the rest of what it painted.
+        if node.scrolls_x() || node.scrolls_y() {
+            climb(Some(id), &mut out);
+        } else if geometry_may_have_moved(node) {
+            climb(node.parent, &mut out);
+        }
+    }
+    for &id in &tree.bar_check_parents {
+        climb(Some(id), &mut out);
+    }
+    out
+}
+
+/// Whether `node`'s box may sit elsewhere in its ancestors' scroll ranges than
+/// when it was last painted: never painted, moved or resized, positioned
+/// otherwise, or transformed (now or then — a transform's value is not
+/// compared).
+fn geometry_may_have_moved(node: &Node) -> bool {
+    let Some(painted) = node.painted.as_ref() else {
+        return true;
+    };
+    node.prev_layout != node.layout
+        || painted.position != node.box_position()
+        || painted.transform.is_some()
+        || node.has_applied_transform()
 }
 
 /// Whether `node`'s place in the paint order has changed since it was last

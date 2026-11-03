@@ -39,8 +39,8 @@ impl RinchDocument {
         existing: Option<RawNodeId>,
     ) -> bool {
         use selectors::matching::{
-            IncludeStartingStyle, MatchingContext, MatchingForInvalidation, MatchingMode,
-            NeedsSelectorFlags, SelectorCaches, VisitedHandlingMode,
+            MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags,
+            SelectorCaches, VisitedHandlingMode,
         };
         use style::applicable_declarations::ApplicableDeclarationList;
         use style::context::CascadeInputs;
@@ -80,7 +80,6 @@ impl RinchDocument {
                     None,
                     &mut selector_caches,
                     VisitedHandlingMode::AllLinksUnvisited,
-                    IncludeStartingStyle::No,
                     self.stylist.quirks_mode(),
                     // Recorded, as for the element's own match: a structural
                     // selector that only a pseudo rule uses
@@ -142,10 +141,13 @@ impl RinchDocument {
                 Some(self.stylist.cascade_style_and_visited(
                     Some(RinchNode::new(parent_id, &self.tree)),
                     Some(&pseudo),
-                    CascadeInputs {
+                    &CascadeInputs {
                         rules: Some(rule_node),
                         visited_rules: None,
                         flags: matching_context.extra_data.cascade_input_flags,
+                        // Not `STARTING_STYLE`: `@starting-style` rules stay
+                        // out, as `IncludeStartingStyle::No` kept them before.
+                        included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
                     },
                     &guards,
                     Some(parent_style),
@@ -154,6 +156,7 @@ impl RinchDocument {
                     &Default::default(),
                     None,
                     &mut rule_cache_conditions,
+                    &mut Default::default(), // tree_counting_caches
                 ))
             }
         };
@@ -170,19 +173,9 @@ impl RinchDocument {
             self.tree.nodes[parent_id].uses_viewport_units.set(true);
         }
 
-        // `content: attr(x)` reads an attribute no selector need name, so
-        // the element is flagged for `note_attribute_change` to restyle on any
-        // attribute write — including the one that *adds* `x`, when there is
-        // no generated box yet (an absent attribute yields empty content).
-        if let style::values::generics::counters::Content::Items(items) =
-            &pseudo_computed.get_counters().content
-            && items
-                .items
-                .iter()
-                .any(|i| matches!(i, style::values::generics::counters::ContentItem::Attr(_)))
-        {
-            self.tree.nodes[parent_id].content_reads_attrs.set(true);
-        }
+        // `content: attr(x)` reads an attribute no selector need name; the
+        // cascade above asked `TElement::get_attr` for it, which flagged the
+        // element (`content_reads_attrs`) for `note_attribute_change`.
 
         // Check content property - if none/normal/empty, skip
         if pseudo_computed.ineffective_content_property() {
@@ -199,11 +192,7 @@ impl RinchDocument {
         // purely decorative `::before`/`::after` (an arrow, a divider stroke, a
         // dot) ever wants. So this does not early-return on an empty string: it
         // only decides whether the box gets a text child below.
-        let text = Self::extract_content_text_with_counters(
-            &pseudo_computed,
-            &counter_values,
-            &self.tree.nodes[parent_id].attributes,
-        );
+        let text = Self::extract_content_text_with_counters(&pseudo_computed, &counter_values);
 
         // Convert pseudo computed style to our ComputedStyle
         let pseudo_style = ComputedStyle::from_stylo(&pseudo_computed);
@@ -269,7 +258,7 @@ impl RinchDocument {
                 .set(filter_creates_stacking_context);
             let mut data = style::data::ElementData::default();
             data.styles.primary = Some(pseudo_computed);
-            *self.tree.nodes[span_raw].stylo_element_data.borrow_mut() = Some(data);
+            self.tree.nodes[span_raw].stylo_element_data.set(data);
             self.tree.style_dirty_nodes.push(span_raw);
         }
 
@@ -402,7 +391,6 @@ impl RinchDocument {
     pub(crate) fn extract_content_text_with_counters(
         computed: &ComputedValues,
         counter_values: &std::collections::HashMap<String, i32>,
-        attributes: &std::collections::HashMap<String, String>,
     ) -> String {
         use style::values::generics::counters::{Content, ContentItem};
 
@@ -433,15 +421,9 @@ impl RinchDocument {
                             }
                             let _ = separator; // TODO: nested counter separator support
                         }
-                        // `attr(name)`: the originating element's attribute, or
-                        // the fallback when it has none. An attribute change on
-                        // an element with generated content restyles it
-                        // (`invalidation::note_attribute_change`), which is
-                        // what keeps this current.
-                        ContentItem::Attr(attr) => match attributes.get(attr.attribute.as_ref()) {
-                            Some(value) => result.push_str(value),
-                            None => result.push_str(attr.fallback.as_ref()),
-                        },
+                        // `attr(name)` is no content item since stylo 0.21: it
+                        // is substituted in the cascade (`TElement::get_attr`)
+                        // and arrives here as the `String` above.
                         _ => {
                             // Skip other content items (image, quotes, etc.)
                         }
@@ -579,19 +561,41 @@ impl RinchDocument {
         // `<li>` covers both an inline override and inheriting it from the
         // parent `<ul>`/`<ol>`) gets none either.
         use style::properties::longhands::list_style_type::computed_value::T as ListStyleType;
+        #[derive(Clone, Copy, PartialEq)]
+        enum Marker {
+            Disc,
+            Circle,
+            Square,
+            Decimal,
+            Other,
+        }
         let keyword = {
             let stylo_data = node.stylo_element_data.borrow();
-            match &*stylo_data {
+            match &stylo_data {
                 Some(data) => match &data.styles.primary {
                     Some(primary) => {
                         if !primary.get_box().display.is_list_item() {
                             return false;
                         }
-                        let kw = primary.get_list().list_style_type;
-                        if kw == ListStyleType::None {
+                        let kw = &primary.get_list().list_style_type;
+                        if *kw == ListStyleType::none() {
                             return false;
                         }
-                        kw
+                        // A `<counter-style>` since stylo 0.21 (it was a
+                        // keyword enum): the four names this picks a glyph
+                        // for, anything else `Other`.
+                        let is = |name: &str| kw.is_name(&style::Atom::from(name));
+                        if is("disc") {
+                            Marker::Disc
+                        } else if is("circle") {
+                            Marker::Circle
+                        } else if is("square") {
+                            Marker::Square
+                        } else if is("decimal") {
+                            Marker::Decimal
+                        } else {
+                            Marker::Other
+                        }
                     }
                     None => return false,
                 },
@@ -631,10 +635,10 @@ impl RinchDocument {
         // `Decimal`, and any keyword this match doesn't know yet, fall back
         // to the pre-#725 tag-based heuristic.
         let marker_text = match keyword {
-            ListStyleType::Disc => "\u{2022}\u{2002}".to_string(), // •
-            ListStyleType::Circle => "\u{25E6}\u{2002}".to_string(), // ◦
-            ListStyleType::Square => "\u{25AA}\u{2002}".to_string(), // ▪
-            _ if parent_tag == "ol" || keyword == ListStyleType::Decimal => {
+            Marker::Disc => "\u{2022}\u{2002}".to_string(),   // •
+            Marker::Circle => "\u{25E6}\u{2002}".to_string(), // ◦
+            Marker::Square => "\u{25AA}\u{2002}".to_string(), // ▪
+            _ if parent_tag == "ol" || keyword == Marker::Decimal => {
                 let counters = self.compute_list_item_counters(node_id);
                 let num = counters.get("list-item").copied().unwrap_or(1);
                 format!("{}.\u{2002}", num)

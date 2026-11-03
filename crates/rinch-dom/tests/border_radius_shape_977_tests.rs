@@ -633,18 +633,20 @@ fn a_vertical_only_radius_change_transitions() {
     );
 }
 
-/// An axis that cannot interpolate (a length to a percentage) snaps on its
-/// own; the other axis of the same corner still animates (review of #1640:
-/// the first cut snapped the whole corner, where the horizontal radius
-/// animated before #977).
+/// Each axis of a corner interpolates on its own (review of #1640: the first
+/// cut snapped the whole corner, where the horizontal radius animated before
+/// #977). A length against a percentage interpolates as a `calc()` (#767):
+/// Chrome 156 reads `15px calc(25% + 5px)` at the midpoint of
+/// `10px` → `20px 50%`, which is 30px on a 100px-tall box. It used to snap to
+/// its end (50).
 #[test]
-fn a_corner_snaps_only_the_axis_that_cannot_interpolate() {
+fn a_corner_interpolates_each_axis_on_its_own() {
     let (x, y) = radius_mid_transition("10px", "20px / 50%")
         .expect("the class change should start a transition");
     assert!((x - 15.0).abs() < 0.01, "the length axis animates: {x}");
     assert!(
-        (y - 50.0).abs() < 0.01,
-        "the mixed axis snaps to its end: {y}"
+        (y - 30.0).abs() < 0.01,
+        "the mixed axis interpolates as calc(25% + 5px): {y}"
     );
 }
 
