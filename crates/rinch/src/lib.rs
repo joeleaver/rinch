@@ -305,7 +305,8 @@ pub mod prelude {
     pub use rinch_macros::{component, rsx};
     // Window facts and acts on every target (#1770)
     pub use crate::window::{
-        OpenUrlError, open_url, scale_factor, set_window_title, window_focused, window_size,
+        OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
+        window_focused, window_size,
     };
     // Window control functions
     #[cfg(feature = "desktop")]
@@ -437,7 +438,8 @@ pub use shell::{
 #[allow(deprecated)]
 pub use shell::{run_with_external_device, run_with_gpu_config};
 pub use window::{
-    OpenUrlError, open_url, scale_factor, set_window_title, window_focused, window_size,
+    OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
+    window_focused, window_size,
 };
 
 /// Re-export of the exact `wgpu` rinch links against.

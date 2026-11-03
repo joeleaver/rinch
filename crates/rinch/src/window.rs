@@ -297,9 +297,233 @@ pub(crate) fn take_stored_title() -> Option<String> {
         .take()
 }
 
+// ── Vsync (#2095) ───────────────────────────────────────────────────────────
+
+/// How the window's frames reach the display: what [`set_vsync`] got from the
+/// window's surface, and what [`presentation`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Presentation {
+    /// Nothing presents yet: the window or its renderer does not exist (before
+    /// the event loop starts, or while a window that started hidden has not
+    /// been shown). The setting is stored and applied when it does.
+    Pending,
+    /// Paced to the display's refresh (vsync on): each present waits for the
+    /// next vertical blank, so a window draws at most one frame per refresh
+    /// (`Fifo`, or `FifoRelaxed` where the surface offers it).
+    Vsync,
+    /// Uncapped without tearing: frames are drawn as fast as the app asks
+    /// for them, and the display shows the newest one at each refresh
+    /// (`Mailbox`).
+    Mailbox,
+    /// Uncapped: each frame goes to the display as soon as it is drawn, which
+    /// may tear (`Immediate`).
+    Immediate,
+    /// The renderer has no present mode to switch. The software renderer
+    /// (softbuffer) has none, nor does the browser (frames follow
+    /// `requestAnimationFrame`), Android's shell (it presents with `Fifo`), or
+    /// an embed host (it owns the surface).
+    Unsupported,
+}
+
+impl Presentation {
+    /// Whether frames are drawn without waiting for the display:
+    /// [`Mailbox`](Self::Mailbox) or [`Immediate`](Self::Immediate).
+    pub fn is_uncapped(self) -> bool {
+        matches!(self, Self::Mailbox | Self::Immediate)
+    }
+}
+
+/// What the main window's surface does with vsync on and with it off, as the
+/// shell worked it out from the surface's present modes when it made the
+/// renderer: `None` before there is one.
+#[cfg(all(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    feature = "desktop"
+))]
+static PACING: std::sync::Mutex<Option<PacingOutcomes>> = std::sync::Mutex::new(None);
+
+/// Whether vsync was asked off ([`set_vsync`], [`App::vsync`](crate::App::vsync)).
+#[cfg(all(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    feature = "desktop"
+))]
+static VSYNC_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What a window's surface does with vsync on and off (#2095).
+#[cfg_attr(
+    not(all(
+        not(all(target_arch = "wasm32", target_os = "unknown")),
+        feature = "desktop"
+    )),
+    allow(dead_code)
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PacingOutcomes {
+    pub on: Presentation,
+    pub off: Presentation,
+}
+
+#[cfg_attr(
+    not(all(
+        not(all(target_arch = "wasm32", target_os = "unknown")),
+        feature = "desktop"
+    )),
+    allow(dead_code)
+)]
+impl PacingOutcomes {
+    /// A renderer with no present mode to switch (software).
+    pub const UNSUPPORTED: Self = Self {
+        on: Presentation::Unsupported,
+        off: Presentation::Unsupported,
+    };
+
+    /// The outcome for a request.
+    pub fn for_vsync(self, on: bool) -> Presentation {
+        if on { self.on } else { self.off }
+    }
+}
+
+/// Turn the window's vsync on or off, and answer what its surface will do.
+///
+/// With vsync on (the default) each frame waits for the display's next
+/// refresh, so frame-to-frame times never read below the refresh interval
+/// (16.7 ms at 60 Hz), however cheap the frame. Turned off, the GPU renderer
+/// presents with `Immediate`, or `Mailbox` where the surface has no
+/// `Immediate`; a surface that offers neither stays paced, and the answer says
+/// [`Presentation::Vsync`]. Use it to measure what a frame costs, to compare
+/// against another engine, or as a player setting.
+///
+/// The frame loop is unchanged: rinch draws a frame when something asks for
+/// one (a continuous [`RenderSurface`](crate::render_surface), a running CSS
+/// animation, a texture source's new frame, an event). With vsync off those
+/// frames follow each other as fast as they can be drawn; a window with
+/// nothing to draw still sleeps.
+///
+/// - **Desktop, GPU renderer**: applied to the main window's surface and the
+///   DevTools window's on the event loop's next turn, before the next frame
+///   is acquired; a window the shell makes later (a hide/show re-creation)
+///   takes it at creation. The answer is worked out from the main window's
+///   surface, the same way the shell chooses.
+/// - **Desktop, software renderer**: [`Presentation::Unsupported`]. softbuffer
+///   has no present mode; how its frames are paced is the windowing system's
+///   (on Wayland a frame waits until the compositor releases the buffer it
+///   drew the frame before last into).
+/// - **Before the window exists** (or while it starts hidden):
+///   [`Presentation::Pending`]; the setting is stored and the window takes it.
+/// - **Web and Android**: [`Presentation::Unsupported`], and nothing changes.
+/// - **A native embed** (`RinchContext`): the host owns its surface and its
+///   present mode, and nothing here changes them. The answer is `Pending` in
+///   a build with the desktop shell (no shell window presents), else
+///   `Unsupported`.
+///
+/// May be called from any thread on the desktop. [`presentation`] reads the
+/// result reactively.
+pub fn set_vsync(on: bool) -> Presentation {
+    let honoured = platform::set_vsync(on);
+    // The calling thread's readers hear it now: on the UI thread, those are
+    // the app's. A request from another thread reaches the UI thread's when
+    // the shell applies it (`publish_pacing`).
+    vsync_signal().set_if_changed(platform::vsync());
+    honoured
+}
+
+/// Whether vsync is asked for: `true` unless [`set_vsync`] (or
+/// [`App::vsync`](crate::App::vsync)) turned it off. What the surface does is
+/// [`presentation`].
+///
+/// Reactive on the UI thread: a reader there re-runs when the request
+/// changes — at once for a [`set_vsync`] made on the UI thread, and when the
+/// shell applies it for one made on another thread. The value it answers is
+/// the request itself, on any thread.
+pub fn vsync() -> bool {
+    vsync_signal().get();
+    platform::vsync()
+}
+
+/// How the main window's frames reach the display now: see [`Presentation`].
+/// Reactive: a reader re-runs when the shell applies a [`set_vsync`], creates
+/// the window's renderer or falls back to software.
+///
+/// [`Presentation::Pending`] until the desktop shell has made its renderer;
+/// [`Presentation::Unsupported`] on the web, Android and in a native embed.
+///
+/// **UI thread only.** The answer is a signal of the UI thread's, which the
+/// shell publishes; read on another thread it stays at that thread's initial
+/// value (`Pending` on the desktop). Off the UI thread, keep what
+/// [`set_vsync`] returned.
+pub fn presentation() -> Presentation {
+    presentation_signal().get()
+}
+
+thread_local! {
+    static PRESENTATION: Cell<Option<Signal<Presentation>>> = const { Cell::new(None) };
+    static VSYNC: Cell<Option<Signal<bool>>> = const { Cell::new(None) };
+}
+
+/// The vsync request, read without subscribing: for the shell's GPU
+/// renderer.
+#[cfg(feature = "gpu")]
+pub(crate) fn vsync_requested() -> bool {
+    platform::vsync()
+}
+
+/// The thread's copy of the vsync request, for [`vsync`]'s readers to
+/// subscribe to.
+fn vsync_signal() -> Signal<bool> {
+    if let Some(s) = VSYNC.with(Cell::get) {
+        return s;
+    }
+    let s = rinch_core::unowned(|| Signal::new(platform::vsync()));
+    VSYNC.with(|c| c.set(Some(s)));
+    s
+}
+
+fn presentation_signal() -> Signal<Presentation> {
+    if let Some(s) = PRESENTATION.with(Cell::get) {
+        return s;
+    }
+    let s = rinch_core::unowned(|| Signal::new(platform::initial_presentation()));
+    PRESENTATION.with(|c| c.set(Some(s)));
+    s
+}
+
+/// Record what the main window's surface does with vsync on and off
+/// (`None`: it has no renderer now), and publish what it does now. On the UI
+/// thread, from the shell.
+#[cfg(all(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    feature = "desktop"
+))]
+pub(crate) fn publish_pacing(outcomes: Option<PacingOutcomes>) {
+    *PACING.lock().unwrap_or_else(|e| e.into_inner()) = outcomes;
+    let on = platform::vsync();
+    let now = outcomes.map_or(Presentation::Pending, |o| o.for_vsync(on));
+    rinch_core::batch(|| {
+        vsync_signal().set_if_changed(on);
+        presentation_signal().set_if_changed(now);
+    });
+}
+
+/// Serialises the tests that write the process-wide vsync request and
+/// outcomes.
+#[cfg(all(test, feature = "desktop"))]
+pub(crate) static VSYNC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Forget the main window's outcomes when the shell shuts down, so a later
+/// [`set_vsync`] answers `Pending`. Writes no signal: the reactive runtime
+/// may be going away with the shell.
+#[cfg(all(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    feature = "desktop"
+))]
+pub(crate) fn clear_pacing() {
+    *PACING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod platform {
-    use super::{Initial, OpenUrlError};
+    use super::{Initial, OpenUrlError, Presentation};
 
     pub(super) fn initial_state() -> Initial {
         Initial {
@@ -311,6 +535,48 @@ mod platform {
 
     /// Nothing to watch: the runtime publishes.
     pub(super) fn watch() {}
+
+    pub(super) fn set_vsync(on: bool) -> Presentation {
+        #[cfg(feature = "desktop")]
+        {
+            super::VSYNC_OFF.store(!on, std::sync::atomic::Ordering::SeqCst);
+            // Wake a running shell to apply it; before the loop starts the
+            // window takes it when its renderer is made.
+            if crate::shell::rinch_runtime::GLOBAL_PROXY.get().is_some() {
+                crate::shell::rinch_runtime::send_native_event(
+                    crate::shell::rinch_runtime::RinchNativeEvent::ApplyVsync,
+                );
+            }
+            super::PACING
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .map_or(Presentation::Pending, |o| o.for_vsync(on))
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            let _ = on;
+            Presentation::Unsupported
+        }
+    }
+
+    pub(super) fn vsync() -> bool {
+        #[cfg(feature = "desktop")]
+        {
+            !super::VSYNC_OFF.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            true
+        }
+    }
+
+    pub(super) fn initial_presentation() -> Presentation {
+        if cfg!(feature = "desktop") {
+            Presentation::Pending
+        } else {
+            Presentation::Unsupported
+        }
+    }
 
     pub(super) fn set_window_title(title: &str) {
         #[cfg(feature = "desktop")]
@@ -400,7 +666,7 @@ mod platform {
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod platform {
-    use super::{Initial, OpenUrlError, WindowFacts, publish};
+    use super::{Initial, OpenUrlError, Presentation, WindowFacts, publish};
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::Closure;
 
@@ -497,6 +763,19 @@ mod platform {
         );
     }
 
+    /// The browser paces frames with `requestAnimationFrame`: nothing to switch.
+    pub(super) fn set_vsync(_on: bool) -> Presentation {
+        Presentation::Unsupported
+    }
+
+    pub(super) fn vsync() -> bool {
+        true
+    }
+
+    pub(super) fn initial_presentation() -> Presentation {
+        Presentation::Unsupported
+    }
+
     pub(super) fn set_window_title(title: &str) {
         if let Some(document) = web_sys::window().and_then(|w| w.document()) {
             document.set_title(title);
@@ -523,6 +802,56 @@ mod platform {
 mod tests {
     use super::*;
     use std::rc::Rc;
+
+    /// #2095: `set_vsync` answers from the outcomes the shell published, is
+    /// `Pending` before a window, and `presentation` follows the request.
+    /// One test: the setting is process-wide.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn set_vsync_answers_what_the_surface_will_do() {
+        let _lock = VSYNC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_vsync(true);
+        publish_pacing(None);
+        assert!(vsync(), "on by default");
+        assert_eq!(presentation(), Presentation::Pending);
+        assert_eq!(set_vsync(false), Presentation::Pending, "no window yet");
+        assert!(!vsync(), "stored for the window to take");
+
+        // A surface with `Mailbox` and no `Immediate`.
+        publish_pacing(Some(PacingOutcomes {
+            on: Presentation::Vsync,
+            off: Presentation::Mailbox,
+        }));
+        assert_eq!(presentation(), Presentation::Mailbox, "the stored request");
+        assert_eq!(set_vsync(true), Presentation::Vsync);
+        assert_eq!(set_vsync(false), Presentation::Mailbox);
+
+        // The software renderer.
+        publish_pacing(Some(PacingOutcomes::UNSUPPORTED));
+        assert_eq!(presentation(), Presentation::Unsupported);
+        assert_eq!(set_vsync(true), Presentation::Unsupported);
+        assert!(vsync());
+
+        // Hidden: nothing presents until it is shown.
+        publish_pacing(None);
+        assert_eq!(presentation(), Presentation::Pending);
+        assert_eq!(set_vsync(true), Presentation::Pending);
+
+        // `vsync()` is reactive (review of #2104): an effect reading it runs
+        // again on a request made on the UI thread.
+        let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = seen.clone();
+        let _effect = rinch_core::Effect::new(move || log.borrow_mut().push(vsync()));
+        set_vsync(false);
+        set_vsync(false);
+        set_vsync(true);
+        assert_eq!(*seen.borrow(), [true, false, true]);
+
+        // Shutdown forgets the outcomes.
+        publish_pacing(Some(PacingOutcomes::UNSUPPORTED));
+        clear_pacing();
+        assert_eq!(set_vsync(true), Presentation::Pending);
+    }
 
     #[test]
     fn a_url_needs_a_scheme_and_no_leading_dash() {
