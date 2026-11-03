@@ -36,7 +36,8 @@ either form (`data:image/svg+xml;base64,…` or the percent-encoded
 `data:image/svg+xml,%3Csvg…`). One is recognised by its content (an `<svg>`
 root element), whatever the source is called. It is drawn **at the size it
 covers on the screen**, DPI scale and CSS transforms included, so an icon stays
-sharp at any size; its rasters are kept per size (a few per image). It is laid
+sharp at any size; its rasters are kept per size (64 MB of them at most, the
+ones on screen always kept). It is laid
 out as a browser lays it out: its natural size is the root's `width` and
 `height` when they are absolute lengths, a missing one follows from the
 `viewBox`'s ratio, and an SVG with only a `viewBox` and no CSS size fills its
@@ -50,6 +51,15 @@ URL alike), and no external reference is followed. **Text in an SVG file is
 not drawn**: rinch gives the SVG renderer no fonts, so convert text to paths
 for an icon that needs it. Inline `<svg>` elements in the DOM are a different
 path and are unaffected.
+
+An SVG file is untrusted input, and rinch refuses one that could crash or
+freeze the app; it then draws nothing and logs why. The limits: elements
+nested at most 128 deep (counting each `<use>` as a level), at most 100,000
+elements once `<use>` and other references are expanded, a DTD with flat
+entities only (Illustrator's `&ns_svg;` is fine; an entity that refers to
+another is not) expanding to at most 1 MB, and a raster estimated at more than
+about a second of work (a full-window SVG of thousands of canvas-sized
+translucent shapes at 2x) is not drawn at that size.
 
 Two differences from Chrome: rinch rounds a layout to whole pixels (an SVG of
 `width="10.5"` is 11 wide), and an *inline* `<img>` of an SVG with only a
@@ -65,6 +75,9 @@ each spanning the canvas took 0.65 s and 1.8 s. An SVG drawn at a size that
 keeps changing — a full-window `background-size: cover` while the window is
 resized, a scale animation — is rasterised again at each new size, so keep
 large or complex SVG backgrounds at a fixed size, or use a raster image.
+
+A `data:` URL is decoded as Chrome decodes one: its data is percent-decoded,
+and base64 may leave out its padding and contain white space.
 
 An `<img>` is sized as a browser sizes a replaced element: with no CSS size it
 is its natural size — `display: block` included, so `margin: 0 auto` centres

@@ -8,9 +8,35 @@
 //! at**, in device pixels: [`VectorImage::raster`], called by the paint of an
 //! `<img>` and by a background or mask layer's tile. So an icon stays sharp
 //! under any zoom, DPI or CSS size, where rasterising once at the natural size
-//! and scaling that would blur it. Rasters are kept per size, at most
-//! [`MAX_RASTERS`] per image (least recently used goes), each at most
-//! [`MAX_RASTER_PX`] pixels.
+//! and scaling that would blur it.
+//!
+//! **An SVG file is untrusted input** (review of #2125), and these limits keep
+//! one from crashing the app or holding its UI thread:
+//! - [`prescan`] reads the bytes before any parser does: element nesting is
+//!   at most [`MAX_DEPTH`] (roxmltree and usvg recurse once per level, and a
+//!   stack overflow aborts the process, which `catch_unwind` cannot stop); an
+//!   internal DTD may declare only flat entities (no `&` or `%` in a value,
+//!   no external entity), and all references to them together expand to at
+//!   most [`MAX_ENTITY_EXPANSION`] bytes. Illustrator's `&ns_svg;` is fine.
+//! - `check_expansion` then walks the parsed XML the way usvg will expand
+//!   it — every `<use>`/`href` and `url(#id)` reference counted as a copy of
+//!   what it names (a marker once per vertex) — and refuses a file whose
+//!   expanded depth passes [`MAX_DEPTH`] or whose element count passes
+//!   [`MAX_NODES`], before usvg builds that tree. usvg's own tree is counted
+//!   again afterwards.
+//! - Each raster has a budget of [`MAX_RASTER_WORK`], an estimate of resvg's
+//!   time: the device pixels painted, from the bounding boxes of everything
+//!   resvg will fill (each layer and clip/mask/pattern subtree included)
+//!   scaled to the drawn size, plus [`WORK_PER_ELEMENT`] per element. A file
+//!   over it at that size draws nothing and logs why, once.
+//! - Parsing and rasterising run under `catch_unwind`: a panic in usvg or
+//!   resvg fails that image (and it is not rasterised again), not the app.
+//! - Rasters are kept per drawn size in one cache per thread, at most
+//!   [`RASTER_BUDGET_BYTES`] in all; a raster the frame being painted uses is
+//!   never evicted (#1156's rule for background tiles), so any number of sizes
+//!   on screen are made once, and one no frame has used for
+//!   [`RASTER_IDLE_FRAMES`] painted frames is let go. Each raster is at most
+//!   [`MAX_RASTER_PX`] pixels (counted after rounding up to whole pixels).
 //!
 //! **Sizing** follows Chrome 156 (`crate::replaced::default_sized`, shared
 //! with the `<svg>` element): the natural width and height are the root's
@@ -30,7 +56,10 @@
 //! out. Everything else usvg renders is drawn: paths, shapes, gradients,
 //! patterns, clip paths, masks, filters, opacity.
 
-use std::sync::{Arc, Mutex};
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use peniko::kurbo;
 use resvg::tiny_skia;
@@ -38,13 +67,46 @@ use resvg::usvg;
 
 use crate::image_cache::DecodedImage;
 
-/// The most rasters one image keeps, one per drawn size.
-pub const MAX_RASTERS: usize = 4;
-
-/// The most device pixels one raster has (16 MB of RGBA). A larger draw is
-/// rasterised at this many pixels, keeping its shape, and scaled up by the
-/// painter.
+/// The most device pixels one raster has (16 MB of RGBA), counted after
+/// rounding up to whole pixels. A larger draw is rasterised at this many
+/// pixels, keeping its shape, and scaled up by the painter.
 pub const MAX_RASTER_PX: f64 = 4.0 * 1024.0 * 1024.0;
+
+/// The deepest an SVG file may nest, as written (elements) and as usvg
+/// expands it (each `<use>` or other reference a level). Real icons and
+/// illustrations nest a few dozen deep; a debug build survives this many on
+/// a 2 MB stack with room to spare (roxmltree, usvg and resvg each recurse
+/// once per level, and a debug build overflowed 2 MB at about 1,000).
+pub const MAX_DEPTH: usize = 128;
+
+/// The most elements an SVG file may expand to (each reference counted as a
+/// copy of what it names): far beyond a detailed illustration (a few
+/// thousand paths).
+pub const MAX_NODES: u64 = 100_000;
+
+/// The most bytes all references to an internal DTD's entities may expand to.
+pub const MAX_ENTITY_EXPANSION: usize = 1 << 20;
+
+/// The most work one raster may take, in device pixels painted, estimated
+/// from bounding boxes, plus [`WORK_PER_ELEMENT`] for each element drawn:
+/// about a second of resvg on one core (measured on a loaded host, release:
+/// 1.46e9 took 1.95 s, 3.65e8 took 0.6 s). A 1200x800 illustration of 2,000
+/// small shapes estimates at 2.1e7 (29 ms) and at 2x 2.5e7 (70 ms); 2,000
+/// half-transparent shapes each spanning the canvas are drawn at 1200x800
+/// and refused at 2x.
+pub const MAX_RASTER_WORK: f64 = 1.0e9;
+
+/// What each element drawn costs resvg whatever its size, as pixels painted
+/// (about 14 µs a path, measured, against about 1.3 ns a pixel).
+pub const WORK_PER_ELEMENT: f64 = 1.0e4;
+
+/// The bytes every SVG raster on one thread may hold together: 64 MB.
+/// Charged at 8 bytes a pixel (the raster, and the painter's premultiplied
+/// copy or GPU blob of it).
+pub const RASTER_BUDGET_BYTES: usize = 64 << 20;
+
+/// Painted frames a raster may go unused before it is let go.
+pub const RASTER_IDLE_FRAMES: u64 = 60;
 
 /// What an image says about its own size: CSS's natural width, height and
 /// ratio, each of which an SVG may lack. A raster image has all three.
@@ -68,9 +130,53 @@ impl NaturalSize {
     }
 }
 
+/// The length of the markup construct at the start of `s` that is not an
+/// element — `<?…?>`, `<!--…-->`, `<![CDATA[…]]>` or a `<!DOCTYPE …>` with
+/// its quoted strings and internal subset — or `None` if `s` does not start
+/// with one or it never ends.
+fn skip_non_element(s: &[u8]) -> Option<usize> {
+    let past = |from: usize, end: &[u8]| {
+        s.get(from..)?
+            .windows(end.len())
+            .position(|w| w == end)
+            .map(|i| from + i + end.len())
+    };
+    if s.starts_with(b"<?") {
+        past(2, b"?>")
+    } else if s.starts_with(b"<!--") {
+        past(4, b"-->")
+    } else if s.starts_with(b"<![CDATA[") {
+        past(9, b"]]>")
+    } else if s.starts_with(b"<!") {
+        // A declaration: `>` ends it outside quotes and outside `[…]`, whose
+        // own comments and quoted strings may hold either.
+        let mut i = 2;
+        let mut subset = false;
+        while i < s.len() {
+            match s[i] {
+                q @ (b'"' | b'\'') => i += s[i + 1..].iter().position(|&b| b == q)? + 2,
+                b'<' if subset && s[i..].starts_with(b"<!--") => i = past(i + 4, b"-->")?,
+                b'[' if !subset => {
+                    subset = true;
+                    i += 1;
+                }
+                b']' if subset => {
+                    subset = false;
+                    i += 1;
+                }
+                b'>' if !subset => return Some(i + 1),
+                _ => i += 1,
+            }
+        }
+        None
+    } else {
+        None
+    }
+}
+
 /// Whether `bytes` are an SVG document: after a byte-order mark, white space,
-/// an XML declaration, comments and a doctype, the first element is `svg`
-/// (or a prefixed `x:svg`).
+/// an XML declaration, comments and a doctype (its internal subset
+/// included), the first element is `svg` (or a prefixed `x:svg`).
 pub fn sniff_svg(bytes: &[u8]) -> bool {
     let mut s = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     loop {
@@ -79,21 +185,10 @@ pub fn sniff_svg(bytes: &[u8]) -> bool {
             .position(|b| !b.is_ascii_whitespace())
             .unwrap_or(s.len());
         s = &s[start..];
-        let skip_past = |s: &[u8], end: &[u8]| {
-            s.windows(end.len())
-                .position(|w| w == end)
-                .map(|i| i + end.len())
-        };
-        let next = if s.starts_with(b"<?") {
-            skip_past(s, b"?>")
-        } else if s.starts_with(b"<!--") {
-            skip_past(s, b"-->")
-        } else if s.starts_with(b"<!") {
-            skip_past(s, b">")
-        } else {
+        if !s.starts_with(b"<!") && !s.starts_with(b"<?") {
             break;
-        };
-        match next {
+        }
+        match skip_non_element(s) {
             Some(n) => s = &s[n..],
             None => return false,
         }
@@ -110,6 +205,241 @@ pub fn sniff_svg(bytes: &[u8]) -> bool {
     local == b"svg" && name_end < rest.len()
 }
 
+/// Read an SVG file's bytes before any parser does (see the module doc):
+/// element nesting at most [`MAX_DEPTH`], an internal DTD with flat internal
+/// entities only, and their references expanding to at most
+/// [`MAX_ENTITY_EXPANSION`] bytes. A loop over the bytes, with no recursion.
+pub fn prescan(bytes: &[u8]) -> Result<(), String> {
+    let mut entities: HashMap<&[u8], usize> = HashMap::new();
+    let mut expanded = 0usize;
+    let mut depth = 0usize;
+    let mut i = 0;
+    // Entity references in a run of text or a tag's attribute values.
+    let mut count_refs = |run: &[u8], entities: &HashMap<&[u8], usize>| -> Result<(), String> {
+        if entities.is_empty() {
+            return Ok(());
+        }
+        let mut at = 0;
+        while let Some(amp) = run[at..].iter().position(|&b| b == b'&') {
+            let start = at + amp + 1;
+            let Some(semi) = run[start..].iter().position(|&b| b == b';') else {
+                break;
+            };
+            if let Some(len) = entities.get(&run[start..start + semi]) {
+                expanded += len;
+                if expanded > MAX_ENTITY_EXPANSION {
+                    return Err(format!(
+                        "SVG refused: its entities expand past {MAX_ENTITY_EXPANSION} bytes"
+                    ));
+                }
+            }
+            at = start + semi + 1;
+        }
+        Ok(())
+    };
+    while i < bytes.len() {
+        let Some(lt) = bytes[i..].iter().position(|&b| b == b'<') else {
+            count_refs(&bytes[i..], &entities)?;
+            break;
+        };
+        count_refs(&bytes[i..i + lt], &entities)?;
+        i += lt;
+        let s = &bytes[i..];
+        if s.len() >= 9 && s[..9].eq_ignore_ascii_case(b"<!DOCTYPE") {
+            let len = skip_non_element(s).ok_or("SVG refused: an unterminated doctype")?;
+            read_entities(&s[..len], &mut entities)?;
+            i += len;
+        } else if s.starts_with(b"<!") || s.starts_with(b"<?") {
+            i += skip_non_element(s).ok_or("SVG refused: unterminated markup")?;
+        } else {
+            // A tag: to its `>`, outside quoted attribute values.
+            let mut j = 1;
+            let mut quote = None;
+            while j < s.len() {
+                match (quote, s[j]) {
+                    (None, q @ (b'"' | b'\'')) => quote = Some(q),
+                    (Some(q), b) if b == q => quote = None,
+                    (None, b'>') => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            if j >= s.len() {
+                break; // Unterminated: the parser reports it.
+            }
+            count_refs(&s[..j], &entities)?;
+            if s.starts_with(b"</") {
+                depth = depth.saturating_sub(1);
+            } else if s[j - 1] != b'/' {
+                depth += 1;
+                if depth > MAX_DEPTH {
+                    return Err(format!(
+                        "SVG refused: elements nested more than {MAX_DEPTH} deep"
+                    ));
+                }
+            }
+            i += j + 1;
+        }
+    }
+    Ok(())
+}
+
+/// The `<!ENTITY>` declarations of a doctype into `entities` (name → value
+/// length). Refuses a parameter entity, an external one, and a value that
+/// refers to another entity: nesting is what makes expansion exponential.
+fn read_entities<'a>(
+    doctype: &'a [u8],
+    entities: &mut HashMap<&'a [u8], usize>,
+) -> Result<(), String> {
+    let refuse = |why: &str| Err(format!("SVG refused: a DTD entity {why}"));
+    let mut rest = doctype;
+    while let Some(at) = rest.windows(8).position(|w| w == b"<!ENTITY") {
+        rest = rest[at + 8..].trim_ascii_start();
+        let name_len = rest
+            .iter()
+            .position(|b| b.is_ascii_whitespace())
+            .unwrap_or(rest.len());
+        let name = &rest[..name_len];
+        if name.is_empty() {
+            return refuse("has no name");
+        }
+        if name == b"%" {
+            return refuse("is a parameter entity");
+        }
+        let value = rest[name_len..].trim_ascii_start();
+        let Some(&q @ (b'"' | b'\'')) = value.first() else {
+            return refuse("is external (SYSTEM or PUBLIC)");
+        };
+        let Some(end) = value[1..].iter().position(|&b| b == q) else {
+            return refuse("value is unterminated");
+        };
+        let text = &value[1..1 + end];
+        if text.contains(&b'&') || text.contains(&b'%') {
+            return refuse("refers to another entity");
+        }
+        entities.insert(name, text.len());
+        rest = &value[1 + end..];
+    }
+    Ok(())
+}
+
+/// The `#id`s an element refers to, and how many copies of each usvg makes:
+/// an `href`/`xlink:href` (a `<use>`, a gradient or pattern's template) and
+/// every `url(#id)` in an attribute or its `style`, once each, except a
+/// marker, drawn at each vertex of the path (estimated as one per two numbers
+/// in its `d` or `points`).
+fn references<'a, 'i>(node: usvg::roxmltree::Node<'a, 'i>) -> Vec<(&'a str, u64)> {
+    let vertices = || {
+        let data = node
+            .attribute("d")
+            .or(node.attribute("points"))
+            .unwrap_or("");
+        let numbers = data
+            .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .filter(|n| !n.is_empty())
+            .count() as u64;
+        numbers / 2 + 1
+    };
+    let mut out = Vec::new();
+    for attr in node.attributes() {
+        let v = attr.value();
+        if attr.name() == "href" {
+            if let Some(id) = v.trim().strip_prefix('#') {
+                out.push((id, 1));
+            }
+            continue;
+        }
+        let marker =
+            attr.name().starts_with("marker") || (attr.name() == "style" && v.contains("marker"));
+        let mut rest = v;
+        while let Some(at) = rest.find("url(") {
+            rest = &rest[at + 4..];
+            let inner = rest.split(')').next().unwrap_or("");
+            let id = inner
+                .trim()
+                .trim_matches(['"', '\''])
+                .trim_start_matches('#');
+            if !id.is_empty() {
+                out.push((id, if marker { vertices() } else { 1 }));
+            }
+        }
+    }
+    out
+}
+
+/// Walk the parsed XML as usvg will expand it (see the module doc): refuse a
+/// file whose expanded depth passes [`MAX_DEPTH`] or whose element count
+/// passes [`MAX_NODES`]. Memoised per element, and its own recursion stops at
+/// [`MAX_DEPTH`].
+fn check_expansion(doc: &usvg::roxmltree::Document) -> Result<(), String> {
+    use usvg::roxmltree::{Node, NodeId};
+    type Memo = HashMap<NodeId, Option<(u64, usize)>>;
+    fn too_deep<T>() -> Result<T, String> {
+        Err(format!(
+            "SVG refused: nested more than {MAX_DEPTH} deep once its references are expanded"
+        ))
+    }
+    fn expand<'a, 'i>(
+        ids: &HashMap<&'a str, Node<'a, 'i>>,
+        memo: &mut Memo,
+        node: Node<'a, 'i>,
+        depth: usize,
+    ) -> Result<(u64, usize), String> {
+        if depth > MAX_DEPTH {
+            return too_deep();
+        }
+        match memo.get(&node.id()) {
+            Some(Some((count, height))) => {
+                return if depth + height > MAX_DEPTH {
+                    too_deep()
+                } else {
+                    Ok((*count, *height))
+                };
+            }
+            // A reference cycle: usvg drops it.
+            Some(None) => return Ok((0, 0)),
+            None => {}
+        }
+        memo.insert(node.id(), None);
+        let (mut count, mut height) = (1u64, 0usize);
+        let refs: Vec<(Node<'a, 'i>, u64)> = references(node)
+            .into_iter()
+            .filter_map(|(id, n)| ids.get(id).map(|&t| (t, n)))
+            .collect();
+        let children = node.children().filter(|c| c.is_element()).map(|c| (c, 1));
+        for (target, copies) in refs.into_iter().chain(children) {
+            let (c, h) = expand(ids, memo, target, depth + 1)?;
+            count = count.saturating_add(c.saturating_mul(copies));
+            height = height.max(h + 1);
+            if count > MAX_NODES {
+                return Err(format!(
+                    "SVG refused: it expands to more than {MAX_NODES} elements"
+                ));
+            }
+        }
+        memo.insert(node.id(), Some((count, height)));
+        Ok((count, height))
+    }
+    let ids = doc
+        .descendants()
+        .filter_map(|n| n.attribute("id").map(|id| (id, n)))
+        .collect();
+    expand(&ids, &mut Memo::new(), doc.root_element(), 0).map(|_| ())
+}
+
+/// Run `f`, turning a panic into an error naming `what`: usvg and resvg are
+/// large, and one of their panics must fail an image, not the app.
+fn guarded<T>(what: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let message = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        Err(format!("{what} panicked: {message}"))
+    })
+}
+
 /// Whether a source names an SVG by its `.svg` extension (before any query
 /// or fragment, any case) or a `data:image/svg+xml` media type.
 pub fn source_says_svg(src: &str) -> bool {
@@ -121,31 +451,91 @@ pub fn source_says_svg(src: &str) -> bool {
     path.len() >= 4 && path[path.len() - 4..].eq_ignore_ascii_case(".svg")
 }
 
-/// An SVG file, parsed, with the rasters made of it so far.
+/// An SVG file, parsed.
 pub struct VectorImage {
     tree: usvg::Tree,
     /// The root's `viewBox` and `preserveAspectRatio`, which map the drawing
     /// into whatever box it is drawn into. `None`: stretched.
     view_box: Option<(svgtypes::ViewBox, svgtypes::AspectRatio)>,
     natural: NaturalSize,
-    rasters: Mutex<Rasters>,
+    /// The device pixels a raster paints per pixel of the raster, estimated
+    /// from bounding boxes (see [`MAX_RASTER_WORK`]).
+    work_per_pixel: f64,
+    /// The elements usvg built (each copy of a reference counted).
+    elements: u64,
+    /// Process-unique: the raster cache's key.
+    id: u64,
+    made: AtomicU64,
+    /// A refused or failed raster has been logged.
+    warned: AtomicBool,
+    /// resvg panicked on this file: it is not rasterised again.
+    broken: AtomicBool,
 }
 
-#[derive(Default)]
-struct Rasters {
-    entries: Vec<RasterEntry>,
-    clock: u64,
-    made: u64,
+/// The SVG rasters of one thread (the painting one): see the module doc.
+struct RasterCache {
+    entries: HashMap<(u64, u64, u64), RasterEntry>,
+    bytes: usize,
+    frame: u64,
 }
 
 struct RasterEntry {
-    /// The drawn size, in 1/64 device pixels.
-    key: (u64, u64),
     raster: Arc<DecodedImage>,
     /// The drawn size the raster's pixels hold (its pixel grid may be a
     /// fraction of a pixel larger).
     drawn: (f64, f64),
-    last_used: u64,
+    bytes: usize,
+    last_frame: u64,
+}
+
+thread_local! {
+    static RASTERS: RefCell<RasterCache> = RefCell::new(RasterCache {
+        entries: HashMap::new(),
+        bytes: 0,
+        frame: 0,
+    });
+    static BUDGET: Cell<usize> = const { Cell::new(RASTER_BUDGET_BYTES) };
+}
+
+/// A new painted frame on this thread (`paint::paint_document` calls it):
+/// the rasters the last one used may now be evicted, and those no frame has
+/// used for [`RASTER_IDLE_FRAMES`] frames are let go.
+pub fn begin_frame() {
+    RASTERS.with_borrow_mut(|c| {
+        c.frame += 1;
+        let frame = c.frame;
+        let mut freed = 0;
+        c.entries.retain(|_, e| {
+            let keep = frame - e.last_frame <= RASTER_IDLE_FRAMES;
+            if !keep {
+                freed += e.bytes;
+            }
+            keep
+        });
+        c.bytes -= freed;
+    });
+}
+
+/// The bytes this thread's SVG rasters hold, as charged (a test's count).
+#[doc(hidden)]
+pub fn raster_bytes() -> usize {
+    RASTERS.with_borrow(|c| c.bytes)
+}
+
+/// The guard [`test_budget`] returns.
+#[doc(hidden)]
+pub struct BudgetGuard(usize);
+
+impl Drop for BudgetGuard {
+    fn drop(&mut self) {
+        BUDGET.with(|b| b.set(self.0));
+    }
+}
+
+/// Set this thread's raster budget until the guard drops (a test's knob).
+#[doc(hidden)]
+pub fn test_budget(bytes: usize) -> BudgetGuard {
+    BudgetGuard(BUDGET.with(|b| b.replace(bytes)))
 }
 
 /// A raster of a [`VectorImage`] at one drawn size: draw `image`'s pixels so
@@ -186,9 +576,15 @@ fn natural_length(value: Option<&str>) -> Option<f32> {
 }
 
 /// Parse an SVG file. Fails on bytes that are not UTF-8 or not a well-formed
-/// SVG document, or whose size cannot be resolved.
+/// SVG document, whose size cannot be resolved, or that pass a limit of the
+/// module doc ([`prescan`], `check_expansion`); and if usvg panics.
 pub fn decode_svg(bytes: &[u8]) -> Result<VectorImage, String> {
+    guarded("SVG parsing", || decode_svg_unguarded(bytes))
+}
+
+fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
     let text = std::str::from_utf8(bytes).map_err(|e| format!("SVG is not UTF-8: {e}"))?;
+    prescan(bytes)?;
     let doc = usvg::roxmltree::Document::parse_with_options(
         text,
         usvg::roxmltree::ParsingOptions {
@@ -201,6 +597,7 @@ pub fn decode_svg(bytes: &[u8]) -> Result<VectorImage, String> {
     if root.tag_name().name() != "svg" {
         return Err("Failed to parse SVG: the root element is not <svg>".into());
     }
+    check_expansion(&doc)?;
     let view_box = root
         .attribute("viewBox")
         .and_then(|v| v.parse::<svgtypes::ViewBox>().ok())
@@ -236,6 +633,17 @@ pub fn decode_svg(bytes: &[u8]) -> Result<VectorImage, String> {
     };
     let tree =
         usvg::Tree::from_str(text, &options).map_err(|e| format!("Failed to parse SVG: {e}"))?;
+    // What usvg built, measured: its element count (it expands a marker per
+    // vertex, which the estimate above only approximates) and the area its
+    // fills and layers cover.
+    let size = tree.size();
+    let canvas = (f64::from(size.width()), f64::from(size.height()));
+    let mut tally = Tally {
+        nodes: 0,
+        area: 0.0,
+        canvas,
+    };
+    tally.group(tree.root(), 0)?;
     Ok(VectorImage {
         tree,
         view_box,
@@ -244,8 +652,78 @@ pub fn decode_svg(bytes: &[u8]) -> Result<VectorImage, String> {
             height,
             ratio,
         },
-        rasters: Mutex::new(Rasters::default()),
+        work_per_pixel: tally.area / (canvas.0 * canvas.1),
+        elements: tally.nodes,
+        id: {
+            static NEXT: AtomicU64 = AtomicU64::new(1);
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        },
+        made: AtomicU64::new(0),
+        warned: AtomicBool::new(false),
+        broken: AtomicBool::new(false),
     })
+}
+
+/// The usvg tree's element count and the area (in its own units, clipped to
+/// its canvas) of every path and every isolated layer resvg paints, clip,
+/// mask and pattern contents included as often as they are used.
+struct Tally {
+    nodes: u64,
+    area: f64,
+    canvas: (f64, f64),
+}
+
+impl Tally {
+    fn rect(&mut self, r: usvg::Rect) {
+        let w = (f64::from(r.right()).min(self.canvas.0) - f64::from(r.left()).max(0.0)).max(0.0);
+        let h = (f64::from(r.bottom()).min(self.canvas.1) - f64::from(r.top()).max(0.0)).max(0.0);
+        self.area += w * h;
+    }
+
+    fn node(&mut self, node: &usvg::Node, depth: usize) -> Result<(), String> {
+        self.nodes += 1;
+        if self.nodes > MAX_NODES {
+            return Err(format!(
+                "SVG refused: it expands to more than {MAX_NODES} elements"
+            ));
+        }
+        if depth > 2 * MAX_DEPTH {
+            return Err(format!(
+                "SVG refused: nested more than {MAX_DEPTH} deep once its references are expanded"
+            ));
+        }
+        let mut result = Ok(());
+        node.subroots(|g| {
+            if result.is_ok() {
+                result = self.group(g, depth + 1);
+            }
+        });
+        result?;
+        match node {
+            usvg::Node::Group(g) => {
+                if g.should_isolate() {
+                    self.rect(g.abs_layer_bounding_box().to_rect());
+                }
+                self.group(g, depth + 1)
+            }
+            usvg::Node::Path(p) => {
+                self.rect(p.abs_stroke_bounding_box());
+                Ok(())
+            }
+            usvg::Node::Image(i) => {
+                self.rect(i.abs_bounding_box());
+                Ok(())
+            }
+            usvg::Node::Text(_) => Ok(()),
+        }
+    }
+
+    fn group(&mut self, g: &usvg::Group, depth: usize) -> Result<(), String> {
+        for child in g.children() {
+            self.node(child, depth)?;
+        }
+        Ok(())
+    }
 }
 
 /// The `viewBox` to viewport transform of SVG 1.1 §7.8, for a viewport of
@@ -308,7 +786,7 @@ impl VectorImage {
     /// How many rasters this image has made (a test's count).
     #[doc(hidden)]
     pub fn rasters_made(&self) -> u64 {
-        self.rasters.lock().unwrap_or_else(|e| e.into_inner()).made
+        self.made.load(Ordering::Relaxed)
     }
 
     /// The raster for drawing an `iw` x `ih` box of the image through
@@ -320,40 +798,69 @@ impl VectorImage {
         self.raster(iw * a.hypot(b), ih * c.hypot(d))
     }
 
-    /// How many rasters this image keeps now (a test's count).
+    /// How many rasters of this image this thread keeps now (a test's count).
     #[doc(hidden)]
     pub fn rasters_held(&self) -> usize {
-        self.rasters
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entries
-            .len()
+        RASTERS.with_borrow(|c| c.entries.keys().filter(|k| k.0 == self.id).count())
+    }
+
+    /// The device pixels a `w` x `h` raster is estimated to paint, which
+    /// [`MAX_RASTER_WORK`] bounds.
+    pub fn estimated_work(&self, w: u32, h: u32) -> f64 {
+        self.work_per_pixel * f64::from(w) * f64::from(h) + self.elements as f64 * WORK_PER_ELEMENT
+    }
+
+    fn warn_once(&self, why: &str) {
+        if !self.warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!("SVG image not drawn: {why}");
+        }
     }
 
     /// The drawing rasterised to cover `dw` x `dh` device pixels, made now or
     /// kept from an earlier draw at that size. `None` for an empty or
-    /// non-finite size.
+    /// non-finite size, a draw over [`MAX_RASTER_WORK`], or a file resvg
+    /// panicked on.
     pub fn raster(&self, dw: f64, dh: f64) -> Option<VectorRaster> {
-        if !(dw > 0.0 && dh > 0.0 && dw.is_finite() && dh.is_finite()) {
+        if !(dw > 0.0 && dh > 0.0 && dw.is_finite() && dh.is_finite())
+            || self.broken.load(Ordering::Relaxed)
+        {
             return None;
         }
-        // A huge draw is rasterised smaller, keeping its shape.
-        let shrink = (MAX_RASTER_PX / (dw * dh)).sqrt().min(1.0);
-        let (dw, dh) = (dw * shrink, dh * shrink);
-        let key = ((dw * 64.0).round() as u64, (dh * 64.0).round() as u64);
-        let mut rasters = self.rasters.lock().unwrap_or_else(|e| e.into_inner());
-        rasters.clock += 1;
-        let clock = rasters.clock;
-        if let Some(entry) = rasters.entries.iter_mut().find(|e| e.key == key) {
-            entry.last_used = clock;
-            return Some(VectorRaster {
-                image: entry.raster.clone(),
-                drawn: entry.drawn,
-            });
+        // A huge draw is rasterised smaller, keeping its shape, so that the
+        // whole pixels allocated (rounded up) stay within the cap.
+        let whole = |v: f64| (v - 1e-6).ceil().max(1.0);
+        let (mut dw, mut dh) = (dw, dh);
+        while whole(dw) * whole(dh) > MAX_RASTER_PX {
+            let shrink = (MAX_RASTER_PX / (whole(dw) * whole(dh))).sqrt().min(0.999);
+            (dw, dh) = (dw * shrink, dh * shrink);
         }
-        let w = (dw - 1e-6).ceil().max(1.0) as u32;
-        let h = (dh - 1e-6).ceil().max(1.0) as u32;
-        let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
+        let key = (
+            self.id,
+            (dw * 64.0).round() as u64,
+            (dh * 64.0).round() as u64,
+        );
+        let hit = RASTERS.with_borrow_mut(|c| {
+            let frame = c.frame;
+            c.entries.get_mut(&key).map(|e| {
+                e.last_frame = frame;
+                VectorRaster {
+                    image: e.raster.clone(),
+                    drawn: e.drawn,
+                }
+            })
+        });
+        if hit.is_some() {
+            return hit;
+        }
+        let (w, h) = (whole(dw) as u32, whole(dh) as u32);
+        let work = self.estimated_work(w, h);
+        if work > MAX_RASTER_WORK {
+            self.warn_once(&format!(
+                "rasterising it at {w}x{h} would paint about {work:.1e} pixels, past the \
+                 limit of {MAX_RASTER_WORK:.1e}"
+            ));
+            return None;
+        }
         let size = self.tree.size();
         let (sw, sh) = (f64::from(size.width()), f64::from(size.height()));
         // usvg has already mapped the viewBox into the tree's own size;
@@ -367,24 +874,51 @@ impl VectorImage {
             }
             None => tiny_skia::Transform::from_scale((dw / sw) as f32, (dh / sh) as f32),
         };
-        resvg::render(&self.tree, transform, &mut pixmap.as_mut());
-        let raster = Arc::new(DecodedImage::new(pixmap.take_demultiplied(), w, h));
-        rasters.made += 1;
-        if rasters.entries.len() >= MAX_RASTERS
-            && let Some(oldest) = rasters
-                .entries
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, e)| e.last_used)
-                .map(|(i, _)| i)
-        {
-            rasters.entries.swap_remove(oldest);
-        }
-        rasters.entries.push(RasterEntry {
-            key,
-            raster: raster.clone(),
-            drawn: (dw, dh),
-            last_used: clock,
+        let pixels = guarded("SVG rasterising", || {
+            let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("no pixmap")?;
+            resvg::render(&self.tree, transform, &mut pixmap.as_mut());
+            Ok(pixmap.take_demultiplied())
+        });
+        let pixels = match pixels {
+            Ok(p) => p,
+            Err(e) => {
+                self.broken.store(true, Ordering::Relaxed);
+                self.warn_once(&e);
+                return None;
+            }
+        };
+        let raster = Arc::new(DecodedImage::new(pixels, w, h));
+        self.made.fetch_add(1, Ordering::Relaxed);
+        let bytes = w as usize * h as usize * 8;
+        RASTERS.with_borrow_mut(|c| {
+            // Make room: least recently used first, never one this frame has
+            // drawn (if only those are left, the frame's own rasters stay
+            // over the budget until a later frame stops using them).
+            let budget = BUDGET.with(Cell::get);
+            let frame = c.frame;
+            while c.bytes + bytes > budget {
+                let Some(oldest) = c
+                    .entries
+                    .iter()
+                    .filter(|(_, e)| e.last_frame < frame)
+                    .min_by_key(|(_, e)| e.last_frame)
+                    .map(|(k, _)| *k)
+                else {
+                    break;
+                };
+                let gone = c.entries.remove(&oldest).expect("listed");
+                c.bytes -= gone.bytes;
+            }
+            c.bytes += bytes;
+            c.entries.insert(
+                key,
+                RasterEntry {
+                    raster: raster.clone(),
+                    drawn: (dw, dh),
+                    bytes,
+                    last_frame: frame,
+                },
+            );
         });
         Some(VectorRaster {
             image: raster,
@@ -408,6 +942,20 @@ mod tests {
         assert!(!sniff_svg(b"<html><svg>"));
         assert!(!sniff_svg(b"\x89PNG\r\n"));
         assert!(!sniff_svg(b"<!-- never closed"));
+    }
+
+    #[test]
+    fn a_panic_fails_the_image_not_the_app() {
+        let r: Result<(), String> = guarded("SVG parsing", || panic!("boom"));
+        assert_eq!(r, Err("SVG parsing panicked: boom".to_string()));
+    }
+
+    #[test]
+    fn the_prescan_counts_depth_across_comments_and_quotes() {
+        let nest = |n: usize| format!("{}{}", "<g a='>'><!-- <g> -->".repeat(n), "</g>".repeat(n));
+        assert!(prescan(nest(MAX_DEPTH).as_bytes()).is_ok());
+        assert!(prescan(nest(MAX_DEPTH + 1).as_bytes()).is_err());
+        assert!(prescan(b"<g/><g/><g></g>").is_ok());
     }
 
     #[test]

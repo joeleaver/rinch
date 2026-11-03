@@ -47,8 +47,14 @@ draws the raster made for it (`VectorImage::raster`) with
 `img_transform * scale(iw / dw, ih / dh)`, so its pixels are the device's (copied, not
 resampled, on a whole-pixel origin). The raster is `ceil(dw)` x `ceil(dh)` with the drawing
 mapped onto exactly `dw` x `dh` (a fraction of the last column is transparent), keyed by the
-drawn size in 1/64 px, at most `MAX_RASTERS` (4) per image (least recently used goes), each
-at most `MAX_RASTER_PX` (4M px; a larger draw is rasterised smaller and scaled up). Each
+drawn size in 1/64 px, in one cache per painting thread (`RASTERS`, thread-local) of at
+most `RASTER_BUDGET_BYTES` (64 MB, charged at 8 bytes a pixel) for all SVG images together:
+a new raster evicts the least recently used ones, never one the frame being painted has used
+(`svg_image::begin_frame`, from `paint_document`; the frame's own working set may stay over
+the budget), and a raster no frame has used for `RASTER_IDLE_FRAMES` (60) painted frames is
+let go. Before the review of #2125 it was 4 rasters per image, so five sizes of one SVG on
+screen re-rasterised every paint. Each raster is at most `MAX_RASTER_PX` (4M px, counted
+after rounding up; a larger draw is rasterised smaller and scaled up). Each
 raster is a `DecodedImage`, so it has one Vello blob (the atlas keeps it) and one
 premultiplied copy, like any image. The background paths reach it through `draw_tile` →
 `paint_image` (the software pattern raster draws the tile through a transform of its device
@@ -77,7 +83,25 @@ drawn size is rasterised on the UI thread inside the paint that needs it. Measur
 each spanning the canvas 0.65 s (1.8 s). Moving that onto the native load threads would
 need a request per size and a frame drawn without the picture (or with a stale raster)
 meanwhile; not done. A size that keeps changing (a window resize under `background-size:
-cover`, a transform animated in scale) rasterises at each new size (the cache holds 4). Percent-encoded `data:` URLs decode since #2111
+cover`, a transform animated in scale) rasterises at each new size. **Limits** (review of
+#2125, which proved each one; pinned in `rinch-dom/tests/svg_image_limits_2111_tests.rs`, a
+binary of its own because a stack overflow aborts it): an SVG file is untrusted input.
+`svg_image::prescan` reads the bytes before any parser: element nesting at most `MAX_DEPTH`
+(128; roxmltree up to 0.21.1 and usvg recurse per level, and 1,000 levels overflowed a 2 MB
+debug stack, 4,000 a release one: an abort `catch_unwind` cannot catch), and an internal DTD
+may hold only flat internal entities (a value with `&` or `%`, a parameter or an external
+entity is refused) whose references expand to at most `MAX_ENTITY_EXPANSION` (1 MB) in all;
+Illustrator's `<!ENTITY ns_svg "…">` passes. `check_expansion` walks roxmltree's document as
+usvg expands it (`href` and `url(#id)` references counted as copies, a marker once per vertex)
+and refuses an expanded depth past `MAX_DEPTH` or an element count past `MAX_NODES` (100,000),
+before usvg builds the tree; usvg's tree is counted again (`Tally`). Each raster has a work
+budget, `MAX_RASTER_WORK` (1e9): the device pixels its paths' and isolated layers' bounding
+boxes cover (clip, mask and pattern contents as often as used), scaled to the raster, plus
+`WORK_PER_ELEMENT` (1e4) an element; over it, nothing is drawn and a warning is logged once
+(1e9 is about a second of resvg here; four levels of tenfold `<use>` fan-out, a 1.2 KB file,
+took 12 s at 1200x800 before). Parsing and rasterising run under `catch_unwind` (`guarded`;
+a raster that panicked marks the image broken). Native load threads have an 8 MB stack.
+`roxmltree` is 0.21.2 (0.21.1 recursed per level in release). Percent-encoded `data:` URLs decode since #2111
 (`decode_data_uri`; only base64 did, so `data:image/svg+xml,%3Csvg…` failed). Known gaps,
 pinned in `svg_images_2111_tests.rs`: layout rounds to whole pixels (`width="10.5"` is 11),
 and an **inline** `<img>` with a ratio alone is 300 wide where Chrome fills its containing
@@ -886,6 +910,40 @@ glyph or a tap lands on the wrong character. The repair fills `monospace`,
 `ui-monospace`, `ui-sans-serif` and `ui-serif` only where the platform left them
 empty; `ui-rounded` and `fangsong` are deliberately left alone (Android has no
 face for either).
+
+**Registered font data fills only empty generic slots, by its own class**
+(`rinch_dom::fonts::fill_empty_generics` / `classify_face`, #2102). Data that
+declares nothing — `RinchApp::register_font_data`, the embed's
+`RinchContextConfig::fonts` and `register_font` — used to be *claimed* for
+`sans-serif` and `system-ui` (`claim_generic_families`, a prepend), so the face
+registered **last** headed the slot: a game's script face took over every
+`sans-serif` element. Now each registered family is classified from its own
+tables — color tables (`COLR`, `CBDT`, `sbix`, `SVG `) → display (Noto Color
+Emoji declares `isFixedPitch` 1 and PANOSE proportion 9); no `A` and no `a` in
+the cmap → display (icon and symbol fonts, which declare no class);
+`post.isFixedPitch` → monospace; OS/2 IBM class 1–5/7 → serif, 8 → sans,
+9/10/12 → display; else PANOSE family 2 (proportion 9 → monospace, serif style
+2–10 → serif, else sans), family 3–5 → display; unclassified → sans. The class
+names a plain generic and its companions (`FaceClass::generics`: `sans-serif`
+with `system-ui` and `ui-sans-serif`, `serif` with `ui-serif`, `monospace`
+with `ui-monospace`), and they are filled **only when the plain slot is
+empty** (platform map included), each companion only where it is empty too.
+A display face fills none. The companion rule matters on a desktop:
+fontconfig maps the plain generics and `system-ui` but no `ui-*` one
+(fontique `backend/fontconfig.rs`), and the #322 repair runs on Android only,
+so filling an empty `ui-monospace` changed the face of the theme's monospace
+stack, which starts with `ui-monospace` (review of PR #2122). So on wasm the
+first sans text face is `sans-serif` for good, and on a desktop data changes
+no generic slot at all (`registering_data_changes_no_generic_slot_on_a_desktop`
+compares every `GenericFamily::all()` slot in both contexts).
+An explicit claim (`AppFont::sans_serif`, `with_generics`) still prepends. The
+pins are in `crates/rinch/src/app/font_tests.rs` (bare no-system-fonts
+contexts, plus the desktop shape against the platform's map),
+`crates/rinch/tests/embed_fonts_2101_2102.rs`, `rinch-dom`'s
+`fonts::tests::data_fill` (the emoji fixture, and a symbol face cut from it)
+and, in Chrome, `embed_web_fonts_2102.rs` (in both CI wasm embed steps);
+their text fixtures are Inter with its `name` table and class rewritten
+(`crates/rinch/tests/support/font_variants.rs`).
 
 **A font stack that resolves to nothing ends in the primary `sans-serif` face**
 (`rinch_dom::fonts::parley_font_family`, #1198). parley queries a cluster with

@@ -594,6 +594,7 @@ fn main() {
             height: 720,
             scale_factor: window.scale_factor(),
             theme: None,
+            fonts: Vec::new(),
         },
         game_hud,
     );
@@ -1310,7 +1311,8 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `take_ime_change() -> Option<ImeChange>` | The `Enable` / `Update` / `Disable` that takes the host's IME from what it last reported to `ime_state()` |
 | `needs_update() -> bool` | True if UI needs repaint (including a due `next_wake` or a new `RenderSurface` frame) |
 | `next_wake() -> Option<Instant>` | When to call `update()` again with no input (the caret blink), or `None` |
-| `register_font(data)` | Register font data for text rendering |
+| `register_font(data)` | Register font data for text rendering after the mount: `&'static [u8]` or owned bytes (`Vec<u8>`, `Arc<[u8]>`, `Blob<u8>`; see [Fonts](#fonts)) |
+| `register_app_font(AppFont)` | Register a face **and the generics it claims** (`AppFont::sans_serif`, `.with_generics(..)`), ahead of the platform's mapping |
 | `app() / app_mut()` | Access the underlying RinchApp |
 
 **RinchOverlayRenderer:**
@@ -1330,6 +1332,36 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `height` | `u32` | Initial viewport height (physical pixels) |
 | `scale_factor` | `f64` | Display scale factor |
 | `theme` | `Option<ThemeProviderProps>` | Theme configuration |
+| `fonts` | `Vec<FontData>` | Font files registered before the mount, so the first layout has glyphs (mandatory on wasm). `BYTES.into()` for `&'static [u8]`, or owned bytes; see [Fonts](#fonts) |
+
+### Fonts
+
+The faces in `RinchContextConfig::fonts` and those given to `register_font`
+are font data that declares nothing. Each is reachable by its own family name
+(`font-family: "Liberation Sans"`), joins the last-resort fallback chain for
+every script, and fills the generic slots of its own class — `sans-serif` and
+`system-ui` for a sans-serif face, `serif` for a serif one, `monospace` for a
+fixed-pitch one, none for a script, symbol, icon or color-emoji face — **only
+where the plain slot is empty**. On wasm, where there are no platform fonts, the first sans-serif face
+you register is what `font-family: sans-serif` means, whatever else you
+register before or after it. On a desktop, where the platform fills every
+slot, registering data changes no generic slot (`ui-monospace` and the other
+`ui-*` slots included): `sans-serif` stays the platform's face. An embed that
+used its registered face as `sans-serif` before this change keeps it by
+claiming it or by naming its family (see [Fonts](./fonts.md#migrating-from-before-2102)). A face you want to *be* a generic there is claimed explicitly with
+`register_app_font(AppFont::sans_serif(BYTES))` (or
+`AppFont::from_data(bytes).with_generics(AppFont::SANS_SERIF)`); a claim goes
+ahead of the platform's face. Before issue #2102 every registered face was
+put at the head of `sans-serif`, so the one registered **last** — a game's
+script face as easily as the UI face — drew every `sans-serif` element.
+
+The bytes can be owned: `Vec<u8>`, `Box<[u8]>`, `Arc<[u8]>` or a parley
+`Blob<u8>` (`FontData`, each with `.into()`), as well as `&'static [u8]`. An
+owned face lives as long as the context that registered it and is released
+when the context is dropped, so fonts a game loads at run time need not be
+leaked (issue #2101). A face cannot be unregistered from a live context; a
+game whose fonts change for good builds a new context and drops the old one.
+See [Fonts](./fonts.md) for how a face is matched.
 
 **Theming is per-context.** Each `RinchContext` owns the theme CSS generated
 from its `config.theme` (or the default theme when `None`) — creating a second

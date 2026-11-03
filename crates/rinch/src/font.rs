@@ -55,12 +55,133 @@
 /// `fangsong`.
 pub use parlance::GenericFamily;
 
-/// A font file the application carries in its own binary, and the CSS names it
-/// answers to.
+/// The bytes of a font file: borrowed for the life of the program, or owned
+/// and shared (#2101).
+///
+/// `&'static [u8]` — normally [`include_bytes!`] — is what a font built into
+/// the binary is. Font data that arrives while the app runs (a file the user
+/// picks, a game's own fonts) is owned instead: a `Vec<u8>`, a `Box<[u8]>`,
+/// an `Arc<[u8]>`, or a `Blob<u8>` from parley's stack. Each converts with
+/// `.into()`, and rinch keeps the bytes alive for as long as a font context
+/// that registered them does — no longer. Nothing is leaked: dropping the
+/// app (or the embed's [`RinchContext`](crate::embed::RinchContext)) that
+/// registered an owned face drops rinch's references to it.
+///
+/// Cloning is cheap (a pointer, or a reference count).
+#[derive(Clone)]
+pub struct FontData(FontDataRepr);
+
+#[derive(Clone)]
+enum FontDataRepr {
+    Static(&'static [u8]),
+    Shared(std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>),
+    /// A `Blob` kept whole, so its id — what parley's and Vello's caches key
+    /// a font on — is the app's own.
+    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    Blob(peniko::Blob<u8>),
+}
+
+impl FontData {
+    /// Bytes that live for the whole program (`include_bytes!`).
+    pub const fn from_static(data: &'static [u8]) -> Self {
+        Self(FontDataRepr::Static(data))
+    }
+
+    /// Bytes owned by a shared handle; rinch holds a clone of `data` for as
+    /// long as a font context uses the face.
+    pub fn shared(data: std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>) -> Self {
+        Self(FontDataRepr::Shared(data))
+    }
+
+    /// The font file's bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        match &self.0 {
+            FontDataRepr::Static(data) => data,
+            FontDataRepr::Shared(data) => (**data).as_ref(),
+            #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+            FontDataRepr::Blob(blob) => blob.data(),
+        }
+    }
+
+    /// Whether the bytes are `'static` rather than owned.
+    pub fn is_static(&self) -> bool {
+        matches!(self.0, FontDataRepr::Static(_))
+    }
+
+    /// The `Blob` a font context registers: a `Blob` given as one keeps its
+    /// id; otherwise a new one over the static slice, or over a clone of the
+    /// owned handle (so every context shares the one allocation).
+    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    pub(crate) fn to_blob(&self) -> peniko::Blob<u8> {
+        match &self.0 {
+            FontDataRepr::Static(data) => peniko::Blob::new(std::sync::Arc::new(*data)),
+            FontDataRepr::Shared(data) => peniko::Blob::new(data.clone()),
+            FontDataRepr::Blob(blob) => blob.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for FontData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FontData")
+            .field("len", &self.as_bytes().len())
+            .field("static", &self.is_static())
+            .finish()
+    }
+}
+
+impl From<&'static [u8]> for FontData {
+    fn from(data: &'static [u8]) -> Self {
+        Self::from_static(data)
+    }
+}
+
+impl<const N: usize> From<&'static [u8; N]> for FontData {
+    fn from(data: &'static [u8; N]) -> Self {
+        Self::from_static(data)
+    }
+}
+
+impl From<Vec<u8>> for FontData {
+    fn from(data: Vec<u8>) -> Self {
+        Self::shared(std::sync::Arc::new(data))
+    }
+}
+
+impl From<Box<[u8]>> for FontData {
+    fn from(data: Box<[u8]>) -> Self {
+        Self::shared(std::sync::Arc::new(data))
+    }
+}
+
+/// One `Arc` around the caller's, made here once: an `Arc<[u8]>` is unsized,
+/// so it cannot itself become the `Arc<dyn AsRef<[u8]>>` a `Blob` holds.
+/// Every font context then clones that one handle.
+impl From<std::sync::Arc<[u8]>> for FontData {
+    fn from(data: std::sync::Arc<[u8]>) -> Self {
+        Self::shared(std::sync::Arc::new(data))
+    }
+}
+
+impl From<std::sync::Arc<Vec<u8>>> for FontData {
+    fn from(data: std::sync::Arc<Vec<u8>>) -> Self {
+        Self::shared(data)
+    }
+}
+
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+impl From<peniko::Blob<u8>> for FontData {
+    fn from(data: peniko::Blob<u8>) -> Self {
+        Self(FontDataRepr::Blob(data))
+    }
+}
+
+/// A font file the application carries, and the CSS names it answers to.
 ///
 /// The bytes are a TrueType (`.ttf`), OpenType (`.otf`) or collection
-/// (`.ttc`/`.otc`) file, normally from [`include_bytes!`]. They are `'static`
-/// because a registered face outlives every layout that used it.
+/// (`.ttc`/`.otc`) file: normally from [`include_bytes!`] through
+/// [`AppFont::new`] and its siblings, or owned bytes loaded at run time
+/// through [`AppFont::from_data`] (see [`FontData`]).
 ///
 /// ```ignore
 /// use rinch::prelude::*;
@@ -75,14 +196,18 @@ pub use parlance::GenericFamily;
 /// ];
 ///
 /// App::new(app).title("My App").fonts(FACES).run();
+///
+/// // A face read from disk while the app runs, answering `sans-serif`:
+/// let bytes: Vec<u8> = std::fs::read("UserFont.ttf")?;
+/// let face = AppFont::from_data(bytes).with_generics(AppFont::SANS_SERIF);
 /// ```
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct AppFont {
     /// The font file.
     ///
     /// A collection file registers every face it holds; each keeps its own
     /// family name, and `generics` applies to all of them.
-    pub data: &'static [u8],
+    pub data: FontData,
 
     /// The CSS generic families this face becomes the answer to.
     ///
@@ -113,20 +238,52 @@ pub struct AppFont {
 }
 
 impl AppFont {
+    /// The generics [`AppFont::serif`] claims.
+    pub const SERIF: &'static [GenericFamily] = &[GenericFamily::Serif, GenericFamily::UiSerif];
+
+    /// The generics [`AppFont::sans_serif`] claims.
+    pub const SANS_SERIF: &'static [GenericFamily] = &[
+        GenericFamily::SansSerif,
+        GenericFamily::SystemUi,
+        GenericFamily::UiSansSerif,
+    ];
+
+    /// The generics [`AppFont::monospace`] claims.
+    pub const MONOSPACE: &'static [GenericFamily] =
+        &[GenericFamily::Monospace, GenericFamily::UiMonospace];
+
     /// A face reachable by its own family name and nothing else.
     pub const fn new(data: &'static [u8]) -> Self {
         Self {
-            data,
+            data: FontData::from_static(data),
             generics: &[],
             script_fallback: false,
         }
     }
 
+    /// [`AppFont::new`] for bytes of any kind [`FontData`] takes, owned ones
+    /// included: a face loaded while the app runs.
+    pub fn from_data(data: impl Into<FontData>) -> Self {
+        Self {
+            data: data.into(),
+            generics: &[],
+            script_fallback: false,
+        }
+    }
+
+    /// This face, answering `generics` as well as its own family name
+    /// ([`AppFont::SERIF`], [`AppFont::SANS_SERIF`], [`AppFont::MONOSPACE`],
+    /// or a list of your own).
+    pub fn with_generics(self, generics: &'static [GenericFamily]) -> Self {
+        Self { generics, ..self }
+    }
+
     /// A face that also answers `font-family: serif`.
     pub const fn serif(data: &'static [u8]) -> Self {
         Self {
-            generics: &[GenericFamily::Serif, GenericFamily::UiSerif],
-            ..Self::new(data)
+            data: FontData::from_static(data),
+            generics: Self::SERIF,
+            script_fallback: false,
         }
     }
 
@@ -135,20 +292,18 @@ impl AppFont {
     /// UI", and which a theme's default stack usually ends in.
     pub const fn sans_serif(data: &'static [u8]) -> Self {
         Self {
-            generics: &[
-                GenericFamily::SansSerif,
-                GenericFamily::SystemUi,
-                GenericFamily::UiSansSerif,
-            ],
-            ..Self::new(data)
+            data: FontData::from_static(data),
+            generics: Self::SANS_SERIF,
+            script_fallback: false,
         }
     }
 
     /// A face that also answers `font-family: monospace`.
     pub const fn monospace(data: &'static [u8]) -> Self {
         Self {
-            generics: &[GenericFamily::Monospace, GenericFamily::UiMonospace],
-            ..Self::new(data)
+            data: FontData::from_static(data),
+            generics: Self::MONOSPACE,
+            script_fallback: false,
         }
     }
 }

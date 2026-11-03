@@ -534,8 +534,8 @@ fn a_fractional_device_size_keeps_its_last_column() {
 }
 
 /// Rasters are made per drawn size and kept: a repaint at a size already
-/// drawn makes none, a new device scale makes one, and an image keeps at
-/// most `MAX_RASTERS`.
+/// drawn makes none, a new device scale makes one, and the sizes drawn stay
+/// kept (within the thread's byte budget, `svg_image_limits_2111_tests`).
 #[test]
 fn rasters_are_made_per_size_and_bounded() {
     let src = b64(ICON);
@@ -563,39 +563,47 @@ fn rasters_are_made_per_size_and_bounded() {
         paint_at(&mut doc, 1.0);
         assert_eq!(made(&doc), 3 + i as u64);
     }
+    // Well under the byte budget: all seven sizes are kept, and going back
+    // to the first makes nothing.
     let vector = doc.tree.image_cache.get(&src).unwrap();
-    assert_eq!(
-        vector.vector().unwrap().rasters_held(),
-        rinch_dom::svg_image::MAX_RASTERS
-    );
-    // 16px (1x) was the least recently used of them: gone, so made again.
+    assert_eq!(vector.vector().unwrap().rasters_held(), 7);
     doc.set_attribute(img, "style", "left: 0; top: 0");
     paint_at(&mut doc, 1.0);
-    assert_eq!(made(&doc), 8);
+    assert_eq!(made(&doc), 7);
 }
 
-/// Nothing outside the file is read and no text is drawn: an `<image>`
-/// (a file path or a `data:` PNG) and a `<text>` draw nothing; the rest of
-/// the file draws.
+/// Nothing outside the file is read and no text is drawn: an `<image>` of
+/// an SVG file on disk (which usvg's default resolver loads and draws, so
+/// this fails with rinch's resolvers taken out), of a `data:` SVG, of a
+/// `data:` PNG, and a `<text>` draw nothing; the rest of the file draws.
 #[test]
 fn an_svg_reads_nothing_outside_itself() {
     const RED_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAYAAACddGYaAAAAEUlEQVR4nGP4z8DwH4YZkDkAm34L9XKwuTwAAAAASUVORK5CYII=";
+    let red = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#f00"/></svg>"##;
+    let dir = std::env::temp_dir().join(format!("rinch-2111-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let on_disk = dir.join("red.svg");
+    std::fs::write(&on_disk, red).unwrap();
     let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="10" viewBox="0 0 40 10">
+        r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="50" height="10" viewBox="0 0 50 10">
         <image x="0" y="0" width="10" height="10" href="{RED_PNG}"/>
-        <image x="10" y="0" width="10" height="10" xlink:href="/etc/hosts"/>
-        <text x="20" y="10" font-size="10" fill="#f00">MM</text>
-        <rect x="30" y="0" width="10" height="10" fill="#00f"/></svg>"##
+        <image x="10" y="0" width="10" height="10" xlink:href="{}"/>
+        <image x="20" y="0" width="10" height="10" href="{}"/>
+        <text x="30" y="10" font-size="10" fill="#f00">MM</text>
+        <rect x="40" y="0" width="10" height="10" fill="#00f"/></svg>"##,
+        on_disk.display(),
+        b64(red)
     );
     let mut doc = new_doc();
     add(&mut doc, "img", "left: 0; top: 0", Some(&pct(&svg)));
     let p = paint_at(&mut doc, 1.0);
+    let _ = std::fs::remove_dir_all(&dir);
     for y in 0..10 {
-        for x in 0..30 {
+        for x in 0..40 {
             assert_eq!(px(&p, x, y), WH, "({x}, {y})");
         }
     }
-    expect(&p, &[((35, 5), B)], 0);
+    expect(&p, &[((45, 5), B)], 0);
 }
 
 /// What rasterising costs on the UI thread: an icon, and two 1200x800
@@ -646,13 +654,17 @@ fn svg_raster_cost_probe() {
         let parse = t.elapsed();
         for (w, h) in sizes {
             let t = std::time::Instant::now();
-            let r = v.raster(w, h).unwrap();
+            let r = v.raster(w, h);
             eprintln!(
-                "{name} ({} bytes): parse {parse:?}, raster {}x{} {:?}",
+                "{name} ({} bytes): parse {parse:?}, raster {w}x{h} {:?}, estimated work {:.2e}{}",
                 svg.len(),
-                r.image.width,
-                r.image.height,
-                t.elapsed()
+                t.elapsed(),
+                v.estimated_work(w as u32, h as u32),
+                if r.is_none() {
+                    " (refused: over the work budget)"
+                } else {
+                    ""
+                }
             );
         }
     }

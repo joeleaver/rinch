@@ -603,28 +603,37 @@ pub fn run_queued_loads() -> bool {
 /// requesting document's [`ImageCache::drain_pending`] picks it up.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader>) {
-    std::thread::spawn(move || {
-        let result = load_and_decode(&src, loader);
-        if !queue_answer(doc_key, src, result) {
-            return;
-        }
+    // 8 MB of stack, not the 2 MB a spawned thread gets: a decoder recurses
+    // over its input (#2111's review: a nested SVG overflowed 2 MB, and a
+    // stack overflow aborts the process). The SVG limits keep well inside it.
+    let spawned = std::thread::Builder::new()
+        .name("rinch-image-load".into())
+        .stack_size(8 << 20)
+        .spawn(move || {
+            let result = load_and_decode(&src, loader);
+            if !queue_answer(doc_key, src, result) {
+                return;
+            }
 
-        // Wake the main thread. The desktop event loop runs on
-        // `ControlFlow::Wait`, so without this the decode sits in the queue
-        // until some other input happens to arrive — an `<img src>` set while
-        // the app is otherwise idle stays 0x0 and unpainted, in practice
-        // forever. Dispatching an empty callback is the cheapest thing that
-        // goes through the platform wake path.
-        //
-        // The wake is *promptness only*, never the correctness guarantee, and
-        // must not be treated as one: hosts install their own dispatcher, and
-        // an embedded one deliberately wakes nothing (its game loop is already
-        // turning); the desktop one coalesces, so a wake can be swallowed when
-        // another closure is already queued. What actually guarantees the drain
-        // is [`has_pending`], which every host's "is there anything to do?"
-        // gate consults.
-        rinch_core::run_on_main_thread(|| {});
-    });
+            // Wake the main thread. The desktop event loop runs on
+            // `ControlFlow::Wait`, so without this the decode sits in the queue
+            // until some other input happens to arrive — an `<img src>` set while
+            // the app is otherwise idle stays 0x0 and unpainted, in practice
+            // forever. Dispatching an empty callback is the cheapest thing that
+            // goes through the platform wake path.
+            //
+            // The wake is *promptness only*, never the correctness guarantee, and
+            // must not be treated as one: hosts install their own dispatcher, and
+            // an embedded one deliberately wakes nothing (its game loop is already
+            // turning); the desktop one coalesces, so a wake can be swallowed when
+            // another closure is already queued. What actually guarantees the drain
+            // is [`has_pending`], which every host's "is there anything to do?"
+            // gate consults.
+            rinch_core::run_on_main_thread(|| {});
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("image load thread not started: {e}");
+    }
 }
 
 /// Whether any decode is queued for this document.
@@ -789,26 +798,35 @@ pub fn purge_pending(doc_key: u64) {
 
 /// Decode a `data:` URI into raw bytes.
 ///
-/// `data:[<mediatype>][;base64],<data>`: base64 (ASCII white space in it is
-/// ignored, as the fetch standard's forgiving decode does), or else
-/// percent-encoded, the form an inline `data:image/svg+xml,%3Csvg…` takes
-/// (#2111; before, only base64 decoded). Returns `None` if the URI has no
-/// comma or its base64 is invalid.
+/// `data:[<mediatype>][;base64],<data>`. The data is percent-decoded first,
+/// as the fetch standard does; then, with `;base64`, decoded by its
+/// forgiving base64: ASCII white space is ignored and padding is optional
+/// (as Chrome decodes a `data:` URL). Without it, the percent-decoded bytes
+/// are the data — the form an inline `data:image/svg+xml,%3Csvg…` takes
+/// (#2111; before, only padded base64 decoded). Returns `None` if the URI has
+/// no comma or its base64 is invalid.
 pub fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
     let comma = src.find(',')?;
     let header = &src[..comma];
-    let data = &src[comma + 1..];
+    let data = percent_decode(&src.as_bytes()[comma + 1..]);
     let base64 = header
         .split(';')
         .skip(1)
         .any(|p| p.trim().eq_ignore_ascii_case("base64"));
-    if base64 {
-        use base64::Engine;
-        let data: Vec<u8> = data.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-        base64::engine::general_purpose::STANDARD.decode(data).ok()
-    } else {
-        Some(percent_decode(data.as_bytes()))
+    if !base64 {
+        return Some(data);
     }
+    use base64::Engine;
+    let forgiving = base64::engine::GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        base64::engine::GeneralPurposeConfig::new()
+            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
+    );
+    let data: Vec<u8> = data
+        .into_iter()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    forgiving.decode(data).ok()
 }
 
 /// `%XX` escapes to their bytes; a `%` not followed by two hex digits is kept
