@@ -207,7 +207,7 @@ them clips. That question is `Node::scrolls_y()` / `scrolls_x()`.
 **Stacking contexts and the clip chain.** `Node::creates_stacking_context()`
 answers: a positioned box with an explicit `z-index`, `position: fixed` or
 `sticky` whatever the `z-index`, `opacity < 1`, a `mask-image` with a gradient
-layer (#1798), a `transform` other than `none`
+or `url()` layer (#1798, #2099), a `transform` other than `none`
 — an identity such as `translateX(0)` included (#415, `Node::has_transform`).
 **None of them on a `display: contents` element** (#1038): it generates no box,
 so it is neither a stacking context nor a positioned layer (`is_positioned_z_auto`),

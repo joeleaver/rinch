@@ -129,11 +129,51 @@ stops; a radial gradient takes its shape, size (`circle 40px`, `120% 60%`,
 transparency as in a browser (premultiplied). Not supported: conic gradients,
 interpolation hints and `in <colorspace>`; `to top right` is always 45°.
 
-`mask-image` takes gradients (#1798): each layer covers the element's border
-box, layers are added together, and the element and everything it paints are
-kept where the mask is opaque and clipped to the border box. `mask-image:
-url(...)` and the other `mask-*` properties are not read on desktop (the
-browser reads them on the web).
+### Masks
+
+`mask-image` takes gradients (#1798) and images (#2099), as `mask-image` or
+`-webkit-mask-image`, alone or in the `mask` / `-webkit-mask` shorthand. The
+element and everything it paints are kept where the mask is opaque and clipped
+to its border box. This is the CSS way to tint a single-colour icon:
+
+```rust
+div { style: "width: 24px; height: 24px; background-color: #ff4040; \
+              mask-image: url(heart.png); mask-size: 100% 100%;" }
+```
+
+Each mask layer is sized, placed and tiled like a background layer, by its own
+entry of `mask-size`, `mask-position`, `mask-repeat` and `mask-origin`. The
+difference is that `mask-origin` starts at `border-box`. The layers are added
+together (`mask-composite: add`). An image mask loads like a `background-image`:
+from files, from an app's image scheme (`register_image_scheme`), and over the
+network with `image-network`. Until it has loaded, or if it fails, the element
+is masked away entirely, as in a browser.
+
+Not read on desktop:
+- `mask-mode`: every layer is an alpha mask, so `luminance` is drawn as
+  `alpha`.
+- `mask-clip` (always the border box), `mask-composite` (always `add`), and
+  `mask-type`.
+- A `url(#id)` reference to an SVG `<mask>` element.
+
+rinch decodes no SVG *file* as an image, so `mask-image: url(icon.svg)` masks
+the element away (an `<img src="icon.svg">` shows nothing either). Use a
+PNG or another raster format. A `data:` URL works, as it does for
+`background-image`. On the web, the browser reads all of these itself.
+
+### `image-rendering`
+
+`image-rendering: pixelated` and `crisp-edges` (#2098) sample an image
+nearest-neighbour, so a 16x16 pixel-art icon drawn at 48px keeps hard
+pixels. They apply to an `<img>`, a `background-image: url(...)` and a
+`mask-image: url(...)`. As in Chrome, both keywords are nearest when scaling
+up and when scaling down. The property is inherited. `auto` is smooth
+(bilinear) on the GPU renderer. The software renderer has always drawn a
+scaled `<img>` nearest, where Chrome's `auto` is smooth, so there the
+keywords change only repeating backgrounds and masks at a fractional
+position. `smooth` is not parsed, so the declaration is dropped and the
+inherited value stays. A `RenderSurface`, `<video>` or `<canvas>` frame does
+not read the property.
 
 `background-position` is animatable, by `transition` and `@keyframes` alike;
 it moves paint only, never layout. This is what makes the striped `Progress`
@@ -228,8 +268,11 @@ What a loader must know:
 
 - **It returns encoded bytes**: the contents of a PNG, JPEG, GIF or WebP file.
   rinch decodes them. It never returns decoded pixels.
-- **It runs on a background thread** spawned for that one load, never the UI
-  thread, so it may block on I/O. Several loads run at once.
+- **On native targets it runs on a background thread** spawned for that one
+  load, never the UI thread, so it may block on I/O. Several loads run at once.
+  On wasm32 (an embedded `RinchContext` in the browser, a WASI guest) there are
+  no threads: it runs on the UI thread, inside the frame that asks, and must
+  answer from memory (see "Images in a context" in the game-engine guide).
 - **Its answer is cached by source string, a failure included.** A source that
   failed is not asked for again on its own.
 - **On desktop, a panic is a failed load.** It is caught on the load's thread and
@@ -237,8 +280,8 @@ What a loader must know:
   again. In the browser (and on a native build with `panic = "abort"`) a
   panicking loader or resolver aborts the whole app.
 - **The `data` scheme cannot be registered** (`register_image_scheme("data", ..)`
-  panics). No app loader is ever offered a `data:` URL; an `<img>`'s is decoded
-  in place.
+  panics). No app loader is ever offered a `data:` URL; an `<img>`'s and a
+  `background-image`'s are decoded in place.
 - **A registration lasts until `unregister_image_scheme`.** It is process-wide
   and is not undone when the component that made it unmounts.
 
@@ -268,7 +311,8 @@ one has decoded. A window that never named the source is not woken by the call.
   for after the last `reload_image`, and ten reloads during one slow load cost
   one more load, not ten.
 - **Do not call `reload_image(src)` from inside the loader's answer for `src`**:
-  each call discards the answer being given and asks again.
+  each call discards the answer being given and asks again, and keeps a reload
+  of `src` queued every frame, so the app never goes idle.
 
 
 #### In the browser

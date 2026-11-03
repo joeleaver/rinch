@@ -371,6 +371,9 @@ jobs:
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
             --ignored --test-threads=1
+          # #2098's image-rendering and #2099's url masks against Chrome's pixels.
+          run 1 -p rinch --features gpu,video --test gpu_image_rendering_mask_2098 -- \
+            --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).
           run 2 -p rinch-dom --no-default-features --test background_tiling_embed_tests -- \
@@ -791,10 +794,12 @@ jobs:
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features word-dictionary --test editor_word_dictionary
           # `rinch` alone with `embed` (#1956): a RinchContext installs the
-          # browser's timers and task scheduler. rinch-web's run above builds
-          # `rinch` without `embed`, so this file would run nowhere else.
+          # browser's timers and task scheduler, and loads images (#2100).
+          # rinch-web's run above builds `rinch` without `embed`, so these
+          # files would run nowhere else.
           cargo test -p rinch --no-default-features --features embed \
-            --target wasm32-unknown-unknown --test embed_web_runtime_1956
+            --target wasm32-unknown-unknown --test embed_web_runtime_1956 \
+            --test embed_web_images_2100
 
       # rinch-av's audio capture where the browser holds an AudioContext
       # until a user gesture (Chrome's default; the step above allows
@@ -912,7 +917,8 @@ jobs:
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
           cargo test -p rinch --no-default-features --features embed \
-            --target wasm32-unknown-unknown --test embed_web_runtime_1956
+            --target wasm32-unknown-unknown --test embed_web_runtime_1956 \
+            --test embed_web_images_2100
           cargo test -p rinch-av --features audio,camera --target wasm32-unknown-unknown
           # The Chrome step's lite_echo, or a new one on the same port if that
           # one did not outlive its step: the same URL keeps the test binaries

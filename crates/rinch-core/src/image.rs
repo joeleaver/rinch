@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 pub enum ImageLoadResult {
     /// Successfully loaded raw **encoded** bytes: the contents of a PNG, JPEG,
     /// GIF or WebP file, exactly as they would sit on disk. rinch decodes them
-    /// (on the same background thread that called the loader); a loader never
+    /// (on the thread that called the loader); a loader never
     /// hands over decoded pixels.
     Loaded(Vec<u8>),
     /// Loading failed with an error message.
@@ -34,8 +34,9 @@ pub enum ImageLoadResult {
 ///
 /// # Where it runs
 ///
-/// On a background thread spawned for that one load ([`std::thread::spawn`]),
-/// never on the UI thread, so blocking I/O is acceptable: a loader may read a
+/// On native targets, on a background thread spawned for that one load
+/// ([`std::thread::spawn`]), never on the UI thread, so blocking I/O is
+/// acceptable: a loader may read a
 /// file, make a request, or wait on a channel. It is called once per source
 /// per document (results are cached by source string), and from several
 /// threads at once when several sources are loading, hence `Send + Sync`.
@@ -45,13 +46,22 @@ pub enum ImageLoadResult {
 /// [`ImageLoadResult::Failed`] and have the app call `reload_image` when they
 /// arrive, rather than park a thread per missing picture.
 ///
+/// On `wasm32` (an embedded `RinchContext` in the browser, a WASI guest) there
+/// are no threads to spawn: the loader is called on the UI thread, by the
+/// frame (`RinchContext::update`) that first names the source, with no
+/// document borrowed, so it may write signals; its bytes are decoded there.
+/// It must answer from memory, never wait; a source it has to fetch first is
+/// answered [`ImageLoadResult::Failed`] and reloaded when the bytes arrive.
+///
 /// On desktop (any native target built with unwinding), a loader that
 /// **panics** has failed that load: the panic is caught on the load's thread
 /// and recorded as an [`ImageLoadResult::Failed`] carrying its message, so the
 /// source can be reloaded like any other failure. In the browser, and on a
 /// native build with `panic = "abort"`, a panic aborts the whole app. A loader
 /// must not call `reload_image` for the source it is being asked for: that
-/// discards the answer it is about to give and asks again, for ever.
+/// discards the answer it is about to give and asks again, for ever, and keeps
+/// a reload of it queued every frame, so a host that idles when nothing is
+/// pending never idles.
 ///
 /// # Closures
 ///
@@ -110,8 +120,9 @@ pub fn scheme_of(src: &str) -> Option<String> {
 /// own loader (files, plus HTTP(S) with rinch's `image-network` feature), so
 /// the fallback is automatic: an app installs only what it alone can resolve.
 /// Registering a scheme the default loader also handles (`https`, `file`)
-/// takes it over. `data` is the one scheme that cannot be registered: no app
-/// loader is ever offered a `data:` URL (an `<img>`'s is decoded in place).
+/// takes it over. `data` is the one scheme that cannot be registered: no
+/// loader is ever offered a `data:` URL (an `<img>`'s and a
+/// `background-image`'s are decoded in place).
 ///
 /// The registration is process-wide and lasts until
 /// [`unregister_image_scheme`]: it is not tied to the component that made it

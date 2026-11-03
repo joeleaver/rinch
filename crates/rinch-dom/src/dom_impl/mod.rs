@@ -1539,22 +1539,8 @@ impl RinchDocument {
         // triggers a re-render and creates a new img element, the cache lookup
         // in the "already in cache" path below finds the Decoded entry immediately.
         if src.starts_with("data:") {
-            if !self.tree.image_cache.contains(src)
-                && let Some(bytes) = crate::image_cache::decode_data_uri(src)
-            {
-                match image::load_from_memory(&bytes) {
-                    Ok(img) => {
-                        let rgba = img.to_rgba8();
-                        let (w, h) = (rgba.width(), rgba.height());
-                        self.tree.image_cache.insert_decoded(
-                            src.to_string(),
-                            crate::image_cache::DecodedImage::new(rgba.into_raw(), w, h),
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to decode data URI image: {}", e);
-                    }
-                }
+            if !self.tree.image_cache.contains(src) {
+                self.decode_data_url_in_place(src);
             }
             // Fall through to the "already in cache" path to set NodeContext
             // dimensions on this node (works for both first render and re-renders).
@@ -1627,26 +1613,52 @@ impl RinchDocument {
         }
     }
 
-    /// Scan for background-image URLs that need loading and trigger async loads.
-    pub fn request_background_image_loads(&mut self) {
-        let Some(loader) = self.tree.image_loader.clone() else {
-            return;
-        };
+    /// Decode a `data:` URL's picture into the cache now, on this thread: no
+    /// loader is offered one, and none is needed (#2100). A malformed one is
+    /// recorded as failed, so it is not decoded again per element.
+    fn decode_data_url_in_place(&mut self, src: &str) {
+        match crate::image_cache::decode_data_url_image(src) {
+            Ok(img) => self.tree.image_cache.insert_decoded(src.to_string(), img),
+            Err(e) => {
+                tracing::warn!("Failed to decode data URI image: {}", e);
+                self.tree.image_cache.mark_failed(src.to_string(), e);
+            }
+        }
+    }
 
+    /// Start the loads of the background-image URLs the cascade produced
+    /// since the last call.
+    ///
+    /// A `data:` URL is decoded here, in place, as an `<img>`'s is: it is in
+    /// the cache before this frame paints, and needs no loader (#2100; it
+    /// used to go to the document's loader, which read it as a file name).
+    pub fn request_background_image_loads(&mut self) {
         // Only URLs a cascade produced since the last call (see
         // `NodeTree::pending_background_urls`), never a walk of the slab.
         if self.tree.pending_background_urls.is_empty() {
             return;
         }
+        let loader = self.tree.image_loader.clone();
+        let mut kept = Vec::new();
         for url in std::mem::take(&mut self.tree.pending_background_urls) {
             // A URL two nodes share, or one that finished loading since it
             // was noted, is started once.
             if self.tree.image_cache.contains(&url) {
                 continue;
             }
+            if url.starts_with("data:") {
+                self.decode_data_url_in_place(&url);
+                continue;
+            }
+            // Kept for the first layout with a loader installed.
+            let Some(loader) = loader.clone() else {
+                kept.push(url);
+                continue;
+            };
             self.tree.image_cache.mark_loading(url.clone());
-            crate::image_cache::request_image_load(self.doc_key, url, loader.clone());
+            crate::image_cache::request_image_load(self.doc_key, url, loader);
         }
+        self.tree.pending_background_urls = kept;
     }
 
     /// Drain completed image loads and update Taffy nodes with intrinsic dimensions.
@@ -1681,16 +1693,17 @@ impl RinchDocument {
         // For each newly decoded image, find <img> nodes referencing it
         // and update their intrinsic dimensions
         for src in &newly_decoded {
-            // `background-image: url(src)` users: no intrinsic size feeds
-            // layout, but their pixels changed, so they must be in the dirty
-            // region the next paint clears and redraws.
+            // `background-image: url(src)` and `mask-image: url(src)` users
+            // (#2099): no intrinsic size feeds layout, but their pixels
+            // changed, so they must be in the dirty region the next paint
+            // clears and redraws.
             let bg_ids: Vec<RawNodeId> = self
                 .tree
                 .nodes
                 .iter()
                 .filter_map(|(id, node)| {
                     node.computed_style
-                        .background_image_urls()
+                        .paint_image_urls()
                         .any(|url| url == src)
                         .then_some(id)
                 })

@@ -152,15 +152,19 @@ pub struct ComputedStyle {
     /// single image (no allocation), and a layer with nothing to paint
     /// (`none`, a conic gradient) is left out.
     pub background_layers: Vec<BackgroundLayer>,
-    /// `mask-image` (#1798): its gradient layers, first listed first. Each
-    /// covers the border box (`mask-size`, `-position`, `-repeat`, `-origin`
-    /// and `-clip` are gecko-only in Stylo, so they keep their initial
-    /// values), and they are added together (`mask-composite: add`) into
-    /// an alpha mask over the element and its descendants, clipped to the
-    /// border box. A `url()` layer is not read, and neither is `mask-mode`
-    /// (gecko-only too; a gradient's `match-source` is `alpha`). Empty for
-    /// `none`, and for a list with no gradient.
-    pub mask_image: Vec<BackgroundValue>,
+    /// `mask-image` (#1798, #2099): its gradient and `url()` layers, first
+    /// listed first, each with its entries of `mask-size`, `mask-position`,
+    /// `mask-repeat` and `mask-origin` (a shorter list repeating, as the
+    /// background lists do). They are added together (`mask-composite:
+    /// add`) into an alpha mask over the element and its descendants,
+    /// clipped to the border box (`mask-clip` is not read). A `url()` layer's
+    /// image is loaded as a `background-image`'s is; until it has loaded, or
+    /// when it fails, it masks everything away (css-masking-1 §7.1: a
+    /// transparent black layer). `mask-mode` is not read: every layer is an
+    /// alpha mask (`match-source` is `alpha` for an image and a gradient
+    /// alike, so only an explicit `luminance` differs). Empty for `none`, and
+    /// for a list with nothing rinch can paint (a conic gradient).
+    pub mask_image: Vec<BackgroundLayer>,
     #[serde(serialize_with = "values::color_serde::serialize")]
     pub color: Option<peniko::Color>,
 
@@ -205,6 +209,9 @@ pub struct ComputedStyle {
 
     // Object fit (for <img> elements)
     pub object_fit: ObjectFitValue,
+    /// `image-rendering` (#2098): nearest-neighbour sampling for an `<img>`,
+    /// a `background-image` and a `mask-image` `url()` when not `auto`.
+    pub image_rendering: ImageRenderingValue,
 
     /// `aspect-ratio` (#1286). A non-replaced box hands it to Taffy
     /// ([`Self::to_taffy_style`]); a replaced element's measure reads it
@@ -398,6 +405,7 @@ impl Default for ComputedStyle {
             filter_hue_rotate: 0.0,
 
             object_fit: ObjectFitValue::default(),
+            image_rendering: ImageRenderingValue::Auto,
             aspect_ratio: AspectRatioValue::default(),
 
             cursor: CursorValue::default(),
@@ -529,6 +537,17 @@ impl ComputedStyle {
                 BackgroundValue::Image { url } => Some(url.as_str()),
                 _ => None,
             })
+    }
+
+    /// Every `url()` paint loads for this style: the background layers'
+    /// ([`Self::background_image_urls`]) and then the `mask-image` layers'
+    /// (#2099).
+    pub fn paint_image_urls(&self) -> impl Iterator<Item = &str> {
+        self.background_image_urls()
+            .chain(self.mask_image.iter().filter_map(|l| match &l.image {
+                BackgroundValue::Image { url } => Some(url.as_str()),
+                _ => None,
+            }))
     }
 
     /// Get the background color (convenience accessor for BackgroundValue::Color).

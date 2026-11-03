@@ -3971,10 +3971,11 @@ fn sticky_y(tree: &NodeTree, node: &Node, y: f64, offset_y: f64, scale: f64) -> 
 }
 
 /// Paint a node and its subtree, under its `mask-image` when it has one
-/// (#1798): the subtree is drawn into a layer, clipped to the border box
-/// (`mask-clip: border-box`), and a `destination-in` layer holding the mask's
-/// gradient layers (each laid on the border box, `mask-origin: border-box`,
-/// added together) keeps it only where the mask is opaque. A masked box is a
+/// (#1798, #2099): the subtree is drawn into a layer, clipped to the border
+/// box (`mask-clip: border-box`), and a `destination-in` layer holding the
+/// mask's layers (gradients and images, each sized, positioned and tiled by
+/// its `mask-size`/`-position`/`-repeat`/`-origin`, added together) keeps it
+/// only where the mask is opaque. A masked box is a
 /// stacking context, so everything it paints — hoisted descendants included —
 /// is inside the layer.
 #[allow(clippy::too_many_arguments)]
@@ -4053,15 +4054,34 @@ fn paint_node(
     );
     painter.push_layer(BlendMode::DestinationIn, 1.0, node_transform, &shape);
     for layer in mask.iter().rev() {
-        gradient::fill(
-            painter,
-            layer,
-            scale,
-            Fill::NonZero,
-            node_transform,
-            border_box,
-            &shape,
-        );
+        if background::covers_border_box(&layer.image, layer.geometry) {
+            // A gradient at its initial `mask-size`, `-position` and
+            // `-origin` covers the border box: one fill, as #1798 drew it.
+            gradient::fill(
+                painter,
+                &layer.image,
+                scale,
+                Fill::NonZero,
+                node_transform,
+                border_box,
+                &shape,
+            );
+        } else {
+            // A `url()` layer, or one sized, positioned or tiled away from
+            // the border box (#2099): laid out and tiled as a background
+            // layer is, over the border box. An image not loaded (yet, or
+            // ever) draws nothing, so it masks everything away.
+            background::paint_mask_layer(
+                painter,
+                tree,
+                &node.computed_style,
+                layer,
+                scale,
+                border_box,
+                &shape,
+                node_transform,
+            );
+        }
     }
     painter.pop_layer();
     painter.pop_layer();
@@ -4582,7 +4602,15 @@ fn paint_node_unmasked(
                 if let Some(src) = node.attributes.get("src")
                     && let Some(decoded) = tree.image_cache.get(src)
                 {
-                    image::paint_image(painter, decoded, rect, scale, fit, node_transform);
+                    image::paint_image(
+                        painter,
+                        decoded,
+                        rect,
+                        scale,
+                        fit,
+                        node_transform,
+                        painter::ImageSampling::of(node.computed_style.image_rendering),
+                    );
                 }
 
                 // Borders (no border-radius for img elements)
