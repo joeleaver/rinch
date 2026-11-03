@@ -471,7 +471,7 @@ pub fn caret_position_for_offset_layout_with_affinity(
         CaretAffinity::Upstream => Affinity::Upstream,
     };
     let cursor = Cursor::from_byte_index(layout, byte_offset, affinity);
-    let geom = cursor.geometry(layout, 0.0);
+    let geom = crate::float_wrap::caret_box(layout, &cursor);
     (geom.x0 as f32, geom.y0 as f32)
 }
 
@@ -507,7 +507,7 @@ pub fn glyph_bounds_for_offset_layout(
     let advance = cluster.advance();
 
     // Get the x position from cursor geometry
-    let geom = cursor.geometry(layout, 0.0);
+    let geom = crate::float_wrap::caret_box(layout, &cursor);
 
     Some(GlyphBounds {
         x: geom.x0 as f32,
@@ -785,9 +785,11 @@ fn selection_rects_impl(
             rects.push((l, top, (r - l).max(1.0), height));
             continue;
         }
-        let left = Cursor::from_byte_index(layout, start, Affinity::Downstream)
-            .geometry(layout, 0.0)
-            .x0 as f32;
+        let left = crate::float_wrap::caret_box(
+            layout,
+            &Cursor::from_byte_index(layout, start, Affinity::Downstream),
+        )
+        .x0 as f32;
         // A range that runs to (or past) the line's end ends at the line's
         // trailing edge: an *upstream* caret there. A downstream caret at a
         // soft line break stands at the start of the NEXT line (x = 0), which
@@ -803,9 +805,11 @@ fn selection_rects_impl(
             && range.end > range.start
             && line.break_reason() == parley::layout::BreakReason::Explicit
         {
-            let before_break = Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream)
-                .geometry(layout, 0.0)
-                .x0 as f32;
+            let before_break = crate::float_wrap::caret_box(
+                layout,
+                &Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream),
+            )
+            .x0 as f32;
             before_break + (metrics.ascent + metrics.descent) * 0.25
         } else {
             let end_affinity = if end == range.end {
@@ -813,9 +817,11 @@ fn selection_rects_impl(
             } else {
                 Affinity::Downstream
             };
-            Cursor::from_byte_index(layout, end, end_affinity)
-                .geometry(layout, 0.0)
-                .x0 as f32
+            crate::float_wrap::caret_box(
+                layout,
+                &Cursor::from_byte_index(layout, end, end_affinity),
+            )
+            .x0 as f32
         };
         let (mut left, mut right) = (left, right);
         if selected.is_some() {
@@ -914,9 +920,11 @@ fn bidi_line_pieces(
         && (a..b).contains(&(range.end - 1))
     {
         let metrics = line.metrics();
-        let nx = Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream)
-            .geometry(layout, 0.0)
-            .x0 as f32;
+        let nx = crate::float_wrap::caret_box(
+            layout,
+            &Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream),
+        )
+        .x0 as f32;
         let nr = nx + (metrics.ascent + metrics.descent) * 0.25;
         match pieces.iter_mut().find(|(l, r)| *l <= nx && nx <= *r) {
             Some(piece) => piece.1 = piece.1.max(nr),

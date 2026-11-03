@@ -107,6 +107,17 @@ impl ComputedStyle {
             inline_level_before_blockify: box_style.original_display.outside()
                 == style::values::specified::box_::DisplayOutside::Inline,
             position: position_from_stylo(&box_style.position),
+            float: match box_style.float {
+                style::computed_values::float::T::Left => taffy::Float::Left,
+                style::computed_values::float::T::Right => taffy::Float::Right,
+                _ => taffy::Float::None,
+            },
+            clear: match box_style.clear {
+                style::computed_values::clear::T::Left => taffy::Clear::Left,
+                style::computed_values::clear::T::Right => taffy::Clear::Right,
+                style::computed_values::clear::T::Both => taffy::Clear::Both,
+                _ => taffy::Clear::None,
+            },
             vertical_align: vertical_align_from_stylo(
                 box_style.alignment_baseline,
                 &box_style.baseline_shift,

@@ -9,7 +9,20 @@ license.workspace = true
 rinch-words.workspace = true
 rinch-core = { workspace = true }
 slab = "0.4"
-# Taffy's default features minus the five rinch never reads (#1260), which
+# Taffy 0.14 from joeleaver/taffy-fork, branch `rinch-patch`: v0.14.0 plus five
+# commits for floats. `TaffyTree::compute_layout_with_block_measure` hands a
+# leaf's measure the `BlockContext` it is laid out in, so an IFC root wraps its
+# lines around the floats beside it (`float_wrap.rs`), and a box laid out while
+# floats are active skips Taffy's layout cache, whose key does not hold where
+# they are; `find_content_slot` gives a slot its real height rather than
+# infinity; and the floats right before an IFC root's measure leaf are left to
+# it to place, at the lines they stand in (`PendingFloat`); a formatting-context
+# root that holds floats keeps its bottom padding and border below them; and
+# marking a box dirty climbs past a box laid out beside floats. A dependency, not a [patch], so an app on rinch gets it with
+# nothing to copy. Pinned by rev so a push to the fork's branch never changes
+# rinch; moving it is a rinch PR, and a Taffy bump rebases the five commits.
+#
+# Taffy's default features minus the four rinch never reads (#1260), which
 # cost instructions in every compute whether read or not:
 # - `content_size`: a scrollable-overflow rect per node in flex, block, grid and
 #   leaf layout, and eight more roundings per node in `round_layout`. rinch
@@ -17,14 +30,15 @@ slab = "0.4"
 # - `calc`: Taffy's calc pointer. rinch never hands Taffy one — a mixed
 #   `calc()` is resolved by `calc_layout.rs` and written in as a plain length
 #   — so it only bought a tag check on every length resolution.
-# - `float_layout`, `flexbox_balance`, `detailed_layout_info`: CSS floats,
-#   `flex-wrap: balance` and the grid's per-track output, none of which rinch
-#   maps into or reads out of Taffy.
+# - `flexbox_balance`, `detailed_layout_info`: `flex-wrap: balance` and the
+#   grid's per-track output, neither of which rinch maps into or reads out of
+#   Taffy.
+# `float_layout` is on: Taffy places floats and clears (`floats.rs`).
 # Measured on `rinch-bench`'s 500-row list: about -4% instructions per
 # structural edit (append, remove, set_text_content). The dev-dependency below
 # must carry the same list, or `cargo test` unifies the defaults back in and
 # the suite runs a different Taffy than the build.
-taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout"] }
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "fa0fd0de0fc221742eb6ca8ca11143cffdcac8d4", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
 bitflags = "2"
 # Monotonic/wall clock usable on wasm32-unknown-unknown (layout perf timers + CSS
 # transition/animation clocks). Re-exports std::time on native — zero cost off web.
@@ -81,6 +95,6 @@ software-renderer = ["tiny-skia", "swash"]
 # block on wgpu's adapter request. Already in the lock through `rinch`.
 pollster = "0.4"
 # Integration tests name taffy types (the IFC leaf invariant tests, #466,
-# inspect `NodeTree::taffy` directly). Resolves to the same pinned 0.14, with
-# the same features as the dependency above (see there).
-taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout"] }
+# inspect `NodeTree::taffy` directly). The same fork and rev, with the same
+# features, as the dependency above (see there).
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "fa0fd0de0fc221742eb6ca8ca11143cffdcac8d4", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }

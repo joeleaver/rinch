@@ -1457,6 +1457,9 @@ impl RinchDocument {
                     c.base = None;
                     c.shift = 0.0;
                 }
+                if self.tree.nodes[node_id].computed_style.float.is_floated() {
+                    self.note_float(node_id);
+                }
                 let new = &self.tree.nodes[node_id].computed_style;
                 if new.table_part != crate::computed_style::values::TablePart::None
                     || old_table_part != new.table_part
