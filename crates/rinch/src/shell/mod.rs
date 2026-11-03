@@ -22,6 +22,9 @@ pub mod memory_profile;
 pub(crate) mod os_file_drag;
 #[cfg(feature = "desktop")]
 pub(crate) mod overlay_window;
+// The main window's pointer lock and raw motion (#2092).
+#[cfg(feature = "desktop")]
+pub(crate) mod pointer_lock;
 #[cfg(feature = "desktop")]
 pub mod renderer;
 #[cfg(feature = "desktop")]

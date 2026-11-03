@@ -92,6 +92,9 @@ pub mod font;
 /// mount the same menus in a browser. The `muda` builders inside it are gated
 /// instead. See the module docs.
 pub mod menu;
+/// Pointer lock and raw pointer motion (#2092); the API is re-exported through
+/// [`window`].
+mod pointer_lock;
 pub mod render_surface;
 #[cfg(any(feature = "desktop", feature = "android"))]
 pub mod shell;
@@ -307,6 +310,11 @@ pub mod prelude {
     pub use crate::window::{
         OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
         window_focused, window_size,
+    };
+    // Pointer lock and raw motion (#2092)
+    pub use crate::window::{
+        PointerLockError, PointerLockMode, PointerMotion, exit_pointer_lock, on_pointer_motion,
+        pointer_lock, request_pointer_lock, request_pointer_lock_on,
     };
     // Window control functions
     #[cfg(feature = "desktop")]

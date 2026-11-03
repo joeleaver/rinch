@@ -283,6 +283,12 @@ pub enum SurfaceEvent {
     /// each touch's `PointerMove`; an app that pinches ignores them while
     /// two touches are down.
     Pinch { x: f32, y: f32, scale: f32 },
+    /// Raw relative pointer motion while this surface holds the pointer lock
+    /// ([`RenderSurfaceHandle::request_pointer_lock`]): one step of the
+    /// mouse's motion, unclamped at the window's or the screen's edge, in the
+    /// platform's units — see [`on_pointer_motion`](crate::window::on_pointer_motion).
+    /// Only the surface holding a granted lock hears it.
+    PointerMotion { dx: f32, dy: f32 },
 }
 
 /// Mouse button identifier.
@@ -572,6 +578,10 @@ pub struct RenderSurfaceHandle {
     /// Whether presses, moves and releases arrive as pointer events — see
     /// [`set_pointer_events`](RenderSurfaceHandle::set_pointer_events).
     pub(crate) pointer_events: std::rc::Rc<Cell<bool>>,
+    /// The element the mounted `RenderSurface` component made (the `<div>` on
+    /// desktop, the `<canvas>` on the web): what a pointer lock it asks for
+    /// is held by (#2092). `None` while unmounted.
+    pub(crate) element: std::rc::Rc<RefCell<Option<NodeHandle>>>,
     /// Viewport name for hole-punch compositing.
     pub(crate) viewport_name: String,
     /// Whether this surface carries decoded **video** frames.
@@ -720,6 +730,41 @@ impl RenderSurfaceHandle {
     /// Whether [`set_pointer_events`](Self::set_pointer_events) is on.
     pub fn pointer_events(&self) -> bool {
         self.pointer_events.get()
+    }
+
+    /// Lock the pointer to this surface, for mouse look or a fly camera
+    /// (#2092): the cursor is hidden and kept in the window, and the mouse's
+    /// raw motion arrives at the event handler as
+    /// [`SurfaceEvent::PointerMotion`] deltas that do not stop at the edge.
+    ///
+    /// The lock is the window's pointer lock, held by this surface's element:
+    /// see [`request_pointer_lock_on`](crate::window::request_pointer_lock_on)
+    /// for what each platform does (the desktop grants it at once; a browser
+    /// grants it only in a user gesture — call this from the surface's
+    /// `MouseDown` or a key handler — and answers later), and
+    /// [`pointer_lock`](crate::window::pointer_lock) for what was granted. It
+    /// ends on [`exit_pointer_lock`](crate::window::exit_pointer_lock), on a
+    /// window focus loss, on Escape, and when the surface unmounts.
+    ///
+    /// [`PointerLockError::NotConnected`](crate::window::PointerLockError::NotConnected)
+    /// while the surface is not mounted.
+    pub fn request_pointer_lock(&self) -> Result<(), crate::window::PointerLockError> {
+        let element = self
+            .element
+            .borrow()
+            .clone()
+            .ok_or(crate::window::PointerLockError::NotConnected)?;
+        crate::pointer_lock::request(
+            crate::window::PointerLockTarget::Element(element),
+            Some(self.id),
+        )
+    }
+
+    /// Whether this surface holds the pointer lock, granted or (in a browser)
+    /// still pending. Not reactive; [`pointer_lock`](crate::window::pointer_lock)
+    /// is.
+    pub fn has_pointer_lock(&self) -> bool {
+        crate::pointer_lock::held_by_surface(self.id)
     }
 
     /// Get the unique surface ID.
@@ -1104,6 +1149,7 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
         event_handler: std::rc::Rc::new(RefCell::new(None)),
         key_handler: std::rc::Rc::new(RefCell::new(None)),
         pointer_events: std::rc::Rc::new(Cell::new(false)),
+        element: std::rc::Rc::new(RefCell::new(None)),
         viewport_name,
         is_video,
         layout_size: Arc::new(Mutex::new((0, 0))),
@@ -1273,6 +1319,8 @@ pub fn unregister_render_surface(id: usize) {
     }
     #[cfg(not(feature = "desktop"))]
     let _ = removed;
+    // A pointer lock it holds ends with it (#2092).
+    crate::pointer_lock::surface_gone(id);
     // Clear focus if this surface was focused
     FOCUSED_SURFACE.with(|f| {
         let mut f = f.borrow_mut();
@@ -2570,6 +2618,7 @@ impl Component for RenderSurface {
             // listeners so nothing leaks.
             let surface = surface.clone();
             scope.on_cleanup(move || {
+                surface.element.borrow_mut().take();
                 unregister_render_surface(surface.id);
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                 teardown_web_surface(&surface);
@@ -2586,6 +2635,9 @@ impl Component for RenderSurface {
 
             div.set_attribute("style", "width: 100%; height: 100%;");
 
+            if let Some(ref surface) = self.surface {
+                *surface.element.borrow_mut() = Some(div.clone());
+            }
             div
         }
 
@@ -2605,6 +2657,7 @@ impl Component for RenderSurface {
                 canvas.set_attribute("data-render-surface", &surface.id.to_string());
                 // Defer canvas context acquisition to after DOM mount
                 schedule_canvas_init(surface.clone());
+                *surface.element.borrow_mut() = Some(canvas.clone());
             }
 
             canvas
@@ -2996,9 +3049,13 @@ fn setup_canvas_events(
         pointer_listeners.push(("pointercancel", closure));
     }
 
-    // pointermove
+    // pointermove — none while the pointer is locked (#2092): its position
+    // is held, and the motion arrives as `PointerMotion`, as on desktop.
     {
         let closure = only::<web_sys::PointerEvent>(move |event: web_sys::PointerEvent| {
+            if crate::pointer_lock::is_locked() {
+                return;
+            }
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             dispatch_surface_pointer(surface_id, PointerPhase::Move, x, y, pointer_of(&event));

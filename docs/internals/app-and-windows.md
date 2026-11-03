@@ -496,6 +496,113 @@ with null stdio and reaps it on a thread; Windows `ShellExecuteW`
 `resize` and resolution listeners have no fixture (a test cannot resize the
 page or change its scale).
 
+### Pointer lock and raw motion (#2092)
+
+State and API: `crates/rinch/src/pointer_lock.rs` (private module, re-exported
+through `rinch::window`), per thread. `HELD` is the lock asked for or held (its
+`PointerLockTarget` — `Window` or `Element(NodeHandle)` —, the
+`RenderSurface` id that asked, if one did, and the asking app's `doc`: the
+element's `doc_key`, else `current_dispatching_doc`, `None` from outside any
+dispatch); `MODE` is the granted mode, mirrored
+into a lazily made `unowned` signal that `pointer_lock()` reads; `HANDLERS` are
+the `on_pointer_motion` handlers (removed by `on_cleanup` of the ambient owner;
+with no owner, by dropping the `#[must_use]` `PointerMotionSubscription` or
+`cancel`).
+`pointer_lock_changed(Some)` with nothing in `HELD` changes nothing and answers
+`false` (it used to adopt the grant as a window lock, which turned a withdrawn
+request into a lock). The grab is a `PointerLockHost`'s
+(`set_pointer_lock_host`; a swap releases a held lock through the old host
+first). `lock` answers `Ok(Some(mode))` (granted now: desktop), `Ok(None)`
+(pending: the browser, confirmed by `pointer_lock_changed`) or `Err`; a host is
+called out of its cell (`with_host`), so it may call back in.
+
+Release paths, all through `release()` (host `unlock` once, mode `None`):
+`exit_pointer_lock`; `RinchApp::handle_event`'s first step — `prune()` (an
+`Element` target that is no longer `NodeHandle::is_connected`, checked on every
+event, `AboutToWait` included), `WindowFocus(false)` (`window_blurred`), and
+a `KeyDown(Escape)` while a lock is granted (`escape(doc_key, fresh)`: released
+and the event returned with only `RequestRedraw`, so DnD's Escape, the dismiss
+stack and every key handler never see it). Both act only on a lock whose
+`doc` is the handling app's (or `None`): several `RinchApp`s share the
+thread's state (embedded contexts), and another's blur or Escape used to end
+this one's. `ESCAPE_HELD` keeps that Escape's later presses that are not
+`KeyRepeat::Fresh` (repeats, and `Unknown`) consumed until its `KeyUp`
+(`escape_released`), a fresh press or a blur — a held Escape's repeats used to
+reach the dismiss stack and close a modal; `unregister_render_surface` (`surface_gone`, at the surface's unmount,
+before any event); `hide_window` (`set_pointer_lock_host(None)`, before the
+window is dropped). The host's own loss (`pointer_lock_changed(None)`) clears
+without calling `unlock`.
+
+Desktop shell (`shell/pointer_lock.rs`): `WindowPointerLock` holds the main
+window as a `Weak<dyn Window>`, installed by `create_window` and `show_window`
+(`install_pointer_lock_host`). `grab` refuses an unfocused window
+(`PointerLockError::NotFocused`, `Window::has_focus`): X11's `Confined` is an
+active `XGrabPointer` the server grants an unfocused window, which then caught
+and hid the pointer over a window a click could not focus, with Escape going
+elsewhere and no focus loss to end it. Then it tries `CursorGrabMode::Locked`, then
+`Confined` (winit-x11 has no lock; it reports `NotSupported`), then hides the
+cursor; `ungrab` is `None` + visible. `device_event` sums
+`DeviceEvent::PointerMotion` into `pending_motion` (`MotionSum`) only while
+`wants_motion()` (a lock granted or a handler registered), and
+`flush_pointer_motion` hands it to the app as one `PlatformEvent::PointerMotion`
+at the start of each `window_event` and in `about_to_wait`. While a lock is
+granted the `PointerMoved` arm keeps the move in `held_pointer_move` instead
+of queueing it, so the document's pointer stays where the lock found it
+(Confined on X11 still moves the cursor); `restore_held_pointer_move`, in
+`about_to_wait`, queues it once the lock has ended (unless a newer move
+waits), so hover is not left stale, and the KeyboardInput arm skips `try_menu_shortcut` for Escape.
+`RinchApp` dispatches `PointerMotion` through `dispatch_pointer_motion` (the
+surface holding a granted lock hears `SurfaceEvent::PointerMotion`, then the
+handlers, in one batch, untracked) and resolves layout when a handler dirtied
+it. winit delivers device events only while the window is focused
+(`DeviceEvents::WhenFocused`, the default; rinch does not change it). Measured
+live in a private nested KWin (`kwin_wayland --virtual --xwayland`, XDG dirs
+pointed at a temp dir): Wayland grants `Locked`, Xwayland `Confined`, and
+under Xwayland XTest's relative moves arrive as raw motion and Escape releases;
+**each raw motion is reported twice by winit-x11** (two `device_event`s for
+one motion, so X11 deltas read double, #2114 — winit-fork's, not fixed here).
+
+Web (`crates/rinch-web/src/pointer_lock.rs`, installed by
+`ensure_event_delegation`): `BrowserPointerLock` resolves the target
+(`document.documentElement`, or `web_document::element_of`), answers
+`Some(Locked)` at once when `pointerLockElement` already is it, else calls
+`requestPointerLock` through `Reflect` (so the promise Chrome and Firefox
+return can be caught) and answers pending; either way it records the element
+in `REQUESTED` (and whether it is granted), which `unlock` clears.
+`pointerlockchange` (`on_change`) marks the request granted when the browser
+locked the element asked for; a lock on any other element, or after the
+request was withdrawn, is given back (`exitPointerLock`, rinch told `None`);
+a lock lost after its grant is reported; an unlock while a request is pending
+is waited through. `pointerlockerror` (`on_error`) ends a pending request and
+gives back whatever the browser still holds (a refused move from A to B used
+to leave A locked and labelled B's). While a lock is granted the canvas's
+`pointermove` sends the surface nothing, as on the desktop; a capture-phase
+passive `mousemove` on the document feeds `movementX/Y` to
+`dispatch_pointer_motion`. The browser ends a lock itself on Escape, blur and
+the locked element's removal. Measured (headless Chrome 155, a CDP click): the
+click on the canvas locks it, CDP moves arrive as `movementX/Y`, and
+`exit_pointer_lock` and the surface's unmount each end it; a CDP Escape does
+not (it skips the browser's own Escape handling), so the browser's Escape has
+no automated test. Firefox (Playwright's build, through geckodriver): the
+synthetic half and the refusal of an ungestured request.
+
+Element liveness is `NodeHandle::is_connected`, whose id carries a slot
+generation; the desktop slab reuses slots at generation 0 until #723's second
+half, so a handle to a freed node whose slot went to a new attached node still
+reads as connected there.
+
+Pins: `pointer_lock::tests` (incl. an unowned subscription dropped, a grant
+with no request), `shell::pointer_lock::tests` (lock vs confine, unfocused
+refused, cursor), `shell::rinch_runtime::pointer_lock_2092_tests` (device motion summed
+and gated, hide), `app/pointer_lock_2092_tests.rs` (motion to the surface and
+the handlers, focus loss, Escape consumed ahead of the dismiss stack and an app
+key listener, its repeats, another app's blur and Escape, a surface's and an
+element's unmount, confine reported), the runtime's held move restored,
+`rinch-web/tests/pointer_lock_2092.rs` (Chrome and Firefox),
+`rinch-web/tests/pointer_lock_real_2092.rs` (trusted input,
+`run_real_keys.sh`, which `real_keys.mjs`'s `RINCH-REAL-MOVE` serves).
+Live: `examples/pointer-lock` with `POINTER_LOCK_LOG=1 POINTER_LOCK_AUTO=1`.
+
 ### Overlay windows (non-activating, click-through, skip-taskbar)
 
 `WindowProps::non_activating`, `click_through` and `skip_taskbar` (#1519,

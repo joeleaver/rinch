@@ -185,6 +185,17 @@ pub enum PlatformEvent {
     /// focus-arbiter routing as [`PlatformEvent::KeyDown`] — it is not an
     /// editor-specific path.
     Ime(ImeEvent),
+    /// Raw relative motion of the mouse (issue #2092): one step, unclamped
+    /// at the window's or the screen's edge, in the platform's own units (not
+    /// logical pixels — unaccelerated device counts on X11 and Windows,
+    /// surface units on Wayland, points on macOS). What a pointer lock
+    /// delivers: `RinchApp` hands it to the `RenderSurface` holding the lock
+    /// and to `rinch::window::on_pointer_motion` handlers.
+    ///
+    /// Desktop: winit's `DeviceEvent::PointerMotion`, summed over a turn of
+    /// the event loop. A native embed host forwards its own (winit's device
+    /// event, SDL's relative motion); nothing else produces it.
+    PointerMotion { dx: f64, dy: f64 },
 }
 
 /// A platform-agnostic IME (input method editor) composition event.

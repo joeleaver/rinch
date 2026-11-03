@@ -4745,6 +4745,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pointer-lock"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+ "rinch-core",
+]
+
+[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
