@@ -206,8 +206,8 @@ kept by `replaced::sync_replaced_measure` on each cascade, which owes a layout
 when it moves) and `replaced::measure` takes `AspectRatioValue::used_ratio`:
 a `<ratio>` without `auto` replaces the natural ratio, `auto <ratio>` is used
 only when there is none, and a `<ratio>` without `auto` relates the
-`box-sizing` box's sizes (always the border box today, since `box-sizing`
-is not read — #1278), any other the content box's. An internal table box (a
+`box-sizing` box's sizes (read since #1278; before that every box was a
+border box), any other the content box's. An internal table box (a
 cell, a row, a row group — `TablePart::is_internal`; not the table or a
 caption) takes no ratio, as in Chrome 155. `aspect-ratio` does not
 transition (Chrome interpolates it) and an `@keyframes` stop of it is
@@ -218,8 +218,9 @@ transfers the other axis's `min-*`/`max-*` onto a definite size
 #1561), and a box with a ratio has no content-based automatic minimum size,
 so text taller than the ratio overflows a visible box and a stretched flex
 item shrinks (#1562); and Taffy applies a non-replaced box's `auto <ratio>`
-to its border box too, where Chrome uses the content box (visible only with
-padding or a border, every rinch box being `border-box` — #1278). Three gaps
+to its `box-sizing` box too, where Chrome uses the content box (visible only
+on a `border-box` box with padding or a border; a `content-box` one, the
+initial value, matches since #1278). Three gaps
 the ratio does not reach: a `position: fixed` box with one vertical inset
 and an auto height is given its content height afterwards, so it is 0 tall
 (`top: 0; width: 100px; aspect-ratio: 2` is 100x0, Chrome 100x50 — a fixed
@@ -233,9 +234,7 @@ Chrome's: an unloaded or failed image with a non-empty `alt` reserves its
 attributes' 100x50 where Chrome lays out the alt text (48x18, both attributes
 ignored), and a failed one with one attribute and no `alt` is 100x0 where
 Chrome draws its 16x16 broken-image box; an out-of-flow image with an `auto`
-dimension fills its containing block (#1432, older than the hints); an
-iframe's hinted size is its border box, since every rinch
-box is (#1278), so it is 4px smaller than Chrome's; a percentage `height`
+dimension fills its containing block (#1432, older than the hints); a percentage `height`
 attribute does nothing on an inline-level image, as a CSS one does not
 (#1420); a `<video>` with a mapped ratio and both dimensions `auto` is 300
 wide where Chrome stretches it to its container. The other presentational

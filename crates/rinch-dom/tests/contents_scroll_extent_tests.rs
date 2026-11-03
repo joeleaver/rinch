@@ -49,6 +49,8 @@ fn build(doc: &mut RinchDocument, parent: NodeId, el: &El) {
 /// the viewport.
 fn scroller(container_style: &str, children: &[El]) -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     let container = doc.create_element("div");
     doc.set_attribute(container, "style", container_style);
@@ -271,6 +273,8 @@ const TEXT_SCROLLER: &str =
 /// A text scroller: `wrapper` (a `span` style, or `None` for bare text).
 fn text_scroller(container_style: &str, wrapper: Option<&str>) -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     let container = doc.create_element("div");
     doc.set_attribute(container, "style", container_style);
@@ -360,6 +364,8 @@ fn a_padded_text_scroller_measures_its_lines_from_the_content_box() {
 #[test]
 fn an_unrelated_layout_pass_keeps_a_text_scrollers_range() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     let container = doc.create_element("div");
     doc.set_attribute(container, "style", TEXT_SCROLLER);
@@ -398,6 +404,8 @@ fn nowrap_text_scrolls_horizontally_by_its_line() {
                  line-height: 20px; white-space: nowrap";
     for wrapper in [None, Some("display: contents")] {
         let mut doc = RinchDocument::new();
+        // The Chrome numbers were measured under this rule (file docs).
+        doc.load_css("* { box-sizing: border-box; }");
         let body = doc.body();
         let container = doc.create_element("div");
         doc.set_attribute(container, "style", style);
@@ -511,6 +519,8 @@ fn build_mixed(doc: &mut RinchDocument, parent: NodeId, piece: &Mixed) {
 
 fn mixed_scroller(extra_style: &str, pieces: &[Mixed]) -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     let container = doc.create_element("div");
     doc.set_attribute(
@@ -663,6 +673,8 @@ fn nowrap_text_after_a_block_scrolls_horizontally_by_its_line() {
 fn a_hoisted_absolute_beside_a_block_counts_only_where_the_container_holds_it() {
     for (position, expected) in [("relative", (Some(210.0), 310.0)), ("static", (None, 70.0))] {
         let mut doc = RinchDocument::new();
+        // The Chrome numbers were measured under this rule (file docs).
+        doc.load_css("* { box-sizing: border-box; }");
         let body = doc.body();
         let container = doc.create_element("div");
         doc.set_attribute(
@@ -703,6 +715,8 @@ fn a_hoisted_absolute_beside_a_block_counts_only_where_the_container_holds_it() 
 fn a_hoisted_absolute_in_a_text_scroller_is_its_content() {
     for depth in [1, 2] {
         let mut doc = RinchDocument::new();
+        // The Chrome numbers were measured under this rule (file docs).
+        doc.load_css("* { box-sizing: border-box; }");
         let body = doc.body();
         let container = doc.create_element("div");
         doc.set_attribute(
@@ -769,6 +783,8 @@ fn an_unrelated_layout_pass_keeps_an_offset_at_the_bottom_of_the_range() {
     ];
     for (name, pieces, max) in shapes {
         let mut doc = RinchDocument::new();
+        // The Chrome numbers were measured under this rule (file docs).
+        doc.load_css("* { box-sizing: border-box; }");
         let body = doc.body();
         let container = doc.create_element("div");
         doc.set_attribute(
@@ -807,6 +823,8 @@ fn an_unrelated_layout_pass_keeps_an_offset_at_the_bottom_of_the_range() {
 #[test]
 fn a_clipping_block_childs_own_line_is_not_the_containers_content() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     let container = doc.create_element("div");
     doc.set_attribute(
@@ -846,6 +864,8 @@ fn a_clipping_block_childs_own_line_is_not_the_containers_content() {
 #[test]
 fn a_block_inside_a_split_inline_with_no_text_is_the_containers_content() {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     let container = doc.create_element("div");
     doc.set_attribute(container, "style", SCROLLER);

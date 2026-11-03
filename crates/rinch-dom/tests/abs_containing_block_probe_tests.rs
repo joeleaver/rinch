@@ -331,7 +331,7 @@ fn r15_percentage_containing_block_follows_the_viewport() {
 fn r16_moved_to_be_a_direct_child() {
     let mut doc = build(&format!(
         r#"<div data-cb style="{CB}"><div style="height: 20px"></div>
-<div data-mid style="{MID}"><div data-a style="position: absolute; left: 0; top: 0; width: 50%; height: 50%; padding: 10%"></div></div></div>"#
+<div data-mid style="{MID}"><div data-a style="box-sizing: border-box; position: absolute; left: 0; top: 0; width: 50%; height: 50%; padding: 10%"></div></div></div>"#
     ));
     assert_eq!(size(&doc, "[data-a]"), (200.0, 150.0));
     let a = one(&doc, "[data-a]");
@@ -373,12 +373,13 @@ fn r17_icb_static_axis_under_two_scrollers() {
 fn k1_calc_under_an_indefinite_parent() {
     let doc = build(&format!(
         r#"<div data-cb style="{CB}"><div style="height: 20px"></div>
-<div style="margin-left: 30px; display: inline-block"><div style="width: 40px; height: 20px"></div><div data-a style="position: absolute; left: 0; top: 0; width: 10px; min-height: calc(50% - 20px); min-width: calc(25% + 3px); padding-top: calc(5% + 2px)"></div></div></div>"#
+<div style="margin-left: 30px; display: inline-block"><div style="width: 40px; height: 20px"></div><div data-a style="box-sizing: border-box; position: absolute; left: 0; top: 0; width: 10px; min-height: calc(50% - 20px); min-width: calc(25% + 3px); padding-top: calc(5% + 2px)"></div></div></div>"#
     ));
     assert_eq!(size(&doc, "[data-a]"), (103.0, 130.0));
 }
 
-const CALC_A: &str = "position: absolute; left: 0; top: 0; width: 10px; min-height: calc(50% - 20px); min-width: calc(25% + 3px); padding-top: calc(5% + 2px)";
+/// `border-box`: the expected sizes include the `padding-top`.
+const CALC_A: &str = "box-sizing: border-box; position: absolute; left: 0; top: 0; width: 10px; min-height: calc(50% - 20px); min-width: calc(25% + 3px); padding-top: calc(5% + 2px)";
 
 /// K1b: the same with a block parent of auto height (indefinite on Y only).
 #[test]
@@ -404,7 +405,7 @@ fn k1c_calc_under_an_auto_width_flex_item() {
 fn k1d_plain_percentages_under_an_inline_block() {
     let doc = build(&format!(
         r#"<div data-cb style="{CB}"><div style="height: 20px"></div>
-<div style="margin-left: 30px; display: inline-block"><div style="width: 40px; height: 20px"></div><div data-a style="position: absolute; left: 0; top: 0; width: 10px; min-height: 50%; min-width: 25%; padding-top: 5%"></div></div></div>"#
+<div style="margin-left: 30px; display: inline-block"><div style="width: 40px; height: 20px"></div><div data-a style="box-sizing: border-box; position: absolute; left: 0; top: 0; width: 10px; min-height: 50%; min-width: 25%; padding-top: 5%"></div></div></div>"#
     ));
     assert_eq!(size(&doc, "[data-a]"), (100.0, 150.0));
 }

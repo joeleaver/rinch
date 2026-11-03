@@ -302,6 +302,8 @@ const KNOWN: &[(&str, &str, &str)] = &[];
 
 fn lay_out(html: &str, height: f32) -> RinchDocument {
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     doc.set_attribute(body, "style", "margin: 0");
     let wrap = doc.create_element("div");

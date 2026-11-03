@@ -51,7 +51,8 @@ fn rig(blocks: usize, editor_is_scroller: bool) -> Rig {
     rig_with(&blocks_html(blocks), editor_is_scroller, 226, 16)
 }
 
-/// `height`: the scroller's border box, which is its padding box here.
+/// `height`: the scroller's border box (it is `border-box`); the plain-div
+/// scroller has no border, so that is its padding box.
 /// `font_px`: the editor's font size (its lines are 1.25 of it).
 fn rig_with(html: &str, editor_is_scroller: bool, height: u32, font_px: u32) -> Rig {
     let ids: Rc<Cell<u64>> = Rc::new(Cell::new(0));
@@ -69,10 +70,12 @@ fn rig_with(html: &str, editor_is_scroller: bool, height: u32, font_px: u32) -> 
             // A number: a paragraph's line is 20px, a heading's 30px.
             ("line-height", "1.25"),
         ]);
-        // Rinch sizes every box as `border-box` (#1278): 226px is the
-        // padding box Chrome's `height: 200px; padding: 13px` has.
-        let scroller_style =
-            format!("width: 500px; height: {height}px; padding: 13px; overflow-y: auto");
+        // `border-box`: 226px is the padding box (Chrome's `height: 200px;
+        // padding: 13px` in the probe), whether the scroller is a plain div
+        // or the editor (whose stylesheet is `border-box` too).
+        let scroller_style = format!(
+            "box-sizing: border-box; width: 500px; height: {height}px; padding: 13px; overflow-y: auto"
+        );
         if editor_is_scroller {
             editor.set_attribute("style", &scroller_style);
             editor.set_styles(&[
@@ -1051,7 +1054,7 @@ mod review_2028 {
             let scroller = scope.create_element("div");
             scroller.set_attribute(
                 "style",
-                "width: 500px; height: 226px; padding: 13px; overflow-y: auto",
+                "box-sizing: border-box; width: 500px; height: 226px; padding: 13px; overflow-y: auto",
             );
             for h in [&a, &b] {
                 let editor = h.mount(scope);
@@ -1172,7 +1175,7 @@ mod review_2028 {
             let scroller = scope.create_element("div");
             scroller.set_attribute(
                 "style",
-                "width: 500px; height: 226px; padding: 13px; overflow-y: auto",
+                "box-sizing: border-box; width: 500px; height: 226px; padding: 13px; overflow-y: auto",
             );
             root.append_child(&scroller);
             for e in [&h, &o] {

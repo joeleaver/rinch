@@ -41,6 +41,11 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
   padding: 16px 20px;
   border: 1px solid #d0d7de;
   border-radius: 10px;
+  /* An app sizes the editor by its outside: a `width` or `height` given to it
+     includes this padding and border, themed or not, on desktop and the web
+     alike (rinch reads `box-sizing` since #1278; the theme's
+     `* { box-sizing: border-box }` used to stand in for this). */
+  box-sizing: border-box;
   /* Preserve the model's whitespace exactly (inherited by every textblock). Without
      this the browser collapses trailing spaces and runs of spaces, so a space typed
      at end of line is invisible until the next character, and — worse — the rendered

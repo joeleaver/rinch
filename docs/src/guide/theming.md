@@ -695,6 +695,14 @@ properties work there.
 
 > **Gotcha:** `--rinch-color-gray-0` is `#f8f9fa`, which matches the default body background. If you use it as a card background, it'll be invisible. Use `gray-1` or higher for visible backgrounds.
 
+## `box-sizing`
+
+rinch reads `box-sizing` as a browser does. Its initial value is `content-box`: a box's `width` and `height` size its content, and its padding and border go outside them, so `width: 200px; padding: 10px` is a box 220px wide. With `box-sizing: border-box` the padding and border are inside it, and the same box is 200px wide.
+
+The theme sets `*, *::before, *::after { box-sizing: border-box }`, so in a themed app every box is a border box unless you say otherwise, and the components are designed that way. Without the theme (an app that does not install it, or HTML you render as content, such as an email), boxes are `content-box`, as in a browser. The built-in stylesheet makes border boxes of the elements a browser does: tables, `select`, `button`, `meter`, `progress`, and button-like, checkbox, radio, colour and search inputs. The editor's root and the Popover's arrow declare `border-box` themselves, so they are the same size themed or not.
+
+Until joeleaver/rinch#1278, `box-sizing` was ignored and every box was sized as a border box. An unthemed app that gave a box a `width` or `height` together with padding or a border sees that box grow by them; add `box-sizing: border-box` to it, or the theme's global rule to your stylesheet, to keep the old size.
+
 ## CSS sizing keywords
 
 For `width`, `height`, `min-width`/`min-height`, `max-width`/`max-height` and

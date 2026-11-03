@@ -1688,7 +1688,7 @@ pub(crate) fn display_contents_taffy_style() -> taffy::Style {
 /// is set once, in [`NodeTree::new`], and never rebuilt from its computed
 /// style) and `<body>` is the only child rinch gives it. So `<body>` grows to
 /// fill the viewport (`flex-grow` is at least 1) and is as wide as it
-/// (`width: 100%`).
+/// (`width: 100%` of its border box, [`body_fills_with_its_border_box`]).
 ///
 /// **And when nothing about `<body>`'s own height depends on its content, its
 /// flex basis is `0`** (#1260). That is the UA sheet's `overflow-y: auto`
@@ -1706,12 +1706,70 @@ pub(crate) fn display_contents_taffy_style() -> taffy::Style {
 /// `<html>` — reachable only by appending to the raw `NodeTree::html_id` —
 /// would share the column with `<body>` by basis, and there the fold would
 /// change the split.)
+/// As wide as `<html>` is the border box's width, as a browser's auto body
+/// fills it: a `content-box` body given `width: 100%` would overflow the
+/// viewport by its padding and border (#1278). So the body is made a border
+/// box, with each of its own length sizes grown by its padding and border to
+/// stay the content-box size it says (`padding: 20px; max-width: 600px` caps
+/// the border box at 640, as in Chrome). Only where every one of them is a
+/// length or `auto`: a percentage padding or size would need `calc()`, and
+/// such a body stays `content-box`. (`width: stretch` sizes it the same way
+/// but measures its whole content once more in every compute.)
+fn body_fills_with_its_border_box(style: &mut taffy::Style) {
+    use taffy::style::CompactLength;
+    if style.box_sizing == taffy::BoxSizing::BorderBox {
+        return;
+    }
+    let px = |raw: CompactLength| (raw.tag() == CompactLength::LENGTH_TAG).then(|| raw.value());
+    let side = |p: taffy::LengthPercentage, b: taffy::LengthPercentage| {
+        Some(px(p.into_raw())? + px(b.into_raw())?)
+    };
+    let (Some(l), Some(r), Some(t), Some(b)) = (
+        side(style.padding.left, style.border.left),
+        side(style.padding.right, style.border.right),
+        side(style.padding.top, style.border.top),
+        side(style.padding.bottom, style.border.bottom),
+    ) else {
+        return;
+    };
+    let grown = |d: taffy::Dimension, by: f32| -> Option<taffy::Dimension> {
+        if d.is_auto() {
+            Some(d)
+        } else {
+            px(d.into_raw()).map(|v| taffy::Dimension::length(v + by))
+        }
+    };
+    let grown_limit = |d: taffy::LengthPercentageAuto, by: f32| {
+        if d.is_auto() {
+            Some(d)
+        } else {
+            px(d.into_raw()).map(|v| taffy::LengthPercentageAuto::length(v + by))
+        }
+    };
+    let (Some(min_w), Some(max_w), Some(h), Some(min_h), Some(max_h)) = (
+        grown_limit(style.min_size.width, l + r),
+        grown_limit(style.max_size.width, l + r),
+        grown(style.size.height, t + b),
+        grown_limit(style.min_size.height, t + b),
+        grown_limit(style.max_size.height, t + b),
+    ) else {
+        return;
+    };
+    style.min_size.width = min_w;
+    style.max_size.width = max_w;
+    style.size.height = h;
+    style.min_size.height = min_h;
+    style.max_size.height = max_h;
+    style.box_sizing = taffy::BoxSizing::BorderBox;
+}
+
 pub(crate) fn body_taffy_overrides(style: &mut taffy::Style) {
     if style.flex_grow == 0.0 {
         style.flex_grow = 1.0;
     }
     if style.size.width == taffy::Dimension::auto() {
         style.size.width = taffy::Dimension::percent(1.0);
+        body_fills_with_its_border_box(style);
     }
     if style.flex_basis == taffy::Dimension::auto()
         && style.size.height == taffy::Dimension::auto()

@@ -2040,7 +2040,8 @@ mod text_geometry_units_tests {
             input.set_attribute(
                 "style",
                 "position: absolute; left: 40px; top: 30px; width: 300px; height: 20px; \
-                 padding: 3px 0 0 13px; font-size: 14px; line-height: 20px",
+                 padding: 3px 0 0 13px; font-size: 14px; line-height: 20px; \
+                 box-sizing: border-box",
             );
             input.set_attribute("value", "");
             root.append_child(&input);
@@ -2056,7 +2057,9 @@ mod text_geometry_units_tests {
         // centred in the 20px box as paint centres it, not at the top padding
         // (33). The empty case is checked against the pixels in the taller
         // field of `painted_caret_matches_mcp_at_scale_two`; this 20px one is
-        // shorter than its line, so its caret runs over the border.
+        // shorter than its line (a border box, its padding and border inside
+        // the 20px: a text input is `content-box` by default, #1278), so its
+        // caret runs over the border.
         let one = caret(&mut app, input, 0, 1.0);
         assert!(
             close(one.0, 40.0 + 2.0 + 13.0) && one.1 > 30.0 && one.1 < 33.0,
