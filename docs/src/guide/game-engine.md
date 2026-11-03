@@ -1114,6 +1114,41 @@ a transformed subtree is hit where it is *painted*.
 
 [#202]: https://github.com/joeleaver/rinch/issues/202
 
+### Images in a context
+
+A context loads images as a desktop window does, on every target, for `<img
+src>` and `background-image: url(…)` alike:
+
+- **`data:` URLs** (base64) are decoded in place, by the layout that meets them,
+  and are never offered to a loader.
+- **The app's own schemes** (`register_image_scheme`, `App::image_scheme`) are
+  answered by the app's loader. This is how a game hands rinch the pictures it
+  keeps in memory: register a scheme over its asset store and name
+  `myassets:hero.png`.
+- **Files** and every other source go to the document's default loader, which
+  reads files: on the desktop, and in a WASI guest from the directories its
+  host preopened. In the browser it has no files to read.
+
+On **wasm32** (the browser, or a `wasm32-wasip1` guest) there are no load
+threads, so the loader is called **on the UI thread**, inside the frame that
+first names the source, and its bytes are decoded there too (#2100). A loader
+that answers from memory shows its picture in that same frame. What that costs
+and rules out:
+
+- **It must not block.** There is no `http(s)` loader on wasm32 (the default
+  loader only reads files), so a URL fails. To show a remote
+  picture, fetch it yourself (asynchronously), answer `ImageLoadResult::Failed`
+  until the bytes are in your store, then call `rinch::image::reload_image(src)`:
+  the next `update()` loads it again, lays it out and asks for a redraw.
+- **The decode is the frame's.** A large PNG or JPEG is decoded inside the
+  `update()` that asks for it, once per source; there is no background decode on
+  wasm32. Decode a very large picture ahead of time, off the frame, if a hitch
+  matters.
+
+On the desktop the loader runs on a background thread, and an image arrives on
+a later `update()`. Either way a landed image dirties the boxes that show it,
+so `update()` returns `AppAction::RequestRedraw` for it.
+
 ### Platform Events
 
 Translate your engine's events to `rinch_platform::PlatformEvent`:

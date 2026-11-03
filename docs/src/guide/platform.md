@@ -228,8 +228,11 @@ What a loader must know:
 
 - **It returns encoded bytes**: the contents of a PNG, JPEG, GIF or WebP file.
   rinch decodes them. It never returns decoded pixels.
-- **It runs on a background thread** spawned for that one load, never the UI
-  thread, so it may block on I/O. Several loads run at once.
+- **On native targets it runs on a background thread** spawned for that one
+  load, never the UI thread, so it may block on I/O. Several loads run at once.
+  On wasm32 (an embedded `RinchContext` in the browser, a WASI guest) there are
+  no threads: it runs on the UI thread, inside the frame that asks, and must
+  answer from memory (see "Images in a context" in the game-engine guide).
 - **Its answer is cached by source string, a failure included.** A source that
   failed is not asked for again on its own.
 - **On desktop, a panic is a failed load.** It is caught on the load's thread and
@@ -237,8 +240,8 @@ What a loader must know:
   again. In the browser (and on a native build with `panic = "abort"`) a
   panicking loader or resolver aborts the whole app.
 - **The `data` scheme cannot be registered** (`register_image_scheme("data", ..)`
-  panics). No app loader is ever offered a `data:` URL; an `<img>`'s is decoded
-  in place.
+  panics). No app loader is ever offered a `data:` URL; an `<img>`'s and a
+  `background-image`'s are decoded in place.
 - **A registration lasts until `unregister_image_scheme`.** It is process-wide
   and is not undone when the component that made it unmounts.
 

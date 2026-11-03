@@ -409,17 +409,102 @@ impl ImageLoader for FileImageLoader {
     }
 }
 
-/// Spawn a background thread to load and decode an image.
+/// Decode encoded image bytes (PNG, JPEG, GIF, WebP) into straight-alpha RGBA8.
+pub fn decode_image_bytes(bytes: &[u8]) -> Result<DecodedImage, String> {
+    match image::load_from_memory(bytes) {
+        Ok(img) => {
+            let rgba = img.to_rgba8();
+            let (w, h) = (rgba.width(), rgba.height());
+            Ok(DecodedImage::new(rgba.into_raw(), w, h))
+        }
+        Err(e) => Err(format!("Failed to decode image: {}", e)),
+    }
+}
+
+/// Decode a `data:` URL's image in place: no loader is ever offered one
+/// (#2100). The `<img>` and `background-image` paths both come here.
+pub fn decode_data_url_image(src: &str) -> Result<DecodedImage, String> {
+    let bytes =
+        decode_data_uri(src).ok_or_else(|| "malformed or non-base64 data: URL".to_string())?;
+    decode_image_bytes(&bytes)
+}
+
+/// Ask the loader that answers for `src` (the app's scheme loader, else the
+/// document's) and decode its answer: one load, wherever it runs.
 ///
-/// When complete, the result is pushed to the global pending queue.
-/// Call [`ImageCache::drain_pending()`] from the main thread to collect results.
+/// Every load produces exactly one answer. A loader is app code (a closure
+/// over a blob store), and one that panics must not take the answer with it:
+/// the source would stay "loading" for the life of the document, and a reload
+/// of a loading source only waits for the answer on its way. So where panics
+/// unwind, a panic in the loader or the decode is a failed load, which a
+/// reload starts again like any other failure.
+fn load_and_decode(src: &str, loader: Arc<dyn ImageLoader>) -> Result<DecodedImage, String> {
+    // A scheme the app installed a loader for is the app's to answer;
+    // everything else is the document's loader's.
+    let loader = rinch_core::image::image_scheme_loader(src).unwrap_or(loader);
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if src.starts_with("data:") {
+            return decode_data_url_image(src);
+        }
+        match loader.load(src) {
+            ImageLoadResult::Loaded(bytes) => decode_image_bytes(&bytes),
+            ImageLoadResult::Failed(e) => Err(e),
+        }
+    }))
+    .unwrap_or_else(|panic| {
+        let message = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "(no message)".to_string());
+        Err(format!("image loader panicked: {message}"))
+    })
+}
+
+/// Queue a load's answer for `doc_key`'s next drain, if the document is still
+/// there: an answer queued for a dropped one is never drained. The live list
+/// is held across the push, and [`purge_pending`] leaves it first, so a
+/// document that drops meanwhile either purges this answer or stops it here.
+fn queue_answer(doc_key: u64, src: String, result: Result<DecodedImage, String>) -> bool {
+    let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
+    if !live.contains_key(&doc_key) {
+        return false;
+    }
+    PENDING_IMAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(PendingImage {
+            doc_key,
+            src,
+            result,
+        });
+    true
+}
+
+/// Load and decode an image **on the calling thread**, and queue the answer
+/// for the document's next [`ImageCache::drain_pending`] (wasm32).
 ///
-/// On `wasm32-unknown-unknown` there are no OS threads (`std::thread::spawn` would
-/// panic), so file/remote loads are a no-op there. Synchronous `data:` URIs never
-/// reach this path — they are decoded inline via [`decode_data_uri`] — so embedded
-/// (base64) images still render on the web. (issue #97)
+/// `wasm32` has no OS threads (`std::thread::spawn` panics on
+/// `wasm32-unknown-unknown` and fails on `wasm32-wasip1`), so the loader — the
+/// app's scheme loader for a registered scheme, else the document's — is asked
+/// here and its bytes decoded here, on the UI thread. The answer goes through
+/// the same queue a desktop load thread pushes to, so the drain publishes it
+/// the same way: an `<img>` takes its decoded size, a `background-image`'s
+/// users are repainted, and [`reload_image`] and its retries behave as on the
+/// desktop. [`RinchDocument::resolve_layout`](crate::RinchDocument) drains
+/// again after it requests the frame's background images on this target, so
+/// a picture a loader can answer at once shows in the frame that asked for it
+/// (#2100). Before #2100 this was a no-op: no scheme loader was asked and no
+/// `background-image` loaded in an embedded context in the browser.
+///
+/// The cost is the frame's: a loader here must answer from memory (it cannot
+/// block on a fetch — there is no thread to block), and the decode of a large
+/// picture is paid inside the frame that asks for it.
 #[cfg(target_arch = "wasm32")]
-pub fn request_image_load(_doc_key: u64, _src: String, _loader: Arc<dyn ImageLoader>) {}
+pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader>) {
+    let result = load_and_decode(&src, loader);
+    queue_answer(doc_key, src, result);
+}
 
 /// Spawn a background thread to load and decode an image (native).
 ///
@@ -428,52 +513,9 @@ pub fn request_image_load(_doc_key: u64, _src: String, _loader: Arc<dyn ImageLoa
 #[cfg(not(target_arch = "wasm32"))]
 pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader>) {
     std::thread::spawn(move || {
-        // A scheme the app installed a loader for is the app's to answer;
-        // everything else is the document's loader's.
-        let loader = rinch_core::image::image_scheme_loader(&src).unwrap_or(loader);
-        // Every load pushes exactly one answer. A loader is app code (a
-        // closure over a blob store), and one that panics must not take the
-        // answer with it: the source would stay "loading" for the life of the
-        // document, and a reload of a loading source only waits for the answer
-        // on its way. So a panic, in the loader or in the decode, is a failed
-        // load, which a reload starts again like any other failure.
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match loader.load(&src) {
-                ImageLoadResult::Loaded(bytes) => match image::load_from_memory(&bytes) {
-                    Ok(img) => {
-                        let rgba = img.to_rgba8();
-                        let (w, h) = (rgba.width(), rgba.height());
-                        Ok(DecodedImage::new(rgba.into_raw(), w, h))
-                    }
-                    Err(e) => Err(format!("Failed to decode image: {}", e)),
-                },
-                ImageLoadResult::Failed(e) => Err(e),
-            }))
-            .unwrap_or_else(|panic| {
-                let message = panic
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "(no message)".to_string());
-                Err(format!("image loader panicked: {message}"))
-            });
-        {
-            // Only for a document that is still there: an answer queued for a
-            // dropped one is never drained. The live list is held across the
-            // push, and `purge_pending` leaves it first, so a document that
-            // drops meanwhile either purges this answer or stops it here.
-            let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
-            if !live.contains_key(&doc_key) {
-                return;
-            }
-            PENDING_IMAGES
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(PendingImage {
-                    doc_key,
-                    src,
-                    result,
-                });
+        let result = load_and_decode(&src, loader);
+        if !queue_answer(doc_key, src, result) {
+            return;
         }
 
         // Wake the main thread. The desktop event loop runs on
