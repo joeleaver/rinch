@@ -95,6 +95,52 @@ where
     T: Fn(&mut RenderScope) -> NodeHandle + 'static,
     E: Fn(&mut RenderScope) -> NodeHandle + 'static,
 {
+    show_dom_impl(scope, parent, when, then_fn, else_fn, false)
+}
+
+/// [`show_dom`] for a then-branch that reads a value out of the condition:
+/// the target of an rsx `if let` whose pattern binds a name (issue #2105).
+///
+/// Everything [`show_dom`] does, plus one thing: while the condition stays
+/// `true`, every re-run of `when` — that is, every change to a reactive value
+/// it read — **rebuilds** the then-branch (old scope disposed, old markup
+/// removed, `then_fn` run again), because `then_fn` re-reads the value the
+/// pattern bound and the branch it built from the old one is stale.
+///
+/// There is no value comparison: `when` returns only a `bool`, and the value
+/// it matched need not be `PartialEq`, `Clone` or `'static`. The equality
+/// cut-off is upstream — a [`Memo`](crate::reactive::Memo) scrutinee does not
+/// re-run `when` when its value is equal, and neither does
+/// [`Signal::set_if_changed`](crate::reactive::Signal::set_if_changed). The
+/// else branch is never rebuilt by a re-run (it binds nothing).
+pub fn show_dom_rebinding<W, T, E>(
+    scope: &mut RenderScope,
+    parent: &NodeHandle,
+    when: W,
+    then_fn: T,
+    else_fn: Option<E>,
+) -> NodeHandle
+where
+    W: Fn() -> bool + 'static,
+    T: Fn(&mut RenderScope) -> NodeHandle + 'static,
+    E: Fn(&mut RenderScope) -> NodeHandle + 'static,
+{
+    show_dom_impl(scope, parent, when, then_fn, else_fn, true)
+}
+
+fn show_dom_impl<W, T, E>(
+    scope: &mut RenderScope,
+    parent: &NodeHandle,
+    when: W,
+    then_fn: T,
+    else_fn: Option<E>,
+    rebind_then: bool,
+) -> NodeHandle
+where
+    W: Fn() -> bool + 'static,
+    T: Fn(&mut RenderScope) -> NodeHandle + 'static,
+    E: Fn(&mut RenderScope) -> NodeHandle + 'static,
+{
     // Create comment marker and insert into parent
     let marker = scope.create_comment("show");
     parent.append_child(&marker);
@@ -182,13 +228,19 @@ where
     let then_fn_clone = then_fn;
     let else_fn_clone = else_fn;
     let marker_effect = marker_clone.clone();
+    // The effect's first run only subscribes: the branch was built above.
+    let first_run = std::cell::Cell::new(true);
 
     let effect = Effect::new(move || {
         let new_showing = when();
         let old_showing = *showing_clone.borrow();
+        let first = first_run.replace(false);
 
-        // Only update if condition actually changed
-        if new_showing != old_showing {
+        // Swap when the condition flipped. A rebinding then-branch is also
+        // rebuilt when `when` re-ran and still holds: a value it read changed,
+        // and the branch destructured the old one (issue #2105).
+        let rebind = rebind_then && new_showing && old_showing && !first;
+        if new_showing != old_showing || rebind {
             *showing_clone.borrow_mut() = new_showing;
 
             // The `take()` is deliberately a separate statement: an `if let`

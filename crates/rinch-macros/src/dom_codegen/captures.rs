@@ -403,6 +403,48 @@ pub(crate) fn collect_pat_ident_tokens(pat: &syn::Pat, out: &mut Vec<syn::Ident>
     }
 }
 
+/// Whether a branch's pattern binds a value its body could read (issue #2105).
+///
+/// Such a branch is rebuilt when its scrutinee's reactive reads change while it
+/// keeps matching (`show_dom_rebinding` / `match_dom_rebinding`); one that binds
+/// nothing is built once per selection, as before.
+///
+/// A bare identifier is ambiguous in a pattern: `name` binds, but `None` or an
+/// imported unit variant or constant matches by value. Like rustc's own
+/// `non_snake_case` convention, one that starts with an uppercase letter and
+/// carries no `ref`, `mut` or `@` is taken as a path, not a binding. Getting
+/// that wrong one way costs a rebuild the branch did not need; the other way
+/// (an uppercase binding) keeps today's build-once behaviour for that branch.
+/// A macro or unparsed pattern is assumed to bind.
+pub(crate) fn pattern_binds_a_value(pat: &syn::Pat) -> bool {
+    use syn::Pat;
+    match pat {
+        Pat::Ident(pat_ident) => {
+            let starts_upper = pat_ident
+                .ident
+                .to_string()
+                .chars()
+                .next()
+                .is_some_and(char::is_uppercase);
+            pat_ident.by_ref.is_some()
+                || pat_ident.mutability.is_some()
+                || pat_ident.subpat.is_some()
+                || !starts_upper
+        }
+        Pat::Tuple(t) => t.elems.iter().any(pattern_binds_a_value),
+        Pat::TupleStruct(t) => t.elems.iter().any(pattern_binds_a_value),
+        Pat::Struct(s) => s.fields.iter().any(|f| pattern_binds_a_value(&f.pat)),
+        Pat::Or(o) => o.cases.iter().any(pattern_binds_a_value),
+        Pat::Reference(r) => pattern_binds_a_value(&r.pat),
+        Pat::Paren(p) => pattern_binds_a_value(&p.pat),
+        Pat::Slice(s) => s.elems.iter().any(pattern_binds_a_value),
+        Pat::Type(t) => pattern_binds_a_value(&t.pat),
+        Pat::Macro(_) | Pat::Verbatim(_) => true,
+        // Wild, Lit, Range, Rest, Path, Const: no binding.
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{collect_body_captures, collect_capture_idents, contested_names};
@@ -414,6 +456,48 @@ mod tests {
             .iter()
             .map(|i| i.to_string())
             .collect()
+    }
+
+    fn binds(src: &str) -> bool {
+        let pat = syn::parse::Parser::parse_str(syn::Pat::parse_multi_with_leading_vert, src)
+            .expect("parse pattern");
+        super::pattern_binds_a_value(&pat)
+    }
+
+    #[test]
+    fn which_patterns_bind_a_value() {
+        // Issue #2105: a pattern that binds is rebuilt on a value change.
+        for src in [
+            "Some(name)",
+            "Some(ref name)",
+            "Some(mut n)",
+            "x",
+            "_x",
+            "(a, _)",
+            "Point { x, .. }",
+            "Point { x: Some(px), .. }",
+            "Ok(v) | Err(v)",
+            "&Some(v)",
+            "[first, ..]",
+            "N @ 1..=3",
+        ] {
+            assert!(binds(src), "{src} binds a value");
+        }
+        for src in [
+            "None",
+            "Some(_)",
+            "_",
+            "0",
+            "1..=9",
+            "Mode::Edit",
+            "Mode::Edit { .. }",
+            "Some(Mode::Edit)",
+            "Ok(_) | Err(_)",
+            "(None, _)",
+            "\"lit\"",
+        ] {
+            assert!(!binds(src), "{src} binds nothing");
+        }
     }
 
     #[test]
