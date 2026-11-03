@@ -370,6 +370,9 @@ jobs:
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
             --ignored --test-threads=1
+          # #2098's image-rendering and #2099's url masks against Chrome's pixels.
+          run 1 -p rinch --features gpu,video --test gpu_image_rendering_mask_2098 -- \
+            --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).
           run 2 -p rinch-dom --no-default-features --test background_tiling_embed_tests -- \

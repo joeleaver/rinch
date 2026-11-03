@@ -28,6 +28,7 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 4. Results go to a static `Mutex<Vec<PendingImage>>` queue
 5. `drain_pending_images()` at the start of layout picks up decoded images, updates Taffy intrinsic dims
 6. `paint_image()` renders via `Painter::draw_image` with proper affine transforms. Vello samples an image at each pixel's centre, as tiny-skia does (#1027), so `VelloPainter::draw_image` and `fill_repeating` draw it with its own transform. (Vello 0.7 sampled from the pixel's top-left **corner** — an image at a whole-pixel origin came out averaged with its neighbours — and rinch moved the image half a device pixel up-left, `vello_painter::centre_sampling`, to compensate; Vello 0.9 moved the sample to the centre, so the shift was dropped for images with the Vello 0.11 upgrade, #1955. Gradients still take it: Vello evaluates them at the corner.) Pins: `vello_painter::sampling_tests` (a CPU model of the shader arm) and the `#[ignore]`d `compositor::gpu_alpha_tests::gpu_alpha_vello_draw_image_*` (real GPU)
+7. **`image-rendering`** (#2098): `ComputedStyle::image_rendering` (inherited; Stylo's servo build parses `auto`, `crisp-edges`/`-moz-crisp-edges`, `pixelated`, not `smooth`) becomes `painter::ImageSampling` on `PaintImage::sampling`, handed through `image::paint_image` by the `<img>` paint and by `background::paint_layer` (backgrounds and url masks). `Nearest` is Vello `ImageQuality::Low` (`vello_painter::image_brush`; `Auto` keeps the brush's default `Medium`, the old brush exactly) and makes a repeating pattern's `RepeatTile::smooth` false. Both keywords are nearest up and down, as Chrome 156 draws them (the spec lets `pixelated` downscale smoothly). **tiny-skia's `draw_image` was already nearest under `auto`** (`PixmapPaint::default()`), unlike Chrome's smooth `auto`. That is unchanged, so in software the keywords change only patterns sampled at a fractional phase. Sampling is a brush or pattern parameter, not image content: Vello's atlas (keyed by blob) needs no key for it, and a rasterised background tile is the same pixels either way (its cache key mixes in `Nearest` only so the two stay apart if `Auto` ever filters; an `auto` layer's key is unchanged). Not read by: `RenderSurface`/`<video>` frames (`paint_frame_data`, `draw_gpu_image`, the split-surface compositor) or `<canvas>`. Rinch paints no SVG `<image>`. Pins: `image_rendering_mask_2098_2099_tests`, `gpu_image_rendering_mask_2098`.
 
 **Background layers** (#468, `crates/rinch-dom/src/paint/background.rs`):
 **every** layer of `background-image` (#1142) is sized, positioned and tiled by
@@ -58,12 +59,28 @@ the stops into the premultiplied ramp CSS (and Vello) draws: a transparent stop
 takes its neighbour's colour, other alpha changes get 8 premultiplied samples.
 Not read: interpolation hints, `in <colorspace>`, and a corner direction's
 dependence on the box's aspect ratio (`to top right` is 45°). **`mask-image`**
-(#1798): `ComputedStyle::mask_image` holds its gradient layers (a `url()` layer
-is not read; the other `mask-*` longhands are gecko-only in Stylo and keep
-their initial values). `paint::paint_node` wraps a masked box: a clip to its
+(#1798, #2099): `ComputedStyle::mask_image` is a `Vec<BackgroundLayer>`, one entry per
+gradient or `url()` layer, each with its own `mask-size`/`-position`/`-repeat`/`-origin`
+entry (`from_stylo::mask_image_from_stylo`; Stylo's servo build has these longhands
+behind `layout.unimplemented`, which rinch turns on. An earlier note here called them
+gecko-only, which was wrong). `mask-origin` defaults to `border-box`. `mask-mode`,
+`mask-clip`, `mask-composite` and `mask-type` are not read: every layer is an alpha mask,
+clipped to the border box, added. `paint::paint_node` wraps a masked box: a clip to its
 border box, an isolated layer holding `paint_node_unmasked`, then a
 `BlendMode::DestinationIn` layer (tiny-skia `DestinationIn`, Vello
-`Compose::DestIn`) into which each mask layer is filled over the border box. A
+`Compose::DestIn`) into which each mask layer is painted. A gradient at its initial
+geometry (`background::covers_border_box`) is filled over the border box exactly as
+#1798 drew it. Any other layer, every `url()` included, goes through
+`background::paint_mask_layer`, which is the background's own `paint_layer` (covering
+tile, repeating pattern, tile by tile) with the element's `image-rendering`. Chrome 156
+samples a mask image by it too. A `url()` is loaded as a background url is
+(`ComputedStyle::paint_image_urls` feeds `note_background_image` and
+`drain_pending_images`). So its decode pushes the masked node paint-dirty, and an
+unloaded or failed image draws nothing into the mask, which hides the box
+(css-masking-1 §7.1, as Chrome does). No SVG file decodes (the image cache has no SVG
+decoder), so an `.svg` mask hides the box. A `data:` url loads only once #2100 decodes
+background urls in place (`image_rendering_mask_2098_2099_tests::a_data_url_mask_image_loads`
+is `#[ignore]`d until then). A
 masked box is a stacking context, so its hoisted descendants paint inside the
 layer. The software painter composites a `DestinationIn` layer over everything
 its parent layer holds, not only what the mask drew, so an empty or
@@ -73,6 +90,8 @@ the mask's alpha is not consulted inside it (nor by Chrome). The background
 tile cache is keyed by the tile's own size as well as its raster size: stop
 positions are lengths in the tile's space. Pins:
 `rinch-dom/tests/gradient_mask_1798_tests.rs` (Chrome 155 pixels),
+`rinch-dom/tests/image_rendering_mask_2098_2099_tests.rs` and its GPU twin
+`rinch/tests/gpu_image_rendering_mask_2098.rs` (Chrome 156 pixels, url masks),
 `hit_testing::tests::a_masked_boxs_overflow_is_not_hit_outside_its_border_box`,
 `rinch-visual-test`'s `css_export` gradient test. Not Chrome's: a mask on a
 non-atomic `display: inline` element (a `<span>`): its text is drawn by its

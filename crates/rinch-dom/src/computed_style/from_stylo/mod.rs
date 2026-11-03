@@ -208,7 +208,7 @@ impl ComputedStyle {
             background_repeat_y: background_first.repeat_y,
             background_origin: background_first.origin,
             background_layers: background_layers_from_stylo(background, &text.color),
-            mask_image: mask_image_from_stylo(&cv.get_svg().mask_image, &text.color),
+            mask_image: mask_image_from_stylo(cv.get_svg(), &text.color),
             color: color_from_absolute(&text.color),
 
             // Visual
@@ -259,6 +259,7 @@ impl ComputedStyle {
 
             // Object fit
             object_fit: object_fit_from_stylo(&cv.clone_object_fit()),
+            image_rendering: image_rendering_from_stylo(&inherited_box.image_rendering),
             aspect_ratio: aspect_ratio_from_stylo(&cv.clone_aspect_ratio()),
 
             // Cursor

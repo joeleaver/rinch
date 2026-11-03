@@ -4,7 +4,7 @@ use peniko::kurbo::Affine;
 use peniko::{Blob, Brush, Fill, FontData, ImageAlphaType, ImageData, ImageFormat};
 use vello::Scene;
 
-use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
+use super::painter::{BlendMode, ImageSampling, PaintGlyph, PaintImage, PaintShape, Painter};
 use super::slicing::{Open, Slicing, SurfaceSlice};
 use peniko::kurbo::Rect;
 
@@ -551,6 +551,20 @@ pub(crate) fn shape_bounds(transform: Affine, shape: &PaintShape) -> Rect {
     transform.transform_rect_bbox(shape.control_bounds())
 }
 
+/// The brush `draw_image` fills with (#2098): Vello's default sampler
+/// (`ImageQuality::Medium`, bilinear) for `ImageSampling::Auto`, exactly the
+/// brush it was before, and `ImageQuality::Low` — nearest-neighbour — for
+/// `image-rendering: pixelated` / `crisp-edges`. The quality is a brush
+/// parameter, not part of the image Vello keeps in its atlas (keyed by the
+/// blob), so one image drawn both ways is uploaded once.
+fn image_brush(image: ImageData, sampling: ImageSampling) -> peniko::ImageBrush {
+    let brush = peniko::ImageBrush::new(image);
+    match sampling {
+        ImageSampling::Auto => brush,
+        ImageSampling::Nearest => brush.with_quality(peniko::ImageQuality::Low),
+    }
+}
+
 impl Painter for VelloPainter {
     fn reset(&mut self) {
         self.scene.reset();
@@ -658,7 +672,7 @@ impl Painter for VelloPainter {
         // `Scene::draw_image`. Vello samples an image at each pixel's centre
         // (since Vello 0.9), as CSS and tiny-skia do (#1027).
         let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
-        let brush = peniko::ImageBrush::new(image_data);
+        let brush = image_brush(image_data, image.sampling);
         route!(
             self,
             || Some(transform.transform_rect_bbox(rect)),
@@ -980,6 +994,7 @@ mod sampling_tests {
                 decoded: None,
                 frame: None,
                 opaque: true,
+                sampling: Default::default(),
             },
             transform,
         );
@@ -1169,6 +1184,7 @@ mod blob_identity_tests {
             decoded: Some(&decoded),
             frame: None,
             opaque: true,
+            sampling: Default::default(),
         };
         let (first, second) = (paint(image()), paint(image()));
         assert_eq!(first.len(), 1);
@@ -1190,6 +1206,7 @@ mod blob_identity_tests {
                     decoded: None,
                     frame: Some(f),
                     opaque: true,
+                    sampling: Default::default(),
                 },
                 Affine::IDENTITY,
             );
@@ -1224,6 +1241,7 @@ mod blob_identity_tests {
             decoded: None,
             frame: None,
             opaque: true,
+            sampling: Default::default(),
         };
         assert_ne!(paint(image()), paint(image()));
     }

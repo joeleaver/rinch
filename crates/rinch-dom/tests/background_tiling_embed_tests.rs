@@ -294,6 +294,7 @@ mod gpu {
                         decoded: None,
                         frame: None,
                         opaque: false,
+                        sampling: Default::default(),
                     },
                     Affine::translate((x, y))
                         * Affine::scale_non_uniform(tw / img.width as f64, th / img.height as f64),

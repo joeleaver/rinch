@@ -3,7 +3,7 @@
 use peniko::Fill;
 use peniko::kurbo::{Affine, Rect};
 
-use super::painter::{PaintImage, Painter};
+use super::painter::{ImageSampling, PaintImage, Painter};
 use crate::computed_style::ObjectFitValue;
 use crate::image_cache::DecodedImage;
 
@@ -15,6 +15,8 @@ use crate::image_cache::DecodedImage;
 /// - `Cover`: uniform scale to cover rect (clips overflow)
 /// - `None`: no scaling, image centered at natural size
 /// - `ScaleDown`: like `Contain`, but never scales up
+///
+/// `sampling` is the element's `image-rendering` (#2098).
 pub fn paint_image(
     painter: &mut dyn Painter,
     decoded: &DecodedImage,
@@ -22,6 +24,7 @@ pub fn paint_image(
     scale: f64,
     object_fit: ObjectFitValue,
     node_transform: Affine,
+    sampling: ImageSampling,
 ) {
     paint_image_pixels(
         painter,
@@ -35,6 +38,7 @@ pub fn paint_image(
         scale,
         object_fit,
         node_transform,
+        sampling,
     );
 }
 
@@ -67,6 +71,7 @@ pub fn paint_image_data(
         _scale,
         object_fit,
         node_transform,
+        ImageSampling::Auto,
     );
 }
 
@@ -102,6 +107,7 @@ pub fn paint_frame_data(
         scale,
         object_fit,
         node_transform,
+        ImageSampling::Auto,
     );
 }
 
@@ -118,6 +124,7 @@ fn paint_image_pixels(
     _scale: f64,
     object_fit: ObjectFitValue,
     node_transform: Affine,
+    sampling: ImageSampling,
 ) {
     if width == 0 || height == 0 {
         return;
@@ -148,6 +155,7 @@ fn paint_image_pixels(
         decoded,
         frame,
         opaque,
+        sampling,
     };
     painter.draw_image(&paint_image, img_transform);
 
