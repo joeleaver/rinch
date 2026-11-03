@@ -248,12 +248,12 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`fd1ceb8276d7b86f1e2ae5fb688af8fa10e05239`, branch `rinch-patch`): three
+(`c89dfd158fcd77bd378b1263eef6d05bd81042e7`, branch `rinch-patch`): four
 commits on the taffy `v0.14.0` tag. It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the three commits onto the new tag. All are upstream
+and a Taffy bump rebases the four commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -285,6 +285,11 @@ candidates.
    only (`float_wrap::is_measure_leaf`): the floats before an IFC root's
    measure leaf are that root's own, placed at the top of the line each stands
    in (CSS 2.2 §9.5.1). A leaf with pending floats bypasses the layout cache too.
+4. **A formatting-context root's bottom inset below its floats.** A box that
+   establishes a block formatting context grew only to its floats' bottom
+   margin edge, losing its bottom padding, border and scrollbar gutter: a
+   padded `overflow: hidden` bar holding only floats was 30px tall where
+   Chrome makes it 38. CSS 2.2 §10.6.7 grows the content box to include them.
 
 The fork's own tests (`tests/block_measure.rs`) cover both; Taffy's suite
 passes unchanged.

@@ -311,3 +311,24 @@ fn a_float_that_does_not_fit_beside_its_line_goes_below_it() {
     let l = lines(&d, "p10");
     assert_eq!(l.len(), 1, "{l:?}");
 }
+
+/// A box that establishes a formatting context and holds only floats is as
+/// tall as they are plus its padding: the floats' bottom is the content
+/// box's, and the bottom padding goes below it (Chrome 156: 8 + 22 + 8 = 38,
+/// the heading's margin below that).
+#[test]
+fn a_padded_box_holding_only_floats_keeps_its_bottom_padding() {
+    let mut d = RinchDocument::new();
+    d.load_css("body { margin: 0; font: 16px/20px sans-serif; }");
+    let body = d.body();
+    d.set_inner_html(
+        body,
+        "<div style='width:400px'><div id=bar style='overflow:hidden;padding:8px'>\
+         <div style='float:left;width:50px;height:22px'></div>\
+         <div style='float:right;width:60px;height:22px'></div></div>\
+         <div id=next style='height:5px'></div></div>",
+    );
+    d.resolve_layout(800.0, 600.0);
+    assert_eq!(rect(&d, "bar").3, 38.0);
+    assert_eq!(rect(&d, "next").1, 38.0);
+}
