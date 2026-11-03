@@ -256,7 +256,7 @@ and the partial frame drew no page bar where the full frame did — batch
 `Scrollbars` (scale 1) as the last paint consumed it, and
 `paint::bar_watch_scrollers` names the containers to check: every scroll
 container that is an ancestor of a paint-dirty node whose **geometry** may
-have moved (never painted, `prev_layout != layout`, its `position` changed, or
+have moved (never painted, `prev_layout != layout`, its unrounded Taffy rect changed (#2116), its `position` changed, or
 a transform on it now or when painted) or of a parent a subtree left
 (`NodeTree::bar_check_parents`, pushed by `mark_subtree_paint_dirty` for the
 subtree's root), and every dirty container itself. Any container whose range
@@ -321,8 +321,27 @@ overflow measured a range of 8.3 at some positions (Chrome: 10). The range
 then lands on the device grid as before (#1543). Pins:
 `rinch-dom/tests/subpixel_overflow_2116_tests.rs` (the dropdown, an IFC root,
 Chrome's threshold at three client heights, and whole-pixel overflow, each at
-ten positions and three scales). On the web the browser decides, and these are
-its answers for the same markup.
+ten positions and three scales; the half-pixel thresholds on both sides; the
+horizontal axis). On the web the browser decides, and these are its answers
+for the same markup.
+
+Two limits. Only a box Taffy laid out directly in the scroller is read
+unrounded: an absolute, hoisted or `sticky` box (whose `layout` is written
+after Taffy) and an inline one placed by its line are still read at their
+rounded rects, against the unrounded client box, so their sub-pixel overflow
+can still decide a pixel the wrong way. And only the *difference* is Chrome's:
+`scrollHeight`/`clientHeight` (`content_extents`/`visible_extents`) are the
+content-box measures, each of which can be a pixel off Chrome's rounded value
+while the range between them is right.
+
+**A sub-pixel change that moves the range damages the bar.** The range is
+measured unrounded, so content growing from 100.4 to 100.55px in a 100px
+scroller gives it a pixel's range while every rounded rect holds (the row stays
+`{y: 10, h: 90}`). `PaintedState::unrounded` records each node's unrounded
+Taffy rect at `consume_paint_dirty`, and `geometry_may_have_moved` compares it
+last, after the rounded checks, so a dirty node whose box held at both
+precisions still measures no range. Pin:
+`scrollbar_range_damage_tests::a_sub_pixel_growth_that_crosses_the_whole_pixel_range_damages_the_bar`.
 
 **How each box counts (#776, #775).** `extend_with_child` gives every box two
 contributions, as Chrome 156 measures them. An **in-flow** box (anything but
