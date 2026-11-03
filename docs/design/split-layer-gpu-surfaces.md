@@ -917,6 +917,14 @@ it):
    inverse clip, inside the ancestor's clip layer, sends that layer's content
    through Vello's 8-bit blend stack in those tiles.
 
+**Note (2026-11-03, #2103; not a new decision).** The 8-bit blend stack also
+broke D10 inside R. A clip layer in an above slice (a box-shadow's, after a
+glyph's antialiased edge) rounded the slice's translucent backdrop, alpha
+included, so the result was 2 levels off in-scene. The Vello fork now keeps the
+blend stack at 16 bits a channel (joeleaver/vello-fork#5). The classes above
+that cite the 8-bit stack are kept as they were and have not been re-measured
+with it.
+
 The alternative, falling back to in-scene for translucent and resampled
 surfaces, would have sent every letterboxed video in-scene.
 

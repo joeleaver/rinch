@@ -712,8 +712,9 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`7a511341325479f8dbbf0b6f71d9f7f29483d5c0`, branch `rinch-patch`): the vello
-`v0.11.0` tag plus the image atlas below and **Bump buffers** after it. The
+(`f010985c43f499f76e7d587e2c5ee3c6f0877817`, joeleaver/vello-fork#5 on branch
+`rinch-patch`): the vello `v0.11.0` tag plus the image atlas below, **Bump
+buffers** and the **Blend stack** after it. The
 fork's `vello` takes `vello_encoding` and `vello_shaders` by path, so all three
 come from the fork.
 It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
@@ -809,6 +810,23 @@ window is a blank window. The fork does three things about it.
      desktop does.
    - A test or tool calling `render_to_texture` directly gets none of this:
      after it, `check_frames` until not `Pending`, and render again on `Lost`.
+
+**Blend stack (#2103).** `fine.wgsl` keeps the backdrop of each open clip or
+layer while it paints the layer's content, and composites the content over it
+at the pop. Stock Vello packs that backdrop to 8 bits a channel
+(`pack4x8unorm`). The fork packs it to 16 (`pack2x16unorm`, two words a pixel,
+in registers and in the spill buffer past four levels; `coarse.wgsl` allocates
+twice the spill). The 8-bit stack rounded the premultiplied backdrop once more.
+Over an opaque backdrop it rounds the colour. Over a translucent one it rounds
+the alpha as well, and the alpha's error is later multiplied by whatever the
+result is composited over. A split surface's above slice
+(`docs/design/split-layer-gpu-surfaces.md`) is rendered over transparent and
+composited over the surface. Where a glyph's antialiased edge was under a later
+box-shadow's clip layer over the surface, the split was 2 levels off the
+in-scene frame, past D10's one. The window's scene changes too, by at most a
+level in tiles a clip's edge crosses, towards the float result. Pinned by
+`shell::split_pages_1865_tests::gpu_split_pages_2103_glyph_edge_shadow_tail`
+(red with the 8-bit stack).
 
 An overflow costs a visible frame, or one per buffer that runs out, since a stage
 after one that failed stops short of saying what it needs: 400 window-sized
