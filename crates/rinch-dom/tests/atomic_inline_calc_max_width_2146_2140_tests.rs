@@ -267,3 +267,28 @@ fn capped_box_content_overflows_2140() {
     assert_width(&doc, a, 300.0, "the capped box");
     assert_width(&doc, inner, 400.0, "the 400px child");
 }
+
+/// A `calc()` width inside an `auto` inline-block is cyclic, so it counts as
+/// `auto` toward the outer box's width (css-sizing-3 §5.2.1), as a plain
+/// percentage does. The outer box takes its 100px content, and the inner box
+/// is then 50% of 100 + 10 = 60. If the inner box counted as its `10px`
+/// length part, the outer box would come out 10 wide.
+#[test]
+fn calc_width_inside_an_auto_box_contributes_as_auto_2146() {
+    let mut ids = None;
+    let doc = build(|doc, body| {
+        let cb = el(doc, body, "div", "width:360px");
+        let chip = el(doc, cb, "span", "display:inline-block");
+        let inner = el(
+            doc,
+            chip,
+            "span",
+            "display:inline-block;width:calc(50% + 10px)",
+        );
+        el(doc, inner, "div", "width:100px;height:10px");
+        ids = Some((chip, inner));
+    });
+    let (chip, inner) = ids.unwrap();
+    assert_width(&doc, chip, 100.0, "the auto chip");
+    assert_width(&doc, inner, 60.0, "calc(50% + 10px) of the chip");
+}
