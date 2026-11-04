@@ -1960,6 +1960,14 @@ impl RinchDocument {
             let old_children: Vec<taffy::NodeId> =
                 self.tree.taffy.children(parent_taffy).unwrap_or_default();
             if old_children == new_children {
+                // The parent itself is still dirtied (review of #2142): a
+                // container whose only content is inline content inside a
+                // wrapper is an IFC root, whose Taffy child list is empty
+                // before and after that content goes, and `set_children` was
+                // the only thing that marked it — a `div` > wrapper > `span`
+                // kept the span's line after the span left. Its children's
+                // caches are what this keeps.
+                let _ = self.tree.taffy.mark_dirty(parent_taffy);
                 continue;
             }
             any_rebuilt = true;
