@@ -448,6 +448,9 @@ struct Active {
     /// onto the source drawn at that place (a re-rendered source withdraws at
     /// once, #2093) takes it back.
     left_over: Option<(String, usize)>,
+    /// The carried nodes drawn away from home when the last place was
+    /// withdrawn: the only ones a leave's place can be taken back from.
+    left_moved: Vec<rinch_core::dom::NodeId>,
     /// The carried items' extent along x and y, spacing included: a gap's size.
     extent: (f32, f32),
     /// The pointer drag's grab point in the source item and its size.
@@ -863,6 +866,12 @@ fn withdraw() {
             && let Some(over) = a.over.take()
         {
             a.left_over = Some(over);
+            a.left_moved = a
+                .shifted
+                .iter()
+                .filter(|(_, x, y)| *x != 0.0 || *y != 0.0)
+                .map(|(n, _, _)| n.node_id())
+                .collect();
         }
     });
     set_offer(None);
@@ -1024,6 +1033,7 @@ fn begin(item: &NodeHandle, key: &str, keyboard: bool) -> bool {
             over: None,
             hovered: false,
             left_over: None,
+            left_moved: Vec::new(),
             extent,
             grab,
             ghost,
@@ -1779,7 +1789,7 @@ fn drag_over(target: &NodeHandle) {
     // gap in its own list): that place stays. Read from where it was laid
     // out, it would be its own place, and the place would flip back and
     // forth under a still pointer.
-    if let Some((_, key)) = &item
+    if let Some((node, key)) = &item
         && keys.contains(key)
         && cfg.indicator.gap()
     {
@@ -1788,9 +1798,17 @@ fn drag_over(target: &NodeHandle) {
                 if a.from.source == SortSource::Collapse || a.from_list != cfg.id {
                     return None;
                 }
+                // Only the source drawn away from its home is drawn at a
+                // place: one at home (a fresh node a co-edit drew) is over
+                // its own place, and is read as any item is.
+                let moved_now = a
+                    .shifted
+                    .iter()
+                    .any(|(n, x, y)| n.node_id() == node.node_id() && (*x != 0.0 || *y != 0.0));
+                let moved_then = a.left_moved.contains(&node.node_id());
                 match (&a.over, &a.left_over) {
-                    (Some((l, _)), _) if *l == cfg.id => Some(None),
-                    (None, Some((l, s))) if *l == cfg.id => Some(Some(*s)),
+                    (Some((l, _)), _) if *l == cfg.id && moved_now => Some(None),
+                    (None, Some((l, s))) if *l == cfg.id && moved_then => Some(Some(*s)),
                     _ => None,
                 }
             })
@@ -1799,6 +1817,8 @@ fn drag_over(target: &NodeHandle) {
             Some(None) => return,
             Some(Some(slot)) => {
                 offer_slot(&cfg, slot);
+                // Drawn as offered, even when the offer itself is unchanged.
+                refresh();
                 return;
             }
             None => {}

@@ -186,7 +186,10 @@ group.
   items between the place and the source make room and the source is drawn
   at the place. A leave that withdrew the place (a re-rendered source
   withdraws at once) followed by an over onto the source drawn there takes
-  the place back (`Active.left_over`, cleared each move). Over the moved
+  the place back and draws it again (`Active.left_over`, cleared each move) —
+  only when that node was drawn away from home when the place was withdrawn
+  (`Active.left_moved`): a source a co-edit drew afresh at home is over its
+  own place. Over the moved
   source the offer stays (`drag_over` returns early),
   and a `data-ondragmove` with no `data-ondragover` while the pointer is over
   the source (the runtime offers no drop on the dragged element itself) does
