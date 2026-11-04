@@ -575,15 +575,13 @@ impl RinchDocument {
         }
         let placed = node.table_box.take().map(|b| b.placed).unwrap_or_default();
         self.tree.tables.retain(|&t| t != host);
+        self.show_blank_runs(host);
         for id in placed.into_iter().chain([host]) {
             let Some(n) = self.tree.nodes.get_mut(id) else {
                 continue;
             };
             n.table_cell = None;
-            let style = self.taffy_style_from_computed(id);
-            if let Some(t) = self.tree.nodes[id].taffy_id {
-                let _ = self.tree.taffy.set_style(t, style);
-            }
+            self.rewrite_taffy_style(id);
         }
         self.tree.layout_dirty = true;
         if let Some(p) = self.tree.nodes[host].parent {
@@ -594,8 +592,18 @@ impl RinchDocument {
     /// Owe `parent`'s table a rebuild after its child list changed: neither a
     /// removal nor a move of an already-styled row restyles anything that
     /// would say so. Consecutive changes under one table are pushed once.
+    ///
+    /// A plain block is owed a look too: one that lost its last child that is
+    /// not a row, or whose text went, may stand for a table now
+    /// ([`Self::note_table_host`]); [`Self::resolve_tables`] checks.
     pub(crate) fn note_table_children_changed(&mut self, parent: RawNodeId) {
-        if let Some(table) = Self::table_of(&self.tree, parent)
+        let owed = Self::table_of(&self.tree, parent).or_else(|| {
+            let cs = &self.tree.nodes.get_live(parent)?.computed_style;
+            (cs.table_part == TablePart::None
+                && matches!(cs.display, DisplayValue::Block | DisplayValue::ListItem))
+            .then_some(parent)
+        });
+        if let Some(table) = owed
             && self.tree.tables_owed.last() != Some(&table)
         {
             self.tree.tables_owed.push(table);
@@ -620,6 +628,16 @@ impl RinchDocument {
             if is_host(&self.tree.nodes[id]) && !qualifies_as_host(&self.tree, id) {
                 self.unhost(id);
                 continue;
+            }
+            // A plain block owed a look (`note_table_children_changed`).
+            if self.tree.nodes[id].computed_style.table_part == TablePart::None {
+                if !qualifies_as_host(&self.tree, id) {
+                    continue;
+                }
+                self.tree.nodes[id].computed_style.table_part = TablePart::Table;
+                if let Some(p) = self.tree.nodes[id].parent {
+                    self.note_table_children_changed(p);
+                }
             }
             if self.tree.nodes[id].computed_style.table_part == TablePart::Table {
                 self.rebuild_table(id);
@@ -1295,6 +1313,26 @@ impl RinchDocument {
     /// The white space between a table's rows and cells generates no box
     /// (css-tables-3 §3.9). The IFC pass mints an anonymous block box around
     /// it, as around any run in a grid, which would be a stray grid item.
+    /// Undo [`Self::hide_blank_runs`] for a block that stops standing for a
+    /// table: its text runs are anonymous blocks again, shown whatever they
+    /// hold (one blank then is no longer blank).
+    fn show_blank_runs(&mut self, table: RawNodeId) {
+        let boxes: Vec<RawNodeId> = self.tree.nodes[table].run_boxes.clone();
+        for b in boxes {
+            let Some(t) = self.tree.nodes.get_live(b).and_then(|n| n.taffy_id) else {
+                continue;
+            };
+            if let Ok(old) = self.tree.taffy.style(t).cloned()
+                && old.display == taffy::Display::None
+            {
+                let mut st = old;
+                st.display = taffy::Display::Block;
+                let _ = self.tree.taffy.set_style(t, st);
+                self.tree.layout_dirty = true;
+            }
+        }
+    }
+
     fn hide_blank_runs(&mut self, table: RawNodeId) {
         let mut parts = vec![table];
         let mut boxes = Vec::new();

@@ -1369,6 +1369,74 @@ impl RinchDocument {
         }
     }
 
+    /// How far HTML's `align` on `node_id`'s parent moves it from where
+    /// Taffy put it ([`ComputedStyle::html_align`]): a block box in flow, with
+    /// a width of its own (a `width`, a `max-width`, or a table's), and no
+    /// `auto` margin. As Chrome places it (`-webkit-center`, `-webkit-right`),
+    /// its margin box: centred, `left = ml + max(0, free / 2)`; at the end,
+    /// `left = max(ml, avail - width - mr)`; `free` is what the parent's
+    /// content box leaves beside the margin box. Taffy laid it out with its
+    /// own margins, so its relative offset, transform and size stand.
+    ///
+    /// [`ComputedStyle::html_align`]: crate::computed_style::ComputedStyle::html_align
+    fn html_align_dx(&self, node_id: RawNodeId) -> f32 {
+        use crate::computed_style::{
+            DimensionValue, DisplayValue, LengthPercentageAutoValue as M, PositionValue, TablePart,
+            TextAlignValue,
+        };
+        let node = &self.tree.nodes[node_id];
+        let Some(parent) = node.parent.and_then(|p| self.tree.nodes.get(p)) else {
+            return 0.0;
+        };
+        let Some(align) = parent.computed_style.html_align else {
+            return 0.0;
+        };
+        if align == TextAlignValue::Start {
+            return 0.0;
+        }
+        let cs = &node.computed_style;
+        let in_flow_block = matches!(
+            parent.computed_style.display,
+            DisplayValue::Block | DisplayValue::ListItem
+        ) && matches!(
+            cs.display,
+            DisplayValue::Block | DisplayValue::ListItem | DisplayValue::Flex | DisplayValue::Grid
+        ) && !matches!(
+            cs.position,
+            PositionValue::Absolute | PositionValue::Fixed
+        ) && cs.float == taffy::Float::None
+            && !cs.table_part.is_internal()
+            && node.run_box.is_none();
+        let own_width = cs.table_part == TablePart::Table
+            || !matches!(cs.width, DimensionValue::Auto)
+            || !matches!(cs.max_width, DimensionValue::Auto);
+        if !in_flow_block
+            || !own_width
+            || matches!(cs.margin_left, M::Auto)
+            || matches!(cs.margin_right, M::Auto)
+        {
+            return 0.0;
+        }
+        let (Some(t), Some(pt)) = (node.taffy_id, parent.taffy_id) else {
+            return 0.0;
+        };
+        let (Ok(own), Ok(outer)) = (self.tree.taffy.layout(t), self.tree.taffy.layout(pt)) else {
+            return 0.0;
+        };
+        let avail = outer.size.width
+            - outer.padding.left
+            - outer.padding.right
+            - outer.border.left
+            - outer.border.right;
+        let (ml, mr, w) = (own.margin.left, own.margin.right, own.size.width);
+        let left = match align {
+            TextAlignValue::Center => ml + ((avail - w - ml - mr) / 2.0).max(0.0),
+            TextAlignValue::End => ml.max(avail - w - mr),
+            _ => ml,
+        };
+        left - ml
+    }
+
     /// Read one anonymous block box's Taffy layout back into its `layout`.
     ///
     /// The box is outside the element tree (#566), so
@@ -1799,6 +1867,11 @@ impl RinchDocument {
                     }
                 }
             }
+
+            // HTML's `align` on the parent places a block box with a width of
+            // its own (`html_align_dx`). From Taffy's own answer, so it is the
+            // same on every read.
+            new_layout.x += self.html_align_dx(node_id);
 
             // An atomic inline child of an IFC has its *position* assigned by the IFC
             // (`write_inline_positions`), not Taffy: it is detached from its parent's

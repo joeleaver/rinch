@@ -1878,6 +1878,37 @@ impl RinchDocument {
     /// `computed_style` starts from (the cascade's sync and both tick
     /// re-syncs). It carries what the computed values alone cannot: a table's
     /// part's place, from its table's last rebuild (`table_layout`).
+    /// Write `node_id`'s Taffy style again from its computed values, as the
+    /// cascade writes it (`apply_stylo_styles_to_taffy`): the body's
+    /// overrides, an out-of-flow box's containing-block size
+    /// (`bake_at_style_site`), a collapsed block's estimated height. A
+    /// `display: contents` wrapper's style is `sync_display_contents`'s, and is
+    /// left alone. For a site that changes what an already-cascaded box's
+    /// style is built from (a table's placement, a cell's height).
+    pub(crate) fn rewrite_taffy_style(&mut self, node_id: RawNodeId) {
+        let Some(node) = self.tree.nodes.get_live(node_id) else {
+            return;
+        };
+        let Some(t) = node.taffy_id else {
+            return;
+        };
+        if !node.is_element()
+            || node.computed_style.display == crate::computed_style::DisplayValue::Contents
+        {
+            return;
+        }
+        let mut style = self.taffy_style_from_computed(node_id);
+        if node_id == self.tree.body_id {
+            crate::node::body_taffy_overrides(&mut style);
+        }
+        crate::out_of_flow::bake_at_style_site(&mut self.tree, node_id, &mut style);
+        if let Some(est_h) = self.tree.nodes[node_id].estimated_height {
+            style.size.height = taffy::Dimension::length(est_h);
+        }
+        let _ = self.tree.taffy.set_style(t, style);
+        self.tree.layout_dirty = true;
+    }
+
     pub(crate) fn taffy_style_from_computed(&self, node_id: RawNodeId) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
@@ -1905,84 +1936,7 @@ impl RinchDocument {
         }
         self.apply_table_style(node_id, &mut style);
         self.unresolve_heights_in_auto_cell(node_id, &mut style);
-        self.align_by_html(node_id, &mut style);
         style
-    }
-
-    /// A block box under HTML's `align` ([`ComputedStyle::html_align`]) with
-    /// a width of its own (a `width`, a `max-width`, or a table's, its
-    /// content's) is aligned by it: `<td align="center"><table>` centres the
-    /// table, as in Chrome. Its margins become `auto` on the side or sides
-    /// that take the room. Chrome centres the margin box: when the two
-    /// margins are lengths that differ, the box is also shifted by half the
-    /// difference (a relative offset, on a box that has no position of its
-    /// own); any other unequal pair is left where it is.
-    ///
-    /// [`ComputedStyle::html_align`]: crate::computed_style::ComputedStyle::html_align
-    fn align_by_html(&self, node_id: RawNodeId, style: &mut taffy::Style) {
-        use crate::computed_style::{
-            DimensionValue, DisplayValue, LengthPercentageAutoValue, PositionValue, TablePart,
-            TextAlignValue,
-        };
-        let node = &self.tree.nodes[node_id];
-        let Some(parent) = node.parent.and_then(|p| self.tree.nodes.get(p)) else {
-            return;
-        };
-        let Some(align) = parent.computed_style.html_align else {
-            return;
-        };
-        let cs = &node.computed_style;
-        let in_flow_block = matches!(
-            parent.computed_style.display,
-            DisplayValue::Block | DisplayValue::ListItem
-        ) && matches!(
-            cs.display,
-            DisplayValue::Block | DisplayValue::ListItem | DisplayValue::Flex | DisplayValue::Grid
-        ) && !matches!(
-            cs.position,
-            PositionValue::Absolute | PositionValue::Fixed
-        ) && cs.float == taffy::Float::None
-            && !cs.table_part.is_internal();
-        let own_width = cs.table_part == TablePart::Table
-            || !matches!(cs.width, DimensionValue::Auto)
-            || !matches!(cs.max_width, DimensionValue::Auto);
-        if !in_flow_block || !own_width {
-            return;
-        }
-        let (left, right) = (cs.margin_left, cs.margin_right);
-        if matches!(left, LengthPercentageAutoValue::Auto)
-            || matches!(right, LengthPercentageAutoValue::Auto)
-        {
-            return;
-        }
-        use LengthPercentageAutoValue::{Length, Percent};
-        // How far the margin box's centre is from the border box's.
-        let shift = match (left, right) {
-            (Length(a), Length(b)) => Some((a - b) / 2.0),
-            (Percent(a), Percent(b)) if a == b => Some(0.0),
-            _ => None,
-        };
-        let auto = taffy::LengthPercentageAuto::auto();
-        match align {
-            TextAlignValue::Center => {
-                let Some(shift) = shift else {
-                    return;
-                };
-                if shift != 0.0 {
-                    if cs.position != PositionValue::Static {
-                        return;
-                    }
-                    style.position = taffy::Position::Relative;
-                    style.inset.left = taffy::LengthPercentageAuto::length(shift);
-                    style.inset.right = auto;
-                }
-                style.margin.left = auto;
-                style.margin.right = auto;
-            }
-            TextAlignValue::Start => style.margin.right = auto,
-            TextAlignValue::End => style.margin.left = auto,
-            _ => {}
-        }
     }
 
     /// A cell whose `height` became or stopped being a fixed length, or a box
@@ -2008,15 +1962,7 @@ impl RinchDocument {
         }
         let children = self.tree.nodes[node_id].children.clone();
         for c in children {
-            let Some(t) = self.tree.nodes.get(c).and_then(|n| n.taffy_id) else {
-                continue;
-            };
-            if !self.tree.nodes[c].is_element() {
-                continue;
-            }
-            let style = self.taffy_style_from_computed(c);
-            let _ = self.tree.taffy.set_style(t, style);
-            self.tree.layout_dirty = true;
+            self.rewrite_taffy_style(c);
         }
     }
 
