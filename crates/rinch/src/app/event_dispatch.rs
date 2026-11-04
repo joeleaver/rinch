@@ -549,7 +549,7 @@ impl RinchApp {
                                 viewport_width: vp_w,
                                 viewport_height: vp_h,
                                 button: events::MouseButton::Left,
-                                modifiers: events::ModifierState::default(),
+                                modifiers: self.modifier_state(),
                             });
                             Self::dispatch_drag_attr(doc, node_id, "data-ondragstart");
                         }

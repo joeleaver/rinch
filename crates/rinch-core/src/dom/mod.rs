@@ -614,6 +614,14 @@ impl NodeHandle {
         doc.borrow().get_attribute(self.node_id, name)
     }
 
+    /// This element's border-box size as laid out, before a CSS transform on
+    /// it or an ancestor scales it ([`DomDocument::layout_size`]); compare
+    /// [`Self::bounding_rect`], the painted box. `None` without a layout.
+    pub fn layout_size(&self) -> Option<(f32, f32)> {
+        self.accessed_doc()
+            .and_then(|doc| doc.borrow().layout_size(self.node_id))
+    }
+
     /// Every attribute of this element as (name, value) pairs, in no promised
     /// order ([`DomDocument::attribute_list`]). Empty for a text node, a node
     /// that is gone, or a host that cannot list them.

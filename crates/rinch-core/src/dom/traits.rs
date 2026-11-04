@@ -394,6 +394,14 @@ pub trait DomDocument {
         Vec::new()
     }
 
+    /// `node`'s border-box size as laid out, before any CSS transform on it
+    /// or an ancestor scales it (the web's `offsetWidth`/`offsetHeight`), in
+    /// logical pixels (#2154). `None` where the host has no layout (the
+    /// default) or the node is gone.
+    fn layout_size(&self, _node: NodeId) -> Option<(f32, f32)> {
+        None
+    }
+
     /// The text a form control **holds right now** — what the user sees and
     /// what the next keystroke edits — as opposed to its `value` *content
     /// attribute* (issue #238).

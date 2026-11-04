@@ -2038,6 +2038,11 @@ impl DomDocument for WebDocument {
         Some(el.local_name())
     }
 
+    fn layout_size(&self, node: NodeId) -> Option<(f32, f32)> {
+        let el: &web_sys::HtmlElement = self.nodes.get(&node.0)?.dyn_ref()?;
+        Some((el.offset_width() as f32, el.offset_height() as f32))
+    }
+
     fn attribute_list(&self, node: NodeId) -> Vec<(String, String)> {
         let Some(el) = self
             .nodes

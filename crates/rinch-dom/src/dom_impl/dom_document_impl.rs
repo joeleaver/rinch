@@ -975,6 +975,11 @@ impl DomDocument for RinchDocument {
         );
     }
 
+    fn layout_size(&self, node: NodeId) -> Option<(f32, f32)> {
+        let n = self.tree.nodes.get(node.0)?;
+        Some((n.layout.width, n.layout.height))
+    }
+
     fn attribute_list(&self, node: NodeId) -> Vec<(String, String)> {
         self.tree.nodes.get(node.0).map_or_else(Vec::new, |n| {
             n.attributes
