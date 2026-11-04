@@ -275,10 +275,19 @@ SortableList {
   there and the item — their tags, classes and attributes, inline style
   included — so it inherits and matches selectors as the item does, while no
   ancestor's own box (its size, padding, `overflow`, `transform`) reaches it.
-  Selectors that look at siblings (`:first-child`, `+`) and `id`s (not copied)
-  do not match. A copy leaves out handlers, `id`, `tabindex`, `draggable`,
-  `name`, `checked` and `form`; a text field shows what it holds now (a
-  `<select>` shows its default option).
+  An ancestor's own opacity, filter or transform is not applied to the
+  preview (its stand-in draws no box).
+
+  **What does not carry over:** `id`s are not copied, so an id-scoped selector
+  (`#board .card`) does not match the preview; and each stand-in is an only
+  child, so structural selectors (`:nth-child`, `:first-child`, `+`, `~`) see
+  it as one. Style the preview with classes, or with the list's
+  `--rinch-sortable-ghost-*` properties. A copy also leaves out everything the
+  runtime acts on — handlers, `id`, `tabindex`, `draggable`, `contenteditable`,
+  `name`, `checked`, `form`, and `data-` attributes such as
+  `data-trap-focus`, `data-viewport`, `data-render-surface` and the editor's
+  `data-pm-*` — while other `data-` attributes stay, as style hooks. A text
+  field shows what it holds now (a `<select>` shows its default option).
 - **The gap** and a collapse are a `transform` on the items (the component
   writes `--rinch-sortable-shift-x` / `-y`, the stylesheet turns them into a
   `translate`), so layout does not move. The place under the pointer is read

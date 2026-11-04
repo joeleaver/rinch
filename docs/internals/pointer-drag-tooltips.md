@@ -170,11 +170,24 @@ group.
   ancestor), placed by its centre (`Active.ghost_fix`). A copy drops the
   placement declarations of the item's inline style (`PLACEMENT`). `Custom`
   runs under `scope.push_owner()`, so what it makes is disposed with it.
-  In the source's own list (not collapsing), a gap is `reordered()`: the
-  list's items, measured along its axis at `begin` (`Active.home`), packed in
-  the order the drop would give from the first item's start — the items
-  between the place and the source make room and the source is drawn at the
-  place. Over the moved source the offer stays (`drag_over` returns early),
+  The wrapper is one node per document (`GHOST_WRAPPERS`), detached between
+  drags; at the end its children are taken with `set_inner_html("")`, the
+  verb both backends free a subtree on — desktop's `discard` keeps slab
+  entries (#723), which leaked 7 nodes a drag. Copies drop handler,
+  identity, focus and runtime attributes (`copied_attribute`: `data-on*`,
+  `data-pm-*`, `data-rinch-*`, `data-viewport*`, `data-trap-focus`,
+  `data-render-surface`, `contenteditable`, …), keeping other `data-`
+  attributes as style hooks.
+  In the source's own list (not collapsing), a gap is `reordered()`: each
+  item's offset is its position packed in the drop's order less its position
+  packed as it is, from the items' **current layout sizes** (`layout_size`,
+  their own units, so a scaled ancestor is right) and the spacing measured at
+  `begin`; an item added or removed mid-drag is laid out with the rest. The
+  items between the place and the source make room and the source is drawn
+  at the place. A leave that withdrew the place (a re-rendered source
+  withdraws at once) followed by an over onto the source drawn there takes
+  the place back (`Active.left_over`, cleared each move). Over the moved
+  source the offer stays (`drag_over` returns early),
   and a `data-ondragmove` with no `data-ondragover` while the pointer is over
   the source (the runtime offers no drop on the dragged element itself) does
   not withdraw. The grab point comes from
