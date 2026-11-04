@@ -32,16 +32,19 @@
 //! when the table has a width of its own, which spreads the room as the
 //! automatic table layout does: never under a cell's minimum, and in
 //! proportion to what each column would like. Its max-content is measured by
-//! [`RinchDocument::measure_table_columns`], laying the table out detached
-//! with `auto` tracks. A table with no width of its own shrinks to fit on
-//! plain `auto` tracks and needs no measure.
+//! [`RinchDocument::measure_table_columns`]: the widest of its cells' own,
+//! each asked size-only and only again once it changed (#2141), or — with a
+//! spanning cell or a caption, which share their width between columns — by
+//! laying the table out detached with `auto` tracks. A table with no width of
+//! its own shrinks to fit on plain `auto` tracks and needs no measure.
 //!
 //! ## Vertical alignment
 //!
 //! Taffy's block layout has no `align-content`, and a table cell is a block
 //! container, so `vertical-align` is applied after the compute: the cell's
 //! leftover height becomes extra top padding on the computed style (what
-//! positions its text) and an offset on its children. Blink calls the same
+//! positions its text, and the atomic inlines in its lines) and an offset on
+//! the children Taffy places. Blink calls the same
 //! thing intrinsic padding. It reaches no Taffy style, so it cannot feed back
 //! into the row's height. `baseline` aligns as `top`.
 
