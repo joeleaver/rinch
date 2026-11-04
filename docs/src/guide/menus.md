@@ -184,6 +184,9 @@ let view_menu = Menu::new()
     );
 ```
 
+For a submenu inside a rendered `ContextMenu` or `DropdownMenu`, see
+[Submenus in rendered menus](#submenus-in-rendered-menus).
+
 ## Keyboard Shortcuts
 
 Shortcuts are specified as strings combining modifiers and a key, separated by `+`.
@@ -390,11 +393,80 @@ The `ContextMenu` component automatically:
 - Positions the dropdown at the click coordinates: it hangs from the pointer, or
   stands on it when there is little room below, and starts at the pointer, or
   ends there when its minimum width does not fit to the right
+- Closes on Escape and answers the arrow keys (see below)
 - Keeps it inside the window: a menu that would run past the bottom or right edge
   is shifted back by its overflow, 4px from the edge, as native menus are; a menu
   taller than the whole window starts 4px below the top and scrolls
 - Shows an invisible overlay for click-outside-to-close
 - Reuses `DropdownMenuItem` and `DropdownMenuDivider` for consistent styling
+
+### Submenus in rendered menus
+
+`DropdownMenuSub` is a row that opens a cascading submenu (a *flyout*) beside
+it. It goes in a `ContextMenuDropdown`, a `DropdownMenuDropdown` or another
+`DropdownMenuSub`, to any depth; its children are the flyout's items:
+
+```rust
+ContextMenuDropdown {
+    DropdownMenuItem { onclick: || open(), "Open" }
+    DropdownMenuSub { label: "New", left_section: TablerIcon::Plus,
+        DropdownMenuItem { onclick: || new_file(), "File" }
+        DropdownMenuItem { onclick: || new_folder(), "Folder" }
+        DropdownMenuSub { label: "From template",
+            DropdownMenuItem { onclick: || from_template("report"), "Report" }
+        }
+    }
+    DropdownMenuSub { label: "Sync", disabled: true,
+        DropdownMenuItem { "Now" }
+    }
+}
+```
+
+It behaves like Chrome's own context menu, and every choice is a prop
+(see [Component Props › DropdownMenuSub](component-props.md)):
+
+- Hovering the row opens the flyout after 400ms (`open_delay`); a press opens it
+  at once (`open_on_click`); `open_on_hover: false` leaves only the press and the
+  keys.
+- Moving onto another row of the same menu closes it after 400ms
+  (`close_delay`), so a diagonal move across a neighbouring row on the way into
+  the flyout keeps it, and a submenu row merely crossed on the way (into a
+  flyout, or out of the menu) does not open. Leaving the menu altogether keeps an
+  open submenu open, as Chrome does.
+  `safe_triangle: true` adds a pointer-direction tolerance instead (pair it with a
+  short `close_delay`).
+- It opens to the right of its menu, overlapping it by 3px, its first row level
+  with the row that opened it; at the window's right edge it opens on the left
+  (`flip`), and at the bottom it moves up (`shift`). It is never clipped by its
+  menu's own overflow, on the desktop or in a browser. A flyout whose content
+  changes size while open is placed again; a window resize or a display scale
+  change closes it, as Chrome
+  closes its menus (`close_on_resize: false` places it again instead). A page
+  scrollbar appearing is not a resize.
+- Choosing an item anywhere in the tree closes the whole menu, `ContextMenu`
+  included. A `disabled` submenu never opens.
+- Style it per menu through the cascade: `--rinch-dropdown-menu-sub-offset`,
+  `--rinch-dropdown-menu-sub-width`, the `.rinch-dropdown-menu__sub-chevron`
+  icon (or `chevron` / `hide_chevron`), and the `.rinch-dropdown-menu__sub--opened`
+  state class all reach the flyout from a class on the menu or any ancestor.
+
+### Keyboard in rendered menus
+
+While a `ContextMenu` or `DropdownMenu` is open it takes the keys Chrome's menus
+do (`keyboard_nav`, on by default):
+
+| Key | Does |
+|-----|------|
+| ArrowDown / ArrowUp | Next / previous item of the menu the focus is in, wrapping (`loop_focus`). With the focus outside the menu (opened with the mouse), the first / last item |
+| Home / End | First / last item |
+| A letter or digit | Type-ahead (`typeahead`): the next item whose label starts with it; a single match is activated |
+| Enter / Space | Activate the focused item |
+| ArrowRight / Enter / Space on a submenu row | Open it and focus its first item |
+| ArrowLeft in a submenu | Close that submenu; the focus goes back to its row |
+| Escape | Close the innermost open submenu, else the menu (`close_on_escape`); the focus goes back to where it was |
+
+A text field keeps its own keys: nothing is taken while one holds the focus.
+`on_key` is offered every key first, as an escape hatch.
 
 ### oncontextmenu Event
 

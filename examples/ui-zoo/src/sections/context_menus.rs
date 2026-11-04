@@ -136,7 +136,7 @@ pub fn context_menus_section() -> NodeHandle {
             // --- Simple Context Menu ---
             Title { order: 3, "Simple Context Menu" }
             Text { size: "sm", color: "dimmed",
-                "A basic context menu with action items. Right-click the targets below."
+                "A basic context menu with action items and cascading submenus (hover, click or ArrowRight to open). Right-click the targets below."
             }
             Space { h: "sm" }
 
@@ -170,6 +170,25 @@ fn corner_target(
                 DropdownMenuItem {
                     onclick: { let l = label_owned.clone(); move || last_action.set(format!("Duplicate ({})", l)) },
                     "Duplicate"
+                }
+                DropdownMenuSub { label: "Move to",
+                    DropdownMenuItem {
+                        onclick: { let l = label_owned.clone(); move || last_action.set(format!("Move to Inbox ({})", l)) },
+                        "Inbox"
+                    }
+                    DropdownMenuSub { label: "Archive",
+                        DropdownMenuItem {
+                            onclick: { let l = label_owned.clone(); move || last_action.set(format!("Archive 2025 ({})", l)) },
+                            "2025"
+                        }
+                        DropdownMenuItem {
+                            onclick: { let l = label_owned.clone(); move || last_action.set(format!("Archive 2026 ({})", l)) },
+                            "2026"
+                        }
+                    }
+                }
+                DropdownMenuSub { label: "Locked", disabled: true,
+                    DropdownMenuItem { "Never shown" }
                 }
                 DropdownMenuDivider {}
                 DropdownMenuItem {

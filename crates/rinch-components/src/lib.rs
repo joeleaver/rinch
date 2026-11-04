@@ -68,7 +68,7 @@
 //! - [`Drawer`] - Slide-out panel
 //! - [`Notification`] - Toast notification
 //! - [`Popover`] - Positioned popup + [`PopoverTarget`], [`PopoverDropdown`]
-//! - [`DropdownMenu`] - Dropdown menu + [`DropdownMenuTarget`], [`DropdownMenuDropdown`], [`DropdownMenuItem`]
+//! - [`DropdownMenu`] - Dropdown menu + [`DropdownMenuTarget`], [`DropdownMenuDropdown`], [`DropdownMenuItem`], [`DropdownMenuSub`] (cascading submenu)
 //! - [`HoverCard`] - Card on hover + [`HoverCardTarget`], [`HoverCardDropdown`]
 //! - [`LoadingOverlay`] - Loading overlay for containers
 //!
@@ -142,6 +142,7 @@ pub mod context_menu;
 pub mod divider;
 pub mod drawer;
 pub mod dropdown_menu;
+pub mod dropdown_menu_sub;
 pub(crate) mod field_ids;
 pub mod fieldset;
 pub(crate) mod floating;
@@ -157,6 +158,7 @@ pub mod list;
 pub mod loader;
 pub mod loading_overlay;
 pub mod mark;
+pub mod menu_nav;
 pub mod modal;
 pub mod navlink;
 pub mod notification;
@@ -258,8 +260,10 @@ pub use dropdown_menu::{
     DropdownMenu, DropdownMenuDivider, DropdownMenuDropdown, DropdownMenuItem, DropdownMenuLabel,
     DropdownMenuTarget,
 };
+pub use dropdown_menu_sub::DropdownMenuSub;
 pub use hover_card::{HoverCard, HoverCardDropdown, HoverCardTarget};
 pub use loading_overlay::LoadingOverlay;
+pub use menu_nav::MenuKeyHook;
 pub use modal::Modal;
 pub use notification::Notification;
 pub use popover::{Popover, PopoverDropdown, PopoverTarget};

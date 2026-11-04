@@ -234,6 +234,103 @@ dropping it also removes the icon (#377, below). A callback may also rebuild the
 to be a `BorrowMutError`.
 
 
+## Rendered menus: submenus, keys and Escape (#2214, #2169, #2170)
+
+`DropdownMenuSub` (`rinch-components/src/dropdown_menu_sub.rs`) and the menus'
+keyboard (`menu_nav.rs`) are component code only — one implementation for the
+desktop and rinch-web. Defaults are Chromium's views menus, read from
+`ui/views/controls/menu/menu_config.h` (`show_delay = 400`,
+`submenu_horizontal_overlap = 3`, `arrow_key_selection_wraps = true`) and
+`menu_controller.cc` (the sibling switch on the show timer in
+`CommitPendingSelection`, "keeps the submenu open" when the pointer leaves every
+menu in `HandleMouseLocation`, `SelectByChar`, ArrowRight/Left/Return/Escape in
+`OnKeyPressed`, no safe triangle).
+
+**The flyout stays in the DOM** under its row (`div.rinch-dropdown-menu__sub` →
+row button, offset probe, `div.rinch-dropdown-menu__sub-dropdown`). So the CSS
+cascade reaches it per menu, and an item in it closes the whole menu by the
+ordinary `find_menu_close_signal` walk: a submenu stamps **no**
+`MENU_CLOSE_ID_ATTR`, so the walk passes through it to the root menu (the nested
+`DropdownMenu` rule, `nested_menu_closes_the_nearest_one`, is untouched). The
+root menu's close cascades down: `DropdownMenu`'s `opened_fn` falling edge and its
+item-close watcher, and `ContextMenu`'s hide branch, call
+`close_subs_within(root)`.
+
+**Placement.** The flyout is `position: fixed` — no ancestor overflow clips it,
+on desktop (a fixed box carries no ancestor clip chain) or in a browser — and is
+placed in viewport px on each open by `arm_placement`, the `floating.rs`
+pattern: write `left: 0; top: 0`, measure after the layout (desktop: a
+`bounds_signal` effect, settled before paint; web: the same task), write the
+result. The measurement at 0/0 *is* the containing block's origin, so a
+transformed ancestor (which a browser makes a fixed box's containing block) is
+subtracted out. The horizontal offset is the CSS custom property
+`--rinch-dropdown-menu-sub-offset`, read through a zero-size probe
+(`left: var(…)` in the `position: relative` submenu): rinch has no
+computed-style read on `NodeHandle`. `decide` (pure, unit-tested) puts it
+right of the parent panel, flips it left when it does not fit, shifts it inside
+by `EDGE_MARGIN` (4px), and caps one taller than the window. While open it
+follows its row (the row's `bounds_signal`). No width is pinned — placed where
+it fits, a fixed box's shrink-to-fit width is its content's — and the size it was
+placed at is kept: a different size later is its content changing, and it is
+measured and placed again (`remeasure`). A window resize is seen through a
+viewport-sized, hidden `position: fixed` sentinel shown while open (no viewport
+signal on `NodeHandle`); it closes the submenu (Chrome closes menus on a bounds change) or,
+with `close_on_resize: false`, re-places it. On desktop the resize is the
+runtime's `resize_layout` path, which refreshes the bounds signals. The size compared is the sentinel's own box (`100vw` x `100vh`, the window), not
+`viewport_size()`: on the web that is `clientWidth`, which shrinks when a page
+scrollbar appears, and a scrollbar closed open submenus (second review of #2216).
+A display scale change closes it too, whatever the logical size does (Chrome
+closes its menus on any display change), or with `close_on_resize: false`
+re-places it: `RinchApp::set_device_pixel_ratio`, every route a new scale takes,
+calls `rinch_core::events::notify_display_scale_changed(doc_key)` when the scale
+differs, and the placement effect reads `display_scale_changes(doc_key)` (a
+per-document counter signal) against the generation it was placed at. rinch-web
+has no such event; a browser zoom changes the window's CSS size, which the
+sentinel sees.
+
+**Pointer.** Hover-open is a `data-onenter` on the row (arm the open timer); the row's
+`data-onleave` clears `on_row`, and a pending open fires only while it is set, so
+a row merely crossed — into a flyout whose own panel hears the pointer, or out of
+the menu, where no panel hears it — opens nothing (Chrome drops the pending
+selection). Desktop's leave-then-enter on every hit-node change inside the row
+sets it false and true in one event, so the delay is not restarted. Every
+other decision is geometric, from one `data-onmousemove` the first submenu row
+the pointer enters (or the first open) installs on its **parent panel**
+(`PANEL_MARK`; only panels holding a submenu get one, so no other app's
+nearest-handler `data-onmousemove` changes). It records the pointer
+(`LAST_POINTER`), cancels a pending open when the pointer leaves the row, and
+arms a close when the pointer is on the panel outside an open submenu's region
+(row, flyout, open descendants' flyouts). The close timer checks
+`LAST_POINTER` against the region again when it fires, because a pointer that
+went on into a *deeper* flyout is heard by that flyout's panel handler, not this
+one, and cancelled nothing. Leaving every menu produces no move on any panel, so
+nothing closes — Chrome's behaviour. Hover enter/leave semantics differ between
+the backends (desktop fires leave + enter on every hit-node change, the web only
+when the nearest handler changes), which is why nothing here relies on leave.
+
+**Keys.** A submenu root carries an element `onkeydown`: on its row
+ArrowRight/Enter/Space open and focus the first row; with the focus in its own
+flyout (nearest panel), ArrowLeft/Escape close it and refocus the row. Element
+handlers run before everything below, nearest first, so a nested submenu
+answers before its parent. Escape with the focus anywhere goes to a dismiss
+entry each submenu pushes **at open** (LIFO: innermost first). The menus
+themselves (`arm_menu_keys`) push their Escape entry at open too (the
+`arm_close_on_escape_while_open` policy, since `opened_fn` has an edge), and hold
+an **app key listener** (`on_app_key`) while open for Up/Down/Home/End and
+type-ahead — an app listener because a right-click-opened `ContextMenu` has no
+focused element inside it, so a focus-scoped `push_key_handler` entry would
+never be offered a key. `OPEN_MENUS` makes the most recently opened menu's
+listener the only one that answers. Keys are declined while a text-taking
+field holds the focus, and with Ctrl/Alt/Meta. The arrows walk the panel the
+focus is in (`nearest_panel`), so one listener serves the root panel and every
+flyout. On close the focus returns to the element focused at open when it was
+left inside the panel. Item rows are recognised by `tag_name()`, not
+`node_type()`, which rinch-web does not implement.
+
+Pins: `rinch/src/app/menu_sub_2214_tests.rs` (desktop, real layout, manual timer
+backend), `rinch-web/tests/menu_sub_2214.rs` (Chrome and Firefox),
+`dropdown_menu_sub::tests` (`decide`).
+
 ## Keyboard Shortcuts (built-in)
 
 - `Alt + I` - Toggle inspect mode (hover highlight for element info)

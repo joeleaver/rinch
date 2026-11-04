@@ -194,6 +194,22 @@ pub fn overlays_section() -> NodeHandle {
                                     onclick: move || dropdown_selection.set("Duplicate".to_string()),
                                     "Duplicate"
                                 }
+                                DropdownMenuSub { label: "Share", left_section: rinch_tabler_icons::TablerIcon::Share,
+                                    DropdownMenuItem {
+                                        onclick: move || dropdown_selection.set("Copy link".to_string()),
+                                        "Copy link"
+                                    }
+                                    DropdownMenuSub { label: "Send to",
+                                        DropdownMenuItem {
+                                            onclick: move || dropdown_selection.set("Send: email".to_string()),
+                                            "Email"
+                                        }
+                                        DropdownMenuItem {
+                                            onclick: move || dropdown_selection.set("Send: chat".to_string()),
+                                            "Chat"
+                                        }
+                                    }
+                                }
                                 DropdownMenuDivider {}
                                 DropdownMenuItem {
                                     color: "red",

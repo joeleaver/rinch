@@ -6,6 +6,7 @@
 mod app_key;
 mod configuration;
 mod dismiss;
+mod display;
 mod drag;
 mod drag_auto_scroll;
 mod drag_context;
@@ -19,6 +20,7 @@ mod selection;
 pub use app_key::*;
 pub use configuration::*;
 pub use dismiss::*;
+pub use display::*;
 pub use drag::*;
 pub use drag_auto_scroll::*;
 pub use drag_context::*;
