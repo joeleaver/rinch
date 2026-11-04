@@ -11,10 +11,14 @@
 //! and scaling that would blur it.
 //!
 //! **An SVG file is untrusted input, drawn only within a profile** (the
-//! reviews of #2125 broke a cost estimate three times, so the guarantee is
-//! an allowlist, `check_profile`). A file that uses anything outside the
-//! profile is refused whole — nothing is drawn, and one reason is logged —
-//! never drawn in part:
+//! reviews of #2125 broke a cost estimate three times, then a checker that
+//! read the file differently from usvg; so usvg is given not the file but a
+//! document `svg_sanitize` rebuilds from it, holding only the profile, with
+//! unique ids, resolved references and CSS inlined, and every count is
+//! taken on that document). A file that uses anything outside the profile is
+//! refused whole — nothing is drawn, and one reason is logged — never drawn
+//! in part; a reference that resolves to nothing of the right kind is
+//! dropped, as Chrome 156 ignores one:
 //! - **Elements**: `svg`, `g`, `defs`, `symbol`, `use`, `a`, `switch`,
 //!   `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`,
 //!   `linearGradient`, `radialGradient` (at most [`MAX_GRADIENT_STOPS`]
@@ -32,17 +36,18 @@
 //!   `feConvolveMatrix`, the lighting filters, `feImage`, `feTile`,
 //!   `feDisplacementMap`, `feComponentTransfer`, `tref`, …).
 //! - **CSS** in `<style>`: rules whose selectors are type, `*`, `.class` and
-//!   `#id` compounds with at most one combinator, and whose `url()`s name a
-//!   gradient. No `@` rule, pseudo-class or attribute selector. Checked
-//!   before usvg parses (usvg's CSS matching backtracks on descendant
-//!   chains).
+//!   `#id` compounds with at most one combinator; no `@` rule, pseudo-class
+//!   or attribute selector. The rules are matched by `svg_sanitize` and
+//!   their declarations written onto the elements; no `<style>` reaches
+//!   usvg (whose CSS matching backtracks on descendant chains).
 //! - **The doctype** is read by a strict grammar ([`prescan`]): its internal
 //!   subset may hold only flat `<!ENTITY name "value">` declarations, each
 //!   name once; their references expand to at most [`MAX_ENTITY_EXPANSION`]
 //!   bytes, checked again from what roxmltree holds after it parses.
 //! - **Counts**: nesting at most [`MAX_DEPTH`] as written and as expanded,
 //!   at most [`MAX_NODES`] elements once `<use>` and other references are
-//!   expanded (`check_expansion`, before usvg builds the tree), each raster
+//!   expanded (counted on the rebuilt document, markers on the vertices of
+//!   the path data as rewritten, before usvg builds the tree), each raster
 //!   at most [`MAX_RASTER_PX`], each layer at most [`MAX_LAYER_PX`] and each
 //!   pattern tile at most [`MAX_RASTER_PX`] device pixels.
 //! - **A work budget**, [`MAX_RASTER_WORK`], stays as a backstop: the
@@ -398,487 +403,21 @@ fn read_doctype<'a>(s: &'a [u8], entities: &mut HashMap<&'a [u8], usize>) -> Res
     }
 }
 
-/// The `#id`s an element refers to, and how many copies of each usvg makes:
-/// an `href`/`xlink:href` (a `<use>`, a gradient or pattern's template) and
-/// every `url(#id)` in an attribute or its `style`, once each, except a
-/// marker, drawn at each vertex of the path (estimated as one per two numbers
-/// in its `d` or `points`).
-fn references<'a, 'i>(
-    node: usvg::roxmltree::Node<'a, 'i>,
-    sheet: &[(&'a str, bool)],
-) -> Vec<(&'a str, u64)> {
-    let vertices = || {
-        let data = node
-            .attribute("d")
-            .or(node.attribute("points"))
-            .unwrap_or("");
-        let numbers = data
-            .split(|c: char| !(c.is_ascii_digit() || c == '.'))
-            .filter(|n| !n.is_empty())
-            .count() as u64;
-        numbers / 2 + 1
-    };
-    let mut out = Vec::new();
-    // A stylesheet's references may apply to any element: counted for all.
-    for &(id, marker) in sheet {
-        out.push((id, if marker { vertices() } else { 1 }));
-    }
-    for attr in node.attributes() {
-        let v = attr.value();
-        if attr.name() == "href" {
-            if let Some(id) = v.trim().strip_prefix('#') {
-                out.push((id, 1));
-            }
-            continue;
-        }
-        let marker =
-            attr.name().starts_with("marker") || (attr.name() == "style" && v.contains("marker"));
-        let mut rest = v;
-        while let Some(at) = rest.find("url(") {
-            rest = &rest[at + 4..];
-            let inner = rest.split(')').next().unwrap_or("");
-            let id = inner
-                .trim()
-                .trim_matches(['"', '\''])
-                .trim_start_matches('#');
-            if !id.is_empty() {
-                out.push((id, if marker { vertices() } else { 1 }));
-            }
-        }
-    }
-    out
-}
-
-/// Every `url(#id)` in the document's `<style>` sheets, and whether the
-/// property naming it is a marker (drawn per vertex).
-fn sheet_references<'a>(doc: &'a usvg::roxmltree::Document) -> Vec<(&'a str, bool)> {
-    let mut out = Vec::new();
-    for style in doc.descendants().filter(|n| n.has_tag_name("style")) {
-        for text in style.children().filter_map(|c| c.text()) {
-            let mut at = 0;
-            while let Some(u) = text[at..].find("url(") {
-                let start = at + u + 4;
-                let property = text[..at + u].rsplit([';', '{']).next().unwrap_or("");
-                let inner = text[start..].split(')').next().unwrap_or("");
-                let id = inner
-                    .trim()
-                    .trim_matches(['"', '\''])
-                    .trim_start_matches('#');
-                if !id.is_empty() {
-                    out.push((id, property.contains("marker")));
-                }
-                at = start;
-            }
-        }
-    }
-    out
-}
-
-/// The SVG namespace; an element in no namespace counts as SVG, as usvg
-/// reads it.
-const SVG_NS: &str = "http://www.w3.org/2000/svg";
-
-/// Elements drawn or read as written.
-const PROFILE_ELEMENTS: &[&str] = &[
-    "svg",
-    "g",
-    "defs",
-    "symbol",
-    "use",
-    "a",
-    "switch",
-    "path",
-    "rect",
-    "circle",
-    "ellipse",
-    "line",
-    "polyline",
-    "polygon",
-    "linearGradient",
-    "radialGradient",
-    "stop",
-    "title",
-    "desc",
-    "metadata",
-    "style",
-    "clipPath",
-    "mask",
-    "pattern",
-    "marker",
-    "filter",
-];
-
-/// Filter primitives cheap per pixel (a drop shadow's parts), and
-/// `feMerge`'s inputs.
-const PROFILE_FILTERS: &[&str] = &[
-    "feGaussianBlur",
-    "feOffset",
-    "feFlood",
-    "feColorMatrix",
-    "feComposite",
-    "feBlend",
-    "feDropShadow",
-    "feMerge",
-];
-
-/// Elements drawn as nothing, their contents unread: usvg's text support is
-/// off, an `<image>` resolves to nothing (nothing outside the file is
-/// read), and usvg skips `foreignObject`.
-const IGNORED_ELEMENTS: &[&str] = &["text", "image", "foreignObject"];
-
-/// Every element usvg reads (its `EId`). Any other name it skips, subtree
-/// and all, so the profile ignores it too (an editor's `sodipodi:namedview`
-/// or `flowRoot`, `metadata`'s RDF).
-const USVG_ELEMENTS: &[&str] = &[
-    "a",
-    "circle",
-    "clipPath",
-    "defs",
-    "ellipse",
-    "feBlend",
-    "feColorMatrix",
-    "feComponentTransfer",
-    "feComposite",
-    "feConvolveMatrix",
-    "feDiffuseLighting",
-    "feDisplacementMap",
-    "feDistantLight",
-    "feDropShadow",
-    "feFlood",
-    "feFuncA",
-    "feFuncB",
-    "feFuncG",
-    "feFuncR",
-    "feGaussianBlur",
-    "feImage",
-    "feMerge",
-    "feMergeNode",
-    "feMorphology",
-    "feOffset",
-    "fePointLight",
-    "feSpecularLighting",
-    "feSpotLight",
-    "feTile",
-    "feTurbulence",
-    "filter",
-    "g",
-    "image",
-    "line",
-    "linearGradient",
-    "marker",
-    "mask",
-    "path",
-    "pattern",
-    "polygon",
-    "polyline",
-    "radialGradient",
-    "rect",
-    "stop",
-    "style",
-    "svg",
-    "switch",
-    "symbol",
-    "text",
-    "textPath",
-    "tref",
-    "tspan",
-    "use",
-];
-
-/// Elements that may be used only one level deep.
-const ONE_LEVEL: &[&str] = &["clipPath", "mask", "pattern", "marker"];
-
-fn refuse<T>(why: impl std::fmt::Display) -> Result<T, String> {
-    Err(format!("SVG refused: outside the supported profile: {why}"))
-}
-
-/// The `#id`s an element names through a property that draws another
-/// element: `clip-path`, `mask`, `filter`, the markers, `fill` and `stroke`
-/// (as attributes or in its `style`), and `href`.
-fn drawn_references<'a>(node: usvg::roxmltree::Node<'a, '_>) -> Vec<&'a str> {
-    let mut out = Vec::new();
-    for attr in node.attributes() {
-        let v = attr.value();
-        if attr.name() == "href" {
-            if let Some(id) = v.trim().strip_prefix('#') {
-                out.push(id);
-            }
-            continue;
-        }
-        let mut rest = v;
-        while let Some(at) = rest.find("url(") {
-            rest = &rest[at + 4..];
-            let inner = rest.split(')').next().unwrap_or("");
-            let id = inner
-                .trim()
-                .trim_matches(['"', '\''])
-                .trim_start_matches('#');
-            if !id.is_empty() {
-                out.push(id);
-            }
-        }
-    }
-    out
-}
-
-/// One `<style>` sheet's rules, checked against the profile: no `@` rule;
-/// selectors of type, `*`, `.class` and `#id` compounds, at most one
-/// combinator each; every `url()` naming a gradient. Returns how many
-/// selectors it holds.
-fn check_sheet(sheet: &str, ids: &HashMap<&str, usvg::roxmltree::Node>) -> Result<usize, String> {
-    // Comments out.
-    let mut css = String::with_capacity(sheet.len());
-    let mut rest = sheet;
-    while let Some(at) = rest.find("/*") {
-        css.push_str(&rest[..at]);
-        rest = match rest[at + 2..].find("*/") {
-            Some(end) => &rest[at + 2 + end + 2..],
-            None => "",
-        };
-    }
-    css.push_str(rest);
-    if css.contains('@') {
-        return refuse("a CSS @ rule");
-    }
-    let is_ident = |s: &str| {
-        !s.is_empty()
-            && s.chars()
-                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    };
-    let mut selectors = 0;
-    for rule in css.split('}') {
-        if rule.trim().is_empty() {
-            continue;
-        }
-        let Some((head, body)) = rule.split_once('{') else {
-            return refuse("malformed CSS");
-        };
-        if body.contains('{') {
-            return refuse("nested CSS");
-        }
-        for selector in head.split(',') {
-            selectors += 1;
-            let compounds: Vec<&str> = selector
-                .split(|c: char| c.is_whitespace() || matches!(c, '>' | '+' | '~'))
-                .filter(|c| !c.is_empty())
-                .collect();
-            if compounds.is_empty() || compounds.len() > 2 {
-                return refuse(format!("the CSS selector `{}`", selector.trim()));
-            }
-            for compound in compounds {
-                // An optional type or `*`, then `.class` / `#id` parts.
-                let (head, mut rest) =
-                    compound.split_at(compound.find(['.', '#']).unwrap_or(compound.len()));
-                let mut ok = head == "*" || is_ident(head) || (head.is_empty() && !rest.is_empty());
-                while ok && !rest.is_empty() {
-                    let body = &rest[1..];
-                    let end = body.find(['.', '#']).unwrap_or(body.len());
-                    ok = is_ident(&body[..end]);
-                    rest = &body[end..];
-                }
-                if !ok {
-                    return refuse(format!("the CSS selector `{}`", selector.trim()));
-                }
-            }
-        }
-        let mut rest = body;
-        while let Some(at) = rest.find("url(") {
-            rest = &rest[at + 4..];
-            let inner = rest.split(')').next().unwrap_or("");
-            let id = inner
-                .trim()
-                .trim_matches(['"', '\''])
-                .trim_start_matches('#');
-            let gradient = ids.get(id).is_some_and(|n| {
-                matches!(n.tag_name().name(), "linearGradient" | "radialGradient")
-            });
-            if !gradient {
-                return refuse("a CSS url() that names something other than a gradient");
-            }
-        }
-    }
-    Ok(selectors)
-}
-
-/// Each `id` to its **first** element, as usvg resolves a reference (a
-/// later duplicate is not the one drawn).
-fn first_ids<'a, 'i>(
-    doc: &'a usvg::roxmltree::Document<'i>,
-) -> HashMap<&'a str, usvg::roxmltree::Node<'a, 'i>> {
-    let mut ids = HashMap::new();
-    for n in doc.descendants() {
-        if let Some(id) = n.attribute("id") {
-            ids.entry(id).or_insert(n);
-        }
-    }
-    ids
-}
-
-/// Check a parsed SVG file against the profile of the module doc, before
-/// usvg reads it. Iterative; nothing here recurses.
-pub(crate) fn check_profile(doc: &usvg::roxmltree::Document) -> Result<(), String> {
-    use usvg::roxmltree::Node;
-    let ids = first_ids(doc);
-    // Every `<style>` in the document, in any namespace and inside an
-    // ignored element too: usvg reads them all (`resolve_css`).
-    let mut selectors = 0;
-    for style in doc.descendants().filter(|n| n.has_tag_name("style")) {
-        for text in style.children().filter_map(|c| c.text()) {
-            selectors += check_sheet(text, &ids)?;
-        }
-        if selectors > MAX_SELECTORS {
-            return refuse(format!("more than {MAX_SELECTORS} CSS selectors"));
-        }
-    }
-    let mut stack: Vec<Node> = vec![doc.root_element()];
-    while let Some(node) = stack.pop() {
-        if !node.is_element() {
-            continue;
-        }
-        if !matches!(node.tag_name().namespace(), None | Some(SVG_NS)) {
-            continue; // usvg does not read it.
-        }
-        let name = node.tag_name().name();
-        if IGNORED_ELEMENTS.contains(&name) || !USVG_ELEMENTS.contains(&name) {
-            continue;
-        }
-        let in_filter = node
-            .parent_element()
-            .is_some_and(|p| p.has_tag_name("filter"));
-        let in_merge = node
-            .parent_element()
-            .is_some_and(|p| p.has_tag_name("feMerge"));
-        if in_filter {
-            if !PROFILE_FILTERS.contains(&name) {
-                return refuse(format!("the filter primitive <{name}>"));
-            }
-        } else if in_merge {
-            if name != "feMergeNode" {
-                return refuse(format!("<{name}> in an feMerge"));
-            }
-        } else if !PROFILE_ELEMENTS.contains(&name) {
-            return refuse(format!("the element <{name}>"));
-        }
-        match name {
-            "filter" => {
-                if node.attribute("href").is_some() {
-                    return refuse("a filter that takes another's href");
-                }
-                let primitives = node.children().filter(|c| c.is_element()).count();
-                if primitives > MAX_FILTER_PRIMITIVES {
-                    return refuse(format!(
-                        "a filter of {primitives} primitives (at most {MAX_FILTER_PRIMITIVES})"
-                    ));
-                }
-            }
-            "feMerge" => {
-                let inputs = node.children().filter(|c| c.is_element()).count();
-                if inputs > MAX_MERGE_NODES {
-                    return refuse(format!(
-                        "an feMerge of {inputs} inputs (at most {MAX_MERGE_NODES})"
-                    ));
-                }
-            }
-            "linearGradient" | "radialGradient" => {
-                let stops = node.children().filter(|c| c.has_tag_name("stop")).count();
-                if stops > MAX_GRADIENT_STOPS {
-                    return refuse(format!(
-                        "a gradient of {stops} stops (at most {MAX_GRADIENT_STOPS})"
-                    ));
-                }
-            }
-            // Checked below, wherever it is.
-            "style" => continue,
-            _ => {}
-        }
-        if ONE_LEVEL.contains(&name) {
-            if node.attribute("href").is_some() {
-                return refuse(format!("a <{name}> that takes another's href"));
-            }
-            // Nothing it draws (following `<use>`) may use another.
-            let mut seen = std::collections::HashSet::new();
-            let mut inner: Vec<Node> = vec![node];
-            while let Some(n) = inner.pop() {
-                if !seen.insert(n.id()) || seen.len() > MAX_NODES as usize {
-                    continue;
-                }
-                for id in drawn_references(n) {
-                    let Some(&target) = ids.get(id) else { continue };
-                    if ONE_LEVEL.contains(&target.tag_name().name()) {
-                        return refuse(format!(
-                            "a <{name}> that uses a <{}>",
-                            target.tag_name().name()
-                        ));
-                    }
-                    if n.has_tag_name("use") {
-                        inner.push(target);
-                    }
-                }
-                inner.extend(n.children().filter(|c| c.is_element()));
-            }
-        }
-        stack.extend(node.children());
-    }
-    Ok(())
-}
-
-/// Walk the parsed XML as usvg will expand it (see the module doc): refuse a
-/// file whose expanded depth passes [`MAX_DEPTH`] or whose element count
-/// passes [`MAX_NODES`]. Memoised per element, and its own recursion stops at
-/// [`MAX_DEPTH`].
-fn check_expansion(doc: &usvg::roxmltree::Document) -> Result<(), String> {
-    use usvg::roxmltree::{Node, NodeId};
-    type Memo = HashMap<NodeId, Option<(u64, usize)>>;
-    fn too_deep<T>() -> Result<T, String> {
-        Err(format!(
-            "SVG refused: nested more than {MAX_DEPTH} deep once its references are expanded"
-        ))
-    }
-    fn expand<'a, 'i>(
-        ids: &HashMap<&'a str, Node<'a, 'i>>,
-        sheet: &[(&'a str, bool)],
-        memo: &mut Memo,
-        node: Node<'a, 'i>,
-        depth: usize,
-    ) -> Result<(u64, usize), String> {
-        if depth > MAX_DEPTH {
-            return too_deep();
-        }
-        match memo.get(&node.id()) {
-            Some(Some((count, height))) => {
-                return if depth + height > MAX_DEPTH {
-                    too_deep()
-                } else {
-                    Ok((*count, *height))
-                };
-            }
-            // A reference cycle: usvg drops it.
-            Some(None) => return Ok((0, 0)),
-            None => {}
-        }
-        memo.insert(node.id(), None);
-        let (mut count, mut height) = (1u64, 0usize);
-        let refs: Vec<(Node<'a, 'i>, u64)> = references(node, sheet)
-            .into_iter()
-            .filter_map(|(id, n)| ids.get(id).map(|&t| (t, n)))
-            .collect();
-        let children = node.children().filter(|c| c.is_element()).map(|c| (c, 1));
-        for (target, copies) in refs.into_iter().chain(children) {
-            let (c, h) = expand(ids, sheet, memo, target, depth + 1)?;
-            count = count.saturating_add(c.saturating_mul(copies));
-            height = height.max(h + 1);
-            if count > MAX_NODES {
-                return Err(format!(
-                    "SVG refused: it expands to more than {MAX_NODES} elements"
-                ));
-            }
-        }
-        memo.insert(node.id(), Some((count, height)));
-        Ok((count, height))
-    }
-    let ids = first_ids(doc);
-    let sheet = sheet_references(doc);
-    expand(&ids, &sheet, &mut Memo::new(), doc.root_element(), 0).map(|_| ())
+/// The document usvg is given for an SVG file's bytes (a test's view of
+/// `svg_sanitize`), or why it is refused.
+#[doc(hidden)]
+pub fn sanitized_text(bytes: &[u8]) -> Result<String, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+    prescan(bytes)?;
+    let doc = usvg::roxmltree::Document::parse_with_options(
+        text,
+        usvg::roxmltree::ParsingOptions {
+            allow_dtd: true,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    crate::svg_sanitize::sanitize(&doc)
 }
 
 /// Run `f`, turning a panic into an error naming `what`: usvg and resvg are
@@ -1042,7 +581,7 @@ fn natural_length(value: Option<&str>) -> Option<f32> {
 
 /// Parse an SVG file. Fails on bytes that are not UTF-8 or not a well-formed
 /// SVG document, whose size cannot be resolved, or that pass a limit of the
-/// module doc ([`prescan`], `check_expansion`); and if usvg panics.
+/// module doc ([`prescan`], `svg_sanitize`); and if usvg panics.
 pub fn decode_svg(bytes: &[u8]) -> Result<VectorImage, String> {
     guarded("SVG parsing", || decode_svg_unguarded(bytes))
 }
@@ -1062,8 +601,6 @@ fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
     if root.tag_name().name() != "svg" {
         return Err("Failed to parse SVG: the root element is not <svg>".into());
     }
-    check_profile(&doc)?;
-    check_expansion(&doc)?;
     // What roxmltree actually expanded: the text and attribute values it
     // holds, which entities can only have grown, bounded by the file plus
     // the entity allowance (a check of the prescan by roxmltree's own
@@ -1102,7 +639,11 @@ fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
         (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some(w / h),
         _ => view_box.map(|(vb, _)| (vb.w / vb.h) as f32),
     };
+    // What usvg reads: not the file, but the document rebuilt from it within
+    // the profile (`svg_sanitize`), so the checks and usvg read one document.
+    let sanitized = crate::svg_sanitize::sanitize(&doc)?;
     drop(doc);
+    let text = sanitized.as_str();
 
     let options = usvg::Options {
         resources_dir: None,

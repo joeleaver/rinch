@@ -76,22 +76,31 @@ editor's `sodipodi:namedview` or Inkscape's `flowRoot`.
 
 **`<style>` sheets** may hold rules whose selectors are a type, `*`, `.class`
 or `#id` (or several together, `rect.a#b`), comma-separated, with at most one
-combinator (`g rect`, `g > .a`), and whose `url(…)`s name a gradient.
+combinator (`g rect`, `g > .a`, `a + b`, `a ~ b`). rinch applies them itself,
+by specificity and order, between the presentation attributes and the
+element's `style=""` (`!important` honoured).
+
+**References** (`href`, and `url(#…)` in `fill`, `stroke`, `clip-path`,
+`mask`, `filter` and the markers) resolve as Chrome 156 resolves them: to
+the first element with that id **of the kind the property takes**, and a
+reference to nothing of that kind is ignored (a `fill` falls back to its
+fallback colour, or `none`; a missing clip path, mask or filter draws the
+element unclipped, unmasked, unfiltered). An `href` is read only on `<use>`
+and on a gradient (to inherit another's stops).
 
 **Refused, and why:**
 - Any other element an SVG renderer would draw: the other filter primitives
   (`feTurbulence`, `feMorphology`, `feConvolveMatrix`, the lighting filters,
   `feDisplacementMap`, `feTile`, `feImage`, `feComponentTransfer`), each of
   which can cost seconds per frame from a file of a few hundred bytes.
-- A `clipPath`, `mask`, `pattern` or `marker` that itself uses one, or that
-  takes another's `href`. A chain of masks is a full-size layer per link.
-- A filter that takes another's `href`, a filter of more than 6
-  primitives, an `feMerge` of more than 8 inputs, or a gradient of more than
+- A `clipPath`, `mask`, `pattern` or `marker` that itself uses one (an
+  `href` on one of them is ignored). A chain of masks is a full-size layer
+  per link.
+- A filter of more than 6 primitives, an `feMerge` of more than 8 inputs, or a gradient of more than
   64 stops.
 - In `<style>`: an `@` rule (`@media`, `@import`), a pseudo-class, an
-  attribute selector, more than one combinator, a `url()` naming anything but
-  a gradient, more than 1,024 selectors. A long descendant chain makes the
-  matcher backtrack for seconds.
+  attribute selector, more than one combinator, more than 1,024 selectors.
+  A long descendant chain makes a matcher backtrack for seconds.
 - A doctype whose internal subset holds anything but flat
   `<!ENTITY name "value">` declarations, each name once. Illustrator's
   `&ns_svg;` entities are fine; an entity that refers to another is not.

@@ -537,14 +537,15 @@ fn stylesheet_references_are_counted_before_usvg_expands_them() {
     let d: String = (0..5000)
         .map(|i| format!(" L{} {}", i % 100, i / 100))
         .collect();
-    // In a stylesheet: a CSS url() may name only a gradient.
+    // In a stylesheet.
     let svg = format!(
         r#"<svg {NS} width="100" height="100"><style>path {{ marker-mid: url(#m) }}</style><marker id="m">{rects}</marker><path d="M0 0{d}" stroke="black"/></svg>"#
     );
     let err = quick(300, || {
         decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
     });
-    assert!(err.contains("profile"), "{err}");
+    // Inlined onto the path, and counted per vertex like an attribute.
+    assert!(err.contains("expands to"), "{err}");
     // As an attribute: within the profile, but counted per vertex before
     // usvg built anything (usvg's own count says "built").
     let svg = format!(
@@ -571,6 +572,29 @@ fn svg_corpus_probe() {
     let mut by: BTreeMap<String, (u32, u32, u32, u32)> = BTreeMap::new();
     let mut reasons: BTreeMap<(String, String), u32> = BTreeMap::new();
     let mut slowest = (Duration::ZERO, String::new());
+    // Sanitized vs original, both through usvg and resvg at 48x48: files
+    // identical, within 2 levels, and the worst differences.
+    let (mut same, mut close, mut worst) = (0u32, 0u32, Vec::<(u8, usize, String)>::new());
+    let render = |text: &str| -> Option<Vec<u8>> {
+        use resvg::{tiny_skia, usvg};
+        let options = usvg::Options {
+            default_size: usvg::Size::from_wh(300.0, 150.0)?,
+            image_href_resolver: usvg::ImageHrefResolver {
+                resolve_data: Box::new(|_, _, _| None),
+                resolve_string: Box::new(|_, _| None),
+            },
+            ..usvg::Options::default()
+        };
+        let tree = usvg::Tree::from_str(text, &options).ok()?;
+        let size = tree.size();
+        let mut pixmap = tiny_skia::Pixmap::new(48, 48)?;
+        resvg::render(
+            &tree,
+            tiny_skia::Transform::from_scale(48.0 / size.width(), 48.0 / size.height()),
+            &mut pixmap.as_mut(),
+        );
+        Some(pixmap.take())
+    };
     for line in list.lines() {
         let Some((label, path)) = line.split_once('\t') else {
             continue;
@@ -586,6 +610,22 @@ fn svg_corpus_probe() {
                     entry.0 += 1;
                 } else {
                     entry.3 += 1;
+                }
+                let original = std::str::from_utf8(&bytes).ok().and_then(render);
+                let rebuilt = svg_image::sanitized_text(&bytes)
+                    .ok()
+                    .and_then(|t| render(&t));
+                if let (Some(a), Some(b)) = (original, rebuilt) {
+                    let diffs: Vec<u8> = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).collect();
+                    let max = diffs.iter().copied().max().unwrap_or(0);
+                    let count = diffs.iter().filter(|d| **d > 2).count();
+                    if max == 0 {
+                        same += 1;
+                    } else if max <= 2 {
+                        close += 1;
+                    } else {
+                        worst.push((max, count, path.to_string()));
+                    }
                 }
             }
             Err(e) => {
@@ -615,6 +655,14 @@ fn svg_corpus_probe() {
         eprintln!("  {n:5} {label}: {why}");
     }
     eprintln!("slowest: {:?} {}", slowest.0, slowest.1);
+    worst.sort_by_key(|w| std::cmp::Reverse((w.1, w.0)));
+    eprintln!(
+        "rebuilt vs original at 48x48: {same} identical, {close} within 2 levels, {} differ",
+        worst.len()
+    );
+    for (max, count, path) in worst.iter().take(25) {
+        eprintln!("  max {max}, {count} channels over 2: {path}");
+    }
 }
 
 // ---- Third review of #2125, and the profile that answers it (Joe,
@@ -738,24 +786,12 @@ fn the_profile_refuses_what_it_does_not_list() {
         ("attribute selector", "<style>rect[x] { fill: red }</style>"),
         ("two combinators", "<style>svg g rect { fill: red }</style>"),
         (
-            "css url to a mask",
-            r#"<mask id="m"/><style>rect { mask: url(#m) }</style>"#,
-        ),
-        (
             "style hidden in an ignored element",
             "<foreignObject><style>x * * * * * { fill: red }</style></foreignObject>",
         ),
         (
             "too many primitives",
             r#"<filter id="f"><feOffset/><feOffset/><feOffset/><feOffset/><feOffset/><feOffset/><feOffset/></filter>"#,
-        ),
-        (
-            "filter href",
-            r##"<filter id="f"/><filter id="g" href="#f"/>"##,
-        ),
-        (
-            "pattern href",
-            r##"<pattern id="p"/><pattern id="q" href="#p"/>"##,
         ),
         (
             "a pattern using a clip",
@@ -766,10 +802,6 @@ fn the_profile_refuses_what_it_does_not_list() {
             r##"<pattern id="p"/><rect id="r" fill="url(#p)"/><marker id="m"><use href="#r"/></marker>"##,
         ),
         ("tref", "<tref/>"),
-        (
-            "a css url to an id whose first element is a mask",
-            r#"<mask id="m"/><linearGradient id="m"/><style>rect { fill: url(#m) }</style>"#,
-        ),
     ] {
         let svg = wrap(body);
         let err = quick(300, || {
@@ -898,17 +930,161 @@ fn every_known_attack_is_refused_quickly() {
         ("stops", r3_stops(1900, 8), 100.0),
         ("merge", r3_merge(250), 100.0),
         (
+            "a marker on unseparated path data",
+            format!(
+                r##"<svg {NS} viewBox="0 0 100 100"><marker id="mk"><path id="q" d="M0 0h1v1z"/>{}</marker><path d="M0 0{}" marker-mid="url(#mk)"/></svg>"##,
+                r##"<use href="#q"/>"##.repeat(64),
+                "l.1.1".repeat(4096)
+            ),
+            100.0,
+        ),
+        (
+            "a filter inside <image>",
+            format!(
+                r#"<svg {NS} viewBox="0 0 100 100"><image><filter id="f"><feTurbulence numOctaves="64"/></filter></image><rect width="100" height="100" filter="url(#f)"/></svg>"#
+            ),
+            -1.0,
+        ),
+        (
             "morphology",
             filtered(r#"<feMorphology radius="50"/>"#, 100),
             256.0,
         ),
     ];
     for (name, svg, size) in cases {
+        // A negative size: drawn, harmlessly, at 1200x800 (the attack is
+        // defused rather than refused).
         let r = on_small_stack(move || {
             let t = Instant::now();
-            (refused(&svg, size), t.elapsed())
+            let refused = if size < 0.0 {
+                let _ = decode_svg(svg.as_bytes()).map(|v| v.raster(1200.0, 800.0));
+                true
+            } else {
+                refused(&svg, size)
+            };
+            (refused, t.elapsed())
         });
         assert!(r.0, "{name} was drawn");
         assert!(r.1 < Duration::from_millis(300), "{name}: {:?}", r.1);
+    }
+}
+
+// ---- Fourth review of #2125: the checker and usvg read the original text
+// two ways, and each difference was a bypass. usvg now reads only the
+// document `svg_sanitize` rebuilds. These pin the three inputs and what the
+// rebuild does with references.
+
+fn sanitized(svg: &str) -> String {
+    svg_image::sanitized_text(svg.as_bytes()).expect("within the profile")
+}
+
+/// r4-1: a filter inside `<image>` (233 B, 3.72 s at 1200x800): the
+/// checker skipped the `<image>`, usvg still read its children's ids. The
+/// `<image>` is left out of the rebuilt document, so `url(#f)` names nothing
+/// and the rect draws unfiltered.
+#[test]
+fn a_filter_inside_an_ignored_element_is_not_reachable() {
+    let svg = format!(
+        r#"<svg {NS} viewBox="0 0 100 100" width="100" height="100"><image><filter id="f"><feTurbulence baseFrequency="0.05" numOctaves="64"/></filter></image><rect width="100" height="100" filter="url(#f)"/></svg>"#
+    );
+    let out = sanitized(&svg);
+    assert!(
+        !out.contains("filter") && !out.contains("Turbulence"),
+        "{out}"
+    );
+    let v = decode_svg(svg.as_bytes()).unwrap();
+    assert!(quick(300, || v.raster(1200.0, 800.0)).is_some());
+}
+
+/// r4-2: duplicate ids with decoys. usvg resolved `url()` to the last
+/// element with an id and `<use>` to the first; the checker took the first,
+/// so a 512-deep mask chain passed it (51 KB; 2.5 s, 1.3 GB). The rebuilt
+/// document gives every element its own id and every reference rewritten
+/// to the element this module resolved, so the chain is what the check sees.
+#[test]
+fn duplicate_ids_cannot_hide_a_chain() {
+    let n = 512;
+    let decoys: String = (1..=n).map(|i| format!(r#"<g id="m{i}"/>"#)).collect();
+    let masks: String = (0..n)
+        .map(|i| {
+            format!(
+                r#"<mask id="m{i}" mask="url(#m{})"><rect width="100" height="100" fill="white"/></mask>"#,
+                i + 1
+            )
+        })
+        .collect();
+    // Decoys first or last, each reference resolves to the first element
+    // of the kind it wants, in a document where every id is unique: the
+    // chain is what the check sees, and it is refused either way.
+    for svg in [
+        format!(
+            r#"<svg {NS} viewBox="0 0 100 100" width="100" height="100"><defs>{decoys}{masks}</defs><rect width="100" height="100" mask="url(#m0)"/></svg>"#
+        ),
+        format!(
+            r#"<svg {NS} viewBox="0 0 100 100" width="100" height="100"><defs>{masks}{decoys}</defs><rect width="100" height="100" mask="url(#m0)"/></svg>"#
+        ),
+    ] {
+        let err = quick(300, || {
+            decode_svg(svg.as_bytes()).map(|_| ()).expect_err("a chain")
+        });
+        assert!(err.contains("uses a <mask>"), "{err}");
+    }
+}
+
+/// r4-3: a marker on path data written without separators (`.1.1.1…`)
+/// that the checker read as 2 vertices (4,096 real; usvg spent 2.39 s and
+/// 873 MB before the tally refused it). Vertices are counted from the path
+/// data as rewritten, so it is refused before usvg runs.
+#[test]
+fn markers_are_counted_on_the_real_vertices() {
+    let uses: String = r##"<use href="#q"/>"##.repeat(64);
+    let d = format!("M0 0{}", "l.1.1".repeat(4096));
+    let svg = format!(
+        r##"<svg {NS} viewBox="0 0 100 100" width="100" height="100"><marker id="mk" markerWidth="3" markerHeight="3" overflow="visible"><path id="q" d="M0 0h1v1z"/>{uses}</marker><path d="{d}" marker-mid="url(#mk)" stroke="black"/></svg>"##
+    );
+    let err = quick(300, || {
+        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
+    });
+    assert!(err.contains("expands to"), "{err}");
+    // `h`/`v` count one vertex each, not half.
+    // 1,200 real vertices, 600 by the old reckoning: under the limit then.
+    let d = format!("M0 0{}", "h1v1".repeat(600));
+    let svg = format!(
+        r##"<svg {NS} viewBox="0 0 100 100"><marker id="mk"><path id="q" d="M0 0h1v1z"/>{uses}</marker><path d="{d}" marker-mid="url(#mk)"/></svg>"##
+    );
+    let err = quick(300, || {
+        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
+    });
+    assert!(err.contains("expands to"), "{err}");
+}
+
+/// References the rebuilt document cannot resolve to an emitted element of
+/// the right kind are dropped (a paint falls back, or is `none`), and an
+/// `href` on anything but `<use>` and a gradient is left out.
+#[test]
+fn unresolved_references_are_dropped() {
+    let out = sanitized(&format!(
+        r##"<svg {NS} viewBox="0 0 10 10"><mask id="m"/><linearGradient id="m"><stop/></linearGradient><filter id="f"/><filter id="g" href="#f"/><pattern id="p"/><pattern id="q" href="#p"/><style>rect {{ mask: url(#m) }}</style><rect width="10" height="10" fill="url(#m) red" stroke="url(#nowhere)"/></svg>"##
+    ));
+    // `m` is a mask and a gradient: the fill (a paint server) reaches the
+    // gradient, the CSS mask the mask, as Chrome 156 resolves each (its
+    // first element of the kind). `nowhere` is nothing: the stroke is none.
+    assert!(out.contains("fill=\"url(#i2) #ff0000\""), "{out}");
+    assert!(out.contains("mask=\"url(#i1)\""), "{out}");
+    assert!(out.contains("stroke=\"none\""), "{out}");
+    assert!(!out.contains("href"), "{out}");
+    assert!(!out.contains("<style"), "{out}");
+}
+
+/// Print the rebuilt document for `RINCH_SVG_DUMP=<file>` (a debugging aid).
+#[test]
+#[ignore = "a debugging aid"]
+fn svg_sanitize_dump() {
+    if let Ok(path) = std::env::var("RINCH_SVG_DUMP") {
+        let bytes = std::fs::read(path).unwrap();
+        eprintln!(
+            "{}",
+            svg_image::sanitized_text(&bytes).unwrap_or_else(|e| e)
+        );
     }
 }

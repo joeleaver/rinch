@@ -83,48 +83,57 @@ drawn size is rasterised on the UI thread inside the paint that needs it. Measur
 each spanning the canvas 0.65 s (1.8 s). Moving that onto the native load threads would
 need a request per size and a frame drawn without the picture (or with a stale raster)
 meanwhile; not done. A size that keeps changing (a window resize under `background-size:
-cover`, a transform animated in scale) rasterises at each new size. **The profile** (Joe, after three adversarial reviews of
-#2125 broke a cost estimate each time; `svg_image::check_profile`, run after roxmltree parses
-and before usvg does). An SVG file is drawn only if everything in it is inside an allowlist;
-anything else refuses the file whole, with one logged reason. The user guide's "The SVG
-profile" is the exact list; the constants are `MAX_GRADIENT_STOPS` (64),
-`MAX_FILTER_PRIMITIVES` (6, Inkscape's drop shadow is 5), `MAX_MERGE_NODES` (8) and
-`MAX_SELECTORS` (1,024). Mechanism notes:
-- **Elements.** `PROFILE_ELEMENTS` and, under a `filter`, `PROFILE_FILTERS`. `IGNORED_ELEMENTS`
-  (`text`, `image`, `foreignObject`) are skipped with their contents, as are elements outside
-  the SVG namespace and names usvg does not know (`USVG_ELEMENTS` is usvg's `EId` list; usvg
-  skips any other name with its subtree, `parse_xml_node`). Ignoring rather than refusing
-  those was the one widening the corpus asked for: Inkscape files carry
-  `sodipodi:namedview`, `flowRoot` and RDF metadata.
-- **One level.** A `clipPath`, `mask`, `pattern` or `marker` (`ONE_LEVEL`) may not, in itself
-  or anything it draws (following `<use>`), name another through `clip-path`, `mask`,
-  `filter`, `fill`, `stroke`, the markers or `href`, and may not take an `href` itself.
-- **CSS.** usvg reads every `<style>` in the document wherever it is (`resolve_css`), so the
-  check does too, inside ignored elements included. `check_sheet` takes comments out, refuses
-  any `@`, and allows compounds of an optional type or `*` and `.class`/`#id` parts, at most
-  two compounds a selector; a `url()` must name a gradient, so nothing that draws another
-  element can come from a stylesheet. simplecss's descendant matching backtracks (`x * * * *
-  *` over 100 nested groups took over 10 s inside usvg's parse).
-- **Ids** resolve to their **first** element, as usvg's do (`first_ids`): a later duplicate
-  is not the one drawn.
-- **The doctype** keeps the strict grammar of round 2 (`read_doctype`), and the expansion
-  checks of round 1 (`prescan`, `check_expansion`, `Tally`) still run: nesting at most
-  `MAX_DEPTH` (128) as written and expanded, at most `MAX_NODES` (100,000) elements,
-  entities at most `MAX_ENTITY_EXPANSION` (1 MB).
-- **Per raster:** each pattern tile at most `MAX_RASTER_PX` device pixels (`Tally::max_tile`:
-  the tile rect under the path's and pattern's transforms; a 16384-px tile allocated 1.05 GB at
-  a 100x100 draw), each isolated layer at most `MAX_LAYER_PX` (16M px), and the work budget
-  `MAX_RASTER_WORK` (1e9) as a backstop: bounding-box area painted, `WORK_PER_ELEMENT` (1e4),
-  `WORK_PER_DASH` (100), and per pixel of a filter's region 60 for a box blur (any deviation),
-  250 for an IIR blur (both deviations under 2) or a drop shadow, 20 for the rest.
-- **The real-file pass rate** comes from `svg_image_limits_2111_tests::svg_corpus_probe`
-  (`RINCH_SVG_CORPUS`, a `label\tpath` list): 11,840 of 11,843 drew (Tabler 5,986/5,986,
-  Breeze 2,206/2,206, Oxygen and the rest 1,325/1,325, Adwaita 699/699, Inkscape files
-  530/530, Illustrator 7/7, hicolor 58/59, wallpapers 10/10, npm package SVGs 61/63). The three
-  refusals: two `@media` rules, one mask that uses a clip path.
-- Pins: `svg_image_limits_2111_tests.rs` (every input of the three reviews refused within
-  300 ms; the profile's refusals; ignored elements; real-world Tabler, Breeze, Inkscape and
-  Illustrator shapes drawing).
+cover`, a transform animated in scale) rasterises at each new size. **The profile, enforced by rebuilding the file** (`svg_sanitize.rs`). Three reviews of
+#2125 broke a cost estimate; Joe chose an allowlist; a fourth broke the allowlist checker,
+because it read roxmltree's tree while usvg read the same text its own way (usvg's parser
+recurses into an `<image>`'s children and indexes their ids; its `url()` links take the
+**last** element with an id and its `<use>` map the first; a path tokeniser that split on
+anything but digits and `.` read `.1.1.1…` as one number). So usvg no longer reads the file:
+`svg_sanitize::sanitize` builds a new document from roxmltree's reading and usvg parses that
+text. Every check runs on the document usvg reads.
+- **Elements**: `KEPT` and, under a `filter`, `FILTERS` (and `feMergeNode` under `feMerge`).
+  `DROPPED` (`text`, `image`, `foreignObject`, `style`, `title`, `desc`, `metadata`), other
+  namespaces and names not in `USVG_ELEMENTS` are left out **with their children**, so
+  nothing inside them can be referenced. Any other `USVG_ELEMENTS` name refuses the file.
+  Counts as before: `MAX_GRADIENT_STOPS` (64), `MAX_FILTER_PRIMITIVES` (6),
+  `MAX_MERGE_NODES` (8), `MAX_SELECTORS` (1,024).
+- **Ids and references**: each id maps to the emitted elements carrying it in document order;
+  a reference (`Want`: paint server, gradient, clip path, mask, filter, marker, drawable for
+  `<use>`) resolves to the **first of the kind it wants** (Chrome 156 takes the first element;
+  a file reusing an id for a path and its gradient means the gradient). Unresolved: dropped (a
+  paint takes its fallback or `none`). Chrome 156 measured: a dangling `clip-path`, `mask` or
+  `filter` draws the element as if none; a duplicate gradient id is the first. usvg on the raw
+  file hides an element with a dangling clip path and takes the last duplicate, so these files
+  now draw as Chrome draws them. The output renames every referenced element `i<n>`; no two
+  elements share an id. `href` is kept on `<use>` and gradients only.
+- **CSS is inlined**, not re-serialized (chosen because it also removes usvg's CSS parse and
+  match, which issue 1 of round 3 lived in): rules (the round-3 selector forms) are matched
+  against the original tree (`selector_matches`, at most `MAX_MATCH_STEPS` = 20M steps) and
+  applied by `(origin, !important, specificity, order)` between the presentation attributes
+  and `style=""`; the result is written as attributes. No `<style>` or `class` reaches usvg.
+- **Values** are re-emitted from their parse: path data through svgtypes'
+  `SimplifyingPathParser` (absolute M/L/C/Q/Z; arcs become curves, as usvg makes them; the
+  segment count is the vertex count markers are charged on), points, transforms (`matrix`),
+  lengths, colours (`#rrggbb` or `rgba`), paints, number lists, exact numbers (shortest
+  round-trip, no exponent); keywords and filter result names from a safe character set. Only
+  attributes in no namespace are read (an editor's `sodipodi:cx` is not `cx`). Properties and
+  attributes outside `property_kind`/`attribute_kind` are dropped.
+- **Counts on the rebuilt document** (`expansion`): `<use>` copies its target, a marker counts
+  its content times the vertices below the element it is set on (inherited markers are charged
+  where set); clip paths, masks, patterns, filters and gradients are shared (usvg keeps one
+  copy). Depth at most `MAX_DEPTH` (128), elements at most `MAX_NODES` (100,000). One level:
+  nothing a clip path, mask, pattern or marker draws (following `<use>`) uses another. Still in
+  place: the strict doctype grammar, the entity bound, the post-build `Tally`, the tile, layer
+  and raster caps, the work budget, `catch_unwind`.
+- **Rendering unchanged for good files**: `svg_corpus_probe` renders each corpus file both ways
+  (usvg on the original, usvg on the rebuilt text, 48x48): 10,867 of 10,882 drawn files are
+  pixel-identical, 1 within 2 levels, 3 within AA noise (max 16 on at most 4 channels), and 11
+  differ where the original had dangling references (10 Breeze colour icons, an Oxygen cursor)
+  or a duplicate gradient id (a Breeze weather icon), now drawn as Chrome draws them. The
+  real-file pass rate is unchanged: 11,840 of 11,843 (99.97%).
+- Pins: `svg_image_limits_2111_tests.rs` (the inputs of all four reviews refused or defused
+  within 300 ms; references dropped and resolved; the profile's refusals; real-world shapes)
+  and `svg_sanitize::tests` (vertex counting, duplicate ids, ignored subtrees, CSS cascade).
 
 Parsing and rasterising run under `catch_unwind` (`guarded`;
 a raster that panicked marks the image broken). Native load threads have an 8 MB stack.
