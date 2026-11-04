@@ -504,12 +504,17 @@ impl RinchDocument {
                 loop {
                     let absolutes = self.resolve_ancestor_absolutes(false) || rebaked;
                     rebaked = false;
-                    let calcs = self.resolve_layout_calcs();
+                    let (calcs, calcs_in_atomic) = self.resolve_layout_calcs();
                     if !absolutes && !calcs {
                         break;
                     }
-                    if absolutes {
-                        self.tree.perf.bump(Counter::AbsContainingBlockPasses);
+                    // A rewritten calc inside an atomic inline is in that box's
+                    // own detached compute too (#2136): the same re-measure.
+                    if absolutes || calcs_in_atomic {
+                        if absolutes {
+                            self.tree.perf.bump(Counter::AbsContainingBlockPasses);
+                        }
+
                         // A re-baked box inside an atomic inline is in that box's own
                         // detached compute, which the root compute does not reach.
                         self.remeasure_dirty_atomic_inlines();
@@ -520,7 +525,7 @@ impl RinchDocument {
                     text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
                     // The re-measure above sized a percentage atomic inline with no
                     // containing block, as the pass before the first compute does.
-                    if absolutes {
+                    if absolutes || calcs_in_atomic {
                         let mut inline_rounds_left = crate::ifc::MAX_INLINE_ROUNDS;
                         while inline_rounds_left > 0 && self.resolve_percentage_inline_blocks() {
                             text_layout_cache = self.run_taffy_compute(root_taffy, available_space);

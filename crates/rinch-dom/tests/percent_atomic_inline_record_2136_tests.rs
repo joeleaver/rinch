@@ -200,10 +200,13 @@ fn a_changed_percentage_at_an_unchanged_block_width_is_resolved_again() {
     assert_matches_fresh(&d, &fresh, "max-width 100% -> 50%, width 50% -> 25%");
 }
 
-/// A change elsewhere leaves every percentage box at the size it was resolved
-/// to — the record is what is served, and it must be the right size.
+/// A change elsewhere leaves every percentage box at the size it was
+/// resolved to, and lays none of them out again: the record is what is served
+/// (`inline_block_computes` stays 0 — on main, each of the pill and the two
+/// `width: 50%` boxes was laid out again), and it must be the right size.
 #[test]
 fn an_unrelated_change_keeps_every_percentage_box_at_its_resolved_size() {
+    use rinch_dom::perf::Counter::InlineBlockComputes;
     let mut d = build("300px", LONG);
     let before: Vec<_> = [d.pill, d.half, d.chip]
         .iter()
@@ -213,7 +216,15 @@ fn an_unrelated_change_keeps_every_percentage_box_at_its_resolved_size() {
     let other = el(&mut d.doc, body, "div", "");
     let t = text(&mut d.doc, other, "elsewhere");
     settle(&mut d.doc);
+    d.doc.tree.perf.reset();
     d.doc.set_text_content(t, "elsewhere, changed");
+    d.doc.resolve_layout(VP.0, VP.1);
+    let s = d.doc.tree.perf.end_frame();
+    assert_eq!(
+        s.get(InlineBlockComputes),
+        0,
+        "no percentage box is laid out again for a change elsewhere"
+    );
     settle(&mut d.doc);
     let after: Vec<_> = [d.pill, d.half, d.chip]
         .iter()
@@ -222,21 +233,72 @@ fn an_unrelated_change_keeps_every_percentage_box_at_its_resolved_size() {
     assert_eq!(before, after);
 }
 
-/// A percentage box taken out and put back in another block of a different
-/// width is resolved there, not served the old block's answer.
+/// A percentage box moved to another block of the **same** width, whose
+/// inherited `font-size` is twice as large: the block width alone would
+/// match the record, so only the move's `auto` measure dropping it makes the
+/// pill wrap its (now wider) text again. Compared with the pill laid out
+/// fresh in that block.
 #[test]
-fn a_percentage_box_moved_to_another_block_is_resolved_against_it() {
+fn a_percentage_box_moved_to_a_same_width_block_is_resolved_again() {
     let mut d = build("300px", LONG);
     let body = d.doc.body();
     let other = el(&mut d.doc, body, "div", "cb");
-    d.doc.set_style(other, "width", "100px");
+    d.doc.set_style(other, "font-size", "32px");
     settle(&mut d.doc);
-    assert_eq!(size(&d.doc, d.pill).0, 300.0);
+    let small = size(&d.doc, d.pill);
+    assert_eq!(small.0, 300.0, "capped in the 16px block");
     d.doc.append_child(other, d.pill);
     settle(&mut d.doc);
-    assert_eq!(
-        size(&d.doc, d.pill).0,
-        100.0,
-        "max-width: 100% of the 100px block it moved to"
+
+    let mut fresh = RinchDocument::new();
+    fresh.load_css(CSS);
+    let fbody = fresh.body();
+    let fcb = el(&mut fresh, fbody, "div", "cb");
+    fresh.set_style(fcb, "font-size", "32px");
+    let fpill = el(&mut fresh, fcb, "span", "pill");
+    text(&mut fresh, fpill, &"word ".repeat(LONG));
+    settle(&mut fresh);
+    let want = size(&fresh, fpill);
+    assert_eq!(want.0, 300.0, "positive control: capped in the 32px block");
+    assert!(
+        want.1 > small.1,
+        "positive control: twice the font wraps to more lines ({want:?} vs {small:?})"
     );
+    assert_eq!(
+        size(&d.doc, d.pill),
+        want,
+        "the moved pill vs a fresh layout"
+    );
+}
+
+/// A `calc()` size inside a percentage box, resolved against the box's own
+/// width (review of #2136): `resolve_layout_calcs` rewrites the child's
+/// Taffy style after the root compute, which never reaches the box's
+/// detached subtree, so the box is laid out again around it. With the
+/// record and nothing else the child stayed at its `calc` seed (10px), and a
+/// narrower block left it at its old width; before the record it was right
+/// one layout late.
+#[test]
+fn a_calc_child_inside_a_percentage_box_follows_the_box() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(CSS);
+    doc.load_css(".c { display: block; width: calc(50% + 10px); height: 5px }");
+    let body = doc.body();
+    let cb = el(&mut doc, body, "div", "cb");
+    let half = el(&mut doc, cb, "span", "half");
+    doc.set_style(half, "height", "auto");
+    let c = el(&mut doc, half, "div", "c");
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(size(&doc, half).0, 150.0);
+    assert_eq!(
+        size(&doc, c).0,
+        85.0,
+        "50% of 150px + 10px, on the first layout"
+    );
+    doc.set_style(cb, "width", "200px");
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(size(&doc, half).0, 100.0);
+    assert_eq!(size(&doc, c).0, 60.0, "50% of 100px + 10px");
+    settle(&mut doc);
+    assert_eq!(size(&doc, c).0, 60.0, "and it stays");
 }

@@ -267,8 +267,18 @@ impl RinchDocument {
     /// Resolve every `Calc` layout value against the sizes the last Taffy
     /// compute produced, writing resolved lengths into the Taffy styles.
     /// Returns whether anything changed — the caller re-runs the compute
-    /// until this answers `false` (see `resolve_layout`).
-    pub(crate) fn resolve_layout_calcs(&mut self) -> bool {
+    /// until this answers `false` (see `resolve_layout`) — and whether a
+    /// changed one is inside an atomic inline.
+    ///
+    /// Such a box is laid out by its own detached compute, which the root
+    /// compute does not reach, so each atomic inline around a rewritten node
+    /// is queued for `remeasure_dirty_atomic_inlines` here (which also drops
+    /// what `resolve_percentage_inline_blocks` recorded for it, #2136), and
+    /// the caller runs that and the percentage pass, as it does for a re-baked
+    /// absolute box. Before #2136 the box was left as it was, and only the
+    /// percentage pass's re-layout of every percentage box on every pass
+    /// corrected it — one layout late.
+    pub(crate) fn resolve_layout_calcs(&mut self) -> (bool, bool) {
         let mut targets: Vec<(RawNodeId, taffy::NodeId)> = Vec::new();
         for (id, node) in &self.tree.nodes {
             if let Some(taffy_id) = node.taffy_id
@@ -278,10 +288,11 @@ impl RinchDocument {
             }
         }
         if targets.is_empty() {
-            return false;
+            return (false, false);
         }
 
         let mut changed = false;
+        let mut in_atomic = false;
         for (id, taffy_id) in targets {
             let before = match self.tree.taffy.style(taffy_id) {
                 Ok(s) => s.clone(),
@@ -292,9 +303,23 @@ impl RinchDocument {
             if before != ts {
                 let _ = self.tree.taffy.set_style(taffy_id, ts);
                 changed = true;
+                // Inside an atomic inline (the node itself excluded: its own
+                // style is read by the compute of the IFC around it)?
+                let mut cur = self.tree.nodes.get(id).and_then(|n| n.parent);
+                while let Some(a) = cur {
+                    let Some(an) = self.tree.nodes.get(a) else {
+                        break;
+                    };
+                    if an.display_mode.is_atomic_inline() {
+                        in_atomic = true;
+                        self.mark_atomic_inline_dirty(id);
+                        break;
+                    }
+                    cur = an.parent;
+                }
             }
         }
-        changed
+        (changed, in_atomic)
     }
 
     /// What a Taffy style `ts` rebuilt from node `id`'s computed values is
