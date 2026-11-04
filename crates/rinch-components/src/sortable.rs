@@ -1288,7 +1288,6 @@ fn copied_attribute(name: &str) -> bool {
                 | "data-graph-nowheel"
                 | "data-preedit"
                 | "data-block-index"
-                | "data-annotation-id"
                 | "data-user-rid"
         ))
 }
