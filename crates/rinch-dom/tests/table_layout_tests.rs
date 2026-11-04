@@ -207,3 +207,25 @@ fn a_percentage_width_picture_does_not_widen_its_column() {
         assert_eq!(abs(&d, "b").0, 360.0, "{picture}");
     }
 }
+
+#[test]
+fn inline_block_tables_in_a_cell_wrap_inside_it() {
+    // #2159, email's "responsive columns": two `inline-block` tables in a
+    // cell, the second `width: 100%`. A percentage width is cyclic in the
+    // cell's min-content measure, so the box contributes its min-content
+    // width there (css-sizing-3 §5.2.1); lined up at its one-line width, it
+    // made the cell (and the table) as wide as its paragraph. Chrome 153: the
+    // cell is the table's 600, the first table 280, the second 592 (the
+    // cell's content box) and two lines (40) tall.
+    let d = doc("<table style='width:600px;border-spacing:0'><tr>
+        <td id=cell style='text-align:center;padding:40px 4px;font-size:0'>
+        <table id=t1 style='display:inline-block;max-width:280px;width:100%;border-spacing:0'><tr>
+          <td style='padding:0 12px 24px'><div style='width:256px;height:120px'></div></td></tr></table>
+        <table id=t2 style='display:inline-block;width:100%;border-spacing:0'><tr>
+          <td style='padding:0 12px;font-size:16px;line-height:20px;text-align:left'>Some white text that belongs inside the dark cell, long enough to wrap onto a second line at this width.</td></tr></table>
+        </td></tr></table>");
+    assert_eq!(abs(&d, "cell").2, 600.0);
+    assert_eq!(abs(&d, "t1").2, 280.0);
+    let (.., w, h) = abs(&d, "t2");
+    assert_eq!((w, h), (592.0, 40.0));
+}

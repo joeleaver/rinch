@@ -723,6 +723,38 @@ pub(crate) fn plain_shrink_to_fit_margins(
     Some(margin(style.margin_left)? + margin(style.margin_right)?)
 }
 
+/// The margins of an atomic inline whose `width` is a percentage (and whose
+/// `min-width`/`max-width` are not), when they are lengths or `auto`. Such a
+/// box's percentage is cyclic in a min-content measure of the line it sits
+/// on, so there it contributes as `auto` does: its min-content width
+/// (css-sizing-3 §5.2.1). An email's "responsive columns" are exactly this,
+/// `display: inline-block; width: 100%` tables in a cell: lined up at their
+/// one-line width instead, they made the cell, and the table, as wide as
+/// their longest paragraph (#2159).
+pub(crate) fn percent_width_margins(style: &crate::computed_style::ComputedStyle) -> Option<f32> {
+    use crate::computed_style::DimensionValue::Percent;
+    use crate::computed_style::LengthPercentageAutoValue as M;
+    if !matches!(style.width, Percent(_))
+        || matches!(style.min_width, Percent(_))
+        || matches!(style.max_width, Percent(_))
+    {
+        return None;
+    }
+    let margin = |m: M| match m {
+        M::Auto => Some(0.0),
+        M::Length(px) => Some(px),
+        _ => None,
+    };
+    Some(margin(style.margin_left)? + margin(style.margin_right)?)
+}
+
+/// Whether an atomic inline's min-content width is measured and kept
+/// (`NodeTree::atomic_min_content`): a plain shrink-to-fit box, or one with
+/// a percentage width ([`percent_width_margins`]).
+fn keeps_min_content(style: &crate::computed_style::ComputedStyle) -> bool {
+    plain_shrink_to_fit_margins(style).is_some() || percent_width_margins(style).is_some()
+}
+
 /// What an IFC **measure** needs to size the atomic inlines on its lines
 /// (#1476).
 ///
@@ -794,6 +826,19 @@ impl AtomicContributions<'_> {
                 at(natural.0, natural.1)
             };
         };
+        // A percentage width in a min-content measure is cyclic: the box
+        // contributes its min-content width, as `auto` does (#2159).
+        if wrap <= 0.0
+            && let Some(margins) = percent_width_margins(&node.computed_style)
+        {
+            return match self.min_content.get(&id) {
+                Some(&min_width) => (min_width + margins, layout.1),
+                None => {
+                    self.requests.borrow_mut().push(id);
+                    layout
+                }
+            };
+        }
         // Resolved against exactly this width: the size it has is the answer
         // (and the one the paint layout will use).
         if resolved_at.is_some_and(|w| (w - wrap).abs() < 0.01) {
@@ -9589,9 +9634,7 @@ impl RinchDocument {
             let (Some(root_id), Some(taffy_id)) = (node.ifc_root, node.taffy_id) else {
                 continue;
             };
-            if !node.display_mode.is_atomic_inline()
-                || plain_shrink_to_fit_margins(&node.computed_style).is_none()
-            {
+            if !node.display_mode.is_atomic_inline() || !keeps_min_content(&node.computed_style) {
                 continue;
             }
             let Some(depth) = self.depth_if_connected(id) else {
@@ -9696,7 +9739,7 @@ impl RinchDocument {
                 n.ifc_root.is_some()
                     && n.taffy_id.is_some()
                     && n.display_mode.is_atomic_inline()
-                    && plain_shrink_to_fit_margins(&n.computed_style).is_some()
+                    && keeps_min_content(&n.computed_style)
             })
             && self.depth_if_connected(id).is_some()
     }
