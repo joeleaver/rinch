@@ -1036,6 +1036,7 @@ impl RinchDocument {
             // Capture old display before transitions overwrite computed_style
             let old_display = self.tree.nodes[node_id].computed_style.display;
             let old_table_part = self.tree.nodes[node_id].computed_style.table_part;
+            let old_height = self.tree.nodes[node_id].computed_style.height;
             let was_inline_level = self.tree.nodes[node_id]
                 .computed_style
                 .inline_level_before_blockify;
@@ -1268,6 +1269,7 @@ impl RinchDocument {
             }
 
             self.note_table_host(node_id);
+            self.note_cell_height(node_id, old_table_part, old_height);
 
             // An inline element that casts a `text-shadow` other than its
             // parent's makes its IFC's runs cast more than one list (#1048);
@@ -1908,11 +1910,13 @@ impl RinchDocument {
     }
 
     /// A block box under HTML's `align` ([`ComputedStyle::html_align`]) with
-    /// a width of its own (a table's is its content's) is aligned by it:
-    /// `<td align="center"><table>` centres the table, as in Chrome, which
-    /// centres the margin box. Its margins become `auto` on the side or sides
-    /// that take the room, when they are equal (zero, in email); otherwise
-    /// it is left where it is.
+    /// a width of its own (a `width`, a `max-width`, or a table's, its
+    /// content's) is aligned by it: `<td align="center"><table>` centres the
+    /// table, as in Chrome. Its margins become `auto` on the side or sides
+    /// that take the room. Chrome centres the margin box: when the two
+    /// margins are lengths that differ, the box is also shifted by half the
+    /// difference (a relative offset, on a box that has no position of its
+    /// own); any other unequal pair is left where it is.
     ///
     /// [`ComputedStyle::html_align`]: crate::computed_style::ComputedStyle::html_align
     fn align_by_html(&self, node_id: RawNodeId, style: &mut taffy::Style) {
@@ -1939,8 +1943,9 @@ impl RinchDocument {
             PositionValue::Absolute | PositionValue::Fixed
         ) && cs.float == taffy::Float::None
             && !cs.table_part.is_internal();
-        let own_width =
-            cs.table_part == TablePart::Table || !matches!(cs.width, DimensionValue::Auto);
+        let own_width = cs.table_part == TablePart::Table
+            || !matches!(cs.width, DimensionValue::Auto)
+            || !matches!(cs.max_width, DimensionValue::Auto);
         if !in_flow_block || !own_width {
             return;
         }
@@ -1951,19 +1956,67 @@ impl RinchDocument {
             return;
         }
         use LengthPercentageAutoValue::{Length, Percent};
-        let equal = match (left, right) {
-            (Length(a), Length(b)) | (Percent(a), Percent(b)) => a == b,
-            _ => false,
+        // How far the margin box's centre is from the border box's.
+        let shift = match (left, right) {
+            (Length(a), Length(b)) => Some((a - b) / 2.0),
+            (Percent(a), Percent(b)) if a == b => Some(0.0),
+            _ => None,
         };
         let auto = taffy::LengthPercentageAuto::auto();
         match align {
-            TextAlignValue::Center if equal => {
+            TextAlignValue::Center => {
+                let Some(shift) = shift else {
+                    return;
+                };
+                if shift != 0.0 {
+                    if cs.position != PositionValue::Static {
+                        return;
+                    }
+                    style.position = taffy::Position::Relative;
+                    style.inset.left = taffy::LengthPercentageAuto::length(shift);
+                    style.inset.right = auto;
+                }
                 style.margin.left = auto;
                 style.margin.right = auto;
             }
             TextAlignValue::Start => style.margin.right = auto,
             TextAlignValue::End => style.margin.left = auto,
             _ => {}
+        }
+    }
+
+    /// A cell whose `height` became or stopped being a fixed length, or a box
+    /// that became or stopped being a cell, changes how its children's
+    /// percentage heights resolve
+    /// ([`Self::unresolve_heights_in_auto_cell`]), and their Taffy styles were
+    /// written from the cell it was: write them again. (A child cascaded on
+    /// this same pass writes its own after this.)
+    fn note_cell_height(
+        &mut self,
+        node_id: RawNodeId,
+        old_part: crate::computed_style::TablePart,
+        old_height: crate::computed_style::DimensionValue,
+    ) {
+        use crate::computed_style::{DimensionValue, TablePart};
+        let cs = &self.tree.nodes[node_id].computed_style;
+        let was_cell = old_part == TablePart::Cell;
+        let is_cell = cs.table_part == TablePart::Cell;
+        let fixed = |h: DimensionValue| matches!(h, DimensionValue::Length(_));
+        if !(was_cell || is_cell) || (was_cell == is_cell && fixed(cs.height) == fixed(old_height))
+        {
+            return;
+        }
+        let children = self.tree.nodes[node_id].children.clone();
+        for c in children {
+            let Some(t) = self.tree.nodes.get(c).and_then(|n| n.taffy_id) else {
+                continue;
+            };
+            if !self.tree.nodes[c].is_element() {
+                continue;
+            }
+            let style = self.taffy_style_from_computed(c);
+            let _ = self.tree.taffy.set_style(t, style);
+            self.tree.layout_dirty = true;
         }
     }
 
@@ -1974,8 +2027,8 @@ impl RinchDocument {
     /// Chrome. Resolved against the cell's laid-out height instead, an
     /// email's `min-height: 100%` blocks were each as tall as their whole
     /// cell, and the cell did not grow to hold them: everything after the
-    /// first was laid out below the message and never drawn (Home Depot's
-    /// phone layout).
+    /// first was laid out below the table and never drawn (a phone layout
+    /// whose cell content carries `min-height: 100%`).
     fn unresolve_heights_in_auto_cell(&self, node_id: RawNodeId, style: &mut taffy::Style) {
         use crate::computed_style::{DimensionValue, TablePart};
         let Some(parent) = self.tree.nodes[node_id]
