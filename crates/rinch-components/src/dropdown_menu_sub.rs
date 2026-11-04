@@ -458,10 +458,7 @@ fn panel_pointer_moved(panel: &NodeHandle) {
         .collect();
     // An open submenu's triangle holds its siblings back too.
     let guarded = subs.iter().any(|s| {
-        s.is_open.get()
-            && s.opts.safe_triangle
-            && !region_contains(s, p)
-            && in_triangle(s, p)
+        s.is_open.get() && s.opts.safe_triangle && !region_contains(s, p) && in_triangle(s, p)
     });
     for sub in &subs {
         let on_row = hit(rect(&sub.trigger), p);
@@ -685,7 +682,10 @@ impl Component for DropdownMenuSub {
             } else {
                 format!("var(--rinch-color-{c}-6)")
             };
-            trigger.set_attribute("style", &format!("--rinch-dropdown-menu-item-color: {value}"));
+            trigger.set_attribute(
+                "style",
+                &format!("--rinch-dropdown-menu-item-color: {value}"),
+            );
         }
         if let Some(icon) = self.left_section {
             let span = rinch_macros::rsx! { span { class: "rinch-dropdown-menu__item-left" } };
@@ -823,8 +823,8 @@ impl Component for DropdownMenuSub {
                         _ => false,
                     };
                 }
-                let in_flyout = nearest_panel(&focused)
-                    .is_some_and(|p| p.node_id() == sub.flyout.node_id());
+                let in_flyout =
+                    nearest_panel(&focused).is_some_and(|p| p.node_id() == sub.flyout.node_id());
                 if in_flyout && matches!(k.key.as_str(), "ArrowLeft" | "Escape") {
                     close(&sub, true);
                     return true;

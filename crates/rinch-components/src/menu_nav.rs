@@ -102,7 +102,7 @@ fn is_disabled(node: &NodeHandle) -> bool {
         || has_class(node, "rinch-dropdown-menu__item--disabled")
 }
 
-/// The enabled, rendered rows of `panel` in document order — not the rows of a
+/// The enabled rows of `panel` in document order — not the rows of a
 /// panel nested in it (a submenu's flyout, a nested `DropdownMenu`).
 pub(crate) fn panel_items(panel: &NodeHandle) -> Vec<NodeHandle> {
     fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) {
@@ -114,7 +114,10 @@ pub(crate) fn panel_items(panel: &NodeHandle) -> Vec<NodeHandle> {
                 continue;
             }
             if has_class(&child, ITEM_CLASS) {
-                if !is_disabled(&child) && child.is_rendered() {
+                // Not asked `is_rendered`: a flyout opened in this same
+                // handler is not laid out yet on desktop, which answers from
+                // the last resolve.
+                if !is_disabled(&child) {
                     out.push(child);
                 }
                 continue;

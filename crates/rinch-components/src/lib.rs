@@ -154,11 +154,11 @@ pub mod icons;
 pub mod image;
 pub mod kbd;
 pub mod late_children;
-pub mod menu_nav;
 pub mod list;
 pub mod loader;
 pub mod loading_overlay;
 pub mod mark;
+pub mod menu_nav;
 pub mod modal;
 pub mod navlink;
 pub mod notification;
@@ -260,9 +260,9 @@ pub use dropdown_menu::{
     DropdownMenuTarget,
 };
 pub use dropdown_menu_sub::DropdownMenuSub;
-pub use menu_nav::MenuKeyHook;
 pub use hover_card::{HoverCard, HoverCardDropdown, HoverCardTarget};
 pub use loading_overlay::LoadingOverlay;
+pub use menu_nav::MenuKeyHook;
 pub use modal::Modal;
 pub use notification::Notification;
 pub use popover::{Popover, PopoverDropdown, PopoverTarget};
