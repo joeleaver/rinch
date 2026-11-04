@@ -588,23 +588,12 @@ fn flow_hoists(tree: &rinch_dom::NodeTree, id: u64) -> bool {
     hoists
 }
 
-/// Whether `node` computes to `visibility: hidden`/`collapse`, so that it is
-/// not hit itself (#843). A text node is drawn with its parent element's
-/// visibility (paint reads the parent's), so it is answered from there.
+/// Whether `node` is not hit itself (#843): `visibility: hidden`/`collapse`,
+/// a text node answering from its parent. Paint's answer too
+/// (`rinch_dom::visibility::hides_own`).
 #[inline]
 fn hides_own_hit(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node) -> bool {
-    let hidden = |n: &rinch_dom::Node| {
-        matches!(
-            n.computed_style.visibility,
-            rinch_dom::computed_style::VisibilityValue::Hidden
-                | rinch_dom::computed_style::VisibilityValue::Collapse
-        )
-    };
-    if node.is_text() {
-        node.parent.and_then(|p| tree.get(p)).is_some_and(hidden)
-    } else {
-        hidden(node)
-    }
+    rinch_dom::visibility::hides_own(tree, node)
 }
 
 /// Whether the glyph under `(lx, ly)` — relative to `node`'s border-box
@@ -636,29 +625,12 @@ fn visible_text_at(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node, lx: f32, 
 }
 
 /// Whether some element below `id` computes to `visibility: visible` (#843),
-/// i.e. whether a hidden `id`'s subtree can hold anything to hit.
-///
-/// Walks the box-tree children — what both walks enumerate, an anonymous
-/// block's wrapped inline content included (an anonymous box has no DOM
-/// children); a stacking sequence's entries are box-tree descendants too — so
-/// `false` is a proof. Text nodes are skipped: they take their parent's
-/// visibility ([`hides_own_hit`]). Memoised in the hit cache, so a hidden
-/// subtree is walked once per generation, not once per probe.
+/// i.e. whether a hidden `id`'s subtree can hold anything to hit. One memo with
+/// paint and the stacking collector, which skip the same subtrees (#2137):
+/// `rinch_dom::visibility::shows_below`.
+#[inline]
 fn shows_below(tree: &rinch_dom::NodeTree, id: rinch_dom::node::RawNodeId) -> bool {
-    if let Some(s) = tree.hit_cache.shows(id) {
-        return s;
-    }
-    let shows = tree.get_live(id).is_some_and(|node| {
-        rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
-            .iter()
-            .any(|&child_id| {
-                tree.get_live(child_id).is_some_and(|child| {
-                    !child.is_text() && (!hides_own_hit(tree, child) || shows_below(tree, child_id))
-                })
-            })
-    });
-    tree.hit_cache.store_shows(id, shows);
-    shows
+    rinch_dom::visibility::shows_below(tree, id)
 }
 
 /// The box a node is *painted* in, in layout pixels, shaped as the four

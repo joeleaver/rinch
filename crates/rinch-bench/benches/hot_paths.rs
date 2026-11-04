@@ -114,6 +114,7 @@ fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
 
 #[library_benchmark]
 #[bench::text_page_warm(setup = setup_full_paint)]
+#[bench::closed_drawer_500(setup = setup_closed_drawer_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
 }

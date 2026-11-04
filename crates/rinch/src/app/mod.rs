@@ -202,11 +202,15 @@ mod gpu_bump_overflow_2071_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_clip_groups_1645_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_hidden_subtree_cull_2137_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_partial_frame_1718_tests;
 #[cfg(test)]
 mod graph_canvas_wheel_tests;
 #[cfg(test)]
 mod hidden_animation_frames_tests;
+#[cfg(all(test, software_shell))]
+mod hidden_subtree_cull_2137_tests;
 #[cfg(test)]
 mod hidpi_pointer_tests;
 pub(crate) mod hit_testing;

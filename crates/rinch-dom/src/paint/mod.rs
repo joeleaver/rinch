@@ -1866,6 +1866,7 @@ pub fn take_base_refused() -> bool {
 /// places it against the surfaces split so far (#1865 S4,
 /// `VelloPainter::node_starts`).
 pub fn set_paint_order_watch(tree: &NodeTree, nodes: &[RawNodeId], on: bool) {
+    crate::visibility::set_paint_watching(on && !nodes.is_empty());
     for &id in nodes {
         if let Some(node) = tree.get(id) {
             node.paint_watch.set(on);
@@ -3175,6 +3176,29 @@ thread_local! {
     static SNAPSHOT_PAINT: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Whether paint skips `node` and its whole subtree as `visibility: hidden`
+/// with nothing visible below it (#2137,
+/// [`crate::visibility::subtree_shows_nothing`]).
+///
+/// Every visual paint emits is gated on the visibility of the element it
+/// belongs to — a box's background, border, shadows, outline, scrollbars,
+/// `filter` overlay, form value, render-surface frame and viewport clear on
+/// its own; an IFC's glyphs, decorations and inline boxes on their text node's
+/// parent (`TextMask`); an SVG shape on the shape's own — so a subtree with no
+/// visible element in it draws nothing. Before this, the walk entered every
+/// node of a closed `Drawer` or `Popover` to draw nothing, ran every IFC in it
+/// through the text mask, and pushed an empty group layer for each translucent
+/// box in it. The stacking collector skips the same subtrees, so nothing in
+/// them is hoisted into a sequence to be entered from there either.
+///
+/// Not while a paint-order watch is on (#1865 S4): it reports each watched
+/// node paint starts, so paint and the collector both walk for that paint,
+/// and a watched hidden node — in flow or hoisted — is started where it was.
+#[inline]
+fn skips_hidden_subtree(tree: &NodeTree, node: &Node) -> bool {
+    crate::visibility::subtree_shows_nothing(tree, node)
+}
+
 /// Whether the sequence being painted draws `node_id`'s bars itself.
 fn bars_deferred(node_id: RawNodeId) -> bool {
     DEFERRED_BARS.with(|d| d.borrow().contains(&node_id))
@@ -3781,6 +3805,11 @@ fn paints_nothing_within(
     if cs.display == DisplayValue::None {
         return true;
     }
+    // A hidden subtree with nothing visible in it draws nothing anywhere,
+    // whatever is positioned in it (#2137).
+    if skips_hidden_subtree(tree, node) {
+        return true;
+    }
     if matches!(cs.position, PositionValue::Fixed | PositionValue::Sticky)
         || node.estimated_height.is_some()
     {
@@ -3999,6 +4028,14 @@ fn paint_node(
     let Some(node) = tree.get(node_id) else {
         return;
     };
+    // Paint's own callers ask this one level up, without a visit
+    // ([`paints_nothing_within`]); this catches the ones that enter a node
+    // directly (the body, a lifted `position: fixed` entry, an IFC's atomic
+    // inline, a snapshot).
+    if skips_hidden_subtree(tree, node) {
+        tree.perf.bump(crate::perf::Counter::PaintNodesVisited);
+        return;
+    }
     let mask = &node.computed_style.mask_image;
     if mask.is_empty() || node.computed_style.display == DisplayValue::Contents {
         paint_node_unmasked(

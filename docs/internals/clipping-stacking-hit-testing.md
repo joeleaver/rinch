@@ -480,7 +480,40 @@ skip its whole subtree, as they always did, when nothing below it is visible:
 children (an anonymous block has no DOM children; its wrapped inline content is
 what it shows) and asked only of a hidden node, so a visible tree pays one enum
 test per node and an all-hidden one (a closed `Drawer`) one walk per
-generation. A text node takes its parent's visibility. An IFC's text is hit as
+generation. **Paint and the stacking collector skip the same subtrees** (#2137):
+the memo and `hides_own` live in `rinch_dom::visibility`, and
+`visibility::subtree_shows_nothing` is what `paint_node`, its one-level-up cull
+`paints_nothing_within` and `Collector::collect_hoisted` ask. Every visual paint
+emits is gated on the visibility of the element it belongs to, so a subtree
+with no visible element draws nothing; before #2137 paint entered every node of
+a closed overlay, ran its IFCs through the text mask, and the collector hoisted
+its positioned boxes into the enclosing sequence, where each translucent one
+pushed an empty group layer. The memo is right for paint for the same reason it
+is for hit testing — the hit cache's generation moves on every change of
+`visibility` (`resolve_styles`, a tick's `HitStyleKey`, which holds it,
+`propagate_inherited_visibility`) and of the box tree — and a tick is the case
+that matters: `resolve_layout` after it takes the paint-only path, which moves
+nothing, so a tick that reveals a descendant of a still-hidden node must
+invalidate itself (`hidden_subtree_cull_2137_tests::a_tick_that_reveals_a_descendant_reaches_paint`
+kills the mutants that drop it). Two exceptions keep the walk: under an open
+scroll container that draws bars, the collector keeps a hidden entry, since it
+can be the container's last contained entry and the bars are drawn after that
+(#1717; paint still skips the entry on arrival); and while a paint-order watch
+is on (#1865 S4), paint and the collector both walk, so a watched hidden node,
+in flow or hoisted, is started where it was. **An anonymous block box is judged
+by its container's visibility, read live**, and a text child counts by its
+parent element's, the rule the text mask draws it by: the box copies its
+container's `visibility` once, when layout builds it
+(`ComputedStyle::for_anonymous_box`), and opening a box built closed changes
+only `visibility`, which is paint-only, so the copy stays `hidden`. Read from
+the copy, a `Drawer` built closed opened without the bare text of its rows
+(review of #2137); hit testing skipped that text the same way, which predates
+#2137 and is fixed with it. Either rule alone closes it; the pins
+(`bare_text_of_a_panel_built_closed_shows_when_it_opens`,
+`random_documents_changed_after_layout_paint_the_same`, which mutates random
+documents after their first layout) fail with both removed.
+`rinch_dom::visibility::set_hidden_subtree_cull(false)` turns the skip off, for
+the differential tests that compare the two pictures byte for byte. A text node takes its parent's visibility. An IFC's text is hit as
 its root, so a hidden IFC root still answers a point over the glyphs of a
 visible inline element in it (`visible_text_at`: the cluster under the point,
 its `IfcTextRange`, that text node's parent element); Chrome answers the span
@@ -648,7 +681,16 @@ Vello allocates tiles over a clip's or a layer's whole bounds, whatever they hol
 so a window-sized clip or layer around nothing still costs a window of tiles
 (#2069). Five rules keep that out of the scene:
 
-- `Collector::collect_hoisted` does not enter a `display: none` subtree.
+- `Collector::collect_hoisted` does not enter a `display: none` subtree, nor a
+  `visibility: hidden` one with nothing visible in it (#2137; a closed overlay),
+  except under an open scroll container whose bars it orders. On Vello that
+  also changes clip edges in one case: a hidden entry used to split two runs of
+  entries under the same clip into two clip layers (its own chain was switched
+  to, then back), and without it the runs share one, which antialiases at that
+  clip's edge as gathered entries do (below): measured on lavapipe, 194 pixels
+  of a 30px-radius edge move by up to 23 levels. The picture is the one the
+  page without the hidden box paints, and the software painter's does not move
+  (`gpu_a_hidden_entry_between_two_runs_of_one_clip` and its rinch-dom twin).
 - `opacity_layer_shape` gives a subtree proved to paint nothing an empty rect.
   `opacity_layer_bounds`, which damage reads, keeps answering `UNBOUNDED` there.
 - `paint_sequence_entry` skips an entry that paints nothing before it switches

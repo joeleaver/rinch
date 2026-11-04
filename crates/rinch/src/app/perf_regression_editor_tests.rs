@@ -181,7 +181,9 @@ fn one_caret_blink_repaints_the_caret() {
             (DamageRects, 1),
             (RepaintedPx, 320),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 5),
+            // #2137: 5 → 4. The blinked-off caret is `visibility: hidden`
+            // with nothing under it, so paint skips it without a visit.
+            (PaintNodesVisited, 4),
             (StackingOrderBuilds, 2),
             (GlyphCacheHits, 19),
             (ClipMasks, 2),
@@ -456,7 +458,9 @@ fn a_toolbar_bold_over_a_word() {
             (DamageRects, 1),
             (RepaintedPx, 18112),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 6),
+            // #2137: 6 → 5. Over a range selection the caret is
+            // `visibility: hidden`, and paint skips it without a visit.
+            (PaintNodesVisited, 5),
             (StackingOrderBuilds, 6),
             (GlyphCacheHits, 19),
             (ClipMasks, 2),

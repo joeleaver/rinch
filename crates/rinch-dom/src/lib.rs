@@ -46,6 +46,7 @@ pub mod table_layout;
 pub mod testing;
 pub mod text_query;
 pub mod transition;
+pub mod visibility;
 
 pub use computed_style::ComputedStyle;
 pub use dom_impl::RinchDocument;
