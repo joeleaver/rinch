@@ -1866,7 +1866,7 @@ pub fn take_base_refused() -> bool {
 /// places it against the surfaces split so far (#1865 S4,
 /// `VelloPainter::node_starts`).
 pub fn set_paint_order_watch(tree: &NodeTree, nodes: &[RawNodeId], on: bool) {
-    PAINT_WATCHING.set(on && !nodes.is_empty());
+    crate::visibility::set_paint_watching(on && !nodes.is_empty());
     for &id in nodes {
         if let Some(node) = tree.get(id) {
             node.paint_watch.set(on);
@@ -3174,14 +3174,6 @@ thread_local! {
     static SNAPSHOT_PAINT: Cell<bool> = const { Cell::new(false) };
 }
 
-thread_local! {
-    /// A [`set_paint_order_watch`] is on: paint reports when it starts each
-    /// watched node, and a node it skips is not reported. While one is on,
-    /// [`skips_hidden_subtree`] skips nothing, so a watched node in a hidden
-    /// subtree is still started where it was (#2137).
-    static PAINT_WATCHING: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Whether paint skips `node` and its whole subtree as `visibility: hidden`
 /// with nothing visible below it (#2137,
 /// [`crate::visibility::subtree_shows_nothing`]).
@@ -3198,11 +3190,11 @@ thread_local! {
 /// them is hoisted into a sequence to be entered from there either.
 ///
 /// Not while a paint-order watch is on (#1865 S4): it reports each watched
-/// node paint starts, and a hidden node's start places a change against a
-/// split surface as it always did.
+/// node paint starts, so paint and the collector both walk for that paint,
+/// and a watched hidden node — in flow or hoisted — is started where it was.
 #[inline]
 fn skips_hidden_subtree(tree: &NodeTree, node: &Node) -> bool {
-    crate::visibility::subtree_shows_nothing(tree, node) && !PAINT_WATCHING.get()
+    crate::visibility::subtree_shows_nothing(tree, node)
 }
 
 /// Whether the sequence being painted draws `node_id`'s bars itself.

@@ -508,6 +508,57 @@ fn a_watched_hidden_node_is_still_started() {
     let _ = hidden;
 }
 
+/// A panel built closed and opened by a class change, holding bare text beside
+/// a block: the text sits in an anonymous block box, which copied the panel's
+/// `hidden` at its layout and keeps it, since opening is paint-only. The text
+/// shows once the panel opens.
+#[test]
+fn bare_text_of_a_panel_built_closed_shows_when_it_opens() {
+    let (mut doc, body) = page();
+    doc.load_css(".shut { visibility: hidden; } .kid { width: 40px; height: 10px; }");
+    let panel = doc.create_element("div");
+    doc.set_attribute(panel, "class", "shut");
+    doc.append_child(body, panel);
+    text(&mut doc, panel, "Hello");
+    el(&mut doc, panel, "width: 40px; height: 10px");
+    let closed = shoot(&mut doc, 1.0);
+    assert_eq!(ink(&closed.pixels), 0, "closed");
+    doc.set_attribute(panel, "class", "");
+    let (on, off) = both(&mut doc, 1.0);
+    assert!(ink(&off.pixels) > 100, "control: walked, the text shows");
+    assert_same_picture(&on, &off, "opened");
+}
+
+/// While a paint-order watch is on, a watched **positioned** node in a hidden
+/// subtree is started too: the collector, which would otherwise not hoist
+/// it, stands down with paint.
+#[test]
+fn a_watched_hidden_positioned_node_is_still_started() {
+    let (mut doc, body) = page();
+    let hidden = el(
+        &mut doc,
+        body,
+        "visibility: hidden; width: 50px; height: 50px",
+    );
+    let kid = el(
+        &mut doc,
+        hidden,
+        "position: absolute; left: 5px; top: 5px; width: 20px; height: 20px; \
+         z-index: 1; background: red",
+    );
+    doc.resolve_layout(VP.0, VP.1);
+    let mut c = Commands::default();
+    let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::set_paint_order_watch(&doc.tree, &[kid.0], true);
+    rinch_dom::paint::paint_document(&doc.tree, &mut c, 1.0, VP, &mut doc.font_cx, &mut layout_cx);
+    rinch_dom::paint::set_paint_order_watch(&doc.tree, &[kid.0], false);
+    assert_eq!(
+        c.started,
+        vec![kid.0],
+        "the watched positioned node is started"
+    );
+}
+
 // ── Transitions: the memo moves with the value ─────────────────────────────
 
 const TRANSITION_CSS: &str = "
@@ -708,8 +759,24 @@ fn random_box(doc: &mut RinchDocument, r: &mut Rng, parent: NodeId, depth: u32) 
             doc.append_child(p, span);
             text(doc, p, " amet.");
         }
+        // Bare text beside a block: an anonymous block box holds the text,
+        // with a copy of its container's `visibility` taken at layout.
+        2 => {
+            let c = el(doc, parent, &format!("{vis} background: {bg}"));
+            text(doc, c, "Bare text ");
+            el(
+                doc,
+                c,
+                &format!(
+                    "{} width: {}px; height: 6px; background: {}",
+                    visibility(r),
+                    10 + r.pick(60),
+                    color(r)
+                ),
+            );
+        }
         // A leaf box with a shadow or an outline.
-        1 | 2 => {
+        1 => {
             let deco = r.of(&[
                 "",
                 "box-shadow: 3px 3px 4px rgb(0, 80, 80);",
@@ -795,6 +862,62 @@ fn random_doc(seed: u64) -> RinchDocument {
         random_box(&mut doc, &mut r, body, 0);
     }
     doc
+}
+
+/// The random documents again, changed after their first layout: visibility
+/// toggled by class and by `style` on random elements, opened, then closed
+/// again, each state painted with the skip and without it. A document whose
+/// first layout saw a subtree hidden keeps state from that layout (an
+/// anonymous block box's copy of its container's `visibility`), which a
+/// document painted once can never exercise.
+#[test]
+fn random_documents_changed_after_layout_paint_the_same() {
+    let mut changed = 0;
+    for seed in 0..120u64 {
+        let mut doc = random_doc(seed);
+        doc.load_css(".h { visibility: hidden; } .v { visibility: visible; }");
+        let scale = [1.0, 1.5][seed as usize % 2];
+        let (on, off) = both(&mut doc, scale);
+        assert_same_picture(&on, &off, &format!("seed {seed}, as built"));
+        let mut r = Rng(seed ^ 0x5eed);
+        let elements: Vec<NodeId> = doc
+            .tree
+            .nodes
+            .iter()
+            .filter(|(id, n)| n.is_element() && *id != doc.tree.body_id && n.parent.is_some())
+            .map(|(id, _)| NodeId(id))
+            .collect();
+        let picked: Vec<NodeId> = (0..1 + r.pick(4))
+            .map(|_| elements[r.pick(elements.len() as u64) as usize])
+            .collect();
+        for (step, (class, style)) in [
+            ("v", "visible"),
+            ("h", "hidden"),
+            ("", "visible"),
+            ("h", "inherit"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (i, &e) in picked.iter().enumerate() {
+                if (i + step) % 2 == 0 {
+                    doc.set_attribute(e, "class", class);
+                } else {
+                    doc.set_style(e, "visibility", style);
+                }
+            }
+            let before = on.pixels.clone();
+            let (on2, off2) = both(&mut doc, scale);
+            assert_same_picture(&on2, &off2, &format!("seed {seed}, step {step}"));
+            if on2.pixels != before {
+                changed += 1;
+            }
+        }
+    }
+    assert!(
+        changed >= 100,
+        "the changes moved the picture {changed} times"
+    );
 }
 
 /// Random documents of hidden and visible subtrees — `visible` overrides under

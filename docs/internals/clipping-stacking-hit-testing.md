@@ -499,7 +499,19 @@ kills the mutants that drop it). Two exceptions keep the walk: under an open
 scroll container that draws bars, the collector keeps a hidden entry, since it
 can be the container's last contained entry and the bars are drawn after that
 (#1717; paint still skips the entry on arrival); and while a paint-order watch
-is on (#1865 S4), paint walks, so a watched hidden node is started where it was.
+is on (#1865 S4), paint and the collector both walk, so a watched hidden node,
+in flow or hoisted, is started where it was. **An anonymous block box is judged
+by its container's visibility, read live**, and a text child counts by its
+parent element's, the rule the text mask draws it by: the box copies its
+container's `visibility` once, when layout builds it
+(`ComputedStyle::for_anonymous_box`), and opening a box built closed changes
+only `visibility`, which is paint-only, so the copy stays `hidden`. Read from
+the copy, a `Drawer` built closed opened without the bare text of its rows
+(review of #2137); hit testing skipped that text the same way, which predates
+#2137 and is fixed with it. Either rule alone closes it; the pins
+(`bare_text_of_a_panel_built_closed_shows_when_it_opens`,
+`random_documents_changed_after_layout_paint_the_same`, which mutates random
+documents after their first layout) fail with both removed.
 `rinch_dom::visibility::set_hidden_subtree_cull(false)` turns the skip off, for
 the differential tests that compare the two pictures byte for byte. A text node takes its parent's visibility. An IFC's text is hit as
 its root, so a hidden IFC root still answers a point over the glyphs of a

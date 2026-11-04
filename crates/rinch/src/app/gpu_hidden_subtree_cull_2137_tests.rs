@@ -422,3 +422,47 @@ fn gpu_a_hidden_entry_between_two_runs_of_one_clip() {
     );
     assert_eq!(differing(&on, &without), 0);
 }
+
+/// A panel built closed, holding bare text beside a block, opened by a class
+/// change: the text's anonymous box copied the panel's `hidden` at layout and
+/// opening is paint-only (review of #2137). On Vello the opened text paints,
+/// as it does when the subtree is walked.
+#[test]
+#[ignore]
+fn gpu_bare_text_of_a_panel_built_closed_shows_when_it_opens() {
+    let open = rinch_core::Signal::new(false);
+    let mut app = super::perf_expect::new_app(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = scope.create_text(
+            "body { font-family: sans-serif; font-size: 24px; line-height: 30px; } \
+             .shut { visibility: hidden; }",
+        );
+        style.append_child(&css);
+        root.append_child(&style);
+        let panel = scope.create_element("div");
+        let t = scope.create_text("Hello");
+        panel.append_child(&t);
+        div(scope, &panel, "width: 40px; height: 10px");
+        let handle = panel.clone();
+        scope.create_effect(move || {
+            handle.set_attribute("class", if open.get() { "" } else { "shut" });
+        });
+        root.append_child(&panel);
+        root
+    });
+    app.mount_component(W as f32, H as f32);
+    app.resolve_and_repaint(W as f32, H as f32);
+    let mut gpu = Gpu::new();
+    let (closed, _) = gpu.render(&mut app, true);
+    open.set(true);
+    app.handle_event(PlatformEvent::AboutToWait, (W, H), 1.0);
+    app.resolve_and_repaint(W as f32, H as f32);
+    let (on, _) = gpu.render(&mut app, true);
+    let (off, _) = gpu.render(&mut app, false);
+    assert!(
+        differing(&closed, &off) > 100,
+        "control: walked, the opened text shows"
+    );
+    assert_eq!(differing(&on, &off), 0);
+}

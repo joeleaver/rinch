@@ -17,6 +17,14 @@ use rinch_dom::perf::Counter;
 /// The page: text rows across the window, under a left `Drawer` whose
 /// content is 40 rows, each with a translucent badge.
 fn mount(open: Signal<bool>) -> RinchApp {
+    mount_with(open, false)
+}
+
+/// [`mount`], with each row's badge `in_flow` (a static block after the row's
+/// text) rather than absolute: then the text is bare text beside a block, held
+/// by an anonymous block box that copies the drawer's `visibility` when layout
+/// builds it.
+fn mount_with(open: Signal<bool>, in_flow: bool) -> RinchApp {
     let mut app = new_app(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
         let style = scope.create_element("style");
@@ -26,8 +34,13 @@ fn mount(open: Signal<bool>) -> RinchApp {
                           border-bottom: 1px solid rgb(120, 120, 160); }} \
              .item {{ position: relative; height: 12px; line-height: 12px; }} \
              .badge {{ position: absolute; right: 4px; top: 2px; width: 8px; height: 8px; \
-                       opacity: 0.5; background: rgb(200, 0, 0); }}",
-            rinch_components::generate_component_css()
+                       opacity: 0.5; background: rgb(200, 0, 0); }} {}",
+            rinch_components::generate_component_css(),
+            if in_flow {
+                ".item { height: auto; } .badge { position: static; height: 4px; }"
+            } else {
+                ""
+            }
         );
         let text = scope.create_text(&css);
         style.append_child(&text);
@@ -255,4 +268,46 @@ fn toggling_a_small_panel_repaints_its_area_partially() {
             assert!(differing(&now, &shown) > 5000, "hidden: the panel is gone");
         }
     }
+}
+
+/// A `Drawer` built closed whose rows hold bare text beside an in-flow block,
+/// then opened: the rows' text is in anonymous block boxes built while the
+/// drawer was hidden, and opening is paint-only, so their copied `visibility`
+/// stays `hidden` (review of #2137). Every label shows once it is open, as a
+/// paint that walks the subtree shows it — and is hit there.
+#[test]
+fn a_drawer_built_closed_shows_its_bare_text_when_it_opens() {
+    let open = Signal::new(false);
+    let mut app = mount_with(open, true);
+    let closed = full_frame(&mut app, true);
+    open.set(true);
+    run_for(&mut app, 450, "opening");
+    let opened = full_frame(&mut app, true);
+    let walked = full_frame(&mut app, false);
+    assert!(
+        differing(&closed, &walked) > 10_000,
+        "positive control: the open drawer shows"
+    );
+    assert_eq!(differing(&opened, &walked), 0, "every label is painted");
+
+    // Hit testing reads the same answer: the first row's text is hit.
+    let d = app.doc.as_ref().unwrap().borrow();
+    let tree = &d.tree;
+    let anon = tree
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.is_anonymous_block_box && n.text_layout.is_some())
+        .map(|(id, _)| id)
+        .find(|&id| {
+            let r = rinch_dom::paint::painted_border_box(tree, id, 1.0);
+            r.x0 >= 0.0 && r.y0 >= 0.0 && r.width() > 20.0
+        })
+        .expect("positive control: the rows' text is in anonymous boxes");
+    let r = rinch_dom::paint::painted_border_box(tree, anon, 1.0);
+    let hit =
+        super::hit_testing::hit_test(tree, (r.x0 + 5.0) as f32, (r.y0 + r.height() / 2.0) as f32);
+    assert!(
+        hit.is_some_and(|h| h == anon || tree.get(anon).and_then(|n| n.parent) == Some(h)),
+        "the opened row's text is hit: {hit:?} for box {anon}"
+    );
 }

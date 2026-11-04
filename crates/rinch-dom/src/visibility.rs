@@ -34,33 +34,47 @@ use std::cell::Cell;
 use crate::computed_style::VisibilityValue;
 use crate::node::{Node, NodeTree, RawNodeId};
 
-/// Whether `node` draws none of its own visuals and is not hit itself:
-/// `visibility: hidden` or `collapse`. A text node is drawn with its parent
-/// element's visibility (paint reads the parent's), so it is answered from
-/// there.
-#[inline]
-pub fn hides_own(tree: &NodeTree, node: &Node) -> bool {
-    let hidden = |n: &Node| {
-        matches!(
-            n.computed_style.visibility,
-            VisibilityValue::Hidden | VisibilityValue::Collapse
-        )
-    };
-    if node.is_text() {
-        node.parent.and_then(|p| tree.get(p)).is_some_and(hidden)
+/// The `visibility` `node` is drawn and hit with, read live.
+///
+/// An element's is its own. A text node is drawn with its parent element's
+/// (paint's text mask reads the parent's), and so is an **anonymous block
+/// box**: it copies its container's `visibility` once, when layout builds it
+/// (`ComputedStyle::for_anonymous_box`), and a later change of the container's
+/// `visibility` alone — opening a closed `Drawer` — is paint-only, so nothing
+/// refreshes the copy. Read from the copy, a box built while its container
+/// was hidden stayed hidden after the container opened: paint skipped its text
+/// (review of #2137) and hit testing skipped it too, which predates #2137.
+fn live_visibility(tree: &NodeTree, node: &Node) -> Option<VisibilityValue> {
+    if node.is_text() || node.is_anonymous_block_box {
+        node.parent
+            .and_then(|p| tree.get(p))
+            .map(|p| p.computed_style.visibility)
     } else {
-        hidden(node)
+        Some(node.computed_style.visibility)
     }
 }
 
-/// Whether some element below `id` computes to `visibility: visible`, i.e.
-/// whether a hidden `id`'s subtree can hold anything to draw or hit.
+/// Whether `node` draws none of its own visuals and is not hit itself:
+/// `visibility: hidden` or `collapse`, read live ([`live_visibility`]: a text
+/// node and an anonymous block box answer from their container).
+#[inline]
+pub fn hides_own(tree: &NodeTree, node: &Node) -> bool {
+    matches!(
+        live_visibility(tree, node),
+        Some(VisibilityValue::Hidden | VisibilityValue::Collapse)
+    )
+}
+
+/// Whether some node below `id` is drawn `visibility: visible`, i.e. whether a
+/// hidden `id`'s subtree can hold anything to draw or hit.
 ///
-/// Walks the box-tree children (see the [module docs](self)). Text nodes are
-/// skipped: they take their parent's visibility ([`hides_own`]). Memoised in
-/// the hit cache, so a hidden subtree is walked once per generation, not once
-/// per probe or per paint; asked only of hidden nodes, so a visible tree never
-/// pays for it.
+/// Walks the box-tree children (see the [module docs](self)). A text child
+/// counts by its parent element's visibility ([`hides_own`]), the rule the
+/// text mask draws it by: under a hidden element that is the element itself,
+/// but an anonymous block box's run members answer from its container.
+/// Memoised in the hit cache, so a hidden subtree is walked once per
+/// generation, not once per probe or per paint; asked only of hidden nodes, so
+/// a visible tree never pays for it.
 pub fn shows_below(tree: &NodeTree, id: RawNodeId) -> bool {
     if let Some(s) = tree.hit_cache.shows(id) {
         return s;
@@ -70,7 +84,7 @@ pub fn shows_below(tree: &NodeTree, id: RawNodeId) -> bool {
             .iter()
             .any(|&child_id| {
                 tree.get_live(child_id).is_some_and(|child| {
-                    !child.is_text() && (!hides_own(tree, child) || shows_below(tree, child_id))
+                    !hides_own(tree, child) || (!child.is_text() && shows_below(tree, child_id))
                 })
             })
     });
@@ -84,6 +98,13 @@ thread_local! {
     /// differential tests can paint the same document both ways and compare
     /// the pixels.
     static CULL_HIDDEN: Cell<bool> = const { Cell::new(true) };
+
+    /// A paint-order watch is on (`paint::set_paint_order_watch`, #1865 S4):
+    /// paint reports when it starts each watched node, and a node it skips is
+    /// not reported. While one is on nothing is skipped — by paint or by the
+    /// collector, so a watched hidden node is started where it always was,
+    /// positioned or not.
+    static PAINT_WATCHING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Turn the hidden-subtree skip in paint and the stacking collector off (or
@@ -94,21 +115,25 @@ pub fn set_hidden_subtree_cull(on: bool) {
     CULL_HIDDEN.set(on);
 }
 
+/// A paint-order watch started (`true`) or ended.
+pub(crate) fn set_paint_watching(on: bool) {
+    PAINT_WATCHING.set(on);
+}
+
 /// Whether paint and the stacking collector may skip `node` and its whole
-/// subtree: it is a hidden element (or anonymous box) and nothing below it is
-/// visible ([`shows_below`]). Such a subtree draws nothing — every visual
-/// paint emits is gated on the visibility of the element it belongs to — and
-/// is hit nowhere, so neither its own descent nor the entries it would hoist
-/// into an enclosing stacking sequence can change a pixel.
+/// subtree: it is a hidden element (or anonymous box, judged by its
+/// container) and nothing below it is visible ([`shows_below`]). Such a
+/// subtree draws nothing — every visual paint emits is gated on the
+/// visibility of the element it belongs to — and is hit nowhere, so neither
+/// its own descent nor the entries it would hoist into an enclosing stacking
+/// sequence can change a pixel. Never while a paint-order watch is on.
 ///
-/// A visible node pays one enum test.
+/// A visible element pays one enum test.
 #[inline]
 pub fn subtree_shows_nothing(tree: &NodeTree, node: &Node) -> bool {
     !node.is_text()
-        && matches!(
-            node.computed_style.visibility,
-            VisibilityValue::Hidden | VisibilityValue::Collapse
-        )
+        && hides_own(tree, node)
         && CULL_HIDDEN.get()
+        && !PAINT_WATCHING.get()
         && !shows_below(tree, node.id)
 }
