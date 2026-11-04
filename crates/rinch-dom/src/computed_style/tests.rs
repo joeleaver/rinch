@@ -97,6 +97,7 @@ fn for_anonymous_box_copies_every_entry_on_its_inherited_list() {
         letter_spacing: 5.0,
         word_spacing: 6.0,
         text_align: TextAlignValue::Center,
+        html_align: Some(TextAlignValue::Center),
         text_decoration: TextDecorationValue {
             underline: true,
             strikethrough: true,
@@ -133,6 +134,7 @@ fn for_anonymous_box_copies_every_entry_on_its_inherited_list() {
     assert_ne!(parent.letter_spacing, default.letter_spacing);
     assert_ne!(parent.word_spacing, default.word_spacing);
     assert_ne!(parent.text_align, default.text_align);
+    assert_ne!(parent.html_align, default.html_align);
     assert_ne!(parent.text_decoration, default.text_decoration);
     assert_ne!(parent.text_transform, default.text_transform);
     assert_ne!(parent.text_underline_offset, default.text_underline_offset);
@@ -163,6 +165,7 @@ fn for_anonymous_box_copies_every_entry_on_its_inherited_list() {
     assert_eq!(anon.letter_spacing, parent.letter_spacing, "letter_spacing");
     assert_eq!(anon.word_spacing, parent.word_spacing, "word_spacing");
     assert_eq!(anon.text_align, parent.text_align, "text_align");
+    assert_eq!(anon.html_align, parent.html_align, "html_align");
     assert_eq!(
         anon.text_decoration, parent.text_decoration,
         "text_decoration"

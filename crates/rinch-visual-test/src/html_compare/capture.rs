@@ -83,8 +83,15 @@ fn stitch(probe: &mut RinchCapture, width: u32) -> Result<(RgbaImage, f64)> {
     for _ in 0..64 {
         let at = card(probe)?;
         let shot = image::load_from_memory(&probe.screenshot()?)?;
-        // The screenshot is in physical pixels; the boxes are logical.
-        let scale = f64::from(shot.width()) / f64::from(width + BAR);
+        // The screenshot is in physical pixels; the boxes are logical. The
+        // window's logical width is the probe root's (the window manager may
+        // have made the window wider than asked: a narrow one usually is).
+        let window = probe
+            .query_selector(".probe")?
+            .into_iter()
+            .next()
+            .map_or(f64::from(width + BAR), |p| p.width);
+        let scale = f64::from(shot.width()) / window;
         let shot = if scale == 1.0 {
             shot.to_rgba8()
         } else {

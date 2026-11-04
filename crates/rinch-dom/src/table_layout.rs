@@ -213,6 +213,9 @@ struct Row {
     id: Option<RawNodeId>,
     group: Option<RawNodeId>,
     cells: Vec<RawNodeId>,
+    /// A row's one child that is not a cell (`display: block` on a `<td>`),
+    /// in the first column ([`row_of`]).
+    stacked: bool,
 }
 
 #[derive(Default)]
@@ -246,7 +249,22 @@ fn flat_children(tree: &NodeTree, id: RawNodeId, out: &mut Vec<RawNodeId>) {
     }
 }
 
-fn row_of(tree: &NodeTree, row: RawNodeId, group: Option<RawNodeId>) -> Row {
+/// Whether `id` is a row group, a row or a cell: a part that needs a table.
+fn is_row_part(tree: &NodeTree, id: RawNodeId) -> bool {
+    tree.nodes[id].computed_style.table_part.is_row_like()
+        || tree.nodes[id].computed_style.table_part == TablePart::Cell
+}
+
+/// A row's rows: itself, or, when none of its children is a table cell, one
+/// row for each child, in the first column. CSS wraps a row's consecutive
+/// children that are not cells in one anonymous cell, in the first column, so
+/// they stack there; HTML email's phone layouts rely on it (`<th
+/// style="display: block !important; width: 100% !important">` columns that
+/// stack under 600px, in a table of one row, so the first column is all of
+/// it). rinch has no anonymous cell box; a row of its own per child, in that
+/// column, draws the same. (A row mixing cells and blocks keeps each in a
+/// column of its own.)
+fn row_of(tree: &NodeTree, row: RawNodeId, group: Option<RawNodeId>) -> Vec<Row> {
     let mut kids = Vec::new();
     flat_children(tree, row, &mut kids);
     kids.retain(|&c| {
@@ -255,11 +273,27 @@ fn row_of(tree: &NodeTree, row: RawNodeId, group: Option<RawNodeId>) -> Row {
             && cs.position != PositionValue::Fixed
             && cs.table_part != TablePart::Other
     });
-    Row {
+    let blocks = !kids.is_empty()
+        && kids
+            .iter()
+            .all(|&c| tree.nodes[c].computed_style.table_part != TablePart::Cell);
+    if blocks && kids.len() > 1 {
+        return kids
+            .into_iter()
+            .map(|c| Row {
+                id: Some(row),
+                group,
+                cells: vec![c],
+                stacked: true,
+            })
+            .collect();
+    }
+    vec![Row {
         id: Some(row),
         group,
         cells: kids,
-    }
+        stacked: false,
+    }]
 }
 
 fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
@@ -282,10 +316,11 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                 id: None,
                 group: None,
                 cells: std::mem::take(&mut bare),
+                stacked: false,
             });
         }
         match part {
-            TablePart::Row => s.body.push(row_of(tree, c, None)),
+            TablePart::Row => s.body.extend(row_of(tree, c, None)),
             TablePart::RowGroup | TablePart::HeaderGroup | TablePart::FooterGroup => {
                 let mut rows = Vec::new();
                 flat_children(tree, c, &mut rows);
@@ -303,9 +338,10 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                                 id: None,
                                 group: Some(c),
                                 cells: std::mem::take(&mut cells),
+                                stacked: false,
                             });
                         }
-                        list.push(row_of(tree, r, Some(c)));
+                        list.extend(row_of(tree, r, Some(c)));
                     } else {
                         cells.push(r);
                     }
@@ -315,6 +351,7 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                         id: None,
                         group: Some(c),
                         cells,
+                        stacked: false,
                     });
                 }
             }
@@ -333,6 +370,7 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
             id: None,
             group: None,
             cells: bare,
+            stacked: false,
         });
     }
     s
@@ -388,6 +426,57 @@ impl RinchDocument {
                 return (node.computed_style.table_part == TablePart::Table).then_some(id);
             }
             id = node.parent?;
+        }
+    }
+
+    /// A block whose children are rows, row groups or cells is laid out as
+    /// the table CSS wraps them in (CSS 2.1 §17.2.1, "anonymous table
+    /// objects"): email sets `display: block` on a `<table>` for phones, and
+    /// its cells stay side by side in Chrome. rinch has no anonymous box; the
+    /// block takes the table's part itself, so with an `auto` width it is as
+    /// wide as the table would be rather than its container. Called as each
+    /// node is cascaded: a row marks its block when it is styled after it,
+    /// and the block keeps the part when it is restyled alone.
+    pub(crate) fn note_table_host(&mut self, node_id: RawNodeId) {
+        let hosts = |tree: &NodeTree, id: RawNodeId| {
+            let cs = &tree.nodes[id].computed_style;
+            cs.table_part == TablePart::None
+                && matches!(cs.display, DisplayValue::Block | DisplayValue::ListItem)
+        };
+        let part = self.tree.nodes[node_id].computed_style.table_part;
+        if part == TablePart::None {
+            if hosts(&self.tree, node_id) {
+                let mut kids = Vec::new();
+                flat_children(&self.tree, node_id, &mut kids);
+                if kids.iter().any(|&c| is_row_part(&self.tree, c)) {
+                    self.tree.nodes[node_id].computed_style.table_part = TablePart::Table;
+                    // The table it stands in, if any, now holds it as a cell.
+                    if let Some(p) = self.tree.nodes[node_id].parent {
+                        self.note_table_children_changed(p);
+                    }
+                }
+            }
+            return;
+        }
+        if !is_row_part(&self.tree, node_id) {
+            return;
+        }
+        let mut id = node_id;
+        let host = loop {
+            let Some(p) = self.tree.nodes[id].parent else {
+                return;
+            };
+            if self.tree.nodes[p].computed_style.display != DisplayValue::Contents {
+                break p;
+            }
+            id = p;
+        };
+        if hosts(&self.tree, host) {
+            self.tree.nodes[host].computed_style.table_part = TablePart::Table;
+            if self.tree.tables_owed.last() != Some(&host) {
+                self.tree.tables_owed.push(host);
+            }
+            self.tree.layout_dirty = true;
         }
     }
 
@@ -521,8 +610,10 @@ impl RinchDocument {
                 x += n;
             }
         }
+        // A stacked block's `width` is its own, inside the anonymous cell
+        // that holds it, whose width is auto.
         for (cell, slot, y) in &placed {
-            if slot.colspan == 1 && (!fixed || *y == 0) {
+            if slot.colspan == 1 && (!fixed || *y == 0) && !rows[*y].stacked {
                 let i = slot.col as usize - 1;
                 tracks[i] = merge_track(tracks[i], declared_track(&self.tree, *cell));
             }
@@ -640,6 +731,13 @@ impl RinchDocument {
     pub(crate) fn apply_table_style(&self, id: RawNodeId, style: &mut taffy::Style) {
         let node = &self.tree.nodes[id];
         if let Some(b) = &node.table_box {
+            // A block that hosts table parts ([`Self::note_table_host`]).
+            if matches!(
+                node.computed_style.display,
+                DisplayValue::Block | DisplayValue::ListItem
+            ) {
+                style.display = taffy::Display::Grid;
+            }
             let can_weigh = b.definite && !b.fixed;
             let all_declared = b.tracks.iter().all(|t| *t != Track::Auto);
             style.grid_template_columns = b
@@ -1018,6 +1116,11 @@ impl RinchDocument {
         let Some(cell) = &node.table_cell else {
             return;
         };
+        // A block that hosts a table in a cell's place ([`Self::note_table_host`])
+        // is that table, which its cell is exactly as tall as.
+        if node.table_box.is_some() {
+            return;
+        }
         let old = cell.shift;
         let align = node.computed_style.vertical_align;
         let cs = &node.computed_style;

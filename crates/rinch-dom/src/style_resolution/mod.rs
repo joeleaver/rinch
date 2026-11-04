@@ -1267,6 +1267,8 @@ impl RinchDocument {
                 self.tree.nodes[node_id].computed_style = new_style.clone();
             }
 
+            self.note_table_host(node_id);
+
             // An inline element that casts a `text-shadow` other than its
             // parent's makes its IFC's runs cast more than one list (#1048);
             // until one does, paint skips looking for them.
@@ -1895,7 +1897,103 @@ impl RinchDocument {
             style.aspect_ratio = None;
         }
         self.apply_table_style(node_id, &mut style);
+        self.unresolve_heights_in_auto_cell(node_id, &mut style);
+        self.align_by_html(node_id, &mut style);
         style
+    }
+
+    /// A block box under HTML's `align` ([`ComputedStyle::html_align`]) with
+    /// a width of its own (a table's is its content's) is aligned by it:
+    /// `<td align="center"><table>` centres the table, as in Chrome, which
+    /// centres the margin box. Its margins become `auto` on the side or sides
+    /// that take the room, when they are equal (zero, in email); otherwise
+    /// it is left where it is.
+    ///
+    /// [`ComputedStyle::html_align`]: crate::computed_style::ComputedStyle::html_align
+    fn align_by_html(&self, node_id: RawNodeId, style: &mut taffy::Style) {
+        use crate::computed_style::{
+            DimensionValue, DisplayValue, LengthPercentageAutoValue, PositionValue, TablePart,
+            TextAlignValue,
+        };
+        let node = &self.tree.nodes[node_id];
+        let Some(parent) = node.parent.and_then(|p| self.tree.nodes.get(p)) else {
+            return;
+        };
+        let Some(align) = parent.computed_style.html_align else {
+            return;
+        };
+        let cs = &node.computed_style;
+        let in_flow_block = matches!(
+            parent.computed_style.display,
+            DisplayValue::Block | DisplayValue::ListItem
+        ) && matches!(
+            cs.display,
+            DisplayValue::Block | DisplayValue::ListItem | DisplayValue::Flex | DisplayValue::Grid
+        ) && !matches!(
+            cs.position,
+            PositionValue::Absolute | PositionValue::Fixed
+        ) && cs.float == taffy::Float::None
+            && !cs.table_part.is_internal();
+        let own_width =
+            cs.table_part == TablePart::Table || !matches!(cs.width, DimensionValue::Auto);
+        if !in_flow_block || !own_width {
+            return;
+        }
+        let (left, right) = (cs.margin_left, cs.margin_right);
+        if matches!(left, LengthPercentageAutoValue::Auto)
+            || matches!(right, LengthPercentageAutoValue::Auto)
+        {
+            return;
+        }
+        use LengthPercentageAutoValue::{Length, Percent};
+        let equal = match (left, right) {
+            (Length(a), Length(b)) | (Percent(a), Percent(b)) => a == b,
+            _ => false,
+        };
+        let auto = taffy::LengthPercentageAuto::auto();
+        match align {
+            TextAlignValue::Center if equal => {
+                style.margin.left = auto;
+                style.margin.right = auto;
+            }
+            TextAlignValue::Start => style.margin.right = auto,
+            TextAlignValue::End => style.margin.left = auto,
+            _ => {}
+        }
+    }
+
+    /// A percentage `height`, `min-height` or `max-height` on a child of a
+    /// table cell with no fixed `height` behaves as `auto` (a cell's own
+    /// percentage height is not one rinch sizes it by; CSS 2.1
+    /// §10.5: its containing block's height depends on its content), as in
+    /// Chrome. Resolved against the cell's laid-out height instead, an
+    /// email's `min-height: 100%` blocks were each as tall as their whole
+    /// cell, and the cell did not grow to hold them: everything after the
+    /// first was laid out below the message and never drawn (Home Depot's
+    /// phone layout).
+    fn unresolve_heights_in_auto_cell(&self, node_id: RawNodeId, style: &mut taffy::Style) {
+        use crate::computed_style::{DimensionValue, TablePart};
+        let Some(parent) = self.tree.nodes[node_id]
+            .parent
+            .and_then(|p| self.tree.nodes.get(p))
+        else {
+            return;
+        };
+        if parent.computed_style.table_part != TablePart::Cell
+            || matches!(parent.computed_style.height, DimensionValue::Length(_))
+        {
+            return;
+        }
+        let percent = |raw: taffy::CompactLength| raw.tag() == taffy::CompactLength::PERCENT_TAG;
+        if percent(style.size.height.into_raw()) {
+            style.size.height = taffy::Dimension::auto();
+        }
+        if percent(style.min_size.height.into_raw()) {
+            style.min_size.height = taffy::LengthPercentageAuto::auto();
+        }
+        if percent(style.max_size.height.into_raw()) {
+            style.max_size.height = taffy::LengthPercentageAuto::auto();
+        }
     }
 
     /// Set [`NodeTree::inline_text_shadows`] if `node_id` — just cascaded — is
