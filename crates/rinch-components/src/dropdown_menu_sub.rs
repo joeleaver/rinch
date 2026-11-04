@@ -133,6 +133,9 @@ pub struct DropdownMenuSub {
     /// (negative overlaps). Written as `--rinch-dropdown-menu-sub-offset` on
     /// the submenu; unset, the cascade's value applies (default `-3px`).
     pub offset: Option<i32>,
+    /// A window resize while open closes the submenu (Chrome closes its
+    /// menus when the window's bounds change). Off: it is placed again.
+    pub close_on_resize: bool,
 }
 
 impl Default for DropdownMenuSub {
@@ -152,6 +155,7 @@ impl Default for DropdownMenuSub {
             flip: true,
             shift: true,
             offset: None,
+            close_on_resize: true,
         }
     }
 }

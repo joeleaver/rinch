@@ -675,3 +675,188 @@ fn a_pointer_reaching_a_deeper_flyout_in_time_keeps_the_chain() {
     deadline(&mut app);
     assert!(!is_open(&app, "s-new") && !is_open(&app, "s-deep"));
 }
+
+// ---- Review of #2216 ----------------------------------------------------
+
+/// Alpha, New ▸ (File, Deep ▸ (Leaf), Folder), Other ▸ (X), Beta — two
+/// enabled sibling submenus.
+fn two_subs(wrapper_style: &'static str, props: fn() -> DropdownMenuSub) -> RinchApp {
+    let open = Signal::new(true);
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let trigger = scope.create_element("div");
+        trigger.set_attribute("style", "width: 40px; height: 20px;");
+        let target = DropdownMenuTarget.render(scope, &[trigger]);
+        let leaf = item(scope, "Leaf", "i-leaf");
+        let deep = sub(scope, "Deep", "s-deep", props(), &[leaf]);
+        let file = item(scope, "File", "i-file");
+        let folder = item(scope, "Folder", "i-folder");
+        let new = sub(scope, "New", "s-new", props(), &[file, deep, folder]);
+        let x = item(scope, "X", "i-x");
+        let other = sub(scope, "Other", "s-other", props(), &[x]);
+        let kids = vec![
+            item(scope, "Alpha", "i-alpha"),
+            new,
+            other,
+            item(scope, "Beta", "i-beta"),
+        ];
+        let dropdown = DropdownMenuDropdown.render(scope, &kids);
+        let menu = DropdownMenu {
+            opened_fn: Some(Rc::new(move || open.get())),
+            on_close: Some(Callback::new(move || open.set(false))),
+            ..Default::default()
+        }
+        .render(scope, &[target, dropdown]);
+        let wrapper = scope.create_element("div");
+        wrapper.set_attribute("style", wrapper_style);
+        wrapper.set_attribute("class", "fixture-root");
+        wrapper.append_child(&menu);
+        wrapper
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    style(&mut app);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    app
+}
+
+const AT_60_40: &str = "position: absolute; left: 60px; top: 40px; line-height: 0;";
+
+/// Crossing a sibling *submenu* row on the way into an open flyout whose own
+/// panel hears the pointer: the sibling's open timer must not fire on a
+/// pointer that has left its row (review of #2216).
+#[test]
+fn a_sibling_submenu_crossed_on_the_way_into_the_flyout_does_not_open() {
+    let _t = timer_lock();
+    let mut app = two_subs(AT_60_40, defaults);
+    let at = row(&app, "s-new");
+    click(&mut app, at);
+    let at = row(&app, "s-deep");
+    click(&mut app, at);
+    let at = center(&app, find(&app, "i-file"));
+    move_to(&mut app, at);
+    deadline(&mut app);
+    assert!(
+        is_open(&app, "s-new") && !is_open(&app, "s-deep"),
+        "premise"
+    );
+    let at = center(&app, row(&app, "s-other"));
+    move_to(&mut app, at);
+    assert!(
+        armed().contains(&400),
+        "positive control: Other's open timer armed"
+    );
+    let at = center(&app, find(&app, "i-folder"));
+    move_to(&mut app, at);
+    deadline(&mut app);
+    assert!(!is_open(&app, "s-other"), "Other must not open");
+    assert!(is_open(&app, "s-new"), "New must stay open");
+}
+
+/// Crossing a sibling submenu row and leaving the menu within the delay:
+/// Chrome drops the pending selection.
+#[test]
+fn a_submenu_crossed_on_the_way_out_of_the_menu_does_not_open() {
+    let _t = timer_lock();
+    let mut app = two_subs(AT_60_40, defaults);
+    let at = center(&app, row(&app, "s-other"));
+    move_to(&mut app, at);
+    assert_eq!(armed(), vec![400], "positive control: its open timer armed");
+    move_to(&mut app, (700.0, 400.0));
+    deadline(&mut app);
+    assert!(!is_open(&app, "s-other"));
+}
+
+/// Content that grows while the flyout is open is measured again: the
+/// flyout holds its widest row and stays inside the window.
+#[test]
+fn a_flyout_whose_content_grows_while_open_is_placed_again() {
+    let _t = timer_lock();
+    let mut app = two_subs(AT_60_40, defaults);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css(".fixture-root { --rinch-dropdown-menu-sub-width: auto; }");
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let at = row(&app, "s-new");
+    click(&mut app, at);
+    let before = painted(&app, flyout(&app, "s-new"));
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css(".i-file { width: 400px; }");
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let after = painted(&app, flyout(&app, "s-new"));
+    let file = painted(&app, find(&app, "i-file"));
+    assert!(
+        after.2 - after.0 > before.2 - before.0,
+        "it grew: {before:?} → {after:?}"
+    );
+    assert!(
+        after.2 >= file.2,
+        "it holds its widest row: {after:?} {file:?}"
+    );
+    assert!(after.2 <= 800.0, "and stays inside the window: {after:?}");
+}
+
+/// A window resize while a submenu is open closes it (Chrome closes its
+/// menus on a bounds change), by default.
+#[test]
+fn a_window_resize_closes_an_open_submenu() {
+    let _t = timer_lock();
+    let mut app = two_subs(
+        "position: absolute; left: 300px; top: 40px; line-height: 0;",
+        defaults,
+    );
+    let at = row(&app, "s-new");
+    click(&mut app, at);
+    assert!(is_open(&app, "s-new"), "premise");
+    app.resolve_and_repaint(560.0, 480.0);
+    app.resolve_and_repaint(560.0, 480.0);
+    assert!(!is_open(&app, "s-new"));
+}
+
+/// With `close_on_resize: false` the submenu stays open and is placed again
+/// inside the new window.
+#[test]
+fn with_close_on_resize_off_a_resize_places_it_again() {
+    let _t = timer_lock();
+    fn keep() -> DropdownMenuSub {
+        DropdownMenuSub {
+            close_on_resize: false,
+            ..Default::default()
+        }
+    }
+    let mut app = two_subs(
+        "position: absolute; left: 300px; top: 40px; line-height: 0;",
+        keep,
+    );
+    let at = row(&app, "s-new");
+    click(&mut app, at);
+    let before = painted(&app, flyout(&app, "s-new"));
+    assert!(before.2 > 560.0, "premise: it would be past the new edge");
+    app.resolve_and_repaint(560.0, 480.0);
+    app.resolve_and_repaint(560.0, 480.0);
+    assert!(is_open(&app, "s-new"));
+    let after = painted(&app, flyout(&app, "s-new"));
+    assert!(after.2 <= 560.0, "placed again inside: {after:?}");
+}
+
+/// Menu roles (review of #2216).
+#[test]
+fn rows_and_panels_carry_menu_roles() {
+    let _t = timer_lock();
+    let app = two_subs(AT_60_40, defaults);
+    let d = app.doc.as_ref().unwrap().borrow();
+    let role = |id: u64| d.tree.nodes[id].attributes.get("role").cloned();
+    assert_eq!(
+        role(find(&app, "rinch-dropdown-menu__dropdown")).as_deref(),
+        Some("menu")
+    );
+    assert_eq!(role(find(&app, "i-alpha")).as_deref(), Some("menuitem"));
+    assert_eq!(role(row(&app, "s-new")).as_deref(), Some("menuitem"));
+    assert_eq!(role(flyout(&app, "s-new")).as_deref(), Some("menu"));
+}
