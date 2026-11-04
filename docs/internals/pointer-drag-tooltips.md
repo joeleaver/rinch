@@ -138,15 +138,95 @@ group.
   (`aria-live="assertive"`, `aria-atomic="true"`, inline-hidden); a sentence
   equal to the region's current text gets a trailing no-break space, so a
   repeat is heard.
-- **`data-drag-ghost="false"`** on an item: desktop's `activate_drag` hides the
-  built-in ghost when the source or an ancestor carries it — an attribute a
-  host applying a guest's DOM reads like any other, where the guest's
-  `suppress_drag_ghost()` reaches nothing that paints.
+- **`data-drag-ghost="false"`** on a list (on each item before #2154; an item
+  is drawn before its list and cannot know the list's `preview`): desktop's
+  `activate_drag` hides the built-in ghost when the source or an ancestor
+  carries it — an attribute a host applying a guest's DOM reads like any
+  other, where the guest's `suppress_drag_ghost()` reaches nothing that
+  paints. A `SortPreview::Snapshot` list omits it and does not suppress.
+- **Presentation options (#2154).** `preview` / `source` are read from the
+  source list's config (held in `Active.from`), `indicator` from the target
+  list's. The preview is built at `begin` in a `RenderScope::new(doc, body)`
+  (`ListConfig.doc` / `.body` from the list's render scope; rinch-web's body
+  is the mount root): a `.rinch-sortable__ghost` wrapper holding a copy
+  (`copy_tree`: `attribute_list` + `node_type` + `text_content`, dropping
+  `data-on*`, `id`, `tabindex`, `draggable`, `data-sortable-*`) or the app's
+  element. It is placed by inline custom properties
+  (`--rinch-sortable-ghost-x/-y` = pointer − grab point) from every
+  `data-ondragmove` and `data-ondragover` (`follow_pointer`), and discarded,
+  its scope disposed, in `end_active`. Between the wrapper and the preview's
+  body sit `display: contents` stand-ins (`mirror`: tag, classes minus the
+  drag's own state classes, attributes and inline style, plus `display:
+  contents`) for every element from below `<body>` down to the item's list
+  (and, for `Custom`, the item), so the cascade reaches the body as it
+  reaches the item: inherited values, descendant selectors, a class setting a
+  `--rinch-sortable-ghost-*` property on the list, an ancestor or the item.
+  Chosen over copying resolved values onto the preview: no backend-specific
+  computed-style query, and selectors (not only inherited values) apply. The
+  body is placed `position: fixed` by the wrapper's
+  `--rinch-sortable-ghost-x/-y`, sized at the item's **layout** size
+  (`DomDocument::layout_size`: Taffy's box, the web's `offsetWidth`) and
+  scaled by `--rinch-sortable-ghost-fit` = painted / layout (a scaled
+  ancestor), placed by its centre (`Active.ghost_fix`). A copy drops the
+  placement declarations of the item's inline style (`PLACEMENT`). `Custom`
+  runs under `scope.push_owner()`, so what it makes is disposed with it.
+  The wrapper is one node per document (`GHOST_WRAPPERS`), detached between
+  drags; at the end its children are taken with `set_inner_html("")`, the
+  verb both backends free a subtree on — desktop's `discard` keeps slab
+  entries (#723), which leaked 7 nodes a drag. Copies drop handler,
+  identity, focus and runtime attributes (`copied_attribute`: `data-on*`,
+  `data-pm-*`, `data-rinch-*`, `data-viewport*`, `data-trap-focus`,
+  `data-render-surface`, `contenteditable`, …), keeping other `data-`
+  attributes as style hooks.
+  In the source's own list (not collapsing), a gap is `reordered()`: each
+  item's offset is its position packed in the drop's order less its position
+  packed as it is, from the items' **current layout sizes** (`layout_size`,
+  their own units, so a scaled ancestor is right) and the spacing measured at
+  `begin`; an item added or removed mid-drag is laid out with the rest. The
+  items between the place and the source make room and the source is drawn
+  at the place. A leave that withdrew the place (a re-rendered source
+  withdraws at once) followed by an over onto the source drawn there takes
+  the place back and draws it again (`Active.left_over`, cleared each move) —
+  only when that node was drawn away from home when the place was withdrawn
+  (`Active.left_moved`): a source a co-edit drew afresh at home is over its
+  own place. Over the moved
+  source the offer stays (`drag_over` returns early),
+  and a `data-ondragmove` with no `data-ondragover` while the pointer is over
+  the source (the runtime offers no drop on the dragged element itself) does
+  not withdraw. The grab point comes from
+  `data-ondragstart`'s click context, which **both runtimes now set to the
+  press point and the source's box** (desktop: `mousedown_pos` and
+  `painted_element_box`; rinch-web: `WebDragState::start_x/y`,
+  `dispatch_drag_with_bounds`). The gap and the collapse are `reflow()`:
+  after every `set_offer` (and at `begin`) it works out a shift per item —
+  `+extent` for the target list's rest items from the slot on, when the offer
+  is accepted and that list's indicator has a gap; `-extent·n` for an item
+  with n collapsed carried items before it in the source list; over the
+  source's own (no-op) place a collapsed list opens the gap there — and
+  writes only the changed ones as `--rinch-sortable-shift-x/-y` with the
+  `--shifted` class; an item that stops shifting goes to `0px` and keeps the
+  class, so the way back transitions too. The extent is the carried items'
+  boxes plus the list's spacing (pressed item to its neighbour), measured at
+  `begin` before anything moves. The transition is on `.rinch-sortable--reflowing`
+  lists only, and `end_active` takes the classes and the properties off in
+  the same pass as the drop's re-render, so nothing slides from a stale
+  offset. **Hit-testing uses painted boxes**, transforms included (the only
+  boxes either backend gives); the midpoint rule is stable under the shifts
+  because opening a gap before an item moves its midpoint away from the
+  pointer (pinned by a sweep in `sortable_2154_tests`). `Active.over` is the
+  place under the pointer, no-op included; a pointer drag starts over its home
+  place, and a `data-ondragmove` with no `data-ondragover` since the last one
+  (`Active.hovered`) withdraws it — a drag that leaves its list before any
+  target was entered has no leave to hear. `sortable_drag()` /
+  `sortable_drag_pointer()` are leaked thread signals (`live_signal` makes a
+  new one when the runtime freed the old), set with `set_if_changed` from
+  `publish()`.
 
 Pins: `rinch/src/app/sortable_2091_tests.rs` (the real event path; a module
 driven by dispatching the handler attributes alone; `review_2093`;
 `nested_same_group`), `rinch-components/tests/sortable_2093.rs` (a mock
-document with no boxes, no runtime), `rinch-web/tests/sortable_2091.rs`.
+document with no boxes, no runtime), `rinch-web/tests/sortable_2091.rs`;
+presentation: `rinch/src/app/sortable_2154_tests.rs`, `rinch-web/tests/sortable_2154.rs`.
 
 ### Pointer Capture Drag (Drag Builder)
 

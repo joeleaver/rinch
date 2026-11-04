@@ -55,7 +55,9 @@
 //!   block's used size never depends on a box resolved against it.
 //!   (Not for a box inside an atomic inline: this pass does not reach a
 //!   detached compute, so no `Calc` in one is resolved, in flow or out —
-//!   #1412.)
+//!   #1412. An atomic inline's *own* `width`/`min-width`/`max-width`
+//!   `Calc` is resolved by `ifc::own_percentage_widths` against its
+//!   containing block when the box is measured, #2146.)
 //!   `position: fixed` keeps the Taffy parent as its basis for these.
 //! - An absolute box whose containing block *is* its Taffy parent resolves
 //!   against that parent's padding box with the basis definite on both axes

@@ -554,6 +554,15 @@ impl DomDocument for MockDomDocument {
         self.mark_dirty(node);
     }
 
+    fn attribute_list(&self, node: NodeId) -> Vec<(String, String)> {
+        self.nodes.get(&node).map_or_else(Vec::new, |n| {
+            n.attributes
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+    }
+
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
         self.count(|ops| ops.attribute_reads += 1);
         self.nodes.get(&node)?.attributes.get(name).cloned()

@@ -387,6 +387,21 @@ pub trait DomDocument {
     /// Get an attribute value.
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String>;
 
+    /// Every attribute of `node`, as (name, value) pairs in no promised order
+    /// (#2154: a component's copy of an element). Empty for a text node, a
+    /// node that is gone, and a host that cannot list them (the default).
+    fn attribute_list(&self, _node: NodeId) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// `node`'s border-box size as laid out, before any CSS transform on it
+    /// or an ancestor scales it (the web's `offsetWidth`/`offsetHeight`), in
+    /// logical pixels (#2154). `None` where the host has no layout (the
+    /// default) or the node is gone.
+    fn layout_size(&self, _node: NodeId) -> Option<(f32, f32)> {
+        None
+    }
+
     /// The text a form control **holds right now** — what the user sees and
     /// what the next keystroke edits — as opposed to its `value` *content
     /// attribute* (issue #238).

@@ -529,8 +529,28 @@ impl RinchApp {
                         // Capture snapshot and compute anchor
                         self.activate_drag(node_id, mousedown_pos, (x, y), scale_factor);
 
-                        // Fire ondragstart handler
+                        // Fire ondragstart handler, its click context the
+                        // press point and the source's painted box (#2154):
+                        // a source that draws its own ghost keeps the point
+                        // it was grabbed at under the pointer.
                         if let Some(doc) = &self.doc {
+                            let (ex, ey, ew, eh) = {
+                                let d = doc.borrow();
+                                crate::app::hit_testing::painted_element_box(&d.tree, node_id)
+                            };
+                            events::set_click_context(events::ClickContext {
+                                mouse_x: mousedown_pos.0,
+                                mouse_y: mousedown_pos.1,
+                                element_x: ex,
+                                element_y: ey,
+                                element_width: ew,
+                                element_height: eh,
+                                text_hit: Default::default(),
+                                viewport_width: vp_w,
+                                viewport_height: vp_h,
+                                button: events::MouseButton::Left,
+                                modifiers: self.modifier_state(),
+                            });
                             Self::dispatch_drag_attr(doc, node_id, "data-ondragstart");
                         }
 

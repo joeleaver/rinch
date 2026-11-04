@@ -294,6 +294,12 @@ impl RinchDocument {
             Some(id) => id,
             None => return,
         };
+        // Which tables, and which of their cells, changed — read before any
+        // compute of this layout clears Taffy's dirty flags (#2156, review of
+        // #2153): an atomic inline's own compute runs first and lays out a
+        // table inside it, and a table that skips the column measure has its
+        // cells laid out all the same.
+        self.note_changed_tables();
 
         // IFC setup passes only need to run when tree structure or display modes
         // changed. Text-only changes (e.g. slider label "50%" → "19%") preserve the
@@ -744,9 +750,32 @@ impl RinchDocument {
         root_taffy: taffy::NodeId,
         available_space: taffy::Size<taffy::AvailableSpace>,
     ) -> HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>> {
+        self.run_taffy(TaffyRun::Layout(root_taffy), available_space)
+            .0
+    }
+
+    /// The size each of `nodes` takes in `available_space`, asked as a parent
+    /// asks a child for its contribution: no layout is written, so the
+    /// final-layout cache entries the next root compute reuses survive
+    /// (`TaffyTree::compute_sizes_with_block_measure`, #2141). Unrounded.
+    pub(crate) fn measure_taffy_sizes(
+        &mut self,
+        nodes: &[taffy::NodeId],
+        available_space: taffy::Size<taffy::AvailableSpace>,
+    ) -> Vec<taffy::Size<f32>> {
+        self.run_taffy(TaffyRun::Sizes(nodes), available_space).1
+    }
+
+    fn run_taffy(
+        &mut self,
+        run: TaffyRun<'_>,
+        available_space: taffy::Size<taffy::AvailableSpace>,
+    ) -> (MeasuredTextLayouts, Vec<taffy::Size<f32>>) {
         use crate::perf::Counter;
-        self.tree.taffy_computes += 1;
-        self.tree.perf.bump(Counter::TaffyRootComputes);
+        if let TaffyRun::Layout(_) = run {
+            self.tree.taffy_computes += 1;
+            self.tree.perf.bump(Counter::TaffyRootComputes);
+        }
         // The measure closure borrows `self.tree.nodes` while the compute
         // borrows `self.tree.taffy` mutably, so it counts into locals that are
         // folded into `self.tree.perf` after the compute.
@@ -792,304 +821,308 @@ impl RinchDocument {
         let ifc_float_bands = RefCell::new(std::mem::take(&mut self.tree.ifc_float_bands));
 
         let t = web_time::Instant::now();
-        self.tree
-            .taffy
-            .compute_layout_with_block_measure(
-                root_taffy,
-                available_space,
-                |inputs, _node_id, context, style, block_ctx| {
-                    // The block context of an IFC root's leaf: the room its
-                    // floats leave the lines, read before the leaf algorithm
-                    // takes `inputs`, and the floats left for the paragraph
-                    // to place as its lines reach them (`float_wrap`).
-                    let block_ctx =
-                        block_ctx.filter(|_| matches!(context, Some(NodeContext::InlineRoot(_))));
-                    let leaf_box = block_ctx
-                        .as_ref()
-                        .and_then(|_| crate::float_wrap::LeafBox::of(&inputs, style));
-                    let floats = block_ctx
-                        .as_deref()
-                        .map(|ctx| crate::float_wrap::FloatBands::of_leaf(ctx, &inputs, style))
-                        .filter(|bands| !bands.is_empty());
-                    let places_floats = block_ctx
-                        .as_deref()
-                        .is_some_and(|ctx| !ctx.pending_floats().is_empty());
-                    // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
-                    // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
-                    // `TaffyView` ran around the size this body returns, with the
-                    // same `0.0` calc resolver. The body also says where its
-                    // first line's baseline is, from the content-box top, and
-                    // `with_first_baseline` hands it to Taffy (#1013).
-                    let mut first_baseline: Option<f32> = None;
-                    let out = taffy::compute_leaf_layout(
-                        crate::out_of_flow::absolute_leaf_inputs(inputs, style),
-                        style,
-                        |_, _| 0.0,
-                        |known_dims, avail_space| {
-                            measure_calls.set(measure_calls.get() + 1);
-                            let max_width = match avail_space.width {
-                                taffy::AvailableSpace::Definite(w) => Some(w),
-                                taffy::AvailableSpace::MaxContent => None,
-                                taffy::AvailableSpace::MinContent => Some(0.0),
-                            };
+        let measure = measure_fn(|inputs, _node_id, context, style, block_ctx| {
+            // The block context of an IFC root's leaf: the room its
+            // floats leave the lines, read before the leaf algorithm
+            // takes `inputs`, and the floats left for the paragraph
+            // to place as its lines reach them (`float_wrap`).
+            let block_ctx =
+                block_ctx.filter(|_| matches!(context, Some(NodeContext::InlineRoot(_))));
+            let leaf_box = block_ctx
+                .as_ref()
+                .and_then(|_| crate::float_wrap::LeafBox::of(&inputs, style));
+            let floats = block_ctx
+                .as_deref()
+                .map(|ctx| crate::float_wrap::FloatBands::of_leaf(ctx, &inputs, style))
+                .filter(|bands| !bands.is_empty());
+            let places_floats = block_ctx
+                .as_deref()
+                .is_some_and(|ctx| !ctx.pending_floats().is_empty());
+            // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
+            // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
+            // `TaffyView` ran around the size this body returns, with the
+            // same `0.0` calc resolver. The body also says where its
+            // first line's baseline is, from the content-box top, and
+            // `with_first_baseline` hands it to Taffy (#1013).
+            let mut first_baseline: Option<f32> = None;
+            let out = taffy::compute_leaf_layout(
+                crate::out_of_flow::absolute_leaf_inputs(inputs, style),
+                style,
+                |_, _| 0.0,
+                |known_dims, avail_space| {
+                    measure_calls.set(measure_calls.get() + 1);
+                    let max_width = match avail_space.width {
+                        taffy::AvailableSpace::Definite(w) => Some(w),
+                        taffy::AvailableSpace::MaxContent => None,
+                        taffy::AvailableSpace::MinContent => Some(0.0),
+                    };
 
-                            match context {
-                                Some(NodeContext::Text(text)) => {
-                                    if text.content.is_empty() {
-                                        return taffy::Size {
-                                            width: 0.0,
-                                            height: 0.0,
-                                        };
-                                    }
-
-                                    // Skip Parley measurement for text in collapsed blocks
-                                    if nodes[text.node_id].estimated_height.is_some()
-                                        || nodes[text.node_id]
-                                            .parent
-                                            .is_some_and(|p| nodes[p].estimated_height.is_some())
-                                    {
-                                        return taffy::Size::ZERO;
-                                    }
-
-                                    shape_text.set(shape_text.get() + 1);
-                                    // If no_wrap is set (white-space: nowrap), don't constrain width
-                                    let wrap_width = if text.no_wrap {
-                                        None
-                                    } else {
-                                        known_dims.width.or(max_width)
-                                    };
-                                    let leaf = crate::ifc::shape_text_leaf(
-                                        font_cx, layout_cx, text, wrap_width,
-                                    );
-                                    let mut h = hang.get();
-                                    h.add(leaf.hang);
-                                    hang.set(h);
-
-                                    // Cache the layout for use during paint
-                                    // Use wrap_width bits as part of the key since layout depends on it
-                                    let wrap_bits =
-                                        wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
-                                    first_baseline = leaf.first_baseline();
-                                    text_layout_cache
-                                        .borrow_mut()
-                                        .insert((text.node_id, wrap_bits), leaf.layout);
-
-                                    taffy::Size {
-                                        width: known_dims.width.unwrap_or(leaf.width),
-                                        height: known_dims.height.unwrap_or(leaf.height),
-                                    }
-                                }
-                                Some(NodeContext::Image {
-                                    natural, aspect, ..
-                                }) => {
-                                    // A loaded image's own ratio unless `aspect-ratio`
-                                    // declares one without `auto`; before it loads (or when
-                                    // it failed), the declared one, which is the one its
-                                    // `width` and `height` attributes map to (#684) unless an
-                                    // author rule replaced it (#1286); with neither, none.
-                                    let (natural, ratio) =
-                                        crate::replaced::image_natural_size(*natural, *aspect);
-                                    // A replaced element with a natural size and
-                                    // ratio (#788, #1150): a style width or height
-                                    // gives the other through the ratio, and so do
-                                    // `min-*`/`max-*` clamps.
-                                    crate::replaced::contribution(
-                                        crate::replaced::measure(
-                                            natural,
-                                            ratio,
-                                            known_dims,
-                                            style,
-                                            inputs.parent_size,
-                                            inputs.sizing_mode == taffy::SizingMode::InherentSize,
-                                        ),
-                                        style,
-                                        known_dims,
-                                        inputs.available_space,
-                                    )
-                                }
-                                Some(NodeContext::InlineRoot(root_id)) => {
-                                    let root_id = *root_id;
-
-                                    // Collapsed block (virtualized) — return estimated size
-                                    // without doing any Parley work.
-                                    //
-                                    // This early return only runs at all because the
-                                    // node is a Taffy leaf — Taffy never consults a
-                                    // measure function on a node with children (the
-                                    // IFC leaf invariant, #466; see
-                                    // `NodeContext::InlineRoot`). A non-leaf
-                                    // virtualized root would silently get 0 from the
-                                    // block algorithm instead of its estimate.
-                                    if let Some(est_h) = nodes[root_id].estimated_height {
-                                        return taffy::Size {
-                                            width: known_dims.width.unwrap_or(0.0),
-                                            height: known_dims.height.unwrap_or(est_h),
-                                        };
-                                    }
-
-                                    // Use wrap_width bits as cache key
-                                    let wrap_bits =
-                                        max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
-
-                                    let beside_floats = floats.is_some() || places_floats;
-                                    // Laid out with no float beside it, the root's paint
-                                    // layout has the whole width again: its old bands go
-                                    // before the cache below can answer (the bands of a
-                                    // root beside floats are recorded after its build).
-                                    // (Most documents have no floats: an empty map is
-                                    // not hashed into.)
-                                    if inputs.run_mode == taffy::RunMode::PerformLayout
-                                        && !beside_floats
-                                    {
-                                        let mut bands = ifc_float_bands.borrow_mut();
-                                        if !bands.is_empty() {
-                                            bands.remove(&root_id);
-                                        }
-                                    }
-
-                                    // Check persistent IFC measure cache — skip expensive
-                                    // Parley rebuild if this root's text hasn't changed.
-                                    // Its sizes are of lines with the whole width: a root
-                                    // beside a float, or placing its own, is broken afresh,
-                                    // and not kept.
-                                    if !beside_floats {
-                                        let cached = ifc_measure_cache
-                                            .borrow()
-                                            .get(&root_id)
-                                            .and_then(|e| e.get(wrap_bits));
-                                        if let Some(m) = cached {
-                                            cache_hits.set(cache_hits.get() + 1);
-                                            first_baseline = m.first_baseline;
-                                            return taffy::Size {
-                                                width: known_dims.width.unwrap_or(m.width),
-                                                height: known_dims.height.unwrap_or(m.height),
-                                            };
-                                        }
-                                    }
-
-                                    // Full Parley rebuild (text changed or cache miss)
-                                    shape_ifc.set(shape_ifc.get() + 1);
-                                    let atomic = crate::ifc::AtomicContributions {
-                                        wrap_width: max_width,
-                                        min_content,
-                                        resolved_at,
-                                        requests: min_requests,
-                                    };
-                                    let mut placer = block_ctx
-                                        .zip(leaf_box)
-                                        .filter(|_| places_floats)
-                                        .map(|(ctx, leaf)| crate::float_wrap::BlockFloats {
-                                            ctx,
-                                            nodes,
-                                            leaf,
-                                        });
-                                    let (inline_layout, resolved) = Self::build_inline_layout(
-                                        nodes,
-                                        root_id,
-                                        max_width,
-                                        None,
-                                        1.0,
-                                        font_cx,
-                                        layout_cx,
-                                        Some(&atomic),
-                                        floats.as_ref(),
-                                        placer
-                                            .as_mut()
-                                            .map(|p| p as &mut dyn crate::ifc::PlaceFloats),
-                                    );
-                                    font_family_resolves.set(font_family_resolves.get() + resolved);
-                                    // The room the lines were finally broken beside, the
-                                    // paragraph's own floats included, for the paint layout.
-                                    if inputs.run_mode == taffy::RunMode::PerformLayout {
-                                        let last = match &placer {
-                                            Some(p) => Some(p.leaf.bands(p.ctx)),
-                                            None => floats.clone(),
-                                        }
-                                        .filter(|bands| !bands.is_empty());
-                                        let mut bands = ifc_float_bands.borrow_mut();
-                                        match last {
-                                            Some(last) => {
-                                                bands.insert(root_id, last);
-                                            }
-                                            None if !bands.is_empty() => {
-                                                bands.remove(&root_id);
-                                            }
-                                            None => {}
-                                        }
-                                    }
-                                    let mut h = hang.get();
-                                    h.add(inline_layout.hang);
-                                    hang.set(h);
-                                    let w = inline_layout.measured_width();
-                                    let h = inline_layout.content_height();
-                                    first_baseline =
-                                        crate::ifc::first_line_baseline(&inline_layout.layout);
-
-                                    if beside_floats {
-                                        return taffy::Size {
-                                            width: known_dims.width.unwrap_or(w),
-                                            height: known_dims.height.unwrap_or(h),
-                                        };
-                                    }
-
-                                    // Store in persistent cache
-                                    ifc_measure_cache
-                                        .borrow_mut()
-                                        .entry(root_id)
-                                        .or_default()
-                                        .insert(
-                                            wrap_bits,
-                                            crate::node::IfcMeasure {
-                                                width: w,
-                                                height: h,
-                                                first_baseline,
-                                            },
-                                        );
-
-                                    // Measure callback for IFC root
-                                    taffy::Size {
-                                        width: known_dims.width.unwrap_or(w),
-                                        height: known_dims.height.unwrap_or(h),
-                                    }
-                                }
-                                Some(NodeContext::FormControl {
-                                    content_width,
-                                    content_height,
-                                }) => crate::form_control::measure(
-                                    *content_width,
-                                    *content_height,
-                                    known_dims,
-                                ),
-                                Some(NodeContext::Replaced {
-                                    width,
-                                    height,
-                                    ratio,
-                                    aspect,
-                                }) => crate::replaced::contribution(
-                                    crate::replaced::measure(
-                                        (*width, *height),
-                                        aspect.used_ratio(*ratio),
-                                        known_dims,
-                                        style,
-                                        inputs.parent_size,
-                                        inputs.sizing_mode == taffy::SizingMode::InherentSize,
-                                    ),
-                                    style,
-                                    known_dims,
-                                    inputs.available_space,
-                                ),
-                                _ => taffy::Size::ZERO,
+                    match context {
+                        Some(NodeContext::Text(text)) => {
+                            if text.content.is_empty() {
+                                return taffy::Size {
+                                    width: 0.0,
+                                    height: 0.0,
+                                };
                             }
-                        },
-                    );
-                    crate::ifc::with_first_baseline(out, &inputs, style, first_baseline)
+
+                            // Skip Parley measurement for text in collapsed blocks
+                            if nodes[text.node_id].estimated_height.is_some()
+                                || nodes[text.node_id]
+                                    .parent
+                                    .is_some_and(|p| nodes[p].estimated_height.is_some())
+                            {
+                                return taffy::Size::ZERO;
+                            }
+
+                            shape_text.set(shape_text.get() + 1);
+                            // If no_wrap is set (white-space: nowrap), don't constrain width
+                            let wrap_width = if text.no_wrap {
+                                None
+                            } else {
+                                known_dims.width.or(max_width)
+                            };
+                            let leaf =
+                                crate::ifc::shape_text_leaf(font_cx, layout_cx, text, wrap_width);
+                            let mut h = hang.get();
+                            h.add(leaf.hang);
+                            hang.set(h);
+
+                            // Cache the layout for use during paint
+                            // Use wrap_width bits as part of the key since layout depends on it
+                            let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+                            first_baseline = leaf.first_baseline();
+                            text_layout_cache
+                                .borrow_mut()
+                                .insert((text.node_id, wrap_bits), leaf.layout);
+
+                            taffy::Size {
+                                width: known_dims.width.unwrap_or(leaf.width),
+                                height: known_dims.height.unwrap_or(leaf.height),
+                            }
+                        }
+                        Some(NodeContext::Image {
+                            natural, aspect, ..
+                        }) => {
+                            // A loaded image's own ratio unless `aspect-ratio`
+                            // declares one without `auto`; before it loads (or when
+                            // it failed), the declared one, which is the one its
+                            // `width` and `height` attributes map to (#684) unless an
+                            // author rule replaced it (#1286); with neither, none.
+                            let (natural, ratio) =
+                                crate::replaced::image_natural_size(*natural, *aspect);
+                            // A replaced element with a natural size and
+                            // ratio (#788, #1150): a style width or height
+                            // gives the other through the ratio, and so do
+                            // `min-*`/`max-*` clamps.
+                            crate::replaced::contribution(
+                                crate::replaced::measure(
+                                    natural,
+                                    ratio,
+                                    known_dims,
+                                    style,
+                                    inputs.parent_size,
+                                    inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                ),
+                                style,
+                                known_dims,
+                                inputs.available_space,
+                            )
+                        }
+                        Some(NodeContext::InlineRoot(root_id)) => {
+                            let root_id = *root_id;
+
+                            // Collapsed block (virtualized) — return estimated size
+                            // without doing any Parley work.
+                            //
+                            // This early return only runs at all because the
+                            // node is a Taffy leaf — Taffy never consults a
+                            // measure function on a node with children (the
+                            // IFC leaf invariant, #466; see
+                            // `NodeContext::InlineRoot`). A non-leaf
+                            // virtualized root would silently get 0 from the
+                            // block algorithm instead of its estimate.
+                            if let Some(est_h) = nodes[root_id].estimated_height {
+                                return taffy::Size {
+                                    width: known_dims.width.unwrap_or(0.0),
+                                    height: known_dims.height.unwrap_or(est_h),
+                                };
+                            }
+
+                            // Use wrap_width bits as cache key
+                            let wrap_bits = max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+
+                            let beside_floats = floats.is_some() || places_floats;
+                            // Laid out with no float beside it, the root's paint
+                            // layout has the whole width again: its old bands go
+                            // before the cache below can answer (the bands of a
+                            // root beside floats are recorded after its build).
+                            // (Most documents have no floats: an empty map is
+                            // not hashed into.)
+                            if inputs.run_mode == taffy::RunMode::PerformLayout && !beside_floats {
+                                let mut bands = ifc_float_bands.borrow_mut();
+                                if !bands.is_empty() {
+                                    bands.remove(&root_id);
+                                }
+                            }
+
+                            // Check persistent IFC measure cache — skip expensive
+                            // Parley rebuild if this root's text hasn't changed.
+                            // Its sizes are of lines with the whole width: a root
+                            // beside a float, or placing its own, is broken afresh,
+                            // and not kept.
+                            if !beside_floats {
+                                let cached = ifc_measure_cache
+                                    .borrow()
+                                    .get(&root_id)
+                                    .and_then(|e| e.get(wrap_bits));
+                                if let Some(m) = cached {
+                                    cache_hits.set(cache_hits.get() + 1);
+                                    first_baseline = m.first_baseline;
+                                    return taffy::Size {
+                                        width: known_dims.width.unwrap_or(m.width),
+                                        height: known_dims.height.unwrap_or(m.height),
+                                    };
+                                }
+                            }
+
+                            // Full Parley rebuild (text changed or cache miss)
+                            shape_ifc.set(shape_ifc.get() + 1);
+                            let atomic = crate::ifc::AtomicContributions {
+                                wrap_width: max_width,
+                                min_content,
+                                resolved_at,
+                                requests: min_requests,
+                            };
+                            let mut placer = block_ctx.zip(leaf_box).filter(|_| places_floats).map(
+                                |(ctx, leaf)| crate::float_wrap::BlockFloats { ctx, nodes, leaf },
+                            );
+                            let (inline_layout, resolved) = Self::build_inline_layout(
+                                nodes,
+                                root_id,
+                                max_width,
+                                None,
+                                1.0,
+                                font_cx,
+                                layout_cx,
+                                Some(&atomic),
+                                floats.as_ref(),
+                                placer
+                                    .as_mut()
+                                    .map(|p| p as &mut dyn crate::ifc::PlaceFloats),
+                            );
+                            font_family_resolves.set(font_family_resolves.get() + resolved);
+                            // The room the lines were finally broken beside, the
+                            // paragraph's own floats included, for the paint layout.
+                            if inputs.run_mode == taffy::RunMode::PerformLayout {
+                                let last = match &placer {
+                                    Some(p) => Some(p.leaf.bands(p.ctx)),
+                                    None => floats.clone(),
+                                }
+                                .filter(|bands| !bands.is_empty());
+                                let mut bands = ifc_float_bands.borrow_mut();
+                                match last {
+                                    Some(last) => {
+                                        bands.insert(root_id, last);
+                                    }
+                                    None if !bands.is_empty() => {
+                                        bands.remove(&root_id);
+                                    }
+                                    None => {}
+                                }
+                            }
+                            let mut h = hang.get();
+                            h.add(inline_layout.hang);
+                            hang.set(h);
+                            let w = inline_layout.measured_width();
+                            let h = inline_layout.content_height();
+                            first_baseline = crate::ifc::first_line_baseline(&inline_layout.layout);
+
+                            if beside_floats {
+                                return taffy::Size {
+                                    width: known_dims.width.unwrap_or(w),
+                                    height: known_dims.height.unwrap_or(h),
+                                };
+                            }
+
+                            // Store in persistent cache
+                            ifc_measure_cache
+                                .borrow_mut()
+                                .entry(root_id)
+                                .or_default()
+                                .insert(
+                                    wrap_bits,
+                                    crate::node::IfcMeasure {
+                                        width: w,
+                                        height: h,
+                                        first_baseline,
+                                    },
+                                );
+
+                            // Measure callback for IFC root
+                            taffy::Size {
+                                width: known_dims.width.unwrap_or(w),
+                                height: known_dims.height.unwrap_or(h),
+                            }
+                        }
+                        Some(NodeContext::FormControl {
+                            content_width,
+                            content_height,
+                        }) => crate::form_control::measure(
+                            *content_width,
+                            *content_height,
+                            known_dims,
+                        ),
+                        Some(NodeContext::Replaced {
+                            width,
+                            height,
+                            ratio,
+                            aspect,
+                        }) => crate::replaced::contribution(
+                            crate::replaced::measure(
+                                (*width, *height),
+                                aspect.used_ratio(*ratio),
+                                known_dims,
+                                style,
+                                inputs.parent_size,
+                                inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                            ),
+                            style,
+                            known_dims,
+                            inputs.available_space,
+                        ),
+                        _ => taffy::Size::ZERO,
+                    }
                 },
-                // A measure leaf (an IFC root's, beside its out-of-flow
-                // children) places the floats before it: they are the floats
-                // in its root's content, placed at their lines (`float_wrap`).
-                |leaf, context| crate::float_wrap::is_measure_leaf(nodes, leaf, context),
-            )
-            .unwrap();
+            );
+            crate::ifc::with_first_baseline(out, &inputs, style, first_baseline)
+        });
+        // A measure leaf (an IFC root's, beside its out-of-flow
+        // children) places the floats before it: they are the floats
+        // in its root's content, placed at their lines (`float_wrap`).
+        let places_floats = |leaf: taffy::NodeId, context: Option<&NodeContext>| {
+            crate::float_wrap::is_measure_leaf(nodes, leaf, context)
+        };
+        let sizes = match run {
+            TaffyRun::Layout(root_taffy) => {
+                self.tree
+                    .taffy
+                    .compute_layout_with_block_measure(
+                        root_taffy,
+                        available_space,
+                        measure,
+                        places_floats,
+                    )
+                    .unwrap();
+                Vec::new()
+            }
+            TaffyRun::Sizes(of) => self.tree.taffy.compute_sizes_with_block_measure(
+                of,
+                available_space,
+                measure,
+                places_floats,
+            ),
+        };
 
         // Restore the persistent IFC measure cache (dirty_ifc_text_roots cleared after build_ifc)
         self.tree.ifc_measure_cache = ifc_measure_cache.into_inner();
@@ -1107,7 +1140,7 @@ impl RinchDocument {
         );
         perf.add_elapsed(Counter::TimeTaffyComputeNs, t);
 
-        text_layout_cache.into_inner()
+        (text_layout_cache.into_inner(), sizes)
     }
 
     /// Incremental version of `sync_text_contexts` — only processes text nodes
@@ -1396,6 +1429,10 @@ impl RinchDocument {
             if node.layout != zero {
                 node.layout = zero;
                 self.tree.paint_dirty_nodes.push(id);
+            }
+            // A hidden cell's children carry no `vertical-align` offset now.
+            if let Some(cell) = node.table_cell.as_mut() {
+                cell.kids_shift = 0.0;
             }
             let children = &self.tree.nodes[id].children;
             stack.extend_from_slice(children);
@@ -3256,4 +3293,31 @@ impl RinchDocument {
         // and setup_inline_formatting_contexts() won't re-assign them because
         // ifc_dirty is not set for text-only changes.
     }
+}
+
+/// The text layouts a compute's measures built, by node and wrap width.
+type MeasuredTextLayouts = HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>>;
+
+/// What [`RinchDocument::run_taffy`] asks Taffy for.
+enum TaffyRun<'a> {
+    /// A root compute: lay the tree under this node out.
+    Layout(taffy::NodeId),
+    /// The size of each of these nodes, laying nothing out.
+    Sizes(&'a [taffy::NodeId]),
+}
+
+/// Pins a measure closure to the signature both Taffy entry points take, so
+/// it can be built once and handed to either (the higher-ranked lifetimes are
+/// not inferred for a closure bound to a `let`).
+fn measure_fn<F>(f: F) -> F
+where
+    F: FnMut(
+        taffy::LayoutInput,
+        taffy::NodeId,
+        Option<&mut NodeContext>,
+        &taffy::Style,
+        Option<&mut taffy::BlockContext<'_>>,
+    ) -> taffy::LayoutOutput,
+{
+    f
 }
