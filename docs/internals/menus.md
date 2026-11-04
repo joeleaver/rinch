@@ -266,7 +266,7 @@ transformed ancestor (which a browser makes a fixed box's containing block) is
 subtracted out. The horizontal offset is the CSS custom property
 `--rinch-dropdown-menu-sub-offset`, read through a zero-size probe
 (`left: var(…)` in the `position: relative` submenu): rinch has no
-computed-style read for custom properties. `decide` (pure, unit-tested) puts it
+computed-style read on `NodeHandle`. `decide` (pure, unit-tested) puts it
 right of the parent panel, flips it left when it does not fit, shifts it inside
 by `EDGE_MARGIN` (4px), and caps one taller than the window. While open it
 follows its row (the row's `bounds_signal`).
