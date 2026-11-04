@@ -816,6 +816,12 @@ hole in its ancestors' backgrounds (#854), and a ligature that straddles a
 visibility boundary follows the wrong end of it (#852). As in CSS,
 a descendant that declares `visibility: visible` is painted again.
 
+A closed overlay costs paint nothing (#2137): a hidden subtree with no
+`visibility: visible` descendant is skipped whole, by paint and by the stacking
+sequence its positioned boxes would otherwise be hoisted into, so a page with a
+closed `Drawer`, `Popover` or menu paints what the page without it paints. A
+subtree that does hold a visible descendant is walked, for that descendant.
+
 
 - **It still takes part in layout**, so a hidden overlay that is an in-flow
   child of an `overflow: auto` container contributes its box to that
@@ -823,12 +829,12 @@ a descendant that declares `visibility: visible` is painted again.
   content nobody can see — as it would in a browser. A `position: fixed`
   overlay (`Modal`, `Drawer`) is exempt, since #765: a fixed box is no part of
   any scroll range below the viewport.
-- **A descendant may declare `visibility: visible`**, and the three readers do
-  not agree about what that means. Paint honours it (the node is drawn), the Tab
-  order honours it (`collect_focusable_nodes_from` tests each node on its own),
-  and hit testing does **not** — it rejects the whole subtree at the hidden
-  ancestor before it ever reaches the descendant. So such a node is painted and
-  tabbable but not clickable (#843).
+- **A descendant may declare `visibility: visible`**, and it is shown again:
+  paint draws it, the Tab order reaches it (`collect_focusable_nodes_from`
+  tests each node on its own) and, since #843, hit testing hits it, as Chrome's
+  `elementFromPoint` does. Before #843 hit testing rejected the whole subtree at
+  the hidden ancestor, so such a node was painted and tabbable but not
+  clickable.
 
 Neither is a reason to go back to `display`, which cannot animate at all. They
 are the two places to look when a closed overlay misbehaves.

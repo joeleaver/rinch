@@ -849,6 +849,27 @@ impl<const BARS: bool> Collector<'_, BARS> {
             if matches!(child.computed_style.display, DisplayValue::None) {
                 continue;
             }
+            // Nor does anything under a `visibility: hidden` box with nothing
+            // visible below it (#2137) — a closed `Drawer`, `Popover` or menu.
+            // `visibility` inherits and a descendant may set it back to
+            // `visible`, so this is not the first hidden node but one whose
+            // whole box subtree is hidden (`visibility::shows_below`, the hit
+            // tester's memo): paint draws nothing for any of it, and hit
+            // testing hits none of it, so its positioned boxes and stacking
+            // contexts are entries neither walk does anything with. Hoisting
+            // them made paint enter each, and push an empty group layer for a
+            // translucent one, every frame the overlay stayed closed.
+            //
+            // Not under an open scroll container that draws bars (#1717): its
+            // bars are drawn after its last contained entry, and a hidden one
+            // can be that entry, so dropping it would move the bars ahead of
+            // whatever sorts between — over which they used to be drawn. Paint
+            // still skips each such entry on arrival (`paints_nothing_within`).
+            if !(BARS && !self.open_bars.is_empty())
+                && crate::visibility::subtree_shows_nothing(self.tree, child)
+            {
+                continue;
+            }
             let dom_order = self.order;
             self.order += 1;
 

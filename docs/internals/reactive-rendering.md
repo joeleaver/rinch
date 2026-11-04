@@ -540,9 +540,10 @@ Three things it deliberately does not do.
   A hidden span on a line `text-overflow: ellipsis` cuts is hidden too: the
   cut keeps the lines and their text ranges (#853, #1100). Known exceptions, each filed: a hidden `data-viewport`'s layer is still composited (#854; paint stopped clearing its box in #1866), a
   ligature across a visibility boundary follows the wrong end (#852). A
-  `visibility: visible` descendant is drawn, as in CSS — but desktop hit
-  testing still skips the whole hidden subtree, so it is drawn and not
-  clickable (**#843**).
+  `visibility: visible` descendant is drawn, as in CSS, and since **#843**
+  hit testing hits it too. A closed overlay with no visible descendant is
+  skipped whole by paint and the stacking collector (**#2137**), so it costs a
+  frame nothing.
   `rinch/src/app/overlay_animation_audit_tests.rs` holds one fixture per overlay
   and fails the moment a transitioned property starts changing on a reveal pass.
   **The close animates too** (#413, #759): `TransitionProperty::Visibility`
