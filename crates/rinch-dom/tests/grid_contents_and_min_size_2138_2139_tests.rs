@@ -277,3 +277,31 @@ fn auto_fill_rows_count_from_the_grids_own_height_2139() {
     );
     assert_eq!(got, (200.0, 10.0), "four repetitions in a 220px max-height");
 }
+
+/// An `inline-grid` is laid out as its own Taffy root, so its styled height is
+/// the only thing that makes its block size definite: a 100px-tall one with
+/// two `min-height: 0` items, each holding a 100px box, shares its 100px
+/// between the two auto rows — 50 each (Chrome 156). Read as indefinite, the
+/// rows grow to their content, 100 each.
+#[test]
+fn inline_grid_with_a_styled_height_shares_it_among_auto_rows_2139() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let p = el(&mut doc, body, "");
+    let g = el(
+        &mut doc,
+        p,
+        "display: inline-grid; height: 100px; width: 100px;",
+    );
+    let items: Vec<NodeId> = (0..2)
+        .map(|_| {
+            let c = el(&mut doc, g, "min-height: 0;");
+            el(&mut doc, c, "height: 100px;");
+            c
+        })
+        .collect();
+    doc.resolve_layout(VW, VH);
+    let heights: Vec<f32> = items.iter().map(|&c| rect(&doc, c).3).collect();
+    assert_eq!(heights, vec![50.0, 50.0]);
+}
