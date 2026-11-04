@@ -75,6 +75,21 @@ fn inset_move(f: InsetFixture) -> InsetFixture {
 // of ancestor-resolved boxes, a scroll that carries boxes it is not the
 // containing block of — are pinned as exact counters in
 // `rinch-dom/tests/perf_regression_scenarios.rs` (`abs_boxes_visited`).
+// #2136: one card's text in a 430-card grid, and a change beside the grid.
+// The exact counters are pinned in `rinch-dom/tests/perf_regression_scenarios.rs`
+// (`one_changed_card_in_a_grid_*`, `percentage_pills_in_a_grid_*`).
+#[library_benchmark]
+#[bench::cards_430(setup = setup_card_grid)]
+fn card_grid_count_edit(f: CardGridFixture) -> CardGridFixture {
+    black_box(measure(black_box(f), op_card_count_edit))
+}
+
+#[library_benchmark]
+#[bench::cards_430(setup = setup_card_grid)]
+fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
+    black_box(measure(black_box(f), op_card_grid_unrelated_edit))
+}
+
 #[library_benchmark]
 #[bench::direct_500(setup = setup_badges_direct)]
 #[bench::icb_500(setup = setup_badges_icb)]
@@ -175,6 +190,8 @@ library_benchmark_group!(
         inset_move,
         abs_badge_relayout,
         abs_badge_scroll,
+        card_grid_count_edit,
+        card_grid_unrelated_edit,
         full_paint,
         vello_paint,
         shadow_paint,

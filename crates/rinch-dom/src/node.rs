@@ -3523,6 +3523,19 @@ pub struct NodeTree {
     /// its entry, so an entry still here at the same width means nothing that
     /// sizes the box moved and it need not be measured again.
     pub(crate) keyword_inline_cb_width: HashMap<RawNodeId, f32>,
+    /// The same record for an atomic inline with a **percentage** inline
+    /// size (`width`, `min-width` or `max-width`, #120): the
+    /// containing-block inner width `resolve_percentage_inline_blocks` last
+    /// resolved it against. Kept apart from `keyword_inline_cb_width`
+    /// because that map also says "lined up at a resolved, not its natural,
+    /// size" to the measure ([`crate::ifc::AtomicContributions`]), which a
+    /// percentage box has never meant. Dropped by the same events: any
+    /// measure of the box as `auto` (a change inside it or to its own
+    /// style, a structural pass, phase 1's reset of the boxes inside one
+    /// being resolved) and the node being freed. Until #2136 a percentage
+    /// box was laid out twice on every pass whatever moved — a `max-width:
+    /// 100%` pill on each of 430 grid cards was 860 computes a layout.
+    pub(crate) percent_inline_cb_width: HashMap<RawNodeId, f32>,
     /// The `auto`-width atomic inlines whose own Taffy subtree holds a
     /// percentage that resolves against the box's width (#662), as found
     /// the last time the box was measured with no containing-block width.
@@ -3833,6 +3846,7 @@ impl NodeTree {
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),
+            percent_inline_cb_width: HashMap::new(),
             auto_inline_percent_content: HashSet::new(),
             atomic_min_content: HashMap::new(),
             atomic_min_dropped: HashSet::new(),
@@ -4351,6 +4365,9 @@ impl NodeTree {
             // the first two leaked until then, review of #1477).
             if !self.keyword_inline_cb_width.is_empty() {
                 self.keyword_inline_cb_width.remove(node_id);
+            }
+            if !self.percent_inline_cb_width.is_empty() {
+                self.percent_inline_cb_width.remove(node_id);
             }
             if !self.auto_inline_percent_content.is_empty() {
                 self.auto_inline_percent_content.remove(node_id);

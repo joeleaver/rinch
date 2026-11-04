@@ -522,6 +522,113 @@ pub fn op_inset_move(mut f: InsetFixture) -> InsetFixture {
     f
 }
 
+// ── rinch-dom: a large grid of cards (#2136) ───────────────────────────────
+
+/// Cards in [`CardGridFixture`]: #2136's asset library held 430.
+pub const GRID_CARDS: usize = 430;
+
+/// #2136's shape: a scroller holding `repeat(auto-fill, minmax(108px, 1fr))`
+/// with implicit `auto` rows, each item behind a `display: contents` wrapper
+/// (as an rsx `for` builds it) and a flex column of a thumbnail with an
+/// absolutely positioned `max-width: 100%` pill in its corner, a name, and a
+/// flex row of a badge, a spacer and a "N uses" count.
+pub struct CardGridFixture {
+    pub doc: RinchDocument,
+    /// Each card's count text.
+    pub counts: Vec<NodeId>,
+    /// A text outside the grid.
+    pub outside: NodeId,
+}
+
+/// The card grid, laid out and settled, with both operations run once.
+pub fn setup_card_grid() -> CardGridFixture {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 18px; }
+         .scroll { width: 380px; height: 600px; overflow-y: auto; }
+         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+                 gap: 8px; padding: 4px; }
+         .card { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+         .thumb { position: relative; height: 80px; }
+         .tl { position: absolute; top: 4px; left: 4px; }
+         .pill { display: inline-flex; max-width: 100%; height: 18px; padding: 0 6px; }
+         .name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+         .meta { display: flex; align-items: center; gap: 4px; min-width: 0; }
+         .spacer { flex: 1 1 auto; }",
+    );
+    let el = |doc: &mut RinchDocument, parent: NodeId, tag: &str, class: &str| {
+        let e = doc.create_element(tag);
+        if !class.is_empty() {
+            doc.set_attribute(e, "class", class);
+        }
+        doc.append_child(parent, e);
+        e
+    };
+    let text = |doc: &mut RinchDocument, parent: NodeId, s: &str| {
+        let t = doc.create_text(s);
+        doc.append_child(parent, t);
+        t
+    };
+    let body = doc.body();
+    let scroll = el(&mut doc, body, "div", "scroll");
+    let grid = el(&mut doc, scroll, "div", "grid");
+    let mut counts = Vec::with_capacity(GRID_CARDS);
+    for i in 0..GRID_CARDS {
+        let wrap = el(&mut doc, grid, "div", "");
+        doc.set_attribute(wrap, "style", "display: contents");
+        let card = el(&mut doc, wrap, "div", "card");
+        let thumb = el(&mut doc, card, "div", "thumb");
+        let tl = el(&mut doc, thumb, "span", "tl");
+        let pill = el(&mut doc, tl, "span", "pill");
+        text(&mut doc, pill, "3d");
+        let name = el(&mut doc, card, "span", "name");
+        text(&mut doc, name, &format!("Asset {i}.glb"));
+        let meta = el(&mut doc, card, "span", "meta");
+        let badge = el(&mut doc, meta, "span", "");
+        text(&mut doc, badge, "v1");
+        el(&mut doc, meta, "span", "spacer");
+        counts.push(text(&mut doc, meta, "3 uses"));
+    }
+    let other = el(&mut doc, body, "div", "");
+    let outside = text(&mut doc, other, "elsewhere");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = CardGridFixture {
+        doc,
+        counts,
+        outside,
+    };
+    f = op_card_count_edit(f);
+    f = op_card_grid_unrelated_edit(f);
+    f
+}
+
+/// One card's count goes from "3 uses" to "4 uses" (or back), then layout.
+/// The grid's track sizing asks every item again; every unchanged one should
+/// be answered from its cache.
+pub fn op_card_count_edit(mut f: CardGridFixture) -> CardGridFixture {
+    let t = f.counts[GRID_CARDS / 2];
+    let next = match &f.doc.tree.nodes[t.0].kind {
+        rinch_dom::node::NodeKind::Text(s) if s.content == "4 uses" => "3 uses",
+        _ => "4 uses",
+    };
+    f.doc.set_text_content(t, next);
+    f.doc.resolve_layout(VP.0, VP.1);
+    f
+}
+
+/// A text outside the grid changes, then layout: nothing in the grid moves,
+/// and none of its 430 percentage pills is laid out again (#2136).
+pub fn op_card_grid_unrelated_edit(mut f: CardGridFixture) -> CardGridFixture {
+    let next = match &f.doc.tree.nodes[f.outside.0].kind {
+        rinch_dom::node::NodeKind::Text(s) if s.content == "elsewhere" => "elsewhere, changed",
+        _ => "elsewhere",
+    };
+    f.doc.set_text_content(f.outside, next);
+    f.doc.resolve_layout(VP.0, VP.1);
+    f
+}
+
 // ── rinch-dom: rows with an absolute badge ─────────────────────────────────
 
 /// A 400px-high scroller of `LIST_ROWS` 20px rows, each holding a 4px leaf

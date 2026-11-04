@@ -8716,10 +8716,13 @@ impl RinchDocument {
             // Measured as `auto` (no containing-block width): a keyword box's
             // cached size no longer stands (#691).
             if available_width.is_none()
-                && !self.tree.keyword_inline_cb_width.is_empty()
+                && !(self.tree.keyword_inline_cb_width.is_empty()
+                    && self.tree.percent_inline_cb_width.is_empty())
                 && let Some(&nid) = self.tree.taffy_map.get(&taffy_id)
             {
                 self.tree.keyword_inline_cb_width.remove(&nid);
+                // Nor a percentage box's (#2136).
+                self.tree.percent_inline_cb_width.remove(&nid);
             }
             let definite = |w: f32| taffy::Size {
                 width: taffy::AvailableSpace::Definite(w),
@@ -9237,13 +9240,16 @@ impl RinchDocument {
             // width and its own content alone. Its content changing
             // re-measures it as `auto` first, which drops this entry, so an
             // entry at the same width means nothing moved: skip the two or
-            // three computes. (A percentage size is left re-measured every
-            // pass, as before.)
-            if !percent
-                && any_keyword
-                && self
-                    .tree
-                    .keyword_inline_cb_width
+            // three computes. A percentage size is the same (#2136): its
+            // own record, at the same width, means it was resolved there and
+            // nothing inside it or about it has been measured since.
+            let resolved_at = if percent {
+                &self.tree.percent_inline_cb_width
+            } else {
+                &self.tree.keyword_inline_cb_width
+            };
+            if !resolved_at.is_empty()
+                && resolved_at
                     .get(&id)
                     .is_some_and(|&w| (w - inner_width).abs() < 0.01)
             {
@@ -9391,6 +9397,8 @@ impl RinchDocument {
             self.measure_inline_blocks(&[(taffy_id, Some(available))]);
             if keyword_only {
                 self.tree.keyword_inline_cb_width.insert(id, available);
+            } else {
+                self.tree.percent_inline_cb_width.insert(id, available);
             }
             if self.atomic_inline_resized(id, root_id, before) {
                 changed = true;
