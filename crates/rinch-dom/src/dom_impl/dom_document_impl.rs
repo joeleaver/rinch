@@ -77,8 +77,7 @@ impl DomDocument for RinchDocument {
             // Image elements use NodeContext::Image for intrinsic sizing
             let context = NodeContext::Image {
                 src: String::new(),
-                width: 0,
-                height: 0,
+                natural: None,
                 aspect: Default::default(),
             };
             self.tree

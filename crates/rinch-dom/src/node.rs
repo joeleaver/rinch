@@ -145,10 +145,11 @@ pub enum NodeContext {
     /// Image element with intrinsic dimensions (0x0 while loading).
     Image {
         src: String,
-        /// Intrinsic width (0 while loading).
-        width: u32,
-        /// Intrinsic height (0 while loading).
-        height: u32,
+        /// The decoded image's natural size and ratio
+        /// ([`crate::image_cache::DecodedImage::natural`]); `None` while
+        /// loading or after a failure. An SVG file may lack a dimension or
+        /// both (#2111).
+        natural: Option<crate::svg_image::NaturalSize>,
         /// The element's computed `aspect-ratio` (#1286), which carries the
         /// ratio its `width` and `height` attributes map to (#684,
         /// `aspect-ratio: auto w / h`, [`crate::replaced::attribute_ratio`])

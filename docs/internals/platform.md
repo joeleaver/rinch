@@ -30,6 +30,136 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 6. `paint_image()` renders via `Painter::draw_image` with proper affine transforms. Vello samples an image at each pixel's centre, as tiny-skia does (#1027), so `VelloPainter::draw_image` and `fill_repeating` draw it with its own transform. (Vello 0.7 sampled from the pixel's top-left **corner** — an image at a whole-pixel origin came out averaged with its neighbours — and rinch moved the image half a device pixel up-left, `vello_painter::centre_sampling`, to compensate; Vello 0.9 moved the sample to the centre, so the shift was dropped for images with the Vello 0.11 upgrade, #1955. Gradients still take it: Vello evaluates them at the corner.) Pins: `vello_painter::sampling_tests` (a CPU model of the shader arm) and the `#[ignore]`d `compositor::gpu_alpha_tests::gpu_alpha_vello_draw_image_*` (real GPU)
 7. **`image-rendering`** (#2098): `ComputedStyle::image_rendering` (inherited; Stylo's servo build parses `auto`, `crisp-edges`/`-moz-crisp-edges`, `pixelated`, not `smooth`) becomes `painter::ImageSampling` on `PaintImage::sampling`, handed through `image::paint_image` by the `<img>` paint and by `background::paint_layer` (backgrounds and url masks). `Nearest` is Vello `ImageQuality::Low` (`vello_painter::image_brush`; `Auto` keeps the brush's default `Medium`, the old brush exactly) and makes a repeating pattern's `RepeatTile::smooth` false. Both keywords are nearest up and down, as Chrome 156 draws them (the spec lets `pixelated` downscale smoothly). **tiny-skia's `draw_image` was already nearest under `auto`** (`PixmapPaint::default()`), unlike Chrome's smooth `auto`. That is unchanged, so in software the keywords change only patterns sampled at a fractional phase. Sampling is a brush or pattern parameter, not image content: Vello's atlas (keyed by blob) needs no key for it, and a rasterised background tile is the same pixels either way (its cache key mixes in `Nearest` only so the two stay apart if `Auto` ever filters; an `auto` layer's key is unchanged). Not read by: `RenderSurface`/`<video>` frames (`paint_frame_data`, `draw_gpu_image`, the split-surface compositor) or `<canvas>`. Rinch paints no SVG `<image>`. Pins: `image_rendering_mask_2098_2099_tests`, `gpu_image_rendering_mask_2098`.
 
+**SVG files as images** (#2111, `crates/rinch-dom/src/svg_image.rs`). An SVG *file* — an
+`<img>`'s, a background's or mask's `url()`, an app scheme's bytes — decodes to a
+`DecodedImage` with no pixels (`data` empty) and a `VectorImage` (`DecodedImage::vector`):
+the usvg tree, the root's `viewBox`/`preserveAspectRatio`, its `NaturalSize`, and a raster
+cache. It is recognised by content (`svg_image::sniff_svg`: the first element after a BOM,
+XML declaration, comments and doctype is `svg`), so a scheme's `blob:x` holding SVG bytes
+is one; a source that says SVG (`.svg`, `data:image/svg+xml`) and is not raster is parsed
+as SVG too, so its error says why (`decode_image_bytes_for`). The parse runs where a raster
+decode runs (the load thread natively, the #2100 queue on wasm32, in place for `data:`).
+**Rasterising is per drawn size, at paint**: `image::paint_vector_image` places the image's
+`concrete()` box by `object-fit` (`fit_image`), takes the device size that box covers under
+the full transform (`VectorImage::raster_for`: the box's sides scaled by the transform's
+column lengths, so the DPI scale, a CSS `transform` and `background-size` all count) and
+draws the raster made for it (`VectorImage::raster`) with
+`img_transform * scale(iw / dw, ih / dh)`, so its pixels are the device's (copied, not
+resampled, on a whole-pixel origin). The raster is `ceil(dw)` x `ceil(dh)` with the drawing
+mapped onto exactly `dw` x `dh` (a fraction of the last column is transparent), keyed by the
+drawn size in 1/64 px, in one cache per painting thread (`RASTERS`, thread-local) of at
+most `RASTER_BUDGET_BYTES` (64 MB, charged at 8 bytes a pixel) for all SVG images together:
+a new raster evicts the least recently used ones, never one the frame being painted has used
+(`svg_image::begin_frame`, from `paint_document`; the frame's own working set may stay over
+the budget), and a raster no frame has used for `RASTER_IDLE_FRAMES` (60) painted frames is
+let go. Before the review of #2125 it was 4 rasters per image, so five sizes of one SVG on
+screen re-rasterised every paint. Each raster is at most `MAX_RASTER_PX` (4M px, counted
+after rounding up; a larger draw is rasterised smaller and scaled up). Each
+raster is a `DecodedImage`, so it has one Vello blob (the atlas keeps it) and one
+premultiplied copy, like any image. The background paths reach it through `draw_tile` →
+`paint_image` (the software pattern raster draws the tile through a transform of its device
+size, so the tile is rasterised at that size; the tile cache's key already has the size). A
+build without the software painter (`embed`) hands the pattern a raster of `ceil` of the
+tile's device size (`pattern_source`), its drawing stretched by under a pixel. The drawing
+is mapped into the drawn box by the root's `viewBox` and `preserveAspectRatio`
+(`view_box_transform` applied after undoing usvg's own mapping into its `tree.size()`); a
+file without a `viewBox` is stretched. Chrome 156 does both (an `<img>` 40x40 of a 16x8
+`viewBox` icon is a centred 40x20 picture; without the `viewBox`, 40x40). **Sizing**: an
+`<img>`'s context is `NodeContext::Image { natural: Option<NaturalSize>, .. }` (`None`
+while loading or failed); `replaced::image_natural_size` runs `replaced::default_sized`,
+the table an `<svg>` element uses (`width=30` alone 30x150, a `viewBox` alone fills the
+containing block's width, nothing 300x150), with the natural ratio both attributes', else
+the `viewBox`'s. Natural lengths are absolute ones only (`em` is 16px; `%` and `ex` are
+none). A background's `auto` size is css-images-3's default sizing against the
+positioning area (`background::vector_size`; a ratio alone is `contain`). `concrete()` (the
+`object-fit` box and `DecodedImage::width/height`) is the natural size with a ratio alone
+contained in 300x150, Chrome's `naturalWidth`. **The boundary**: no script; nothing outside
+the file is read (both of usvg's `<image>` resolvers answer `None`, so no `<image>` draws,
+`data:` included; `resources_dir` is unset); usvg's `text` feature is off, so `<text>` is not
+drawn (no font database). **Cost**: parsing is off the UI thread natively, but each new
+drawn size is rasterised on the UI thread inside the paint that needs it. Measured with
+`svg_images_2111_tests::svg_raster_cost_probe` (release, a loaded host): a 16px icon 16–33 µs;
+1200x800 of 2,000 small opaque paths 31 ms (72 ms at 2400x1600); 2,000 half-transparent paths
+each spanning the canvas 0.65 s (1.8 s). Moving that onto the native load threads would
+need a request per size and a frame drawn without the picture (or with a stale raster)
+meanwhile; not done. A size that keeps changing (a window resize under `background-size:
+cover`, a transform animated in scale) rasterises at each new size. **The profile, enforced by rebuilding the file** (`svg_sanitize.rs`). Three reviews of
+#2125 broke a cost estimate; Joe chose an allowlist; a fourth broke the allowlist checker,
+because it read roxmltree's tree while usvg read the same text its own way (usvg's parser
+recurses into an `<image>`'s children and indexes their ids; its `url()` links take the
+**last** element with an id and its `<use>` map the first; a path tokeniser that split on
+anything but digits and `.` read `.1.1.1…` as one number). So usvg no longer reads the file:
+`svg_sanitize::sanitize` builds a new document from roxmltree's reading and usvg parses that
+text. Every check runs on the document usvg reads.
+- **Elements**: `KEPT` and, under a `filter`, `FILTERS` (and `feMergeNode` under `feMerge`).
+  `DROPPED` (`text`, `image`, `foreignObject`, `style`, `title`, `desc`, `metadata`), other
+  namespaces and names not in `USVG_ELEMENTS` are left out **with their children**, so
+  nothing inside them can be referenced. Any other `USVG_ELEMENTS` name refuses the file.
+  Counts as before: `MAX_GRADIENT_STOPS` (64), `MAX_FILTER_PRIMITIVES` (6),
+  `MAX_MERGE_NODES` (8), `MAX_SELECTORS` (1,024).
+- **Ids and references**: each id maps to the emitted elements carrying it in document order;
+  a reference (`Want`: paint server, gradient, clip path, mask, filter, marker, drawable for
+  `<use>`) resolves to the **first of the kind it wants** (Chrome 156 takes the first element;
+  a file reusing an id for a path and its gradient means the gradient). Unresolved: dropped (a
+  paint takes its fallback or `none`). Chrome 156 measured: a dangling `clip-path`, `mask` or
+  `filter` draws the element as if none; a duplicate gradient id is the first. usvg on the raw
+  file hides an element with a dangling clip path and takes the last duplicate, so these files
+  now draw as Chrome draws them. The output renames every referenced element `i<n>`; no two
+  elements share an id. `href` is kept on `<use>` and gradients only.
+- **CSS is inlined**, not re-serialized (chosen because it also removes usvg's CSS parse and
+  match, which issue 1 of round 3 lived in): rules (the round-3 selector forms) are matched
+  against the original tree (`selector_matches`, at most `MAX_MATCH_STEPS` = 20M steps) and
+  applied by `(origin, !important, specificity, order)` between the presentation attributes
+  and `style=""`; the result is written as attributes. No `<style>` or `class` reaches usvg.
+- **Values** are re-emitted from their parse: path data through svgtypes'
+  `SimplifyingPathParser` (absolute M/L/C/Q/Z; arcs become curves, as usvg makes them; the
+  segment count is the vertex count markers are charged on), points, transforms (`matrix`),
+  lengths, colours (`#rrggbb` or `rgba`), paints, number lists, exact numbers (shortest
+  round-trip, no exponent); keywords and filter result names from a safe character set. Only
+  attributes in no namespace are read (an editor's `sodipodi:cx` is not `cx`). Properties and
+  attributes outside `property_kind`/`attribute_kind` are dropped.
+- **Counts on the rebuilt document** (`expansion`): `<use>` copies its target, a marker counts
+  its content times the vertices below the element it is set on (inherited markers are charged
+  where set); clip paths, masks, patterns, filters and gradients are shared (usvg keeps one
+  copy). Depth at most `MAX_DEPTH` (128), elements at most `MAX_NODES` (100,000). One level:
+  nothing a clip path, mask, pattern or marker draws (following `<use>`) uses another. Still in
+  place: the strict doctype grammar, the entity bound, the post-build `Tally`, the tile, layer
+  and raster caps, the work budget, `catch_unwind`.
+- **The work budget, recalibrated** (fifth review of #2125): `MAX_RASTER_WORK` is **2e8** units of
+  one translucent solid pixel (about 2 ns, release; measured as user + sys CPU with
+  `/usr/bin/time -v` around `svg_image_limits_2111_tests::svg_work_probe`): 2.46e8 of
+  translucent full-canvas rects at 2400x1600 took 0.50 s, so a file at the cap takes about
+  0.4 s. It was 1e9 (about 2.2 s). A gradient fill or stroke is charged area x
+  `gradient_factor` (linear 1.2, radial 2.5, plus 0.9 x log2(stops)): measured over
+  2400x1600, linear 2, 8 and 64 stops cost 2.2x, 4.0x and 6.5x a translucent solid pixel,
+  radial 3.5x, 3.8x and 7.9x; before, they were charged as solid, and 64 stops ran 6.5x over
+  (8 s for 256 rects at the old cap). Filter costs in the same unit (`filter_cost`): box blur
+  40, IIR blur 180, drop shadow 60 (200 over an IIR blur), the rest 20. The estimate stays
+  conservative: of a 1,469-file corpus sample at 1024px, the 9 refused take 0.08 to 0.55 s
+  when drawn anyway (`RINCH_SVG_UNBUDGETED`); at 48px all 11,840 drawable files draw, the
+  slowest raster 6 ms. Pins: `gradient_fills_are_charged_by_their_stops`,
+  `the_raster_budget_is_about_half_a_second`.
+- **Rendering unchanged for good files**: `svg_corpus_probe` renders each corpus file both ways
+  (usvg on the original, usvg on the rebuilt text, 48x48): 10,867 of 10,882 drawn files are
+  pixel-identical, 1 within 2 levels, 3 within AA noise (max 16 on at most 4 channels), and 11
+  differ where the original had dangling references (10 Breeze colour icons, an Oxygen cursor)
+  or a duplicate gradient id (a Breeze weather icon), now drawn as Chrome draws them. The
+  real-file pass rate is unchanged: 11,840 of 11,843 (99.97%).
+- Pins: `svg_image_limits_2111_tests.rs` (the inputs of all four reviews refused or defused
+  within 300 ms; references dropped and resolved; the profile's refusals; real-world shapes)
+  and `svg_sanitize::tests` (vertex counting, duplicate ids, ignored subtrees, CSS cascade).
+
+Parsing and rasterising run under `catch_unwind` (`guarded`;
+a raster that panicked marks the image broken). Native load threads have an 8 MB stack.
+`roxmltree` is 0.21.2 (0.21.1 recursed per level in release). Percent-encoded `data:` URLs decode since #2111
+(`decode_data_uri`; only base64 did, so `data:image/svg+xml,%3Csvg…` failed). Known gaps,
+pinned in `svg_images_2111_tests.rs`: layout rounds to whole pixels (`width="10.5"` is 11),
+and an **inline** `<img>` with a ratio alone is 300 wide where Chrome fills its containing
+block (the inline `<svg>` gap, `SVG_FILL_WIDTH`). Pins: `rinch-dom/tests/svg_images_2111_tests.rs`
+(Chrome 156 pixels at 1x and 2x, sizes, failure, data URLs, the raster cache, the boundary),
+its GPU twin `rinch/tests/gpu_svg_images_2111.rs`, and
+`background_tiling_embed_tests::an_svg_background_and_img_are_drawn_without_the_software_painter`.
+
 **Background layers** (#468, `crates/rinch-dom/src/paint/background.rs`):
 **every** layer of `background-image` (#1142) is sized, positioned and tiled by
 its entry of `background-size`/`-position`/`-repeat`/`-origin`, a shorter list
@@ -77,8 +207,8 @@ samples a mask image by it too. A `url()` is loaded as a background url is
 (`ComputedStyle::paint_image_urls` feeds `note_background_image` and
 `drain_pending_images`). So its decode pushes the masked node paint-dirty, and an
 unloaded or failed image draws nothing into the mask, which hides the box
-(css-masking-1 §7.1, as Chrome does). No SVG file decodes (the image cache has no SVG
-decoder), so an `.svg` mask hides the box. A `data:` url is decoded in place, as a
+(css-masking-1 §7.1, as Chrome does). An SVG file is a mask image like any other since
+#2111 (below; it hid the box before). A `data:` url is decoded in place, as a
 background's is (#2100; `image_rendering_mask_2098_2099_tests::a_data_url_mask_image_loads`). A
 masked box is a stacking context, so its hoisted descendants paint inside the
 layer. The software painter composites a `DestinationIn` layer over everything

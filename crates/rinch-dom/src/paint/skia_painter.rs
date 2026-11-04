@@ -138,6 +138,7 @@ fn gradient_to_paint(gradient: &Gradient) -> Option<Paint<'static>> {
             };
             tiny_skia::RadialGradient::new(
                 start,
+                0.0,
                 end,
                 radial.end_radius,
                 stops,

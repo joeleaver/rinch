@@ -1,0 +1,1160 @@
+//! SVG files as images (#2111): `<img src="icon.svg">`, `background-image:
+//! url(icon.svg)`, `mask-image: url(icon.svg)` and an app scheme's SVG bytes.
+//!
+//! An inline `<svg>` element is a different thing: it is part of the DOM and
+//! `paint/svg.rs` draws it. This module is for an SVG **file** used as an
+//! image. It is parsed once, at decode (on the load thread natively), by
+//! `usvg` into a tree, and rasterised by `resvg` **at the size it is drawn
+//! at**, in device pixels: [`VectorImage::raster`], called by the paint of an
+//! `<img>` and by a background or mask layer's tile. So an icon stays sharp
+//! under any zoom, DPI or CSS size, where rasterising once at the natural size
+//! and scaling that would blur it.
+//!
+//! **An SVG file is untrusted input, drawn only within a profile** (the
+//! reviews of #2125 broke a cost estimate three times, then a checker that
+//! read the file differently from usvg; so usvg is given not the file but a
+//! document `svg_sanitize` rebuilds from it, holding only the profile, with
+//! unique ids, resolved references and CSS inlined, and every count is
+//! taken on that document). A file that uses anything outside the profile is
+//! refused whole — nothing is drawn, and one reason is logged — never drawn
+//! in part; a reference that resolves to nothing of the right kind is
+//! dropped, as Chrome 156 ignores one:
+//! - **Elements**: `svg`, `g`, `defs`, `symbol`, `use`, `a`, `switch`,
+//!   `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`,
+//!   `linearGradient`, `radialGradient` (at most [`MAX_GRADIENT_STOPS`]
+//!   `stop`s each), `title`, `desc`, `metadata`, `style`; `clipPath`, `mask`,
+//!   `pattern` and `marker` one level deep (one that itself uses a clip path,
+//!   mask, pattern or marker, or takes another's `href`, is refused); and
+//!   `filter` with at most [`MAX_FILTER_PRIMITIVES`] of `feGaussianBlur`,
+//!   `feOffset`, `feFlood`, `feColorMatrix`, `feComposite`, `feBlend`,
+//!   `feDropShadow` and `feMerge` (at most [`MAX_MERGE_NODES`] inputs).
+//!   **Ignored**, drawn as nothing, whatever they hold: `text`, `image`,
+//!   `foreignObject`, elements outside the SVG namespace and elements usvg
+//!   does not know (an editor's `sodipodi:namedview`, Inkscape's `flowRoot`,
+//!   `metadata`'s RDF), which usvg skips subtree and all. Any other element
+//!   usvg would draw refuses the file (`feTurbulence`, `feMorphology`,
+//!   `feConvolveMatrix`, the lighting filters, `feImage`, `feTile`,
+//!   `feDisplacementMap`, `feComponentTransfer`, `tref`, …).
+//! - **CSS** in `<style>`: rules whose selectors are type, `*`, `.class` and
+//!   `#id` compounds with at most one combinator; no `@` rule, pseudo-class
+//!   or attribute selector. The rules are matched by `svg_sanitize` and
+//!   their declarations written onto the elements; no `<style>` reaches
+//!   usvg (whose CSS matching backtracks on descendant chains).
+//! - **The doctype** is read by a strict grammar ([`prescan`]): its internal
+//!   subset may hold only flat `<!ENTITY name "value">` declarations, each
+//!   name once; their references expand to at most [`MAX_ENTITY_EXPANSION`]
+//!   bytes, checked again from what roxmltree holds after it parses.
+//! - **Counts**: nesting at most [`MAX_DEPTH`] as written and as expanded,
+//!   at most [`MAX_NODES`] elements once `<use>` and other references are
+//!   expanded (counted on the rebuilt document, markers on the vertices of
+//!   the path data as rewritten, before usvg builds the tree), each raster
+//!   at most [`MAX_RASTER_PX`], each layer at most [`MAX_LAYER_PX`] and each
+//!   pattern tile at most [`MAX_RASTER_PX`] device pixels.
+//! - **A work budget**, [`MAX_RASTER_WORK`], stays as a backstop: the
+//!   bounding-box area resvg paints scaled to the drawn size, plus a cost per
+//!   element, per dash and per filter pixel.
+//! - Parsing and rasterising run under `catch_unwind`: a panic in usvg or
+//!   resvg fails that image (and it is not rasterised again), not the app.
+//! - Rasters are kept per drawn size in one cache per thread, at most
+//!   [`RASTER_BUDGET_BYTES`] in all; a raster the frame being painted uses is
+//!   never evicted (#1156's rule for background tiles), so any number of sizes
+//!   on screen are made once, and one no frame has used for
+//!   [`RASTER_IDLE_FRAMES`] painted frames is let go.
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use peniko::kurbo;
+use resvg::tiny_skia;
+use resvg::usvg;
+
+use crate::image_cache::DecodedImage;
+
+/// The most device pixels one raster has (16 MB of RGBA), counted after
+/// rounding up to whole pixels. A larger draw is rasterised at this many
+/// pixels, keeping its shape, and scaled up by the painter.
+pub const MAX_RASTER_PX: f64 = 4.0 * 1024.0 * 1024.0;
+
+/// The deepest an SVG file may nest, as written (elements) and as usvg
+/// expands it (each `<use>` or other reference a level). Real icons and
+/// illustrations nest a few dozen deep; a debug build survives this many on
+/// a 2 MB stack with room to spare (roxmltree, usvg and resvg each recurse
+/// once per level, and a debug build overflowed 2 MB at about 1,000).
+pub const MAX_DEPTH: usize = 128;
+
+/// The most elements an SVG file may expand to (each reference counted as a
+/// copy of what it names): far beyond a detailed illustration (a few
+/// thousand paths).
+pub const MAX_NODES: u64 = 100_000;
+
+/// The most bytes all references to an internal DTD's entities may expand to.
+pub const MAX_ENTITY_EXPANSION: usize = 1 << 20;
+
+/// The most work one raster may take, in units of one translucent solid
+/// pixel painted (about 2 ns of resvg on one core, release): the
+/// bounding-box area painted, a gradient's by [`gradient_factor`], plus
+/// [`WORK_PER_ELEMENT`] an element, [`WORK_PER_DASH`] a dash and each filter
+/// primitive's cost per pixel. Measured as user + sys CPU time with
+/// `/usr/bin/time -v` around `svg_work_probe`: 2.46e8 of translucent solid
+/// rects at 2400x1600 took 0.50 s, 64-stop linear and radial gradients at
+/// 2.0e8 and 2.4e8 took 0.22 and 0.23 s (the factor is conservative). So a
+/// file at the cap, 2e8, takes about 0.4 s at most. (Until the fifth review
+/// of #2125 the cap was 1e9, about 2.2 s, and gradients were charged as
+/// solid fills, so 64-stop ones ran 6.5x over: 8 s at the cap.) A 1200x800
+/// illustration of 2,000 small shapes estimates at 2.1e7 (29 ms).
+pub const MAX_RASTER_WORK: f64 = 2.0e8;
+
+/// What a pixel of a gradient fill or stroke costs resvg, in translucent
+/// solid pixels, by its kind and stop count (measured with
+/// `svg_work_probe` over 2,400x1,600 of overlapping rects: linear 2, 8 and
+/// 64 stops 2.2x, 4.0x and 6.5x; radial 3.5x, 3.8x and 7.9x).
+pub fn gradient_factor(radial: bool, stops: usize) -> f64 {
+    let base = if radial { 2.5 } else { 1.2 };
+    base + 0.9 * (stops.max(2) as f64).log2()
+}
+
+/// What each element drawn costs resvg whatever its size, as pixels painted
+/// (about 14 µs a path, measured, against about 1.3 ns a pixel).
+pub const WORK_PER_ELEMENT: f64 = 1.0e4;
+
+/// The bytes every SVG raster on one thread may hold together: 64 MB.
+/// Charged at 8 bytes a pixel (the raster, and the painter's premultiplied
+/// copy or GPU blob of it).
+pub const RASTER_BUDGET_BYTES: usize = 64 << 20;
+
+/// Painted frames a raster may go unused before it is let go.
+pub const RASTER_IDLE_FRAMES: u64 = 60;
+
+/// The most device pixels one isolated layer may have (a group with a
+/// filter, mask, clip or opacity is drawn into a pixmap of its own, and a
+/// filter region may reach five times the canvas each way, as resvg clamps
+/// it): 16M px, 64 MB a pixmap.
+pub const MAX_LAYER_PX: f64 = 16.0 * 1024.0 * 1024.0;
+
+/// The most `stop`s one gradient may have (each is a ramp segment resvg
+/// evaluates per pixel it fills).
+pub const MAX_GRADIENT_STOPS: usize = 64;
+
+/// The most primitives one `filter` may chain. Inkscape's drop shadow is
+/// five (flood, composite, blur, offset, composite).
+pub const MAX_FILTER_PRIMITIVES: usize = 6;
+
+/// The most inputs one `feMerge` may composite.
+pub const MAX_MERGE_NODES: usize = 8;
+
+/// The most selectors all of a file's `<style>` sheets may hold (each is
+/// matched against every element).
+pub const MAX_SELECTORS: usize = 1024;
+
+/// What one dash of a dashed stroke costs, as pixels painted (about 140 ns a
+/// dash, measured).
+pub const WORK_PER_DASH: f64 = 100.0;
+
+/// What an image says about its own size: CSS's natural width, height and
+/// ratio, each of which an SVG may lack. A raster image has all three.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NaturalSize {
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+    /// Width over height.
+    pub ratio: Option<f32>,
+}
+
+impl NaturalSize {
+    /// A raster image's: its pixel size, and their ratio when neither is 0.
+    pub fn of_pixels(width: u32, height: u32) -> Self {
+        let (w, h) = (width as f32, height as f32);
+        Self {
+            width: Some(w),
+            height: Some(h),
+            ratio: (w > 0.0 && h > 0.0).then(|| w / h),
+        }
+    }
+}
+
+/// The length of the markup construct at the start of `s` that is not an
+/// element — `<?…?>`, `<!--…-->`, `<![CDATA[…]]>` or a `<!DOCTYPE …>` with
+/// its quoted strings and internal subset — or `None` if `s` does not start
+/// with one or it never ends.
+fn skip_non_element(s: &[u8]) -> Option<usize> {
+    let past = |from: usize, end: &[u8]| {
+        s.get(from..)?
+            .windows(end.len())
+            .position(|w| w == end)
+            .map(|i| from + i + end.len())
+    };
+    if s.starts_with(b"<?") {
+        past(2, b"?>")
+    } else if s.starts_with(b"<!--") {
+        past(4, b"-->")
+    } else if s.starts_with(b"<![CDATA[") {
+        past(9, b"]]>")
+    } else if s.starts_with(b"<!") {
+        // A declaration: `>` ends it outside quotes and outside `[…]`, whose
+        // own comments and quoted strings may hold either.
+        let mut i = 2;
+        let mut subset = false;
+        while i < s.len() {
+            match s[i] {
+                q @ (b'"' | b'\'') => i += s[i + 1..].iter().position(|&b| b == q)? + 2,
+                b'<' if subset && s[i..].starts_with(b"<!--") => i = past(i + 4, b"-->")?,
+                b'<' if subset && s[i..].starts_with(b"<?") => i = past(i + 2, b"?>")?,
+                b'[' if !subset => {
+                    subset = true;
+                    i += 1;
+                }
+                b']' if subset => {
+                    subset = false;
+                    i += 1;
+                }
+                b'>' if !subset => return Some(i + 1),
+                _ => i += 1,
+            }
+        }
+        None
+    } else {
+        None
+    }
+}
+
+/// Whether `bytes` are an SVG document: after a byte-order mark, white space,
+/// an XML declaration, comments and a doctype (its internal subset
+/// included), the first element is `svg` (or a prefixed `x:svg`).
+pub fn sniff_svg(bytes: &[u8]) -> bool {
+    let mut s = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    loop {
+        let start = s
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .unwrap_or(s.len());
+        s = &s[start..];
+        if !s.starts_with(b"<!") && !s.starts_with(b"<?") {
+            break;
+        }
+        match skip_non_element(s) {
+            Some(n) => s = &s[n..],
+            None => return false,
+        }
+    }
+    let Some(rest) = s.strip_prefix(b"<") else {
+        return false;
+    };
+    let name_end = rest
+        .iter()
+        .position(|&b| b.is_ascii_whitespace() || b == b'>' || b == b'/')
+        .unwrap_or(rest.len());
+    let name = &rest[..name_end];
+    let local = name.rsplit(|&b| b == b':').next().unwrap_or(name);
+    local == b"svg" && name_end < rest.len()
+}
+
+/// Read an SVG file's bytes before any parser does (see the module doc):
+/// element nesting at most [`MAX_DEPTH`], an internal DTD with flat internal
+/// entities only, and their references expanding to at most
+/// [`MAX_ENTITY_EXPANSION`] bytes. A loop over the bytes, with no recursion.
+pub fn prescan(bytes: &[u8]) -> Result<(), String> {
+    let mut entities: HashMap<&[u8], usize> = HashMap::new();
+    let mut expanded = 0usize;
+    let mut depth = 0usize;
+    let mut i = 0;
+    // Entity references in a run of text or a tag's attribute values.
+    let mut count_refs = |run: &[u8], entities: &HashMap<&[u8], usize>| -> Result<(), String> {
+        if entities.is_empty() {
+            return Ok(());
+        }
+        let mut at = 0;
+        while let Some(amp) = run[at..].iter().position(|&b| b == b'&') {
+            let start = at + amp + 1;
+            let Some(semi) = run[start..].iter().position(|&b| b == b';') else {
+                break;
+            };
+            if let Some(len) = entities.get(&run[start..start + semi]) {
+                expanded += len;
+                if expanded > MAX_ENTITY_EXPANSION {
+                    return Err(format!(
+                        "SVG refused: its entities expand past {MAX_ENTITY_EXPANSION} bytes"
+                    ));
+                }
+            }
+            at = start + semi + 1;
+        }
+        Ok(())
+    };
+    while i < bytes.len() {
+        let Some(lt) = bytes[i..].iter().position(|&b| b == b'<') else {
+            count_refs(&bytes[i..], &entities)?;
+            break;
+        };
+        count_refs(&bytes[i..i + lt], &entities)?;
+        i += lt;
+        let s = &bytes[i..];
+        if s.len() >= 9 && s[..9].eq_ignore_ascii_case(b"<!DOCTYPE") {
+            i += read_doctype(s, &mut entities)?;
+        } else if s.starts_with(b"<!") || s.starts_with(b"<?") {
+            i += skip_non_element(s).ok_or("SVG refused: unterminated markup")?;
+        } else {
+            // A tag: to its `>`, outside quoted attribute values.
+            let mut j = 1;
+            let mut quote = None;
+            while j < s.len() {
+                match (quote, s[j]) {
+                    (None, q @ (b'"' | b'\'')) => quote = Some(q),
+                    (Some(q), b) if b == q => quote = None,
+                    (None, b'>') => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            if j >= s.len() {
+                break; // Unterminated: the parser reports it.
+            }
+            count_refs(&s[..j], &entities)?;
+            if s.starts_with(b"</") {
+                depth = depth.saturating_sub(1);
+            } else if s[j - 1] != b'/' {
+                depth += 1;
+                if depth > MAX_DEPTH {
+                    return Err(format!(
+                        "SVG refused: elements nested more than {MAX_DEPTH} deep"
+                    ));
+                }
+            }
+            i += j + 1;
+        }
+    }
+    Ok(())
+}
+
+/// Read a `<!DOCTYPE …>` at the start of `s` strictly, returning its length
+/// and its entities (name → value length) in `entities`. Its internal subset
+/// may hold only what Illustrator writes: `<!ENTITY name "value">`, a flat
+/// value (no `&`, `%` or `<`), each name declared once. Anything else in it
+/// — a parameter or external entity, a duplicate, a processing instruction,
+/// a comment, an `<!ELEMENT>` or `<!ATTLIST>` — refuses the file. (Review of
+/// #2125: a lenient reader was tricked twice, by a duplicate declaration —
+/// roxmltree keeps the first, a map the last — and by a `]>` inside a
+/// processing instruction ending the subset early for it but not for
+/// roxmltree; a strict grammar leaves no reading of the subset but one.)
+fn read_doctype<'a>(s: &'a [u8], entities: &mut HashMap<&'a [u8], usize>) -> Result<usize, String> {
+    let refuse = |why: &str| Err(format!("SVG refused: its DTD {why}"));
+    let mut i = 9;
+    // The name and an external id: words and quoted strings, up to `[` or
+    // `>`.
+    loop {
+        match s.get(i) {
+            None => return refuse("is unterminated"),
+            Some(b'>') => return Ok(i + 1),
+            Some(b'[') => break,
+            Some(&q @ (b'"' | b'\'')) => {
+                let Some(end) = s[i + 1..].iter().position(|&b| b == q) else {
+                    return refuse("is unterminated");
+                };
+                i += end + 2;
+            }
+            Some(b'<' | b'&' | b'%') => return refuse("is malformed"),
+            Some(_) => i += 1,
+        }
+    }
+    i += 1;
+    let is_name = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':');
+    loop {
+        while s.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+            i += 1;
+        }
+        if s.get(i) == Some(&b']') {
+            i += 1;
+            while s.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+                i += 1;
+            }
+            return if s.get(i) == Some(&b'>') {
+                Ok(i + 1)
+            } else {
+                refuse("is malformed after its internal subset")
+            };
+        }
+        if !s[i..].starts_with(b"<!ENTITY") {
+            return refuse("holds something other than flat entities");
+        }
+        i += 8;
+        let ws = s[i..]
+            .iter()
+            .take_while(|b| b.is_ascii_whitespace())
+            .count();
+        let name_len = s[i + ws..].iter().take_while(|&&b| is_name(b)).count();
+        if ws == 0 || name_len == 0 {
+            return refuse("declares a parameter entity or an unnamed one");
+        }
+        let name = &s[i + ws..i + ws + name_len];
+        i += ws + name_len;
+        let ws = s[i..]
+            .iter()
+            .take_while(|b| b.is_ascii_whitespace())
+            .count();
+        i += ws;
+        let Some(&q @ (b'"' | b'\'')) = s.get(i).filter(|_| ws > 0) else {
+            return refuse("declares an external entity");
+        };
+        let Some(end) = s[i + 1..].iter().position(|&b| b == q) else {
+            return refuse("is unterminated");
+        };
+        let value = &s[i + 1..i + 1 + end];
+        if value.iter().any(|b| matches!(b, b'&' | b'%' | b'<')) {
+            return refuse("has an entity that refers to another");
+        }
+        if entities.insert(name, value.len()).is_some() {
+            return refuse("declares an entity twice");
+        }
+        i += end + 2;
+        while s.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+            i += 1;
+        }
+        if s.get(i) != Some(&b'>') {
+            return refuse("is malformed");
+        }
+        i += 1;
+    }
+}
+
+/// The document usvg is given for an SVG file's bytes (a test's view of
+/// `svg_sanitize`), or why it is refused.
+#[doc(hidden)]
+pub fn sanitized_text(bytes: &[u8]) -> Result<String, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+    prescan(bytes)?;
+    let doc = usvg::roxmltree::Document::parse_with_options(
+        text,
+        usvg::roxmltree::ParsingOptions {
+            allow_dtd: true,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    crate::svg_sanitize::sanitize(&doc)
+}
+
+/// Run `f`, turning a panic into an error naming `what`: usvg and resvg are
+/// large, and one of their panics must fail an image, not the app.
+fn guarded<T>(what: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let message = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        Err(format!("{what} panicked: {message}"))
+    })
+}
+
+/// Whether a source names an SVG by its `.svg` extension (before any query
+/// or fragment, any case) or a `data:image/svg+xml` media type.
+pub fn source_says_svg(src: &str) -> bool {
+    if let Some(data) = src.strip_prefix("data:") {
+        let media = data.split([',', ';']).next().unwrap_or("");
+        return media.trim().eq_ignore_ascii_case("image/svg+xml");
+    }
+    let path = src.split(['?', '#']).next().unwrap_or(src);
+    path.len() >= 4 && path[path.len() - 4..].eq_ignore_ascii_case(".svg")
+}
+
+/// An SVG file, parsed.
+pub struct VectorImage {
+    tree: usvg::Tree,
+    /// The root's `viewBox` and `preserveAspectRatio`, which map the drawing
+    /// into whatever box it is drawn into. `None`: stretched.
+    view_box: Option<(svgtypes::ViewBox, svgtypes::AspectRatio)>,
+    natural: NaturalSize,
+    /// The device pixels a raster paints per pixel of the raster, estimated
+    /// from bounding boxes (see [`MAX_RASTER_WORK`]).
+    work_per_pixel: f64,
+    /// The elements usvg built (each copy of a reference counted).
+    elements: u64,
+    /// The dashes its dashed strokes are cut into (each path's capped at
+    /// tiny-skia's million).
+    dashes: f64,
+    /// The tree's own size, which the drawn size scales.
+    canvas: (f64, f64),
+    /// Each filter primitive's region and cost per pixel.
+    filters: Vec<FilterWork>,
+    /// The largest isolated layer, in tree units squared.
+    max_layer: f64,
+    /// The largest pattern tile, in tree units squared.
+    max_tile: f64,
+    /// Process-unique: the raster cache's key.
+    id: u64,
+    made: AtomicU64,
+    /// A refused or failed raster has been logged.
+    warned: AtomicBool,
+    /// resvg panicked on this file: it is not rasterised again.
+    broken: AtomicBool,
+}
+
+/// The SVG rasters of one thread (the painting one): see the module doc.
+struct RasterCache {
+    entries: HashMap<(u64, u64, u64), RasterEntry>,
+    bytes: usize,
+    frame: u64,
+}
+
+struct RasterEntry {
+    raster: Arc<DecodedImage>,
+    /// The drawn size the raster's pixels hold (its pixel grid may be a
+    /// fraction of a pixel larger).
+    drawn: (f64, f64),
+    bytes: usize,
+    last_frame: u64,
+}
+
+thread_local! {
+    static RASTERS: RefCell<RasterCache> = RefCell::new(RasterCache {
+        entries: HashMap::new(),
+        bytes: 0,
+        frame: 0,
+    });
+    static BUDGET: Cell<usize> = const { Cell::new(RASTER_BUDGET_BYTES) };
+}
+
+/// A new painted frame on this thread (`paint::paint_document` calls it):
+/// the rasters the last one used may now be evicted, and those no frame has
+/// used for [`RASTER_IDLE_FRAMES`] frames are let go.
+pub fn begin_frame() {
+    RASTERS.with_borrow_mut(|c| {
+        c.frame += 1;
+        let frame = c.frame;
+        let mut freed = 0;
+        c.entries.retain(|_, e| {
+            let keep = frame - e.last_frame <= RASTER_IDLE_FRAMES;
+            if !keep {
+                freed += e.bytes;
+            }
+            keep
+        });
+        c.bytes -= freed;
+    });
+}
+
+/// The bytes this thread's SVG rasters hold, as charged (a test's count).
+#[doc(hidden)]
+pub fn raster_bytes() -> usize {
+    RASTERS.with_borrow(|c| c.bytes)
+}
+
+/// The guard [`test_budget`] returns.
+#[doc(hidden)]
+pub struct BudgetGuard(usize);
+
+impl Drop for BudgetGuard {
+    fn drop(&mut self) {
+        BUDGET.with(|b| b.set(self.0));
+    }
+}
+
+/// Set this thread's raster budget until the guard drops (a test's knob).
+#[doc(hidden)]
+pub fn test_budget(bytes: usize) -> BudgetGuard {
+    BudgetGuard(BUDGET.with(|b| b.replace(bytes)))
+}
+
+/// A raster of a [`VectorImage`] at one drawn size: draw `image`'s pixels so
+/// that `drawn` device pixels of them cover the image's box. `image` is
+/// `ceil(drawn)` pixels; the fraction beyond `drawn` is transparent.
+#[derive(Clone)]
+pub struct VectorRaster {
+    pub image: Arc<DecodedImage>,
+    pub drawn: (f64, f64),
+}
+
+impl std::fmt::Debug for VectorImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VectorImage")
+            .field("natural", &self.natural)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A length on the root `<svg>` as Chrome 156 reads it for an image's
+/// natural size: an absolute length in CSS pixels (`em` against the default
+/// 16px font), a negative one 0; a percentage, `ex` or anything unparsable
+/// is no natural size.
+fn natural_length(value: Option<&str>) -> Option<f32> {
+    use svgtypes::LengthUnit as U;
+    let l: svgtypes::Length = value?.trim().parse().ok()?;
+    let px = match l.unit {
+        U::None | U::Px => l.number,
+        U::In => l.number * 96.0,
+        U::Cm => l.number * 96.0 / 2.54,
+        U::Mm => l.number * 96.0 / 25.4,
+        U::Pt => l.number * 96.0 / 72.0,
+        U::Pc => l.number * 16.0,
+        U::Em => l.number * 16.0,
+        U::Ex | U::Percent => return None,
+    } as f32;
+    px.is_finite().then_some(px.max(0.0))
+}
+
+/// Parse an SVG file. Fails on bytes that are not UTF-8 or not a well-formed
+/// SVG document, whose size cannot be resolved, or that pass a limit of the
+/// module doc ([`prescan`], `svg_sanitize`); and if usvg panics.
+pub fn decode_svg(bytes: &[u8]) -> Result<VectorImage, String> {
+    guarded("SVG parsing", || decode_svg_unguarded(bytes))
+}
+
+fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| format!("SVG is not UTF-8: {e}"))?;
+    prescan(bytes)?;
+    let doc = usvg::roxmltree::Document::parse_with_options(
+        text,
+        usvg::roxmltree::ParsingOptions {
+            allow_dtd: true,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| format!("Failed to parse SVG: {e}"))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "svg" {
+        return Err("Failed to parse SVG: the root element is not <svg>".into());
+    }
+    // What roxmltree actually expanded: the text and attribute values it
+    // holds, which entities can only have grown, bounded by the file plus
+    // the entity allowance (a check of the prescan by roxmltree's own
+    // reading of the DTD).
+    let held: usize = doc
+        .descendants()
+        .map(|n| {
+            if n.is_text() {
+                n.text().map_or(0, str::len)
+            } else {
+                n.attributes().map(|a| a.value().len()).sum::<usize>()
+            }
+        })
+        .sum();
+    if held > bytes.len() + MAX_ENTITY_EXPANSION {
+        return Err(format!(
+            "SVG refused: its entities expand past {MAX_ENTITY_EXPANSION} bytes"
+        ));
+    }
+    let view_box = root
+        .attribute("viewBox")
+        .and_then(|v| v.parse::<svgtypes::ViewBox>().ok())
+        .filter(|vb| vb.w > 0.0 && vb.h > 0.0 && (vb.w / vb.h).is_finite())
+        .map(|vb| {
+            let aspect = root
+                .attribute("preserveAspectRatio")
+                .and_then(|a| a.parse().ok())
+                .unwrap_or_default();
+            (vb, aspect)
+        });
+    let width = natural_length(root.attribute("width"));
+    let height = natural_length(root.attribute("height"));
+    // Both attributes' ratio first, the viewBox's after, as for an `<svg>`
+    // element (`replaced::svg_context`).
+    let ratio = match (width, height) {
+        (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some(w / h),
+        _ => view_box.map(|(vb, _)| (vb.w / vb.h) as f32),
+    };
+    // What usvg reads: not the file, but the document rebuilt from it within
+    // the profile (`svg_sanitize`), so the checks and usvg read one document.
+    let sanitized = crate::svg_sanitize::sanitize(&doc)?;
+    drop(doc);
+    let text = sanitized.as_str();
+
+    let options = usvg::Options {
+        resources_dir: None,
+        // The viewport of a file with neither a size nor a viewBox: CSS's
+        // default object size, which Chrome draws it at.
+        default_size: usvg::Size::from_wh(300.0, 150.0).expect("a valid size"),
+        // Nothing outside the file is read: an `<image>` draws nothing.
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: Box::new(|_, _, _| None),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..usvg::Options::default()
+    };
+    let tree =
+        usvg::Tree::from_str(text, &options).map_err(|e| format!("Failed to parse SVG: {e}"))?;
+    // What usvg built, measured: its element count (it expands a marker per
+    // vertex, which the estimate above only approximates) and the area its
+    // fills and layers cover.
+    let size = tree.size();
+    let canvas = (f64::from(size.width()), f64::from(size.height()));
+    let mut tally = Tally {
+        nodes: 0,
+        area: 0.0,
+        canvas,
+        dashes: 0.0,
+        filters: Vec::new(),
+        max_layer: 0.0,
+        max_tile: 0.0,
+    };
+    tally.group(tree.root(), 0)?;
+    Ok(VectorImage {
+        tree,
+        view_box,
+        natural: NaturalSize {
+            width,
+            height,
+            ratio,
+        },
+        work_per_pixel: tally.area / (canvas.0 * canvas.1),
+        elements: tally.nodes,
+        dashes: tally.dashes,
+        canvas,
+        filters: tally.filters,
+        max_layer: tally.max_layer,
+        max_tile: tally.max_tile,
+        id: {
+            static NEXT: AtomicU64 = AtomicU64::new(1);
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        },
+        made: AtomicU64::new(0),
+        warned: AtomicBool::new(false),
+        broken: AtomicBool::new(false),
+    })
+}
+
+/// The usvg tree's element count and the area (in its own units, clipped to
+/// its canvas) of every path and every isolated layer resvg paints, clip,
+/// mask and pattern contents included as often as they are used.
+struct Tally {
+    nodes: u64,
+    area: f64,
+    canvas: (f64, f64),
+    dashes: f64,
+    filters: Vec<FilterWork>,
+    max_layer: f64,
+    max_tile: f64,
+}
+
+/// One filter primitive's work: its region (the filter's, in tree units
+/// squared, clamped as resvg clamps it) and its cost per pixel of that
+/// region, in pixels painted.
+struct FilterWork {
+    area: f64,
+    per_pixel: f64,
+}
+
+/// What each primitive the profile allows costs per pixel of its region, in
+/// the work budget's unit (about 2 ns; measured with `filter_cost_probe`,
+/// release, 400x400): a box blur (any deviation of 2 or more) 40, an IIR
+/// blur (both deviations under 2) 180, a drop shadow 60 (200 over an IIR
+/// blur), the rest 20 (colour matrix, offset, flood, composite, blend and
+/// merge measured at 8 to 11).
+fn filter_cost(kind: &usvg::filter::Kind) -> f64 {
+    use usvg::filter::Kind as K;
+    let small = |x: f32, y: f32| x < 2.0 && y < 2.0;
+    match kind {
+        K::GaussianBlur(b) => {
+            if small(b.std_dev_x().get(), b.std_dev_y().get()) {
+                180.0
+            } else {
+                40.0
+            }
+        }
+        K::DropShadow(d) => {
+            if small(d.std_dev_x().get(), d.std_dev_y().get()) {
+                200.0
+            } else {
+                60.0
+            }
+        }
+        _ => 20.0,
+    }
+}
+
+impl Tally {
+    /// The area of `r` clamped to resvg's largest filter region (the
+    /// canvas, and twice it beyond each edge).
+    fn clamped_area(&self, r: usvg::Rect) -> f64 {
+        let (w, h) = self.canvas;
+        let x = (f64::from(r.right()).min(3.0 * w) - f64::from(r.left()).max(-2.0 * w)).max(0.0);
+        let y = (f64::from(r.bottom()).min(3.0 * h) - f64::from(r.top()).max(-2.0 * h)).max(0.0);
+        x * y
+    }
+
+    /// The area of `r` clipped to the canvas.
+    fn clipped(&self, r: usvg::Rect) -> f64 {
+        let w = (f64::from(r.right()).min(self.canvas.0) - f64::from(r.left()).max(0.0)).max(0.0);
+        let h = (f64::from(r.bottom()).min(self.canvas.1) - f64::from(r.top()).max(0.0)).max(0.0);
+        w * h
+    }
+
+    fn rect(&mut self, r: usvg::Rect) {
+        self.area += self.clipped(r);
+    }
+
+    /// A gradient paint's cost beyond a solid one's, per pixel.
+    fn gradient_extra(paint: &usvg::Paint) -> f64 {
+        match paint {
+            usvg::Paint::LinearGradient(g) => gradient_factor(false, g.stops().len()) - 1.0,
+            usvg::Paint::RadialGradient(g) => gradient_factor(true, g.stops().len()) - 1.0,
+            _ => 0.0,
+        }
+    }
+
+    fn node(&mut self, node: &usvg::Node, depth: usize) -> Result<(), String> {
+        self.nodes += 1;
+        if self.nodes > MAX_NODES {
+            return Err(format!(
+                "SVG refused: usvg built more than {MAX_NODES} elements"
+            ));
+        }
+        if depth > 2 * MAX_DEPTH {
+            return Err(format!(
+                "SVG refused: nested more than {MAX_DEPTH} deep once its references are expanded"
+            ));
+        }
+        let mut result = Ok(());
+        node.subroots(|g| {
+            if result.is_ok() {
+                result = self.group(g, depth + 1);
+            }
+        });
+        result?;
+        match node {
+            usvg::Node::Group(g) => {
+                if g.should_isolate() {
+                    let layer = g.abs_layer_bounding_box().to_rect();
+                    self.rect(layer);
+                    let area = self.clamped_area(layer);
+                    self.max_layer = self.max_layer.max(area);
+                    for filter in g.filters() {
+                        for primitive in filter.primitives() {
+                            let kind = primitive.kind();
+                            if let usvg::filter::Kind::Image(image) = kind {
+                                self.group(image.root(), depth + 1)?;
+                            }
+                            self.filters.push(FilterWork {
+                                area,
+                                per_pixel: filter_cost(kind),
+                            });
+                        }
+                    }
+                }
+                self.group(g, depth + 1)
+            }
+            usvg::Node::Path(p) => {
+                self.rect(p.abs_stroke_bounding_box());
+                // A gradient costs more per pixel than a solid colour, and
+                // more the more stops it has (review of #2125, round 5).
+                if let Some(f) = p.fill() {
+                    self.area +=
+                        self.clipped(p.abs_bounding_box()) * Self::gradient_extra(f.paint());
+                }
+                if let Some(s) = p.stroke() {
+                    self.area +=
+                        self.clipped(p.abs_stroke_bounding_box()) * Self::gradient_extra(s.paint());
+                }
+                // A pattern's tile is rendered once at its own device size.
+                let paints = [p.fill().map(|f| f.paint()), p.stroke().map(|s| s.paint())];
+                for paint in paints.into_iter().flatten() {
+                    if let usvg::Paint::Pattern(pattern) = paint {
+                        let t = p.abs_transform().pre_concat(pattern.transform());
+                        let det = f64::from((t.sx * t.sy - t.kx * t.ky).abs());
+                        let r = pattern.rect();
+                        let tile = f64::from(r.width()) * f64::from(r.height()) * det;
+                        self.max_tile = self.max_tile.max(tile);
+                    }
+                }
+                if let Some(dashes) = p.stroke().and_then(|s| s.dasharray()) {
+                    let period: f64 = dashes.iter().map(|d| f64::from(*d)).sum();
+                    let points = p.data().points();
+                    let length: f64 = points
+                        .windows(2)
+                        .map(|w| f64::from((w[1].x - w[0].x).hypot(w[1].y - w[0].y)))
+                        .sum();
+                    if period > 0.0 {
+                        self.dashes += (length / period * dashes.len() as f64).min(1_000_000.0);
+                    }
+                }
+                Ok(())
+            }
+            usvg::Node::Image(i) => {
+                self.rect(i.abs_bounding_box());
+                Ok(())
+            }
+            usvg::Node::Text(_) => Ok(()),
+        }
+    }
+
+    fn group(&mut self, g: &usvg::Group, depth: usize) -> Result<(), String> {
+        for child in g.children() {
+            self.node(child, depth)?;
+        }
+        Ok(())
+    }
+}
+
+/// The `viewBox` to viewport transform of SVG 1.1 §7.8, for a viewport of
+/// `w` x `h` at the origin.
+fn view_box_transform(
+    vb: &svgtypes::ViewBox,
+    aspect: &svgtypes::AspectRatio,
+    w: f64,
+    h: f64,
+) -> tiny_skia::Transform {
+    use svgtypes::Align as A;
+    let (mut sx, mut sy) = (w / vb.w, h / vb.h);
+    if aspect.align != A::None {
+        let s = if aspect.slice { sx.max(sy) } else { sx.min(sy) };
+        (sx, sy) = (s, s);
+    }
+    let (fx, fy) = match aspect.align {
+        A::None | A::XMinYMin => (0.0, 0.0),
+        A::XMidYMin => (0.5, 0.0),
+        A::XMaxYMin => (1.0, 0.0),
+        A::XMinYMid => (0.0, 0.5),
+        A::XMidYMid => (0.5, 0.5),
+        A::XMaxYMid => (1.0, 0.5),
+        A::XMinYMax => (0.0, 1.0),
+        A::XMidYMax => (0.5, 1.0),
+        A::XMaxYMax => (1.0, 1.0),
+    };
+    let tx = -vb.x * sx + (w - vb.w * sx) * fx;
+    let ty = -vb.y * sy + (h - vb.h * sy) * fy;
+    tiny_skia::Transform::from_row(sx as f32, 0.0, 0.0, sy as f32, tx as f32, ty as f32)
+}
+
+impl VectorImage {
+    /// The file's natural size and ratio.
+    pub fn natural(&self) -> NaturalSize {
+        self.natural
+    }
+
+    /// The size a draw that knows no other lays the image out at (the
+    /// `object-fit` box of an `<img>`): the natural size, a missing dimension
+    /// from the ratio or the default object size, and for a ratio alone the
+    /// largest box of that ratio inside 300x150 — what Chrome 156 reports as
+    /// `naturalWidth`/`naturalHeight`.
+    pub fn concrete(&self) -> (f64, f64) {
+        let n = self.natural;
+        let (w, h) = crate::replaced::default_sized(n.width, n.height, n.ratio);
+        if w.is_infinite() {
+            let (dw, dh) = crate::replaced::DEFAULT_OBJECT_SIZE;
+            let r = n.ratio.unwrap_or(dw / dh);
+            let (w, h) = if dw / dh > r {
+                (dh * r, dh)
+            } else {
+                (dw, dw / r)
+            };
+            return (f64::from(w), f64::from(h));
+        }
+        (f64::from(w), f64::from(h))
+    }
+
+    /// How many rasters this image has made (a test's count).
+    #[doc(hidden)]
+    pub fn rasters_made(&self) -> u64 {
+        self.made.load(Ordering::Relaxed)
+    }
+
+    /// The raster for drawing an `iw` x `ih` box of the image through
+    /// `transform` (image units to device pixels): the device size that box
+    /// covers is the box's sides scaled by the transform's (a rotation keeps
+    /// the length, a skew or a 3D projection is approximated).
+    pub fn raster_for(&self, iw: f64, ih: f64, transform: kurbo::Affine) -> Option<VectorRaster> {
+        let [a, b, c, d, _, _] = transform.as_coeffs();
+        self.raster(iw * a.hypot(b), ih * c.hypot(d))
+    }
+
+    /// How many rasters of this image this thread keeps now (a test's count).
+    #[doc(hidden)]
+    pub fn rasters_held(&self) -> usize {
+        RASTERS.with_borrow(|c| c.entries.keys().filter(|k| k.0 == self.id).count())
+    }
+
+    /// The device pixels a `w` x `h` raster is estimated to paint, which
+    /// [`MAX_RASTER_WORK`] bounds.
+    pub fn estimated_work(&self, w: u32, h: u32) -> f64 {
+        let (sx, sy) = (f64::from(w) / self.canvas.0, f64::from(h) / self.canvas.1);
+        let filters: f64 = self
+            .filters
+            .iter()
+            .map(|f| f.area * sx * sy * f.per_pixel)
+            .sum();
+        self.work_per_pixel * f64::from(w) * f64::from(h)
+            + self.elements as f64 * WORK_PER_ELEMENT
+            + self.dashes * WORK_PER_DASH
+            + filters
+    }
+
+    /// Why a `w` x `h` raster may not be drawn, if it may not.
+    fn refusal(&self, w: u32, h: u32) -> Option<String> {
+        let (sx, sy) = (f64::from(w) / self.canvas.0, f64::from(h) / self.canvas.1);
+        let work = self.estimated_work(w, h);
+        if work > MAX_RASTER_WORK {
+            return Some(format!(
+                "rasterising it at {w}x{h} would paint about {work:.1e} pixels, past the \
+                 limit of {MAX_RASTER_WORK:.1e}"
+            ));
+        }
+        let layer = self.max_layer * sx * sy;
+        if layer > MAX_LAYER_PX {
+            return Some(format!(
+                "at {w}x{h} it needs a {layer:.1e} px layer, past {MAX_LAYER_PX:.1e}"
+            ));
+        }
+        let tile = self.max_tile * sx * sy;
+        if tile > MAX_RASTER_PX {
+            return Some(format!(
+                "at {w}x{h} a pattern tile is {tile:.1e} px, past {MAX_RASTER_PX:.1e}"
+            ));
+        }
+        None
+    }
+
+    fn warn_once(&self, why: &str) {
+        if !self.warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!("SVG image not drawn: {why}");
+        }
+    }
+
+    /// The drawing rasterised to cover `dw` x `dh` device pixels, made now or
+    /// kept from an earlier draw at that size. `None` for an empty or
+    /// non-finite size, a draw over [`MAX_RASTER_WORK`], or a file resvg
+    /// panicked on.
+    pub fn raster(&self, dw: f64, dh: f64) -> Option<VectorRaster> {
+        if !(dw > 0.0 && dh > 0.0 && dw.is_finite() && dh.is_finite())
+            || self.broken.load(Ordering::Relaxed)
+        {
+            return None;
+        }
+        // A huge draw is rasterised smaller, keeping its shape, so that the
+        // whole pixels allocated (rounded up) stay within the cap.
+        let whole = |v: f64| (v - 1e-6).ceil().max(1.0);
+        let (mut dw, mut dh) = (dw, dh);
+        while whole(dw) * whole(dh) > MAX_RASTER_PX {
+            let shrink = (MAX_RASTER_PX / (whole(dw) * whole(dh))).sqrt().min(0.999);
+            (dw, dh) = (dw * shrink, dh * shrink);
+        }
+        let key = (
+            self.id,
+            (dw * 64.0).round() as u64,
+            (dh * 64.0).round() as u64,
+        );
+        let hit = RASTERS.with_borrow_mut(|c| {
+            let frame = c.frame;
+            c.entries.get_mut(&key).map(|e| {
+                e.last_frame = frame;
+                VectorRaster {
+                    image: e.raster.clone(),
+                    drawn: e.drawn,
+                }
+            })
+        });
+        if hit.is_some() {
+            return hit;
+        }
+        let (w, h) = (whole(dw) as u32, whole(dh) as u32);
+        if let Some(why) = self.refusal(w, h) {
+            self.warn_once(&why);
+            return None;
+        }
+        let size = self.tree.size();
+        let (sw, sh) = (f64::from(size.width()), f64::from(size.height()));
+        // usvg has already mapped the viewBox into the tree's own size;
+        // undo that and map it into the drawn size instead, by the root's
+        // `preserveAspectRatio`. With no viewBox, Chrome stretches.
+        let transform = match &self.view_box {
+            Some((vb, aspect)) => {
+                let to_tree = view_box_transform(vb, aspect, sw, sh);
+                let to_drawn = view_box_transform(vb, aspect, dw, dh);
+                to_drawn.pre_concat(to_tree.invert()?)
+            }
+            None => tiny_skia::Transform::from_scale((dw / sw) as f32, (dh / sh) as f32),
+        };
+        let pixels = guarded("SVG rasterising", || {
+            let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("no pixmap")?;
+            resvg::render(&self.tree, transform, &mut pixmap.as_mut());
+            Ok(pixmap.take_demultiplied())
+        });
+        let pixels = match pixels {
+            Ok(p) => p,
+            Err(e) => {
+                self.broken.store(true, Ordering::Relaxed);
+                self.warn_once(&e);
+                return None;
+            }
+        };
+        let raster = Arc::new(DecodedImage::new(pixels, w, h));
+        self.made.fetch_add(1, Ordering::Relaxed);
+        let bytes = w as usize * h as usize * 8;
+        RASTERS.with_borrow_mut(|c| {
+            // Make room: least recently used first, never one this frame has
+            // drawn (if only those are left, the frame's own rasters stay
+            // over the budget until a later frame stops using them).
+            let budget = BUDGET.with(Cell::get);
+            let frame = c.frame;
+            while c.bytes + bytes > budget {
+                let Some(oldest) = c
+                    .entries
+                    .iter()
+                    .filter(|(_, e)| e.last_frame < frame)
+                    .min_by_key(|(_, e)| e.last_frame)
+                    .map(|(k, _)| *k)
+                else {
+                    break;
+                };
+                let gone = c.entries.remove(&oldest).expect("listed");
+                c.bytes -= gone.bytes;
+            }
+            c.bytes += bytes;
+            c.entries.insert(
+                key,
+                RasterEntry {
+                    raster: raster.clone(),
+                    drawn: (dw, dh),
+                    bytes,
+                    last_frame: frame,
+                },
+            );
+        });
+        Some(VectorRaster {
+            image: raster,
+            drawn: (dw, dh),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sniffing_finds_the_svg_root_after_a_prolog() {
+        assert!(sniff_svg(b"<svg xmlns='http://www.w3.org/2000/svg'/>"));
+        assert!(sniff_svg(
+            b"\xEF\xBB\xBF  <?xml version='1.0'?>\n<!-- c -->\n<!DOCTYPE svg>\n<svg>"
+        ));
+        assert!(sniff_svg(b"<svg:svg xmlns:svg='x'>"));
+        assert!(!sniff_svg(b"<svgx>"));
+        assert!(!sniff_svg(b"<html><svg>"));
+        assert!(!sniff_svg(b"\x89PNG\r\n"));
+        assert!(!sniff_svg(b"<!-- never closed"));
+    }
+
+    #[test]
+    fn a_panic_fails_the_image_not_the_app() {
+        let r: Result<(), String> = guarded("SVG parsing", || panic!("boom"));
+        assert_eq!(r, Err("SVG parsing panicked: boom".to_string()));
+    }
+
+    #[test]
+    fn the_prescan_counts_depth_across_comments_and_quotes() {
+        let nest = |n: usize| format!("{}{}", "<g a='>'><!-- <g> -->".repeat(n), "</g>".repeat(n));
+        assert!(prescan(nest(MAX_DEPTH).as_bytes()).is_ok());
+        assert!(prescan(nest(MAX_DEPTH + 1).as_bytes()).is_err());
+        assert!(prescan(b"<g/><g/><g></g>").is_ok());
+    }
+
+    #[test]
+    fn a_source_names_svg_by_extension_or_media_type() {
+        assert!(source_says_svg("icons/a.svg"));
+        assert!(source_says_svg("https://x/a.SVG?v=2#frag"));
+        assert!(source_says_svg("data:image/svg+xml;base64,AAAA"));
+        assert!(source_says_svg("data:IMAGE/SVG+XML,%3Csvg"));
+        assert!(!source_says_svg("a.svgz"));
+        assert!(!source_says_svg("data:image/png;base64,AAAA"));
+        assert!(!source_says_svg("svg"));
+    }
+}
