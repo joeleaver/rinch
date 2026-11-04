@@ -41,6 +41,8 @@
 //! | `ifc_tab_rebuilds` | `ifc.rs` `build_inline_layout` (the paint layout and the root compute's measure) | [`a_pre_paragraph_of_tabs_is_set_in_one_rebuild`] (1 per layout), [`a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds`] (2 per layout) |
 //! | `inline_block_computes` | `ifc.rs` `resolve_percentage_inline_blocks`, a `fit-content`/`stretch` atomic inline (#691) | [`fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change`] |
 //! | `abs_containing_block_passes` | `layout_engine.rs` `resolve_layout`'s fixpoint (#386) | [`an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resize`] (1 per resize of the block), [`a_position_only_absolute_box_under_a_grandparent_pays_no_compute`] (0) |
+//! | `paint_nodes_visited` | `paint/mod.rs` `paints_nothing_within` (a hidden subtree with nothing visible, asked one level up: no visit, #2137) | [`a_closed_panel_and_a_hidden_chip_cost_paint_one_visit`] |
+//! | `paint_nodes_visited` | `paint/mod.rs` `paint_node` (the same, entered directly — an IFC's atomic inline: one visit, #2137) | [`a_closed_panel_and_a_hidden_chip_cost_paint_one_visit`] |
 //! | `inline_font_family_resolves` | `ifc.rs` `inline_style_props` (review of #1326's perf finding) — fires only when a span's own `font-family` differs from the enclosing style's | [`a_spans_unchanged_font_family_resolves_nothing`] (0), [`a_spans_changed_font_family_resolves_once_per_rebuild`] (nonzero) |
 //!
 //! Every frame is asserted whole, #877's contract: every non-timing counter
@@ -3965,4 +3967,48 @@ fn a_colour_tick_on_every_pill_refreshes_the_paragraph_once() {
             ],
         );
     }
+}
+
+// ── paint_nodes_visited: hidden subtrees (#2137) ───────────────────────────
+
+/// A `visibility: hidden` block of 30 rows in flow (a collapsed panel), and a
+/// hidden `inline-block` of 10 spans in a visible paragraph: neither holds
+/// anything visible, so paint skips both. The panel is skipped from its
+/// parent's child loop and costs no visit; the chip is entered by its IFC
+/// root, which paints atomic inlines directly, and costs the one visit that
+/// refuses it. The repaint visits the body, the panel's visible wrapper, the
+/// paragraph and the chip: 4. Walked (before #2137) it was 4 + 30 rows + the
+/// panel + 10 spans' worth of the chip's own IFC.
+#[test]
+fn a_closed_panel_and_a_hidden_chip_cost_paint_one_visit() {
+    let mut doc = doc_with(
+        ".hidden { visibility: hidden; } .row { height: 10px; background: rgb(0, 0, 200); } \
+         .chip { display: inline-block; visibility: hidden; padding: 2px; \
+                 background: rgb(200, 0, 0); }",
+    );
+    let body = doc.body();
+    let wrapper = el(&mut doc, body, "div", "");
+    let panel = el(&mut doc, wrapper, "div", "hidden");
+    for i in 0..30 {
+        let row = el(&mut doc, panel, "div", "row");
+        text(&mut doc, row, &format!("row {i}"));
+    }
+    let p = el(&mut doc, body, "p", "");
+    text(&mut doc, p, "before ");
+    let chip = el(&mut doc, p, "span", "chip");
+    for i in 0..10 {
+        let span = el(&mut doc, chip, "span", "");
+        text(&mut doc, span, &format!("s{i} "));
+    }
+    let s = repaint_frame(&mut doc);
+    expect(
+        "hidden panel and chip repaint",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 4),
+            (StackingOrderBuilds, 1),
+        ],
+    );
 }

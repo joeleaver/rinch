@@ -696,6 +696,23 @@ pub fn setup_full_paint() -> PaintFixture {
     f
 }
 
+/// The drawer list of [`setup_drawer_toggle`] — 500 rows under a **closed**
+/// `Drawer`, with the theme and component stylesheets — laid out and painted
+/// once, glyph cache warm. Built closed and never opened: a close holds the
+/// root `visible` for its 300ms (`transition: visibility 0s linear 300ms`),
+/// and no clock runs here to end it. A closed overlay is `visibility: hidden`
+/// with nothing visible in it, so paint and the stacking collector skip it
+/// whole (#2137).
+pub fn setup_closed_drawer_paint() -> PaintFixture {
+    let DrawerFixture { list, .. } = build_drawer_list();
+    let mut f = PaintFixture {
+        doc: list.doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
 /// Paint the whole page with the software painter, glyph cache warm.
 pub fn op_full_paint(mut f: PaintFixture) -> PaintFixture {
     f.paint();
