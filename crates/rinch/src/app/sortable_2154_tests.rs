@@ -204,7 +204,7 @@ fn list(f: &Fixture, id: &str) -> u64 {
                         .attributes
                         .get("data-sortable-key")
                         .is_some_and(|k| {
-                            (id == "c1" && "abcd".contains(k.as_str()))
+                            (id == "c1" && "abcdz".contains(k.as_str()))
                                 || (id == "c2" && "ef".contains(k.as_str()))
                         })
                 })
@@ -967,6 +967,13 @@ mod preview_cascade {
                             }
                         }
                     }
+                    div { style: "opacity: 0.5",
+                        SortableList {
+                            group: "cards", id: "c4",
+                            style: "width: 150px; --rinch-sortable-ghost-opacity: 1",
+                            SortableItem { value: "k", style: "height: 30px; background: rgb(0, 0, 0)" }
+                        }
+                    }
                 }
             }
         });
@@ -1014,6 +1021,27 @@ mod preview_cascade {
         key(&mut f, KeyCode::Escape, None);
         assert!(ghosts(&f).is_empty());
         seen
+    }
+
+    /// An ancestor's `opacity` is carried onto its stand-in, which draws no
+    /// box: it is not applied to the preview a second time (nor at all), so
+    /// an opaque black card is painted black.
+    #[cfg(software_shell)]
+    #[test]
+    fn an_ancestors_opacity_is_not_applied_to_the_preview() {
+        let mut f = styled();
+        grab(&mut f, "k", 0.5, 0.5);
+        move_to(&mut f, (300.0, 400.0));
+        let (x, y, w, h) = box_of(&f, ghost_body(&f));
+        f.app.has_previous_frame = false;
+        f.app.scene_dirty = true;
+        let (px, width, _) = f
+            .app
+            .build_pixels(1.0, (VIEWPORT.0 as u32, VIEWPORT.1 as u32), false);
+        let (cx, cy) = ((x + w / 2.0) as u32, (y + h / 2.0) as u32);
+        let i = ((cy * width + cx) * 4) as usize;
+        assert_eq!(&px[i..i + 3], &[0, 0, 0], "painted at {x},{y} {w}x{h}");
+        key(&mut f, KeyCode::Escape, None);
     }
 
     #[test]
@@ -1072,4 +1100,100 @@ fn what_a_custom_preview_makes_goes_with_its_drag() {
         3,
         "each effect ran once, at its build"
     );
+}
+
+// ── Second review round.
+
+/// Every node in the document's slab, connected or not.
+fn slab_len(f: &Fixture) -> usize {
+    f.app.doc.as_ref().unwrap().borrow().tree.nodes.len()
+}
+
+/// A preview's nodes go when its drag ends: after the first drag (which may
+/// keep a wrapper for the next), cancelled drags leave the slab as it was.
+#[test]
+fn cancelled_drags_with_a_copy_leave_no_nodes_behind() {
+    let mut f = fixture(Options::default());
+    grab(&mut f, "a", 0.5, 0.5);
+    key(&mut f, KeyCode::Escape, None);
+    let base = slab_len(&f);
+    for k in ["a", "b", "c", "d", "e", "f", "a", "b", "c", "d"] {
+        grab(&mut f, k, 0.5, 0.5);
+        move_to(&mut f, (500.0, 400.0));
+        key(&mut f, KeyCode::Escape, None);
+    }
+    assert_eq!(
+        slab_len(&f),
+        base,
+        "nodes left behind by 10 cancelled drags"
+    );
+}
+
+/// Dropping costs what the app's re-render costs, the same with a copy as
+/// with no preview.
+#[test]
+fn drops_with_a_copy_cost_no_more_nodes_than_drops_without() {
+    let growth = |preview: SortPreview| {
+        let mut f = fixture(Options {
+            preview,
+            ..Options::default()
+        });
+        // One drop first: whatever is made once is made.
+        let drop_a_after_b = |f: &mut Fixture| {
+            grab(f, "a", 0.5, 0.5);
+            let over = point(f, item(f, "b"), 0.5, 0.8);
+            move_to(f, over);
+            release_at(f, over);
+        };
+        drop_a_after_b(&mut f);
+        let base = slab_len(&f);
+        for _ in 0..6 {
+            drop_a_after_b(&mut f);
+        }
+        slab_len(&f) - base
+    };
+    assert_eq!(growth(SortPreview::Clone), growth(SortPreview::None));
+}
+
+/// A co-edit mid-drag (an item inserted into the source's list) keeps the
+/// gap: the list is laid out again in the drop's order with the new item in it.
+#[test]
+fn the_gap_in_the_sources_list_survives_an_item_added_mid_drag() {
+    let mut f = fixture(Options {
+        indicator: SortIndicator::Gap,
+        source: SortSource::Unchanged,
+        preview: SortPreview::None,
+    });
+    grab(&mut f, "d", 0.5, 0.5);
+    let over = point(&f, item(&f, "b"), 0.5, 0.2);
+    move_to(&mut f, over);
+    assert_eq!(
+        (dy(&f, "a"), dy(&f, "b"), dy(&f, "c"), dy(&f, "d")),
+        (0.0, STEP, STEP, -2.0 * STEP)
+    );
+    // A collaborator puts z first in c1: every card is laid out a step lower.
+    f.board.update(|b| b[0].1.insert(0, "z".into()));
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let over = point(&f, item(&f, "b"), 0.5, 0.2);
+    move_to(&mut f, (over.0, over.1 + 0.5));
+    move_to(&mut f, over);
+    let target = sortable_drag().unwrap().target;
+    assert_eq!(
+        target,
+        Some(SortTarget {
+            list: "c1".into(),
+            index: 2
+        })
+    );
+    assert_eq!(
+        (
+            dy(&f, "z"),
+            dy(&f, "a"),
+            dy(&f, "b"),
+            dy(&f, "c"),
+            dy(&f, "d")
+        ),
+        (0.0, 0.0, STEP, STEP, -2.0 * STEP)
+    );
+    key(&mut f, KeyCode::Escape, None);
 }

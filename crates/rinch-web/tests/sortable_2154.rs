@@ -673,3 +673,90 @@ fn a_copy_keeps_svg_tag_case_and_leaves_a_radio_group_alone() {
     release((590, 590));
     assert!(ghost().is_none());
 }
+
+// ── Second review round.
+
+/// A preview's nodes leave the page's registry when its drag ends.
+#[wasm_bindgen_test]
+fn cancelled_drags_with_a_copy_leave_no_nodes_registered() {
+    let _board = mount(Options::default());
+    let drag = |k: &str| {
+        let p = point(&item(k), 0.5, 0.5);
+        press(p);
+        move_to((p.0 + 8, p.1 + 2));
+        move_to((500, 400));
+        move_to((590, 590));
+        release((590, 590));
+    };
+    drag("a");
+    let base = rinch_web::web_document::__node_registry_len();
+    for k in ["a", "b", "c", "d", "e", "f", "a", "b"] {
+        drag(k);
+    }
+    assert_eq!(rinch_web::web_document::__node_registry_len(), base);
+}
+
+/// The copies carry no attribute the runtime acts on.
+#[wasm_bindgen_test]
+fn the_copies_carry_no_runtime_attributes() {
+    PREVIOUS.with(|p| {
+        if let Some(h) = p.borrow_mut().take() {
+            h.unmount();
+        }
+    });
+    while let Ok(Some(el)) = document().query_selector(&format!("[{HOST_ATTR}]")) {
+        el.remove();
+    }
+    if let Some(root) = document().document_element() {
+        pointer(&root, "pointerup", (0, 0));
+    }
+    let host = document().create_element("div").unwrap();
+    host.set_attribute(HOST_ATTR, "true").unwrap();
+    host.set_attribute(
+        "style",
+        "position: fixed; left: 0px; top: 0px; width: 600px",
+    )
+    .unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let handle = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |__scope: &mut RenderScope| {
+            rsx! {
+                div { "data-trap-focus": "", "data-render-surface": "1", "data-viewport": "1",
+                    "data-state": "open",
+                    SortableList {
+                        group: "cards", id: "c1", style: "width: 150px",
+                        SortableItem { value: "a", style: "height: 40px",
+                            div { "contenteditable": "true", "data-pm-editor": "", "data-scroll-lock-exempt": "", style: "height: 15px", "a" }
+                        }
+                    }
+                }
+            }
+        },
+    );
+    PREVIOUS.with(|p| *p.borrow_mut() = Some(handle));
+    // Pressed below the editable part.
+    let p = point(&item("a"), 0.5, 0.85);
+    press(p);
+    move_to((p.0 + 8, p.1 + 2));
+    move_to((400, 300));
+    let g = ghost().expect("a preview");
+    for attr in [
+        "data-trap-focus",
+        "data-render-surface",
+        "data-viewport",
+        "contenteditable",
+        "data-pm-editor",
+        "data-scroll-lock-exempt",
+    ] {
+        assert!(
+            g.query_selector(&format!("[{attr}]")).unwrap().is_none(),
+            "a copy carries {attr}"
+        );
+    }
+    // A style hook stays.
+    assert!(g.query_selector("[data-state=open]").unwrap().is_some());
+    move_to((590, 590));
+    release((590, 590));
+}
