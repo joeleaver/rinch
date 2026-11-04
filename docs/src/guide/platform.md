@@ -45,25 +45,65 @@ container's width (an inline one is 300px wide; see below). Drawn into a box of
 another shape, the `viewBox` is fitted by the file's `preserveAspectRatio`
 (centred, by default); a file with no `viewBox` is stretched.
 
-What an SVG file may not do: it runs no script, and it reads **nothing outside
-itself** — an `<image>` inside it draws nothing (a file, a URL or a `data:`
-URL alike), and no external reference is followed. **Text in an SVG file is
-not drawn**: rinch gives the SVG renderer no fonts, so convert text to paths
-for an icon that needs it. Inline `<svg>` elements in the DOM are a different
-path and are unaffected.
+#### The SVG profile
 
-An SVG file is untrusted input, and rinch refuses one that could crash or
-freeze the app; it then draws nothing and logs why. The limits: elements
-nested at most 128 deep (counting each `<use>` as a level), at most 100,000
-elements once `<use>` and other references are expanded, a DTD with flat
-entities only (Illustrator's `&ns_svg;` is fine; an entity that refers to
-another, a duplicate, or any other DTD declaration is not) expanding to at
-most 1 MB, an `feConvolveMatrix` order of at most 16, and a raster estimated
-at more than about a second of work (a full-window SVG of thousands of
-canvas-sized translucent shapes at 2x, heavy filters, millions of dashes) is
-not drawn at that size, nor one needing an `feMorphology` radius over 64
-device pixels or a filter layer over 16M pixels. `feTurbulence` octaves are
-clamped to 10, as browsers clamp them.
+An SVG file is untrusted input. rinch draws one only if everything in it is
+inside a **profile** of SVG, the features icon sets and editors use that are
+cheap and bounded to draw. A file that uses anything outside the profile is
+**refused whole**: it draws nothing (a failed image: an `<img>` is 0x0, a
+background is not painted, a mask hides its box), and the reason is logged
+once. It is never drawn in part. Measured on 11,843 real files (all 5,986
+Tabler icons; samples of KDE Breeze, Oxygen, GNOME Adwaita and hicolor app
+icons; 530 Inkscape and 7 Illustrator files among them; wallpapers), 99.97%
+draw.
+
+**Drawn:** `svg`, `g`, `defs`, `symbol`, `use`, `a`, `switch`, `path`,
+`rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`,
+`linearGradient` and `radialGradient` (at most 64 `stop`s each), `title`,
+`desc`, `metadata`, `style`; `clipPath`, `mask`, `pattern` and `marker`
+one level deep; and `filter` with at most 6 primitives, each one of
+`feGaussianBlur`, `feOffset`, `feFlood`, `feColorMatrix`, `feComposite`,
+`feBlend`, `feDropShadow` and `feMerge` (at most 8 inputs). That covers drop
+shadows and glows, including Inkscape's five-primitive drop shadow.
+Presentation attributes, `style=""`, `class`, gradients, opacity, strokes and
+dashes all work.
+
+**Ignored** (drawn as nothing; the rest of the file draws): `<text>` (rinch
+gives the SVG renderer no fonts, so convert text to paths), `<image>` (an
+SVG file reads nothing outside itself: not a file, a URL or a `data:` URL),
+`<foreignObject>`, and elements an SVG renderer does not draw, such as an
+editor's `sodipodi:namedview` or Inkscape's `flowRoot`.
+
+**`<style>` sheets** may hold rules whose selectors are a type, `*`, `.class`
+or `#id` (or several together, `rect.a#b`), comma-separated, with at most one
+combinator (`g rect`, `g > .a`), and whose `url(…)`s name a gradient.
+
+**Refused, and why:**
+- Any other element an SVG renderer would draw: the other filter primitives
+  (`feTurbulence`, `feMorphology`, `feConvolveMatrix`, the lighting filters,
+  `feDisplacementMap`, `feTile`, `feImage`, `feComponentTransfer`), each of
+  which can cost seconds per frame from a file of a few hundred bytes.
+- A `clipPath`, `mask`, `pattern` or `marker` that itself uses one, or that
+  takes another's `href`. A chain of masks is a full-size layer per link.
+- A filter that takes another's `href`, a filter of more than 6
+  primitives, an `feMerge` of more than 8 inputs, or a gradient of more than
+  64 stops.
+- In `<style>`: an `@` rule (`@media`, `@import`), a pseudo-class, an
+  attribute selector, more than one combinator, a `url()` naming anything but
+  a gradient, more than 1,024 selectors. A long descendant chain makes the
+  matcher backtrack for seconds.
+- A doctype whose internal subset holds anything but flat
+  `<!ENTITY name "value">` declarations, each name once. Illustrator's
+  `&ns_svg;` entities are fine; an entity that refers to another is not.
+  References expand to at most 1 MB in all.
+- Nesting deeper than 128 (as written, or once `<use>` is expanded), or more
+  than 100,000 elements once `<use>` and other references are expanded.
+- At draw time: a pattern tile over 4M device pixels or a filter layer over
+  16M pixels refuses that size of the image; so does a raster estimated at
+  more than about a second of work (a backstop: millions of dashes,
+  thousands of canvas-sized translucent shapes at 2x).
+
+Inline `<svg>` elements in the DOM are a different path and are unaffected.
 
 Two differences from Chrome: rinch rounds a layout to whole pixels (an SVG of
 `width="10.5"` is 11 wide), and an *inline* `<img>` of an SVG with only a

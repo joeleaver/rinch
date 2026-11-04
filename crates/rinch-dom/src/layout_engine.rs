@@ -251,6 +251,7 @@ impl RinchDocument {
         if !self.tree.layout_dirty {
             if !self.tree.dirty_ifc_text_roots.is_empty() {
                 self.tree.hit_cache.invalidate();
+                self.tree.layout_epoch = self.tree.layout_epoch.wrapping_add(1);
                 self.tree.perf.bump(Counter::LayoutSkippedTextOnly);
                 self.sync_dirty_text_contexts();
                 let t = web_time::Instant::now();
@@ -279,12 +280,14 @@ impl RinchDocument {
             } else {
                 if viewport_changed {
                     self.tree.hit_cache.invalidate();
+                    self.tree.layout_epoch = self.tree.layout_epoch.wrapping_add(1);
                 }
                 self.tree.perf.bump(Counter::LayoutSkippedPaintOnly);
                 return;
             }
         }
         self.tree.hit_cache.invalidate();
+        self.tree.layout_epoch = self.tree.layout_epoch.wrapping_add(1);
         self.tree.layout_dirty = false;
 
         let root_taffy = match self.tree.nodes[self.tree.root_id].taffy_id {
@@ -1284,6 +1287,16 @@ impl RinchDocument {
             // none of them — the common case, a long list scrolled anywhere
             // but its end, whose layout would otherwise measure every row's
             // badge.
+            //
+            // And first from the rounded rects alone (#2116): an offset more
+            // than their slack inside that range is inside the whole-pixel
+            // one, so a layout measures no container unrounded for this.
+            let rounded_flow =
+                crate::paint::scrollbar::content_extents_in_flow_rounded(&self.tree, node_id).1;
+            let slack = crate::paint::scrollbar::ROUNDED_RANGE_SLACK;
+            if node.scroll_offset.1 <= (rounded_flow - visible_h - slack).max(0.0) {
+                continue;
+            }
             let flow_height =
                 crate::paint::scrollbar::content_extents_in_flow(&self.tree, node_id).1;
             if node.scroll_offset.1 <= (flow_height - visible_h).max(0.0) {

@@ -10,63 +10,51 @@
 //! under any zoom, DPI or CSS size, where rasterising once at the natural size
 //! and scaling that would blur it.
 //!
-//! **An SVG file is untrusted input** (review of #2125), and these limits keep
-//! one from crashing the app or holding its UI thread:
-//! - [`prescan`] reads the bytes before any parser does: element nesting is
-//!   at most [`MAX_DEPTH`] (roxmltree and usvg recurse once per level, and a
-//!   stack overflow aborts the process, which `catch_unwind` cannot stop); a
-//!   doctype's internal subset is read by a strict grammar and may hold only
-//!   flat `<!ENTITY name "value">` declarations, each name once (Illustrator's
-//!   `&ns_svg;` shape; a processing instruction, comment, parameter or
-//!   external entity, a value with `&`, `%` or `<`, or a duplicate refuses the
-//!   file), and all references to them together expand to at most
-//!   [`MAX_ENTITY_EXPANSION`] bytes — checked again from what roxmltree
-//!   actually holds after it parses.
-//! - `check_expansion` then walks the parsed XML the way usvg will expand
-//!   it — every `<use>`/`href` and `url(#id)` reference counted as a copy of
-//!   what it names (a marker once per vertex) — and refuses a file whose
-//!   expanded depth passes [`MAX_DEPTH`] or whose element count passes
-//!   [`MAX_NODES`], before usvg builds that tree. usvg's own tree is counted
-//!   again afterwards.
-//! - Each raster has a budget of [`MAX_RASTER_WORK`], an estimate of resvg's
-//!   time: the device pixels painted, from the bounding boxes of everything
-//!   resvg will fill (each layer and clip/mask/pattern subtree included)
-//!   scaled to the drawn size, plus [`WORK_PER_ELEMENT`] per element,
-//!   [`WORK_PER_DASH`] per dash of a dashed stroke, and each filter
-//!   primitive's measured cost per pixel of its region (`filter_cost`; a
-//!   morphology's grows with its radius squared). A file over it at that size
-//!   draws nothing and logs why, once. Also per raster: an isolated layer is
-//!   at most [`MAX_LAYER_PX`], an `feMorphology` radius at most
-//!   [`MAX_MORPHOLOGY_RADIUS`] device pixels. Per file: `feTurbulence`
-//!   octaves are clamped to [`MAX_TURBULENCE_OCTAVES`], and an
-//!   `feConvolveMatrix` order past [`MAX_CONVOLVE_ORDER`] is refused.
-//!   `<style>` sheets' `url(#id)` references are counted for every element.
+//! **An SVG file is untrusted input, drawn only within a profile** (the
+//! reviews of #2125 broke a cost estimate three times, so the guarantee is
+//! an allowlist, `check_profile`). A file that uses anything outside the
+//! profile is refused whole — nothing is drawn, and one reason is logged —
+//! never drawn in part:
+//! - **Elements**: `svg`, `g`, `defs`, `symbol`, `use`, `a`, `switch`,
+//!   `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`,
+//!   `linearGradient`, `radialGradient` (at most [`MAX_GRADIENT_STOPS`]
+//!   `stop`s each), `title`, `desc`, `metadata`, `style`; `clipPath`, `mask`,
+//!   `pattern` and `marker` one level deep (one that itself uses a clip path,
+//!   mask, pattern or marker, or takes another's `href`, is refused); and
+//!   `filter` with at most [`MAX_FILTER_PRIMITIVES`] of `feGaussianBlur`,
+//!   `feOffset`, `feFlood`, `feColorMatrix`, `feComposite`, `feBlend`,
+//!   `feDropShadow` and `feMerge` (at most [`MAX_MERGE_NODES`] inputs).
+//!   **Ignored**, drawn as nothing, whatever they hold: `text`, `image`,
+//!   `foreignObject`, elements outside the SVG namespace and elements usvg
+//!   does not know (an editor's `sodipodi:namedview`, Inkscape's `flowRoot`,
+//!   `metadata`'s RDF), which usvg skips subtree and all. Any other element
+//!   usvg would draw refuses the file (`feTurbulence`, `feMorphology`,
+//!   `feConvolveMatrix`, the lighting filters, `feImage`, `feTile`,
+//!   `feDisplacementMap`, `feComponentTransfer`, `tref`, …).
+//! - **CSS** in `<style>`: rules whose selectors are type, `*`, `.class` and
+//!   `#id` compounds with at most one combinator, and whose `url()`s name a
+//!   gradient. No `@` rule, pseudo-class or attribute selector. Checked
+//!   before usvg parses (usvg's CSS matching backtracks on descendant
+//!   chains).
+//! - **The doctype** is read by a strict grammar ([`prescan`]): its internal
+//!   subset may hold only flat `<!ENTITY name "value">` declarations, each
+//!   name once; their references expand to at most [`MAX_ENTITY_EXPANSION`]
+//!   bytes, checked again from what roxmltree holds after it parses.
+//! - **Counts**: nesting at most [`MAX_DEPTH`] as written and as expanded,
+//!   at most [`MAX_NODES`] elements once `<use>` and other references are
+//!   expanded (`check_expansion`, before usvg builds the tree), each raster
+//!   at most [`MAX_RASTER_PX`], each layer at most [`MAX_LAYER_PX`] and each
+//!   pattern tile at most [`MAX_RASTER_PX`] device pixels.
+//! - **A work budget**, [`MAX_RASTER_WORK`], stays as a backstop: the
+//!   bounding-box area resvg paints scaled to the drawn size, plus a cost per
+//!   element, per dash and per filter pixel.
 //! - Parsing and rasterising run under `catch_unwind`: a panic in usvg or
 //!   resvg fails that image (and it is not rasterised again), not the app.
 //! - Rasters are kept per drawn size in one cache per thread, at most
 //!   [`RASTER_BUDGET_BYTES`] in all; a raster the frame being painted uses is
 //!   never evicted (#1156's rule for background tiles), so any number of sizes
 //!   on screen are made once, and one no frame has used for
-//!   [`RASTER_IDLE_FRAMES`] painted frames is let go. Each raster is at most
-//!   [`MAX_RASTER_PX`] pixels (counted after rounding up to whole pixels).
-//!
-//! **Sizing** follows Chrome 156 (`crate::replaced::default_sized`, shared
-//! with the `<svg>` element): the natural width and height are the root's
-//! `width` and `height` attributes when they are absolute lengths, the ratio
-//! theirs, else the `viewBox`'s. **Drawing** into a box of another shape maps
-//! the `viewBox` into it by the root's `preserveAspectRatio` (an `<img>` 40x40
-//! of a 16x8 icon shows a 40x20 picture, centred), and stretches a file with
-//! no `viewBox`, as Chrome does.
-//!
-//! **A security boundary.** The file is data, never code and never a fetch:
-//! there is no script (usvg has no script engine), and nothing outside the
-//! file is read. An `<image>` inside it draws nothing, whatever its `href`
-//! (a file path, a URL or a `data:` URL; both of usvg's resolvers answer
-//! `None`), and usvg follows no external reference (`<use href="other.svg#a">`,
-//! a stylesheet `@import`) of its own. **Text is not drawn**: usvg's `text`
-//! feature (a font database, shaping) is off, so a `<text>` element is left
-//! out. Everything else usvg renders is drawn: paths, shapes, gradients,
-//! patterns, clip paths, masks, filters, opacity.
+//!   [`RASTER_IDLE_FRAMES`] painted frames is let go.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -126,19 +114,20 @@ pub const RASTER_IDLE_FRAMES: u64 = 60;
 /// it): 16M px, 64 MB a pixmap.
 pub const MAX_LAYER_PX: f64 = 16.0 * 1024.0 * 1024.0;
 
-/// The most octaves an `feTurbulence` is rendered with; more are clamped to
-/// this, as browsers clamp them (each octave is another noise evaluation per
-/// pixel, and usvg takes `numOctaves="1e5"` as written).
-pub const MAX_TURBULENCE_OCTAVES: u32 = 10;
+/// The most `stop`s one gradient may have (each is a ramp segment resvg
+/// evaluates per pixel it fills).
+pub const MAX_GRADIENT_STOPS: usize = 64;
 
-/// The largest `feConvolveMatrix` `order` (each side of its kernel) a file
-/// may use; a larger one is refused. Real kernels are 3 to 5 wide.
-pub const MAX_CONVOLVE_ORDER: u32 = 16;
+/// The most primitives one `filter` may chain. Inkscape's drop shadow is
+/// five (flood, composite, blur, offset, composite).
+pub const MAX_FILTER_PRIMITIVES: usize = 6;
 
-/// The largest `feMorphology` radius, in device pixels, a raster may draw;
-/// a draw that would need more is refused (its cost grows with the square
-/// of the radius per pixel).
-pub const MAX_MORPHOLOGY_RADIUS: f64 = 64.0;
+/// The most inputs one `feMerge` may composite.
+pub const MAX_MERGE_NODES: usize = 8;
+
+/// The most selectors all of a file's `<style>` sheets may hold (each is
+/// matched against every element).
+pub const MAX_SELECTORS: usize = 1024;
 
 /// What one dash of a dashed stroke costs, as pixels painted (about 140 ns a
 /// dash, measured).
@@ -485,6 +474,354 @@ fn sheet_references<'a>(doc: &'a usvg::roxmltree::Document) -> Vec<(&'a str, boo
     out
 }
 
+/// The SVG namespace; an element in no namespace counts as SVG, as usvg
+/// reads it.
+const SVG_NS: &str = "http://www.w3.org/2000/svg";
+
+/// Elements drawn or read as written.
+const PROFILE_ELEMENTS: &[&str] = &[
+    "svg",
+    "g",
+    "defs",
+    "symbol",
+    "use",
+    "a",
+    "switch",
+    "path",
+    "rect",
+    "circle",
+    "ellipse",
+    "line",
+    "polyline",
+    "polygon",
+    "linearGradient",
+    "radialGradient",
+    "stop",
+    "title",
+    "desc",
+    "metadata",
+    "style",
+    "clipPath",
+    "mask",
+    "pattern",
+    "marker",
+    "filter",
+];
+
+/// Filter primitives cheap per pixel (a drop shadow's parts), and
+/// `feMerge`'s inputs.
+const PROFILE_FILTERS: &[&str] = &[
+    "feGaussianBlur",
+    "feOffset",
+    "feFlood",
+    "feColorMatrix",
+    "feComposite",
+    "feBlend",
+    "feDropShadow",
+    "feMerge",
+];
+
+/// Elements drawn as nothing, their contents unread: usvg's text support is
+/// off, an `<image>` resolves to nothing (nothing outside the file is
+/// read), and usvg skips `foreignObject`.
+const IGNORED_ELEMENTS: &[&str] = &["text", "image", "foreignObject"];
+
+/// Every element usvg reads (its `EId`). Any other name it skips, subtree
+/// and all, so the profile ignores it too (an editor's `sodipodi:namedview`
+/// or `flowRoot`, `metadata`'s RDF).
+const USVG_ELEMENTS: &[&str] = &[
+    "a",
+    "circle",
+    "clipPath",
+    "defs",
+    "ellipse",
+    "feBlend",
+    "feColorMatrix",
+    "feComponentTransfer",
+    "feComposite",
+    "feConvolveMatrix",
+    "feDiffuseLighting",
+    "feDisplacementMap",
+    "feDistantLight",
+    "feDropShadow",
+    "feFlood",
+    "feFuncA",
+    "feFuncB",
+    "feFuncG",
+    "feFuncR",
+    "feGaussianBlur",
+    "feImage",
+    "feMerge",
+    "feMergeNode",
+    "feMorphology",
+    "feOffset",
+    "fePointLight",
+    "feSpecularLighting",
+    "feSpotLight",
+    "feTile",
+    "feTurbulence",
+    "filter",
+    "g",
+    "image",
+    "line",
+    "linearGradient",
+    "marker",
+    "mask",
+    "path",
+    "pattern",
+    "polygon",
+    "polyline",
+    "radialGradient",
+    "rect",
+    "stop",
+    "style",
+    "svg",
+    "switch",
+    "symbol",
+    "text",
+    "textPath",
+    "tref",
+    "tspan",
+    "use",
+];
+
+/// Elements that may be used only one level deep.
+const ONE_LEVEL: &[&str] = &["clipPath", "mask", "pattern", "marker"];
+
+fn refuse<T>(why: impl std::fmt::Display) -> Result<T, String> {
+    Err(format!("SVG refused: outside the supported profile: {why}"))
+}
+
+/// The `#id`s an element names through a property that draws another
+/// element: `clip-path`, `mask`, `filter`, the markers, `fill` and `stroke`
+/// (as attributes or in its `style`), and `href`.
+fn drawn_references<'a>(node: usvg::roxmltree::Node<'a, '_>) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for attr in node.attributes() {
+        let v = attr.value();
+        if attr.name() == "href" {
+            if let Some(id) = v.trim().strip_prefix('#') {
+                out.push(id);
+            }
+            continue;
+        }
+        let mut rest = v;
+        while let Some(at) = rest.find("url(") {
+            rest = &rest[at + 4..];
+            let inner = rest.split(')').next().unwrap_or("");
+            let id = inner
+                .trim()
+                .trim_matches(['"', '\''])
+                .trim_start_matches('#');
+            if !id.is_empty() {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// One `<style>` sheet's rules, checked against the profile: no `@` rule;
+/// selectors of type, `*`, `.class` and `#id` compounds, at most one
+/// combinator each; every `url()` naming a gradient. Returns how many
+/// selectors it holds.
+fn check_sheet(sheet: &str, ids: &HashMap<&str, usvg::roxmltree::Node>) -> Result<usize, String> {
+    // Comments out.
+    let mut css = String::with_capacity(sheet.len());
+    let mut rest = sheet;
+    while let Some(at) = rest.find("/*") {
+        css.push_str(&rest[..at]);
+        rest = match rest[at + 2..].find("*/") {
+            Some(end) => &rest[at + 2 + end + 2..],
+            None => "",
+        };
+    }
+    css.push_str(rest);
+    if css.contains('@') {
+        return refuse("a CSS @ rule");
+    }
+    let is_ident = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    };
+    let mut selectors = 0;
+    for rule in css.split('}') {
+        if rule.trim().is_empty() {
+            continue;
+        }
+        let Some((head, body)) = rule.split_once('{') else {
+            return refuse("malformed CSS");
+        };
+        if body.contains('{') {
+            return refuse("nested CSS");
+        }
+        for selector in head.split(',') {
+            selectors += 1;
+            let compounds: Vec<&str> = selector
+                .split(|c: char| c.is_whitespace() || matches!(c, '>' | '+' | '~'))
+                .filter(|c| !c.is_empty())
+                .collect();
+            if compounds.is_empty() || compounds.len() > 2 {
+                return refuse(format!("the CSS selector `{}`", selector.trim()));
+            }
+            for compound in compounds {
+                // An optional type or `*`, then `.class` / `#id` parts.
+                let (head, mut rest) =
+                    compound.split_at(compound.find(['.', '#']).unwrap_or(compound.len()));
+                let mut ok = head == "*" || is_ident(head) || (head.is_empty() && !rest.is_empty());
+                while ok && !rest.is_empty() {
+                    let body = &rest[1..];
+                    let end = body.find(['.', '#']).unwrap_or(body.len());
+                    ok = is_ident(&body[..end]);
+                    rest = &body[end..];
+                }
+                if !ok {
+                    return refuse(format!("the CSS selector `{}`", selector.trim()));
+                }
+            }
+        }
+        let mut rest = body;
+        while let Some(at) = rest.find("url(") {
+            rest = &rest[at + 4..];
+            let inner = rest.split(')').next().unwrap_or("");
+            let id = inner
+                .trim()
+                .trim_matches(['"', '\''])
+                .trim_start_matches('#');
+            let gradient = ids.get(id).is_some_and(|n| {
+                matches!(n.tag_name().name(), "linearGradient" | "radialGradient")
+            });
+            if !gradient {
+                return refuse("a CSS url() that names something other than a gradient");
+            }
+        }
+    }
+    Ok(selectors)
+}
+
+/// Each `id` to its **first** element, as usvg resolves a reference (a
+/// later duplicate is not the one drawn).
+fn first_ids<'a, 'i>(
+    doc: &'a usvg::roxmltree::Document<'i>,
+) -> HashMap<&'a str, usvg::roxmltree::Node<'a, 'i>> {
+    let mut ids = HashMap::new();
+    for n in doc.descendants() {
+        if let Some(id) = n.attribute("id") {
+            ids.entry(id).or_insert(n);
+        }
+    }
+    ids
+}
+
+/// Check a parsed SVG file against the profile of the module doc, before
+/// usvg reads it. Iterative; nothing here recurses.
+pub(crate) fn check_profile(doc: &usvg::roxmltree::Document) -> Result<(), String> {
+    use usvg::roxmltree::Node;
+    let ids = first_ids(doc);
+    // Every `<style>` in the document, in any namespace and inside an
+    // ignored element too: usvg reads them all (`resolve_css`).
+    let mut selectors = 0;
+    for style in doc.descendants().filter(|n| n.has_tag_name("style")) {
+        for text in style.children().filter_map(|c| c.text()) {
+            selectors += check_sheet(text, &ids)?;
+        }
+        if selectors > MAX_SELECTORS {
+            return refuse(format!("more than {MAX_SELECTORS} CSS selectors"));
+        }
+    }
+    let mut stack: Vec<Node> = vec![doc.root_element()];
+    while let Some(node) = stack.pop() {
+        if !node.is_element() {
+            continue;
+        }
+        if !matches!(node.tag_name().namespace(), None | Some(SVG_NS)) {
+            continue; // usvg does not read it.
+        }
+        let name = node.tag_name().name();
+        if IGNORED_ELEMENTS.contains(&name) || !USVG_ELEMENTS.contains(&name) {
+            continue;
+        }
+        let in_filter = node
+            .parent_element()
+            .is_some_and(|p| p.has_tag_name("filter"));
+        let in_merge = node
+            .parent_element()
+            .is_some_and(|p| p.has_tag_name("feMerge"));
+        if in_filter {
+            if !PROFILE_FILTERS.contains(&name) {
+                return refuse(format!("the filter primitive <{name}>"));
+            }
+        } else if in_merge {
+            if name != "feMergeNode" {
+                return refuse(format!("<{name}> in an feMerge"));
+            }
+        } else if !PROFILE_ELEMENTS.contains(&name) {
+            return refuse(format!("the element <{name}>"));
+        }
+        match name {
+            "filter" => {
+                if node.attribute("href").is_some() {
+                    return refuse("a filter that takes another's href");
+                }
+                let primitives = node.children().filter(|c| c.is_element()).count();
+                if primitives > MAX_FILTER_PRIMITIVES {
+                    return refuse(format!(
+                        "a filter of {primitives} primitives (at most {MAX_FILTER_PRIMITIVES})"
+                    ));
+                }
+            }
+            "feMerge" => {
+                let inputs = node.children().filter(|c| c.is_element()).count();
+                if inputs > MAX_MERGE_NODES {
+                    return refuse(format!(
+                        "an feMerge of {inputs} inputs (at most {MAX_MERGE_NODES})"
+                    ));
+                }
+            }
+            "linearGradient" | "radialGradient" => {
+                let stops = node.children().filter(|c| c.has_tag_name("stop")).count();
+                if stops > MAX_GRADIENT_STOPS {
+                    return refuse(format!(
+                        "a gradient of {stops} stops (at most {MAX_GRADIENT_STOPS})"
+                    ));
+                }
+            }
+            // Checked below, wherever it is.
+            "style" => continue,
+            _ => {}
+        }
+        if ONE_LEVEL.contains(&name) {
+            if node.attribute("href").is_some() {
+                return refuse(format!("a <{name}> that takes another's href"));
+            }
+            // Nothing it draws (following `<use>`) may use another.
+            let mut seen = std::collections::HashSet::new();
+            let mut inner: Vec<Node> = vec![node];
+            while let Some(n) = inner.pop() {
+                if !seen.insert(n.id()) || seen.len() > MAX_NODES as usize {
+                    continue;
+                }
+                for id in drawn_references(n) {
+                    let Some(&target) = ids.get(id) else { continue };
+                    if ONE_LEVEL.contains(&target.tag_name().name()) {
+                        return refuse(format!(
+                            "a <{name}> that uses a <{}>",
+                            target.tag_name().name()
+                        ));
+                    }
+                    if n.has_tag_name("use") {
+                        inner.push(target);
+                    }
+                }
+                inner.extend(n.children().filter(|c| c.is_element()));
+            }
+        }
+        stack.extend(node.children());
+    }
+    Ok(())
+}
+
 /// Walk the parsed XML as usvg will expand it (see the module doc): refuse a
 /// file whose expanded depth passes [`MAX_DEPTH`] or whose element count
 /// passes [`MAX_NODES`]. Memoised per element, and its own recursion stops at
@@ -539,10 +876,7 @@ fn check_expansion(doc: &usvg::roxmltree::Document) -> Result<(), String> {
         memo.insert(node.id(), Some((count, height)));
         Ok((count, height))
     }
-    let ids = doc
-        .descendants()
-        .filter_map(|n| n.attribute("id").map(|id| (id, n)))
-        .collect();
+    let ids = first_ids(doc);
     let sheet = sheet_references(doc);
     expand(&ids, &sheet, &mut Memo::new(), doc.root_element(), 0).map(|_| ())
 }
@@ -592,6 +926,8 @@ pub struct VectorImage {
     filters: Vec<FilterWork>,
     /// The largest isolated layer, in tree units squared.
     max_layer: f64,
+    /// The largest pattern tile, in tree units squared.
+    max_tile: f64,
     /// Process-unique: the raster cache's key.
     id: u64,
     made: AtomicU64,
@@ -726,6 +1062,7 @@ fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
     if root.tag_name().name() != "svg" {
         return Err("Failed to parse SVG: the root element is not <svg>".into());
     }
+    check_profile(&doc)?;
     check_expansion(&doc)?;
     // What roxmltree actually expanded: the text and attribute values it
     // holds, which entities can only have grown, bounded by the file plus
@@ -746,56 +1083,6 @@ fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
             "SVG refused: its entities expand past {MAX_ENTITY_EXPANSION} bytes"
         ));
     }
-    // Filters with a cost per pixel that a file sets: `feTurbulence`'s
-    // octaves are clamped (in the text usvg is given), an `feConvolveMatrix`
-    // past [`MAX_CONVOLVE_ORDER`] refuses the file.
-    let mut clamps: Vec<std::ops::Range<usize>> = Vec::new();
-    for n in doc.descendants() {
-        match n.tag_name().name() {
-            "feTurbulence" => {
-                if let Some(a) = n.attribute_node("numOctaves")
-                    && a.value()
-                        .trim()
-                        .parse::<f64>()
-                        .is_ok_and(|v| v > f64::from(MAX_TURBULENCE_OCTAVES))
-                {
-                    clamps.push(a.range_value());
-                }
-            }
-            "feConvolveMatrix" => {
-                let order = n.attribute("order").unwrap_or("3");
-                if order
-                    .split(|c: char| c.is_ascii_whitespace() || c == ',')
-                    .filter(|o| !o.is_empty())
-                    .any(|o| {
-                        o.parse::<f64>()
-                            .map_or(true, |o| o > f64::from(MAX_CONVOLVE_ORDER))
-                    })
-                {
-                    return Err(format!(
-                        "SVG refused: an feConvolveMatrix order past {MAX_CONVOLVE_ORDER}"
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-    let clamped;
-    let text = if clamps.is_empty() {
-        text
-    } else {
-        let mut out = String::with_capacity(text.len());
-        let mut at = 0;
-        clamps.sort_by_key(|r| r.start);
-        for r in &clamps {
-            out.push_str(&text[at..r.start]);
-            out.push_str(&MAX_TURBULENCE_OCTAVES.to_string());
-            at = r.end;
-        }
-        out.push_str(&text[at..]);
-        clamped = out;
-        clamped.as_str()
-    };
     let view_box = root
         .attribute("viewBox")
         .and_then(|v| v.parse::<svgtypes::ViewBox>().ok())
@@ -843,6 +1130,7 @@ fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
         dashes: 0.0,
         filters: Vec::new(),
         max_layer: 0.0,
+        max_tile: 0.0,
     };
     tally.group(tree.root(), 0)?;
     Ok(VectorImage {
@@ -859,6 +1147,7 @@ fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
         canvas,
         filters: tally.filters,
         max_layer: tally.max_layer,
+        max_tile: tally.max_tile,
         id: {
             static NEXT: AtomicU64 = AtomicU64::new(1);
             NEXT.fetch_add(1, Ordering::Relaxed)
@@ -879,24 +1168,24 @@ struct Tally {
     dashes: f64,
     filters: Vec<FilterWork>,
     max_layer: f64,
+    max_tile: f64,
 }
 
 /// One filter primitive's work: its region (the filter's, in tree units
-/// squared, clamped as resvg clamps it), its cost per pixel of that region
-/// (in pixels painted, measured per filter), and a morphology's radius in
-/// tree units, whose cost grows with its square per pixel.
+/// squared, clamped as resvg clamps it) and its cost per pixel of that
+/// region, in pixels painted.
 struct FilterWork {
     area: f64,
     per_pixel: f64,
-    morphology: Option<(f64, f64)>,
 }
 
-/// What each filter primitive costs per pixel of its region, in pixels
-/// painted (one is about 1.5 ns; measured with `filter_cost_probe`, release).
+/// What each primitive the profile allows costs per pixel of its region, in
+/// pixels painted (one is about 1.5 ns; measured with `filter_cost_probe`,
+/// release): a box blur 60 at any deviation, an IIR blur (both deviations
+/// under 2) and a drop shadow 250, the rest 20.
 fn filter_cost(kind: &usvg::filter::Kind) -> f64 {
     use usvg::filter::Kind as K;
     match kind {
-        // Box blur (3 passes, any deviation) or IIR (below 2, slower).
         K::GaussianBlur(b) => {
             if b.std_dev_x().get() < 2.0 && b.std_dev_y().get() < 2.0 {
                 250.0
@@ -905,13 +1194,6 @@ fn filter_cost(kind: &usvg::filter::Kind) -> f64 {
             }
         }
         K::DropShadow(_) => 250.0,
-        K::Turbulence(t) => 30.0 + 30.0 * f64::from(t.num_octaves().min(MAX_TURBULENCE_OCTAVES)),
-        K::ConvolveMatrix(c) => {
-            20.0 + 2.0 * f64::from(c.matrix().columns()) * f64::from(c.matrix().rows())
-        }
-        K::SpecularLighting(_) | K::DisplacementMap(_) => 60.0,
-        // The radius term is added per raster ([`VectorImage::estimated_work`]).
-        K::Morphology(_) => 20.0,
         _ => 20.0,
     }
 }
@@ -958,25 +1240,15 @@ impl Tally {
                     self.rect(layer);
                     let area = self.clamped_area(layer);
                     self.max_layer = self.max_layer.max(area);
-                    let t = g.abs_transform();
-                    let scale = f64::from((t.sx * t.sy - t.kx * t.ky).abs()).sqrt();
                     for filter in g.filters() {
                         for primitive in filter.primitives() {
                             let kind = primitive.kind();
                             if let usvg::filter::Kind::Image(image) = kind {
                                 self.group(image.root(), depth + 1)?;
                             }
-                            let morphology = match kind {
-                                usvg::filter::Kind::Morphology(m) => Some((
-                                    f64::from(m.radius_x().get()) * scale,
-                                    f64::from(m.radius_y().get()) * scale,
-                                )),
-                                _ => None,
-                            };
                             self.filters.push(FilterWork {
                                 area,
                                 per_pixel: filter_cost(kind),
-                                morphology,
                             });
                         }
                     }
@@ -985,6 +1257,17 @@ impl Tally {
             }
             usvg::Node::Path(p) => {
                 self.rect(p.abs_stroke_bounding_box());
+                // A pattern's tile is rendered once at its own device size.
+                let paints = [p.fill().map(|f| f.paint()), p.stroke().map(|s| s.paint())];
+                for paint in paints.into_iter().flatten() {
+                    if let usvg::Paint::Pattern(pattern) = paint {
+                        let t = p.abs_transform().pre_concat(pattern.transform());
+                        let det = f64::from((t.sx * t.sy - t.kx * t.ky).abs());
+                        let r = pattern.rect();
+                        let tile = f64::from(r.width()) * f64::from(r.height()) * det;
+                        self.max_tile = self.max_tile.max(tile);
+                    }
+                }
                 if let Some(dashes) = p.stroke().and_then(|s| s.dasharray()) {
                     let period: f64 = dashes.iter().map(|d| f64::from(*d)).sum();
                     let points = p.data().points();
@@ -1099,12 +1382,7 @@ impl VectorImage {
         let filters: f64 = self
             .filters
             .iter()
-            .map(|f| {
-                let radius = f.morphology.map_or(0.0, |(rx, ry)| {
-                    0.3 * (2.0 * rx * sx + 1.0) * (2.0 * ry * sy + 1.0)
-                });
-                f.area * sx * sy * (f.per_pixel + radius)
-            })
+            .map(|f| f.area * sx * sy * f.per_pixel)
             .sum();
         self.work_per_pixel * f64::from(w) * f64::from(h)
             + self.elements as f64 * WORK_PER_ELEMENT
@@ -1128,15 +1406,10 @@ impl VectorImage {
                 "at {w}x{h} it needs a {layer:.1e} px layer, past {MAX_LAYER_PX:.1e}"
             ));
         }
-        let radius = self
-            .filters
-            .iter()
-            .filter_map(|f| f.morphology)
-            .map(|(rx, ry)| (rx * sx).max(ry * sy))
-            .fold(0.0, f64::max);
-        if radius > MAX_MORPHOLOGY_RADIUS {
+        let tile = self.max_tile * sx * sy;
+        if tile > MAX_RASTER_PX {
             return Some(format!(
-                "at {w}x{h} an feMorphology radius is {radius:.0} px, past {MAX_MORPHOLOGY_RADIUS}"
+                "at {w}x{h} a pattern tile is {tile:.1e} px, past {MAX_RASTER_PX:.1e}"
             ));
         }
         None

@@ -3146,6 +3146,17 @@ pub struct NodeTree {
     /// beside the list. Boxed: a document is moved by value, and this is
     /// one pointer of it.
     pub(crate) overflow_absolutes: Box<crate::paint::scrollbar::OverflowAbsolutes>,
+    /// Each scroll container's in-flow reach measured unrounded, for the
+    /// current geometry (#2116): `content_extents`' memo of the one walk that
+    /// reads Taffy's unrounded rects. Boxed for the reason above.
+    pub(crate) exact_flow: Box<crate::paint::scrollbar::ExactFlow>,
+    /// Moved by every layout pass (and a text-only IFC rebuild), by
+    /// `out_of_flow::replace_all` and by a subtree's removal: everything that
+    /// can move a box's rect, and nothing that only restyles or scrolls. What
+    /// [`Self::exact_flow`] is keyed on — `HitCache::shape_generation` also
+    /// moves on every paint-only restyle (a hover), and the unrounded walk
+    /// it would then repeat is the cost #2116's memo is there to save.
+    pub(crate) layout_epoch: u64,
     /// The placed boxes among those that are **shrunk to fit from their
     /// static position** (#1404): an `auto` (or `fit-content`) width and both
     /// inline insets `auto`. What
@@ -3776,6 +3787,8 @@ impl NodeTree {
             ancestor_absolutes: BTreeSet::new(),
             placed_absolutes: Vec::new(),
             overflow_absolutes: Default::default(),
+            exact_flow: Default::default(),
+            layout_epoch: 0,
             abs_static_fits: Vec::new(),
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
@@ -4153,6 +4166,7 @@ impl NodeTree {
         // `prev_layout`), and their bars recorded after.
         let watched = crate::paint::bar_watch_scrollers(self);
         let members = self.inline_text_shadows;
+        let taffy = &self.taffy;
         let nodes = &mut self.nodes;
         // Each state is read with the slab borrowed shared (an IFC root's ink
         // reads its inline elements' styles, #1048), then written.
@@ -4160,7 +4174,8 @@ impl NodeTree {
             let Some(node) = nodes.get(id) else {
                 return;
             };
-            let state = PaintedState::of_in(node, members, |i| nodes.get(i));
+            let mut state = PaintedState::of_in(node, members, |i| nodes.get(i));
+            state.unrounded = unrounded_rect(taffy, node);
             let node = &mut nodes[id];
             if layout {
                 node.prev_layout = node.layout;
@@ -4312,6 +4327,7 @@ impl NodeTree {
     /// free-on-discard must go through it, or repeat both.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
         self.hit_cache.invalidate();
+        self.layout_epoch = self.layout_epoch.wrapping_add(1);
         // Collect all descendant IDs first
         let mut to_remove = Vec::new();
         self.collect_descendants(id, &mut to_remove);
@@ -4597,6 +4613,22 @@ pub struct PaintedState {
     /// A node whose answer has changed since owes the damage everything its
     /// subtree paints, not only its own rect (#1384).
     pub order: crate::stacking::PaintOrderKey,
+    /// Its unrounded Taffy rect `[x, y, width, height]` when painted
+    /// ([`unrounded_rect`]; `None` for a box with no Taffy node), written by
+    /// [`NodeTree::consume_paint_dirty`]. A scroller's range is measured from
+    /// it (#2116), so a change that leaves the rounded `layout` alone can
+    /// still move a bar: `paint::bar_watch_scrollers` compares it.
+    pub unrounded: Option<[f32; 4]>,
+}
+
+/// `node`'s unrounded Taffy rect `[x, y, width, height]`, in its Taffy
+/// parent's frame — what a scroller's range is measured from (#2116).
+pub(crate) fn unrounded_rect(
+    taffy: &taffy::TaffyTree<NodeContext>,
+    node: &Node,
+) -> Option<[f32; 4]> {
+    let u = taffy.unrounded_layout(node.taffy_id?);
+    Some([u.location.x, u.location.y, u.size.width, u.size.height])
 }
 
 /// A painted transform: the value and its resolved origin, in CSS px.
@@ -4642,6 +4674,7 @@ impl PaintedState {
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
             order: crate::stacking::PaintOrderKey::of(node),
+            unrounded: None,
         }
     }
 }

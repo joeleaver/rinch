@@ -681,7 +681,7 @@ pub(crate) fn bar_watch_scrollers(tree: &NodeTree) -> Vec<RawNodeId> {
         // with the rest of what it painted.
         if node.scrolls_x() || node.scrolls_y() {
             climb(Some(id), &mut out);
-        } else if geometry_may_have_moved(node) {
+        } else if geometry_may_have_moved(tree, node) {
             climb(node.parent, &mut out);
         }
     }
@@ -694,8 +694,11 @@ pub(crate) fn bar_watch_scrollers(tree: &NodeTree) -> Vec<RawNodeId> {
 /// Whether `node`'s box may sit elsewhere in its ancestors' scroll ranges than
 /// when it was last painted: never painted, moved or resized, positioned
 /// otherwise, or transformed (now or then — a transform's value is not
-/// compared).
-fn geometry_may_have_moved(node: &Node) -> bool {
+/// compared) — or its **unrounded** rect changed while the rounded one held:
+/// a scroller's range is measured unrounded (#2116), so 100.4px of content
+/// growing to 100.55px gives it a pixel's range with no rounded rect moving.
+/// The unrounded rect is read only when everything else held.
+fn geometry_may_have_moved(tree: &NodeTree, node: &Node) -> bool {
     let Some(painted) = node.painted.as_ref() else {
         return true;
     };
@@ -703,6 +706,7 @@ fn geometry_may_have_moved(node: &Node) -> bool {
         || painted.position != node.box_position()
         || painted.transform.is_some()
         || node.has_applied_transform()
+        || painted.unrounded != crate::node::unrounded_rect(&tree.taffy, node)
 }
 
 /// Whether `node`'s place in the paint order has changed since it was last

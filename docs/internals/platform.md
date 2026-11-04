@@ -83,41 +83,50 @@ drawn size is rasterised on the UI thread inside the paint that needs it. Measur
 each spanning the canvas 0.65 s (1.8 s). Moving that onto the native load threads would
 need a request per size and a frame drawn without the picture (or with a stale raster)
 meanwhile; not done. A size that keeps changing (a window resize under `background-size:
-cover`, a transform animated in scale) rasterises at each new size. **Limits** (review of
-#2125, which proved each one; pinned in `rinch-dom/tests/svg_image_limits_2111_tests.rs`, a
-binary of its own because a stack overflow aborts it): an SVG file is untrusted input.
-`svg_image::prescan` reads the bytes before any parser: element nesting at most `MAX_DEPTH`
-(128; roxmltree up to 0.21.1 and usvg recurse per level, and 1,000 levels overflowed a 2 MB
-debug stack, 4,000 a release one: an abort `catch_unwind` cannot catch). A doctype is read
-by a strict grammar (`read_doctype`): its internal subset may hold only flat
-`<!ENTITY name "value">` declarations, each name once, values without `&`, `%` or `<`;
-anything else (a PI, a comment, a parameter or external entity, `<!ELEMENT>`, a duplicate)
-refuses the file. The references expand to at most `MAX_ENTITY_EXPANSION` (1 MB) in all, and
-roxmltree's parsed text and attribute values are checked against the same bound afterwards.
-Illustrator's `<!ENTITY ns_svg "…">` passes. (The second review of #2125 got past a lenient
-reader twice: a duplicate declaration, which roxmltree resolves to the first and a map to the
-last, and a `]>` inside a PI in the subset; a strict grammar has one reading.) `check_expansion` walks roxmltree's document as
-usvg expands it (`href` and `url(#id)` references counted as copies, a marker once per vertex)
-and refuses an expanded depth past `MAX_DEPTH` or an element count past `MAX_NODES` (100,000),
-before usvg builds the tree; usvg's tree is counted again (`Tally`). Each raster has a work
-budget, `MAX_RASTER_WORK` (1e9): the device pixels its paths' and isolated layers' bounding
-boxes cover (clip, mask and pattern contents as often as used), scaled to the raster, plus
-`WORK_PER_ELEMENT` (1e4) an element, `WORK_PER_DASH` (100) a dash of a dashed stroke (control
-polygon length over the dash period, a path's capped at tiny-skia's million), and each filter
-primitive's cost per pixel of its region (the group's layer box clamped to resvg's
-`max_filter_bbox`, five canvases each way), measured with `filter_cost_probe` (release, ns
-per pixel at 400x400 / 1.5): box blur 60 (any deviation; `stdDeviation="1e6"` costs what 3
-does), IIR blur (both deviations under 2) and drop shadow 250, turbulence 30 + 30 an octave,
-convolve 20 + 2 a kernel cell, specular lighting and displacement 60, the rest 20, morphology
-20 + 0.3 x (2rx+1)(2ry+1) in device px. Caps: `feTurbulence` octaves clamped to
-`MAX_TURBULENCE_OCTAVES` (10, in the text usvg is given; `numOctaves="1e5"` took over 2 s),
-`feConvolveMatrix` order past `MAX_CONVOLVE_ORDER` (16) refuses the file, an `feMorphology`
-radius past `MAX_MORPHOLOGY_RADIUS` (64 device px) or an isolated layer past `MAX_LAYER_PX`
-(16M px) refuses the raster. `<style>` sheets' `url(#id)`s (`sheet_references`) are counted
-as references of every element before usvg runs; usvg's own tree is counted after. Over the
-budget, nothing is drawn and a warning is logged once
-(1e9 is about a second of resvg here; four levels of tenfold `<use>` fan-out, a 1.2 KB file,
-took 12 s at 1200x800 before). Parsing and rasterising run under `catch_unwind` (`guarded`;
+cover`, a transform animated in scale) rasterises at each new size. **The profile** (Joe, after three adversarial reviews of
+#2125 broke a cost estimate each time; `svg_image::check_profile`, run after roxmltree parses
+and before usvg does). An SVG file is drawn only if everything in it is inside an allowlist;
+anything else refuses the file whole, with one logged reason. The user guide's "The SVG
+profile" is the exact list; the constants are `MAX_GRADIENT_STOPS` (64),
+`MAX_FILTER_PRIMITIVES` (6, Inkscape's drop shadow is 5), `MAX_MERGE_NODES` (8) and
+`MAX_SELECTORS` (1,024). Mechanism notes:
+- **Elements.** `PROFILE_ELEMENTS` and, under a `filter`, `PROFILE_FILTERS`. `IGNORED_ELEMENTS`
+  (`text`, `image`, `foreignObject`) are skipped with their contents, as are elements outside
+  the SVG namespace and names usvg does not know (`USVG_ELEMENTS` is usvg's `EId` list; usvg
+  skips any other name with its subtree, `parse_xml_node`). Ignoring rather than refusing
+  those was the one widening the corpus asked for: Inkscape files carry
+  `sodipodi:namedview`, `flowRoot` and RDF metadata.
+- **One level.** A `clipPath`, `mask`, `pattern` or `marker` (`ONE_LEVEL`) may not, in itself
+  or anything it draws (following `<use>`), name another through `clip-path`, `mask`,
+  `filter`, `fill`, `stroke`, the markers or `href`, and may not take an `href` itself.
+- **CSS.** usvg reads every `<style>` in the document wherever it is (`resolve_css`), so the
+  check does too, inside ignored elements included. `check_sheet` takes comments out, refuses
+  any `@`, and allows compounds of an optional type or `*` and `.class`/`#id` parts, at most
+  two compounds a selector; a `url()` must name a gradient, so nothing that draws another
+  element can come from a stylesheet. simplecss's descendant matching backtracks (`x * * * *
+  *` over 100 nested groups took over 10 s inside usvg's parse).
+- **Ids** resolve to their **first** element, as usvg's do (`first_ids`): a later duplicate
+  is not the one drawn.
+- **The doctype** keeps the strict grammar of round 2 (`read_doctype`), and the expansion
+  checks of round 1 (`prescan`, `check_expansion`, `Tally`) still run: nesting at most
+  `MAX_DEPTH` (128) as written and expanded, at most `MAX_NODES` (100,000) elements,
+  entities at most `MAX_ENTITY_EXPANSION` (1 MB).
+- **Per raster:** each pattern tile at most `MAX_RASTER_PX` device pixels (`Tally::max_tile`:
+  the tile rect under the path's and pattern's transforms; a 16384-px tile allocated 1.05 GB at
+  a 100x100 draw), each isolated layer at most `MAX_LAYER_PX` (16M px), and the work budget
+  `MAX_RASTER_WORK` (1e9) as a backstop: bounding-box area painted, `WORK_PER_ELEMENT` (1e4),
+  `WORK_PER_DASH` (100), and per pixel of a filter's region 60 for a box blur (any deviation),
+  250 for an IIR blur (both deviations under 2) or a drop shadow, 20 for the rest.
+- **The real-file pass rate** comes from `svg_image_limits_2111_tests::svg_corpus_probe`
+  (`RINCH_SVG_CORPUS`, a `label\tpath` list): 11,840 of 11,843 drew (Tabler 5,986/5,986,
+  Breeze 2,206/2,206, Oxygen and the rest 1,325/1,325, Adwaita 699/699, Inkscape files
+  530/530, Illustrator 7/7, hicolor 58/59, wallpapers 10/10, npm package SVGs 61/63). The three
+  refusals: two `@media` rules, one mask that uses a clip path.
+- Pins: `svg_image_limits_2111_tests.rs` (every input of the three reviews refused within
+  300 ms; the profile's refusals; ignored elements; real-world Tabler, Breeze, Inkscape and
+  Illustrator shapes drawing).
+
+Parsing and rasterising run under `catch_unwind` (`guarded`;
 a raster that panicked marks the image broken). Native load threads have an 8 MB stack.
 `roxmltree` is 0.21.2 (0.21.1 recursed per level in release). Percent-encoded `data:` URLs decode since #2111
 (`decode_data_uri`; only base64 did, so `data:image/svg+xml,%3Csvg…` failed). Known gaps,

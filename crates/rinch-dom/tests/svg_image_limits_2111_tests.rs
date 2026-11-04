@@ -349,35 +349,12 @@ fn filter_cost_probe() {
         ("blur 1e4", r#"<feGaussianBlur stdDeviation="10000"/>"#),
         ("blur 1.5 (iir)", r#"<feGaussianBlur stdDeviation="1.5"/>"#),
         ("shadow 1e4", r#"<feDropShadow stdDeviation="10000"/>"#),
-        ("morph 2", r#"<feMorphology radius="2"/>"#),
-        ("morph 8", r#"<feMorphology radius="8"/>"#),
-        ("turb 1", r#"<feTurbulence numOctaves="1"/>"#),
-        ("turb 8", r#"<feTurbulence numOctaves="8"/>"#),
+        ("flood", r##"<feFlood flood-color="#08f"/>"##),
+        ("offset", r#"<feOffset dx="5"/>"#),
         (
-            "conv 3",
-            r#"<feConvolveMatrix order="3" kernelMatrix="1 1 1 1 1 1 1 1 1"/>"#,
+            "composite",
+            r#"<feOffset dx="5" result="o"/><feComposite in="SourceGraphic" in2="o"/>"#,
         ),
-        (
-            "conv 9",
-            format!(
-                r#"<feConvolveMatrix order="9" kernelMatrix="{}"/>"#,
-                "1 ".repeat(81)
-            )
-            .leak(),
-        ),
-        (
-            "diffuse",
-            r#"<feDiffuseLighting><feDistantLight/></feDiffuseLighting>"#,
-        ),
-        (
-            "specular",
-            r#"<feSpecularLighting specularExponent="20"><fePointLight x="5" y="5" z="5"/></feSpecularLighting>"#,
-        ),
-        (
-            "displace",
-            r#"<feTurbulence result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="20"/>"#,
-        ),
-        ("tile", r#"<feOffset dx="5" result="o"/><feTile in="o"/>"#),
         (
             "colormatrix",
             r#"<feColorMatrix type="hueRotate" values="30"/>"#,
@@ -484,53 +461,33 @@ fn filtered(fe: &str, size: u32) -> String {
     )
 }
 
-/// `feMorphology radius="50"` on 100x100: its cost per pixel grows with the
-/// radius squared, so 256 px took 1.32 s. Refused there, drawn small.
+/// Filters outside the profile — the ones whose cost per pixel a file sets
+/// (`feMorphology`'s radius: 1.32 s at 256 px; `feTurbulence numOctaves="1e5"`:
+/// over 2 s; `feConvolveMatrix order="64"`: 1.72 s) and the rest — refuse
+/// the file at decode, quickly.
 #[test]
-fn a_large_morphology_radius_is_refused() {
-    let v = decode_svg(filtered(r#"<feMorphology radius="50"/>"#, 100).as_bytes()).unwrap();
-    assert!(quick(300, || v.raster(256.0, 256.0)).is_none());
-    assert!(v.raster(16.0, 16.0).is_some());
-}
-
-/// The morphology charge and cap, apart: radius 60 over 512x512 is under
-/// the radius cap but its cost per pixel (121² samples) passes the budget;
-/// radius 100 over 64x64 is cheap but past the cap of 64 device pixels.
-#[test]
-fn morphology_is_charged_by_its_radius_and_capped() {
-    let v = decode_svg(filtered(r#"<feMorphology radius="60"/>"#, 512).as_bytes()).unwrap();
-    assert!(quick(300, || v.raster(512.0, 512.0)).is_none(), "charged");
-    let v = decode_svg(filtered(r#"<feMorphology radius="100"/>"#, 64).as_bytes()).unwrap();
-    assert!(v.raster(64.0, 64.0).is_none(), "capped");
-    assert!(v.raster(32.0, 32.0).is_some(), "50 px is under the cap");
-}
-
-/// `feTurbulence numOctaves="1e5"` took over 2 s; its octaves are clamped
-/// to a browser's 10, so it draws, quickly.
-#[test]
-fn turbulence_octaves_are_clamped() {
-    let v = decode_svg(
-        filtered(
-            r#"<feTurbulence baseFrequency="0.05" numOctaves="1e5"/>"#,
-            100,
-        )
-        .as_bytes(),
-    )
-    .unwrap();
-    assert!(quick(300, || v.raster(100.0, 100.0)).is_some());
-}
-
-/// `feConvolveMatrix order="64"` (8.4 KB; 1.72 s at 400x400) is refused.
-#[test]
-fn a_large_convolve_matrix_is_refused() {
-    let fe = format!(
+fn filters_outside_the_profile_are_refused() {
+    let kernel = format!(
         r#"<feConvolveMatrix order="64" kernelMatrix="{}"/>"#,
         "1 ".repeat(64 * 64)
     );
-    let err = decode_svg(filtered(&fe, 400).as_bytes())
-        .map(|_| ())
-        .expect_err("refused");
-    assert!(err.contains("ConvolveMatrix"), "{err}");
+    for fe in [
+        r#"<feMorphology radius="50"/>"#,
+        r#"<feTurbulence baseFrequency="0.05" numOctaves="1e5"/>"#,
+        kernel.as_str(),
+        r#"<feDiffuseLighting><feDistantLight/></feDiffuseLighting>"#,
+        r#"<feSpecularLighting><fePointLight/></feSpecularLighting>"#,
+        r#"<feTurbulence result="t"/><feDisplacementMap in="SourceGraphic" in2="t"/>"#,
+        r#"<feOffset result="o"/><feTile in="o"/>"#,
+        r#"<feComponentTransfer><feFuncR type="identity"/></feComponentTransfer>"#,
+        r##"<feImage href="#r"/>"##,
+    ] {
+        let svg = filtered(fe, 100);
+        let err = quick(300, || {
+            decode_svg(svg.as_bytes()).map(|_| ()).expect_err(fe)
+        });
+        assert!(err.contains("profile"), "{fe}: {err}");
+    }
 }
 
 /// Dense dashes: a dash every 0.005 over 100 lines of 1,000 is 20 million
@@ -580,12 +537,378 @@ fn stylesheet_references_are_counted_before_usvg_expands_them() {
     let d: String = (0..5000)
         .map(|i| format!(" L{} {}", i % 100, i / 100))
         .collect();
+    // In a stylesheet: a CSS url() may name only a gradient.
     let svg = format!(
         r#"<svg {NS} width="100" height="100"><style>path {{ marker-mid: url(#m) }}</style><marker id="m">{rects}</marker><path d="M0 0{d}" stroke="black"/></svg>"#
     );
     let err = quick(300, || {
         decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
     });
-    // Refused before usvg built anything (usvg's own count says "built").
+    assert!(err.contains("profile"), "{err}");
+    // As an attribute: within the profile, but counted per vertex before
+    // usvg built anything (usvg's own count says "built").
+    let svg = format!(
+        r#"<svg {NS} width="100" height="100"><marker id="m">{rects}</marker><path d="M0 0{d}" stroke="black" marker-mid="url(#m)"/></svg>"#
+    );
+    let err = quick(300, || {
+        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
+    });
     assert!(err.contains("expands to"), "{err}");
+}
+
+/// How much of a real-world corpus the profile draws. `#[ignore]`d; run
+/// with `RINCH_SVG_CORPUS=<list.tsv of label\tpath> … -- --ignored
+/// --nocapture svg_corpus_probe`.
+#[test]
+#[ignore = "a corpus probe"]
+fn svg_corpus_probe() {
+    use std::collections::BTreeMap;
+    let Ok(list) = std::env::var("RINCH_SVG_CORPUS") else {
+        return;
+    };
+    let list = std::fs::read_to_string(list).unwrap();
+    // label -> (drawn, refused by the profile, failed otherwise, not drawn at 48px)
+    let mut by: BTreeMap<String, (u32, u32, u32, u32)> = BTreeMap::new();
+    let mut reasons: BTreeMap<(String, String), u32> = BTreeMap::new();
+    let mut slowest = (Duration::ZERO, String::new());
+    for line in list.lines() {
+        let Some((label, path)) = line.split_once('\t') else {
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let t = Instant::now();
+        let entry = by.entry(label.to_string()).or_default();
+        match decode_svg(&bytes) {
+            Ok(v) => {
+                if v.raster(48.0, 48.0).is_some() {
+                    entry.0 += 1;
+                } else {
+                    entry.3 += 1;
+                }
+            }
+            Err(e) => {
+                let key: String = e.chars().filter(|c| !c.is_ascii_digit()).collect();
+                if e.contains("profile") {
+                    entry.1 += 1;
+                } else {
+                    entry.2 += 1;
+                }
+                *reasons.entry((label.to_string(), key)).or_default() += 1;
+            }
+        }
+        if t.elapsed() > slowest.0 {
+            slowest = (t.elapsed(), path.to_string());
+        }
+    }
+    for (label, (ok, refused, failed, undrawn)) in &by {
+        let n = ok + refused + failed + undrawn;
+        eprintln!(
+            "{label}: {ok}/{n} drawn ({:.1}%), {refused} refused by the profile, {failed} failed to parse, {undrawn} not drawn at 48px",
+            100.0 * f64::from(*ok) / f64::from(n)
+        );
+    }
+    let mut top: Vec<_> = reasons.into_iter().collect();
+    top.sort_by_key(|t| std::cmp::Reverse(t.1));
+    for ((label, why), n) in top.iter().take(40) {
+        eprintln!("  {n:5} {label}: {why}");
+    }
+    eprintln!("slowest: {:?} {}", slowest.0, slowest.1);
+}
+
+// ---- Third review of #2125, and the profile that answers it (Joe,
+// 2026-11-08): a file outside the profile is refused whole, quickly.
+
+/// Refused at decode or at raster time; either way nothing is drawn.
+fn refused(svg: &str, size: f64) -> bool {
+    match decode_svg(svg.as_bytes()) {
+        Err(_) => true,
+        Ok(v) => v.raster(size, size).is_none(),
+    }
+}
+
+fn r3_css(levels: usize) -> String {
+    format!(
+        r#"<svg {NS} viewBox="0 0 10 10"><style>x{}{{fill:red}}</style>{}<rect width="10" height="10"/>{}</svg>"#,
+        " *".repeat(levels),
+        "<g>".repeat(100),
+        "</g>".repeat(100)
+    )
+}
+
+fn r3_pattern(n: u32) -> String {
+    format!(
+        r#"<svg {NS} viewBox="0 0 100 100" width="100" height="100"><defs><pattern id="p" patternUnits="userSpaceOnUse" width="{n}" height="{n}"><rect width="{n}" height="{n}" fill="red"/></pattern></defs><rect width="100" height="100" fill="url(#p)"/></svg>"#
+    )
+}
+
+fn r3_chain(kind: &str, attr: &str, n: usize) -> String {
+    let defs: String = (0..n)
+        .map(|i| {
+            format!(
+                r#"<{kind} id="c{i}" {attr}="url(#c{})"><rect width="100" height="100" fill="white"/></{kind}>"#,
+                i + 1
+            )
+        })
+        .collect();
+    format!(
+        r#"<svg {NS} viewBox="0 0 100 100"><defs>{defs}<{kind} id="c{n}"><rect width="100" height="100"/></{kind}></defs><rect width="100" height="100" {attr}="url(#c0)"/></svg>"#
+    )
+}
+
+fn r3_stops(n: usize, uses: usize) -> String {
+    let stops: String = (0..n)
+        .map(|i| {
+            format!(
+                r##"<stop offset="{:.4}" stop-color="#{:02x}0000"/>"##,
+                i as f64 / n as f64,
+                i % 256
+            )
+        })
+        .collect();
+    format!(
+        r##"<svg {NS} viewBox="0 0 100 100"><defs><linearGradient id="g">{stops}</linearGradient><rect id="r" width="100" height="100" fill="url(#g)"/></defs>{}</svg>"##,
+        r##"<use href="#r"/>"##.repeat(uses)
+    )
+}
+
+fn r3_merge(n: usize) -> String {
+    format!(
+        r#"<svg {NS} viewBox="0 0 100 100"><defs><filter id="f"><feMerge>{}</feMerge></filter></defs><rect width="100" height="100" filter="url(#f)"/></svg>"#,
+        r#"<feMergeNode in="SourceGraphic"/>"#.repeat(n)
+    )
+}
+
+/// The third review's five inputs: a CSS descendant chain that usvg's
+/// matching backtracks on (832 B, over 10 s, inside usvg's parse); a
+/// 16384-px pattern tile (1.05 GB at a 100x100 draw); 120-deep chains of
+/// masks and of clip paths (2.3 s, 1.2 GB); 1,900 gradient stops drawn 8
+/// times (2.6 s); an `feMerge` of 250 inputs (7 s). Each is refused, in
+/// well under the time it took.
+#[test]
+fn the_third_reviews_inputs_are_refused_quickly() {
+    let cases = [
+        ("css", r3_css(5)),
+        ("pattern", r3_pattern(16384)),
+        ("mask chain", r3_chain("mask", "mask", 120)),
+        ("clip chain", r3_chain("clipPath", "clip-path", 120)),
+        ("stops", r3_stops(1900, 8)),
+        ("merge", r3_merge(250)),
+    ];
+    for (name, svg) in cases {
+        assert!(quick(300, || refused(&svg, 100.0)), "{name}");
+    }
+    // And the profile's edges: two compounds, 64 stops, 8 inputs, a mask
+    // that uses no mask, a tile within the raster cap all draw.
+    let svg = format!(
+        r#"<svg {NS} viewBox="0 0 10 10"><style>g rect{{fill:red}} .a, #b, g > .c{{fill:blue}}</style><g><rect width="10" height="10"/></g></svg>"#
+    );
+    assert!(!refused(&svg, 10.0), "simple selectors");
+    assert!(!refused(&r3_stops(64, 2), 100.0), "64 stops");
+    assert!(!refused(&r3_merge(8), 100.0), "8 inputs");
+    assert!(!refused(&r3_chain("mask", "mask", 0), 100.0), "one mask");
+    assert!(!refused(&r3_pattern(512), 100.0), "a 512 tile");
+}
+
+/// Each of the profile's other refusals.
+#[test]
+fn the_profile_refuses_what_it_does_not_list() {
+    let wrap = |body: &str| {
+        format!(r#"<svg {NS} viewBox="0 0 10 10">{body}<rect width="10" height="10"/></svg>"#)
+    };
+    for (why, body) in [
+        (
+            "@ rule",
+            "<style>@media print { rect { fill: red } }</style>",
+        ),
+        (
+            "@import",
+            "<style>@import url(x.css); rect { fill: red }</style>",
+        ),
+        ("pseudo-class", "<style>rect:hover { fill: red }</style>"),
+        (
+            "pseudo-class on a class",
+            "<style>.a:hover { fill: red }</style>",
+        ),
+        (
+            "attribute selector on an id",
+            "<style>#b[x] { fill: red }</style>",
+        ),
+        ("attribute selector", "<style>rect[x] { fill: red }</style>"),
+        ("two combinators", "<style>svg g rect { fill: red }</style>"),
+        (
+            "css url to a mask",
+            r#"<mask id="m"/><style>rect { mask: url(#m) }</style>"#,
+        ),
+        (
+            "style hidden in an ignored element",
+            "<foreignObject><style>x * * * * * { fill: red }</style></foreignObject>",
+        ),
+        (
+            "too many primitives",
+            r#"<filter id="f"><feOffset/><feOffset/><feOffset/><feOffset/><feOffset/><feOffset/><feOffset/></filter>"#,
+        ),
+        (
+            "filter href",
+            r##"<filter id="f"/><filter id="g" href="#f"/>"##,
+        ),
+        (
+            "pattern href",
+            r##"<pattern id="p"/><pattern id="q" href="#p"/>"##,
+        ),
+        (
+            "a pattern using a clip",
+            r#"<clipPath id="c"/><pattern id="p"><rect clip-path="url(#c)"/></pattern>"#,
+        ),
+        (
+            "a marker using a pattern through <use>",
+            r##"<pattern id="p"/><rect id="r" fill="url(#p)"/><marker id="m"><use href="#r"/></marker>"##,
+        ),
+        ("tref", "<tref/>"),
+        (
+            "a css url to an id whose first element is a mask",
+            r#"<mask id="m"/><linearGradient id="m"/><style>rect { fill: url(#m) }</style>"#,
+        ),
+    ] {
+        let svg = wrap(body);
+        let err = quick(300, || {
+            decode_svg(svg.as_bytes()).map(|_| ()).expect_err(why)
+        });
+        assert!(err.contains("profile"), "{why}: {err}");
+        // An @ rule is named as one, whatever else is wrong with it.
+        if why.starts_with('@') {
+            assert!(err.contains("@ rule"), "{why}: {err}");
+        }
+    }
+}
+
+/// What the profile ignores draws as nothing, and the rest of the file
+/// draws: text, images, foreignObject, and what usvg does not know
+/// (Inkscape's `sodipodi:namedview` and `flowRoot`, metadata's RDF).
+#[test]
+fn ignored_elements_do_not_refuse_the_file() {
+    let svg = format!(
+        r##"<svg {NS} xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" viewBox="0 0 10 10">
+        <sodipodi:namedview pagecolor="#fff"/><metadata><rdf:RDF/></metadata>
+        <flowRoot><flowRegion><rect width="5" height="5"/></flowRegion></flowRoot>
+        <text x="0" y="5">hi</text><image href="x.png"/><foreignObject><div/></foreignObject>
+        <rect width="10" height="10" fill="#f00"/></svg>"##
+    );
+    let v = decode_svg(svg.as_bytes()).expect("ignored, not refused");
+    let r = v.raster(10.0, 10.0).unwrap();
+    assert_eq!(&r.image.data[..4], &[255, 0, 0, 255]);
+}
+
+/// Real-world shapes draw: a Tabler icon, a KDE Breeze icon with its
+/// colour-scheme stylesheet, Inkscape's drop shadow (five primitives) with
+/// its editor metadata, and an Adobe Illustrator export (namespace
+/// entities, class rules, a `switch` around `foreignObject` and a group).
+/// The corpus these were picked from is in the PR (`svg_corpus_probe`).
+#[test]
+fn real_world_shapes_draw() {
+    let tabler = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M9 12l2 2l4 -4"/></svg>"#;
+    let breeze = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><defs id="defs3051"><style type="text/css" id="current-color-scheme">
+      .ColorScheme-Text { color:#232629; }
+      </style></defs><path style="fill:currentColor;fill-opacity:1;stroke:none" d="M2 2h12v12H2z" class="ColorScheme-Text"/></svg>"#;
+    let inkscape = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" width="64" height="64" viewBox="0 0 64 64" inkscape:version="1.3">
+      <sodipodi:namedview id="nv" pagecolor="#ffffff"/>
+      <defs><filter id="shadow" style="color-interpolation-filters:sRGB" x="-0.2" y="-0.2" width="1.4" height="1.4">
+        <feFlood flood-opacity="0.5" flood-color="rgb(0,0,0)" result="flood"/>
+        <feComposite in="flood" in2="SourceGraphic" operator="in" result="composite1"/>
+        <feGaussianBlur in="composite1" stdDeviation="2" result="blur"/>
+        <feOffset dx="2" dy="2" result="offset"/>
+        <feComposite in="SourceGraphic" in2="offset" operator="over" result="composite2"/>
+      </filter><linearGradient id="lg" x1="0" x2="1"><stop offset="0" stop-color="#36f"/><stop offset="1" stop-color="#0c9"/></linearGradient></defs>
+      <g inkscape:label="Layer 1" inkscape:groupmode="layer"><rect x="8" y="8" width="44" height="44" rx="6" fill="url(#lg)" style="filter:url(#shadow)"/></g></svg>"##;
+    let illustrator = r##"<?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 27.0.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd" [
+	<!ENTITY ns_extend "http://ns.adobe.com/Extensibility/1.0/">
+	<!ENTITY ns_ai "http://ns.adobe.com/AdobeIllustrator/10.0/">
+	<!ENTITY ns_graphs "http://ns.adobe.com/Graphs/1.0/">
+	<!ENTITY ns_svg "http://www.w3.org/2000/svg">
+	<!ENTITY ns_xlink "http://www.w3.org/1999/xlink">
+]>
+<svg version="1.1" id="Layer_1" xmlns:x="&ns_extend;" xmlns:i="&ns_ai;" xmlns:graph="&ns_graphs;" xmlns="&ns_svg;" xmlns:xlink="&ns_xlink;" x="0px" y="0px" viewBox="0 0 32 32" style="enable-background:new 0 0 32 32;" xml:space="preserve">
+<style type="text/css">
+	.st0{fill:#E30613;}
+	.st1{fill:url(#SVGID_1_);}
+</style>
+<switch>
+	<foreignObject requiredExtensions="&ns_ai;" x="0" y="0" width="1" height="1"><i:aipgfRef xlink:href="#adobe_illustrator_pgf"></i:aipgfRef></foreignObject>
+	<g i:extraneous="self">
+		<linearGradient id="SVGID_1_" gradientUnits="userSpaceOnUse" x1="0" y1="16" x2="32" y2="16"><stop offset="0" style="stop-color:#FFFFFF"/><stop offset="1" style="stop-color:#000000"/></linearGradient>
+		<rect class="st0" width="32" height="16"/><rect y="16" class="st1" width="32" height="16"/>
+	</g>
+</switch>
+<i:pgf id="adobe_illustrator_pgf"><![CDATA[eJzLSM3JyVcozy/KSQEAGgQEXQ==]]></i:pgf>
+</svg>"##;
+    for (name, svg) in [
+        ("tabler", tabler),
+        ("breeze", breeze),
+        ("inkscape", inkscape),
+        ("illustrator", illustrator),
+    ] {
+        let v = decode_svg(svg.as_bytes()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let r = v
+            .raster(48.0, 48.0)
+            .unwrap_or_else(|| panic!("{name} not drawn"));
+        assert!(
+            r.image.data.chunks(4).any(|p| p[3] > 0),
+            "{name} drew nothing"
+        );
+    }
+}
+
+/// Every attack the three reviews found, refused within 300 ms in one
+/// place (release and debug alike): what each did before is in its own
+/// test above.
+#[test]
+fn every_known_attack_is_refused_quickly() {
+    let deep = nested_groups(1000);
+    let mut chain = String::from(r#"<rect id="u0" width="1" height="1"/>"#);
+    for i in 1..4000 {
+        chain.push_str(&format!(r##"<use id="u{i}" href="#u{}"/>"##, i - 1));
+    }
+    let chain = format!(r#"<svg {NS} width="10" height="10"><defs>{chain}</defs></svg>"#);
+    let dup = format!(
+        r#"<!DOCTYPE svg [<!ENTITY a "{}"><!ENTITY a "x">]><svg {NS} width="10" height="10"><desc>{}</desc></svg>"#,
+        "A".repeat(65536),
+        "&a;".repeat(4096)
+    );
+    let pi =
+        format!(r#"<!DOCTYPE svg [<?x ]>?><!ENTITY a "x">]><svg {NS} width="10" height="10"/>"#);
+    let dashes: String = (0..100)
+        .map(|i| {
+            format!(r##"<path d="M0 {i} H1000" stroke="#000" stroke-dasharray="0.005 0.005"/>"##)
+        })
+        .collect();
+    let dashes = format!(r#"<svg {NS} width="1000" height="100">{dashes}</svg>"#);
+    let cases: Vec<(&str, String, f64)> = vec![
+        ("deep nesting", deep, 10.0),
+        ("use chain", chain, 10.0),
+        ("duplicate entity", dup, 10.0),
+        ("PI in the subset", pi, 10.0),
+        ("dense dashes", dashes, 1000.0),
+        ("css", r3_css(5), 10.0),
+        ("pattern tile", r3_pattern(16384), 100.0),
+        ("mask chain", r3_chain("mask", "mask", 120), 100.0),
+        ("clip chain", r3_chain("clipPath", "clip-path", 120), 100.0),
+        ("stops", r3_stops(1900, 8), 100.0),
+        ("merge", r3_merge(250), 100.0),
+        (
+            "morphology",
+            filtered(r#"<feMorphology radius="50"/>"#, 100),
+            256.0,
+        ),
+    ];
+    for (name, svg, size) in cases {
+        let r = on_small_stack(move || {
+            let t = Instant::now();
+            (refused(&svg, size), t.elapsed())
+        });
+        assert!(r.0, "{name} was drawn");
+        assert!(r.1 < Duration::from_millis(300), "{name}: {:?}", r.1);
+    }
 }
