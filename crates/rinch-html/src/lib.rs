@@ -8,13 +8,18 @@
 //!   [`Policy`], links limited to the schemes the app allows.
 //! - [`HtmlView`] shows a cleaned document and tells the app which link was
 //!   clicked (`onlink`), through `rinch_core::click_link`.
+//! - [`text`] gives a cleaned document's text: what a reader sees, and apart
+//!   from it the text the document hides (for a program reading the text,
+//!   such as an AI agent, to be told about).
 //!
 //! Enabled in the `rinch` facade by its `html` feature, as `rinch::html`.
 
 mod clean;
 mod media;
+mod text;
 mod view;
 
 pub use clean::{Cleaned, PictureRule, Policy, clean, clean_at};
 pub use media::signature;
+pub use text::{Text, text};
 pub use view::HtmlView;
