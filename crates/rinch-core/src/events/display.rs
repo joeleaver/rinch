@@ -40,6 +40,16 @@ pub fn display_scale_changes(doc_key: u64) -> u64 {
 /// Called by a runtime when the scale document `doc_key`'s window paints at
 /// changes. Not app API.
 #[doc(hidden)]
+///
+/// Nothing is written when nothing has ever read the counter of that document:
+/// a frame with no listener costs no signal write (the perf baseline
+/// `a_scale_factor_change_restyles_and_repaints_in_full` counts none). A
+/// reader that arrives later starts from the counter as it is then.
 pub fn notify_display_scale_changed(doc_key: u64) {
-    signal(doc_key).update(|n| *n += 1);
+    let existing = CHANGES.with(|c| c.borrow().get(&doc_key).copied());
+    if let Some(s) = existing
+        && s.is_alive()
+    {
+        s.update(|n| *n += 1);
+    }
 }
