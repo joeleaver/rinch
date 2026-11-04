@@ -274,7 +274,7 @@ it fits, a fixed box's shrink-to-fit width is its content's — and the size it 
 placed at is kept: a different size later is its content changing, and it is
 measured and placed again (`remeasure`). A window resize is seen through a
 viewport-sized, hidden `position: fixed` sentinel shown while open (no viewport
-signal exists); it closes the submenu (Chrome closes menus on a bounds change) or,
+signal on `NodeHandle`); it closes the submenu (Chrome closes menus on a bounds change) or,
 with `close_on_resize: false`, re-places it. On desktop the resize is the
 runtime's `resize_layout` path, which refreshes the bounds signals.
 
