@@ -34,35 +34,49 @@ use std::cell::Cell;
 use crate::computed_style::VisibilityValue;
 use crate::node::{Node, NodeTree, RawNodeId};
 
-/// The `visibility` `node` is drawn and hit with, read live.
-///
-/// An element's is its own. A text node is drawn with its parent element's
-/// (paint's text mask reads the parent's), and so is an **anonymous block
-/// box**: it copies its container's `visibility` once, when layout builds it
-/// (`ComputedStyle::for_anonymous_box`), and a later change of the container's
-/// `visibility` alone — opening a closed `Drawer` — is paint-only, so nothing
-/// refreshes the copy. Read from the copy, a box built while its container
-/// was hidden stayed hidden after the container opened: paint skipped its text
-/// (review of #2137) and hit testing skipped it too, which predates #2137.
-fn live_visibility(tree: &NodeTree, node: &Node) -> Option<VisibilityValue> {
-    if node.is_text() || node.is_anonymous_block_box {
-        node.parent
-            .and_then(|p| tree.get(p))
-            .map(|p| p.computed_style.visibility)
-    } else {
-        Some(node.computed_style.visibility)
-    }
+#[inline(always)]
+fn hidden(v: VisibilityValue) -> bool {
+    matches!(v, VisibilityValue::Hidden | VisibilityValue::Collapse)
 }
 
 /// Whether `node` draws none of its own visuals and is not hit itself:
-/// `visibility: hidden` or `collapse`, read live ([`live_visibility`]: a text
-/// node and an anonymous block box answer from their container).
+/// `visibility: hidden` or `collapse`.
+///
+/// An element answers from its own value. A text node is drawn with its parent
+/// element's (paint's text mask reads the parent's), and so is an **anonymous
+/// block box** whose own copy says hidden: the box copies its container's
+/// `visibility` once, when layout builds it (`ComputedStyle::for_anonymous_box`),
+/// and a later change of the container's `visibility` alone — opening a
+/// closed `Drawer` — is paint-only, so nothing refreshes the copy. Read from
+/// the copy, a box built while its container was hidden stayed hidden after
+/// the container opened: paint skipped its text (review of #2137) and hit
+/// testing skipped it too, which predates #2137.
+///
+/// This sits on every node of every hit test and stacking collection, so the
+/// node's own enum is read first and the container is looked up only for a
+/// text node or an anonymous box whose own copy says hidden (#2145's Perf:
+/// `shell::pointer_move_cold` +3.34% when every such node looked it up). A
+/// box whose copy says `visible` under a container hidden since is answered
+/// from the copy: that can only make paint walk what it could have skipped
+/// (the text mask still hides the text), never skip what it must draw; hit
+/// testing answers it as it did before #2137.
 #[inline]
 pub fn hides_own(tree: &NodeTree, node: &Node) -> bool {
-    matches!(
-        live_visibility(tree, node),
-        Some(VisibilityValue::Hidden | VisibilityValue::Collapse)
-    )
+    if node.is_text() {
+        return node
+            .parent
+            .and_then(|p| tree.get(p))
+            .is_some_and(|p| hidden(p.computed_style.visibility));
+    }
+    if !hidden(node.computed_style.visibility) {
+        return false;
+    }
+    if !node.is_anonymous_block_box {
+        return true;
+    }
+    node.parent
+        .and_then(|p| tree.get(p))
+        .is_none_or(|p| hidden(p.computed_style.visibility))
 }
 
 /// Whether some node below `id` is drawn `visibility: visible`, i.e. whether a
@@ -129,8 +143,22 @@ pub(crate) fn set_paint_watching(on: bool) {
 /// sequence can change a pixel. Never while a paint-order watch is on.
 ///
 /// A visible element pays one enum test.
-#[inline]
+#[inline(always)]
 pub fn subtree_shows_nothing(tree: &NodeTree, node: &Node) -> bool {
+    // The node's own copy first, inline: a visible element (or anonymous box)
+    // is done in one enum test. Everything else is out of line, so the walks
+    // this sits in — the collector's child loop above all, which a cold hit
+    // test runs over the whole document — keep their register allocation:
+    // inlined whole, it cost `shell::pointer_move_cold` 2.4% in callee-saved
+    // spills on a page with nothing hidden (#2145's Perf).
+    hidden(node.computed_style.visibility) && hidden_subtree_shows_nothing(tree, node)
+}
+
+/// [`subtree_shows_nothing`] past its first test: `node`'s own copy says
+/// hidden.
+#[cold]
+#[inline(never)]
+fn hidden_subtree_shows_nothing(tree: &NodeTree, node: &Node) -> bool {
     !node.is_text()
         && hides_own(tree, node)
         && CULL_HIDDEN.get()
