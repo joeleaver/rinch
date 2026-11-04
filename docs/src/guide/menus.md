@@ -430,13 +430,17 @@ It behaves like Chrome's own context menu, and every choice is a prop
   keys.
 - Moving onto another row of the same menu closes it after 400ms
   (`close_delay`), so a diagonal move across a neighbouring row on the way into
-  the flyout keeps it. Leaving the menu altogether keeps it open, as Chrome does.
+  the flyout keeps it, and a submenu row merely crossed on the way (into a
+  flyout, or out of the menu) does not open. Leaving the menu altogether keeps an
+  open submenu open, as Chrome does.
   `safe_triangle: true` adds a pointer-direction tolerance instead (pair it with a
   short `close_delay`).
 - It opens to the right of its menu, overlapping it by 3px, its first row level
   with the row that opened it; at the window's right edge it opens on the left
   (`flip`), and at the bottom it moves up (`shift`). It is never clipped by its
-  menu's own overflow, on the desktop or in a browser.
+  menu's own overflow, on the desktop or in a browser. A flyout whose content
+  changes size while open is placed again; a window resize closes it, as Chrome
+  closes its menus (`close_on_resize: false` places it again instead).
 - Choosing an item anywhere in the tree closes the whole menu, `ContextMenu`
   included. A `disabled` submenu never opens.
 - Style it per menu through the cascade: `--rinch-dropdown-menu-sub-offset`,

@@ -269,9 +269,21 @@ subtracted out. The horizontal offset is the CSS custom property
 computed-style read on `NodeHandle`. `decide` (pure, unit-tested) puts it
 right of the parent panel, flips it left when it does not fit, shifts it inside
 by `EDGE_MARGIN` (4px), and caps one taller than the window. While open it
-follows its row (the row's `bounds_signal`).
+follows its row (the row's `bounds_signal`). No width is pinned — placed where
+it fits, a fixed box's shrink-to-fit width is its content's — and the size it was
+placed at is kept: a different size later is its content changing, and it is
+measured and placed again (`remeasure`). A window resize is seen through a
+viewport-sized, hidden `position: fixed` sentinel shown while open (no viewport
+signal exists); it closes the submenu (Chrome closes menus on a bounds change) or,
+with `close_on_resize: false`, re-places it. On desktop the resize is the
+runtime's `resize_layout` path, which refreshes the bounds signals.
 
-**Pointer.** Hover-open is a `data-onenter` on the row (arm the open timer). Every
+**Pointer.** Hover-open is a `data-onenter` on the row (arm the open timer); the row's
+`data-onleave` clears `on_row`, and a pending open fires only while it is set, so
+a row merely crossed — into a flyout whose own panel hears the pointer, or out of
+the menu, where no panel hears it — opens nothing (Chrome drops the pending
+selection). Desktop's leave-then-enter on every hit-node change inside the row
+sets it false and true in one event, so the delay is not restarted. Every
 other decision is geometric, from one `data-onmousemove` the first submenu row
 the pointer enters (or the first open) installs on its **parent panel**
 (`PANEL_MARK`; only panels holding a submenu get one, so no other app's
