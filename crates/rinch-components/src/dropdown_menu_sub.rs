@@ -192,8 +192,11 @@ struct Placement {
     /// The size the flyout has as placed: a different one later is its
     /// content changing, and it is measured again (review of #2216).
     placed_size: Option<(f32, f32)>,
-    /// The viewport it was placed in: a different one is a window resize.
-    viewport: Option<(f32, f32)>,
+    /// The window's size when it was placed, read from the sentinel (a
+    /// `100vw` x `100vh` fixed box): a different one is a window resize. Not
+    /// `viewport_size()`, which on the web is `clientWidth` and shrinks when
+    /// a page scrollbar appears (second review of #2216).
+    window: Option<(f32, f32)>,
 }
 
 struct Sub {
@@ -615,13 +618,21 @@ fn place(sub: &Sub, m: Measured) -> bool {
     {
         let mut p = sub.placement.borrow_mut();
         p.placed_size = Some(placed);
-        p.viewport = Some(viewport);
+        p.window = window_size(sub);
     }
     true
 }
 
 fn px(v: f32) -> f32 {
     (v * 100.0).round() / 100.0
+}
+
+/// The window's size, as the sentinel's box gives it (`None` while it has
+/// none).
+fn window_size(sub: &Sub) -> Option<(f32, f32)> {
+    rect(&sub.sentinel)
+        .filter(|r| r.width > 0.0 && r.height > 0.0)
+        .map(|r| (r.width, r.height))
 }
 
 /// Put the flyout back at `left`/`top` 0 and measure it again: now when the
@@ -688,10 +699,10 @@ fn arm_placement(sub: &Rc<Sub>) {
             }
             let (m, anchor, placed_size, placed_in) = {
                 let p = sub.placement.borrow();
-                (p.measured, p.anchor, p.placed_size, p.viewport)
+                (p.measured, p.anchor, p.placed_size, p.window)
             };
             // A window resize: closed (Chrome), or placed again.
-            if let (Some(was), Some(now)) = (placed_in, sub.root.viewport_size())
+            if let (Some(was), Some(now)) = (placed_in, window_size(&sub))
                 && ((was.0 - now.0).abs() > 0.5 || (was.1 - now.1).abs() > 0.5)
             {
                 if sub.opts.close_on_resize {
