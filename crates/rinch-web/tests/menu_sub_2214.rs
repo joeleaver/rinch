@@ -492,3 +492,122 @@ fn a_context_menu_holds_submenus_and_answers_the_keyboard() {
     assert!(!opened.get(), "a deep item closes the context menu");
     assert!(!is_open("s-new") && !is_open("s-deep"));
 }
+
+// ---- Review of #2216 ----------------------------------------------------
+
+/// Alpha, New ▸ (File, Deep ▸ (Leaf), Folder), Other ▸ (X), Beta.
+fn two_subs() -> Signal<bool> {
+    let open = Signal::new(true);
+    mount(move |scope| {
+        let trigger = scope.create_element("div");
+        trigger.set_attribute("style", "width: 40px; height: 20px;");
+        let target = DropdownMenuTarget.render(scope, &[trigger]);
+        let leaf = item(scope, "Leaf", "i-leaf");
+        let deep = sub(scope, "Deep", "s-deep", false, &[leaf]);
+        let file = item(scope, "File", "i-file");
+        let folder = item(scope, "Folder", "i-folder");
+        let new = sub(scope, "New", "s-new", false, &[file, deep, folder]);
+        let x = item(scope, "X", "i-x");
+        let other = sub(scope, "Other", "s-other", false, &[x]);
+        let kids = vec![
+            item(scope, "Alpha", "i-alpha"),
+            new,
+            other,
+            item(scope, "Beta", "i-beta"),
+        ];
+        let dd = DropdownMenuDropdown.render(scope, &kids);
+        dd.set_attribute("id", "panel");
+        let menu = DropdownMenu {
+            opened_fn: Some(Rc::new(move || open.get())),
+            on_close: Some(Callback::new(move || {
+                LOG.with(|l| l.borrow_mut().push("on_close".into()));
+                open.set(false);
+            })),
+            ..Default::default()
+        }
+        .render(scope, &[target, dd]);
+        let w = scope.create_element("div");
+        w.set_attribute("class", "fixture-2214");
+        w.set_attribute(
+            "style",
+            "position: fixed; left: 60px; top: 40px; line-height: 0;",
+        );
+        w.append_child(&menu);
+        w
+    });
+    open
+}
+
+/// Crossing a sibling submenu row into an open flyout, and out of the menu:
+/// the sibling's pending open is dropped both times.
+#[wasm_bindgen_test]
+async fn a_crossed_sibling_submenu_does_not_open() {
+    two_subs();
+    click(&row("s-new"));
+    click(&row("s-deep"));
+    move_to(center(&el("i-file")));
+    sleep_ms(500).await;
+    assert!(is_open("s-new") && !is_open("s-deep"), "premise");
+    move_to(center(&row("s-other")));
+    move_to(center(&el("i-folder")));
+    sleep_ms(500).await;
+    assert!(!is_open("s-other"), "into the flyout: Other must not open");
+    assert!(is_open("s-new"), "New stays");
+
+    move_to(center(&row("s-other")));
+    move_to((5.0, 5.0));
+    sleep_ms(500).await;
+    assert!(!is_open("s-other"), "out of the menu: Other must not open");
+    // Positive control: resting on the row opens it.
+    move_to(center(&row("s-other")));
+    sleep_ms(500).await;
+    assert!(is_open("s-other"));
+}
+
+/// A row that grows while the flyout is open: placed again, inside.
+#[wasm_bindgen_test]
+async fn a_flyout_whose_content_grows_is_placed_again() {
+    two_subs();
+    click(&row("s-new"));
+    let style = doc().create_element("style").unwrap();
+    style.set_text_content(Some(
+        ".fixture-2214 { --rinch-dropdown-menu-sub-width: auto; } #i-file { width: 600px; }",
+    ));
+    doc().body().unwrap().append_child(&style).unwrap();
+    sleep_ms(100).await;
+    let fly = rect(&flyout("s-new"));
+    let file = rect(&el("i-file"));
+    style.remove();
+    let (vw, _) = viewport();
+    assert!(fly.2 >= file.2 - 0.6, "holds its row: {fly:?} {file:?}");
+    assert!(fly.2 <= vw + 0.6, "inside the viewport: {fly:?} vw={vw}");
+}
+
+/// Type-ahead on the web: a single match is activated.
+#[wasm_bindgen_test]
+fn typeahead_activates_a_single_match() {
+    two_subs();
+    assert!(key("ArrowDown"), "positive control: the menu took a key");
+    assert_eq!(focused_id(), "i-alpha");
+    assert!(key("b"));
+    assert_eq!(log(), vec!["Beta".to_string(), "on_close".to_string()]);
+}
+
+/// Menu roles.
+#[wasm_bindgen_test]
+fn rows_and_panels_carry_menu_roles() {
+    two_subs();
+    assert_eq!(el("panel").get_attribute("role").as_deref(), Some("menu"));
+    assert_eq!(
+        el("i-alpha").get_attribute("role").as_deref(),
+        Some("menuitem")
+    );
+    assert_eq!(
+        row("s-new").get_attribute("role").as_deref(),
+        Some("menuitem")
+    );
+    assert_eq!(
+        flyout("s-new").get_attribute("role").as_deref(),
+        Some("menu")
+    );
+}
