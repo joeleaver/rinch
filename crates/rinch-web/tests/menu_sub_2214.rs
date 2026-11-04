@@ -611,3 +611,30 @@ fn rows_and_panels_carry_menu_roles() {
         Some("menu")
     );
 }
+
+/// A page scrollbar appearing is not a window resize: `clientWidth` shrinks
+/// by the scrollbar, the window does not, and the submenus stay open (second
+/// review of #2216).
+#[wasm_bindgen_test]
+async fn a_page_scrollbar_appearing_does_not_close_the_submenu() {
+    dropdown(
+        "position: fixed; left: 100px; top: 40px; line-height: 0;".into(),
+        None,
+    );
+    click(&row("s-new"));
+    let de = doc().document_element().unwrap();
+    let w0 = de.client_width();
+    let tall = doc().create_element("div").unwrap();
+    tall.set_attribute("style", "height: 5000px; width: 10px;")
+        .unwrap();
+    doc().body().unwrap().append_child(&tall).unwrap();
+    sleep_ms(100).await;
+    // A bounds change of a row re-runs the placement check.
+    click(&row("s-deep"));
+    sleep_ms(100).await;
+    let w1 = de.client_width();
+    let (new_open, deep_open) = (is_open("s-new"), is_open("s-deep"));
+    tall.remove();
+    assert!(w1 < w0, "premise: a scrollbar took width ({w0} -> {w1})");
+    assert!(new_open && deep_open, "New {new_open}, Deep {deep_open}");
+}

@@ -863,3 +863,25 @@ fn rows_and_panels_carry_menu_roles() {
     assert_eq!(role(row(&app, "s-new")).as_deref(), Some("menuitem"));
     assert_eq!(role(flyout(&app, "s-new")).as_deref(), Some("menu"));
 }
+
+/// A scale change that leaves the window's logical size as it was (the
+/// window dragged to a 2x display, its physical size doubling) keeps an open
+/// submenu open: its placement is in logical px and nothing moved. A scale
+/// change that changes the logical size is a resize, and closes it as above.
+#[test]
+fn a_scale_change_with_the_same_logical_size_keeps_the_submenu() {
+    let _t = timer_lock();
+    let mut app = two_subs(AT_60_40, defaults);
+    let at = row(&app, "s-new");
+    click(&mut app, at);
+    let before = painted(&app, flyout(&app, "s-new"));
+    app.handle_event(
+        PlatformEvent::ScaleFactorChanged(2.0),
+        (VP.0 * 2, VP.1 * 2),
+        2.0,
+    );
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    assert!(is_open(&app, "s-new"));
+    assert_eq!(painted(&app, flyout(&app, "s-new")), before);
+}
