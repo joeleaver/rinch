@@ -53,9 +53,10 @@ breakpoints (see below). Given HTML already cleaned instead (`html` and
   `static`/`relative`, `z-index`), no `expression()` or `javascript:`, no
   `behavior`, `-moz-binding`, `cursor` or `pointer-events`, no absurd
   lengths.
-- **Cuts deep nesting**: content nested more than 512 elements deep is
-  left out (mail is a few dozen deep; tens of thousands crash a recursive
-  serializer).
+- **Cuts deep nesting**: content nested more than 512 elements deep, as the
+  HTML parser builds it, is left out (mail is a few dozen deep; tens of
+  thousands crash a recursive serializer), and `@media` blocks nested more
+  than 16 deep.
 - **Asks you about every picture.** `Policy::picture` sees each `<img src>`
   and each `url()` in a style (`image-set()` and the other ways to name a
   picture are left out, as the rule would never see them) and answers the source to load (the same, or
@@ -109,7 +110,11 @@ held back ("3 pictures are hidden").
 or clicked by assistive technology. It never navigates or opens anything
 itself, and on the web the browser does not either: the view marks itself
 `data-claim-links`, and a click on a link inside an element so marked has
-its default cancelled. Check the scheme before opening anything.
+its default cancelled. A middle click comes to `onlink` too
+(`click_context().button` is `Middle`, for "open in a new tab"). The
+browser's own link menu and dragging a link to the tab bar would open it
+without asking you, so they are off; `link_menu: true` allows them. Check
+the scheme before opening anything.
 
 The view learns which link was clicked from `click_link()` (in the prelude;
 `rinch_core::click_link`), which any click handler can read: the `href` of
@@ -134,10 +139,12 @@ blocks match, which is how `HtmlView` knows a resize needs a new clean.
 
 By default every link in an `HtmlView` gets its address as its tooltip
 (`title`), with a warning when the address hides or disguises where it goes:
-a user name before the host (`https://paypal.com@evil.example/`), a host in
-look-alike letters (shown in punycode), or link text naming another site
-than the one it opens. Addresses are read with the `url` crate, as a browser
-reads them. `check_link(href, text)` gives the same answer as data
+a user name before the host (`https://paypal.com@evil.example/`), a host
+that mixes look-alike alphabets or passes Cyrillic for Latin (shown in
+punycode; an international name in its own script, `münchen.de`, is fine),
+or link text naming another site than the one it opens. Addresses are read
+with the `url` crate, as a browser reads them, and sites compared by the
+Public Suffix List (`evil.github.io` is not `good.github.io`). `check_link(href, text)` gives the same answer as data
 (`LinkCheck`, `Warning`); `HtmlView`'s `tooltips` field chooses the words:
 `Tooltips::Default` (English), `Tooltips::Off`, or `Tooltips::Custom` with
 your own function.
@@ -148,7 +155,9 @@ Nothing a document draws reaches outside its view: the view clips (a
 document wider than it scrolls sideways) and is the stacking context and
 containing block of everything in it, so a relative offset, a transform or
 a negative margin cannot put the document's link over your app's own
-controls. A document that sets no colours is drawn black on white, as a
+controls. (A `position: fixed` box is placed against the window whatever
+contains it; `clean` never lets one through, so this holds for what it
+returns. HTML you pass as `html` or `body_style` is taken as it is.) A document that sets no colours is drawn black on white, as a
 browser draws a page, whatever your theme. All of this is the view's own
 CSS on `.rinch-html-view`: restyle it through the cascade (your font, your
 page colour) as you need.

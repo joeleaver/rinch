@@ -22,7 +22,10 @@
 //! document's body: its style on it, its content inside). A click on a link
 //! in the document calls `onlink` with the link's `href` (as written, after
 //! the cleaner's scheme check); the view never navigates or opens anything
-//! itself, and on the web the browser does not follow it either. Links show
+//! itself, and on the web the browser does not follow it either: a middle
+//! click comes to `onlink` too (`rinch_core::click_context().button` says
+//! which button), and the browser's link menu and link dragging are off
+//! unless `link_menu` allows them. Links show
 //! a pointer cursor and, by default, their address as a tooltip, with a
 //! warning when it hides or disguises where it goes ([`Tooltips`]).
 //!
@@ -57,6 +60,10 @@ pub struct HtmlView {
     /// disguises where it goes ([`Tooltips::Default`], in English), the
     /// app's own words, or nothing.
     pub tooltips: Tooltips,
+    /// On the web, let the browser's own link menu ("Open link in new tab")
+    /// and dragging a link to the tab bar work on the document's links:
+    /// both open the address without `onlink`, so they are off by default.
+    pub link_menu: bool,
 }
 
 impl std::fmt::Debug for HtmlView {
@@ -68,6 +75,7 @@ impl std::fmt::Debug for HtmlView {
             .field("body_style", &self.body_style)
             .field("onlink", &self.onlink.as_ref().map(|_| "<callback>"))
             .field("tooltips", &self.tooltips)
+            .field("link_menu", &self.link_menu)
             .finish()
     }
 }
@@ -103,7 +111,7 @@ impl Component for HtmlView {
         view.set_attribute("class", "rinch-html-view");
         // Its links are the app's to follow (`onlink`): on the web, the
         // browser never navigates the app's own tab to one.
-        view.set_attribute("data-claim-links", "");
+        view.set_attribute("data-claim-links", if self.link_menu { "menu" } else { "" });
         let style = scope.create_element("style");
         style.append_child(&scope.create_text(CSS));
         view.append_child(&style);

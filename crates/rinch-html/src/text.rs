@@ -31,14 +31,17 @@ pub fn text(html: &str) -> Text {
 /// [`text`], on a page of colour `page` (`#rrggbb`, `#rgb`, `rgb()`, `white`
 /// or `black`): what an app shows a document on, if not white.
 pub fn text_on(html: &str, page: &str) -> Text {
-    let html = crate::depth::cap(html);
     let mut walk = Walk::default();
     let mut stack: Vec<(String, Context)> = Vec::new();
+    // Elements open past `MAX_DEPTH`, counted, not named: they take the
+    // context they are in, and an end tag among them costs nothing to match
+    // (cleaned HTML is never so deep; any other could be, unclosed).
+    let mut deeper = 0usize;
     let base = Context {
         background: colour(page),
         ..Context::default()
     };
-    let mut rest: &str = &html;
+    let mut rest: &str = html;
     while !rest.is_empty() {
         let Some(lt) = rest.find('<') else {
             walk.text(&decode(rest), Some(stack.last().map_or(&base, |s| &s.1)));
@@ -56,6 +59,10 @@ pub fn text_on(html: &str, page: &str) -> Text {
         let tag = &rest[lt + 1..lt + gt];
         rest = &rest[lt + gt + 1..];
         if let Some(name) = tag.strip_prefix('/') {
+            if deeper > 0 {
+                deeper -= 1;
+                continue;
+            }
             let name = name.trim().to_ascii_lowercase();
             if let Some(at) = stack.iter().rposition(|(n, _)| *n == name) {
                 let (_, closed) = stack.split_off(at).remove(0);
@@ -93,7 +100,11 @@ pub fn text_on(html: &str, page: &str) -> Text {
             walk.visible.push('\n');
         }
         if !is_void(&name) && !tag.ends_with('/') {
-            stack.push((name, context));
+            if stack.len() >= crate::depth::MAX_DEPTH {
+                deeper += 1;
+            } else {
+                stack.push((name, context));
+            }
         }
     }
     walk.end_hidden();
@@ -234,7 +245,12 @@ fn apply(style: &str, context: &mut Context) {
             "display" if value == "none" => context.hidden = true,
             "visibility" if value == "hidden" || value == "collapse" => context.hidden = true,
             "opacity" if opacity(&value).is_some_and(|o| o <= 0.01) => context.hidden = true,
-            "font-size" if px(&value).is_some_and(|s| s <= 1.0) => context.hidden = true,
+            // Under 2px (an `em` or `%` counted at 16px) no one reads it.
+            // (`xx-small` is 9px, and readable.)
+            "font-size" if text_px(&value).is_some_and(|s| s < 2.0) => context.hidden = true,
+            "filter" if value.contains("opacity(0)") || value.contains("opacity(0%)") => {
+                context.hidden = true
+            }
             "max-height" | "height" | "max-width" | "width"
                 if px(&value).is_some_and(|s| s <= 1.0) =>
             {
@@ -310,8 +326,24 @@ fn colour(value: &str) -> Option<String> {
                 hex.chars().flat_map(|c| [c, c]).collect::<String>()
             )),
             6 => Some(format!("#{hex}")),
+            // With an alpha digit: drawn only if it is not zero.
+            4 | 8 => {
+                let (rgb, alpha) = hex.split_at(hex.len() / 4 * 3);
+                if alpha.chars().all(|c| c == '0') {
+                    Some(TRANSPARENT.into())
+                } else {
+                    colour(&format!("#{rgb}"))
+                }
+            }
             _ => None,
         };
+    }
+    if let Some(inner) = v
+        .strip_prefix("hsl(")
+        .or_else(|| v.strip_prefix("hsla("))
+        .and_then(|r| r.strip_suffix(')'))
+    {
+        return hsl(inner);
     }
     if let Some(inner) = v
         .strip_prefix("rgb(")
@@ -342,6 +374,57 @@ fn colour(value: &str) -> Option<String> {
         "transparent" => Some(TRANSPARENT.into()),
         _ => None,
     }
+}
+
+/// A font size in px, an `em`, `rem` or `%` counted at 16px.
+fn text_px(value: &str) -> Option<f32> {
+    let v = value.trim();
+    let (number, scale) = if let Some(n) = v.strip_suffix("rem").or_else(|| v.strip_suffix("em")) {
+        (n, 16.0)
+    } else if let Some(n) = v.strip_suffix('%') {
+        (n, 0.16)
+    } else {
+        return px(v);
+    };
+    number.trim().parse::<f32>().ok().map(|n| n * scale)
+}
+
+/// `hsl()`/`hsla()` as `#rrggbb`, or [`TRANSPARENT`] at zero alpha.
+fn hsl(inner: &str) -> Option<String> {
+    let fields: Vec<&str> = inner
+        .split([',', '/', ' '])
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if fields
+        .get(3)
+        .and_then(|a| opacity(a))
+        .is_some_and(|a| a <= 0.01)
+    {
+        return Some(TRANSPARENT.into());
+    }
+    let h: f32 = fields.first()?.trim_end_matches("deg").parse().ok()?;
+    let pct = |f: &str| {
+        f.trim_end_matches('%')
+            .parse::<f32>()
+            .ok()
+            .map(|v| v / 100.0)
+    };
+    let (sat, light) = (pct(fields.get(1)?)?, pct(fields.get(2)?)?);
+    let c = (1.0 - (2.0 * light - 1.0).abs()) * sat;
+    let hp = (h.rem_euclid(360.0)) / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = light - c / 2.0;
+    let byte = |v: f32| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    Some(format!("#{:02x}{:02x}{:02x}", byte(r), byte(g), byte(b)))
 }
 
 fn px(value: &str) -> Option<f32> {
@@ -397,6 +480,10 @@ fn tidy(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Time limits are a release build's; a debug build is about ten times
+    /// slower.
+    const SLOW: f32 = if cfg!(debug_assertions) { 10.0 } else { 1.0 };
+
     use super::text;
 
     #[test]
@@ -439,6 +526,13 @@ mod tests {
             "transform: scale(0)",
             "clip-path: inset(50%)",
             "opacity: 0%",
+            // The second review.
+            "font-size: 0.1em",
+            "font-size: 5%",
+            "color: hsl(0 0% 100%)",
+            "color: #FFFFFFFF",
+            "color: #0000",
+            "filter: opacity(0)",
         ] {
             let t = text(&format!(
                 r#"<p>shown</p><div style="{style}">secret words</div>"#
@@ -463,6 +557,10 @@ mod tests {
         let html = "<b>x".repeat(160_000) + &"</i>".repeat(1_000);
         let t = std::time::Instant::now();
         let _ = text(&html);
-        assert!(t.elapsed().as_millis() < 1_000, "took {:?}", t.elapsed());
+        assert!(
+            t.elapsed().as_secs_f32() < 1.0 * SLOW,
+            "took {:?}",
+            t.elapsed()
+        );
     }
 }

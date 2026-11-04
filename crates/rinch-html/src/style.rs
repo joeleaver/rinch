@@ -15,8 +15,10 @@
 //! - a picture the [`PictureRule`] refuses, and every way to load one other
 //!   than `url()` (`image-set()`, `image()`, `cross-fade()`, `element()`,
 //!   `paint()`, `src()`), which the rule would never see;
-//! - a length over [`MAX_LENGTH`] px (a `font-size` over [`MAX_FONT_SIZE`]):
-//!   no document needs one, and laying it out costs the app.
+//! - a number over [`MAX_LENGTH`] anywhere in a value (in a `calc()` too),
+//!   and a `font-size` or `line-height` over [`MAX_FONT_SIZE`] px in any unit
+//!   (`pt`, `em`, `%`, a bare number, counted at 16px): no document needs one,
+//!   and laying it out costs the app.
 
 use cssparser::{
     AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserState,
@@ -196,10 +198,29 @@ fn walk<'i>(
             | Token::CloseSquareBracket
             | Token::CloseCurlyBracket => return refuse(),
             Token::Dimension { value, unit, .. } => {
-                let px = unit.eq_ignore_ascii_case("px");
-                if value.abs() > MAX_LENGTH
-                    || (property == "font-size" && px && *value > MAX_FONT_SIZE)
-                {
+                let text_size = match unit.to_ascii_lowercase().as_str() {
+                    "px" => *value,
+                    "pt" => value * 4.0 / 3.0,
+                    "pc" => value * 16.0,
+                    "em" | "rem" | "ex" | "ch" | "lh" => value * 16.0,
+                    "in" => value * 96.0,
+                    "cm" => value * 96.0 / 2.54,
+                    "mm" => value * 96.0 / 25.4,
+                    _ => 0.0,
+                };
+                if value.abs() > MAX_LENGTH || (sizes_text(property) && text_size > MAX_FONT_SIZE) {
+                    return refuse();
+                }
+                out.push_str(&token.to_css_string());
+            }
+            // A bare number (a `line-height` of 1.4) and a percentage
+            // (`unit_value`: 1.0 is 100%) both scale the 16px text size.
+            Token::Number { value, .. }
+            | Token::Percentage {
+                unit_value: value, ..
+            } => {
+                let text_size = value * 16.0;
+                if value.abs() > MAX_LENGTH || (sizes_text(property) && text_size > MAX_FONT_SIZE) {
                     return refuse();
                 }
                 out.push_str(&token.to_css_string());
@@ -207,6 +228,12 @@ fn walk<'i>(
             _ => out.push_str(&token.to_css_string()),
         }
     }
+}
+
+/// Whether `property` sizes text, so its value counts against
+/// [`MAX_FONT_SIZE`].
+fn sizes_text(property: &str) -> bool {
+    matches!(property, "font-size" | "line-height" | "font")
 }
 
 /// `url("…")` for what the picture rule makes of `src`, or `None` if it

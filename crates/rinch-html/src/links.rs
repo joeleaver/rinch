@@ -6,10 +6,9 @@
 //! answer as the link's tooltip through [`Tooltips`]: by default
 //! [`default_tooltip`], in English; an app may give its own words, or none.
 //!
-//! The site two hosts belong to is compared by their registrable domain: the
-//! label before the public suffix. There is no full public-suffix list here;
-//! [`TWO_LABEL_SUFFIXES`] holds the common two-label ones (`co.uk`,
-//! `com.au`, …), and any other suffix is taken as the last label.
+//! The site two hosts belong to is compared by their registrable domain, from
+//! the Public Suffix List (the `psl` crate): `shop.example.co.uk` is
+//! `example.co.uk`, and `evil.github.io` and `good.github.io` are two sites.
 
 use std::rc::Rc;
 
@@ -22,9 +21,10 @@ pub enum Warning {
     /// (`https://paypal.com@evil.example/`): what a reader takes for the
     /// site is not where it goes.
     HiddenHost,
-    /// The host is spelled with letters outside ASCII, which can look like
-    /// another site's (`pаypal.com` with a Cyrillic `а`); `opens` shows it
-    /// in punycode.
+    /// The host's name mixes alphabets that look alike (`pаypal.com`, with
+    /// a Cyrillic `а`), or is spelled wholly in letters that pass for Latin
+    /// ones (`раураl`); `opens` shows it in punycode. An international name in
+    /// one script of its own (`münchen.de`, `例え.jp`) is not one.
     LookAlike,
     /// The link's text names a site other than the one it opens.
     Mismatch {
@@ -101,18 +101,6 @@ pub fn default_tooltip(link: &LinkCheck) -> String {
     }
 }
 
-/// Two-label public suffixes: a host under one is compared by the label
-/// before them (`shop.example.co.uk` is `example.co.uk`).
-pub const TWO_LABEL_SUFFIXES: &[&str] = &[
-    "co.uk", "org.uk", "ac.uk", "gov.uk", "ltd.uk", "plc.uk", "me.uk", "net.uk", "com.au",
-    "net.au", "org.au", "edu.au", "gov.au", "co.nz", "org.nz", "govt.nz", "co.jp", "ne.jp",
-    "or.jp", "ac.jp", "co.kr", "or.kr", "co.in", "net.in", "org.in", "gov.in", "com.br", "net.br",
-    "org.br", "gov.br", "com.mx", "org.mx", "gob.mx", "co.za", "org.za", "com.cn", "net.cn",
-    "org.cn", "gov.cn", "com.tw", "org.tw", "com.hk", "org.hk", "com.sg", "org.sg", "com.ar",
-    "com.tr", "co.il", "org.il", "co.id", "or.id", "com.my", "com.ph", "com.pk", "com.ng", "co.ke",
-    "com.eg", "com.sa", "com.ua", "co.th", "in.th",
-];
-
 /// Top-level domains a bare word in a link's text is read as a site under
 /// (`paypal.com`): common ones only, so a file name (`invoice.pdf`,
 /// `notes.md`) is not taken for one. A word with a scheme or `www.` counts
@@ -136,11 +124,12 @@ pub fn check(href: &str, text: &str) -> LinkCheck {
         if !url.username().is_empty() || url.password().is_some() {
             return Some(Warning::HiddenHost);
         }
-        if opens.split('.').any(|label| label.starts_with("xn--")) {
-            return Some(Warning::LookAlike);
+        if let Some(named) = text.split_whitespace().find_map(named_host)
+            && site(&named) != site(opens)
+        {
+            return Some(Warning::Mismatch { named });
         }
-        let named = text.split_whitespace().find_map(named_host)?;
-        (site(&named) != site(opens)).then_some(Warning::Mismatch { named })
+        looks_alike(opens).then_some(Warning::LookAlike)
     });
     LinkCheck {
         href: href.to_owned(),
@@ -158,10 +147,40 @@ fn parse(href: &str) -> Option<Url> {
     }
 }
 
-/// A host as text, without a leading `www.`.
+/// A host as text, without a leading `www.` or a trailing dot.
 fn host_text(host: &Host<&str>) -> String {
     let s = host.to_string();
-    s.strip_prefix("www.").map(str::to_owned).unwrap_or(s)
+    let s = s.trim_end_matches('.');
+    s.strip_prefix("www.").unwrap_or(s).to_owned()
+}
+
+/// Letters of other alphabets drawn like Latin ones.
+const LATIN_LOOKING: &str = "аеорсухіјѕԁԛԝҽһӏոօрսνοαιкмнтвʏ";
+
+/// Whether a host (ASCII, punycode for an international name) is written to
+/// pass for another: see [`Warning::LookAlike`].
+fn looks_alike(host: &str) -> bool {
+    if !host.split('.').any(|l| l.starts_with("xn--")) {
+        return false;
+    }
+    let (unicode, _) = idna::domain_to_unicode(host);
+    unicode.split('.').any(|label| {
+        let script = |c: char| match c as u32 {
+            0x41..=0x5a | 0x61..=0x7a | 0xc0..=0x24f => Some(0),
+            0x370..=0x3ff => Some(1),
+            0x400..=0x4ff => Some(2),
+            _ => None,
+        };
+        let scripts: std::collections::HashSet<u8> = label.chars().filter_map(script).collect();
+        let mixed = scripts.len() > 1;
+        let all_latin_looking = !scripts.contains(&0)
+            && label.chars().any(|c| script(c).is_some())
+            && label
+                .chars()
+                .filter(|c| c.is_alphabetic())
+                .all(|c| LATIN_LOOKING.contains(c));
+        mixed || all_latin_looking
+    })
 }
 
 /// The site a word in a link's text names, if it names one.
@@ -189,17 +208,11 @@ fn named_host(word: &str) -> Option<String> {
     Some(host_text(&Host::Domain(domain)))
 }
 
-/// A host's registrable domain (see the module docs).
+/// A host's registrable domain (see the module docs), or the host itself
+/// when it has none (an address, a bare suffix).
 fn site(host: &str) -> String {
-    let labels: Vec<&str> = host.split('.').collect();
-    let take = if labels.len() >= 3
-        && TWO_LABEL_SUFFIXES.contains(&labels[labels.len() - 2..].join(".").as_str())
-    {
-        3
-    } else {
-        2
-    };
-    labels[labels.len().saturating_sub(take)..].join(".")
+    let host = host.trim_end_matches('.');
+    psl::domain_str(host).unwrap_or(host).to_owned()
 }
 
 #[cfg(test)]
@@ -223,6 +236,11 @@ mod tests {
             None
         );
         assert_eq!(warning("https://shop.bbc.co.uk/", "bbc.co.uk"), None);
+        // The second review: none of these is a trick.
+        assert_eq!(warning("https://münchen.de/", "münchen.de"), None);
+        assert_eq!(warning("https://bücher.de/", "Bücher"), None);
+        assert_eq!(warning("https://例え.jp/", "例え.jp"), None);
+        assert_eq!(warning("https://paypal.com./", "paypal.com"), None);
         assert_eq!(
             check("https://xn--80ak6aa92e.com/", "").opens.as_deref(),
             Some("xn--80ak6aa92e.com")
@@ -249,6 +267,24 @@ mod tests {
             warning("https://evil.co.uk/", "barclays.co.uk"),
             Some(Warning::Mismatch { .. })
         ));
+        // Shared hosts are many sites (the Public Suffix List).
+        for (href, text) in [
+            ("https://evil.github.io/", "good.github.io"),
+            ("https://evil.blogspot.com/", "good.blogspot.com"),
+            ("https://evil.s3.amazonaws.com/", "good.s3.amazonaws.com"),
+            // `*.kawasaki.jp` is a suffix; `city.kawasaki.jp` is its listed
+            // exception, one site, so its subdomains compare as one.
+            ("https://evil.kawasaki.jp/", "good.kawasaki.jp"),
+        ] {
+            assert!(
+                matches!(warning(href, text), Some(Warning::Mismatch { .. })),
+                "{href}"
+            );
+        }
+        assert_eq!(
+            warning("https://раураl.com/", "Log in"),
+            Some(Warning::LookAlike)
+        );
         assert!(matches!(
             warning("//evil.example/", "paypal.com"),
             Some(Warning::Mismatch { .. })

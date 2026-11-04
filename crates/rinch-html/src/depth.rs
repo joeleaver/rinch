@@ -1,163 +1,323 @@
 //! A document's nesting, cut short before anything recursive reads it.
 //!
 //! css-inline serializes recursively: ~16k nested elements (80 KB) overflow
-//! an 8 MB stack and abort the process, and the time grows about fourfold
-//! per doubling well before that. Mail is a few dozen levels deep, so
-//! [`cap`] drops whatever is nested deeper than [`MAX_DEPTH`].
+//! an 8 MB stack and abort the process, and rinch lays out recursively too.
+//! Mail is a few dozen levels deep, so [`cap`] leaves out every element
+//! nested deeper than [`MAX_DEPTH`].
 //!
-//! The scan follows the HTML parser closely enough for this: void elements
-//! open nothing; `<p>`, `<li>`, `<dt>`/`<dd>`, `<option>`, cells and rows
-//! close the open one of their kind (as the parser closes an unclosed `<p>`
-//! at the next), a row closes an open cell, and an end tag closes up to the
-//! nearest open element of its name. Comments and the text of `<script>`,
-//! `<style>`, `<textarea>` and `<title>` are passed over whole. Where it
-//! counts deeper than the parser would, it only cuts sooner.
+//! The depth is the real one: the document is parsed with html5ever, as a
+//! browser parses it (so `<div/>` opens a div, an end tag past a cell
+//! boundary is ignored, and unclosed formatting elements are reopened), into
+//! a flat arena ([`Arena`]), and written back with html5ever's serializer
+//! from an explicit stack. Nothing here recurses on the document's depth.
 
 use std::borrow::Cow;
+use std::cell::{Ref, RefCell};
 
-/// The deepest nesting kept.
+use html5ever::serialize::{Serialize, SerializeOpts, Serializer, TraversalScope};
+use html5ever::tendril::{StrTendril, TendrilSink};
+use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink};
+use html5ever::{Attribute, QualName, parse_document};
+
+/// The deepest nesting kept, in elements below the document.
 pub const MAX_DEPTH: usize = 512;
 
 /// `document` with every element nested deeper than [`MAX_DEPTH`] left out,
-/// borrowed when nothing is.
+/// borrowed when nothing is. A document that is cut comes back as html5ever
+/// writes a parsed document (`<html><head>…<body>…`).
 pub(crate) fn cap(document: &str) -> Cow<'_, str> {
-    let mut stack: Vec<String> = Vec::new();
-    let mut out: Option<String> = None;
-    // Where the copy has got to, and where a cut started.
-    let mut copied = 0;
-    let mut cut_from: Option<usize> = None;
-    // How many elements are open inside the cut: they are counted, not
-    // named, so an end tag there costs nothing to match.
-    let mut deeper = 0usize;
-    let bytes = document.as_bytes();
-    let mut i = 0;
-    while let Some(lt) = document[i..].find('<').map(|p| p + i) {
-        if document[lt..].starts_with("<!--") {
-            i = document[lt + 4..]
-                .find("-->")
-                .map_or(document.len(), |p| lt + 4 + p + 3);
-            continue;
+    // A document cannot nest deeper than it has `<`s.
+    if document.bytes().filter(|&b| b == b'<').count() <= MAX_DEPTH {
+        return Cow::Borrowed(document);
+    }
+    let arena = parse_document(Arena::default(), Default::default()).one(document);
+    if arena.depth() <= MAX_DEPTH {
+        return Cow::Borrowed(document);
+    }
+    let mut out = Vec::with_capacity(document.len());
+    let opts = SerializeOpts {
+        traversal_scope: TraversalScope::ChildrenOnly(None),
+        ..Default::default()
+    };
+    if html5ever::serialize(&mut out, &arena, opts).is_err() {
+        return Cow::Owned(String::new());
+    }
+    Cow::Owned(String::from_utf8(out).unwrap_or_default())
+}
+
+type Id = usize;
+
+enum Kind {
+    Document,
+    Doctype(String),
+    Element {
+        name: QualName,
+        attrs: Vec<Attribute>,
+        /// A `<template>`'s contents, a fragment of its own.
+        contents: Option<Id>,
+    },
+    Text(StrTendril),
+    Comment(StrTendril),
+    Pi(StrTendril, StrTendril),
+}
+
+struct Node {
+    kind: Kind,
+    parent: Option<Id>,
+    children: Vec<Id>,
+}
+
+/// A parsed document as html5ever builds it, in one vector.
+pub(crate) struct Arena {
+    nodes: RefCell<Vec<Node>>,
+}
+
+impl Default for Arena {
+    fn default() -> Self {
+        Self {
+            nodes: RefCell::new(vec![Node {
+                kind: Kind::Document,
+                parent: None,
+                children: Vec::new(),
+            }]),
         }
-        let Some(gt) = document[lt..].find('>').map(|p| lt + p) else {
-            break;
-        };
-        let tag = &document[lt + 1..gt];
-        i = gt + 1;
-        if let Some(name) = tag.strip_prefix('/') {
-            if deeper > 0 {
-                deeper -= 1;
-                continue;
-            }
-            let name = tag_name(name);
-            if let Some(at) = stack.iter().rposition(|n| *n == name) {
-                stack.truncate(at);
-                if let Some(from) = cut_from
-                    && stack.len() <= MAX_DEPTH
+    }
+}
+
+impl Arena {
+    fn push(&self, kind: Kind) -> Id {
+        let mut nodes = self.nodes.borrow_mut();
+        nodes.push(Node {
+            kind,
+            parent: None,
+            children: Vec::new(),
+        });
+        nodes.len() - 1
+    }
+
+    /// Put `child` under `parent` at `at` (the end when `None`), joining text
+    /// to a text node just before it, as the parser expects.
+    fn insert(&self, parent: Id, at: Option<usize>, child: NodeOrText<Id>) {
+        let id = match child {
+            NodeOrText::AppendNode(id) => id,
+            NodeOrText::AppendText(text) => {
+                let before = {
+                    let nodes = self.nodes.borrow();
+                    match at {
+                        Some(i) => i.checked_sub(1).map(|i| nodes[parent].children[i]),
+                        None => nodes[parent].children.last().copied(),
+                    }
+                };
+                if let Some(b) = before
+                    && let Kind::Text(t) = &mut self.nodes.borrow_mut()[b].kind
                 {
-                    // The cut ends with the element that crossed the limit.
-                    let o = out.get_or_insert_with(String::new);
-                    o.push_str(&document[copied..from]);
-                    copied = i;
-                    cut_from = None;
+                    t.push_tendril(&text);
+                    return;
+                }
+                self.push(Kind::Text(text))
+            }
+        };
+        self.detach(id);
+        let mut nodes = self.nodes.borrow_mut();
+        nodes[id].parent = Some(parent);
+        let children = &mut nodes[parent].children;
+        match at {
+            Some(i) => children.insert(i, id),
+            None => children.push(id),
+        }
+    }
+
+    fn detach(&self, id: Id) {
+        let mut nodes = self.nodes.borrow_mut();
+        if let Some(p) = nodes[id].parent.take() {
+            nodes[p].children.retain(|&c| c != id);
+        }
+    }
+
+    /// The deepest element, counted from the document.
+    fn depth(&self) -> usize {
+        let nodes = self.nodes.borrow();
+        let mut deepest = 0;
+        let mut stack = vec![(0usize, 0usize)];
+        while let Some((id, depth)) = stack.pop() {
+            deepest = deepest.max(depth);
+            let contents = match &nodes[id].kind {
+                Kind::Element { contents, .. } => *contents,
+                _ => None,
+            };
+            let below = depth + usize::from(matches!(nodes[id].kind, Kind::Element { .. }));
+            stack.extend(nodes[id].children.iter().map(|&c| (c, below)));
+            stack.extend(contents.map(|c| (c, below)));
+        }
+        deepest
+    }
+}
+
+impl TreeSink for Arena {
+    type Handle = Id;
+    type Output = Self;
+    type ElemName<'a> = Ref<'a, QualName>;
+
+    fn finish(self) -> Self {
+        self
+    }
+
+    fn parse_error(&self, _msg: Cow<'static, str>) {}
+
+    fn get_document(&self) -> Id {
+        0
+    }
+
+    fn elem_name<'a>(&'a self, target: &'a Id) -> Ref<'a, QualName> {
+        Ref::map(self.nodes.borrow(), |n| match &n[*target].kind {
+            Kind::Element { name, .. } => name,
+            _ => unreachable!("html5ever asks only elements their name"),
+        })
+    }
+
+    fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> Id {
+        let contents = flags.template.then(|| self.push(Kind::Document));
+        self.push(Kind::Element {
+            name,
+            attrs,
+            contents,
+        })
+    }
+
+    fn create_comment(&self, text: StrTendril) -> Id {
+        self.push(Kind::Comment(text))
+    }
+
+    fn create_pi(&self, target: StrTendril, data: StrTendril) -> Id {
+        self.push(Kind::Pi(target, data))
+    }
+
+    fn append(&self, parent: &Id, child: NodeOrText<Id>) {
+        self.insert(*parent, None, child);
+    }
+
+    fn append_based_on_parent_node(&self, element: &Id, prev: &Id, child: NodeOrText<Id>) {
+        if self.nodes.borrow()[*element].parent.is_some() {
+            self.append_before_sibling(element, child);
+        } else {
+            self.append(prev, child);
+        }
+    }
+
+    fn append_doctype_to_document(
+        &self,
+        name: StrTendril,
+        _public: StrTendril,
+        _system: StrTendril,
+    ) {
+        let id = self.push(Kind::Doctype(name.to_string()));
+        self.insert(0, None, NodeOrText::AppendNode(id));
+    }
+
+    fn get_template_contents(&self, target: &Id) -> Id {
+        match &self.nodes.borrow()[*target].kind {
+            Kind::Element {
+                contents: Some(c), ..
+            } => *c,
+            _ => *target,
+        }
+    }
+
+    fn same_node(&self, x: &Id, y: &Id) -> bool {
+        x == y
+    }
+
+    fn set_quirks_mode(&self, _mode: QuirksMode) {}
+
+    fn append_before_sibling(&self, sibling: &Id, child: NodeOrText<Id>) {
+        let Some(parent) = self.nodes.borrow()[*sibling].parent else {
+            return;
+        };
+        let at = self.nodes.borrow()[parent]
+            .children
+            .iter()
+            .position(|c| c == sibling);
+        self.insert(parent, at, child);
+    }
+
+    fn add_attrs_if_missing(&self, target: &Id, attrs: Vec<Attribute>) {
+        if let Kind::Element { attrs: have, .. } = &mut self.nodes.borrow_mut()[*target].kind {
+            for a in attrs {
+                if !have.iter().any(|h| h.name == a.name) {
+                    have.push(a);
                 }
             }
-            continue;
-        }
-        // A `<` that starts no tag (`a < b`) is text.
-        if !bytes.get(lt + 1).is_some_and(u8::is_ascii_alphabetic) {
-            continue;
-        }
-        let name = tag_name(tag);
-        if let Some(raw) = raw_text_end(document, i, &name) {
-            i = raw;
-            continue;
-        }
-        if is_void(&name) || tag.ends_with('/') {
-            continue;
-        }
-        if cut_from.is_some() {
-            deeper += 1;
-            continue;
-        }
-        close_implied(&mut stack, &name);
-        stack.push(name);
-        if stack.len() > MAX_DEPTH {
-            cut_from = Some(lt);
         }
     }
-    match (out, cut_from) {
-        (None, None) => Cow::Borrowed(document),
-        (out, cut) => {
-            let mut o = out.unwrap_or_default();
-            o.push_str(&document[copied..cut.unwrap_or(document.len())]);
-            Cow::Owned(o)
+
+    fn remove_from_parent(&self, target: &Id) {
+        self.detach(*target);
+    }
+
+    fn reparent_children(&self, node: &Id, new_parent: &Id) {
+        let children = std::mem::take(&mut self.nodes.borrow_mut()[*node].children);
+        for c in children {
+            self.nodes.borrow_mut()[c].parent = None;
+            self.insert(*new_parent, None, NodeOrText::AppendNode(c));
         }
     }
 }
 
-fn tag_name(tag: &str) -> String {
-    tag.split(|c: char| c.is_whitespace() || c == '/' || c == '>')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-}
-
-/// Past the end tag of an element whose content is raw text, if `name` is one.
-fn raw_text_end(document: &str, from: usize, name: &str) -> Option<usize> {
-    if !matches!(name, "script" | "style" | "textarea" | "title") {
-        return None;
+impl Serialize for Arena {
+    /// The document's children, leaving out each element deeper than
+    /// [`MAX_DEPTH`] (and what is in it).
+    fn serialize<S: Serializer>(&self, s: &mut S, _scope: TraversalScope) -> std::io::Result<()> {
+        enum Step {
+            Open(Id, usize),
+            Close(Id),
+        }
+        let nodes = self.nodes.borrow();
+        let mut stack: Vec<Step> = nodes[0]
+            .children
+            .iter()
+            .rev()
+            .map(|&c| Step::Open(c, 1))
+            .collect();
+        while let Some(step) = stack.pop() {
+            match step {
+                Step::Close(id) => {
+                    if let Kind::Element { name, .. } = &nodes[id].kind {
+                        s.end_elem(name.clone())?;
+                    }
+                }
+                Step::Open(id, depth) => match &nodes[id].kind {
+                    Kind::Element {
+                        name,
+                        attrs,
+                        contents,
+                    } => {
+                        if depth > MAX_DEPTH {
+                            continue;
+                        }
+                        s.start_elem(
+                            name.clone(),
+                            attrs.iter().map(|a| (&a.name, a.value.as_ref())),
+                        )?;
+                        stack.push(Step::Close(id));
+                        let inside = contents.map_or(&nodes[id].children, |c| &nodes[c].children);
+                        stack.extend(inside.iter().rev().map(|&c| Step::Open(c, depth + 1)));
+                    }
+                    Kind::Text(t) => s.write_text(t)?,
+                    Kind::Comment(t) => s.write_comment(t)?,
+                    Kind::Doctype(name) => s.write_doctype(name)?,
+                    Kind::Pi(target, data) => s.write_processing_instruction(target, data)?,
+                    Kind::Document => {}
+                },
+            }
+        }
+        Ok(())
     }
-    let close = format!("</{name}");
-    let at = document[from..].to_ascii_lowercase().find(&close)? + from;
-    Some(
-        document[at..]
-            .find('>')
-            .map_or(document.len(), |p| at + p + 1),
-    )
-}
-
-/// Close what opening `name` closes in the parser.
-fn close_implied(stack: &mut Vec<String>, name: &str) {
-    let closes: &[&str] = match name {
-        "p" | "div" | "table" | "ul" | "ol" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => &["p"],
-        "li" => &["li"],
-        "dt" | "dd" => &["dt", "dd"],
-        "option" => &["option"],
-        "td" | "th" => &["td", "th"],
-        "tr" => &["tr", "td", "th"],
-        "tbody" | "thead" | "tfoot" => &["tbody", "thead", "tfoot", "tr", "td", "th"],
-        _ => &[],
-    };
-    while stack
-        .last()
-        .is_some_and(|top| closes.contains(&top.as_str()))
-    {
-        stack.pop();
-    }
-}
-
-fn is_void(name: &str) -> bool {
-    matches!(
-        name,
-        "area"
-            | "base"
-            | "br"
-            | "col"
-            | "embed"
-            | "hr"
-            | "img"
-            | "input"
-            | "link"
-            | "meta"
-            | "source"
-            | "track"
-            | "wbr"
-    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_DEPTH, cap};
+    use super::{Arena, MAX_DEPTH, cap};
+    use html5ever::tendril::TendrilSink;
 
     #[test]
     fn ordinary_documents_are_untouched() {
@@ -173,13 +333,36 @@ mod tests {
     fn what_is_nested_too_deep_is_left_out() {
         let depth = MAX_DEPTH + 100;
         let doc = format!(
-            "<p>before</p>{}deep{}<p>after</p>",
+            "<style>p {{ color: red }}</style><p>before</p>{}deep{}<p>after</p>",
             "<div>".repeat(depth),
             "</div>".repeat(depth)
         );
         let out = cap(&doc);
         assert!(!out.contains("deep"), "the deep text is gone");
         assert!(out.contains("before") && out.contains("after"));
-        assert_eq!(out.matches("<div>").count(), MAX_DEPTH);
+        assert!(
+            out.contains("<style>p { color: red }</style>"),
+            "raw text kept"
+        );
+        // `<html>` and `<body>` are two of the levels.
+        assert_eq!(out.matches("<div>").count(), MAX_DEPTH - 2);
+    }
+
+    #[test]
+    fn the_depth_is_the_parsers_not_the_tags() {
+        // The second review of #2213: each of these nests deeper than a scan
+        // of the tags said, and overflowed css-inline's stack.
+        for (unit, n) in [
+            ("<div/>", 16_000),
+            ("<span><table><tbody><tr><td></span>", 2_000),
+            ("<div><table><tr><td></div>", 2_000),
+            ("<b><i></b>", 16_000),
+        ] {
+            let doc = unit.repeat(n);
+            let out = cap(&doc);
+            let arena =
+                html5ever::parse_document(Arena::default(), Default::default()).one(out.as_ref());
+            assert!(arena.depth() <= MAX_DEPTH + 1, "{unit}: {}", arena.depth());
+        }
     }
 }

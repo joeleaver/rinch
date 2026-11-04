@@ -14,8 +14,14 @@ rinch-core.workspace = true
 ammonia = "4.2"
 # Inline styles parsed as Stylo parses them (the version Stylo builds with).
 cssparser = "0.38"
-# Link addresses, for the tooltip's warning.
+# Parsing a document as a browser does, to cut its nesting (depth.rs): the
+# version ammonia and css-inline use.
+html5ever = "0.40"
+# Link addresses, for the tooltip's warning: parsed as a browser parses
+# them, shown in their own letters, and compared by the Public Suffix List.
 url = "2"
+idna = "1"
+psl = "2"
 css-inline = { version = "0.23", default-features = false }
 
 [dev-dependencies]

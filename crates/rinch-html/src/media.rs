@@ -30,17 +30,25 @@ struct Block {
 pub fn queries(document: &str) -> Queries {
     let mut out = Vec::new();
     for sheet in sheets(document) {
-        collect(&document[sheet], &mut out);
+        collect(&document[sheet], &mut out, 0);
     }
     Queries(out)
 }
 
-fn collect(css: &str, out: &mut Vec<String>) {
+fn collect(css: &str, out: &mut Vec<String>, nesting: usize) {
+    if nesting >= MAX_NESTING {
+        return;
+    }
     for block in blocks(css) {
         out.push(css[block.query.clone()].trim().to_owned());
-        collect(&css[block.inside], out);
+        collect(&css[block.inside], out, nesting + 1);
     }
 }
+
+/// How many `@media` blocks deep a sheet is read: a block nested deeper is
+/// left out, matching or not. Real sheets nest one or two; each level is
+/// read again, and in turn.
+pub const MAX_NESTING: usize = 16;
 
 /// A document's media queries ([`queries`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -68,20 +76,20 @@ pub(crate) fn resolve(document: &str, width: Option<f32>) -> String {
     let mut at = 0;
     for sheet in sheets(document) {
         out.push_str(&document[at..sheet.start]);
-        out.push_str(&resolve_css(&document[sheet.clone()], width));
+        out.push_str(&resolve_css(&document[sheet.clone()], width, 0));
         at = sheet.end;
     }
     out.push_str(&document[at..]);
     out
 }
 
-fn resolve_css(css: &str, width: Option<f32>) -> String {
+fn resolve_css(css: &str, width: Option<f32>, nesting: usize) -> String {
     let mut out = String::with_capacity(css.len());
     let mut at = 0;
     for block in blocks(css) {
         out.push_str(&css[at..block.whole.start]);
-        if width.is_some_and(|w| matches(&css[block.query.clone()], w)) {
-            out.push_str(&resolve_css(&css[block.inside.clone()], width));
+        if nesting < MAX_NESTING && width.is_some_and(|w| matches(&css[block.query.clone()], w)) {
+            out.push_str(&resolve_css(&css[block.inside.clone()], width, nesting + 1));
         }
         at = block.whole.end;
     }
@@ -265,6 +273,10 @@ fn length(value: &str) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
+    /// Time limits are a release build's; a debug build is about ten times
+    /// slower.
+    const SLOW: f32 = if cfg!(debug_assertions) { 10.0 } else { 1.0 };
+
     use super::*;
 
     #[test]
@@ -276,7 +288,11 @@ mod tests {
         let t = std::time::Instant::now();
         assert_eq!(signature(&doc, 400.0), [true]);
         assert!(resolve(&doc, Some(400.0)).contains("color:red"));
-        assert!(t.elapsed().as_millis() < 500, "took {:?}", t.elapsed());
+        assert!(
+            t.elapsed().as_secs_f32() < 0.5 * SLOW,
+            "took {:?}",
+            t.elapsed()
+        );
     }
 
     #[test]

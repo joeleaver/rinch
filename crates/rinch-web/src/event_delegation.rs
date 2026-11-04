@@ -2364,6 +2364,21 @@ fn claimed_link(el: &web_sys::Element) -> Option<web_sys::Element> {
     a.closest("[data-claim-links]").ok().flatten().map(|_| a)
 }
 
+/// Whether the browser's own ways to open a claimed link other than a click
+/// — its context menu ("Open link in new tab") and dragging it to the tab
+/// bar — are cancelled on `el`: on a claimed link, unless the claiming
+/// element allows them (`data-claim-links="menu"`).
+fn claimed_link_menu_blocked(el: &web_sys::Element) -> bool {
+    let Some(a) = claimed_link(el) else {
+        return false;
+    };
+    a.closest("[data-claim-links]")
+        .ok()
+        .flatten()
+        .and_then(|c| c.get_attribute("data-claim-links"))
+        .is_none_or(|v| !v.split_whitespace().any(|t| t == "menu"))
+}
+
 /// The rich-text editor `el` belongs to — its `[data-pm-editor]` container —
 /// unless `el` is **inside** a node view's component (an app's own subtree drawn
 /// in the editor, below an element carrying
@@ -3674,6 +3689,45 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .unwrap();
     click_closure.forget();
 
+    // A middle click on a claimed link (`data-claim-links`) opens it in a new
+    // tab, with no `click` at all: it is cancelled, and handed to the handler
+    // around it as a click with `MouseButton::Middle` and the link in
+    // `click_link`, so the app decides (and can tell it from a plain click).
+    let auxclick_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let Some(mouse) = event.dyn_ref::<web_sys::MouseEvent>() else {
+            return;
+        };
+        let Some(el) = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        if claimed_link(&el).is_none() {
+            return;
+        }
+        event.prevent_default();
+        if mouse.button() != 1 {
+            return;
+        }
+        if let Some((rid_el, rid)) = nearest_live_rid(&el) {
+            set_click_context_for(
+                &rid_el,
+                Some((mouse.client_x() as f32, mouse.client_y() as f32)),
+                events::TextHitInfo::default(),
+                events::MouseButton::Middle,
+                modifiers_from_event(mouse),
+            );
+            events::set_click_link(link_in(&el, &rid_el));
+            dispatch_rid(rid);
+            events::set_click_link(None);
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("auxclick", auxclick_closure.as_ref().unchecked_ref())
+        .unwrap();
+    auxclick_closure.forget();
+
     // Suppress the browser's native HTML5 drag for rinch draggables: the element
     // drag-and-drop above is synthesized from pointer events, and a native drag
     // would otherwise hijack the gesture (suppressing pointermove/pointerup).
@@ -3683,7 +3737,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     let dragstart_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
         if let Some(target) = event.target()
             && let Ok(el) = target.dyn_into::<web_sys::Element>()
-            && el.closest("[draggable=\"true\"]").ok().flatten().is_some()
+            && (el.closest("[draggable=\"true\"]").ok().flatten().is_some()
+                // A claimed link dragged to the tab bar would open it.
+                || claimed_link_menu_blocked(&el))
         {
             event.prevent_default();
         }
@@ -4120,6 +4176,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         let target = event
             .target()
             .and_then(|target| target.dyn_into::<web_sys::Element>().ok());
+        // "Open link in new tab" on a claimed link would open it.
+        if target.as_ref().is_some_and(claimed_link_menu_blocked) {
+            event.prevent_default();
+        }
         // A stale `data-oncontextmenu` — its scope disposed, the attribute
         // outliving the handler (issue #141) — is not a handler. Without this
         // check it both swallowed the browser's menu and dispatched nothing,

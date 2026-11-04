@@ -31,9 +31,13 @@ fn document() -> web_sys::Document {
     web_sys::window().unwrap().document().unwrap()
 }
 
-/// Mount an `HtmlView` holding one link (`#link`, around `#inner`), and
-/// return what its `onlink` is given.
+/// Mount an `HtmlView` holding one link, and return what its `onlink` is
+/// given.
 fn mount() -> Rc<RefCell<Vec<String>>> {
+    mount_with(false)
+}
+
+fn mount_with(link_menu: bool) -> Rc<RefCell<Vec<String>>> {
     rinch_web::__reset_activation_state();
     PREVIOUS.with(|p| {
         if let Some(h) = p.borrow_mut().take() {
@@ -58,6 +62,7 @@ fn mount() -> Rc<RefCell<Vec<String>>> {
         HtmlView {
             html: r#"<p><a href="https://evil.example/p2213"><span style="display: inline-block; width: 200px; height: 20px">go</span></a></p>"#.into(),
             onlink: Some(InputCallback::new(move |href: String| l.borrow_mut().push(href))),
+            link_menu,
             ..Default::default()
         }
         .render(scope, &[])
@@ -79,6 +84,12 @@ fn link() -> web_sys::HtmlElement {
 /// (after rinch's own listener on the document): what decides whether the
 /// browser follows the link.
 fn watch_click() -> Rc<RefCell<Vec<bool>>> {
+    watch("click")
+}
+
+/// Whether the next `name` event is cancelled by the time it reaches
+/// `window`.
+fn watch(name: &str) -> Rc<RefCell<Vec<bool>>> {
     let seen: Rc<RefCell<Vec<bool>>> = Rc::default();
     let s = seen.clone();
     let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
@@ -91,7 +102,7 @@ fn watch_click() -> Rc<RefCell<Vec<bool>>> {
     web_sys::window()
         .unwrap()
         .add_event_listener_with_callback_and_add_event_listener_options(
-            "click",
+            name,
             closure.as_ref().unchecked_ref(),
             &opts,
         )
@@ -157,4 +168,54 @@ fn element_click_on_a_link_does_not_navigate_and_calls_onlink() {
         *links.borrow(),
         vec!["https://evil.example/p2213".to_owned()]
     );
+}
+
+fn mouse(el: &web_sys::Element, name: &str, button: i16) {
+    let r = el.get_bounding_client_rect();
+    let init = web_sys::MouseEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_button(button);
+    init.set_client_x((r.x() + 4.0) as i32);
+    init.set_client_y((r.y() + r.height() / 2.0) as i32);
+    let ev = web_sys::MouseEvent::new_with_mouse_event_init_dict(name, &init).unwrap();
+    el.dispatch_event(&ev).unwrap();
+}
+
+#[wasm_bindgen_test]
+fn a_middle_click_on_a_link_does_not_open_it_and_calls_onlink() {
+    let links = mount();
+    let prevented = watch("auxclick");
+    mouse(&link(), "auxclick", 1);
+    assert_eq!(*prevented.borrow(), vec![true], "no new tab");
+    assert_eq!(
+        *links.borrow(),
+        vec!["https://evil.example/p2213".to_owned()]
+    );
+}
+
+#[wasm_bindgen_test]
+fn the_link_menu_and_link_dragging_are_off_unless_allowed() {
+    for (allowed, expect) in [(false, true), (true, false)] {
+        let links = mount_with(allowed);
+        for name in ["contextmenu", "dragstart"] {
+            let prevented = watch(name);
+            let a = link();
+            if name == "dragstart" {
+                let init = web_sys::DragEventInit::new();
+                init.set_bubbles(true);
+                init.set_cancelable(true);
+                let ev = web_sys::DragEvent::new_with_event_init_dict(name, &init).unwrap();
+                a.dispatch_event(&ev).unwrap();
+            } else {
+                mouse(&a, name, 2);
+            }
+            assert_eq!(
+                *prevented.borrow(),
+                vec![expect],
+                "{name}, link_menu {allowed}"
+            );
+        }
+        assert!(links.borrow().is_empty());
+    }
 }
