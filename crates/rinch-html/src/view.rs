@@ -65,8 +65,22 @@ impl std::fmt::Debug for HtmlView {
     }
 }
 
-/// The view's own CSS: only what links need, scoped to the view.
-const CSS: &str = ".rinch-html-view a[href] { cursor: pointer; }";
+/// The view's own CSS, scoped to the view.
+///
+/// - Nothing the document draws reaches outside the view, to paint over the
+///   app or take its clicks: the view clips on both axes and is the
+///   stacking context and containing block of everything in it. A document
+///   wider than the view scrolls sideways, as a browser scrolls a page wider
+///   than its window. (The cleaner already leaves out `position: fixed` and
+///   `absolute` and `z-index`; this holds for whatever moves content
+///   otherwise: relative offsets, transforms, negative margins.)
+/// - Links show a pointer.
+///
+/// An app may restyle `.rinch-html-view` through the cascade; one that lets
+/// its content overflow takes that on.
+const CSS: &str = "\
+.rinch-html-view { position: relative; z-index: 0; overflow-x: auto; overflow-y: hidden; }
+.rinch-html-view a[href] { cursor: pointer; }";
 
 /// The width a document is first cleaned at, before the view has one: wide,
 /// as a desktop shows mail.
@@ -76,6 +90,9 @@ impl Component for HtmlView {
     fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let view = scope.create_element("div");
         view.set_attribute("class", "rinch-html-view");
+        // Its links are the app's to follow (`onlink`): on the web, the
+        // browser never navigates the app's own tab to one.
+        view.set_attribute("data-claim-links", "");
         let style = scope.create_element("style");
         style.append_child(&scope.create_text(CSS));
         view.append_child(&style);

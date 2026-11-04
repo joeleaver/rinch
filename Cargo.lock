@@ -5733,7 +5733,9 @@ version = "0.1.0"
 dependencies = [
  "ammonia",
  "css-inline",
+ "cssparser",
  "rinch-core",
+ "url",
 ]
 
 [[package]]

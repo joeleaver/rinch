@@ -118,8 +118,6 @@ const LAYOUT_ATTRIBUTES: &[&str] = &[
     "rowspan",
     "nowrap",
 ];
-/// Inline style properties dropped whatever their value.
-const DROPPED_PROPERTIES: &[&str] = &["behavior", "-moz-binding", "cursor", "pointer-events"];
 
 /// Clean `document` (a whole document or a fragment) under `policy`,
 /// leaving out every `@media` block.
@@ -134,7 +132,8 @@ pub fn clean_at(document: &str, policy: &Policy, width: f32) -> Cleaned {
 }
 
 fn clean_inner(document: &str, policy: &Policy, width: Option<f32>) -> Cleaned {
-    let resolved = crate::media::resolve(document, width);
+    let document = crate::depth::cap(document);
+    let resolved = crate::media::resolve(&document, width);
     let inlined = inline_sheets(&resolved);
     let document = inlined.as_str();
     let body_style = body_style(body_tag(document).unwrap_or_default(), policy);
@@ -156,9 +155,13 @@ fn clean_inner(document: &str, policy: &Policy, width: Option<f32>) -> Cleaned {
         .link_rel(Some("noopener noreferrer"))
         .attribute_filter(
             move |element, attribute, value| match (element, attribute) {
-                (_, "style") => Some(clean_style(value, &picture).into()),
+                (_, "style") => Some(crate::style::clean_style(value, &picture).into()),
                 ("img", "src") => picture(value).map(Into::into),
                 ("a", "href") => link(value, &links).map(Into::into),
+                // A tooltip the document wrote could say anything ("verified");
+                // the view gives links their own. A citation is a URL no one
+                // follows, and could be any scheme.
+                (_, "title" | "cite") => None,
                 _ => Some(value.into()),
             },
         );
@@ -201,64 +204,6 @@ fn link(href: &str, schemes: &[String]) -> Option<String> {
     }
 }
 
-/// An inline style without what could cover the app, run code, or fetch a
-/// picture the policy does not allow.
-pub(crate) fn clean_style(style: &str, picture: &PictureRule) -> String {
-    let mut kept = Vec::new();
-    for declaration in style.split(';') {
-        let Some((property, value)) = declaration.split_once(':') else {
-            continue;
-        };
-        let property = property.trim().to_ascii_lowercase();
-        let value = value.trim();
-        let lower = value.to_ascii_lowercase();
-        if DROPPED_PROPERTIES.contains(&property.as_str())
-            || lower.contains("expression(")
-            || lower.contains("javascript:")
-        {
-            continue;
-        }
-        // A document cannot lift itself out of its own box onto the app.
-        if property == "position" && !matches!(lower.as_str(), "static" | "relative") {
-            continue;
-        }
-        if property == "z-index" {
-            continue;
-        }
-        let value = if lower.contains("url(") {
-            match pictures_in(value, picture) {
-                Some(value) => value,
-                None => continue,
-            }
-        } else {
-            value.to_owned()
-        };
-        kept.push(format!("{property}: {value}"));
-    }
-    kept.join("; ")
-}
-
-/// `value` with each `url(...)` replaced by what the picture rule makes of
-/// it; `None` if the rule refuses any of them.
-fn pictures_in(value: &str, picture: &PictureRule) -> Option<String> {
-    let mut out = String::new();
-    let mut rest = value;
-    while let Some(at) = rest.to_ascii_lowercase().find("url(") {
-        out.push_str(&rest[..at]);
-        let after = &rest[at + 4..];
-        let end = after.find(')')?;
-        let src = after[..end].trim().trim_matches(['"', '\'']);
-        let kept = picture(src)?;
-        if kept.contains(['"', '\\', '\n']) {
-            return None;
-        }
-        out.push_str(&format!("url(\"{kept}\")"));
-        rest = &after[end + 1..];
-    }
-    out.push_str(rest);
-    Some(out)
-}
-
 /// The document's `<body ...>` start tag: ammonia keeps what is inside the
 /// body, not the body's own attributes.
 fn body_tag(source: &str) -> Option<&str> {
@@ -286,7 +231,7 @@ fn body_style(tag: &str, policy: &Policy) -> String {
     if let Some(c) = colour("text") {
         declarations.push(format!("color: {c}"));
     }
-    let own = clean_style(
+    let own = crate::style::clean_style(
         &attribute(tag, "style").unwrap_or_default(),
         &policy.picture,
     );

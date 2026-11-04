@@ -12,6 +12,10 @@ rinch-core.workspace = true
 # so they add no second copy of either. css-inline without its defaults: no
 # HTTP or file loading of linked sheets, no CLI.
 ammonia = "4.2"
+# Inline styles parsed as Stylo parses them (the version Stylo builds with).
+cssparser = "0.38"
+# Link addresses, for the tooltip's warning.
+url = "2"
 css-inline = { version = "0.23", default-features = false }
 
 [dev-dependencies]

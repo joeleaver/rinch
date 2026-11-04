@@ -127,7 +127,7 @@ web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "Ht
 # `rinch::worker` in a real browser (tests/worker_1772.rs). The browser's
 # message dialogs (tests/confirm_dialog_1773.rs) need no feature on wasm32
 # (#1821): `file-dialogs` stays off here so that test pins it.
-rinch = { workspace = true, default-features = false, features = ["components", "theme", "worker"] }
+rinch = { workspace = true, default-features = false, features = ["components", "theme", "worker", "html"] }
 # The node-graph canvas's wheel over scrollable node bodies (tests/graph_canvas_wheel.rs).
 rinch-graph-view = { workspace = true }
 # Emitting events at `rinch::init_logging`'s console writer (tests/init_logging_1773.rs).

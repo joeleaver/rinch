@@ -15,7 +15,9 @@
 //! Enabled in the `rinch` facade by its `html` feature, as `rinch::html`.
 
 mod clean;
+mod depth;
 mod media;
+mod style;
 mod text;
 mod view;
 

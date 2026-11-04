@@ -102,3 +102,48 @@ fn html_view_calls_onlink_for_a_link_only() {
     click(&mut app, "view-link");
     assert_eq!(*links.borrow(), vec!["https://three.example/".to_owned()]);
 }
+
+/// The node with `id`.
+fn node(app: &RinchApp, wanted: &str) -> u64 {
+    let d = app.doc.as_ref().unwrap().borrow();
+    d.tree
+        .nodes
+        .iter()
+        .find(|(_, n)| n.attributes.get("id").map(String::as_str) == Some(wanted))
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| panic!("no #{wanted}"))
+}
+
+#[test]
+fn enter_on_a_focused_link_names_it() {
+    // Chrome follows a focused link on Enter; the handler around it is told
+    // which link, as a click tells it.
+    let (mut app, log, links) = mount();
+    // `#plain` is the link itself; `#view-link` is a span inside one.
+    let view_link = {
+        let span = node(&app, "view-link");
+        let d = app.doc.as_ref().unwrap().borrow();
+        d.tree.get(span).unwrap().parent.unwrap()
+    };
+    for link in [node(&app, "plain"), view_link] {
+        app.focus_target = FocusTarget::Node(link);
+        for event in [
+            PlatformEvent::KeyDown {
+                key: KeyCode::Enter,
+                logical_key: None,
+                text: None,
+                modifiers: Modifiers::default(),
+                repeat: KeyRepeat::Unknown,
+            },
+            PlatformEvent::KeyUp {
+                key: KeyCode::Enter,
+                logical_key: None,
+                modifiers: Modifiers::default(),
+            },
+        ] {
+            app.handle_event(event, VP, 1.0);
+        }
+    }
+    assert_eq!(*log.borrow(), vec![Some("https://one.example/".to_owned())]);
+    assert_eq!(*links.borrow(), vec!["https://three.example/".to_owned()]);
+}

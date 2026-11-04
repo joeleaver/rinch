@@ -2218,13 +2218,7 @@ fn dispatch_click_at(
         let active = active_in(el);
         // The link the press went through on its way to the handler
         // (`events::click_link`), as on desktop.
-        let link = el
-            .closest("a[href]")
-            .ok()
-            .flatten()
-            .filter(|a| rid_el.contains(Some(a)))
-            .and_then(|a| a.get_attribute("href"));
-        events::set_click_link(link);
+        events::set_click_link(link_in(el, &rid_el));
         let ran = dispatch_rid(rid);
         events::set_click_link(None);
         if let PressFocus::Focus(target) = press_focus.clone()
@@ -2346,7 +2340,28 @@ fn dispatch_activation(
         events::MouseButton::Left,
         modifiers,
     );
-    dispatch_rid(rid).then_some(rid)
+    // A keyboard or AT activation of a link names it too.
+    events::set_click_link(link_in(el, &rid_el));
+    let ran = dispatch_rid(rid);
+    events::set_click_link(None);
+    ran.then_some(rid)
+}
+
+/// The `href` of the nearest `<a href>` at or above `el` that is inside the
+/// handler's element `rid_el` (`events::click_link`).
+fn link_in(el: &web_sys::Element, rid_el: &web_sys::Element) -> Option<String> {
+    el.closest("a[href]")
+        .ok()
+        .flatten()
+        .filter(|a| rid_el.contains(Some(a)))
+        .and_then(|a| a.get_attribute("href"))
+}
+
+/// The `<a href>` at or above `el` when an element around it claims its
+/// links (`data-claim-links`).
+fn claimed_link(el: &web_sys::Element) -> Option<web_sys::Element> {
+    let a = el.closest("a[href]").ok().flatten()?;
+    a.closest("[data-claim-links]").ok().flatten().map(|_| a)
 }
 
 /// The rich-text editor `el` belongs to — its `[data-pm-editor]` container —
@@ -3587,6 +3602,15 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         let target_el = event
             .target()
             .and_then(|t| t.dyn_into::<web_sys::Element>().ok());
+        // A link inside an element that claims its links (`data-claim-links`,
+        // `HtmlView`) is the app's to follow: the browser never navigates
+        // the app's own tab to it, whatever input clicked it.
+        if target_el
+            .as_ref()
+            .is_some_and(|el| claimed_link(el).is_some())
+        {
+            event.prevent_default();
+        }
         if !activation::click_should_dispatch(acted_gesture, trusted)
             // A `<label>`'s forwarded click reaching a handler the press did
             // not run is the label's activation of its control, not the
