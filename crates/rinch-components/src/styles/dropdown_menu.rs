@@ -258,6 +258,23 @@ pub fn styles() -> String {
     pointer-events: none;
 }
 
+/* Shown while open: a viewport-sized fixed box whose bounds change on a
+   window resize, which closes (or places again) the flyout. */
+.rinch-dropdown-menu__sub-viewport {
+    display: none;
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100vw;
+    height: 100vh;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.rinch-dropdown-menu__sub--opened > .rinch-dropdown-menu__sub-viewport {
+    display: block;
+}
+
 .rinch-dropdown-menu__sub-dropdown {
     display: none;
     position: fixed;

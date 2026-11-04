@@ -814,7 +814,8 @@ fn a_window_resize_closes_an_open_submenu() {
     let at = row(&app, "s-new");
     click(&mut app, at);
     assert!(is_open(&app, "s-new"), "premise");
-    app.resolve_and_repaint(560.0, 480.0);
+    // The window is resized: the runtime's resize path, then a frame.
+    app.resize_layout(560, 480);
     app.resolve_and_repaint(560.0, 480.0);
     assert!(!is_open(&app, "s-new"));
 }
@@ -838,7 +839,8 @@ fn with_close_on_resize_off_a_resize_places_it_again() {
     click(&mut app, at);
     let before = painted(&app, flyout(&app, "s-new"));
     assert!(before.2 > 560.0, "premise: it would be past the new edge");
-    app.resolve_and_repaint(560.0, 480.0);
+    // The window is resized: the runtime's resize path, then a frame.
+    app.resize_layout(560, 480);
     app.resolve_and_repaint(560.0, 480.0);
     assert!(is_open(&app, "s-new"));
     let after = painted(&app, flyout(&app, "s-new"));

@@ -630,6 +630,7 @@ pub struct DropdownMenuDropdown;
 impl Component for DropdownMenuDropdown {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let dropdown = rinch_macros::rsx! { div { class: "rinch-dropdown-menu__dropdown" } };
+        dropdown.set_attribute("role", "menu");
 
         for child in children {
             dropdown.append_child(child);
@@ -678,6 +679,7 @@ impl Component for DropdownMenuItem {
 
         let btn = rinch_macros::rsx! { button { class: "rinch-dropdown-menu__item" } };
         btn.set_attribute("class", &classes.join(" "));
+        btn.set_attribute("role", "menuitem");
 
         if let Some(ref style) = color_style {
             btn.set_attribute("style", style);

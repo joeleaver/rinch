@@ -170,6 +170,7 @@ struct Opts {
     safe_triangle: bool,
     flip: bool,
     shift: bool,
+    close_on_resize: bool,
 }
 
 /// What one open measured: the flyout's size, the origin of its containing
@@ -188,6 +189,11 @@ struct Placement {
     waiting: bool,
     measured: Option<Measured>,
     anchor: Option<ElementBounds>,
+    /// The size the flyout has as placed: a different one later is its
+    /// content changing, and it is measured again (review of #2216).
+    placed_size: Option<(f32, f32)>,
+    /// The viewport it was placed in: a different one is a window resize.
+    viewport: Option<(f32, f32)>,
 }
 
 struct Sub {
@@ -195,11 +201,19 @@ struct Sub {
     trigger: NodeHandle,
     flyout: NodeHandle,
     probe: NodeHandle,
+    /// A hidden `position: fixed` box the size of the viewport, shown while
+    /// open: its bounds change when the window is resized.
+    sentinel: NodeHandle,
     opened: Signal<bool>,
     is_open: Cell<bool>,
     opts: Opts,
     open_timer: Cell<Option<TimeoutHandle>>,
     close_timer: Cell<Option<TimeoutHandle>>,
+    /// Whether the pointer is on the row, from its enter and leave. A
+    /// pending open fires only while it is: a pointer that crossed the row
+    /// into another flyout, or out of the menu, opens nothing (Chrome drops
+    /// the pending selection).
+    on_row: Cell<bool>,
     /// Where the pointer last was on the row (the safe triangle's apex).
     exit_point: Cell<Option<(f32, f32)>>,
     dismiss: RefCell<Option<DismissHandle>>,
@@ -398,7 +412,9 @@ fn arm_open(sub: &Rc<Sub>) {
         set_timeout(sub.opts.open_delay, move || {
             if let Some(sub) = weak.upgrade() {
                 sub.open_timer.set(None);
-                open(&sub, false);
+                if sub.on_row.get() {
+                    open(&sub, false);
+                }
             }
         })
     });
@@ -513,7 +529,8 @@ fn measure_and_place(sub: &Sub) -> bool {
     place(sub, m)
 }
 
-/// Where the flyout goes, in viewport px: `(x, y, flipped, cap)`.
+/// Where the flyout goes, in viewport px: `(x, y, flipped, cap)`. A flyout
+/// wider than the window is placed at the margin; [`place`] narrows it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide(
     row: ElementBounds,
@@ -576,16 +593,30 @@ fn place(sub: &Sub, m: Measured) -> bool {
     } else {
         sub.root.remove_class(LEFT_CLASS);
     }
+    // No width is pinned: placed where it fits, a fixed box's shrink-to-fit
+    // width is its content's, and a row that grows widens it (and is then
+    // measured again). Only one wider than the window is narrowed.
     let mut style = format!(
-        "left: {}px; top: {}px; width: {}px;",
+        "left: {}px; top: {}px;",
         px(x - m.origin.0),
-        px(y - m.origin.1),
-        px(m.w)
+        px(y - m.origin.1)
     );
+    let mut placed = (m.w, m.h);
+    if sub.opts.shift && m.w > viewport.0 - 2.0 * EDGE_MARGIN {
+        let w = (viewport.0 - 2.0 * EDGE_MARGIN).max(0.0);
+        style.push_str(&format!(" width: {}px;", px(w)));
+        placed.0 = w;
+    }
     if let Some(cap) = cap {
         style.push_str(&format!(" max-height: {}px; overflow-y: auto;", px(cap)));
+        placed.1 = cap;
     }
     sub.flyout.set_attribute("style", &style);
+    {
+        let mut p = sub.placement.borrow_mut();
+        p.placed_size = Some(placed);
+        p.viewport = Some(viewport);
+    }
     true
 }
 
@@ -593,7 +624,25 @@ fn px(v: f32) -> f32 {
     (v * 100.0).round() / 100.0
 }
 
-/// Measure and place the flyout on each open; follow the row while open.
+/// Put the flyout back at `left`/`top` 0 and measure it again: now when the
+/// layout is current (web), else after the next one.
+fn remeasure(sub: &Sub) {
+    {
+        let mut p = sub.placement.borrow_mut();
+        p.placed_size = None;
+        p.waiting = false;
+    }
+    sub.flyout.set_attribute("style", "left: 0px; top: 0px;");
+    sub.root.remove_class(LEFT_CLASS);
+    let placed = !sub.root.layout_pending() && measure_and_place(sub);
+    if !placed {
+        sub.placement.borrow_mut().waiting = true;
+    }
+}
+
+/// Measure and place the flyout on each open; follow the row while open;
+/// measure again when its content changes size; close (or place again) on a
+/// window resize.
 fn arm_placement(sub: &Rc<Sub>) {
     let weak: Weak<Sub> = Rc::downgrade(sub);
     let opened = sub.opened;
@@ -614,18 +663,15 @@ fn arm_placement(sub: &Rc<Sub>) {
             return;
         }
         *sub.placement.borrow_mut() = Placement::default();
-        sub.flyout.set_attribute("style", "left: 0px; top: 0px;");
-        sub.root.remove_class(LEFT_CLASS);
-        let placed = !sub.root.layout_pending() && measure_and_place(&sub);
-        if !placed {
-            sub.placement.borrow_mut().waiting = true;
-        }
+        remeasure(&sub);
         let flyout_bounds = sub.flyout.bounds_signal();
         let row_bounds = sub.trigger.bounds_signal();
+        let viewport_bounds = sub.sentinel.bounds_signal();
         let weak = Rc::downgrade(&sub);
         Effect::new(move || {
             let b = flyout_bounds.get();
             let _ = row_bounds.get();
+            let _ = viewport_bounds.get();
             let Some(sub) = weak.upgrade() else {
                 return;
             };
@@ -640,10 +686,29 @@ fn arm_placement(sub: &Rc<Sub>) {
                 sub.placement.borrow_mut().waiting = false;
                 return;
             }
-            let (m, anchor) = {
+            let (m, anchor, placed_size, placed_in) = {
                 let p = sub.placement.borrow();
-                (p.measured, p.anchor)
+                (p.measured, p.anchor, p.placed_size, p.viewport)
             };
+            // A window resize: closed (Chrome), or placed again.
+            if let (Some(was), Some(now)) = (placed_in, sub.root.viewport_size())
+                && ((was.0 - now.0).abs() > 0.5 || (was.1 - now.1).abs() > 0.5)
+            {
+                if sub.opts.close_on_resize {
+                    close(&sub, true);
+                } else {
+                    remeasure(&sub);
+                }
+                return;
+            }
+            // Its content changed size: measure it again.
+            if let Some((w, h)) = placed_size
+                && (b.width > 0.0 || b.height > 0.0)
+                && ((b.width - w).abs() > 0.5 || (b.height - h).abs() > 0.5)
+            {
+                remeasure(&sub);
+                return;
+            }
             let (Some(m), Some(anchor), Some(now)) = (m, anchor, rect(&sub.trigger)) else {
                 return;
             };
@@ -672,6 +737,7 @@ impl Component for DropdownMenuSub {
             crate::menu_nav::ITEM_CLASS,
             "rinch-dropdown-menu__sub-trigger",
         ];
+        trigger.set_attribute("role", "menuitem");
         if self.disabled {
             classes.push("rinch-dropdown-menu__item--disabled");
             trigger.set_attribute("disabled", "");
@@ -719,6 +785,11 @@ impl Component for DropdownMenuSub {
         probe.set_attribute("aria-hidden", "true");
         root.append_child(&probe);
 
+        let sentinel = __scope.create_element("span");
+        sentinel.set_attribute("class", "rinch-dropdown-menu__sub-viewport");
+        sentinel.set_attribute("aria-hidden", "true");
+        root.append_child(&sentinel);
+
         let flyout = __scope.create_element("div");
         flyout.set_attribute("class", "rinch-dropdown-menu__sub-dropdown");
         flyout.set_attribute("role", "menu");
@@ -738,6 +809,7 @@ impl Component for DropdownMenuSub {
             trigger: trigger.clone(),
             flyout,
             probe,
+            sentinel,
             opened: Signal::new(false),
             is_open: Cell::new(false),
             opts: Opts {
@@ -749,9 +821,11 @@ impl Component for DropdownMenuSub {
                 safe_triangle: self.safe_triangle,
                 flip: self.flip,
                 shift: self.shift,
+                close_on_resize: self.close_on_resize,
             },
             open_timer: Cell::new(None),
             close_timer: Cell::new(None),
+            on_row: Cell::new(false),
             exit_point: Cell::new(None),
             dismiss: RefCell::new(None),
             placement: RefCell::new(Placement::default()),
@@ -780,6 +854,7 @@ impl Component for DropdownMenuSub {
                     return;
                 };
                 install_panel_pointer(&sub);
+                sub.on_row.set(true);
                 if sub.is_open.get() {
                     cancel(&sub.close_timer);
                 } else {
@@ -787,6 +862,16 @@ impl Component for DropdownMenuSub {
                 }
             });
             trigger.set_attribute("data-onenter", &enter.0.to_string());
+            // Desktop fires a leave and an enter on every change of the node
+            // under the pointer, so moving inside the row sets this false and
+            // true again in one event; a pending open is not restarted.
+            let weak = Rc::downgrade(&sub);
+            let leave = __scope.register_handler(move || {
+                if let Some(sub) = weak.upgrade() {
+                    sub.on_row.set(false);
+                }
+            });
+            trigger.set_attribute("data-onleave", &leave.0.to_string());
         }
 
         // Press: open at once.

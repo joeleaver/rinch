@@ -247,6 +247,7 @@ impl Component for ContextMenu {
         // Dropdown container — sibling of overlay so clicks inside it
         // don't bubble to the overlay's close handler
         let dropdown = rinch_macros::rsx! { div { class: "rinch-context-menu__dropdown" } };
+        dropdown.set_attribute("role", "menu");
 
         // Stamped for this menu's whole lifetime (issue #714): a
         // `DropdownMenuItem` closes its menu by walking up from the clicked
