@@ -178,6 +178,47 @@ fn offered(status: Signal<String>, offer: Option<(SortMove, SortVerdict)>) {
     }
 }
 
+/// The presentation presets the demo switches between: (name, preview,
+/// indicator, source).
+fn preset(mode: usize) -> (SortPreview, SortIndicator, SortSource) {
+    match mode {
+        1 => (SortPreview::Clone, SortIndicator::Gap, SortSource::Collapse),
+        2 => (
+            SortPreview::Custom(Rc::new(|__scope: &mut RenderScope, key: &str| {
+                let key = key.to_string();
+                rsx! {
+                    div {
+                        style: "padding: 8px 12px; border-radius: 6px; font-size: 13px; background: var(--rinch-color-body); border: 1px solid var(--rinch-primary-color); box-shadow: 0 8px 20px rgba(0,0,0,0.25); transform: rotate(3deg)",
+                        {format!("Moving {key}")}
+                    }
+                }
+            })),
+            SortIndicator::Both,
+            SortSource::Dim,
+        ),
+        3 => (SortPreview::None, SortIndicator::Caret, SortSource::Dim),
+        _ => (
+            SortPreview::Clone,
+            SortIndicator::Caret,
+            SortSource::Unchanged,
+        ),
+    }
+}
+
+/// The lanes, each with the preset they are drawn in: a preset change redraws
+/// them (the preset is part of their key).
+fn lanes_in_mode(board: Signal<Vec<Lane>>, mode: Signal<usize>) -> Vec<(usize, Lane)> {
+    let m = mode.get();
+    board.get().into_iter().map(|l| (m, l)).collect()
+}
+
+const PRESETS: [&str; 4] = [
+    "Browser-like (default)",
+    "Gap + collapse",
+    "Custom preview + gap and caret",
+    "No preview, caret, dimmed",
+];
+
 #[component]
 pub fn sortable_section() -> NodeHandle {
     let board = Signal::new(initial_board());
@@ -186,6 +227,7 @@ pub fn sortable_section() -> NodeHandle {
         "Drag a card, a column header or a lane handle.",
     ));
     let opened = Signal::new(String::new());
+    let mode = Signal::new(0usize);
 
     rsx! {
         Fragment {
@@ -203,6 +245,16 @@ pub fn sortable_section() -> NodeHandle {
             Text { size: "sm", color: "dimmed", class: "sortable-demo-opened",
                 {|| if opened.get().is_empty() { String::new() } else { format!("Opened: {}", opened.get()) }}
             }
+            Group { gap: "xs", class: "sortable-demo-presets",
+                for (i, name) in PRESETS.iter().enumerate() {
+                    Button {
+                        key: i.to_string(), size: "xs",
+                        variant: {move || if mode.get() == i { "filled".to_string() } else { "default".to_string() }},
+                        onclick: move || mode.set(i),
+                        {name.to_string()}
+                    }
+                }
+            }
             Space { h: "sm" }
 
             SortableList {
@@ -210,21 +262,21 @@ pub fn sortable_section() -> NodeHandle {
                 style: "--rinch-sortable-gap: 12px",
                 ondrop: move |m: SortMove| dropped(board, status, m),
                 ondropchange: move |o: Option<(SortMove, SortVerdict)>| offered(status, o),
-                for lane in board.get() {
+                for lane in lanes_in_mode(board, mode) {
                     SortableItem {
-                        key: lane.id.clone(), value: lane.id.clone(), handle: true, label: lane.title.clone(),
+                        key: format!("{}#{}", lane.1.id, lane.0), value: lane.1.id.clone(), handle: true, label: lane.1.title.clone(),
                         style: "border: 1px solid var(--rinch-color-border); border-radius: 8px; padding: 8px",
                         SortableHandle {
                             style: "font-weight: 600; padding: 4px 0 8px",
-                            {format!("⠿ {}", lane.title)}
+                            {format!("⠿ {}", lane.1.title)}
                         }
                         SortableList {
-                            group: "columns", id: lane.id.clone(), axis: SortAxis::Horizontal, label: lane.title.clone(),
+                            group: "columns", id: lane.1.id.clone(), axis: SortAxis::Horizontal, label: lane.1.title.clone(),
                             class: "sortable-demo-columns",
                             style: "--rinch-sortable-gap: 8px; overflow-x: auto; padding-bottom: 4px",
                             ondrop: move |m: SortMove| dropped(board, status, m),
                 ondropchange: move |o: Option<(SortMove, SortVerdict)>| offered(status, o),
-                            for col in lane.columns.clone() {
+                            for col in lane.1.columns.clone() {
                                 SortableItem {
                                     key: col.id.clone(), value: col.id.clone(), handle: true, label: col.title.clone(),
                                     style: "flex: 0 0 200px; display: flex; flex-direction: column; background: var(--rinch-color-surface-alt, rgba(127,127,127,0.08)); border-radius: 6px; padding: 6px",
@@ -237,6 +289,7 @@ pub fn sortable_section() -> NodeHandle {
                                         class: "sortable-demo-cards",
                                         style: "flex: 1; min-height: 40px; max-height: 220px; overflow-y: auto; padding: 2px",
                                         judge: Some(wip_judge(board)),
+                                        preview: preset(lane.0).0, indicator: preset(lane.0).1, source: preset(lane.0).2,
                                         drag_keys: Some(selection_keys(board, selection)),
                                         ondrop: move |m: SortMove| dropped(board, status, m),
                 ondropchange: move |o: Option<(SortMove, SortVerdict)>| offered(status, o),

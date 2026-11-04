@@ -179,8 +179,9 @@ drag_keys: Some(Rc::new(move |key: &str| {
 ```
 
 The keys arrive in `SortMove::keys` in the order you returned them; an answer
-that leaves the pressed item out carries the item alone. Every carried item is
-dimmed during the drag, a re-rendered one included. **The keys are not
+that leaves the pressed item out carries the item alone. Every carried item
+takes the `source` look during the drag (dimmed with `SortSource::Dim`), a
+re-rendered one included. **The keys are not
 checked**: one that names no item is passed on as it is, and when the
 selection spans several lists `from_list` still names only the pressed item's
 list — your `ondrop` takes each key out of wherever it is.
@@ -224,6 +225,58 @@ card list near its top or bottom, a horizontally scrolling row of columns near
 its left or right edge, both at once in a corner. This is the drag
 auto-scroll every element drag (`draggable` + `data-ondrag*`) gets.
 
+## How a drag looks
+
+Every part of a drag's presentation is an option on `SortableList`, each on
+its own. The defaults do what a browser's native drag does where it has one,
+and draw a caret where it has none:
+
+| Prop | Decided by | Values (default first) |
+|------|-----------|------------------------|
+| `preview: SortPreview` | the list the drag starts in | `Clone` — a translucent copy of the item that follows the pointer, keeping the point it was grabbed at under it (as a browser's drag image); `None`; `Snapshot` — the runtime's built-in picture (desktop only: the web runtime has none, so nothing shows there); `Custom(f)` — the app's element |
+| `indicator: SortIndicator` | the list the place is in | `Caret`; `Gap` — the items from the place on slide apart to open a gap the size of what is carried; `Both`; `None` |
+| `source: SortSource` | the list the drag starts in | `Unchanged` (as a browser leaves a drag's source); `Dim` (`--rinch-sortable-dragging-opacity`); `Collapse` — hidden, and the items after it slide up over its space; `Hide` — hidden, its space kept |
+
+```rust
+SortableList {
+    group: "cards", id: col.id.clone(),
+    indicator: SortIndicator::Gap,
+    source: SortSource::Collapse,
+    preview: SortPreview::Custom(Rc::new(|__scope: &mut RenderScope, key: &str| {
+        rsx! { div { class: "card-preview", {key.to_string()} } }
+    })),
+    …
+}
+```
+
+- **A refused place never opens a gap.** It shows the refused caret and the
+  reason in every mode but `SortIndicator::None`, which still shows the reason.
+- **The preview** (`Clone`, `Custom`) is a `.rinch-sortable__ghost` element on
+  the document's `<body>` (rinch-web: the mount's root), `position: fixed` and
+  `pointer-events: none`, so it is never what a drag is over. Being outside the
+  list, a copy takes no style that depends on the item's ancestors, and the
+  `--rinch-sortable-ghost-*` properties are read there: set them on `:root` or
+  `<body>`, not on the list. A `Custom` function gets a scope and the dragged
+  item's key; its scope is disposed when the drag ends. A keyboard lift has no
+  pointer and shows no preview.
+- **The gap** and a collapse are a `transform` on the items (the component
+  writes `--rinch-sortable-shift-x` / `-y`, the stylesheet turns them into a
+  `translate`), so layout does not move. The place under the pointer is read
+  from the boxes as painted, gap included; a shift always moves the next
+  threshold away from the pointer, so a slow sweep changes the place once
+  each way. Over its own place a collapsed item's list opens the gap there
+  again (with a gap indicator).
+- **A keyboard lift** rings the lifted items (whatever `source` says) and moves
+  the gap with the arrows like a pointer does.
+- **An app that draws everything itself** sets `preview: SortPreview::None`,
+  `indicator: SortIndicator::None`, `source: SortSource::Unchanged` and reads
+  the drag reactively: `sortable_drag()` gives a `SortDragState` (group, keys,
+  `source_key`, `from_list`, `keyboard`, `over` — the place under the pointer,
+  its own place included —, `target` — the place a drop would land —, and its
+  `verdict` with a refusal's reason), and `sortable_drag_pointer()` a
+  `SortPointer` (the pointer, the grab point in the item, the item's size),
+  its own signal because it changes on every move.
+
 ## Styling
 
 The list is a flex column (`Vertical`) or row (`Horizontal`) with
@@ -242,7 +295,16 @@ add a stylesheet, has.
 | `--rinch-sortable-caret-color` | `--rinch-primary-color` |
 | `--rinch-sortable-caret-size` | `2px` (the caret line, and an empty list's outline) |
 | `--rinch-sortable-refused-color` | `--rinch-color-red-6` |
-| `--rinch-sortable-dragging-opacity` | `0.4` |
+| `--rinch-sortable-dragging-opacity` | `0.4` (`SortSource::Dim`) |
+| `--rinch-sortable-reflow-duration` | `150ms` (the gap's and a collapse's slide; `0ms` turns it off) |
+| `--rinch-sortable-reflow-easing` | `ease` |
+| `--rinch-sortable-ghost-opacity` | `0.75` (on `:root`/`<body>`, as every `-ghost-` one) |
+| `--rinch-sortable-ghost-tilt` | `0deg` (a `rotate`) |
+| `--rinch-sortable-ghost-scale` | `1` |
+| `--rinch-sortable-ghost-shadow` | `none` (on a copy) |
+| `--rinch-sortable-ghost-duration` | `0ms` (the preview follows the pointer exactly; more makes it trail) |
+| `--rinch-sortable-ghost-easing` | `ease` |
+| `--rinch-sortable-ghost-z-index` | `1000` |
 | `--rinch-sortable-reason-bg` | the refused colour |
 | `--rinch-sortable-reason-color` | white |
 | `--rinch-sortable-reason-font-size` | `--rinch-font-size-xs` |
@@ -261,7 +323,11 @@ hide it):
 
 | Class | On |
 |-------|----|
-| `rinch-sortable__item--dragging` | the carried items during a pointer drag |
+| `rinch-sortable__item--dragging` | the carried items during a pointer drag, with `source: SortSource::Dim` |
+| `rinch-sortable__item--collapsed` / `--drag-hidden` | the same, with `Collapse` / `Hide` (`visibility: hidden`) |
+| `rinch-sortable__item--shifted` | an item the gap or a collapse moved (until the drag ends) |
+| `rinch-sortable--reflowing` | a list items slide in, while the drag lasts (it carries the `transition`) |
+| `rinch-sortable__ghost` (`--clone`, `--custom`) | the preview, on `<body>` |
 | `rinch-sortable__item--lifted` | the carried items during a keyboard lift |
 | `rinch-sortable__item--drop-before` / `--drop-after` | the item the caret is drawn at (`--drop-horizontal` in a horizontal list) |
 | `rinch-sortable__item--refused`, `rinch-sortable--refused` | a refused place |
@@ -293,10 +359,17 @@ drives it. What such a host must also give the guest:
   taken for the item's.
 - **Timers**, to give the focus back after a keyboard drop when the item is
   already drawn; without them it is focused only at its next render.
-- **The drag ghost.** Items carry `data-drag-ghost="false"`: the component
-  draws the drag itself, and a host that paints a ghost should read the
-  attribute (the desktop runtime does) — or forward the guest's
+- **The drag ghost.** Lists carry `data-drag-ghost="false"` (all but a
+  `preview: SortPreview::Snapshot` one): the component draws the drag itself,
+  and a host that paints a ghost should read the attribute on the source or
+  an ancestor (the desktop runtime does) — or forward the guest's
   `suppress_drag_ghost()`, which otherwise reaches nothing that paints.
+- **The press point** in `data-ondragstart`'s click context (`mouse_x/y`; both
+  runtimes set it, #2154), for the preview's grab offset; without it the
+  preview is held by the item's middle.
+- **`DomDocument::attribute_list`, `node_type` and `text_content`** for a
+  `SortPreview::Clone` copy; a host without them copies nothing (the preview
+  is an empty box).
 - **The end of a drag.** Each backend tells `rinch_core::on_element_drag_end`
   listeners when an element drag ends, which is what ends a drag whose dragged
   item was re-rendered away (its own `data-ondragend` goes to the gone node).

@@ -1511,6 +1511,9 @@ pointer or keyboard (guide: [Sortable Lists](sortable.md)).
 | `ondrop` | `Option<ValueCallback<SortMove>>` | `None` | An accepted drop into this list. The component moves nothing: the app applies it to its data |
 | `ondropchange` | `Option<ValueCallback<Option<(SortMove, SortVerdict)>>>` | `None` | For a drag that started in this list: the move on offer and its verdict each time it changes; `None` when nothing is on offer and when the drag ends |
 | `drag_keys` | `Option<SortKeys>` | `None` | What a drag from an item of this list carries, in order (a selection). The item alone when not given, or when the answer leaves the item out. Not checked against any list; `from_list` names the pressed item's list only |
+| `preview` | `SortPreview` | `Clone` | What follows the pointer in a drag from this list: `Clone` (a translucent copy at the grab offset), `None`, `Snapshot` (the runtime's picture; desktop only), `Custom(SortPreviewFn)` |
+| `indicator` | `SortIndicator` | `Caret` | How a place in this list is shown: `Caret`, `Gap` (the items slide apart), `Both`, `None`. A refused place never opens a gap |
+| `source` | `SortSource` | `Unchanged` | How this list's items look while a pointer drags them: `Unchanged`, `Dim`, `Collapse` (hidden, followers slide over), `Hide` |
 
 **SortableItem** — one item; focusable (`tabindex="0"`).
 
@@ -1534,10 +1537,16 @@ pointer or keyboard (guide: [Sortable Lists](sortable.md)).
 - `SortAxis` — `Vertical` (default), `Horizontal`.
 - `SortJudge` = `Rc<dyn Fn(&SortMove) -> SortVerdict>`, `SortKeys` = `Rc<dyn Fn(&str) -> Vec<String>>`.
 - `sortable_drag_group() -> Option<String>` — the group of the drag in progress, pointer or keyboard.
+- `SortPreviewFn` = `Rc<dyn Fn(&mut RenderScope, &str) -> NodeHandle>` (gets the dragged item's key).
+- `sortable_drag() -> Option<SortDragState>` — reactive: `{ group, keys, source_key, from_list, keyboard, over: Option<SortTarget>, target: Option<SortTarget>, verdict: Option<SortVerdict> }`, `SortTarget { list, index }`.
+- `sortable_drag_pointer() -> Option<SortPointer>` — reactive, pointer drags: `{ x, y, grab_x, grab_y, width, height }`.
 
 **Custom properties** (inherited, with fallbacks; set them inline on a list —
 see [Sortable Lists](sortable.md#styling)): `--rinch-sortable-gap`,
 `-caret-color`, `-caret-size`, `-refused-color`, `-dragging-opacity`,
+`-reflow-duration`, `-reflow-easing`, `-ghost-opacity`, `-ghost-tilt`,
+`-ghost-scale`, `-ghost-shadow`, `-ghost-duration`, `-ghost-easing`,
+`-ghost-z-index` (the `-ghost-` ones on `:root`/`<body>`),
 `-reason-bg`, `-reason-color`, `-reason-font-size`, `-reason-radius`,
 `-reason-inset`, `-reason-padding`, `-reason-white-space`, `-reason-max-width`
 (each `--rinch-sortable-…`).

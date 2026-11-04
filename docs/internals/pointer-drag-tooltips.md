@@ -138,15 +138,56 @@ group.
   (`aria-live="assertive"`, `aria-atomic="true"`, inline-hidden); a sentence
   equal to the region's current text gets a trailing no-break space, so a
   repeat is heard.
-- **`data-drag-ghost="false"`** on an item: desktop's `activate_drag` hides the
-  built-in ghost when the source or an ancestor carries it — an attribute a
-  host applying a guest's DOM reads like any other, where the guest's
-  `suppress_drag_ghost()` reaches nothing that paints.
+- **`data-drag-ghost="false"`** on a list (on each item before #2154; an item
+  is drawn before its list and cannot know the list's `preview`): desktop's
+  `activate_drag` hides the built-in ghost when the source or an ancestor
+  carries it — an attribute a host applying a guest's DOM reads like any
+  other, where the guest's `suppress_drag_ghost()` reaches nothing that
+  paints. A `SortPreview::Snapshot` list omits it and does not suppress.
+- **Presentation options (#2154).** `preview` / `source` are read from the
+  source list's config (held in `Active.from`), `indicator` from the target
+  list's. The preview is built at `begin` in a `RenderScope::new(doc, body)`
+  (`ListConfig.doc` / `.body` from the list's render scope; rinch-web's body
+  is the mount root): a `.rinch-sortable__ghost` wrapper holding a copy
+  (`copy_tree`: `attribute_list` + `node_type` + `text_content`, dropping
+  `data-on*`, `id`, `tabindex`, `draggable`, `data-sortable-*`) or the app's
+  element. It is placed by inline custom properties
+  (`--rinch-sortable-ghost-x/-y` = pointer − grab point) from every
+  `data-ondragmove` and `data-ondragover` (`follow_pointer`), and discarded,
+  its scope disposed, in `end_active`. The grab point comes from
+  `data-ondragstart`'s click context, which **both runtimes now set to the
+  press point and the source's box** (desktop: `mousedown_pos` and
+  `painted_element_box`; rinch-web: `WebDragState::start_x/y`,
+  `dispatch_drag_with_bounds`). The gap and the collapse are `reflow()`:
+  after every `set_offer` (and at `begin`) it works out a shift per item —
+  `+extent` for the target list's rest items from the slot on, when the offer
+  is accepted and that list's indicator has a gap; `-extent·n` for an item
+  with n collapsed carried items before it in the source list; over the
+  source's own (no-op) place a collapsed list opens the gap there — and
+  writes only the changed ones as `--rinch-sortable-shift-x/-y` with the
+  `--shifted` class; an item that stops shifting goes to `0px` and keeps the
+  class, so the way back transitions too. The extent is the carried items'
+  boxes plus the list's spacing (pressed item to its neighbour), measured at
+  `begin` before anything moves. The transition is on `.rinch-sortable--reflowing`
+  lists only, and `end_active` takes the classes and the properties off in
+  the same pass as the drop's re-render, so nothing slides from a stale
+  offset. **Hit-testing uses painted boxes**, transforms included (the only
+  boxes either backend gives); the midpoint rule is stable under the shifts
+  because opening a gap before an item moves its midpoint away from the
+  pointer (pinned by a sweep in `sortable_2154_tests`). `Active.over` is the
+  place under the pointer, no-op included; a pointer drag starts over its home
+  place, and a `data-ondragmove` with no `data-ondragover` since the last one
+  (`Active.hovered`) withdraws it — a drag that leaves its list before any
+  target was entered has no leave to hear. `sortable_drag()` /
+  `sortable_drag_pointer()` are leaked thread signals (`live_signal` makes a
+  new one when the runtime freed the old), set with `set_if_changed` from
+  `publish()`.
 
 Pins: `rinch/src/app/sortable_2091_tests.rs` (the real event path; a module
 driven by dispatching the handler attributes alone; `review_2093`;
 `nested_same_group`), `rinch-components/tests/sortable_2093.rs` (a mock
-document with no boxes, no runtime), `rinch-web/tests/sortable_2091.rs`.
+document with no boxes, no runtime), `rinch-web/tests/sortable_2091.rs`;
+presentation: `rinch/src/app/sortable_2154_tests.rs`, `rinch-web/tests/sortable_2154.rs`.
 
 ### Pointer Capture Drag (Drag Builder)
 
