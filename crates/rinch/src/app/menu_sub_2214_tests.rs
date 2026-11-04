@@ -766,7 +766,8 @@ fn a_submenu_crossed_on_the_way_out_of_the_menu_does_not_open() {
 }
 
 /// Content that grows while the flyout is open is measured again: the
-/// flyout holds its widest row and stays inside the window.
+/// flyout holds its widest row and, now too wide for the room right of its
+/// panel, is shifted back inside the window.
 #[test]
 fn a_flyout_whose_content_grows_while_open_is_placed_again() {
     let _t = timer_lock();
@@ -784,7 +785,7 @@ fn a_flyout_whose_content_grows_while_open_is_placed_again() {
     {
         let doc = app.doc.as_ref().unwrap();
         let mut d = doc.borrow_mut();
-        d.load_css(".i-file { width: 400px; }");
+        d.load_css(".i-file { width: 600px; }");
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
