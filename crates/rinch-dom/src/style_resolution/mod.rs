@@ -1451,11 +1451,16 @@ impl RinchDocument {
             {
                 // A restyle wrote the cascade's values back over what the
                 // table's last rebuild left there, and any part's style can
-                // move the table.
+                // move the table. The `vertical-align` padding went with it,
+                // while the children keep their offset (`kids_shift`): the
+                // cell is aligned again at the end of this layout even when
+                // nothing reads it back — a colour change runs no compute,
+                // and left its content at the top of the cell (#2144).
                 let node = &mut self.tree.nodes[node_id];
                 if let Some(c) = node.table_cell.as_mut() {
                     c.base = None;
                     c.shift = 0.0;
+                    self.tree.cells_to_align.push(node_id);
                 }
                 if self.tree.nodes[node_id].computed_style.float.is_floated() {
                     self.note_float(node_id);

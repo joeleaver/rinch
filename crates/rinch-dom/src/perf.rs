@@ -267,8 +267,13 @@ define_counters! {
     /// Root Taffy computes (`run_taffy_compute`). Mirrors
     /// `NodeTree::taffy_computes`.
     TaffyRootComputes = "taffy_root_computes",
-    /// Taffy measure-function invocations during root computes.
+    /// Taffy measure-function invocations during root computes (and the
+    /// size-only requests of `table_column_measures`).
     TaffyMeasureCalls = "taffy_measure_calls",
+    /// Table cells asked their max-content width for their column's share of
+    /// a table's width (`RinchDocument::measure_table_columns`, #2141): only
+    /// cells whose sizes Taffy has dropped since they were last asked.
+    TableColumnMeasures = "table_column_measures",
     /// Standalone Taffy computes sizing an atomic inline outside the root
     /// compute.
     InlineBlockComputes = "inline_block_computes",
