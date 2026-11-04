@@ -2526,12 +2526,12 @@ fn one_changed_card_in_a_grid_measures_that_card_alone() {
             &format!("one card's count among {cards}"),
             &s,
             &[
-                (ShapeMeasureText, 23),
-                (IfcMeasureCacheHits, 20),
+                (ShapeMeasureText, 18),
+                (IfcMeasureCacheHits, 17),
                 (IfcMeasureInvalidations, 2),
                 (LayoutResolves, 1),
                 (TaffyRootComputes, 1),
-                (TaffyMeasureCalls, 84),
+                (TaffyMeasureCalls, 76),
             ],
         );
     }
@@ -2637,7 +2637,7 @@ fn a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved()
                 (TaffyStyleSyncs, 6),
                 (TaffyStyleChanges, 6),
                 (ShapeMeasureIfc, 4),
-                (ShapeMeasureText, 23),
+                (ShapeMeasureText, 18),
                 (ShapeIfcBuild, 1),
                 (IfcMeasureCacheHits, 9),
                 (IfcMeasureInvalidations, 8),
@@ -2648,7 +2648,7 @@ fn a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved()
                 (IfcScopeContainers, 6),
                 (IfcScopeNodes, scope_nodes),
                 (TaffyRootComputes, 1),
-                (TaffyMeasureCalls, 92),
+                (TaffyMeasureCalls, 87),
             ],
         );
 
@@ -2656,15 +2656,17 @@ fn a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved()
         doc.insert_before(grid, NodeId(kids[11]), NodeId(kids[10]));
         doc.resolve_layout(1440.0, 900.0);
         let s = doc.tree.perf.end_frame();
-        // The two cards that changed cells are measured again; no other.
+        // The two cards change cells of the same size, so their Taffy caches
+        // still answer most of what is asked (with nine entries a node it was
+        // 36 shapes).
         expect(
             &format!("two wrappers swapped among {cards}"),
             &s,
             &[
                 (ShapeMeasureIfc, 1),
-                (ShapeMeasureText, 36),
+                (ShapeMeasureText, 8),
                 (ShapeIfcBuild, 2),
-                (IfcMeasureCacheHits, 16),
+                (IfcMeasureCacheHits, 5),
                 (IfcMeasureInvalidations, 1),
                 (LayoutResolves, 1),
                 (IfcSetupPasses, 1),
@@ -2672,7 +2674,7 @@ fn a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved()
                 (IfcScopeContainers, 6),
                 (IfcScopeNodes, scope_nodes),
                 (TaffyRootComputes, 1),
-                (TaffyMeasureCalls, 121),
+                (TaffyMeasureCalls, 45),
             ],
         );
     }
