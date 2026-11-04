@@ -864,10 +864,6 @@ impl RinchDocument {
         }
     }
 
-    /// Measure the columns of every table whose room is shared out by weight:
-    /// a table with a width of its own, with `auto` columns, whose subtree
-    /// changed since. Innermost first, because an outer table's max-content
-    /// reads an inner one's.
     /// Note, before any compute of a layout, which tables changed and which of
     /// their cells: a changed cell's remembered max-content width is dropped
     /// (`TableCell::max_content`), and a changed table is owed a column
@@ -902,6 +898,10 @@ impl RinchDocument {
         }
     }
 
+    /// Measure the columns of every table whose room is shared out by weight:
+    /// a table with a width of its own, with `auto` columns, whose subtree
+    /// changed since. Innermost first, because an outer table's max-content
+    /// reads an inner one's.
     pub(crate) fn measure_table_columns(&mut self) {
         let owed = std::mem::take(&mut self.tree.tables_owed_columns);
         if self.tree.tables.is_empty() {
