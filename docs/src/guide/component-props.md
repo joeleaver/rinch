@@ -1257,7 +1257,7 @@ closes the whole menu. Defaults are Chrome's own menus' (`ui/views/controls/menu
 | `flip` | `bool` | **`true`** | Open on the panel's left when there is no room on its right |
 | `shift` | `bool` | **`true`** | Move it back inside the window at an edge, 4px in; cap and scroll one taller than the window |
 | `offset` | `Option<i32>` | `None` | Gap from the parent panel in px, negative overlaps; writes `--rinch-dropdown-menu-sub-offset` on the submenu (default `-3px`, Chromium's `submenu_horizontal_overlap`) |
-| `close_on_resize` | `bool` | **`true`** | A window resize closes it (Chrome closes its menus on a bounds change); `false` places it again |
+| `close_on_resize` | `bool` | **`true`** | A window resize or a display scale change closes it (Chrome closes its menus on either); `false` places it again. A page scrollbar appearing is not a resize |
 
 Styling goes through the cascade, so a class or custom property on the menu, any
 ancestor or the submenu reaches its flyout: `--rinch-dropdown-menu-sub-offset`,

@@ -279,9 +279,14 @@ with `close_on_resize: false`, re-places it. On desktop the resize is the
 runtime's `resize_layout` path, which refreshes the bounds signals. The size compared is the sentinel's own box (`100vw` x `100vh`, the window), not
 `viewport_size()`: on the web that is `clientWidth`, which shrinks when a page
 scrollbar appears, and a scrollbar closed open submenus (second review of #2216).
-A desktop scale change that leaves the logical window size as it was keeps the
-submenu open (its placement is in logical px; Chrome closes its menus on any
-display change); one that changes the logical size closes it like a resize.
+A display scale change closes it too, whatever the logical size does (Chrome
+closes its menus on any display change), or with `close_on_resize: false`
+re-places it: `RinchApp::set_device_pixel_ratio`, every route a new scale takes,
+calls `rinch_core::events::notify_display_scale_changed(doc_key)` when the scale
+differs, and the placement effect reads `display_scale_changes(doc_key)` (a
+per-document counter signal) against the generation it was placed at. rinch-web
+has no such event; a browser zoom changes the window's CSS size, which the
+sentinel sees.
 
 **Pointer.** Hover-open is a `data-onenter` on the row (arm the open timer); the row's
 `data-onleave` clears `on_row`, and a pending open fires only while it is set, so

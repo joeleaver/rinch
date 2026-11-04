@@ -197,6 +197,10 @@ struct Placement {
     /// `viewport_size()`, which on the web is `clientWidth` and shrinks when
     /// a page scrollbar appears (second review of #2216).
     window: Option<(f32, f32)>,
+    /// The display-scale generation it was placed at
+    /// ([`rinch_core::events::display_scale_changes`]): a later one is a
+    /// display change, closed like a resize (Chrome closes its menus on any).
+    scale_gen: Option<u64>,
 }
 
 struct Sub {
@@ -619,6 +623,9 @@ fn place(sub: &Sub, m: Measured) -> bool {
         let mut p = sub.placement.borrow_mut();
         p.placed_size = Some(placed);
         p.window = window_size(sub);
+        p.scale_gen = Some(rinch_core::reactive::untracked(|| {
+            rinch_core::events::display_scale_changes(sub.root.doc_key())
+        }));
     }
     true
 }
@@ -683,6 +690,7 @@ fn arm_placement(sub: &Rc<Sub>) {
             let b = flyout_bounds.get();
             let _ = row_bounds.get();
             let _ = viewport_bounds.get();
+            let scale_gen = rinch_core::events::display_scale_changes(sub.root.doc_key());
             let Some(sub) = weak.upgrade() else {
                 return;
             };
@@ -701,10 +709,15 @@ fn arm_placement(sub: &Rc<Sub>) {
                 let p = sub.placement.borrow();
                 (p.measured, p.anchor, p.placed_size, p.window)
             };
+            let placed_gen = sub.placement.borrow().scale_gen;
             // A window resize: closed (Chrome), or placed again.
-            if let (Some(was), Some(now)) = (placed_in, window_size(&sub))
-                && ((was.0 - now.0).abs() > 0.5 || (was.1 - now.1).abs() > 0.5)
-            {
+            let resized = matches!(
+                (placed_in, window_size(&sub)),
+                (Some(was), Some(now))
+                    if (was.0 - now.0).abs() > 0.5 || (was.1 - now.1).abs() > 0.5
+            );
+            let rescaled = placed_gen.is_some_and(|g| g != scale_gen);
+            if resized || rescaled {
                 if sub.opts.close_on_resize {
                     close(&sub, true);
                 } else {

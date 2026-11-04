@@ -439,7 +439,8 @@ It behaves like Chrome's own context menu, and every choice is a prop
   with the row that opened it; at the window's right edge it opens on the left
   (`flip`), and at the bottom it moves up (`shift`). It is never clipped by its
   menu's own overflow, on the desktop or in a browser. A flyout whose content
-  changes size while open is placed again; a window resize closes it, as Chrome
+  changes size while open is placed again; a window resize or a display scale
+  change closes it, as Chrome
   closes its menus (`close_on_resize: false` places it again instead). A page
   scrollbar appearing is not a resize.
 - Choosing an item anywhere in the tree closes the whole menu, `ContextMenu`
