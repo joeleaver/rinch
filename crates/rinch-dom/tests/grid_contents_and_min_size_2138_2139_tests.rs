@@ -205,7 +205,7 @@ fn auto_height_grid_rows_ignore_the_parents_height_2139() {
 }
 
 /// Where the grid's height *is* definite — stretched by a row flex container,
-/// or flexed to 300 with `min-height: 0`, or raised by `min-height` — the free
+/// flexed to 300 with `min-height: 0`, styled, or raised by `min-height` — the free
 /// space is shared among the auto rows (Chrome 156). These held before #2139's
 /// fix and must hold after it.
 #[test]
@@ -222,6 +222,12 @@ fn definite_height_grid_still_shares_free_space_among_auto_rows_2139() {
             "column flex, min-height: 0",
             "display: flex; flex-direction: column; height: 300px; width: 264px;",
             "min-height: 0;",
+            (300.0, 69.0),
+        ),
+        (
+            "a styled height",
+            "width: 264px;",
+            "height: 300px;",
             (300.0, 69.0),
         ),
         (
