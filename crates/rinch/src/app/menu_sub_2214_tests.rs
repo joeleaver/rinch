@@ -645,3 +645,33 @@ fn a_context_menu_holds_submenus_and_answers_the_keyboard() {
     assert!(!opened.get(), "a deep item closes the context menu");
     assert!(!is_open(&app, "s-new") && !is_open(&app, "s-deep"));
 }
+
+/// The close timer checks the pointer again when it fires: a pointer that
+/// crossed a sibling and went on into a *deeper* open flyout — whose moves the
+/// root panel never hears, so nothing cancelled the timer — keeps the chain
+/// open; one that stayed on the sibling closes it.
+#[test]
+fn a_pointer_reaching_a_deeper_flyout_in_time_keeps_the_chain() {
+    let _t = timer_lock();
+    let (mut app, _open) = dropdown_at(60.0, 40.0, defaults, None);
+    let at = row(&app, "s-new");
+    click(&mut app, at);
+    let at = row(&app, "s-deep");
+    click(&mut app, at);
+    assert!(is_open(&app, "s-deep"), "positive control: three deep");
+    SCHEDULED.with(|s| s.borrow_mut().clear());
+    let at = center(&app, find(&app, "i-alpha"));
+    move_to(&mut app, at);
+    assert_eq!(armed(), vec![400], "the sibling armed New's close");
+    let at = center(&app, find(&app, "i-ly"));
+    let fly = painted(&app, flyout(&app, "s-new"));
+    assert!(at.0 > fly.2, "premise: the row is outside New's own flyout");
+    move_to(&mut app, at);
+    deadline(&mut app);
+    assert!(is_open(&app, "s-new") && is_open(&app, "s-deep"));
+
+    let at = center(&app, find(&app, "i-alpha"));
+    move_to(&mut app, at);
+    deadline(&mut app);
+    assert!(!is_open(&app, "s-new") && !is_open(&app, "s-deep"));
+}
