@@ -39,6 +39,7 @@
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
 //! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
 //! | `ifc_tab_rebuilds` | `ifc.rs` `build_inline_layout` (the paint layout and the root compute's measure) | [`a_pre_paragraph_of_tabs_is_set_in_one_rebuild`] (1 per layout), [`a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds`] (2 per layout) |
+//! | `table_column_measures` | `table_layout.rs` `column_weights_from_cells` (#2141) | [`a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone`] |
 //! | `inline_block_computes` | `ifc.rs` `resolve_percentage_inline_blocks`, a `fit-content`/`stretch` atomic inline (#691) | [`fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change`] |
 //! | `inline_block_computes` | the same, a percentage-sized atomic inline (#2136) | [`percentage_pills_in_a_grid_are_not_remeasured_for_an_unrelated_change`], [`one_changed_card_in_a_grid_measures_that_card_alone`] |
 //! | `abs_containing_block_passes` | `layout_engine.rs` `resolve_layout`'s fixpoint (#386) | [`an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resize`] (1 per resize of the block), [`a_position_only_absolute_box_under_a_grandparent_pays_no_compute`] (0) |
@@ -4334,6 +4335,71 @@ fn a_colour_tick_on_every_pill_refreshes_the_paragraph_once() {
                 (PaintNodesVisited, 2),
                 (StackingOrderBuilds, 1),
             ],
+        );
+    }
+}
+
+/// A table with a width of its own shares it between its columns by their
+/// max-content widths. Those came from a detached layout of the whole table
+/// on every layout it was dirty in — a second root compute — which asked
+/// every cell, and evicted the layout each cell kept, so the root compute
+/// asked every cell again: a one-cell edit cost about six measure calls per
+/// row (#2141). Each column's width is now its cells' widest, each asked
+/// size-only and only once it changed: the frame asks the edited cell, the
+/// same at 12 rows and at 24. The edit changes no width (the same letters),
+/// so the root compute too asks only that cell's row.
+#[test]
+fn a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone() {
+    for rows in [12, 24] {
+        let mut doc = doc_with(
+            "table { width: 380px; border-spacing: 0 } td { padding: 0 }
+             .pill { display: inline-flex; max-width: 100% }",
+        );
+        let body = doc.body();
+        let table = el(&mut doc, body, "table", "");
+        let tbody = el(&mut doc, table, "tbody", "");
+        let mut uses = Vec::new();
+        for i in 0..rows {
+            let tr = el(&mut doc, tbody, "tr", "");
+            let a = el(&mut doc, tr, "td", "");
+            text(&mut doc, a, &format!("Item {i}"));
+            let b = el(&mut doc, tr, "td", "");
+            let pill = el(&mut doc, b, "span", "pill");
+            text(&mut doc, pill, "3d");
+            let c = el(&mut doc, tr, "td", "");
+            uses.push(text(&mut doc, c, "3 uses"));
+        }
+        doc.resolve_layout(VP.0, VP.1);
+        doc.resolve_layout(VP.0, VP.1);
+        doc.tree.perf.reset();
+        doc.set_text_content(uses[rows / 2], "3 sues");
+        doc.resolve_layout(VP.0, VP.1);
+        let s = doc.tree.perf.end_frame();
+        expect(
+            &format!("one cell's text in a table of {rows} rows"),
+            &s,
+            &[
+                (ShapeMeasureIfc, 3),
+                (ShapeIfcBuild, 1),
+                (IfcMeasureCacheHits, 3),
+                (IfcMeasureInvalidations, 3),
+                (LayoutResolves, 1),
+                (TaffyRootComputes, 1),
+                (TaffyMeasureCalls, 6),
+                (TableColumnMeasures, 1),
+            ],
+        );
+
+        // Positive control: a wider text widens its column, and every row
+        // is laid out at the new widths.
+        doc.set_text_content(uses[rows / 2], "3 uses and many more uses");
+        doc.resolve_layout(VP.0, VP.1);
+        let s = doc.tree.perf.end_frame();
+        assert_eq!(s.get(TableColumnMeasures), 1, "the edited cell alone is asked");
+        assert!(
+            s.get(TaffyMeasureCalls) > rows as u64,
+            "positive control: a moved column lays every row out again ({})",
+            s.get(TaffyMeasureCalls)
         );
     }
 }
