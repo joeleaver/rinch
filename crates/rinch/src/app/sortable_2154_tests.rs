@@ -320,6 +320,13 @@ fn ghosts(f: &Fixture) -> Vec<u64> {
     carrying(f, "rinch-sortable__ghost")
 }
 
+/// The preview's one box.
+fn ghost_body(f: &Fixture) -> u64 {
+    let b = carrying(f, "rinch-sortable__ghost-body");
+    assert_eq!(b.len(), 1, "one preview body");
+    b[0]
+}
+
 /// A ghost wrapper's (x, y) custom properties.
 fn ghost_xy(f: &Fixture) -> (f32, f32) {
     let g = ghosts(f);
@@ -422,7 +429,7 @@ fn a_copy_follows_the_pointer_keeping_the_grab_point() {
         assert!((x - (to.0 - gx)).abs() < 0.01, "x {x} for {to:?}");
         assert!((y - (to.1 - gy)).abs() < 0.01, "y {y} for {to:?}");
         // Painted where the properties say, at the item's size.
-        let (px, py, pw, ph) = box_of(&f, ghosts(&f)[0]);
+        let (px, py, pw, ph) = box_of(&f, ghost_body(&f));
         assert!((px - x).abs() < 0.5 && (py - y).abs() < 0.5, "{px},{py}");
         assert!((pw - aw).abs() < 0.5 && (ph - ah).abs() < 0.5, "{pw}x{ph}");
     }
@@ -572,12 +579,12 @@ fn a_gap_opens_at_the_place_and_closes_when_the_pointer_leaves() {
     move_to(&mut f, (790.0, 590.0));
     assert_eq!((dy(&f, "e"), dy(&f, "f")), (0.0, 0.0));
     assert_eq!(sortable_drag().unwrap().target, None);
-    // Within c1, after c: d slides; the dimmed a stays put.
+    // Within c1, after c: b and c make room, a goes to the place, d stays.
     let over = point(&f, item(&f, "c"), 0.5, 0.75);
     move_to(&mut f, over);
     assert_eq!(
         (dy(&f, "a"), dy(&f, "b"), dy(&f, "c"), dy(&f, "d")),
-        (0.0, 0.0, 0.0, STEP)
+        (2.0 * STEP, -STEP, -STEP, 0.0)
     );
     release_at(&mut f, over);
     assert_eq!(cards(&f, "c1"), ["b", "c", "a", "d"]);
@@ -683,6 +690,79 @@ fn a_sweep_over_a_shifting_list_changes_the_place_once_each_way() {
     key(&mut f, KeyCode::Escape, None);
 }
 
+/// In its own list a visible source (dimmed or unchanged) is never painted
+/// over: dragging d up over c1 and back, the items between the place and d
+/// make room and d sits at the place, every step; no two of c1's cards
+/// overlap, and the place still changes once each way.
+#[test]
+fn a_sweep_in_the_sources_own_list_never_paints_one_card_over_another() {
+    for source in [SortSource::Dim, SortSource::Unchanged] {
+        let mut f = fixture(Options {
+            indicator: SortIndicator::Gap,
+            source,
+            preview: SortPreview::None,
+        });
+        grab(&mut f, "d", 0.5, 0.5);
+        let (ax, ay, aw, _) = box_of(&f, item(&f, "a"));
+        let (_, dy0, _, dh) = box_of(&f, item(&f, "d"));
+        let x = ax + aw / 2.0;
+        let index = || sortable_drag().unwrap().over.map(|t| t.index);
+        let no_overlap = |f: &Fixture, at: f32| {
+            let mut boxes: Vec<(String, f32, f32)> = ["a", "b", "c", "d"]
+                .iter()
+                .map(|k| {
+                    let (_, y, _, h) = box_of(f, item(f, k));
+                    (k.to_string(), y, y + h)
+                })
+                .collect();
+            boxes.sort_by(|p, q| p.1.total_cmp(&q.1));
+            for w in boxes.windows(2) {
+                assert!(
+                    w[0].2 <= w[1].1 + 0.5,
+                    "{source:?} at y {at}: {} ({}..{}) over {} ({}..{})",
+                    w[0].0,
+                    w[0].1,
+                    w[0].2,
+                    w[1].0,
+                    w[1].1,
+                    w[1].2
+                );
+            }
+        };
+        let mut up = Vec::new();
+        let mut y = dy0 + dh / 2.0;
+        while y > ay + 2.0 {
+            y -= 1.5;
+            move_to(&mut f, (x, y));
+            no_overlap(&f, y);
+            up.push(index());
+        }
+        // At the top: d painted first, where a was.
+        let (_, d_now, _, _) = box_of(&f, item(&f, "d"));
+        assert!(
+            (d_now - ay).abs() < 0.5,
+            "{source:?}: d at {d_now}, a was at {ay}"
+        );
+        let mut down = Vec::new();
+        while y < dy0 + dh / 2.0 {
+            y += 1.5;
+            move_to(&mut f, (x, y));
+            no_overlap(&f, y);
+            down.push(index());
+        }
+        let changes = |v: &[Option<usize>]| v.windows(2).filter(|w| w[0] != w[1]).count();
+        assert!(up.windows(2).all(|w| w[0] >= w[1]), "{source:?} up: {up:?}");
+        assert!(
+            down.windows(2).all(|w| w[0] <= w[1]),
+            "{source:?} down: {down:?}"
+        );
+        assert_eq!(changes(&up), 3, "{source:?} {up:?}");
+        assert_eq!(changes(&down), 3, "{source:?} {down:?}");
+        release_at(&mut f, (x, ay + 2.0));
+        assert_clean(&f);
+    }
+}
+
 // ── Source.
 
 #[test]
@@ -767,12 +847,18 @@ fn a_keyboard_lift_moves_the_gap_and_escape_puts_everything_back() {
     assert!(sortable_drag().unwrap().keyboard);
     assert_eq!(sortable_drag_pointer(), None);
     key(&mut f, KeyCode::ArrowDown, None);
-    // After b: c and d open the gap; a lifted item does not collapse.
-    assert_eq!((dy(&f, "b"), dy(&f, "c"), dy(&f, "d")), (0.0, STEP, STEP));
+    // After b: b makes room and the lifted a (which does not collapse) moves
+    // to the place.
+    assert_eq!((dy(&f, "a"), dy(&f, "b"), dy(&f, "c")), (STEP, -STEP, 0.0));
     key(&mut f, KeyCode::ArrowDown, None);
-    assert_eq!((dy(&f, "c"), dy(&f, "d")), (0.0, STEP));
+    assert_eq!(
+        (dy(&f, "a"), dy(&f, "c"), dy(&f, "d")),
+        (2.0 * STEP, -STEP, 0.0)
+    );
     key(&mut f, KeyCode::ArrowRight, None);
-    assert_eq!(dy(&f, "d"), 0.0);
+    // Across into c2 at the same index, its end: c1 is as it was, and the
+    // gap is after f (nothing to move).
+    assert_eq!((dy(&f, "a"), dy(&f, "c"), dy(&f, "e")), (0.0, 0.0, 0.0));
     assert_eq!(
         sortable_drag().unwrap().target.map(|t| t.list),
         Some("c2".into())
@@ -843,4 +929,147 @@ fn the_drag_state_signal_tells_an_app_every_step() {
     );
     assert_eq!(seen.last(), Some(&None), "and the end");
     assert_eq!(cards(&f, "c1"), ["d", "a", "b", "c"]);
+}
+
+// ── Each list's preview takes its own styling (#2154 review).
+
+mod preview_cascade {
+    //! c1 [a b] sets its ghost look inline on the list; c2 [e f] sits in a
+    //! wrapper whose *class* sets it from a stylesheet, and f sets its own
+    //! inline. Each drag's preview, on `<body>`, shows the values its item
+    //! inherits — as if it were still inside its list.
+    use super::*;
+
+    fn styled() -> Fixture {
+        DROPS.with(|d| d.borrow_mut().clear());
+        let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+            let board: Signal<Board> = Signal::new(vec![
+                ("c1".into(), vec!["a".into(), "b".into()]),
+                ("c2".into(), vec!["e".into(), "f".into()]),
+            ]);
+            BOARD.with(|b| b.set(Some(board)));
+            rsx! {
+                div { style: "display: flex; gap: 100px; width: 800px; height: 600px; padding: 20px",
+                    SortableList {
+                        group: "cards", id: "c1",
+                        style: "width: 150px; --rinch-sortable-ghost-opacity: 0.5; --rinch-sortable-ghost-shadow: 0 0 0 3px red",
+                        SortableItem { value: "a", style: "height: 30px", "a" }
+                        SortableItem { value: "b", style: "height: 30px", "b" }
+                    }
+                    div { class: "lane-b",
+                        SortableList {
+                            group: "cards", id: "c2", style: "width: 150px",
+                            SortableItem { value: "e", style: "height: 30px", "e" }
+                            SortableItem {
+                                value: "f",
+                                style: "height: 30px; --rinch-sortable-ghost-opacity: 0.9",
+                                "f"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        app.mount_component(VIEWPORT.0, VIEWPORT.1);
+        {
+            let doc = app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            d.load_css(&rinch_theme::generate_theme_css(
+                &rinch_theme::Theme::default(),
+            ));
+            d.load_css(&rinch_components::generate_component_css());
+            d.load_css(
+                ".lane-b { --rinch-sortable-ghost-opacity: 0.3; \
+                 --rinch-sortable-ghost-shadow: 0 0 0 5px blue }",
+            );
+            d.recompute_all_styles_full();
+        }
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        let board = BOARD.with(|b| b.get()).unwrap();
+        Fixture { app, board }
+    }
+
+    /// The preview's opacity and its copy's shadow spread, as painted.
+    fn look(f: &Fixture) -> (f32, Option<f32>) {
+        let g = ghosts(f);
+        assert_eq!(g.len(), 1, "one preview");
+        let doc = f.app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        let _ = g;
+        let body = &d.tree.nodes[ghost_body(f)];
+        (
+            body.computed_style.opacity,
+            body.computed_style
+                .box_shadow
+                .first()
+                .map(|s| s.spread_radius),
+        )
+    }
+
+    fn drag_look(k: &str) -> (f32, Option<f32>) {
+        let mut f = styled();
+        grab(&mut f, k, 0.5, 0.5);
+        move_to(&mut f, (500.0, 400.0));
+        let seen = look(&f);
+        key(&mut f, KeyCode::Escape, None);
+        assert!(ghosts(&f).is_empty());
+        seen
+    }
+
+    #[test]
+    fn set_inline_on_the_list() {
+        assert_eq!(drag_look("a"), (0.5, Some(3.0)));
+    }
+
+    #[test]
+    fn set_by_a_class_on_an_ancestor() {
+        assert_eq!(drag_look("e"), (0.3, Some(5.0)));
+    }
+
+    #[test]
+    fn set_on_the_item_itself() {
+        assert_eq!(drag_look("f"), (0.9, Some(5.0)));
+    }
+}
+
+/// What an app's preview function makes (a signal, an effect) belongs to the
+/// preview and goes when its drag ends: none of it outlives its drag.
+#[test]
+fn what_a_custom_preview_makes_goes_with_its_drag() {
+    thread_local! {
+        static MADE: RefCell<Vec<Signal<u32>>> = const { RefCell::new(Vec::new()) };
+        static RUNS: Cell<u32> = const { Cell::new(0) };
+    }
+    MADE.with(|m| m.borrow_mut().clear());
+    let render: SortPreviewFn = Rc::new(|scope: &mut RenderScope, key: &str| {
+        let count = Signal::new(0u32);
+        MADE.with(|m| m.borrow_mut().push(count));
+        scope.create_effect(move || {
+            let _ = count.get();
+            RUNS.with(|r| r.set(r.get() + 1));
+        });
+        let el = scope.create_element("div");
+        el.set_text(key);
+        el
+    });
+    let mut f = fixture(Options {
+        preview: SortPreview::Custom(render),
+        ..Options::default()
+    });
+    for k in ["a", "b", "c"] {
+        grab(&mut f, k, 0.5, 0.5);
+        key(&mut f, KeyCode::Escape, None);
+    }
+    let made = MADE.with(|m| m.borrow().clone());
+    assert_eq!(made.len(), 3);
+    assert!(
+        made.iter().all(|s| !s.is_alive()),
+        "alive after their drags: {}",
+        made.iter().filter(|s| s.is_alive()).count()
+    );
+    assert_eq!(
+        RUNS.with(Cell::get),
+        3,
+        "each effect ran once, at its build"
+    );
 }
