@@ -217,6 +217,8 @@ mod hidden_subtree_cull_2137_tests;
 mod hidpi_pointer_tests;
 pub(crate) mod hit_testing;
 #[cfg(test)]
+mod html_view_tests;
+#[cfg(test)]
 mod implicit_focus_tests;
 #[cfg(all(test, software_shell))]
 mod inline_ink_damage_1815_tests;

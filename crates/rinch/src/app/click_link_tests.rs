@@ -42,6 +42,7 @@ fn mount() -> (RinchApp, Log, Rc<RefCell<Vec<String>>>) {
             onlink: Some(InputCallback::new(move |href: String| {
                 k.borrow_mut().push(href)
             })),
+            ..Default::default()
         }
         .render(__scope, &[]);
         let root = rsx! { div {} };

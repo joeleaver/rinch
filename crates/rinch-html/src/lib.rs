@@ -12,7 +12,9 @@
 //! Enabled in the `rinch` facade by its `html` feature, as `rinch::html`.
 
 mod clean;
+mod media;
 mod view;
 
-pub use clean::{Cleaned, PictureRule, Policy, clean};
+pub use clean::{Cleaned, PictureRule, Policy, clean, clean_at};
+pub use media::signature;
 pub use view::HtmlView;

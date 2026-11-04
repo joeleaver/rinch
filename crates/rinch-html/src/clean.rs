@@ -8,8 +8,10 @@
 //! - **Style sheets are applied, not kept.** A document's `<style>` rules
 //!   are copied onto the elements they match (css-inline), and the sheets
 //!   dropped: a sheet in the app's DOM would style the app's own elements.
-//!   Rules inside `@media` blocks are left out (mostly phone layouts), and a
-//!   linked sheet is never fetched.
+//!   `@media` blocks are evaluated at the width the document is drawn at
+//!   ([`clean_at`]; `media.rs`), so a narrow view gets the document's narrow
+//!   layout; [`clean`], with no width, leaves them all out. A linked sheet is
+//!   never fetched.
 //! - **Inline styles are filtered**: nothing that lifts content out of its
 //!   own box (`position` other than `static`/`relative`, `z-index`), no
 //!   `expression()`/`javascript:`, no `behavior`/`-moz-binding`, `cursor`
@@ -119,9 +121,21 @@ const LAYOUT_ATTRIBUTES: &[&str] = &[
 /// Inline style properties dropped whatever their value.
 const DROPPED_PROPERTIES: &[&str] = &["behavior", "-moz-binding", "cursor", "pointer-events"];
 
-/// Clean `document` (a whole document or a fragment) under `policy`.
+/// Clean `document` (a whole document or a fragment) under `policy`,
+/// leaving out every `@media` block.
 pub fn clean(document: &str, policy: &Policy) -> Cleaned {
-    let inlined = inline_sheets(document);
+    clean_inner(document, policy, None)
+}
+
+/// Clean `document` for drawing `width` CSS px wide: its `@media` blocks
+/// that match at that width are applied, the others left out.
+pub fn clean_at(document: &str, policy: &Policy, width: f32) -> Cleaned {
+    clean_inner(document, policy, Some(width))
+}
+
+fn clean_inner(document: &str, policy: &Policy, width: Option<f32>) -> Cleaned {
+    let resolved = crate::media::resolve(document, width);
+    let inlined = inline_sheets(&resolved);
     let document = inlined.as_str();
     let body_style = body_style(body_tag(document).unwrap_or_default(), policy);
 

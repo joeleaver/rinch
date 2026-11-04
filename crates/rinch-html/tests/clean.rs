@@ -150,3 +150,41 @@ fn text_is_escaped_with_its_spacing_kept() {
     );
     assert!(out.html.contains("pre-wrap"));
 }
+
+#[test]
+fn media_rules_apply_at_the_width_drawn() {
+    let doc = r#"<html><head><style>
+        .mob { display: none }
+        .col { width: 300px }
+        @media only screen and (max-width: 600px) {
+            .mob { display: block !important }
+            .desk { display: none !important }
+            .col { width: 100% !important }
+        }
+    </style></head><body>
+        <div class="desk">desktop</div><div class="mob">mobile</div>
+        <div class="col" style="color: red">column</div>
+    </body></html>"#;
+    let narrow = rinch_html::clean_at(doc, &Policy::default(), 480.0).html;
+    assert!(
+        narrow.contains(r#"<div style="display: none !important">desktop"#),
+        "{narrow}"
+    );
+    assert!(
+        narrow.contains(r#"<div style="display: block !important">mobile"#),
+        "{narrow}"
+    );
+    assert!(narrow.contains("width: 100%"), "{narrow}");
+    assert!(narrow.contains("color: red"), "{narrow}");
+    let wide = rinch_html::clean_at(doc, &Policy::default(), 720.0).html;
+    assert!(wide.contains(r#"<div>desktop"#), "{wide}");
+    assert!(
+        wide.contains(r#"<div style="display: none">mobile"#),
+        "{wide}"
+    );
+    assert!(wide.contains("width: 300px"), "{wide}");
+    // Without a width, as wide: every @media block left out.
+    assert_eq!(clean(doc, &Policy::default()).html, wide);
+    assert_eq!(rinch_html::signature(doc, 480.0), [true]);
+    assert_eq!(rinch_html::signature(doc, 720.0), [false]);
+}
