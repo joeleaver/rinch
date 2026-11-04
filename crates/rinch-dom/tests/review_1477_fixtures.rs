@@ -188,6 +188,13 @@ const CHROME: &[(&str, &str, &str)] = &[
         r##"<div style="width:400px;display:flex"><div data-m="f" style="min-width:0"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
         "f=400.0x40.0 t=400.0x40.0",
     ),
+    // A `GAPS` row until #2140: pass C re-resolved the percentage
+    // `max-width` against the clamped width (100x160).
+    (
+        "p06_maxw_50pct",
+        r##"<div style="width:400px"><span data-m="t" style="display:inline-block;max-width:50%">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div>"##,
+        "t=200.0x80.0",
+    ),
 ];
 
 /// (name, html, rinch today, Chrome 153, why)
@@ -201,13 +208,6 @@ const GAPS: &[(&str, &str, &str, &str, &str)] = &[
         "t=72.0x20.0",
         "t=151.8x20.0",
         "pre-existing: own percentage padding on a fitting auto box resolves against nothing (issue draft 2)",
-    ),
-    (
-        "p06_maxw_50pct",
-        r##"<div style="width:400px"><span data-m="t" style="display:inline-block;max-width:50%">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div>"##,
-        "t=100.0x160.0",
-        "t=200.0x80.0",
-        "pre-existing: pass C re-resolves a percentage max-width against the clamped width (issue draft 1)",
     ),
     (
         "p26_img_child_maxw",

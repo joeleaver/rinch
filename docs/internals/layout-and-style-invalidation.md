@@ -97,7 +97,24 @@ box:
   the boxes inside one being resolved) and when the node is freed. They are
   two maps because the first also tells the measure "lined up at a resolved,
   not its natural, size" (`AtomicContributions`), which a percentage box has
-  never meant. A new path that changes what sizes such a box without
+  never meant.
+  **The box's own percentages are resolved by rinch, not Taffy** (#2140,
+  #2146): a detached root resolves its own `width`/`min-width`/`max-width`
+  percentages against the available space it is computed under, and
+  `measure_inline_blocks` widens that space (pass B never hands a box less
+  than a width resolved for it; pass C recomputes at the box's used width). So
+  `own_percentage_widths` writes each one, plain or in a mixed `calc()`, into
+  the Taffy style as a length of the containing block's inner width for the
+  measure, and puts the declared style back afterwards. Before that, a
+  `max-width: 100%` over content wider than the block was resolved against
+  the content and capped nothing (Chrome caps the box and the content
+  overflows), a `max-width: 50%` was resolved twice and came out at 25%, and a
+  `calc()` size, whose Taffy form is only its length part and which
+  `resolve_layout_calcs` does not reach on a detached root, laid out
+  `calc(50% + 10px)` at `10px`. Measured with no containing-block width, a
+  `calc()` size is `auto`, as a plain percentage is under max-content space.
+  So a `calc()` box inside an `auto` box counts as `auto` toward that box's
+  width. A new path that changes what sizes such a box without
   measuring it as `auto` must drop its entry. Pins:
   `tests/percent_atomic_inline_record_2136_tests.rs` (each history against a
   fresh layout), `perf_regression_scenarios::percentage_pills_in_a_grid_*`.

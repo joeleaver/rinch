@@ -154,12 +154,21 @@ fn a_percentage_min_or_max_height_resolves() {
     assert_eq!(got, (160.0, 30.0), "Chrome 155: 160 x 30");
 }
 
-/// Not Chrome's: an atomic inline's percentage `max-width` and `min-height`
-/// (#1738). Chrome 155 gives 50 x 24 and 160 x 150. When this fails because
-/// rinch got Chrome's answer, move these rows into the tests above.
+/// An inline select's percentage `max-width` resolves against its containing
+/// block (#2140; it was 40 wide, resolved against a wider basis and then
+/// again against the clamped width). Chrome 155: 50 wide.
+#[test]
+fn an_inline_selects_percentage_max_width_resolves_2140() {
+    assert_eq!(size("width: 100px", "max-width: 50%").0, 50.0);
+}
+
+/// Not Chrome's: an atomic inline's percentage `min-height` (#1738), and the
+/// capped inline select of the test above is 23 tall where Chrome 155's is
+/// 24. Chrome 155 gives 50 x 24 and 160 x 150. When this fails because rinch
+/// got Chrome's answer, move these rows into the tests above.
 #[test]
 fn known_difference_an_inline_selects_percentage_max_width_and_min_height_1738() {
-    assert_eq!(size("width: 100px", "max-width: 50%"), (40.0, 23.0));
+    assert_eq!(size("width: 100px", "max-width: 50%"), (50.0, 23.0));
     assert_eq!(size("height: 300px", "min-height: 50%"), (160.0, 23.0));
 }
 

@@ -30,10 +30,9 @@ use rinch_dom::RinchDocument;
 const VP: (f32, f32) = (800.0, 600.0);
 
 /// Words enough that the pill's text, which wraps, is wider than any block
-/// here, so `max-width: 100%` is what sizes it. (Wrapping text: a pill whose
-/// content cannot get narrower — `white-space: nowrap`, or a 400px box — is
-/// left at its min-content width by rinch where Chrome caps it, a separate
-/// bug, so a fixture on it would not exercise the cap.)
+/// here, so `max-width: 100%` is what sizes it. (A pill whose content cannot
+/// get narrower — `white-space: nowrap`, or a 400px box — is capped too since
+/// #2140: `atomic_inline_calc_max_width_2146_2140_tests.rs`.)
 const LONG: usize = 200;
 
 const CSS: &str = "body { margin: 0; font-size: 16px; line-height: 20px }
