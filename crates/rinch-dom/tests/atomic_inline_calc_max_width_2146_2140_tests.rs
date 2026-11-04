@@ -292,3 +292,80 @@ fn calc_width_inside_an_auto_box_contributes_as_auto_2146() {
     assert_width(&doc, chip, 100.0, "the auto chip");
     assert_width(&doc, inner, 60.0, "calc(50% + 10px) of the chip");
 }
+
+/// An inline-block nested in a percentage-sized one, laid out three more
+/// times (each at another viewport height, so each one actually runs; the
+/// 360px block keeps every width). After the inner box is sized, the outer
+/// box is laid out again pinned at the width it already has
+/// (`relayout_atomic_inline_at_its_width`). That pass must not resolve the
+/// outer box's own percentages against its own width: in review of #2152 it
+/// did, and the outer box halved on every layout (180 → 90 → 45 → 23).
+/// Each `want` is (outer, inner): 50% of 360 is 180, `calc(50% + 10px)`
+/// is 190, and the inner box resolves its own percentage against the
+/// outer box's width.
+#[test]
+fn nested_percentage_boxes_hold_their_width_across_layouts_2146_2140() {
+    let cases: &[(&str, &str, &str, (f32, f32))] = &[
+        (
+            "width:50%",
+            "width:400px;max-width:100%",
+            "",
+            (180.0, 180.0),
+        ),
+        (
+            "width:calc(50% + 10px)",
+            "width:400px;max-width:100%",
+            "",
+            (190.0, 190.0),
+        ),
+        ("width:calc(50% + 10px)", "width:50%", "", (190.0, 95.0)),
+        (
+            "width:50%",
+            "max-width:calc(100% - 20px)",
+            "width:400px;height:10px",
+            (180.0, 160.0),
+        ),
+        (
+            "max-width:calc(100% - 20px)",
+            "width:50%",
+            "width:400px;height:10px",
+            (340.0, 170.0),
+        ),
+    ];
+    let mut bad = vec![];
+    for &(outer_style, inner_style, child, want) in cases {
+        let mut ids = None;
+        let mut doc = build(|doc, body| {
+            let cb = el(doc, body, "div", "width:360px");
+            let outer = el(
+                doc,
+                cb,
+                "span",
+                &format!("display:inline-block;{outer_style}"),
+            );
+            let inner = el(
+                doc,
+                outer,
+                "span",
+                &format!("display:inline-block;height:5px;{inner_style}"),
+            );
+            if !child.is_empty() {
+                el(doc, inner, "div", child);
+            }
+            ids = Some((outer, inner));
+        });
+        let (outer, inner) = ids.unwrap();
+        for pass in 0..4 {
+            if pass > 0 {
+                doc.resolve_layout(VP.0, VP.1 + pass as f32);
+            }
+            let got = (width(&doc, outer), width(&doc, inner));
+            if (got.0 - want.0).abs() >= 0.5 || (got.1 - want.1).abs() >= 0.5 {
+                bad.push(format!(
+                    "outer {{{outer_style}}} inner {{{inner_style}}} layout {pass}: got {got:?}, want {want:?}"
+                ));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
