@@ -37,6 +37,62 @@ pub fn styles() -> String {
 .rinch-sortable__item--dragging {
     opacity: var(--rinch-sortable-dragging-opacity, 0.4);
 }
+/* SortSource::Hide and ::Collapse: the item is not drawn (a collapsed one's
+   followers slide over its space). Not hit either, so a drag over its place
+   finds what is drawn there. */
+.rinch-sortable__item--drag-hidden,
+.rinch-sortable__item--collapsed {
+    visibility: hidden;
+}
+/* SortIndicator::Gap and SortSource::Collapse: items slide by a shift the
+   component writes as --rinch-sortable-shift-x / -y. The transition is on
+   only while a drag is (the list's --reflowing class), so the drop's
+   re-render does not slide from a stale offset. 0ms turns it off. */
+.rinch-sortable__item--shifted {
+    transform: translate(
+        var(--rinch-sortable-shift-x, 0px),
+        var(--rinch-sortable-shift-y, 0px)
+    );
+}
+.rinch-sortable--reflowing .rinch-sortable__item {
+    transition: transform var(--rinch-sortable-reflow-duration, 150ms)
+        var(--rinch-sortable-reflow-easing, ease);
+}
+/* SortPreview::Clone and ::Custom: a `.rinch-sortable__ghost` wrapper on
+   <body> holding `display: contents` stand-ins for the item's ancestors, so
+   the preview's body inherits and matches selectors as the item does. The
+   body is the one box. The component writes --rinch-sortable-ghost-x / -y
+   (where the body goes), -width / -height (the item's layout size) and -fit
+   (its ancestors' scale) on the wrapper; everything else here is a
+   --rinch-sortable-ghost-* property, read where the body is: set it on the
+   list, an ancestor of it, the item, or with a selector on the body. */
+.rinch-sortable__ghost {
+    display: contents;
+}
+.rinch-sortable__ghost .rinch-sortable__ghost-body {
+    position: fixed;
+    left: 0;
+    top: 0;
+    margin: 0;
+    box-sizing: border-box;
+    z-index: var(--rinch-sortable-ghost-z-index, 1000);
+    pointer-events: none;
+    opacity: var(--rinch-sortable-ghost-opacity, 0.75);
+    transform: translate(
+            var(--rinch-sortable-ghost-x, 0px),
+            var(--rinch-sortable-ghost-y, 0px)
+        )
+        scale(var(--rinch-sortable-ghost-fit, 1))
+        rotate(var(--rinch-sortable-ghost-tilt, 0deg))
+        scale(var(--rinch-sortable-ghost-scale, 1));
+    transition: transform var(--rinch-sortable-ghost-duration, 0ms)
+        var(--rinch-sortable-ghost-easing, ease);
+}
+.rinch-sortable__ghost .rinch-sortable__ghost-body--clone {
+    width: var(--rinch-sortable-ghost-width, auto);
+    height: var(--rinch-sortable-ghost-height, auto);
+    box-shadow: var(--rinch-sortable-ghost-shadow, none);
+}
 .rinch-sortable__item--lifted {
     outline: 2px solid var(--rinch-sortable-caret-color, var(--rinch-primary-color));
     outline-offset: 2px;

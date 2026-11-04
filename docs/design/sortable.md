@@ -96,7 +96,10 @@ as it changes. The caret is a class on the item (`--drop-before` /
 `--drop-after`; `--drop-into` on an empty list) drawn by its `::after`;
 `--refused` turns it red, and the reason is written into a
 `rinch-sortable__reason` element at the caret's edge, inside the item (app-styleable; a box hanging outside the item would grow a scrolling list's overflow).
-The carried items take `rinch-sortable__item--dragging`. All of it is taken
+The carried items take `rinch-sortable__item--dragging` (since #2154 only
+with `source: SortSource::Dim`; the default is a browser's: a translucent copy
+following the pointer, the source unchanged — see the guide's "How a drag
+looks"). All of it is taken
 down when the drag ends. The source list's `ondropchange` hears every change
 of offer (`None` when nothing is on offer).
 
@@ -152,7 +155,8 @@ a node or a registration token surviving:
 - the dropped item is focused at its render in its new list (no timer needed);
 - styling is inherited custom properties (a guest's only lever), and the
   parts stay quiet without the stylesheet;
-- `data-drag-ghost="false"` lets a painting host hide its ghost.
+- `data-drag-ghost="false"` lets a painting host hide its ghost (on the list
+  since #2154).
 
 ## Not built
 

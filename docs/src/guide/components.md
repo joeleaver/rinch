@@ -413,7 +413,7 @@ keeps the old text).
 | `Image` | Responsive image with fallback |
 | `List` / `ListItem` | Styled list |
 | `Tree` | Hierarchical rows with expand/collapse, selection, drag-to-rearrange and keyboard navigation |
-| `SortableList` | Items that drag within and between lists of one group (cards across columns, columns, lanes), with a live judge, an insertion caret and a keyboard flow + `SortableItem`, `SortableHandle` — see [Sortable Lists](sortable.md) |
+| `SortableList` | Items that drag within and between lists of one group (cards across columns, columns, lanes), with a live judge, a pointer-following preview, a caret or an animated gap, and a keyboard flow + `SortableItem`, `SortableHandle` — see [Sortable Lists](sortable.md) |
 
 ```rust
 // Avatar

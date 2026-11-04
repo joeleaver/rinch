@@ -231,8 +231,9 @@ pub use simple_grid::SimpleGrid;
 pub use skeleton::Skeleton;
 pub use slider::Slider;
 pub use sortable::{
-    SortAxis, SortJudge, SortKeys, SortMove, SortPlace, SortVerdict, SortableHandle, SortableItem,
-    SortableList, sortable_drag_group,
+    SortAxis, SortDragState, SortIndicator, SortJudge, SortKeys, SortMove, SortPlace, SortPointer,
+    SortPreview, SortPreviewFn, SortSource, SortTarget, SortVerdict, SortableHandle, SortableItem,
+    SortableList, sortable_drag, sortable_drag_group, sortable_drag_pointer,
 };
 pub use space::Space;
 pub use stack::Stack;
