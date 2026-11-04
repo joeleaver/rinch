@@ -304,15 +304,47 @@ impl RinchDocument {
                 let _ = self.tree.taffy.set_style(taffy_id, ts);
                 changed = true;
                 // Inside an atomic inline (the node itself excluded: its own
-                // style is read by the compute of the IFC around it)?
+                // style is read by the compute of the IFC around it)? Only
+                // when the percentage has a definite basis there: a box
+                // between the two with a length width, or the atomic inline's
+                // own width a length or a percentage. Under an `auto` (or
+                // keyword) atomic inline the percentage is cyclic, and CSS
+                // Sizing 3 §5.2.1 takes it as `auto` for the box's
+                // contribution: re-measuring then iterated toward the box's
+                // own width (5 calc passes and 20px for `calc(50% + 10px)`,
+                // the fixpoint cap for `90%`) where Chrome 156 keeps the box
+                // at its contribution and the child at `calc` of it.
                 let mut cur = self.tree.nodes.get(id).and_then(|n| n.parent);
                 while let Some(a) = cur {
                     let Some(an) = self.tree.nodes.get(a) else {
                         break;
                     };
+                    use crate::computed_style::DimensionValue as D;
                     if an.display_mode.is_atomic_inline() {
-                        in_atomic = true;
-                        self.mark_atomic_inline_dirty(id);
+                        if matches!(
+                            an.computed_style.width,
+                            D::Length(_) | D::Percent(_) | D::Calc { .. }
+                        ) {
+                            in_atomic = true;
+                            self.mark_atomic_inline_dirty(id);
+                        }
+                        break;
+                    }
+                    if matches!(an.computed_style.width, D::Length(_)) {
+                        // A definite basis below the atomic inline: find the
+                        // box around it to re-measure.
+                        let mut up = an.parent;
+                        while let Some(b) = up {
+                            let Some(bn) = self.tree.nodes.get(b) else {
+                                break;
+                            };
+                            if bn.display_mode.is_atomic_inline() {
+                                in_atomic = true;
+                                self.mark_atomic_inline_dirty(id);
+                                break;
+                            }
+                            up = bn.parent;
+                        }
                         break;
                     }
                     cur = an.parent;

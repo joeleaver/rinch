@@ -302,3 +302,63 @@ fn a_calc_child_inside_a_percentage_box_follows_the_box() {
     settle(&mut doc);
     assert_eq!(size(&doc, c).0, 60.0, "and it stays");
 }
+
+/// A block holding `before <ib><child/></ib> after`, laid out once.
+fn calc_in_atomic(outer: &str, inner: &str) -> (RinchDocument, NodeId, NodeId) {
+    let mut doc = RinchDocument::new();
+    doc.load_css(CSS);
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "");
+    doc.set_style(p, "width", "360px");
+    text(&mut doc, p, "before ");
+    let ib = el(&mut doc, p, "span", "");
+    doc.set_attribute(ib, "style", outer);
+    let c = el(&mut doc, ib, "span", "");
+    doc.set_attribute(c, "style", inner);
+    text(&mut doc, p, " after");
+    (doc, ib, c)
+}
+
+/// A `calc()` percentage inside a shrink-to-fit (`auto`) atomic inline is
+/// cyclic, and CSS Sizing 3 §5.2.1 takes it as `auto` for the box's
+/// contribution (review of #2142): it is not re-measured around. Re-measuring
+/// iterated toward the box's own width — 5 calc passes, 6 root computes and a
+/// 20px child for `calc(50% + 10px)`, the 8-pass cap and an answer that
+/// depended on history for `90%`. The child is `calc` of a zero basis, as
+/// Chrome 156 lays it out (child 10px; Chrome's box is 0 wide, rinch's is
+/// the child's 10px — not pinned here). And the same at a second layout,
+/// after a viewport change.
+#[test]
+fn a_cyclic_calc_inside_a_shrink_to_fit_atomic_inline_is_not_iterated() {
+    use rinch_dom::perf::Counter::{CalcFixpointPasses, TaffyRootComputes};
+    for pct in ["50%", "90%"] {
+        let inner = format!("display: block; width: calc({pct} + 10px); height: 5px");
+        let (mut doc, _ib, c) = calc_in_atomic("display: inline-block", &inner);
+        doc.tree.perf.reset();
+        doc.resolve_layout(VP.0, VP.1);
+        let s = doc.tree.perf.end_frame();
+        assert_eq!(size(&doc, c).0, 10.0, "{pct}: calc of a zero basis");
+        assert!(
+            s.get(CalcFixpointPasses) <= 1 && s.get(TaffyRootComputes) <= 2,
+            "{pct}: no iteration ({} calc passes, {} root computes)",
+            s.get(CalcFixpointPasses),
+            s.get(TaffyRootComputes)
+        );
+        doc.resolve_layout(VP.0 - 1.0, VP.1);
+        assert_eq!(size(&doc, c).0, 10.0, "{pct}: and after a relayout");
+    }
+}
+
+/// The same child inside an atomic inline whose width is a length is
+/// resolved against it on the first layout: 50% of 120px + 10px = 70px, as
+/// Chrome 156 has it.
+#[test]
+fn a_calc_child_inside_a_fixed_width_atomic_inline_resolves_against_it() {
+    let (mut doc, ib, c) = calc_in_atomic(
+        "display: inline-block; width: 120px",
+        "display: block; width: calc(50% + 10px); height: 5px",
+    );
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(size(&doc, ib).0, 120.0);
+    assert_eq!(size(&doc, c).0, 70.0);
+}
