@@ -291,12 +291,12 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`d2e1f98d4dc2d423704971cbe408ee1f909b2d87`, branch `rinch-patch`): six
+(`2bec089dc8a9ff0b045727260412deaffc91410e`, branch `rinch-patch`): seven
 commits on the taffy `v0.14.0` tag. It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the five commits onto the new tag. All are upstream
+and a Taffy bump rebases the seven commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -355,6 +355,26 @@ candidates.
    it is a change of that field too. Pin:
    `perf_regression_scenarios::a_label_edit_in_a_grid_probed_at_four_widths_measures_one_card`.
 
-The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; Taffy's suite
-passes unchanged.
+7. **An auto-height grid's rows have indefinite available space** (#2139).
+   A grid whose height is neither known (stretched, flexed) nor styled sizes
+   its rows with `AvailableSpace::MaxContent`, whatever its parent passed
+   (`compute/grid/mod.rs`, `available_grid_space`). Browsers lay a box's block
+   size out from its content: Chrome 156 gives an auto-height grid of
+   `overflow: hidden` cards holding 100px boxes rows of 100px in a 300px column
+   flex container, a 300px grid parent and an `align-items: start` row flex
+   container. Taffy shared the parent's definite height among the `auto` rows
+   (69px each), and under a min-content height (the probe that gives a column
+   flex item its automatic minimum size, css-flexbox-1 §4.5) sized them from
+   the items' minimum contributions, zero for a scroll container, so a grid
+   flex item was shrunk below its content and its rows collapsed. The spec's
+   "available grid space" (css-grid-1 §11.1) does take the parent's space;
+   rinch follows Chrome. A stretched or flexed height (`min-height: 0`), a
+   styled `height` and a `min-height` above the content still share their
+   free space among the rows; a `max-height` clamps the grid, not its rows;
+   `repeat(auto-fill, …)` rows count from the grid's own height and
+   `max-height` (Chrome's numbers for each). Pins:
+   `crates/rinch-dom/tests/grid_contents_and_min_size_2138_2139_tests.rs`.
+
+The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
+fixtures named in 7 cover 7; Taffy's suite (6,021 generated tests) passes unchanged with 7.
 
