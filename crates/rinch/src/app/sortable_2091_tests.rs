@@ -13,8 +13,8 @@ use crate as rinch;
 use std::cell::{Cell, RefCell};
 
 use rinch_components::{
-    SortAxis, SortJudge, SortKeys, SortMove, SortPlace, SortVerdict, SortableHandle, SortableItem,
-    SortableList,
+    SortAxis, SortJudge, SortKeys, SortMove, SortPlace, SortSource, SortVerdict, SortableHandle,
+    SortableItem, SortableList,
 };
 use rinch_core::Signal;
 use rinch_core::element::IntoEventHandler;
@@ -187,6 +187,9 @@ fn fixture() -> Fixture {
                     style: "--rinch-sortable-gap: 0px",
                     ondrop: move |m: SortMove| on_drop(board, m),
                     ondropchange: move |o: Offer| on_offer(o),
+                    // The carried items are told by their dimming (#2154: no
+                    // longer the default).
+                    source: SortSource::Dim,
                     for lane in board.get() {
                         SortableItem {
                             key: lane.id.clone(), value: lane.id.clone(), handle: true,
@@ -196,6 +199,9 @@ fn fixture() -> Fixture {
                                 style: "--rinch-sortable-gap: 0px; width: 500px; overflow-x: auto",
                                 ondrop: move |m: SortMove| on_drop(board, m),
                                 ondropchange: move |o: Offer| on_offer(o),
+                    // The carried items are told by their dimming (#2154: no
+                    // longer the default).
+                    source: SortSource::Dim,
                                 for c in lane.cols.clone() {
                                     SortableItem {
                                         key: c.id.clone(), value: c.id.clone(), handle: true,
@@ -208,6 +214,9 @@ fn fixture() -> Fixture {
                                             drag_keys: Some(Rc::new(selection_for) as SortKeys),
                                             ondrop: move |m: SortMove| on_drop(board, m),
                                             ondropchange: move |o: Offer| on_offer(o),
+                    // The carried items are told by their dimming (#2154: no
+                    // longer the default).
+                    source: SortSource::Dim,
                                             for card in c.cards.clone() {
                                                 SortableItem {
                                                     key: card.clone(), value: card.clone(),
@@ -1544,7 +1553,7 @@ mod review_2093 {
         escape(&mut f);
         assert!(events::is_drag_ghost_visible());
         assert_eq!(
-            f.app.doc.as_ref().unwrap().borrow().tree.nodes[item(&f, "a")]
+            f.app.doc.as_ref().unwrap().borrow().tree.nodes[list_holding(&f, "a")]
                 .attributes
                 .get("data-drag-ghost")
                 .map(String::as_str),
