@@ -291,12 +291,12 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`2bec089dc8a9ff0b045727260412deaffc91410e`, branch `rinch-patch`): seven
+(`317d532abadd38755b46d15c298fd0a522f0f672`, branch `rinch-patch`): eight
 commits on the taffy `v0.14.0` tag. It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the seven commits onto the new tag. All are upstream
+and a Taffy bump rebases the eight commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -374,7 +374,17 @@ candidates.
    `repeat(auto-fill, …)` rows count from the grid's own height and
    `max-height` (Chrome's numbers for each). Pins:
    `crates/rinch-dom/tests/grid_contents_and_min_size_2138_2139_tests.rs`.
+8. **`TaffyTree::compute_sizes_with_block_measure`** (#2141). Asks given nodes
+   their size the way a parent asks a child for its contribution
+   (`RunMode::ComputeSize`, no known dimensions), through the same measure
+   functions as `compute_layout_with_block_measure`, and writes no final
+   layout (`src/tree/taffy_tree.rs`). rinch's table column measure uses it to
+   ask each changed cell its max-content width between layouts without
+   evicting the final-layout cache entries the next layout reuses; the old
+   probe laid the whole table out detached and so asked every cell twice per
+   edit. Pins: `crates/rinch-dom/tests/table_column_weights_2141_tests.rs` and
+   the `a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone` scenario.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
-fixtures named in 7 cover 7; Taffy's suite (6,021 generated tests) passes unchanged with 7.
+fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7.
 
