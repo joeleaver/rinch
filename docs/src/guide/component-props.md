@@ -1131,7 +1131,16 @@ Sub-components: **PopoverTarget** (no props), **PopoverDropdown** (no props).
 
 ### ContextMenu
 
-A right-click context menu. No props on the wrapper — state is managed internally.
+A right-click context menu. Its open state is managed internally; its props are
+the keyboard options below (#2170).
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `close_on_escape` | `bool` | **`true`** | Escape closes the menu and returns the focus to the element that held it when the menu opened. An open `DropdownMenuSub` takes Escape first and closes only itself |
+| `keyboard_nav` | `bool` | **`true`** | ArrowUp/ArrowDown/Home/End and type-ahead while open (see [Menus › Keyboard](menus.md#keyboard-in-rendered-menus)) |
+| `loop_focus` | `bool` | **`true`** | The arrows wrap at the ends (Chrome's menus: `arrow_key_selection_wraps`) |
+| `typeahead` | `bool` | **`true`** | A letter or digit moves to the next item whose label starts with it; a single match is activated (Chrome's `SelectByChar`) |
+| `on_key` | `Option<MenuKeyHook>` | `None` | Escape hatch: `Rc<dyn Fn(&KeyEventData) -> bool>` offered every key the open menu would see, first; `true` consumes it |
 
 The dropdown opens at the pointer and is kept inside the viewport: if it would
 run past the bottom or right edge it is shifted back by the overflow, 4px from
@@ -1141,7 +1150,7 @@ on the desktop and in a browser and costs no extra layout.
 
 Sub-components: **ContextMenuTarget** (no props), **ContextMenuDropdown** (no props).
 
-Use `DropdownMenuItem` and `DropdownMenuDivider` as children of `ContextMenuDropdown`.
+Use `DropdownMenuItem`, `DropdownMenuDivider` and `DropdownMenuSub` as children of `ContextMenuDropdown`.
 
 ### DropdownMenu
 
@@ -1209,6 +1218,11 @@ Two consequences of that spelling:
 | `close_on_item_click` | `bool` | **`true`** | |
 | `width` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the menu panel; its click-catching backdrop stays one below (defaults 100 / 99) |
+| `close_on_escape` | `bool` | **`true`** | Escape closes the menu (through `on_close`, so it needs one) and returns the focus to the element that held it when the menu opened. An open `DropdownMenuSub` takes Escape first and closes only itself |
+| `keyboard_nav` | `bool` | **`true`** | ArrowUp/ArrowDown/Home/End and type-ahead while open (see [Menus › Keyboard](menus.md#keyboard-in-rendered-menus)) |
+| `loop_focus` | `bool` | **`true`** | The arrows wrap at the ends (Chrome's menus: `arrow_key_selection_wraps`) |
+| `typeahead` | `bool` | **`true`** | A letter or digit moves to the next item whose label starts with it; a single match is activated (Chrome's `SelectByChar`) |
+| `on_key` | `Option<MenuKeyHook>` | `None` | Escape hatch: `Rc<dyn Fn(&KeyEventData) -> bool>` offered every key the open menu would see, first; `true` consumes it |
 
 **DropdownMenuTarget**, **DropdownMenuDropdown**, **DropdownMenuLabel**, **DropdownMenuDivider**: No props.
 
@@ -1221,6 +1235,36 @@ Two consequences of that spelling:
 | `color` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `onclick` | `Option<Callback>` | `None` | |
+
+**DropdownMenuSub** (#2214) — a cascading submenu row; its children are the
+flyout's items. Works in `DropdownMenuDropdown`, `ContextMenuDropdown` and
+another `DropdownMenuSub`, to any depth. Choosing an item anywhere in the tree
+closes the whole menu. Defaults are Chrome's own menus' (`ui/views/controls/menu`).
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `label` | `String` | `""` | The row's text |
+| `left_section` | `Option<TablerIcon>` | `None` | As `DropdownMenuItem`'s |
+| `color` | `String` | `""` | As `DropdownMenuItem`'s |
+| `disabled` | `bool` | `false` | Never opens, by pointer or key |
+| `chevron` | `Option<TablerIcon>` | `None` | The trailing icon; `None` is `ChevronRight` |
+| `hide_chevron` | `bool` | `false` | No trailing icon |
+| `open_delay` | `u32` | **`400`** | Hover time before it opens, ms (`MenuConfig::show_delay`) |
+| `close_delay` | `u32` | **`400`** | Time on another row of the same panel before it closes, ms (Chrome switches on the same show timer) |
+| `open_on_hover` | `bool` | **`true`** | |
+| `open_on_click` | `bool` | **`true`** | A press opens it at once |
+| `safe_triangle` | `bool` | `false` | Hold it open (and hold sibling rows back) while the pointer moves inside the triangle toward the flyout. Chrome has none; pair it with a short `close_delay` |
+| `flip` | `bool` | **`true`** | Open on the panel's left when there is no room on its right |
+| `shift` | `bool` | **`true`** | Move it back inside the window at an edge, 4px in; cap and scroll one taller than the window |
+| `offset` | `Option<i32>` | `None` | Gap from the parent panel in px, negative overlaps; writes `--rinch-dropdown-menu-sub-offset` on the submenu (default `-3px`, Chromium's `submenu_horizontal_overlap`) |
+
+Styling goes through the cascade, so a class or custom property on the menu, any
+ancestor or the submenu reaches its flyout: `--rinch-dropdown-menu-sub-offset`,
+`--rinch-dropdown-menu-sub-width`, `--rinch-dropdown-menu-sub-z-index`, and the
+classes `.rinch-dropdown-menu__sub` (`--opened` while open, `--left` while flipped),
+`.rinch-dropdown-menu__sub-trigger`, `.rinch-dropdown-menu__sub-chevron` and
+`.rinch-dropdown-menu__sub-dropdown`. The flyout's own `left`, `top`, `width` and
+`max-height` are written by its placement.
 
 ### HoverCard
 
