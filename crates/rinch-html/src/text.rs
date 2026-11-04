@@ -1,8 +1,10 @@
 //! A cleaned document as text: what a reader sees, and apart from it what
 //! the document hides from a reader but a program reading its text would
 //! still get. Text hidden with `display: none`, `visibility: hidden`,
-//! `opacity: 0`, a font size of one pixel or less, `max-height: 0` with
-//! `overflow: hidden`, or a colour the same as its background is a known
+//! `opacity: 0`, a font size of one pixel or less, a box of (nearly) no
+//! height or width with `overflow: hidden`, a large negative offset or
+//! `text-indent`, `transform: scale(0)`, a `clip-path`, a transparent
+//! colour, or a colour the same as (or very near) its background is a known
 //! way to address instructions to an AI reading mail, invisible to the
 //! person; an agent should be told it is there, and that it was hidden.
 //!
@@ -20,18 +22,33 @@ pub struct Text {
 }
 
 /// The text of `html` (cleaned HTML, as html5ever serializes it: every
-/// element closed but the void ones, attributes quoted; see the module docs).
+/// element closed but the void ones, attributes quoted; see the module docs),
+/// on a white page, as a mail reader draws mail.
 pub fn text(html: &str) -> Text {
+    text_on(html, "#ffffff")
+}
+
+/// [`text`], on a page of colour `page` (`#rrggbb`, `#rgb`, `rgb()`, `white`
+/// or `black`): what an app shows a document on, if not white.
+pub fn text_on(html: &str, page: &str) -> Text {
+    let html = crate::depth::cap(html);
     let mut walk = Walk::default();
     let mut stack: Vec<(String, Context)> = Vec::new();
-    let mut rest = html;
+    let base = Context {
+        background: colour(page),
+        ..Context::default()
+    };
+    let mut rest: &str = &html;
     while !rest.is_empty() {
         let Some(lt) = rest.find('<') else {
-            walk.text(&decode(rest), stack.last().map(|s| &s.1));
+            walk.text(&decode(rest), Some(stack.last().map_or(&base, |s| &s.1)));
             break;
         };
         if lt > 0 {
-            walk.text(&decode(&rest[..lt]), stack.last().map(|s| &s.1));
+            walk.text(
+                &decode(&rest[..lt]),
+                Some(stack.last().map_or(&base, |s| &s.1)),
+            );
         }
         let Some(gt) = rest[lt..].find('>') else {
             break;
@@ -60,7 +77,7 @@ pub fn text(html: &str) -> Text {
             .next()
             .unwrap_or_default()
             .to_ascii_lowercase();
-        let mut context = stack.last().map(|s| s.1.clone()).unwrap_or_default();
+        let mut context = stack.last().map_or_else(|| base.clone(), |s| s.1.clone());
         if let Some(c) = attribute(tag, "bgcolor") {
             context.background = colour(&c);
         }
@@ -201,7 +218,7 @@ fn is_void(tag: &str) -> bool {
 
 /// An element's inline style, onto what it passes down.
 fn apply(style: &str, context: &mut Context) {
-    let mut max_height_zero = false;
+    let mut collapsed = false;
     let mut overflow_hidden = false;
     for declaration in style.split(';') {
         let Some((property, value)) = declaration.split_once(':') else {
@@ -216,11 +233,26 @@ fn apply(style: &str, context: &mut Context) {
         match property.as_str() {
             "display" if value == "none" => context.hidden = true,
             "visibility" if value == "hidden" || value == "collapse" => context.hidden = true,
-            "opacity" if value.parse::<f32>().is_ok_and(|o| o <= 0.01) => context.hidden = true,
+            "opacity" if opacity(&value).is_some_and(|o| o <= 0.01) => context.hidden = true,
             "font-size" if px(&value).is_some_and(|s| s <= 1.0) => context.hidden = true,
-            "max-height" if px(&value) == Some(0.0) => max_height_zero = true,
-            "height" if px(&value) == Some(0.0) => max_height_zero = true,
-            "overflow" | "overflow-y" if value == "hidden" => overflow_hidden = true,
+            "max-height" | "height" | "max-width" | "width"
+                if px(&value).is_some_and(|s| s <= 1.0) =>
+            {
+                collapsed = true
+            }
+            "overflow" | "overflow-y" | "overflow-x"
+                if matches!(value.as_str(), "hidden" | "clip") =>
+            {
+                overflow_hidden = true
+            }
+            "left" | "top" | "right" | "bottom" | "text-indent" | "margin-left" | "margin-top"
+                if px(&value).is_some_and(|v| v <= -999.0) =>
+            {
+                context.hidden = true
+            }
+            "transform" if value.contains("scale(0") => context.hidden = true,
+            "clip-path" if value != "none" => context.hidden = true,
+            "clip" if value.starts_with("rect(") => context.hidden = true,
             "color" => context.colour = colour(&value),
             "background-color" => context.background = colour(&value),
             "background" => {
@@ -231,16 +263,40 @@ fn apply(style: &str, context: &mut Context) {
             _ => {}
         }
     }
-    if max_height_zero && overflow_hidden {
+    if collapsed && overflow_hidden {
         context.hidden = true;
     }
 }
 
-/// Text in the colour of what is behind it. With no background set, the
-/// page is white (as a mail reader draws mail).
+/// Text that cannot be seen against what is behind it: transparent, or
+/// within a few steps of the background's colour on every channel.
 fn same_colour(context: &Context) -> bool {
-    let background = context.background.as_deref().unwrap_or("#ffffff");
-    context.colour.as_deref() == Some(background)
+    let (Some(text), Some(background)) = (context.colour.as_deref(), context.background.as_deref())
+    else {
+        return false;
+    };
+    if text == TRANSPARENT {
+        return true;
+    }
+    let rgb = |c: &str| -> Option<[i32; 3]> {
+        let h = c.strip_prefix('#')?;
+        let n = |i: usize| i32::from_str_radix(h.get(i..i + 2)?, 16).ok();
+        Some([n(0)?, n(2)?, n(4)?])
+    };
+    match (rgb(text), rgb(background)) {
+        (Some(a), Some(b)) => a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 8),
+        _ => false,
+    }
+}
+
+/// What [`colour`] makes of a colour that draws nothing.
+const TRANSPARENT: &str = "transparent";
+
+fn opacity(value: &str) -> Option<f32> {
+    match value.strip_suffix('%') {
+        Some(p) => p.trim().parse::<f32>().ok().map(|p| p / 100.0),
+        None => value.parse().ok(),
+    }
 }
 
 /// A colour as `#rrggbb`, from `#rgb`, `#rrggbb`, a few names, or `rgb()`.
@@ -262,10 +318,20 @@ fn colour(value: &str) -> Option<String> {
         .or_else(|| v.strip_prefix("rgba("))
         .and_then(|r| r.strip_suffix(')'))
     {
-        let parts: Vec<u8> = inner
-            .split(',')
+        let fields: Vec<&str> = inner
+            .split([',', '/', ' '])
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .collect();
+        if let Some(alpha) = fields.get(3).and_then(|a| opacity(a))
+            && alpha <= 0.01
+        {
+            return Some(TRANSPARENT.into());
+        }
+        let parts: Vec<u8> = fields
+            .iter()
             .take(3)
-            .filter_map(|p| p.trim().parse().ok())
+            .filter_map(|p| p.parse().ok())
             .collect();
         return (parts.len() == 3)
             .then(|| format!("#{:02x}{:02x}{:02x}", parts[0], parts[1], parts[2]));
@@ -273,6 +339,7 @@ fn colour(value: &str) -> Option<String> {
     match v.as_str() {
         "white" => Some("#ffffff".into()),
         "black" => Some("#000000".into()),
+        "transparent" => Some(TRANSPARENT.into()),
         _ => None,
     }
 }
@@ -356,5 +423,46 @@ mod tests {
                 "collapsed"
             ]
         );
+    }
+
+    #[test]
+    fn the_common_ways_to_hide_text_are_seen() {
+        // The first review of #2213: each of these read as visible.
+        for style in [
+            "color: transparent",
+            "color: rgba(0, 0, 0, 0)",
+            "color: #fefefe",
+            "height: 1px; overflow: hidden",
+            "width: 0; overflow: hidden",
+            "position: relative; left: -9999px",
+            "text-indent: -9999px",
+            "transform: scale(0)",
+            "clip-path: inset(50%)",
+            "opacity: 0%",
+        ] {
+            let t = text(&format!(
+                r#"<p>shown</p><div style="{style}">secret words</div>"#
+            ));
+            assert_eq!(t.visible, "shown", "{style}");
+            assert_eq!(t.hidden, ["secret words"], "{style}");
+        }
+    }
+
+    #[test]
+    fn the_page_colour_can_be_given() {
+        let html = r#"<p style="color: #000">dark on dark</p><p style="color: #fff">light</p>"#;
+        let on_black = super::text_on(html, "#000000");
+        assert_eq!(on_black.visible, "light");
+        assert_eq!(on_black.hidden, ["dark on dark"]);
+        assert_eq!(text(html).hidden, ["light"]);
+    }
+
+    #[test]
+    fn unclosed_tags_are_read_in_linear_time() {
+        // 640 KB of unclosed tags took 2.8 s.
+        let html = "<b>x".repeat(160_000) + &"</i>".repeat(1_000);
+        let t = std::time::Instant::now();
+        let _ = text(&html);
+        assert!(t.elapsed().as_millis() < 1_000, "took {:?}", t.elapsed());
     }
 }

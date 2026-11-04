@@ -47,12 +47,18 @@ breakpoints (see below). Given HTML already cleaned instead (`html` and
   would style your app's own elements. A linked sheet is never fetched.
   `@media` blocks are evaluated at a width: `clean_at(document, policy,
   width)` applies those that match there (`clean` leaves them all out).
-- **Filters inline styles**: nothing that lifts content out of its own box
-  (`position` other than `static`/`relative`, `z-index`), no
-  `expression()` or `javascript:`, no `behavior`, `-moz-binding`, `cursor`
-  or `pointer-events`.
+- **Filters inline styles**, parsed as the style engine parses them (so an
+  escaped or commented property name is read as the browser reads it):
+  nothing that lifts content out of its own box (`position` other than
+  `static`/`relative`, `z-index`), no `expression()` or `javascript:`, no
+  `behavior`, `-moz-binding`, `cursor` or `pointer-events`, no absurd
+  lengths.
+- **Cuts deep nesting**: content nested more than 512 elements deep is
+  left out (mail is a few dozen deep; tens of thousands crash a recursive
+  serializer).
 - **Asks you about every picture.** `Policy::picture` sees each `<img src>`
-  and each `url()` in a style and answers the source to load (the same, or
+  and each `url()` in a style (`image-set()` and the other ways to name a
+  picture are left out, as the rule would never see them) and answers the source to load (the same, or
   rewritten) or `None` to leave it out. The default keeps `data:image/`
   pictures only, so a cleaned document fetches nothing unless you say so.
 - **Limits links** to `Policy::link_schemes` (`http`, `https`, `mailto` by
@@ -60,6 +66,9 @@ breakpoints (see below). Given HTML already cleaned instead (`html` and
 - **Keeps legacy layout attributes** (`bgcolor`, `width`, `align`,
   `valign`, `cellpadding`, `border`, `<font color>`…): rinch maps them as
   presentational hints, as a browser does.
+- **Drops `title` and `cite`**: a tooltip the document wrote could say
+  anything ("your account is verified"), and a citation is a URL nobody
+  follows.
 - **Keeps the body's own look.** `Cleaned::body_style` is the `<body>`'s
   style (and its `bgcolor`/`text` attributes as CSS), for the element that
   stands for the body; `HtmlView` puts it there.
@@ -96,9 +105,11 @@ held back ("3 pictures are hidden").
 ## Links
 
 `HtmlView` calls `onlink` with a clicked link's `href`, as written (after
-`clean`'s scheme check). It never navigates or opens anything itself: check
-the scheme, and, for a document from outside, consider showing the real
-address before opening it.
+`clean`'s scheme check), whether the link was clicked, activated with Enter,
+or clicked by assistive technology. It never navigates or opens anything
+itself, and on the web the browser does not either: the view marks itself
+`data-claim-links`, and a click on a link inside an element so marked has
+its default cancelled. Check the scheme before opening anything.
 
 The view learns which link was clicked from `click_link()` (in the prelude;
 `rinch_core::click_link`), which any click handler can read: the `href` of
@@ -121,17 +132,37 @@ blocks match, which is how `HtmlView` knows a resize needs a new clean.
 
 ## Links say where they go
 
-Every link in an `HtmlView` gets its address as its tooltip (`title`), and
-when its text names another site than the one it opens (`www.paypal.com`
-written over a link elsewhere), the tooltip says so.
+By default every link in an `HtmlView` gets its address as its tooltip
+(`title`), with a warning when the address hides or disguises where it goes:
+a user name before the host (`https://paypal.com@evil.example/`), a host in
+look-alike letters (shown in punycode), or link text naming another site
+than the one it opens. Addresses are read with the `url` crate, as a browser
+reads them. `check_link(href, text)` gives the same answer as data
+(`LinkCheck`, `Warning`); `HtmlView`'s `tooltips` field chooses the words:
+`Tooltips::Default` (English), `Tooltips::Off`, or `Tooltips::Custom` with
+your own function.
+
+## The view's box
+
+Nothing a document draws reaches outside its view: the view clips (a
+document wider than it scrolls sideways) and is the stacking context and
+containing block of everything in it, so a relative offset, a transform or
+a negative margin cannot put the document's link over your app's own
+controls. A document that sets no colours is drawn black on white, as a
+browser draws a page, whatever your theme. All of this is the view's own
+CSS on `.rinch-html-view`: restyle it through the cascade (your font, your
+page colour) as you need.
 
 ## Text, and hidden text
 
 `text(&cleaned.html)` gives the document as text: `visible`, what a reader
 sees (blocks apart by a blank line), and `hidden`, each stretch of text the
 document hides from its reader with `display: none`, `visibility: hidden`,
-`opacity: 0`, a 1px font, a zero height with `overflow: hidden`, or a colour
-the same as its background. Newsletters hide preview lines that way; an
+`opacity: 0`, a 1px font, a box of (nearly) no height or width with
+`overflow: hidden`, a large negative offset or `text-indent`, `scale(0)`, a
+`clip-path`, a transparent colour, or a colour the same as or very near its
+background. `text` assumes a white page; `text_on(html, page)` takes yours.
+Newsletters hide preview lines that way; an
 attacker hides instructions to an AI reading the mail. Hand an agent the
 visible text as the document, and the hidden text apart, marked as hidden.
 

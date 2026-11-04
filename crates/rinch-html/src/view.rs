@@ -22,7 +22,9 @@
 //! document's body: its style on it, its content inside). A click on a link
 //! in the document calls `onlink` with the link's `href` (as written, after
 //! the cleaner's scheme check); the view never navigates or opens anything
-//! itself. Links show a pointer cursor and their address as a tooltip.
+//! itself, and on the web the browser does not follow it either. Links show
+//! a pointer cursor and, by default, their address as a tooltip, with a
+//! warning when it hides or disguises where it goes ([`Tooltips`]).
 //!
 //! To show another document, render a new view (key it on the document, in
 //! a `for` loop).
@@ -33,7 +35,7 @@ use std::rc::Rc;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::{Component, InputCallback};
 
-use crate::{Cleaned, Policy};
+use crate::{Cleaned, Policy, Tooltips};
 
 /// Shows a document someone else wrote; see the module docs.
 #[derive(Default)]
@@ -51,6 +53,10 @@ pub struct HtmlView {
     pub body_style: String,
     /// Called with a clicked link's `href`.
     pub onlink: Option<InputCallback>,
+    /// How links are titled: their address and a warning when it hides or
+    /// disguises where it goes ([`Tooltips::Default`], in English), the
+    /// app's own words, or nothing.
+    pub tooltips: Tooltips,
 }
 
 impl std::fmt::Debug for HtmlView {
@@ -61,6 +67,7 @@ impl std::fmt::Debug for HtmlView {
             .field("html", &format_args!("<{} bytes>", self.html.len()))
             .field("body_style", &self.body_style)
             .field("onlink", &self.onlink.as_ref().map(|_| "<callback>"))
+            .field("tooltips", &self.tooltips)
             .finish()
     }
 }
@@ -74,12 +81,16 @@ impl std::fmt::Debug for HtmlView {
 ///   than its window. (The cleaner already leaves out `position: fixed` and
 ///   `absolute` and `z-index`; this holds for whatever moves content
 ///   otherwise: relative offsets, transforms, negative margins.)
+/// - A document that sets no colours is drawn as a browser draws a page:
+///   black on white, whatever the app's own theme (a dark theme's light text
+///   would otherwise reach mail written for a white page).
 /// - Links show a pointer.
 ///
-/// An app may restyle `.rinch-html-view` through the cascade; one that lets
-/// its content overflow takes that on.
+/// An app may restyle `.rinch-html-view` through the cascade (its own
+/// colours, its font); one that lets content overflow takes that on.
 const CSS: &str = "\
-.rinch-html-view { position: relative; z-index: 0; overflow-x: auto; overflow-y: hidden; }
+.rinch-html-view { position: relative; z-index: 0; overflow-x: auto; overflow-y: hidden; \
+background-color: #ffffff; color: #000000; }
 .rinch-html-view a[href] { cursor: pointer; }";
 
 /// The width a document is first cleaned at, before the view has one: wide,
@@ -108,26 +119,40 @@ impl Component for HtmlView {
                     html: self.html.clone(),
                     body_style: self.body_style.clone(),
                 },
+                &self.tooltips,
             );
         } else {
             let document = Rc::new(self.document.clone());
             let policy = self.policy.clone().unwrap_or_default();
-            show(&body, &crate::clean_at(&document, &policy, FIRST_WIDTH));
-            // Clean again when the view's width crosses a breakpoint.
-            let shown = Rc::new(RefCell::new(crate::signature(&document, FIRST_WIDTH)));
+            let tooltips = self.tooltips.clone();
+            show(
+                &body,
+                &crate::clean_at(&document, &policy, FIRST_WIDTH),
+                &tooltips,
+            );
+            // Clean again when the view's width crosses a breakpoint. The
+            // queries are read once; a resize only evaluates them, and only
+            // when the width changed.
+            let queries = crate::media::queries(&document);
+            let shown = Rc::new(RefCell::new((FIRST_WIDTH, queries.at(FIRST_WIDTH))));
             let bounds = view.bounds_signal();
             let body = body.clone();
             scope.create_effect(move || {
                 let width = bounds.get().width;
-                if width <= 0.0 {
+                if width <= 0.0 || shown.borrow().0 == width {
                     return;
                 }
-                let now = crate::signature(&document, width);
-                if *shown.borrow() == now {
+                let now = queries.at(width);
+                if shown.borrow().1 == now {
+                    shown.borrow_mut().0 = width;
                     return;
                 }
-                show(&body, &crate::clean_at(&document, &policy, width));
-                *shown.borrow_mut() = now;
+                show(
+                    &body,
+                    &crate::clean_at(&document, &policy, width),
+                    &tooltips,
+                );
+                *shown.borrow_mut() = (width, now);
             });
         }
 
@@ -145,7 +170,7 @@ impl Component for HtmlView {
     }
 }
 
-fn show(body: &NodeHandle, cleaned: &Cleaned) {
+fn show(body: &NodeHandle, cleaned: &Cleaned, tooltips: &Tooltips) {
     if cleaned.body_style.is_empty() {
         body.remove_attribute("style");
     } else {
@@ -158,86 +183,8 @@ fn show(body: &NodeHandle, cleaned: &Cleaned) {
             continue;
         };
         let text = link.text_content().unwrap_or_default();
-        link.set_attribute("title", &link_title(&href, &text));
-    }
-}
-
-/// A link's tooltip: its address, and a warning when its text names another
-/// site than the one it opens (`paypal.com` written over a link to
-/// `paypa1-login.example`).
-pub(crate) fn link_title(href: &str, text: &str) -> String {
-    let opens = host(href);
-    let named = text
-        .split_whitespace()
-        .filter_map(host)
-        .find(|h| h.contains('.'));
-    match (opens, named) {
-        (Some(opens), Some(named)) if site(&opens) != site(&named) => {
-            format!("{href}\nCareful: the text says {named}, but this opens {opens}.")
+        if let Some(title) = tooltips.title(&href, &text) {
+            link.set_attribute("title", &title);
         }
-        _ => href.to_owned(),
-    }
-}
-
-/// The host of a web address, or of a bare domain (`www.example.com/x`).
-fn host(s: &str) -> Option<String> {
-    let s = s
-        .trim()
-        .trim_matches(|c: char| !c.is_alphanumeric() && c != '/');
-    let lower = s.to_ascii_lowercase();
-    let rest = lower
-        .strip_prefix("https://")
-        .or_else(|| lower.strip_prefix("http://"))
-        .unwrap_or(&lower);
-    let host = rest
-        .split(['/', '?', '#', ':'])
-        .next()?
-        .trim_start_matches("www.");
-    let looks = host.contains('.')
-        && host
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-        && host
-            .rsplit('.')
-            .next()
-            .is_some_and(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()));
-    looks.then(|| host.to_owned())
-}
-
-/// A host's last two labels: `mail.google.com` and `google.com` are one
-/// site. (No public-suffix list: `example.co.uk` hosts all compare as
-/// `co.uk`, so they never warn.)
-fn site(host: &str) -> String {
-    let labels: Vec<&str> = host.rsplit('.').take(2).collect();
-    labels.into_iter().rev().collect::<Vec<_>>().join(".")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::link_title;
-
-    #[test]
-    fn a_link_names_where_it_goes_and_warns_on_a_mismatch() {
-        assert_eq!(
-            link_title("https://shop.example/sale?x=1", "See the sale"),
-            "https://shop.example/sale?x=1"
-        );
-        assert_eq!(
-            link_title("https://mail.google.com/x", "www.google.com"),
-            "https://mail.google.com/x"
-        );
-        let warned = link_title(
-            "https://paypa1-login.example/",
-            "https://www.paypal.com/signin",
-        );
-        assert!(
-            warned.contains("Careful: the text says paypal.com"),
-            "{warned}"
-        );
-        assert!(warned.contains("opens paypa1-login.example"), "{warned}");
-        assert_eq!(
-            link_title("mailto:ada@example.org", "Mail Ada"),
-            "mailto:ada@example.org"
-        );
     }
 }

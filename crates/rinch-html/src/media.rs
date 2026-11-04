@@ -24,26 +24,40 @@ struct Block {
     inside: std::ops::Range<usize>,
 }
 
-/// The `@media` queries in `document`'s `<style>` sheets, outermost, in
-/// order.
-pub(crate) fn queries(document: &str) -> Vec<String> {
+/// The `@media` queries in `document`'s `<style>` sheets, nested ones
+/// included, in order. Read once per document: a view asks [`Queries::at`]
+/// on each resize, which reads no document.
+pub fn queries(document: &str) -> Queries {
     let mut out = Vec::new();
     for sheet in sheets(document) {
-        let css = &document[sheet];
-        for block in blocks(css) {
-            out.push(css[block.query].trim().to_owned());
-        }
+        collect(&document[sheet], &mut out);
     }
-    out
+    Queries(out)
 }
 
-/// Which of `document`'s `@media` blocks match at `width`: a view cleans
-/// again when this changes.
+fn collect(css: &str, out: &mut Vec<String>) {
+    for block in blocks(css) {
+        out.push(css[block.query.clone()].trim().to_owned());
+        collect(&css[block.inside], out);
+    }
+}
+
+/// A document's media queries ([`queries`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Queries(Vec<String>);
+
+impl Queries {
+    /// Which of them match at `width`: a view cleans again when this
+    /// changes.
+    pub fn at(&self, width: f32) -> Vec<bool> {
+        self.0.iter().map(|q| matches(q, width)).collect()
+    }
+}
+
+/// Which of `document`'s `@media` blocks match at `width`
+/// (`queries(document).at(width)`).
 pub fn signature(document: &str, width: f32) -> Vec<bool> {
-    queries(document)
-        .iter()
-        .map(|q| matches(q, width))
-        .collect()
+    queries(document).at(width)
 }
 
 /// `document` with each sheet's `@media` blocks unwrapped where they match
@@ -104,9 +118,7 @@ fn blocks(css: &str) -> Vec<Block> {
     while i < bytes.len() {
         match bytes[i] {
             b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i = css[i + 2..]
-                    .find("*/")
-                    .map_or(bytes.len(), |e| i + 2 + e + 2);
+                i = comment_end(bytes, i);
                 continue;
             }
             q @ (b'"' | b'\'') => {
@@ -141,6 +153,14 @@ fn blocks(css: &str) -> Vec<Block> {
     out
 }
 
+/// Past the `*/` closing the comment opened at `start`.
+fn comment_end(bytes: &[u8], start: usize) -> usize {
+    bytes[start + 2..]
+        .windows(2)
+        .position(|w| w == b"*/")
+        .map_or(bytes.len(), |e| start + 2 + e + 2)
+}
+
 fn skip_string(bytes: &[u8], start: usize, quote: u8) -> usize {
     let mut i = start + 1;
     while i < bytes.len() {
@@ -160,10 +180,7 @@ fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
     while i < bytes.len() {
         match bytes[i] {
             b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i = std::str::from_utf8(&bytes[i + 2..])
-                    .ok()?
-                    .find("*/")
-                    .map_or(bytes.len(), |e| i + 2 + e + 2);
+                i = comment_end(bytes, i);
                 continue;
             }
             q @ (b'"' | b'\'') => {
@@ -251,6 +268,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_huge_sheet_of_comments_is_read_in_linear_time() {
+        // A 1 MB sheet of comments inside @media took 2.1 s per resize.
+        let comments = "/* x */".repeat(150_000);
+        let doc =
+            format!("<style>@media (max-width: 600px) {{ {comments} .a{{color:red}} }}</style>");
+        let t = std::time::Instant::now();
+        assert_eq!(signature(&doc, 400.0), [true]);
+        assert!(resolve(&doc, Some(400.0)).contains("color:red"));
+        assert!(t.elapsed().as_millis() < 500, "took {:?}", t.elapsed());
+    }
+
+    #[test]
     fn queries_match_as_a_browser_would_at_a_width() {
         assert!(matches("only screen and (max-width: 600px)", 480.0));
         assert!(!matches("only screen and (max-width: 600px)", 720.0));
@@ -275,7 +304,11 @@ mod tests {
         let wide = resolve(doc, Some(800.0));
         assert!(!wide.contains("blue"), "{wide}");
         assert!(wide.contains(".b{content:'}'}"), "{wide}");
-        assert_eq!(signature(doc, 400.0), [true]);
-        assert_eq!(signature(doc, 800.0), [false]);
+        assert_eq!(signature(doc, 400.0), [true, false]);
+        assert_eq!(signature(doc, 300.0), [true, true]);
+        assert_eq!(signature(doc, 800.0), [false, false]);
+        // A nested block is seen on its own: 300 and 400 differ in it.
+        let nested = "<style>@media screen { @media (max-width: 350px) { .a{color:red} } }</style>";
+        assert_ne!(signature(nested, 300.0), signature(nested, 400.0));
     }
 }

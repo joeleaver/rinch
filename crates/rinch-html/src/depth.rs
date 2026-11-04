@@ -26,6 +26,9 @@ pub(crate) fn cap(document: &str) -> Cow<'_, str> {
     // Where the copy has got to, and where a cut started.
     let mut copied = 0;
     let mut cut_from: Option<usize> = None;
+    // How many elements are open inside the cut: they are counted, not
+    // named, so an end tag there costs nothing to match.
+    let mut deeper = 0usize;
     let bytes = document.as_bytes();
     let mut i = 0;
     while let Some(lt) = document[i..].find('<').map(|p| p + i) {
@@ -38,10 +41,13 @@ pub(crate) fn cap(document: &str) -> Cow<'_, str> {
         let Some(gt) = document[lt..].find('>').map(|p| lt + p) else {
             break;
         };
-        // A `<` that starts no tag (`a < b`) is text.
         let tag = &document[lt + 1..gt];
         i = gt + 1;
         if let Some(name) = tag.strip_prefix('/') {
+            if deeper > 0 {
+                deeper -= 1;
+                continue;
+            }
             let name = tag_name(name);
             if let Some(at) = stack.iter().rposition(|n| *n == name) {
                 stack.truncate(at);
@@ -57,6 +63,7 @@ pub(crate) fn cap(document: &str) -> Cow<'_, str> {
             }
             continue;
         }
+        // A `<` that starts no tag (`a < b`) is text.
         if !bytes.get(lt + 1).is_some_and(u8::is_ascii_alphabetic) {
             continue;
         }
@@ -68,9 +75,13 @@ pub(crate) fn cap(document: &str) -> Cow<'_, str> {
         if is_void(&name) || tag.ends_with('/') {
             continue;
         }
+        if cut_from.is_some() {
+            deeper += 1;
+            continue;
+        }
         close_implied(&mut stack, &name);
         stack.push(name);
-        if stack.len() > MAX_DEPTH && cut_from.is_none() {
+        if stack.len() > MAX_DEPTH {
             cut_from = Some(lt);
         }
     }

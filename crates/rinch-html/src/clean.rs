@@ -96,7 +96,7 @@ impl Cleaned {
 }
 
 /// Tags kept beyond ammonia's defaults: the legacy ones documents still use.
-const EXTRA_TAGS: &[&str] = &["font", "center", "big", "strike"];
+const EXTRA_TAGS: &[&str] = &["font", "center", "big", "strike", "details", "summary"];
 /// Attributes kept on any tag: layout, and the legacy presentational ones
 /// rinch maps as hints.
 const LAYOUT_ATTRIBUTES: &[&str] = &[
@@ -117,6 +117,7 @@ const LAYOUT_ATTRIBUTES: &[&str] = &[
     "colspan",
     "rowspan",
     "nowrap",
+    "open",
 ];
 
 /// Clean `document` (a whole document or a fragment) under `policy`,

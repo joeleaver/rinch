@@ -12,10 +12,32 @@ use super::Result;
 /// The tallest a screenshot is: past this, a document is cut off.
 pub const TALLEST: u32 = 12_000;
 
-/// Screenshot `page` (an HTML file) into `png`, `width` wide.
-pub fn screenshot(page: &Path, png: &Path, width: u32, profile: &Path) -> Result<()> {
+/// Screenshot `page` (an HTML file) into `png`, `width` wide. Scripts never
+/// run, and nothing is fetched from the network unless `remote`: the page
+/// may be mail as it was sent, with its tracking pictures. Chrome is given a
+/// copy that starts with a Content-Security-Policy saying so (a `<meta>`
+/// before the document goes into its head), and with `remote` off no host
+/// name resolves either.
+pub fn screenshot(page: &Path, png: &Path, width: u32, profile: &Path, remote: bool) -> Result<()> {
     let page = std::fs::canonicalize(page)?;
-    let status = Command::new(chrome())
+    let pictures = if remote {
+        "data: file: http: https:"
+    } else {
+        "data: file:"
+    };
+    let policy = format!(
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
+         script-src 'none'; style-src 'unsafe-inline' data: file:; font-src data: file:; \
+         img-src {pictures}\">"
+    );
+    let copy = page.with_extension("chrome.html");
+    std::fs::write(&copy, policy + &std::fs::read_to_string(&page)?)?;
+    let mut chrome = Command::new(chrome());
+    if !remote {
+        // Every host name fails to resolve: no request leaves the machine.
+        chrome.arg("--host-resolver-rules=MAP * ~NOTFOUND");
+    }
+    let status = chrome
         .args([
             "--headless=new",
             "--disable-gpu",
@@ -29,8 +51,9 @@ pub fn screenshot(page: &Path, png: &Path, width: u32, profile: &Path) -> Result
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg(format!("--window-size={width},{TALLEST}"))
         .arg(format!("--screenshot={}", png.display()))
-        .arg(format!("file://{}", page.display()))
+        .arg(format!("file://{}", copy.display()))
         .output()?;
+    let _ = std::fs::remove_file(&copy);
     if !status.status.success() || !png.exists() {
         return Err(format!(
             "Chrome did not screenshot {}: {}",
@@ -43,19 +66,21 @@ pub fn screenshot(page: &Path, png: &Path, width: u32, profile: &Path) -> Result
 }
 
 /// Screenshot a case's two pages, `a-original.png` (as written, `width`
-/// wide) and `b-cleaned.png`.
-pub fn case(dir: &Path, width: u32, profile: &Path) -> Result<()> {
+/// wide) and `b-cleaned.png`; pictures from the web only when `remote`.
+pub fn case(dir: &Path, width: u32, profile: &Path, remote: bool) -> Result<()> {
     screenshot(
         &dir.join("original.html"),
         &dir.join("a-original.png"),
         width,
         profile,
+        remote,
     )?;
     screenshot(
         &dir.join("cleaned.html"),
         &dir.join("b-cleaned.png"),
         width,
         profile,
+        remote,
     )
 }
 

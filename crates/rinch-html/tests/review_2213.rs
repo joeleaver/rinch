@@ -109,3 +109,10 @@ fn deep_nesting_is_cut_short_not_a_crash() {
     assert!(t.elapsed().as_secs_f32() < 2.0, "took {:?}", t.elapsed());
     assert!(out.len() < 200_000, "{} bytes", out.len());
 }
+
+#[test]
+fn details_stay_open_or_closed_as_written() {
+    let out = cleaned("<details open><summary>More</summary>inside</details>");
+    assert!(out.contains("<details open"), "{out}");
+    assert!(out.contains("<summary>More</summary>"), "{out}");
+}

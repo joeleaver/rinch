@@ -16,12 +16,14 @@
 
 mod clean;
 mod depth;
+mod links;
 mod media;
 mod style;
 mod text;
 mod view;
 
 pub use clean::{Cleaned, PictureRule, Policy, clean, clean_at};
-pub use media::signature;
-pub use text::{Text, text};
+pub use links::{LinkCheck, TooltipFn, Tooltips, Warning, check as check_link, default_tooltip};
+pub use media::{Queries, queries, signature};
+pub use text::{Text, text, text_on};
 pub use view::HtmlView;

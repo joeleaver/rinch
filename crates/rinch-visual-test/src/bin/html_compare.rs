@@ -6,7 +6,8 @@
 //! ```
 //!
 //! Each file is cleaned with `rinch_html::clean_at` at each width (the
-//! default policy; with `--remote`, pictures from the web too),
+//! default policy; with `--remote`, pictures from the web too, which the
+//! probe loads with rinch's own loader, `image-network`),
 //! screenshotted in Chrome as written and as cleaned, drawn in a probe window
 //! by `HtmlView`, and put side by side in `<out>/report.html`, worst first
 //! (with several widths, `<out>/w<width>/report.html` and an
@@ -23,7 +24,6 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("--probe") => {
-            web_pictures();
             let width: u32 = args.get(1).and_then(|w| w.parse().ok()).unwrap_or(720);
             let setup = Setup {
                 width,
@@ -101,7 +101,7 @@ fn run(args: &[String]) -> Result<()> {
         }
         let profile = out.join(".chrome-profile");
         for dir in &dirs {
-            chrome::case(dir, width, &profile)?;
+            chrome::case(dir, width, &profile, remote)?;
         }
         let mut probe = Command::new(std::env::current_exe()?);
         probe.arg("--probe").arg(width.to_string()).args(&dirs);
@@ -112,33 +112,4 @@ fn run(args: &[String]) -> Result<()> {
         println!("{}", report::index(&out, &widths)?.display());
     }
     Ok(())
-}
-
-/// Pictures from the web for the probe, without cookies, with a time limit.
-fn web_pictures() {
-    struct Web(ureq::Agent);
-    impl rinch::image::ImageLoader for Web {
-        fn load(&self, src: &str) -> rinch::image::ImageLoadResult {
-            use rinch::image::ImageLoadResult::{Failed, Loaded};
-            match self.0.get(src).call() {
-                Ok(mut response) => match response
-                    .body_mut()
-                    .with_config()
-                    .limit(15 << 20)
-                    .read_to_vec()
-                {
-                    Ok(bytes) => Loaded(bytes),
-                    Err(e) => Failed(e.to_string()),
-                },
-                Err(e) => Failed(e.to_string()),
-            }
-        }
-    }
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(20)))
-        .build()
-        .into();
-    let web = Arc::new(Web(agent));
-    rinch::image::register_image_scheme_arc("https", web.clone());
-    rinch::image::register_image_scheme_arc("http", web);
 }
