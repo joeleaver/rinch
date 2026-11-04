@@ -1197,3 +1197,41 @@ fn the_gap_in_the_sources_list_survives_an_item_added_mid_drag() {
     );
     key(&mut f, KeyCode::Escape, None);
 }
+
+/// A place withdrawn by a leave is taken back only from the source drawn at
+/// that place. Here the source was re-rendered at home (removed and added
+/// again by a co-edit): the pointer on it there is over its own place, not
+/// the withdrawn one, and whatever is on offer is what is drawn.
+#[test]
+fn a_rerendered_source_at_home_does_not_take_back_a_withdrawn_place() {
+    let mut f = fixture(Options {
+        indicator: SortIndicator::Gap,
+        source: SortSource::Unchanged,
+        preview: SortPreview::None,
+    });
+    grab(&mut f, "d", 0.5, 0.5);
+    let over = point(&f, item(&f, "a"), 0.5, 0.2);
+    move_to(&mut f, over);
+    assert_eq!(dy(&f, "d"), -3.0 * STEP, "d drawn first");
+    // A co-edit takes d out and puts it back: a new node, at home.
+    f.board.update(|b| b[0].1.retain(|k| k != "d"));
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    f.board.update(|b| b[0].1.push("d".into()));
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let home = point(&f, item(&f, "d"), 0.5, 0.5);
+    for _ in 0..4 {
+        move_to(&mut f, home);
+        let state = sortable_drag().unwrap();
+        let shifts: Vec<f32> = ["a", "b", "c", "d"].iter().map(|k| dy(&f, k)).collect();
+        // What is on offer is what is drawn: no place and no shift, or the
+        // place and its gap.
+        match &state.target {
+            None => assert!(shifts.iter().all(|s| *s == 0.0), "{state:?} {shifts:?}"),
+            Some(t) => {
+                assert_eq!(t.index, 0, "{state:?}");
+                assert_eq!(shifts, [STEP, STEP, STEP, -3.0 * STEP], "{state:?}");
+            }
+        }
+    }
+    key(&mut f, KeyCode::Escape, None);
+}
