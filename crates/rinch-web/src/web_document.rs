@@ -2038,6 +2038,24 @@ impl DomDocument for WebDocument {
         Some(el.local_name())
     }
 
+    fn attribute_list(&self, node: NodeId) -> Vec<(String, String)> {
+        let Some(el) = self
+            .nodes
+            .get(&node.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+        else {
+            return Vec::new();
+        };
+        el.get_attribute_names()
+            .iter()
+            .filter_map(|name| name.as_string())
+            .filter_map(|name| {
+                let value = self.get_attribute(node, &name)?;
+                Some((name, value))
+            })
+            .collect()
+    }
+
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
         let n = self.nodes.get(&node.0)?;
         let el: web_sys::Element = n.clone().dyn_into().ok()?;
@@ -2142,6 +2160,16 @@ impl DomDocument for WebDocument {
             return Vec::new();
         };
         node_list_ids(warn_invalid_selector(selector, found))
+    }
+
+    /// The DOM `nodeType` (1 element, 3 text, 8 comment), as desktop's.
+    fn node_type(&self, node: NodeId) -> Option<u16> {
+        self.nodes.get(&node.0).map(|n| n.node_type())
+    }
+
+    /// The DOM `textContent`: a text node's text, an element's descendants'.
+    fn text_content(&self, node: NodeId) -> Option<String> {
+        self.nodes.get(&node.0).and_then(|n| n.text_content())
     }
 
     fn is_text_node(&self, node: NodeId) -> bool {

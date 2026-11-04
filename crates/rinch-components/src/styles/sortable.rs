@@ -37,6 +37,57 @@ pub fn styles() -> String {
 .rinch-sortable__item--dragging {
     opacity: var(--rinch-sortable-dragging-opacity, 0.4);
 }
+/* SortSource::Hide and ::Collapse: the item is not drawn (a collapsed one's
+   followers slide over its space). Not hit either, so a drag over its place
+   finds what is drawn there. */
+.rinch-sortable__item--drag-hidden,
+.rinch-sortable__item--collapsed {
+    visibility: hidden;
+}
+/* SortIndicator::Gap and SortSource::Collapse: items slide by a shift the
+   component writes as --rinch-sortable-shift-x / -y. The transition is on
+   only while a drag is (the list's --reflowing class), so the drop's
+   re-render does not slide from a stale offset. 0ms turns it off. */
+.rinch-sortable__item--shifted {
+    transform: translate(
+        var(--rinch-sortable-shift-x, 0px),
+        var(--rinch-sortable-shift-y, 0px)
+    );
+}
+.rinch-sortable--reflowing .rinch-sortable__item {
+    transition: transform var(--rinch-sortable-reflow-duration, 150ms)
+        var(--rinch-sortable-reflow-easing, ease);
+}
+/* SortPreview::Clone and ::Custom: the element following the pointer, on
+   <body>. The component writes only --rinch-sortable-ghost-x / -y (the grab
+   point kept under the pointer) and -width / -height (the item's size). */
+.rinch-sortable__ghost {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: var(--rinch-sortable-ghost-z-index, 1000);
+    pointer-events: none;
+    opacity: var(--rinch-sortable-ghost-opacity, 0.75);
+    transform: translate(
+            var(--rinch-sortable-ghost-x, 0px),
+            var(--rinch-sortable-ghost-y, 0px)
+        )
+        rotate(var(--rinch-sortable-ghost-tilt, 0deg))
+        scale(var(--rinch-sortable-ghost-scale, 1));
+    transition: transform var(--rinch-sortable-ghost-duration, 0ms)
+        var(--rinch-sortable-ghost-easing, ease);
+}
+.rinch-sortable__ghost--clone {
+    width: var(--rinch-sortable-ghost-width, auto);
+    height: var(--rinch-sortable-ghost-height, auto);
+}
+.rinch-sortable__ghost--clone > * {
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    box-shadow: var(--rinch-sortable-ghost-shadow, none);
+}
 .rinch-sortable__item--lifted {
     outline: 2px solid var(--rinch-sortable-caret-color, var(--rinch-primary-color));
     outline-offset: 2px;

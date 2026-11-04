@@ -975,6 +975,15 @@ impl DomDocument for RinchDocument {
         );
     }
 
+    fn attribute_list(&self, node: NodeId) -> Vec<(String, String)> {
+        self.tree.nodes.get(node.0).map_or_else(Vec::new, |n| {
+            n.attributes
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        })
+    }
+
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
         let n = self.tree.nodes.get(node.0)?;
         // Folded like the write (#688), so `getAttribute("ID")` answers for an
