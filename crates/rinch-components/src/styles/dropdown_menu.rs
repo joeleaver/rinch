@@ -226,18 +226,94 @@ pub fn styles() -> String {
     display: block;
 }
 
+/* Cascading submenus (#2214, `dropdown_menu_sub.rs`).
+
+   The submenu stays in the DOM under its row, so everything here is reachable
+   from the menu, any ancestor, or the submenu itself (a class or a custom
+   property on any of them):
+
+   - `--rinch-dropdown-menu-sub-offset` (default -3px, Chromium's
+     `submenu_horizontal_overlap`): the gap between the parent panel and the
+     flyout; negative overlaps. Mirrored when the flyout flips left.
+   - `--rinch-dropdown-menu-sub-width`, `--rinch-dropdown-menu-sub-z-index`.
+   - `.rinch-dropdown-menu__sub-chevron`: the trailing icon (hide or restyle).
+   - `.rinch-dropdown-menu__sub--opened` on the submenu while open,
+     `.rinch-dropdown-menu__sub--left` while its flyout is flipped left.
+
+   The flyout is `position: fixed` and placed inline in viewport px on each
+   open, so the parent panel's overflow does not clip it. Its own `left`,
+   `top`, `width` and `max-height` are written by the placement; style it
+   through these classes, not with those properties. */
+.rinch-dropdown-menu__sub {
+    position: relative;
+}
+
+.rinch-dropdown-menu__sub-offset {
+    position: absolute;
+    left: var(--rinch-dropdown-menu-sub-offset, -3px);
+    top: 0;
+    width: 0;
+    height: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.rinch-dropdown-menu__sub-dropdown {
+    display: none;
+    position: fixed;
+    left: 0;
+    top: 0;
+    box-sizing: border-box;
+    background-color: var(--rinch-color-body);
+    border: 1px solid var(--rinch-color-border, var(--rinch-color-gray-3));
+    border-radius: var(--rinch-radius-md);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    padding: var(--rinch-spacing-xs);
+    width: var(--rinch-dropdown-menu-sub-width, auto);
+    min-width: 160px;
+    z-index: var(--rinch-dropdown-menu-sub-z-index, 1);
+}
+
+.rinch-dropdown-menu__sub--opened > .rinch-dropdown-menu__sub-dropdown {
+    display: block;
+}
+
+.rinch-dropdown-menu__sub--opened > .rinch-dropdown-menu__sub-trigger {
+    background-color: var(--rinch-color-default);
+}
+
+.rinch-dropdown-menu__sub-chevron {
+    color: var(--rinch-color-dimmed);
+}
+
+/* Keyboard focus on a row shows like hover. */
+.rinch-dropdown-menu__item:focus-visible {
+    outline: none;
+    background-color: var(--rinch-color-default);
+}
+
 /* Radius */
-.rinch-dropdown-menu--radius-xs .rinch-dropdown-menu__dropdown { border-radius: var(--rinch-radius-xs); }
-.rinch-dropdown-menu--radius-sm .rinch-dropdown-menu__dropdown { border-radius: var(--rinch-radius-sm); }
-.rinch-dropdown-menu--radius-md .rinch-dropdown-menu__dropdown { border-radius: var(--rinch-radius-md); }
-.rinch-dropdown-menu--radius-lg .rinch-dropdown-menu__dropdown { border-radius: var(--rinch-radius-lg); }
-.rinch-dropdown-menu--radius-xl .rinch-dropdown-menu__dropdown { border-radius: var(--rinch-radius-xl); }
+.rinch-dropdown-menu--radius-xs .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--radius-xs .rinch-dropdown-menu__sub-dropdown { border-radius: var(--rinch-radius-xs); }
+.rinch-dropdown-menu--radius-sm .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--radius-sm .rinch-dropdown-menu__sub-dropdown { border-radius: var(--rinch-radius-sm); }
+.rinch-dropdown-menu--radius-md .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--radius-md .rinch-dropdown-menu__sub-dropdown { border-radius: var(--rinch-radius-md); }
+.rinch-dropdown-menu--radius-lg .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--radius-lg .rinch-dropdown-menu__sub-dropdown { border-radius: var(--rinch-radius-lg); }
+.rinch-dropdown-menu--radius-xl .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--radius-xl .rinch-dropdown-menu__sub-dropdown { border-radius: var(--rinch-radius-xl); }
 
 /* Shadow */
-.rinch-dropdown-menu--shadow-xs .rinch-dropdown-menu__dropdown { box-shadow: var(--rinch-shadow-xs); }
-.rinch-dropdown-menu--shadow-sm .rinch-dropdown-menu__dropdown { box-shadow: var(--rinch-shadow-sm); }
-.rinch-dropdown-menu--shadow-md .rinch-dropdown-menu__dropdown { box-shadow: var(--rinch-shadow-md); }
-.rinch-dropdown-menu--shadow-lg .rinch-dropdown-menu__dropdown { box-shadow: var(--rinch-shadow-lg); }
-.rinch-dropdown-menu--shadow-xl .rinch-dropdown-menu__dropdown { box-shadow: var(--rinch-shadow-xl); }
+.rinch-dropdown-menu--shadow-xs .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--shadow-xs .rinch-dropdown-menu__sub-dropdown { box-shadow: var(--rinch-shadow-xs); }
+.rinch-dropdown-menu--shadow-sm .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--shadow-sm .rinch-dropdown-menu__sub-dropdown { box-shadow: var(--rinch-shadow-sm); }
+.rinch-dropdown-menu--shadow-md .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--shadow-md .rinch-dropdown-menu__sub-dropdown { box-shadow: var(--rinch-shadow-md); }
+.rinch-dropdown-menu--shadow-lg .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--shadow-lg .rinch-dropdown-menu__sub-dropdown { box-shadow: var(--rinch-shadow-lg); }
+.rinch-dropdown-menu--shadow-xl .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--shadow-xl .rinch-dropdown-menu__sub-dropdown { box-shadow: var(--rinch-shadow-xl); }
 "#.to_string()
 }

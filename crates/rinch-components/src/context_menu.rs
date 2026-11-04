@@ -34,6 +34,22 @@ pub struct ContextMenu {
     /// Internal opened state — set automatically, not a user prop.
     #[doc(hidden)]
     pub opened: Signal<bool>,
+    /// Escape closes the menu and returns the focus to the element that held
+    /// it when the menu opened (#2170). An open `DropdownMenuSub` takes
+    /// Escape first and closes only itself.
+    pub close_on_escape: bool,
+    /// ArrowUp/ArrowDown/Home/End and type-ahead move the focus among the
+    /// items while the menu is open (#2170); with the focus outside the menu,
+    /// ArrowDown picks the first item and ArrowUp the last.
+    pub keyboard_nav: bool,
+    /// The arrows wrap at the ends (Chrome: `arrow_key_selection_wraps`).
+    pub loop_focus: bool,
+    /// A letter or digit moves to the next item whose label starts with it;
+    /// a single match is activated (Chrome's `SelectByChar`).
+    pub typeahead: bool,
+    /// Escape hatch: offered every key the open menu would see, before it;
+    /// `true` consumes the key.
+    pub on_key: Option<crate::menu_nav::MenuKeyHook>,
 }
 
 impl std::fmt::Debug for ContextMenu {
@@ -45,7 +61,14 @@ impl std::fmt::Debug for ContextMenu {
 impl Default for ContextMenu {
     fn default() -> Self {
         let opened = Signal::new(false);
-        Self { opened }
+        Self {
+            opened,
+            close_on_escape: true,
+            keyboard_nav: true,
+            loop_focus: true,
+            typeahead: true,
+            on_key: None,
+        }
     }
 }
 
@@ -301,6 +324,8 @@ impl Component for ContextMenu {
                     h_tail.set_attribute("style", &placement.h_tail);
                     dropdown_clone.set_attribute("style", DROPDOWN_STYLE);
                 } else {
+                    // A closing menu closes every submenu open in it (#2214).
+                    crate::dropdown_menu_sub::close_subs_within(&dropdown_clone);
                     portal_clone.set_attribute("style", "display: none;");
                     overlay_clone.set_attribute("style", "display: none;");
                     frame.set_attribute("style", "display: none;");
@@ -309,6 +334,29 @@ impl Component for ContextMenu {
             });
         }
         body.append_child(&portal);
+
+        // Keys and Escape while open (#2170): `menu_nav::arm_menu_keys`.
+        {
+            let panel = dropdown.clone();
+            crate::menu_nav::arm_menu_keys(
+                __scope,
+                dropdown.clone(),
+                std::rc::Rc::new(move || Some(panel.clone())),
+                std::rc::Rc::new(move || opened.get()),
+                crate::menu_nav::MenuKeyOptions {
+                    close_on_escape: self.close_on_escape,
+                    keyboard_nav: self.keyboard_nav,
+                    loop_focus: self.loop_focus,
+                    typeahead: self.typeahead,
+                    on_key: self.on_key.clone(),
+                },
+                Some(std::rc::Rc::new(move || {
+                    if opened.is_alive() {
+                        opened.set(false);
+                    }
+                })),
+            );
+        }
 
         // Take the portal down with whatever built this menu.
         //

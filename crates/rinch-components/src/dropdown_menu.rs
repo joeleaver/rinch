@@ -233,6 +233,22 @@ pub struct DropdownMenu {
     pub width: String,
     /// Z-index.
     pub z_index: Option<i32>,
+    /// Escape closes the menu (through `on_close`) and returns the focus to
+    /// the element that held it when the menu opened (#2169). An open
+    /// `DropdownMenuSub` takes Escape first and closes only itself.
+    pub close_on_escape: bool,
+    /// ArrowUp/ArrowDown/Home/End and type-ahead move the focus among the
+    /// items while the menu is open (#2169) — see `menu_nav`'s module docs.
+    pub keyboard_nav: bool,
+    /// ArrowDown on the last item goes to the first, and ArrowUp on the
+    /// first to the last (Chrome's menus: `arrow_key_selection_wraps`).
+    pub loop_focus: bool,
+    /// A letter or digit moves to the next item whose label starts with it;
+    /// a single match is activated (Chrome's `SelectByChar`).
+    pub typeahead: bool,
+    /// Escape hatch: offered every key the open menu would see, before it;
+    /// `true` consumes the key.
+    pub on_key: Option<crate::menu_nav::MenuKeyHook>,
     /// Internal signal `DropdownMenuItem` children close by setting it to
     /// `false` (issue #714: resolved at click time from the DOM, not at
     /// render time from a thread-local — see [`register_menu_close_signal`]).
@@ -277,6 +293,11 @@ impl Default for DropdownMenu {
             on_close: None,
             width: String::new(),
             z_index: None,
+            close_on_escape: true,
+            keyboard_nav: true,
+            loop_focus: true,
+            typeahead: true,
+            on_key: None,
             _close_signal: close_sig,
             _close_signal_id: close_signal_id,
         }
@@ -403,6 +424,8 @@ impl Component for DropdownMenu {
                     root_vis.add_class(OPENED_CLASS);
                 } else {
                     root_vis.remove_class(OPENED_CLASS);
+                    // A closing menu closes every submenu open in it (#2214).
+                    crate::dropdown_menu_sub::close_subs_within(&root_vis);
                 }
             });
         }
@@ -458,9 +481,11 @@ impl Component for DropdownMenu {
             let cb = self.on_close.clone().unwrap();
             let last = std::rc::Rc::new(std::cell::Cell::new(true));
             let last_e = last.clone();
+            let root_close = root.clone();
             Effect::new(move || {
                 let is_true = close_sig.get();
                 if last_e.get() && !is_true {
+                    crate::dropdown_menu_sub::close_subs_within(&root_close);
                     cb.invoke();
                 }
                 last_e.set(is_true);
@@ -480,6 +505,45 @@ impl Component for DropdownMenu {
                     last_open.set(open);
                 });
             }
+        }
+
+        // Keys and Escape while open (#2169): `menu_nav::arm_menu_keys`.
+        {
+            let is_open: Rc<dyn Fn() -> bool> = match &self.opened_fn {
+                Some(f) => f.clone(),
+                None => {
+                    let opened = self.opened;
+                    Rc::new(move || opened)
+                }
+            };
+            let root_for_panel = root.clone();
+            let on_escape: Option<Rc<dyn Fn()>> = self.on_close.clone().map(|cb| {
+                let root = root.clone();
+                Rc::new(move || {
+                    crate::dropdown_menu_sub::close_subs_within(&root);
+                    cb.invoke();
+                }) as Rc<dyn Fn()>
+            });
+            crate::menu_nav::arm_menu_keys(
+                __scope,
+                root.clone(),
+                Rc::new(move || {
+                    crate::floating::find_dropdown(
+                        &root_for_panel,
+                        "rinch-dropdown-menu",
+                        "rinch-dropdown-menu__dropdown",
+                    )
+                }),
+                is_open,
+                crate::menu_nav::MenuKeyOptions {
+                    close_on_escape: self.close_on_escape,
+                    keyboard_nav: self.keyboard_nav,
+                    loop_focus: self.loop_focus,
+                    typeahead: self.typeahead,
+                    on_key: self.on_key.clone(),
+                },
+                on_escape,
+            );
         }
 
         // close_on_click_outside: render an invisible backdrop that fires

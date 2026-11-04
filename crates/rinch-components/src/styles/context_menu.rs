@@ -29,6 +29,15 @@ pub fn styles() -> String {
     border-radius: var(--rinch-radius-default, 4px);
     box-shadow: var(--rinch-shadow-md, 0 1px 3px rgba(0,0,0,.1), 0 4px 6px rgba(0,0,0,.08));
 }
+
+/* A submenu's flyout in a context menu looks like the context menu (#2214). */
+.rinch-context-menu__dropdown .rinch-dropdown-menu__sub-dropdown {
+    min-width: 180px;
+    padding: var(--rinch-spacing-xs, 4px) 0;
+    border: 1px solid var(--rinch-color-default-border, #dee2e6);
+    border-radius: var(--rinch-radius-default, 4px);
+    box-shadow: var(--rinch-shadow-md, 0 1px 3px rgba(0,0,0,.1), 0 4px 6px rgba(0,0,0,.08));
+}
 "#
     .into()
 }
