@@ -30,6 +30,8 @@ mod context_menu_viewport_1761_tests;
 #[cfg(test)]
 mod dropdown_viewport_1764_tests;
 #[cfg(test)]
+mod menu_sub_2214_tests;
+#[cfg(test)]
 mod review_1589_tests;
 #[cfg(test)]
 mod review_1601_tests;
@@ -6136,6 +6138,15 @@ impl RinchApp {
             d.tree.device_scale = dpr;
             if previous != dpr {
                 d.tree.resnap_scroll_offsets();
+            }
+            let changed = previous != dpr && previous > 0.0;
+            let doc_key = d.doc_key();
+            drop(d);
+            // Components that react to a display change (an open
+            // `DropdownMenuSub` closes, as Chrome closes its menus) hear it
+            // here, with no document borrow held.
+            if changed {
+                rinch_core::events::notify_display_scale_changed(doc_key);
             }
         }
     }

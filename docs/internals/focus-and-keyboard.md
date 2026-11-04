@@ -1,6 +1,6 @@
 # Keyboard focus
 
-Read this page when your task touches: the focus arbiter, Tab order, traps, dismiss stack, key handlers, selection ranges, scroll lock, IME, text context menu.
+Read this page when your task touches: the focus arbiter, Tab order, traps, dismiss stack, key handlers, selection ranges, scroll lock, IME, text context menu. (Rendered menus' keys: `menus.md`.)
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
@@ -296,7 +296,7 @@ input `onBlur` does; its panel and preview swatch are `data-nofocus`, so a
 press in the picker keeps the keyboard on the field, and opening focuses the
 field when it does not already hold it. With `close_on_click_outside: false`
 an outside press reaches the page under it and still closes the dropdown by
-moving the focus. `DropdownMenu`'s dismiss-only entry is not told. Push a key entry at **open** and release it at close
+moving the focus. `DropdownMenu`'s and `ContextMenu`'s dismiss-only entries (pushed at open since #2169/#2170, with an app key listener for their arrows — `docs/internals/menus.md`, "Rendered menus") are not told. Push a key entry at **open** and release it at close
 and unmount (`overlay_dismiss::arm_keys_while_open`). `MockDomDocument` now
 records `focus_element` and answers it from `active_element`, so a component
 test has to focus the owner before its keys reach an entry.

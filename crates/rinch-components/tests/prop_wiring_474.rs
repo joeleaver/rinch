@@ -561,10 +561,10 @@ fn the_wired_overlays_hard_code_no_z_index() {
     // Positive control: a selector tracker that matched nothing would pass the
     // loop above without looking at a single declaration.
     assert_eq!(
-        checked, 12,
-        "expected the twelve z-index declarations these six own (2 Modal, \
-         2 Drawer, 2 Popover, 2 DropdownMenu, 1 Notification, 3 ColorInput), \
-         saw {checked}"
+        checked, 13,
+        "expected the thirteen z-index declarations these six own (2 Modal, \
+         2 Drawer, 2 Popover, 3 DropdownMenu — panel, backdrop and a \
+         submenu's flyout (#2214) — 1 Notification, 3 ColorInput), saw {checked}"
     );
 }
 
