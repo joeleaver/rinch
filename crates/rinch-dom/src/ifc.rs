@@ -8607,13 +8607,18 @@ impl RinchDocument {
                                 let (natural, ratio) =
                                     crate::replaced::image_natural_size(*natural, *aspect);
                                 // As the root compute measures one (#788, #1150).
-                                crate::replaced::measure(
-                                    natural,
-                                    ratio,
-                                    known_dims,
+                                crate::replaced::contribution(
+                                    crate::replaced::measure(
+                                        natural,
+                                        ratio,
+                                        known_dims,
+                                        style,
+                                        inputs.parent_size,
+                                        inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                    ),
                                     style,
-                                    inputs.parent_size,
-                                    inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                    known_dims,
+                                    inputs.available_space,
                                 )
                             }
                             Some(NodeContext::FormControl {
@@ -8629,13 +8634,18 @@ impl RinchDocument {
                                 height,
                                 ratio,
                                 aspect,
-                            }) => crate::replaced::measure(
-                                (*width, *height),
-                                aspect.used_ratio(*ratio),
-                                known_dims,
+                            }) => crate::replaced::contribution(
+                                crate::replaced::measure(
+                                    (*width, *height),
+                                    aspect.used_ratio(*ratio),
+                                    known_dims,
+                                    style,
+                                    inputs.parent_size,
+                                    inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                ),
                                 style,
-                                inputs.parent_size,
-                                inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                known_dims,
+                                inputs.available_space,
                             ),
                             _ => taffy::Size::ZERO,
                         }

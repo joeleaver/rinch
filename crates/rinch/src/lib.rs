@@ -280,7 +280,8 @@ pub mod prelude {
     // Event handling - click context, drag support, input callbacks, file-drop callbacks
     pub use rinch_core::{
         ClickContext, Drag, DragContext, FileDropCallback, InputCallback, ModifierState,
-        MouseButton, ScrollEvent, get_click_context, restore_drag_ghost, suppress_drag_ghost,
+        MouseButton, ScrollEvent, click_link, get_click_context, restore_drag_ghost,
+        suppress_drag_ghost,
     };
     // Paste notification (issue #150): on the web this is the only place app paste
     // logic can see content copied outside the app, because the browser's `paste`

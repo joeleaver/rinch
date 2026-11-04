@@ -25,10 +25,25 @@ rinch-debug = { workspace = true }
 # its quote-/bracket-aware split rather than carrying a second, cruder one
 # (#705). A test-harness crate, so the dependency is free.
 rinch-core = { workspace = true }
+# html-compare: the probe window, `HtmlView`, and pictures from the web.
+rinch = { workspace = true, optional = true, features = ["desktop", "html", "debug"] }
+rinch-html = { workspace = true, optional = true }
+ureq = { version = "3", optional = true }
+
+[features]
+# `html_compare` and the `html-compare` binary: HTML documents drawn by
+# Chrome and by rinch's `HtmlView`, side by side. A desktop app of its own
+# (the probe window), so off by default.
+html-compare = ["dep:rinch", "dep:rinch-html", "dep:ureq"]
 
 [[bin]]
 name = "visual-test"
 path = "src/bin/visual_test.rs"
+
+[[bin]]
+name = "html-compare"
+path = "src/bin/html_compare.rs"
+required-features = ["html-compare"]
 
 [[example]]
 name = "gen_browser_screenshot"

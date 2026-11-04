@@ -893,13 +893,18 @@ impl RinchDocument {
                                     // ratio (#788, #1150): a style width or height
                                     // gives the other through the ratio, and so do
                                     // `min-*`/`max-*` clamps.
-                                    crate::replaced::measure(
-                                        natural,
-                                        ratio,
-                                        known_dims,
+                                    crate::replaced::contribution(
+                                        crate::replaced::measure(
+                                            natural,
+                                            ratio,
+                                            known_dims,
+                                            style,
+                                            inputs.parent_size,
+                                            inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                        ),
                                         style,
-                                        inputs.parent_size,
-                                        inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                        known_dims,
+                                        inputs.available_space,
                                     )
                                 }
                                 Some(NodeContext::InlineRoot(root_id)) => {
@@ -1060,13 +1065,18 @@ impl RinchDocument {
                                     height,
                                     ratio,
                                     aspect,
-                                }) => crate::replaced::measure(
-                                    (*width, *height),
-                                    aspect.used_ratio(*ratio),
-                                    known_dims,
+                                }) => crate::replaced::contribution(
+                                    crate::replaced::measure(
+                                        (*width, *height),
+                                        aspect.used_ratio(*ratio),
+                                        known_dims,
+                                        style,
+                                        inputs.parent_size,
+                                        inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                    ),
                                     style,
-                                    inputs.parent_size,
-                                    inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                    known_dims,
+                                    inputs.available_space,
                                 ),
                                 _ => taffy::Size::ZERO,
                             }

@@ -181,3 +181,29 @@ fn a_span_changed_after_layout_places_the_table_again() {
         assert_eq!(abs(&edited, id), abs(&fresh, id), "#{id}");
     }
 }
+
+/// An 800x200 PNG.
+const WIDE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAyAAAADICAIAAACf7RJNAAADBElEQVR42u3WMQ0AAAgEsZeDJhQjCxNsNKmCmy7VAwDAoUgAAGCwAAAMFgCAwQIAwGABABgsAACDBQCAwQIAMFgAAAYLAACDBQBgsAAADBYAgMECAMBgAQAYLAAAgwUAgMECADBYAAAGCwAAgwUAYLAAAAwWAAAGCwDAYAEAGCwAAIMFAIDBAgAwWAAABgsAAIMFAGCwAAAMFgAABgsAwGABABgsAAAMFgCAwQIAMFgAAAYLAACDBQBgsAAADBYAAAYLAMBgAQAYLAAADBYAgMECADBYAAAYLAAAgwUAYLAAAAwWAAAGCwDAYAEAGCwAAAwWAIDBAgAwWAAAGCwAAIMFAGCwAAAMFgAABgsAwGABABgsAAAMFgCAwQIAMFgAABgsAACDBQBgsAAAMFgAAAYLAMBgAQAYLAAADBYAgMECADBYAAAYLAAAgwUAYLAAADBYAAAGCwDAYAEAYLAAAAwWAIDBAgAwWAAAGCwAAIMFAGCwAAAwWAAABgsAwGABAGCwAAAMFgCAwQIAwGABABgsAACDBQBgsAAAMFgAAAYLAMBgAQBgsAAADBYAgMECAMBgAQAYLAAAgwUAYLAAADBYAAAGCwDAYAEAYLAAAAwWAIDBAgDAYAEAGCwAAIMFAIDBAgAwWAAABgsAwGABAGCwAAAMFgCAwQIAwGABABgsAACDBQCAwQIAMFgAAAYLAACDBQBgsAAADBYAgMECAMBgAQAYLAAAgwUAgMECADBYAAAGCwAAgwUAYLAAAAwWAAAGCwDAYAEAGCwAAIMFAIDBAgAwWAAABgsAAIMFAGCwAAAMFgAABgsAwGABABgsAACDpQIAgMECADBYAAAGCwAAgwUAYLAAAAwWAAAGCwDAYAEAGCwAAAwWAIDBAgAwWAAABgsAAIMFAGCwAAAMFgAABgsAwGABABgsAAAMFgCAwQIAMFgAABgsAACDBQBgsAAADBYAAAYLAMBgAQAYLAAADBYAgMECADBYAAAYLAAAgwUAYLAAADBYAAAGCwDAYAEAfLMLtdks6n5QTwAAAABJRU5ErkJggg==";
+
+#[test]
+fn a_percentage_width_picture_does_not_widen_its_column() {
+    // css-sizing-3 §5.2.2: a replaced element whose `width` or `max-width`
+    // is a percentage contributes no min-content width, so the declared
+    // columns hold and the picture scales into its cell. Chrome 153: the
+    // 300px and 200px columns share the 600px table as 360 and 240, and the
+    // picture is 360x90, for `width="100%"` and for `max-width: 100%` alike.
+    // rinch used to let the picture's natural 800px widen its column.
+    for picture in [
+        "width='100%' style='display:block'",
+        "style='display:block; max-width:100%'",
+    ] {
+        let d = doc(&format!(
+            "<table style='width:600px;border-spacing:0'><tr>
+            <td id=a width=300 style='padding:0'><img id=i {picture} src='{WIDE}'></td>
+            <td id=b width=200 style='padding:0'>text</td></tr></table>"
+        ));
+        assert_eq!(abs(&d, "a").2, 360.0, "{picture}");
+        assert_eq!(abs(&d, "i"), (0.0, 0.0, 360.0, 90.0), "{picture}");
+        assert_eq!(abs(&d, "b").0, 360.0, "{picture}");
+    }
+}

@@ -5911,14 +5911,17 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "image",
+ "rinch",
  "rinch-core",
  "rinch-debug",
  "rinch-dom",
+ "rinch-html",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
  "tracing",
+ "ureq",
 ]
 
 [[package]]
