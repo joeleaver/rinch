@@ -208,3 +208,23 @@ fn a_colour_restyle_keeps_a_block_in_a_cell_where_it_was() {
     edit_other(&mut doc, "edited");
     assert_eq!(doc.tree.nodes[k.0].layout.y, 20.0, "after an edit");
 }
+
+/// `vertical-align` itself is no Taffy property: changing it runs no
+/// compute, and the cell is aligned again from the offset its block child
+/// carries.
+#[test]
+fn a_vertical_align_change_moves_a_block_in_a_cell() {
+    let mut doc = doc_with(
+        TABLE_CSS,
+        "<table><tr><td id=a><div id=k style='height:10px'></div></td>\
+         <td><div style='height:50px'></div></td></tr></table>",
+    );
+    let (a, k) = (id(&doc, "#a"), id(&doc, "#k"));
+    assert_eq!(doc.tree.nodes[k.0].layout.y, 20.0, "middle: (50 - 10) / 2");
+    doc.set_style(a, "vertical-align", "bottom");
+    settle(&mut doc);
+    assert_eq!(doc.tree.nodes[k.0].layout.y, 40.0, "bottom");
+    doc.set_style(a, "vertical-align", "top");
+    settle(&mut doc);
+    assert_eq!(doc.tree.nodes[k.0].layout.y, 0.0, "top");
+}
