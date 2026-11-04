@@ -1546,7 +1546,7 @@ see [Sortable Lists](sortable.md#styling)): `--rinch-sortable-gap`,
 `-caret-color`, `-caret-size`, `-refused-color`, `-dragging-opacity`,
 `-reflow-duration`, `-reflow-easing`, `-ghost-opacity`, `-ghost-tilt`,
 `-ghost-scale`, `-ghost-shadow`, `-ghost-duration`, `-ghost-easing`,
-`-ghost-z-index` (the `-ghost-` ones on `:root`/`<body>`),
+`-ghost-z-index` (the `-ghost-` ones read where the item is),
 `-reason-bg`, `-reason-color`, `-reason-font-size`, `-reason-radius`,
 `-reason-inset`, `-reason-padding`, `-reason-white-space`, `-reason-max-width`
 (each `--rinch-sortable-…`).

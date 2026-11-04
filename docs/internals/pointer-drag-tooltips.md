@@ -154,7 +154,30 @@ group.
   element. It is placed by inline custom properties
   (`--rinch-sortable-ghost-x/-y` = pointer − grab point) from every
   `data-ondragmove` and `data-ondragover` (`follow_pointer`), and discarded,
-  its scope disposed, in `end_active`. The grab point comes from
+  its scope disposed, in `end_active`. Between the wrapper and the preview's
+  body sit `display: contents` stand-ins (`mirror`: tag, classes minus the
+  drag's own state classes, attributes and inline style, plus `display:
+  contents`) for every element from below `<body>` down to the item's list
+  (and, for `Custom`, the item), so the cascade reaches the body as it
+  reaches the item: inherited values, descendant selectors, a class setting a
+  `--rinch-sortable-ghost-*` property on the list, an ancestor or the item.
+  Chosen over copying resolved values onto the preview: no backend-specific
+  computed-style query, and selectors (not only inherited values) apply. The
+  body is placed `position: fixed` by the wrapper's
+  `--rinch-sortable-ghost-x/-y`, sized at the item's **layout** size
+  (`DomDocument::layout_size`: Taffy's box, the web's `offsetWidth`) and
+  scaled by `--rinch-sortable-ghost-fit` = painted / layout (a scaled
+  ancestor), placed by its centre (`Active.ghost_fix`). A copy drops the
+  placement declarations of the item's inline style (`PLACEMENT`). `Custom`
+  runs under `scope.push_owner()`, so what it makes is disposed with it.
+  In the source's own list (not collapsing), a gap is `reordered()`: the
+  list's items, measured along its axis at `begin` (`Active.home`), packed in
+  the order the drop would give from the first item's start — the items
+  between the place and the source make room and the source is drawn at the
+  place. Over the moved source the offer stays (`drag_over` returns early),
+  and a `data-ondragmove` with no `data-ondragover` while the pointer is over
+  the source (the runtime offers no drop on the dragged element itself) does
+  not withdraw. The grab point comes from
   `data-ondragstart`'s click context, which **both runtimes now set to the
   press point and the source's box** (desktop: `mousedown_pos` and
   `painted_element_box`; rinch-web: `WebDragState::start_x/y`,
