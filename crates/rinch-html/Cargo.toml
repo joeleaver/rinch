@@ -1,0 +1,18 @@
+[package]
+name = "rinch-html"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Showing HTML you did not write in rinch: an allow-list cleaner and the HtmlView component"
+
+[dependencies]
+rinch-core.workspace = true
+# The allow-list (html5ever underneath) and the style-sheet inliner. Both on
+# html5ever 0.40 and css-inline on the cssparser/selectors stylo builds with,
+# so they add no second copy of either. css-inline without its defaults: no
+# HTTP or file loading of linked sheets, no CLI.
+ammonia = "4.2"
+css-inline = { version = "0.23", default-features = false }
+
+[dev-dependencies]
+rinch-core = { workspace = true, features = ["test-util"] }

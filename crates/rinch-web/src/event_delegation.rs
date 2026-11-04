@@ -2208,7 +2208,17 @@ fn dispatch_click_at(
             focus_press_target(target);
         }
         let active = active_in(el);
+        // The link the press went through on its way to the handler
+        // (`events::click_link`), as on desktop.
+        let link = el
+            .closest("a[href]")
+            .ok()
+            .flatten()
+            .filter(|a| rid_el.contains(Some(a)))
+            .and_then(|a| a.get_attribute("href"));
+        events::set_click_link(link);
         let ran = dispatch_rid(rid);
+        events::set_click_link(None);
         if let PressFocus::Focus(target) = press_focus.clone()
             && touch
         {

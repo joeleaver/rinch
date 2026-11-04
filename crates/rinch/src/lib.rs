@@ -223,6 +223,13 @@ pub mod components {
     pub use rinch_components::*;
 }
 
+/// Showing HTML you did not write (enable with the `html` feature): the
+/// allow-list cleaner and the `HtmlView` component. See `rinch_html`.
+#[cfg(feature = "html")]
+pub mod html {
+    pub use rinch_html::*;
+}
+
 /// Futures on the UI thread (issue #1767): [`spawn_local`](task::spawn_local),
 /// [`sleep`](task::sleep). The same on desktop, Android, embed and the web.
 pub mod task {
@@ -408,6 +415,10 @@ pub mod prelude {
     // Re-export components when the components feature is enabled
     #[cfg(feature = "components")]
     pub use rinch_components::*;
+
+    // Showing HTML you did not write
+    #[cfg(feature = "html")]
+    pub use rinch_html::HtmlView;
 
     // Video playback
     #[cfg(feature = "video")]
