@@ -294,6 +294,12 @@ impl RinchDocument {
             Some(id) => id,
             None => return,
         };
+        // Which tables, and which of their cells, changed — read before any
+        // compute of this layout clears Taffy's dirty flags (#2156, review of
+        // #2153): an atomic inline's own compute runs first and lays out a
+        // table inside it, and a table that skips the column measure has its
+        // cells laid out all the same.
+        self.note_changed_tables();
 
         // IFC setup passes only need to run when tree structure or display modes
         // changed. Text-only changes (e.g. slider label "50%" → "19%") preserve the

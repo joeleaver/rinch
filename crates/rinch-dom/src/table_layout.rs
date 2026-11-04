@@ -868,7 +868,42 @@ impl RinchDocument {
     /// a table with a width of its own, with `auto` columns, whose subtree
     /// changed since. Innermost first, because an outer table's max-content
     /// reads an inner one's.
+    /// Note, before any compute of a layout, which tables changed and which of
+    /// their cells: a changed cell's remembered max-content width is dropped
+    /// (`TableCell::max_content`), and a changed table is owed a column
+    /// measure (`NodeTree::tables_owed_columns`). Both used to be read off
+    /// Taffy's dirty flags where the measure runs, after an atomic inline's own
+    /// compute had laid out a table inside it (#2156), and after the computes
+    /// of the layouts in which the table had no width of its own (review of
+    /// #2153) — each clears them.
+    pub(crate) fn note_changed_tables(&mut self) {
+        for i in 0..self.tree.tables.len() {
+            let id = self.tree.tables[i];
+            let Some(n) = self.tree.nodes.get_live(id) else {
+                continue;
+            };
+            let (Some(t), Some(b)) = (n.taffy_id, n.table_box.as_ref()) else {
+                continue;
+            };
+            if !self.tree.taffy.dirty(t).unwrap_or(false) {
+                continue;
+            }
+            for c in b.placed.clone() {
+                let Some(tid) = self.tree.nodes.get_live(c).and_then(|n| n.taffy_id) else {
+                    continue;
+                };
+                if self.tree.taffy.dirty(tid).unwrap_or(true)
+                    && let Some(cell) = self.tree.nodes[c].table_cell.as_mut()
+                {
+                    cell.max_content = None;
+                }
+            }
+            self.tree.tables_owed_columns.push(id);
+        }
+    }
+
     pub(crate) fn measure_table_columns(&mut self) {
+        let owed = std::mem::take(&mut self.tree.tables_owed_columns);
         if self.tree.tables.is_empty() {
             return;
         }
@@ -901,11 +936,13 @@ impl RinchDocument {
             })
             .collect();
         tables.sort_unstable_by_key(|&(d, id)| (std::cmp::Reverse(d), id));
+        // Tables whose columns moved.
+        let mut moved = Vec::new();
         for (_, id) in tables {
             let Some(t) = self.tree.nodes[id].taffy_id else {
                 continue;
             };
-            if !self.tree.taffy.dirty(t).unwrap_or(false) {
+            if !owed.contains(&id) && !self.tree.taffy.dirty(t).unwrap_or(false) {
                 continue;
             }
             let Ok(style) = self.tree.taffy.style(t).cloned() else {
@@ -925,6 +962,7 @@ impl RinchDocument {
                     self.apply_table_style(id, &mut restyled);
                     if restyled != style {
                         let _ = self.tree.taffy.set_style(t, restyled);
+                        moved.push(id);
                     }
                 }
                 continue;
@@ -956,7 +994,15 @@ impl RinchDocument {
             let mut restored = style;
             self.apply_table_style(id, &mut restored);
             let _ = self.tree.taffy.set_style(t, restored);
+            moved.push(id);
         }
+        // A table inside an atomic inline was laid out by that box's own
+        // compute, which ran before this and which the root compute does not
+        // reach: lay it out again at the widths just measured (#2156).
+        for &id in &moved {
+            self.mark_atomic_inline_dirty(id);
+        }
+        self.remeasure_dirty_atomic_inlines();
     }
 
     /// Each column's max-content width, from its cells' own, when every box

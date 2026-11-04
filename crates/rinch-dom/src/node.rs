@@ -3047,6 +3047,10 @@ pub struct NodeTree {
     /// #2141), so a test can compare the two answers.
     #[doc(hidden)]
     pub table_columns_by_detached_layout: bool,
+    /// Tables whose layout was dirty when this layout started
+    /// (`RinchDocument::note_changed_tables`): owed a column measure even if
+    /// a compute before it cleared their dirty flag.
+    pub tables_owed_columns: Vec<RawNodeId>,
     /// Boxes the cascade computed as floated; dead or unfloated ones are
     /// dropped before each layout (`floats`).
     pub floats: Vec<RawNodeId>,
@@ -3793,6 +3797,7 @@ impl NodeTree {
             ifc_float_bands: Default::default(),
             cells_to_align: Vec::new(),
             table_columns_by_detached_layout: false,
+            tables_owed_columns: Vec::new(),
             cell_hints: Default::default(),
             style_roots: Vec::new(),
             full_style_walk: true, // The first resolve styles everything
