@@ -328,5 +328,10 @@ fn without_the_stylesheet_the_live_region_and_reasons_stay_out_of_sight() {
             "{style}"
         );
     }
-    assert_eq!(a.get_attribute("data-drag-ghost").as_deref(), Some("false"));
+    // A painting host reads it on the source or an ancestor: the list
+    // carries it (#2154: the list's `preview` decides it).
+    assert_eq!(
+        c1.get_attribute("data-drag-ghost").as_deref(),
+        Some("false")
+    );
 }

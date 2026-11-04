@@ -38,6 +38,8 @@ mod review_1601_tests;
 mod scroll_into_view;
 #[cfg(all(test, feature = "desktop"))]
 mod sortable_2091_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod sortable_2154_tests;
 #[cfg(test)]
 mod tree_drop_tests;
 #[cfg(test)]
