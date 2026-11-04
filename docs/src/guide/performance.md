@@ -122,7 +122,8 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `ifc_scoped_passes`, `ifc_scope_containers`, `ifc_scope_nodes` | Passes scoped to the formatting containers a structural change reached, and how many containers and nodes they set up again. Everything else keeps its splices, boxes, marks and Taffy cache |
 | | `ifc_full_passes`, `ifc_full_{initial,theme,unattributed}` | Passes over the whole document, and why: the first layout, a whole-document restyle, or `NodeTree::ifc_dirty` written directly with no reason |
 | | `taffy_root_computes` | Root Taffy computes (the same count as `NodeTree::taffy_computes`) |
-| | `taffy_measure_calls` | Calls to the measure function during root computes |
+| | `taffy_measure_calls` | Calls to the measure function during root computes and `table_column_measures`' size requests |
+| | `table_column_measures` | Table cells asked their max-content width for their column's share of a table that has a width of its own: only cells changed since they were last asked (#2141). A table with a spanning cell or a caption is measured by one detached layout of the whole table instead, which is a root compute |
 | | `inline_block_computes` | Standalone Taffy computes that size an atomic inline |
 | | `calc_fixpoint_passes` | Extra computes run by the `calc(%, px)` fixpoint |
 | | `abs_containing_block_passes` | Extra computes run because an absolutely positioned box's containing block — a positioned ancestor that is not its layout parent — came out of a compute at a size the box was not sized for: the document's first layout, and a resize of that block. Only a box whose *size* depends on the block (`inset: 0`, `width: 50%`) can cause one |

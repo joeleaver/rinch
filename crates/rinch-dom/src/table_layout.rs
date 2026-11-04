@@ -91,6 +91,10 @@ pub struct TableCell {
     /// restyle replaces the computed style but not the children's boxes, so
     /// there it is kept apart from [`Self::shift`] (#2144).
     pub kids_shift: f32,
+    /// The cell's max-content width, as [`RinchDocument::measure_table_columns`]
+    /// last asked it; asked again once Taffy has dropped the cell's sizes
+    /// (a change inside it, or to its style).
+    pub max_content: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -616,6 +620,7 @@ impl RinchDocument {
             slot.base = slot.base.or(old.base);
             slot.shift = old.shift;
             slot.kids_shift = old.kids_shift;
+            slot.max_content = old.max_content;
             if old.under != slot.under {
                 self.tree.paint_dirty_nodes.push(id);
             }
@@ -904,6 +909,23 @@ impl RinchDocument {
                 continue;
             };
             let cols = self.tree.nodes[id].table_box.as_ref().unwrap().tracks.len();
+            let from_cells = if self.tree.table_columns_by_detached_layout {
+                None
+            } else {
+                self.column_weights_from_cells(id, t, cols)
+            };
+            if let Some(weights) = from_cells {
+                let b = self.tree.nodes[id].table_box.as_mut().unwrap();
+                if b.weights != weights {
+                    b.weights = weights;
+                    let mut restyled = style.clone();
+                    self.apply_table_style(id, &mut restyled);
+                    if restyled != style {
+                        let _ = self.tree.taffy.set_style(t, restyled);
+                    }
+                }
+                continue;
+            }
             let mut probe = style.clone();
             probe.size.width = taffy::Dimension::auto();
             probe.grid_template_columns =
@@ -932,6 +954,87 @@ impl RinchDocument {
             self.apply_table_style(id, &mut restored);
             let _ = self.tree.taffy.set_style(t, restored);
         }
+    }
+
+    /// Each column's max-content width, from its cells' own, when every box
+    /// the table's grid lays out is a cell one column wide: an `auto` track
+    /// under max-content is then as wide as its widest cell, which is what
+    /// the detached layout below reads. A cell is asked only when Taffy has
+    /// dropped its sizes since it was last asked, and asked size-only, which
+    /// leaves the layout every cell keeps for the root compute in place
+    /// (#2141: the detached layout asked every row twice per edit, once
+    /// itself and once more in the root compute it had evicted).
+    ///
+    /// `None` — a spanning cell or a caption shares its width between
+    /// columns, or the grid holds a box that is no cell — leaves it to the
+    /// detached layout.
+    fn column_weights_from_cells(
+        &mut self,
+        table: RawNodeId,
+        t: taffy::NodeId,
+        cols: usize,
+    ) -> Option<Vec<f32>> {
+        let placed = self.tree.nodes[table].table_box.as_ref()?.placed.clone();
+        let mut cells = Vec::with_capacity(placed.len());
+        for id in placed {
+            let n = self.tree.nodes.get_live(id)?;
+            let cell = n.table_cell.as_ref()?;
+            if cell.colspan != 1 || cell.col < 1 || cell.col as usize > cols {
+                return None;
+            }
+            cells.push((id, n.taffy_id?, cell.col as usize - 1));
+        }
+        let ids: std::collections::HashSet<taffy::NodeId> =
+            cells.iter().map(|&(_, tid, _)| tid).collect();
+        for child in self.tree.taffy.children(t).ok()? {
+            if ids.contains(&child) {
+                continue;
+            }
+            let st = self.tree.taffy.style(child).ok()?;
+            if st.display != taffy::Display::None && st.position != taffy::Position::Absolute {
+                return None;
+            }
+        }
+        let ask: Vec<(RawNodeId, taffy::NodeId)> = cells
+            .iter()
+            .filter(|&&(id, tid, _)| {
+                self.tree.nodes[id]
+                    .table_cell
+                    .as_ref()
+                    .is_none_or(|c| c.max_content.is_none())
+                    || self.tree.taffy.dirty(tid).unwrap_or(true)
+            })
+            .map(|&(id, tid, _)| (id, tid))
+            .collect();
+        if !ask.is_empty() {
+            let tids: Vec<taffy::NodeId> = ask.iter().map(|&(_, tid)| tid).collect();
+            let sizes = self.measure_taffy_sizes(
+                &tids,
+                taffy::Size {
+                    width: taffy::AvailableSpace::MaxContent,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            );
+            self.tree
+                .perf
+                .add(crate::perf::Counter::TableColumnMeasures, ask.len() as u64);
+            for ((id, _), size) in ask.into_iter().zip(sizes) {
+                if let Some(c) = self.tree.nodes[id].table_cell.as_mut() {
+                    // Rounded, as the detached layout's boxes are.
+                    c.max_content = Some(size.width.round());
+                }
+            }
+        }
+        let mut weights = vec![0.0f32; cols];
+        for (id, _, col) in cells {
+            let w = self.tree.nodes[id]
+                .table_cell
+                .as_ref()
+                .and_then(|c| c.max_content)
+                .unwrap_or(0.0);
+            weights[col] = weights[col].max(w);
+        }
+        Some(weights)
     }
 
     /// The white space between a table's rows and cells generates no box

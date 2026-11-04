@@ -744,9 +744,35 @@ impl RinchDocument {
         root_taffy: taffy::NodeId,
         available_space: taffy::Size<taffy::AvailableSpace>,
     ) -> HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>> {
+        self.run_taffy(TaffyRun::Layout(root_taffy), available_space)
+            .0
+    }
+
+    /// The size each of `nodes` takes in `available_space`, asked as a parent
+    /// asks a child for its contribution: no layout is written, so the
+    /// final-layout cache entries the next root compute reuses survive
+    /// (`TaffyTree::compute_sizes_with_block_measure`, #2141). Unrounded.
+    pub(crate) fn measure_taffy_sizes(
+        &mut self,
+        nodes: &[taffy::NodeId],
+        available_space: taffy::Size<taffy::AvailableSpace>,
+    ) -> Vec<taffy::Size<f32>> {
+        self.run_taffy(TaffyRun::Sizes(nodes), available_space).1
+    }
+
+    fn run_taffy(
+        &mut self,
+        run: TaffyRun<'_>,
+        available_space: taffy::Size<taffy::AvailableSpace>,
+    ) -> (
+        HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>>,
+        Vec<taffy::Size<f32>>,
+    ) {
         use crate::perf::Counter;
-        self.tree.taffy_computes += 1;
-        self.tree.perf.bump(Counter::TaffyRootComputes);
+        if let TaffyRun::Layout(_) = run {
+            self.tree.taffy_computes += 1;
+            self.tree.perf.bump(Counter::TaffyRootComputes);
+        }
         // The measure closure borrows `self.tree.nodes` while the compute
         // borrows `self.tree.taffy` mutably, so it counts into locals that are
         // folded into `self.tree.perf` after the compute.
@@ -792,11 +818,7 @@ impl RinchDocument {
         let ifc_float_bands = RefCell::new(std::mem::take(&mut self.tree.ifc_float_bands));
 
         let t = web_time::Instant::now();
-        self.tree
-            .taffy
-            .compute_layout_with_block_measure(
-                root_taffy,
-                available_space,
+        let measure = measure_fn(
                 |inputs, _node_id, context, style, block_ctx| {
                     // The block context of an IFC root's leaf: the room its
                     // floats leave the lines, read before the leaf algorithm
@@ -1074,12 +1096,33 @@ impl RinchDocument {
                     );
                     crate::ifc::with_first_baseline(out, &inputs, style, first_baseline)
                 },
-                // A measure leaf (an IFC root's, beside its out-of-flow
-                // children) places the floats before it: they are the floats
-                // in its root's content, placed at their lines (`float_wrap`).
-                |leaf, context| crate::float_wrap::is_measure_leaf(nodes, leaf, context),
-            )
-            .unwrap();
+        );
+        // A measure leaf (an IFC root's, beside its out-of-flow
+        // children) places the floats before it: they are the floats
+        // in its root's content, placed at their lines (`float_wrap`).
+        let places_floats = |leaf: taffy::NodeId, context: Option<&NodeContext>| {
+            crate::float_wrap::is_measure_leaf(nodes, leaf, context)
+        };
+        let sizes = match run {
+            TaffyRun::Layout(root_taffy) => {
+                self.tree
+                    .taffy
+                    .compute_layout_with_block_measure(
+                        root_taffy,
+                        available_space,
+                        measure,
+                        places_floats,
+                    )
+                    .unwrap();
+                Vec::new()
+            }
+            TaffyRun::Sizes(of) => self.tree.taffy.compute_sizes_with_block_measure(
+                of,
+                available_space,
+                measure,
+                places_floats,
+            ),
+        };
 
         // Restore the persistent IFC measure cache (dirty_ifc_text_roots cleared after build_ifc)
         self.tree.ifc_measure_cache = ifc_measure_cache.into_inner();
@@ -1097,7 +1140,7 @@ impl RinchDocument {
         );
         perf.add_elapsed(Counter::TimeTaffyComputeNs, t);
 
-        text_layout_cache.into_inner()
+        (text_layout_cache.into_inner(), sizes)
     }
 
     /// Incremental version of `sync_text_contexts` — only processes text nodes
@@ -3250,4 +3293,28 @@ impl RinchDocument {
         // and setup_inline_formatting_contexts() won't re-assign them because
         // ifc_dirty is not set for text-only changes.
     }
+}
+
+/// What [`RinchDocument::run_taffy`] asks Taffy for.
+enum TaffyRun<'a> {
+    /// A root compute: lay the tree under this node out.
+    Layout(taffy::NodeId),
+    /// The size of each of these nodes, laying nothing out.
+    Sizes(&'a [taffy::NodeId]),
+}
+
+/// Pins a measure closure to the signature both Taffy entry points take, so
+/// it can be built once and handed to either (the higher-ranked lifetimes are
+/// not inferred for a closure bound to a `let`).
+fn measure_fn<F>(f: F) -> F
+where
+    F: FnMut(
+        taffy::LayoutInput,
+        taffy::NodeId,
+        Option<&mut NodeContext>,
+        &taffy::Style,
+        Option<&mut taffy::BlockContext<'_>>,
+    ) -> taffy::LayoutOutput,
+{
+    f
 }

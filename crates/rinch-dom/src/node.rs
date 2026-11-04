@@ -3039,8 +3039,14 @@ pub struct NodeTree {
     pub tables_owed: Vec<RawNodeId>,
     /// Parsed `legacy_hints::cell_hints_css` blocks, by their CSS text.
     pub cell_hints: std::sync::Mutex<HashMap<String, ServoArc<Locked<PropertyDeclarationBlock>>>>,
-    /// Cells read back this layout and owed their `vertical-align`.
+    /// Cells read back (or restyled) this layout and owed their
+    /// `vertical-align`.
     pub cells_to_align: Vec<RawNodeId>,
+    /// Testing hook: size every table's columns by the detached layout, never
+    /// from its cells' own widths (`RinchDocument::measure_table_columns`,
+    /// #2141), so a test can compare the two answers.
+    #[doc(hidden)]
+    pub table_columns_by_detached_layout: bool,
     /// Boxes the cascade computed as floated; dead or unfloated ones are
     /// dropped before each layout (`floats`).
     pub floats: Vec<RawNodeId>,
@@ -3786,6 +3792,7 @@ impl NodeTree {
             float_blank_runs: Vec::new(),
             ifc_float_bands: Default::default(),
             cells_to_align: Vec::new(),
+            table_columns_by_detached_layout: false,
             cell_hints: Default::default(),
             style_roots: Vec::new(),
             full_style_walk: true, // The first resolve styles everything
