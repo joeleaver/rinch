@@ -40,6 +40,8 @@ pub mod stacking;
 mod style_resolution;
 pub mod stylesheet;
 pub mod stylo_impl;
+pub mod svg_image;
+mod svg_sanitize;
 pub mod table_layout;
 pub mod testing;
 pub mod text_query;

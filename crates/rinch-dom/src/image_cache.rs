@@ -10,13 +10,22 @@ use std::sync::{Arc, LazyLock, Mutex};
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 
 /// A decoded image ready to paint.
+///
+/// A raster image (PNG, JPEG, GIF, WebP) is its pixels. An SVG file (#2111)
+/// is a [`VectorImage`](crate::svg_image::VectorImage) ([`Self::vector`]),
+/// rasterised at each size it is drawn at; its `data` is empty and `width` x
+/// `height` is its [`concrete`](crate::svg_image::VectorImage::concrete) size
+/// rounded, so code that reads the pixels directly draws nothing.
 pub struct DecodedImage {
-    /// Raw RGBA8 pixel data, straight (not premultiplied) alpha.
+    /// Raw RGBA8 pixel data, straight (not premultiplied) alpha. Empty for
+    /// an SVG file.
     pub data: Vec<u8>,
     /// Image width in pixels.
     pub width: u32,
     /// Image height in pixels.
     pub height: u32,
+    /// The parsed SVG file, for an SVG source.
+    vector: Option<Arc<crate::svg_image::VectorImage>>,
     /// The same pixels premultiplied, made on the first software paint and
     /// kept (the software painter needs premultiplied pixels, and making them
     /// is a pass over the whole image). `None` inside means every pixel is
@@ -41,12 +50,36 @@ impl DecodedImage {
             data,
             width,
             height,
+            vector: None,
             premultiplied: std::sync::OnceLock::new(),
             blob: std::sync::OnceLock::new(),
             id: {
                 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             },
+        }
+    }
+
+    /// A decoded SVG file (#2111): no pixels of its own, rasterised per draw.
+    pub fn from_vector(vector: crate::svg_image::VectorImage) -> Self {
+        let (w, h) = vector.concrete();
+        let mut image = Self::new(Vec::new(), w.round() as u32, h.round() as u32);
+        image.vector = Some(Arc::new(vector));
+        image
+    }
+
+    /// The SVG file this image is, if it is one.
+    pub fn vector(&self) -> Option<&crate::svg_image::VectorImage> {
+        self.vector.as_deref()
+    }
+
+    /// The image's natural width, height and ratio, which lay an `<img>` out
+    /// and size an `auto` background. A raster image's pixel size; an SVG
+    /// file's root `width`/`height`/`viewBox`, any of which may be absent.
+    pub fn natural(&self) -> crate::svg_image::NaturalSize {
+        match &self.vector {
+            Some(v) => v.natural(),
+            None => crate::svg_image::NaturalSize::of_pixels(self.width, self.height),
         }
     }
 
@@ -409,14 +442,28 @@ impl ImageLoader for FileImageLoader {
     }
 }
 
-/// Decode encoded image bytes (PNG, JPEG, GIF, WebP) into straight-alpha RGBA8.
+/// Decode encoded image bytes (PNG, JPEG, GIF, WebP) into straight-alpha
+/// RGBA8, or parse an SVG file (#2111), which is recognised by its content
+/// ([`crate::svg_image::sniff_svg`]).
 pub fn decode_image_bytes(bytes: &[u8]) -> Result<DecodedImage, String> {
+    decode_image_bytes_for(bytes, false)
+}
+
+/// [`decode_image_bytes`], told whether the source names an SVG
+/// ([`crate::svg_image::source_says_svg`]: a `.svg` path or an
+/// `image/svg+xml` data URL). Such bytes that the raster decoders do not know
+/// are parsed as SVG too, so their failure says why the SVG did not parse.
+pub fn decode_image_bytes_for(bytes: &[u8], says_svg: bool) -> Result<DecodedImage, String> {
+    if crate::svg_image::sniff_svg(bytes) {
+        return crate::svg_image::decode_svg(bytes).map(DecodedImage::from_vector);
+    }
     match image::load_from_memory(bytes) {
         Ok(img) => {
             let rgba = img.to_rgba8();
             let (w, h) = (rgba.width(), rgba.height());
             Ok(DecodedImage::new(rgba.into_raw(), w, h))
         }
+        Err(_) if says_svg => crate::svg_image::decode_svg(bytes).map(DecodedImage::from_vector),
         Err(e) => Err(format!("Failed to decode image: {}", e)),
     }
 }
@@ -424,9 +471,8 @@ pub fn decode_image_bytes(bytes: &[u8]) -> Result<DecodedImage, String> {
 /// Decode a `data:` URL's image in place: no loader is ever offered one
 /// (#2100). The `<img>` and `background-image` paths both come here.
 pub fn decode_data_url_image(src: &str) -> Result<DecodedImage, String> {
-    let bytes =
-        decode_data_uri(src).ok_or_else(|| "malformed or non-base64 data: URL".to_string())?;
-    decode_image_bytes(&bytes)
+    let bytes = decode_data_uri(src).ok_or_else(|| "malformed data: URL".to_string())?;
+    decode_image_bytes_for(&bytes, crate::svg_image::source_says_svg(src))
 }
 
 /// Ask the loader that answers for `src` (the app's scheme loader, else the
@@ -450,7 +496,9 @@ fn load_and_decode(src: &str, loader: Arc<dyn ImageLoader>) -> Result<DecodedIma
         // that happens to be running (CLAUDE.md, "Every app-callback invoke
         // runs untracked").
         match rinch_core::untracked_handler(|| loader.load(src)) {
-            ImageLoadResult::Loaded(bytes) => decode_image_bytes(&bytes),
+            ImageLoadResult::Loaded(bytes) => {
+                decode_image_bytes_for(&bytes, crate::svg_image::source_says_svg(src))
+            }
             ImageLoadResult::Failed(e) => Err(e),
         }
     }))
@@ -555,28 +603,37 @@ pub fn run_queued_loads() -> bool {
 /// requesting document's [`ImageCache::drain_pending`] picks it up.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader>) {
-    std::thread::spawn(move || {
-        let result = load_and_decode(&src, loader);
-        if !queue_answer(doc_key, src, result) {
-            return;
-        }
+    // 8 MB of stack, not the 2 MB a spawned thread gets: a decoder recurses
+    // over its input (#2111's review: a nested SVG overflowed 2 MB, and a
+    // stack overflow aborts the process). The SVG limits keep well inside it.
+    let spawned = std::thread::Builder::new()
+        .name("rinch-image-load".into())
+        .stack_size(8 << 20)
+        .spawn(move || {
+            let result = load_and_decode(&src, loader);
+            if !queue_answer(doc_key, src, result) {
+                return;
+            }
 
-        // Wake the main thread. The desktop event loop runs on
-        // `ControlFlow::Wait`, so without this the decode sits in the queue
-        // until some other input happens to arrive — an `<img src>` set while
-        // the app is otherwise idle stays 0x0 and unpainted, in practice
-        // forever. Dispatching an empty callback is the cheapest thing that
-        // goes through the platform wake path.
-        //
-        // The wake is *promptness only*, never the correctness guarantee, and
-        // must not be treated as one: hosts install their own dispatcher, and
-        // an embedded one deliberately wakes nothing (its game loop is already
-        // turning); the desktop one coalesces, so a wake can be swallowed when
-        // another closure is already queued. What actually guarantees the drain
-        // is [`has_pending`], which every host's "is there anything to do?"
-        // gate consults.
-        rinch_core::run_on_main_thread(|| {});
-    });
+            // Wake the main thread. The desktop event loop runs on
+            // `ControlFlow::Wait`, so without this the decode sits in the queue
+            // until some other input happens to arrive — an `<img src>` set while
+            // the app is otherwise idle stays 0x0 and unpainted, in practice
+            // forever. Dispatching an empty callback is the cheapest thing that
+            // goes through the platform wake path.
+            //
+            // The wake is *promptness only*, never the correctness guarantee, and
+            // must not be treated as one: hosts install their own dispatcher, and
+            // an embedded one deliberately wakes nothing (its game loop is already
+            // turning); the desktop one coalesces, so a wake can be swallowed when
+            // another closure is already queued. What actually guarantees the drain
+            // is [`has_pending`], which every host's "is there anything to do?"
+            // gate consults.
+            rinch_core::run_on_main_thread(|| {});
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("image load thread not started: {e}");
+    }
 }
 
 /// Whether any decode is queued for this document.
@@ -741,18 +798,58 @@ pub fn purge_pending(doc_key: u64) {
 
 /// Decode a `data:` URI into raw bytes.
 ///
-/// Supports `data:[<mediatype>];base64,<data>` format.
-/// Returns `None` if the URI is malformed or not base64-encoded.
+/// `data:[<mediatype>][;base64],<data>`. The data is percent-decoded first,
+/// as the fetch standard does; then, with `;base64`, decoded by its
+/// forgiving base64: ASCII white space is ignored and padding is optional
+/// (as Chrome decodes a `data:` URL). Without it, the percent-decoded bytes
+/// are the data — the form an inline `data:image/svg+xml,%3Csvg…` takes
+/// (#2111; before, only padded base64 decoded). Returns `None` if the URI has
+/// no comma or its base64 is invalid.
 pub fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
     let comma = src.find(',')?;
     let header = &src[..comma];
-    let data = &src[comma + 1..];
-    if header.contains(";base64") {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.decode(data).ok()
-    } else {
-        None
+    let data = percent_decode(&src.as_bytes()[comma + 1..]);
+    let base64 = header
+        .split(';')
+        .skip(1)
+        .any(|p| p.trim().eq_ignore_ascii_case("base64"));
+    if !base64 {
+        return Some(data);
     }
+    use base64::Engine;
+    let forgiving = base64::engine::GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        base64::engine::GeneralPurposeConfig::new()
+            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
+    );
+    let data: Vec<u8> = data
+        .into_iter()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    forgiving.decode(data).ok()
+}
+
+/// `%XX` escapes to their bytes; a `%` not followed by two hex digits is kept
+/// as it is (the URL standard's percent-decode).
+fn percent_decode(input: &[u8]) -> Vec<u8> {
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'%'
+            && let (Some(hi), Some(lo)) = (
+                input.get(i + 1).copied().and_then(hex),
+                input.get(i + 2).copied().and_then(hex),
+            )
+        {
+            out.push(hi << 4 | lo);
+            i += 3;
+            continue;
+        }
+        out.push(input[i]);
+        i += 1;
+    }
+    out
 }
 
 #[cfg(test)]

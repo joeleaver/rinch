@@ -1589,15 +1589,14 @@ impl RinchDocument {
         // Check if already in cache
         if let Some(img) = self.tree.image_cache.get(src) {
             // Already decoded — update intrinsic dimensions on the Taffy node
-            let (iw, ih) = (img.width, img.height);
+            let natural = img.natural();
             let aspect = self.tree.nodes[node_id].computed_style.aspect_ratio;
             if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
                 let _ = self.tree.taffy.set_node_context(
                     taffy_id,
                     Some(crate::node::NodeContext::Image {
                         src: src.to_string(),
-                        width: iw,
-                        height: ih,
+                        natural: Some(natural),
                         aspect,
                     }),
                 );
@@ -1626,8 +1625,7 @@ impl RinchDocument {
                 taffy_id,
                 Some(crate::node::NodeContext::Image {
                     src: src.to_string(),
-                    width: 0,
-                    height: 0,
+                    natural: None,
                     aspect,
                 }),
             );
@@ -1752,8 +1750,7 @@ impl RinchDocument {
                 self.push_dirty_flags(node_id, DirtyFlags::PAINT);
             }
 
-            let img_dims = self.tree.image_cache.get(src).map(|i| (i.width, i.height));
-            let Some((iw, ih)) = img_dims else {
+            let Some(natural) = self.tree.image_cache.get(src).map(|i| i.natural()) else {
                 continue;
             };
 
@@ -1780,8 +1777,7 @@ impl RinchDocument {
                         taffy_id,
                         Some(crate::node::NodeContext::Image {
                             src: src.clone(),
-                            width: iw,
-                            height: ih,
+                            natural: Some(natural),
                             aspect,
                         }),
                     );

@@ -1203,7 +1203,7 @@ a transformed subtree is hit where it is *painted*.
 A context loads images as a desktop window does, on every target, for `<img
 src>` and `background-image: url(…)` alike:
 
-- **`data:` URLs** (base64) are decoded in place, by the layout that meets them,
+- **`data:` URLs** (base64 or percent-encoded) are decoded in place, by the layout that meets them,
   and are never offered to a loader.
 - **The app's own schemes** (`register_image_scheme`, `App::image_scheme`) are
   answered by the app's loader. This is how a game hands rinch the pictures it
@@ -1228,7 +1228,8 @@ out:
   the next `update()` loads it again, lays it out and asks for a redraw.
 - **The decode is the frame's.** A large PNG or JPEG is decoded inside the
   `update()` that asks for it, once per source; there is no background decode on
-  wasm32. Decode a very large picture ahead of time, off the frame, if a hitch
+  wasm32. An SVG file is parsed there too, and rasterised during the paint of
+  each new size it is drawn at (#2111), as on the desktop. Decode a very large picture ahead of time, off the frame, if a hitch
   matters.
 
 On the desktop the loader runs on a background thread, and an image arrives on

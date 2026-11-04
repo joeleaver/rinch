@@ -28,7 +28,112 @@ fn app() -> NodeHandle {
 }
 ```
 
-Supported formats: PNG, JPEG, GIF, WebP.
+Supported formats: PNG, JPEG, GIF, WebP, and SVG.
+
+**SVG files** (#2111) work wherever an image does — `<img src="icon.svg">`,
+`background-image`, `mask-image`, an app scheme's bytes, and a `data:` URL in
+either form (`data:image/svg+xml;base64,…` or the percent-encoded
+`data:image/svg+xml,%3Csvg…`). One is recognised by its content (an `<svg>`
+root element), whatever the source is called. It is drawn **at the size it
+covers on the screen**, DPI scale and CSS transforms included, so an icon stays
+sharp at any size; its rasters are kept per size (64 MB of them at most, the
+ones on screen always kept). It is laid
+out as a browser lays it out: its natural size is the root's `width` and
+`height` when they are absolute lengths, a missing one follows from the
+`viewBox`'s ratio, and an SVG with only a `viewBox` and no CSS size fills its
+container's width (an inline one is 300px wide; see below). Drawn into a box of
+another shape, the `viewBox` is fitted by the file's `preserveAspectRatio`
+(centred, by default); a file with no `viewBox` is stretched.
+
+#### The SVG profile
+
+An SVG file is untrusted input. rinch draws one only if everything in it is
+inside a **profile** of SVG, the features icon sets and editors use that are
+cheap and bounded to draw. A file that uses anything outside the profile is
+**refused whole**: it draws nothing (a failed image: an `<img>` is 0x0, a
+background is not painted, a mask hides its box), and the reason is logged
+once. It is never drawn in part. Measured on 11,843 real files (all 5,986
+Tabler icons; samples of KDE Breeze, Oxygen, GNOME Adwaita and hicolor app
+icons; 530 Inkscape and 7 Illustrator files among them; wallpapers), 99.97%
+draw.
+
+**Drawn:** `svg`, `g`, `defs`, `symbol`, `use`, `a`, `switch`, `path`,
+`rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`,
+`linearGradient` and `radialGradient` (at most 64 `stop`s each), `title`,
+`desc`, `metadata`, `style`; `clipPath`, `mask`, `pattern` and `marker`
+one level deep; and `filter` with at most 6 primitives, each one of
+`feGaussianBlur`, `feOffset`, `feFlood`, `feColorMatrix`, `feComposite`,
+`feBlend`, `feDropShadow` and `feMerge` (at most 8 inputs). That covers drop
+shadows and glows, including Inkscape's five-primitive drop shadow.
+Presentation attributes, `style=""`, `class`, gradients, opacity, strokes and
+dashes all work.
+
+**Ignored** (drawn as nothing; the rest of the file draws): `<text>` (rinch
+gives the SVG renderer no fonts, so convert text to paths), `<image>` (an
+SVG file reads nothing outside itself: not a file, a URL or a `data:` URL),
+`<foreignObject>`, and elements an SVG renderer does not draw, such as an
+editor's `sodipodi:namedview` or Inkscape's `flowRoot`.
+
+**`<style>` sheets** may hold rules whose selectors are a type, `*`, `.class`
+or `#id` (or several together, `rect.a#b`), comma-separated, with at most one
+combinator (`g rect`, `g > .a`, `a + b`, `a ~ b`). rinch applies them itself,
+by specificity and order, between the presentation attributes and the
+element's `style=""` (`!important` honoured).
+
+**References** (`href`, and `url(#…)` in `fill`, `stroke`, `clip-path`,
+`mask`, `filter` and the markers) resolve as Chrome 156 resolves them: to
+the first element with that id **of the kind the property takes**, and a
+reference to nothing of that kind is ignored (a `fill` falls back to its
+fallback colour, or `none`; a missing clip path, mask or filter draws the
+element unclipped, unmasked, unfiltered). An `href` is read only on `<use>`
+and on a gradient (to inherit another's stops).
+
+**Refused, and why:**
+- Any other element an SVG renderer would draw: the other filter primitives
+  (`feTurbulence`, `feMorphology`, `feConvolveMatrix`, the lighting filters,
+  `feDisplacementMap`, `feTile`, `feImage`, `feComponentTransfer`), each of
+  which can cost seconds per frame from a file of a few hundred bytes.
+- A `clipPath`, `mask`, `pattern` or `marker` that itself uses one (an
+  `href` on one of them is ignored). A chain of masks is a full-size layer
+  per link.
+- A filter of more than 6 primitives, an `feMerge` of more than 8 inputs, or a gradient of more than
+  64 stops.
+- In `<style>`: an `@` rule (`@media`, `@import`), a pseudo-class, an
+  attribute selector, more than one combinator, more than 1,024 selectors.
+  A long descendant chain makes a matcher backtrack for seconds.
+- A doctype whose internal subset holds anything but flat
+  `<!ENTITY name "value">` declarations, each name once. Illustrator's
+  `&ns_svg;` entities are fine; an entity that refers to another is not.
+  References expand to at most 1 MB in all.
+- Nesting deeper than 128 (as written, or once `<use>` is expanded), or more
+  than 100,000 elements once `<use>` and other references are expanded.
+- At draw time: a pattern tile over 4M device pixels or a filter layer over
+  16M pixels refuses that size of the image; so does a raster estimated at
+  more than about half a second of work on one core (a backstop: millions
+  of dashes, dozens of canvas-sized translucent or many-stop gradient
+  shapes at 2x). Every icon and illustration in the 11,843-file corpus
+  draws at 48px; at 1024px, 9 of a 1,469-file sample (filter-heavy app
+  icons and cursors, 0.1 to 0.55 s each) are refused at that size.
+
+Inline `<svg>` elements in the DOM are a different path and are unaffected.
+
+Two differences from Chrome: rinch rounds a layout to whole pixels (an SVG of
+`width="10.5"` is 11 wide), and an *inline* `<img>` of an SVG with only a
+`viewBox` is 300px wide where Chrome fills its container (a block one fills it
+in both).
+
+**Cost.** The file is parsed on the load thread, but it is rasterised on the UI
+thread, inside the paint that first draws it at each size. An icon costs tens
+of microseconds. A full-window illustration costs what its shapes cover:
+measured (release build, one core of a loaded desktop), 2,000 small opaque
+shapes took 31 ms at 1200x800 and 72 ms at 2x; 2,000 half-transparent shapes
+each spanning the canvas took 0.65 s and 1.8 s. An SVG drawn at a size that
+keeps changing — a full-window `background-size: cover` while the window is
+resized, a scale animation — is rasterised again at each new size, so keep
+large or complex SVG backgrounds at a fixed size, or use a raster image.
+
+A `data:` URL is decoded as Chrome decodes one: its data is percent-decoded,
+and base64 may leave out its padding and contain white space.
 
 An `<img>` is sized as a browser sizes a replaced element: with no CSS size it
 is its natural size — `display: block` included, so `margin: 0 auto` centres
@@ -156,9 +261,9 @@ Not read on desktop:
   `mask-type`.
 - A `url(#id)` reference to an SVG `<mask>` element.
 
-rinch decodes no SVG *file* as an image, so `mask-image: url(icon.svg)` masks
-the element away (an `<img src="icon.svg">` shows nothing either). Use a
-PNG or another raster format. A `data:` URL works, as it does for
+An SVG file is a mask image like any other (#2111): `background-color` under
+`mask-image: url(icon.svg)` is the usual way to tint an icon, and the icon is
+rasterised at the size the mask draws it. A `data:` URL works, as it does for
 `background-image`. On the web, the browser reads all of these itself.
 
 ### `image-rendering`
@@ -266,7 +371,7 @@ closure, or a type that implements `rinch::image::ImageLoader`.
 
 What a loader must know:
 
-- **It returns encoded bytes**: the contents of a PNG, JPEG, GIF or WebP file.
+- **It returns encoded bytes**: the contents of a PNG, JPEG, GIF, WebP or SVG file.
   rinch decodes them. It never returns decoded pixels.
 - **On native targets it runs on a background thread** spawned for that one
   load, never the UI thread, so it may block on I/O. Several loads run at once.

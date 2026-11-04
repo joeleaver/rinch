@@ -3136,6 +3136,8 @@ pub fn paint_document(
     // for a while are forgotten (#1157).
     #[cfg(feature = "software-renderer")]
     tree.background_tiles.borrow_mut().begin_frame();
+    // And the SVG rasters (#2111): ones this frame draws are kept.
+    crate::svg_image::begin_frame();
     ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,

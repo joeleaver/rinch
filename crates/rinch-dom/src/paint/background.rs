@@ -223,7 +223,13 @@ fn paint_layer(
 ) {
     let intrinsic = match image {
         BackgroundValue::Image { url } => match tree.image_cache.get(url) {
-            Some(decoded) => Some((decoded.width as f64 * scale, decoded.height as f64 * scale)),
+            Some(decoded) => Some(match decoded.vector() {
+                Some(vector) => {
+                    let area = positioning_area(cs, geometry.origin, scale, rect);
+                    vector_size(vector.natural(), scale, area.width(), area.height())
+                }
+                None => (decoded.width as f64 * scale, decoded.height as f64 * scale),
+            }),
             // Not loaded yet: nothing to draw.
             None => return,
         },
@@ -369,6 +375,31 @@ impl DeviceSnap {
             Self::Translate(..) => (self.x(x) - x).abs() < 1e-6 && (self.y(y) - y).abs() < 1e-6,
             Self::None => false,
         }
+    }
+}
+
+/// The size an SVG file (#2111) takes as a layer's image: CSS's default
+/// sizing algorithm (css-images-3 §5.3) against the positioning area `aw` x
+/// `ah`. Its natural width and height (scaled) where it has them, a missing
+/// one through its ratio, else the area's; with only a ratio, the largest
+/// box of it inside the area (`contain`); with nothing, the area.
+fn vector_size(n: crate::svg_image::NaturalSize, scale: f64, aw: f64, ah: f64) -> (f64, f64) {
+    let px = |v: Option<f32>| v.map(|v| f64::from(v) * scale);
+    let r = n.ratio.map(f64::from);
+    match (px(n.width), px(n.height), r) {
+        (Some(w), Some(h), _) => (w, h),
+        (Some(w), None, Some(r)) => (w, w / r),
+        (Some(w), None, None) => (w, ah),
+        (None, Some(h), Some(r)) => (h * r, h),
+        (None, Some(h), None) => (aw, h),
+        (None, None, Some(r)) => {
+            if aw / ah > r {
+                (ah * r, ah)
+            } else {
+                (aw, aw / r)
+            }
+        }
+        (None, None, None) => (aw, ah),
     }
 }
 
@@ -788,13 +819,26 @@ fn pattern_source(
     image: &BackgroundValue,
     _scale: f64,
     _tile: (f64, f64),
-    _device: (f64, f64),
+    device: (f64, f64),
     _sampling: ImageSampling,
 ) -> Option<PatternSource> {
     let BackgroundValue::Image { url } = image else {
         return None;
     };
     let decoded = tree.image_cache.get(url)?;
+    // An SVG file (#2111) is rasterised at the whole device pixels the tile
+    // covers (the pattern's transform scales the raster to the tile), its
+    // drawing stretched by under a pixel to fill them.
+    if let Some(vector) = decoded.vector() {
+        let raster = vector.raster(device.0.ceil(), device.1.ceil())?;
+        let image = &raster.image;
+        return Some(PatternSource {
+            pixels: image.blob(),
+            width: image.width,
+            height: image.height,
+            premultiplied: false,
+        });
+    }
     if decoded.width == 0 || decoded.height == 0 {
         return None;
     }
