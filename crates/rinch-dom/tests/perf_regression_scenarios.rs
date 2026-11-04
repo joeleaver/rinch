@@ -2678,6 +2678,107 @@ fn a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved()
     }
 }
 
+/// Playweft's asset panel as its live capture has it (#2136,
+/// `repro-dom.json`), down to what makes each card be asked at four column
+/// widths: a CSS-grid panel (`minmax(0, 1fr)` column, `auto` rows) in an
+/// absolutely placed flex host, whose toolbar is wider at max-content than the
+/// panel; the scrolling flex column with `flex: none` children; and the card
+/// grid, one of whose names is wider at max-content than a column. Returns
+/// the document and every card's count text.
+fn probed_card_grid(cards: usize) -> (RinchDocument, Vec<NodeId>) {
+    let mut doc = doc_with(
+        "body { height: 100% }
+         .hosted { position: absolute; left: 265px; top: 557px; width: 434px; height: 267px;
+                   display: flex; flex-direction: column; overflow: hidden }
+         .panel { display: grid; flex: 1 1 auto; min-width: 0; min-height: 0;
+                  grid-template-columns: minmax(0, 1fr);
+                  grid-template-rows: auto auto minmax(0, 1fr) auto }
+         .tools { height: 40px }
+         .wide { display: inline-block; width: 380px; height: 10px }
+         .well { display: flex; flex-direction: column; gap: 8px; padding: 8px;
+                 min-width: 0; min-height: 0; overflow: auto }
+         .well > * { flex: none }
+         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+                 gap: 8px; padding: 4px; min-width: 0 }
+         .card { display: flex; flex-direction: column; min-width: 0; overflow: hidden }
+         .thumb { height: 60px }
+         .name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis }
+         .meta { display: flex; align-items: center; gap: 4px; min-width: 0 }
+         .spacer { flex: 1 1 auto }",
+    );
+    let body = doc.body();
+    let hosted = el(&mut doc, body, "div", "hosted");
+    let panel = el(&mut doc, hosted, "aside", "panel");
+    let tools = el(&mut doc, panel, "div", "tools");
+    el(&mut doc, tools, "span", "wide");
+    let folders = el(&mut doc, panel, "div", "");
+    text(&mut doc, folders, "Folders");
+    let well = el(&mut doc, panel, "div", "well");
+    let foot = el(&mut doc, panel, "div", "");
+    text(&mut doc, foot, "foot");
+    let grid = el(&mut doc, well, "div", "grid");
+    let mut counts = Vec::new();
+    for i in 0..cards {
+        let w = el(&mut doc, grid, "div", "");
+        doc.set_attribute(w, "style", "display: contents");
+        let card = el(&mut doc, w, "div", "card");
+        el(&mut doc, card, "div", "thumb");
+        let name = el(&mut doc, card, "span", "name");
+        let label = if i == 3 {
+            "A much longer asset name that is wide".to_string()
+        } else {
+            format!("Asset {i}")
+        };
+        text(&mut doc, name, &label);
+        let meta = el(&mut doc, card, "span", "meta");
+        let c = doc.create_comment("for");
+        doc.append_child(meta, c);
+        el(&mut doc, meta, "span", "spacer");
+        counts.push(text(&mut doc, meta, &format!("{} uses", 10 + i % 80)));
+    }
+    doc.resolve_layout(1440.0, 900.0);
+    doc.resolve_layout(1440.0, 900.0);
+    doc.tree.perf.reset();
+    (doc, counts)
+}
+
+/// One card's count edited, same width, in [`probed_card_grid`] (#2136's live
+/// trigger). Each card is asked ten distinct sizes a layout — its min- and
+/// max-content widths, and its height under a min- and a max-content
+/// constraint at four column widths (the min-content probe's, the
+/// max-content probe's, the narrower panel probe's and the final one) — and
+/// Taffy kept nine per node, with clock eviction: every card missed every
+/// size on every layout that recomputed the grid, and measured its text
+/// again (Playweft, 430 cards: 15,242 `shape_measure_text`, 63,369
+/// `taffy_measure_calls`, 402 ms; the count at 24 and 48 cards here is in the
+/// PR). The taffy fork keeps sixteen now (`dependencies.md`, "Taffy Fork",
+/// item 6): the edit measures that card's text, at either number of cards.
+#[test]
+fn a_label_edit_in_a_grid_probed_at_four_widths_measures_one_card() {
+    for cards in [24, 48] {
+        let (mut doc, counts) = probed_card_grid(cards);
+        // Twice: the second edit is the steady state, where the thrash was.
+        for (label, hits, calls) in [("88 uses", 17, 114), ("89 uses", 16, 113)] {
+            doc.set_text_content(counts[10], label);
+            doc.resolve_layout(1440.0, 900.0);
+            let s = doc.tree.perf.end_frame();
+            expect(
+                &format!("a count edited to {label:?} among {cards}"),
+                &s,
+                &[
+                    (ShapeMeasureText, 24),
+                    (IfcMeasureCacheHits, hits),
+                    (IfcMeasureInvalidations, 2),
+                    (LayoutResolves, 1),
+                    (TaffyRootComputes, 1),
+                    (TaffyMeasureCalls, calls),
+                    (AbsBoxesVisited, 1),
+                ],
+            );
+        }
+    }
+}
+
 // ── inline_block_computes: keyword atomic inlines (#691) ─────────────────────
 
 /// A `fit-content` atomic inline is sized by three computes (its max-content,
