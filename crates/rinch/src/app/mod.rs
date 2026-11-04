@@ -6139,6 +6139,15 @@ impl RinchApp {
             if previous != dpr {
                 d.tree.resnap_scroll_offsets();
             }
+            let changed = previous != dpr && previous > 0.0;
+            let doc_key = d.doc_key();
+            drop(d);
+            // Components that react to a display change (an open
+            // `DropdownMenuSub` closes, as Chrome closes its menus) hear it
+            // here, with no document borrow held.
+            if changed {
+                rinch_core::events::notify_display_scale_changed(doc_key);
+            }
         }
     }
 

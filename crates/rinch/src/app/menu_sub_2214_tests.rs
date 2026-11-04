@@ -864,14 +864,37 @@ fn rows_and_panels_carry_menu_roles() {
     assert_eq!(role(flyout(&app, "s-new")).as_deref(), Some("menu"));
 }
 
-/// A scale change that leaves the window's logical size as it was (the
-/// window dragged to a 2x display, its physical size doubling) keeps an open
-/// submenu open: its placement is in logical px and nothing moved. A scale
-/// change that changes the logical size is a resize, and closes it as above.
+/// A display scale change closes an open submenu, as Chrome closes its menus
+/// on any display change — even when the window's logical size stays the
+/// same (the window dragged to a 2x display, its physical size doubling).
 #[test]
-fn a_scale_change_with_the_same_logical_size_keeps_the_submenu() {
+fn a_scale_change_closes_an_open_submenu() {
     let _t = timer_lock();
     let mut app = two_subs(AT_60_40, defaults);
+    let at = row(&app, "s-new");
+    click(&mut app, at);
+    assert!(is_open(&app, "s-new"), "premise");
+    app.handle_event(
+        PlatformEvent::ScaleFactorChanged(2.0),
+        (VP.0 * 2, VP.1 * 2),
+        2.0,
+    );
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    assert!(!is_open(&app, "s-new"));
+}
+
+/// With `close_on_resize: false` a scale change keeps it open, placed again
+/// where it was (the placement is in logical px and nothing moved).
+#[test]
+fn with_close_on_resize_off_a_scale_change_keeps_it_in_place() {
+    let _t = timer_lock();
+    fn keep() -> DropdownMenuSub {
+        DropdownMenuSub {
+            close_on_resize: false,
+            ..Default::default()
+        }
+    }
+    let mut app = two_subs(AT_60_40, keep);
     let at = row(&app, "s-new");
     click(&mut app, at);
     let before = painted(&app, flyout(&app, "s-new"));
