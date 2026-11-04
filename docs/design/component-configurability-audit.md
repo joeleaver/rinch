@@ -136,7 +136,58 @@ Sorted roughly by how much an app is held back, most first. Defaults in the Prop
 
 ## Issues
 
-One issue per component (small text primitives grouped). See the table at the end of this file, filled in when the issues were filed.
+One issue per component (small text primitives grouped, plus shared overlay helpers, shared input attributes, the component stylesheet and reduced motion). Filed 2026-11-04:
+
+| Issue | Component(s) |
+|---|---|
+| #2163 | Tree |
+| #2164 | SortableList |
+| #2165 | Modal, Drawer, Popover |
+| #2166 | Modal |
+| #2167 | Drawer |
+| #2168 | Popover |
+| #2169 | DropdownMenu |
+| #2170 | ContextMenu |
+| #2171 | Tooltip |
+| #2172 | HoverCard |
+| #2173 | Notification |
+| #2174 | FloatingPanel |
+| #2175 | LoadingOverlay |
+| #2176 | Form inputs |
+| #2177 | Select |
+| #2178 | NumberInput |
+| #2179 | ColorInput |
+| #2180 | ColorPicker |
+| #2181 | ColorSwatch |
+| #2182 | PasswordInput |
+| #2183 | TextInput |
+| #2184 | Textarea |
+| #2185 | Slider |
+| #2186 | Checkbox |
+| #2187 | Switch |
+| #2188 | Radio / RadioGroup |
+| #2189 | Fieldset |
+| #2190 | Accordion |
+| #2191 | Tabs |
+| #2192 | NavLink |
+| #2193 | Breadcrumbs |
+| #2194 | Pagination |
+| #2195 | Stepper |
+| #2196 | BorderlessWindow |
+| #2197 | Button |
+| #2198 | ActionIcon |
+| #2199 | CloseButton (and Alert's close) |
+| #2200 | Alert |
+| #2201 | Badge |
+| #2202 | Avatar |
+| #2203 | Image |
+| #2204 | Progress |
+| #2205 | Loader |
+| #2206 | Anchor |
+| #2207 | Text, Title, Highlight, Blockquote, Divider, List, Skeleton, SimpleGrid |
+| #2208 | Component stylesheet |
+| #2209 | Reduced motion never applies on desktop |
+| #2210 | Editor |
 
 ---
 
