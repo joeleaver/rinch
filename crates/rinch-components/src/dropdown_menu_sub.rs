@@ -494,7 +494,7 @@ fn measure_and_place(sub: &Sub) -> bool {
         .flyout
         .children()
         .into_iter()
-        .filter(|c| c.node_type() == Some(1))
+        .filter(|c| c.tag_name().is_some())
         .find_map(|c| rect(&c).filter(|r| r.width > 0.0 || r.height > 0.0))
         .map(|r| r.y - f.y)
         .unwrap_or(0.0);

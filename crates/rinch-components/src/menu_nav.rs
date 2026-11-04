@@ -107,7 +107,7 @@ fn is_disabled(node: &NodeHandle) -> bool {
 pub(crate) fn panel_items(panel: &NodeHandle) -> Vec<NodeHandle> {
     fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) {
         for child in node.children() {
-            if child.node_type() != Some(1) {
+            if child.tag_name().is_none() {
                 continue;
             }
             if is_panel(&child) {
