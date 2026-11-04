@@ -188,3 +188,23 @@ fn a_colour_restyle_keeps_a_cell_centred() {
     edit_other(&mut doc, "edited");
     assert_centred(&doc, "after a colour change and an edit");
 }
+
+/// The same restyle on a cell whose content is a block box: Taffy placed it,
+/// so it carries the offset itself, and aligning the cell again must not add
+/// it twice.
+#[test]
+fn a_colour_restyle_keeps_a_block_in_a_cell_where_it_was() {
+    let mut doc = doc_with(
+        TABLE_CSS,
+        "<table><tr><td id=a><div id=k style='height:10px'></div></td>\
+         <td><div style='height:50px'></div></td></tr></table><p id=other>other</p>",
+    );
+    let k = id(&doc, "#k");
+    assert_eq!(doc.tree.nodes[k.0].layout.y, 20.0, "positive control: (50 - 10) / 2");
+    let body = doc.body();
+    doc.set_style(body, "color", "rgb(200, 0, 0)");
+    settle(&mut doc);
+    assert_eq!(doc.tree.nodes[k.0].layout.y, 20.0, "after a colour change");
+    edit_other(&mut doc, "edited");
+    assert_eq!(doc.tree.nodes[k.0].layout.y, 20.0, "after an edit");
+}
