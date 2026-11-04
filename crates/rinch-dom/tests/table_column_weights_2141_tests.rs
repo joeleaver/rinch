@@ -185,3 +185,67 @@ fn cell_widths_give_the_detached_layouts_columns() {
         assert_eq!(cells(&fast), cells(&slow), "{html}");
     }
 }
+
+fn doc_by(html: &str, detached: bool) -> RinchDocument {
+    let mut d = RinchDocument::new();
+    d.tree.table_columns_by_detached_layout = detached;
+    d.load_css(CSS);
+    let body = d.body();
+    d.set_inner_html(body, html);
+    settle(&mut d);
+    d
+}
+
+/// A cell changes while its table has no width of its own (or a fixed
+/// layout), when no column is measured, and the width comes back: the
+/// column must be measured from the cell as it is now. The remembered width
+/// used to be dropped only when Taffy still called the cell dirty, which the
+/// computes of the layouts in between had cleared (review of #2153: 407/193
+/// where a fresh layout gives 585/15).
+#[test]
+fn a_cell_changed_while_its_table_had_no_width_is_measured_again() {
+    for (prop, off, on) in [
+        ("width", "auto", "600px"),
+        ("table-layout", "fixed", "auto"),
+    ] {
+        let mut d = doc(&rows(&[(SHORT, "x"), ("cd", "y")]));
+        let t = d.query_selector("table").unwrap();
+        d.set_style(t, prop, off);
+        settle(&mut d);
+        set_text(&mut d, "#a0", LONG);
+        d.set_style(t, prop, on);
+        settle(&mut d);
+        let fresh = doc(&rows(&[(LONG, "x"), ("cd", "y")]));
+        assert_ne!(
+            cells(&fresh),
+            cells(&doc(&rows(&[(SHORT, "x"), ("cd", "y")]))),
+            "positive control"
+        );
+        assert_eq!(cells(&d), cells(&fresh), "{prop}: {off} -> edit -> {on}");
+    }
+}
+
+/// #2156: a table with a width inside an `inline-block`. The box's own
+/// compute lays the table out before its columns are measured, and cleared
+/// the dirty flag the measure looked for, so the columns kept their old
+/// shares — on the detached layout's path as on the cells' one.
+#[test]
+fn a_table_in_an_inline_block_moves_its_columns_after_a_cell_edit() {
+    let html = |t: &str| {
+        format!(
+            "<div style='width:700px'>x <span style='display:inline-block'><table>\
+             <tr><td id=a>{t}</td><td>yy</td></tr></table></span> y</div>"
+        )
+    };
+    for detached in [false, true] {
+        let mut d = doc_by(&html(SHORT), detached);
+        set_text(&mut d, "#a", LONG);
+        let fresh = doc_by(&html(LONG), detached);
+        assert_ne!(
+            cells(&fresh),
+            cells(&doc_by(&html(SHORT), detached)),
+            "positive control"
+        );
+        assert_eq!(cells(&d), cells(&fresh), "detached layout: {detached}");
+    }
+}
