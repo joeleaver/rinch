@@ -85,6 +85,12 @@ pub struct TableCell {
     pub base: Option<BorderSides>,
     /// Extra top padding `vertical-align` wrote on the computed style.
     pub shift: f32,
+    /// The offset `vertical-align` added to the `y` of the children Taffy
+    /// places (block boxes, anonymous boxes, floats, out-of-flow boxes), which
+    /// they still carry. A read-back resets them, so it is zeroed there; a
+    /// restyle replaces the computed style but not the children's boxes, so
+    /// there it is kept apart from [`Self::shift`] (#2144).
+    pub kids_shift: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -609,6 +615,7 @@ impl RinchDocument {
         if let Some(old) = &node.table_cell {
             slot.base = slot.base.or(old.base);
             slot.shift = old.shift;
+            slot.kids_shift = old.kids_shift;
             if old.under != slot.under {
                 self.tree.paint_dirty_nodes.push(id);
             }
@@ -991,6 +998,7 @@ impl RinchDocument {
         if node.computed_style.table_part == TablePart::Caption {
             return;
         }
+        cell.kids_shift = 0.0;
         let shift = std::mem::take(&mut cell.shift);
         if shift != 0.0 {
             let top = node.computed_style.padding_top.to_px() - shift;
@@ -1013,12 +1021,28 @@ impl RinchDocument {
         }
     }
 
+    /// Apply a cell's `vertical-align`: its leftover height becomes extra top
+    /// padding (`TableCell::shift`), which moves everything its own inline
+    /// formatting context positions — text, and the atomic inlines in it, whose
+    /// boxes are relative to its content box — and an offset on the `y` of
+    /// each child Taffy places (`TableCell::kids_shift`).
+    ///
+    /// Idempotent, whatever a layout re-read: each half is applied as the
+    /// difference from what it already carries. It used to add the whole shift
+    /// to every child, on the assumption that the read-back had just reset
+    /// them all. An atomic inline is not reset by a read (its place is its
+    /// line's, `write_inline_positions`), so it took the shift once more per
+    /// layout its line was not rebuilt in, on top of the padding that already
+    /// moved it (#2144).
     fn align_table_cell(&mut self, id: RawNodeId) {
         let node = &self.tree.nodes[id];
         let Some(cell) = &node.table_cell else {
             return;
         };
-        let old = cell.shift;
+        if node.computed_style.table_part == TablePart::Caption {
+            return;
+        }
+        let (old, kids_old) = (cell.shift, cell.kids_shift);
         let align = node.computed_style.vertical_align;
         let cs = &node.computed_style;
         let base_top = cs.padding_top.to_px() - old;
@@ -1032,32 +1056,53 @@ impl RinchDocument {
                 kids.iter()
                     .map(|&c| {
                         let l = &self.tree.nodes[c].layout;
-                        l.y + l.height
+                        l.y - kids_old + l.height
                     })
                     .fold(0.0, f32::max)
                     - inset_top
             }
         };
         let room = (avail - content).max(0.0);
-        let shift = match align {
-            VerticalAlignValue::Middle => room / 2.0,
-            VerticalAlignValue::Bottom => room,
-            _ => 0.0,
-        };
         let plain = matches!(
             cs.padding_top,
             LengthPercentageValue::Zero | LengthPercentageValue::Length(_)
         );
-        if !plain || (shift == 0.0 && old == 0.0) {
+        let shift = match align {
+            _ if !plain => 0.0,
+            VerticalAlignValue::Middle => room / 2.0,
+            VerticalAlignValue::Bottom => room,
+            _ => 0.0,
+        };
+        if shift == old && shift == kids_old {
             return;
         }
         let children = Self::box_tree_children(&self.tree.nodes, id).into_owned();
         let node = &mut self.tree.nodes[id];
-        node.table_cell.as_mut().unwrap().shift = shift;
-        node.computed_style.padding_top = LengthPercentageValue::Length(base_top + shift);
-        // The children were read back just now, with no shift on them.
+        let cell = node.table_cell.as_mut().unwrap();
+        cell.shift = shift;
+        cell.kids_shift = shift;
+        if plain {
+            let top = base_top + shift;
+            node.computed_style.padding_top = if top == 0.0 {
+                LengthPercentageValue::Zero
+            } else {
+                LengthPercentageValue::Length(top)
+            };
+        }
+        let delta = shift - kids_old;
+        if delta == 0.0 {
+            return;
+        }
         for c in children {
-            self.tree.nodes[c].layout.y += shift;
+            let child = &mut self.tree.nodes[c];
+            // Placed by the cell's own lines, relative to its content box:
+            // the padding above has moved it already.
+            if child.ifc_root == Some(id)
+                && (child.is_text() || child.display_mode.is_atomic_inline())
+            {
+                continue;
+            }
+            child.layout.y += delta;
         }
     }
 }

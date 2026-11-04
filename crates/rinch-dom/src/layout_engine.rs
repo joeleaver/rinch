@@ -1387,6 +1387,10 @@ impl RinchDocument {
                 node.layout = zero;
                 self.tree.paint_dirty_nodes.push(id);
             }
+            // A hidden cell's children carry no `vertical-align` offset now.
+            if let Some(cell) = node.table_cell.as_mut() {
+                cell.kids_shift = 0.0;
+            }
             let children = &self.tree.nodes[id].children;
             stack.extend_from_slice(children);
         }
