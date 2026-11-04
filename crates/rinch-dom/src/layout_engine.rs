@@ -764,10 +764,7 @@ impl RinchDocument {
         &mut self,
         run: TaffyRun<'_>,
         available_space: taffy::Size<taffy::AvailableSpace>,
-    ) -> (
-        HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>>,
-        Vec<taffy::Size<f32>>,
-    ) {
+    ) -> (MeasuredTextLayouts, Vec<taffy::Size<f32>>) {
         use crate::perf::Counter;
         if let TaffyRun::Layout(_) = run {
             self.tree.taffy_computes += 1;
@@ -3281,6 +3278,9 @@ impl RinchDocument {
         // ifc_dirty is not set for text-only changes.
     }
 }
+
+/// The text layouts a compute's measures built, by node and wrap width.
+type MeasuredTextLayouts = HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>>;
 
 /// What [`RinchDocument::run_taffy`] asks Taffy for.
 enum TaffyRun<'a> {
