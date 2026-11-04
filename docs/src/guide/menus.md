@@ -440,7 +440,8 @@ It behaves like Chrome's own context menu, and every choice is a prop
   (`flip`), and at the bottom it moves up (`shift`). It is never clipped by its
   menu's own overflow, on the desktop or in a browser. A flyout whose content
   changes size while open is placed again; a window resize closes it, as Chrome
-  closes its menus (`close_on_resize: false` places it again instead).
+  closes its menus (`close_on_resize: false` places it again instead). A page
+  scrollbar appearing is not a resize.
 - Choosing an item anywhere in the tree closes the whole menu, `ContextMenu`
   included. A `disabled` submenu never opens.
 - Style it per menu through the cascade: `--rinch-dropdown-menu-sub-offset`,

@@ -276,7 +276,12 @@ measured and placed again (`remeasure`). A window resize is seen through a
 viewport-sized, hidden `position: fixed` sentinel shown while open (no viewport
 signal on `NodeHandle`); it closes the submenu (Chrome closes menus on a bounds change) or,
 with `close_on_resize: false`, re-places it. On desktop the resize is the
-runtime's `resize_layout` path, which refreshes the bounds signals.
+runtime's `resize_layout` path, which refreshes the bounds signals. The size compared is the sentinel's own box (`100vw` x `100vh`, the window), not
+`viewport_size()`: on the web that is `clientWidth`, which shrinks when a page
+scrollbar appears, and a scrollbar closed open submenus (second review of #2216).
+A desktop scale change that leaves the logical window size as it was keeps the
+submenu open (its placement is in logical px; Chrome closes its menus on any
+display change); one that changes the logical size closes it like a resize.
 
 **Pointer.** Hover-open is a `data-onenter` on the row (arm the open timer); the row's
 `data-onleave` clears `on_row`, and a pending open fires only while it is set, so
