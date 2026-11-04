@@ -53,6 +53,7 @@ use rinch_core::element::ValueCallback;
 use rinch_core::events::KeyEventData;
 use rinch_core::get_click_context;
 use rinch_core::reactive::ElementBounds;
+use rinch_core::reactive::Signal;
 use rinch_core::timer::set_timeout;
 
 /// The attribute naming an item's key.
@@ -73,6 +74,16 @@ const REASON_CLASS: &str = "rinch-sortable__reason";
 const REASON_SHOWN_CLASS: &str = "rinch-sortable__reason--shown";
 const REASON_ABOVE_CLASS: &str = "rinch-sortable__reason--above";
 const DISABLED_ATTR: &str = "data-sortable-disabled";
+const HIDDEN_CLASS: &str = "rinch-sortable__item--drag-hidden";
+const COLLAPSED_CLASS: &str = "rinch-sortable__item--collapsed";
+const SHIFTED_CLASS: &str = "rinch-sortable__item--shifted";
+const REFLOWING_CLASS: &str = "rinch-sortable--reflowing";
+const GHOST_CLASS: &str = "rinch-sortable__ghost";
+const GHOST_ATTR: &str = "data-sortable-ghost";
+const SHIFT_X: &str = "--rinch-sortable-shift-x";
+const SHIFT_Y: &str = "--rinch-sortable-shift-y";
+const GHOST_X: &str = "--rinch-sortable-ghost-x";
+const GHOST_Y: &str = "--rinch-sortable-ghost-y";
 /// The keys that lift and drop when a list names none.
 const DEFAULT_LIFT_KEYS: [&str; 2] = [" ", "Enter"];
 /// Inline style that keeps the live region off screen without the stylesheet.
@@ -165,6 +176,154 @@ pub type SortJudge = Rc<dyn Fn(&SortMove) -> SortVerdict>;
 /// What a drag from an item carries: given the item's key, the keys moved
 /// together, in order.
 pub type SortKeys = Rc<dyn Fn(&str) -> Vec<String>>;
+/// Builds a pointer drag's preview ([`SortPreview::Custom`]): given a scope to
+/// build in and the dragged item's key, the element that follows the pointer.
+/// The scope is disposed, and the element discarded, when the drag ends.
+pub type SortPreviewFn = Rc<dyn Fn(&mut RenderScope, &str) -> NodeHandle>;
+
+/// What follows the pointer during a pointer drag from a list
+/// ([`SortableList::preview`]; the list the drag *starts* in decides). A
+/// keyboard lift has no pointer and shows none.
+#[derive(Clone, Default)]
+pub enum SortPreview {
+    /// Nothing: the dragged item stays where it is, styled by
+    /// [`SortableList::source`].
+    None,
+    /// The runtime's built-in drag ghost: on desktop a picture of the item
+    /// taken when the drag starts, kept at the grab offset under the pointer.
+    /// It is a picture, not an element: no CSS reaches it. The web runtime has
+    /// no built-in ghost, so nothing shows there.
+    Snapshot,
+    /// A copy of the item's elements, in a `.rinch-sortable__ghost` element on
+    /// `<body>` that follows the pointer, keeping the point the item was
+    /// grabbed at under it. Styled by classes and `--rinch-sortable-ghost-*`
+    /// properties. Being on `<body>`, the copy takes no style that depends on
+    /// the item's ancestors. The default, as a browser's native drag
+    /// image: translucent (`--rinch-sortable-ghost-opacity`, 0.75), no tilt,
+    /// no shadow.
+    #[default]
+    Clone,
+    /// The app's own element, built by the function, in the same
+    /// `.rinch-sortable__ghost` wrapper as [`SortPreview::Clone`].
+    Custom(SortPreviewFn),
+}
+
+impl std::fmt::Debug for SortPreview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SortPreview::None => "None",
+            SortPreview::Snapshot => "Snapshot",
+            SortPreview::Clone => "Clone",
+            SortPreview::Custom(_) => "Custom(..)",
+        })
+    }
+}
+
+/// How a list shows the place a drag would land in it
+/// ([`SortableList::indicator`]; the list the place is in decides).
+///
+/// A refused place never opens a gap: it shows the refused caret and the
+/// reason in every mode but [`SortIndicator::None`], which still shows the
+/// reason.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SortIndicator {
+    /// An insertion line at the place (the default).
+    #[default]
+    Caret,
+    /// The items from the place on slide apart along the list's axis to open
+    /// a gap the size of what is carried, and back when the place moves on.
+    /// The slide is a CSS transition (`--rinch-sortable-reflow-duration`,
+    /// `--rinch-sortable-reflow-easing`); layout does not move.
+    Gap,
+    /// The gap and the caret.
+    Both,
+    /// Nothing but a refusal's reason: the app draws its own from
+    /// [`sortable_drag`].
+    None,
+}
+
+impl SortIndicator {
+    fn caret(self) -> bool {
+        matches!(self, SortIndicator::Caret | SortIndicator::Both)
+    }
+
+    fn gap(self) -> bool {
+        matches!(self, SortIndicator::Gap | SortIndicator::Both)
+    }
+}
+
+/// How the dragged items look in their list during a pointer drag
+/// ([`SortableList::source`]; the list the drag starts in decides). A
+/// keyboard lift always rings the lifted items instead.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SortSource {
+    /// Faded (`--rinch-sortable-dragging-opacity`).
+    Dim,
+    /// Hidden, and the items after them in their list slide up over their
+    /// space (the same transition as [`SortIndicator::Gap`]); over its own
+    /// place a list with a gap indicator opens the gap there again.
+    Collapse,
+    /// Hidden, their space kept.
+    Hide,
+    /// As they are: the default, as a browser's native drag leaves its
+    /// source.
+    #[default]
+    Unchanged,
+}
+
+/// Where a drag is: a list and an index in it, counted with the carried items
+/// left out (as [`SortPlace::index`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SortTarget {
+    /// The list's `id`.
+    pub list: String,
+    /// The place in it.
+    pub index: usize,
+}
+
+/// The sortable drag in progress, for an app that draws its own presentation
+/// ([`sortable_drag`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SortDragState {
+    /// The group dragged.
+    pub group: String,
+    /// The keys carried, in order.
+    pub keys: Vec<String>,
+    /// The key of the item the drag was started from.
+    pub source_key: String,
+    /// The `id` of the list the drag started in.
+    pub from_list: String,
+    /// A keyboard lift rather than a pointer drag.
+    pub keyboard: bool,
+    /// The place under the pointer (or the lift's place), whether or not it
+    /// would change anything — the dragged item's own place included.
+    pub over: Option<SortTarget>,
+    /// The place on offer: where a drop now would land. `None` over nothing,
+    /// and over a place that would leave the lists as they are.
+    pub target: Option<SortTarget>,
+    /// The verdict on [`Self::target`]; a refusal carries its reason.
+    pub verdict: Option<SortVerdict>,
+}
+
+/// Where the pointer is in a pointer drag ([`sortable_drag_pointer`]), in
+/// viewport-relative logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SortPointer {
+    /// The pointer.
+    pub x: f32,
+    /// The pointer.
+    pub y: f32,
+    /// Where in the dragged item it was grabbed, from its top-left corner: a
+    /// preview drawn at `(x - grab_x, y - grab_y)` keeps that point under the
+    /// pointer.
+    pub grab_x: f32,
+    /// See [`Self::grab_x`].
+    pub grab_y: f32,
+    /// The dragged item's size when the drag started.
+    pub width: f32,
+    /// See [`Self::width`].
+    pub height: f32,
+}
 
 // =============================================================================
 // Registry and drag state
@@ -182,6 +341,12 @@ struct ListConfig {
     ondrop: Option<ValueCallback<SortMove>>,
     ondropchange: Option<ValueCallback<Option<(SortMove, SortVerdict)>>>,
     drag_keys: Option<SortKeys>,
+    preview: SortPreview,
+    indicator: SortIndicator,
+    source: SortSource,
+    /// The document and its `<body>`, where a preview is mounted.
+    doc: std::rc::Weak<RefCell<dyn rinch_core::dom::DomDocument>>,
+    body: NodeHandle,
     node: NodeHandle,
     /// The reason slot for a drop into the list itself (an empty list).
     reason: NodeHandle,
@@ -239,6 +404,9 @@ struct Offer {
     mark: Mark,
     reason: Option<NodeHandle>,
     horizontal: bool,
+    /// Whether the caret (or the refused caret) is drawn: the target list's
+    /// indicator.
+    caret: bool,
 }
 
 /// A keyboard lift: the list (by id) and slot the caret is at.
@@ -271,6 +439,32 @@ struct Active {
     /// the runtime's drag moves go to the gone node, so a left target
     /// withdraws at once. The end is the runtime's ([`on_drag_end`]).
     source_gone: bool,
+    /// The place under the pointer or the lift's, no-op places included.
+    over: Option<(String, usize)>,
+    /// A target heard this move (`data-ondragover`): a move with none is over
+    /// no list.
+    hovered: bool,
+    /// The place withdrawn by the last leave, until the next place: a leave
+    /// onto the source drawn at that place (a re-rendered source withdraws at
+    /// once, #2093) takes it back.
+    left_over: Option<(String, usize)>,
+    /// The carried nodes drawn away from home when the last place was
+    /// withdrawn: the only ones a leave's place can be taken back from.
+    left_moved: Vec<rinch_core::dom::NodeId>,
+    /// The carried items' extent along x and y, spacing included: a gap's size.
+    extent: (f32, f32),
+    /// The pointer drag's grab point in the source item and its size.
+    grab: Option<SortPointer>,
+    /// The preview following the pointer, and the scope it was built in.
+    ghost: Option<(NodeHandle, Option<RenderScope>)>,
+    /// How far the preview's body sits from the item's painted corner: half
+    /// the difference of its layout and painted sizes (a scaled ancestor).
+    ghost_fix: (f32, f32),
+    /// The spacing between the source list's items (its own units).
+    spacing: f32,
+    /// Items carrying a shift, and lists carrying the reflow class.
+    shifted: Vec<(NodeHandle, f32, f32)>,
+    reflowing: Vec<NodeHandle>,
 }
 
 /// (document, group, key, the list it was dropped in).
@@ -509,6 +703,13 @@ fn judge(cfg: &ListConfig, mv: &SortMove) -> SortVerdict {
 /// Make `slot` of `cfg` the place on offer for the active drag, judging it
 /// and drawing the caret.
 fn offer_slot(cfg: &ListConfig, slot: usize) {
+    let len = rest_of(&cfg.node, &active_keys()).0.len();
+    ACTIVE.with(|a| {
+        if let Some(a) = a.borrow_mut().as_mut() {
+            a.over = Some((cfg.id.clone(), slot.min(len)));
+            a.left_over = None;
+        }
+    });
     let Some(placed) = place_in(cfg, slot) else {
         set_offer(None);
         return;
@@ -527,6 +728,11 @@ fn offer_slot(cfg: &ListConfig, slot: usize) {
         return;
     }
     let verdict = judge(cfg, &placed.mv);
+    let caret = if verdict.is_accept() {
+        cfg.indicator.caret()
+    } else {
+        cfg.indicator != SortIndicator::None
+    };
     set_offer(Some(Offer {
         list_id: cfg.id.clone(),
         slot: placed.slot,
@@ -535,6 +741,7 @@ fn offer_slot(cfg: &ListConfig, slot: usize) {
         mark: placed.mark,
         reason: Some(placed.reason),
         horizontal: cfg.axis == SortAxis::Horizontal,
+        caret,
     }));
 }
 
@@ -585,6 +792,7 @@ fn reason_slot(item: &NodeHandle) -> NodeHandle {
 fn draw(offer: &Offer) {
     let refused = !offer.verdict.is_accept();
     match &offer.mark {
+        _ if !offer.caret => {}
         Mark::Before(item) | Mark::After(item) => {
             item.add_class(if matches!(offer.mark, Mark::Before(_)) {
                 DROP_BEFORE_CLASS
@@ -647,6 +855,29 @@ fn erase(offer: &Offer) {
 
 /// Replace the offer, redraw, and tell the source list's `ondropchange`.
 fn set_offer(new: Option<Offer>) {
+    set_offer_inner(new);
+    refresh();
+}
+
+/// A drag left every list: nothing is under it any more.
+fn withdraw() {
+    ACTIVE.with(|a| {
+        if let Some(a) = a.borrow_mut().as_mut()
+            && let Some(over) = a.over.take()
+        {
+            a.left_over = Some(over);
+            a.left_moved = a
+                .shifted
+                .iter()
+                .filter(|(_, x, y)| *x != 0.0 || *y != 0.0)
+                .map(|(n, _, _)| n.node_id())
+                .collect();
+        }
+    });
+    set_offer(None);
+}
+
+fn set_offer_inner(new: Option<Offer>) {
     let Some((old, from, report)) = ACTIVE.with(|a| {
         let mut a = a.borrow_mut();
         let a = a.as_mut()?;
@@ -679,14 +910,36 @@ fn set_offer(new: Option<Offer>) {
 /// End the active drag: take the caret and the dimming down; `ondropchange`
 /// hears `None` if it last heard a move.
 fn end_active() {
-    set_offer(None);
+    set_offer_inner(None);
     let Some(active) = ACTIVE.with(|a| a.borrow_mut().take()) else {
         return;
     };
     for node in &active.carried {
-        node.remove_class(DRAGGING_CLASS);
-        node.remove_class(LIFTED_CLASS);
+        for class in [DRAGGING_CLASS, LIFTED_CLASS, HIDDEN_CLASS, COLLAPSED_CLASS] {
+            node.remove_class(class);
+        }
     }
+    // Everything at once, transition classes included: the drop's re-render
+    // lands in the same frame, and nothing slides back from a stale offset.
+    for (node, _, _) in &active.shifted {
+        node.remove_class(SHIFTED_CLASS);
+        clear_props(node, &[SHIFT_X, SHIFT_Y]);
+    }
+    for list in &active.reflowing {
+        list.remove_class(REFLOWING_CLASS);
+    }
+    if let Some((ghost, scope)) = active.ghost {
+        if let Some(scope) = scope {
+            scope.dispose();
+        }
+        // Freed, not only detached: `set_inner_html` is the verb every
+        // backend reclaims a subtree on (desktop's `discard` keeps its slab
+        // entries, #723). The wrapper itself waits, detached, for the next
+        // drag in this document.
+        ghost.set_inner_html("");
+        ghost.remove();
+    }
+    publish();
 }
 
 /// The runtime ended an element drag (dropped or cancelled): a pointer drag of
@@ -746,12 +999,21 @@ fn begin(item: &NodeHandle, key: &str, keyboard: bool) -> bool {
     let keys = keys_for(&cfg, key);
     let doc = item.doc_key();
     let carried = carried_nodes(&cfg.group, doc, &keys);
+    // Measured before anything is shifted, hidden or copied.
+    let (extent, spacing) = carried_extent(&cfg, item, &carried);
+
+    let grab = (!keyboard).then(|| grab_point(item)).flatten();
+    let (ghost, ghost_fix) = match (!keyboard)
+        .then(|| build_ghost(&cfg, item, key, grab.as_ref()))
+        .flatten()
+    {
+        Some((node, scope, fix)) => (Some((node, scope)), fix),
+        None => (None, (0.0, 0.0)),
+    };
     for node in &carried {
-        node.add_class(if keyboard {
-            LIFTED_CLASS
-        } else {
-            DRAGGING_CLASS
-        });
+        if let Some(class) = carried_class(keyboard, cfg.source) {
+            node.add_class(class);
+        }
     }
     ACTIVE.with(|a| {
         *a.borrow_mut() = Some(Active {
@@ -768,8 +1030,32 @@ fn begin(item: &NodeHandle, key: &str, keyboard: bool) -> bool {
             pending_none: false,
             lift: None,
             source_gone: false,
+            over: None,
+            hovered: false,
+            left_over: None,
+            left_moved: Vec::new(),
+            extent,
+            grab,
+            ghost,
+            ghost_fix,
+            spacing,
+            shifted: Vec::new(),
+            reflowing: Vec::new(),
         })
     });
+    // The drag starts over its own place (a collapsed item's space stays
+    // open there until the pointer leaves it).
+    let home = items_of(&cfg.node)
+        .iter()
+        .take_while(|(_, k)| k != key)
+        .filter(|(_, k)| !active_keys().contains(k))
+        .count();
+    ACTIVE.with(|a| {
+        if let Some(a) = a.borrow_mut().as_mut() {
+            a.over = Some((cfg.id.clone(), home));
+        }
+    });
+    refresh();
     true
 }
 
@@ -791,6 +1077,675 @@ fn active_keys() -> Vec<String> {
 }
 
 // =============================================================================
+// Presentation: the preview, the source's look, the gap, the drag state
+// =============================================================================
+
+thread_local! {
+    static STATE: Cell<Option<Signal<Option<SortDragState>>>> = const { Cell::new(None) };
+    static POINTER: Cell<Option<Signal<Option<SortPointer>>>> = const { Cell::new(None) };
+    /// Each document's preview wrapper, kept detached between drags: one
+    /// node per document rather than one per drag.
+    static GHOST_WRAPPERS: RefCell<HashMap<u64, NodeHandle>> = RefCell::new(HashMap::new());
+}
+
+/// A signal that lives as long as the thread's reactive runtime does: made
+/// again if the one held was freed (a test that tore its runtime down).
+fn live_signal<T: Clone + 'static>(
+    slot: &'static std::thread::LocalKey<Cell<Option<Signal<Option<T>>>>>,
+) -> Signal<Option<T>> {
+    slot.with(|c| match c.get().filter(|s| s.is_alive()) {
+        Some(s) => s,
+        None => {
+            let s = rinch_core::unowned(|| Signal::new(None).leak());
+            c.set(Some(s));
+            s
+        }
+    })
+}
+
+/// The sortable drag in progress, pointer or keyboard, read reactively: an
+/// effect or a `{|| …}` that calls it runs again when the drag starts, moves
+/// to another place, is judged or ends. With every presentation option at
+/// its none value (`preview: SortPreview::None`, `indicator:
+/// SortIndicator::None`, `source: SortSource::Unchanged`) an app draws the
+/// whole drag from this and [`sortable_drag_pointer`].
+pub fn sortable_drag() -> Option<SortDragState> {
+    live_signal(&STATE).get()
+}
+
+/// The pointer of a pointer drag in progress, read reactively (it changes on
+/// every move, so it is a signal of its own). `None` for a keyboard lift.
+pub fn sortable_drag_pointer() -> Option<SortPointer> {
+    live_signal(&POINTER).get()
+}
+
+/// Bring the drag-state signals up to date.
+fn publish() {
+    let (state, pointer) = ACTIVE.with(|a| {
+        let a = a.borrow();
+        let Some(a) = a.as_ref() else {
+            return (None, None);
+        };
+        let target = a.offer.as_ref().map(|o| SortTarget {
+            list: o.list_id.clone(),
+            index: o.slot,
+        });
+        let state = SortDragState {
+            group: a.group.clone(),
+            keys: a.keys.clone(),
+            source_key: a.source_key.clone(),
+            from_list: a.from_list.clone(),
+            keyboard: a.lift.is_some(),
+            over: a.over.as_ref().map(|(list, index)| SortTarget {
+                list: list.clone(),
+                index: *index,
+            }),
+            target,
+            verdict: a.offer.as_ref().map(|o| o.verdict.clone()),
+        };
+        (Some(state), a.grab.filter(|_| a.lift.is_none()))
+    });
+    live_signal(&STATE).set_if_changed(state);
+    live_signal(&POINTER).set_if_changed(pointer);
+}
+
+/// The class the carried items wear for the drag.
+fn carried_class(keyboard: bool, source: SortSource) -> Option<&'static str> {
+    if keyboard {
+        return Some(LIFTED_CLASS);
+    }
+    match source {
+        SortSource::Dim => Some(DRAGGING_CLASS),
+        SortSource::Collapse => Some(COLLAPSED_CLASS),
+        SortSource::Hide => Some(HIDDEN_CLASS),
+        SortSource::Unchanged => None,
+    }
+}
+
+/// The carried items' extent along x and y, each with the list's spacing
+/// after it (measured between the pressed item and its neighbour along the
+/// list's axis): what a gap opens by. Zero where the host has no boxes.
+fn carried_extent(
+    cfg: &ListConfig,
+    item: &NodeHandle,
+    carried: &[NodeHandle],
+) -> ((f32, f32), f32) {
+    let all = items_of(&cfg.node);
+    let at = all.iter().position(|(n, _)| n.node_id() == item.node_id());
+    // Painted, then brought to the item's own units (an ancestor's scale):
+    // shifts are `translate`s in those units.
+    let fit = item
+        .bounding_rect()
+        .zip(item.layout_size())
+        .map(|(b, (lw, lh))| match cfg.axis {
+            SortAxis::Vertical if lh > 0.0 => b.height / lh,
+            SortAxis::Horizontal if lw > 0.0 => b.width / lw,
+            _ => 1.0,
+        })
+        .filter(|f| *f > 0.0)
+        .unwrap_or(1.0);
+    let spacing = at
+        .and_then(|i| {
+            let here = item.bounding_rect()?;
+            let (start, len) = span(&here, cfg.axis);
+            if let Some((next, _)) = all.get(i + 1) {
+                let (n, _) = span(&next.bounding_rect()?, cfg.axis);
+                Some(n - (start + len))
+            } else {
+                let (prev, _) = all.get(i.checked_sub(1)?)?;
+                let (p, plen) = span(&prev.bounding_rect()?, cfg.axis);
+                Some(start - (p + plen))
+            }
+        })
+        .unwrap_or(0.0)
+        .max(0.0)
+        / fit;
+    let (mut w, mut h) = (0.0, 0.0);
+    for node in carried {
+        if let Some((nw, nh)) = size_of(node) {
+            w += nw;
+            h += nh;
+            match cfg.axis {
+                SortAxis::Vertical => h += spacing,
+                SortAxis::Horizontal => w += spacing,
+            }
+        }
+    }
+    ((w, h), spacing)
+}
+
+/// `node`'s size in its own units (as laid out, before an ancestor's
+/// scale); its painted size where the host has no layout.
+fn size_of(node: &NodeHandle) -> Option<(f32, f32)> {
+    node.layout_size()
+        .or_else(|| node.bounding_rect().map(|b| (b.width, b.height)))
+}
+
+/// Where the press that started a pointer drag landed in `item`, from the
+/// `data-ondragstart` click context (the press point); its middle when the
+/// context names a point outside it (a host that does not set it).
+fn grab_point(item: &NodeHandle) -> Option<SortPointer> {
+    let b = item.bounding_rect()?;
+    let ctx = get_click_context();
+    let (mut gx, mut gy) = (ctx.mouse_x - b.x, ctx.mouse_y - b.y);
+    if !(0.0..=b.width).contains(&gx) || !(0.0..=b.height).contains(&gy) {
+        gx = b.width / 2.0;
+        gy = b.height / 2.0;
+    }
+    Some(SortPointer {
+        x: b.x + gx,
+        y: b.y + gy,
+        grab_x: gx,
+        grab_y: gy,
+        width: b.width,
+        height: b.height,
+    })
+}
+
+/// Attributes a copy leaves behind: handlers, identity, focus, drag and
+/// sortable wiring, and form-group membership (a copied checked radio on the
+/// page would join its original's group and uncheck it).
+///
+/// Every `data-` attribute the runtime or a component acts on is left out by
+/// prefix or name (handlers, focus traps, viewports and render surfaces, the
+/// editor's `data-pm-*`, scroll locks, …); other `data-` attributes stay,
+/// as the style hooks they usually are (`[data-state=open]`).
+fn copied_attribute(name: &str) -> bool {
+    const PREFIXES: [&str; 10] = [
+        "data-on",
+        "data-rid",
+        "data-pm-",
+        "data-rinch-",
+        "data-sortable-",
+        "data-tcm-",
+        "data-text-sel",
+        "data-cursor-",
+        "data-selection-",
+        "data-viewport",
+    ];
+    !(PREFIXES.iter().any(|p| name.starts_with(p))
+        || matches!(
+            name,
+            "id" | "tabindex"
+                | "autofocus"
+                | "accesskey"
+                | "contenteditable"
+                | "draggable"
+                | "popover"
+                | "name"
+                | "checked"
+                | "form"
+                | "data-drag-ghost"
+                | "data-drag-window"
+                | "data-render-surface"
+                | "data-trap-focus"
+                | "data-scroll-lock-exempt"
+                | "data-nofocus"
+                | "data-backdrop"
+                | "data-video-player"
+                | "data-rtc-view"
+                | "data-theme-provider"
+                | "data-graph-nowheel"
+                | "data-preedit"
+                | "data-block-index"
+                | "data-annotation-id"
+                | "data-user-rid"
+        ))
+}
+
+/// A class the drag itself put on an item or a list: not part of its look.
+fn drag_state_class(class: &str) -> bool {
+    class.starts_with("rinch-sortable__item--drop")
+        || matches!(
+            class,
+            DRAGGING_CLASS
+                | LIFTED_CLASS
+                | HIDDEN_CLASS
+                | COLLAPSED_CLASS
+                | SHIFTED_CLASS
+                | REFLOWING_CLASS
+                | ITEM_REFUSED_CLASS
+                | DROP_INTO_CLASS
+                | LIST_REFUSED_CLASS
+                | REASON_SHOWN_CLASS
+                | REASON_ABOVE_CLASS
+        )
+}
+
+/// `node`'s element, empty, with its copyable attributes (drag-state classes
+/// left out), built in `scope`. The tag keeps its case (`clipPath`).
+fn copy_element(scope: &mut RenderScope, node: &NodeHandle) -> Option<NodeHandle> {
+    let copy = scope.create_element(&node.tag_name()?);
+    let mut attrs = node.attributes();
+    attrs.sort();
+    for (name, value) in attrs {
+        if !copied_attribute(&name) {
+            continue;
+        }
+        if name == "class" {
+            let kept: Vec<&str> = value
+                .split_whitespace()
+                .filter(|c| !drag_state_class(c))
+                .collect();
+            copy.set_attribute("class", &kept.join(" "));
+        } else {
+            copy.set_attribute(&name, &value);
+        }
+    }
+    Some(copy)
+}
+
+/// A copy of `node` and everything under it, built in `scope`. A text field
+/// carries what it holds now, not only its `value` attribute.
+fn copy_tree(scope: &mut RenderScope, node: &NodeHandle) -> Option<NodeHandle> {
+    match node.node_type()? {
+        3 => Some(scope.create_text(&node.text_content().unwrap_or_default())),
+        1 => {
+            let copy = copy_element(scope, node)?;
+            if let Some(tag) = node.tag_name()
+                && (tag.eq_ignore_ascii_case("input") || tag.eq_ignore_ascii_case("textarea"))
+                && let Some(value) = node.live_value()
+            {
+                copy.set_attribute("value", &value);
+            }
+            for child in node.children() {
+                if let Some(c) = copy_tree(scope, &child) {
+                    copy.append_child(&c);
+                }
+            }
+            Some(copy)
+        }
+        _ => None,
+    }
+}
+
+/// Declarations a copy drops from the item's inline style: where it is
+/// placed and how big it is are the preview's. (The app's own element keeps
+/// all of its own.)
+const PLACEMENT: [&str; 22] = [
+    "position",
+    "left",
+    "top",
+    "right",
+    "bottom",
+    "inset",
+    "transform",
+    "translate",
+    "rotate",
+    "scale",
+    "transition",
+    "z-index",
+    "margin",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "width",
+    "height",
+    "flex",
+    "opacity",
+    "pointer-events",
+];
+
+/// A stand-in for an element above the item: its tag, classes and attributes
+/// (inline style included), and `display: contents`, so it draws no box but
+/// the cascade runs through it as through the original — inherited values
+/// (font, colour, `--rinch-sortable-ghost-*`), descendant selectors
+/// (`.column .card`) and classes setting custom properties all reach the
+/// preview, while the original's own box (size, padding, a `transform`) does
+/// not.
+fn mirror(scope: &mut RenderScope, node: &NodeHandle) -> Option<NodeHandle> {
+    let m = copy_element(scope, node)?;
+    m.set_style("display", "contents");
+    Some(m)
+}
+
+fn px(v: f32) -> String {
+    format!("{v}px")
+}
+
+/// The preview a pointer drag of `item` shows, mounted on `<body>`: the
+/// wrapper and the scope it was built in.
+///
+/// The wrapper (`display: contents`) holds a stand-in for every element
+/// between `<body>` and the item, then the preview's body: the item's copy,
+/// or the app's element inside a stand-in for the item. So the preview is
+/// styled as if it were still in its list. The body is the one box: placed
+/// `position: fixed` by the wrapper's `--rinch-sortable-ghost-x/-y`, at the
+/// item's layout size, scaled to its painted size (an item inside a scaled
+/// ancestor), and given its look by the `--rinch-sortable-ghost-*`
+/// properties it inherits through the stand-ins.
+fn build_ghost(
+    cfg: &ListConfig,
+    item: &NodeHandle,
+    key: &str,
+    grab: Option<&SortPointer>,
+) -> Option<(NodeHandle, Option<RenderScope>, (f32, f32))> {
+    let modifier = match &cfg.preview {
+        SortPreview::Clone => "rinch-sortable__ghost-body--clone",
+        SortPreview::Custom(_) => "rinch-sortable__ghost-body--custom",
+        SortPreview::None | SortPreview::Snapshot => return None,
+    };
+    let doc = cfg.doc.upgrade()?;
+    let ghost = GHOST_WRAPPERS.with(|w| {
+        let mut w = w.borrow_mut();
+        let key = cfg.body.doc_key();
+        if let Some(g) = w.get(&key).filter(|g| g.is_valid()) {
+            return g.clone();
+        }
+        let g = RenderScope::new(doc.clone(), cfg.body.node_id()).create_element("div");
+        g.set_attribute("class", GHOST_CLASS);
+        g.set_attribute(GHOST_ATTR, "");
+        g.set_attribute("aria-hidden", "true");
+        w.insert(key, g.clone());
+        g
+    });
+    let mut scope = RenderScope::new(doc, cfg.body.node_id());
+    // The item's painted box (`grab`) and its layout size: their ratio is the
+    // scale of the ancestors, and the body is placed by its centre so that
+    // scale does not move it.
+    let (pw, ph) = grab.map_or((0.0, 0.0), |g| (g.width, g.height));
+    let (lw, lh) = item.layout_size().unwrap_or((pw, ph));
+    let fit = if lw > 0.0 { pw / lw } else { 1.0 };
+    let fix = ((lw - pw) / 2.0, (lh - ph) / 2.0);
+    let (x, y) = grab.map_or((0.0, 0.0), |g| {
+        (g.x - g.grab_x - fix.0, g.y - g.grab_y - fix.1)
+    });
+    ghost.set_styles(&[
+        (GHOST_X, &px(x)),
+        (GHOST_Y, &px(y)),
+        ("--rinch-sortable-ghost-width", &px(lw)),
+        ("--rinch-sortable-ghost-height", &px(lh)),
+        ("--rinch-sortable-ghost-fit", &fit.to_string()),
+    ]);
+    // The stand-ins, outermost first.
+    let mut chain = Vec::new();
+    let mut at = item.parent_node();
+    let mut reached = false;
+    while let Some(n) = at {
+        if n.node_id() == cfg.body.node_id() {
+            reached = true;
+            break;
+        }
+        at = n.parent_node();
+        chain.push(n);
+    }
+    if !reached {
+        chain.clear();
+    }
+    let mut parent = ghost.clone();
+    for n in chain.iter().rev() {
+        if let Some(m) = mirror(&mut scope, n) {
+            parent.append_child(&m);
+            parent = m;
+        }
+    }
+    let body = match &cfg.preview {
+        SortPreview::Clone => copy_tree(&mut scope, item),
+        SortPreview::Custom(f) => {
+            if let Some(m) = mirror(&mut scope, item) {
+                parent.append_child(&m);
+                parent = m;
+            }
+            let f = f.clone();
+            let key = key.to_string();
+            // Owned by the preview's scope: what the function makes (signals,
+            // memos, effects) goes when the drag ends.
+            let _owner = scope.push_owner();
+            Some(rinch_core::untracked_handler(|| f(&mut scope, &key)))
+        }
+        _ => None,
+    };
+    if let Some(body) = body {
+        if matches!(cfg.preview, SortPreview::Clone) {
+            clear_props(&body, &PLACEMENT);
+        }
+        body.add_class("rinch-sortable__ghost-body");
+        body.add_class(modifier);
+        parent.append_child(&body);
+    }
+    cfg.body.append_child(&ghost);
+    Some((ghost, Some(scope), fix))
+}
+
+/// The pointer is at (`x`, `y`): move the preview and tell the pointer signal.
+fn follow_pointer(x: f32, y: f32) {
+    let ghost = ACTIVE.with(|a| {
+        let mut a = a.borrow_mut();
+        let a = a.as_mut().filter(|a| a.lift.is_none())?;
+        let fix = a.ghost_fix;
+        let g = a.grab.as_mut()?;
+        if g.x == x && g.y == y {
+            return None;
+        }
+        g.x = x;
+        g.y = y;
+        Some((
+            a.ghost.as_ref().map(|(n, _)| n.clone()),
+            g.grab_x + fix.0,
+            g.grab_y + fix.1,
+        ))
+    });
+    let Some((node, gx, gy)) = ghost else {
+        return;
+    };
+    if let Some(node) = node {
+        node.set_styles(&[(GHOST_X, &px(x - gx)), (GHOST_Y, &px(y - gy))]);
+    }
+    publish();
+}
+
+/// Take `props` out of `node`'s inline style.
+fn clear_props(node: &NodeHandle, props: &[&str]) {
+    let Some(style) = node.get_attribute("style") else {
+        return;
+    };
+    let decls: Vec<(String, String)> = rinch_core::dom::split_declarations(&style)
+        .into_iter()
+        .filter(|(k, _)| !props.contains(&k.as_str()))
+        .collect();
+    let out = rinch_core::dom::serialize_declarations(&decls);
+    if out.is_empty() {
+        node.remove_attribute("style");
+    } else {
+        node.set_attribute("style", &out);
+    }
+}
+
+/// Each item of `cfg` (the source list) and how far it moves when the
+/// carried items in it are put at `slot`: its place in the list packed in the
+/// new order less its place packed as it is, from the items' sizes as laid
+/// out now — so an item added or removed mid-drag (a co-edit) is laid out
+/// with the rest. Nothing where a size is unknown.
+fn reordered(
+    cfg: &ListConfig,
+    keys: &[String],
+    slot: usize,
+    spacing: f32,
+) -> Vec<(NodeHandle, f32)> {
+    let all = items_of(&cfg.node);
+    let len = |n: &NodeHandle| {
+        size_of(n).map(|(w, h)| match cfg.axis {
+            SortAxis::Vertical => h,
+            SortAxis::Horizontal => w,
+        })
+    };
+    let mut before = Vec::with_capacity(all.len());
+    let mut at = 0.0;
+    for (n, _) in &all {
+        let Some(l) = len(n) else {
+            return Vec::new();
+        };
+        before.push((n.node_id(), at));
+        at += l + spacing;
+    }
+    let (mut order, mut carried): (Vec<_>, Vec<_>) =
+        all.into_iter().partition(|(_, k)| !keys.contains(k));
+    carried.sort_by_key(|(_, k)| keys.iter().position(|x| x == k));
+    let at = slot.min(order.len());
+    order.splice(at..at, carried);
+    let mut cursor = 0.0;
+    order
+        .into_iter()
+        .map(|(n, _)| {
+            let was = before
+                .iter()
+                .find(|(id, _)| *id == n.node_id())
+                .map_or(cursor, |b| b.1);
+            let d = cursor - was;
+            cursor += len(&n).unwrap_or(0.0) + spacing;
+            (n, d)
+        })
+        .collect()
+}
+
+/// Lay the gap and the collapse out as shifts of the items, then publish.
+fn refresh() {
+    reflow();
+    publish();
+}
+
+/// The shift every item of the drag's lists should have now: the gap at the
+/// place on offer (in a list with a gap indicator, never at a refused place),
+/// and the carried items' space closed up in their list when they collapse.
+fn reflow() {
+    struct Plan {
+        group: String,
+        doc: u64,
+        keys: Vec<String>,
+        from_list: String,
+        collapse: bool,
+        gap_at: Option<(String, usize)>,
+        extents: (f32, f32),
+        spacing: f32,
+    }
+    let Some(plan) = ACTIVE.with(|a| {
+        let a = a.borrow();
+        let a = a.as_ref()?;
+        let collapse = a.lift.is_none() && a.from.source == SortSource::Collapse;
+        let gap_at = match &a.offer {
+            Some(o) if o.verdict.is_accept() => Some((o.list_id.clone(), o.slot)),
+            Some(_) => None,
+            // Over its own place, a collapsed item's space opens again.
+            None if collapse => a.over.clone().filter(|(l, _)| *l == a.from_list),
+            None => None,
+        };
+        Some(Plan {
+            group: a.group.clone(),
+            doc: a.doc,
+            keys: a.keys.clone(),
+            from_list: a.from_list.clone(),
+            collapse,
+            gap_at,
+            extents: a.extent,
+            spacing: a.spacing,
+        })
+    }) else {
+        return;
+    };
+    let mut want: Vec<(NodeHandle, NodeHandle, f32, f32)> = Vec::new();
+    let mut add = |cfg: &ListConfig, node: &NodeHandle, d: f32| {
+        let (dx, dy) = match cfg.axis {
+            SortAxis::Vertical => (0.0, d),
+            SortAxis::Horizontal => (d, 0.0),
+        };
+        match want.iter_mut().find(|w| w.0.node_id() == node.node_id()) {
+            Some(w) => {
+                w.2 += dx;
+                w.3 += dy;
+            }
+            None => want.push((node.clone(), cfg.node.clone(), dx, dy)),
+        }
+    };
+    let along = |cfg: &ListConfig| match cfg.axis {
+        SortAxis::Vertical => plan.extents.1,
+        SortAxis::Horizontal => plan.extents.0,
+    };
+    if plan.collapse
+        && let Some(cfg) = list_by_id(&plan.group, &plan.from_list, plan.doc)
+    {
+        // Each item moves up by the carried items before it: their share of
+        // the extent, in proportion to how many there are.
+        let all = items_of(&cfg.node);
+        let carried = all.iter().filter(|(_, k)| plan.keys.contains(k)).count();
+        let per = if carried > 0 {
+            along(&cfg) / carried as f32
+        } else {
+            0.0
+        };
+        let mut before = 0;
+        for (node, key) in &all {
+            if plan.keys.contains(key) {
+                before += 1;
+            } else if before > 0 {
+                add(&cfg, node, -per * before as f32);
+            }
+        }
+    }
+    if let Some((list, slot)) = &plan.gap_at
+        && let Some(cfg) = list_by_id(&plan.group, list, plan.doc).filter(|c| c.indicator.gap())
+    {
+        if cfg.id == plan.from_list && !plan.collapse {
+            // The source is drawn in its own list: the list is laid out again
+            // in the order the drop would give, from where its items were, so
+            // the ones between the place and the source make room and the
+            // source sits at the place — nothing is painted over it.
+            for (node, d) in reordered(&cfg, &plan.keys, *slot, plan.spacing) {
+                add(&cfg, &node, d);
+            }
+        } else {
+            let d = along(&cfg);
+            for (node, _) in rest_of(&cfg.node, &plan.keys).0.iter().skip(*slot) {
+                add(&cfg, node, d);
+            }
+        }
+    }
+    let (old, mut reflowing) = ACTIVE.with(|a| {
+        a.borrow_mut()
+            .as_mut()
+            .map_or((Vec::new(), Vec::new()), |a| {
+                (
+                    std::mem::take(&mut a.shifted),
+                    std::mem::take(&mut a.reflowing),
+                )
+            })
+    });
+    let mut shifted: Vec<(NodeHandle, f32, f32)> = Vec::new();
+    for (node, list, dx, dy) in want {
+        let prev = old.iter().find(|(n, _, _)| n.node_id() == node.node_id());
+        if prev.is_none_or(|(_, x, y)| *x != dx || *y != dy) {
+            if !reflowing.iter().any(|l| l.node_id() == list.node_id()) {
+                list.add_class(REFLOWING_CLASS);
+                reflowing.push(list);
+            }
+            node.add_class(SHIFTED_CLASS);
+            node.set_styles(&[(SHIFT_X, &px(dx)), (SHIFT_Y, &px(dy))]);
+        }
+        shifted.push((node, dx, dy));
+    }
+    // What no longer shifts slides back, keeping its class until the end so
+    // the way back is a transition too.
+    for (node, x, y) in old {
+        if shifted
+            .iter()
+            .any(|(n, _, _)| n.node_id() == node.node_id())
+        {
+            continue;
+        }
+        if x != 0.0 || y != 0.0 {
+            node.set_styles(&[(SHIFT_X, "0px"), (SHIFT_Y, "0px")]);
+        }
+        shifted.push((node, 0.0, 0.0));
+    }
+    ACTIVE.with(|a| {
+        if let Some(a) = a.borrow_mut().as_mut() {
+            a.shifted = shifted;
+            a.reflowing = reflowing;
+        }
+    });
+}
+
+// =============================================================================
 // Pointer handlers
 // =============================================================================
 
@@ -800,12 +1755,18 @@ fn drag_over(target: &NodeHandle) {
     let Some((group, false)) = active_group() else {
         return;
     };
+    ACTIVE.with(|a| {
+        if let Some(a) = a.borrow_mut().as_mut() {
+            a.hovered = true;
+        }
+    });
     let keys = active_keys();
     let Some((cfg, item)) = resolve_target(target, &group, &keys) else {
-        set_offer(None);
+        withdraw();
         return;
     };
     let ctx = get_click_context();
+    follow_pointer(ctx.mouse_x, ctx.mouse_y);
     let pointer = match cfg.axis {
         SortAxis::Vertical => ctx.mouse_y,
         SortAxis::Horizontal => ctx.mouse_x,
@@ -824,6 +1785,45 @@ fn drag_over(target: &NodeHandle) {
             node.bounding_rect()
         }
     };
+    // Over the source itself where it was moved to the place on offer (a
+    // gap in its own list): that place stays. Read from where it was laid
+    // out, it would be its own place, and the place would flip back and
+    // forth under a still pointer.
+    if let Some((node, key)) = &item
+        && keys.contains(key)
+        && cfg.indicator.gap()
+    {
+        let held = ACTIVE.with(|a| {
+            a.borrow().as_ref().and_then(|a| {
+                if a.from.source == SortSource::Collapse || a.from_list != cfg.id {
+                    return None;
+                }
+                // Only the source drawn away from its home is drawn at a
+                // place: one at home (a fresh node a co-edit drew) is over
+                // its own place, and is read as any item is.
+                let moved_now = a
+                    .shifted
+                    .iter()
+                    .any(|(n, x, y)| n.node_id() == node.node_id() && (*x != 0.0 || *y != 0.0));
+                let moved_then = a.left_moved.contains(&node.node_id());
+                match (&a.over, &a.left_over) {
+                    (Some((l, _)), _) if *l == cfg.id && moved_now => Some(None),
+                    (None, Some((l, s))) if *l == cfg.id && moved_then => Some(Some(*s)),
+                    _ => None,
+                }
+            })
+        });
+        match held {
+            Some(None) => return,
+            Some(Some(slot)) => {
+                offer_slot(&cfg, slot);
+                // Drawn as offered, even when the offer itself is unchanged.
+                refresh();
+                return;
+            }
+            None => {}
+        }
+    }
     let all = items_of(&cfg.node);
     let mut slot = 0;
     match item {
@@ -892,20 +1892,40 @@ fn drag_leave() {
         a.source_gone
     });
     if now {
-        set_offer(None);
+        withdraw();
     }
 }
 
-/// After every move's targets: a left target nothing replaced withdraws.
+/// After every move's targets: a left target nothing replaced withdraws, and
+/// the preview follows the pointer.
 fn drag_move() {
+    // A left target nothing replaced, or a move over no target at all with
+    // a place still held (the drag starts over its own place).
+    let ctx = get_click_context();
+    // The runtime offers no drop on the dragged element itself: a move over
+    // the source (drawn at the place on offer, in its own list) hears no
+    // `data-ondragover` and is not a move over nothing.
+    let over_source = ACTIVE.with(|a| {
+        a.borrow()
+            .as_ref()
+            .and_then(|a| a.source.bounding_rect())
+            .is_some_and(|b| {
+                (b.x..=b.x + b.width).contains(&ctx.mouse_x)
+                    && (b.y..=b.y + b.height).contains(&ctx.mouse_y)
+            })
+    });
     let pending = ACTIVE.with(|a| {
-        a.borrow_mut()
-            .as_mut()
-            .is_some_and(|a| std::mem::replace(&mut a.pending_none, false))
+        a.borrow_mut().as_mut().is_some_and(|a| {
+            // A leave's place is taken back in the same move or not at all.
+            a.left_over = None;
+            let unheard = !std::mem::replace(&mut a.hovered, false) && a.over.is_some();
+            (std::mem::replace(&mut a.pending_none, false) || unheard) && !over_source
+        })
     });
     if pending {
-        set_offer(None);
+        withdraw();
     }
+    follow_pointer(ctx.mouse_x, ctx.mouse_y);
 }
 
 /// The release: settle the offer against the lists as they are, deliver it if
@@ -1013,6 +2033,7 @@ fn lift(item: &NodeHandle, key: &str) {
             });
         }
     });
+    publish();
     let label = label_of(item, key);
     announce(&format!(
         "Picked up {label}. Use the arrow keys to move it, the same key to drop it, \
@@ -1350,6 +2371,16 @@ pub struct SortableList {
     /// together, in order. The keys are not checked: one that names no item
     /// is passed on as given.
     pub drag_keys: Option<SortKeys>,
+    /// What follows the pointer in a drag from this list's items: a
+    /// translucent copy of the item (the default), nothing, the runtime's
+    /// snapshot or the app's own element ([`SortPreview`]).
+    pub preview: SortPreview,
+    /// How a place in this list is shown: a caret (the default), a gap that
+    /// opens there, both, or nothing ([`SortIndicator`]).
+    pub indicator: SortIndicator,
+    /// How this list's items look while a pointer drags them: unchanged (the
+    /// default), dimmed, collapsed or hidden ([`SortSource`]).
+    pub source: SortSource,
 }
 
 impl std::fmt::Debug for SortableList {
@@ -1359,6 +2390,9 @@ impl std::fmt::Debug for SortableList {
             .field("id", &self.id)
             .field("axis", &self.axis)
             .field("disabled", &self.disabled)
+            .field("preview", &self.preview)
+            .field("indicator", &self.indicator)
+            .field("source", &self.source)
             .finish()
     }
 }
@@ -1376,6 +2410,9 @@ impl Default for SortableList {
             ondrop: None,
             ondropchange: None,
             drag_keys: None,
+            preview: SortPreview::Clone,
+            indicator: SortIndicator::Caret,
+            source: SortSource::Unchanged,
         }
     }
 }
@@ -1422,6 +2459,13 @@ impl Component for SortableList {
         });
         list.set_attribute(LIST_ATTR, &token.to_string());
         list.set_attribute("data-sortable-group", &self.group);
+        // The component draws the drag itself unless it asks for the
+        // runtime's picture: a host that paints a drag ghost reads this on
+        // the source or an ancestor (the desktop runtime does). On the list,
+        // not the item: an item is drawn before its list and cannot know.
+        if !matches!(self.preview, SortPreview::Snapshot) {
+            list.set_attribute("data-drag-ghost", "false");
+        }
         for child in children {
             list.append_child(child);
         }
@@ -1446,6 +2490,11 @@ impl Component for SortableList {
             ondrop: self.ondrop.clone(),
             ondropchange: self.ondropchange.clone(),
             drag_keys: self.drag_keys.clone(),
+            preview: self.preview.clone(),
+            indicator: self.indicator,
+            source: self.source,
+            doc: __scope.doc_weak(),
+            body: __scope.body_handle(),
             node: list.clone(),
             reason,
             live,
@@ -1488,9 +2537,6 @@ impl Component for SortableItem {
             item.set_attribute("data-sortable-label", &self.label);
         }
         item.set_attribute("tabindex", "0");
-        // The component draws the drag itself: a host that paints a drag
-        // ghost reads this (the desktop runtime does).
-        item.set_attribute("data-drag-ghost", "false");
         if self.disabled {
             item.set_attribute(DISABLED_ATTR, "");
         } else {
@@ -1512,7 +2558,9 @@ impl Component for SortableItem {
 
         let (node, key) = (item.clone(), self.value.clone());
         let start = __scope.register_handler(move || {
-            rinch_core::suppress_drag_ghost();
+            if !list_of(&node).is_some_and(|c| matches!(c.preview, SortPreview::Snapshot)) {
+                rinch_core::suppress_drag_ghost();
+            }
             begin(&node, &key, false);
         });
         item.set_attribute("data-ondragstart", &start.0.to_string());
@@ -1557,11 +2605,9 @@ fn adopt(item: &NodeHandle, key: &str) {
         if !a.keys.iter().any(|k| k == key) {
             return None;
         }
-        item.add_class(if a.lift.is_some() {
-            LIFTED_CLASS
-        } else {
-            DRAGGING_CLASS
-        });
+        if let Some(class) = carried_class(a.lift.is_some(), a.from.source) {
+            item.add_class(class);
+        }
         a.carried.push(item.clone());
         if a.lift.is_some() && a.source_key == key {
             a.source = item.clone();

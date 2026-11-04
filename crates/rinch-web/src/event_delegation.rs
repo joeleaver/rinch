@@ -1200,7 +1200,7 @@ fn pointer_hit_element(event: &web_sys::PointerEvent) -> Option<web_sys::Element
 /// drag or it is already active. Called from the movement-threshold path (mouse)
 /// and from the long-press timer (touch/pen).
 fn activate_web_drag() {
-    let Some((source, kind, pointer_id, cursor)) = WEB_DRAG.with(|d| {
+    let Some((source, kind, pointer_id, cursor, press)) = WEB_DRAG.with(|d| {
         let mut b = d.borrow_mut();
         let s = b.as_mut()?;
         if s.active {
@@ -1208,7 +1208,13 @@ fn activate_web_drag() {
         }
         s.active = true;
         clear_long_press_timer(s);
-        Some((s.source.clone(), s.kind, s.pointer_id, s.cursor))
+        Some((
+            s.source.clone(),
+            s.kind,
+            s.pointer_id,
+            s.cursor,
+            (s.start_x, s.start_y),
+        ))
     }) else {
         return;
     };
@@ -1232,7 +1238,9 @@ fn activate_web_drag() {
         });
     }
 
-    dispatch_plain_attr(&source, "data-ondragstart");
+    // The press point and the source's box, as desktop gives them (#2154): a
+    // source that draws its own ghost keeps the grabbed point under the pointer.
+    dispatch_drag_with_bounds(&source, "data-ondragstart", press.0, press.1);
     // Process the target at the current cursor on this same frame so a coarse
     // drag (few moves) still fires enter/over and can drop. (Desktop splits
     // dragstart and the first target frame to render a drag ghost first; web has

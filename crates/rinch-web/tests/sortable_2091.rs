@@ -132,6 +132,8 @@ fn mount() -> Signal<Vec<Col>> {
                     style: "--rinch-sortable-gap: 0px; width: 300px; overflow-x: auto; margin: 0; padding: 0",
                     ondrop: move |m: SortMove| on_drop(board, m),
                     ondropchange: move |o: Offer| OFFERS.with(|v| v.borrow_mut().push(o)),
+                    // Carried items told by their dimming (#2154: not the default).
+                    source: SortSource::Dim,
                     for c in board.get() {
                         SortableItem {
                             key: c.id.clone(), value: c.id.clone(), handle: true,
@@ -143,6 +145,8 @@ fn mount() -> Signal<Vec<Col>> {
                                 judge: Some(Rc::new(judge) as SortJudge),
                                 ondrop: move |m: SortMove| on_drop(board, m),
                                 ondropchange: move |o: Offer| OFFERS.with(|v| v.borrow_mut().push(o)),
+                    // Carried items told by their dimming (#2154: not the default).
+                    source: SortSource::Dim,
                                 for card in c.cards.clone() {
                                     SortableItem {
                                         key: card.clone(), value: card.clone(),
