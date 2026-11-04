@@ -109,8 +109,11 @@ and on a gradient (to inherit another's stops).
   than 100,000 elements once `<use>` and other references are expanded.
 - At draw time: a pattern tile over 4M device pixels or a filter layer over
   16M pixels refuses that size of the image; so does a raster estimated at
-  more than about a second of work (a backstop: millions of dashes,
-  thousands of canvas-sized translucent shapes at 2x).
+  more than about half a second of work on one core (a backstop: millions
+  of dashes, dozens of canvas-sized translucent or many-stop gradient
+  shapes at 2x). Every icon and illustration in the 11,843-file corpus
+  draws at 48px; at 1024px, 9 of a 1,469-file sample (filter-heavy app
+  icons and cursors, 0.1 to 0.55 s each) are refused at that size.
 
 Inline `<svg>` elements in the DOM are a different path and are unaffected.
 

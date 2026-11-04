@@ -125,6 +125,20 @@ text. Every check runs on the document usvg reads.
   nothing a clip path, mask, pattern or marker draws (following `<use>`) uses another. Still in
   place: the strict doctype grammar, the entity bound, the post-build `Tally`, the tile, layer
   and raster caps, the work budget, `catch_unwind`.
+- **The work budget, recalibrated** (fifth review of #2125): `MAX_RASTER_WORK` is **2e8** units of
+  one translucent solid pixel (about 2 ns, release; measured as user + sys CPU with
+  `/usr/bin/time -v` around `svg_image_limits_2111_tests::svg_work_probe`): 2.46e8 of
+  translucent full-canvas rects at 2400x1600 took 0.50 s, so a file at the cap takes about
+  0.4 s. It was 1e9 (about 2.2 s). A gradient fill or stroke is charged area x
+  `gradient_factor` (linear 1.2, radial 2.5, plus 0.9 x log2(stops)): measured over
+  2400x1600, linear 2, 8 and 64 stops cost 2.2x, 4.0x and 6.5x a translucent solid pixel,
+  radial 3.5x, 3.8x and 7.9x; before, they were charged as solid, and 64 stops ran 6.5x over
+  (8 s for 256 rects at the old cap). Filter costs in the same unit (`filter_cost`): box blur
+  40, IIR blur 180, drop shadow 60 (200 over an IIR blur), the rest 20. The estimate stays
+  conservative: of a 1,469-file corpus sample at 1024px, the 9 refused take 0.08 to 0.55 s
+  when drawn anyway (`RINCH_SVG_UNBUDGETED`); at 48px all 11,840 drawable files draw, the
+  slowest raster 6 ms. Pins: `gradient_fills_are_charged_by_their_stops`,
+  `the_raster_budget_is_about_half_a_second`.
 - **Rendering unchanged for good files**: `svg_corpus_probe` renders each corpus file both ways
   (usvg on the original, usvg on the rebuilt text, 48x48): 10,867 of 10,882 drawn files are
   pixel-identical, 1 within 2 levels, 3 within AA noise (max 16 on at most 4 channels), and 11

@@ -151,7 +151,12 @@ fn use_fan_out_is_refused_at_raster_time() {
         "{:?}",
         t.elapsed()
     );
-    // A small draw of the same file is within it.
+    // Three levels (1,000 rects) is within it at a small size.
+    let svg = svg.replace(
+        r##"<use href="#l4"/></svg>"##,
+        r##"<use href="#l3"/></svg>"##,
+    );
+    let v = decode_svg(svg.as_bytes()).unwrap();
     assert!(v.raster(40.0, 40.0).is_some());
 }
 
@@ -572,6 +577,7 @@ fn svg_corpus_probe() {
     let mut by: BTreeMap<String, (u32, u32, u32, u32)> = BTreeMap::new();
     let mut reasons: BTreeMap<(String, String), u32> = BTreeMap::new();
     let mut slowest = (Duration::ZERO, String::new());
+    let mut slowest_raster = (Duration::ZERO, String::new());
     // Sanitized vs original, both through usvg and resvg at 48x48: files
     // identical, within 2 levels, and the worst differences.
     let (mut same, mut close, mut worst) = (0u32, 0u32, Vec::<(u8, usize, String)>::new());
@@ -604,9 +610,24 @@ fn svg_corpus_probe() {
         };
         let t = Instant::now();
         let entry = by.entry(label.to_string()).or_default();
+        let size: f64 = std::env::var("RINCH_SVG_CORPUS_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(48.0);
         match decode_svg(&bytes) {
             Ok(v) => {
-                if v.raster(48.0, 48.0).is_some() {
+                let r = Instant::now();
+                let drawn = v.raster(size, size).is_some();
+                if r.elapsed() > slowest_raster.0 {
+                    slowest_raster = (r.elapsed(), path.to_string());
+                }
+                if !drawn && std::env::var("RINCH_SVG_LIST_UNDRAWN").is_ok() {
+                    eprintln!(
+                        "undrawn: {path} {:.2e}",
+                        v.estimated_work(size as u32, size as u32)
+                    );
+                }
+                if drawn {
                     entry.0 += 1;
                 } else {
                     entry.3 += 1;
@@ -645,7 +666,7 @@ fn svg_corpus_probe() {
     for (label, (ok, refused, failed, undrawn)) in &by {
         let n = ok + refused + failed + undrawn;
         eprintln!(
-            "{label}: {ok}/{n} drawn ({:.1}%), {refused} refused by the profile, {failed} failed to parse, {undrawn} not drawn at 48px",
+            "{label}: {ok}/{n} drawn ({:.1}%), {refused} refused by the profile, {failed} failed to parse, {undrawn} not drawn (over a budget)",
             100.0 * f64::from(*ok) / f64::from(n)
         );
     }
@@ -655,6 +676,10 @@ fn svg_corpus_probe() {
         eprintln!("  {n:5} {label}: {why}");
     }
     eprintln!("slowest: {:?} {}", slowest.0, slowest.1);
+    eprintln!(
+        "slowest raster: {:?} {}",
+        slowest_raster.0, slowest_raster.1
+    );
     worst.sort_by_key(|w| std::cmp::Reverse((w.1, w.0)));
     eprintln!(
         "rebuilt vs original at 48x48: {same} identical, {close} within 2 levels, {} differ",
@@ -950,6 +975,11 @@ fn every_known_attack_is_refused_quickly() {
             filtered(r#"<feMorphology radius="50"/>"#, 100),
             256.0,
         ),
+        (
+            "64-stop gradient pile",
+            gradient_rects(false, 64, 48),
+            2400.0,
+        ),
     ];
     for (name, svg, size) in cases {
         // A negative size: drawn, harmlessly, at 1200x800 (the attack is
@@ -1087,4 +1117,144 @@ fn svg_sanitize_dump() {
             svg_image::sanitized_text(&bytes).unwrap_or_else(|e| e)
         );
     }
+}
+
+/// One file's estimated work and raster time, for calibrating the budget:
+/// `RINCH_SVG_WORK=<file> RINCH_SVG_SIZE=<w>x<h> … -- --ignored --nocapture
+/// svg_work_probe`, timed from outside with `/usr/bin/time -v` (user + sys).
+#[test]
+#[ignore = "a calibration probe"]
+fn svg_work_probe() {
+    let (Ok(path), Ok(size)) = (
+        std::env::var("RINCH_SVG_WORK"),
+        std::env::var("RINCH_SVG_SIZE"),
+    ) else {
+        return;
+    };
+    let (w, h) = size.split_once('x').unwrap();
+    let (w, h): (u32, u32) = (w.parse().unwrap(), h.parse().unwrap());
+    let v = decode_svg(&std::fs::read(&path).unwrap()).unwrap();
+    let t = Instant::now();
+    let drawn = v.raster(f64::from(w), f64::from(h)).is_some();
+    eprintln!(
+        "work {:.3e} drawn {drawn} wall {:?}",
+        v.estimated_work(w, h),
+        t.elapsed()
+    );
+    // Refused: what drawing it would have cost (the rebuilt text, through
+    // resvg directly).
+    if !drawn && std::env::var("RINCH_SVG_UNBUDGETED").is_ok() {
+        use resvg::{tiny_skia, usvg};
+        let text = svg_image::sanitized_text(&std::fs::read(&path).unwrap()).unwrap();
+        let tree = usvg::Tree::from_str(&text, &usvg::Options::default()).unwrap();
+        let size = tree.size();
+        let mut pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
+        let t = Instant::now();
+        resvg::render(
+            &tree,
+            tiny_skia::Transform::from_scale(w as f32 / size.width(), h as f32 / size.height()),
+            &mut pixmap.as_mut(),
+        );
+        eprintln!("unbudgeted render {:?}", t.elapsed());
+    }
+}
+
+// ---- Fifth review of #2125: the work budget's calibration. Gradients cost
+// resvg 2-8x a solid pixel, more with more stops, and the cap was about
+// 2.2 s of CPU; gradients are now charged by kind and stop count and the cap
+// is about 0.4 s.
+
+fn gradient_rects(radial: bool, stops: usize, rects: usize) -> String {
+    let stops: String = (0..stops)
+        .map(|i| {
+            format!(
+                r##"<stop offset="{}" stop-color="#{:02x}{:02x}{:02x}"/>"##,
+                i as f64 / (stops - 1) as f64,
+                (i * 4) % 256,
+                (i * 7) % 256,
+                (i * 11) % 256
+            )
+        })
+        .collect();
+    let gradient = if radial {
+        format!(r#"<radialGradient id="g">{stops}</radialGradient>"#)
+    } else {
+        format!(r#"<linearGradient id="g" x1="0" y1="0" x2="1" y2="1">{stops}</linearGradient>"#)
+    };
+    format!(
+        r#"<svg {NS} viewBox="0 0 1000 1000" width="1000" height="1000"><defs>{gradient}</defs>{}</svg>"#,
+        r#"<rect width="1000" height="1000" fill="url(#g)"/>"#.repeat(rects)
+    )
+}
+
+/// The fifth review's inputs: 48, 200 and 256 overlapping rects filled with
+/// a 64-stop gradient (2.0 s, 8.7 s and 8.0 s at 2400x1600, within the old
+/// cap) and 256 with a 2-stop one (3.7 s). Each is refused at 2400x1600,
+/// quickly; each draws small.
+#[test]
+fn gradient_fills_are_charged_by_their_stops() {
+    for (radial, stops, rects) in [
+        (false, 64, 48),
+        (false, 64, 256),
+        (true, 64, 200),
+        (false, 2, 256),
+    ] {
+        let svg = gradient_rects(radial, stops, rects);
+        let v = decode_svg(svg.as_bytes()).unwrap();
+        assert!(
+            quick(300, || v.raster(2400.0, 1600.0)).is_none(),
+            "{rects} rects of {stops} stops"
+        );
+        assert!(v.raster(48.0, 48.0).is_some(), "{rects} rects drawn small");
+    }
+    // An ordinary gradient background, a full-window rect at 2x, draws.
+    let v = decode_svg(gradient_rects(false, 8, 1).as_bytes()).unwrap();
+    assert!(v.raster(2400.0, 1600.0).is_some());
+    // The charge grows with the stop count: at one size, 64 stops are
+    // estimated dearer than 2, and a radial dearer than a linear.
+    let work = |radial, stops| {
+        decode_svg(gradient_rects(radial, stops, 4).as_bytes())
+            .unwrap()
+            .estimated_work(1000, 1000)
+    };
+    assert!(
+        work(false, 64) > 2.5 * work(false, 2),
+        "{} {}",
+        work(false, 64),
+        work(false, 2)
+    );
+    assert!(work(true, 2) > work(false, 2));
+    // A solid fill costs one unit a pixel: 4 rects of 1000x1000, and 4
+    // elements.
+    let solid = decode_svg(
+        format!(
+            r##"<svg {NS} viewBox="0 0 1000 1000" width="1000" height="1000">{}</svg>"##,
+            r##"<rect width="1000" height="1000" fill="#f00"/>"##.repeat(4)
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        solid.estimated_work(1000, 1000),
+        4.0e6 + 4.0 * svg_image::WORK_PER_ELEMENT
+    );
+    assert!(work(false, 2) > 2.0 * solid.estimated_work(1000, 1000));
+}
+
+/// The cap is about half a second of CPU (release, user + sys): 64
+/// half-transparent full-size rects at 2400x1600 (2.46e8, 0.50 s measured)
+/// are refused; 32 (1.23e8, 0.21 s) draw. At the old cap, 1e9 (about 2.2 s),
+/// both drew.
+#[test]
+fn the_raster_budget_is_about_half_a_second() {
+    let rects = |n: usize| {
+        format!(
+            r##"<svg {NS} viewBox="0 0 1000 1000" width="1000" height="1000">{}</svg>"##,
+            r##"<rect width="1000" height="1000" fill="#f00" fill-opacity="0.5"/>"##.repeat(n)
+        )
+    };
+    let v = decode_svg(rects(64).as_bytes()).unwrap();
+    assert!(quick(300, || v.raster(2400.0, 1600.0)).is_none());
+    let v = decode_svg(rects(32).as_bytes()).unwrap();
+    assert!(v.estimated_work(2400, 1600) < svg_image::MAX_RASTER_WORK);
 }

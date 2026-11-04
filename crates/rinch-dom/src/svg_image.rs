@@ -92,14 +92,28 @@ pub const MAX_NODES: u64 = 100_000;
 /// The most bytes all references to an internal DTD's entities may expand to.
 pub const MAX_ENTITY_EXPANSION: usize = 1 << 20;
 
-/// The most work one raster may take, in device pixels painted, estimated
-/// from bounding boxes, plus [`WORK_PER_ELEMENT`] for each element drawn:
-/// about a second of resvg on one core (measured on a loaded host, release:
-/// 1.46e9 took 1.95 s, 3.65e8 took 0.6 s). A 1200x800 illustration of 2,000
-/// small shapes estimates at 2.1e7 (29 ms) and at 2x 2.5e7 (70 ms); 2,000
-/// half-transparent shapes each spanning the canvas are drawn at 1200x800
-/// and refused at 2x.
-pub const MAX_RASTER_WORK: f64 = 1.0e9;
+/// The most work one raster may take, in units of one translucent solid
+/// pixel painted (about 2 ns of resvg on one core, release): the
+/// bounding-box area painted, a gradient's by [`gradient_factor`], plus
+/// [`WORK_PER_ELEMENT`] an element, [`WORK_PER_DASH`] a dash and each filter
+/// primitive's cost per pixel. Measured as user + sys CPU time with
+/// `/usr/bin/time -v` around `svg_work_probe`: 2.46e8 of translucent solid
+/// rects at 2400x1600 took 0.50 s, 64-stop linear and radial gradients at
+/// 2.0e8 and 2.4e8 took 0.22 and 0.23 s (the factor is conservative). So a
+/// file at the cap, 2e8, takes about 0.4 s at most. (Until the fifth review
+/// of #2125 the cap was 1e9, about 2.2 s, and gradients were charged as
+/// solid fills, so 64-stop ones ran 6.5x over: 8 s at the cap.) A 1200x800
+/// illustration of 2,000 small shapes estimates at 2.1e7 (29 ms).
+pub const MAX_RASTER_WORK: f64 = 2.0e8;
+
+/// What a pixel of a gradient fill or stroke costs resvg, in translucent
+/// solid pixels, by its kind and stop count (measured with
+/// `svg_work_probe` over 2,400x1,600 of overlapping rects: linear 2, 8 and
+/// 64 stops 2.2x, 4.0x and 6.5x; radial 3.5x, 3.8x and 7.9x).
+pub fn gradient_factor(radial: bool, stops: usize) -> f64 {
+    let base = if radial { 2.5 } else { 1.2 };
+    base + 0.9 * (stops.max(2) as f64).log2()
+}
 
 /// What each element drawn costs resvg whatever its size, as pixels painted
 /// (about 14 µs a path, measured, against about 1.3 ns a pixel).
@@ -721,20 +735,29 @@ struct FilterWork {
 }
 
 /// What each primitive the profile allows costs per pixel of its region, in
-/// pixels painted (one is about 1.5 ns; measured with `filter_cost_probe`,
-/// release): a box blur 60 at any deviation, an IIR blur (both deviations
-/// under 2) and a drop shadow 250, the rest 20.
+/// the work budget's unit (about 2 ns; measured with `filter_cost_probe`,
+/// release, 400x400): a box blur (any deviation of 2 or more) 40, an IIR
+/// blur (both deviations under 2) 180, a drop shadow 60 (200 over an IIR
+/// blur), the rest 20 (colour matrix, offset, flood, composite, blend and
+/// merge measured at 8 to 11).
 fn filter_cost(kind: &usvg::filter::Kind) -> f64 {
     use usvg::filter::Kind as K;
+    let small = |x: f32, y: f32| x < 2.0 && y < 2.0;
     match kind {
         K::GaussianBlur(b) => {
-            if b.std_dev_x().get() < 2.0 && b.std_dev_y().get() < 2.0 {
-                250.0
+            if small(b.std_dev_x().get(), b.std_dev_y().get()) {
+                180.0
+            } else {
+                40.0
+            }
+        }
+        K::DropShadow(d) => {
+            if small(d.std_dev_x().get(), d.std_dev_y().get()) {
+                200.0
             } else {
                 60.0
             }
         }
-        K::DropShadow(_) => 250.0,
         _ => 20.0,
     }
 }
@@ -749,10 +772,24 @@ impl Tally {
         x * y
     }
 
-    fn rect(&mut self, r: usvg::Rect) {
+    /// The area of `r` clipped to the canvas.
+    fn clipped(&self, r: usvg::Rect) -> f64 {
         let w = (f64::from(r.right()).min(self.canvas.0) - f64::from(r.left()).max(0.0)).max(0.0);
         let h = (f64::from(r.bottom()).min(self.canvas.1) - f64::from(r.top()).max(0.0)).max(0.0);
-        self.area += w * h;
+        w * h
+    }
+
+    fn rect(&mut self, r: usvg::Rect) {
+        self.area += self.clipped(r);
+    }
+
+    /// A gradient paint's cost beyond a solid one's, per pixel.
+    fn gradient_extra(paint: &usvg::Paint) -> f64 {
+        match paint {
+            usvg::Paint::LinearGradient(g) => gradient_factor(false, g.stops().len()) - 1.0,
+            usvg::Paint::RadialGradient(g) => gradient_factor(true, g.stops().len()) - 1.0,
+            _ => 0.0,
+        }
     }
 
     fn node(&mut self, node: &usvg::Node, depth: usize) -> Result<(), String> {
@@ -798,6 +835,16 @@ impl Tally {
             }
             usvg::Node::Path(p) => {
                 self.rect(p.abs_stroke_bounding_box());
+                // A gradient costs more per pixel than a solid colour, and
+                // more the more stops it has (review of #2125, round 5).
+                if let Some(f) = p.fill() {
+                    self.area +=
+                        self.clipped(p.abs_bounding_box()) * Self::gradient_extra(f.paint());
+                }
+                if let Some(s) = p.stroke() {
+                    self.area +=
+                        self.clipped(p.abs_stroke_bounding_box()) * Self::gradient_extra(s.paint());
+                }
                 // A pattern's tile is rendered once at its own device size.
                 let paints = [p.fill().map(|f| f.paint()), p.stroke().map(|s| s.paint())];
                 for paint in paints.into_iter().flatten() {
