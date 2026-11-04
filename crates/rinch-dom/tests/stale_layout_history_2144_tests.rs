@@ -118,9 +118,17 @@ fn pill_in_cell(doc: &RinchDocument) -> f32 {
 #[track_caller]
 fn assert_centred(doc: &RinchDocument, what: &str) {
     let a = &doc.tree.nodes[id(doc, "#a").0];
-    let lines = a.text_layout.as_ref().expect("#a lays out its lines").layout.height();
+    let lines = a
+        .text_layout
+        .as_ref()
+        .expect("#a lays out its lines")
+        .layout
+        .height();
     let room = a.layout.height - lines;
-    assert!(room > 0.0, "{what}: positive control, #a is taller than its lines");
+    assert!(
+        room > 0.0,
+        "{what}: positive control, #a is taller than its lines"
+    );
     assert_eq!(
         pill_in_cell(doc),
         room / 2.0,
@@ -200,7 +208,10 @@ fn a_colour_restyle_keeps_a_block_in_a_cell_where_it_was() {
          <td><div style='height:50px'></div></td></tr></table><p id=other>other</p>",
     );
     let k = id(&doc, "#k");
-    assert_eq!(doc.tree.nodes[k.0].layout.y, 20.0, "positive control: (50 - 10) / 2");
+    assert_eq!(
+        doc.tree.nodes[k.0].layout.y, 20.0,
+        "positive control: (50 - 10) / 2"
+    );
     let body = doc.body();
     doc.set_style(body, "color", "rgb(200, 0, 0)");
     settle(&mut doc);

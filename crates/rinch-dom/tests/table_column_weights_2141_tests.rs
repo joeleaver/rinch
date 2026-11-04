@@ -47,7 +47,9 @@ fn cells(d: &RinchDocument) -> Vec<(f32, f32, f32, f32)> {
 fn rows(texts: &[(&str, &str)]) -> String {
     let mut h = String::from("<table><tbody>");
     for (i, (a, b)) in texts.iter().enumerate() {
-        h.push_str(&format!("<tr id=r{i}><td id=a{i}>{a}</td><td id=b{i}>{b}</td></tr>"));
+        h.push_str(&format!(
+            "<tr id=r{i}><td id=a{i}>{a}</td><td id=b{i}>{b}</td></tr>"
+        ));
     }
     h.push_str("</tbody></table>");
     h
@@ -73,7 +75,11 @@ fn a_cell_that_grows_and_shrinks_moves_its_column() {
 
     set_text(&mut d, "#a1", LONG);
     let fresh = doc(&rows(&[(SHORT, "x"), (LONG, "y"), ("ef", "z")]));
-    assert_ne!(cells(&fresh), before, "positive control: the long text widens column a");
+    assert_ne!(
+        cells(&fresh),
+        before,
+        "positive control: the long text widens column a"
+    );
     assert_eq!(cells(&d), cells(&fresh), "grown");
 
     set_text(&mut d, "#a1", "cd");
@@ -153,7 +159,9 @@ fn cell_widths_give_the_detached_layouts_columns() {
             "<table><tr><td colspan=2>{LONG} {LONG}</td></tr>\
              <tr><td>{SHORT}</td><td>cd</td></tr></table>"
         ),
-        format!("<table><caption>{LONG} {LONG} {LONG}</caption><tr><td>{SHORT}</td><td>cd</td></tr></table>"),
+        format!(
+            "<table><caption>{LONG} {LONG} {LONG}</caption><tr><td>{SHORT}</td><td>cd</td></tr></table>"
+        ),
         // Text straight in the table: a grid item that is no cell.
         format!("<table><tr><td>{SHORT}</td><td>cd</td></tr>{LONG} {LONG}</table>"),
     ];

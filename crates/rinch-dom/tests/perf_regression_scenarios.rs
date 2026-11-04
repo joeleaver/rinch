@@ -4395,7 +4395,11 @@ fn a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone() {
         doc.set_text_content(uses[rows / 2], "3 uses and many more uses");
         doc.resolve_layout(VP.0, VP.1);
         let s = doc.tree.perf.end_frame();
-        assert_eq!(s.get(TableColumnMeasures), 1, "the edited cell alone is asked");
+        assert_eq!(
+            s.get(TableColumnMeasures),
+            1,
+            "the edited cell alone is asked"
+        );
         assert!(
             s.get(TaffyMeasureCalls) > rows as u64,
             "positive control: a moved column lays every row out again ({})",
