@@ -2537,6 +2537,147 @@ fn one_changed_card_in_a_grid_measures_that_card_alone() {
     }
 }
 
+/// The chain Playweft's asset grid sits in (#2136's live capture,
+/// `repro-dom.json`): an absolutely placed panel host behind a `display:
+/// contents` wrapper, a CSS-grid panel whose `minmax(0, 1fr)` row holds a
+/// scrolling flex column whose children are `flex: none`, and in it the
+/// card grid, every card behind the keyed `for`'s `display: contents`
+/// wrapper. Returns the document and the card grid.
+fn studio_card_grid(cards: usize) -> (RinchDocument, NodeId) {
+    let mut doc = doc_with(
+        "body { height: 100% }
+         .studio { display: grid; grid-template-rows: 48px minmax(0, 1fr) 28px;
+                   height: 900px; min-width: 640px; overflow: hidden }
+         .dock { position: relative; display: flex; min-width: 0; min-height: 0 }
+         .host { position: absolute; left: 0; top: 0; width: 0; height: 0 }
+         .hosted { position: absolute; left: 265px; top: 557px; width: 434px; height: 267px;
+                   display: flex; flex-direction: column; overflow: hidden }
+         .panel { display: grid; flex: 1 1 auto; min-width: 0; min-height: 0;
+                  grid-template-columns: minmax(0, 1fr);
+                  grid-template-rows: 40px minmax(0, 1fr) 33px }
+         .well { grid-row: 2; display: flex; flex-direction: column; gap: 8px; padding: 8px;
+                 min-width: 0; min-height: 0; overflow: auto }
+         .well > * { flex: none }
+         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+                 gap: 8px; padding: 4px; min-width: 0 }
+         .card { display: flex; flex-direction: column; min-width: 0; overflow: hidden }
+         .thumb { height: 60px }
+         .meta { display: flex; align-items: center; gap: 4px; min-width: 0 }
+         .spacer { flex: 1 1 auto }",
+    );
+    let contents = |doc: &mut RinchDocument, parent: NodeId| {
+        let w = el(doc, parent, "div", "");
+        doc.set_attribute(w, "style", "display: contents");
+        w
+    };
+    let body = doc.body();
+    let c0 = contents(&mut doc, body);
+    let studio = el(&mut doc, c0, "div", "studio");
+    el(&mut doc, studio, "div", "");
+    let dock = el(&mut doc, studio, "div", "dock");
+    let host = el(&mut doc, dock, "div", "host");
+    let c1 = contents(&mut doc, host);
+    let hosted = el(&mut doc, c1, "div", "hosted");
+    let panel = el(&mut doc, hosted, "aside", "panel");
+    let tools = el(&mut doc, panel, "div", "");
+    text(&mut doc, tools, "Assets");
+    let well = el(&mut doc, panel, "div", "well");
+    let grid = el(&mut doc, well, "div", "grid");
+    for i in 0..cards {
+        let w = contents(&mut doc, grid);
+        card(&mut doc, w, i);
+    }
+    doc.resolve_layout(1440.0, 900.0);
+    doc.resolve_layout(1440.0, 900.0);
+    doc.tree.perf.reset();
+    (doc, grid)
+}
+
+/// One card of [`studio_card_grid`]: a thumbnail, a name, and a flex row of
+/// a spacer and a count.
+fn card(doc: &mut RinchDocument, parent: NodeId, i: usize) {
+    let card = el(doc, parent, "div", "card");
+    el(doc, card, "div", "thumb");
+    let name = el(doc, card, "span", "");
+    text(doc, name, &format!("Asset {i}.glb"));
+    let meta = el(doc, card, "span", "meta");
+    el(doc, meta, "span", "spacer");
+    text(doc, meta, &format!("{} uses", i % 7));
+}
+
+/// A card is appended to a grid whose items are each behind a keyed `for`'s
+/// `display: contents` wrapper, and two wrappers trade places. Each is a
+/// scoped structural pass whose scope holds every wrapper in the grid, and
+/// `sync_display_contents` used to rebuild the grid's Taffy child list for
+/// each of them and **mark every item dirty**: every card's cache cleared,
+/// every card's text measured again (10,892 `shape_measure_text` on #2136's
+/// 430-card chain; the count on main at 24 and 48 cards is in the PR). A list
+/// the splice leaves as it was is now left alone, and only an item new to the
+/// list is dirtied: appending measures the new card, a swap measures nothing
+/// whose inputs did not change, at either number of cards.
+#[test]
+fn a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved() {
+    for cards in [24, 48] {
+        let (mut doc, grid) = studio_card_grid(cards);
+        let w = doc.create_element("div");
+        doc.set_attribute(w, "style", "display: contents");
+        card(&mut doc, w, cards);
+        doc.append_child(grid, w);
+        doc.resolve_layout(1440.0, 900.0);
+        let s = doc.tree.perf.end_frame();
+        // The scope is the grid's region: every wrapper and card, 2 a card.
+        let scope_nodes = 2 * cards as u64 + 9;
+        expect(
+            &format!("a card appended among {cards}"),
+            &s,
+            &[
+                (StyleResolves, 7),
+                (ElementsCascaded, 6),
+                (StyleNodesVisited, 6),
+                (TaffyStyleSyncs, 6),
+                (TaffyStyleChanges, 6),
+                (ShapeMeasureIfc, 4),
+                (ShapeMeasureText, 23),
+                (ShapeIfcBuild, 1),
+                (IfcMeasureCacheHits, 9),
+                (IfcMeasureInvalidations, 8),
+                (IfcSignatureChanges, 1),
+                (LayoutResolves, 1),
+                (IfcSetupPasses, 1),
+                (IfcScopedPasses, 1),
+                (IfcScopeContainers, 6),
+                (IfcScopeNodes, scope_nodes),
+                (TaffyRootComputes, 1),
+                (TaffyMeasureCalls, 92),
+            ],
+        );
+
+        let kids = doc.tree.nodes[grid.0].children.clone();
+        doc.insert_before(grid, NodeId(kids[11]), NodeId(kids[10]));
+        doc.resolve_layout(1440.0, 900.0);
+        let s = doc.tree.perf.end_frame();
+        // The two cards that changed cells are measured again; no other.
+        expect(
+            &format!("two wrappers swapped among {cards}"),
+            &s,
+            &[
+                (ShapeMeasureIfc, 1),
+                (ShapeMeasureText, 36),
+                (ShapeIfcBuild, 2),
+                (IfcMeasureCacheHits, 16),
+                (IfcMeasureInvalidations, 1),
+                (LayoutResolves, 1),
+                (IfcSetupPasses, 1),
+                (IfcScopedPasses, 1),
+                (IfcScopeContainers, 6),
+                (IfcScopeNodes, scope_nodes),
+                (TaffyRootComputes, 1),
+                (TaffyMeasureCalls, 121),
+            ],
+        );
+    }
+}
+
 // ── inline_block_computes: keyword atomic inlines (#691) ─────────────────────
 
 /// A `fit-content` atomic inline is sized by three computes (its max-content,

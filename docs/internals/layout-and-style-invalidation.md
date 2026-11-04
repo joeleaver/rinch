@@ -699,6 +699,20 @@ mutation shape in 17 contexts, plus a lockstep randomized differential, each
 comparing the scoped pass with the whole-document pass on the same history and
 both with a fresh layout; its module doc lists what it found.
 
+**A `display: contents` splice that comes out the same is left alone**
+(#2136, `sync_display_contents`). A scoped structural pass reaches every
+wrapper in its containers' regions, and a grid built by a keyed `for` holds a
+wrapper per item, so an append, a removal or a reorder in that grid put the
+grid in `affected_parents` once per wrapper. Each rebuild used to
+`set_children` the grid and `mark_dirty` **every** item, clearing all their
+Taffy caches: one card appended to Playweft's 430-card asset grid measured
+every card's text again (10,892 `shape_measure_text`). The rebuild now
+compares the new list with Taffy's: an unchanged list is skipped, and only an
+item that was not in the list is dirtied (one that stays, reordered or not,
+keeps its cache — Taffy keys an entry on the inputs its parent passes, and the
+parent is dirtied by `set_children`). The root is marked only when a list
+changed. Pin: `perf_regression_scenarios::a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved`.
+
 **`<body>`'s flex basis is `0` when its height cannot depend on it** (#1260,
 `node::body_taffy_overrides`): `<html>` is a fixed viewport-sized flex column and
 `<body>` its only item, so the UA sheet's `overflow-y: auto` body (a scroll
