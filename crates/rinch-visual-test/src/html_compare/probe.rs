@@ -84,7 +84,7 @@ fn document(dir: PathBuf) -> NodeHandle {
     let view = rinch::html::HtmlView {
         html: cleaned.html,
         body_style: cleaned.body_style,
-        onlink: None,
+        ..Default::default()
     }
     .render(__scope, &[]);
     host.append_child(&view);

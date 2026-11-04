@@ -152,3 +152,21 @@ img { display: block; width: 100%; height: auto; }
 <h1>Rendering comparison</h1>
 <p>Each document three ways, worst first. A against B is what cleaning loses; B against C is how rinch lays out the same HTML differently from Chrome.</p>
 "#;
+
+/// Write `out/index.html`, linking each width's report (`w<width>/report.html`).
+pub fn index(out: &Path, widths: &[u32]) -> Result<PathBuf> {
+    let mut html = String::from(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Rendering comparison</title>\
+         <style>body { margin: 24px; font: 15px/1.5 system-ui, sans-serif; }</style></head><body>\
+         <h1>Rendering comparison</h1><p>The same documents drawn at each width:</p><ul>",
+    );
+    for w in widths {
+        html.push_str(&format!(
+            "<li><a href=\"w{w}/report.html\">{w}px wide</a></li>"
+        ));
+    }
+    html.push_str("</ul></body></html>\n");
+    let path = out.join("index.html");
+    std::fs::write(&path, html)?;
+    Ok(path)
+}
