@@ -2159,6 +2159,7 @@ pub(crate) fn replace_all(tree: &mut NodeTree) {
     // It moves boxes after the scroll ranges may have been measured (the
     // layout's clamp asks for them first), so what those measured goes.
     tree.hit_cache.invalidate();
+    tree.layout_epoch = tree.layout_epoch.wrapping_add(1);
     let placed = std::mem::take(&mut tree.placed_absolutes);
     tree.perf
         .add(crate::perf::Counter::AbsBoxesVisited, placed.len() as u64);

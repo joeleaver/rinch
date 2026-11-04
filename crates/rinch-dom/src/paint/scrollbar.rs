@@ -309,8 +309,189 @@ pub(crate) fn content_extents_in_flow(tree: &NodeTree, node_id: RawNodeId) -> (f
 }
 
 fn content_extents_with(tree: &NodeTree, node_id: RawNodeId, listed: bool) -> (f64, f64) {
+    let rounded = measure_content(tree, node_id, listed, None);
+    if let Some(node) = tree.get(node_id)
+        && (node.scrolls_x() || node.scrolls_y())
+        && let Some(extents) = scroller_extents(tree, node_id, node, &rounded)
+    {
+        return extents;
+    }
+    rounded.content(rounded.flow)
+}
+
+/// [`content_extents_in_flow`] from the rounded rects alone: within
+/// [`ROUNDED_RANGE_SLACK`] of the whole-pixel range on either side, and
+/// without the unrounded measure's walk. For a caller that only needs to know
+/// an offset is well inside the range — layout's clamp, on every layout.
+pub(crate) fn content_extents_in_flow_rounded(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
+    let rounded = measure_content(tree, node_id, false, None);
+    rounded.content(rounded.flow)
+}
+
+/// How far a scroll range measured from the rounded rects
+/// ([`content_extents_in_flow_rounded`]) can sit from the whole-pixel range
+/// [`scroller_extents`] answers: an in-flow box's rounded end is within 1.5px
+/// of its unrounded one (its location rounded on its own, its size within a
+/// pixel), the content box within 1px, and the range rounds by half a pixel
+/// at each end.
+pub(crate) const ROUNDED_RANGE_SLACK: f64 = 4.0;
+
+/// A scroll container's content extents, with its range on each axis it
+/// scrolls on **Chrome's whole-pixel range** (#2116): `scrollHeight` is the
+/// scrollable overflow and `clientHeight` the padding box, each rounded to a
+/// whole CSS pixel from layout units (1/64px) — wherever the box is and at any
+/// device scale — and the range is their difference (measured in Chrome 156,
+/// `tests/subpixel_overflow_2116_tests.rs`). So 0.4px of overflow is none and
+/// 0.5px is a pixel's range.
+///
+/// Both are measured from Taffy's **unrounded** layout. The rounded rects
+/// cannot answer it: Taffy rounds a box's location on its own and its size
+/// from its absolute edges, so a child's rounded end can sit a pixel or more
+/// from where its unrounded one is against the container's rounded box — the
+/// menu bar's two-item dropdown, whose content fits exactly, measured a pixel
+/// past its content box at some positions and painted a bar over it.
+///
+/// An axis with no overflow keeps its measure (a scroller emptier than its box
+/// reports what it holds); an overflowing one is the content box plus the
+/// range, so every reader of the range — the bar, the wheel
+/// ([`can_scroll_toward`], [`overflows`]), layout's clamp, `scrollHeight` —
+/// answers the same. An axis that does not scroll keeps the unrounded measure.
+/// `None` when the box's rounded size is not a rounding of its unrounded one
+/// (a size written after layout); the rounded measure then stands.
+///
+/// **Cost.** Only the in-flow boxes' margin boxes are read unrounded, and that
+/// walk is memoized per container for the current geometry ([`ExactFlow`]):
+/// every other contribution — the container's lines, its absolute, offset and
+/// transformed boxes where they are drawn — is the rounded walk's
+/// (`rounded`), which the caller has made anyway. So a scroller asked again
+/// with nothing moved (each paint, each pointer move) pays the rounded walk
+/// and a lookup, as before #2116, and the unrounded walk once per layout.
+fn scroller_extents(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    node: &crate::node::Node,
+    rounded: &Measured,
+) -> Option<(f64, f64)> {
+    let taffy_id = node.taffy_id?;
+    let u = tree.taffy.unrounded_layout(taffy_id);
+    if (u.size.width - node.layout.width).abs() >= 1.0
+        || (u.size.height - node.layout.height).abs() >= 1.0
+    {
+        return None;
+    }
+    let cs = &node.computed_style;
+    let pad_h = (cs.padding_left.to_px() + cs.padding_right.to_px()) as f64;
+    let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64;
+    let border_h = (cs.border_left_width.to_px() + cs.border_right_width.to_px()) as f64;
+    let border_v = (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64;
+    let client_w = (u.size.width as f64 - border_h).max(pad_h);
+    let client_h = (u.size.height as f64 - border_v).max(pad_v);
+    let flow = tree.exact_flow.get(tree, node_id, || {
+        measure_content(tree, node_id, false, Some(taffy_id)).flow
+    });
+    let (content_w, content_h) = rounded.content(flow);
+    // To layout units first, as Chrome holds them, so float noise in a sum
+    // that lands on a half pixel rounds the way the exact value does.
+    let whole = |px: f64| ((px * 64.0).round() / 64.0).round();
+    let range_x = (whole(content_w + pad_h) - whole(client_w)).max(0.0);
+    let range_y = (whole(content_h + pad_v) - whole(client_h)).max(0.0);
+    let (visible_w, visible_h) = visible_extents(tree, node_id);
+    let settle = |scrolls: bool, measured: f64, visible: f64, range: f64| {
+        if !scrolls {
+            measured
+        } else if range > 0.0 {
+            visible + range
+        } else {
+            measured.min(visible)
+        }
+    };
+    Some((
+        settle(node.scrolls_x(), content_w, visible_w, range_x),
+        settle(node.scrolls_y(), content_h, visible_h, range_y),
+    ))
+}
+
+/// What [`measure_content`] measured, in the container's border-box frame:
+/// the in-flow boxes' margin boxes (`flow`) apart from everything else
+/// (`right`, `bottom`), so [`scroller_extents`] can put the unrounded `flow`
+/// beside the rounded rest.
+pub(crate) struct Measured {
+    right: f64,
+    bottom: f64,
+    flow: (f64, f64),
+    content_origin: (f64, f64),
+}
+
+impl Measured {
+    /// The content extents with `flow` as the in-flow boxes' reach.
+    fn content(&self, flow: (f64, f64)) -> (f64, f64) {
+        (
+            (self.right.max(flow.0) - self.content_origin.0).max(0.0),
+            (self.bottom.max(flow.1) - self.content_origin.1).max(0.0),
+        )
+    }
+}
+
+/// Each scroll container's in-flow reach measured unrounded
+/// ([`scroller_extents`], #2116), for the geometry it was measured in —
+/// **keyed on `NodeTree::layout_epoch`**: the in-flow margin boxes are the
+/// layout's rects and the styles that layout read (no scroll, no transform,
+/// nothing a paint-only restyle changes), and every layout pass moves it. Not
+/// on `HitCache::shape_generation`, which every paint-dirty push moves too:
+/// a hover frame would walk every row unrounded (+3.8% on
+/// `shell::hover_frame`).
+#[derive(Debug, Default)]
+pub(crate) struct ExactFlow {
+    state: std::cell::RefCell<ExactFlowState>,
+}
+
+#[derive(Debug, Default)]
+struct ExactFlowState {
+    /// The `layout_epoch` the entries were measured in.
+    epoch: Option<u64>,
+    /// `(scroll container, its in-flow reach)`, in the order first asked.
+    entries: Vec<(RawNodeId, (f64, f64))>,
+}
+
+impl ExactFlow {
+    fn get(
+        &self,
+        tree: &NodeTree,
+        id: RawNodeId,
+        measure: impl FnOnce() -> (f64, f64),
+    ) -> (f64, f64) {
+        let generation = tree.layout_epoch;
+        {
+            let mut state = self.state.borrow_mut();
+            if state.epoch != Some(generation) {
+                state.epoch = Some(generation);
+                state.entries.clear();
+            } else if let Some(&(_, flow)) = state.entries.iter().find(|e| e.0 == id) {
+                return flow;
+            }
+        }
+        let flow = measure();
+        self.state.borrow_mut().entries.push((id, flow));
+        flow
+    }
+}
+
+/// [`content_extents_with`]'s walk. With `unrounded` (the container's Taffy
+/// node), every box Taffy laid out directly in the container is read at its
+/// unrounded rect ([`child_rect`]); every other box at its rounded one.
+fn measure_content(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    listed: bool,
+    unrounded: Option<taffy::NodeId>,
+) -> Measured {
     let Some(node) = tree.get(node_id) else {
-        return (0.0, 0.0);
+        return Measured {
+            right: 0.0,
+            bottom: 0.0,
+            flow: (0.0, 0.0),
+            content_origin: (0.0, 0.0),
+        };
     };
     let cs = &node.computed_style;
     let content_left = (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64;
@@ -348,20 +529,30 @@ fn content_extents_with(tree: &NodeTree, node_id: RawNodeId, listed: bool) -> (f
         ),
         content_box: visible_extents(tree, node_id),
         inline_measured,
+        unrounded,
+        flow: std::cell::Cell::new((0.0, 0.0)),
         grid: matches!(
             cs.display,
             crate::computed_style::DisplayValue::Grid
                 | crate::computed_style::DisplayValue::InlineGrid
         ),
     };
-    extend_with_children(tree, node_id, node_id, &frame, &mut right, &mut bottom);
+    // Two monomorphs: the rounded walk every call makes compiles as it did
+    // before #2116, with no unrounded branch per box.
+    if frame.unrounded.is_some() {
+        extend_with_children::<true>(tree, node_id, node_id, &frame, &mut right, &mut bottom);
+    } else {
+        extend_with_children::<false>(tree, node_id, node_id, &frame, &mut right, &mut bottom);
+    }
     if listed {
         extend_with_overflow_absolutes(tree, node_id, &frame, &mut right, &mut bottom);
     }
-    (
-        (right - content_left).max(0.0),
-        (bottom - content_top).max(0.0),
-    )
+    Measured {
+        right,
+        bottom,
+        flow: frame.flow.get(),
+        content_origin: (content_left, content_top),
+    }
 }
 
 /// Grow `right`/`bottom` (in the scroll container's border-box frame) by every
@@ -397,7 +588,7 @@ fn content_extents_with(tree: &NodeTree, node_id: RawNodeId, listed: bool) -> (f
 /// With `frame.inline_measured`, the container's own inline layout has already been
 /// measured, so a text node it lays out is skipped rather than read through
 /// the proxy box `write_inline_positions` gives a direct one.
-fn extend_with_children(
+fn extend_with_children<const UNROUNDED: bool>(
     tree: &NodeTree,
     container_id: RawNodeId,
     parent_id: RawNodeId,
@@ -429,18 +620,33 @@ fn extend_with_children(
                 || child.hosts_hoisted_out_of_flow
                 || child.hoisted_out_of_flow_to.is_some()
             {
-                extend_with_box_tree_children(tree, container_id, parent_id, frame, right, bottom);
+                extend_with_box_tree_children::<UNROUNDED>(
+                    tree,
+                    container_id,
+                    parent_id,
+                    frame,
+                    right,
+                    bottom,
+                );
                 return;
             }
-            extend_with_child(tree, container_id, child_id, child, frame, right, bottom);
+            extend_with_child::<UNROUNDED>(
+                tree,
+                container_id,
+                child_id,
+                child,
+                frame,
+                right,
+                bottom,
+            );
         }
         return;
     }
-    extend_with_box_tree_children(tree, container_id, parent_id, frame, right, bottom);
+    extend_with_box_tree_children::<UNROUNDED>(tree, container_id, parent_id, frame, right, bottom);
 }
 
 /// [`extend_with_children`] over `parent_id`'s box-tree children.
-fn extend_with_box_tree_children(
+fn extend_with_box_tree_children<const UNROUNDED: bool>(
     tree: &NodeTree,
     container_id: RawNodeId,
     parent_id: RawNodeId,
@@ -452,7 +658,7 @@ fn extend_with_box_tree_children(
         let Some(child) = tree.get_live(child_id) else {
             continue;
         };
-        extend_with_child(tree, container_id, child_id, child, frame, right, bottom);
+        extend_with_child::<UNROUNDED>(tree, container_id, child_id, child, frame, right, bottom);
     }
 }
 
@@ -854,6 +1060,12 @@ struct ContainerFrame {
     /// Whether the container's own inline layout is already measured, so a
     /// text node it lays out is skipped (see [`extend_with_children`]).
     inline_measured: bool,
+    /// Its Taffy node, when the walk reads boxes laid out directly in it at
+    /// their unrounded rects ([`scroller_extents`], #2116).
+    unrounded: Option<taffy::NodeId>,
+    /// The in-flow boxes' margin boxes' furthest `(right, bottom)`, kept
+    /// apart from the walk's other contributions ([`Measured::flow`]).
+    flow: std::cell::Cell<(f64, f64)>,
     /// Whether it is a grid container, whose items count their border box
     /// alone: Chrome counts the grid's tracks, which layout does not keep
     /// (see [`extend_with_child`]).
@@ -862,7 +1074,7 @@ struct ContainerFrame {
 
 /// Grow `right`/`bottom` by one box-tree child of the walk — by how it
 /// contributes, which [`content_extents`] spells out.
-fn extend_with_child(
+fn extend_with_child<const UNROUNDED: bool>(
     tree: &NodeTree,
     container_id: RawNodeId,
     child_id: RawNodeId,
@@ -872,7 +1084,7 @@ fn extend_with_child(
     bottom: &mut f64,
 ) {
     if child.taffy_style_owned_by_contents_splice() {
-        extend_with_children(tree, container_id, child_id, frame, right, bottom);
+        extend_with_children::<UNROUNDED>(tree, container_id, child_id, frame, right, bottom);
         return;
     }
     if frame.inline_measured && child.is_text() && child.ifc_root == Some(container_id) {
@@ -881,8 +1093,15 @@ fn extend_with_child(
     if !crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, child) {
         return;
     }
-    let l = &child.layout;
-    let (x, y, w, h) = (l.x as f64, l.y as f64, l.width as f64, l.height as f64);
+    let ((x, y, w, h), unrounded) = if UNROUNDED {
+        child_rect(tree, frame, child)
+    } else {
+        let l = &child.layout;
+        (
+            (l.x as f64, l.y as f64, l.width as f64, l.height as f64),
+            false,
+        )
+    };
     let cs = &child.computed_style;
     let (cb_w, cb_h) = (frame.content_box.0 as f32, frame.content_box.1 as f32);
     // In flow: the margin box at the static position, which the container's
@@ -907,7 +1126,15 @@ fn extend_with_child(
             // Rounded as Taffy rounds the layout rect it applied the offset
             // to: a `top: -10%` of 74px is placed 7px up, and taking 7.4 off
             // it left the static box 0.4px low.
-            offset = (dx.round() as f64, dy.round() as f64);
+            // Unrounded where the rect is (#2116). No offset — a `relative`
+            // row that only anchors its badges — rounds nothing.
+            offset = if dx == 0.0 && dy == 0.0 {
+                (0.0, 0.0)
+            } else if unrounded {
+                (dx as f64, dy as f64)
+            } else {
+                (dx.round() as f64, dy.round() as f64)
+            };
         }
         // A percentage margin, on either axis, resolves against the
         // containing block's width; `auto` counts as 0, and a negative margin
@@ -938,8 +1165,11 @@ fn extend_with_child(
                     cs.margin_bottom.resolve(cb_w).unwrap_or(0.0).max(0.0) as f64,
                 )
             };
-        *right = right.max(x - offset.0 + w + margin_right);
-        *bottom = bottom.max(y - offset.1 + h + margin_bottom);
+        let (flow_right, flow_bottom) = frame.flow.get();
+        frame.flow.set((
+            flow_right.max(x - offset.0 + w + margin_right),
+            flow_bottom.max(y - offset.1 + h + margin_bottom),
+        ));
     } else if is_empty_box(child) {
         // An `absolute` box with no area counts nothing, wherever it is:
         // Chrome 156 gives a 200x100 scroller no range for a `0x500` one, a
@@ -973,8 +1203,51 @@ fn extend_with_child(
     if child.is_anonymous_block_box
         && let Some(inline) = &child.text_layout
     {
-        *right = right.max(child.layout.x as f64 + inline.layout.width() as f64);
+        *right = right.max(x + inline.layout.width() as f64);
     }
+}
+
+/// A box's layout rect `(x, y, width, height)` in its parent's frame, as
+/// [`extend_with_child`] measures it: the rounded `layout`, or — in a walk for
+/// [`scroller_extents`] — Taffy's unrounded rect for a box Taffy laid out
+/// directly in the container, where `layout` is a rounding of it (Taffy rounds
+/// the location to the nearest pixel and the size within one). A box placed
+/// after layout (an absolute one moved by a scroll, an inline one placed by
+/// its line) fails that test and is read rounded. The flag says which.
+#[inline(always)]
+fn child_rect(
+    tree: &NodeTree,
+    frame: &ContainerFrame,
+    child: &crate::node::Node,
+) -> ((f64, f64, f64, f64), bool) {
+    let l = &child.layout;
+    let rounded = (
+        (l.x as f64, l.y as f64, l.width as f64, l.height as f64),
+        false,
+    );
+    let (Some(container), Some(taffy_id)) = (frame.unrounded, child.taffy_id) else {
+        return rounded;
+    };
+    if tree.taffy.parent(taffy_id) != Some(container) {
+        return rounded;
+    }
+    let u = tree.taffy.unrounded_layout(taffy_id);
+    let is_rounding = u.location.x.round() == l.x
+        && u.location.y.round() == l.y
+        && (u.size.width - l.width).abs() < 1.0
+        && (u.size.height - l.height).abs() < 1.0;
+    if !is_rounding {
+        return rounded;
+    }
+    (
+        (
+            u.location.x as f64,
+            u.location.y as f64,
+            u.size.width as f64,
+            u.size.height as f64,
+        ),
+        true,
+    )
 }
 
 /// What the built-in `auto` thumb looks like on this container.
