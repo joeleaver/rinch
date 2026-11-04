@@ -699,6 +699,16 @@ pub(crate) fn atomic_inline_capped_width(min: f32, max: f32, stretch: f32) -> Op
     (fit + 1.0 < max).then_some(fit)
 }
 
+/// What an atomic inline's own percentage inline sizes are resolved against
+/// in a measure. See `RinchDocument::own_percentage_widths`.
+#[derive(Clone, Copy)]
+enum OwnPercentageBasis {
+    /// Resolve against this containing-block width (`None`: not known yet).
+    ContainingBlock(Option<f32>),
+    /// The box is laid out at a width already resolved and pinned.
+    PinnedWidth,
+}
+
 /// An atomic inline's own percentage inline sizes as the Taffy values they
 /// take against its containing block (#2140, #2146); `None` for a field left
 /// as it is. See `RinchDocument::own_percentage_widths`.
@@ -8718,6 +8728,20 @@ impl RinchDocument {
     /// returns, so nothing outside this function ever sees it; the node's
     /// computed style, which is what the next pass re-derives from, is untouched.
     fn measure_inline_blocks(&mut self, targets: &[(taffy::NodeId, Option<f32>)]) {
+        self.measure_inline_blocks_with(targets, false);
+    }
+
+    /// [`Self::measure_inline_blocks`], or, with `at_pinned_width`, the
+    /// measure [`Self::relayout_atomic_inline_at_its_width`] runs: each box's
+    /// `width` is pinned at the width it already has and `available_width`
+    /// is that width, **not** its containing block's, so the box's own
+    /// percentages are not resolved against it (see
+    /// [`Self::own_percentage_widths`]).
+    fn measure_inline_blocks_with(
+        &mut self,
+        targets: &[(taffy::NodeId, Option<f32>)],
+        at_pinned_width: bool,
+    ) {
         for &(taffy_id, available_width) in targets {
             // Measured as `auto` (no containing-block width): a keyword box's
             // cached size no longer stands (#691).
@@ -8767,7 +8791,12 @@ impl RinchDocument {
             // resolve against its containing block's width, not against the
             // space the passes below hand Taffy, which can be wider (#2140)
             // — and a `calc()` one has no Taffy form at all (#2146).
-            if let Some(own) = self.own_percentage_widths(taffy_id, available_width) {
+            let basis = if at_pinned_width {
+                OwnPercentageBasis::PinnedWidth
+            } else {
+                OwnPercentageBasis::ContainingBlock(available_width)
+            };
+            if let Some(own) = self.own_percentage_widths(taffy_id, basis) {
                 declared.get_or_insert_with(|| original.clone());
                 if let Some(w) = own.width {
                     original.size.width = w;
@@ -9154,10 +9183,17 @@ impl RinchDocument {
     /// against max-content space as `auto`; a `calc()` is made `auto` the
     /// same way, not its length part. [`Self::resolve_percentage_inline_blocks`]
     /// measures the box again once the block has a width.
+    ///
+    /// For [`OwnPercentageBasis::PinnedWidth`] (the box laid out again at the
+    /// width it has, its `width` pinned there) the pin is kept, and a
+    /// percentage `min-width`/`max-width` is made `auto`: the pinned width
+    /// already obeys them, and the only basis that pass has is the box's own
+    /// width. Resolved against that, a `width: 50%` box halved on every
+    /// layout (review of #2152), and a `calc()` one kept only its length part.
     fn own_percentage_widths(
         &self,
         taffy_id: taffy::NodeId,
-        cb_width: Option<f32>,
+        basis: OwnPercentageBasis,
     ) -> Option<OwnPercentageWidths> {
         use crate::computed_style::DimensionValue as D;
         let nid = self
@@ -9172,8 +9208,13 @@ impl RinchDocument {
         }
         // `Some(length)` for a resolved size, `Some(None)` for `auto`, `None`
         // to leave the Taffy value as it is.
+        let (cb_width, pinned) = match basis {
+            OwnPercentageBasis::ContainingBlock(cb) => (cb, false),
+            OwnPercentageBasis::PinnedWidth => (None, true),
+        };
         let resolve = |v: D| -> Option<Option<f32>> {
             match (v, cb_width) {
+                (D::Percent(_) | D::Calc { .. }, _) if pinned => Some(None),
                 (D::Percent(p), Some(cb)) => Some(Some((p * cb).max(0.0))),
                 (D::Calc { .. }, Some(cb)) => Some(v.resolve_calc(cb)),
                 (D::Calc { .. }, None) => Some(None),
@@ -9181,7 +9222,7 @@ impl RinchDocument {
             }
         };
         let own = OwnPercentageWidths {
-            width: resolve(style.width).map(|w| match w {
+            width: resolve(style.width).filter(|_| !pinned).map(|w| match w {
                 Some(w) => taffy::Dimension::length(w),
                 None => taffy::Dimension::auto(),
             }),
@@ -9832,7 +9873,7 @@ impl RinchDocument {
         pinned.size.width =
             taffy::Dimension::length(self.sizing_box_width(taffy_id, &declared, w, None));
         let _ = self.tree.taffy.set_style(taffy_id, pinned);
-        self.measure_inline_blocks(&[(taffy_id, Some(w))]);
+        self.measure_inline_blocks_with(&[(taffy_id, Some(w))], true);
         let _ = self.tree.taffy.set_style(taffy_id, declared);
     }
 
