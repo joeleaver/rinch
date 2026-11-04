@@ -97,6 +97,21 @@ fn abs_badge_extents(f: BadgeFixture) -> BadgeFixture {
     black_box(measure(black_box(f), op_badge_extents))
 }
 
+// #2136: one card's text in a 430-card grid, and a change beside the grid.
+// The exact counters are pinned in `rinch-dom/tests/perf_regression_scenarios.rs`
+// (`one_changed_card_in_a_grid_*`, `percentage_pills_in_a_grid_*`).
+#[library_benchmark]
+#[bench::cards_430(setup = setup_card_grid)]
+fn card_grid_count_edit(f: CardGridFixture) -> CardGridFixture {
+    black_box(measure(black_box(f), op_card_count_edit))
+}
+
+#[library_benchmark]
+#[bench::cards_430(setup = setup_card_grid)]
+fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
+    black_box(measure(black_box(f), op_card_grid_unrelated_edit))
+}
+
 #[library_benchmark]
 #[bench::text_page_warm(setup = setup_full_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
@@ -175,6 +190,8 @@ library_benchmark_group!(
         inset_move,
         abs_badge_relayout,
         abs_badge_scroll,
+        card_grid_count_edit,
+        card_grid_unrelated_edit,
         full_paint,
         vello_paint,
         shadow_paint,

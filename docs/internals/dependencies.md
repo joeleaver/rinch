@@ -291,7 +291,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`fa0fd0de0fc221742eb6ca8ca11143cffdcac8d4`, branch `rinch-patch`): five
+(`d2e1f98d4dc2d423704971cbe408ee1f909b2d87`, branch `rinch-patch`): six
 commits on the taffy `v0.14.0` tag. It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
@@ -341,6 +341,20 @@ candidates.
    laid out since. The bypass now clears the cache and counts the node
    computed (`Cache::clear_for_uncached_compute`), so marking climbs on.
 
-The fork's own tests (`tests/block_measure.rs`) cover both; Taffy's suite
+6. **Sixteen measure entries per node, not nine** (#2136). Taffy 0.14's cache
+   keeps nine exact-key size entries per node with clock eviction, so a node
+   asked more distinct sizes per layout than that misses on every one of them
+   on every layout: the cycle evicts each entry just before it is asked again.
+   A grid item under a few intrinsic probes reaches ten — its min- and
+   max-content widths, then its height under a min- and a max-content
+   constraint at each of four column widths (Playweft's asset grid, in a
+   CSS-grid panel in a flex column, is asked at 108, 115.85, 131 and 275.57) —
+   and with nine a grid of 430 such cards re-measured every card whenever any
+   one changed: 15,242 text measures for one changed label, 27 with sixteen.
+   Sixteen is the width of the `recently_used_entries` bitmask, so going past
+   it is a change of that field too. Pin:
+   `perf_regression_scenarios::a_label_edit_in_a_grid_probed_at_four_widths_measures_one_card`.
+
+The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; Taffy's suite
 passes unchanged.
 

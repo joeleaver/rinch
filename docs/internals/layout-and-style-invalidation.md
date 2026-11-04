@@ -84,6 +84,23 @@ box:
   (`tree.dirty_atomic_inlines`) rather than a flag: measured, re-measuring the
   whole document instead costs
   +47% on a one-row text edit in a 500-row document carrying 500 chips.
+  **A box `resolve_percentage_inline_blocks` resolved is recorded at the
+  containing-block width it resolved it against**, and skipped while that
+  width stands: `keyword_inline_cb_width` for a `fit-content`/`stretch`/`auto`
+  box (#1281's review), `percent_inline_cb_width` for one with a percentage
+  `width`/`min-width`/`max-width` (#2136; until then a percentage box was laid
+  out twice after **every** root compute, whatever moved — a `max-width: 100%`
+  pill on each of 430 grid cards was 860 `inline_block_computes` and 860
+  re-shapes a layout). Both records are dropped by any measure of the box as
+  `auto` (`measure_inline_blocks` with no containing-block width: a change
+  inside the box or to its own style, a structural pass, phase 1's reset of
+  the boxes inside one being resolved) and when the node is freed. They are
+  two maps because the first also tells the measure "lined up at a resolved,
+  not its natural, size" (`AtomicContributions`), which a percentage box has
+  never meant. A new path that changes what sizes such a box without
+  measuring it as `auto` must drop its entry. Pins:
+  `tests/percent_atomic_inline_record_2136_tests.rs` (each history against a
+  fresh layout), `perf_regression_scenarios::percentage_pills_in_a_grid_*`.
 - **A transition or animation writes `computed_style` directly**, so it reaches
   none of the cascade's invalidation; `tick_transitions` and `tick_animations`
   each invalidate the text measure of the nodes they are interpolating
@@ -681,6 +698,20 @@ shapes itself (one shape for a new row where there were four).
 mutation shape in 17 contexts, plus a lockstep randomized differential, each
 comparing the scoped pass with the whole-document pass on the same history and
 both with a fresh layout; its module doc lists what it found.
+
+**A `display: contents` splice that comes out the same is left alone**
+(#2136, `sync_display_contents`). A scoped structural pass reaches every
+wrapper in its containers' regions, and a grid built by a keyed `for` holds a
+wrapper per item, so an append, a removal or a reorder in that grid put the
+grid in `affected_parents` once per wrapper. Each rebuild used to
+`set_children` the grid and `mark_dirty` **every** item, clearing all their
+Taffy caches: one card appended to Playweft's 430-card asset grid measured
+every card's text again (10,892 `shape_measure_text`). The rebuild now
+compares the new list with Taffy's: an unchanged list is skipped, and only an
+item that was not in the list is dirtied (one that stays, reordered or not,
+keeps its cache — Taffy keys an entry on the inputs its parent passes, and the
+parent is dirtied by `set_children`). The root is marked only when a list
+changed. Pin: `perf_regression_scenarios::a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved`.
 
 **`<body>`'s flex basis is `0` when its height cannot depend on it** (#1260,
 `node::body_taffy_overrides`): `<html>` is a fixed viewport-sized flex column and

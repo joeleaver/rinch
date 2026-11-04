@@ -504,12 +504,16 @@ impl RinchDocument {
                 loop {
                     let absolutes = self.resolve_ancestor_absolutes(false) || rebaked;
                     rebaked = false;
-                    let calcs = self.resolve_layout_calcs();
+                    let (calcs, calcs_in_atomic) = self.resolve_layout_calcs();
                     if !absolutes && !calcs {
                         break;
                     }
-                    if absolutes {
-                        self.tree.perf.bump(Counter::AbsContainingBlockPasses);
+                    // A rewritten calc inside an atomic inline is in that box's
+                    // own detached compute too (#2136): the same re-measure.
+                    if absolutes || calcs_in_atomic {
+                        if absolutes {
+                            self.tree.perf.bump(Counter::AbsContainingBlockPasses);
+                        }
                         // A re-baked box inside an atomic inline is in that box's own
                         // detached compute, which the root compute does not reach.
                         self.remeasure_dirty_atomic_inlines();
@@ -520,7 +524,7 @@ impl RinchDocument {
                     text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
                     // The re-measure above sized a percentage atomic inline with no
                     // containing block, as the pass before the first compute does.
-                    if absolutes {
+                    if absolutes || calcs_in_atomic {
                         let mut inline_rounds_left = crate::ifc::MAX_INLINE_ROUNDS;
                         while inline_rounds_left > 0 && self.resolve_percentage_inline_blocks() {
                             text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
@@ -1933,6 +1937,7 @@ impl RinchDocument {
 
         // For each affected parent, rebuild its taffy children by flattening
         // display:contents nodes recursively.
+        let mut any_rebuilt = false;
         for parent_id in &affected_parents {
             let parent_taffy = match self.tree.nodes[*parent_id].taffy_id {
                 Some(t) => t,
@@ -1940,12 +1945,41 @@ impl RinchDocument {
             };
 
             let new_children = Self::collect_effective_taffy_children(&self.tree.nodes, *parent_id);
+            // A child list the splice leaves as it was is not touched (#2136).
+            // A scoped structural pass reaches every wrapper in its
+            // containers' regions — a grid built by a keyed `for` holds one
+            // `display: contents` wrapper per item — and rebuilding the list
+            // and dirtying every item for each of them cleared the Taffy cache
+            // of all 430 cards of a grid whenever anything moved in it, so the
+            // next compute measured every card's text again (10,892 shapes
+            // for one re-appended wrapper).
+            let old_children: Vec<taffy::NodeId> =
+                self.tree.taffy.children(parent_taffy).unwrap_or_default();
+            if old_children == new_children {
+                // The parent itself is still dirtied (review of #2142): a
+                // container whose only content is inline content inside a
+                // wrapper is an IFC root, whose Taffy child list is empty
+                // before and after that content goes, and `set_children` was
+                // the only thing that marked it — a `div` > wrapper > `span`
+                // kept the span's line after the span left. Its children's
+                // caches are what this keeps.
+                let _ = self.tree.taffy.mark_dirty(parent_taffy);
+                continue;
+            }
+            any_rebuilt = true;
             let _ = self.tree.taffy.set_children(parent_taffy, &new_children);
 
-            // Also mark each reparented child dirty so their own caches are
-            // cleared (they may have stale entries from their old position).
+            // Mark a child that was not in this list dirty, so its own cache
+            // is cleared (it may have entries from its old position under
+            // another parent). One that stays — reordered or not — keeps its
+            // cache: Taffy keys an entry on the inputs its parent passes, not
+            // on where it sits, and the parent itself is dirtied by
+            // `set_children`.
+            let old: std::collections::HashSet<taffy::NodeId> = old_children.into_iter().collect();
             for &child_taffy in &new_children {
-                let _ = self.tree.taffy.mark_dirty(child_taffy);
+                if !old.contains(&child_taffy) {
+                    let _ = self.tree.taffy.mark_dirty(child_taffy);
+                }
             }
         }
 
@@ -1953,7 +1987,7 @@ impl RinchDocument {
         // Taffy's mark_dirty propagation stops at already-empty ancestors,
         // which can leave stale cached layouts when available space hasn't
         // changed but children have been swapped.
-        if !affected_parents.is_empty() || !departed_nodes.is_empty() {
+        if any_rebuilt || !departed_nodes.is_empty() {
             if let Some(root_taffy) = self.tree.nodes[self.tree.root_id].taffy_id {
                 let _ = self.tree.taffy.mark_dirty(root_taffy);
             }

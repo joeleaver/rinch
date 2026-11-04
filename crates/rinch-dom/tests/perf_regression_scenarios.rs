@@ -40,6 +40,7 @@
 //! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
 //! | `ifc_tab_rebuilds` | `ifc.rs` `build_inline_layout` (the paint layout and the root compute's measure) | [`a_pre_paragraph_of_tabs_is_set_in_one_rebuild`] (1 per layout), [`a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds`] (2 per layout) |
 //! | `inline_block_computes` | `ifc.rs` `resolve_percentage_inline_blocks`, a `fit-content`/`stretch` atomic inline (#691) | [`fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change`] |
+//! | `inline_block_computes` | the same, a percentage-sized atomic inline (#2136) | [`percentage_pills_in_a_grid_are_not_remeasured_for_an_unrelated_change`], [`one_changed_card_in_a_grid_measures_that_card_alone`] |
 //! | `abs_containing_block_passes` | `layout_engine.rs` `resolve_layout`'s fixpoint (#386) | [`an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resize`] (1 per resize of the block), [`a_position_only_absolute_box_under_a_grandparent_pays_no_compute`] (0) |
 //! | `inline_font_family_resolves` | `ifc.rs` `inline_style_props` (review of #1326's perf finding) — fires only when a span's own `font-family` differs from the enclosing style's | [`a_spans_unchanged_font_family_resolves_nothing`] (0), [`a_spans_changed_font_family_resolves_once_per_rebuild`] (nonzero) |
 //!
@@ -2406,6 +2407,376 @@ fn a_detached_atomic_inline_is_sized_again_when_reattached() {
                 );
                 assert_eq!(got, want, "{case}: re-attached box vs a fresh layout");
             }
+        }
+    }
+}
+
+// ── a large grid of cards (#2136) ────────────────────────────────────────────
+
+/// #2136's shape: `repeat(auto-fill, minmax(108px, 1fr))` with implicit
+/// `auto` rows, inside a scroll container, each item (behind a `display:
+/// contents` wrapper, as an rsx `for` builds it) a flex column holding a
+/// thumbnail with an absolutely positioned `max-width: 100%` pill in its
+/// corner, a name, and a flex row of a badge, a spacer and a count. Returns
+/// the document and each card's count text.
+fn card_grid(cards: usize) -> (RinchDocument, Vec<NodeId>) {
+    let mut doc = doc_with(
+        ".scroll { width: 380px; height: 260px; overflow-y: auto }
+         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+                 gap: 8px; padding: 4px }
+         .card { display: flex; flex-direction: column; min-width: 0; overflow: hidden }
+         .thumb { position: relative; height: 40px }
+         .tl { position: absolute; top: 4px; left: 4px }
+         .pill { display: inline-flex; max-width: 100%; height: 18px; line-height: 18px;
+                 padding: 0 6px }
+         .name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis }
+         .meta { display: flex; align-items: center; gap: 4px; min-width: 0 }
+         .spacer { flex: 1 1 auto }",
+    );
+    let body = doc.body();
+    let scroll = el(&mut doc, body, "div", "scroll");
+    let grid = el(&mut doc, scroll, "div", "grid");
+    let mut counts = Vec::new();
+    for i in 0..cards {
+        let wrap = el(&mut doc, grid, "div", "");
+        doc.set_attribute(wrap, "style", "display: contents");
+        let card = el(&mut doc, wrap, "div", "card");
+        let thumb = el(&mut doc, card, "div", "thumb");
+        let tl = el(&mut doc, thumb, "span", "tl");
+        let pill = el(&mut doc, tl, "span", "pill");
+        text(&mut doc, pill, "3d");
+        let name = el(&mut doc, card, "span", "name");
+        text(&mut doc, name, &format!("Asset {i}.glb"));
+        let meta = el(&mut doc, card, "span", "meta");
+        let badge = el(&mut doc, meta, "span", "");
+        text(&mut doc, badge, "v1");
+        el(&mut doc, meta, "span", "spacer");
+        counts.push(text(&mut doc, meta, &format!("{} uses", i % 7)));
+    }
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+    (doc, counts)
+}
+
+/// Nothing in the grid changes: a text outside it does. Every card's pill
+/// is a `max-width: 100%` atomic inline, which `resolve_percentage_inline_blocks`
+/// used to lay out twice after every root compute whatever had moved — 2 x
+/// `cards` `inline_block_computes` and as many re-shapes, on this frame (860
+/// on #2136's 430 cards). They are recorded at the containing-block width they
+/// were resolved against now, and this frame pays none; the same frame at
+/// twice the cards is the same frame. A pill's containing block (its corner
+/// box) narrowing below it — the positive control — resolves it again.
+#[test]
+fn percentage_pills_in_a_grid_are_not_remeasured_for_an_unrelated_change() {
+    for cards in [12, 24] {
+        let (mut doc, _) = card_grid(cards);
+        let body = doc.body();
+        let other = el(&mut doc, body, "div", "");
+        let t = text(&mut doc, other, "elsewhere");
+        doc.resolve_layout(VP.0, VP.1);
+        doc.tree.perf.reset();
+        doc.set_text_content(t, "elsewhere, changed");
+        doc.resolve_layout(VP.0, VP.1);
+        let s = doc.tree.perf.end_frame();
+        expect(
+            &format!("an unrelated text edit beside {cards} cards"),
+            &s,
+            &[
+                (ShapeMeasureIfc, 1),
+                (ShapeIfcBuild, 1),
+                (IfcMeasureInvalidations, 3),
+                (LayoutResolves, 1),
+                (TaffyRootComputes, 1),
+                (TaffyMeasureCalls, 1),
+            ],
+        );
+
+        // The pill's containing block is its corner box: given a width of its
+        // own, it resolves that pill again and no other: 3 computes, the
+        // same at 12 cards and at 24.
+        let tl = doc.query_selector_all(".tl")[3];
+        doc.set_style(tl, "width", "10px");
+        doc.resolve_layout(VP.0, VP.1);
+        let s = doc.tree.perf.end_frame();
+        assert_eq!(
+            s.get(InlineBlockComputes),
+            3,
+            "positive control: a new containing-block width resolves that pill alone"
+        );
+    }
+}
+
+/// One card's count goes from "3 uses" to "4 uses": the grid's track sizing
+/// asks every item again, and every item but the changed one is answered from
+/// its Taffy cache — the frame measures that card's text alone, at either
+/// number of cards. #2136 measured ~9,000 `shape_measure_text` for this edit
+/// in Playweft's 430-card asset grid; that did not reproduce in a static
+/// rinch-dom document of the same shape (this one, or one built from
+/// Playweft's own stylesheet and mockup markup) at #2136's base revision or
+/// at main, and this pins the cost it has here.
+#[test]
+fn one_changed_card_in_a_grid_measures_that_card_alone() {
+    for cards in [12, 24] {
+        let (mut doc, counts) = card_grid(cards);
+        doc.set_text_content(counts[5], "4 uses");
+        doc.resolve_layout(VP.0, VP.1);
+        let s = doc.tree.perf.end_frame();
+        expect(
+            &format!("one card's count among {cards}"),
+            &s,
+            &[
+                (ShapeMeasureText, 18),
+                (IfcMeasureCacheHits, 17),
+                (IfcMeasureInvalidations, 2),
+                (LayoutResolves, 1),
+                (TaffyRootComputes, 1),
+                (TaffyMeasureCalls, 76),
+            ],
+        );
+    }
+}
+
+/// The chain Playweft's asset grid sits in (#2136's live capture,
+/// `repro-dom.json`): an absolutely placed panel host behind a `display:
+/// contents` wrapper, a CSS-grid panel whose `minmax(0, 1fr)` row holds a
+/// scrolling flex column whose children are `flex: none`, and in it the
+/// card grid, every card behind the keyed `for`'s `display: contents`
+/// wrapper. Returns the document and the card grid.
+fn studio_card_grid(cards: usize) -> (RinchDocument, NodeId) {
+    let mut doc = doc_with(
+        "body { height: 100% }
+         .studio { display: grid; grid-template-rows: 48px minmax(0, 1fr) 28px;
+                   height: 900px; min-width: 640px; overflow: hidden }
+         .dock { position: relative; display: flex; min-width: 0; min-height: 0 }
+         .host { position: absolute; left: 0; top: 0; width: 0; height: 0 }
+         .hosted { position: absolute; left: 265px; top: 557px; width: 434px; height: 267px;
+                   display: flex; flex-direction: column; overflow: hidden }
+         .panel { display: grid; flex: 1 1 auto; min-width: 0; min-height: 0;
+                  grid-template-columns: minmax(0, 1fr);
+                  grid-template-rows: 40px minmax(0, 1fr) 33px }
+         .well { grid-row: 2; display: flex; flex-direction: column; gap: 8px; padding: 8px;
+                 min-width: 0; min-height: 0; overflow: auto }
+         .well > * { flex: none }
+         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+                 gap: 8px; padding: 4px; min-width: 0 }
+         .card { display: flex; flex-direction: column; min-width: 0; overflow: hidden }
+         .thumb { height: 60px }
+         .meta { display: flex; align-items: center; gap: 4px; min-width: 0 }
+         .spacer { flex: 1 1 auto }",
+    );
+    let contents = |doc: &mut RinchDocument, parent: NodeId| {
+        let w = el(doc, parent, "div", "");
+        doc.set_attribute(w, "style", "display: contents");
+        w
+    };
+    let body = doc.body();
+    let c0 = contents(&mut doc, body);
+    let studio = el(&mut doc, c0, "div", "studio");
+    el(&mut doc, studio, "div", "");
+    let dock = el(&mut doc, studio, "div", "dock");
+    let host = el(&mut doc, dock, "div", "host");
+    let c1 = contents(&mut doc, host);
+    let hosted = el(&mut doc, c1, "div", "hosted");
+    let panel = el(&mut doc, hosted, "aside", "panel");
+    let tools = el(&mut doc, panel, "div", "");
+    text(&mut doc, tools, "Assets");
+    let well = el(&mut doc, panel, "div", "well");
+    let grid = el(&mut doc, well, "div", "grid");
+    for i in 0..cards {
+        let w = contents(&mut doc, grid);
+        card(&mut doc, w, i);
+    }
+    doc.resolve_layout(1440.0, 900.0);
+    doc.resolve_layout(1440.0, 900.0);
+    doc.tree.perf.reset();
+    (doc, grid)
+}
+
+/// One card of [`studio_card_grid`]: a thumbnail, a name, and a flex row of
+/// a spacer and a count.
+fn card(doc: &mut RinchDocument, parent: NodeId, i: usize) {
+    let card = el(doc, parent, "div", "card");
+    el(doc, card, "div", "thumb");
+    let name = el(doc, card, "span", "");
+    text(doc, name, &format!("Asset {i}.glb"));
+    let meta = el(doc, card, "span", "meta");
+    el(doc, meta, "span", "spacer");
+    text(doc, meta, &format!("{} uses", i % 7));
+}
+
+/// A card is appended to a grid whose items are each behind a keyed `for`'s
+/// `display: contents` wrapper, and two wrappers trade places. Each is a
+/// scoped structural pass whose scope holds every wrapper in the grid, and
+/// `sync_display_contents` used to rebuild the grid's Taffy child list for
+/// each of them and **mark every item dirty**: every card's cache cleared,
+/// every card's text measured again (10,892 `shape_measure_text` on #2136's
+/// 430-card chain; the count on main at 24 and 48 cards is in the PR). A list
+/// the splice leaves as it was is now left alone, and only an item new to the
+/// list is dirtied: appending measures the new card, a swap measures nothing
+/// whose inputs did not change, at either number of cards.
+#[test]
+fn a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved() {
+    for cards in [24, 48] {
+        let (mut doc, grid) = studio_card_grid(cards);
+        let w = doc.create_element("div");
+        doc.set_attribute(w, "style", "display: contents");
+        card(&mut doc, w, cards);
+        doc.append_child(grid, w);
+        doc.resolve_layout(1440.0, 900.0);
+        let s = doc.tree.perf.end_frame();
+        // The scope is the grid's region: every wrapper and card, 2 a card.
+        let scope_nodes = 2 * cards as u64 + 9;
+        expect(
+            &format!("a card appended among {cards}"),
+            &s,
+            &[
+                (StyleResolves, 7),
+                (ElementsCascaded, 6),
+                (StyleNodesVisited, 6),
+                (TaffyStyleSyncs, 6),
+                (TaffyStyleChanges, 6),
+                (ShapeMeasureIfc, 4),
+                (ShapeMeasureText, 18),
+                (ShapeIfcBuild, 1),
+                (IfcMeasureCacheHits, 9),
+                (IfcMeasureInvalidations, 8),
+                (IfcSignatureChanges, 1),
+                (LayoutResolves, 1),
+                (IfcSetupPasses, 1),
+                (IfcScopedPasses, 1),
+                (IfcScopeContainers, 6),
+                (IfcScopeNodes, scope_nodes),
+                (TaffyRootComputes, 1),
+                (TaffyMeasureCalls, 87),
+            ],
+        );
+
+        let kids = doc.tree.nodes[grid.0].children.clone();
+        doc.insert_before(grid, NodeId(kids[11]), NodeId(kids[10]));
+        doc.resolve_layout(1440.0, 900.0);
+        let s = doc.tree.perf.end_frame();
+        // The two cards change cells of the same size, so their Taffy caches
+        // still answer most of what is asked (with nine entries a node it was
+        // 36 shapes).
+        expect(
+            &format!("two wrappers swapped among {cards}"),
+            &s,
+            &[
+                (ShapeMeasureIfc, 1),
+                (ShapeMeasureText, 8),
+                (ShapeIfcBuild, 2),
+                (IfcMeasureCacheHits, 5),
+                (IfcMeasureInvalidations, 1),
+                (LayoutResolves, 1),
+                (IfcSetupPasses, 1),
+                (IfcScopedPasses, 1),
+                (IfcScopeContainers, 6),
+                (IfcScopeNodes, scope_nodes),
+                (TaffyRootComputes, 1),
+                (TaffyMeasureCalls, 45),
+            ],
+        );
+    }
+}
+
+/// Playweft's asset panel as its live capture has it (#2136,
+/// `repro-dom.json`), down to what makes each card be asked at four column
+/// widths: a CSS-grid panel (`minmax(0, 1fr)` column, `auto` rows) in an
+/// absolutely placed flex host, whose toolbar is wider at max-content than the
+/// panel; the scrolling flex column with `flex: none` children; and the card
+/// grid, one of whose names is wider at max-content than a column. Returns
+/// the document and every card's count text.
+fn probed_card_grid(cards: usize) -> (RinchDocument, Vec<NodeId>) {
+    let mut doc = doc_with(
+        "body { height: 100% }
+         .hosted { position: absolute; left: 265px; top: 557px; width: 434px; height: 267px;
+                   display: flex; flex-direction: column; overflow: hidden }
+         .panel { display: grid; flex: 1 1 auto; min-width: 0; min-height: 0;
+                  grid-template-columns: minmax(0, 1fr);
+                  grid-template-rows: auto auto minmax(0, 1fr) auto }
+         .tools { height: 40px }
+         .wide { display: inline-block; width: 380px; height: 10px }
+         .well { display: flex; flex-direction: column; gap: 8px; padding: 8px;
+                 min-width: 0; min-height: 0; overflow: auto }
+         .well > * { flex: none }
+         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+                 gap: 8px; padding: 4px; min-width: 0 }
+         .card { display: flex; flex-direction: column; min-width: 0; overflow: hidden }
+         .thumb { height: 60px }
+         .name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis }
+         .meta { display: flex; align-items: center; gap: 4px; min-width: 0 }
+         .spacer { flex: 1 1 auto }",
+    );
+    let body = doc.body();
+    let hosted = el(&mut doc, body, "div", "hosted");
+    let panel = el(&mut doc, hosted, "aside", "panel");
+    let tools = el(&mut doc, panel, "div", "tools");
+    el(&mut doc, tools, "span", "wide");
+    let folders = el(&mut doc, panel, "div", "");
+    text(&mut doc, folders, "Folders");
+    let well = el(&mut doc, panel, "div", "well");
+    let foot = el(&mut doc, panel, "div", "");
+    text(&mut doc, foot, "foot");
+    let grid = el(&mut doc, well, "div", "grid");
+    let mut counts = Vec::new();
+    for i in 0..cards {
+        let w = el(&mut doc, grid, "div", "");
+        doc.set_attribute(w, "style", "display: contents");
+        let card = el(&mut doc, w, "div", "card");
+        el(&mut doc, card, "div", "thumb");
+        let name = el(&mut doc, card, "span", "name");
+        let label = if i == 3 {
+            "A much longer asset name that is wide".to_string()
+        } else {
+            format!("Asset {i}")
+        };
+        text(&mut doc, name, &label);
+        let meta = el(&mut doc, card, "span", "meta");
+        let c = doc.create_comment("for");
+        doc.append_child(meta, c);
+        el(&mut doc, meta, "span", "spacer");
+        counts.push(text(&mut doc, meta, &format!("{} uses", 10 + i % 80)));
+    }
+    doc.resolve_layout(1440.0, 900.0);
+    doc.resolve_layout(1440.0, 900.0);
+    doc.tree.perf.reset();
+    (doc, counts)
+}
+
+/// One card's count edited, same width, in [`probed_card_grid`] (#2136's live
+/// trigger). Each card is asked ten distinct sizes a layout — its min- and
+/// max-content widths, and its height under a min- and a max-content
+/// constraint at four column widths (the min-content probe's, the
+/// max-content probe's, the narrower panel probe's and the final one) — and
+/// Taffy kept nine per node, with clock eviction: every card missed every
+/// size on every layout that recomputed the grid, and measured its text
+/// again (Playweft, 430 cards: 15,242 `shape_measure_text`, 63,369
+/// `taffy_measure_calls`, 402 ms; the count at 24 and 48 cards here is in the
+/// PR). The taffy fork keeps sixteen now (`dependencies.md`, "Taffy Fork",
+/// item 6): the edit measures that card's text, at either number of cards.
+#[test]
+fn a_label_edit_in_a_grid_probed_at_four_widths_measures_one_card() {
+    for cards in [24, 48] {
+        let (mut doc, counts) = probed_card_grid(cards);
+        // Twice: the second edit is the steady state, where the thrash was.
+        for (label, hits, calls) in [("88 uses", 17, 114), ("89 uses", 16, 113)] {
+            doc.set_text_content(counts[10], label);
+            doc.resolve_layout(1440.0, 900.0);
+            let s = doc.tree.perf.end_frame();
+            expect(
+                &format!("a count edited to {label:?} among {cards}"),
+                &s,
+                &[
+                    (ShapeMeasureText, 24),
+                    (IfcMeasureCacheHits, hits),
+                    (IfcMeasureInvalidations, 2),
+                    (LayoutResolves, 1),
+                    (TaffyRootComputes, 1),
+                    (TaffyMeasureCalls, calls),
+                    (AbsBoxesVisited, 1),
+                ],
+            );
         }
     }
 }
