@@ -692,37 +692,10 @@ impl RinchApp {
                     sel.dragged = (x - px).hypot(y - py) > 3.0;
                 }
                 if self.text_selecting && self.text_selection.as_ref().is_some_and(|s| s.dragged) {
-                    if let Some(sel) = &self.text_selection {
-                        // The focus moves into the selectable root under the
-                        // pointer, or, over anything else, the one nearest it
-                        // (`nearest_selectable_root`), at the nearest offset.
-                        let (current, anchor) = (sel.focus_node, sel.ifc_node_id);
-                        let focus = self.doc.as_ref().map(|doc| {
-                            let d = doc.borrow();
-                            let node = self
-                                .shared_hit(&d, x, y)
-                                .and_then(|hit| Self::find_selectable_ifc(&d.tree, hit))
-                                .or_else(|| {
-                                    super::text_selection::nearest_selectable_root(
-                                        &d.tree, anchor, y,
-                                    )
-                                })
-                                .unwrap_or(current);
-                            (
-                                node,
-                                Self::compute_ifc_offset_from_click(&d.tree, node, x, y),
-                            )
-                        });
-                        if let (Some((node, offset)), Some(sel)) = (focus, &mut self.text_selection)
-                        {
-                            sel.focus_node = node;
-                            sel.focus_offset = offset;
-                        }
-                        self.paint_text_selection();
-                        actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Text));
-                        actions.push(AppAction::RequestRedraw);
-                        return actions;
-                    }
+                    self.extend_text_selection_to(x, y);
+                    actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Text));
+                    actions.push(AppAction::RequestRedraw);
+                    return actions;
                 }
 
                 // Check resize edge for borderless windows. Deliberately AFTER

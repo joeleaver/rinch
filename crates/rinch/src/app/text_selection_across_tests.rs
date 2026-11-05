@@ -128,7 +128,7 @@ fn a_drag_selects_every_paragraph_it_passes_and_copies_them_a_line_each() {
     assert_eq!(
         text,
         format!(
-            "first paragraph\nsecond paragraph\n{}",
+            "first paragraph\n\nsecond paragraph\n\n{}",
             &"third paragraph"[..to]
         )
     );
@@ -206,7 +206,7 @@ fn an_unselectable_paragraph_inside_is_passed_over() {
         drag(&mut app, p);
     }
     assert_eq!(highlighted(&app, "b"), None);
-    assert_eq!(app.text_selection_text().unwrap(), "first\nthird");
+    assert_eq!(app.text_selection_text().unwrap(), "first\n\n\nthird");
 }
 
 #[test]
@@ -253,7 +253,7 @@ fn loose_text_between_paragraphs_is_selected_in_document_order() {
     drag(&mut app, (x + 300.0, y + h - 5.0));
     assert_eq!(
         app.text_selection_text().unwrap(),
-        "before bold\nmiddle\nafter"
+        "before bold\nmiddle\n\nafter"
     );
 }
 
@@ -298,7 +298,7 @@ fn a_document_in_an_html_view_can_be_selected_and_copied() {
     drag(&mut app, (x + w - 1.0, y + h - 5.0));
     assert_eq!(
         app.text_selection_text().unwrap(),
-        "Dear Ada,\nYour order shipped."
+        "Dear Ada,\n\nYour order shipped."
     );
 }
 

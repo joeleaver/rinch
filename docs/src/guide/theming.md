@@ -513,9 +513,19 @@ rsx! { div { style: "user-select: text", {article_body} } }
 
 A press in selectable text starts a selection and a drag extends it into
 any selectable paragraph it reaches, every paragraph between included;
-dragging into the space beside or below text extends it to the nearest
-text, as a browser does. Ctrl+C (Cmd+C on macOS) copies it, a line per
-paragraph. `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
+dragging into the space beside, between or below text extends it to the
+nearest selectable text anywhere in the window, as a browser does. A double
+click selects a word, a triple click the paragraph, Shift+click extends the
+selection, and Ctrl+A (Cmd+A) with no field focused selects all the text the
+selection is in. A `user-select: all` element is selected whole. Text inside
+that is `user-select: none` or `visibility: hidden` is neither highlighted
+nor copied. A press on a link in selectable text follows it on release, and
+a drag across it selects it instead.
+
+Ctrl+C (Cmd+C) copies what Chrome's `getSelection().toString()` gives for
+the same markup: a tab between cells of a row, a line break between blocks
+and rows, a blank line after a `<p>`, no list bullets or other generated
+content. `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
 they are. On the web the browser selects text itself, from the same CSS.
 
 ## Extending the Theme

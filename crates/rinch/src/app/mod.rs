@@ -374,9 +374,12 @@ mod text_selection;
 #[cfg(test)]
 mod text_selection_across_tests;
 #[cfg(test)]
+mod text_selection_chrome_tests;
+#[cfg(test)]
 mod text_selection_gestures_tests;
 #[cfg(test)]
 mod text_selection_range_552_tests;
+mod text_selection_text;
 #[cfg(test)]
 mod textarea_home_end_tests;
 #[cfg(test)]
@@ -784,8 +787,14 @@ pub(crate) struct TextSelection {
     pub(crate) focus_node: u64,
     /// Selection focus/cursor (byte offset in the focus root's flat text).
     pub(crate) focus_offset: usize,
-    /// The roots that carry a part of the highlight now.
-    pub(crate) painted: Vec<u64>,
+    /// The roots that carry a part of the highlight now, with the ranges
+    /// each carries.
+    pub(crate) painted: Vec<(u64, Vec<(usize, usize)>)>,
+    /// The document's selectable roots, for this layout
+    /// (`text_selection_text::RootsCache`).
+    pub(crate) cache: Option<Box<text_selection_text::RootsCache>>,
+    /// The hit-cache generation the highlight was last written at.
+    pub(crate) painted_generation: u64,
     /// Where the press that started it was, and whether the pointer has moved
     /// far enough from there to drag: a double- or triple-click's word or
     /// paragraph is not collapsed by the jitter after the click.
@@ -1933,6 +1942,8 @@ impl RinchApp {
         // and lay out again what their subscribers wrote.
         self.refresh_bounds_signals();
         self.settle_bounds_writes(viewport_width, viewport_height);
+        // A read-only selection follows text that changed under it.
+        self.refresh_text_selection();
 
         self.scene_dirty = true;
 

@@ -63,7 +63,7 @@ fn shift_click_extends_the_selection_to_the_press() {
     assert_eq!(highlighted(&app, "b"), Some((0, "second paragraph".len())));
     assert_eq!(
         app.text_selection_text().unwrap(),
-        "first paragraph\nsecond paragraph\nthird paragraph"
+        "first paragraph\n\nsecond paragraph\n\nthird paragraph"
     );
 }
 
@@ -93,7 +93,7 @@ fn select_all_takes_all_the_text_a_selection_is_in() {
     );
     assert_eq!(
         app.text_selection_text().unwrap(),
-        "first paragraph\nsecond paragraph\nthird paragraph"
+        "first paragraph\n\nsecond paragraph\n\nthird paragraph"
     );
 }
 

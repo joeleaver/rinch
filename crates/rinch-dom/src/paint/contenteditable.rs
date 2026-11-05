@@ -52,23 +52,36 @@ fn paint_selection_rects(
 }
 
 /// The **read-only** text selection (`user-select: text`) IFC root `node`
-/// carries — `data-text-sel`, `-start`, `-end` — as byte offsets into its
-/// laid-out text, clamped to it. `None` when it carries none, or an empty one.
-pub(crate) fn read_only_selection(node: &Node) -> Option<(usize, usize)> {
+/// carries — `data-text-sel`, `-start`, `-end`, and `-ranges` when the
+/// selection skips runs inside it (`"a-b,c-d"`: text that is hidden or
+/// `user-select: none`) — as byte ranges into its laid-out text, clamped to
+/// it. Empty when it carries none.
+pub(crate) fn read_only_selection(node: &Node) -> Vec<(usize, usize)> {
     if !node.carries_text_selection() {
-        return None;
+        return Vec::new();
     }
-    let layout = node.text_layout.as_ref()?;
-    let len = layout.text_content.len();
-    let at = |k: &str| {
-        node.attributes
-            .get(k)
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(0)
-            .min(len)
+    let Some(layout) = node.text_layout.as_ref() else {
+        return Vec::new();
     };
+    let len = layout.text_content.len();
+    let num = |s: &str| s.trim().parse::<usize>().ok().map(|v| v.min(len));
+    if let Some(ranges) = node.attributes.get("data-text-sel-ranges") {
+        return ranges
+            .split(',')
+            .filter_map(|r| {
+                let (a, b) = r.split_once('-')?;
+                Some((num(a)?, num(b)?))
+            })
+            .filter(|(a, b)| a < b)
+            .collect();
+    }
+    let at = |k: &str| node.attributes.get(k).and_then(|s| num(s)).unwrap_or(0);
     let (a, b) = (at("data-text-sel-start"), at("data-text-sel-end"));
-    (a != b).then_some((a, b))
+    if a == b {
+        Vec::new()
+    } else {
+        vec![(a.min(b), a.max(b))]
+    }
 }
 
 /// How far `node`'s read-only selection highlight reaches past its border box,
@@ -80,14 +93,14 @@ pub(crate) fn read_only_selection(node: &Node) -> Option<(usize, usize)> {
 /// of #1706). Zero for a node with no selection.
 pub(crate) fn read_only_selection_outsets(node: &Node) -> [f32; 4] {
     let mut o = [0.0_f32; 4];
-    let (Some((a, b)), Some(layout)) = (read_only_selection(node), node.text_layout.as_ref())
-    else {
+    let Some(layout) = node.text_layout.as_ref() else {
         return o;
     };
     let (ox, oy) = super::ifc_root_content_origin(node);
     let (w, h) = (node.layout.width, node.layout.height);
-    for (left, top, width, height) in
-        crate::text_query::selection_rects_for_layout(&layout.layout, a, b)
+    for (left, top, width, height) in read_only_selection(node)
+        .into_iter()
+        .flat_map(|(a, b)| crate::text_query::selection_rects_for_layout(&layout.layout, a, b))
     {
         o[0] = o[0].max(-(ox + left));
         o[1] = o[1].max(-(oy + top));
@@ -111,20 +124,21 @@ pub(super) fn paint_text_selection_highlight(
     text_y: f64,
     transform: Affine,
 ) {
-    let (Some((a, b)), Some(layout)) = (read_only_selection(node), node.text_layout.as_ref())
-    else {
+    let Some(layout) = node.text_layout.as_ref() else {
         return;
     };
-    paint_selection_rects(
-        painter,
-        transform,
-        &layout.layout,
-        a,
-        b,
-        text_x,
-        text_y,
-        scale,
-    );
+    for (a, b) in read_only_selection(node) {
+        paint_selection_rects(
+            painter,
+            transform,
+            &layout.layout,
+            a,
+            b,
+            text_x,
+            text_y,
+            scale,
+        );
+    }
 }
 
 /// Get a CSS style property value from inline styles.

@@ -640,7 +640,7 @@ pub(crate) fn text_node_at(
     let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
     let rel_x = lx - ox + node.scroll_offset.0 as f32;
     let rel_y = ly - oy + node.scroll_offset.1 as f32;
-    let cluster = rinch_dom::text_query::cluster_range_at_point(&inline.layout, rel_x, rel_y)?;
+    let cluster = rinch_dom::text_query::glyph_cluster_at_point(&inline.layout, rel_x, rel_y)?;
     inline
         .text_ranges
         .iter()
