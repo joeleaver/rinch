@@ -651,6 +651,26 @@ pub fn cluster_range_at_point(
     parley::layout::Cluster::from_point_exact(layout, x, y).map(|(c, _)| c.text_range())
 }
 
+/// [`cluster_range_at_point`], only where the point is on the glyphs
+/// themselves: between its run's ascent and descent around the line's
+/// baseline, not in the line's leading above or below them. An inline
+/// element's box is its content area in Chrome too (a click in a tall line's
+/// leading is the block's, not the link's, Chrome 156).
+pub fn glyph_cluster_at_point(
+    layout: &parley::layout::Layout<Brush>,
+    x: f32,
+    y: f32,
+) -> Option<std::ops::Range<usize>> {
+    if !(0.0..layout.height()).contains(&y) {
+        return None;
+    }
+    let (cluster, _) = parley::layout::Cluster::from_point_exact(layout, x, y)?;
+    let baseline = cluster.line().metrics().baseline;
+    let run = cluster.run();
+    let m = run.metrics();
+    (y >= baseline - m.ascent && y <= baseline + m.descent).then(|| cluster.text_range())
+}
+
 /// Selection rectangles `(x, y, width, height)` (layout-local) covering the
 /// byte range `[a, b)` in `layout`: one rect per visual piece of the range on
 /// each line it spans — one per line for left-to-right text, and on a line

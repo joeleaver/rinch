@@ -121,6 +121,10 @@ define_counters! {
     /// ...of which the resulting Taffy style differed and was written.
     TaffyStyleChanges = "taffy_style_changes",
 
+    /// IFC roots whose read-only selection highlight (`data-text-sel*`) was
+    /// written by the app: only the roots whose part of a selection changed.
+    ReadOnlySelectionWrites = "read_only_selection_writes",
+
     // ── Text ───────────────────────────────────────────────────────────
     /// `RinchDocument::inline_style_props` resolved a span's `font-family`
     /// through `fonts::parley_font_family` (review of #1326): a generic

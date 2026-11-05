@@ -1,21 +1,256 @@
-//! Read-only text selection for `user-select: text` elements.
+//! Read-only text selection for `user-select: text` content.
+//!
+//! - **Which text is selectable.** `user-select` does not inherit, but its
+//!   initial `auto` takes its parent's value (CSS UI 4 §6.1), so an IFC root
+//!   is selectable when its nearest ancestor-or-self whose value is not
+//!   `auto` says `text`, `all` or `contain`. With none at all it is not:
+//!   rinch's default, for an app's own controls. Worked out where it is
+//!   asked ([`RinchApp::find_selectable_ifc`], [`selectable_roots`]), not
+//!   stored, so a container's `user-select` changing needs no restyle below it.
+//! - **One selection, many paragraphs.** A press starts it in one IFC root (the
+//!   anchor) and a drag moves its focus into whatever selectable root is under
+//!   the pointer. Every selectable root between the two in document order is
+//!   part of it ([`TextSelection::runs`]): the first from its offset to its
+//!   end, the last from its start to its offset, the ones between whole. Each
+//!   carries its own part as the `data-text-sel*` attributes paint reads,
+//!   less what a selection leaves out (`text_selection_text::kept_ranges`),
+//!   and a move writes only the roots whose part changed.
+//! - **Copy** gives what Chrome's `getSelection().toString()` gives
+//!   (`text_selection_text`).
+//! - **Gestures**: double and triple click, Shift+click, Select All, a
+//!   `user-select: all` element taken whole, and a link in selectable text
+//!   followed on release (a drag across it selects it).
 
+use std::collections::HashMap;
+
+use super::text_selection_text::{RootsCache, kept_ranges, separator};
 use super::*;
+use rinch_dom::computed_style::UserSelectValue;
+
+impl TextSelection {
+    /// A selection collapsed at `offset` in `ifc_node_id`.
+    pub(crate) fn at(ifc_node_id: u64, offset: usize) -> Self {
+        Self {
+            ifc_node_id,
+            anchor_offset: offset,
+            focus_node: ifc_node_id,
+            focus_offset: offset,
+            painted: Vec::new(),
+            cache: None,
+            painted_generation: u64::MAX,
+            press: (0.0, 0.0),
+            dragged: false,
+        }
+    }
+
+    /// Whether it selects anything.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ifc_node_id == self.focus_node && self.anchor_offset == self.focus_offset
+    }
+
+    /// The document's selectable roots for this layout, built when there
+    /// are none or they are stale.
+    fn cache(&mut self, tree: &rinch_dom::NodeTree) -> &RootsCache {
+        if !self.cache.as_ref().is_some_and(|c| c.current(tree)) {
+            self.cache = Some(Box::new(RootsCache::build(tree)));
+        }
+        self.cache.as_deref().expect("built just now")
+    }
+
+    /// Each IFC root the selection covers, in document order, with the part
+    /// of its text (byte offsets, clamped to it) it covers.
+    pub(crate) fn runs(&mut self, tree: &rinch_dom::NodeTree) -> Vec<(u64, usize, usize)> {
+        let (a, f, ao, fo) = (
+            self.ifc_node_id,
+            self.focus_node,
+            self.anchor_offset,
+            self.focus_offset,
+        );
+        let len = |id: u64| {
+            tree.get(id)
+                .and_then(|n| n.text_layout.as_ref())
+                .map_or(0, |l| l.text_content.len())
+        };
+        if a == f {
+            let (lo, hi) = order(ao.min(len(a)), fo.min(len(a)));
+            return vec![(a, lo, hi)];
+        }
+        let cache = self.cache(tree);
+        let (Some(&ia), Some(&ifo)) = (cache.index.get(&a), cache.index.get(&f)) else {
+            return vec![(a, ao, ao)];
+        };
+        let ((first, first_off), (last, last_off), (i0, i1)) = if ia < ifo {
+            ((a, ao), (f, fo), (ia, ifo))
+        } else {
+            ((f, fo), (a, ao), (ifo, ia))
+        };
+        cache.roots[i0..=i1]
+            .iter()
+            .map(|&r| {
+                if r == first {
+                    (r, first_off.min(len(r)), len(r))
+                } else if r == last {
+                    (r, 0, last_off.min(len(r)))
+                } else {
+                    (r, 0, len(r))
+                }
+            })
+            .collect()
+    }
+
+    /// Whether `(node, offset)` comes before the anchor in document order.
+    fn before_anchor(&mut self, tree: &rinch_dom::NodeTree, node: u64, offset: usize) -> bool {
+        if node == self.ifc_node_id {
+            return offset < self.anchor_offset;
+        }
+        let anchor = self.ifc_node_id;
+        let cache = self.cache(tree);
+        match (cache.index.get(&node), cache.index.get(&anchor)) {
+            (Some(n), Some(a)) => n < a,
+            _ => false,
+        }
+    }
+}
+
+fn order(a: usize, b: usize) -> (usize, usize) {
+    (a.min(b), a.max(b))
+}
+
+/// `node`'s `user-select` as `auto` resolves it: its own value, else its
+/// nearest ancestor's that is not `auto` (see the module docs).
+fn resolved_user_select(tree: &rinch_dom::NodeTree, node: u64) -> UserSelectValue {
+    let mut id = Some(node);
+    while let Some(n) = id.and_then(|i| tree.get(i)) {
+        if n.computed_style.user_select != UserSelectValue::Auto {
+            return n.computed_style.user_select;
+        }
+        id = n.parent;
+    }
+    UserSelectValue::Auto
+}
+
+/// The selectable IFC roots at or under `top`, in document order. A run of
+/// inline content beside blocks lays out in an anonymous box, which stands
+/// in the order where its first member is.
+pub(crate) fn selectable_roots(tree: &rinch_dom::NodeTree, top: u64) -> Vec<u64> {
+    let above = tree
+        .get(top)
+        .and_then(|n| n.parent)
+        .map_or(UserSelectValue::Auto, |p| resolved_user_select(tree, p));
+    let mut out = Vec::new();
+    let mut seen_boxes = std::collections::HashSet::new();
+    let mut stack = vec![(top, above)];
+    while let Some((id, inherited)) = stack.pop() {
+        let Some(n) = tree.get(id) else {
+            continue;
+        };
+        let own = match n.computed_style.user_select {
+            UserSelectValue::Auto => inherited,
+            v => v,
+        };
+        if let Some(b) = n.run_box {
+            if seen_boxes.insert(b)
+                && let Some(anon) = tree.get(b)
+                && anon.text_layout.is_some()
+                && own.is_selectable()
+            {
+                out.push(b);
+            }
+            continue;
+        }
+        if n.text_layout.is_some() && own.is_selectable() {
+            out.push(id);
+        }
+        stack.extend(n.children.iter().rev().map(|&c| (c, own)));
+    }
+    out
+}
+
+/// The element that makes `node` selectable: its nearest ancestor-or-self
+/// with a `user-select` of its own.
+fn selection_host(tree: &rinch_dom::NodeTree, node: u64) -> u64 {
+    let mut host = node;
+    while let Some(n) = tree.get(host) {
+        if n.computed_style.user_select != UserSelectValue::Auto {
+            break;
+        }
+        match n.parent {
+            Some(p) => host = p,
+            None => break,
+        }
+    }
+    host
+}
+
+/// Where a `user-select: all` element under the point `(x, y)` in `root`
+/// starts and ends, `((root, offset), (root, offset))`: it is selected
+/// whole. `None` when the point is in no such element.
+fn all_extent(
+    tree: &rinch_dom::NodeTree,
+    root: u64,
+    x: f32,
+    y: f32,
+) -> Option<((u64, usize), (u64, usize))> {
+    let text = super::hit_testing::text_node_at(tree, root, x, y).unwrap_or(root);
+    let mut id = Some(text);
+    let mut element = None;
+    while let Some(i) = id {
+        let n = tree.get(i)?;
+        if n.is_element() && n.computed_style.user_select != UserSelectValue::Auto {
+            if n.computed_style.user_select == UserSelectValue::All {
+                element = Some(i);
+            }
+            break;
+        }
+        id = n.parent;
+    }
+    let element = element?;
+    let inside = |mut i: u64| loop {
+        if i == element {
+            return true;
+        }
+        match tree.get(i).and_then(|n| n.parent) {
+            Some(p) => i = p,
+            None => return false,
+        }
+    };
+    if inside(root) {
+        // A block: every root in it.
+        let roots = selectable_roots(tree, element);
+        let (&first, &last) = (roots.first()?, roots.last()?);
+        let end = tree.get(last)?.text_layout.as_ref()?.text_content.len();
+        return Some(((first, 0), (last, end)));
+    }
+    let layout = tree.get(root)?.text_layout.as_ref()?;
+    let mut spans = layout.text_ranges.iter().filter(|r| inside(r.node_id));
+    let first = spans.next()?;
+    let (lo, hi) = spans.fold((first.flat_start, first.flat_end), |(lo, hi), r| {
+        (lo.min(r.flat_start), hi.max(r.flat_end))
+    });
+    Some(((root, lo), (root, hi)))
+}
 
 impl RinchApp {
-    /// Find the IFC root node (block element with an inline layout) at or
-    /// above `hit_id` that has `user_select.is_selectable()`.
+    /// The IFC root (a block with an inline layout) at or above `hit_id`
+    /// whose resolved `user-select` makes it selectable (see the module
+    /// docs). A root that is not selectable gives way to one further up.
     pub(super) fn find_selectable_ifc(tree: &rinch_dom::NodeTree, hit_id: u64) -> Option<u64> {
+        let mut candidate: Option<u64> = None;
         let mut check = Some(hit_id);
         while let Some(nid) = check {
-            if let Some(node) = tree.get(nid) {
-                if node.computed_style.user_select.is_selectable() && node.text_layout.is_some() {
-                    return Some(nid);
-                }
-                check = node.parent;
-            } else {
-                break;
+            let node = tree.get(nid)?;
+            if candidate.is_none() && node.text_layout.is_some() {
+                candidate = Some(nid);
             }
+            if let Some(c) = candidate
+                && node.computed_style.user_select != UserSelectValue::Auto
+            {
+                if node.computed_style.user_select.is_selectable() {
+                    return Some(c);
+                }
+                candidate = None;
+            }
+            check = node.parent;
         }
         None
     }
@@ -52,83 +287,273 @@ impl RinchApp {
         )
     }
 
-    /// Set data attributes on the IFC node for paint to read.
-    pub(super) fn set_text_selection_attributes(
-        &self,
-        ifc_node_id: u64,
-        anchor: usize,
-        focus: usize,
-    ) {
-        if let Some(doc) = &self.doc {
-            let mut d = doc.borrow_mut();
-            if let Some(node) = d.tree.nodes.get_mut(ifc_node_id) {
-                if anchor != focus {
-                    let sel_start = anchor.min(focus);
-                    let sel_end = anchor.max(focus);
-                    node.write_attribute("data-text-sel", "true");
-                    node.attributes
-                        .insert("data-text-sel-start".to_string(), sel_start.to_string());
-                    node.attributes
-                        .insert("data-text-sel-end".to_string(), sel_end.to_string());
-                } else {
-                    node.erase_attribute("data-text-sel");
-                    node.attributes.remove("data-text-sel-start");
-                    node.attributes.remove("data-text-sel-end");
+    /// Write `node`'s highlight (`RinchDocument::set_read_only_selection`).
+    fn write_selection_part(d: &mut RinchDocument, node: u64, ranges: &[(usize, usize)]) {
+        d.set_read_only_selection(node, ranges);
+    }
+
+    /// Paint the current selection: each root it covers carries the ranges
+    /// of its part a selection keeps ([`kept_ranges`]). Only the roots whose
+    /// ranges changed are written, and a root it no longer covers loses its
+    /// highlight.
+    pub(super) fn paint_text_selection(&mut self) {
+        let (Some(doc), Some(sel)) = (&self.doc, &mut self.text_selection) else {
+            return;
+        };
+        let mut d = doc.borrow_mut();
+        let runs = sel.runs(&d.tree);
+        let now: Vec<(u64, Vec<(usize, usize)>)> = runs
+            .iter()
+            .map(|&(node, start, end)| (node, kept_ranges(&d.tree, node, start, end)))
+            .collect();
+        let before: HashMap<u64, &Vec<(usize, usize)>> =
+            sel.painted.iter().map(|(n, r)| (*n, r)).collect();
+        let kept: std::collections::HashSet<u64> = now.iter().map(|(n, _)| *n).collect();
+        for (old, _) in &sel.painted {
+            if !kept.contains(old) {
+                Self::write_selection_part(&mut d, *old, &[]);
+            }
+        }
+        for (node, ranges) in &now {
+            if before.get(node).is_none_or(|old| *old != ranges) {
+                Self::write_selection_part(&mut d, *node, ranges);
+            }
+        }
+        sel.painted = now;
+        sel.painted_generation = d.tree.hit_cache.generation();
+        self.scene_dirty = true;
+    }
+
+    /// After a layout: a selection whose text changed under it is painted
+    /// again (its parts clamped to the text there is now).
+    pub(super) fn refresh_text_selection(&mut self) {
+        let stale = match (&self.doc, &self.text_selection) {
+            (Some(doc), Some(sel)) => {
+                sel.painted_generation != doc.borrow().tree.hit_cache.generation()
+            }
+            _ => false,
+        };
+        if stale {
+            self.paint_text_selection();
+        }
+    }
+
+    /// Move the focus of the selection being dragged to the window point
+    /// `(x, y)`: into the selectable root under it, or, over anything else,
+    /// the selectable root nearest it in the whole document
+    /// ([`RootsCache::nearest`]), as a browser does. A `user-select: all`
+    /// element it reaches is taken whole.
+    pub(super) fn extend_text_selection_to(&mut self, x: f32, y: f32) {
+        let Some(doc) = self.doc.clone() else {
+            return;
+        };
+        {
+            let d = doc.borrow();
+            let hit = self
+                .shared_hit(&d, x, y)
+                .and_then(|hit| Self::find_selectable_ifc(&d.tree, hit));
+            let Some(sel) = &mut self.text_selection else {
+                return;
+            };
+            let node = hit
+                .or_else(|| sel.cache(&d.tree).nearest(x, y))
+                .unwrap_or(sel.focus_node);
+            let mut offset = Self::compute_ifc_offset_from_click(&d.tree, node, x, y);
+            // Below a root's box is its end, above it its start.
+            if hit.is_none() {
+                let (_, top, _, height) = super::hit_testing::painted_element_box(&d.tree, node);
+                if y >= top + height {
+                    offset = d
+                        .tree
+                        .get(node)
+                        .and_then(|n| n.text_layout.as_ref())
+                        .map_or(offset, |l| l.text_content.len());
+                } else if y < top {
+                    offset = 0;
                 }
             }
-            // The highlight is painted from these attributes on the IFC root,
-            // so the root is the damage.
-            d.tree.mark_paint_dirty(ifc_node_id);
+            let mut node = node;
+            if let Some((start, end)) = all_extent(&d.tree, node, x, y) {
+                (node, offset) = if sel.before_anchor(&d.tree, node, offset) {
+                    start
+                } else {
+                    end
+                };
+            }
+            sel.focus_node = node;
+            sel.focus_offset = offset;
+        }
+        self.paint_text_selection();
+    }
+
+    /// Start a selection at `offset` in `root` for a press `click_count`
+    /// times over at `press` (the word around it on a double click, the whole
+    /// root on a triple, a `user-select: all` element whole), or, with Shift
+    /// held and a selection in place, move that selection's focus there.
+    pub(super) fn start_text_selection(
+        &mut self,
+        root: u64,
+        offset: usize,
+        click_count: u8,
+        shift: bool,
+        press: (f32, f32),
+    ) {
+        if shift && let Some(sel) = &mut self.text_selection {
+            sel.focus_node = root;
+            sel.focus_offset = offset;
+            sel.press = press;
+            sel.dragged = true;
+        } else {
+            self.clear_text_selection();
+            let mut sel = TextSelection::at(root, offset);
+            sel.press = press;
+            if let Some(doc) = &self.doc {
+                let d = doc.borrow();
+                if let Some(((a, ao), (f, fo))) = all_extent(&d.tree, root, press.0, press.1) {
+                    (sel.ifc_node_id, sel.anchor_offset) = (a, ao);
+                    (sel.focus_node, sel.focus_offset) = (f, fo);
+                } else if click_count >= 2 {
+                    let text = d
+                        .tree
+                        .get(root)
+                        .and_then(|n| n.text_layout.as_ref())
+                        .map(|l| l.text_content.as_str())
+                        .unwrap_or_default();
+                    let (start, end) = if click_count == 2 {
+                        super::word_around(text, offset).unwrap_or((offset, offset))
+                    } else {
+                        (0, text.len())
+                    };
+                    sel.anchor_offset = start;
+                    sel.focus_offset = end;
+                }
+            }
+            self.text_selection = Some(sel);
+        }
+        self.text_selecting = true;
+        self.paint_text_selection();
+    }
+
+    /// Select all the read-only text the current selection is in: every
+    /// selectable root under the element that makes it selectable. `false`
+    /// when there is no selection to go by.
+    pub(super) fn select_all_text(&mut self) -> bool {
+        let Some(anchor) = self.text_selection.as_ref().map(|s| s.ifc_node_id) else {
+            return false;
+        };
+        let Some(doc) = &self.doc else {
+            return false;
+        };
+        let ends = {
+            let d = doc.borrow();
+            let roots = selectable_roots(&d.tree, selection_host(&d.tree, anchor));
+            let len = |id: u64| {
+                d.tree
+                    .get(id)
+                    .and_then(|n| n.text_layout.as_ref())
+                    .map_or(0, |l| l.text_content.len())
+            };
+            roots
+                .first()
+                .zip(roots.last())
+                .map(|(&first, &last)| (first, last, len(last)))
+        };
+        let Some((first, last, end)) = ends else {
+            return false;
+        };
+        if let Some(sel) = &mut self.text_selection {
+            sel.ifc_node_id = first;
+            sel.anchor_offset = 0;
+            sel.focus_node = last;
+            sel.focus_offset = end;
+            sel.dragged = true;
+        }
+        self.paint_text_selection();
+        true
+    }
+
+    /// The release of the press that started a selection: a link click held
+    /// for it ([`HeldLinkClick`]) runs now, if nothing was selected.
+    pub(super) fn release_held_link_click(&mut self) {
+        let Some(held) = self.held_link_click.take() else {
+            return;
+        };
+        if self.text_selection.as_ref().is_some_and(|s| !s.is_empty()) {
+            return;
+        }
+        let live = self.doc.as_ref().is_some_and(|doc| {
+            doc.borrow()
+                .tree
+                .get(held.node_id)
+                .and_then(|n| n.attributes.get("data-rid"))
+                .and_then(|s| s.parse::<usize>().ok())
+                .is_some_and(|h| {
+                    h == held.handler_id && events::has_click_handler(events::EventHandlerId(h))
+                })
+        });
+        if live {
+            self.dispatch_rid_click(
+                held.node_id,
+                held.handler_id,
+                held.text_hit,
+                held.at,
+                MouseButton::Left,
+                held.viewport,
+                held.link,
+            );
         }
     }
 
     /// Clear the current text selection state and DOM attributes.
     pub(super) fn clear_text_selection(&mut self) {
         if let Some(sel) = self.text_selection.take() {
-            // Inline the attribute clearing to avoid borrowing self.doc through &self
             if let Some(doc) = &self.doc {
                 let mut d = doc.borrow_mut();
-                if let Some(node) = d.tree.nodes.get_mut(sel.ifc_node_id) {
-                    node.erase_attribute("data-text-sel");
-                    node.attributes.remove("data-text-sel-start");
-                    node.attributes.remove("data-text-sel-end");
+                let painted = sel.painted.iter().map(|(n, _)| *n);
+                for node in painted.chain([sel.ifc_node_id]) {
+                    Self::write_selection_part(&mut d, node, &[]);
                 }
-                // Where the highlight was painted is the damage.
-                d.tree.mark_paint_dirty(sel.ifc_node_id);
             }
             self.scene_dirty = true;
         }
         self.text_selecting = false;
     }
 
-    /// Copy the currently selected text to the clipboard.
-    pub(super) fn copy_text_selection(&self) {
-        let Some(ref sel) = self.text_selection else {
-            return;
-        };
-        if sel.anchor_offset == sel.focus_offset {
-            return;
-        }
-        let Some(doc) = &self.doc else {
-            return;
-        };
+    /// The selected text, as Chrome's `getSelection().toString()` has it:
+    /// each covered root's kept text ([`kept_ranges`]), with a tab between
+    /// two cells of a row and line breaks between blocks ([`separator`]).
+    pub(super) fn text_selection_text(&mut self) -> Option<String> {
+        let doc = self.doc.clone()?;
+        let sel = self.text_selection.as_mut().filter(|s| !s.is_empty())?;
         let d = doc.borrow();
-        let Some(node) = d.tree.get(sel.ifc_node_id) else {
-            return;
-        };
-        let Some(ref inline_layout) = node.text_layout else {
-            return;
-        };
-        let start = sel.anchor_offset.min(sel.focus_offset);
-        let end = sel.anchor_offset.max(sel.focus_offset);
-        let text = &inline_layout.text_content;
-        let selected = &text[start.min(text.len())..end.min(text.len())];
-        if !selected.is_empty() {
-            #[cfg(feature = "clipboard")]
-            {
-                let _ = crate::clipboard::copy_text(selected);
+        let mut out = String::new();
+        let mut last: Option<u64> = None;
+        for (node, start, end) in sel.runs(&d.tree) {
+            let text = &d.tree.get(node)?.text_layout.as_ref()?.text_content;
+            let part: String = kept_ranges(&d.tree, node, start, end)
+                .into_iter()
+                .filter_map(|(a, b)| text.get(a..b))
+                .collect();
+            if let Some(prev) = last {
+                out.push_str(&separator(&d.tree, prev, node));
             }
+            out.push_str(&part);
+            last = Some(node);
         }
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// Copy the currently selected text to the clipboard.
+    pub(super) fn copy_text_selection(&mut self) {
+        let Some(selected) = self.text_selection_text() else {
+            return;
+        };
+        #[cfg(feature = "clipboard")]
+        {
+            let _ = crate::clipboard::copy_text(&selected);
+        }
+        #[cfg(not(feature = "clipboard"))]
+        let _ = selected;
     }
 }
 

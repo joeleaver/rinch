@@ -147,3 +147,50 @@ fn enter_on_a_focused_link_names_it() {
     assert_eq!(*log.borrow(), vec![Some("https://one.example/".to_owned())]);
     assert_eq!(*links.borrow(), vec!["https://three.example/".to_owned()]);
 }
+
+#[test]
+fn a_plain_inline_link_in_a_paragraph_is_found() {
+    // An IFC's text is hit as its root; the walk for the link starts at the
+    // text node under the point (`hit_testing::text_node_at`). Links in mail
+    // are inline, not inline-block.
+    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let l = log.clone();
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        let l = l.clone();
+        let host = rsx! {
+            div {
+                id: "host",
+                style: "font-size: 16px; line-height: 20px; font-family: sans-serif; width: 600px",
+                onclick: move || l.borrow_mut().push(rinch_core::click_link()),
+            }
+        };
+        host.set_inner_html(
+            r#"<p id="para">Go to <a href="https://inline.example/">the shop</a> now.</p>"#,
+        );
+        host
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let (x, y) = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let nid = d
+            .tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.attributes.get("id").map(String::as_str) == Some("para"))
+            .map(|(id, _)| id)
+            .unwrap();
+        let (x, y, _, h) = painted_element_box(&d.tree, nid);
+        (x, y + h / 2.0)
+    };
+    let button = MouseButton::Left;
+    // "Go to " is about 40px; then the link; "now." far past its end.
+    for px in [x + 60.0, x + 4.0] {
+        app.handle_event(PlatformEvent::MouseDown { x: px, y, button }, VP, 1.0);
+        app.handle_event(PlatformEvent::MouseUp { x: px, y, button }, VP, 1.0);
+    }
+    assert_eq!(
+        *log.borrow(),
+        vec![Some("https://inline.example/".to_owned()), None]
+    );
+}
