@@ -78,7 +78,8 @@ pub const RESERVED_DATA_ATTR_PREFIXES: &[&str] = &[
 ///   wheel opt-out (`data-graph-nowheel`, read on every element from the one
 ///   under the pointer up), compositing holes
 ///   (`data-viewport`, `data-viewport-ready`, `data-render-surface`,
-///   `data-video-player`), rinch-rtc's `MediaView` element (`data-rtc-view`:
+///   `data-video-player`), an embed host's GPU texture (`data-host-texture`,
+///   #2082), rinch-rtc's `MediaView` element (`data-rtc-view`:
 ///   the web backend finds its `<video>` by it and sets the track as its
 ///   `srcObject`), a press's block (`data-block-index`);
 /// - state the shell writes on elements (`data-focused`, `data-preedit`, the
@@ -126,6 +127,7 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-drag-ghost",
     "data-graph-nowheel",
     "data-viewport",
+    "data-host-texture",
     "data-viewport-ready",
     "data-render-surface",
     "data-video-player",

@@ -210,6 +210,8 @@ mod gpu_bump_overflow_2071_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_clip_groups_1645_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_composited_frame_2215_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_hidden_subtree_cull_2137_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_partial_frame_1718_tests;

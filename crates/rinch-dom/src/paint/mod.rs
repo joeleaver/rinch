@@ -1422,6 +1422,16 @@ thread_local! {
     /// `paint_document()` and cleared after, like `SURFACE_PIXELS`.
     static SURFACE_GPU_IMAGES: RefCell<Option<HashMap<usize, peniko::ImageData>>> = const { RefCell::new(None) };
 
+    /// Host-owned GPU textures for a `data-host-texture` element, by the name
+    /// the host registered them under (#2082, the embed API): an image
+    /// registered with the renderer that will render this scene, drawn in
+    /// the element's content box. Set before `paint_document()` and cleared
+    /// after, like `SURFACE_GPU_IMAGES`.
+    static HOST_TEXTURE_IMAGES: RefCell<Option<HashMap<String, peniko::ImageData>>> = const { RefCell::new(None) };
+    /// [`HOST_TEXTURE_IMAGES`] holds an image: only then does paint look for
+    /// `data-host-texture` (an attribute lookup per element otherwise).
+    static HOST_TEXTURES_ON: Cell<bool> = const { Cell::new(false) };
+
     /// The render target for this paint cycle. Nothing outside it can be
     /// seen, so nothing outside it is drawn — see [`intersects_dirty_region`]
     /// for the cull and card K43 for what it is worth.
@@ -1810,6 +1820,66 @@ fn paint_surface_frame(
     if rounded {
         painter.pop_layer();
     }
+}
+
+/// Draw a `data-host-texture` element's texture (#2082) into its content
+/// box, fitted by its `object-fit` (`fill`, the initial value, as for a
+/// `<canvas>` or `<video>`), clipped to the inner (content-edge) radius. The
+/// border box is `x, y, w, h` (scaled) with `radii`; the background, border
+/// and outline are the element's, painted around it by the caller. A name
+/// with no texture this paint draws nothing, so the background shows.
+fn paint_host_texture(
+    painter: &mut dyn Painter,
+    node: &Node,
+    scale: f64,
+    (x, y, w, h): (f64, f64, f64, f64),
+    radii: BorderRadii,
+    node_transform: Affine,
+) {
+    let Some(name) = node.attributes.get("data-host-texture") else {
+        return;
+    };
+    let Some(image) =
+        HOST_TEXTURE_IMAGES.with(|g| g.borrow().as_ref().and_then(|m| m.get(name).cloned()))
+    else {
+        return;
+    };
+    let (l, t, r, b) = content_box_insets(node);
+    let (l, t, r, b) = (
+        l as f64 * scale,
+        t as f64 * scale,
+        r as f64 * scale,
+        b as f64 * scale,
+    );
+    let content = Rect::new(x + l, y + t, (x + w - r).max(x + l), (y + h - b).max(y + t));
+    if content.width() <= 0.0 || content.height() <= 0.0 {
+        return;
+    }
+    let inner = radii.inner(t, r, b, l);
+    let rounded = !inner.is_square();
+    if rounded {
+        painter.push_clip(Fill::NonZero, node_transform, &inner.shape(content));
+    }
+    image::paint_gpu_image(
+        painter,
+        &image,
+        content,
+        node.computed_style.object_fit,
+        node_transform,
+    );
+    if rounded {
+        painter.pop_layer();
+    }
+}
+
+/// Hand this paint the host-owned GPU textures (#2082) that
+/// `data-host-texture` elements draw, by name. Each image must be registered
+/// with the renderer that renders the scene
+/// (`vello::Renderer::register_texture`); only the Vello painter draws them.
+/// `None` clears.
+pub fn set_host_texture_images(images: Option<HashMap<String, peniko::ImageData>>) {
+    HOST_TEXTURES_ON.with(|on| on.set(images.as_ref().is_some_and(|m| !m.is_empty())));
+    HOST_TEXTURE_IMAGES.with(|v| *v.borrow_mut() = images);
 }
 
 /// The viewports whose frames the next paints may split out of the scene
@@ -5105,6 +5175,14 @@ fn paint_node_unmasked(
                         radii,
                         node_transform,
                     );
+                }
+
+                // A host-owned GPU texture (#2082) is the element's content
+                // the same way, sized by the element's own box.
+                if HOST_TEXTURES_ON.with(Cell::get)
+                    && node.attributes.contains_key("data-host-texture")
+                {
+                    paint_host_texture(painter, node, scale, (x, y, w, h), radii, node_transform);
                 }
 
                 // Render input element value

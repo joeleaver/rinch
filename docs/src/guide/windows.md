@@ -700,6 +700,82 @@ installed nothing answer `PointerLockError::Unsupported`; see
 [Pointer lock in a context](game-engine.md#pointer-lock-in-a-context) for what an
 embed host forwards.
 
+## Recording the Window (the composited frame)
+
+To record or stream the whole window — its panels and chrome as well as any
+render surface — register a handler with `rinch::window::on_frame_composited`
+(desktop, `gpu` feature). It is called on the UI thread once for every frame the
+window presents, after the frame is composited and before it is presented, with
+the finished frame as a GPU texture on the window's own device:
+
+```rust
+use rinch::window::{on_frame_composited, CompositedFrame};
+
+#[component]
+fn recorder() -> NodeHandle {
+    // Removed when this component unmounts.
+    let _ = on_frame_composited(move |frame: &mut CompositedFrame<'_>| {
+        // frame.device, frame.queue, frame.encoder, frame.texture / frame.view,
+        // frame.size, frame.format, frame.alpha.
+        // Copy the frame with an encoder of your own, submit it, then map:
+        let buffer: wgpu::Buffer = my_next_free_buffer(frame.size);
+        let mut encoder = frame.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            frame.texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: my_layout },
+            wgpu::Extent3d { width: frame.size.0, height: frame.size.1, depth_or_array_layers: 1 },
+        );
+        frame.queue.submit(Some(encoder.finish()));
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            // Ok once the copy is done: hand the bytes to your encoder.
+        });
+    });
+    rsx! { div {} }
+}
+```
+
+- **What it is.** The texture the window is presented from: the UI texture
+  (`Rgba8Unorm`, straight alpha) when the window has no composite layers, the
+  composited texture (the surface's format, `Rgba8Unorm` or `Bgra8Unorm`, with
+  premultiplied alpha) while it has. `frame.format` and `frame.alpha` say
+  which; for an opaque window the two alphas are the same. Both have
+  `TEXTURE_BINDING | COPY_SRC`. After a partial frame, which redraws only what
+  changed, it still holds the whole frame. (The composited texture's format is
+  the surface's: `Rgba8Unorm` or `Bgra8Unorm` where the surface offers either,
+  else the first it offers.)
+- **Read it only.** It is the window's own texture and also carries the usages
+  rinch draws it with, so a write is possible, and corrupts the frame the next
+  partial frame builds on.
+- **Reading it back.** A buffer written by a copy you record into
+  `frame.encoder` cannot be mapped inside the handler (the copy is not
+  submitted yet, and `map_async` fails): record into an encoder of your own,
+  submit it on `frame.queue` and map, as above, or record into `frame.encoder`
+  and map at the next frame's call. A map's callback runs only when the device
+  is polled. rinch polls without waiting once per presented frame, so the last
+  frame before the window goes idle arrives only if the app polls the device
+  itself (`device.poll`, from a timer or another thread).
+- **What it costs.** Nothing is copied for it: the texture is one the window
+  already has. While a handler is registered, one command encoder per frame
+  carries the handlers' work (`frame.encoder`, submitted right after the
+  handlers return and before the present). The frame's own commands are
+  submitted before the call, so work you submit yourself on `frame.queue` sees
+  the finished frame too. Nothing waits for the GPU.
+- **Valid during the call.** The next frame draws into the same texture, and a
+  resize replaces it (with `frame.size` following the window): copy what you
+  need inside the handler.
+- **Which frames.** Only presented ones. rinch draws when something asks (an
+  event, an animation, a continuous `RenderSurface`) and sleeps otherwise; a
+  recorder that wants a steady rate repeats its last frame across a gap. A
+  hidden window, or one whose surface is unavailable for a frame, hands nothing
+  over. The DevTools window is not handed over.
+- **Lifetime.** Registered while a component renders, the handler goes when the
+  component unmounts. Registered elsewhere (or under `rinch_core::unowned`, to
+  outlive the component that started it), the returned `FrameSubscription` is
+  its lifetime: dropping it removes the handler. `cancel()` removes it early.
+- **Software renderer.** Never called: the software renderer has no GPU frame
+  (`rinch::window::presentation()` answers `Unsupported` there). Nor on the web,
+  Android or in a native embed, where the host owns the frame.
+
 ## Overlay Windows
 
 An overlay — a status pill, a HUD, an indicator — sits on top of another
