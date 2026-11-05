@@ -151,6 +151,12 @@ your own function.
 
 ## The view's box
 
+Its text can be selected and copied, as in a browser, though your app's own
+text is not ([Selecting text](theming.md#selecting-text-desktop)): the view
+sets `user-select: text` on itself. `selectable: false` turns that off (on
+desktop that prop is the switch: a style sheet's `user-select` is not read
+there yet, only an element's own `style`).
+
 Nothing a document draws reaches outside its view: the view clips (a
 document wider than it scrolls sideways) and is the stacking context and
 containing block of everything in it, so a relative offset, a transform or

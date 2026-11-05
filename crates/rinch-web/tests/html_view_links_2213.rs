@@ -219,3 +219,41 @@ fn the_link_menu_and_link_dragging_are_off_unless_allowed() {
         assert!(links.borrow().is_empty());
     }
 }
+
+#[wasm_bindgen_test]
+fn an_html_view_is_selectable_unless_told_otherwise() {
+    for (selectable, expect) in [(true, "text"), (false, "none")] {
+        rinch_web::__reset_activation_state();
+        PREVIOUS.with(|p| {
+            if let Some(h) = p.borrow_mut().take() {
+                h.unmount();
+            }
+        });
+        while let Ok(Some(el)) = document().query_selector(&format!("[{HOST_ATTR}]")) {
+            el.remove();
+        }
+        let host = document().create_element("div").unwrap();
+        host.set_attribute(HOST_ATTR, "true").unwrap();
+        document().body().unwrap().append_child(&host).unwrap();
+        let handle = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |scope| {
+            HtmlView {
+                html: "<p>Some mail</p>".into(),
+                selectable,
+                ..Default::default()
+            }
+            .render(scope, &[])
+        });
+        PREVIOUS.with(|p| *p.borrow_mut() = Some(handle));
+        let view = document()
+            .query_selector(&format!("[{HOST_ATTR}] .rinch-html-view"))
+            .unwrap()
+            .unwrap();
+        let style = web_sys::window()
+            .unwrap()
+            .get_computed_style(&view)
+            .unwrap()
+            .unwrap();
+        let value = style.get_property_value("user-select").unwrap();
+        assert_eq!(value, expect, "selectable {selectable}");
+    }
+}

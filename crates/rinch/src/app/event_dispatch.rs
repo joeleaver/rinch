@@ -683,25 +683,19 @@ impl RinchApp {
                 }
 
                 // Handle read-only text selection drag
-                if self.text_selecting {
-                    if let Some(sel) = &self.text_selection {
-                        let ifc_node_id = sel.ifc_node_id;
-                        let anchor = sel.anchor_offset;
-                        let new_offset = if let Some(doc) = &self.doc {
-                            let d = doc.borrow();
-                            Self::compute_ifc_offset_from_click(&d.tree, ifc_node_id, x, y)
-                        } else {
-                            anchor
-                        };
-                        if let Some(sel) = &mut self.text_selection {
-                            sel.focus_offset = new_offset;
-                        }
-                        self.set_text_selection_attributes(ifc_node_id, anchor, new_offset);
-                        self.scene_dirty = true;
-                        actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Text));
-                        actions.push(AppAction::RequestRedraw);
-                        return actions;
-                    }
+                if self.text_selecting
+                    && let Some(sel) = &mut self.text_selection
+                    && !sel.dragged
+                {
+                    // Not a drag until the pointer leaves the press's spot.
+                    let (px, py) = sel.press;
+                    sel.dragged = (x - px).hypot(y - py) > 3.0;
+                }
+                if self.text_selecting && self.text_selection.as_ref().is_some_and(|s| s.dragged) {
+                    self.extend_text_selection_to(x, y);
+                    actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Text));
+                    actions.push(AppAction::RequestRedraw);
+                    return actions;
                 }
 
                 // Check resize edge for borderless windows. Deliberately AFTER
@@ -1374,6 +1368,7 @@ impl RinchApp {
                 if primary {
                     self.scrollbar_drag = None;
                     self.text_selecting = false;
+                    self.release_held_link_click();
 
                     // Clear :active pseudo-class state on mouse release.
                     // Don't request redraw — AboutToWait batches dirty state.

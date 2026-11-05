@@ -376,7 +376,14 @@ mod text_context_menu;
 mod text_context_menu_tests;
 mod text_selection;
 #[cfg(test)]
+mod text_selection_across_tests;
+#[cfg(test)]
+mod text_selection_chrome_tests;
+#[cfg(test)]
+mod text_selection_gestures_tests;
+#[cfg(test)]
 mod text_selection_range_552_tests;
+mod text_selection_text;
 #[cfg(test)]
 mod textarea_home_end_tests;
 #[cfg(test)]
@@ -772,14 +779,42 @@ const DRAG_THRESHOLD: f32 = 5.0;
 
 // ── Read-only text selection ────────────────────────────────────────────────
 
-/// State for read-only text selection (non-contenteditable).
+/// State for read-only text selection (non-contenteditable), which may run
+/// across several IFC roots (`text_selection.rs`).
 pub(crate) struct TextSelection {
-    /// The IFC root node where the selection lives (the block element containing the text).
+    /// The IFC root where the selection started (the anchor's root).
     pub(crate) ifc_node_id: u64,
-    /// Selection anchor (byte offset in IFC flat text, set on mousedown).
+    /// Selection anchor (byte offset in the anchor root's flat text, set on
+    /// mousedown).
     pub(crate) anchor_offset: usize,
-    /// Selection focus/cursor (byte offset, updated on mousemove).
+    /// The IFC root the focus is in (updated on mousemove).
+    pub(crate) focus_node: u64,
+    /// Selection focus/cursor (byte offset in the focus root's flat text).
     pub(crate) focus_offset: usize,
+    /// The roots that carry a part of the highlight now, with the ranges
+    /// each carries.
+    pub(crate) painted: Vec<(u64, Vec<(usize, usize)>)>,
+    /// The document's selectable roots, for this layout
+    /// (`text_selection_text::RootsCache`).
+    pub(crate) cache: Option<Box<text_selection_text::RootsCache>>,
+    /// The hit-cache generation the highlight was last written at.
+    pub(crate) painted_generation: u64,
+    /// Where the press that started it was, and whether the pointer has moved
+    /// far enough from there to drag: a double- or triple-click's word or
+    /// paragraph is not collapsed by the jitter after the click.
+    pub(crate) press: (f32, f32),
+    pub(crate) dragged: bool,
+}
+
+/// A press on a link inside selectable text, held for the release: a click
+/// on a link follows it, a drag across it selects (`text_selection.rs`).
+pub(crate) struct HeldLinkClick {
+    pub(crate) node_id: u64,
+    pub(crate) handler_id: usize,
+    pub(crate) text_hit: events::TextHitInfo,
+    pub(crate) at: (f32, f32),
+    pub(crate) viewport: (f32, f32),
+    pub(crate) link: Option<String>,
 }
 
 // ── Scrollbars ───────────────────────────────────────────────────────────────
@@ -1216,6 +1251,8 @@ pub struct RinchApp {
     pub(crate) text_selection: Option<TextSelection>,
     /// Whether we're currently mouse-drag selecting text (read-only, non-CE).
     pub(crate) text_selecting: bool,
+    /// A link's click waiting for the release ([`HeldLinkClick`]).
+    pub(crate) held_link_click: Option<HeldLinkClick>,
     /// Node ID of the current file-drop hover target (for enter/leave during OS drag).
     pub(crate) file_hover_target: Option<u64>,
     /// The OS file drag over the window, with its drop caret (#1649).
@@ -1349,6 +1386,7 @@ impl RinchApp {
             surface_captures: Vec::new(),
             text_selection: None,
             text_selecting: false,
+            held_link_click: None,
             file_hover_target: None,
             #[cfg(feature = "desktop")]
             file_drag: None,
@@ -1908,6 +1946,8 @@ impl RinchApp {
         // and lay out again what their subscribers wrote.
         self.refresh_bounds_signals();
         self.settle_bounds_writes(viewport_width, viewport_height);
+        // A read-only selection follows text that changed under it.
+        self.refresh_text_selection();
 
         self.scene_dirty = true;
 
@@ -4376,6 +4416,10 @@ impl RinchApp {
         self.sync_input_cursor_to_dom();
     }
     fn handle_select_all(&mut self) {
+        // With no field focused, all the read-only text a selection is in.
+        if self.live_focused_input_handler().is_none() && self.select_all_text() {
+            return;
+        }
         self.handle_input_edit_command(EditCommand::SelectAll);
     }
 
@@ -4416,11 +4460,7 @@ impl RinchApp {
     }
     fn handle_copy(&mut self) {
         // Check for read-only text selection first
-        if self
-            .text_selection
-            .as_ref()
-            .is_some_and(|s| s.anchor_offset != s.focus_offset)
-        {
+        if self.text_selection.as_ref().is_some_and(|s| !s.is_empty()) {
             self.copy_text_selection();
             return;
         }

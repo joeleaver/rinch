@@ -41,7 +41,6 @@ use rinch_core::{Component, InputCallback};
 use crate::{Cleaned, Policy, Tooltips};
 
 /// Shows a document someone else wrote; see the module docs.
-#[derive(Default)]
 pub struct HtmlView {
     /// The document as written, cleaned by the view at its own width under
     /// `policy`. Takes the place of `html` and `body_style`.
@@ -64,6 +63,26 @@ pub struct HtmlView {
     /// and dragging a link to the tab bar work on the document's links:
     /// both open the address without `onlink`, so they are off by default.
     pub link_menu: bool,
+    /// Whether the document's text can be selected and copied, as in a
+    /// browser (the default). `false` makes it unselectable, as an app's own
+    /// text is. This is the switch on desktop: a style sheet's `user-select`
+    /// is not read there yet, only an element's own `style`.
+    pub selectable: bool,
+}
+
+impl Default for HtmlView {
+    fn default() -> Self {
+        Self {
+            document: String::new(),
+            policy: None,
+            html: String::new(),
+            body_style: String::new(),
+            onlink: None,
+            tooltips: Tooltips::default(),
+            link_menu: false,
+            selectable: true,
+        }
+    }
 }
 
 impl std::fmt::Debug for HtmlView {
@@ -76,6 +95,7 @@ impl std::fmt::Debug for HtmlView {
             .field("onlink", &self.onlink.as_ref().map(|_| "<callback>"))
             .field("tooltips", &self.tooltips)
             .field("link_menu", &self.link_menu)
+            .field("selectable", &self.selectable)
             .finish()
     }
 }
@@ -112,6 +132,18 @@ impl Component for HtmlView {
         // Its links are the app's to follow (`onlink`): on the web, the
         // browser never navigates the app's own tab to one.
         view.set_attribute("data-claim-links", if self.link_menu { "menu" } else { "" });
+        // A document's text can be selected and copied, as in a browser; an
+        // app's own controls cannot, by default (`selectable`). rinch reads
+        // `user-select` from the `style` attribute on desktop, and the
+        // document's own elements take it from here unless they say otherwise.
+        view.set_attribute(
+            "style",
+            if self.selectable {
+                "user-select: text"
+            } else {
+                "user-select: none"
+            },
+        );
         let style = scope.create_element("style");
         style.append_child(&scope.create_text(CSS));
         view.append_child(&style);
