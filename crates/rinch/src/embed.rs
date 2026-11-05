@@ -1379,6 +1379,13 @@ impl RinchOverlayRenderer {
         self.render_texture = Self::create_texture(device, self.format, width, height);
     }
 
+    /// How many host textures (#2082) this renderer has registered with its
+    /// Vello so far. A test hook, not a stable API.
+    #[doc(hidden)]
+    pub fn host_texture_registrations(&self) -> u64 {
+        self.host_images.registration_count()
+    }
+
     /// Get the current render texture (e.g. for binding to a shader).
     pub fn texture(&self) -> &Texture {
         &self.render_texture

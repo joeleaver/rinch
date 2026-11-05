@@ -47,6 +47,21 @@ pub enum FrameAlpha {
 /// your own work on [`queue`](Self::queue) — the frame's commands were
 /// submitted before the call, so either sees the finished frame.
 ///
+/// **Read it only.** The texture also carries the usages rinch draws it with
+/// (`STORAGE_BINDING | COPY_DST` for the UI texture, `RENDER_ATTACHMENT` for
+/// the composited one), so wgpu lets you write it, but a write corrupts the
+/// frame the next partial frame (#1718) builds on.
+///
+/// **Reading it back.** A buffer that a copy in `encoder` writes cannot be
+/// mapped during the call: the copy is not submitted yet, and `map_async`
+/// fails. Either record the copy into an encoder of your own, submit it on
+/// `queue`, and call `map_async` — all inside the call — or record it into
+/// `encoder` and map the buffer at the next call, by which time rinch has
+/// submitted it. A map's callback runs only when the device is polled:
+/// rinch polls (without waiting) once per presented frame, so the last
+/// frame before the window goes idle is delivered only when the app polls
+/// the device itself (`device.poll`, from a timer or another thread).
+///
 /// Its colour values are sRGB-encoded bytes in a non-sRGB format, as the
 /// window presents them.
 #[non_exhaustive]
@@ -67,9 +82,9 @@ pub struct CompositedFrame<'a> {
     pub view: &'a wgpu::TextureView,
     /// The frame's size in physical pixels: the window's surface size.
     pub size: (u32, u32),
-    /// `texture`'s format: `Rgba8Unorm` for the UI texture, the surface's
-    /// (`Rgba8Unorm` or `Bgra8Unorm`, as the platform offers) for the
-    /// composited one.
+    /// `texture`'s format: `Rgba8Unorm` for the UI texture; for the
+    /// composited one the surface's, which is `Rgba8Unorm` or `Bgra8Unorm`
+    /// where the surface offers either, else the first format it offers.
     pub format: wgpu::TextureFormat,
     /// How the colour values carry alpha.
     pub alpha: FrameAlpha,
@@ -153,9 +168,16 @@ fn remove_handler(id: u64) {
 /// fn recorder() -> NodeHandle {
 ///     // Removed when this component unmounts.
 ///     let _ = on_frame_composited(move |frame: &mut CompositedFrame<'_>| {
-///         // Copy `frame.texture` into a buffer of your own with
-///         // `frame.encoder.copy_texture_to_buffer(..)`, then map it
-///         // asynchronously once the frame's work is done.
+///         // Copy the frame into a buffer of your own with an encoder of your
+///         // own, submit it, then map the buffer: its callback runs at a
+///         // later `device.poll` (rinch polls once per presented frame).
+///         let buffer: wgpu::Buffer = my_next_free_buffer(frame.size);
+///         let mut encoder = frame.device.create_command_encoder(&Default::default());
+///         encoder.copy_texture_to_buffer(frame.texture.as_image_copy(), my_copy_info(&buffer), my_extent(frame.size));
+///         frame.queue.submit(Some(encoder.finish()));
+///         buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+///             // `result` is Ok once the copy is done: read and encode it.
+///         });
 ///     });
 ///     rsx! { div {} }
 /// }

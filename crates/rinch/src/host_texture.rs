@@ -246,6 +246,8 @@ struct Registered {
 pub struct HostTextureImages {
     by_name: HashMap<String, Registered>,
     converter: Option<Converter>,
+    /// How many textures were registered with the renderer, ever.
+    registrations: u64,
 }
 
 impl std::fmt::Debug for HostTextureImages {
@@ -260,6 +262,13 @@ impl HostTextureImages {
     /// None registered yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// How many textures this has registered with its renderer so far (a
+    /// re-registration counts again). A test hook, not a stable API.
+    #[doc(hidden)]
+    pub fn registration_count(&self) -> u64 {
+        self.registrations
     }
 
     /// Bring `renderer`'s registrations up to `textures` and copy (or
@@ -303,6 +312,7 @@ impl HostTextureImages {
                     Route::Direct => None,
                     Route::Convert(_) => Some(converted_texture(device, w, h)),
                 };
+                self.registrations += 1;
                 let mut image =
                     renderer.register_texture(converted.clone().unwrap_or(entry.texture.clone()));
                 image.alpha_type = alpha;

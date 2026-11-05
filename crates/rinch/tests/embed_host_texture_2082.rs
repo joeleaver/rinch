@@ -313,11 +313,74 @@ fn gpu_a_host_texture_follows_the_host_frame_by_frame_2082() {
     assert_eq!(paints, 0, "and then nothing");
 }
 
-/// The converted routes keep the bytes: `Bgra8Unorm` is swizzled,
-/// `Rgba8UnormSrgb` and `Bgra8UnormSrgb` are decoded and encoded again (not
-/// left linear), and `Rgba8Unorm` without `COPY_SRC` goes through the pass.
-/// Straight alpha is blended as straight, premultiplied (the default) as
-/// premultiplied.
+/// A 64x32 texture of four 32x16 quadrants, each texel the four bytes of
+/// its quadrant as stored: `[top-left, top-right, bottom-left, bottom-right]`.
+fn quadrants(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+    quads: [[u8; 4]; 4],
+) -> wgpu::Texture {
+    let t = texture(device, queue, (64, 32), format, usage, [0; 4]);
+    let data: Vec<u8> = (0..32u32)
+        .flat_map(|y| (0..64u32).map(move |x| (x, y)))
+        .flat_map(|(x, y)| quads[(y >= 16) as usize * 2 + (x >= 32) as usize])
+        .collect();
+    queue.write_texture(
+        t.as_image_copy(),
+        &data,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(64 * 4),
+            rows_per_image: Some(32),
+        },
+        wgpu::Extent3d {
+            width: 64,
+            height: 32,
+            depth_or_array_layers: 1,
+        },
+    );
+    t
+}
+
+/// Where the `cam` fill element (64x32 at 20,20) shows each quadrant: two
+/// points inside each, off its centre and edges.
+const QUAD_POINTS: [[(u32, u32); 2]; 4] = [
+    [(28, 24), (44, 32)],
+    [(60, 24), (78, 33)],
+    [(26, 41), (47, 48)],
+    [(57, 40), (80, 49)],
+];
+
+fn check_quadrants(px: &[[u8; 4]], want: [[u8; 4]; 4], tol: i32, what: &str) {
+    for (q, points) in QUAD_POINTS.iter().enumerate() {
+        for &(x, y) in points {
+            let got = at(px, x, y);
+            let near = got
+                .iter()
+                .zip(want[q])
+                .all(|(&g, w)| (g as i32 - w as i32).abs() <= tol);
+            assert!(
+                near,
+                "{what}: quadrant {q} at ({x}, {y}) is {got:?}, want {:?}",
+                want[q]
+            );
+        }
+    }
+}
+
+/// BGRA's bytes in RGBA order.
+fn bgra(q: [[u8; 4]; 4]) -> [[u8; 4]; 4] {
+    q.map(|[r, g, b, a]| [b, g, r, a])
+}
+
+/// The converted routes keep each texel's bytes and its place: `Bgra8Unorm`
+/// is swizzled, `Rgba8UnormSrgb` and `Bgra8UnormSrgb` are decoded and encoded
+/// again (not left linear), and `Rgba8Unorm` without `COPY_SRC` goes through
+/// the pass; four distinct quadrants, so a flipped or mirrored conversion
+/// fails. Straight alpha is blended as straight, premultiplied (the
+/// default) as premultiplied, quadrant by quadrant.
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_host_texture_formats_and_alpha_2082() {
@@ -325,51 +388,221 @@ fn gpu_host_texture_formats_and_alpha_2082() {
     let mut h = Host::new();
     let (dev, q) = (h.device.clone(), h.queue.clone());
     let sampled = wgpu::TextureUsages::TEXTURE_BINDING;
-    let colour = [10, 200, 60, 255];
+    let quads = [
+        [10, 200, 60, 255],
+        [230, 40, 90, 255],
+        [70, 20, 210, 255],
+        [250, 220, 30, 255],
+    ];
     // `COPY_SRC` on the BGRA and sRGB ones too: copyable, they are still
     // converted, not copied as they are.
     let both = sampled | DIRECT;
     for (format, usage, stored) in [
-        (F::Bgra8Unorm, both, [60, 200, 10, 255]),
-        (F::Bgra8UnormSrgb, both, [60, 200, 10, 255]),
-        (F::Rgba8UnormSrgb, both, colour),
-        (F::Rgba8Unorm, sampled, colour),
+        (F::Rgba8Unorm, DIRECT, quads),
+        (F::Bgra8Unorm, both, bgra(quads)),
+        (F::Bgra8UnormSrgb, both, bgra(quads)),
+        (F::Rgba8UnormSrgb, both, quads),
+        (F::Rgba8Unorm, sampled, quads),
     ] {
-        let t = texture(&dev, &q, (64, 32), format, usage, stored);
+        let t = quadrants(&dev, &q, format, usage, stored);
         h.ctx.register_texture("cam", &t).unwrap();
-        let got = at(&h.render().0, 50, 35);
-        let near = got
-            .iter()
-            .zip(colour)
-            .all(|(&g, w)| (g as i32 - w as i32).abs() <= 1);
-        assert!(near, "{format:?}: {got:?}, want {colour:?}");
+        check_quadrants(&h.render().0, quads, 1, &format!("{format:?} {usage:?}"));
     }
 
-    // Half-transparent dark red over the white page: straight alpha blends
-    // to (191, 127, 127); the same bytes read premultiplied add the white's
-    // half to a red of 128, which saturates.
-    let half = [128, 0, 0, 128];
-    let t = texture(&dev, &q, (64, 32), F::Rgba8Unorm, DIRECT, half);
-    h.ctx
-        .register_texture_with(
-            "cam",
-            &t,
-            HostTextureOptions::new().alpha(TextureAlpha::Straight),
+    // Half-transparent quadrants over the white page. Straight: c * a/255 +
+    // 255 * (1 - a/255). Premultiplied: c + 255 * (1 - a/255), saturating.
+    let half = [
+        [128, 0, 0, 128],
+        [0, 128, 0, 128],
+        [0, 0, 128, 128],
+        [64, 64, 0, 128],
+    ];
+    let blend = |premultiplied: bool| {
+        half.map(|[r, g, b, a]| {
+            let k = 1.0 - a as f32 / 255.0;
+            let f = |c: u8| {
+                let c = if premultiplied {
+                    c as f32
+                } else {
+                    c as f32 * a as f32 / 255.0
+                };
+                (c + 255.0 * k).round().min(255.0) as u8
+            };
+            [f(r), f(g), f(b), 255]
+        })
+    };
+    for (format, stored) in [(F::Rgba8Unorm, half), (F::Bgra8Unorm, bgra(half))] {
+        let t = quadrants(&dev, &q, format, both, stored);
+        h.ctx
+            .register_texture_with(
+                "cam",
+                &t,
+                HostTextureOptions::new().alpha(TextureAlpha::Straight),
+            )
+            .unwrap();
+        let (px, paints) = h.render();
+        assert_eq!(paints, 1, "another texture route or alpha repaints");
+        check_quadrants(&px, blend(false), 2, &format!("{format:?} straight"));
+        h.ctx.register_texture("cam", &t).unwrap();
+        check_quadrants(
+            &h.render().0,
+            blend(true),
+            2,
+            &format!("{format:?} premultiplied"),
+        );
+    }
+}
+
+/// The `HostTexture` component draws the texture under its children, as a
+/// canvas or video under positioned overlays: a child box shows over it.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_host_texture_children_draw_over_it_2082() {
+    let (device, queue) = gpu();
+    let mut overlay = RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
+    let mut ctx = RinchContext::new(
+        RinchContextConfig {
+            width: W,
+            height: H,
+            scale_factor: 1.0,
+            theme: None,
+            fonts: Vec::new(),
+        },
+        |__scope: &mut RenderScope| {
+            rsx! {
+                div { style: "position: absolute; left: 0; top: 0; width: 200px; height: 100px; background: rgb(255,255,255)",
+                    HostTexture { name: "cam", style: "position: absolute; left: 20px; top: 20px; width: 64px; height: 32px",
+                        div { style: "position: absolute; left: 8px; top: 8px; width: 16px; height: 16px; background: rgb(0,0,255)" }
+                    }
+                }
+            }
+        },
+    );
+    ctx.update(&[]);
+    let red = [255, 0, 0, 255];
+    let t = texture(
+        &device,
+        &queue,
+        (64, 32),
+        wgpu::TextureFormat::Rgba8Unorm,
+        DIRECT,
+        red,
+    );
+    ctx.register_texture("cam", &t).unwrap();
+    let _ = overlay.render(&device, &queue, &mut ctx);
+    let px = read_back(&device, &queue, overlay.texture());
+    assert_eq!(at(&px, 36, 36), BLUE, "the child, over the texture");
+    assert_eq!(at(&px, 70, 30), red, "the texture beside it");
+}
+
+/// One overlay renderer drawing two contexts in turn (#1976's turn-taking)
+/// keeps each context's registrations: no texture is registered (or
+/// converted target allocated) again on a later turn, and each context
+/// shows its own texture. And one context rendered through
+/// `scene_with_textures` by two Vello renderers in turn draws its texture
+/// with each: the scene is painted again for the renderer whose images it
+/// names.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_host_textures_across_contexts_and_renderers_2082() {
+    let mut h = Host::new();
+    let (dev, q) = (h.device.clone(), h.queue.clone());
+    let sampled = wgpu::TextureUsages::TEXTURE_BINDING;
+    let (red, green) = ([255, 0, 0, 255], [0, 255, 0, 255]);
+    // A converted (BGRA) texture in each, so a re-registration allocates.
+    let a = texture(
+        &dev,
+        &q,
+        (64, 32),
+        wgpu::TextureFormat::Bgra8Unorm,
+        sampled,
+        [0, 0, 255, 255],
+    );
+    let b = texture(
+        &dev,
+        &q,
+        (64, 32),
+        wgpu::TextureFormat::Bgra8Unorm,
+        sampled,
+        [0, 255, 0, 255],
+    );
+    let mut other = context();
+    h.ctx.register_texture("cam", &a).unwrap();
+    other.register_texture("cam", &b).unwrap();
+    let turn = |ctx: &mut RinchContext, overlay: &mut RinchOverlayRenderer| {
+        let _ = overlay.render(&dev, &q, ctx);
+        at(&read_back(&dev, &q, overlay.texture()), 50, 35)
+    };
+    assert_eq!(turn(&mut h.ctx, &mut h.overlay), red);
+    assert_eq!(turn(&mut other, &mut h.overlay), green);
+    let registered = h.overlay.host_texture_registrations();
+    assert_eq!(registered, 2, "one per context");
+    for _ in 0..3 {
+        assert_eq!(turn(&mut h.ctx, &mut h.overlay), red);
+        assert_eq!(turn(&mut other, &mut h.overlay), green);
+    }
+    assert_eq!(
+        h.overlay.host_texture_registrations(),
+        registered,
+        "taking turns registers nothing again"
+    );
+    // A context dropped: its registrations go at the renderer's next render.
+    drop(other);
+    assert_eq!(turn(&mut h.ctx, &mut h.overlay), red);
+
+    // Two Vello renderers taking turns on one context's scene.
+    let new_vello = || {
+        vello::Renderer::new(
+            &dev,
+            vello::RendererOptions {
+                antialiasing_support: vello::AaSupport::all(),
+                use_cpu: false,
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
         )
-        .unwrap();
-    let (px, paints) = h.render();
-    assert_eq!(paints, 1, "another alpha mode repaints");
-    let got = at(&px, 50, 35);
-    assert!(
-        (got[0] as i32 - 191).abs() <= 2 && (got[1] as i32 - 127).abs() <= 2,
-        "straight: {got:?}"
+        .expect("vello")
+    };
+    let mut ctx = context();
+    let c = texture(
+        &dev,
+        &q,
+        (64, 32),
+        wgpu::TextureFormat::Rgba8Unorm,
+        DIRECT,
+        red,
     );
-    h.ctx.register_texture("cam", &t).unwrap();
-    let got = at(&h.render().0, 50, 35);
-    assert!(
-        got[0] >= 253 && (got[1] as i32 - 127).abs() <= 2,
-        "premultiplied: {got:?}"
-    );
+    ctx.register_texture("cam", &c).unwrap();
+    let target = h.overlay.texture().clone();
+    let params = vello::RenderParams {
+        base_color: vello::peniko::Color::TRANSPARENT,
+        width: W,
+        height: H,
+        antialiasing_method: vello::AaConfig::Msaa16,
+    };
+    let mut renderers = [
+        (new_vello(), HostTextureImages::new()),
+        (new_vello(), HostTextureImages::new()),
+    ];
+    for round in 0..2 {
+        for (k, (vello, images)) in renderers.iter_mut().enumerate() {
+            let scene = ctx.scene_with_textures(&dev, &q, vello, images);
+            vello
+                .render_to_texture(
+                    &dev,
+                    &q,
+                    scene,
+                    &target.create_view(&Default::default()),
+                    &params,
+                )
+                .unwrap();
+            assert_eq!(
+                at(&read_back(&dev, &q, &target), 50, 35),
+                red,
+                "round {round}, renderer {k}"
+            );
+        }
+    }
 }
 
 /// What is refused, and that a refusal keeps the texture already under the

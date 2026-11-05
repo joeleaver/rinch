@@ -474,7 +474,8 @@ impl PlatformWindow for WinitWindow {
 pub struct WgpuRenderer {
     pub(crate) renderer: VelloRenderer,
     pub(crate) render_texture: Texture,
-    pub(crate) surface: Surface<'static>,
+    /// `None` only for a renderer made without a window, in tests.
+    pub(crate) surface: Option<Surface<'static>>,
     pub(crate) surface_config: SurfaceConfiguration,
     pub(crate) device: Arc<Device>,
     pub(crate) queue: Arc<Queue>,
@@ -748,7 +749,7 @@ impl WgpuRenderer {
         Ok(Self {
             renderer,
             render_texture,
-            surface,
+            surface: Some(surface),
             surface_config,
             device,
             queue,
@@ -766,6 +767,62 @@ impl WgpuRenderer {
             reconfigure: false,
             hands_over_frames: false,
         })
+    }
+
+    /// A renderer with no window, for tests that drive [`Self::compose`]
+    /// with a texture standing in for the swapchain's (#2215): `format` is
+    /// the surface format it pretends to have, opaque.
+    #[cfg(test)]
+    pub(crate) fn offscreen(
+        device: Arc<Device>,
+        queue: Arc<Queue>,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+    ) -> Self {
+        let renderer = VelloRenderer::new(
+            &device,
+            RendererOptions {
+                antialiasing_support: AaSupport::all(),
+                use_cpu: false,
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .expect("vello");
+        let render_texture =
+            Self::create_render_texture(&device, TextureFormat::Rgba8Unorm, width, height);
+        Self {
+            renderer,
+            render_texture,
+            surface: None,
+            surface_config: SurfaceConfiguration {
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
+                format,
+                width,
+                height,
+                present_mode: PresentMode::Fifo,
+                desired_maximum_frame_latency: 2,
+                alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+                view_formats: vec![],
+                color_space: wgpu::SurfaceColorSpace::Auto,
+            },
+            device,
+            queue,
+            layer_compositor: None,
+            layer_uploader: None,
+            composite_layers: Vec::new(),
+            surface_images: SurfaceImages::default(),
+            split: Default::default(),
+            split_compositor: None,
+            gpu_layers: Vec::new(),
+            composited_texture: None,
+            ui_state: UiTextureState::default(),
+            partial_target: None,
+            present_modes: vec![PresentMode::Fifo],
+            reconfigure: false,
+            hands_over_frames: false,
+        }
     }
 
     /// Turn vsync on or off for this window's surface (#2095), and say what
@@ -1123,15 +1180,18 @@ impl WgpuRenderer {
         use wgpu::CurrentSurfaceTexture as Current;
         // A new present mode (#2095), configured while this window holds no
         // frame of the surface's.
+        let Some(surface) = self.surface.as_ref() else {
+            return Ok(());
+        };
         if std::mem::take(&mut self.reconfigure) {
-            self.surface.configure(&self.device, &self.surface_config);
+            surface.configure(&self.device, &self.surface_config);
         }
-        let surface_texture = match self.surface.get_current_texture() {
+        let surface_texture = match surface.get_current_texture() {
             Current::Success(t) | Current::Suboptimal(t) => t,
             // Swapchain went stale (resize/DPI/occlusion/GPU reset) — recreate it and retry once.
             Current::Outdated | Current::Lost => {
-                self.surface.configure(&self.device, &self.surface_config);
-                match self.surface.get_current_texture() {
+                surface.configure(&self.device, &self.surface_config);
+                match surface.get_current_texture() {
                     Current::Success(t) | Current::Suboptimal(t) => t,
                     _ => return Ok(()), // try again on the next redraw
                 }
@@ -1145,6 +1205,25 @@ impl WgpuRenderer {
             }
         };
 
+        self.compose(&surface_texture.texture, base_color)?;
+        self.queue.present(surface_texture);
+        self.device
+            .poll(wgpu::PollType::Poll)
+            .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
+
+        Ok(())
+    }
+
+    /// Composite the frame into `target` (the swapchain texture, or a test's
+    /// stand-in for it), submit it, and hand the presented texture to the
+    /// app's `on_frame_composited` handlers (#2215). Everything
+    /// [`Self::present`] does between acquiring the surface texture and
+    /// presenting it.
+    pub(crate) fn compose(
+        &mut self,
+        target: &Texture,
+        base_color: Color,
+    ) -> Result<(), RenderError> {
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
@@ -1266,7 +1345,7 @@ impl WgpuRenderer {
                         aspect: wgpu::TextureAspect::All,
                     },
                     wgpu::TexelCopyTextureInfo {
-                        texture: &surface_texture.texture,
+                        texture: target,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
@@ -1278,9 +1357,7 @@ impl WgpuRenderer {
                     },
                 ),
                 PresentStep::Pass(alpha) => {
-                    let surface_view = surface_texture
-                        .texture
-                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    let surface_view = target.create_view(&wgpu::TextureViewDescriptor::default());
                     compositor.present(
                         &self.device,
                         &mut encoder,
@@ -1339,7 +1416,7 @@ impl WgpuRenderer {
                         aspect: wgpu::TextureAspect::All,
                     },
                     wgpu::TexelCopyTextureInfo {
-                        texture: &surface_texture.texture,
+                        texture: target,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
@@ -1354,9 +1431,7 @@ impl WgpuRenderer {
                     let present = self.layer_compositor.get_or_insert_with(|| {
                         super::compositor::LayerCompositor::new(&self.device, format)
                     });
-                    let surface_view = surface_texture
-                        .texture
-                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    let surface_view = target.create_view(&wgpu::TextureViewDescriptor::default());
                     present.present(&self.device, &mut encoder, composited, &surface_view, alpha);
                 }
             }
@@ -1382,7 +1457,7 @@ impl WgpuRenderer {
                         aspect: wgpu::TextureAspect::All,
                     },
                     wgpu::TexelCopyTextureInfo {
-                        texture: &surface_texture.texture,
+                        texture: target,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
@@ -1400,9 +1475,7 @@ impl WgpuRenderer {
                             self.surface_config.format,
                         )
                     });
-                    let surface_view = surface_texture
-                        .texture
-                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    let surface_view = target.create_view(&wgpu::TextureViewDescriptor::default());
                     compositor.present(
                         &self.device,
                         &mut encoder,
@@ -1428,11 +1501,6 @@ impl WgpuRenderer {
             );
             crate::composited_frame::hand_over_frame(&self.device, &self.queue, texture, alpha);
         }
-        self.queue.present(surface_texture);
-        self.device
-            .poll(wgpu::PollType::Poll)
-            .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
-
         Ok(())
     }
 }
@@ -1443,7 +1511,9 @@ impl PlatformRenderer for WgpuRenderer {
         let height = height.max(1);
         self.surface_config.width = width;
         self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.surface_config);
+        }
         self.reconfigure = false;
         self.render_texture =
             Self::create_render_texture(&self.device, TextureFormat::Rgba8Unorm, width, height);

@@ -712,15 +712,20 @@ use rinch::window::{on_frame_composited, CompositedFrame};
 fn recorder() -> NodeHandle {
     // Removed when this component unmounts.
     let _ = on_frame_composited(move |frame: &mut CompositedFrame<'_>| {
-        // frame.device, frame.queue, frame.texture / frame.view,
-        // frame.size, frame.format, frame.alpha. Record a copy into a
-        // buffer (or a blit into a texture) of your own:
-        frame.encoder.copy_texture_to_buffer(
+        // frame.device, frame.queue, frame.encoder, frame.texture / frame.view,
+        // frame.size, frame.format, frame.alpha.
+        // Copy the frame with an encoder of your own, submit it, then map:
+        let buffer: wgpu::Buffer = my_next_free_buffer(frame.size);
+        let mut encoder = frame.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
             frame.texture.as_image_copy(),
-            wgpu::TexelCopyBufferInfo { buffer: &my_buffer, layout: my_layout },
+            wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: my_layout },
             wgpu::Extent3d { width: frame.size.0, height: frame.size.1, depth_or_array_layers: 1 },
         );
-        // ...and map `my_buffer` asynchronously once the GPU is done.
+        frame.queue.submit(Some(encoder.finish()));
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            // Ok once the copy is done: hand the bytes to your encoder.
+        });
     });
     rsx! { div {} }
 }
@@ -732,14 +737,26 @@ fn recorder() -> NodeHandle {
   premultiplied alpha) while it has. `frame.format` and `frame.alpha` say
   which; for an opaque window the two alphas are the same. Both have
   `TEXTURE_BINDING | COPY_SRC`. After a partial frame, which redraws only what
-  changed, it still holds the whole frame.
+  changed, it still holds the whole frame. (The composited texture's format is
+  the surface's: `Rgba8Unorm` or `Bgra8Unorm` where the surface offers either,
+  else the first it offers.)
+- **Read it only.** It is the window's own texture and also carries the usages
+  rinch draws it with, so a write is possible, and corrupts the frame the next
+  partial frame builds on.
+- **Reading it back.** A buffer written by a copy you record into
+  `frame.encoder` cannot be mapped inside the handler (the copy is not
+  submitted yet, and `map_async` fails): record into an encoder of your own,
+  submit it on `frame.queue` and map, as above, or record into `frame.encoder`
+  and map at the next frame's call. A map's callback runs only when the device
+  is polled. rinch polls without waiting once per presented frame, so the last
+  frame before the window goes idle arrives only if the app polls the device
+  itself (`device.poll`, from a timer or another thread).
 - **What it costs.** Nothing is copied for it: the texture is one the window
   already has. While a handler is registered, one command encoder per frame
   carries the handlers' work (`frame.encoder`, submitted right after the
   handlers return and before the present). The frame's own commands are
   submitted before the call, so work you submit yourself on `frame.queue` sees
-  the finished frame too. Nothing waits for the GPU: do your readback
-  asynchronously (`map_async`) and pick it up a frame or two later.
+  the finished frame too. Nothing waits for the GPU.
 - **Valid during the call.** The next frame draws into the same texture, and a
   resize replaces it (with `frame.size` following the window): copy what you
   need inside the handler.
