@@ -1131,7 +1131,16 @@ Sub-components: **PopoverTarget** (no props), **PopoverDropdown** (no props).
 
 ### ContextMenu
 
-A right-click context menu. No props on the wrapper — state is managed internally.
+A right-click context menu. Its open state is managed internally; its props are
+the keyboard options below (#2170).
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `close_on_escape` | `bool` | **`true`** | Escape closes the menu and returns the focus to the element that held it when the menu opened. An open `DropdownMenuSub` takes Escape first and closes only itself |
+| `keyboard_nav` | `bool` | **`true`** | ArrowUp/ArrowDown/Home/End and type-ahead while open (see [Menus › Keyboard](menus.md#keyboard-in-rendered-menus)) |
+| `loop_focus` | `bool` | **`true`** | The arrows wrap at the ends (Chrome's menus: `arrow_key_selection_wraps`) |
+| `typeahead` | `bool` | **`true`** | A letter or digit moves to the next item whose label starts with it; a single match is activated (Chrome's `SelectByChar`) |
+| `on_key` | `Option<MenuKeyHook>` | `None` | Escape hatch: `Rc<dyn Fn(&KeyEventData) -> bool>` offered every key the open menu would see, first; `true` consumes it |
 
 The dropdown opens at the pointer and is kept inside the viewport: if it would
 run past the bottom or right edge it is shifted back by the overflow, 4px from
@@ -1141,7 +1150,7 @@ on the desktop and in a browser and costs no extra layout.
 
 Sub-components: **ContextMenuTarget** (no props), **ContextMenuDropdown** (no props).
 
-Use `DropdownMenuItem` and `DropdownMenuDivider` as children of `ContextMenuDropdown`.
+Use `DropdownMenuItem`, `DropdownMenuDivider` and `DropdownMenuSub` as children of `ContextMenuDropdown`.
 
 ### DropdownMenu
 
@@ -1209,6 +1218,11 @@ Two consequences of that spelling:
 | `close_on_item_click` | `bool` | **`true`** | |
 | `width` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the menu panel; its click-catching backdrop stays one below (defaults 100 / 99) |
+| `close_on_escape` | `bool` | **`true`** | Escape closes the menu (through `on_close`, so it needs one) and returns the focus to the element that held it when the menu opened. An open `DropdownMenuSub` takes Escape first and closes only itself |
+| `keyboard_nav` | `bool` | **`true`** | ArrowUp/ArrowDown/Home/End and type-ahead while open (see [Menus › Keyboard](menus.md#keyboard-in-rendered-menus)) |
+| `loop_focus` | `bool` | **`true`** | The arrows wrap at the ends (Chrome's menus: `arrow_key_selection_wraps`) |
+| `typeahead` | `bool` | **`true`** | A letter or digit moves to the next item whose label starts with it; a single match is activated (Chrome's `SelectByChar`) |
+| `on_key` | `Option<MenuKeyHook>` | `None` | Escape hatch: `Rc<dyn Fn(&KeyEventData) -> bool>` offered every key the open menu would see, first; `true` consumes it |
 
 **DropdownMenuTarget**, **DropdownMenuDropdown**, **DropdownMenuLabel**, **DropdownMenuDivider**: No props.
 
@@ -1221,6 +1235,40 @@ Two consequences of that spelling:
 | `color` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `onclick` | `Option<Callback>` | `None` | |
+
+**DropdownMenuSub** (#2214) — a cascading submenu row; its children are the
+flyout's items. Works in `DropdownMenuDropdown`, `ContextMenuDropdown` and
+another `DropdownMenuSub`, to any depth. Choosing an item anywhere in the tree
+closes the whole menu. Defaults are Chrome's own menus' (`ui/views/controls/menu`).
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `label` | `String` | `""` | The row's text |
+| `left_section` | `Option<TablerIcon>` | `None` | As `DropdownMenuItem`'s |
+| `color` | `String` | `""` | As `DropdownMenuItem`'s |
+| `disabled` | `bool` | `false` | Never opens, by pointer or key |
+| `chevron` | `Option<TablerIcon>` | `None` | The trailing icon; `None` is `ChevronRight` |
+| `hide_chevron` | `bool` | `false` | No trailing icon |
+| `open_delay` | `u32` | **`400`** | Hover time before it opens, ms (`MenuConfig::show_delay`) |
+| `close_delay` | `u32` | **`400`** | Time on another row of the same panel before it closes, ms (Chrome switches on the same show timer) |
+| `open_on_hover` | `bool` | **`true`** | |
+| `open_on_click` | `bool` | **`true`** | A press opens it at once |
+| `safe_triangle` | `bool` | `false` | Hold it open (and hold sibling rows back) while the pointer moves inside the triangle toward the flyout. Chrome has none; pair it with a short `close_delay` |
+| `flip` | `bool` | **`true`** | Open on the panel's left when there is no room on its right |
+| `shift` | `bool` | **`true`** | Move it back inside the window at an edge, 4px in; cap and scroll one taller than the window |
+| `offset` | `Option<i32>` | `None` | Gap from the parent panel in px, negative overlaps; writes `--rinch-dropdown-menu-sub-offset` on the submenu (default `-3px`, Chromium's `submenu_horizontal_overlap`) |
+| `close_on_resize` | `bool` | **`true`** | A window resize or a display scale change closes it (Chrome closes its menus on either); `false` places it again. A page scrollbar appearing is not a resize |
+
+Styling goes through the cascade, so a class or custom property on the menu, any
+ancestor or the submenu reaches its flyout: `--rinch-dropdown-menu-sub-offset`,
+`--rinch-dropdown-menu-sub-width`, `--rinch-dropdown-menu-sub-z-index`, and the
+classes `.rinch-dropdown-menu__sub` (`--opened` while open, `--left` while flipped),
+`.rinch-dropdown-menu__sub-trigger`, `.rinch-dropdown-menu__sub-chevron` and
+`.rinch-dropdown-menu__sub-dropdown`. The flyout's own `left`, `top` and
+`max-height` (and `width`, only for one wider than the window) are written by its
+placement, which runs again when its content changes size. Rows carry
+`role="menuitem"` (a submenu row also `aria-haspopup`/`aria-expanded`), panels and
+flyouts `role="menu"`.
 
 ### HoverCard
 
@@ -1476,7 +1524,8 @@ write `judge_drop: Some(Rc::new(|drop: &TreeDrop| …))`.
 - `DragValues` = `Rc<dyn Fn(&str) -> Vec<String>>`, `JudgeDrop` = `Rc<dyn Fn(&TreeDrop) -> DropVerdict>`, `AcceptsChildren` = `Rc<dyn Fn(&TreeNodeData) -> bool>`.
 
 A draggable row's click (select, expand) runs on the release, once the drag
-has failed to start, on both backends.
+has failed to start, on both backends. It is the click of what was pressed:
+the chevron expands without selecting the row.
 
 **Keyboard types:**
 
@@ -1490,6 +1539,72 @@ has failed to start, on both backends.
 - `UseTreeReturn::cursor: Signal<Option<String>>`; `TreeController::set_cursor(value)` (when a row of the tree has the keyboard, it moves to the cursor row), `cursor()`, and `focus()` (gives the cursor row, or the first row, the keyboard).
 
 **TreeNodeData:** `value: String`, `label: String`, `children: Vec<TreeNodeData>`, `disabled: bool`, `icon: Option<TablerIcon>`, `payload: Option<Rc<dyn Any>>`.
+
+### SortableList, SortableItem, SortableHandle
+
+Lists whose items drag within and between lists of the same `group`, by
+pointer or keyboard (guide: [Sortable Lists](sortable.md)).
+
+**SortableList** — a flex row or column of items.
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `group` | `String` | `""` | The kind of thing the list holds. A drag only targets lists of its own group, so nested lists of other groups never fight |
+| `id` | `String` | `""` | The list's id, as `SortMove::from_list` / `to_list` name it |
+| `axis` | `SortAxis` | `Vertical` | `Vertical` or `Horizontal`: which way the items run, and which axis the place is read along |
+| `label` | `String` | `""` | The list's name in keyboard announcements (its `id` when empty) |
+| `disabled` | `bool` | `false` | Read-only: no drag starts from its items, none lands in it, no lift |
+| `lift_keys` | `Vec<String>` | `[]` | The `KeyEventData::key` values that lift and drop; Space and Enter when empty (`vec![" ".into()]` leaves Enter to the app) |
+| `judge` | `Option<SortJudge>` | `None` | Whether a move into this list may happen, asked live for every place on offer and again at the drop; a refusal's reason is drawn at the caret. Accepted when not given |
+| `ondrop` | `Option<ValueCallback<SortMove>>` | `None` | An accepted drop into this list. The component moves nothing: the app applies it to its data |
+| `ondropchange` | `Option<ValueCallback<Option<(SortMove, SortVerdict)>>>` | `None` | For a drag that started in this list: the move on offer and its verdict each time it changes; `None` when nothing is on offer and when the drag ends |
+| `drag_keys` | `Option<SortKeys>` | `None` | What a drag from an item of this list carries, in order (a selection). The item alone when not given, or when the answer leaves the item out. Not checked against any list; `from_list` names the pressed item's list only |
+| `preview` | `SortPreview` | `Clone` | What follows the pointer in a drag from this list: `Clone` (a translucent copy at the grab offset), `None`, `Snapshot` (the runtime's picture; desktop only), `Custom(SortPreviewFn)` |
+| `indicator` | `SortIndicator` | `Caret` | How a place in this list is shown: `Caret`, `Gap` (the items slide apart), `Both`, `None`. A refused place never opens a gap |
+| `source` | `SortSource` | `Unchanged` | How this list's items look while a pointer drags them: `Unchanged`, `Dim`, `Collapse` (hidden, followers slide over), `Hide` |
+
+**SortableItem** — one item; focusable (`tabindex="0"`).
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `value` | `String` | `""` | The item's key. (In a `for`, `key:` is the loop's key; give both) |
+| `handle` | `bool` | `false` | Drag only by a `SortableHandle` inside the item. The whole item drags otherwise |
+| `label` | `String` | `""` | The item's name in keyboard announcements (its key when empty) |
+| `disabled` | `bool` | `false` | No drag source (no `draggable`, no lift); it keeps its place and takes drops around it |
+
+**SortableHandle** — the part of a `handle: true` item a pointer drags it by. No props.
+
+`judge` and `drag_keys` are `Rc` closures, not `on*` props: write
+`judge: Some(Rc::new(|m: &SortMove| …) as SortJudge)`.
+
+**Types:**
+
+- `SortMove { group, keys: Vec<String>, from_list, to_list, place: SortPlace }`.
+- `SortPlace { after: Option<String>, before: Option<String>, index: usize }` — the carried items' neighbours by key once they are taken out of `to_list`; `is_first()` (no `after`), `is_last()` (no `before`); both `None` in an empty list. Settled again at the drop: found by `after`, with `before` and `index` read off the list as it is then.
+- `SortVerdict` — `Accept` or `Refuse(reason)`; `is_accept()`.
+- `SortAxis` — `Vertical` (default), `Horizontal`.
+- `SortJudge` = `Rc<dyn Fn(&SortMove) -> SortVerdict>`, `SortKeys` = `Rc<dyn Fn(&str) -> Vec<String>>`.
+- `sortable_drag_group() -> Option<String>` — the group of the drag in progress, pointer or keyboard.
+- `SortPreviewFn` = `Rc<dyn Fn(&mut RenderScope, &str) -> NodeHandle>` (gets the dragged item's key).
+- `sortable_drag() -> Option<SortDragState>` — reactive: `{ group, keys, source_key, from_list, keyboard, over: Option<SortTarget>, target: Option<SortTarget>, verdict: Option<SortVerdict> }`, `SortTarget { list, index }`.
+- `sortable_drag_pointer() -> Option<SortPointer>` — reactive, pointer drags: `{ x, y, grab_x, grab_y, width, height }`.
+
+**Custom properties** (inherited, with fallbacks; set them inline on a list —
+see [Sortable Lists](sortable.md#styling)): `--rinch-sortable-gap`,
+`-caret-color`, `-caret-size`, `-refused-color`, `-dragging-opacity`,
+`-reflow-duration`, `-reflow-easing`, `-ghost-opacity`, `-ghost-tilt`,
+`-ghost-scale`, `-ghost-shadow`, `-ghost-duration`, `-ghost-easing`,
+`-ghost-z-index` (the `-ghost-` ones read where the item is),
+`-reason-bg`, `-reason-color`, `-reason-font-size`, `-reason-radius`,
+`-reason-inset`, `-reason-padding`, `-reason-white-space`, `-reason-max-width`
+(each `--rinch-sortable-…`).
+
+**Classes**:
+`rinch-sortable` (`--vertical` / `--horizontal`, `--drop-into` and
+`--refused` on an empty list on offer), `rinch-sortable__item` (`--grab`,
+`--dragging`, `--lifted`, `--drop-before`, `--drop-after`,
+`--drop-horizontal`, `--refused`), `rinch-sortable__reason`
+(`--shown`, `--above`), `rinch-sortable__handle`, `rinch-sortable__live`.
 
 ---
 

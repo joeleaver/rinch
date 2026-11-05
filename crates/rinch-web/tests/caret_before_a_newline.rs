@@ -394,7 +394,7 @@ impl D {
     fn caret(&self, byte: usize) -> (f64, f64, f64) {
         let (x, y, h) = self
             .doc
-            .query_caret_rect_with_affinity(self.block.0 as u64, byte, CaretAffinity::Downstream)
+            .query_caret_rect_with_affinity(self.block.0, byte, CaretAffinity::Downstream)
             .expect("a caret rect");
         let r = self.el().get_bounding_client_rect();
         (x as f64 - r.x(), y as f64 - r.y(), h as f64)

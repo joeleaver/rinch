@@ -11,8 +11,9 @@
 //! whatever lay above and below it, unclipped.
 //!
 //! Text is set in the bundled Inter (`sans-serif`), the field is
-//! `border: 3px` + `padding: 0 6px`, so its content box is `x ∈ [9, 111)`
-//! inside a 120px border box — off the `left == padding` fixed point the old
+//! `box-sizing: border-box` (a text `<input>` is `content-box` by default, in
+//! Chrome as here) with `border: 3px` + `padding: 0 6px`, so its content box
+//! is `x ∈ [9, 111)` inside a 120px border box — off the `left == padding` fixed point the old
 //! text origin sat on.
 
 use super::*;
@@ -27,7 +28,7 @@ const CONTENT_LEFT: f32 = 9.0;
 const CONTENT_RIGHT: f32 = 111.0;
 const FIELD_BOTTOM: usize = 30;
 
-const FIELD_STYLE: &str = "display: block; width: 120px; height: 30px; padding: 0 6px; margin: 0; \
+const FIELD_STYLE: &str = "display: block; box-sizing: border-box; width: 120px; height: 30px; padding: 0 6px; margin: 0; \
      border: 3px solid transparent; font-size: 16px; line-height: 20px; \
      font-family: sans-serif; color: rgb(255, 0, 0); background: transparent";
 
@@ -79,7 +80,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
     ev(app, PlatformEvent::MouseUp { x, y, button });
 }
 
-fn caret_pos(app: &RinchApp, id: usize) -> usize {
+fn caret_pos(app: &RinchApp, id: u64) -> usize {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -90,9 +91,9 @@ fn caret_pos(app: &RinchApp, id: usize) -> usize {
 
 /// One `<input type=…>` holding `value`, with a button after it to take focus
 /// away. Returns the app, the field and its handle.
-fn page(ty: &'static str, value: &'static str) -> (RinchApp, usize, NodeHandle) {
+fn page(ty: &'static str, value: &'static str) -> (RinchApp, u64, NodeHandle) {
     let h = register_input_handler(InputCallback::new(|_| {}));
-    let id = Rc::new(Cell::new(0usize));
+    let id = Rc::new(Cell::new(0u64));
     let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let (id_in, handle_in) = (id.clone(), handle.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -147,7 +148,7 @@ fn ink(app: &mut RinchApp) -> (usize, usize) {
     (inside, outside)
 }
 
-fn focus_by_tab(app: &mut RinchApp, field: &NodeHandle, id: usize) {
+fn focus_by_tab(app: &mut RinchApp, field: &NodeHandle, id: u64) {
     field.focus();
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
     about_to_wait(app);

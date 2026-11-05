@@ -55,7 +55,7 @@ pub fn init_logging_with_filter(filter: &str) {
 // Native desktop/Android builds already carry tracing-subscriber (the desktop
 // shell installs one); the full `EnvFilter` syntax comes with it.
 #[cfg(all(
-    not(target_arch = "wasm32"),
+    not(all(target_arch = "wasm32", target_os = "unknown")),
     any(feature = "desktop", feature = "android"),
     not(all(target_os = "android", feature = "android"))
 ))]
@@ -87,14 +87,14 @@ mod imp {
 // The browser, and native builds without the desktop shell: the small
 // subscriber below, so a web app's dependency tree gains nothing.
 #[cfg(any(
-    target_arch = "wasm32",
+    all(target_arch = "wasm32", target_os = "unknown"),
     not(any(feature = "desktop", feature = "android"))
 ))]
 mod imp {
     pub(super) fn init(filter: &str) {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         super::simple::install_panic_hook();
-        let filter = if cfg!(target_arch = "wasm32") {
+        let filter = if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
             filter.to_string()
         } else {
             std::env::var("RUST_LOG").unwrap_or_else(|_| filter.to_string())
@@ -109,7 +109,7 @@ mod imp {
 /// (`"warn,my_app=debug"`), the longest matching target winning.
 #[cfg_attr(
     all(
-        not(target_arch = "wasm32"),
+        not(all(target_arch = "wasm32", target_os = "unknown")),
         any(feature = "desktop", feature = "android")
     ),
     allow(dead_code)
@@ -216,7 +216,7 @@ mod simple {
 
     /// Write one line at `level`.
     fn emit(level: Level, line: &str) {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
             let line = wasm_bindgen::JsValue::from_str(line);
             match level {
@@ -227,7 +227,7 @@ mod simple {
                 Level::TRACE => web_sys::console::debug_1(&line),
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         {
             let _ = level;
             eprintln!("{line}");
@@ -347,7 +347,7 @@ mod simple {
 
     /// Send a panic's message and the JavaScript stack to `console.error`,
     /// then run whatever hook was there before (a test harness's, say).
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub(super) fn install_panic_hook() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {

@@ -272,7 +272,7 @@ impl MockDomDocument {
     }
 
     fn next_id(&mut self) -> NodeId {
-        let id = NodeId(self.next_id);
+        let id = NodeId::from_index(self.next_id);
         self.next_id += 1;
         id
     }
@@ -554,6 +554,15 @@ impl DomDocument for MockDomDocument {
         self.mark_dirty(node);
     }
 
+    fn attribute_list(&self, node: NodeId) -> Vec<(String, String)> {
+        self.nodes.get(&node).map_or_else(Vec::new, |n| {
+            n.attributes
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+    }
+
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
         self.count(|ops| ops.attribute_reads += 1);
         self.nodes.get(&node)?.attributes.get(name).cloned()
@@ -805,7 +814,7 @@ impl DomDocument for MockDomDocument {
     fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
         // `None` unless a test injected a box with `__set_node_layout` — the mock
         // does not lay anything out.
-        self.layout.get(&NodeId(node_id as usize)).copied()
+        self.layout.get(&NodeId(node_id)).copied()
     }
 
     fn request_scroll_into_view(&mut self, node: NodeId) {

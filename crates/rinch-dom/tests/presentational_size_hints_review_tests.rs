@@ -193,7 +193,7 @@ fn uppercase_removal_removes_the_hint() {
 #[test]
 fn unmapped_elements_hold_no_hint_block() {
     for tag in [
-        "div", "span", "canvas", "input", "image", "rect", "table", "td", "hr", "object", "embed",
+        "div", "span", "canvas", "input", "image", "rect", "object", "embed",
     ] {
         let (doc, _, e) = build_in("", BOX, tag, BOTH, "");
         assert!(

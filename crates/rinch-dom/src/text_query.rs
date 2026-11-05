@@ -3,6 +3,7 @@
 //! This module provides utilities for converting between byte offsets and
 //! screen coordinates in text layouts, as well as querying glyph bounds.
 
+use crate::node::RawNodeId;
 use parley::Cursor;
 use parley::layout::Affinity;
 use peniko::Brush;
@@ -45,7 +46,7 @@ pub fn caret_position_for_offset_with_affinity(
     byte_offset: usize,
     affinity: CaretAffinity,
 ) -> Option<(f32, f32)> {
-    let node = doc.tree.nodes.get(node_id as usize)?;
+    let node = doc.tree.nodes.get(node_id)?;
     let at = |layout: &parley::layout::Layout<Brush>| {
         caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity)
     };
@@ -68,7 +69,7 @@ pub fn caret_position_for_offset_with_affinity(
     // For block elements with a single text child (non-IFC case),
     // check the first text child's cached layout
     for &child_id in &node.children {
-        if let Some(child) = doc.tree.nodes.get(child_id)
+        if let Some(child) = doc.tree.nodes.get_live(child_id)
             && let Some(ref layout) = child.cached_text_parley
         {
             return Some(at(layout));
@@ -95,7 +96,7 @@ pub fn glyph_bounds_for_offset(
     node_id: u64,
     byte_offset: usize,
 ) -> Option<GlyphBounds> {
-    let node = doc.tree.nodes.get(node_id as usize)?;
+    let node = doc.tree.nodes.get(node_id)?;
 
     // Check inline layout first (IFC root). Shifted the same way
     // `caret_position_for_offset_with_affinity` is, and for the same reason
@@ -115,7 +116,7 @@ pub fn glyph_bounds_for_offset(
     // For block elements with a single text child (non-IFC case),
     // check the first text child's cached layout
     for &child_id in &node.children {
-        if let Some(child) = doc.tree.nodes.get(child_id)
+        if let Some(child) = doc.tree.nodes.get_live(child_id)
             && let Some(ref layout) = child.cached_text_parley
         {
             return glyph_bounds_for_offset_layout(layout, byte_offset);
@@ -202,7 +203,7 @@ pub fn visual_line_range_for_node(
     byte_offset: usize,
     affinity: CaretAffinity,
 ) -> Option<std::ops::Range<usize>> {
-    let node = doc.tree.nodes.get(node_id as usize)?;
+    let node = doc.tree.nodes.get(node_id)?;
     if let Some(ref inline_layout) = node.text_layout {
         return visual_line_range(&inline_layout.layout, byte_offset, affinity);
     }
@@ -276,7 +277,7 @@ pub fn visual_line_edges_for_node(
     node_id: u64,
     at: LineOf,
 ) -> Option<VisualLineEdges> {
-    let node = doc.tree.nodes.get(node_id as usize)?;
+    let node = doc.tree.nodes.get(node_id)?;
     if let Some(ref inline_layout) = node.text_layout {
         return visual_line_edges(&inline_layout.layout, at);
     }
@@ -479,7 +480,7 @@ pub fn caret_position_for_offset_layout_with_affinity(
         CaretAffinity::Upstream => Affinity::Upstream,
     };
     let cursor = Cursor::from_byte_index(layout, byte_offset, affinity);
-    let geom = cursor.geometry(layout, 0.0);
+    let geom = crate::float_wrap::caret_box(layout, &cursor);
     (geom.x0 as f32, top.unwrap_or(geom.y0 as f32))
 }
 
@@ -514,7 +515,7 @@ pub fn glyph_bounds_for_offset_layout(
     let advance = cluster.advance();
 
     // Get the x position from cursor geometry
-    let geom = cursor.geometry(layout, 0.0);
+    let geom = crate::float_wrap::caret_box(layout, &cursor);
 
     Some(GlyphBounds {
         x: geom.x0 as f32,
@@ -798,9 +799,11 @@ fn selection_rects_impl(
             rects.push((l, top, (r - l).max(1.0), height));
             continue;
         }
-        let left = Cursor::from_byte_index(layout, start, Affinity::Downstream)
-            .geometry(layout, 0.0)
-            .x0 as f32;
+        let left = crate::float_wrap::caret_box(
+            layout,
+            &Cursor::from_byte_index(layout, start, Affinity::Downstream),
+        )
+        .x0 as f32;
         // A range that runs to (or past) the line's end ends at the line's
         // trailing edge: an *upstream* caret there. A downstream caret at a
         // soft line break stands at the start of the NEXT line (x = 0), which
@@ -816,9 +819,11 @@ fn selection_rects_impl(
             && range.end > range.start
             && line.break_reason() == parley::layout::BreakReason::Explicit
         {
-            let before_break = Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream)
-                .geometry(layout, 0.0)
-                .x0 as f32;
+            let before_break = crate::float_wrap::caret_box(
+                layout,
+                &Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream),
+            )
+            .x0 as f32;
             before_break
                 + (crate::ifc::line_ascent(metrics) + crate::ifc::line_descent(metrics)) * 0.25
         } else {
@@ -827,9 +832,11 @@ fn selection_rects_impl(
             } else {
                 Affinity::Downstream
             };
-            Cursor::from_byte_index(layout, end, end_affinity)
-                .geometry(layout, 0.0)
-                .x0 as f32
+            crate::float_wrap::caret_box(
+                layout,
+                &Cursor::from_byte_index(layout, end, end_affinity),
+            )
+            .x0 as f32
         };
         let (mut left, mut right) = (left, right);
         if selected.is_some() {
@@ -927,9 +934,11 @@ fn bidi_line_pieces(
         && (a..b).contains(&(range.end - 1))
     {
         let metrics = line.metrics();
-        let nx = Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream)
-            .geometry(layout, 0.0)
-            .x0 as f32;
+        let nx = crate::float_wrap::caret_box(
+            layout,
+            &Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream),
+        )
+        .x0 as f32;
         let nr = nx + (crate::ifc::line_ascent(metrics) + crate::ifc::line_descent(metrics)) * 0.25;
         match pieces.iter_mut().find(|(l, r)| *l <= nx && nx <= *r) {
             Some(piece) => piece.1 = piece.1.max(nr),
@@ -959,7 +968,7 @@ pub fn ifc_offset_to_dom_cursor(
     ranges: &[crate::node::IfcTextRange],
     ifc_offset: usize,
     allow_br: bool,
-) -> Option<(usize, usize)> {
+) -> Option<(RawNodeId, usize)> {
     if ranges.is_empty() {
         return None;
     }
@@ -1010,7 +1019,7 @@ pub fn ifc_offset_to_dom_cursor(
 /// Returns `None` if no range maps the given `node_id`.
 pub fn dom_cursor_to_ifc_offset(
     ranges: &[crate::node::IfcTextRange],
-    node_id: usize,
+    node_id: RawNodeId,
     node_offset: usize,
 ) -> Option<usize> {
     for r in ranges {

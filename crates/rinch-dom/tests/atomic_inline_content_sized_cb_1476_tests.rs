@@ -304,9 +304,9 @@ const GAPS: &[(&str, &str, &str, &str, &str)] = &[
     (
         "d03_pct_max_width_in_flex_item",
         r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block;max-width:80%">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
-        "f=278.0x60.0 t=278.0x60.0",
+        "f=348.0x40.0 t=348.0x40.0",
         "f=400.0x40.0 t=320.0x40.0",
-        "a percentage `max-width` is not plain shrink-to-fit: the box is lined up at the size it has, which its own cyclic percentage shrinks on every layout (the #1293 class; this is the first layout's answer, and main's)",
+        "a percentage `max-width` is not plain shrink-to-fit: the box is lined up at the size it has, which its own cyclic percentage shrinks on every layout (the #1293 class; this is the first layout's answer — 278x60 before #2140 resolved the percentage against the containing block, not a wider basis; a second layout still gives 278x60)",
     ),
     (
         "d04_fit_content_in_flex_item",

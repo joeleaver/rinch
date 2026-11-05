@@ -34,11 +34,12 @@ fn main() {
 | `App::new(component)` | Start configuring around the root component |
 | `.title(title)` / `.size(w, h)` | Window title and initial logical size |
 | `.theme(ThemeProviderProps)` | Colors, radius, dark mode |
-| `.fonts(&[AppFont])` | Typefaces the build carries in its own binary (issue #286) |
+| `.fonts(&[AppFont])` | Typefaces the build carries, `'static` or owned (`AppFont::from_data`; issues #286, #2101) |
 | `.menu(Vec<(&str, Menu)>)` | Native menu bar |
 | `.window_props(WindowProps)` | Borderless, transparent, icon, `app_id`, `on_close_requested`, … |
 | `.renderer(Renderer)` | `Auto` (GPU, falling back to software), `Gpu` or `Software`; `RINCH_RENDERER` overrides it |
 | `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu` feature) |
+| `.vsync(bool)` | Start with vsync on (default) or off (#2095; `rinch::window::set_vsync` at run time) |
 | `.run()` | Start on desktop; runs until the event loop exits |
 | `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
 | `rinch_web::AppExt::run()` | Start in the browser (`wasm32`, #1769) |
@@ -136,6 +137,30 @@ the bundled face at **glyph 0** (`.notdef`), where without it the platform's CJK
 face answers with real glyphs. It is on for `RinchApp::register_font_data`, the
 wasm/embed front door, because wasm has no system fonts and a last-resort face
 is the only thing that renders a character the author did not name a font for.
+
+**`register_font_data` claims no generic** (#2102). It used to claim
+`sans-serif` and `system-ui` for every face, so the last face registered won
+them. It now fills only an *empty* slot of the face's own class
+(`rinch_dom::fonts::fill_empty_generics`; the classification is on the
+platform page, "Registered font data fills only empty generic slots"). The
+registration is kept as a `PendingFont { font, fill_empty_generics }` so the
+mount replays the same policy onto the document's context that the hit-test
+context got.
+
+**Font bytes are `FontData`, owned or `'static`** (#2101). `AppFont::data` is a
+`FontData` (`&'static [u8]` or an `Arc<dyn AsRef<[u8]> + Send + Sync>`, from
+`Vec<u8>`, `Box<[u8]>`, `Arc<[u8]>`, `Arc<Vec<u8>>` or `peniko::Blob<u8>`), so
+`AppFont` is `Clone`, not `Copy`; the `const` constructors still take
+`&'static [u8]`, and `AppFont::from_data` / `with_generics` cover owned bytes.
+Each font context's `Blob` is built over a clone of the one `Arc`, so the
+references are exactly: the app's `pending_fonts`, the hit-test context and
+the document's context (plus whatever a live layout or scene holds). All go
+with the app; `owned_font_bytes_are_released_when_the_app_is_dropped` and the
+embed's `owned_font_bytes_are_released_with_the_context` pin the count back to
+1 after a mount, layout and paint. **No unregistering:** fontique has
+`Collection::unregister_font(family, width, style, weight)`, but the face is
+also in the document's shaped layouts, text caches and glyph caches; dropping
+the app (or `RinchContext`) is the only release.
 
 Guide: `docs/src/guide/fonts.md`. Fixtures live in `crates/rinch/assets/fonts/`
 and `crates/rinch-dom/assets/fonts/` rather than under `examples/`, because
@@ -495,6 +520,113 @@ with null stdio and reaps it on a thread; Windows `ShellExecuteW`
 `resize` and resolution listeners have no fixture (a test cannot resize the
 page or change its scale).
 
+### Pointer lock and raw motion (#2092)
+
+State and API: `crates/rinch/src/pointer_lock.rs` (private module, re-exported
+through `rinch::window`), per thread. `HELD` is the lock asked for or held (its
+`PointerLockTarget` — `Window` or `Element(NodeHandle)` —, the
+`RenderSurface` id that asked, if one did, and the asking app's `doc`: the
+element's `doc_key`, else `current_dispatching_doc`, `None` from outside any
+dispatch); `MODE` is the granted mode, mirrored
+into a lazily made `unowned` signal that `pointer_lock()` reads; `HANDLERS` are
+the `on_pointer_motion` handlers (removed by `on_cleanup` of the ambient owner;
+with no owner, by dropping the `#[must_use]` `PointerMotionSubscription` or
+`cancel`).
+`pointer_lock_changed(Some)` with nothing in `HELD` changes nothing and answers
+`false` (it used to adopt the grant as a window lock, which turned a withdrawn
+request into a lock). The grab is a `PointerLockHost`'s
+(`set_pointer_lock_host`; a swap releases a held lock through the old host
+first). `lock` answers `Ok(Some(mode))` (granted now: desktop), `Ok(None)`
+(pending: the browser, confirmed by `pointer_lock_changed`) or `Err`; a host is
+called out of its cell (`with_host`), so it may call back in.
+
+Release paths, all through `release()` (host `unlock` once, mode `None`):
+`exit_pointer_lock`; `RinchApp::handle_event`'s first step — `prune()` (an
+`Element` target that is no longer `NodeHandle::is_connected`, checked on every
+event, `AboutToWait` included), `WindowFocus(false)` (`window_blurred`), and
+a `KeyDown(Escape)` while a lock is granted (`escape(doc_key, fresh)`: released
+and the event returned with only `RequestRedraw`, so DnD's Escape, the dismiss
+stack and every key handler never see it). Both act only on a lock whose
+`doc` is the handling app's (or `None`): several `RinchApp`s share the
+thread's state (embedded contexts), and another's blur or Escape used to end
+this one's. `ESCAPE_HELD` keeps that Escape's later presses that are not
+`KeyRepeat::Fresh` (repeats, and `Unknown`) consumed until its `KeyUp`
+(`escape_released`), a fresh press or a blur — a held Escape's repeats used to
+reach the dismiss stack and close a modal; `unregister_render_surface` (`surface_gone`, at the surface's unmount,
+before any event); `hide_window` (`set_pointer_lock_host(None)`, before the
+window is dropped). The host's own loss (`pointer_lock_changed(None)`) clears
+without calling `unlock`.
+
+Desktop shell (`shell/pointer_lock.rs`): `WindowPointerLock` holds the main
+window as a `Weak<dyn Window>`, installed by `create_window` and `show_window`
+(`install_pointer_lock_host`). `grab` refuses an unfocused window
+(`PointerLockError::NotFocused`, `Window::has_focus`): X11's `Confined` is an
+active `XGrabPointer` the server grants an unfocused window, which then caught
+and hid the pointer over a window a click could not focus, with Escape going
+elsewhere and no focus loss to end it. Then it tries `CursorGrabMode::Locked`, then
+`Confined` (winit-x11 has no lock; it reports `NotSupported`), then hides the
+cursor; `ungrab` is `None` + visible. `device_event` sums
+`DeviceEvent::PointerMotion` into `pending_motion` (`MotionSum`) only while
+`wants_motion()` (a lock granted or a handler registered), and
+`flush_pointer_motion` hands it to the app as one `PlatformEvent::PointerMotion`
+at the start of each `window_event` and in `about_to_wait`. While a lock is
+granted the `PointerMoved` arm keeps the move in `held_pointer_move` instead
+of queueing it, so the document's pointer stays where the lock found it
+(Confined on X11 still moves the cursor); `restore_held_pointer_move`, in
+`about_to_wait`, queues it once the lock has ended (unless a newer move
+waits), so hover is not left stale, and the KeyboardInput arm skips `try_menu_shortcut` for Escape.
+`RinchApp` dispatches `PointerMotion` through `dispatch_pointer_motion` (the
+surface holding a granted lock hears `SurfaceEvent::PointerMotion`, then the
+handlers, in one batch, untracked) and resolves layout when a handler dirtied
+it. winit delivers device events only while the window is focused
+(`DeviceEvents::WhenFocused`, the default; rinch does not change it). Measured
+live in a private nested KWin (`kwin_wayland --virtual --xwayland`, XDG dirs
+pointed at a temp dir): Wayland grants `Locked`, Xwayland `Confined`, and
+under Xwayland XTest's relative moves arrive as raw motion and Escape releases.
+Each raw motion arrives once under the X11 grab since the winit-fork fix for #2114
+(see "winit Fork" below); before it, the server's second copy doubled the deltas.
+
+Web (`crates/rinch-web/src/pointer_lock.rs`, installed by
+`ensure_event_delegation`): `BrowserPointerLock` resolves the target
+(`document.documentElement`, or `web_document::element_of`), answers
+`Some(Locked)` at once when `pointerLockElement` already is it, else calls
+`requestPointerLock` through `Reflect` (so the promise Chrome and Firefox
+return can be caught) and answers pending; either way it records the element
+in `REQUESTED` (and whether it is granted), which `unlock` clears.
+`pointerlockchange` (`on_change`) marks the request granted when the browser
+locked the element asked for; a lock on any other element, or after the
+request was withdrawn, is given back (`exitPointerLock`, rinch told `None`);
+a lock lost after its grant is reported; an unlock while a request is pending
+is waited through. `pointerlockerror` (`on_error`) ends a pending request and
+gives back whatever the browser still holds (a refused move from A to B used
+to leave A locked and labelled B's). While a lock is granted the canvas's
+`pointermove` sends the surface nothing, as on the desktop; a capture-phase
+passive `mousemove` on the document feeds `movementX/Y` to
+`dispatch_pointer_motion`. The browser ends a lock itself on Escape, blur and
+the locked element's removal. Measured (headless Chrome 155, a CDP click): the
+click on the canvas locks it, CDP moves arrive as `movementX/Y`, and
+`exit_pointer_lock` and the surface's unmount each end it; a CDP Escape does
+not (it skips the browser's own Escape handling), so the browser's Escape has
+no automated test. Firefox (Playwright's build, through geckodriver): the
+synthetic half and the refusal of an ungestured request.
+
+Element liveness is `NodeHandle::is_connected`, whose id carries a slot
+generation; the desktop slab reuses slots at generation 0 until #723's second
+half, so a handle to a freed node whose slot went to a new attached node still
+reads as connected there.
+
+Pins: `pointer_lock::tests` (incl. an unowned subscription dropped, a grant
+with no request), `shell::pointer_lock::tests` (lock vs confine, unfocused
+refused, cursor), `shell::rinch_runtime::pointer_lock_2092_tests` (device motion summed
+and gated, hide), `app/pointer_lock_2092_tests.rs` (motion to the surface and
+the handlers, focus loss, Escape consumed ahead of the dismiss stack and an app
+key listener, its repeats, another app's blur and Escape, a surface's and an
+element's unmount, confine reported), the runtime's held move restored,
+`rinch-web/tests/pointer_lock_2092.rs` (Chrome and Firefox),
+`rinch-web/tests/pointer_lock_real_2092.rs` (trusted input,
+`run_real_keys.sh`, which `real_keys.mjs`'s `RINCH-REAL-MOVE` serves).
+Live: `examples/pointer-lock` with `POINTER_LOCK_LOG=1 POINTER_LOCK_AUTO=1`.
+
 ### Overlay windows (non-activating, click-through, skip-taskbar)
 
 `WindowProps::non_activating`, `click_through` and `skip_taskbar` (#1519,
@@ -621,8 +753,8 @@ let window_props = WindowProps {
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`34f153bd6e523de53f9da67c6db58bd1f8732542`,
-#1962). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`d99384edd804a20e737c013b5f57b56ab931a611`,
+#1962, moved for #2114). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -630,9 +762,10 @@ API) declares its own dependency, and naming this git rev keeps one winit in
 its build. The rev is pinned so a push to the fork's branch
 never changes rinch; moving it is a commit here.
 
-The branch is upstream's `v0.31.0-beta.4` tag plus five commits: four in
-`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597), and one
-taking crates.io `dpi` (below):
+The branch is upstream's `v0.31.0-beta.4` tag plus six commits: four in
+`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597), one
+taking crates.io `dpi` (below), and one in `winit-x11` for raw pointer events
+under a grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`):
 
 - `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
   window a `zwlr_layer_surface_v1` (layer, keyboard interactivity, anchors,
@@ -653,6 +786,26 @@ taking crates.io `dpi` (below):
   `wl_display.sync`, so an app following the pointer with the surface knows
   which origin each pointer position is relative to (#1597;
   `shell::layer_shell`).
+- **X11: one `DeviceEvent` per raw pointer event under a grab** (#2114).
+  While a window holds `CursorGrabMode::Confined` (an `XGrabPointer` on the
+  window with `owner_events`; X11 has no `Locked`, so rinch's pointer lock
+  ends up here), the X server delivers each `XI_RawMotion` /
+  `XI_RawButtonPress` / `XI_RawButtonRelease` twice to winit's raw selection
+  on the root. `dix` `DeliverRawEvent` delivers once through the grab's
+  owner-events path, which walks up to the root, and once more in its loop
+  over root windows, because `FilterRawEvents` skips the grabbing client only
+  when the grab window is the root. The two copies are identical and
+  adjacent, so `PointerMotion`, raw `Button` and valuator `MouseWheel` came
+  doubled. Mouse-look turned twice as far as on Wayland, Windows or macOS.
+  The fork's `XConnection` records which window holds the client's pointer grab
+  (cleared by every ungrab, unmap and destroy), and while one is held
+  `winit-x11/src/raw_duplicate.rs` passes the first of each identical
+  back-to-back pair and drops the second. It pairs rather than dropping every
+  repeat, so genuine identical events in one millisecond survive; without a
+  grab it filters nothing. Raw keys arrive once (winit never grabs the
+  keyboard) and are not filtered. Measured in Xwayland under a nested
+  `kwin_wayland --virtual` with XTest, before and after; not measured on a
+  real X.Org server with a physical mouse (it shares the `dix` code).
 
 The beta.2 branch (`rinch-patch`, kept for apps still on it) also carried
 Wayland drag and drop (SCTK's `DataDeviceManager`) and its fix to report DnD
@@ -671,7 +824,7 @@ crates.io `dpi` itself never meets "expected `dpi::PhysicalSize`, found
 `dpi::PhysicalSize`". `cargo tree -d` shows no second `dpi`; keep it so on a
 bump.
 
-On a winit bump: rebase the five commits onto the new tag on a new branch
+On a winit bump: rebase the six commits onto the new tag on a new branch
 (apps on the old one keep building), move the rev here, and read upstream's
 changelog for API breaks (beta.3 made most public enums `#[non_exhaustive]`;
 beta.3/4 replaced the path-carrying `DragEntered`/`DragMoved`/`DragDropped`
@@ -712,10 +865,11 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`c6b2e61558962d0074a98f46d55a435c06901865`, branch `rinch-patch`): one commit
-on the vello `v0.11.0` tag, touching only
-`research/vello_encoding/src/{image_cache,resolve}.rs`. The fork's `vello` takes
-`vello_encoding` and `vello_shaders` by path, so all three come from the fork.
+(`f010985c43f499f76e7d587e2c5ee3c6f0877817`, joeleaver/vello-fork#5 on branch
+`rinch-patch`): the vello `v0.11.0` tag plus the image atlas below, **Bump
+buffers** and the **Blend stack** after it. The
+fork's `vello` takes `vello_encoding` and `vello_shaders` by path, so all three
+come from the fork.
 It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
 with nothing to copy; apps build Vello types from `rinch::vello` (a second
 `vello` from crates.io would be an unpatched copy whose types do not match).
@@ -769,10 +923,89 @@ repainted unchanged stays resident and is not uploaded again, and keeps a
 `RenderSurface` texture it draws into in place fresh with
 `mark_override_image_dirty` (`SurfaceImages::sync`).
 
+**Bump buffers (#2066, #2071).** Vello's GPU stages allocate tiles, command
+lists and the like from fixed buffers of hand-picked sizes (2^21 tiles, 2^23
+ptcl words), and a frame that needs more is not drawn, which on a transparent
+window is a blank window. The fork does three things about it.
+
+1. *Floors.* `BumpSizes::floors` gives tiles 32 and ptcl 512 words per target
+   tile, or Vello's size where that is larger, capped at the device's limit
+   after the pool's rounding. Tiles change nothing below about 5.8K. Ptcl
+   changes nothing up to 1440p, and costs 32 MiB at 4K (Vello's 32 to the pool's
+   64) and 112 MiB with the tile floor at 8K, where wgpu's default 128 MiB limit
+   caps it. A busy UI after #2069 uses 9 to 14 tiles and 65 to 72 ptcl words per
+   target tile, but 8 sequential full-window opacity layers overflow 256 words
+   at 4K, on every new renderer, so 512. The peaks in #2066 (2.79M tiles, 15.5M
+   ptcl words) were from before #2069 stopped pushing clips that cut nothing.
+2. *No wait.* `render_to_texture` submits and returns. Its counters are mapped
+   after submit and collected with `PollType::Poll`. From #2066 until #2071 it
+   waited for the GPU after every frame, once per split slice, and on a shared
+   device for the embedder's work too: a 110 ms GPU frame held the main thread
+   110 ms, where it now holds it 1.7 ms (Radeon 890M, 4K). Do not add back
+   a blocking poll here; `device.poll(wait_indefinitely)` waits for everything on
+   the device.
+3. *Recovery.* A frame that overflowed has gone out undrawn by the time its
+   counters arrive, along with any frame submitted meanwhile. The buffers grow,
+   and `Renderer::check_frames` answers `Lost`. So it does, conservatively, for a
+   frame whose counters are never seen: pushed out of the 64-entry queue, or a
+   failed map. It is the caller's job to draw again, because the frame's damage
+   is long spent:
+   - `RinchRuntime::check_vello_frames` runs in `about_to_wait`, where
+     `WgpuRenderer::check_frames` tells `UiTextureState`, so `ui_invalid_reason`
+     makes the next frame full (`repaint_full_invalidated`). A full frame paints every
+     kept split slice again, and repairs a lost partial frame's rects. Then it
+     requests the redraw. On `Pending` it arms a `WaitUntil` every 8 ms, so a
+     window at rest is back on `Wait` soon after the GPU finishes.
+   - `RinchOverlayRenderer::check_frames` sets `fed` to 0, which repaints the
+     slices. `render` calls it, which is enough for a host rendering every
+     frame; an event-driven host calls it itself (`game-engine.md`). Android's
+     loop asks for a redraw and has a timed wake as the
+     desktop does.
+   - A test or tool calling `render_to_texture` directly gets none of this:
+     after it, `check_frames` until not `Pending`, and render again on `Lost`.
+
+**Blend stack (#2103).** `fine.wgsl` keeps the backdrop of each open clip or
+layer while it paints the layer's content, and composites the content over it
+at the pop. Stock Vello packs that backdrop to 8 bits a channel
+(`pack4x8unorm`). The fork packs it to 16 (`pack2x16unorm`, two words a pixel,
+in registers and in the spill buffer past four levels; `coarse.wgsl` allocates
+twice the spill). The 8-bit stack rounded the premultiplied backdrop once more.
+Over an opaque backdrop it rounds the colour. Over a translucent one it rounds
+the alpha as well, and the alpha's error is later multiplied by whatever the
+result is composited over. A split surface's above slice
+(`docs/design/split-layer-gpu-surfaces.md`) is rendered over transparent and
+composited over the surface. Where a glyph's antialiased edge was under a later
+box-shadow's clip layer over the surface, the split was 2 levels off the
+in-scene frame, past D10's one. The window's scene changes too, by at most a
+level in tiles a clip's edge crosses, towards the float result. Pinned by
+`shell::split_pages_1865_tests::gpu_split_pages_2103_glyph_edge_shadow_tail`
+(red with the 8-bit stack).
+
+An overflow costs a visible frame, or one per buffer that runs out, since a stage
+after one that failed stops short of saying what it needs: 400 window-sized
+layers at 1024x768 took three frames to draw. A frame that needs more than the
+device's largest buffer stays undrawn, logged, and is not reported as lost, or
+the shell would repaint it forever. `Limits::default()` caps a buffer at 128 MiB
+unless the app asks for more (`GpuInit`). Growth is not undone, and the pool keeps
+a buffer of each size class it has used.
+
+A lost device is not reported by any of this. wgpu's `Device::poll` panics on
+one rather than returning an error (`handle_error_fatal`; a `DeviceError::Lost`
+is no `PollError`), and the check polls, as the desktop's present always has.
+
+Pins: `app::gpu_bump_overflow_2071_tests` (full frame, frames in flight, partial
+frame, a frame pushed out of the queue, 8 layers at 4K drawing first time) and
+`gpu_split_runtime_an_overflowed_slice_is_painted_again`, all without a blocking
+poll before the decision; `shell::desktop` and `a_lost_vello_frame_makes_the_next_frame_full`
+for `UiTextureState`, with no adapter; the fork's `bump_sizes_tests` for the
+floors. A failed map has no test. The loop's half needs a window, so nothing in
+CI runs `check_vello_frames` itself: to check it, run a page of 400 layers in a nested compositor with `RINCH_PERF=1`
+and see the frames repeat with no input.
+
 **Downstream apps copy nothing for Vello**, and delete the five wgpu-fork
-patch lines they used to copy. On a Vello bump, rebase the commit onto the new
+patch lines they used to copy. On a Vello bump, rebase the commits onto the new
 tag (or go back to crates.io if upstream behaves the same), move the pinned rev,
-and rerun the three pins.
+and rerun the pins.
 
 ### Bounds signals on the web (#1781)
 

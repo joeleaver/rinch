@@ -189,8 +189,8 @@ fn apply_mark_attrs(dom: &NodeHandle, mark: &Mark) {
 /// generated itself) are stepped over, not touched.
 fn place_children(host: &NodeHandle, want: &[NodeHandle]) {
     let actual = host.children();
-    let wanted: HashSet<usize> = want.iter().map(|n| n.node_id().0).collect();
-    let mut placed: HashSet<usize> = HashSet::with_capacity(want.len());
+    let wanted: HashSet<u64> = want.iter().map(|n| n.node_id().0).collect();
+    let mut placed: HashSet<u64> = HashSet::with_capacity(want.len());
     let mut i = 0usize;
     for node in want {
         while actual
@@ -848,8 +848,8 @@ impl ViewDesc {
             vec![(self.dom.clone(), Vec::with_capacity(self.children.len()))];
         // The open wrappers, outermost first: (mark, host, container index).
         let mut stack: Vec<(Mark, NodeHandle, usize)> = Vec::new();
-        let mut used: HashSet<usize> = HashSet::new();
-        let mut reused_ids: HashSet<usize> = HashSet::new();
+        let mut used: HashSet<u64> = HashSet::new();
+        let mut reused_ids: HashSet<u64> = HashSet::new();
         for child in &mut self.children {
             let marks: Vec<&Mark> = child
                 .node
@@ -1568,15 +1568,15 @@ pub struct RinchDomEditorView {
     /// Each mounted view's host box as the last caret pass saw it, so a view
     /// that grew or shrank re-runs the selection overlay
     /// ([`Self::node_view_hosts_moved`]).
-    view_boxes: Vec<(usize, (i32, i32, i32, i32))>,
+    view_boxes: Vec<(u64, (i32, i32, i32, i32))>,
 }
 
 /// What a margin anchor is measured on ([`RinchDomEditorView::margin_target`]).
 enum MarginTarget {
     /// A caret: its textblock's host id, its flat byte, its position.
-    Text(usize, usize, Pos),
+    Text(u64, usize, Pos),
     /// A leaf block's host id.
-    Leaf(usize),
+    Leaf(u64),
 }
 
 /// How far above and below a revealed range [`RinchDomEditorView::position_reveal`]
@@ -1854,7 +1854,7 @@ impl EditorView for RinchDomEditorView {
         let geometry = {
             let d = doc.borrow();
             if self.preedit.is_some() {
-                preedit_font = d.node_font(block_id as u64);
+                preedit_font = d.node_font(block_id);
             }
             self.caret_geometry(
                 &*d,
@@ -2052,7 +2052,7 @@ impl RinchDomEditorView {
     }
 
     /// The slot whose host is the element `host_id`.
-    pub(crate) fn slot_by_host(&self, host_id: usize) -> Option<Rc<Slot>> {
+    pub(crate) fn slot_by_host(&self, host_id: u64) -> Option<Rc<Slot>> {
         self.slots
             .iter()
             .find(|s| s.host().node_id().0 == host_id)
@@ -2102,14 +2102,14 @@ impl RinchDomEditorView {
         let Some(doc) = self.doc.upgrade() else {
             return false;
         };
-        let boxes: Vec<(usize, (i32, i32, i32, i32))> = {
+        let boxes: Vec<(u64, (i32, i32, i32, i32))> = {
             let d = doc.borrow();
             self.slots
                 .iter()
                 .filter(|s| s.is_mounted())
                 .filter_map(|s| {
                     let id = s.host().node_id().0;
-                    let (x, y, w, h) = d.query_node_layout(id as u64)?;
+                    let (x, y, w, h) = d.query_node_layout(id)?;
                     Some((
                         id,
                         (
@@ -2128,7 +2128,7 @@ impl RinchDomEditorView {
     }
 
     /// The host id of the editor container (the `doc` node's element).
-    pub(crate) fn container_id(&self) -> usize {
+    pub(crate) fn container_id(&self) -> u64 {
         self.root.dom.node_id().0
     }
 
@@ -2168,7 +2168,7 @@ impl RinchDomEditorView {
     /// Resolve a model [`Pos`] to its host caret address `(textblock element id,
     /// flat UTF-8 byte offset)` — the address app-side geometry (caret point,
     /// vertical movement) queries Parley with. `None` if `pos` isn't in a textblock.
-    pub(crate) fn caret_address(&self, doc: &Node, pos: Pos) -> Option<(usize, usize)> {
+    pub(crate) fn caret_address(&self, doc: &Node, pos: Pos) -> Option<(u64, usize)> {
         self.caret_target(doc, pos)
             .map(|(dom, byte)| (dom.node_id().0, byte))
     }
@@ -2194,22 +2194,20 @@ impl RinchDomEditorView {
         // A soft borrow: an app may ask from a callback while a runtime holds
         // the document; that answers "no geometry" rather than panicking.
         let host = host.try_borrow().ok()?;
-        let block_id = block.node_id().0 as u64;
+        let block_id = block.node_id().0;
         for (leaf, after) in self
             .inline_boxes_beside(doc, pos, affinity)
             .into_iter()
             .flatten()
         {
-            if let Some(rect) = host.query_inline_box_caret_rect(block_id, leaf as u64, after) {
+            if let Some(rect) = host.query_inline_box_caret_rect(block_id, leaf, after) {
                 return Some(rect);
             }
         }
         let shift = self.shared_exit_width(&*host, doc, pos, block_id, stored);
         let shifted = |(x, y, h): (f32, f32, f32)| (x + shift, y, h);
         for (element, end, after) in self.mark_edges_beside(doc, pos, stored, affinity) {
-            if let Some(rect) =
-                host.query_inline_edge_caret_rect(block_id, element as u64, end, after)
-            {
+            if let Some(rect) = host.query_inline_edge_caret_rect(block_id, element, end, after) {
                 return Some(shifted(rect));
             }
         }
@@ -2243,7 +2241,7 @@ impl RinchDomEditorView {
         doc: &Node,
         pos: Pos,
         affinity: CaretAffinity,
-    ) -> [Option<(usize, bool)>; 2] {
+    ) -> [Option<(u64, bool)>; 2] {
         let none = [None, None];
         let Ok(r) = doc.resolve(pos) else {
             return none;
@@ -2328,7 +2326,7 @@ impl RinchDomEditorView {
         pos: Pos,
         stored: Option<&[Mark]>,
         affinity: CaretAffinity,
-    ) -> Vec<(usize, bool, bool)> {
+    ) -> Vec<(u64, bool, bool)> {
         let Some((desc, before, next, marks_here)) = self.seam(doc, pos) else {
             return Vec::new();
         };
@@ -2340,7 +2338,7 @@ impl RinchDomEditorView {
             i.and_then(|i| desc.children.get(i))
                 .map_or(&[], |c| c.wraps.as_slice())
         };
-        let wrappers = |i: Option<usize>, other: Option<usize>| -> Vec<usize> {
+        let wrappers = |i: Option<usize>, other: Option<usize>| -> Vec<u64> {
             let shared = wraps_of(other);
             wraps_of(i)
                 .iter()
@@ -2435,7 +2433,7 @@ impl RinchDomEditorView {
         doc: &Node,
         pos: Pos,
         stored: Option<&[Mark]>,
-    ) -> Vec<usize> {
+    ) -> Vec<u64> {
         let Some((desc, Some(before), Some(next), marks_here)) = self.seam(doc, pos) else {
             return Vec::new();
         };
@@ -2466,8 +2464,8 @@ impl RinchDomEditorView {
         self.shared_wrappers_left(doc, pos, stored)
             .into_iter()
             .filter_map(|w| {
-                let lead = d.query_inline_edge_caret(block_id, w as u64, true, false)?;
-                let trail = d.query_inline_edge_caret(block_id, w as u64, true, true)?;
+                let lead = d.query_inline_edge_caret(block_id, w, true, false)?;
+                let trail = d.query_inline_edge_caret(block_id, w, true, true)?;
                 Some(trail.0 - lead.0)
             })
             .sum()
@@ -2480,7 +2478,7 @@ impl RinchDomEditorView {
         doc: &Node,
         pos: Pos,
         affinity: CaretAffinity,
-    ) -> Option<(usize, bool)> {
+    ) -> Option<(u64, bool)> {
         self.inline_boxes_beside(doc, pos, affinity)[0]
     }
 
@@ -2514,21 +2512,21 @@ impl RinchDomEditorView {
     /// the model's text does not: [`host_flat_byte`] steps over them. None
     /// when the host is gone or busy (a document being written answers no
     /// geometry either).
-    fn generated_ranges(&self, block_id: usize) -> Vec<GeneratedFlatRange> {
+    fn generated_ranges(&self, block_id: u64) -> Vec<GeneratedFlatRange> {
         let Some(host) = self.doc.upgrade() else {
             return Vec::new();
         };
         let Ok(d) = host.try_borrow() else {
             return Vec::new();
         };
-        d.generated_flat_ranges(block_id as u64)
+        d.generated_flat_ranges(block_id)
     }
 
     /// Map a host caret address — `(textblock element id, flat UTF-8 byte offset)`,
     /// as produced by a pointer hit-test — back to a model [`Pos`] (the inverse of
     /// [`Self::caret_target`]). `None` if `textblock_dom_id` isn't a known
     /// textblock in this view.
-    pub(crate) fn pos_at(&self, textblock_dom_id: usize, ifc_byte: usize) -> Option<Pos> {
+    pub(crate) fn pos_at(&self, textblock_dom_id: u64, ifc_byte: usize) -> Option<Pos> {
         let (content_start, block) = find_block(&self.root, textblock_dom_id, 0)?;
         let generated = self.generated_ranges(textblock_dom_id);
         let ifc_byte = model_flat_byte(&generated, ifc_byte);
@@ -2540,7 +2538,7 @@ impl RinchDomEditorView {
     /// The inverse of [`Self::pos_in_textblock`]: the textblock holding `pos` (its
     /// host element id) and `pos`'s offset into that block's content, a leaf
     /// counting one. `None` when `pos` is not inside a textblock.
-    pub(crate) fn textblock_offset(&self, doc: &Node, pos: Pos) -> Option<(usize, usize)> {
+    pub(crate) fn textblock_offset(&self, doc: &Node, pos: Pos) -> Option<(u64, usize)> {
         let r = doc.resolve(pos).ok()?;
         if !r.parent().is_textblock() {
             return None;
@@ -2557,7 +2555,7 @@ impl RinchDomEditorView {
     /// if that element is not an inline leaf in this view. What a pointer hit
     /// on an image's half resolves to (#1104), since the flat byte offset of
     /// [`Self::pos_at`] is the same number on both of its sides.
-    pub(crate) fn pos_beside_inline_leaf(&self, leaf_dom_id: usize, after: bool) -> Option<Pos> {
+    pub(crate) fn pos_beside_inline_leaf(&self, leaf_dom_id: u64, after: bool) -> Option<Pos> {
         let (pos, node) = self.node_pos_for_host(leaf_dom_id)?;
         (node.is_inline() && node.node_type().is_leaf()).then_some(Pos(pos + usize::from(after)))
     }
@@ -2571,14 +2569,14 @@ impl RinchDomEditorView {
     /// a leaf is one position wide and, in the browser (and for an image on
     /// rinch-dom), zero text bytes wide, so the byte offset just before it and
     /// the one just after it are the same number (#1025).
-    pub(crate) fn pos_in_textblock(&self, textblock_dom_id: usize, offset: usize) -> Option<Pos> {
+    pub(crate) fn pos_in_textblock(&self, textblock_dom_id: u64, offset: usize) -> Option<Pos> {
         let (content_start, block) = find_block(&self.root, textblock_dom_id, 0)?;
         Some(Pos(content_start + offset.min(block.content().size())))
     }
 
     /// The textblock's offset in container coordinates — the sum of parent-relative
     /// layouts from the block up to (excluding) the container.
-    fn block_offset_in_container(&self, d: &dyn DomDocument, block_id: usize) -> (f32, f32) {
+    fn block_offset_in_container(&self, d: &dyn DomDocument, block_id: u64) -> (f32, f32) {
         let container_id = self.root.dom.node_id().0;
         let (mut x, mut y) = (0.0f32, 0.0f32);
         let mut cur = Some(block_id);
@@ -2586,7 +2584,7 @@ impl RinchDomEditorView {
             if id == container_id {
                 break;
             }
-            if let Some((nx, ny, _, _)) = d.query_node_layout(id as u64) {
+            if let Some((nx, ny, _, _)) = d.query_node_layout(id) {
                 x += nx;
                 y += ny;
             }
@@ -2596,7 +2594,7 @@ impl RinchDomEditorView {
         // anchor to its *padding* box; the summed offsets are border-box-relative.
         // Subtract the container's border inset once so caret/selection land on glyphs
         // (both renderers report it).
-        let (ix, iy) = d.content_origin_inset(container_id as u64);
+        let (ix, iy) = d.content_origin_inset(container_id);
         (x - ix, y - iy)
     }
 
@@ -2619,8 +2617,8 @@ impl RinchDomEditorView {
     /// either, in Chrome or here.
     ///
     /// [`CARET_WIDTH`]: rinch_core::dom::CARET_WIDTH
-    fn keep_caret_in_block(&self, d: &dyn DomDocument, block_id: usize, x: f32) -> f32 {
-        let Some((_, _, w, _)) = d.query_node_layout(block_id as u64) else {
+    fn keep_caret_in_block(&self, d: &dyn DomDocument, block_id: u64, x: f32) -> f32 {
+        let Some((_, _, w, _)) = d.query_node_layout(block_id) else {
             return x;
         };
         if w <= 0.0 {
@@ -2650,7 +2648,7 @@ impl RinchDomEditorView {
         d: &dyn DomDocument,
         doc: &Node,
         pos: Pos,
-        block_id: usize,
+        block_id: u64,
         flat_byte: usize,
         affinity: CaretAffinity,
         stored: Option<&[Mark]>,
@@ -2660,30 +2658,26 @@ impl RinchDomEditorView {
             .into_iter()
             .flatten()
         {
-            if let Some((x, y, height)) =
-                d.query_inline_box_caret(block_id as u64, leaf as u64, after)
-            {
+            if let Some((x, y, height)) = d.query_inline_box_caret(block_id, leaf, after) {
                 let (ox, oy) = self.block_offset_in_container(d, block_id);
                 return Some((ox + x, oy + y, height));
             }
         }
         // #1833: past the end edges of the shared wrappers a typed
         // character would leave.
-        let shift = self.shared_exit_width(d, doc, pos, block_id as u64, stored);
+        let shift = self.shared_exit_width(d, doc, pos, block_id, stored);
         // #1426: past a mark wrapper's padding, on the side its marks say.
         for (element, end, after) in self.mark_edges_beside(doc, pos, stored, affinity) {
-            if let Some((x, y, height)) =
-                d.query_inline_edge_caret(block_id as u64, element as u64, end, after)
-            {
+            if let Some((x, y, height)) = d.query_inline_edge_caret(block_id, element, end, after) {
                 let (ox, oy) = self.block_offset_in_container(d, block_id);
                 return Some((ox + x + shift, oy + y, height));
             }
         }
         let from_parley = d
-            .query_caret_position_with_affinity(block_id as u64, flat_byte, affinity)
+            .query_caret_position_with_affinity(block_id, flat_byte, affinity)
             .map(|(local_x, local_y)| {
                 let height = d
-                    .query_glyph_bounds(block_id as u64, flat_byte)
+                    .query_glyph_bounds(block_id, flat_byte)
                     .map(|g| g.height)
                     .unwrap_or(18.0);
                 let (ox, oy) = self.block_offset_in_container(d, block_id);
@@ -2740,7 +2734,7 @@ impl RinchDomEditorView {
                 .last()
                 .and_then(|last| {
                     let id = last.dom.node_id().0;
-                    let (_, _, _, h) = d.query_node_layout(id as u64)?;
+                    let (_, _, _, h) = d.query_node_layout(id)?;
                     let (_, y) = self.block_offset_in_container(&*d, id);
                     Some(y + h)
                 })
@@ -2851,7 +2845,7 @@ impl RinchDomEditorView {
         let host = self.doc.upgrade()?;
         let d = host.try_borrow().ok()?;
         let d: &dyn DomDocument = &*d;
-        let mut ids: Vec<usize> = positions
+        let mut ids: Vec<u64> = positions
             .iter()
             .filter_map(|&p| match self.margin_target(doc, p)? {
                 MarginTarget::Text(id, _, _) | MarginTarget::Leaf(id) => Some(id),
@@ -2866,12 +2860,12 @@ impl RinchDomEditorView {
         for id in ids {
             id.hash(&mut h);
             let (x, y) = self.block_offset_in_container(d, id);
-            let (_, _, w, bh) = d.query_node_layout(id as u64).unwrap_or_default();
-            let (l, t, r, b) = d.content_box_inset(id as u64);
+            let (_, _, w, bh) = d.query_node_layout(id).unwrap_or_default();
+            let (l, t, r, b) = d.content_box_inset(id);
             for v in [x, y, w, bh, l, t, r, b] {
                 v.to_bits().hash(&mut h);
             }
-            d.text_layout_generation(id as u64).hash(&mut h);
+            d.text_layout_generation(id).hash(&mut h);
         }
         Some(h.finish())
     }
@@ -2908,16 +2902,16 @@ impl RinchDomEditorView {
         };
         let d: &dyn DomDocument = &*d;
         // (index, block id, top, height), merged per block below.
-        let mut found: Vec<(usize, usize, f32, f32)> = Vec::with_capacity(positions.len());
+        let mut found: Vec<(usize, u64, f32, f32)> = Vec::with_capacity(positions.len());
         // The carets, grouped by their textblock.
-        let mut by_block: HashMap<usize, Vec<(usize, usize, Pos)>> = HashMap::new();
+        let mut by_block: HashMap<u64, Vec<(usize, usize, Pos)>> = HashMap::new();
         for (i, &pos) in positions.iter().enumerate() {
             match self.margin_target(doc, pos) {
                 Some(MarginTarget::Text(block, byte, at)) => {
                     by_block.entry(block).or_default().push((i, byte, at));
                 }
                 Some(MarginTarget::Leaf(id)) => {
-                    if let Some((_, _, w, h)) = d.query_node_layout(id as u64)
+                    if let Some((_, _, w, h)) = d.query_node_layout(id)
                         && (w != 0.0 || h != 0.0)
                     {
                         let (_, oy) = self.block_offset_in_container(d, id);
@@ -2933,7 +2927,7 @@ impl RinchDomEditorView {
                 .iter()
                 .map(|&(_, byte, _)| (byte, CaretAffinity::Downstream))
                 .collect();
-            let boxes = d.query_line_boxes(block as u64, &asked);
+            let boxes = d.query_line_boxes(block, &asked);
             let mut line_height: Option<Option<f32>> = None;
             for (&(i, byte, at), line) in carets.iter().zip(boxes) {
                 let geometry = match line {
@@ -2941,8 +2935,7 @@ impl RinchDomEditorView {
                     None => self
                         .caret_geometry(d, doc, at, block, byte, CaretAffinity::Downstream, None)
                         .map(|(_, y, h)| {
-                            let lh =
-                                *line_height.get_or_insert_with(|| d.line_box_height(block as u64));
+                            let lh = *line_height.get_or_insert_with(|| d.line_box_height(block));
                             match lh {
                                 Some(lh) if lh > h => (y - (lh - h) / 2.0, lh),
                                 _ => (y, h),
@@ -2973,7 +2966,7 @@ impl RinchDomEditorView {
         }
         let right = self.root.children.iter().find_map(|c| {
             let id = c.dom.node_id().0;
-            let (_, _, w, h) = d.query_node_layout(id as u64)?;
+            let (_, _, w, h) = d.query_node_layout(id)?;
             if w == 0.0 && h == 0.0 {
                 return None;
             }
@@ -3067,25 +3060,25 @@ impl RinchDomEditorView {
         d: &dyn DomDocument,
         doc: &Node,
         pos: Pos,
-        block_id: usize,
+        block_id: u64,
     ) -> Option<(f32, f32, f32)> {
         let r = doc.resolve(pos).ok()?;
         if r.parent().content().size() != 0 {
             return None;
         }
-        let (_, _, bw, bh) = d.query_node_layout(block_id as u64)?;
+        let (_, _, bw, bh) = d.query_node_layout(block_id)?;
         if bw == 0.0 && bh == 0.0 {
             return None;
         }
         let (ox, oy) = self.block_offset_in_container(d, block_id);
         // Its content box, not its border box: an empty code block is padded,
         // and its caret goes where its text would start (#1667).
-        let (l, t, _, b) = d.content_box_inset(block_id as u64);
+        let (l, t, _, b) = d.content_box_inset(block_id);
         // One line box tall: the block's line height, else its content height
         // (its box need not be one line plus its padding: desktop sizes
         // `min-height: 1lh` as a border box, #1278); clamp to a sane range and
         // fall back to a default when it has collapsed to zero.
-        let ch = d.line_box_height(block_id as u64).unwrap_or(bh - t - b);
+        let ch = d.line_box_height(block_id).unwrap_or(bh - t - b);
         let h = if (4.0..=80.0).contains(&ch) { ch } else { 18.0 };
         Some((ox + l, oy + t, h))
     }
@@ -3148,7 +3141,7 @@ impl RinchDomEditorView {
             for (block_id, byte_a, byte_b, boxes) in targets {
                 let (ox, oy) = self.block_offset_in_container(&*d, block_id);
                 for (rx, ry, rw, rh) in
-                    d.query_selection_rects_with_boxes(block_id as u64, byte_a, byte_b, &boxes)
+                    d.query_selection_rects_with_boxes(block_id, byte_a, byte_b, &boxes)
                 {
                     out.push((ox + rx, oy + ry, rw, rh));
                 }
@@ -3169,7 +3162,7 @@ impl RinchDomEditorView {
         doc: &Node,
         from: Pos,
         to: Pos,
-    ) -> Vec<(usize, usize, usize, Vec<u64>)> {
+    ) -> Vec<(u64, usize, usize, Vec<u64>)> {
         let mut targets = Vec::new();
         doc.nodes_between(from.0, to.0, &mut |node, pos, _parent| {
             if node.is_textblock() {
@@ -3239,7 +3232,7 @@ impl RinchDomEditorView {
                 && leaf_flat_bytes(child, self.flat) == 0
                 && let Some(c) = desc.children.get(i)
             {
-                out.push(c.dom.node_id().0 as u64);
+                out.push(c.dom.node_id().0);
             }
             at += child.node_size();
         }
@@ -3347,7 +3340,7 @@ impl RinchDomEditorView {
                 .into_iter()
                 .filter_map(|cell_pos| {
                     let node_id = self.node_host_at(&state.doc, Pos(cell_pos))?;
-                    let (_, _, w, h) = d.query_node_layout(node_id as u64)?;
+                    let (_, _, w, h) = d.query_node_layout(node_id)?;
                     let (ox, oy) = self.block_offset_in_container(&*d, node_id);
                     Some((cell_pos == head_cell, (ox, oy, w, h)))
                 })
@@ -3387,7 +3380,7 @@ impl RinchDomEditorView {
         };
         let geometry = {
             let d = doc.borrow();
-            d.query_node_layout(node_id as u64).map(|(_, _, w, h)| {
+            d.query_node_layout(node_id).map(|(_, _, w, h)| {
                 let (ox, oy) = self.block_offset_in_container(&*d, node_id);
                 (ox, oy, w, h)
             })
@@ -3472,7 +3465,7 @@ impl RinchDomEditorView {
     /// path. `None` if `pos` doesn't sit immediately before a child node.
     ///
     /// [`Selection::Node`]: rinch_editor_core::Selection::Node
-    fn node_host_at(&self, doc: &Node, pos: Pos) -> Option<usize> {
+    fn node_host_at(&self, doc: &Node, pos: Pos) -> Option<u64> {
         let r = doc.resolve(pos).ok()?;
         let mut desc = &self.root;
         for d in 0..r.depth() {
@@ -3491,7 +3484,7 @@ impl RinchDomEditorView {
     /// the node's inner element (`dom`) or one of its mark wrappers (`wraps`), so a
     /// hit on a marked inline image still resolves. `None` if `target` isn't a placed
     /// node in this view.
-    pub(crate) fn node_pos_for_host(&self, target: usize) -> Option<(usize, Node)> {
+    pub(crate) fn node_pos_for_host(&self, target: u64) -> Option<(usize, Node)> {
         find_node_by_host(&self.root, target, 0).map(|(pos, node)| (pos, node.clone()))
     }
 
@@ -3761,7 +3754,7 @@ fn overlay_size(x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
 /// Walk the descriptor tree for the block whose host node is `target`, returning
 /// its model **content-start** position and its model node. `content_start` is the
 /// position passed in for `desc`'s own content (0 for the root/doc).
-fn find_block(desc: &ViewDesc, target: usize, content_start: usize) -> Option<(usize, &Node)> {
+fn find_block(desc: &ViewDesc, target: u64, content_start: usize) -> Option<(usize, &Node)> {
     let mut pos = content_start; // the position just before the current child
     for child in &desc.children {
         if child.dom.node_id().0 == target {
@@ -3782,11 +3775,7 @@ fn find_block(desc: &ViewDesc, target: usize, content_start: usize) -> Option<(u
 /// returning its model **position-before** and the node. `content_start` is the
 /// position just inside `desc`'s content (0 for the root/doc). The successor lookup
 /// to [`find_block`] for *node* (not text-cursor) addressing.
-fn find_node_by_host(
-    desc: &ViewDesc,
-    target: usize,
-    content_start: usize,
-) -> Option<(usize, &Node)> {
+fn find_node_by_host(desc: &ViewDesc, target: u64, content_start: usize) -> Option<(usize, &Node)> {
     let mut pos = content_start; // the position just before the current child
     for child in &desc.children {
         // A decorated run is placed as a wrapper span holding `<span data-pm-deco>`
@@ -5292,7 +5281,7 @@ mod tests {
             let mut m = h.mock.borrow_mut();
             let n = m.__node_count();
             for id in 1..n {
-                m.__set_node_layout(NodeId(id), 3.0, 7.0 + id as f32, 100.0, 20.0);
+                m.__set_node_layout(NodeId::from_index(id), 3.0, 7.0 + id as f32, 100.0, 20.0);
             }
         }
         let map = rinch_editor_core::tables::TableMap::compute(&table, 1);
@@ -5609,7 +5598,7 @@ mod tests {
         let st = spell_state(s.clone(), doc.clone(), &spell);
         let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
 
-        let addresses: Vec<Option<(usize, usize)>> = (1..=12)
+        let addresses: Vec<Option<(u64, usize)>> = (1..=12)
             .map(|i| view.caret_address(&doc, rinch_editor_core::Pos(i)))
             .collect();
 

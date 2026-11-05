@@ -54,7 +54,8 @@ pub const MAX_DATA_ATTR_NAME: usize = 64;
 /// anything rinch names after itself (`data-rinch-*`), and the shell's
 /// families of state attributes — the read-only text selection
 /// (`data-text-sel*`), an input's caret and selection (`data-cursor-*`,
-/// `data-selection-*`) and the text context menu's rows (`data-tcm-*`).
+/// `data-selection-*`), the text context menu's rows (`data-tcm-*`) and
+/// `SortableList`'s markers (`data-sortable-*`, read from a drag's hit up).
 pub const RESERVED_DATA_ATTR_PREFIXES: &[&str] = &[
     "data-pm-",
     "data-rinch-",
@@ -62,6 +63,7 @@ pub const RESERVED_DATA_ATTR_PREFIXES: &[&str] = &[
     "data-cursor-",
     "data-selection-",
     "data-tcm-",
+    "data-sortable-",
 ];
 
 /// Whole names rinch reserves:
@@ -71,7 +73,10 @@ pub const RESERVED_DATA_ATTR_PREFIXES: &[&str] = &[
 ///   `data-online` stay an app's);
 /// - what the runtime reads on any element: focus and pointer handling
 ///   (`data-nofocus`, `data-disabled`, `data-trap-focus`, `data-backdrop`,
-///   `data-scroll-lock-exempt`, `data-drag-window`), compositing holes
+///   `data-scroll-lock-exempt`, `data-drag-window`, `data-drag-ghost`, read from
+///   the drag source up), the node-graph canvas's
+///   wheel opt-out (`data-graph-nowheel`, read on every element from the one
+///   under the pointer up), compositing holes
 ///   (`data-viewport`, `data-viewport-ready`, `data-render-surface`,
 ///   `data-video-player`), rinch-rtc's `MediaView` element (`data-rtc-view`:
 ///   the web backend finds its `<video>` by it and sets the track as its
@@ -88,6 +93,7 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-oninput",
     "data-onchange",
     "data-onscroll",
+    "data-onwheel",
     "data-onsubmit",
     "data-onfiledrop",
     "data-ondropfiles",
@@ -101,6 +107,9 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-ondragover",
     "data-ondragleave",
     "data-oncontextmenu",
+    // An element whose links are the app's to follow (rinch-html's
+    // `HtmlView`): rinch-web cancels the browser's default on them.
+    "data-claim-links",
     "data-onenter",
     "data-onleave",
     "data-onmousedown",
@@ -114,6 +123,8 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-backdrop",
     "data-scroll-lock-exempt",
     "data-drag-window",
+    "data-drag-ghost",
+    "data-graph-nowheel",
     "data-viewport",
     "data-viewport-ready",
     "data-render-surface",

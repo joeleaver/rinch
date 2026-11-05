@@ -50,6 +50,7 @@ mod select;
 mod simple_grid;
 mod skeleton;
 mod slider;
+mod sortable;
 mod space;
 mod stack;
 mod stepper;
@@ -116,6 +117,7 @@ pub fn generate_all_component_styles() -> String {
     css.push_str(&pagination::styles());
     css.push_str(&navlink::styles());
     css.push_str(&stepper::styles());
+    css.push_str(&sortable::styles());
     css.push_str(&tree::styles());
 
     // Tier 4 components (overlays)

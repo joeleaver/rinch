@@ -35,7 +35,7 @@ const ABS: &str = "position: absolute;";
 
 struct Case {
     doc: RinchDocument,
-    cb: usize,
+    cb: u64,
     relayouts: u32,
 }
 
@@ -44,6 +44,8 @@ impl Case {
     /// element carrying `data-cb`.
     fn new(html: &str) -> Self {
         let mut doc = RinchDocument::new();
+        // The Chrome numbers were measured under this rule (file docs).
+        doc.load_css("* { box-sizing: border-box; }");
         let body = doc.body();
         let wrap = doc.create_element("div");
         doc.set_inner_html(wrap, html);
@@ -71,7 +73,7 @@ impl Case {
         Self::scaffold("", "", &abs("abs", abs_style, ""))
     }
 
-    fn id(&self, m: &str) -> usize {
+    fn id(&self, m: &str) -> u64 {
         one(&self.doc, &format!("[data-m={m}]"))
     }
 
@@ -102,7 +104,7 @@ impl Case {
     }
 }
 
-fn one(doc: &RinchDocument, selector: &str) -> usize {
+fn one(doc: &RinchDocument, selector: &str) -> u64 {
     let found = query_selector(&doc.tree, selector);
     assert_eq!(found.len(), 1, "{selector} names exactly one node");
     found[0]
@@ -903,6 +905,8 @@ fn computes(doc: &mut RinchDocument, f: impl FnOnce(&mut RinchDocument)) -> u64 
 fn the_second_compute_is_paid_only_when_the_containing_block_resizes() {
     // Position only: one compute, ever.
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     let wrap = doc.create_element("div");
     doc.set_inner_html(

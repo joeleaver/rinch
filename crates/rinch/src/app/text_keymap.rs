@@ -20,6 +20,12 @@
 //! caret; rinch does not scroll a field's text, so they do nothing, and
 //! Shift+Home / Shift+End extend the selection to the value's ends.
 //!
+//! Page Up / Page Down (#2020) move the rich-text editor's caret about a page
+//! on Windows and Linux, Shift extending; on macOS they scroll a page and
+//! leave the caret, Option+Page Up / Down move it and Shift+Page Up / Down
+//! extend (Chrome's Mac bindings). A plain `<input>` / `<textarea>` does not
+//! route these keys here.
+//!
 //! Shift extends in every case: the head moves and the anchor stays.
 
 use rinch_platform::{KeyCode, Modifiers};
@@ -60,6 +66,11 @@ pub(crate) enum TextMotion {
     LineDown,
     DocStart,
     DocEnd,
+    /// About a page up (#2020): 0.875 of the scrollport, the goal column kept.
+    /// Only the rich-text editor moves by a page; a field ignores it.
+    PageUp,
+    /// About a page down.
+    PageDown,
 }
 
 /// What a text field does with a key.
@@ -74,6 +85,8 @@ pub(crate) enum TextKeyAction {
     /// The key is the field's and changes nothing in it (macOS Home / End,
     /// which scroll a field rinch does not scroll).
     Inert,
+    /// Scroll a page and leave the caret (macOS Page Up / Page Down, #2020).
+    ScrollPage { down: bool },
 }
 
 /// What `key` with `modifiers` does in a text field under `keymap`, or `None`
@@ -97,6 +110,10 @@ pub(crate) fn text_key_action(
                 KeyCode::ArrowDown => mv(LineDown),
                 KeyCode::Home => mv(if ctrl { DocStart } else { LineStart }),
                 KeyCode::End => mv(if ctrl { DocEnd } else { LineEnd }),
+                // Chrome binds only the plain and the Shift chord (#2020);
+                // Ctrl+Page Up / Down are a window's (a browser's tab keys).
+                KeyCode::PageUp if !ctrl && !modifiers.alt => mv(PageUp),
+                KeyCode::PageDown if !ctrl && !modifiers.alt => mv(PageDown),
                 // Not with Alt: Windows reports AltGr as Ctrl+Alt (the undo
                 // chords' guard, #288).
                 KeyCode::Backspace => Some(DeleteBackward {
@@ -121,6 +138,13 @@ pub(crate) fn text_key_action(
                 KeyCode::Home if extend => mv(DocStart),
                 KeyCode::End if extend => mv(DocEnd),
                 KeyCode::Home | KeyCode::End => Some(Inert),
+                // Chrome's Mac bindings (#2020): Page Up / Down scroll and
+                // leave the caret, Option moves it, Shift extends.
+                KeyCode::PageUp | KeyCode::PageDown if cmd => None,
+                KeyCode::PageUp if option || extend => mv(PageUp),
+                KeyCode::PageDown if option || extend => mv(PageDown),
+                KeyCode::PageUp => Some(ScrollPage { down: false }),
+                KeyCode::PageDown => Some(ScrollPage { down: true }),
                 KeyCode::Backspace => Some(DeleteBackward { word: option }),
                 KeyCode::Delete => Some(DeleteForward { word: option }),
                 _ => None,
@@ -246,5 +270,35 @@ mod tests {
             Some(DeleteForward { word: false })
         );
         assert_eq!(k(KeyCode::Enter, NONE), None);
+    }
+
+    /// Page Up / Page Down (#2020): Chrome's editing key bindings.
+    #[test]
+    fn page_keys() {
+        let std = |key, m| text_key_action(TextKeymap::Standard, key, m);
+        let mac = |key, m| text_key_action(TextKeymap::MacOs, key, m);
+        let shift = mods(false, false, false, true);
+        let ctrl = mods(true, false, false, false);
+        let opt = mods(false, true, false, false);
+        let opt_shift = mods(false, true, false, true);
+        let cmd = mods(false, false, true, false);
+
+        assert_eq!(std(KeyCode::PageDown, NONE), mv(PageDown, false));
+        assert_eq!(std(KeyCode::PageUp, NONE), mv(PageUp, false));
+        assert_eq!(std(KeyCode::PageDown, shift), mv(PageDown, true));
+        assert_eq!(std(KeyCode::PageUp, shift), mv(PageUp, true));
+        assert_eq!(std(KeyCode::PageDown, ctrl), None);
+        assert_eq!(std(KeyCode::PageUp, opt), None);
+
+        assert_eq!(
+            mac(KeyCode::PageDown, NONE),
+            Some(ScrollPage { down: true })
+        );
+        assert_eq!(mac(KeyCode::PageUp, NONE), Some(ScrollPage { down: false }));
+        assert_eq!(mac(KeyCode::PageDown, opt), mv(PageDown, false));
+        assert_eq!(mac(KeyCode::PageUp, opt), mv(PageUp, false));
+        assert_eq!(mac(KeyCode::PageDown, shift), mv(PageDown, true));
+        assert_eq!(mac(KeyCode::PageUp, opt_shift), mv(PageUp, true));
+        assert_eq!(mac(KeyCode::PageDown, cmd), None);
     }
 }

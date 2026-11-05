@@ -119,15 +119,211 @@ pub(crate) fn gpu_handle_for_tests(make: impl FnOnce() -> GpuHandle) -> &'static
 ///
 /// rinch still creates the instance, picks a surface-compatible adapter, and
 /// owns the device, so surface presentation is always correct. Use this via
-/// [`crate::App::gpu_config`]. The requested features/limits are passed
+/// [`crate::App::gpu_config`]. The required features and limits are passed
 /// through verbatim — if the adapter cannot satisfy them, device creation fails
-/// loudly rather than silently dropping a capability.
+/// loudly (naming the missing features) rather than silently dropping a
+/// capability. Optional features are requested only where the adapter has
+/// them (#2085); [`GpuHandle::granted_optional_features`] says which were.
+///
+/// Build it with `..Default::default()` so a field added later does not
+/// break the construction:
+///
+/// ```ignore
+/// RinchGpuConfig {
+///     optional_features: wgpu::Features::TIMESTAMP_QUERY,
+///     ..Default::default()
+/// }
+/// ```
 #[derive(Clone, Default)]
 pub struct RinchGpuConfig {
-    /// Device features to require in addition to rinch's defaults.
+    /// Device features to require in addition to rinch's defaults. An adapter
+    /// without one of them fails device creation, and the error names it.
     pub required_features: Features,
     /// Device limits to require (replaces `Limits::default()`).
     pub required_limits: Limits,
+    /// Device features to request where the adapter has them, and to go
+    /// without where it does not (#2085): `TIMESTAMP_QUERY` for timing GPU
+    /// frames, say. What the device got is
+    /// [`GpuHandle::granted_optional_features`] (or `device.features()`).
+    ///
+    /// Experimental features (`Features::all_experimental_mask()`, such as
+    /// `EXPERIMENTAL_RAY_QUERY`) are never requested from this set: wgpu
+    /// refuses them without an `ExperimentalFeatures` opt-in, which rinch
+    /// does not give, so asking would fail the device on an adapter that has
+    /// them. `Features::all()` here is therefore safe.
+    pub optional_features: Features,
+}
+
+/// The features rinch requests its device with (#2085): the `required` ones,
+/// the `optional` ones the adapter has (never an experimental one: wgpu
+/// refuses those without an opt-in rinch does not give), and
+/// `BGRA8UNORM_STORAGE` where the
+/// surface is `Bgra8Unorm` and the adapter has it (any storage use of that
+/// surface format needs it). `Err` holds the required features the adapter
+/// lacks.
+pub(crate) fn device_features(
+    required: Features,
+    optional: Features,
+    adapter: Features,
+    bgra_surface: bool,
+) -> Result<Features, Features> {
+    let missing = required.difference(adapter);
+    if !missing.is_empty() {
+        return Err(missing);
+    }
+    let optional = optional.difference(Features::all_experimental_mask());
+    let mut features = required | optional.intersection(adapter);
+    if bgra_surface && adapter.contains(Features::BGRA8UNORM_STORAGE) {
+        features |= Features::BGRA8UNORM_STORAGE;
+    }
+    Ok(features)
+}
+
+/// The optional features the app asked for through
+/// [`App::gpu_config`](crate::App::gpu_config); empty for any other start.
+fn requested_optional_features() -> Features {
+    match GPU_INIT.get() {
+        Some(GpuInit::Config(cfg)) => cfg.optional_features,
+        _ => Features::empty(),
+    }
+}
+
+impl GpuHandle {
+    /// Which of [`RinchGpuConfig::optional_features`] the device has (#2085):
+    /// the ones the adapter supported. Empty when the app asked for none, and
+    /// with [`App::external_gpu`](crate::App::external_gpu), whose device is
+    /// the app's own (read `device.features()` there).
+    pub fn granted_optional_features(&self) -> Features {
+        self.device.features() & requested_optional_features()
+    }
+}
+
+/// Request rinch's own device from `adapter` for a surface of `format`, with
+/// the app's [`RinchGpuConfig`] (#57, #2085), or the defaults without one.
+pub(crate) fn request_rinch_device(
+    adapter: &Adapter,
+    format: TextureFormat,
+    config: Option<&RinchGpuConfig>,
+) -> Result<(Device, Queue), String> {
+    let (required, optional, limits) = match config {
+        Some(cfg) => (
+            cfg.required_features,
+            cfg.optional_features,
+            cfg.required_limits.clone(),
+        ),
+        None => (Features::default(), Features::empty(), Limits::default()),
+    };
+    let features = device_features(
+        required,
+        optional,
+        adapter.features(),
+        format == TextureFormat::Bgra8Unorm,
+    )
+    .map_err(|missing| {
+        format!(
+            "Failed to create device: the adapter {:?} lacks the features \
+             App::gpu_config requires: {missing:?} (request them in \
+             `optional_features` to go without them where they are missing)",
+            adapter.get_info().name
+        )
+    })?;
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("rinch-dom device"),
+        required_features: features,
+        required_limits: limits,
+        memory_hints: MemoryHints::MemoryUsage,
+        trace: wgpu::Trace::default(),
+        experimental_features: wgpu::ExperimentalFeatures::default(),
+    }))
+    .map_err(|e| {
+        format!(
+            "Failed to create device (the adapter may not support the \
+             features/limits requested via App::gpu_config): {e}"
+        )
+    })
+}
+
+// ── Present mode (#2095) ─────────────────────────────────────────────────────
+
+/// The present mode a surface offering `offered` is configured with: with
+/// vsync, `FifoRelaxed` where offered, else `Fifo` (wgpu's `AutoVsync`
+/// order); without, `Immediate`, else `Mailbox`, else `Fifo` (wgpu's
+/// `AutoNoVsync` order). Resolved here rather than left to wgpu's `Auto*`, so
+/// the shell can say what the surface does. `Fifo` is the one mode every
+/// surface supports.
+pub(crate) fn choose_present_mode(vsync: bool, offered: &[PresentMode]) -> PresentMode {
+    let has = |m: PresentMode| offered.contains(&m);
+    if !vsync {
+        return if has(PresentMode::Immediate) {
+            PresentMode::Immediate
+        } else if has(PresentMode::Mailbox) {
+            PresentMode::Mailbox
+        } else {
+            PresentMode::Fifo
+        };
+    }
+    if has(PresentMode::FifoRelaxed) {
+        PresentMode::FifoRelaxed
+    } else {
+        PresentMode::Fifo
+    }
+}
+
+/// What a configured present mode does, for the app.
+pub(crate) fn presentation_of(mode: PresentMode) -> crate::window::Presentation {
+    use crate::window::Presentation;
+    match mode {
+        PresentMode::Immediate => Presentation::Immediate,
+        PresentMode::Mailbox => Presentation::Mailbox,
+        // `Auto*` never reaches a configuration: `choose_present_mode`
+        // resolves them.
+        _ => Presentation::Vsync,
+    }
+}
+
+/// Point a surface's configured `mode` at the vsync request: what the
+/// surface does now, and whether the mode changed (the surface needs
+/// configuring again). A request for what it already does changes nothing,
+/// so it costs no reconfigure.
+pub(crate) fn retarget_present_mode(
+    mode: &mut PresentMode,
+    vsync: bool,
+    offered: &[PresentMode],
+) -> (crate::window::Presentation, bool) {
+    let wanted = choose_present_mode(vsync, offered);
+    let changed = wanted != *mode;
+    *mode = wanted;
+    (presentation_of(wanted), changed)
+}
+
+/// A surface whose vsync the runtime switches (#2095): the GPU renderer, or a
+/// fake in a test.
+pub(crate) trait VsyncTarget {
+    fn set_vsync(&mut self, on: bool) -> crate::window::Presentation;
+}
+
+impl VsyncTarget for WgpuRenderer {
+    fn set_vsync(&mut self, on: bool) -> crate::window::Presentation {
+        WgpuRenderer::set_vsync(self, on)
+    }
+}
+
+/// Apply a vsync request to each of a runtime's surfaces that exists.
+pub(crate) fn apply_vsync_to<'a, T: VsyncTarget + 'a>(
+    on: bool,
+    targets: impl IntoIterator<Item = Option<&'a mut T>>,
+) {
+    for target in targets.into_iter().flatten() {
+        target.set_vsync(on);
+    }
+}
+
+/// What a surface offering `offered` does with vsync on and with it off.
+pub(crate) fn pacing_outcomes(offered: &[PresentMode]) -> crate::window::PacingOutcomes {
+    crate::window::PacingOutcomes {
+        on: presentation_of(choose_present_mode(true, offered)),
+        off: presentation_of(choose_present_mode(false, offered)),
+    }
 }
 
 /// A fully embedder-provided GPU stack for zero-copy present.
@@ -300,16 +496,17 @@ pub struct WgpuRenderer {
     /// Composited output texture (layers + UI) for screenshot capture.
     /// Created lazily, invalidated on resize.
     pub(crate) composited_texture: Option<Texture>,
-    /// What `render_texture` holds (#1718): `None` before the first frame
-    /// and after a resize or a failed render, else the base colour Vello
-    /// rendered it over. A partial frame updates it in place only while it
-    /// holds a frame over the base colour this frame needs.
-    pub(crate) ui_base: Option<Color>,
-    /// Why `ui_base` was last cleared, for the full frame that repairs it.
-    pub(crate) ui_lost: rinch_dom::perf::FullRepaintReason,
+    /// What `render_texture` holds (#1718). A partial frame updates it in
+    /// place only while it holds a frame over the base colour this frame needs.
+    ui_state: UiTextureState,
     /// The target a partial frame is rendered into, reused while it is big
     /// enough (sizes rounded up to [`PARTIAL_TARGET_STEP`]).
     pub(crate) partial_target: Option<Texture>,
+    /// The present modes the surface offers (#2095).
+    present_modes: Vec<PresentMode>,
+    /// `surface_config.present_mode` changed since the surface was last
+    /// configured: [`Self::present`] configures it before acquiring a frame.
+    reconfigure: bool,
 }
 
 /// A partial frame's target grows in steps of this many device pixels, so a
@@ -456,40 +653,19 @@ impl WgpuRenderer {
         };
 
         // Device/Queue: adopt the embedder's, or create one — optionally with
-        // the embedder's extra features/limits (issue #57).
+        // the embedder's extra features/limits (issue #57) and the optional
+        // features the adapter has (#2085). On surfaces that only offer
+        // Bgra8Unorm (X11 on NVIDIA, notably) `BGRA8UNORM_STORAGE` is added
+        // where the adapter has it: any storage-texture use of the surface
+        // format needs it.
         let (device, queue) = match (&shared, gpu_init) {
             (Some((_, _, device, queue)), _) => (device.clone(), queue.clone()),
             (None, other) => {
-                let (mut features, limits) = match other {
-                    Some(GpuInit::Config(cfg)) => {
-                        (cfg.required_features, cfg.required_limits.clone())
-                    }
-                    _ => (Features::default(), Limits::default()),
+                let config = match other {
+                    Some(GpuInit::Config(cfg)) => Some(&**cfg),
+                    _ => None,
                 };
-                // On surfaces that only offer Bgra8Unorm (X11 on NVIDIA,
-                // notably), any storage-texture use of the surface format
-                // needs this feature explicitly. Harmless to request whenever
-                // the adapter has it.
-                if format == TextureFormat::Bgra8Unorm
-                    && adapter.features().contains(Features::BGRA8UNORM_STORAGE)
-                {
-                    features |= Features::BGRA8UNORM_STORAGE;
-                }
-                let (raw_device, raw_queue) =
-                    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                        label: Some("rinch-dom device"),
-                        required_features: features,
-                        required_limits: limits,
-                        memory_hints: MemoryHints::MemoryUsage,
-                        trace: wgpu::Trace::default(),
-                        experimental_features: wgpu::ExperimentalFeatures::default(),
-                    }))
-                    .map_err(|e| {
-                        format!(
-                            "Failed to create device (the adapter may not support the \
-                             features/limits requested via App::gpu_config): {e}"
-                        )
-                    })?;
+                let (raw_device, raw_queue) = request_rinch_device(&adapter, format, config)?;
                 (Arc::new(raw_device), Arc::new(raw_queue))
             }
         };
@@ -506,7 +682,11 @@ impl WgpuRenderer {
             format,
             width,
             height,
-            present_mode: PresentMode::AutoVsync,
+            // Vsync on unless the app turned it off (#2095).
+            present_mode: choose_present_mode(
+                crate::window::vsync_requested(),
+                &caps.present_modes,
+            ),
             desired_maximum_frame_latency: 2,
             alpha_mode,
             view_formats: vec![],
@@ -576,10 +756,32 @@ impl WgpuRenderer {
             split_compositor: None,
             gpu_layers: Vec::new(),
             composited_texture: None,
-            ui_base: None,
-            ui_lost: rinch_dom::perf::FullRepaintReason::FirstFrame,
+            ui_state: UiTextureState::default(),
             partial_target: None,
+            present_modes: caps.present_modes,
+            reconfigure: false,
         })
+    }
+
+    /// Turn vsync on or off for this window's surface (#2095), and say what
+    /// the surface does now. The surface is configured with the new mode at
+    /// the next [`Self::present`], before it acquires a frame, so no frame is
+    /// held while it changes; the UI texture, the split slices and the frames
+    /// Vello has in flight are not touched, and the next present shows the
+    /// UI texture as it is.
+    pub fn set_vsync(&mut self, on: bool) -> crate::window::Presentation {
+        let (presentation, changed) = retarget_present_mode(
+            &mut self.surface_config.present_mode,
+            on,
+            &self.present_modes,
+        );
+        self.reconfigure |= changed;
+        presentation
+    }
+
+    /// What this window's surface does with vsync on and with it off.
+    pub(crate) fn pacing_outcomes(&self) -> crate::window::PacingOutcomes {
+        pacing_outcomes(&self.present_modes)
     }
 
     fn create_render_texture(
@@ -649,12 +851,21 @@ impl WgpuRenderer {
         &self,
         transparent: bool,
     ) -> Option<rinch_dom::perf::FullRepaintReason> {
-        let base = self.vello_base_color(Self::window_base_color(transparent));
-        match self.ui_base {
-            Some(b) if b == base => None,
-            Some(_) => Some(rinch_dom::perf::FullRepaintReason::Invalidated),
-            None => Some(self.ui_lost),
-        }
+        self.ui_state
+            .invalid_reason(self.vello_base_color(Self::window_base_color(transparent)))
+    }
+
+    /// What has become of the frames Vello was given (#2071), without waiting
+    /// for the GPU. A frame that overflowed Vello's buffers reached the UI
+    /// texture or a slice undrawn, so [`Self::ui_invalid_reason`] then asks for
+    /// a full frame, which paints every split slice again as well. It takes a
+    /// redraw to get one: the caller requests that on
+    /// [`Lost`](vello::FrameCheck::Lost), and on
+    /// [`Pending`](vello::FrameCheck::Pending) looks again later.
+    pub fn check_frames(&mut self) -> vello::FrameCheck {
+        let check = self.renderer.check_frames(&self.device);
+        self.ui_state.note_check(check);
+        check
     }
 
     /// Render and present a frame [`crate::app::RinchApp::build_gpu_frame`]
@@ -693,8 +904,7 @@ impl WgpuRenderer {
         let view = self
             .render_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.ui_base = None;
-        self.ui_lost = rinch_dom::perf::FullRepaintReason::Invalidated;
+        self.ui_state.begin_render();
         self.renderer
             .render_to_texture(
                 &self.device,
@@ -709,7 +919,7 @@ impl WgpuRenderer {
                 },
             )
             .map_err(|e| RenderError::Internal(format!("render_to_texture failed: {:?}", e)))?;
-        self.ui_base = Some(base);
+        self.ui_state.rendered(base);
         Ok(())
     }
 
@@ -723,12 +933,11 @@ impl WgpuRenderer {
     ) -> Result<(), RenderError> {
         let base = self.vello_base_color(base_color);
         debug_assert_eq!(
-            self.ui_base,
-            Some(base),
+            self.ui_state.invalid_reason(base),
+            None,
             "a partial frame over an invalid UI texture"
         );
-        self.ui_base = None;
-        self.ui_lost = rinch_dom::perf::FullRepaintReason::Invalidated;
+        self.ui_state.begin_render();
         render_partial(
             &self.device,
             &self.queue,
@@ -742,8 +951,65 @@ impl WgpuRenderer {
                 base,
             },
         )?;
-        self.ui_base = Some(base);
+        self.ui_state.rendered(base);
         Ok(())
+    }
+}
+
+/// Whether the UI texture holds the last frame painted, which a partial or
+/// unchanged frame builds on (#1718), and if not, why not.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UiTextureState {
+    /// The colour the frame it holds was rendered over; `None` when it holds
+    /// no good frame.
+    base: Option<Color>,
+    /// Why `base` was last cleared, for the full frame that repairs it.
+    lost: rinch_dom::perf::FullRepaintReason,
+}
+
+impl Default for UiTextureState {
+    fn default() -> Self {
+        Self {
+            base: None,
+            lost: rinch_dom::perf::FullRepaintReason::FirstFrame,
+        }
+    }
+}
+
+impl UiTextureState {
+    /// Why it cannot take a partial frame over `base`: it holds no frame, or
+    /// one rendered over another base colour (layers came or went).
+    pub(crate) fn invalid_reason(&self, base: Color) -> Option<rinch_dom::perf::FullRepaintReason> {
+        match self.base {
+            Some(b) if b == base => None,
+            Some(_) => Some(rinch_dom::perf::FullRepaintReason::Invalidated),
+            None => Some(self.lost),
+        }
+    }
+
+    /// A render into it starts; a failure leaves it holding no good frame.
+    pub(crate) fn begin_render(&mut self) {
+        self.base = None;
+        self.lost = rinch_dom::perf::FullRepaintReason::Invalidated;
+    }
+
+    /// A render over `base` was submitted.
+    pub(crate) fn rendered(&mut self, base: Color) {
+        self.base = Some(base);
+    }
+
+    /// The texture was replaced at a new size.
+    fn resized(&mut self) {
+        self.base = None;
+        self.lost = rinch_dom::perf::FullRepaintReason::Resize;
+    }
+
+    /// What Vello said of the frames it was given (#2071): a lost one went
+    /// out undrawn, here or in a slice, so the next frame has to be full.
+    pub(crate) fn note_check(&mut self, check: vello::FrameCheck) {
+        if check == vello::FrameCheck::Lost {
+            self.begin_render();
+        }
     }
 }
 
@@ -850,6 +1116,11 @@ impl WgpuRenderer {
     /// still holds the frame for the next one.
     fn present(&mut self, base_color: Color) -> Result<(), RenderError> {
         use wgpu::CurrentSurfaceTexture as Current;
+        // A new present mode (#2095), configured while this window holds no
+        // frame of the surface's.
+        if std::mem::take(&mut self.reconfigure) {
+            self.surface.configure(&self.device, &self.surface_config);
+        }
         let surface_texture = match self.surface.get_current_texture() {
             Current::Success(t) | Current::Suboptimal(t) => t,
             // Swapchain went stale (resize/DPI/occlusion/GPU reset) — recreate it and retry once.
@@ -1170,11 +1441,11 @@ impl PlatformRenderer for WgpuRenderer {
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
+        self.reconfigure = false;
         self.render_texture =
             Self::create_render_texture(&self.device, TextureFormat::Rgba8Unorm, width, height);
         self.composited_texture = None;
-        self.ui_base = None;
-        self.ui_lost = rinch_dom::perf::FullRepaintReason::Resize;
+        self.ui_state.resized();
     }
 
     fn render_scene(
@@ -1461,6 +1732,36 @@ mod alpha_mode_tests {
     use wgpu::CompositeAlphaMode as A;
 
     #[test]
+    fn a_lost_frame_invalidates_the_ui_texture_and_nothing_else_does() {
+        use super::{Color, UiTextureState};
+        use rinch_dom::perf::FullRepaintReason as Reason;
+        use vello::FrameCheck;
+        let white = Color::WHITE;
+        let mut ui = UiTextureState::default();
+        assert_eq!(ui.invalid_reason(white), Some(Reason::FirstFrame));
+        ui.begin_render();
+        ui.rendered(white);
+        assert_eq!(ui.invalid_reason(white), None);
+        ui.note_check(FrameCheck::Pending);
+        ui.note_check(FrameCheck::Settled);
+        assert_eq!(ui.invalid_reason(white), None, "these repaint nothing");
+        ui.note_check(FrameCheck::Lost);
+        assert_eq!(ui.invalid_reason(white), Some(Reason::Invalidated));
+        // Settling later does not forgive it.
+        ui.note_check(FrameCheck::Settled);
+        assert_eq!(ui.invalid_reason(white), Some(Reason::Invalidated));
+        ui.rendered(white);
+        assert_eq!(ui.invalid_reason(white), None, "the full frame repairs it");
+        // The other reasons are unchanged.
+        assert_eq!(
+            ui.invalid_reason(Color::TRANSPARENT),
+            Some(Reason::Invalidated)
+        );
+        ui.resized();
+        assert_eq!(ui.invalid_reason(white), Some(Reason::Resize));
+    }
+
+    #[test]
     fn an_opaque_window_keeps_auto() {
         assert_eq!(
             surface_alpha_mode(false, &[A::Opaque, A::PreMultiplied]),
@@ -1549,5 +1850,264 @@ mod alpha_mode_tests {
                 PresentStep::Copy
             );
         }
+    }
+}
+
+/// #2095: the present mode for a vsync request, and #2085: the features a
+/// device is requested with. Pure, so no GPU is needed.
+#[cfg(test)]
+mod pacing_and_features_tests {
+    use super::*;
+    use crate::window::Presentation;
+    use PresentMode::{Fifo, FifoRelaxed, Immediate, Mailbox};
+
+    /// Present-mode lists as drivers report them (Vulkan on X11 and Wayland
+    /// under Mesa, NVIDIA, Metal, DX12, and a FIFO-only compositor).
+    const SURFACES: [(&str, &[PresentMode]); 6] = [
+        ("mesa x11", &[Immediate, Mailbox, Fifo, FifoRelaxed]),
+        ("mesa wayland", &[Mailbox, Fifo, Immediate]),
+        ("mailbox, no immediate", &[Fifo, Mailbox]),
+        ("metal", &[Fifo, Immediate]),
+        ("fifo only", &[Fifo]),
+        ("nothing listed", &[]),
+    ];
+
+    #[test]
+    fn vsync_on_is_what_auto_vsync_picked() {
+        // `FifoRelaxed` where offered, else `Fifo`: today's `AutoVsync`, so
+        // turning nothing off changes nothing.
+        let want = [FifoRelaxed, Fifo, Fifo, Fifo, Fifo, Fifo];
+        for ((name, offered), want) in SURFACES.iter().zip(want) {
+            assert_eq!(choose_present_mode(true, offered), want, "{name}");
+            assert_eq!(presentation_of(want), Presentation::Vsync, "{name}");
+        }
+    }
+
+    #[test]
+    fn vsync_off_prefers_immediate_then_mailbox_and_falls_back_to_vsync() {
+        let want = [Immediate, Immediate, Mailbox, Immediate, Fifo, Fifo];
+        let says = [
+            Presentation::Immediate,
+            Presentation::Immediate,
+            Presentation::Mailbox,
+            Presentation::Immediate,
+            Presentation::Vsync,
+            Presentation::Vsync,
+        ];
+        for (((name, offered), want), says) in SURFACES.iter().zip(want).zip(says) {
+            assert_eq!(choose_present_mode(false, offered), want, "{name}");
+            assert_eq!(pacing_outcomes(offered).off, says, "{name}");
+            assert_eq!(pacing_outcomes(offered).on, Presentation::Vsync, "{name}");
+        }
+    }
+
+    /// A surface offering only `FifoRelaxed` beside `Fifo` keeps vsync off
+    /// paced, on plain `Fifo` as wgpu's `AutoNoVsync` falls back: relaxed
+    /// FIFO still waits for a refresh when the frame is on time, so it is not
+    /// an uncapped mode.
+    #[test]
+    fn fifo_relaxed_is_not_uncapped() {
+        assert_eq!(choose_present_mode(false, &[Fifo, FifoRelaxed]), Fifo);
+        assert_eq!(choose_present_mode(true, &[Fifo, FifoRelaxed]), FifoRelaxed);
+        assert!(!presentation_of(FifoRelaxed).is_uncapped());
+        assert!(Presentation::Mailbox.is_uncapped() && Presentation::Immediate.is_uncapped());
+    }
+
+    #[test]
+    fn a_request_reconfigures_only_when_the_mode_changes() {
+        let offered = [Fifo, Mailbox, Immediate];
+        let mut mode = choose_present_mode(true, &offered);
+        assert_eq!(
+            retarget_present_mode(&mut mode, true, &offered),
+            (Presentation::Vsync, false),
+            "asking for what it does is no reconfigure"
+        );
+        assert_eq!(
+            retarget_present_mode(&mut mode, false, &offered),
+            (Presentation::Immediate, true)
+        );
+        assert_eq!(mode, Immediate);
+        assert_eq!(
+            retarget_present_mode(&mut mode, false, &offered),
+            (Presentation::Immediate, false)
+        );
+        assert_eq!(
+            retarget_present_mode(&mut mode, true, &offered),
+            (Presentation::Vsync, true)
+        );
+        assert_eq!(mode, Fifo);
+        // A FIFO-only surface: off changes nothing, and says so.
+        let mut fifo = Fifo;
+        assert_eq!(
+            retarget_present_mode(&mut fifo, false, &[Fifo]),
+            (Presentation::Vsync, false)
+        );
+    }
+
+    /// A surface that records what it was asked.
+    #[derive(Default)]
+    struct FakeSurface {
+        asked: Vec<bool>,
+    }
+
+    impl VsyncTarget for FakeSurface {
+        fn set_vsync(&mut self, on: bool) -> Presentation {
+            self.asked.push(on);
+            if on {
+                Presentation::Vsync
+            } else {
+                Presentation::Immediate
+            }
+        }
+    }
+
+    /// The runtime's `apply_vsync` hands the request to the main window's
+    /// surface and the DevTools window's, whichever exist.
+    #[test]
+    fn a_vsync_request_reaches_every_surface_that_exists() {
+        let (mut main, mut devtools) = (FakeSurface::default(), FakeSurface::default());
+        apply_vsync_to(false, [Some(&mut main), Some(&mut devtools)]);
+        apply_vsync_to(true, [Some(&mut main), None]);
+        assert_eq!(main.asked, [false, true]);
+        assert_eq!(devtools.asked, [false]);
+    }
+
+    /// An adapter with some features and not others, off the empty set.
+    fn adapter() -> Features {
+        Features::TIMESTAMP_QUERY
+            | Features::FLOAT32_FILTERABLE
+            | Features::DEPTH_CLIP_CONTROL
+            | Features::BGRA8UNORM_STORAGE
+    }
+
+    #[test]
+    fn optional_features_are_requested_where_the_adapter_has_them() {
+        let optional =
+            Features::TIMESTAMP_QUERY | Features::SHADER_F16 | Features::TEXTURE_BINDING_ARRAY;
+        let got = device_features(Features::DEPTH_CLIP_CONTROL, optional, adapter(), false)
+            .expect("required features the adapter has");
+        assert_eq!(
+            got,
+            Features::DEPTH_CLIP_CONTROL | Features::TIMESTAMP_QUERY,
+            "the required ones, and of the optional only those the adapter has"
+        );
+        // None of the optional ones on this adapter: still a device.
+        assert_eq!(
+            device_features(Features::empty(), Features::SHADER_F16, adapter(), false),
+            Ok(Features::empty())
+        );
+    }
+
+    #[test]
+    fn a_missing_required_feature_fails_and_is_named() {
+        let required = Features::FLOAT32_FILTERABLE | Features::SHADER_F16 | Features::MULTIVIEW;
+        assert_eq!(
+            device_features(required, Features::TIMESTAMP_QUERY, adapter(), false),
+            Err(Features::SHADER_F16 | Features::MULTIVIEW),
+            "exactly the ones the adapter lacks"
+        );
+    }
+
+    /// An adapter that has an experimental feature: asked for as optional
+    /// (`Features::all()` included) it is still not requested, since wgpu
+    /// refuses one without an opt-in and the device would fail (review of
+    /// #2104).
+    #[test]
+    fn an_experimental_optional_feature_is_never_requested() {
+        let experimental = Features::EXPERIMENTAL_RAY_QUERY;
+        assert!(Features::all_experimental_mask().contains(experimental));
+        let adapter = adapter() | experimental;
+        assert_eq!(
+            device_features(Features::empty(), experimental, adapter, false),
+            Ok(Features::empty())
+        );
+        assert_eq!(
+            device_features(Features::empty(), Features::all(), adapter, false),
+            Ok(adapter - experimental),
+            "everything the adapter has but the experimental one"
+        );
+    }
+
+    #[test]
+    fn bgra_storage_comes_with_a_bgra_surface_on_an_adapter_that_has_it() {
+        let none = Features::empty();
+        assert_eq!(
+            device_features(none, none, adapter(), true),
+            Ok(Features::BGRA8UNORM_STORAGE)
+        );
+        assert_eq!(device_features(none, none, adapter(), false), Ok(none));
+        assert_eq!(
+            device_features(none, none, adapter() - Features::BGRA8UNORM_STORAGE, true),
+            Ok(none)
+        );
+    }
+
+    /// #2085 on a real adapter (lavapipe in CI): optional features the
+    /// adapter has are granted, one it lacks is left out rather than failing
+    /// the device, and the same feature as a required one fails, naming it.
+    #[test]
+    #[ignore = "needs a GPU adapter (lavapipe in CI)"]
+    fn gpu_optional_features_follow_the_adapter_2085() {
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .expect("a GPU adapter");
+        let has = adapter.features();
+        // A feature this adapter lacks (and that needs no experimental
+        // opt-in), and one it has, whichever adapter this is.
+        let lacks = Features::all()
+            .iter()
+            .find(|f| !has.contains(*f) && !Features::all_experimental_mask().contains(*f))
+            .expect("an adapter without every feature");
+        let present = [
+            Features::TIMESTAMP_QUERY,
+            Features::DEPTH_CLIP_CONTROL,
+            Features::FLOAT32_FILTERABLE,
+            Features::INDIRECT_FIRST_INSTANCE,
+        ]
+        .into_iter()
+        .find(|f| has.contains(*f))
+        .expect("an adapter with one of the common features");
+        let config = RinchGpuConfig {
+            optional_features: lacks | present,
+            ..Default::default()
+        };
+        let (device, _queue) =
+            request_rinch_device(&adapter, TextureFormat::Rgba8Unorm, Some(&config))
+                .expect("optional features never fail the device");
+        assert!(device.features().contains(present), "{present:?} granted");
+        assert!(!device.features().contains(lacks), "{lacks:?} left out");
+
+        // Everything as optional, experimental features included (an adapter
+        // that has one, RADV and llvmpipe among them, refused the device when
+        // one was requested without an opt-in): the device starts, with every
+        // feature the adapter has but the experimental ones.
+        let everything = RinchGpuConfig {
+            optional_features: Features::all(),
+            ..Default::default()
+        };
+        let (device, _queue) =
+            request_rinch_device(&adapter, TextureFormat::Rgba8Unorm, Some(&everything))
+                .expect("Features::all() as optional never fails the device");
+        assert_eq!(
+            device.features() & !Features::all_experimental_mask(),
+            has & !Features::all_experimental_mask()
+        );
+        assert!(
+            (device.features() & Features::all_experimental_mask()).is_empty(),
+            "no experimental feature requested"
+        );
+
+        let required = RinchGpuConfig {
+            required_features: lacks,
+            ..Default::default()
+        };
+        let err = request_rinch_device(&adapter, TextureFormat::Rgba8Unorm, Some(&required))
+            .expect_err("a required feature the adapter lacks fails");
+        assert!(
+            err.contains(&format!("{lacks:?}")),
+            "the error names the missing feature: {err}"
+        );
     }
 }

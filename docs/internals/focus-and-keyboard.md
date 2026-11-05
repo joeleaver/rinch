@@ -1,6 +1,6 @@
 # Keyboard focus
 
-Read this page when your task touches: the focus arbiter, Tab order, traps, dismiss stack, key handlers, selection ranges, scroll lock, IME, text context menu.
+Read this page when your task touches: the focus arbiter, Tab order, traps, dismiss stack, key handlers, selection ranges, scroll lock, IME, text context menu. (Rendered menus' keys: `menus.md`.)
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
@@ -19,7 +19,11 @@ bool` (registered with `register_key_handler`, written to `data-onkeydown` /
 after it hears the press. Offered to the arbiter's `FocusTarget::Input` /
 `Node` node (web: the event target) and its ancestors, nearest first, stopping
 at the first that consumes (`dispatch_key_handler_chain`; ids read before any
-runs). Order, both backends: menu chords → the editor's / a node view's
+runs). Order, both backends: (desktop and embed) an Escape while the pointer
+is locked, which ends the lock and goes nowhere else, nor do its repeats until
+its release (#2092, the requesting app's only: `handle_event`'s
+first step, ahead of DnD's Escape; the desktop shell also skips the menu chords
+for it; the browser handles its own) → menu chords → the editor's / a node view's
 `on_key` → **element handlers** → `set_keyboard_interceptor` → key entries →
 dismiss stack → (desktop) a focused registered widget's `FocusEntry::on_key`
 → a focused render surface's claim → **app key listeners**
@@ -37,7 +41,11 @@ or `key == "Process"`; known gap: Safari's composition-confirming Enter —
 refusing every 229 Enter would refuse an Android soft keyboard's plain
 Enter). `onkeyup`'s consumption stops only its ancestors: the
 interceptor hears every release. `KeyEventData` and `KeyEventKind` are in the
-prelude. Pins: `app/element_key_1678_tests.rs`,
+prelude. The keys offered to element handlers carry `KeyEventData::target` (#2091):
+the arbiter's node on desktop, `event.target`'s node on the web — so a
+handler on a container can tell a key sent to itself from one typed in a
+field inside it (`SortableItem` does). `None` on every other path.
+Pins: `app/element_key_1678_tests.rs`,
 `rinch-web/tests/element_key_1678.rs`.
 
 **App-wide key listeners** (#1784, `rinch_core::events::app_key`):
@@ -288,7 +296,7 @@ input `onBlur` does; its panel and preview swatch are `data-nofocus`, so a
 press in the picker keeps the keyboard on the field, and opening focuses the
 field when it does not already hold it. With `close_on_click_outside: false`
 an outside press reaches the page under it and still closes the dropdown by
-moving the focus. `DropdownMenu`'s dismiss-only entry is not told. Push a key entry at **open** and release it at close
+moving the focus. `DropdownMenu`'s and `ContextMenu`'s dismiss-only entries (pushed at open since #2169/#2170, with an app key listener for their arrows — `docs/internals/menus.md`, "Rendered menus") are not told. Push a key entry at **open** and release it at close
 and unmount (`overlay_dismiss::arm_keys_while_open`). `MockDomDocument` now
 records `focus_element` and answers it from `active_element`, so a component
 test has to focus the owner before its keys reach an entry.
@@ -635,9 +643,11 @@ register_focus_target(
   just a bool, because desktop has to know which subtree may still scroll.
   Desktop records the locking roots on `NodeTree` and refuses a container
   outside every one of them (`NodeTree::scroll_locked_out`) at two input sites:
-  the **wheel arm** in `event_dispatch.rs` (both axes, both the ancestor walk
-  and the geometric fallback — an open overlay is exactly the shape that
-  fallback exists for) and **`find_scrollbar_hit`**, so the page's #178 thumb
+  the **wheel arm** in `event_dispatch.rs` (`hit_testing::wheel_scroll_target`:
+  a locked-out container cannot move under `scrollbar::can_scroll_toward`, on
+  both the ancestor walk and the geometric fallback — an open overlay is
+  exactly the shape that fallback exists for — and a walk that met one does not
+  fall back around it) and **`find_scrollbar_hit`**, so the page's #178 thumb
   cannot be dragged either. Nothing is restyled: the page does not reflow and
   keeps its `scroll_offset`. Web sets `overflow: hidden` on the real `<html>`
   (page-global and counted in `web_document.rs`, previous inline value saved and

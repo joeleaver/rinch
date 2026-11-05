@@ -34,12 +34,15 @@ rinch-macros = { path = "crates/rinch-macros" }
 rinch-renderer = { path = "crates/rinch-renderer" }
 rinch-theme = { path = "crates/rinch-theme" }
 rinch-components = { path = "crates/rinch-components" }
+rinch-html = { path = "crates/rinch-html" }
 rinch-tabler-icons = { path = "crates/rinch-tabler-icons" }
 rinch-storage = { path = "crates/rinch-storage" }
 rinch-dom = { path = "crates/rinch-dom", default-features = false }
 rinch-editor-core = { path = "crates/rinch-editor-core" }
 rinch-editor-collab = { path = "crates/rinch-editor-collab" }
 rinch-editor-view = { path = "crates/rinch-editor-view" }
+rinch-graph-core = { path = "crates/rinch-graph-core" }
+rinch-graph-view = { path = "crates/rinch-graph-view" }
 rinch-debug = { path = "crates/rinch-debug" }
 rinch-editable = { path = "crates/rinch-editable" }
 rinch-words = { path = "crates/rinch-words" }
@@ -58,23 +61,31 @@ rinch-android = { path = "crates/rinch-android" }
 # with no image, gradient or glyph run wiped the persistent atlas (every
 # resident image then drew transparent), and an image stayed resident for two
 # renders after its last use, so the atlas had to hold three scenes' images and
-# large or many images went undrawn. A dependency, not a [patch], so an app on
-# rinch gets it with nothing to copy; apps use `rinch::vello`. Pinned by rev
-# so a push to the fork's branch never changes rinch.
-vello = { git = "https://github.com/joeleaver/vello-fork", rev = "c6b2e61558962d0074a98f46d55a435c06901865" }
+# large or many images went undrawn. And its bump buffers
+# (joeleaver/vello-fork#1, #3, #4): they have floors that follow the target, and a
+# frame that overflows them anyway grows them and is reported through
+# `Renderer::check_frames` without `render_to_texture` waiting for the GPU, so
+# the shell draws it again. It used to be dropped, and a transparent window went
+# blank. And its blend stack (joeleaver/vello-fork#5, #2103): a clip's backdrop
+# is kept at 16 bits a channel, not 8, so a split surface's above slice,
+# rendered over transparent, composites as the window's scene does. A dependency, not a [patch], so an app on rinch gets it with nothing to
+# copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
+# never changes rinch.
+vello = { git = "https://github.com/joeleaver/vello-fork", rev = "f010985c43f499f76e7d587e2c5ee3c6f0877817" }
 wgpu = "30"
 
 # Windowing and input: winit 0.31.0-beta.4 from joeleaver/winit-fork, branch
 # rinch-patch-beta4, pinned to one commit (#1962). The fork is upstream's
 # v0.31.0-beta.4 tag plus the wlr-layer-shell window role
 # (WindowAttributesWayland::with_layer_shell, #1523; a layer surface's move is
-# confirmed by WindowEvent::Moved, #1597). Wayland drag and drop is upstream's
-# own since beta.4. A dependency, not a [patch], so an app on rinch needs no
+# confirmed by WindowEvent::Moved, #1597), and an X11 fix: each raw pointer
+# event under a pointer grab came twice (#2114). Wayland drag and drop is
+# upstream's own since beta.4. A dependency, not a [patch], so an app on rinch needs no
 # patch lines (an app that uses winit itself can name this rev, for one winit
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "34f153bd6e523de53f9da67c6db58bd1f8732542" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "d99384edd804a20e737c013b5f57b56ab931a611" }
 
 # Menus
 muda = "0.15"
@@ -97,12 +108,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 parley = { version = "0.12.0", features = ["complex-scripts", "bytemuck"] }
 
 # CSS engine (Stylo from Firefox/Servo)
-stylo = "0.11"
-stylo_traits = "0.11"
-stylo_dom = "0.11"
-stylo_atoms = "0.11"
-stylo_config = "0.11"
-servo_arc = "0.4"
+stylo = "0.22"
+stylo_traits = "0.22"
+stylo_dom = "0.22"
+stylo_atoms = "0.22"
+stylo_static_prefs = "0.22"
+servo_arc = "0.5"
 
 # Utilities
 thiserror = "1"

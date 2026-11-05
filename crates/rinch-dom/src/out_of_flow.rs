@@ -314,7 +314,7 @@ fn generates_layout_box(node: &Node) -> bool {
 /// The walk is only entered for a box that is actually out of flow, so the
 /// overwhelmingly common node costs one enum compare.
 pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<OutOfFlowKind> {
-    let node = tree.get(node_id)?;
+    let node = tree.get_live(node_id)?;
     if matches!(node.computed_style.display, DisplayValue::None) {
         return None;
     }
@@ -335,7 +335,7 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
                 if current == tree.html_id || current == tree.root_id {
                     return Some(OutOfFlowKind::IcbAbsolute);
                 }
-                let ancestor = tree.get(current)?;
+                let ancestor = tree.get_live(current)?;
                 if ancestor.establishes_abs_containing_block() {
                     // The layout parent establishing it is Taffy's own answer,
                     // so there is nothing to correct. Anything else is an
@@ -398,14 +398,12 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
 /// Note this is *narrower* than "is the box in flow": a `relative` box is
 /// out of flow for nobody and contributes normally, and so does a float.
 ///
-/// The caller stops at the first box, so a box skipped here is measured by **nobody**:
-/// the ancestor that really is its containing block never looks past its own
-/// child boxes either. Chrome does give it to that ancestor (measured: a
-/// 700x1500 absolute under a static `overflow: auto` div reaches
-/// `documentElement.scrollHeight`), and closing that needs the recursive union
-/// css-overflow-3 describes rather than a one-level max — issue #770. It is not
-/// a regression: the box used to be measured by the *wrong* container, which is
-/// what grew the phantom bar #765 was filed for.
+/// The caller stops at the first box, so a box skipped here — and an
+/// absolute box below the first box at all — is measured by the scroll
+/// container [`overflow_scroller`] names instead, from
+/// `NodeTree::overflow_absolutes` (issue #770). Before #770 it was measured
+/// by nobody, and before #765 by the *wrong* container, which is what grew the
+/// phantom bar #765 was filed for.
 pub(crate) fn contributes_to_scrollable_overflow(
     tree: &NodeTree,
     parent_id: RawNodeId,
@@ -432,7 +430,7 @@ pub(crate) fn contributes_to_scrollable_overflow(
                             .get(id)
                             .is_some_and(Node::establishes_abs_containing_block);
                 }
-                let Some(ancestor) = tree.get(id) else {
+                let Some(ancestor) = tree.get_live(id) else {
                     return false;
                 };
                 if ancestor.establishes_abs_containing_block() {
@@ -446,6 +444,100 @@ pub(crate) fn contributes_to_scrollable_overflow(
         }
         _ => true,
     }
+}
+
+/// The scroll container whose **scrollable overflow** the absolute box
+/// `node_id` (of kind `kind`, [`out_of_flow_kind`]'s answer) is part of
+/// (css-overflow-3 §2.2, issue #770): the nearest box at or above its
+/// containing block that clips — when that box is a scroll container
+/// (`overflow` `hidden`, `scroll` or `auto` on either axis). The box scrolls
+/// with that container and with no box below it: a scroll container between
+/// the box and its containing block does not carry it (the box escapes it),
+/// and neither does one above the first scroll container (that one clips it).
+///
+/// * The containing block is the box's own layout parent (`kind` `None`), an
+///   ancestor further up, or — for a positioned inline span (#631) — the
+///   block container whose lines hold the span ([`chain_end`]).
+/// * Above it the walk follows the **containing-block chain**, not the DOM: an
+///   in-flow box's overflow is its parent's, but an `absolute` box on the way
+///   passes it to *its* containing block (Chrome 156: under an absolute box
+///   that escapes a static scroller, an absolute grandchild escapes it too),
+///   and a `fixed` one to the viewport, which scrolls nothing (a `fixed`
+///   `Drawer`'s absolute panel scrolls no ancestor of the drawer).
+/// * A box that clips without scrolling (`overflow: clip`) ends the walk with
+///   no container: what overflows it is clipped away, and nothing above
+///   scrolls to reach it (Chrome 156: an `overflow: auto` box above an
+///   `overflow: clip` one holding a 400x500 absolute reports no overflow).
+///   Not modelled: `clip` on one axis with `visible` on the other, which
+///   clips that axis alone.
+/// * The **initial containing block**, and a walk that reaches it, belongs
+///   to the page's scroll — in rinch the `<body>`'s (the UA sheet gives it
+///   `overflow-y: auto`; its scroll is the one that carries an ICB box,
+///   [`chain_to_containing_block`]) when the body is a scroll container and
+///   holds the box, and the `<html>` box otherwise. Chrome scrolls the
+///   viewport, which in rinch is the body (measured: the issue's 700x1500
+///   absolute under a static `overflow: auto` div is
+///   `documentElement.scrollHeight` 1500).
+/// * `position: fixed` has none: the viewport does not scroll.
+///
+/// `None` also for a box the tree does not connect.
+pub(crate) fn overflow_scroller(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    kind: Option<OutOfFlowKind>,
+) -> Option<RawNodeId> {
+    let mut up = overflow_continues_at(tree, node_id, kind)?;
+    while let Some(id) = up {
+        if id == tree.html_id || id == tree.root_id {
+            break;
+        }
+        let node = tree.get(id)?;
+        let (clip_x, clip_y) = node.clip_axes();
+        if clip_x || clip_y {
+            return is_scroll_container(node).then_some(id);
+        }
+        up = match node.box_position() {
+            PositionValue::Fixed => return None,
+            PositionValue::Absolute => overflow_continues_at(tree, id, out_of_flow_kind(tree, id))?,
+            _ => Some(node.parent?),
+        };
+    }
+    // The initial containing block: the page's scroll.
+    let body_scrolls = tree.get(tree.body_id).is_some_and(|body| {
+        let (clip_x, clip_y) = body.clip_axes();
+        (clip_x || clip_y) && is_scroll_container(body)
+    });
+    if body_scrolls && is_box_ancestor(tree, tree.body_id, node_id) {
+        Some(tree.body_id)
+    } else {
+        Some(tree.html_id)
+    }
+}
+
+/// Where the overflow of the out-of-flow box `node_id` (of kind `kind`) goes
+/// on from: `Some(Some(block))` the box its containing block is (or, for an
+/// inline span, the block holding its line), `Some(None)` the initial
+/// containing block, `None` nowhere — the viewport of a `fixed` box, or a
+/// tree that does not connect.
+fn overflow_continues_at(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    kind: Option<OutOfFlowKind>,
+) -> Option<Option<RawNodeId>> {
+    match kind {
+        Some(OutOfFlowKind::Fixed) => None,
+        Some(OutOfFlowKind::IcbAbsolute) => Some(None),
+        Some(OutOfFlowKind::AncestorAbsolute(cb)) => Some(Some(chain_end(tree, cb)?)),
+        None => Some(Some(layout_parent(tree, node_id)?)),
+    }
+}
+
+/// `overflow` `hidden`, `scroll` or `auto` on either axis — a scroll
+/// container, asked of a box [`Node::clip_axes`] says clips.
+pub(crate) fn is_scroll_container(node: &Node) -> bool {
+    use crate::computed_style::OverflowValue as O;
+    let scrolls = |v: O| matches!(v, O::Hidden | O::Scroll | O::Auto);
+    scrolls(node.computed_style.overflow_x) || scrolls(node.computed_style.overflow_y)
 }
 
 /// A containing block's padding box, and where it starts inside the border
@@ -474,7 +566,7 @@ impl ContainingBox {
     /// lines **last built** for it ([`inline_fragments_box`]), measured from
     /// the border box of the block that holds those lines.
     fn of_ancestor(tree: &NodeTree, cb: RawNodeId) -> Option<Self> {
-        let node = tree.get(cb)?;
+        let node = tree.get_live(cb)?;
         if !generates_layout_box(node) {
             return inline_fragments_box(tree, cb);
         }
@@ -504,7 +596,7 @@ impl ContainingBox {
 /// this kind was read back (`NodeTree::abs_inline_cb_seen`).
 pub(crate) fn has_inline_containing_block(tree: &NodeTree, kind: Option<OutOfFlowKind>) -> bool {
     matches!(kind, Some(OutOfFlowKind::AncestorAbsolute(cb))
-        if tree.get(cb).is_some_and(|n| !generates_layout_box(n)))
+        if tree.get_live(cb).is_some_and(|n| !generates_layout_box(n)))
 }
 
 /// Where the chain of boxes from an absolute box to its containing block
@@ -512,8 +604,8 @@ pub(crate) fn has_inline_containing_block(tree: &NodeTree, kind: Option<OutOfFlo
 /// at the block container whose lines hold the span ([`inline_host`]). The
 /// span's fragments are that block's content, so its own scroll carries the
 /// box and every box below it must not.
-fn chain_end(tree: &NodeTree, cb: RawNodeId) -> Option<RawNodeId> {
-    let node = tree.get(cb)?;
+pub(crate) fn chain_end(tree: &NodeTree, cb: RawNodeId) -> Option<RawNodeId> {
+    let node = tree.get_live(cb)?;
     if generates_layout_box(node) {
         Some(cb)
     } else {
@@ -687,11 +779,11 @@ fn measure_span_fragments(
     // The lines: every cluster's extent, every atomic inline's, each line's
     // baseline and start.
     let mut clusters: Vec<ClusterBox> = Vec::new();
-    let mut box_at: HashMap<usize, (usize, f32, f32)> = HashMap::new();
+    let mut box_at: HashMap<RawNodeId, (usize, f32, f32)> = HashMap::new();
     let mut lines: Vec<(f32, f32)> = Vec::new();
     for (index, line) in layout.lines().enumerate() {
         let metrics = line.metrics();
-        lines.push((metrics.baseline, metrics.offset));
+        lines.push((metrics.baseline, metrics.inline_min_coord + metrics.offset));
         // A run is handed out once per style it holds; its clusters are
         // walked once, from where its first piece starts.
         let mut last_run = None;
@@ -724,7 +816,7 @@ fn measure_span_fragments(
                     if crate::ifc::is_edge_box(b.id) {
                         continue;
                     }
-                    box_at.insert(b.id as usize, (index, b.x, b.x + b.width));
+                    box_at.insert(b.id as RawNodeId, (index, b.x, b.x + b.width));
                 }
             }
         }
@@ -765,7 +857,9 @@ fn measure_span_fragments(
     let mut before = Before::Nothing;
     for &(id, _) in &inline.child_positions {
         *steps += 1;
-        let Some(node) = tree.get(id) else { continue };
+        let Some(node) = tree.get_live(id) else {
+            continue;
+        };
         if let Some(own) = content.get_mut(&id) {
             own.seen = true;
             own.before = before;
@@ -797,7 +891,7 @@ fn measure_span_fragments(
                     span.boxes.push(b);
                 }
             }
-            above = tree.get(p).and_then(|n| n.parent);
+            above = tree.get_live(p).and_then(|n| n.parent);
         }
     }
 
@@ -823,7 +917,7 @@ fn measure_span_fragments(
                     break;
                 }
                 *steps += 1;
-                let Some(el) = tree.get(id) else { break };
+                let Some(el) = tree.get_live(id) else { break };
                 if !(el.is_element() && el.display_mode == crate::node::DisplayMode::Inline) {
                     break;
                 }
@@ -832,7 +926,7 @@ fn measure_span_fragments(
                 {
                     let parent_size = el
                         .parent
-                        .and_then(|p| tree.get(p))
+                        .and_then(|p| tree.get_live(p))
                         .map_or(el.computed_style.font_size, |p| p.computed_style.font_size);
                     shift = RinchDocument::vertical_align_shift_px(&el.computed_style, parent_size);
                     if shift != 0.0 {
@@ -1004,7 +1098,7 @@ pub(crate) fn bake_at_style_site(
     node_id: RawNodeId,
     taffy_style: &mut taffy::Style,
 ) {
-    let Some(node) = tree.nodes.get(node_id) else {
+    let Some(node) = tree.nodes.get_live(node_id) else {
         return;
     };
     let mut ancestor = false;
@@ -1045,7 +1139,7 @@ pub(crate) fn rebake_after_inset_write(
     node_id: RawNodeId,
     taffy_style: &mut taffy::Style,
 ) {
-    let Some(node) = tree.nodes.get(node_id) else {
+    let Some(node) = tree.nodes.get_live(node_id) else {
         return;
     };
     let kind = match out_of_flow_kind(tree, node_id) {
@@ -1108,6 +1202,7 @@ pub(crate) fn note_kind_at_read(
 /// flags. Called before `read_layout_results` walks the document.
 pub(crate) fn begin_read(tree: &mut NodeTree) {
     tree.placed_absolutes.clear();
+    tree.overflow_absolutes.listed.clear();
     tree.abs_static_fits.clear();
     tree.abs_late_moves = false;
     tree.abs_inline_cb_seen = false;
@@ -1174,17 +1269,39 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     // Taffy would take from the direct parent. Unpaired, a missing inset
     // counts as zero — Taffy's `resolve_absolute_sizing_keywords` rule, and
     // Chrome 153's answer (`left: 10px` in an 800px viewport gives 790).
+    // A size that fills the room between the insets is the border box's: a
+    // `content-box` box's `width` or `height` is that less its padding and
+    // border (#1278), or it overflows the room by them. Read from the
+    // computed style: the Taffy style handed here need not carry its
+    // `box_sizing` yet. A percentage padding resolves against the block's
+    // width on both axes.
+    let (inset_x, inset_y) = if cs.box_sizing_border_box {
+        (0.0, 0.0)
+    } else {
+        (
+            cs.padding_left.resolve(cw)
+                + cs.padding_right.resolve(cw)
+                + cs.border_left_width.to_px()
+                + cs.border_right_width.to_px(),
+            cs.padding_top.resolve(cw)
+                + cs.padding_bottom.resolve(cw)
+                + cs.border_top_width.to_px()
+                + cs.border_bottom_width.to_px(),
+        )
+    };
     if taffy_style.size.width.is_stretch() {
         let l = cs.left.resolve(cw).unwrap_or(0.0);
         let r = cs.right.resolve(cw).unwrap_or(0.0);
-        taffy_style.size.width = taffy::Dimension::length((cw - l - r - ml - mr).max(0.0));
+        taffy_style.size.width =
+            taffy::Dimension::length((cw - l - r - ml - mr - inset_x).max(0.0));
     } else if taffy_style.size.width == taffy::Dimension::auto()
         || taffy_style.size.width == taffy::Dimension::fit_content()
     {
         let auto = taffy_style.size.width == taffy::Dimension::auto();
         match (cs.left.resolve(cw), cs.right.resolve(cw)) {
             (Some(l), Some(r)) if auto => {
-                taffy_style.size.width = taffy::Dimension::length((cw - l - r - ml - mr).max(0.0));
+                taffy_style.size.width =
+                    taffy::Dimension::length((cw - l - r - ml - mr - inset_x).max(0.0));
             }
             // Otherwise the box shrinks to fit (CSS 2.1 §10.3.7) — in what
             // its **containing block** leaves it: that block's width less the
@@ -1221,12 +1338,14 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     if taffy_style.size.height.is_stretch() {
         let t = cs.top.resolve(ch).unwrap_or(0.0);
         let b = cs.bottom.resolve(ch).unwrap_or(0.0);
-        taffy_style.size.height = taffy::Dimension::length((ch - t - b - mt - mb).max(0.0));
+        taffy_style.size.height =
+            taffy::Dimension::length((ch - t - b - mt - mb - inset_y).max(0.0));
     } else if taffy_style.size.height == taffy::Dimension::auto() {
         // Between two insets it fills the space; otherwise it is its
         // content's (CSS 2.1 §10.6.4), a fixed box's too (#893).
         if let (Some(t), Some(b)) = (cs.top.resolve(ch), cs.bottom.resolve(ch)) {
-            taffy_style.size.height = taffy::Dimension::length((ch - t - b - mt - mb).max(0.0));
+            taffy_style.size.height =
+                taffy::Dimension::length((ch - t - b - mt - mb - inset_y).max(0.0));
         }
     } else if absolute {
         match cs.height {
@@ -1337,7 +1456,7 @@ fn takes_room(v: LengthPercentageAutoValue) -> bool {
 fn layout_parent_box(tree: &NodeTree, node: &Node) -> Option<RawNodeId> {
     let mut current = node.parent;
     while let Some(id) = current {
-        let ancestor = tree.get(id)?;
+        let ancestor = tree.get_live(id)?;
         if generates_layout_box(ancestor) {
             return Some(id);
         }
@@ -1429,7 +1548,7 @@ fn fit_in_layout_parent(tree: &NodeTree, node: &Node, taffy_style: &mut taffy::S
 /// the lines: shrunk to fit from its static position, or in a grid container
 /// with an inset or margin that takes room. Any other box costs a few reads.
 pub(crate) fn fits_in_layout_parent_later(tree: &NodeTree, node_id: RawNodeId) -> bool {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return false;
     };
     let cs = &node.computed_style;
@@ -1627,7 +1746,7 @@ fn chain_to_containing_block(
             }
             break;
         };
-        let node = tree.get(id)?;
+        let node = tree.get_live(id)?;
         // Mirrors `paint`'s origin step: an atomic inline's `layout` is
         // relative to its IFC root's content box.
         let (dx, dy) = crate::paint::ifc_content_box_offset(tree, node);
@@ -1682,7 +1801,7 @@ pub(crate) fn place_absolute(
     // flag).
     let ((ox, oy), (sx, sy)) = chain_to_containing_block(tree, node_id, end, mark)?;
     let cb = ContainingBox::of(tree, kind)?;
-    let style = &tree.get(node_id)?.computed_style;
+    let style = &tree.get_live(node_id)?.computed_style;
     // Percentage margins resolve against the containing block's *width* on
     // both axes, per CSS.
     let x = axis_start(
@@ -1743,9 +1862,9 @@ pub(crate) fn is_laid_out(tree: &NodeTree, node_id: RawNodeId, size: (f32, f32))
     if size.0 > 0.0 || size.1 > 0.0 {
         return true;
     }
-    let mut current = tree.get(node_id).and_then(|n| n.parent);
+    let mut current = tree.get_live(node_id).and_then(|n| n.parent);
     while let Some(id) = current {
-        let Some(node) = tree.get(id) else {
+        let Some(node) = tree.get_live(id) else {
             return false;
         };
         if node.computed_style.display == DisplayValue::None {
@@ -1773,10 +1892,10 @@ pub(crate) fn static_axes(style: &ComputedStyle) -> (bool, bool) {
 /// The nearest ancestor of `node_id` in the box tree that generates a box:
 /// the one its `layout` is relative to. (A `display: contents` wrapper is in
 /// the chain and has none.)
-fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
+pub(crate) fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
     let mut current = RinchDocument::box_tree_parent(&tree.nodes, node_id)?;
     loop {
-        let node = tree.get(current)?;
+        let node = tree.get_live(current)?;
         if node.computed_style.display != DisplayValue::Contents {
             return Some(current);
         }
@@ -1800,7 +1919,7 @@ fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
 /// left.) The lines' host is the box's layout parent — the block container
 /// an out-of-flow box among inline content is laid out in ([`inline_host`]).
 fn inline_static_position(tree: &NodeTree, node_id: RawNodeId) -> Option<(f32, f32)> {
-    let node = tree.get(node_id)?;
+    let node = tree.get_live(node_id)?;
     let (root_id, index) = node.static_ifc_root?;
     let inline = tree.get(root_id)?.text_layout.as_ref()?;
     // By index, not by search: a paragraph of N such boxes is looked at N
@@ -1835,7 +1954,7 @@ pub(crate) fn static_location(
 ) -> (f32, f32) {
     if tree
         .nodes
-        .get(node_id)
+        .get_live(node_id)
         .is_none_or(|n| n.static_ifc_root.is_none())
     {
         return taffy_location;
@@ -1885,7 +2004,7 @@ fn unscrolled_parent_origin(tree: &mut NodeTree, node_id: RawNodeId) -> (f32, f3
     let (mut x, mut y) = (0.0_f32, 0.0_f32);
     let mut current = RinchDocument::box_tree_parent(&tree.nodes, node_id);
     while let Some(id) = current {
-        let Some(node) = tree.get(id) else { break };
+        let Some(node) = tree.get_live(id) else { break };
         let (dx, dy) = crate::paint::ifc_content_box_offset(tree, node);
         x += node.layout.x + dx;
         y += node.layout.y + dy;
@@ -1922,7 +2041,7 @@ pub(crate) fn place_fixed_static(
     node_id: RawNodeId,
     taffy_location: (f32, f32),
 ) -> (Option<f32>, Option<f32>) {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return (None, None);
     };
     let (horizontal, vertical) = static_axes(&node.computed_style);
@@ -1942,7 +2061,7 @@ pub(crate) fn place_fixed_static(
 /// — an absolute box whose layout parent is its containing block, Taffy's
 /// own answer — is in no list, and is written here.
 pub(crate) fn place_static_after_lines(tree: &mut NodeTree, node_id: RawNodeId) {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return;
     };
     let (horizontal, vertical) = static_axes(&node.computed_style);
@@ -1981,7 +2100,7 @@ pub(crate) fn place_static_after_lines(tree: &mut NodeTree, node_id: RawNodeId) 
 /// already been read back, from Taffy's last answer, the lines and the chain
 /// as they stand. Returns whether it moved.
 fn replace(tree: &mut NodeTree, node_id: RawNodeId, kind: OutOfFlowKind) -> bool {
-    let Some(node) = tree.get(node_id) else {
+    let Some(node) = tree.get_live(node_id) else {
         return false;
     };
     let size = (node.layout.width, node.layout.height);
@@ -2037,6 +2156,10 @@ pub(crate) fn replace_all(tree: &mut NodeTree) {
     if !std::mem::take(&mut tree.abs_late_moves) || tree.placed_absolutes.is_empty() {
         return;
     }
+    // It moves boxes after the scroll ranges may have been measured (the
+    // layout's clamp asks for them first), so what those measured goes.
+    tree.hit_cache.invalidate();
+    tree.layout_epoch = tree.layout_epoch.wrapping_add(1);
     let placed = std::mem::take(&mut tree.placed_absolutes);
     tree.perf
         .add(crate::perf::Counter::AbsBoxesVisited, placed.len() as u64);
@@ -2127,14 +2250,14 @@ fn static_anchor(
     };
     // The parent's border-box start, in the containing block's padding box.
     let origin = ox - cb.border_left;
-    let parent = tree.get(parent_id)?;
+    let parent = tree.get_live(parent_id)?;
     let parent_layout = *tree.taffy.layout(parent.taffy_id?).ok()?;
     let anchor = match parent.computed_style.display {
         DisplayValue::Flex | DisplayValue::InlineFlex => {
             let l = &parent_layout;
             let start = origin + l.border.left + l.padding.left;
             let end = origin + l.size.width - l.border.right - l.padding.right;
-            let node = tree.get(node_id)?;
+            let node = tree.get_live(node_id)?;
             match flex_inline_alignment(tree, parent, node) {
                 Align::Start => StaticAnchor::Start(start),
                 Align::End => StaticAnchor::End(end),
@@ -2145,7 +2268,7 @@ fn static_anchor(
             StaticAnchor::Start(origin + parent_layout.border.left)
         }
         _ => {
-            let node = tree.get(node_id)?;
+            let node = tree.get_live(node_id)?;
             let x = match inline_static_position(tree, node_id) {
                 Some((x, _)) => x,
                 None => {
@@ -2304,7 +2427,7 @@ impl RinchDocument {
         let mut wanted: Vec<(RawNodeId, RawNodeId)> = Vec::new();
         let mut want = |kind: Option<OutOfFlowKind>| {
             if let Some(OutOfFlowKind::AncestorAbsolute(cb)) = kind
-                && let Some(span) = tree.get(cb)
+                && let Some(span) = tree.get_live(cb)
                 && !generates_layout_box(span)
                 && let Some(root) = span.ifc_root
             {

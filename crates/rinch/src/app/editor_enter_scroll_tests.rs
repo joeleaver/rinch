@@ -29,7 +29,7 @@ const WORDS: &str = "lorem ipsum dolor sit amet consectetur adipiscing elit sed 
 struct Rig {
     app: RinchApp,
     handle: crate::editor::EditorHandle,
-    pane: usize,
+    pane: u64,
 }
 
 /// `paragraphs` paragraphs of ~48 words in a 500x500 pane. `flex_pane`: the
@@ -95,7 +95,7 @@ fn idle(app: &mut RinchApp) {
     }
 }
 
-fn scroll_of(app: &RinchApp, id: usize) -> f64 {
+fn scroll_of(app: &RinchApp, id: u64) -> f64 {
     app.doc.as_ref().unwrap().borrow().tree.nodes[id]
         .scroll_offset
         .1
@@ -146,7 +146,7 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
 }
 
 /// Wheel the pane down (100px notches) until it is at `target` or further.
-fn wheel_to(app: &mut RinchApp, pane: usize, target: f64) {
+fn wheel_to(app: &mut RinchApp, pane: u64, target: f64) {
     for _ in 0..400 {
         if scroll_of(app, pane) >= target {
             return;

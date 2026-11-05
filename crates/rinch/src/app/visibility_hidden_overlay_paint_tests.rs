@@ -93,10 +93,10 @@ fn incremental_ink(app: &mut RinchApp) -> usize {
     px.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count()
 }
 
-fn class_node(app: &RinchApp, class: &str) -> usize {
+fn class_node(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let found: Vec<usize> = d
+    let found: Vec<u64> = d
         .tree
         .nodes
         .iter()

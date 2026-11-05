@@ -84,6 +84,40 @@ box:
   (`tree.dirty_atomic_inlines`) rather than a flag: measured, re-measuring the
   whole document instead costs
   +47% on a one-row text edit in a 500-row document carrying 500 chips.
+  **A box `resolve_percentage_inline_blocks` resolved is recorded at the
+  containing-block width it resolved it against**, and skipped while that
+  width stands: `keyword_inline_cb_width` for a `fit-content`/`stretch`/`auto`
+  box (#1281's review), `percent_inline_cb_width` for one with a percentage
+  `width`/`min-width`/`max-width` (#2136; until then a percentage box was laid
+  out twice after **every** root compute, whatever moved — a `max-width: 100%`
+  pill on each of 430 grid cards was 860 `inline_block_computes` and 860
+  re-shapes a layout). Both records are dropped by any measure of the box as
+  `auto` (`measure_inline_blocks` with no containing-block width: a change
+  inside the box or to its own style, a structural pass, phase 1's reset of
+  the boxes inside one being resolved) and when the node is freed. They are
+  two maps because the first also tells the measure "lined up at a resolved,
+  not its natural, size" (`AtomicContributions`), which a percentage box has
+  never meant.
+  **The box's own percentages are resolved by rinch, not Taffy** (#2140,
+  #2146): a detached root resolves its own `width`/`min-width`/`max-width`
+  percentages against the available space it is computed under, and
+  `measure_inline_blocks` widens that space (pass B never hands a box less
+  than a width resolved for it; pass C recomputes at the box's used width). So
+  `own_percentage_widths` writes each one, plain or in a mixed `calc()`, into
+  the Taffy style as a length of the containing block's inner width for the
+  measure, and puts the declared style back afterwards. Before that, a
+  `max-width: 100%` over content wider than the block was resolved against
+  the content and capped nothing (Chrome caps the box and the content
+  overflows), a `max-width: 50%` was resolved twice and came out at 25%, and a
+  `calc()` size, whose Taffy form is only its length part and which
+  `resolve_layout_calcs` does not reach on a detached root, laid out
+  `calc(50% + 10px)` at `10px`. Measured with no containing-block width, a
+  `calc()` size is `auto`, as a plain percentage is under max-content space.
+  So a `calc()` box inside an `auto` box counts as `auto` toward that box's
+  width. A new path that changes what sizes such a box without
+  measuring it as `auto` must drop its entry. Pins:
+  `tests/percent_atomic_inline_record_2136_tests.rs` (each history against a
+  fresh layout), `perf_regression_scenarios::percentage_pills_in_a_grid_*`.
 - **A transition or animation writes `computed_style` directly**, so it reaches
   none of the cascade's invalidation; `tick_transitions` and `tick_animations`
   each invalidate the text measure of the nodes they are interpolating
@@ -140,6 +174,23 @@ box:
   whole subtree — read as a display change and ran the whole-document
   `ifc_dirty` pass: 91ms for a colour-only hover over 2000 rows, 0.18ms after.
   `frozen_box_remeasure_tests` pins both halves through `tree.ifc_setup_passes`.
+- **A `Calc` layout value is compared resolved.** The stored Taffy style holds
+  the length `resolve_layout_calcs` resolved a mixed `calc()` to; a style
+  rebuilt from computed values carries only its length part (the seed). The
+  same three passes compare a copy of the rebuilt style resolved by
+  `patch_layout_calcs` (the per-node step of `resolve_layout_calcs`, against
+  the last layout's bases; `taffy_style_for_compare`), and store the seeded
+  style as before. Storing the resolved copy instead laid a box out unlike a
+  fresh layout where `resolve_layout_calcs` does not reach it (inside an atomic
+  inline, #1412; `review_1477_fixtures`' H5 `calc(5px + 2%)` margin).
+  Unresolved, a new `calc()` whose length part equalled
+  the old resolved length compared equal and the layout was skipped:
+  `calc(50% + 10px)` → `calc(10% + 160px)` stayed 160 wide in 300px, and an
+  animation frame `calc(6.25% + 150px)` after a frame resolved to 150 stayed
+  at 150 (#767; `calc_width_restyle_to_a_length_part_equal_to_the_old_width`,
+  `a_calc_frame_whose_length_part_is_the_last_resolved_width_lays_out`). No
+  transition produces a `Calc` frame yet (#2051), so the transition tick's
+  copy has no fixture of its own.
 
 `RinchDocument::invalidate_text_measure_for_node` is the one place that knows
 what a typography change owes: the IFC's Parley layout, the box of any atomic
@@ -215,8 +266,12 @@ went stale on class toggles, insertions and removals. Now:
   (`stylo_impl::element_state`); `:disabled`/`:enabled`/`:link` are read from
   attributes, so `disabled` and `href` force self + subtree + later siblings.
   `style`, `rows` (textarea), `start` (ol), `value` (li) and any attribute on an
-  element with generated content (`content: attr()` now works) force what they
-  feed. `:nth-child(… of S)` needs nothing extra: Stylo's maps record the
+  element with generated content force what they feed. So does any attribute on
+  an element whose style or `::before`/`::after` substitutes `attr()`: since
+  stylo 0.21 `attr()` is a substitution function (in any property, not only
+  `content`) that the cascade resolves through `TElement::get_attr`, and that
+  call flags the element (`Node::content_reads_attrs`, cleared before each
+  cascade of the element). `:nth-child(… of S)` needs nothing extra: Stylo's maps record the
   selectors inside `of S`.
 - **Stylesheet changes use Stylo's stylesheet invalidation** (#884,
   `style_resolution/sheets.rs`). `load_css`, `set_theme_css` and a `<style>`
@@ -658,6 +713,20 @@ shapes itself (one shape for a new row where there were four).
 mutation shape in 17 contexts, plus a lockstep randomized differential, each
 comparing the scoped pass with the whole-document pass on the same history and
 both with a fresh layout; its module doc lists what it found.
+
+**A `display: contents` splice that comes out the same is left alone**
+(#2136, `sync_display_contents`). A scoped structural pass reaches every
+wrapper in its containers' regions, and a grid built by a keyed `for` holds a
+wrapper per item, so an append, a removal or a reorder in that grid put the
+grid in `affected_parents` once per wrapper. Each rebuild used to
+`set_children` the grid and `mark_dirty` **every** item, clearing all their
+Taffy caches: one card appended to Playweft's 430-card asset grid measured
+every card's text again (10,892 `shape_measure_text`). The rebuild now
+compares the new list with Taffy's: an unchanged list is skipped, and only an
+item that was not in the list is dirtied (one that stays, reordered or not,
+keeps its cache — Taffy keys an entry on the inputs its parent passes, and the
+parent is dirtied by `set_children`). The root is marked only when a list
+changed. Pin: `perf_regression_scenarios::a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved`.
 
 **`<body>`'s flex basis is `0` when its height cannot depend on it** (#1260,
 `node::body_taffy_overrides`): `<html>` is a fixed viewport-sized flex column and

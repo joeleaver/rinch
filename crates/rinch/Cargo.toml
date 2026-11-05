@@ -60,6 +60,7 @@ tray-icon = { workspace = true, optional = true }
 # Platform-independent optional deps
 rinch-theme = { workspace = true, optional = true }
 rinch-components = { workspace = true, optional = true }
+rinch-html = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
 # ProseMirror-style editor core. Pulled in by the `desktop` feature; the desktop
 # runtime's input/IME/focus glue (in `app`/`shell`) reads its `Selection`/`Pos`/
@@ -73,6 +74,8 @@ rinch-editor-core = { workspace = true, optional = true }
 # — so default builds (desktop AND web) link zero CRDT code.
 rinch-editor-view = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
+# Node-and-wire editor canvas (graph feature).
+rinch-graph-view = { workspace = true, optional = true }
 # HTTP client for the network image loader (image-network). Standalone, opt-in:
 # nothing else in the facade depends on it, so default builds link no HTTP stack.
 rinch-http = { workspace = true, optional = true }
@@ -100,10 +103,17 @@ rinch-clipboard = { workspace = true, features = ["test-backend"] }
 # the optional `components` feature: the test then runs under `cargo test -p
 # rinch` with no flags, which is how it will actually be run.
 rinch-components = { workspace = true }
+# Test-only: `app::click_link_tests` mounts a real `HtmlView` and clicks a
+# link inside the HTML it was given.
+rinch-html = { workspace = true }
 # Test-only: `app::stepper_state_709_tests` needs a `TablerIcon` to name a
 # per-step icon with. The facade deliberately does not depend on this crate — the
 # icon enum is not in the prelude — so it is a dev-dependency.
 rinch-tabler-icons = { workspace = true }
+# Test-only: `app::graph_canvas_wheel_tests` drives the node-graph canvas's wheel
+# through the real desktop wheel path, without the optional `graph` feature (so
+# the test runs under `cargo test -p rinch` with no flags).
+rinch-graph-view = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
@@ -131,10 +141,13 @@ futures-lite = { version = "2", optional = true }
 # Native file and message dialogs. The browser's message dialogs need no crate
 # and no feature (`dialogs::web`, #1821), and a browser file picker gives no
 # path (#1773).
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 rfd = { workspace = true, optional = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The browser: `wasm32-unknown-unknown`, not every `wasm32`. A WASI guest
+# (`wasm32-wasip1`) that embeds rinch's components runs inside a host that is
+# not a browser, where these crates are stubs that panic when reached.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
@@ -163,7 +176,7 @@ web-sys = { version = "0.3", features = [
 
 # Test-only: the browser tests under `tests/` that need `rinch` alone (no
 # `rinch-web`), e.g. `embed_web_runtime_1956.rs` (`--features embed`).
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 wasm-bindgen-futures = "0.4"
 
@@ -287,8 +300,13 @@ system-tray = ["tray-icon", "gtk", "ksni"]
 memory-profile = ["memory-stats"]
 theme = ["dep:rinch-theme", "rinch-core/theme"]
 components = ["theme", "dep:rinch-components"]
+# `rinch::html`: the allow-list cleaner and `HtmlView`, for showing HTML the
+# app did not write (mail, feeds, help pages). Adds ammonia and css-inline.
+html = ["dep:rinch-html"]
 debug = ["dep:rinch-debug"]
 video = ["dep:rinch-video"]
+# Node-and-wire editors: the graph model and canvas (docs/design/node-graph.md).
+graph = ["dep:rinch-graph-view"]
 image-network = ["dep:rinch-http"]
 # Editor accessibility (M7b): derive an accesskit TreeUpdate from EditorState and
 # push it through a per-platform adapter. Linux uses accesskit_unix (AT-SPI); other

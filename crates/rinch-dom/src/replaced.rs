@@ -317,7 +317,6 @@ fn svg_natural_length(node: &Node, name: &str) -> Option<f32> {
 /// ([`SVG_FILL_WIDTH`]). Measured in Chrome 155: `width=14` alone is 14x150,
 /// `viewBox="0 0 16 8"` alone 400x200 in a 400px block, nothing 300x150.
 fn svg_context(node: &Node) -> NodeContext {
-    let (dw, dh) = DEFAULT_OBJECT_SIZE;
     let view_box = node.attributes.get("viewBox").and_then(|v| {
         let n: Vec<f64> = v
             .split(|c: char| c.is_ascii_whitespace() || c == ',')
@@ -339,15 +338,7 @@ fn svg_context(node: &Node) -> NodeContext {
         (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some(w / h),
         _ => view_box,
     };
-    let (width, height) = match (nw, nh, ratio) {
-        (Some(w), Some(h), _) => (w, h),
-        (Some(w), None, Some(r)) => (w, w / r),
-        (Some(w), None, None) => (w, dh),
-        (None, Some(h), Some(r)) => (h * r, h),
-        (None, Some(h), None) => (dw, h),
-        (None, None, Some(r)) => (SVG_FILL_WIDTH, dw / r),
-        (None, None, None) => (dw, dh),
-    };
+    let (width, height) = default_sized(nw, nh, ratio);
     NodeContext::Replaced {
         width,
         height,
@@ -364,19 +355,42 @@ fn svg_context(node: &Node) -> NodeContext {
 /// contexts compare equal and a cascade leaves Taffy's cache alone.
 pub const SVG_FILL_WIDTH: f32 = f32::INFINITY;
 
+/// The size [`measure`] starts from for a replaced element whose natural
+/// width, height and ratio are `nw`, `nh` and `ratio`, each possibly absent
+/// (an `<svg>` element, #1797, or an SVG file as an image, #2111): a missing
+/// dimension through the ratio from the other, else from the default object
+/// size (300x150); with neither dimension but a ratio, [`SVG_FILL_WIDTH`]
+/// (the containing block's width). Measured in Chrome 155 for `<svg>` and
+/// Chrome 156 for `<img>`: `width=30` alone is 30x150, `viewBox="0 0 16 8"`
+/// alone 400x200 in a 400px block, nothing 300x150.
+pub(crate) fn default_sized(nw: Option<f32>, nh: Option<f32>, ratio: Option<f32>) -> (f32, f32) {
+    let (dw, dh) = DEFAULT_OBJECT_SIZE;
+    match (nw, nh, ratio) {
+        (Some(w), Some(h), _) => (w, h),
+        (Some(w), None, Some(r)) => (w, w / r),
+        (Some(w), None, None) => (w, dh),
+        (None, Some(h), Some(r)) => (h * r, h),
+        (None, Some(h), None) => (dw, h),
+        (None, None, Some(r)) => (SVG_FILL_WIDTH, dw / r),
+        (None, None, None) => (dw, dh),
+    }
+}
+
 /// An `<img>`'s natural size and the ratio it is measured with: its own once
-/// loaded, with no natural size before, and the ratio its computed
-/// `aspect-ratio` makes of that ([`AspectRatioValue::used_ratio`]).
+/// loaded (`natural`, [`crate::image_cache::DecodedImage::natural`]), with no
+/// natural size before (`None`), and the ratio its computed `aspect-ratio`
+/// makes of that ([`AspectRatioValue::used_ratio`]). A raster image has both
+/// dimensions; an SVG file may lack either or both ([`default_sized`]).
 pub(crate) fn image_natural_size(
-    width: u32,
-    height: u32,
+    natural: Option<crate::svg_image::NaturalSize>,
     aspect: AspectRatioValue,
 ) -> ((f32, f32), Option<UsedRatio>) {
-    if width == 0 || height == 0 {
-        ((0.0, 0.0), aspect.used_ratio(None))
-    } else {
-        let (w, h) = (width as f32, height as f32);
-        ((w, h), aspect.used_ratio(Some(w / h)))
+    match natural {
+        Some(n) if n.width != Some(0.0) && n.height != Some(0.0) => (
+            default_sized(n.width, n.height, n.ratio),
+            aspect.used_ratio(n.ratio),
+        ),
+        _ => ((0.0, 0.0), aspect.used_ratio(None)),
     }
 }
 
@@ -426,7 +440,7 @@ pub fn replaced_context(node: &Node) -> Option<NodeContext> {
 /// `height` write asks for, and whatever moves the element's computed
 /// `aspect-ratio` (#1286). For an `<img>` it keeps the context's `aspect`
 /// current instead.
-pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool {
+pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: crate::node::RawNodeId) -> bool {
     let Some(node) = tree.nodes.get(node_id) else {
         return false;
     };
@@ -483,6 +497,39 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool
 /// sizer. Taffy adds the padding and border, and keeps any dimension it
 /// already knows.
 ///
+/// Whether a replaced box is *compressible* in the min-content sense
+/// (css-sizing-3 §5.2.2): its `width` or `max-width` is a percentage. (A
+/// `calc()` holding one is not detected.) Its min-content contribution is then zero,
+/// so `<td width="390"><img width="100%">` keeps a 390px column and the
+/// picture scales into it, as in Chrome, instead of the picture's natural
+/// width widening the column.
+pub(crate) fn is_compressible(style: &taffy::Style) -> bool {
+    let percent = |raw: taffy::CompactLength| raw.tag() == taffy::CompactLength::PERCENT_TAG;
+    percent(style.size.width.into_raw()) || percent(style.max_size.width.into_raw())
+}
+
+/// What a replaced box's measure answers: `size`, but with no width when the
+/// box is asked for its min-content contribution and is
+/// [compressible](is_compressible).
+pub(crate) fn contribution(
+    size: taffy::Size<f32>,
+    style: &taffy::Style,
+    known: taffy::Size<Option<f32>>,
+    available: taffy::Size<taffy::AvailableSpace>,
+) -> taffy::Size<f32> {
+    if known.width.is_none()
+        && available.width == taffy::AvailableSpace::MinContent
+        && is_compressible(style)
+    {
+        taffy::Size {
+            width: 0.0,
+            height: size.height,
+        }
+    } else {
+        size
+    }
+}
+
 /// A dimension known from `known` (Taffy's, border-box) or, when `inherent`,
 /// from the style's `width`/`height` gives the other through the ratio — its
 /// value **after** its own axis's `min-*`/`max-*` clamp, so `width: 100%;

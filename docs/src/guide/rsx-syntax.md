@@ -230,6 +230,7 @@ Supported HTML-element event attributes:
 | `ondropfiles` | OS → app file drop on the desktop **and** the web (issue #1771): the files as `LocalFile`s (name, size, path where there is one, bytes read on demand). See [Files From the User](./platform.md#files-from-the-user-web-and-desktop) | `Fn(Vec<LocalFile>)` |
 | `onsubmit` | Enter in an `<input>` or `<textarea>` (Shift+Enter in a `<textarea>` inserts a line break instead), read from the control and then up its ancestors — see [Enter in a `<textarea>`](#enter-in-a-textarea) | `Fn()` |
 | `onkeydown` / `onkeyup` | A key pressed / released while the element, or a text control or focusable element inside it, holds the keyboard — see [Keys on an element](#keys-on-an-element) | `Fn(&KeyEventData) -> bool` — `true` consumes the key |
+| `onwheel` | A mouse wheel, trackpad scroll or trackpad pinch over the element or inside it — see [The wheel on an element](#the-wheel-on-an-element) | `Fn(&WheelEvent) -> bool` — `true` consumes the wheel, and nothing scrolls |
 
 That list is closed. Any other `on*` name on an HTML element — `onfocus`,
 `onblur`, a typo such as `onclik` — is a compile error that lists the
@@ -296,6 +297,50 @@ of a `[[`, so the popup stays put as the query is typed) answer where the caret
 is drawn, in logical window px on desktop and client px on the web, the space
 `EditorHandle::caret_rect` answers in. See [Reading the selection and the
 caret](./focus.md#reading-the-selection-and-the-caret).
+
+### The wheel on an element
+
+`onwheel` hears a wheel turn, a two-finger trackpad scroll and a trackpad
+pinch over the element, before any scroll container moves. It answers whether
+it **consumed** the wheel: `true` is the browser's `preventDefault()` — no
+ancestor's `onwheel` is offered it and no container scrolls. `false` lets it go
+on as if the handler were not there. The element under the pointer is asked
+first, then its ancestors, nearest first, until one consumes it.
+
+The [`WheelEvent`] has the DOM's sign and unit on both backends: `delta_x` and
+`delta_y` in logical pixels, positive when the content would move left / up (a
+wheel turned towards you scrolls down: a positive `delta_y`). A notched wheel
+is 40 px a line, a page the window's height. `x` and `y` are the pointer in
+the frame of `get_click_context().mouse_x`, and `modifiers` holds Shift, Ctrl,
+Alt and Meta.
+
+A **pinch** arrives as a wheel with `modifiers.ctrl` set, the way browsers
+report one (desktop turns a macOS or Wayland pinch gesture into the same
+thing), and `zoom_factor()` reads Ctrl+wheel and pinch alike as a scale (100 px
+of `delta_y` is a factor of *e*; above 1 zooms in). A canvas that zooms around
+the pointer on Ctrl/Cmd+wheel and pinch, and pans on a plain wheel:
+
+```rust
+div {
+    style: "overflow: hidden; width: 600px; height: 400px",
+    onwheel: move |w: &WheelEvent| {
+        if w.modifiers.ctrl || w.modifiers.meta {
+            zoom_around(w.zoom_factor(), w.x, w.y);
+        } else {
+            pan_by(-w.delta_x, -w.delta_y);
+        }
+        true // the page does not scroll, nor zoom for a pinch
+    },
+}
+```
+
+A render surface under the pointer takes the wheel first (its own
+`SurfaceEvent::MouseWheel`, or a `Pinch`), and no `onwheel` hears it. A touch
+pan on a touchscreen is not a wheel in a browser; on desktop and Android
+rinch's touch recogniser scrolls through the same path, so an `onwheel` there
+hears a touch pan too.
+
+[`WheelEvent`]: https://docs.rs/rinch/latest/rinch/prelude/struct.WheelEvent.html
 
 ### Pointer moves are coalesced
 
@@ -1274,6 +1319,97 @@ rsx! {
 }
 ```
 
+`current_user.set(Some("Bob".into()))` redraws the greeting. A branch whose
+pattern **binds a name** follows that value: whenever a reactive value the
+scrutinee reads changes and the pattern still matches, the branch is disposed
+and built again, so `name` is the new value. A branch that binds nothing —
+`Some(_)`, `None`, a plain `if` — is built once each time it is shown, since
+nothing in it can be stale. The same rule applies to [`match`
+arms](#how-match-works-internally). (Before issue #2105 a binding branch was
+rebuilt only when the pattern started or stopped matching, so `Some("Alice")`
+→ `Some("Bob")` kept showing Alice.)
+
+What to know about the rebuild:
+
+- **It is a rebuild, not an update.** The branch's own state goes with it:
+  focus inside it, its scroll position, the rows of a keyed `for` inside it.
+  A branch whose own controls write the value it bound — a form whose inputs
+  edit the record it shows, a panel of sliders over the material it shows —
+  would be rebuilt on every keystroke or tick, and its control would lose
+  focus. Mark such a branch [`#[once]`](#once-build-a-branch-once-per-selection).
+
+- **There is no equality check.** The branch cannot compare old and new values
+  (they need be neither `PartialEq` nor `'static`), so it rebuilds whenever
+  the scrutinee re-runs, which is whenever a signal it read was written —
+  `Signal::set` with an equal value included. To skip equal values, put the
+  value behind a `Memo`, whose equality cut-off stops the re-run, or write with
+  `Signal::set_if_changed`:
+
+  ```rust
+  let user_name = Memo::new(move || session.get().map(|s| s.user_name));
+  rsx! {
+      if let Some(name) = user_name.get() {   // rebuilt only when the name changes
+          p { "Welcome, " {name} "!" }
+      }
+  }
+  ```
+
+  The same goes for a scrutinee that reads more than the value it binds:
+  `if let Some(row) = rows.get().get(i).cloned()` rebuilds on any change to
+  `rows`; a `Memo` over the row narrows it to changes of that row.
+
+- **Telling a binding from a constant.** `name` binds; `None`, `Mode::Edit`,
+  `0`, `_` do not. A bare identifier that starts with an uppercase letter is
+  read as a constant or unit variant, as Rust's naming convention has it — the
+  macro sees only syntax and cannot tell `Some(N)` binding `N` from `Some(N)`
+  matching a `const N`. So an uppercase binding is never rebuilt, exactly as if
+  the branch carried `#[once]`. Name bindings in snake_case.
+- **Nested branches on one signal** are built once per write: the outer
+  branch's rebuild replaces the inner one, which does not also rebuild itself.
+
+#### `#[once]`: build a branch once per selection
+
+`#[once]` before an `if` or a `match` keeps the behaviour rsx had before issue
+#2105: each branch is built when it is selected and keeps the value it bound
+then, however that value changes while it stays selected. Switching branches
+(`Some` → `None`, one arm to another) still rebuilds.
+
+```rust
+let draft = Signal::new(Some(Contact::default()));
+
+rsx! {
+    #[once]
+    if let Some(contact) = draft.get() {
+        // The field writes `draft` on every keystroke; without `#[once]` each
+        // keystroke would rebuild the branch and the field would lose focus.
+        TextInput {
+            label: "Name",
+            value_fn: move || draft.get().map(|c| c.name).unwrap_or_default(),
+            oninput: move |v: String| draft.update(|d| if let Some(d) = d { d.name = v }),
+        }
+        p { "Contact #" {contact.id.to_string()} }   // read once: the id does not change
+    }
+}
+```
+
+- On an `if`, `#[once]` covers the whole `else if` chain.
+- On a `match`, it covers every arm. It can also go on **one arm**, which is
+  useful when only one arm holds a form:
+
+  ```rust
+  match mode.get() {
+      #[once]
+      Mode::Editing(draft) => { EditForm { draft } },   // its inputs write `mode`
+      Mode::Viewing(item) => { ItemView { item } },     // follows `item`
+  }
+  ```
+
+- Inside a `#[once]` branch, read anything that changes through a reactive
+  closure (`{|| …}`, `value_fn`), not through the binding: the binding is the
+  value at the time the branch was built.
+- `#[once]` is the only attribute rsx accepts there; on an element, or with
+  another name, it is a compile error.
+
 #### How `if` works internally
 
 The `if` block desugars to `show_dom()` — the same runtime function used by the `Show` component. The condition is auto-wrapped in a `move || { ... }` closure, creating an Effect that watches the signals read inside it. When the condition changes:
@@ -1557,7 +1693,9 @@ rsx! {
 
 #### Match with pattern bindings
 
-Patterns that bind variables work — each arm re-evaluates the scrutinee to extract the bound values:
+Patterns that bind variables work — each arm re-evaluates the scrutinee to extract the bound values,
+and an arm that binds is rebuilt when the value changes while the arm still matches, so
+`Ok("Hello")` → `Ok("Bye")` redraws (see [`if let`](#if-let) for what a rebuild costs):
 
 ```rust
 let result = Signal::new(Ok::<String, String>("Hello".into()));
@@ -1634,6 +1772,14 @@ path such as `geom::Point { x: 1 }`, which is not an element name.
 #### How `match` works internally
 
 The `match` block desugars to `match_dom()`, which generalizes `show_dom()` to N branches. A discriminant closure returns the index of the active branch (0, 1, 2, ...). When the discriminant changes, the old branch is disposed and the new branch is rendered.
+
+An arm whose pattern binds a name (`Some(n) => …`, `Msg::Text(body) => …`) is
+also rebuilt when the discriminant re-runs and picks the same arm again, so it
+always shows the current value; that desugars to `match_dom_rebinding()`, and
+an `if let` that binds desugars to `show_dom_rebinding()`. Arms that bind
+nothing (`0 =>`, `Tab::About =>`, `None =>`, `_ =>`) are built once per
+selection. The [`if let`](#if-let) section above lists what a rebuild costs and
+how a `Memo` scrutinee avoids rebuilding for an equal value.
 
 ### Programmatic Conditional Rendering (show_dom)
 

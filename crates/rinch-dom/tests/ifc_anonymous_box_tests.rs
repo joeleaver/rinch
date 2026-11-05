@@ -91,13 +91,15 @@ fn color_bbox(px: &[u8], rgb: (u8, u8, u8)) -> Option<(u32, u32, u32, u32)> {
 /// The container every test builds: asymmetric padding `(10, 20, 30, 40)` and
 /// a 2px border, so the content-box offset is `(42, 12)` — different on each
 /// axis. Mixed content (a block sibling after the inline run) is what makes
-/// `create_anonymous_block_boxes` mint the anonymous root.
-const CONTAINER: &str = "width: 400px; padding: 10px 20px 30px 40px; \
+/// `create_anonymous_block_boxes` mint the anonymous root. Every container in
+/// this file is `box-sizing: border-box`, so its declared width is the border
+/// box the expectations are written against.
+const CONTAINER: &str = "box-sizing: border-box; width: 400px; padding: 10px 20px 30px 40px; \
                          border: 2px solid rgb(0, 0, 255); font-size: 16px; \
                          line-height: 20px";
 
 /// The anonymous IFC root that owns `child`, asserted to exist.
-fn anon_root_of(doc: &RinchDocument, child: NodeId) -> usize {
+fn anon_root_of(doc: &RinchDocument, child: NodeId) -> u64 {
     let root = doc
         .tree
         .get(child.0)
@@ -352,7 +354,8 @@ fn the_parents_decorations_are_not_repainted_on_the_anonymous_box() {
         &mut doc,
         body,
         "div",
-        "width: 400px; height: 100px; padding: 10px 20px 30px 40px; \
+        "box-sizing: border-box; width: 400px; height: 100px; \
+         padding: 10px 20px 30px 40px; \
          border: 2px solid rgb(0, 0, 255); font-size: 16px; line-height: 20px; \
          color: rgb(0, 0, 0); background-color: rgba(0, 255, 0, 0.5)",
     );
@@ -418,9 +421,9 @@ fn the_parents_decorations_are_not_repainted_on_the_anonymous_box() {
 /// than its twin).
 #[test]
 fn an_anonymous_root_breaks_lines_at_the_same_width_as_its_twin() {
-    // Content width 400 - 100 - 60 - 2*2 = 236; the phantom subtraction is
-    // another 164, leaving 72.
-    let wide = "width: 400px; padding: 10px 60px 30px 100px; \
+    // Border box 400, content width 400 - 100 - 60 - 2*2 = 236; the phantom
+    // subtraction is another 164, leaving 72.
+    let wide = "box-sizing: border-box; width: 400px; padding: 10px 60px 30px 100px; \
                 border: 2px solid rgb(0, 0, 255); font-size: 16px; \
                 line-height: 20px";
     let text = "wrap me here and now";
@@ -489,12 +492,13 @@ fn layer_bounds_keeps_an_anonymous_roots_text_inside_the_container() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     child_of(&mut doc, body, "div", "height: 100px");
-    // 300 wide, content box 300 - 40 - 20 - 2*2 = 236.
+    // 300 wide border box, content box 300 - 40 - 20 - 2*2 = 236.
     let container = child_of(
         &mut doc,
         body,
         "div",
-        "width: 300px; padding: 10px 20px 30px 40px; border: 2px solid black; \
+        "box-sizing: border-box; width: 300px; padding: 10px 20px 30px 40px; \
+         border: 2px solid black; \
          opacity: 0.5; font-size: 16px; line-height: 20px",
     );
     let block = child_of(
@@ -615,7 +619,7 @@ fn an_anonymous_roots_text_decoration_comes_from_its_parent() {
             body,
             "div",
             &format!(
-                "width: 400px; padding: 10px 20px 30px 40px; \
+                "box-sizing: border-box; width: 400px; padding: 10px 20px 30px 40px; \
                  border: 2px solid rgb(0, 0, 255); font-size: 16px; \
                  line-height: 20px; color: rgb(0, 0, 0); {decl}"
             ),

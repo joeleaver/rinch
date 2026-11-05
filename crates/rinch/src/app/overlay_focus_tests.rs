@@ -62,7 +62,7 @@ fn settle(app: &mut RinchApp) {
 }
 
 /// The node the arbiter currently holds, whichever target kind it is.
-fn focused(app: &RinchApp) -> Option<usize> {
+fn focused(app: &RinchApp) -> Option<u64> {
     match app.focus_target {
         FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
         _ => None,
@@ -80,10 +80,10 @@ fn button(scope: &mut RenderScope, id: &str) -> NodeHandle {
 /// Node ids captured at mount, by the name the fixture gave them.
 #[derive(Clone, Copy, Default)]
 struct Ids {
-    opener: usize,
-    elsewhere: usize,
-    inside_first: usize,
-    inside_last: usize,
+    opener: u64,
+    elsewhere: u64,
+    inside_first: u64,
+    inside_last: u64,
 }
 
 /// A page with an opener button, a `Modal` holding two controls, and a second
@@ -356,7 +356,7 @@ fn closing_does_not_release_a_claim_outside_the_overlay() {
 fn unmounting_an_open_modal_restores_the_opener() {
     let inner_scope: Rc<RefCell<Option<RenderScope>>> = Rc::new(RefCell::new(None));
     let ids: Rc<Cell<Ids>> = Rc::new(Cell::new(Ids::default()));
-    let modal_root: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let modal_root: Rc<Cell<u64>> = Rc::new(Cell::new(0));
     let open = Signal::new(false);
 
     let scope_out = inner_scope.clone();
@@ -485,9 +485,9 @@ fn a_parked_restore_is_refused_if_focus_moved_since() {
 fn a_nested_overlay_restores_into_the_one_that_contains_it() {
     #[derive(Clone, Copy, Default)]
     struct Nested {
-        opener: usize,
-        outer_a: usize,
-        inner_a: usize,
+        opener: u64,
+        outer_a: u64,
+        inner_a: u64,
     }
 
     let ids: Rc<Cell<Nested>> = Rc::new(Cell::new(Nested::default()));
@@ -569,7 +569,7 @@ fn a_nested_overlay_restores_into_the_one_that_contains_it() {
 #[test]
 fn a_popover_takes_focus_only_for_an_autofocus_child() {
     for autofocus in [false, true] {
-        let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+        let ids: Rc<Cell<(u64, u64)>> = Rc::new(Cell::new((0, 0)));
         let out = ids.clone();
         let open = Signal::new(false);
         let mut app = mount(move |scope: &mut RenderScope| {
@@ -610,7 +610,7 @@ fn a_popover_takes_focus_only_for_an_autofocus_child() {
 // ── 5. how overlays are actually opened ─────────────────────────────────────
 
 /// The centre of a node's painted box, in the logical space `click()` speaks.
-fn centre(app: &RinchApp, id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, id: u64) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     let (x, y, w, h) = crate::app::hit_testing::painted_element_box(&d.tree, id);
     (x + w / 2.0, y + h / 2.0)
@@ -618,7 +618,7 @@ fn centre(app: &RinchApp, id: usize) -> (f32, f32) {
 
 /// A real left press and release on a node, so the `data-rid` dispatch runs on
 /// the path a pointer takes.
-fn click_node(app: &mut RinchApp, id: usize) {
+fn click_node(app: &mut RinchApp, id: u64) {
     let (x, y) = centre(app, id);
     for ev in [
         PlatformEvent::MouseDown {
@@ -911,9 +911,9 @@ fn a_restore_the_arbiter_refuses_releases_the_claim() {
 fn closing_the_outer_overlay_first_still_restores_the_page() {
     #[derive(Clone, Copy, Default)]
     struct Nested {
-        opener: usize,
-        outer_a: usize,
-        inner_a: usize,
+        opener: u64,
+        outer_a: u64,
+        inner_a: u64,
     }
 
     let ids: Rc<Cell<Nested>> = Rc::new(Cell::new(Nested::default()));
@@ -1001,8 +1001,8 @@ fn closing_the_outer_overlay_first_still_restores_the_page() {
 fn an_opener_inside_an_already_closed_overlay_is_not_restored() {
     #[derive(Clone, Copy, Default)]
     struct Nested {
-        outer_a: usize,
-        inner_a: usize,
+        outer_a: u64,
+        inner_a: u64,
     }
 
     let ids: Rc<Cell<Nested>> = Rc::new(Cell::new(Nested::default()));
@@ -1088,10 +1088,10 @@ fn an_opener_inside_an_already_closed_overlay_is_not_restored() {
 fn editor_modal_page(
     open: Signal<bool>,
     editor_inside: bool,
-) -> (RinchApp, crate::editor::EditorHandle, usize, usize, usize) {
+) -> (RinchApp, crate::editor::EditorHandle, u64, u64, u64) {
     let handle = crate::editor::create_editor();
     assert!(handle.load_html("<p>modal</p>"));
-    let ids: Rc<Cell<(usize, usize, usize)>> = Rc::default();
+    let ids: Rc<Cell<(u64, u64, u64)>> = Rc::default();
     let (out, ed_in) = (ids.clone(), handle.clone());
     let app = mount(move |scope: &mut RenderScope| {
         let page = scope.create_element("div");
@@ -1187,7 +1187,7 @@ fn an_editor_inside_releases_and_the_editor_opener_gets_the_keyboard() {
     assert!(a.load_html("<p>outer</p>"));
     let b = crate::editor::create_editor();
     assert!(b.load_html("<p>inner</p>"));
-    let ids: Rc<Cell<(usize, usize)>> = Rc::default();
+    let ids: Rc<Cell<(u64, u64)>> = Rc::default();
     let (out, a2, b2) = (ids.clone(), a.clone(), b.clone());
     let mut app = mount(move |scope: &mut RenderScope| {
         let page = scope.create_element("div");
@@ -1240,7 +1240,7 @@ fn an_unmounted_editor_is_not_where_the_focus_is() {
     let shown = Signal::new(true);
     let h = crate::editor::create_editor();
     assert!(h.load_html("<p>x</p>"));
-    let ids: Rc<Cell<usize>> = Rc::default();
+    let ids: Rc<Cell<u64>> = Rc::default();
     let (out, h2) = (ids.clone(), h.clone());
     let mut app = mount(move |scope: &mut RenderScope| {
         let page = scope.create_element("div");

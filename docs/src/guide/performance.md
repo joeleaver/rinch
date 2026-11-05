@@ -122,7 +122,8 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `ifc_scoped_passes`, `ifc_scope_containers`, `ifc_scope_nodes` | Passes scoped to the formatting containers a structural change reached, and how many containers and nodes they set up again. Everything else keeps its splices, boxes, marks and Taffy cache |
 | | `ifc_full_passes`, `ifc_full_{initial,theme,unattributed}` | Passes over the whole document, and why: the first layout, a whole-document restyle, or `NodeTree::ifc_dirty` written directly with no reason |
 | | `taffy_root_computes` | Root Taffy computes (the same count as `NodeTree::taffy_computes`) |
-| | `taffy_measure_calls` | Calls to the measure function during root computes |
+| | `taffy_measure_calls` | Calls to the measure function during root computes and `table_column_measures`' size requests |
+| | `table_column_measures` | Table cells asked their max-content width for their column's share of a table that has a width of its own: only cells changed since they were last asked (#2141). A table with a spanning cell or a caption is measured by one detached layout of the whole table instead, which is a root compute |
 | | `inline_block_computes` | Standalone Taffy computes that size an atomic inline |
 | | `calc_fixpoint_passes` | Extra computes run by the `calc(%, px)` fixpoint |
 | | `abs_containing_block_passes` | Extra computes run because an absolutely positioned box's containing block — a positioned ancestor that is not its layout parent — came out of a compute at a size the box was not sized for: the document's first layout, and a resize of that block. Only a box whose *size* depends on the block (`inset: 0`, `width: 50%`) can cause one |
@@ -154,6 +155,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `split_frame_uploads` | GPU window: video frames uploaded for the split compositor (#1865), one per new frame of a video composited outside the scene. A video drawn in the scene (hidden, culled, inside an opacity group, overlapping an earlier split surface) uploads none |
 | | `split_below_kept` | GPU window: regions of split surfaces that a partial frame left as they were in the UI texture, because every change inside them was painted after the surface (a video's controls, a label over a game): only their above slices are rendered again (#1865 S4) |
 | | `split_hoist_walk_nodes` | GPU window, frames with a surface kept split: nodes walked to find a negatively z-indexed descendant hoisted out of a changed box (at most 256 a box), which keeps that change from being placed after the surface (#1865 S4) |
+| GPU painter | `vello_clip_tiles` | An estimate of the tiles the frame's clips and layers ask Vello for: for each clip and layer encoded into a scene, the 16px tiles its device bounding box covers inside that scene's render target. See [Vello's tiles](#vellos-tiles) |
 | Input | `hit_tests`, `hit_test_nodes_visited` | Hit tests run, and the nodes they visited |
 | | `hit_extents_computed` | Subtree extents the hit tester computed so it can skip subtrees nowhere near the pointer. They are kept until the document or its layout changes, so a run of moves over a still document computes each one once. A scroll keeps them (a scroll container's extent is its own box), so a wheel notch after the first computes none, not one per row |
 | Reactive | `effect_runs`, `signal_notifies` | Effect bodies run, and signal writes. A memo's internal marker (which passes a wake on to the memo's dependents) is **not** counted, nor is a recompute, nor is a dependent the equality cut-off skipped: `effect_runs` is the effect bodies that actually ran |
@@ -210,6 +212,42 @@ Some limits on what these numbers mean:
   paint shows up in the counters like any other frame. The capture after it
   adds nothing: on the software backend it reads the frame just presented back,
   as the GPU backend always has, rather than painting a second time (#364).
+
+## Vello's tiles
+
+Vello allocates tiles over a clip's or layer's whole bounds, whatever it holds,
+and its tile and ptcl buffers are fixed. A frame past them is dropped, and a
+transparent window goes blank. A nearly empty window can get there from paint
+mismanagement alone: Pimble's asked for 2.8M tiles at 3840x2128, where one
+window's worth is 31,920. `vello_clip_tiles` puts a number on this in a test, or
+in `perf_stats` on a running app, with no debug log in the Vello fork.
+
+Each clip and layer encoded into a scene adds the tiles its device bounding box
+touches, cut by the render target, rounding outward to 16px tiles as Vello does.
+A partial frame's target ends at its damage's far corner. On a window with a
+split surface the count also takes the inverse clip each time it opens, and the
+scenes a slice keeps (`VelloPainter::clip_tiles` has the list); a slice is a
+Vello render of its own, so the sum is the frame's cost and not one render's
+load. A clip the painter elided as cutting nothing costs nothing.
+
+It is **an estimate of clip and layer cost, not Vello's `bump.tile`**:
+
+- Fills and glyph runs allocate tiles too, and are left out.
+- Vello also cuts a clip by the bounds of the clips around it. This does not, so
+  a clip nested in a smaller one reads high.
+- A curved clip's bounds are its control points'.
+- A drag ghost adds what its own painter counted, uncut by the target.
+
+So do not compare it with Vello's buffer sizes as if it were the same number.
+Use it to compare frames, and to pin a fixture.
+
+It is `0` on a software frame, which has no tiles (its costs are `clip_mask_px`
+and `layer_px`), and on a redraw of a cached scene, which encodes nothing. When a
+frame is painted twice (something over a split surface reads its backdrop, or
+the split memory cap refused a surface) only the pass that is rendered counts.
+
+`crates/rinch-dom/tests/window_tiles_tests.rs` pins the fixtures, with exact
+numbers through a real `VelloPainter`.
 
 ## The committed baselines
 
@@ -443,6 +481,7 @@ The benchmarks live in `crates/rinch-bench`:
 | `dom::abs_badge_relayout.direct_500` / `icb_500` | One leaf restyled, then layout, in a scroller of 500 rows that each hold an absolutely positioned badge: a child of its own `position: relative` row (`direct`), or a box with no positioned ancestor (`icb`). Neither needs a size check after the compute, and the first is in none of the out-of-flow passes at all (#386) |
 | `dom::abs_badge_scroll.direct_500` / `ancestor_500` | One scroll of that scroller with no layout. `ancestor` puts a static wrapper around each badge, so its row is a containing block Taffy does not know; the scroller is still between no badge and its containing block, so the scroll re-places nothing |
 | `dom::full_paint.text_page_warm` | A full `TinySkiaPainter` paint of 40 wrapped paragraphs, with the glyph cache already warm |
+| `dom::full_paint.closed_drawer_500` | A full `TinySkiaPainter` paint of the `drawer_toggle` page — 500 rows under a closed `Drawer`, the theme's and component library's stylesheets loaded — glyph cache warm. The drawer is `visibility: hidden` with nothing visible in it, so paint and the stacking collector skip it whole (#2137) |
 | `dom::vello_paint.text_page` | The same page painted by the **Vello** painter (the GPU window's encoding walk, no GPU), on a frame opened for split GPU surfaces with none in it: the split-layer bookkeeping where it does nothing (#1865, #1894 review) |
 | `dom::vello_paint.split_surface_140_boxes` | A 640×360 GPU surface split out of the scene, 70 boxes over it and 70 beside it: every draw after the split routed by its device bounds |
 | `dom::shadow_paint.fields_40` | A full `TinySkiaPainter` paint of 40 input-like boxes, each with a 1px border, a 6px radius and a blurred `inset` shadow (#974: a blurred mask built and drawn per box) |

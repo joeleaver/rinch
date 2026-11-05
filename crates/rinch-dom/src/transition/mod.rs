@@ -57,9 +57,9 @@ pub fn find_matching_spec(
 ///
 /// What is **not** implemented, and is a deliberate scoping rather than an
 /// oversight: §3's *transitionability* precondition, which appears in item 1
-/// and again in item 4.2. A pair of values that cannot be interpolated (a
-/// length against a percentage, which would need a `calc()` `ComputedStyle`
-/// cannot hold) still gets an `ActiveTransition` that idles for its whole
+/// and again in item 4.2. A pair of values that cannot be interpolated (`auto`
+/// against a length; a length against a percentage interpolates as a `calc()`
+/// since #767) still gets an `ActiveTransition` that idles for its whole
 /// duration, because `AnimatableValue::interpolate` answers `None` for it and
 /// the tick then writes nothing. That is the pre-existing behaviour and it
 /// snaps either way; cancelling instead would only save the idle ticks.
@@ -239,7 +239,10 @@ pub(crate) fn visibility_is_inherited(tree: &NodeTree, node_id: RawNodeId) -> bo
     // the common case without reading a single rule; the rule walk below is
     // for a node that declared some other property of the struct, or whose
     // parent was re-cascaded into a fresh struct without it.
-    if let Some(parent) = tree.nodes[node_id].parent.and_then(|p| tree.nodes.get(p)) {
+    if let Some(parent) = tree.nodes[node_id]
+        .parent
+        .and_then(|p| tree.nodes.get_live(p))
+    {
         let parent_data = parent.stylo_element_data.borrow();
         if let Some(parent_primary) = parent_data.as_ref().and_then(|d| d.styles.get_primary())
             && std::ptr::eq(

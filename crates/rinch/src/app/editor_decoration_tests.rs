@@ -38,7 +38,7 @@ impl Plugin for Spell {
 
 struct Page {
     app: RinchApp,
-    container: usize,
+    container: u64,
     handle: crate::editor::EditorHandle,
     seen: Rc<RefCell<Vec<Selection>>>,
 }
@@ -46,8 +46,7 @@ struct Page {
 /// An editor inside a `div` carrying a live `data-oncontextmenu` (when `claim`),
 /// with an optional spell plugin.
 fn page(html: &'static str, claim: bool, style: &'static str, spell: Option<Rc<Spell>>) -> Page {
-    let slot: Rc<RefCell<Option<(usize, crate::editor::EditorHandle)>>> =
-        Rc::new(RefCell::new(None));
+    let slot: Rc<RefCell<Option<(u64, crate::editor::EditorHandle)>>> = Rc::new(RefCell::new(None));
     let seen: Rc<RefCell<Vec<Selection>>> = Rc::new(RefCell::new(Vec::new()));
     let slot_in = slot.clone();
     let seen_in = seen.clone();
@@ -265,8 +264,7 @@ impl Plugin for Shy {
 }
 
 fn shy_page(claim: bool) -> Page {
-    let slot: Rc<RefCell<Option<(usize, crate::editor::EditorHandle)>>> =
-        Rc::new(RefCell::new(None));
+    let slot: Rc<RefCell<Option<(u64, crate::editor::EditorHandle)>>> = Rc::new(RefCell::new(None));
     let seen: Rc<RefCell<Vec<Selection>>> = Rc::new(RefCell::new(Vec::new()));
     let (slot_in, seen_in) = (slot.clone(), seen.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

@@ -74,6 +74,60 @@ rsx! {
 
 Pattern bindings and guards are supported — each arm re-evaluates the scrutinee to extract bound values.
 
+**A branch that binds a value follows it (issue #2105).** The condition of an
+`if let` is `matches!(expr, pat)`, a `bool`, and a `match`'s discriminant is
+an arm index; `show_dom`/`match_dom` swap content only when that answer
+changes. The branch destructures the scrutinee when it is built, so before
+#2105 `Some(a)` → `Some(b)` left the branch showing `a` forever. Now:
+
+- The macro asks, per branch, whether the pattern binds a name
+  (`captures::pattern_binds_a_value`). A bare identifier starting with an
+  uppercase letter and without `ref`/`mut`/`@` counts as a path (`None`, an
+  imported unit variant, a constant); a macro pattern counts as binding.
+- A binding `if let` emits `show_dom_rebinding`; a `match` with any binding
+  arm emits `match_dom_rebinding` with one `bool` per arm. Everything else
+  emits the plain `show_dom`/`match_dom`, unchanged.
+- At runtime the condition/discriminant effect, on any re-run after its first
+  (which only subscribes) that leaves the same binding branch selected,
+  rebuilds that branch through the same dispose/discard/re-render path a flip
+  takes. The else branch and non-binding arms are never rebuilt by a re-run.
+- **No value comparison**, deliberately. Comparing needs the scrutinee to be
+  `PartialEq + Clone + 'static`, and many are not: `if let Some(i) = &icon`,
+  `items.first()` (borrows of a capture), `Option<Rc<dyn Trait>>`. Requiring it
+  would break those at compile time, and autoref specialization cannot fall
+  back on the `'static` bound (rustc picks the impl and then fails borrowck).
+  So a re-run is the trigger, and the cut-off lives upstream: a `Memo`
+  scrutinee (equality cut-off) or `Signal::set_if_changed`. A plain
+  `Signal::set` of an equal value rebuilds. Pinned by
+  `crates/rinch-macros/tests/rsx_if_let_rebinding_2105.rs`.
+- A guard's reads are part of the discriminant, so a binding arm whose guard
+  reads a signal is rebuilt when that signal changes and the arm still wins.
+- Inside a keyed `for` row, an `if let` on the row's own signal rebuilds only
+  that row's branch, and a reorder rebuilds none. An `if let` *around* a keyed
+  `for` rebuilds the whole list (fresh rows) when its bound value changes.
+- **`#[once]`** (parsed by `node::parse_once_marker`) on an `if` sets `once` on
+  it and every `else if` of its chain; on a `match` it sets `RsxMatchBlock::once`;
+  on an arm `RsxMatchArm::once`. A `once` branch gets `false` for "binds", so
+  it takes the plain `show_dom` / a `false` flag. Any other attribute is an
+  error; `#[once]` before something that is not an `if`/`match` is an error at
+  the attribute (`parse_marked_control_flow`). A transparent brace and a braced
+  arm body look past a leading attribute. Pinned by
+  `rsx_if_let_once_2105.rs` and, for focus in a browser,
+  `crates/rinch-web/tests/if_let_focus_2105.rs`.
+- **The condition/discriminant effect is created before the initial branch is
+  built** (`show_dom_impl`, `match_dom_impl`). Effects run in creation order
+  (#154), so the outer effect now runs ahead of every effect its branch
+  creates; a nested binding `if let` on the same signal is disposed by the
+  outer rebuild before it can rebuild itself (before this, one write built the
+  outer once and the inner twice). A write the initial build itself makes to a
+  signal the condition reads would otherwise reach the effect mid-build and
+  swap half-built content; it is parked (`building`/`pending`) and replayed by
+  `effect.run()` once the build is in place. The effect's first run only
+  subscribes and records the arm.
+- An uppercase bare binding (`Some(N)`) is classified as a path and never
+  rebuilt: syntax cannot tell it from a `const N`. Documented beside `#[once]`
+  in the guide.
+
 **A braced arm body is decided by how it starts** (issue #395). It holds rsx
 children — several nodes, like an `if`/`for` body — when it starts with `let`,
 or with an rsx *head* (`Name {`, a string literal, `if`/`for`/`match`, or a
@@ -178,7 +232,7 @@ A `value_fn` write (any `set_attribute("value")`) to the **focused** field is ad
 
 **Undo/redo on a focused field** (issue #288): Ctrl+Z, and Ctrl+Shift+Z / Ctrl+Y (Cmd on macOS; never with Alt — AltGr on Windows — and refused while an IME preedit is shown), reach `EditableState`'s stack through `handle_input_edit_command`, so `oninput` fires with the restored text and `readonly`/`disabled` refuse them like any edit. One key press is one step: `EditableState::execute` folds a command's operations into a `TextOperation::Group` (typing over a selection), and `handle_input_edit_command` folds the rewrite a keystroke's own `oninput` made into that keystroke's step (`adopt_focused_input_rewrite_from_dom`, `UndoStack::mark` / `EditableState::group_undo_since`) — or drops the step outright when the rewrite put the text back as it was (a rejected keystroke). **Every other adopted `value` write clears the undo and redo stacks** (`adopt_focused_input_value_from_dom`), as Chrome does for any script write to `.value`: a clear after submit is not undoable. (A keystroke's own `oninput` rewrite is the one divergence: Chrome clears history for it too, so a normalizing field has no undo on the web.) No typing coalescing, and the text context menu has no Undo row. Pins: `input_commit_tests` (`ctrl_z_*`, `a_normalizing_field_*`, `a_programmatic_write_clears_*`, `a_rejected_keystroke_*`, …).
 
-**Caret keys follow the platform** (issue #951): `app/text_keymap.rs`'s `text_key_action(TextKeymap, KeyCode, Modifiers)` is the one, pure answer for arrows, Home/End, Backspace and Delete in a desktop `<input>`/`<textarea>` and for the rich editor's caret motions (`dispatch_new_editor_key`; its deletes stay the editor keymap's). `TextKeymap::Standard` (Windows/Linux): Ctrl = word, Home/End = visual line, Ctrl+Home/End = value, Ctrl+Backspace/Delete = word delete (a character until #951). `TextKeymap::MacOs`: Option = word (and word delete, the editor keymap's `Alt-Backspace`), Cmd+Left/Right = visual line, Cmd+Up/Down = value, Home/End leave the caret (Shift extends to the value's ends). A field's word delete never crosses a line break (beside one it takes the break alone: `rinch-editable`'s `word_delete_start`/`_end`), a field's words are the editor's (`rinch-words`, the leaf crate both `rinch-editor-core` and `rinch-editable` take `word_segments` from — the field engine does not depend on the editor model; #1619: `foo-bar|` + Ctrl+Backspace → `foo-`, `3.14` one word; a textarea's `\n` is a word of its own, one stop: Ctrl+Right at a line's end lands past it (Chrome 155); Ctrl+Left stays on the caret's line (an indented line: its start, Chrome 155) except from exactly a line's start, where it lands before the break and Chrome 155 leaves the caret (Joe's decision); a word motion segments only the caret's line, since a break joins nothing (one long unbroken CJK run is still superlinear with the dictionary, #1626); the ICU dictionary through `rinch-editable/word-dictionary`, on for desktop and android, off for embed), Ctrl+Alt (AltGr) is no word delete, and in `type=password` a word is the whole value (word delete → to the value's edge, word move → its ends), as in Chrome. The keymap is the field `RinchApp::text_keymap` (`TextKeymap::host()`, a `cfg!`), so the macOS fixtures (`app/text_keymap_951_tests.rs`) run on Linux; a test that means the Windows/Linux keys sets `TextKeymap::Standard`. Not done (#1614): macOS Ctrl+Left/Right (Cocoa line moves) are character moves, Option+Up/Down (paragraph moves) line moves, the Emacs keys are unbound — all pinned as they are; Cmd+Backspace (macOS line delete) is a character delete in a field and nothing in the editor; rinch-web's editor still takes Ctrl-or-Cmd as its word modifier on every platform.
+**Caret keys follow the platform** (issue #951): `app/text_keymap.rs`'s `text_key_action(TextKeymap, KeyCode, Modifiers)` is the one, pure answer for arrows, Home/End, Backspace and Delete in a desktop `<input>`/`<textarea>` and for the rich editor's caret motions (`dispatch_new_editor_key`; its deletes stay the editor keymap's). `TextKeymap::Standard` (Windows/Linux): Ctrl = word, Home/End = visual line, Ctrl+Home/End = value, Ctrl+Backspace/Delete = word delete (a character until #951). `TextKeymap::MacOs`: Option = word (and word delete, the editor keymap's `Alt-Backspace`), Cmd+Left/Right = visual line, Cmd+Up/Down = value, Home/End leave the caret (Shift extends to the value's ends). A field's word delete never crosses a line break (beside one it takes the break alone: `rinch-editable`'s `word_delete_start`/`_end`), a field's words are the editor's (`rinch-words`, the leaf crate both `rinch-editor-core` and `rinch-editable` take `word_segments` from — the field engine does not depend on the editor model; #1619: `foo-bar|` + Ctrl+Backspace → `foo-`, `3.14` one word; a textarea's `\n` is a word of its own, one stop: Ctrl+Right at a line's end lands past it (Chrome 155); Ctrl+Left stays on the caret's line (an indented line: its start, Chrome 155) except from exactly a line's start, where it lands before the break and Chrome 155 leaves the caret (Joe's decision); a word motion segments only the caret's line, since a break joins nothing (one long unbroken CJK run is still superlinear with the dictionary, #1626); the ICU dictionary through `rinch-editable/word-dictionary`, on for desktop and android, off for embed), Ctrl+Alt (AltGr) is no word delete, and in `type=password` a word is the whole value (word delete → to the value's edge, word move → its ends), as in Chrome. The keymap is the field `RinchApp::text_keymap` (`TextKeymap::host()`, a `cfg!`), so the macOS fixtures (`app/text_keymap_951_tests.rs`) run on Linux; a test that means the Windows/Linux keys sets `TextKeymap::Standard`. Not done (#1614): macOS Ctrl+Left/Right (Cocoa line moves) are character moves, Option+Up/Down (paragraph moves) line moves, the Emacs keys are unbound — all pinned as they are; Cmd+Backspace (macOS line delete) is a character delete in a field and nothing in the editor; rinch-web's editor still takes Ctrl-or-Cmd as its word modifier on every platform. **Page Up / Page Down** (#2020) are `TextMotion::PageUp`/`PageDown` (Standard: plain and Shift; Ctrl/Alt unbound) and, on macOS, `TextKeyAction::ScrollPage` for the plain key with Option moving and Shift extending — Chrome's editing bindings; only the rich editor takes them (`handle_text_key`'s callers never route a page key to a field). The editor's half is on `editor.md` ("Page Up / Page Down").
 
 **`onsubmit`:** TextInput supports `onsubmit` which fires when the user presses Enter.
 

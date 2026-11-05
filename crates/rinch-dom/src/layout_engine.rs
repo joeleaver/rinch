@@ -6,6 +6,7 @@ use peniko::Brush;
 use peniko::color::{AlphaColor, Srgb};
 
 use crate::RinchDocument;
+use crate::node::RawNodeId;
 use crate::node::{LayoutResult, NodeContext, NodeKind};
 
 /// The parent-inherited text properties a text node's [`TextMeasure`] carries.
@@ -93,7 +94,7 @@ impl TextContextFields {
     }
 
     /// Write them into the Taffy node context a text node measures out of.
-    fn apply_to(self, tm: &mut crate::node::TextMeasure, node_id: usize) {
+    fn apply_to(self, tm: &mut crate::node::TextMeasure, node_id: RawNodeId) {
         tm.font_size = self.font_size;
         tm.font_weight = self.font_weight;
         tm.font_family = self.font_family;
@@ -157,6 +158,7 @@ impl RinchDocument {
         let style_before = self.tree.perf.get(Counter::TimeStyleNs);
         self.tree.perf.bump(Counter::LayoutResolves);
         self.resolve_layout_inner(width, height);
+        self.align_table_cells();
         let total = t0.elapsed().as_nanos() as u64;
         let style = self
             .tree
@@ -214,8 +216,8 @@ impl RinchDocument {
             self.tree.styles_dirty = false;
         }
         // A table whose rows came or went with no restyle — a removal, a row
-        // moved in from elsewhere — still owes its direction (#1083).
-        self.resolve_table_directions();
+        // moved in from elsewhere — still owes a rebuild.
+        self.resolve_tables();
         // Everything styled so far is rendered by this frame; a later
         // cascade has a before-change style to transition from.
         for id in std::mem::take(&mut self.tree.styled_unrendered) {
@@ -225,6 +227,8 @@ impl RinchDocument {
         }
 
         // Trigger loads for any background-image URLs not yet in the cache
+        // (on wasm32 only queued: the host runs them outside this borrow,
+        // `image_cache::run_queued_loads`).
         self.request_background_image_loads();
 
         // Skip full layout recompute when no layout-affecting properties changed.
@@ -247,6 +251,7 @@ impl RinchDocument {
         if !self.tree.layout_dirty {
             if !self.tree.dirty_ifc_text_roots.is_empty() {
                 self.tree.hit_cache.invalidate();
+                self.tree.layout_epoch = self.tree.layout_epoch.wrapping_add(1);
                 self.tree.perf.bump(Counter::LayoutSkippedTextOnly);
                 self.sync_dirty_text_contexts();
                 let t = web_time::Instant::now();
@@ -275,18 +280,26 @@ impl RinchDocument {
             } else {
                 if viewport_changed {
                     self.tree.hit_cache.invalidate();
+                    self.tree.layout_epoch = self.tree.layout_epoch.wrapping_add(1);
                 }
                 self.tree.perf.bump(Counter::LayoutSkippedPaintOnly);
                 return;
             }
         }
         self.tree.hit_cache.invalidate();
+        self.tree.layout_epoch = self.tree.layout_epoch.wrapping_add(1);
         self.tree.layout_dirty = false;
 
         let root_taffy = match self.tree.nodes[self.tree.root_id].taffy_id {
             Some(id) => id,
             None => return,
         };
+        // Which tables, and which of their cells, changed — read before any
+        // compute of this layout clears Taffy's dirty flags (#2156, review of
+        // #2153): an atomic inline's own compute runs first and lays out a
+        // table inside it, and a table that skips the column measure has its
+        // cells laid out all the same.
+        self.note_changed_tables();
 
         // IFC setup passes only need to run when tree structure or display modes
         // changed. Text-only changes (e.g. slider label "50%" → "19%") preserve the
@@ -412,6 +425,8 @@ impl RinchDocument {
             height: taffy::AvailableSpace::Definite(height),
         };
 
+        self.measure_table_columns();
+        self.sync_float_avoidance();
         let mut text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
 
         // #120: an inline-block with a percentage main size is pre-measured detached
@@ -495,12 +510,16 @@ impl RinchDocument {
                 loop {
                     let absolutes = self.resolve_ancestor_absolutes(false) || rebaked;
                     rebaked = false;
-                    let calcs = self.resolve_layout_calcs();
+                    let (calcs, calcs_in_atomic) = self.resolve_layout_calcs();
                     if !absolutes && !calcs {
                         break;
                     }
-                    if absolutes {
-                        self.tree.perf.bump(Counter::AbsContainingBlockPasses);
+                    // A rewritten calc inside an atomic inline is in that box's
+                    // own detached compute too (#2136): the same re-measure.
+                    if absolutes || calcs_in_atomic {
+                        if absolutes {
+                            self.tree.perf.bump(Counter::AbsContainingBlockPasses);
+                        }
                         // A re-baked box inside an atomic inline is in that box's own
                         // detached compute, which the root compute does not reach.
                         self.remeasure_dirty_atomic_inlines();
@@ -511,7 +530,7 @@ impl RinchDocument {
                     text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
                     // The re-measure above sized a percentage atomic inline with no
                     // containing block, as the pass before the first compute does.
-                    if absolutes {
+                    if absolutes || calcs_in_atomic {
                         let mut inline_rounds_left = crate::ifc::MAX_INLINE_ROUNDS;
                         while inline_rounds_left > 0 && self.resolve_percentage_inline_blocks() {
                             text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
@@ -726,14 +745,37 @@ impl RinchDocument {
     /// `(node_id, wrap_width_bits)`, so paint can reuse the exact layouts that
     /// measurement produced. Safe to call more than once per frame — see the
     /// percentage inline-block second pass in `resolve_layout`.
-    fn run_taffy_compute(
+    pub(crate) fn run_taffy_compute(
         &mut self,
         root_taffy: taffy::NodeId,
         available_space: taffy::Size<taffy::AvailableSpace>,
-    ) -> HashMap<(usize, u32), parley::layout::Layout<Brush>> {
+    ) -> HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>> {
+        self.run_taffy(TaffyRun::Layout(root_taffy), available_space)
+            .0
+    }
+
+    /// The size each of `nodes` takes in `available_space`, asked as a parent
+    /// asks a child for its contribution: no layout is written, so the
+    /// final-layout cache entries the next root compute reuses survive
+    /// (`TaffyTree::compute_sizes_with_block_measure`, #2141). Unrounded.
+    pub(crate) fn measure_taffy_sizes(
+        &mut self,
+        nodes: &[taffy::NodeId],
+        available_space: taffy::Size<taffy::AvailableSpace>,
+    ) -> Vec<taffy::Size<f32>> {
+        self.run_taffy(TaffyRun::Sizes(nodes), available_space).1
+    }
+
+    fn run_taffy(
+        &mut self,
+        run: TaffyRun<'_>,
+        available_space: taffy::Size<taffy::AvailableSpace>,
+    ) -> (MeasuredTextLayouts, Vec<taffy::Size<f32>>) {
         use crate::perf::Counter;
-        self.tree.taffy_computes += 1;
-        self.tree.perf.bump(Counter::TaffyRootComputes);
+        if let TaffyRun::Layout(_) = run {
+            self.tree.taffy_computes += 1;
+            self.tree.perf.bump(Counter::TaffyRootComputes);
+        }
         // The measure closure borrows `self.tree.nodes` while the compute
         // borrows `self.tree.taffy` mutably, so it counts into locals that are
         // folded into `self.tree.perf` after the compute.
@@ -769,231 +811,322 @@ impl RinchDocument {
         // Key: (node_id, wrap_width as bits) - wrap width is part of key since layout depends on it
         // Value: Parley layout
         use std::cell::RefCell;
-        let text_layout_cache: RefCell<HashMap<(usize, u32), parley::layout::Layout<Brush>>> =
+        let text_layout_cache: RefCell<HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>>> =
             RefCell::new(HashMap::new());
         // Persistent IFC measure cache — survives across frames.
         // Only invalidated when an IFC root's text content changes.
         let ifc_measure_cache = RefCell::new(std::mem::take(&mut self.tree.ifc_measure_cache));
+        // The bands each IFC root was finally laid out beside, for the paint
+        // layout; a root laid out with no float beside it drops its entry.
+        let ifc_float_bands = RefCell::new(std::mem::take(&mut self.tree.ifc_float_bands));
 
         let t = web_time::Instant::now();
-        self.tree
-            .taffy
-            .compute_layout_with_measure(
-                root_taffy,
-                available_space,
-                |inputs, _node_id, context, style| {
-                    // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
-                    // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
-                    // `TaffyView` ran around the size this body returns, with the
-                    // same `0.0` calc resolver. The body also says where its
-                    // first line's baseline is, from the content-box top, and
-                    // `with_first_baseline` hands it to Taffy (#1013).
-                    let mut first_baseline: Option<f32> = None;
-                    let out = taffy::compute_leaf_layout(
-                        crate::out_of_flow::absolute_leaf_inputs(inputs, style),
-                        style,
-                        |_, _| 0.0,
-                        |known_dims, avail_space| {
-                            measure_calls.set(measure_calls.get() + 1);
-                            let max_width = match avail_space.width {
-                                taffy::AvailableSpace::Definite(w) => Some(w),
-                                taffy::AvailableSpace::MaxContent => None,
-                                taffy::AvailableSpace::MinContent => Some(0.0),
+        let measure = measure_fn(|inputs, _node_id, context, style, block_ctx| {
+            // The block context of an IFC root's leaf: the room its
+            // floats leave the lines, read before the leaf algorithm
+            // takes `inputs`, and the floats left for the paragraph
+            // to place as its lines reach them (`float_wrap`).
+            let block_ctx =
+                block_ctx.filter(|_| matches!(context, Some(NodeContext::InlineRoot(_))));
+            let leaf_box = block_ctx
+                .as_ref()
+                .and_then(|_| crate::float_wrap::LeafBox::of(&inputs, style));
+            let floats = block_ctx
+                .as_deref()
+                .map(|ctx| crate::float_wrap::FloatBands::of_leaf(ctx, &inputs, style))
+                .filter(|bands| !bands.is_empty());
+            let places_floats = block_ctx
+                .as_deref()
+                .is_some_and(|ctx| !ctx.pending_floats().is_empty());
+            // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
+            // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
+            // `TaffyView` ran around the size this body returns, with the
+            // same `0.0` calc resolver. The body also says where its
+            // first line's baseline is, from the content-box top, and
+            // `with_first_baseline` hands it to Taffy (#1013).
+            let mut first_baseline: Option<f32> = None;
+            let out = taffy::compute_leaf_layout(
+                crate::out_of_flow::absolute_leaf_inputs(inputs, style),
+                style,
+                |_, _| 0.0,
+                |known_dims, avail_space| {
+                    measure_calls.set(measure_calls.get() + 1);
+                    let max_width = match avail_space.width {
+                        taffy::AvailableSpace::Definite(w) => Some(w),
+                        taffy::AvailableSpace::MaxContent => None,
+                        taffy::AvailableSpace::MinContent => Some(0.0),
+                    };
+
+                    match context {
+                        Some(NodeContext::Text(text)) => {
+                            if text.content.is_empty() {
+                                return taffy::Size {
+                                    width: 0.0,
+                                    height: 0.0,
+                                };
+                            }
+
+                            // Skip Parley measurement for text in collapsed blocks
+                            if nodes[text.node_id].estimated_height.is_some()
+                                || nodes[text.node_id]
+                                    .parent
+                                    .is_some_and(|p| nodes[p].estimated_height.is_some())
+                            {
+                                return taffy::Size::ZERO;
+                            }
+
+                            shape_text.set(shape_text.get() + 1);
+                            // If no_wrap is set (white-space: nowrap), don't constrain width
+                            let wrap_width = if text.no_wrap {
+                                None
+                            } else {
+                                known_dims.width.or(max_width)
                             };
+                            let leaf =
+                                crate::ifc::shape_text_leaf(font_cx, layout_cx, text, wrap_width);
+                            let mut h = hang.get();
+                            h.add(leaf.hang);
+                            hang.set(h);
 
-                            match context {
-                                Some(NodeContext::Text(text)) => {
-                                    if text.content.is_empty() {
-                                        return taffy::Size {
-                                            width: 0.0,
-                                            height: 0.0,
-                                        };
-                                    }
+                            // Cache the layout for use during paint
+                            // Use wrap_width bits as part of the key since layout depends on it
+                            let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+                            first_baseline = leaf.first_baseline();
+                            text_layout_cache
+                                .borrow_mut()
+                                .insert((text.node_id, wrap_bits), leaf.layout);
 
-                                    // Skip Parley measurement for text in collapsed blocks
-                                    if nodes[text.node_id].estimated_height.is_some()
-                                        || nodes[text.node_id]
-                                            .parent
-                                            .is_some_and(|p| nodes[p].estimated_height.is_some())
-                                    {
-                                        return taffy::Size::ZERO;
-                                    }
-
-                                    shape_text.set(shape_text.get() + 1);
-                                    // If no_wrap is set (white-space: nowrap), don't constrain width
-                                    let wrap_width = if text.no_wrap {
-                                        None
-                                    } else {
-                                        known_dims.width.or(max_width)
-                                    };
-                                    let leaf = crate::ifc::shape_text_leaf(
-                                        font_cx, layout_cx, text, wrap_width,
-                                    );
-                                    let mut h = hang.get();
-                                    h.add(leaf.hang);
-                                    hang.set(h);
-
-                                    // Cache the layout for use during paint
-                                    // Use wrap_width bits as part of the key since layout depends on it
-                                    let wrap_bits =
-                                        wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
-                                    first_baseline = leaf.first_baseline();
-                                    text_layout_cache
-                                        .borrow_mut()
-                                        .insert((text.node_id, wrap_bits), leaf.layout);
-
-                                    taffy::Size {
-                                        width: known_dims.width.unwrap_or(leaf.width),
-                                        height: known_dims.height.unwrap_or(leaf.height),
-                                    }
-                                }
-                                Some(NodeContext::Image {
-                                    width,
-                                    height,
-                                    aspect,
-                                    ..
-                                }) => {
-                                    // A loaded image's own ratio unless `aspect-ratio`
-                                    // declares one without `auto`; before it loads (or when
-                                    // it failed), the declared one, which is the one its
-                                    // `width` and `height` attributes map to (#684) unless an
-                                    // author rule replaced it (#1286); with neither, none.
-                                    let (natural, ratio) = crate::replaced::image_natural_size(
-                                        *width, *height, *aspect,
-                                    );
-                                    // A replaced element with a natural size and
-                                    // ratio (#788, #1150): a style width or height
-                                    // gives the other through the ratio, and so do
-                                    // `min-*`/`max-*` clamps.
-                                    crate::replaced::measure(
-                                        natural,
-                                        ratio,
-                                        known_dims,
-                                        style,
-                                        inputs.parent_size,
-                                        inputs.sizing_mode == taffy::SizingMode::InherentSize,
-                                    )
-                                }
-                                Some(NodeContext::InlineRoot(root_id)) => {
-                                    let root_id = *root_id;
-
-                                    // Collapsed block (virtualized) — return estimated size
-                                    // without doing any Parley work.
-                                    //
-                                    // This early return only runs at all because the
-                                    // node is a Taffy leaf — Taffy never consults a
-                                    // measure function on a node with children (the
-                                    // IFC leaf invariant, #466; see
-                                    // `NodeContext::InlineRoot`). A non-leaf
-                                    // virtualized root would silently get 0 from the
-                                    // block algorithm instead of its estimate.
-                                    if let Some(est_h) = nodes[root_id].estimated_height {
-                                        return taffy::Size {
-                                            width: known_dims.width.unwrap_or(0.0),
-                                            height: known_dims.height.unwrap_or(est_h),
-                                        };
-                                    }
-
-                                    // Use wrap_width bits as cache key
-                                    let wrap_bits =
-                                        max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
-
-                                    // Check persistent IFC measure cache — skip expensive
-                                    // Parley rebuild if this root's text hasn't changed.
-                                    {
-                                        let cached = ifc_measure_cache
-                                            .borrow()
-                                            .get(&root_id)
-                                            .and_then(|e| e.get(wrap_bits));
-                                        if let Some(m) = cached {
-                                            cache_hits.set(cache_hits.get() + 1);
-                                            first_baseline = m.first_baseline;
-                                            return taffy::Size {
-                                                width: known_dims.width.unwrap_or(m.width),
-                                                height: known_dims.height.unwrap_or(m.height),
-                                            };
-                                        }
-                                    }
-
-                                    // Full Parley rebuild (text changed or cache miss)
-                                    shape_ifc.set(shape_ifc.get() + 1);
-                                    let atomic = crate::ifc::AtomicContributions {
-                                        wrap_width: max_width,
-                                        min_content,
-                                        resolved_at,
-                                        requests: min_requests,
-                                    };
-                                    let (inline_layout, resolved) = Self::build_inline_layout(
-                                        nodes,
-                                        root_id,
-                                        max_width,
-                                        None,
-                                        1.0,
-                                        font_cx,
-                                        layout_cx,
-                                        Some(&atomic),
-                                    );
-                                    font_family_resolves.set(font_family_resolves.get() + resolved);
-                                    let mut h = hang.get();
-                                    h.add(inline_layout.hang);
-                                    hang.set(h);
-                                    let w = inline_layout.measured_width();
-                                    let h = inline_layout.layout.height();
-                                    first_baseline =
-                                        crate::ifc::first_line_baseline(&inline_layout.layout);
-
-                                    // Store in persistent cache
-                                    ifc_measure_cache
-                                        .borrow_mut()
-                                        .entry(root_id)
-                                        .or_default()
-                                        .insert(
-                                            wrap_bits,
-                                            crate::node::IfcMeasure {
-                                                width: w,
-                                                height: h,
-                                                first_baseline,
-                                            },
-                                        );
-
-                                    // Measure callback for IFC root
-                                    taffy::Size {
-                                        width: known_dims.width.unwrap_or(w),
-                                        height: known_dims.height.unwrap_or(h),
-                                    }
-                                }
-                                Some(NodeContext::FormControl {
-                                    content_width,
-                                    content_height,
-                                }) => crate::form_control::measure(
-                                    *content_width,
-                                    *content_height,
-                                    known_dims,
-                                ),
-                                Some(NodeContext::Replaced {
-                                    width,
-                                    height,
+                            taffy::Size {
+                                width: known_dims.width.unwrap_or(leaf.width),
+                                height: known_dims.height.unwrap_or(leaf.height),
+                            }
+                        }
+                        Some(NodeContext::Image {
+                            natural, aspect, ..
+                        }) => {
+                            // A loaded image's own ratio unless `aspect-ratio`
+                            // declares one without `auto`; before it loads (or when
+                            // it failed), the declared one, which is the one its
+                            // `width` and `height` attributes map to (#684) unless an
+                            // author rule replaced it (#1286); with neither, none.
+                            let (natural, ratio) =
+                                crate::replaced::image_natural_size(*natural, *aspect);
+                            // A replaced element with a natural size and
+                            // ratio (#788, #1150): a style width or height
+                            // gives the other through the ratio, and so do
+                            // `min-*`/`max-*` clamps.
+                            crate::replaced::contribution(
+                                crate::replaced::measure(
+                                    natural,
                                     ratio,
-                                    aspect,
-                                }) => crate::replaced::measure(
-                                    (*width, *height),
-                                    aspect.used_ratio(*ratio),
                                     known_dims,
                                     style,
                                     inputs.parent_size,
                                     inputs.sizing_mode == taffy::SizingMode::InherentSize,
                                 ),
-                                _ => taffy::Size::ZERO,
+                                style,
+                                known_dims,
+                                inputs.available_space,
+                            )
+                        }
+                        Some(NodeContext::InlineRoot(root_id)) => {
+                            let root_id = *root_id;
+
+                            // Collapsed block (virtualized) — return estimated size
+                            // without doing any Parley work.
+                            //
+                            // This early return only runs at all because the
+                            // node is a Taffy leaf — Taffy never consults a
+                            // measure function on a node with children (the
+                            // IFC leaf invariant, #466; see
+                            // `NodeContext::InlineRoot`). A non-leaf
+                            // virtualized root would silently get 0 from the
+                            // block algorithm instead of its estimate.
+                            if let Some(est_h) = nodes[root_id].estimated_height {
+                                return taffy::Size {
+                                    width: known_dims.width.unwrap_or(0.0),
+                                    height: known_dims.height.unwrap_or(est_h),
+                                };
                             }
-                        },
-                    );
-                    crate::ifc::with_first_baseline(out, &inputs, style, first_baseline)
+
+                            // Use wrap_width bits as cache key
+                            let wrap_bits = max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+
+                            let beside_floats = floats.is_some() || places_floats;
+                            // Laid out with no float beside it, the root's paint
+                            // layout has the whole width again: its old bands go
+                            // before the cache below can answer (the bands of a
+                            // root beside floats are recorded after its build).
+                            // (Most documents have no floats: an empty map is
+                            // not hashed into.)
+                            if inputs.run_mode == taffy::RunMode::PerformLayout && !beside_floats {
+                                let mut bands = ifc_float_bands.borrow_mut();
+                                if !bands.is_empty() {
+                                    bands.remove(&root_id);
+                                }
+                            }
+
+                            // Check persistent IFC measure cache — skip expensive
+                            // Parley rebuild if this root's text hasn't changed.
+                            // Its sizes are of lines with the whole width: a root
+                            // beside a float, or placing its own, is broken afresh,
+                            // and not kept.
+                            if !beside_floats {
+                                let cached = ifc_measure_cache
+                                    .borrow()
+                                    .get(&root_id)
+                                    .and_then(|e| e.get(wrap_bits));
+                                if let Some(m) = cached {
+                                    cache_hits.set(cache_hits.get() + 1);
+                                    first_baseline = m.first_baseline;
+                                    return taffy::Size {
+                                        width: known_dims.width.unwrap_or(m.width),
+                                        height: known_dims.height.unwrap_or(m.height),
+                                    };
+                                }
+                            }
+
+                            // Full Parley rebuild (text changed or cache miss)
+                            shape_ifc.set(shape_ifc.get() + 1);
+                            let atomic = crate::ifc::AtomicContributions {
+                                wrap_width: max_width,
+                                min_content,
+                                resolved_at,
+                                requests: min_requests,
+                            };
+                            let mut placer = block_ctx.zip(leaf_box).filter(|_| places_floats).map(
+                                |(ctx, leaf)| crate::float_wrap::BlockFloats { ctx, nodes, leaf },
+                            );
+                            let (inline_layout, resolved) = Self::build_inline_layout(
+                                nodes,
+                                root_id,
+                                max_width,
+                                None,
+                                1.0,
+                                font_cx,
+                                layout_cx,
+                                Some(&atomic),
+                                floats.as_ref(),
+                                placer
+                                    .as_mut()
+                                    .map(|p| p as &mut dyn crate::ifc::PlaceFloats),
+                            );
+                            font_family_resolves.set(font_family_resolves.get() + resolved);
+                            // The room the lines were finally broken beside, the
+                            // paragraph's own floats included, for the paint layout.
+                            if inputs.run_mode == taffy::RunMode::PerformLayout {
+                                let last = match &placer {
+                                    Some(p) => Some(p.leaf.bands(p.ctx)),
+                                    None => floats.clone(),
+                                }
+                                .filter(|bands| !bands.is_empty());
+                                let mut bands = ifc_float_bands.borrow_mut();
+                                match last {
+                                    Some(last) => {
+                                        bands.insert(root_id, last);
+                                    }
+                                    None if !bands.is_empty() => {
+                                        bands.remove(&root_id);
+                                    }
+                                    None => {}
+                                }
+                            }
+                            let mut h = hang.get();
+                            h.add(inline_layout.hang);
+                            hang.set(h);
+                            let w = inline_layout.measured_width();
+                            let h = inline_layout.content_height();
+                            first_baseline = crate::ifc::first_line_baseline(&inline_layout.layout);
+
+                            if beside_floats {
+                                return taffy::Size {
+                                    width: known_dims.width.unwrap_or(w),
+                                    height: known_dims.height.unwrap_or(h),
+                                };
+                            }
+
+                            // Store in persistent cache
+                            ifc_measure_cache
+                                .borrow_mut()
+                                .entry(root_id)
+                                .or_default()
+                                .insert(
+                                    wrap_bits,
+                                    crate::node::IfcMeasure {
+                                        width: w,
+                                        height: h,
+                                        first_baseline,
+                                    },
+                                );
+
+                            // Measure callback for IFC root
+                            taffy::Size {
+                                width: known_dims.width.unwrap_or(w),
+                                height: known_dims.height.unwrap_or(h),
+                            }
+                        }
+                        Some(NodeContext::FormControl {
+                            content_width,
+                            content_height,
+                        }) => crate::form_control::measure(
+                            *content_width,
+                            *content_height,
+                            known_dims,
+                        ),
+                        Some(NodeContext::Replaced {
+                            width,
+                            height,
+                            ratio,
+                            aspect,
+                        }) => crate::replaced::contribution(
+                            crate::replaced::measure(
+                                (*width, *height),
+                                aspect.used_ratio(*ratio),
+                                known_dims,
+                                style,
+                                inputs.parent_size,
+                                inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                            ),
+                            style,
+                            known_dims,
+                            inputs.available_space,
+                        ),
+                        _ => taffy::Size::ZERO,
+                    }
                 },
-            )
-            .unwrap();
+            );
+            crate::ifc::with_first_baseline(out, &inputs, style, first_baseline)
+        });
+        // A measure leaf (an IFC root's, beside its out-of-flow
+        // children) places the floats before it: they are the floats
+        // in its root's content, placed at their lines (`float_wrap`).
+        let places_floats = |leaf: taffy::NodeId, context: Option<&NodeContext>| {
+            crate::float_wrap::is_measure_leaf(nodes, leaf, context)
+        };
+        let sizes = match run {
+            TaffyRun::Layout(root_taffy) => {
+                self.tree
+                    .taffy
+                    .compute_layout_with_block_measure(
+                        root_taffy,
+                        available_space,
+                        measure,
+                        places_floats,
+                    )
+                    .unwrap();
+                Vec::new()
+            }
+            TaffyRun::Sizes(of) => self.tree.taffy.compute_sizes_with_block_measure(
+                of,
+                available_space,
+                measure,
+                places_floats,
+            ),
+        };
 
         // Restore the persistent IFC measure cache (dirty_ifc_text_roots cleared after build_ifc)
         self.tree.ifc_measure_cache = ifc_measure_cache.into_inner();
+        self.tree.ifc_float_bands = ifc_float_bands.into_inner();
 
         let perf = &self.tree.perf;
         perf.add(Counter::TaffyMeasureCalls, measure_calls.get());
@@ -1007,7 +1140,7 @@ impl RinchDocument {
         );
         perf.add_elapsed(Counter::TimeTaffyComputeNs, t);
 
-        text_layout_cache.into_inner()
+        (text_layout_cache.into_inner(), sizes)
     }
 
     /// Incremental version of `sync_text_contexts` — only processes text nodes
@@ -1019,7 +1152,7 @@ impl RinchDocument {
     /// parent's `font-size` changed was measured out of a context built from the
     /// old one. See `NodeTree::dirty_text_contexts`.
     pub(crate) fn sync_dirty_text_contexts(&mut self) {
-        let mut updates: Vec<(taffy::NodeId, usize, TextContextFields)> = Vec::new();
+        let mut updates: Vec<(taffy::NodeId, RawNodeId, TextContextFields)> = Vec::new();
 
         for id in self
             .tree
@@ -1037,7 +1170,7 @@ impl RinchDocument {
             let Some(taffy_id) = node.taffy_id else {
                 continue;
             };
-            let parent = node.parent.and_then(|p| self.tree.nodes.get(p));
+            let parent = node.parent.and_then(|p| self.tree.nodes.get_live(p));
             updates.push((taffy_id, id, TextContextFields::from_parent(parent)));
         }
         self.tree.dirty_text_contexts.clear();
@@ -1062,9 +1195,9 @@ impl RinchDocument {
     /// changed with the structure), plus whatever a restyle queued in
     /// `dirty_text_contexts`.
     pub(crate) fn sync_scoped_text_contexts(&mut self, scope: &crate::ifc_scope::IfcScope) {
-        let mut updates: Vec<(taffy::NodeId, usize, TextContextFields)> = Vec::new();
+        let mut updates: Vec<(taffy::NodeId, RawNodeId, TextContextFields)> = Vec::new();
         for &(id, _, _) in &scope.region {
-            let Some(node) = self.tree.nodes.get(id) else {
+            let Some(node) = self.tree.nodes.get_live(id) else {
                 continue;
             };
             if !matches!(&node.kind, NodeKind::Text(_)) {
@@ -1073,7 +1206,7 @@ impl RinchDocument {
             let Some(taffy_id) = node.taffy_id else {
                 continue;
             };
-            let parent = node.parent.and_then(|p| self.tree.nodes.get(p));
+            let parent = node.parent.and_then(|p| self.tree.nodes.get_live(p));
             updates.push((taffy_id, id, TextContextFields::from_parent(parent)));
         }
         for (taffy_id, node_id, fields) in updates {
@@ -1089,7 +1222,7 @@ impl RinchDocument {
     pub(crate) fn sync_text_contexts(&mut self) {
         // Every text node is refreshed below, so nothing stays owed.
         self.tree.dirty_text_contexts.clear();
-        let mut updates: Vec<(taffy::NodeId, usize, TextContextFields)> = Vec::new();
+        let mut updates: Vec<(taffy::NodeId, RawNodeId, TextContextFields)> = Vec::new();
 
         for (id, node) in &self.tree.nodes {
             if let NodeKind::Text(_) = &node.kind {
@@ -1097,7 +1230,7 @@ impl RinchDocument {
                     continue;
                 };
                 // Read from the parent's parsed computed_style, not from CSS strings.
-                let parent = node.parent.and_then(|p| self.tree.nodes.get(p));
+                let parent = node.parent.and_then(|p| self.tree.nodes.get_live(p));
                 updates.push((taffy_id, id, TextContextFields::from_parent(parent)));
             }
         }
@@ -1177,7 +1310,7 @@ impl RinchDocument {
             }
         }
         // Collect (node_id, max_scroll) for nodes that need clamping
-        let mut clamps: Vec<(usize, f64)> = Vec::new();
+        let mut clamps: Vec<(RawNodeId, f64)> = Vec::new();
         for (node_id, _) in self.tree.nodes.iter() {
             let node = &self.tree.nodes[node_id];
             if !node.scrolls_y() {
@@ -1191,10 +1324,32 @@ impl RinchDocument {
             // direct `children` only — took back on every layout pass the
             // range that one grants: an anonymous box's lines, a `display:
             // contents` wrapper's children, an IFC root's inline content.
-            let content_height = crate::paint::scrollbar::content_extents(&self.tree, node_id).1;
+            //
             // The content box `scrollbars`, `client_height` and the wheel's
             // finders measure against (#769) — one computation, not a copy.
             let visible_h = crate::paint::scrollbar::visible_extents(&self.tree, node_id).1;
+            // First without the absolute boxes listed for this container
+            // from below its children (#770): they only add to the range, so
+            // an offset inside the rest needs no clamp and the walk measures
+            // none of them — the common case, a long list scrolled anywhere
+            // but its end, whose layout would otherwise measure every row's
+            // badge.
+            //
+            // And first from the rounded rects alone (#2116): an offset more
+            // than their slack inside that range is inside the whole-pixel
+            // one, so a layout measures no container unrounded for this.
+            let rounded_flow =
+                crate::paint::scrollbar::content_extents_in_flow_rounded(&self.tree, node_id).1;
+            let slack = crate::paint::scrollbar::ROUNDED_RANGE_SLACK;
+            if node.scroll_offset.1 <= (rounded_flow - visible_h - slack).max(0.0) {
+                continue;
+            }
+            let flow_height =
+                crate::paint::scrollbar::content_extents_in_flow(&self.tree, node_id).1;
+            if node.scroll_offset.1 <= (flow_height - visible_h).max(0.0) {
+                continue;
+            }
+            let content_height = crate::paint::scrollbar::content_extents(&self.tree, node_id).1;
             let max_scroll = (content_height - visible_h).max(0.0);
             if node.scroll_offset.1 > max_scroll {
                 // On the device pixel grid, at or below the range (#1543),
@@ -1214,6 +1369,74 @@ impl RinchDocument {
         }
     }
 
+    /// How far HTML's `align` on `node_id`'s parent moves it from where
+    /// Taffy put it ([`ComputedStyle::html_align`]): a block box in flow, with
+    /// a width of its own (a `width`, a `max-width`, or a table's), and no
+    /// `auto` margin. As Chrome places it (`-webkit-center`, `-webkit-right`),
+    /// its margin box: centred, `left = ml + max(0, free / 2)`; at the end,
+    /// `left = max(ml, avail - width - mr)`; `free` is what the parent's
+    /// content box leaves beside the margin box. Taffy laid it out with its
+    /// own margins, so its relative offset, transform and size stand.
+    ///
+    /// [`ComputedStyle::html_align`]: crate::computed_style::ComputedStyle::html_align
+    fn html_align_dx(&self, node_id: RawNodeId) -> f32 {
+        use crate::computed_style::{
+            DimensionValue, DisplayValue, LengthPercentageAutoValue as M, PositionValue, TablePart,
+            TextAlignValue,
+        };
+        let node = &self.tree.nodes[node_id];
+        let Some(parent) = node.parent.and_then(|p| self.tree.nodes.get(p)) else {
+            return 0.0;
+        };
+        let Some(align) = parent.computed_style.html_align else {
+            return 0.0;
+        };
+        if align == TextAlignValue::Start {
+            return 0.0;
+        }
+        let cs = &node.computed_style;
+        let in_flow_block = matches!(
+            parent.computed_style.display,
+            DisplayValue::Block | DisplayValue::ListItem
+        ) && matches!(
+            cs.display,
+            DisplayValue::Block | DisplayValue::ListItem | DisplayValue::Flex | DisplayValue::Grid
+        ) && !matches!(
+            cs.position,
+            PositionValue::Absolute | PositionValue::Fixed
+        ) && cs.float == taffy::Float::None
+            && !cs.table_part.is_internal()
+            && node.run_box.is_none();
+        let own_width = cs.table_part == TablePart::Table
+            || !matches!(cs.width, DimensionValue::Auto)
+            || !matches!(cs.max_width, DimensionValue::Auto);
+        if !in_flow_block
+            || !own_width
+            || matches!(cs.margin_left, M::Auto)
+            || matches!(cs.margin_right, M::Auto)
+        {
+            return 0.0;
+        }
+        let (Some(t), Some(pt)) = (node.taffy_id, parent.taffy_id) else {
+            return 0.0;
+        };
+        let (Ok(own), Ok(outer)) = (self.tree.taffy.layout(t), self.tree.taffy.layout(pt)) else {
+            return 0.0;
+        };
+        let avail = outer.size.width
+            - outer.padding.left
+            - outer.padding.right
+            - outer.border.left
+            - outer.border.right;
+        let (ml, mr, w) = (own.margin.left, own.margin.right, own.size.width);
+        let left = match align {
+            TextAlignValue::Center => ml + ((avail - w - ml - mr) / 2.0).max(0.0),
+            TextAlignValue::End => ml.max(avail - w - mr),
+            _ => ml,
+        };
+        left - ml
+    }
+
     /// Read one anonymous block box's Taffy layout back into its `layout`.
     ///
     /// The box is outside the element tree (#566), so
@@ -1221,8 +1444,8 @@ impl RinchDocument {
     /// a `taffy_id` and a real box, and paint draws its line at that rect.
     /// Its run's members are reached by the ordinary walk, through their real
     /// parent, so this deliberately does **not** recurse.
-    fn read_layout_results_for_box(&mut self, anon_id: usize) {
-        let Some(taffy_id) = self.tree.nodes.get(anon_id).and_then(|n| n.taffy_id) else {
+    fn read_layout_results_for_box(&mut self, anon_id: RawNodeId) {
+        let Some(taffy_id) = self.tree.nodes.get_live(anon_id).and_then(|n| n.taffy_id) else {
             return;
         };
         let Ok(taffy_layout) = self.tree.taffy.layout(taffy_id) else {
@@ -1245,7 +1468,7 @@ impl RinchDocument {
             // lines (#632) were read with it where it was. One of them is in
             // no list `replace_all` walks: an absolute box whose layout
             // parent is its containing block.
-            let held: Vec<usize> = match &self.tree.nodes[anon_id].text_layout {
+            let held: Vec<RawNodeId> = match &self.tree.nodes[anon_id].text_layout {
                 Some(inline) => inline.out_of_flow.iter().map(|m| m.id).collect(),
                 None => Vec::new(),
             };
@@ -1264,16 +1487,20 @@ impl RinchDocument {
     /// the frame that hides something repaints where it used to be.
     ///
     /// Iterative: a hidden subtree is arbitrary author markup and may be deep.
-    fn zero_subtree_layout(&mut self, node_id: usize) {
+    fn zero_subtree_layout(&mut self, node_id: RawNodeId) {
         let zero = LayoutResult::default();
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
-            let Some(node) = self.tree.nodes.get_mut(id) else {
+            let Some(node) = self.tree.nodes.get_live_mut(id) else {
                 continue;
             };
             if node.layout != zero {
                 node.layout = zero;
                 self.tree.paint_dirty_nodes.push(id);
+            }
+            // A hidden cell's children carry no `vertical-align` offset now.
+            if let Some(cell) = node.table_cell.as_mut() {
+                cell.kids_shift = 0.0;
             }
             let children = &self.tree.nodes[id].children;
             stack.extend_from_slice(children);
@@ -1281,8 +1508,12 @@ impl RinchDocument {
     }
 
     /// Recursively read Taffy layout results into node LayoutResult fields.
-    pub(crate) fn read_layout_results(&mut self, node_id: usize) {
-        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
+    pub(crate) fn read_layout_results(&mut self, node_id: RawNodeId) {
+        let node = &self.tree.nodes[node_id];
+        let children: Vec<RawNodeId> = node.children.clone();
+        // Read here, where the node is in hand: most nodes are not table
+        // cells, and this runs for every node.
+        let is_table_cell = node.table_cell.is_some();
 
         // A `display: contents` element generates no box. Force its layout to the
         // origin so every parent-chain accumulation (paint tree-walk, hit-testing,
@@ -1556,6 +1787,13 @@ impl RinchDocument {
                 // element, which generates no box to place.)
                 let kind = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id);
                 crate::out_of_flow::note_kind_at_read(&mut self.tree, node_id, kind);
+                // Listed for the scroll range it belongs to (#770): which
+                // container that is, and where the box is in it, is worked out
+                // from the final layout when a range is first asked for
+                // (`paint::scrollbar::OverflowAbsolutes`), which also passes
+                // over a box with no area, as a box in a `display: none`
+                // subtree is — so nothing is asked here.
+                self.tree.overflow_absolutes.listed.push((node_id, kind));
                 if crate::out_of_flow::has_inline_containing_block(&self.tree, kind) {
                     self.tree.abs_inline_cb_seen = true;
                 }
@@ -1630,6 +1868,15 @@ impl RinchDocument {
                 }
             }
 
+            // HTML's `align` on the parent places a block box with a width of
+            // its own (`html_align_dx`). From Taffy's own answer, so it is the
+            // same on every read.
+            // Gated on the document having met the attribute at all: the
+            // parent lookup per box per layout is otherwise measurable.
+            if self.tree.html_align_seen {
+                new_layout.x += self.html_align_dx(node_id);
+            }
+
             // An atomic inline child of an IFC has its *position* assigned by the IFC
             // (`write_inline_positions`), not Taffy: it is detached from its parent's
             // Taffy tree and measured standalone (Taffy location 0,0). Keep the IFC's
@@ -1659,6 +1906,9 @@ impl RinchDocument {
 
         for child_id in children {
             self.read_layout_results(child_id);
+        }
+        if is_table_cell {
+            self.note_table_cell_read(node_id);
         }
     }
 
@@ -1698,14 +1948,14 @@ impl RinchDocument {
         // inline form. Without this, class-based contents elements stay in the
         // Taffy tree as ordinary boxes and trap their children inside a 0×0 (or
         // 2×2 text-sized) parent — see issue #25.
-        let mut affected_parents: Vec<usize> = Vec::new();
-        let mut all_contents_nodes: Vec<usize> = Vec::new();
+        let mut affected_parents: Vec<RawNodeId> = Vec::new();
+        let mut all_contents_nodes: Vec<RawNodeId> = Vec::new();
         // Nodes a previous pass spliced as `display: contents` that no longer
         // compute `Contents` (#520): the wrapper's box must come back and its
         // children must stop contributing to the flattening ancestor.
-        let mut departed_nodes: Vec<usize> = Vec::new();
+        let mut departed_nodes: Vec<RawNodeId> = Vec::new();
 
-        let candidates: Vec<usize> = match scope {
+        let candidates: Vec<RawNodeId> = match scope {
             None => self.tree.nodes.iter().map(|(id, _)| id).collect(),
             // Ascending, as the slab walk visits them. Order matters here and
             // should not: a wrapper's splice reads `contributes_in_flow_block`
@@ -1718,7 +1968,7 @@ impl RinchDocument {
             // (Found by the random differential, which tripped over exactly
             // that and orphaned a text node.)
             Some(scope) => {
-                let mut v: Vec<usize> = scope.nodes.iter().copied().collect();
+                let mut v: Vec<RawNodeId> = scope.nodes.iter().copied().collect();
                 v.sort_unstable();
                 v
             }
@@ -1811,6 +2061,7 @@ impl RinchDocument {
 
         // For each affected parent, rebuild its taffy children by flattening
         // display:contents nodes recursively.
+        let mut any_rebuilt = false;
         for parent_id in &affected_parents {
             let parent_taffy = match self.tree.nodes[*parent_id].taffy_id {
                 Some(t) => t,
@@ -1818,12 +2069,41 @@ impl RinchDocument {
             };
 
             let new_children = Self::collect_effective_taffy_children(&self.tree.nodes, *parent_id);
+            // A child list the splice leaves as it was is not touched (#2136).
+            // A scoped structural pass reaches every wrapper in its
+            // containers' regions — a grid built by a keyed `for` holds one
+            // `display: contents` wrapper per item — and rebuilding the list
+            // and dirtying every item for each of them cleared the Taffy cache
+            // of all 430 cards of a grid whenever anything moved in it, so the
+            // next compute measured every card's text again (10,892 shapes
+            // for one re-appended wrapper).
+            let old_children: Vec<taffy::NodeId> =
+                self.tree.taffy.children(parent_taffy).unwrap_or_default();
+            if old_children == new_children {
+                // The parent itself is still dirtied (review of #2142): a
+                // container whose only content is inline content inside a
+                // wrapper is an IFC root, whose Taffy child list is empty
+                // before and after that content goes, and `set_children` was
+                // the only thing that marked it — a `div` > wrapper > `span`
+                // kept the span's line after the span left. Its children's
+                // caches are what this keeps.
+                let _ = self.tree.taffy.mark_dirty(parent_taffy);
+                continue;
+            }
+            any_rebuilt = true;
             let _ = self.tree.taffy.set_children(parent_taffy, &new_children);
 
-            // Also mark each reparented child dirty so their own caches are
-            // cleared (they may have stale entries from their old position).
+            // Mark a child that was not in this list dirty, so its own cache
+            // is cleared (it may have entries from its old position under
+            // another parent). One that stays — reordered or not — keeps its
+            // cache: Taffy keys an entry on the inputs its parent passes, not
+            // on where it sits, and the parent itself is dirtied by
+            // `set_children`.
+            let old: std::collections::HashSet<taffy::NodeId> = old_children.into_iter().collect();
             for &child_taffy in &new_children {
-                let _ = self.tree.taffy.mark_dirty(child_taffy);
+                if !old.contains(&child_taffy) {
+                    let _ = self.tree.taffy.mark_dirty(child_taffy);
+                }
             }
         }
 
@@ -1831,7 +2111,7 @@ impl RinchDocument {
         // Taffy's mark_dirty propagation stops at already-empty ancestors,
         // which can leave stale cached layouts when available space hasn't
         // changed but children have been swapped.
-        if !affected_parents.is_empty() || !departed_nodes.is_empty() {
+        if any_rebuilt || !departed_nodes.is_empty() {
             if let Some(root_taffy) = self.tree.nodes[self.tree.root_id].taffy_id {
                 let _ = self.tree.taffy.mark_dirty(root_taffy);
             }
@@ -1868,8 +2148,11 @@ impl RinchDocument {
     /// run's. That is invisible for a document's first run, whose box is at
     /// `y = 0`, and wrong for every one after it: it was found by a focus test
     /// clicking a toolbar `<input>` and hitting the node above it.
-    pub fn box_tree_parent(nodes: &slab::Slab<crate::node::Node>, node_id: usize) -> Option<usize> {
-        let node = nodes.get(node_id)?;
+    pub fn box_tree_parent(
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
+    ) -> Option<RawNodeId> {
+        let node = nodes.get_live(node_id)?;
         // A hoisted out-of-flow box is held by its host's lists, not its DOM
         // parent's (#591): its `layout` is relative to the host, so every
         // coordinate sum steps there. `Node::hoisted_out_of_flow_to`.
@@ -1928,11 +2211,11 @@ impl RinchDocument {
     /// **Borrows** for the overwhelmingly common case of a node with no run
     /// among its children, so the per-frame walks that call it pay nothing.
     pub fn box_tree_children(
-        nodes: &slab::Slab<crate::node::Node>,
-        node_id: usize,
-    ) -> std::borrow::Cow<'_, [usize]> {
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
+    ) -> std::borrow::Cow<'_, [RawNodeId]> {
         use std::borrow::Cow;
-        let Some(node) = nodes.get(node_id) else {
+        let Some(node) = nodes.get_live(node_id) else {
             return Cow::Borrowed(&[]);
         };
         // An anonymous box's box-tree children **are** its run, verbatim — no
@@ -1973,7 +2256,7 @@ impl RinchDocument {
         // and the box is its host's. Both are one bit per child.
         if node.run_boxes.is_empty()
             && !node.children.iter().any(|&c| {
-                nodes.get(c).is_some_and(|child| {
+                nodes.get_live(c).is_some_and(|child| {
                     child.is_split_inline()
                         || child.hosts_hoisted_out_of_flow
                         || child.hoisted_out_of_flow_to.is_some()
@@ -2004,18 +2287,18 @@ impl RinchDocument {
         // replaced by its box like any other; a wrapper that was broken up
         // vanishes here exactly as it does from the Taffy child list, since it
         // generates no box (CSS 2.1 §9.2.1.1) — its units stand in its place.
-        let mut units: Vec<usize> = Vec::new();
+        let mut units: Vec<RawNodeId> = Vec::new();
         Self::collect_run_units(nodes, node_id, &mut units);
 
-        let mut out: Vec<usize> = Vec::with_capacity(units.len());
+        let mut out: Vec<RawNodeId> = Vec::with_capacity(units.len());
         // A run is **not** contiguous in this list either: a comment or a
         // `display: none` child sits between two members of one run, so the box
         // must be emitted once for the whole run rather than once per
         // maximal stretch. Resetting on a non-member emits it twice and Taffy
         // panics on the duplicate in `set_children`.
-        let mut last_box: Option<usize> = None;
+        let mut last_box: Option<RawNodeId> = None;
         for unit in units {
-            match nodes.get(unit).and_then(|c| c.run_box) {
+            match nodes.get_live(unit).and_then(|c| c.run_box) {
                 Some(b) => {
                     if last_box != Some(b) {
                         out.push(b);
@@ -2093,8 +2376,8 @@ impl RinchDocument {
     /// wrapper's own detached id instead. Read the two together before changing
     /// either gate.
     pub(crate) fn collect_effective_taffy_children(
-        nodes: &slab::Slab<crate::node::Node>,
-        node_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
     ) -> Vec<taffy::NodeId> {
         use crate::computed_style::values::DisplayValue;
 
@@ -2115,12 +2398,12 @@ impl RinchDocument {
         // blocks and once as an IFC line.
         //
         // `get`, not indexing, on both hops. The anonymous-box rebuilds this
-        // replaced skipped an id missing from the slab (`nodes.get(child_id)`),
+        // replaced skipped an id missing from the slab (`nodes.get_live(child_id)`),
         // and routing them here must not turn that into a panic — a DOM
         // `children` list holding a freed id is a bug, but a wrong picture beats
         // a crash and this function is not where it should be discovered.
         for &child_id in Self::box_tree_children(nodes, node_id).iter() {
-            let Some(child) = nodes.get(child_id) else {
+            let Some(child) = nodes.get_live(child_id) else {
                 continue;
             };
             if child.computed_style.display == DisplayValue::Contents {
@@ -2176,14 +2459,14 @@ impl RinchDocument {
     /// caller reaches it today: a caller that asks about a box inside a split
     /// inline and is handed the element would rebuild a list nothing lays out.
     pub(crate) fn effective_taffy_owner(
-        nodes: &slab::Slab<crate::node::Node>,
-        node_id: usize,
-    ) -> Option<usize> {
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
+    ) -> Option<RawNodeId> {
         use crate::computed_style::values::DisplayValue;
 
         let mut ancestor = Self::box_tree_parent(nodes, node_id)?;
         loop {
-            let node = nodes.get(ancestor)?;
+            let node = nodes.get_live(ancestor)?;
             // Two kinds of ancestor hold none of their children's boxes, so
             // neither can be the answer: a `display: contents` element, which
             // generates no box (#476), and a **split inline** (#513), whose
@@ -2243,13 +2526,13 @@ impl RinchDocument {
     /// never pick a wrong slot — while erring narrow silently loses the sibling
     /// and sends the search one step further back than it should go.
     pub(crate) fn collect_taffy_contribution(
-        nodes: &slab::Slab<crate::node::Node>,
-        node_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
         out: &mut Vec<taffy::NodeId>,
     ) {
         use crate::computed_style::values::DisplayValue;
 
-        let Some(node) = nodes.get(node_id) else {
+        let Some(node) = nodes.get_live(node_id) else {
             return;
         };
         if let Some(taffy_id) = node.taffy_id {
@@ -2266,9 +2549,9 @@ impl RinchDocument {
         // where it would be. Erring wide is free here (see above), so every
         // hoisted descendant is offered, whatever its host.
         if node.hosts_hoisted_out_of_flow {
-            let mut stack: Vec<usize> = node.children.clone();
+            let mut stack: Vec<RawNodeId> = node.children.clone();
             while let Some(id) = stack.pop() {
-                let Some(n) = nodes.get(id) else {
+                let Some(n) = nodes.get_live(id) else {
                     continue;
                 };
                 if n.hoisted_out_of_flow_to.is_some()
@@ -2348,9 +2631,9 @@ impl RinchDocument {
     /// inline must rebuild that element's container itself, as that function's one
     /// such caller does.
     pub(crate) fn taffy_child_list_owners(
-        nodes: &slab::Slab<crate::node::Node>,
-        node_id: usize,
-    ) -> Vec<usize> {
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
+    ) -> Vec<RawNodeId> {
         use crate::computed_style::values::DisplayValue;
 
         let mut owners = vec![node_id];
@@ -2400,7 +2683,7 @@ impl RinchDocument {
     /// nothing unless a compute follows, and steps 1 and 3 are invalidations
     /// rather than work; so a property listed one predicate too wide costs a
     /// spare re-shape, and one listed too narrow leaves a box frozen.
-    pub(crate) fn invalidate_text_measure_for_node(&mut self, node_id: usize) {
+    pub(crate) fn invalidate_text_measure_for_node(&mut self, node_id: RawNodeId) {
         self.invalidate_text_layout_for_node(node_id, true);
     }
 
@@ -2408,14 +2691,14 @@ impl RinchDocument {
     /// can move a size (`ComputedStyle::same_measured_text_inputs` failed) or
     /// only re-shapes glyphs in place (a colour): see
     /// [`Self::mark_atomic_inline_dirty_for`].
-    pub(crate) fn invalidate_text_layout_for_node(&mut self, node_id: usize, sizes: bool) {
+    pub(crate) fn invalidate_text_layout_for_node(&mut self, node_id: RawNodeId, sizes: bool) {
         if !self.tree.nodes.contains(node_id) {
             return;
         }
         self.invalidate_ifc_for_node(node_id);
         self.mark_atomic_inline_dirty_for(node_id, sizes);
         for child in self.tree.nodes[node_id].children.clone() {
-            let Some(child_node) = self.tree.nodes.get(child) else {
+            let Some(child_node) = self.tree.nodes.get_live(child) else {
                 continue;
             };
             if !matches!(child_node.kind, NodeKind::Text(_)) {
@@ -2470,12 +2753,12 @@ impl RinchDocument {
     /// leaf's layout (paint colours a leaf from the live style, #904), so no
     /// atomic inline and no flex item's measure is marked, and a node in no
     /// IFC — a flex container whose text is a leaf — drops nothing.
-    pub(crate) fn invalidate_text_brushes_for_node(&mut self, node_id: usize) {
+    pub(crate) fn invalidate_text_brushes_for_node(&mut self, node_id: RawNodeId) {
         let node = &self.tree.nodes[node_id];
         let mut roots = node.run_boxes.clone();
         roots.extend(node.ifc_root);
         roots.extend(node.children.iter().filter_map(|&child| {
-            let child = self.tree.nodes.get(child)?;
+            let child = self.tree.nodes.get_live(child)?;
             matches!(child.kind, NodeKind::Text(_))
                 .then_some(child.ifc_root)
                 .flatten()
@@ -2495,7 +2778,7 @@ impl RinchDocument {
     /// Clears the IFC root's cached text_layout so it rebuilds on next layout pass.
     /// Also checks the parent's text_layout as a fallback when ifc_root hasn't been
     /// set yet (before the first layout pass).
-    pub(crate) fn invalidate_ifc_for_node(&mut self, node_id: usize) {
+    pub(crate) fn invalidate_ifc_for_node(&mut self, node_id: RawNodeId) {
         if let Some(ifc_root_id) = self.tree.nodes.get(node_id).and_then(|n| n.ifc_root) {
             self.invalidate_ifc_root(ifc_root_id);
             // An atomic inline (`inline-block`/`-flex`/`-grid`) is a member of
@@ -2516,14 +2799,14 @@ impl RinchDocument {
 
     /// Fallback for a node with no `ifc_root` yet (before the first layout
     /// pass): walk ancestors to the nearest one holding an IFC layout.
-    fn invalidate_nearest_ifc_ancestor(&mut self, node_id: usize) {
+    fn invalidate_nearest_ifc_ancestor(&mut self, node_id: RawNodeId) {
         let mut cur = self.tree.nodes.get(node_id).and_then(|n| n.parent);
         while let Some(pid) = cur {
             if self.holds_ifc_layout(pid) {
                 self.invalidate_ifc_root(pid);
                 break;
             }
-            cur = self.tree.nodes.get(pid).and_then(|n| n.parent);
+            cur = self.tree.nodes.get_live(pid).and_then(|n| n.parent);
         }
     }
 
@@ -2547,7 +2830,7 @@ impl RinchDocument {
     /// the node's own for a block root; that is right for a restyle of the
     /// node, and for a move it re-shaped the moved row of every keyed `for`
     /// reorder — twice per row on a reversed list — with nothing changed.
-    pub(crate) fn invalidate_ifc_left_by(&mut self, node_id: usize) {
+    pub(crate) fn invalidate_ifc_left_by(&mut self, node_id: RawNodeId) {
         if let Some(ifc_root_id) = self.tree.nodes.get(node_id).and_then(|n| n.ifc_root) {
             self.invalidate_ifc_root(ifc_root_id);
         } else if !self.holds_ifc_layout(node_id) {
@@ -2558,7 +2841,7 @@ impl RinchDocument {
     /// Whether `node_id` holds a layout derived from an inline formatting
     /// context of its own: a paint layout, or sizes the measure function
     /// cached for it.
-    fn holds_ifc_layout(&self, node_id: usize) -> bool {
+    fn holds_ifc_layout(&self, node_id: RawNodeId) -> bool {
         self.tree
             .nodes
             .get(node_id)
@@ -2584,7 +2867,7 @@ impl RinchDocument {
     /// layout and the cache and mark nothing, which was harmless only while an
     /// eager subtree drop on every attribute write marked the root by another
     /// route.
-    pub(crate) fn invalidate_ifc_root(&mut self, root_id: usize) {
+    pub(crate) fn invalidate_ifc_root(&mut self, root_id: RawNodeId) {
         if let Some(root) = self.tree.nodes.get_mut(root_id) {
             root.text_layout = None;
         }
@@ -2690,7 +2973,7 @@ impl RinchDocument {
     pub(crate) fn taffy_detach_contribution(
         &mut self,
         parent_taffy: taffy::NodeId,
-        node_id: usize,
+        node_id: RawNodeId,
     ) {
         use crate::computed_style::values::DisplayValue;
 
@@ -2732,7 +3015,7 @@ impl RinchDocument {
         // removing it as the only child left the box silently reachable. Walk
         // the subtree, and cut every edge whose Taffy parent is not a subtree
         // member. O(subtree), like the `ifc_root` clear the same DOM ops run.
-        let mut subtree: Vec<usize> = vec![node_id];
+        let mut subtree: Vec<RawNodeId> = vec![node_id];
         let mut i = 0;
         while i < subtree.len() {
             if let Some(n) = self.tree.nodes.get(subtree[i]) {
@@ -2745,7 +3028,7 @@ impl RinchDocument {
             .filter_map(|&id| self.tree.nodes.get(id).and_then(|n| n.taffy_id))
             .collect();
         for &id in &subtree[1..] {
-            let Some(t) = self.tree.nodes.get(id).and_then(|n| n.taffy_id) else {
+            let Some(t) = self.tree.nodes.get_live(id).and_then(|n| n.taffy_id) else {
                 continue;
             };
             if let Some(p) = self.tree.taffy.parent(t)
@@ -2768,14 +3051,14 @@ impl RinchDocument {
     /// nested wrapper's grandchildren stranded when both wrappers were toggled
     /// away from `contents` in the same flush.
     fn collect_taffy_detach_candidates(
-        nodes: &slab::Slab<crate::node::Node>,
-        node_id: usize,
+        nodes: &crate::node_slab::NodeSlab,
+        node_id: RawNodeId,
         out: &mut Vec<taffy::NodeId>,
     ) {
         use crate::computed_style::values::DisplayValue;
 
         for &child_id in &nodes[node_id].children {
-            let Some(child) = nodes.get(child_id) else {
+            let Some(child) = nodes.get_live(child_id) else {
                 continue;
             };
             if let Some(child_taffy) = child.taffy_id {
@@ -2894,12 +3177,12 @@ impl RinchDocument {
     /// either, and has its own: [`Self::detach_subtree_styles_if_moved_out`]
     /// (#702). It is not a `parent = None` detach, but it is disconnected,
     /// which #696 established is the question that matters.
-    pub(crate) fn detach_subtree_styles(&mut self, node_id: usize) {
+    pub(crate) fn detach_subtree_styles(&mut self, node_id: RawNodeId) {
         // Iterative, like `clear_ifc_root_recursive` — a deep subtree must not
         // overflow the stack on its way out of the document.
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
-            let Some(node) = self.tree.nodes.get_mut(id) else {
+            let Some(node) = self.tree.nodes.get_live_mut(id) else {
                 continue;
             };
             node.has_been_styled = false;
@@ -3003,9 +3286,9 @@ impl RinchDocument {
     /// nothing", true of every destination but a detached one.
     pub(crate) fn detach_subtree_styles_if_moved_out(
         &mut self,
-        child: usize,
-        old_parent: usize,
-        new_parent: usize,
+        child: RawNodeId,
+        old_parent: RawNodeId,
+        new_parent: RawNodeId,
     ) {
         if old_parent != new_parent && self.depth_if_connected(new_parent).is_none() {
             self.detach_subtree_styles(child);
@@ -3041,8 +3324,8 @@ impl RinchDocument {
     ///
     /// A child with no style yet — never styled, or its data dropped by an
     /// earlier insertion this frame — is cascaded as before.
-    pub(crate) fn keeps_style_across_move(&self, child: usize, new_parent: usize) -> bool {
-        let Some(node) = self.tree.nodes.get(child) else {
+    pub(crate) fn keeps_style_across_move(&self, child: RawNodeId, new_parent: RawNodeId) -> bool {
+        let Some(node) = self.tree.nodes.get_live(child) else {
             return false;
         };
         node.parent == Some(new_parent)
@@ -3066,11 +3349,11 @@ impl RinchDocument {
     /// differential: a text moved out of a mixed container that was removed
     /// in the same frame). The whole-document pass cleaned every box every
     /// time, which hid it.
-    pub(crate) fn clear_ifc_root_recursive(&mut self, node_id: usize) {
+    pub(crate) fn clear_ifc_root_recursive(&mut self, node_id: RawNodeId) {
         // Use iterative approach to avoid stack overflow
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
-            let Some(node) = self.tree.nodes.get_mut(id) else {
+            let Some(node) = self.tree.nodes.get_live_mut(id) else {
                 continue;
             };
             node.ifc_root = None;
@@ -3086,7 +3369,7 @@ impl RinchDocument {
     /// Invalidate IFC state for a parent element.
     /// Clears text_layout on the parent and ifc_root on all its inline children.
     /// Also marks the Taffy node dirty so the measure callback re-fires.
-    pub(crate) fn invalidate_parent_ifc(&mut self, parent_id: usize) {
+    pub(crate) fn invalidate_parent_ifc(&mut self, parent_id: RawNodeId) {
         // The mark on the #466 measure leaf inside matters here: without it a
         // text edit in a `text + absolute` container serves the leaf's cached
         // measure and the container's height never changes.
@@ -3098,4 +3381,31 @@ impl RinchDocument {
         // and setup_inline_formatting_contexts() won't re-assign them because
         // ifc_dirty is not set for text-only changes.
     }
+}
+
+/// The text layouts a compute's measures built, by node and wrap width.
+type MeasuredTextLayouts = HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>>;
+
+/// What [`RinchDocument::run_taffy`] asks Taffy for.
+enum TaffyRun<'a> {
+    /// A root compute: lay the tree under this node out.
+    Layout(taffy::NodeId),
+    /// The size of each of these nodes, laying nothing out.
+    Sizes(&'a [taffy::NodeId]),
+}
+
+/// Pins a measure closure to the signature both Taffy entry points take, so
+/// it can be built once and handed to either (the higher-ranked lifetimes are
+/// not inferred for a closure bound to a `let`).
+fn measure_fn<F>(f: F) -> F
+where
+    F: FnMut(
+        taffy::LayoutInput,
+        taffy::NodeId,
+        Option<&mut NodeContext>,
+        &taffy::Style,
+        Option<&mut taffy::BlockContext<'_>>,
+    ) -> taffy::LayoutOutput,
+{
+    f
 }

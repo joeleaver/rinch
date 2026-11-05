@@ -115,6 +115,45 @@ fn a_repeating_url_layer_is_one_image_draw_without_the_software_painter() {
     }
 }
 
+/// #2111: an SVG file as a repeating background in a build without the
+/// software painter is rasterised (resvg, at the device size of one tile)
+/// and drawn as one image brush, as a decoded raster image is; an `<img>` of
+/// one is one image draw. Before, the SVG never decoded and neither drew.
+#[test]
+fn an_svg_background_and_img_are_drawn_without_the_software_painter() {
+    let svg = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20\
+               width%3D%2216%22%20height%3D%2216%22%3E%3Crect%20width%3D%228%22%20height%3D%228%22%2F%3E%3C%2Fsvg%3E";
+    let (all, _, images) = draws_with_images(&format!(
+        "width:800px;height:600px;background-image:url(\"{svg}\");background-size:10px 10px"
+    ));
+    assert_eq!(images, 1, "{all} draws");
+
+    let mut doc = RinchDocument::new();
+    doc.load_css("html, body { margin: 0; }");
+    let body = doc.body();
+    let img = doc.create_element("img");
+    doc.set_attribute(img, "src", svg);
+    doc.append_child(body, img);
+    doc.resolve_layout(900.0, 700.0);
+    let mut vp = VelloPainter::new();
+    let mut lcx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut vp,
+        2.0,
+        (900.0, 700.0),
+        &mut doc.font_cx,
+        &mut lcx,
+    );
+    let e = vp.scene().encoding();
+    assert_eq!(e.draw_tags.iter().filter(|t| t.0 == 0x28C).count(), 1);
+    let raster = doc.tree.image_cache.get(svg).unwrap().vector().unwrap();
+    assert_eq!(raster.rasters_made(), 1);
+    // At 2x the 16px image is rasterised at 32 device pixels.
+    assert_eq!(raster.raster(32.0, 32.0).unwrap().image.width, 32);
+    assert_eq!(raster.rasters_made(), 1, "that raster was the one drawn");
+}
+
 /// Gradients still go tile by tile: the image arm must not take them.
 #[test]
 fn a_gradient_layer_is_still_tiled_without_the_software_painter() {
@@ -294,6 +333,7 @@ mod gpu {
                         decoded: None,
                         frame: None,
                         opaque: false,
+                        sampling: Default::default(),
                     },
                     Affine::translate((x, y))
                         * Affine::scale_non_uniform(tw / img.width as f64, th / img.height as f64),

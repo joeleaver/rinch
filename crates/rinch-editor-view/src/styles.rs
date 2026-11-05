@@ -13,9 +13,8 @@
 //! [`EditorHandle::set_dark_mode`](super::EditorHandle::set_dark_mode)); the dark
 //! rules below carry that extra attribute so they win by specificity.
 //!
-//! **Tables:** rinch-dom has no `display: table`, so tables are laid out with
-//! flexbox (`table` = column, `row` = row, cells = equal-width flex items). This
-//! is why the default stylesheet is load-bearing for tables, not just cosmetic.
+//! **Tables:** the editor lays its tables out with CSS grid (below), not as CSS
+//! tables, so the stylesheet is load-bearing for them, not just cosmetic.
 //!
 //! **Inline decorations:** a
 //! [`Decoration::Inline`](rinch_editor_core::decoration::Decoration::Inline)
@@ -42,6 +41,11 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
   padding: 16px 20px;
   border: 1px solid #d0d7de;
   border-radius: 10px;
+  /* An app sizes the editor by its outside: a `width` or `height` given to it
+     includes this padding and border, themed or not, on desktop and the web
+     alike (rinch reads `box-sizing` since #1278; the theme's
+     `* { box-sizing: border-box }` used to stand in for this). */
+  box-sizing: border-box;
   /* Preserve the model's whitespace exactly (inherited by every textblock). Without
      this the browser collapses trailing spaces and runs of spaces, so a space typed
      at end of line is invisible until the next character, and — worse — the rendered
@@ -168,7 +172,7 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
    no frame (a press beside it places the caret, an arrow steps over it). */
 [data-pm-editor] [data-pm-type="image"][data-pm-node-view] { padding: 0; border-radius: 0; }
 
-/* ── Tables (CSS grid — rinch-dom has no display:table) ─────────────────
+/* ── Tables (CSS grid, placed from the TableMap) ─────────────────
    The <table> is a grid; the view sets `grid-template-columns: repeat(N, …)`
    inline (N = column count). <tr> is `display: contents`, so its cells become
    the grid's direct items, and each cell carries an inline

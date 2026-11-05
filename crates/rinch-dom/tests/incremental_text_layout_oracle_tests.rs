@@ -57,7 +57,7 @@ fn r(v: f32) -> f32 {
     (v * 64.0).round() / 64.0
 }
 
-fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
+fn walk(doc: &RinchDocument, id: u64, depth: usize, out: &mut Vec<String>) {
     let Some(node) = doc.tree.get(id) else {
         return;
     };
@@ -1097,7 +1097,7 @@ fn a_text_node_that_stops_being_a_leaf_answers_no_stale_caret_970() {
     };
     let last_text = |d: &RinchDocument, w: NodeId| {
         let p = d.tree.get(w.0).unwrap().children[0];
-        *d.tree.get(p).unwrap().children.last().unwrap() as u64
+        *d.tree.get(p).unwrap().children.last().unwrap()
     };
     let (mut d, w) = make(true);
     let t = last_text(&d, w);
@@ -1120,7 +1120,7 @@ fn a_text_node_that_stops_being_a_leaf_answers_no_stale_caret_970() {
         glyph_bounds_for_offset(&f, t2, 8).map(|g| (g.x, g.y, g.width, g.height)),
         "glyph bounds on an IFC member that used to be a leaf"
     );
-    assert!(d.tree.get(t as usize).unwrap().cached_text_parley.is_none());
+    assert!(d.tree.get(t).unwrap().cached_text_parley.is_none());
 }
 
 // ── Width alone ──────────────────────────────────────────────────────────────
@@ -2995,7 +2995,7 @@ fn rv_seed1733_hist(contents: bool, whole: bool, name: &str) {
                 } else {
                     h.0
                 };
-                let kids: Vec<usize> = doc.tree.get(w.0).unwrap().children.clone();
+                let kids: Vec<u64> = doc.tree.get(w.0).unwrap().children.clone();
                 NodeId(
                     kids.into_iter()
                         .find(|&k| {

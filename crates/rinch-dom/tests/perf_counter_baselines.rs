@@ -818,6 +818,7 @@ fn build_table(n: usize, rows: bool) -> Fixture {
 
 /// Reverse 200 table rows, moving each with `append_child` as a keyed `for`
 /// reorder does. The table's direction cannot change, and it costs **no**
+/// Each cell moved, so each changes its grid row (`taffy_style_changes` 200).
 /// Taffy style sync (`taffy_style_syncs` 0): each move owes the table one
 /// direction check, deduplicated and answered once for the frame. The review
 /// of #1097 measured 200 syncs here — one per move — before the owed set.
@@ -838,11 +839,12 @@ fn table_reverse_200_rows() {
         "table: reverse 200 rows",
         &s,
         &[
+            (TaffyStyleChanges, 200),
             (IfcMeasureInvalidations, 200),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
             (IfcScopedPasses, 1),
-            (IfcScopeContainers, 601),
+            (IfcScopeContainers, 401),
             (IfcScopeNodes, 602),
             (TaffyRootComputes, 1),
             (PaintNodesVisited, 105),
@@ -866,6 +868,7 @@ fn table_remove_499_of_500_cells() {
         "table: remove 499 of 500 cells",
         &s,
         &[
+            (TaffyStyleChanges, 1),
             (IfcMeasureInvalidations, 499),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
@@ -1041,6 +1044,39 @@ fn transform_animation_tick_beside_finished_one_shots() {
     });
     expect(
         "transform animation tick beside finished one-shots",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 50),
+            (StackingOrderBuilds, 2),
+        ],
+    );
+}
+
+/// A `to`-only spinner (an implicit `from`) on a box with a width, height,
+/// margin, padding and font-size ticks exactly as `transform_animation_tick`
+/// does: the implicit stop carries `transform` alone, never the layout
+/// properties the base style also holds (#767), so the tick stays paint-only.
+#[test]
+fn to_only_transform_animation_tick() {
+    let mut f = build_with(
+        ROWS,
+        false,
+        "@keyframes k767 { to { transform: rotate(360deg); } }
+         .k767 { width: 30px; height: 10px; margin-left: 3px; padding: 2px; font-size: 12px; animation: k767 1000s linear infinite; }",
+    );
+    let chip = f.chips[ROWS / 2];
+    f.doc.set_attribute(chip, "class", "chip k767");
+    f.doc.resolve_layout(VP.0, VP.1);
+    paint(&mut f);
+    f.doc.tree.perf.reset();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let s = frame(&mut f, |f| {
+        f.doc.tick_animations();
+    });
+    expect(
+        "to-only transform animation tick",
         &s,
         &[
             (LayoutResolves, 1),

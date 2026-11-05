@@ -1,4 +1,4 @@
-//! Event handler registry for click, input, and file-drop events.
+//! Event handler registry for click, input, file-drop, key and wheel events.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -228,6 +228,154 @@ impl std::fmt::Debug for KeyCallback {
     }
 }
 
+/// A wheel turn (or trackpad scroll, or pinch) over an element — the payload
+/// handed to an element's `onwheel` handler.
+///
+/// The deltas have the DOM's sign and unit on every backend
+/// (`WheelEvent.deltaX/deltaY`): **logical pixels**, positive `delta_y` when
+/// the content would move up (the wheel turned towards the user, a two-finger
+/// swipe up), positive `delta_x` when it would move left. A notched wheel's
+/// lines are 40 px each, as the desktop scrolls them; a page is the window's
+/// height.
+///
+/// A trackpad **pinch** arrives as a wheel with `modifiers.ctrl` set, as a
+/// browser reports it: spreading the fingers is a negative `delta_y`, and
+/// [`zoom_factor`](Self::zoom_factor) turns either a pinch or a Ctrl+wheel
+/// into the same scale.
+///
+/// `#[non_exhaustive]`: build one with [`WheelEvent::new`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct WheelEvent {
+    /// Horizontal distance in logical pixels; positive scrolls right.
+    pub delta_x: f32,
+    /// Vertical distance in logical pixels; positive scrolls down.
+    pub delta_y: f32,
+    /// The pointer, in logical window pixels (the frame of
+    /// [`ClickContext::mouse_x`](super::ClickContext::mouse_x)).
+    pub x: f32,
+    /// The pointer, in logical window pixels.
+    pub y: f32,
+    /// Shift / Ctrl / Alt / Meta at the time of the wheel. Ctrl is set for a
+    /// trackpad pinch.
+    pub modifiers: super::ModifierState,
+    /// The element under the pointer, the DOM's `event.target`: the deepest
+    /// element the wheel is over (over text, the element holding it), which
+    /// is the handler's own element or one inside it. On the web, under an
+    /// element rinch did not create (raw HTML), the nearest one it did. `None`
+    /// for an event built by hand.
+    ///
+    /// Turn it into a handle with [`NodeHandle::handle_for`] on any handle
+    /// of the same document (the handler's own element, typically) to walk
+    /// up from it — for instance to ask which scroll container inside the
+    /// handler's element a plain wheel would move
+    /// ([`NodeHandle::can_scroll_toward`]) before taking the wheel for
+    /// itself.
+    ///
+    /// [`NodeHandle::handle_for`]: crate::dom::NodeHandle::handle_for
+    /// [`NodeHandle::can_scroll_toward`]: crate::dom::NodeHandle::can_scroll_toward
+    pub target: Option<crate::dom::NodeId>,
+}
+
+impl WheelEvent {
+    /// A wheel event with these deltas at `(x, y)`, no modifiers held.
+    pub fn new(delta_x: f32, delta_y: f32, x: f32, y: f32) -> Self {
+        Self {
+            delta_x,
+            delta_y,
+            x,
+            y,
+            modifiers: super::ModifierState::default(),
+            target: None,
+        }
+    }
+
+    /// The same event with these modifiers.
+    pub fn with_modifiers(mut self, modifiers: super::ModifierState) -> Self {
+        self.modifiers = modifiers;
+        self
+    }
+
+    /// The same event over this element ([`target`](Self::target)).
+    pub fn with_target(mut self, target: crate::dom::NodeId) -> Self {
+        self.target = Some(target);
+        self
+    }
+
+    /// The deltas the default scroll moves by: these deltas, except that with
+    /// Shift held a wheel with no sideways part scrolls sideways by its
+    /// vertical one where the platform does that ([`shift_wheel_turns_sideways`]:
+    /// Linux and Windows, as Chrome and Firefox scroll there; not macOS, whose
+    /// mouse wheel already arrives sideways under Shift and whose trackpad
+    /// with Shift held stays vertical). A handler that wants to know where
+    /// the default scroll would go — or to scroll the way it does — reads this.
+    pub fn scroll_deltas(&self) -> (f32, f32) {
+        if self.modifiers.shift && self.delta_x == 0.0 && shift_wheel_turns_sideways() {
+            (self.delta_y, 0.0)
+        } else {
+            (self.delta_x, self.delta_y)
+        }
+    }
+
+    /// The scale this wheel zooms by when it is read as a zoom (a pinch, or
+    /// Ctrl/Cmd+wheel): 100 px of `delta_y` is a factor of *e*, the curve
+    /// browsers and most canvas apps use. Above 1 zooms in.
+    pub fn zoom_factor(&self) -> f32 {
+        (-self.delta_y / 100.0).exp()
+    }
+}
+
+thread_local! {
+    static SHIFT_WHEEL_SIDEWAYS: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(!cfg!(target_os = "macos")) };
+}
+
+/// Whether Shift turns a vertical-only wheel sideways for the default scroll
+/// on this platform ([`WheelEvent::scroll_deltas`]): yes on Linux and Windows
+/// (Chrome's and Firefox's behaviour there), no on macOS, where the system
+/// does it for a mouse wheel itself. Native builds answer by the target OS;
+/// rinch-web sets it from `navigator.platform` when it installs its wheel
+/// listener.
+pub fn shift_wheel_turns_sideways() -> bool {
+    SHIFT_WHEEL_SIDEWAYS.with(std::cell::Cell::get)
+}
+
+/// Set [`shift_wheel_turns_sideways`] for this thread: the web backend's
+/// platform answer, and tests of the macOS half. Not app API.
+#[doc(hidden)]
+pub fn set_shift_wheel_turns_sideways(on: bool) {
+    SHIFT_WHEEL_SIDEWAYS.with(|c| c.set(on));
+}
+
+/// Cloneable callback for an element's `onwheel`.
+///
+/// Receives the [`WheelEvent`] and answers whether it **consumed** it: `true`
+/// stops the wheel — no ancestor's `onwheel` is offered it and no scroll
+/// container scrolls (the browser's `preventDefault()`). `false` lets it go on
+/// as if the handler were not there.
+#[derive(Clone)]
+pub struct WheelCallback(pub Rc<dyn Fn(&WheelEvent) -> bool>);
+
+impl WheelCallback {
+    /// Create a new wheel callback from a function.
+    pub fn new<F: Fn(&WheelEvent) -> bool + 'static>(f: F) -> Self {
+        Self(Rc::new(f))
+    }
+
+    /// Invoke the callback; answers whether it consumed the wheel.
+    ///
+    /// Runs untracked (issue #285), like every other app callback.
+    pub fn invoke(&self, event: &WheelEvent) -> bool {
+        crate::reactive::untracked_handler(|| (self.0)(event))
+    }
+}
+
+impl std::fmt::Debug for WheelCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WheelCallback(...)")
+    }
+}
+
 /// Global counter for generating unique event handler IDs.
 static NEXT_HANDLER_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -275,6 +423,8 @@ pub fn unregister_handler(id: EventHandlerId) {
     drop(scroll);
     let key = KEY_REGISTRY.with(|r| r.borrow_mut().remove(&id));
     drop(key);
+    let wheel = WHEEL_REGISTRY.with(|r| r.borrow_mut().remove(&id));
+    drop(wheel);
 }
 
 /// Whether a click handler is still registered under this id.
@@ -327,6 +477,9 @@ thread_local! {
         RefCell::new(HashMap::new());
     /// `onkeydown` / `onkeyup` handlers (issue #1678).
     static KEY_REGISTRY: RefCell<HashMap<EventHandlerId, KeyCallback>> = RefCell::new(HashMap::new());
+    /// `onwheel` handlers.
+    static WHEEL_REGISTRY: RefCell<HashMap<EventHandlerId, WheelCallback>> =
+        RefCell::new(HashMap::new());
     // Not const-evaluable: goes through the non-const `Default` trait method.
     static INPUT_CONTEXT: RefCell<InputContext> = RefCell::new(InputContext::default());
     /// Flag to signal that an input event was handled and a re-render may be needed.
@@ -339,7 +492,7 @@ pub struct InputContext {
     /// The current value of the input field.
     pub value: String,
     /// The node ID of the input element.
-    pub node_id: usize,
+    pub node_id: u64,
 }
 
 /// Registry that maps event handler IDs to callbacks.
@@ -442,6 +595,18 @@ pub fn register_handler(callback: EventCallback) -> EventHandlerId {
 pub fn set_click_context(ctx: ClickContext) {
     super::CLICK_CONTEXT.with(|c| {
         *c.borrow_mut() = ctx;
+    });
+}
+
+/// Set the link the current click went through, read by [`click_link`].
+///
+/// Called by the runtime around a pointer click's dispatch: set before the
+/// handler runs, cleared (`None`) after it.
+///
+/// [`click_link`]: super::click_link
+pub fn set_click_link(href: Option<String>) {
+    super::CLICK_LINK.with(|c| {
+        *c.borrow_mut() = href;
     });
 }
 
@@ -763,6 +928,58 @@ pub fn dispatch_key_handler_chain(
     ids.into_iter().any(|id| dispatch_key_handler(id, key))
 }
 
+/// Register an element wheel handler (`onwheel`) and return its ID, to be
+/// written to the element's `data-onwheel` attribute.
+///
+/// Owned by the scope registering it, and re-enters that scope and context
+/// root on dispatch (issues #136, #141), like every other handler.
+#[doc(hidden)]
+pub fn register_wheel_handler(callback: WheelCallback) -> EventHandlerId {
+    let id = next_handler_id();
+    let root = crate::context::current_context_root();
+    crate::reactive::record_handler(id);
+    let owner = crate::reactive::Owner::current();
+    let callback = WheelCallback::new(move |event| {
+        let _root = crate::context::push_context_root(root);
+        let _owner = owner.push();
+        callback.invoke(event)
+    });
+    WHEEL_REGISTRY.with(|registry| {
+        registry.borrow_mut().insert(id, callback);
+    });
+    id
+}
+
+/// Whether a wheel handler is still registered under this id. See
+/// [`has_click_handler`].
+pub fn has_wheel_handler(id: EventHandlerId) -> bool {
+    WHEEL_REGISTRY.with(|registry| registry.borrow().contains_key(&id))
+}
+
+/// Offer a wheel to the `onwheel` handler with the given ID, as one
+/// transaction (`batch`). Answers whether it **consumed** the wheel; a missing
+/// handler (freed with its scope, #141) consumed nothing.
+pub fn dispatch_wheel_handler(id: EventHandlerId, event: &WheelEvent) -> bool {
+    let handler: Option<WheelCallback> =
+        WHEEL_REGISTRY.with(|registry| registry.borrow().get(&id).cloned());
+    match handler {
+        Some(h) => crate::reactive::batch(|| h.invoke(event)),
+        None => false,
+    }
+}
+
+/// Offer a wheel to a chain of `onwheel` handlers, nearest first — the ids a
+/// backend read off the element under the pointer and its ancestors **before**
+/// calling any of them (a handler may change the tree; the path is the one the
+/// wheel turned over). Stops at the first handler that consumes it and answers
+/// whether one did; a consumed wheel scrolls nothing.
+pub fn dispatch_wheel_handler_chain(
+    ids: impl IntoIterator<Item = EventHandlerId>,
+    event: &WheelEvent,
+) -> bool {
+    ids.into_iter().any(|id| dispatch_wheel_handler(id, event))
+}
+
 /// Check if an input event was handled since last check, and clear the flag.
 ///
 /// This allows the shell to know if a re-render is needed after processing
@@ -795,6 +1012,9 @@ pub fn clear_handlers() {
         registry.borrow_mut().clear();
     });
     KEY_REGISTRY.with(|registry| {
+        registry.borrow_mut().clear();
+    });
+    WHEEL_REGISTRY.with(|registry| {
         registry.borrow_mut().clear();
     });
     reset_handler_ids();

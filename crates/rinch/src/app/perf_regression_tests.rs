@@ -44,7 +44,8 @@ const ROW_CSS: &str = "
     body { font-size: 14px; line-height: 20px; }
     .row { height: 20px; }
     .row:hover { background-color: rgb(200, 0, 0); }
-    .field { position: absolute; left: 300px; top: 300px; width: 200px; height: 24px; }
+    .field { position: absolute; left: 300px; top: 300px; width: 200px; height: 24px;
+             box-sizing: border-box; }
     .scroller { width: 300px; height: 400px; overflow-y: auto; }
     .big { width: 800px; height: 600px; }
     .big.on { background-color: rgb(0, 0, 200); }
@@ -53,6 +54,12 @@ const ROW_CSS: &str = "
 ";
 
 /// Ten static rows, a text `<input>`, and a 200-row scroller off to the side.
+///
+/// `.field` is `box-sizing: border-box`, so its UA padding and border sit
+/// inside its 200×24 box: the scenarios' areas were recorded when rinch sized
+/// every box that way (#1278), and a text `<input>` is `content-box` by
+/// default, in Chrome as here — 208×30 without the declaration, which grows
+/// every repaint and clip that covers the field without costing more work.
 fn static_page() -> RinchApp {
     mount_settled(|scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -414,6 +421,146 @@ fn a_loader_in_a_closed_drawer_idles() {
     expect_frame("Loader in a closed Drawer, idle", &total, &[]);
 }
 
+// ── A closed Drawer full of content (#2137) ───────────────────────────────
+
+/// Ten page rows under a closed left `Drawer` whose content is 100 rows of
+/// text, each with a translucent badge and a `z-index`ed one, under the
+/// shipped component stylesheet.
+fn closed_drawer_page() -> RinchApp {
+    mount_settled(|scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = format!(
+            "{}{ROW_CSS} .item {{ position: relative; height: 20px; }} \
+             .badge {{ position: absolute; right: 4px; top: 6px; width: 8px; height: 8px; \
+                       opacity: 0.5; background: rgb(200, 0, 0); }} \
+             .pin {{ position: absolute; right: 16px; top: 6px; width: 8px; height: 8px; \
+                     z-index: 1; background: rgb(0, 0, 200); }}",
+            rinch_components::generate_component_css()
+        );
+        let text = scope.create_text(&css);
+        style.append_child(&text);
+        root.append_child(&style);
+        for i in 0..10 {
+            let row = scope.create_element("div");
+            row.set_attribute("class", "row");
+            let t = scope.create_text(&format!("row {i}"));
+            row.append_child(&t);
+            root.append_child(&row);
+        }
+        let content = scope.create_element("div");
+        for i in 0..100 {
+            let item = scope.create_element("div");
+            item.set_attribute("class", "item");
+            let t = scope.create_text(&format!("drawer item {i}"));
+            item.append_child(&t);
+            for class in ["badge", "pin"] {
+                let b = scope.create_element("div");
+                b.set_attribute("class", class);
+                item.append_child(&b);
+            }
+            content.append_child(&item);
+        }
+        let drawer = Drawer {
+            opened_fn: Some(std::rc::Rc::new(|| false)),
+            position: "left".to_string(),
+            ..Default::default()
+        }
+        .render(scope, &[content]);
+        root.append_child(&drawer);
+        root
+    })
+}
+
+/// A full repaint of a page under a closed `Drawer` of 100 rows paints the
+/// page alone: the drawer is `visibility: hidden` with nothing visible in it,
+/// so paint never enters it and the stacking collector hoists nothing out of
+/// it (#2137). Before, the walk entered the drawer's root, its panel and the
+/// rows the window showed, ran their text through the visibility mask, and
+/// pushed an empty group layer for every on-screen translucent badge:
+/// `paint_nodes_visited` 160 → 22, `stacking_order_builds` 5 → 1,
+/// `paint_layers` 29 → 0. Positive control: the drawer is mounted, and closed.
+#[test]
+fn a_closed_drawer_full_of_content_costs_a_full_repaint_nothing() {
+    let mut app = closed_drawer_page();
+    {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let tree = &d.tree;
+        let closed = tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| {
+                n.attributes
+                    .get("class")
+                    .is_some_and(|c| c.split_whitespace().any(|c| c == "rinch-drawer__root"))
+            })
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        assert_eq!(closed.len(), 1, "positive control: the drawer is mounted");
+        let root = tree.get(closed[0]).unwrap();
+        assert!(
+            rinch_dom::visibility::hides_own(tree, root)
+                && !rinch_dom::visibility::shows_below(tree, closed[0]),
+            "positive control: the drawer is closed, and shows nothing"
+        );
+    }
+    app.mark_scene_dirty();
+    let s = paint(&mut app);
+    expect_frame(
+        "full repaint under a closed Drawer",
+        &s,
+        &[
+            (PaintFrames, 1),
+            (RepaintFull, 1),
+            (RepaintFullUnattributed, 1),
+            (RepaintedPx, 480000),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 12),
+            (StackingOrderBuilds, 1),
+            (GlyphCacheHits, 50),
+        ],
+    );
+}
+
+/// A hover on a page row under a closed `Drawer` repaints the row, and the
+/// partial frame enters nothing of the drawer the damage crosses (#2137).
+#[test]
+fn a_hover_under_a_closed_drawer_enters_none_of_it() {
+    let mut app = closed_drawer_page();
+    let s = interaction(&mut app, |app| {
+        app.handle_event(PlatformEvent::MouseMove { x: 40.0, y: 50.0 }, SIZE, 1.0);
+    });
+    assert_eq!(s.get(RepaintPartial), 1, "positive control: {s:?}");
+    expect_frame(
+        "hover a row under a closed Drawer",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (PseudoElementPasses, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 22400),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 5),
+            (StackingOrderBuilds, 2),
+            (GlyphCacheHits, 15),
+            (ClipMasks, 1),
+            (ClipMaskPx, 25600),
+            (PaintSurfaceAllocs, 1),
+            (HitTests, 1),
+            (HitTestNodesVisited, 3),
+            (HitExtentsComputed, 13),
+        ],
+    );
+}
+
 // ── Keyed `for`, 200 rows ──────────────────────────────────────────────────
 
 const LIST_ROWS: usize = 200;
@@ -457,7 +604,7 @@ fn mount_list() -> (RinchApp, Signal<Vec<Item>>) {
 fn row_count(app: &RinchApp) -> usize {
     use rinch_core::dom::{DomDocument, NodeId};
     let d = app.doc.as_ref().unwrap().borrow();
-    let ids: Vec<usize> = d.tree.nodes.iter().map(|(id, _)| id).collect();
+    let ids: Vec<u64> = d.tree.nodes.iter().map(|(id, _)| id).collect();
     ids.into_iter()
         .filter(|&id| d.get_attribute(NodeId(id), "class").as_deref() == Some("row"))
         .filter(|&id| {
@@ -1502,6 +1649,7 @@ fn full_repaint_gpu() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
+            (VelloClipTiles, 186),
         ],
     );
 }

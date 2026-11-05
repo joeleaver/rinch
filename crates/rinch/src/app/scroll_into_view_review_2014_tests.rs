@@ -24,7 +24,7 @@ fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchA
     app
 }
 
-fn body_of(app: &RinchApp) -> usize {
+fn body_of(app: &RinchApp) -> u64 {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .nodes
@@ -34,15 +34,15 @@ fn body_of(app: &RinchApp) -> usize {
         .unwrap()
 }
 
-fn off(app: &RinchApp, id: usize) -> (f64, f64) {
+fn off(app: &RinchApp, id: u64) -> (f64, f64) {
     app.doc.as_ref().unwrap().borrow().tree.nodes[id].scroll_offset
 }
 
-fn set_off(app: &RinchApp, id: usize, o: (f64, f64)) {
+fn set_off(app: &RinchApp, id: u64, o: (f64, f64)) {
     app.doc.as_ref().unwrap().borrow_mut().tree.nodes[id].scroll_offset = o;
 }
 
-fn request(app: &mut RinchApp, t: usize) {
+fn request(app: &mut RinchApp, t: u64) {
     {
         let doc = app.doc.as_ref().unwrap();
         let mut d = doc.borrow_mut();
@@ -57,8 +57,8 @@ fn request(app: &mut RinchApp, t: usize) {
 #[test]
 fn review_2014_modal_reveal_does_not_scroll_the_page_behind() {
     let open = Signal::new(true);
-    let t_id = Rc::new(Cell::new(0usize));
-    let s_id = Rc::new(Cell::new(0usize));
+    let t_id = Rc::new(Cell::new(0u64));
+    let s_id = Rc::new(Cell::new(0u64));
     let (ti, si) = (t_id.clone(), s_id.clone());
     let mut app = mount(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -98,8 +98,8 @@ fn review_2014_modal_reveal_does_not_scroll_the_page_behind() {
 /// and the page is not.
 #[test]
 fn review_2014_a_fixed_scroller_is_itself_scrolled() {
-    let t_id = Rc::new(Cell::new(0usize));
-    let s_id = Rc::new(Cell::new(0usize));
+    let t_id = Rc::new(Cell::new(0u64));
+    let s_id = Rc::new(Cell::new(0u64));
     let (ti, si) = (t_id.clone(), s_id.clone());
     let mut app = mount(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -129,9 +129,9 @@ fn review_2014_a_fixed_scroller_is_itself_scrolled() {
     assert_eq!(page, (0.0, 500.0));
 }
 
-fn plain(tree: &'static [(&'static str, &'static str, usize)]) -> (RinchApp, Vec<usize>) {
+fn plain(tree: &'static [(&'static str, &'static str, usize)]) -> (RinchApp, Vec<u64>) {
     // A chain: each (name, style, depth) nests in the previous one.
-    let ids: Rc<RefCell<Vec<usize>>> = Rc::default();
+    let ids: Rc<RefCell<Vec<u64>>> = Rc::default();
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let mut stack: Vec<NodeHandle> = Vec::new();

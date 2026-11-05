@@ -58,6 +58,15 @@ tablet tool `2`, fingers above `1 << 32`; the web passes `pointerId` through; An
 embed report every pointer as the mouse. Pins: `app/surface_pointer_tests.rs`,
 `shell/rinch_runtime.rs` `pointer_source_tests`, `rinch-web/tests/render_surface_pointer_events.rs`.
 
+**Pointer lock on a surface** (#2092). `RenderSurfaceHandle::request_pointer_lock`
+is the window's lock held by the surface's element (`element`, set by
+`RenderSurface::render` — the desktop `<div>`, the web `<canvas>` — and cleared
+at its cleanup), with the surface id recorded so `dispatch_pointer_motion` sends
+it `SurfaceEvent::PointerMotion` while the lock is granted;
+`unregister_render_surface` releases it. An embed host installs a
+`PointerLockHost` and forwards `PlatformEvent::PointerMotion`; mechanism and
+pins: `app-and-windows.md`, "Pointer lock and raw motion (#2092)".
+
 **A focused surface only swallows the keys it claims (issue #482).** `set_event_handler`
 still receives every `KeyDown`/`KeyUp` while the surface is focused — that delivery is
 unaffected. `set_key_handler(|key: &SurfaceKeyData| -> bool)` answers a separate, additive
@@ -275,7 +284,7 @@ the runtime's own steps against an in-scene window.
 
 | Entry point | Ownership | Use when |
 |---|---|---|
-| `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits })` | rinch creates the device (surface-compatible adapter) with your extra features/limits | You just need more capability — **recommended**, always presents correctly |
+| `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits, optional_features })` | rinch creates the device (surface-compatible adapter) with your extra features/limits, and the optional features the adapter has | You just need more capability — **recommended**, always presents correctly |
 | `App::new(component).external_gpu(ExternalGpu { instance, adapter, device, queue })` | You create the whole stack; rinch makes only the surface, validates present-support, composites onto your device | You must keep your exact `DeviceDescriptor` |
 
 Construct `wgpu` types from **`rinch::wgpu`** (wgpu 30; a separately pinned `wgpu` of another major won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
@@ -315,6 +324,19 @@ nothing.
 - `crates/rinch/src/render_surface.rs` — All RenderSurface types and registry (incl. the wasm32 canvas path: `canvas_element`, `set_resize_callback`, `setup_canvas_events`, `setup_resize_observer`, `WebSurfaceCleanup`)
 - `crates/rinch-web/src/event_delegation.rs` — document-level keyboard/focus routing into the surface (`KeyDown`/`KeyUp`/`TextInput`, focus-clear on outside click)
 - `crates/rinch/src/shell/desktop.rs` — `GpuHandle`, `RinchGpuConfig`, `ExternalGpu`, `WgpuRenderer::new` device injection
+
+**Optional device features (#2085).** `request_rinch_device` (`shell/desktop.rs`) asks for
+`device_features(required, optional, adapter.features(), bgra_surface)`: the required features,
+`optional & adapter`, and `BGRA8UNORM_STORAGE` for a `Bgra8Unorm` surface where the adapter has it.
+A required feature the adapter lacks is an `Err` naming it, before `request_device` (which used to
+report it as a generic failure); a `gpu_config` app panics on it at startup as before.
+`GpuHandle::granted_optional_features()` is `device.features() & optional` (empty for
+`external_gpu`). The shared paths are untouched: a later window, the DevTools window and a
+`RenderSurface` reuse the one device, and `external_gpu` and the embed API never request one. The
+web has no rinch-made device (the app requests its own for a canvas), and Android's shell requests
+every adapter feature but the experimental ones. Pins: `pacing_and_features_tests` (pure), and
+`gpu_optional_features_follow_the_adapter_2085` (`#[ignore]`d, lavapipe in CI: a feature the
+adapter has is granted, one it lacks is left out, and the same one required fails, named).
 - `crates/rinch/src/app_builder.rs` — the `App` builder (incl. `gpu_config` / `external_gpu`); `crates/rinch/src/shell/mod.rs` holds the deprecated shims
 
 ### Embed API
@@ -333,8 +355,9 @@ build with `"gpu"`.
 | Type | Purpose |
 |------|---------|
 | `RinchContext` | Main handle — `new()`, `update()`, `scene()`. Multiple contexts can coexist on one thread (#134): each holds its own `subscribe_signal_change` guard, and bounds signals / editor registrations / focus requests are scoped per document via `DomDocument::doc_key()`. Stores/contexts are namespaced per context with a thread-global fallback (#136): `create_store` inside a context lands in that context's namespace (cleared on drop), its effects/handlers resolve it first, and lookups fall back to stores created outside any context. |
-| `RinchContextConfig` | Width, height, scale factor, optional theme |
+| `RinchContextConfig` | Width, height, scale factor, optional theme, and `fonts: Vec<FontData>` registered before the mount (owned or `'static`, #2101; font data, so it fills only empty generic slots, #2102). After the mount: `register_font(impl Into<FontData>)`, and `register_app_font(AppFont)` for a face that claims a generic |
 | `RinchOverlayRenderer` | Renders a context's UI to a texture: `render(device, queue, &mut ctx)` (since #1866; it took `ctx.scene()` before). Its `GameViewport`s are cut out by the split compositor, exactly; a host rendering `ctx.scene()` with its own Vello gets an in-scene erase, approximate inside clips. A renderer that does not hold the context's last sliced frame (new after a device loss, or another renderer or context took a turn) has the frame painted again: the stamp check below (#1976) |
+| `OverlayCheck` | From `RinchOverlayRenderer::check_frames(device)`, never waiting (#2071). `render` calls it, so a host rendering every frame can ignore it; an event-driven host must call it, because a lost frame is the renderer's and `needs_update` belongs to the context, of which several renderers may take turns. `needs_render` stays true until a `render`; `check_again_at` until Vello's counters are in. On a lost frame `fed` goes to 0, which repaints the slices. Pin: `gpu_an_event_driven_host_gets_a_lost_overlay_frame_back_2071` |
 | `GameViewport` | Component marking a transparent hole for game rendering. **Hittable by default** (#207): `wants_mouse` routes input by hit-testing the hole and walking up to `data-viewport`, so an unhittable hole makes the UI claim the mouse *everywhere*. `pointer-events: auto; background: transparent;` come from the UA stylesheet rule for `[data-viewport]` — not an inline style — so restyling the hole can't strip them, and a HUD root's inherited `pointer-events: none` can't reach it. Your own HUD controls under such a root still need `pointer-events: auto`. It also stamps **no** `data-viewport-ready`, and absence means ready, so its hole is unconditional (#186) — see the **Viewport holes** note under Rendering Backends. |
 | `LayoutRect` | `{x, y, width, height}` in logical pixels |
 

@@ -50,6 +50,11 @@ list_bench!(
     setup_flex_label_hover,
     op_flex_label_hover
 );
+list_bench!(
+    animated_list_color,
+    setup_animated_list_color,
+    op_animated_list_color
+);
 
 #[library_benchmark]
 #[bench::list_500_closed(setup = setup_drawer_toggle)]
@@ -85,7 +90,31 @@ fn abs_badge_scroll(f: BadgeFixture) -> BadgeFixture {
 }
 
 #[library_benchmark]
+#[bench::direct_500(setup = setup_badges_direct)]
+#[bench::ancestor_500(setup = setup_badges_ancestor)]
+#[bench::icb_500(setup = setup_badges_icb)]
+fn abs_badge_extents(f: BadgeFixture) -> BadgeFixture {
+    black_box(measure(black_box(f), op_badge_extents))
+}
+
+// #2136: one card's text in a 430-card grid, and a change beside the grid.
+// The exact counters are pinned in `rinch-dom/tests/perf_regression_scenarios.rs`
+// (`one_changed_card_in_a_grid_*`, `percentage_pills_in_a_grid_*`).
+#[library_benchmark]
+#[bench::cards_430(setup = setup_card_grid)]
+fn card_grid_count_edit(f: CardGridFixture) -> CardGridFixture {
+    black_box(measure(black_box(f), op_card_count_edit))
+}
+
+#[library_benchmark]
+#[bench::cards_430(setup = setup_card_grid)]
+fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
+    black_box(measure(black_box(f), op_card_grid_unrelated_edit))
+}
+
+#[library_benchmark]
 #[bench::text_page_warm(setup = setup_full_paint)]
+#[bench::closed_drawer_500(setup = setup_closed_drawer_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
 }
@@ -156,10 +185,14 @@ library_benchmark_group!(
         resize_1px,
         set_text_content,
         flex_label_hover,
+        animated_list_color,
         drawer_toggle,
+        abs_badge_extents,
         inset_move,
         abs_badge_relayout,
         abs_badge_scroll,
+        card_grid_count_edit,
+        card_grid_unrelated_edit,
         full_paint,
         vello_paint,
         shadow_paint,

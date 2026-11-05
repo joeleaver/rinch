@@ -125,7 +125,11 @@ fn offer_keys(page: &Page, consume: impl Fn(&str) -> bool + 'static) -> Offered 
 fn painted_caret(app: &RinchApp) -> (f32, f32, f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let id = (0..d.tree.nodes.len())
+    let id = d
+        .tree
+        .nodes
+        .iter()
+        .map(|(id, _)| id)
         .find(|&id| {
             d.tree
                 .nodes

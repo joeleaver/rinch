@@ -493,18 +493,14 @@ fn hr_inline_margins_are_auto_and_centre_a_narrowed_rule() {
         "<hr> takes `margin-inline: auto` in Chrome, got ({left:?}, {right:?})"
     );
 
-    // 800px container, 100px rule → (800-100)/2. The equivalent Chrome number
-    // is 331px of margin over a 764px body, i.e. the same centring around a
-    // **102px** box: Chrome adds the 1px side borders outside the declared
-    // `width` (content-box), where rinch applies a global `box-sizing:
-    // border-box` (Taffy's default, noted in `style_resolution/mod.rs`). That
-    // 2px is a pre-existing, workspace-wide difference, not something the
-    // `<hr>` rule introduces; the property under test is that the rule centres
-    // at all, which it did not before `margin-inline: auto`.
+    // `<hr>` is `content-box`, so its 1px inset side borders go outside the
+    // declared `width`: a 102px box, centred in the 800px container at
+    // (800-102)/2 = 349. Chrome 156.0.8078.79 (body margin 0, the same
+    // container): x 349, width 102.
     let n = &doc.tree.get(narrow.0).unwrap().layout;
     assert!(
-        close(n.width, 100.0) && close(n.x, 350.0),
-        "a narrowed <hr> centres itself: expected a 100px box at x = 350, got {n:?}"
+        close(n.width, 102.0) && close(n.x, 349.0),
+        "a narrowed <hr> centres itself: expected a 102px box at x = 349, got {n:?}"
     );
 }
 
@@ -596,6 +592,11 @@ fn a_bare_pre_preserves_its_whitespace() {
 /// The tolerance is deliberately 0.005px. The audit suggested `0.83em`, which
 /// gives 13.28 rather than 13.3333 and 11.0224 rather than 11.1111 — inside a
 /// 0.01 tolerance at neither level, but inside a 0.1 one at the first.
+///
+/// The values asserted are Chrome's as stylo stores them: stylo 0.21 and later
+/// round every computed `font-size` to 11 significant bits
+/// (`specified::FontSize::quantize_font_size`, Gecko's rule, no pref), so
+/// 13.3333 is 13.328125, 11.1111 is 11.109375 and 16.6667 is 16.65625.
 #[test]
 fn small_sub_and_sup_take_the_smaller_keyword() {
     let mut doc = RinchDocument::new();
@@ -614,19 +615,19 @@ fn small_sub_and_sup_take_the_smaller_keyword() {
     for (id, tag) in [(s16, "small"), (sub16, "sub"), (sup16, "sup")] {
         let got = font_size(&doc, id);
         assert!(
-            tight(got, 13.3333),
-            "<{tag}> from a 16px parent is Chrome's 13.3333px, got {got}"
+            tight(got, 13.328125),
+            "<{tag}> from a 16px parent is Chrome's 13.3333px (13.328125 quantized), got {got}"
         );
     }
     let got = font_size(&doc, nested);
     assert!(
-        tight(got, 11.1111),
-        "`smaller` compounds: <small> in <small> is 11.1111px in Chrome, got {got}"
+        tight(got, 11.109375),
+        "`smaller` compounds: <small> in <small> is 11.1111px in Chrome (11.109375 quantized), got {got}"
     );
     let got = font_size(&doc, s20);
     assert!(
-        tight(got, 16.6667),
-        "<small> from a 20px parent is Chrome's 16.6667px, got {got}"
+        tight(got, 16.65625),
+        "<small> from a 20px parent is Chrome's 16.6667px (16.65625 quantized), got {got}"
     );
     let got = font_size(&doc, authored);
     assert!(

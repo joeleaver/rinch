@@ -13,7 +13,7 @@
 //!
 //! One `#[wasm_bindgen_test]`: the runtime is page-global, so the "before"
 //! phase is true only for the first fixture of a page.
-#![cfg(all(target_arch = "wasm32", feature = "embed"))]
+#![cfg(all(target_arch = "wasm32", target_os = "unknown", feature = "embed"))]
 
 use std::cell::Cell;
 use std::rc::Rc;

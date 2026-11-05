@@ -50,6 +50,8 @@ struct Scrolled {
 fn document() -> RinchDocument {
     use parley::fontique::{Blob, FontInfoOverride};
     let mut doc = RinchDocument::new();
+    // The Chrome numbers were measured under this rule (file docs).
+    doc.load_css("* { box-sizing: border-box; }");
     let registered = doc.font_cx.collection.register_fonts(
         Blob::new(std::sync::Arc::new(FACE)),
         Some(FontInfoOverride {
@@ -74,7 +76,7 @@ fn build(c: &str, html: &str) -> RinchDocument {
     doc
 }
 
-fn one(doc: &RinchDocument, selector: &str) -> usize {
+fn one(doc: &RinchDocument, selector: &str) -> u64 {
     let found = query_selector(&doc.tree, selector);
     assert_eq!(found.len(), 1, "{selector}");
     found[0]

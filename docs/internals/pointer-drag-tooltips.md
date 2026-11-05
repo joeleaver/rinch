@@ -1,6 +1,6 @@
 # Drag and drop, pointer capture, title tooltips
 
-Read this page when your task touches: DnD attributes, Drag builder, missed releases, right/middle press, file drop, title tooltips.
+Read this page when your task touches: DnD attributes, Drag builder, missed releases, right/middle press, file drop, the element wheel event (`onwheel`), title tooltips.
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
@@ -33,12 +33,13 @@ section).
 **Input & activation — and the two backends do NOT agree.**
 - **rinch-web** drives this suite from Pointer Events and branches on the pointer kind, so activation differs by input and touch does not hijack scrolling. **Mouse:** past `WEB_DRAG_THRESHOLD`, 5 CSS px. **Touch / pen:** a short **long-press** hold, `TOUCH_LONG_PRESS_MS` = 350ms, while the contact stays within `TOUCH_MOVE_SLOP`; moving before the hold completes is a scroll/pan and the drag is abandoned. That is the standard mobile reorder gesture, and it lives in `rinch-web/src/event_delegation.rs`.
 - **Desktop has no such branch.** `event_dispatch.rs` applies one flat `DRAG_THRESHOLD` (5px, `app/mod.rs`) to every pointer alike — the shell folds touch into a plain left-click and discards winit's device kind. Desktop's own touch translation is a *different* machine (`shell/touch_gesture.rs`): a finger that moves past `SCROLL_THRESHOLD` becomes a **scroll** and emits `PointerCancel` first, a finger that lifts while still is a **tap**, and one held past `LONG_PRESS_TIMEOUT` (**500ms**, not 350) becomes a **context menu** — a right-button press/release. So the mobile reorder gesture described above is a web behaviour; do not assume a touch drag of this suite behaves the same way on desktop, and treat its reachability there as unestablished rather than as working.
+- **A press that never becomes a drag clicks what was pressed, on release** (both backends; rinch-web since #2133). Desktop keeps `PendingDrag::mousedown_pos` and on release runs `handle_click` there, which hit-tests the press point again. rinch-web keeps the pressed element (`WebDragState::pressed`) and clicks it, so a `data-rid` on a descendant of the draggable runs (a `Tree` row's chevron, a card inside a `SortableItem`) and only that one, as on any other press. If a re-render took the pressed element out of the document before the release, rinch-web clicks `elementFromPoint` at the press point, as desktop does. Before #2133 rinch-web walked up from the draggable, so the row's handler ran instead of the child's. Pinned by `rinch-web/tests/draggable_child_click_2133.rs`.
 
 **A touch `data-rid` click waits for the release where the finger could pan** (rinch-web, #1582, #1588): a touch or pen press dispatches on `pointerup`, and is dropped by a move past the slop or a `pointercancel`, when the element or an ancestor scrolls **or the page does** (`has_scrollable_ancestor` asks the scrolling element under the viewport's `overflow`, `<html>`'s or the propagated `<body>`'s; `<html>` itself computes `visible`) — unless `touch-action: none` sits on the element or between it and that scroller, where the click stays on the press so a handler can arm a `Drag` (`Slider`, `ColorPicker`'s areas, `FloatingPanel`'s header and resize handle carry it; a control that drags needs it). A `Drag` armed by a deferred click is ended at the release. The deferred `pointerdown` is `preventDefault`ed like the eager one (not for a form control, which the browser focuses), or Chrome sends a compatibility `mousedown` after the tap to whatever the handler put under the finger, which blurred a `Modal`'s field. Real touches are pinned by `rinch-web/tests/real_touch_1582_1588.rs` through `tests/support/run_real_keys.sh` (CDP `Input.dispatchTouchEvent`); synthetic ones by `touch_deferral_1582_1588.rs`.
 
 Because there's no built-in drag ghost (the app renders its own from `data-ondragmove`), **set `pointer-events: none` on your ghost element** — on touch the drop target is resolved via `elementFromPoint`, so a ghost under the finger would otherwise intercept the hit and drops would silently fail.
 
-**A drag auto-scrolls the container it is near the edge of** (both backends). While the drag is active and its pointer is within `DRAG_AUTO_SCROLL_EDGE` (32px; a third of the box for one shorter than 96px) of the top or bottom of a scroll container under it, that container scrolls, at up to `DRAG_AUTO_SCROLL_MAX_SPEED` (1200 px/s) on the edge, falling off with the square of the distance into the band (`rinch_core::events::drag_auto_scroll_velocity`, one curve for both). It keeps scrolling while the pointer rests there, a frame at a time: desktop from the `AboutToWait` frame clock (`RinchApp::tick_drag_auto_scroll`, which asks for the next frame while it is in a band), rinch-web from `requestAnimationFrame` (a loop that a move of an active drag starts and that stops itself out of every band and on the drag's end). The container is the nearest ancestor of what is under the pointer (or the body / scrolling element) that overflows vertically, has the pointer in a band and can still move toward that edge, so a list at its end lets the page around it take over — "its end" is where a write moves the offset no further: on desktop the range's end on the device pixel grid (#1543), so at 125% a range ending off the grid is at its end when the offset cannot move any further, and the clock rests there; on the web a frame whose `scrollTop` write moves nothing marks that container at its end in that direction (`AutoScrollLoop::stuck`; a pointer move clears it), because `scrollHeight` and `clientHeight` are rounded and at DPR 1.5 a 200.4px list stops at 599.33 where they say 600 (CI runs `drag_auto_scroll` and `review2_1592` a second time in Chrome at `--force-device-scale-factor=1.5`). While a `lock_scroll` overlay holds the page, the page and every container outside the overlay's root are skipped on both backends, as desktop's `NodeTree::scroll_locked_out` decides (`data-scroll-lock-exempt` included); rinch-web records the locking roots for this (`web_document::scroll_locked_out`), since a `scrollTop` write ignores `<html>`'s `overflow: hidden`. The web lock is page-wide, so with two islands on one page an overlay open in one locks out the other's lists as well, where desktop's lock is per document. Closing the overlay during a drag scrolls a list under the still pointer from the next frame on both backends (rinch-web restarts its loop from the unlock). Bands are measured on the part of the box inside the viewport, not on the part an outer scroller clips: a scroller partly scrolled out of another keeps its band at its own hidden edge. A drag frame whose pointer is in no band costs no hit test on desktop: the tick reuses the hit the drag's last resolve (or the tick's own last fresh hit test) made while the hit cache's generation and the pointer are unchanged and nothing animates. A drag whose release went missing scrolls while its pointer rests in a band until it is ended — on desktop by the missed-release heal (the next left press or a window blur cancels it, #381/#1028), on the web by its next move reporting no button. After a frame that scrolled, the drag is resolved again at the still pointer, so the drop target scrolled under it hears `data-ondragenter`/`data-ondragover` (and the container its `data-onscroll`). Vertical only. The wheel and the auto-scroll share one vertical scroll write (`RinchApp::scroll_vertically_by`). Pins: `rinch/src/app/drag_auto_scroll_tests.rs`, `rinch-web/tests/drag_auto_scroll.rs`.
+**A drag auto-scrolls the container it is near the edge of** (both backends), **on each axis on its own** (#2091). While the drag is active and its pointer is within `DRAG_AUTO_SCROLL_EDGE` (32px; a third of the box for one shorter than 96px) of the top or bottom of a scroll container under it, that container scrolls vertically, and within that band of the left or right edge of a container that overflows horizontally, that one scrolls horizontally — a column's list and the board row around it in the same frame, with the pointer in a corner of both. Each scrolls at up to `DRAG_AUTO_SCROLL_MAX_SPEED` (1200 px/s) on the edge, falling off with the square of the distance into the band (`rinch_core::events::drag_auto_scroll_velocity`, one curve for both). It keeps scrolling while the pointer rests there, a frame at a time: desktop from the `AboutToWait` frame clock (`RinchApp::tick_drag_auto_scroll`, which asks for the next frame while it is in a band), rinch-web from `requestAnimationFrame` (a loop that a move of an active drag starts and that stops itself out of every band and on the drag's end). The container, per axis, is the nearest ancestor of what is under the pointer (or the body / scrolling element) that overflows on that axis (computed `overflow-y` / `overflow-x` on the web), has the pointer in a band on that axis and can still move toward that edge, so a list at its end lets the page around it take over — "its end" is where a write moves the offset no further (a right-to-left container's web `scrollLeft` runs `-range..0`): on desktop the range's end on the device pixel grid (#1543), so at 125% a range ending off the grid is at its end when the offset cannot move any further, and the clock rests there; on the web a frame whose `scrollTop` / `scrollLeft` write moves nothing marks that container at its end in that direction (`AxisLoop::stuck`, one per axis with its own sub-pixel remainder; a pointer move clears both), because `scrollHeight` and `clientHeight` are rounded and at DPR 1.5 a 200.4px list stops at 599.33 where they say 600 (CI runs `drag_auto_scroll` and `review2_1592` a second time in Chrome at `--force-device-scale-factor=1.5`). While a `lock_scroll` overlay holds the page, the page and every container outside the overlay's root are skipped on both backends, as desktop's `NodeTree::scroll_locked_out` decides (`data-scroll-lock-exempt` included); rinch-web records the locking roots for this (`web_document::scroll_locked_out`), since a `scrollTop` write ignores `<html>`'s `overflow: hidden`. For the same reason the web never scrolls the page on an axis the viewport's overflow hides (`<html>`'s computed `overflow-x`/`-y`, or `<body>`'s when `<html>` is `visible`: `hidden` or `clip`), as desktop asks `scrolls_x`/`scrolls_y` (#2093 review; a page hiding its sideways overflow slid during any drag near the window's edge). The web lock is page-wide, so with two islands on one page an overlay open in one locks out the other's lists as well, where desktop's lock is per document. Closing the overlay during a drag scrolls a list under the still pointer from the next frame on both backends (rinch-web restarts its loop from the unlock). Bands are measured on the part of the box inside the viewport, not on the part an outer scroller clips: a scroller partly scrolled out of another keeps its band at its own hidden edge. A drag frame whose pointer is in no band costs no hit test on desktop: the tick reuses the hit the drag's last resolve (or the tick's own last fresh hit test) made while the hit cache's generation and the pointer are unchanged and nothing animates. A drag whose release went missing scrolls while its pointer rests in a band until it is ended — on desktop by the missed-release heal (the next left press or a window blur cancels it, #381/#1028), on the web by its next move reporting no button. After a frame that scrolled, the drag is resolved again at the still pointer, so the drop target scrolled under it hears `data-ondragenter`/`data-ondragover` (and each container that moved its `data-onscroll`, once, with both offsets). The wheel and the auto-scroll share the scroll writes, one per axis (`RinchApp::scroll_vertically_by`, `RinchApp::scroll_horizontally_by`). Pins: `rinch/src/app/drag_auto_scroll_tests.rs`, `rinch-web/tests/drag_auto_scroll.rs`; both axes: `rinch/src/app/sortable_2091_tests.rs` (`auto_scroll`), `rinch-web/tests/sortable_2091.rs`.
 
 Handlers can read `get_click_context()` for cursor position and element bounds. Use `DragContext<T>` to pass typed data between source and target:
 
@@ -53,6 +54,179 @@ if let Some(item) = drag.take() {
     target_list.update(|list| list.push(item));
 }
 ```
+
+### Sortable lists (#2091)
+
+`rinch-components/src/sortable.rs` (`SortableList`, `SortableItem`,
+`SortableHandle`; design record `docs/design/sortable.md`, guide
+`guide/sortable.md`) is built on the DOM drag suite above, as `Tree`'s drag
+(#1589) is, and on element key handlers. It adds **no handler attribute
+kind**: items carry `draggable` (unless `handle` or `disabled`),
+`data-ondragstart`, `data-ondragmove`, `data-ondragend`, `data-ondragover`,
+`data-ondragleave`, `data-ondrop` and `data-onkeydown`; lists carry the three
+target ones; `SortableHandle` carries only `draggable="true"` (the runtime's
+`data-ondragstart` walk up from the draggable node finds the item's).
+`data-sortable-key` names an item, `data-sortable-list` a list's
+registration token (a thread-local map of token → config, removed by the
+list's scope cleanup; a re-render issues a new one), `data-sortable-group` its
+group.
+
+- **One drag per thread** (`ACTIVE`): group, carried keys, document, the
+  source list's config (held by `Rc` for its `ondropchange`), the offer, and
+  for a keyboard lift its list **by id** and slot. Offers and lifts name their
+  list by `(group, id, document)` and look it up again at every use
+  (`list_by_id`), so they survive a re-render of any list (#2093 review).
+- **The end is the runtime's** (#2093 review). A co-edited board re-renders a
+  lane under a drag; the dragged item's node goes, and with it the handlers the
+  runtime sends `data-ondragend` to. Both backends now call
+  `rinch_core::notify_element_drag_ended()` at the end of every element drag
+  (desktop `end_active_dnd`, web `finish_active_drag`); the component listens
+  through `on_element_drag_end` and ends a pointer drag there. A re-rendered
+  carried item is picked up at its render (`adopt`): dimmed or ringed, and, for
+  the lifted one, made the lift's source with a new focus-leave entry and the
+  focus.
+- **Target resolution.** The runtime sends `data-ondragover` to the nearest
+  `data-ondrop`, whatever its group. `resolve_target` walks up from the
+  handler's node: an item is remembered, a list of another group (or a
+  disabled one) forgets it, and the first list of the dragged group answers —
+  unless a carried item of that group is further up: a list inside a carried
+  item is its own, and the outer list answers over the carried item (no-op).
+  The keyboard's `neighbour` leaves such lists out too. The slot is the count
+  of non-carried items before the remembered item, plus one past its middle
+  along the list's axis (its box from the click context when it is the
+  handler's node, else `NodeHandle::bounding_rect`; without a box, past it
+  when the carried items come before it); over the list itself, the count of
+  non-carried items whose middle the pointer is past (the end without boxes).
+- **Offers** (`offer_slot`): a slot that would leave the list unchanged
+  (`is_no_op`) withdraws; the same slot drawn on the same node is not
+  re-judged; otherwise the target list's `judge` runs (untracked) and the
+  caret is drawn as classes on the item after which (or, at slot 0, before
+  which) it lands, or on an empty list. Each item and list has a hidden
+  `rinch-sortable__reason` child (inline `position: absolute; display: none`);
+  a refusal's reason is written into the one beside the caret and shown with
+  an inline `display: block`.
+- **The drop settles** (`settle`, both paths): the target list found again by
+  id, the slot again by the offer's `after` key (0 without one), the place
+  recomputed (`before`, `index`) and judged again; nothing is delivered when
+  the `after` item is gone, the place became a no-op, or the verdict changed.
+- **Leave/over ordering**, as in `Tree`: a `data-ondragleave` only marks the
+  offer pending; the next target's over replaces it, and the source's
+  `data-ondragmove` (which follows every move's targets) withdraws it if
+  nothing did. With the source re-rendered away (`source_gone`) that move never
+  comes, so a leave then withdraws at once. A release under a still pointer
+  whose target node a re-render replaced since the last move drops nothing
+  (desktop drops on `ActiveDrag::over_target`, the web on the element it last
+  resolved); the next move resolves the new node.
+- **Keyboard.** The item's `onkeydown` acts only for a key sent to the item
+  itself: `KeyEventData::target` (new in #2093's review: the focused node on
+  desktop, `event.target`'s node on the web, set on the keys offered to element
+  handlers), else `active_element`. The keys are the list's `lift_keys` (Space
+  and Enter by default). Escape is answered there, not by a dismiss-stack
+  entry: element handlers run before the dismiss stack, so it still beats an
+  enclosing `Modal`, and it works where only `data-*` handlers reach a guest. A
+  `push_key_handler` entry (taking no key) cancels on focus leave — when the
+  focus is on another element; a focus that went nowhere known (the lifted
+  node re-rendered away) is not a leave. Moves between lists pick the nearest
+  list of the group in the arrow's direction by `bounding_rect` centres
+  (document order without boxes, `doc_path`). After a keyboard drop the item
+  is focused when it is drawn in the list it was dropped in: at every render of
+  it (`adopt`, which works without timers) and by an **unowned**
+  `set_timeout(0)` that finds it if it is already there (a parked callback of
+  a disposed owner is dropped, and the keydown's owner is usually the item the
+  re-render disposes). The request is forgotten at the next drag.
+- **Announcements** go to the source list's live region as drawn now
+  (`aria-live="assertive"`, `aria-atomic="true"`, inline-hidden); a sentence
+  equal to the region's current text gets a trailing no-break space, so a
+  repeat is heard.
+- **`data-drag-ghost="false"`** on a list (on each item before #2154; an item
+  is drawn before its list and cannot know the list's `preview`): desktop's
+  `activate_drag` hides the built-in ghost when the source or an ancestor
+  carries it — an attribute a host applying a guest's DOM reads like any
+  other, where the guest's `suppress_drag_ghost()` reaches nothing that
+  paints. A `SortPreview::Snapshot` list omits it and does not suppress.
+- **Presentation options (#2154).** `preview` / `source` are read from the
+  source list's config (held in `Active.from`), `indicator` from the target
+  list's. The preview is built at `begin` in a `RenderScope::new(doc, body)`
+  (`ListConfig.doc` / `.body` from the list's render scope; rinch-web's body
+  is the mount root): a `.rinch-sortable__ghost` wrapper holding a copy
+  (`copy_tree`: `attribute_list` + `node_type` + `text_content`, dropping
+  `data-on*`, `id`, `tabindex`, `draggable`, `data-sortable-*`) or the app's
+  element. It is placed by inline custom properties
+  (`--rinch-sortable-ghost-x/-y` = pointer − grab point) from every
+  `data-ondragmove` and `data-ondragover` (`follow_pointer`), and discarded,
+  its scope disposed, in `end_active`. Between the wrapper and the preview's
+  body sit `display: contents` stand-ins (`mirror`: tag, classes minus the
+  drag's own state classes, attributes and inline style, plus `display:
+  contents`) for every element from below `<body>` down to the item's list
+  (and, for `Custom`, the item), so the cascade reaches the body as it
+  reaches the item: inherited values, descendant selectors, a class setting a
+  `--rinch-sortable-ghost-*` property on the list, an ancestor or the item.
+  Chosen over copying resolved values onto the preview: no backend-specific
+  computed-style query, and selectors (not only inherited values) apply. The
+  body is placed `position: fixed` by the wrapper's
+  `--rinch-sortable-ghost-x/-y`, sized at the item's **layout** size
+  (`DomDocument::layout_size`: Taffy's box, the web's `offsetWidth`) and
+  scaled by `--rinch-sortable-ghost-fit` = painted / layout (a scaled
+  ancestor), placed by its centre (`Active.ghost_fix`). A copy drops the
+  placement declarations of the item's inline style (`PLACEMENT`). `Custom`
+  runs under `scope.push_owner()`, so what it makes is disposed with it.
+  The wrapper is one node per document (`GHOST_WRAPPERS`), detached between
+  drags; at the end its children are taken with `set_inner_html("")`, the
+  verb both backends free a subtree on — desktop's `discard` keeps slab
+  entries (#723), which leaked 7 nodes a drag. Copies drop handler,
+  identity, focus and runtime attributes (`copied_attribute`: `data-on*`,
+  `data-pm-*`, `data-rinch-*`, `data-viewport*`, `data-trap-focus`,
+  `data-render-surface`, `contenteditable`, …), keeping other `data-`
+  attributes as style hooks.
+  In the source's own list (not collapsing), a gap is `reordered()`: each
+  item's offset is its position packed in the drop's order less its position
+  packed as it is, from the items' **current layout sizes** (`layout_size`,
+  their own units, so a scaled ancestor is right) and the spacing measured at
+  `begin`; an item added or removed mid-drag is laid out with the rest. The
+  items between the place and the source make room and the source is drawn
+  at the place. A leave that withdrew the place (a re-rendered source
+  withdraws at once) followed by an over onto the source drawn there takes
+  the place back and draws it again (`Active.left_over`, cleared each move) —
+  only when that node was drawn away from home when the place was withdrawn
+  (`Active.left_moved`): a source a co-edit drew afresh at home is over its
+  own place. Over the moved
+  source the offer stays (`drag_over` returns early),
+  and a `data-ondragmove` with no `data-ondragover` while the pointer is over
+  the source (the runtime offers no drop on the dragged element itself) does
+  not withdraw. The grab point comes from
+  `data-ondragstart`'s click context, which **both runtimes now set to the
+  press point and the source's box** (desktop: `mousedown_pos` and
+  `painted_element_box`; rinch-web: `WebDragState::start_x/y`,
+  `dispatch_drag_with_bounds`). The gap and the collapse are `reflow()`:
+  after every `set_offer` (and at `begin`) it works out a shift per item —
+  `+extent` for the target list's rest items from the slot on, when the offer
+  is accepted and that list's indicator has a gap; `-extent·n` for an item
+  with n collapsed carried items before it in the source list; over the
+  source's own (no-op) place a collapsed list opens the gap there — and
+  writes only the changed ones as `--rinch-sortable-shift-x/-y` with the
+  `--shifted` class; an item that stops shifting goes to `0px` and keeps the
+  class, so the way back transitions too. The extent is the carried items'
+  boxes plus the list's spacing (pressed item to its neighbour), measured at
+  `begin` before anything moves. The transition is on `.rinch-sortable--reflowing`
+  lists only, and `end_active` takes the classes and the properties off in
+  the same pass as the drop's re-render, so nothing slides from a stale
+  offset. **Hit-testing uses painted boxes**, transforms included (the only
+  boxes either backend gives); the midpoint rule is stable under the shifts
+  because opening a gap before an item moves its midpoint away from the
+  pointer (pinned by a sweep in `sortable_2154_tests`). `Active.over` is the
+  place under the pointer, no-op included; a pointer drag starts over its home
+  place, and a `data-ondragmove` with no `data-ondragover` since the last one
+  (`Active.hovered`) withdraws it — a drag that leaves its list before any
+  target was entered has no leave to hear. `sortable_drag()` /
+  `sortable_drag_pointer()` are leaked thread signals (`live_signal` makes a
+  new one when the runtime freed the old), set with `set_if_changed` from
+  `publish()`.
+
+Pins: `rinch/src/app/sortable_2091_tests.rs` (the real event path; a module
+driven by dispatching the handler attributes alone; `review_2093`;
+`nested_same_group`), `rinch-components/tests/sortable_2093.rs` (a mock
+document with no boxes, no runtime), `rinch-web/tests/sortable_2091.rs`;
+presentation: `rinch/src/app/sortable_2154_tests.rs`, `rinch-web/tests/sortable_2154.rs`.
 
 ### Pointer Capture Drag (Drag Builder)
 
@@ -418,6 +592,104 @@ FIFO or device is refused, `metadata().is_file()`), whole. Pins add
 activation, so the test's no-gesture phase runs only when
 `navigator.userActivation.isActive` is false.
 
+## The element wheel event (`onwheel`)
+
+`onwheel` is written to `data-onwheel` and registered with
+`register_wheel_handler` (`Fn(&WheelEvent) -> bool`, its own `WHEEL_REGISTRY`
+in `rinch-core/src/events/handlers.rs`, freed with its scope like every
+handler). Both backends collect the `data-onwheel` ids from the element under
+the pointer up to the root **before** calling any (a handler may change the
+tree), then `dispatch_wheel_handler_chain` offers them nearest first and stops
+at the first `true`, each call in its own `batch`.
+
+- **Desktop** (`app/event_dispatch.rs`, the `PlatformEvent::MouseWheel` arm):
+  one shared hit test; a render surface under the pointer takes the wheel
+  first, unchanged; otherwise `offer_element_wheel` runs the chain, and a
+  consumed wheel skips both scroll-container halves (vertical and horizontal)
+  and requests a redraw. `PlatformEvent::MouseWheel` has winit's sign (positive
+  `delta_y` = wheel away from the user), so the `WheelEvent` is built with
+  both deltas negated into the DOM's sign. Lines are already 40 px in the
+  runtime, pixel deltas already logical (#299). A `WindowEvent::PinchGesture`
+  no surface takes goes to `RinchApp::pinch_as_wheel`: a Ctrl wheel with
+  `delta_y = -100 ln(1 + delta)`, so `WheelEvent::zoom_factor()` gives back
+  winit's `1 + delta` — the same e-per-100-px curve as
+  `render_surface::wheel_zoom_scale`. Touch pans from `shell/touch_gesture.rs`
+  are `MouseWheel`s too and reach `onwheel` (a browser sends no wheel for a
+  touch pan); `PlatformEvent::MouseWheel` carries no source to tell them apart.
+- **Web** (`rinch-web/src/event_delegation.rs`, `install_wheel`): one
+  document-level `wheel` listener, bubble phase, **`passive: false`** — Chrome
+  treats a document-level wheel listener as passive by default, and a passive
+  one cannot `preventDefault()`. A consumed wheel is `preventDefault()`ed (no
+  scroll, no page zoom for a pinch, which browsers send as `ctrlKey` wheel).
+  `deltaMode` lines are ×40, pages × the viewport height; `x`/`y` are client
+  px. A render surface's canvas listener `stopPropagation()`s, so a surface
+  still takes the wheel first, as on desktop. Not passed through
+  `add_capture`: that helper registers with a `bool` and cannot ask for a
+  non-passive listener.
+
+**`WheelEvent::target`** is the element under the pointer, the DOM's
+`event.target`: desktop takes the nearest element at or above the hit (a text
+node's parent) in `offer_element_wheel`'s walk, the web the nearest element
+with a `__nid` at or above `event.target` (raw HTML an app injected has none).
+A pinch carries it too. With **`NodeHandle::handle_for(id)`** a handler turns
+it into a handle on its own element's document and walks up, and
+**`NodeHandle::can_scroll_toward(dx, dy)`** (`DomDocument::can_scroll_toward`)
+answers whether the default scroll would move that element by a wheel of
+those signs. Desktop answers with `rinch_dom::paint::scrollbar::
+can_scroll_toward` — the very rule the wheel picks its container by (below):
+`overflows` on an axis with a non-zero delta, not `scroll_locked_out`, room up
+to the range's end on the device grid (#1543, drag auto-scroll's test). The
+web answers by computed `overflow-x/y` `auto`/`scroll`, `scroll_locked_out`,
+and the unrounded `scrollTop`/`scrollLeft` against the browser's own end:
+Firefox's `scrollTopMax`/`scrollLeftMax` (fractional, to 0.05px), else
+`scrollHeight - clientHeight` with a slack of one device pixel (+0.01) above a
+device scale of 1 and half a pixel at 1 — at 1.5 Chrome and Firefox stop a
+200.4px list of 800px at 599.33 where the sizes say 600 (measured, Chrome 153
+`--force-device-scale-factor=1.5` and Firefox 155 `layout.css.devPixelsPerPx
+1.5`), and at 1 the end is whole, so a list a pixel short of it still has
+room. RTL's `scrollLeft` runs `-span..0`. A handler that holds scrollable
+content uses the pair to decline the wheels that content can take — the
+node-graph canvas does (`docs/design/node-graph.md`).
+
+**Which container the desktop wheel scrolls** (review of #2084,
+`hit_testing::wheel_scroll_target`): the nearest of the hit and its
+ancestors, then the body, that `can_scroll_toward` the wheel — **one**
+container for the whole wheel. So a list at its end chains to the scroller
+around it, as a browser does for a new gesture, and a diagonal wheel over a
+strip that scrolls only sideways moves the strip and drops the vertical part
+rather than scrolling the page with it (measured with trusted wheels in
+Chrome 153 and Firefox 155 via Playwright: a `(40, 6)` and a `(30, 40)` wheel
+over such a strip move it `(40, 0)` / `(30, 0)` and the page not at all;
+until this change the two axes went to two containers). Only the axes the
+container overflows on move. A walk that met no container overflowing on a
+wheel axis falls back to the container under the point
+(`find_scroll_container_at_point` and its horizontal twin, the fixed-overlay
+case); one that met containers which could not move (at their end, or locked
+out) does not, so a locked page is not reached around the lock. Not
+modelled: a browser **latches** a gesture to its scroller, so the rest of a
+flick that brings a list to its end does not scroll the page; desktop chains
+per wheel (the node-graph canvas latches its own gestures).
+
+**Shift turns the default scroll sideways** where the platform does
+(`events::shift_wheel_turns_sideways`, `WheelEvent::scroll_deltas`): a wheel
+with Shift held and `delta_x == 0` scrolls horizontally by its `delta_y` on
+Linux and Windows, as Chrome and Firefox do there, and not on macOS, where the
+system turns a Shift mouse wheel itself and a trackpad with Shift held stays
+vertical. Native builds take it from `cfg!(target_os = "macos")`; rinch-web
+sets it per wheel from `navigator.platform` (the browser does its own turning
+for its default scroll; the setting is for a handler that reads
+`scroll_deltas`, such as the node-graph canvas). The `onwheel` payload's
+deltas are not turned.
+
+Tests: `rinch/src/app/element_wheel_tests.rs` (order, consumption stopping the
+scroll, modifiers and sign, pinch, `target`, `can_scroll_toward`, Shift on
+both platforms), `rinch/src/app/wheel_scroll_chaining_tests.rs` (chaining,
+one container per wheel, the device grid at 1.25, `lock_scroll`),
+`rinch/src/app/graph_canvas_wheel_tests.rs` (the canvas over scrollable node
+bodies), and `rinch-web/tests/element_wheel.rs` (order, `defaultPrevented`,
+line deltas, Ctrl, `target`, `can_scroll_toward` and its end) and
+`rinch-web/tests/graph_canvas_wheel.rs`.
+
 ## `title` tooltips (desktop)
 
 An element with a non-empty `title` (the nearest one up the tree; a `title=""`
@@ -455,3 +727,15 @@ follows Chrome 155: an SVG element's `title` attribute is ignored and its first
 `title_sources` also counts every `<title>` element created. Not on
 `rinch-web` (the browser draws its own). Components declare no `title` prop, so
 it goes on an HTML element.
+
+**The link a click went through** (`click_link`, rinch-html): a pointer
+click's dispatch publishes the `href` of the nearest `<a href>` between the
+pressed element and the element whose `data-rid` runs (that element
+included), and clears it once the handler returns. Desktop records it in the
+claim walk (`click_handling.rs`, the same walk that finds the `data-rid`) and
+passes it to `dispatch_rid_click`; the web takes `closest("a[href]")` from
+the event's target, kept only inside the handler's element
+(`event_delegation::dispatch_click_at`). A keyboard activation and a label's
+forwarded click publish none. `rinch_html::HtmlView` puts one handler on the
+whole document and calls its `onlink` with it. Pins:
+`crates/rinch/src/app/click_link_tests.rs`.

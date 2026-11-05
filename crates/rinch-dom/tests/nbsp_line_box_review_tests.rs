@@ -27,7 +27,7 @@ fn measure(container_style: &str, html: &str) -> (f32, f32) {
     d.append_child(body, c);
     d.set_inner_html(c, html);
     d.resolve_layout(800.0, 600.0);
-    fn find(d: &RinchDocument, id: usize) -> Option<usize> {
+    fn find(d: &RinchDocument, id: u64) -> Option<u64> {
         let n = d.tree.get(id)?;
         if n.attributes.get("id").map(String::as_str) == Some("m") {
             return Some(id);

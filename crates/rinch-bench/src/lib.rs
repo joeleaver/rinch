@@ -140,8 +140,12 @@ impl ListFixture {
 }
 
 fn build_list() -> ListFixture {
+    build_list_with(LIST_CSS)
+}
+
+fn build_list_with(css: &str) -> ListFixture {
     let mut doc = new_document();
-    doc.load_css(LIST_CSS);
+    doc.load_css(css);
     let body = doc.body();
     let list = doc.create_element("div");
     doc.set_attribute(list, "class", "list");
@@ -197,6 +201,38 @@ pub fn setup_hover() -> ListFixture {
 pub fn op_hover(mut f: ListFixture) -> ListFixture {
     let r = f.rows[10];
     f.hover(Some(r));
+    f.layout();
+    f
+}
+
+/// The list with every row running an infinite `transform` spin, and a class
+/// on the list that changes the colour every row inherits.
+const ANIMATED_LIST_CSS: &str = "
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .row { animation: spin 1s linear infinite; }
+    .list.alt { color: rgb(0, 0, 200); }
+";
+
+/// The list with all 500 rows animated, and its colour class toggled on and
+/// off once.
+pub fn setup_animated_list_color() -> ListFixture {
+    let mut f = build_list_with(&format!("{LIST_CSS}{ANIMATED_LIST_CSS}"));
+    let list = f.list;
+    f.doc.set_attribute(list, "class", "list alt");
+    f.layout();
+    f.doc.set_attribute(list, "class", "list");
+    f.layout();
+    f
+}
+
+/// A colour change on the list, which every row inherits while it runs a
+/// `to { transform: … }` animation, then layout: 500 cascades of an animated
+/// node. The spin's stops read neither `color` nor `font-size`, so none of
+/// those cascades extracts its keyframe stops again (review of #2049: before
+/// the stops were keyed on what they read, each one did).
+pub fn op_animated_list_color(mut f: ListFixture) -> ListFixture {
+    let list = f.list;
+    f.doc.set_attribute(list, "class", "list alt");
     f.layout();
     f
 }
@@ -486,6 +522,113 @@ pub fn op_inset_move(mut f: InsetFixture) -> InsetFixture {
     f
 }
 
+// ── rinch-dom: a large grid of cards (#2136) ───────────────────────────────
+
+/// Cards in [`CardGridFixture`]: #2136's asset library held 430.
+pub const GRID_CARDS: usize = 430;
+
+/// #2136's shape: a scroller holding `repeat(auto-fill, minmax(108px, 1fr))`
+/// with implicit `auto` rows, each item behind a `display: contents` wrapper
+/// (as an rsx `for` builds it) and a flex column of a thumbnail with an
+/// absolutely positioned `max-width: 100%` pill in its corner, a name, and a
+/// flex row of a badge, a spacer and a "N uses" count.
+pub struct CardGridFixture {
+    pub doc: RinchDocument,
+    /// Each card's count text.
+    pub counts: Vec<NodeId>,
+    /// A text outside the grid.
+    pub outside: NodeId,
+}
+
+/// The card grid, laid out and settled, with both operations run once.
+pub fn setup_card_grid() -> CardGridFixture {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 18px; }
+         .scroll { width: 380px; height: 600px; overflow-y: auto; }
+         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+                 gap: 8px; padding: 4px; }
+         .card { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+         .thumb { position: relative; height: 80px; }
+         .tl { position: absolute; top: 4px; left: 4px; }
+         .pill { display: inline-flex; max-width: 100%; height: 18px; padding: 0 6px; }
+         .name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+         .meta { display: flex; align-items: center; gap: 4px; min-width: 0; }
+         .spacer { flex: 1 1 auto; }",
+    );
+    let el = |doc: &mut RinchDocument, parent: NodeId, tag: &str, class: &str| {
+        let e = doc.create_element(tag);
+        if !class.is_empty() {
+            doc.set_attribute(e, "class", class);
+        }
+        doc.append_child(parent, e);
+        e
+    };
+    let text = |doc: &mut RinchDocument, parent: NodeId, s: &str| {
+        let t = doc.create_text(s);
+        doc.append_child(parent, t);
+        t
+    };
+    let body = doc.body();
+    let scroll = el(&mut doc, body, "div", "scroll");
+    let grid = el(&mut doc, scroll, "div", "grid");
+    let mut counts = Vec::with_capacity(GRID_CARDS);
+    for i in 0..GRID_CARDS {
+        let wrap = el(&mut doc, grid, "div", "");
+        doc.set_attribute(wrap, "style", "display: contents");
+        let card = el(&mut doc, wrap, "div", "card");
+        let thumb = el(&mut doc, card, "div", "thumb");
+        let tl = el(&mut doc, thumb, "span", "tl");
+        let pill = el(&mut doc, tl, "span", "pill");
+        text(&mut doc, pill, "3d");
+        let name = el(&mut doc, card, "span", "name");
+        text(&mut doc, name, &format!("Asset {i}.glb"));
+        let meta = el(&mut doc, card, "span", "meta");
+        let badge = el(&mut doc, meta, "span", "");
+        text(&mut doc, badge, "v1");
+        el(&mut doc, meta, "span", "spacer");
+        counts.push(text(&mut doc, meta, "3 uses"));
+    }
+    let other = el(&mut doc, body, "div", "");
+    let outside = text(&mut doc, other, "elsewhere");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = CardGridFixture {
+        doc,
+        counts,
+        outside,
+    };
+    f = op_card_count_edit(f);
+    f = op_card_grid_unrelated_edit(f);
+    f
+}
+
+/// One card's count goes from "3 uses" to "4 uses" (or back), then layout.
+/// The grid's track sizing asks every item again; every unchanged one should
+/// be answered from its cache.
+pub fn op_card_count_edit(mut f: CardGridFixture) -> CardGridFixture {
+    let t = f.counts[GRID_CARDS / 2];
+    let next = match &f.doc.tree.nodes[t.0].kind {
+        rinch_dom::node::NodeKind::Text(s) if s.content == "4 uses" => "3 uses",
+        _ => "4 uses",
+    };
+    f.doc.set_text_content(t, next);
+    f.doc.resolve_layout(VP.0, VP.1);
+    f
+}
+
+/// A text outside the grid changes, then layout: nothing in the grid moves,
+/// and none of its 430 percentage pills is laid out again (#2136).
+pub fn op_card_grid_unrelated_edit(mut f: CardGridFixture) -> CardGridFixture {
+    let next = match &f.doc.tree.nodes[f.outside.0].kind {
+        rinch_dom::node::NodeKind::Text(s) if s.content == "elsewhere" => "elsewhere, changed",
+        _ => "elsewhere",
+    };
+    f.doc.set_text_content(f.outside, next);
+    f.doc.resolve_layout(VP.0, VP.1);
+    f
+}
+
 // ── rinch-dom: rows with an absolute badge ─────────────────────────────────
 
 /// A 400px-high scroller of `LIST_ROWS` 20px rows, each holding a 4px leaf
@@ -554,10 +697,12 @@ fn build_badges(variant: &str) -> BadgeFixture {
         scroller,
         leaf: leaf.expect("row 7 exists"),
     };
-    // Warm both operations once.
+    // Warm the operations once — the bars too, as the paint after that
+    // scroll has read them by the time the pointer next moves.
     f.doc.set_style(f.leaf, "margin-left", "1px");
     f.doc.resolve_layout(VP.0, VP.1);
     f.doc.set_scroll_top(f.scroller, 7.0);
+    f = op_badge_extents(f);
     f
 }
 
@@ -587,6 +732,24 @@ pub fn op_badge_relayout(mut f: BadgeFixture) -> BadgeFixture {
 /// The scroller scrolls by one notch's worth; no layout runs.
 pub fn op_badge_scroll(mut f: BadgeFixture) -> BadgeFixture {
     f.doc.set_scroll_top(f.scroller, 60.0);
+    f
+}
+
+/// The bars of the scroller and of the body, as every paint and every
+/// pointer move's hit test asks for them (`scrollbars` runs `content_extents`,
+/// which counts each badge in the scroller its containing block sits in, #770).
+pub fn op_badge_extents(f: BadgeFixture) -> BadgeFixture {
+    let body = f.doc.body();
+    std::hint::black_box(rinch_dom::paint::scrollbar::scrollbars(
+        &f.doc.tree,
+        f.scroller.0,
+        1.0,
+    ));
+    std::hint::black_box(rinch_dom::paint::scrollbar::scrollbars(
+        &f.doc.tree,
+        body.0,
+        1.0,
+    ));
     f
 }
 
@@ -634,6 +797,23 @@ pub fn setup_full_paint() -> PaintFixture {
     doc.resolve_layout(VP.0, VP.1);
     let mut f = PaintFixture {
         doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// The drawer list of [`setup_drawer_toggle`] — 500 rows under a **closed**
+/// `Drawer`, with the theme and component stylesheets — laid out and painted
+/// once, glyph cache warm. Built closed and never opened: a close holds the
+/// root `visible` for its 300ms (`transition: visibility 0s linear 300ms`),
+/// and no clock runs here to end it. A closed overlay is `visibility: hidden`
+/// with nothing visible in it, so paint and the stacking collector skip it
+/// whole (#2137).
+pub fn setup_closed_drawer_paint() -> PaintFixture {
+    let DrawerFixture { list, .. } = build_drawer_list();
+    let mut f = PaintFixture {
+        doc: list.doc,
         painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
     };
     f.paint();

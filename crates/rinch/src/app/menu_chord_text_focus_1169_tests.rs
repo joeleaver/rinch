@@ -28,12 +28,12 @@ const FIELD_STYLE: &str = "width: 300px; height: 30px; padding: 0; margin: 0; \
 
 #[derive(Clone, Copy)]
 struct Ids {
-    input: usize,
-    textarea: usize,
-    checkbox: usize,
-    other: usize,
+    input: u64,
+    textarea: u64,
+    checkbox: u64,
+    other: u64,
     /// A `tabindex` div registered for composition: a custom text target.
-    ime: usize,
+    ime: u64,
 }
 
 fn page() -> (RinchApp, Ids) {
@@ -88,13 +88,13 @@ fn page() -> (RinchApp, Ids) {
     (app, ids.get().expect("ids captured at mount"))
 }
 
-fn abs_box(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn abs_box(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
     painted_element_box(&d.tree, id)
 }
 
 /// A left press at the right edge of `id`: a field's caret lands at its end.
-fn press(app: &mut RinchApp, id: usize) {
+fn press(app: &mut RinchApp, id: u64) {
     let (x, y, w, h) = abs_box(app, id);
     let (x, y) = (x + w - 2.0, y + h / 2.0);
     for event in [
@@ -113,7 +113,7 @@ fn press(app: &mut RinchApp, id: usize) {
     }
 }
 
-fn value(app: &RinchApp, id: usize) -> String {
+fn value(app: &RinchApp, id: u64) -> String {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)

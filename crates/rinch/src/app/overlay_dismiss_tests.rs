@@ -107,7 +107,7 @@ fn tap(app: &mut RinchApp, x: f32, y: f32) {
 }
 
 /// The one node carrying `class`, by name rather than by append order.
-fn find_by_class(app: &RinchApp, class: &str) -> usize {
+fn find_by_class(app: &RinchApp, class: &str) -> u64 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     d.tree
@@ -122,7 +122,7 @@ fn find_by_class(app: &RinchApp, class: &str) -> usize {
         .unwrap_or_else(|| panic!("no node carries the class {class}"))
 }
 
-fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
+fn centre(app: &RinchApp, node_id: u64) -> (f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let n = d.tree.get(node_id).expect("node still in the tree");
@@ -241,7 +241,7 @@ fn a_closed_but_mounted_modal_leaves_escape_to_the_app_and_answers_it_once_opene
 fn escape_closes_the_modal_while_an_input_inside_it_holds_focus() {
     let open = Signal::new(true);
     let (closes, onclose) = recorder();
-    let field: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let field: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let field_in = field.clone();
 
     let mut app = mount(move |scope: &mut RenderScope| {
@@ -357,7 +357,7 @@ struct Nested {
     outer_closes: Rc<Cell<usize>>,
     inner_closes: Rc<Cell<usize>>,
     inner_scope: Rc<RefCell<Option<RenderScope>>>,
-    inner_root: Rc<Cell<Option<usize>>>,
+    inner_root: Rc<Cell<Option<u64>>>,
 }
 
 impl Nested {
@@ -365,7 +365,7 @@ impl Nested {
         let (outer_closes, outer_cb) = recorder();
         let (inner_closes, inner_cb) = recorder();
         let inner_scope: Rc<RefCell<Option<RenderScope>>> = Rc::new(RefCell::new(None));
-        let inner_root: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let inner_root: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
         let scope_in = inner_scope.clone();
         let root_in = inner_root.clone();
 
@@ -540,7 +540,7 @@ fn one_documents_escape_does_not_close_another_documents_modal() {
 fn a_drag_in_progress_still_takes_escape_before_the_dismiss_stack() {
     let open = Signal::new(true);
     let (closes, onclose) = recorder();
-    let row: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let row: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let row_in = row.clone();
 
     // The handle lives *inside* the modal. An open modal's root is a
@@ -588,9 +588,9 @@ fn a_drag_in_progress_still_takes_escape_before_the_dismiss_stack() {
 // ── 4b. A native <select> inside an overlay ──────────────────────────────────
 
 /// A `Modal` holding a native `<select>`, with the select's node id.
-fn mount_select_in_modal(open: Signal<bool>) -> (RinchApp, usize, Rc<Cell<usize>>) {
+fn mount_select_in_modal(open: Signal<bool>) -> (RinchApp, u64, Rc<Cell<usize>>) {
     let (closes, onclose) = recorder();
-    let sel: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sel: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let sel_in = sel.clone();
 
     let app = mount(move |scope: &mut RenderScope| {
@@ -698,7 +698,7 @@ fn a_select_opened_inside_a_modal_takes_the_first_escape_and_the_modal_the_secon
 /// before any of this existed.
 #[test]
 fn a_bare_select_still_closes_on_escape_with_no_overlay_involved() {
-    let sel: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sel: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let sel_in = sel.clone();
     let mut app = mount(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -731,14 +731,14 @@ struct Pop {
     closes: Rc<Cell<usize>>,
     inside_clicks: Rc<Cell<usize>>,
     /// A node inside the popover's own dropdown, to aim a click at.
-    inside: usize,
+    inside: u64,
 }
 
 fn mount_popover(open: Signal<bool>) -> Pop {
     let (closes, onclose) = recorder();
     let inside_clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let inside_in = inside_clicks.clone();
-    let inside_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let inside_id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let inside_id_in = inside_id.clone();
 
     let app = mount(move |scope: &mut RenderScope| {

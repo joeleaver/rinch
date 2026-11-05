@@ -34,7 +34,7 @@ struct Page {
     app: RinchApp,
     handle: crate::editor::EditorHandle,
     /// The (first) textblock.
-    block: usize,
+    block: u64,
     /// The model text of that block.
     text: &'static str,
 }

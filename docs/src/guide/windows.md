@@ -608,6 +608,95 @@ same component render, effect run or handler — returns the same signal, so
 asking for it per event costs nothing after the first call. A call from
 another component gets a signal of its own, freed with that component.
 
+## Pointer Lock and Raw Mouse Motion
+
+A game's mouse look or an editor's fly camera needs the pointer hidden and
+kept in the window, and the mouse's motion as deltas that do not stop at the
+edge of the screen (issue #2092). `rinch::window` (and the prelude) has both:
+
+| Function | What it does |
+|----------|--------------|
+| `request_pointer_lock() -> Result<(), PointerLockError>` | lock the pointer to the window |
+| `request_pointer_lock_on(&element) -> Result<(), PointerLockError>` | the same, held by an element: it ends when the element leaves the document |
+| `surface.request_pointer_lock()` | the same, held by a `RenderSurface`, which hears the motion as `SurfaceEvent::PointerMotion { dx, dy }` |
+| `exit_pointer_lock()` | let it go |
+| `pointer_lock() -> Option<PointerLockMode>` | **reactive**: `Some(Locked)`, `Some(Confined)`, or `None` |
+| `on_pointer_motion(\|m: PointerMotion\| …)` | hear raw motion (`m.dx`, `m.dy`); removed when the component unmounts |
+
+```rust
+#[component]
+fn viewport() -> NodeHandle {
+    let yaw = Signal::new(0.0_f64);
+    let surface = create_render_surface();
+    let s = surface.clone();
+    surface.set_event_handler(move |event| match event {
+        // A click locks (in a browser a lock needs a gesture like this one).
+        SurfaceEvent::MouseDown { .. } => { let _ = s.request_pointer_lock(); }
+        SurfaceEvent::PointerMotion { dx, .. } => yaw.update(|y| *y += f64::from(dx) * 0.15),
+        _ => {}
+    });
+    rsx! {
+        div {
+            p { {|| if pointer_lock().is_some() { "Escape to let go" } else { "Click to look around" }} }
+            RenderSurface { surface: Some(surface), style: "flex: 1;" }
+        }
+    }
+}
+```
+
+`examples/pointer-lock` is this, with a readout.
+
+**What is granted.** The desktop asks winit for a lock (`CursorGrabMode::Locked`:
+Wayland, Windows, macOS) and, where the platform refuses it, for a confinement
+(`Confined`: X11, whose winit backend has no lock), and hides the cursor for
+either. `pointer_lock()` says which it got. The answer is immediate on the
+desktop: after `Ok`, `pointer_lock()` already says `Some(…)`. Under either the
+document's pointer position is held where the lock found it — hover does not
+move, and a press lands there — and the motion arrives only as deltas; when
+the lock ends, hover catches up with where the pointer really is. **The
+window must have the focus**: an unfocused window's request is refused with
+`PointerLockError::NotFocused` (an X11 confinement would otherwise catch the
+pointer over a window a click cannot focus). A click in the window gives it
+the focus, which is why a click is the usual moment to ask.
+
+**In the browser** the lock is the Pointer Lock API: `requestPointerLock` on the
+element (the page's root element for `request_pointer_lock`, the surface's
+`<canvas>` for a surface). **The browser grants it only during a user gesture**
+— call it from a click, press or key handler; from a timer or at startup it is
+refused. It also answers later: `Ok` means asked, and `pointer_lock()` turns
+`Some(Locked)` when the browser has locked (or stays `None` if it refused).
+`exit_pointer_lock()` while the answer is pending withdraws the request: a
+grant that arrives afterwards is given straight back (a quick press-to-look
+click leaves nothing locked), as is any lock rinch did not ask for.
+
+**Release.** A lock ends on `exit_pointer_lock()`; when the window loses focus
+(alt-tab, another window, a tab switch); on **Escape**; when the element or
+surface that holds it unmounts; and when the desktop window is hidden. An
+Escape that ends a lock is the lock's alone: it closes no modal, popup or menu
+and reaches no key handler, as in a browser, and neither do its auto-repeats
+while it is held — the next press is the app's as usual. With several apps on
+one thread (embedded contexts), a lock is the requesting app's: only its own
+focus loss and Escape end it. In the browser the browser itself handles Escape and a focus loss, and
+`pointer_lock()` follows. Read `pointer_lock()` in a `{|| …}` or an effect to
+hear any of these.
+
+**Motion units.** `dx`/`dy` are the platform's own, not logical pixels:
+unaccelerated device counts on X11 and Windows, unaccelerated surface units on
+Wayland, points on macOS, `movementX`/`movementY` in the browser. Multiply by a
+sensitivity of your own. On the desktop `on_pointer_motion` also hears motion
+while nothing is locked (whenever the window has focus, wherever the cursor
+is), which is enough for a drag-to-orbit camera; a burst within one turn of the
+event loop arrives summed as one step. Called while a component renders, the
+handler goes with the component; called from an event handler, it lives as
+long as the returned `PointerMotionSubscription` (dropping it removes the
+handler), so keep that value. In the browser it hears `mousemove`s
+over the page, and every motion while locked.
+
+**Where there is none.** Android, a WASI guest, and a native embed host that
+installed nothing answer `PointerLockError::Unsupported`; see
+[Pointer lock in a context](game-engine.md#pointer-lock-in-a-context) for what an
+embed host forwards.
+
 ## Overlay Windows
 
 An overlay — a status pill, a HUD, an indicator — sits on top of another
@@ -1039,3 +1128,32 @@ It accepts `auto`, `gpu`, `software`, and `cpu` (an alias of `software`), trimme
 - a `Software` choice, whether from `App::renderer` or from a user's `RINCH_RENDERER=cpu`, is logged as a warning and ignored.
 
 Everywhere else, `gpu_handle()` returns `None` for the whole session while the software renderer presents, so code that reads it should handle `None`.
+
+### Vsync on and off
+
+The GPU renderer presents with vsync on: each frame waits for the display's next refresh, so on a 60 Hz panel frame-to-frame times never read below 16.7 ms, however cheap the frame. To see what a frame costs — profiling, a benchmark, comparing against another engine — or to offer it as a player setting, turn vsync off, at startup or while the app runs:
+
+```rust
+use rinch::prelude::*;
+
+App::new(app).vsync(false).run(); // start with vsync off
+
+// Later, from a handler (or any thread):
+let honoured: Presentation = set_vsync(true);
+```
+
+`set_vsync` answers what the window's surface does with the request, worked out from the present modes the surface offers:
+
+| `Presentation` | Meaning |
+|---|---|
+| `Vsync` | Paced to the refresh (`Fifo`, or `FifoRelaxed` where offered). Vsync on, or off on a surface with no uncapped mode |
+| `Immediate` | Uncapped; a frame goes to the display as soon as it is drawn, and may tear |
+| `Mailbox` | Uncapped without tearing: the display shows the newest frame at each refresh. Used when the surface has no `Immediate` |
+| `Pending` | No window renderer yet (before the event loop, or while the window is hidden); the setting is stored and the window takes it |
+| `Unsupported` | Nothing to switch: the software renderer, the web, Android |
+
+`rinch::window::presentation()` reads the same answer reactively, and `rinch::window::vsync()` whether vsync is asked for (also reactive), so a settings toggle can show both and grey itself out on `Unsupported`. Both are for the UI thread: `presentation()` read on another thread stays `Pending` (keep what `set_vsync` returned there), and a `set_vsync` made on another thread reaches the UI thread's readers when the shell applies it, on the event loop's next turn.
+
+**Vsync off does not make an idle window spin.** rinch draws a frame when something asks for one — a continuous `RenderSurface`, a running animation or transition, a texture source's new frame, input — and with vsync off those frames follow each other as fast as they can be drawn. A window with nothing to draw still sleeps.
+
+The setting applies to the main window's surface and to the DevTools window's, and a window re-created by hide/show takes it. **The software renderer ignores it**: softbuffer has no present mode, so its pacing is the windowing system's (on Wayland a frame waits until the compositor has released the buffer it reuses). The `gpu-device-config` example's `RINCH_GPU_MODE=frames` shows the frame time with a vsync button; `RINCH_MEASURE_FRAMES=300` makes it print a summary of each mode and exit.

@@ -63,7 +63,7 @@ pub use rinch_dom::perf;
 #[cfg(any(
     feature = "desktop",
     all(feature = "android", target_os = "android"),
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 pub mod app_builder;
 
@@ -92,6 +92,9 @@ pub mod font;
 /// mount the same menus in a browser. The `muda` builders inside it are gated
 /// instead. See the module docs.
 pub mod menu;
+/// Pointer lock and raw pointer motion (#2092); the API is re-exported through
+/// [`window`].
+mod pointer_lock;
 pub mod render_surface;
 #[cfg(any(feature = "desktop", feature = "android"))]
 pub mod shell;
@@ -118,9 +121,9 @@ mod logging;
 pub use logging::{init_logging, init_logging_with_filter};
 
 /// The browser's timer backend, task scheduler and poll drain (issue #1956).
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web_runtime;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use web_runtime::install_web_runtime;
 
 /// Install the browser's runtime (timers, tasks, poll drain) for a page that
@@ -128,7 +131,15 @@ pub use web_runtime::install_web_runtime;
 /// timer thread, the main-thread queue and the host's per-frame poll drain are
 /// built in — so this is a no-op, there so a cross-platform app can call it at
 /// startup with no `#[cfg(target_arch = "wasm32")]` of its own.
-#[cfg(not(target_arch = "wasm32"))]
+///
+/// A WASI guest (`wasm32-wasip1`) is not a browser either: rinch's browser
+/// halves are gated on `target_os = "unknown"`, so a guest that embeds rinch's
+/// components links no wasm-bindgen, and this is a no-op there too. Its host
+/// has no rinch frame loop of its own to lend, so the guest installs the hooks
+/// itself, through `rinch_core::set_timer_backend`,
+/// `rinch_core::task::set_task_scheduler` and
+/// `rinch_core::reactive::set_poll_waker`, as the web runtime does.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn install_web_runtime() {}
 
 /// Image loading: the [`ImageLoader`](image::ImageLoader) an app implements to
@@ -149,9 +160,20 @@ pub mod video {
     pub use rinch_video::*;
 }
 
+/// Node-and-wire editors: the graph model (`graph::model`) and the canvas
+/// (`graph::graph_canvas`, `graph::GraphView`). Enable with the `graph`
+/// feature; see `docs/src/guide/node-graphs.md`.
+#[cfg(feature = "graph")]
+pub mod graph {
+    pub use rinch_graph_view::*;
+}
+
 /// File and message dialogs: natively behind the `file-dialogs` feature
 /// (`rfd`); in the browser (wasm32) the message dialogs need no feature (#1821).
-#[cfg(any(feature = "file-dialogs", target_arch = "wasm32"))]
+#[cfg(any(
+    feature = "file-dialogs",
+    all(target_arch = "wasm32", target_os = "unknown")
+))]
 pub mod dialogs;
 
 #[cfg(feature = "clipboard")]
@@ -201,6 +223,13 @@ pub mod components {
     pub use rinch_components::*;
 }
 
+/// Showing HTML you did not write (enable with the `html` feature): the
+/// allow-list cleaner and the `HtmlView` component. See `rinch_html`.
+#[cfg(feature = "html")]
+pub mod html {
+    pub use rinch_html::*;
+}
+
 /// Futures on the UI thread (issue #1767): [`spawn_local`](task::spawn_local),
 /// [`sleep`](task::sleep). The same on desktop, Android, embed and the web.
 pub mod task {
@@ -213,10 +242,10 @@ pub mod prelude {
     #[cfg(any(
         feature = "desktop",
         all(feature = "android", target_os = "android"),
-        target_arch = "wasm32"
+        all(target_arch = "wasm32", target_os = "unknown")
     ))]
     pub use crate::app_builder::App;
-    pub use crate::font::{AppFont, GenericFamily};
+    pub use crate::font::{AppFont, FontData, GenericFamily};
     #[cfg(feature = "desktop")]
     pub use crate::shell::activation::ActivationPolicy;
     #[cfg(all(feature = "android", target_os = "android"))]
@@ -251,7 +280,8 @@ pub mod prelude {
     // Event handling - click context, drag support, input callbacks, file-drop callbacks
     pub use rinch_core::{
         ClickContext, Drag, DragContext, FileDropCallback, InputCallback, ModifierState,
-        MouseButton, ScrollEvent, get_click_context, restore_drag_ghost, suppress_drag_ghost,
+        MouseButton, ScrollEvent, click_link, get_click_context, restore_drag_ghost,
+        suppress_drag_ghost,
     };
     // Paste notification (issue #150): on the web this is the only place app paste
     // logic can see content copied outside the app, because the browser's `paste`
@@ -259,6 +289,8 @@ pub mod prelude {
     pub use rinch_core::{PasteEventData, clear_paste_interceptor, set_paste_interceptor};
     // What an element's `onkeydown` / `onkeyup` handler is given (issue #1678).
     pub use rinch_core::{KeyEventData, KeyEventKind};
+    // What an element's `onwheel` handler is given.
+    pub use rinch_core::WheelEvent;
     // App-wide key listeners (issue #1784): every key the window receives that
     // nothing ahead consumed, with or without a focused element; any number of
     // parties, released with the registering scope.
@@ -284,7 +316,13 @@ pub mod prelude {
     pub use rinch_macros::{component, rsx};
     // Window facts and acts on every target (#1770)
     pub use crate::window::{
-        OpenUrlError, open_url, scale_factor, set_window_title, window_focused, window_size,
+        OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
+        window_focused, window_size,
+    };
+    // Pointer lock and raw motion (#2092)
+    pub use crate::window::{
+        PointerLockError, PointerLockMode, PointerMotion, exit_pointer_lock, on_pointer_motion,
+        pointer_lock, request_pointer_lock, request_pointer_lock_on,
     };
     // Window control functions
     #[cfg(feature = "desktop")]
@@ -379,6 +417,10 @@ pub mod prelude {
     #[cfg(feature = "components")]
     pub use rinch_components::*;
 
+    // Showing HTML you did not write
+    #[cfg(feature = "html")]
+    pub use rinch_html::HtmlView;
+
     // Video playback
     #[cfg(feature = "video")]
     pub use rinch_video::{VideoControls, VideoPlayer, VideoViewport, use_video_player};
@@ -395,7 +437,7 @@ pub use rinch_core::element::{
 #[cfg(any(
     feature = "desktop",
     all(feature = "android", target_os = "android"),
-    target_arch = "wasm32"
+    all(target_arch = "wasm32", target_os = "unknown")
 ))]
 pub use app_builder::App;
 pub use rinch_core::{
@@ -416,7 +458,8 @@ pub use shell::{
 #[allow(deprecated)]
 pub use shell::{run_with_external_device, run_with_gpu_config};
 pub use window::{
-    OpenUrlError, open_url, scale_factor, set_window_title, window_focused, window_size,
+    OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
+    window_focused, window_size,
 };
 
 /// Re-export of the exact `wgpu` rinch links against.

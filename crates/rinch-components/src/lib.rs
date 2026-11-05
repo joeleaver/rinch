@@ -68,7 +68,7 @@
 //! - [`Drawer`] - Slide-out panel
 //! - [`Notification`] - Toast notification
 //! - [`Popover`] - Positioned popup + [`PopoverTarget`], [`PopoverDropdown`]
-//! - [`DropdownMenu`] - Dropdown menu + [`DropdownMenuTarget`], [`DropdownMenuDropdown`], [`DropdownMenuItem`]
+//! - [`DropdownMenu`] - Dropdown menu + [`DropdownMenuTarget`], [`DropdownMenuDropdown`], [`DropdownMenuItem`], [`DropdownMenuSub`] (cascading submenu)
 //! - [`HoverCard`] - Card on hover + [`HoverCardTarget`], [`HoverCardDropdown`]
 //! - [`LoadingOverlay`] - Loading overlay for containers
 //!
@@ -80,6 +80,7 @@
 //! - [`NavLink`] - Navigation link with active state
 //! - [`Stepper`] - Step progress + [`StepperStep`], [`StepperCompleted`]
 //! - [`Tree`] - Hierarchical tree view + [`TreeNodeData`], [`UseTreeReturn`]
+//! - [`SortableList`] - Lists whose items drag within and between them + [`SortableItem`], [`SortableHandle`]
 //!
 //! # Example
 //!
@@ -141,6 +142,7 @@ pub mod context_menu;
 pub mod divider;
 pub mod drawer;
 pub mod dropdown_menu;
+pub mod dropdown_menu_sub;
 pub(crate) mod field_ids;
 pub mod fieldset;
 pub(crate) mod floating;
@@ -156,6 +158,7 @@ pub mod list;
 pub mod loader;
 pub mod loading_overlay;
 pub mod mark;
+pub mod menu_nav;
 pub mod modal;
 pub mod navlink;
 pub mod notification;
@@ -173,6 +176,7 @@ pub mod select;
 pub mod simple_grid;
 pub mod skeleton;
 pub mod slider;
+pub mod sortable;
 pub mod space;
 pub mod stack;
 pub mod stepper;
@@ -228,6 +232,11 @@ pub use select::{Select, SelectOption};
 pub use simple_grid::SimpleGrid;
 pub use skeleton::Skeleton;
 pub use slider::Slider;
+pub use sortable::{
+    SortAxis, SortDragState, SortIndicator, SortJudge, SortKeys, SortMove, SortPlace, SortPointer,
+    SortPreview, SortPreviewFn, SortSource, SortTarget, SortVerdict, SortableHandle, SortableItem,
+    SortableList, sortable_drag, sortable_drag_group, sortable_drag_pointer,
+};
 pub use space::Space;
 pub use stack::Stack;
 pub use stepper::{Stepper, StepperCompleted, StepperStep};
@@ -251,8 +260,10 @@ pub use dropdown_menu::{
     DropdownMenu, DropdownMenuDivider, DropdownMenuDropdown, DropdownMenuItem, DropdownMenuLabel,
     DropdownMenuTarget,
 };
+pub use dropdown_menu_sub::DropdownMenuSub;
 pub use hover_card::{HoverCard, HoverCardDropdown, HoverCardTarget};
 pub use loading_overlay::LoadingOverlay;
+pub use menu_nav::MenuKeyHook;
 pub use modal::Modal;
 pub use notification::Notification;
 pub use popover::{Popover, PopoverDropdown, PopoverTarget};

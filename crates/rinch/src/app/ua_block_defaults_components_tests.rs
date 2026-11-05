@@ -60,7 +60,7 @@ fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchA
 fn margins(app: &RinchApp, class: &str) -> (f32, f32, f32, f32) {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -255,7 +255,7 @@ fn the_other_five_list_and_figure_components_are_unmoved() {
 fn font_size_of_tag(app: &RinchApp, tag: &str) -> f32 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    let matches: Vec<usize> = d
+    let matches: Vec<u64> = d
         .tree
         .nodes
         .iter()
@@ -318,8 +318,11 @@ fn the_editors_sub_and_sup_do_take_the_new_smaller_rule() {
     for tag in ["sub", "sup"] {
         let got = font_size_of_tag(&app, tag);
         assert!(
-            (got - 13.3333).abs() < 0.005,
-            "editor <{tag}> takes the UA `smaller` (Chrome's 13.3333px from 16px), got {got}"
+            // Chrome's 13.3333px, which stylo stores as 13.328125: it rounds
+            // a computed `font-size` to 11 significant bits since 0.21.
+            (got - 13.328125).abs() < 0.005,
+            "editor <{tag}> takes the UA `smaller` (Chrome's 13.3333px from 16px, \
+             13.328125 quantized), got {got}"
         );
     }
 }

@@ -32,9 +32,9 @@ fn height(doc: &RinchDocument, id: NodeId) -> f32 {
 /// as the PR claims ("the control's own `normal` line-height").
 ///
 /// Hand calc: 1.2*16*5 = 96; padding 2*10 = 20; border 1px top+1px bottom =
-/// 2. Total = 118 (border-box; Taffy's default box_sizing is BorderBox and
-/// rinch never overrides it from `box-sizing`, per
-/// `form_control_intrinsic_height_tests.rs`'s own module doc).
+/// 2, so the cap is 118. A `textarea` is `content-box` (#1278), so the cap is
+/// its content height and the box is 118 + 20 + 2 = 140 (Chrome 156: 140,
+/// computed `max-height` 118px). A 24px-based `em` would raise the cap.
 #[test]
 fn em_in_max_height_calc_resolves_against_the_textareas_own_font_size_not_the_parents() {
     let mut doc = RinchDocument::new();
@@ -50,7 +50,7 @@ fn em_in_max_height_calc_resolves_against_the_textareas_own_font_size_not_the_pa
     doc.resolve_layout(800.0, 600.0);
     let h = height(&doc, ta);
     assert_eq!(
-        h, 118.0,
-        "got {h} — a 24px-font-based resolution would give ~178.4"
+        h, 140.0,
+        "got {h} — a 24px-font-based `em` would give a taller box"
     );
 }

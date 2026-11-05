@@ -23,19 +23,18 @@
 //!
 //! # All four spellings really do parse
 //!
-//! Worth stating because it is not obvious from the source and it was got wrong
-//! once while writing this file. Stylo guards `stretch`,
-//! `-webkit-fill-available` and `fit-content(<length-percentage>)` on
-//! `static_prefs::pref!("layout.css.stretch-size-keyword.enabled")` and two
-//! siblings, which *looks* like the runtime preference store rinch pokes in
-//! `RinchDocument::new` (`stylo_config::set_bool`, which answers `false` for
-//! every key nobody set). It is not: `static_prefs` is the separate
-//! `stylo_static_prefs` crate, and its `pref!` is a **compile-time macro** that
-//! hard-codes those three keys — and `layout.css.fit-content-function.enabled` —
-//! to `true`, falling through to `false` only for a key it does not list.
+//! Worth stating because it is not obvious from the source. Stylo guards
+//! `stretch`, `-webkit-fill-available` and `fit-content(<length-percentage>)`
+//! on `layout.css.stretch-size-keyword.enabled`,
+//! `layout.css.webkit-fill-available.enabled` (and its
+//! `.all-size-properties` sibling) and `layout.css.fit-content-function.enabled`.
+//! With stylo 0.11 those were arms of a compile-time macro in
+//! `stylo_static_prefs` hard-coded to `true`; since stylo 0.21 every preference
+//! is a runtime atomic in that crate, and these four default to `true`, which
+//! `RinchDocument::new` (`set_stylo_prefs`) leaves alone.
 //!
 //! So nothing is gated here, and `the_keyword_survives_into_the_computed_style`
-//! is what fails if a stylo bump ever flips one of those macro arms.
+//! is what fails if a stylo bump ever flips one of those defaults.
 //!
 //! # The oracle
 //!
@@ -682,7 +681,7 @@ fn a_content_sized_box_keeps_its_one_pixel_wrap_tolerance() {
         // inline on its line), and its own width is declared, so it is
         // *correctly* given no tolerance and would mask the one being measured.
         let mut stack = vec![t.0];
-        let mut roots: Vec<(usize, f32, f32)> = Vec::new();
+        let mut roots: Vec<(u64, f32, f32)> = Vec::new();
         while let Some(id) = stack.pop() {
             let n = &doc.tree.nodes[id];
             if let Some(tl) = n.text_layout.as_ref() {
@@ -718,23 +717,13 @@ fn a_content_sized_box_keeps_its_one_pixel_wrap_tolerance() {
     );
 }
 
-/// A witness for one sentence in the guide, which would otherwise be prose
-/// nothing checks.
-///
-/// `docs/src/guide/theming.md` says a float is not a way to shrink-wrap a box
-/// in rinch, because it implements no CSS float at all — a floated box fills
-/// its containing block where Chrome 150 gives it 300 for the same content —
-/// and points at `width: fit-content` instead.
-///
-/// Not a keyword behaviour. It guards the guidance the keyword docs give.
+/// A float shrink-wraps its content (CSS 2.1 §10.3.5): Chrome 150 gives
+/// this box 300 in an 800px container. It used to fill the 800, when rinch had
+/// no floats.
 #[test]
-fn rinch_has_no_css_float_so_a_float_does_not_shrink_wrap() {
+fn a_float_shrink_wraps() {
     let (doc, t) = build("width: 800px", "float: left", "width", "auto");
-    assert_eq!(
-        size(&doc, t).0,
-        800.0,
-        "rinch implements no float, so a floated box fills; Chrome 150 gives 300"
-    );
+    assert_eq!(size(&doc, t).0, 300.0, "Chrome 150 gives 300");
 }
 
 /// The contrast that shows this is Taffy's shape rather than a rinch oversight:

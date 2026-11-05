@@ -1,6 +1,6 @@
-# Dependencies: Taffy, Parley, skrifa (pins and their traps)
+# Dependencies: Taffy, Parley, skrifa, Stylo (pins and their traps)
 
-Read this page when your task touches: a Taffy, Parley, skrifa, wgpu or Vello bump, text shaping/line breaking, white space, tabs, NBSP, justify.
+Read this page when your task touches: a Taffy, Parley, skrifa, Stylo, wgpu or Vello bump, text shaping/line breaking, white space, tabs, NBSP, justify.
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
@@ -9,7 +9,7 @@ Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New
 Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, Taffy, Parley, and dual rendering backends (Vello for GPU, tiny-skia for software). The goal is to provide a reactive GUI framework using HTML/CSS for layout.
 
 **Key dependencies:**
-- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.14** in one place, `crates/rinch-dom/Cargo.toml` (its `[dependencies]` and `[dev-dependencies]` lines must agree, **features included**: rinch builds Taffy without the five default features it never reads — `content_size`, `calc`, `float_layout`, `flexbox_balance`, `detailed_layout_info` — which cost about 4% of a structural edit's instructions whether read or not (#1260), and a dev-dependency left on the defaults would unify them back into every test build; the vendored `crates/stylo-taffy` that used to pin it too was unused and was deleted with the 0.14 bump, #1236). 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height. 0.12 numbered grid lines as `i16` and **panicked** on a grid past 32,767 lines (40,000 auto-placed rows, stacked `span`s, #1210) and on `repeat(auto-fill, 0px)` or `minmax(0px, 1fr)` at any width (#1231); 0.14 clamps each grid axis at **10,000 tracks** instead (css-grid-1 §7.2.4), which is not Chrome's geometry: every item past the 10,000th track lands in the last one and they overlap, so a grid of 10,001–32,767 lines that 0.12 laid out correctly now overlaps too (`crates/rinch-dom/tests/grid_line_overflow_tests.rs`). Both measure closures (`layout_engine.rs`, `ifc.rs`) return a `LayoutOutput` through `taffy::compute_leaf_layout` with the same `0.0` calc resolver 0.12 used, and set its first baseline (`ifc::with_first_baseline`, #1013): an IFC root's or text leaf's first Parley line's baseline plus the box's top padding and border, since Taffy measures from the border-box top. `ifc_measure_cache` keeps the baseline beside each size (`IfcMeasure`), and Taffy's block algorithm hands a block item its first in-flow child's, so flex/grid `align-items: baseline` lines items up by their first lines (`tests/flex_baseline_tests.rs`). It used to synthesize every item's from its bottom border edge. A **form control** still reports none and is aligned by its bottom edge (an `<input>` beside a 32px line sits 6px higher than Chrome's, #1273), and so is an image, which is right. An item whose first line holds an atomic inline (an `inline-block`, a `Button`) is aligned by that box's baseline since parley 0.12 (#663): beside a 32px line Chrome 156 puts the `A` at 0 and the item at 1, as rinch does (it put the `A` at 18 before, 9 before #1013), pinned by `an_items_first_line_holding_an_inline_block_is_aligned_by_its_baseline_issue_663`. `min_size`/`max_size` are `LengthPercentageAuto` in 0.14 (`DimensionValue::to_taffy_lpa`), and `size`/`flex_basis` carry the intrinsic keywords, which rinch hands over since #691 (see **Common Issues**). The bump itself moved layout in a few shapes, every one to Chrome 153's answer (`crates/rinch-dom/tests/taffy_014_layout_changes_tests.rs`): flex auto margins absorb free space **before** `justify-content` (0.12 justified first and pushed an auto-margin item off the end), a `min-height` parent keeps its last child's bottom margin inside it, and an empty scroll container's margins collapse through it — so a horizontal `Tabs` nested in a vertical `Tabs` now gets an inner panel 44px wide where 0.12 gave 85 (Chrome: 42.9). An editor table of more than 10,000 rows (which #1209 places by auto-placement past 9,999 tracks) now overlaps its rows from the 10,000th on, on desktop.
+- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.14** in one place, `crates/rinch-dom/Cargo.toml`, and comes from rinch's fork (see **Taffy Fork** below) (its `[dependencies]` and `[dev-dependencies]` lines must agree, **features included**: rinch builds Taffy without the four default features it never reads — `content_size`, `calc`, `flexbox_balance`, `detailed_layout_info`; `float_layout` was the fifth until floats came in — which cost about 4% of a structural edit's instructions whether read or not (#1260), and a dev-dependency left on the defaults would unify them back into every test build; the vendored `crates/stylo-taffy` that used to pin it too was unused and was deleted with the 0.14 bump, #1236). 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height. 0.12 numbered grid lines as `i16` and **panicked** on a grid past 32,767 lines (40,000 auto-placed rows, stacked `span`s, #1210) and on `repeat(auto-fill, 0px)` or `minmax(0px, 1fr)` at any width (#1231); 0.14 clamps each grid axis at **10,000 tracks** instead (css-grid-1 §7.2.4), which is not Chrome's geometry: every item past the 10,000th track lands in the last one and they overlap, so a grid of 10,001–32,767 lines that 0.12 laid out correctly now overlaps too (`crates/rinch-dom/tests/grid_line_overflow_tests.rs`). Both measure closures (`layout_engine.rs`, `ifc.rs`) return a `LayoutOutput` through `taffy::compute_leaf_layout` with the same `0.0` calc resolver 0.12 used, and set its first baseline (`ifc::with_first_baseline`, #1013): an IFC root's or text leaf's first Parley line's baseline plus the box's top padding and border, since Taffy measures from the border-box top. `ifc_measure_cache` keeps the baseline beside each size (`IfcMeasure`), and Taffy's block algorithm hands a block item its first in-flow child's, so flex/grid `align-items: baseline` lines items up by their first lines (`tests/flex_baseline_tests.rs`). It used to synthesize every item's from its bottom border edge. A **form control** still reports none and is aligned by its bottom edge (an `<input>` beside a 32px line sits 6px higher than Chrome's, #1273), and so is an image, which is right. An item whose first line holds an atomic inline (an `inline-block`, a `Button`) is aligned by that box's baseline since parley 0.12 (#663): beside a 32px line Chrome 156 puts the `A` at 0 and the item at 1, as rinch does (it put the `A` at 18 before, 9 before #1013), pinned by `an_items_first_line_holding_an_inline_block_is_aligned_by_its_baseline_issue_663`. `min_size`/`max_size` are `LengthPercentageAuto` in 0.14 (`DimensionValue::to_taffy_lpa`), and `size`/`flex_basis` carry the intrinsic keywords, which rinch hands over since #691 (see **Common Issues**). The bump itself moved layout in a few shapes, every one to Chrome 153's answer (`crates/rinch-dom/tests/taffy_014_layout_changes_tests.rs`): flex auto margins absorb free space **before** `justify-content` (0.12 justified first and pushed an auto-margin item off the end), a `min-height` parent keeps its last child's bottom margin inside it, and an empty scroll container's margins collapse through it — so a horizontal `Tabs` nested in a vertical `Tabs` now gets an inner panel 44px wide where 0.12 gave 85 (Chrome: 42.9). An editor table of more than 10,000 rows (which #1209 places by auto-placement past 9,999 tracks) now overlaps its rows from the 10,000th on, on desktop.
 - **parley** - Text shaping and line breaking, at the **published `0.12.0`** (from 0.11.1 by
   the parley 0.12 upgrade, Refs #624; Joe's decision of 2026-10-29). It was a git `rev` on an
   unmerged 22-commit "Floats WIP" branch off `v0.7.0` until #659; upstream landed that work in
@@ -252,10 +252,155 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
     content back). A split inline (#513) gets no edge boxes.
     `tests/inline_edge_room_1426_tests.rs` is the pin.
 - **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.12.0 (and 0.11.1 before it) depends on — and Vello 0.11 too (`vello`/`vello_encoding` ^0.44; the Vello 0.7 rinch had before #1955 built a second skrifa, 0.40). parley does not re-export it, so a parley (or Vello) bump that moves skrifa silently builds a second copy unless this pin moves with it. (swash 0.2, the software painter's glyph rasteriser, still brings its own skrifa 0.37.)
+- **stylo** - the CSS engine, at **0.22** (crates.io `stylo`, servo feature), with the family at the
+  versions it builds with: `stylo_traits`, `stylo_dom`, `stylo_atoms`, `stylo_static_prefs` 0.22,
+  `servo_arc` 0.5, and in `crates/rinch-dom/Cargo.toml` `cssparser` 0.38, `selectors` 0.41,
+  `web_atoms` 0.3. Move them together: a second `cssparser` or `selectors` is a second copy of every
+  type that crosses the boundary. Upgraded from 0.11 (with selectors 0.35, cssparser 0.36) for
+  `:has()` (#680), as a dependency-only change. What a bump has to know:
+  - **Preferences are process-global atomics** (`stylo_static_prefs::set_pref!`, defaults in that
+    crate's `preferences.toml`); 0.11 split them between a compile-time macro and the `stylo_config`
+    store, which 0.21 dropped. `dom_impl::set_stylo_prefs`, run by every `RinchDocument::new` before
+    any parsing, turns on `layout.grid.enabled` and `layout.unimplemented`, and holds the rest at
+    0.11's answers: `layout.threads` 0 (0.22 defaults to −1, a style thread pool of up to six), and
+    off `@property` (`properties-and-values`, off in 0.11) and five gates of syntax 0.11 did not
+    parse that upstream turns on (`alpha()`, typed `calc()` arithmetic, multi-colour `color-mix()`,
+    `revert-rule`, `@supports at-rule()`). Turning any on is its own change. **`:has()` is
+    `layout.css.has-selector.enabled`**, off; the follow-up to #680 sets it there.
+  - **Every computed `font-size` is rounded to 11 significant bits**
+    (`specified::FontSize::quantize_font_size`, Gecko's rule, no pref): the form controls' and
+    `smaller`'s 13.3333px is 13.328125, 16.6667 is 16.65625, 19.2 is 19.1875 (at most 2⁻¹¹ of the
+    size; an integer size up to 2048px is exact). Chrome does not round. The four
+    `ua_*_defaults` pins assert the rounded values and name Chrome's.
+  - **`attr()` is a substitution function** (css-values-5), in any property, resolved in the
+    cascade through `TElement::get_attr`; `ContentItem::Attr` is gone, and the value reaches
+    `content` as a string. `get_attr` sets `Node::content_reads_attrs`, which
+    `note_attribute_change` reads.
+  - `vertical-align` is a shorthand of `alignment-baseline`, `baseline-shift` and
+    `baseline-source` (`from_stylo::box_model::vertical_align_from_stylo` reads the first two);
+    `list-style-type` is a `<counter-style>` (a name, not a keyword enum); `flex-wrap` is a bitflag
+    set (with `balance`, behind `layout.flexbox.balance`, off); a specified `Number`, `Angle` or
+    `Length` can hold an unresolved `calc()` (`resolve()`/`degrees()` answer `None` for one);
+    `NoCalcLength` is a unit and a value, not an enum of enums.
+  - `TElement::borrow_data`/`mutate_data` return `ElementDataRef`/`ElementDataMut`, which only an
+    `ElementDataWrapper` hands out, so `Node::stylo_element_data` is a `node::StyloData` (the
+    wrapper plus a present flag) where it was `AtomicRefCell<Option<ElementData>>`. The wrapper's
+    borrow checks run in debug builds only.
+  - Newly parsed, and laid out by nothing in rinch: `text-underline-offset` and `scrollbar-color`
+    (servo-enabled behind `layout.unimplemented`; rinch does not read either, #580). Newly
+    evaluated media features: `height`, `aspect-ratio`, `orientation`, `device-width`/`-height`
+    (the window's size, `build_device`), `hover`/`any-hover`, `pointer`/`any-pointer` (stylo's
+    default: fine with hover on desktop, coarse on Android); with 0.11 a query on any of them never
+    matched. The `jump-*` step positions parse (#1581).
+  - The `cssparser` API lost its lifetimes: `Parser::new(&str)` replaces `ParserInput`, and
+    `ParseError<E>` carries no location (`ParseError::custom(e)`).
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`). **Vello 0.11 on wgpu 30** (#1955; workspace `[workspace.dependencies]`, every crate takes `workspace = true`), no wgpu patch (`app-and-windows.md` "wgpu Fork"). Vello pins wgpu's major (0.8 → 28, 0.9/0.10 → 29, 0.11 → 30), so the two move together; peniko stays 0.6 (kurbo 0.13). Check `cargo tree -d` for a second wgpu/vello/skrifa after a bump. wgpu 30 needs wasm-bindgen ≥ 0.2.127 (CI's `wasm-bindgen-test-runner` follows `Cargo.lock`). Rendering changes met in 0.7 → 0.11: images are sampled at the pixel centre since Vello 0.9 (rinch dropped its own half-pixel shift for images; `platform.md` item 6); `ImageQuality::High` became bicubic (rinch uses Low/Medium only); gradients are still evaluated at the pixel corner and the ramp is unchanged for the default `InterpolationAlphaSpace::Premultiplied`. `anyrender`/`anyrender_vello` were removed in #1955: no rinch code used them, and they pulled a second (crates.io) Vello. **Vello comes from `joeleaver/vello-fork` at a pinned rev** (workspace `vello = { git, rev }`; its `vello` takes the patched `vello_encoding` by path): Vello 0.9+ keeps its image atlas across renders, and the fork fixes the atlas being wiped by a render with no images, gradients or glyphs and images staying resident two renders after their last use (`app-and-windows.md` "Vello Fork"). A dependency, not a `[patch]`, so apps get it with nothing to copy; they use `rinch::vello`. Nothing else may pull crates.io `vello` (check `cargo tree -d`), or the graph has two Vellos. Images reach Vello as one blob per image (`DecodedImage::blob`, `frame_blob`), so a repainted image stays resident.
-- **tiny-skia** - 2D software rendering (default mode, no GPU required)
+- **tiny-skia** - 2D software rendering (default mode, no GPU required). **0.12** since #2111 (was 0.11): resvg 0.49 needs 0.12, and winit's `sctk-adwaita` already built 0.12 on Linux, so the bump removed a duplicate rather than adding one. The one API change met: `RadialGradient::new` takes a start radius (`skia_painter`, `0.0`, the 0.11 behaviour). rinch-dom's tests passed unchanged on 0.12.
+- **resvg / usvg 0.49** - SVG files as images (#2111, `svg_image.rs`), a plain dependency of rinch-dom (no feature gate: the cost below is small, and a build without it would quietly draw nothing for an `.svg`). **Default features off**: no `text` (fontdb + harfrust + skrifa shaping; SVG `<text>` is not drawn — usvg can take a `fontdb::Database`, not rinch's fontique collection, so supporting text means a second font database), no `system-fonts`/`memmap-fonts` (a fontconfig scan at startup), no `raster-images` (an `<image>` inside a file is refused anyway), no `svgz`. 0.49 is the version whose graph lines up: tiny-skia 0.12, kurbo 0.13 (peniko's), roxmltree 0.21 (already built), base64 0.23 only behind `writer`, which is off. **New crates**: resvg, usvg, svgtypes, simplecss, data-url, imagesize, pico-args, float-cmp (eight), no second copy of anything: `cargo tree -d -e normal --target all` lists the same set as main minus tiny-skia/tiny-skia-path. 0.45 (tiny-skia 0.11) would have added kurbo 0.11, roxmltree 0.20 and svgtypes 0.15 as second copies. `roxmltree` is locked at **0.21.2**: 0.21.1 recursed once per nesting level and a 28 KB SVG overflowed a load thread's stack in release (review of #2125; rinch's own `svg_image::prescan` also caps nesting before it parses). rinch-dom also names `svgtypes = "0.16"` (usvg's own) for the root's `viewBox`/`preserveAspectRatio`. An `embed` build (no software painter) gets tiny-skia through resvg; that is its rasteriser for SVG files. Measured on #2111 (release `hello-rinch-dom`, desktop features, against the same main): the binary grows 37,006,952 → 37,630,680 bytes (+624 KB, +1.7%), stripped 26,218,680 → 26,707,112 (+488 KB, +1.9%). Build: the eight new crates take 20 s of compile time between them (usvg 10.6 s, the rest under 2.5 s each; `--timings`, `-j 4`, a loaded host), and dropping tiny-skia 0.11 saves 16 s, so a clean build is about even (wall clock 408 s on the branch, 466 s on main, inside the noise).
 - **softbuffer** - Software window presentation (default mode)
 - **winit** - Cross-platform windowing and input. **0.31.0-beta.4 from `joeleaver/winit-fork` (branch `rinch-patch-beta4`) at a pinned rev**, a workspace dependency, not a `[patch]` (#1962): upstream's tag plus the `wlr-layer-shell` window role. Apps copy no patch lines. Wayland drag and drop is upstream's data transfer API (`shell::os_file_drag`). The fork takes crates.io `dpi`, so there is one `dpi` in the graph (muda's too). Detail: `app-and-windows.md` "winit Fork".
 - **muda** - Native menu support
 
 **Design philosophy:** Declarative UI with fine-grained reactive programming. The `rsx!` macro generates DOM construction code with Effects for reactive updates. Only changed DOM nodes are updated - no full re-renders.
+
+## Taffy Fork
+
+**Carried since #2080** (floats). rinch-dom depends on `taffy` from
+https://github.com/joeleaver/taffy-fork, pinned by rev
+(`317d532abadd38755b46d15c298fd0a522f0f672`, branch `rinch-patch`): eight
+commits on the taffy `v0.14.0` tag. It is a dependency, not a
+`[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
+Taffy's types never reach an app (nothing re-exports them). The rev is pinned
+so a push to the fork's branch never changes rinch; moving it is a commit here,
+and a Taffy bump rebases the eight commits onto the new tag. All are upstream
+candidates.
+
+1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
+   hands each in-flow child in the same block formatting context a
+   `BlockContext` (the floats placed so far, `find_content_slot`,
+   `place_floated_box`), but `TaffyTree`'s measure function was never given
+   it, and the trait route around that (`LayoutBlockContainer`) needs
+   `TaffyTree` internals that are private. The new method takes a measure
+   function with a fifth argument, `Option<&mut BlockContext>`; the two
+   compute sites (`layout_engine.rs`'s root compute, `ifc.rs`'s atomic-inline
+   compute) use it so an IFC root wraps its lines around floats
+   (`float_wrap.rs`, `common-issues.md` "Floats"). A box laid out while floats
+   of its context are active (`has_active_floats(0.0)`) is computed afresh
+   rather than answered from Taffy's layout cache, whose key does not hold
+   where the floats are: a paragraph would otherwise keep lines broken around a
+   float that has since moved. A document with no floats takes exactly the old
+   path (the perf counter baselines are unchanged).
+2. **`ContentSlot::height`.** `FloatContext::find_content_slot` always
+   reported `f32::INFINITY`, so a caller could not tell where the room beside
+   the floats next changes. It is now the distance to the end of the slot's
+   segment (still infinity with no float beside it), which is how
+   `FloatBands::of` walks a paragraph's height.
+3. **Pending floats.** The block-measure method takes a second callback,
+   `places_floats(leaf, context)`: a float right before a childless in-flow
+   leaf that it accepts is sized but not placed. The leaf's measure finds it in
+   `BlockContext::pending_floats()` and places it with
+   `place_pending_float(index, min_y)` at the height it chooses; one it leaves
+   unplaced is placed after it, where it stood. rinch accepts measure leaves
+   only (`float_wrap::is_measure_leaf`): the floats before an IFC root's
+   measure leaf are that root's own, placed at the top of the line each stands
+   in (CSS 2.2 §9.5.1). A leaf with pending floats bypasses the layout cache too.
+4. **A formatting-context root's bottom inset below its floats.** A box that
+   establishes a block formatting context grew only to its floats' bottom
+   margin edge, losing its bottom padding, border and scrollbar gutter: a
+   padded `overflow: hidden` bar holding only floats was 30px tall where
+   Chrome makes it 38. CSS 2.2 §10.6.7 grows the content box to include them.
+5. **Dirty marking past uncached boxes.** A box laid out beside active floats
+   keeps no cache entry, so `Cache::clear` answered `AlreadyEmpty` and
+   `mark_dirty` stopped at it: text edited in a paragraph beside a float left
+   its parent's cached layout in place. And an entry stored before the floats
+   came was served again once they went, though the box's children had been
+   laid out since. The bypass now clears the cache and counts the node
+   computed (`Cache::clear_for_uncached_compute`), so marking climbs on.
+
+6. **Sixteen measure entries per node, not nine** (#2136). Taffy 0.14's cache
+   keeps nine exact-key size entries per node with clock eviction, so a node
+   asked more distinct sizes per layout than that misses on every one of them
+   on every layout: the cycle evicts each entry just before it is asked again.
+   A grid item under a few intrinsic probes reaches ten — its min- and
+   max-content widths, then its height under a min- and a max-content
+   constraint at each of four column widths (Playweft's asset grid, in a
+   CSS-grid panel in a flex column, is asked at 108, 115.85, 131 and 275.57) —
+   and with nine a grid of 430 such cards re-measured every card whenever any
+   one changed: 15,242 text measures for one changed label, 27 with sixteen.
+   Sixteen is the width of the `recently_used_entries` bitmask, so going past
+   it is a change of that field too. Pin:
+   `perf_regression_scenarios::a_label_edit_in_a_grid_probed_at_four_widths_measures_one_card`.
+
+7. **An auto-height grid's rows have indefinite available space** (#2139).
+   A grid whose height is neither known (stretched, flexed) nor styled sizes
+   its rows with `AvailableSpace::MaxContent`, whatever its parent passed
+   (`compute/grid/mod.rs`, `available_grid_space`). Browsers lay a box's block
+   size out from its content: Chrome 156 gives an auto-height grid of
+   `overflow: hidden` cards holding 100px boxes rows of 100px in a 300px column
+   flex container, a 300px grid parent and an `align-items: start` row flex
+   container. Taffy shared the parent's definite height among the `auto` rows
+   (69px each), and under a min-content height (the probe that gives a column
+   flex item its automatic minimum size, css-flexbox-1 §4.5) sized them from
+   the items' minimum contributions, zero for a scroll container, so a grid
+   flex item was shrunk below its content and its rows collapsed. The spec's
+   "available grid space" (css-grid-1 §11.1) does take the parent's space;
+   rinch follows Chrome. A stretched or flexed height (`min-height: 0`), a
+   styled `height` and a `min-height` above the content still share their
+   free space among the rows; a `max-height` clamps the grid, not its rows;
+   `repeat(auto-fill, …)` rows count from the grid's own height and
+   `max-height` (Chrome's numbers for each). Pins:
+   `crates/rinch-dom/tests/grid_contents_and_min_size_2138_2139_tests.rs`.
+8. **`TaffyTree::compute_sizes_with_block_measure`** (#2141). Asks given nodes
+   their size the way a parent asks a child for its contribution
+   (`RunMode::ComputeSize`, no known dimensions), through the same measure
+   functions as `compute_layout_with_block_measure`, and writes no final
+   layout (`src/tree/taffy_tree.rs`). rinch's table column measure uses it to
+   ask each changed cell its max-content width between layouts without
+   evicting the final-layout cache entries the next layout reuses; the old
+   probe laid the whole table out detached and so asked every cell twice per
+   edit. Pins: `crates/rinch-dom/tests/table_column_weights_2141_tests.rs` and
+   the `a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone` scenario.
+
+The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
+fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7.
+

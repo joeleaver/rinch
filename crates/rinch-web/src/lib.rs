@@ -90,6 +90,7 @@ mod editor_input;
 mod event_delegation;
 mod images;
 mod menu_bar;
+mod pointer_lock;
 pub mod web_document;
 
 use std::cell::{Cell, RefCell};
@@ -110,6 +111,10 @@ pub use event_delegation::{
 // Whether a right-click anywhere suppresses the browser's own menu. Off by
 // default: an island mounted into somebody else's page must not take the
 // right-click away from the rest of it.
+/// Test-only: take the page as macOS, or not, for the editor's key bindings
+/// (`navigator.platform` otherwise), so their macOS half runs in CI.
+#[doc(hidden)]
+pub use editor_input::__set_mac_platform;
 pub use event_delegation::{set_suppress_native_context_menu, suppresses_native_context_menu};
 #[doc(hidden)]
 pub use images::__reset_image_sources;
@@ -321,6 +326,8 @@ fn ensure_event_delegation(doc: &WebDocument) {
         }
         f.set(true);
         setup_event_delegation(doc);
+        // The browser's pointer lock behind `rinch::window`'s (#2092).
+        pointer_lock::install();
     });
 }
 

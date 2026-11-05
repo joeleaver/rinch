@@ -55,25 +55,27 @@ pub(super) fn display_from_stylo(display: &style::values::computed::Display) -> 
         (DisplayOutside::Block, DisplayInside::Flex) => DisplayValue::Flex,
         (DisplayOutside::Block, DisplayInside::Grid) => DisplayValue::Grid,
         (DisplayOutside::Inline, DisplayInside::Grid) => DisplayValue::InlineGrid,
-        // rinch has no table formatting context (#1072). The two table parts
-        // whose inside is flow content — a cell and a caption — are block
-        // containers: their children stack, their text is an IFC and takes
-        // `text-overflow`, as in Chrome. Mapping them to the flex fallback
-        // below made a cell a flex *row*.
+        // A cell and a caption hold flow content, so they are block containers
+        // (their children stack, their text is an IFC and takes
+        // `text-overflow`). See `table_layout` for the rest: a table is a grid,
+        // row groups and rows generate no box, and columns no box at all.
         (DisplayOutside::InternalTable, DisplayInside::TableCell) => DisplayValue::Block,
         (DisplayOutside::TableCaption, DisplayInside::Flow) => DisplayValue::Block,
-        // Everything else — `table` / `inline-table`, `table-row`, the row and
-        // column groups — is a flex container. A row is a flex row, which puts
-        // its cells side by side. A table or row group is a flex row too when
-        // its children are bare cells (they share one anonymous row) and a
-        // flex column when it holds rows, which stack (#1083) — a choice made
-        // from its children, so at the Taffy sync, not here: see
-        // `ComputedStyle::table_part` and `table_flex_direction`.
+        (DisplayOutside::Inline, DisplayInside::Table) => DisplayValue::InlineGrid,
+        (_, DisplayInside::Table) => DisplayValue::Grid,
+        (
+            DisplayOutside::InternalTable,
+            DisplayInside::TableRowGroup
+            | DisplayInside::TableHeaderGroup
+            | DisplayInside::TableFooterGroup
+            | DisplayInside::TableRow,
+        ) => DisplayValue::Contents,
+        (DisplayOutside::InternalTable, _) => DisplayValue::None,
         _ => DisplayValue::Flex,
     }
 }
 
-/// The [`TablePart`] a computed `display` names (#1083).
+/// The [`TablePart`] a computed `display` names.
 pub(super) fn table_part_from_stylo(display: &style::values::computed::Display) -> TablePart {
     use style::values::specified::box_::{DisplayInside, DisplayOutside};
     if display.is_none() || display.is_contents() {
@@ -81,10 +83,11 @@ pub(super) fn table_part_from_stylo(display: &style::values::computed::Display) 
     }
     match (display.outside(), display.inside()) {
         (_, DisplayInside::Table) => TablePart::Table,
-        (DisplayOutside::InternalTable, DisplayInside::TableRowGroup)
-        | (DisplayOutside::InternalTable, DisplayInside::TableHeaderGroup)
-        | (DisplayOutside::InternalTable, DisplayInside::TableFooterGroup) => TablePart::RowGroup,
+        (DisplayOutside::InternalTable, DisplayInside::TableRowGroup) => TablePart::RowGroup,
+        (DisplayOutside::InternalTable, DisplayInside::TableHeaderGroup) => TablePart::HeaderGroup,
+        (DisplayOutside::InternalTable, DisplayInside::TableFooterGroup) => TablePart::FooterGroup,
         (DisplayOutside::InternalTable, DisplayInside::TableRow) => TablePart::Row,
+        (DisplayOutside::InternalTable, DisplayInside::TableCell) => TablePart::Cell,
         (DisplayOutside::InternalTable, _) => TablePart::Other,
         (DisplayOutside::TableCaption, _) => TablePart::Caption,
         _ => TablePart::None,
@@ -237,11 +240,17 @@ pub(super) fn flex_direction_from_stylo(
 pub(super) fn flex_wrap_from_stylo(
     wrap: &style::properties::longhands::flex_wrap::computed_value::T,
 ) -> FlexWrapValue {
+    // A bitflag set since stylo 0.21 (`nowrap | [wrap | wrap-reverse] ||
+    // balance`). `balance` (which `wrap balance` computes to) parses only
+    // under the `layout.flexbox.balance` pref, which rinch leaves off; it
+    // wraps, so it reads as `wrap` if ever turned on.
     use style::properties::longhands::flex_wrap::computed_value::T as FlexWr;
-    match *wrap {
-        FlexWr::Nowrap => FlexWrapValue::NoWrap,
-        FlexWr::Wrap => FlexWrapValue::Wrap,
-        FlexWr::WrapReverse => FlexWrapValue::WrapReverse,
+    if wrap.contains(FlexWr::WRAP_REVERSE) {
+        FlexWrapValue::WrapReverse
+    } else if wrap.intersects(FlexWr::WRAP | FlexWr::BALANCE) {
+        FlexWrapValue::Wrap
+    } else {
+        FlexWrapValue::NoWrap
     }
 }
 

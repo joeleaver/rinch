@@ -11,6 +11,8 @@ use rinch_dom::RinchDocument;
 
 fn rect(html: &str, m: &str) -> [f32; 4] {
     let mut doc = RinchDocument::new();
+    // The Chrome rects were measured under `* { box-sizing: border-box }`.
+    doc.load_css("* { box-sizing: border-box; }");
     let body = doc.body();
     doc.set_attribute(body, "style", "margin: 0;");
     let wrap = doc.create_element("div");

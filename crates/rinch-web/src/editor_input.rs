@@ -85,7 +85,7 @@ use crate::web_document::{find_text_node_at_byte_offset, get_nid, node_by_nid};
 thread_local! {
     /// Container node-id of the focused editor (`None` = no editor focused). Drives
     /// keyboard routing and the caret pass. Set on `mousedown` into an editor.
-    static FOCUSED_EDITOR: Cell<Option<usize>> = const { Cell::new(None) };
+    static FOCUSED_EDITOR: Cell<Option<u64>> = const { Cell::new(None) };
     /// The vertical-motion goal column (viewport x), kept across a run of Up/Down so the
     /// caret holds its horizontal position through short lines. Reset by any other key.
     static GOAL_X: Cell<Option<f32>> = const { Cell::new(None) };
@@ -116,7 +116,7 @@ thread_local! {
     /// Set by [`handle_mousedown`] when an app's `on_link_click` claimed the press,
     /// to the editor it landed in — read by [`handle_touch_tap`], which clears it
     /// before the call, so it can tell a claimed link tap from a caret tap.
-    static LINK_CLAIMED_IN: Cell<Option<usize>> = const { Cell::new(None) };
+    static LINK_CLAIMED_IN: Cell<Option<u64>> = const { Cell::new(None) };
     /// The context-menu cycle in flight (issue #814): the capture textarea is, or
     /// was just, parked under the pointer and holds the Select-All sentinels rather
     /// than the mirror. `None` when no cycle is live. See
@@ -131,10 +131,10 @@ thread_local! {
     static MENU_KEY_TO_APP: Cell<bool> = const { Cell::new(false) };
 }
 
-fn focused_editor() -> Option<usize> {
+fn focused_editor() -> Option<u64> {
     FOCUSED_EDITOR.with(|c| c.get())
 }
-fn set_focused_editor(id: Option<usize>) {
+fn set_focused_editor(id: Option<u64>) {
     FOCUSED_EDITOR.with(|c| c.set(id));
 }
 fn goal_x() -> Option<f32> {
@@ -147,8 +147,8 @@ fn set_goal_x(x: Option<f32>) {
 /// A resolved pointer hit inside an editor: the container + textblock host ids and the
 /// model offset within the textblock's content ([`model_offset_in_block`]).
 struct EditorHit {
-    container_nid: usize,
-    textblock_nid: usize,
+    container_nid: u64,
+    textblock_nid: u64,
     offset: usize,
 }
 
@@ -255,7 +255,7 @@ fn resolve_editor_point(doc: &web_sys::Document, x: f32, y: f32) -> Option<Edito
 }
 
 /// The focused editor's handle, if any (dropping focus if it has unmounted).
-fn focused_handle() -> Option<(usize, EditorHandle)> {
+fn focused_handle() -> Option<(u64, EditorHandle)> {
     let id = focused_editor()?;
     match registry::editor_for(id) {
         Some(h) => Some((id, h)),
@@ -345,7 +345,7 @@ fn sync_capture_read_only(handle: &EditorHandle) {
 /// would make the offset before it and the one after it the same number.
 #[derive(Clone)]
 struct Mirror {
-    textblock_nid: usize,
+    textblock_nid: u64,
     text: String,
     /// The selection we wrote, in UTF-16 code units — what the textarea counts in.
     /// Kept so a redundant re-sync can be skipped.
@@ -563,11 +563,7 @@ fn reconcile_mirror(handle: &EditorHandle) -> bool {
 /// `t`, so the edit ends at offset 13 while the user expects the caret after "there".
 /// The field already holds the right answer — the browser placed it — so take it from
 /// there rather than inferring it.
-fn adopt_field_caret(
-    handle: &EditorHandle,
-    ta: &web_sys::HtmlTextAreaElement,
-    textblock_nid: usize,
-) {
+fn adopt_field_caret(handle: &EditorHandle, ta: &web_sys::HtmlTextAreaElement, textblock_nid: u64) {
     let text = ta.value();
     let start = ta.selection_start().ok().flatten().unwrap_or(0);
     let end = ta.selection_end().ok().flatten().unwrap_or(start);
@@ -633,7 +629,7 @@ fn focus_capture_target(doc: &web_sys::Document, handle: &EditorHandle) {
 /// other field blurs natively and commits its `change`), and the overlay pass
 /// draws the editor's caret or selection where it already is. Nothing is
 /// selected and nothing scrolls.
-fn focus_editor(container_nid: usize) {
+fn focus_editor(container_nid: u64) {
     let Some(handle) = registry::editor_for(container_nid) else {
         return;
     };
@@ -656,7 +652,7 @@ fn focus_editor(container_nid: usize) {
 /// focus (a window switch); a blur from code is meant whatever the window is
 /// doing. Any other editor or field that holds the keyboard is left alone, and
 /// the selection is kept for a later focus.
-fn blur_editor(container_nid: usize) {
+fn blur_editor(container_nid: u64) {
     if focused_editor() != Some(container_nid) {
         return;
     }
@@ -699,7 +695,7 @@ fn blur_editor(container_nid: usize) {
 /// does not outlive the editor either. Nothing is lost: the next focus empties
 /// the field anyway ([`focus_capture_target`]) and refills it from that editor's
 /// caret block.
-fn on_editor_unregistered(_doc_key: u64, container_nid: usize) {
+fn on_editor_unregistered(_doc_key: u64, container_nid: u64) {
     let ta = capture_target();
     if focused_editor() == Some(container_nid) {
         set_focused_editor(None);
@@ -820,7 +816,7 @@ enum MenuTrigger {
 struct MenuCycle {
     id: u64,
     /// The host id of the editor the cycle belongs to.
-    container_nid: usize,
+    container_nid: u64,
     trigger: MenuTrigger,
     /// The park holding the textarea under the pointer, if any — the id of that
     /// park, so its timer does not end a later one.
@@ -888,9 +884,25 @@ fn context_menu_claimed_by_app(target: &web_sys::Element) -> bool {
         .is_some_and(|(_, id)| rinch_core::events::has_click_handler(id))
 }
 
+thread_local! {
+    /// A test's answer for [`is_mac`] (`__set_mac_platform`), so the macOS key
+    /// bindings run in CI's Linux browsers. `None`: ask the browser.
+    static MAC_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Make the editor's key handling take the page as macOS (`Some(true)`), as
+/// not macOS (`Some(false)`), or ask the browser again (`None`). Test-only.
+#[doc(hidden)]
+pub fn __set_mac_platform(mac: Option<bool>) {
+    MAC_OVERRIDE.with(|m| m.set(mac));
+}
+
 /// Whether the page runs on macOS, where a Control-click is the context click
 /// (CodeMirror 5 asks `navigator.platform` the same question).
-fn is_mac() -> bool {
+pub(crate) fn is_mac() -> bool {
+    if let Some(mac) = MAC_OVERRIDE.with(std::cell::Cell::get) {
+        return mac;
+    }
     web_sys::window()
         .and_then(|w| js_sys::Reflect::get(&w, &"navigator".into()).ok())
         .and_then(|n| js_sys::Reflect::get(&n, &"platform".into()).ok())
@@ -920,7 +932,7 @@ fn after(ms: i32, f: impl FnOnce() + 'static) {
 /// top-left corner at `spot` (see the section comment above).
 fn start_context_menu_cycle(
     handle: &EditorHandle,
-    container_nid: usize,
+    container_nid: u64,
     trigger: MenuTrigger,
     spot: (f32, f32),
 ) {
@@ -1009,7 +1021,7 @@ fn unpark_capture(park: u64) {
 /// (Windows, by reading Chromium), the park from the press is long gone by then,
 /// so a release that no `contextmenu` has preceded parks the textarea again, at
 /// the `spot` it gives for the cycle's editor (`None` parks nothing).
-fn repark_on_release(trigger: MenuTrigger, spot: impl FnOnce(usize) -> Option<(f32, f32)>) {
+fn repark_on_release(trigger: MenuTrigger, spot: impl FnOnce(u64) -> Option<(f32, f32)>) {
     let waiting = MENU_CYCLE.with(|c| {
         c.borrow()
             .as_ref()
@@ -1027,7 +1039,7 @@ fn repark_on_release(trigger: MenuTrigger, spot: impl FnOnce(usize) -> Option<(f
 /// `container_nid`, looking past the capture textarea, which may still be parked
 /// there. A right press dragged out of the editor and released over page content
 /// is that content's to answer.
-fn point_over_editor(doc: &web_sys::Document, x: f32, y: f32, container_nid: usize) -> bool {
+fn point_over_editor(doc: &web_sys::Document, x: f32, y: f32, container_nid: u64) -> bool {
     doc.elements_from_point(x, y)
         .iter()
         .filter_map(|v| v.dyn_into::<web_sys::Element>().ok())
@@ -1217,7 +1229,7 @@ fn on_capture_blur() {
 /// editor. Every question rinch asks of the focus means the editor there, which
 /// is what this answers. The container may be detached (its overlay's subtree
 /// already taken out); `contains` still answers for it.
-pub(crate) fn keyboard_editor(doc: &web_sys::Document) -> Option<(usize, web_sys::Element)> {
+pub(crate) fn keyboard_editor(doc: &web_sys::Document) -> Option<(u64, web_sys::Element)> {
     let ta = capture_target()?;
     let ta: &web_sys::Element = ta.as_ref();
     if doc.active_element().as_ref() != Some(ta) {
@@ -1245,7 +1257,7 @@ pub(crate) fn effective_active_element(doc: &web_sys::Document) -> Option<web_sy
 /// Take the keyboard from the editor at `container_nid`, if it holds it —
 /// [`EditorHandle::blur`]'s path: the capture field is blurred (a live
 /// composition ends into this editor first) and the editor is released.
-pub(crate) fn release_editor(container_nid: usize) {
+pub(crate) fn release_editor(container_nid: u64) {
     blur_editor(container_nid);
 }
 
@@ -1253,7 +1265,7 @@ pub(crate) fn release_editor(container_nid: usize) {
 /// does. Answers whether it holds it afterwards.
 /// Refused, as a browser's `focus()` refuses, for an editor whose container is
 /// detached or not rendered.
-pub(crate) fn give_editor_keyboard(doc: &web_sys::Document, container_nid: usize) -> bool {
+pub(crate) fn give_editor_keyboard(doc: &web_sys::Document, container_nid: u64) -> bool {
     let shown = crate::web_document::registered_node(container_nid)
         .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
         .is_some_and(|el| el.is_connected() && crate::event_delegation::element_is_visible(&el));
@@ -1561,7 +1573,7 @@ fn read_images(
 /// drops at all. One that has the callback and refuses edits (read-only, a
 /// collaboration freeze) is answered too: it takes nothing, but the drop must
 /// still be prevented ([`on_drop`]).
-fn file_drop_editor(event: &web_sys::DragEvent) -> Option<(usize, EditorHandle)> {
+fn file_drop_editor(event: &web_sys::DragEvent) -> Option<(u64, EditorHandle)> {
     let dt = event.data_transfer()?;
     let types = dt.types();
     if !(0..types.length()).any(|i| types.get(i).as_string().as_deref() == Some("Files")) {
@@ -1903,7 +1915,7 @@ fn link_under_pointer(
     target: &web_sys::Element,
     editor_el: &web_sys::Element,
     handle: &EditorHandle,
-    container_nid: usize,
+    container_nid: u64,
     x: f32,
     y: f32,
 ) -> Option<LinkSpan> {
@@ -1956,7 +1968,7 @@ fn offer_link_click(
     target: &web_sys::Element,
     editor_el: &web_sys::Element,
     handle: &EditorHandle,
-    container_nid: usize,
+    container_nid: u64,
 ) -> bool {
     let (x, y) = (event.client_x() as f32, event.client_y() as f32);
     let Some(link) = link_under_pointer(doc, target, editor_el, handle, container_nid, x, y) else {
@@ -2462,7 +2474,7 @@ thread_local! {
 /// view's host, forget an unmounted one's.
 fn on_node_view_host(
     doc_key: u64,
-    _container: usize,
+    _container: u64,
     host: &rinch_core::dom::NodeHandle,
     mounted: bool,
 ) {
@@ -2589,7 +2601,11 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
     let shift = event.shift_key();
     let alt = event.alt_key();
 
-    if key != "ArrowUp" && key != "ArrowDown" {
+    // The goal column survives a run of Up / Down and Page Up / Down.
+    if !matches!(
+        key.as_str(),
+        "ArrowUp" | "ArrowDown" | "PageUp" | "PageDown"
+    ) {
         set_goal_x(None);
     }
 
@@ -2653,6 +2669,21 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
             },
             shift,
         ),
+        // Page Up / Down (#2020), Chrome's bindings: on macOS the plain key
+        // scrolls a page and leaves the caret, Option moves it and Shift
+        // extends; elsewhere the key moves and Shift extends. Ctrl (Cmd) and
+        // Alt there are the browser's.
+        "PageUp" | "PageDown" if is_mac() && !event.meta_key() && !event.ctrl_key() => page_step(
+            &handle,
+            container_nid,
+            doc,
+            key == "PageDown",
+            shift,
+            !alt && !shift,
+        ),
+        "PageUp" | "PageDown" if !is_mac() && !ctrl && !alt => {
+            page_step(&handle, container_nid, doc, key == "PageDown", shift, false)
+        }
         "Home" if ctrl => handle.move_cursor(CursorMotion::DocStart, shift),
         "End" if ctrl => handle.move_cursor(CursorMotion::DocEnd, shift),
         // The visual line's edges, as on desktop (#301).
@@ -2717,11 +2748,192 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
     handled
 }
 
+/// Page Up (`down = false`) or Page Down in the focused editor (#2020), as on
+/// desktop (`RinchApp::page_editor`): the page is 0.875 of the nearest
+/// scroller's `clientHeight` (Chrome's step), at most the window's — the
+/// scroller a scroll lock leaves alone, not past a `position: fixed` box; the
+/// scroller moves a page, and the caret goes to the point a page below (above)
+/// where it is, at the goal column, so with the caret in view it keeps its
+/// place on screen. With the caret scrolled out of view the point is brought
+/// into the scrollport first: the page is from the caret, not the view. A page
+/// that reaches the document's last (first) line, or runs past the editor, puts
+/// the caret at the document's end (start), as Chrome does. `scroll_only`
+/// (macOS's plain key), a read-only editor (Chrome's read-only `<textarea>`)
+/// and a caret with no rect scroll and leave the selection. Always consumed:
+/// the browser's own Page Down would scroll the capture textarea's page.
+fn page_step(
+    handle: &EditorHandle,
+    container_nid: u64,
+    doc: &web_sys::Document,
+    down: bool,
+    extend: bool,
+    scroll_only: bool,
+) -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let Some(container) =
+        node_by_nid(container_nid).and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+    else {
+        return false;
+    };
+    // The nearest scroller that overflows, the editor itself included, and
+    // that no `lock_scroll` overlay locks out (desktop's `page_scroller`, the
+    // drag auto-scroll's rule) — else the page's scrolling element, on the
+    // same terms. The walk stops at a `position: fixed` box (a modal): the
+    // viewport holds it, so nothing outside it moves it.
+    let mut scroller = None;
+    let mut fixed = false;
+    let mut cur = Some(container.clone());
+    while let Some(el) = cur {
+        let cs = window.get_computed_style(&el).ok().flatten();
+        let prop = |name: &str| {
+            cs.as_ref()
+                .and_then(|cs| cs.get_property_value(name).ok())
+                .unwrap_or_default()
+        };
+        let overflow = prop("overflow-y");
+        if (overflow == "auto" || overflow == "scroll")
+            && el.scroll_height() > el.client_height()
+            && !crate::web_document::scroll_locked_out(&el)
+        {
+            scroller = Some(el);
+            break;
+        }
+        if prop("position") == "fixed" {
+            fixed = true;
+            break;
+        }
+        cur = el.parent_element();
+    }
+    let page_el = doc.scrolling_element();
+    let page_locked = page_el
+        .as_ref()
+        .is_none_or(crate::web_document::scroll_locked_out);
+    if scroller.is_none() && !fixed && !page_locked {
+        scroller = page_el.clone();
+    }
+    let view = window
+        .inner_height()
+        .ok()
+        .and_then(|h| h.as_f64())
+        .unwrap_or(f64::MAX);
+    let port = scroller
+        .as_ref()
+        .map_or(view, |s| f64::from(s.client_height()))
+        .min(view);
+    let page = (port * 0.875).round().max(1.0);
+    let step = if down { page } else { -page };
+    let head = handle.selection().head();
+    let from = if scroll_only || handle.refuses_edits() {
+        None
+    } else {
+        head_screen_rect(handle, head)
+    };
+    let scroll_by = |s: &web_sys::Element, dy: f64| {
+        let before = f64::from(s.scroll_top());
+        s.set_scroll_top((before + dy).round() as i32);
+        f64::from(s.scroll_top()) - before
+    };
+    let scrolled = scroller.as_ref().map_or(0.0, |s| scroll_by(s, step));
+    let Some((hx, hy, hh)) = from else {
+        return true;
+    };
+    let gx = goal_x().unwrap_or(hx);
+    set_goal_x(Some(gx));
+    // A page from the caret's middle, where the caret is drawn now —
+    // measured, so a scroller that did not carry the editor moves nothing.
+    let now_y =
+        head_screen_rect(handle, head).map_or(f64::from(hy) - scrolled, |(_, y, _)| f64::from(y));
+    let mut ty = (now_y + f64::from(hh * 0.5) + step) as f32;
+    let view_h = view.min(f64::from(i32::MAX)) as f32;
+    // The caret scrolled out of the scroller's view (the wheel): the point a
+    // page from it is outside the scrollport too, where
+    // `caretPositionFromPoint` finds nothing or another element. Chrome 155
+    // and Firefox 155 move the caret a page from where it is, wherever the
+    // view is: bring the point into the scrollport first, half a caret in
+    // from the edge it is past.
+    if let Some(s) = &scroller {
+        let band = if page_el.as_ref().is_some_and(|p| p.is_same_node(Some(s))) {
+            (0.0, view_h)
+        } else {
+            let r = s.get_bounding_client_rect();
+            let top = r.top() as f32 + s.client_top() as f32;
+            (top.max(0.0), (top + s.client_height() as f32).min(view_h))
+        };
+        let (lo, hi) = (band.0 + hh * 0.5, band.1 - hh * 0.5);
+        let over = if ty < lo {
+            ty - lo
+        } else if ty > hi {
+            ty - hi
+        } else {
+            0.0
+        };
+        if over != 0.0 && lo <= hi {
+            ty -= scroll_by(s, f64::from(over)) as f32;
+        }
+    }
+    // A point still off the window resolves to nothing: with the scroller
+    // running past the window's edge (and stopped at its end), bring the
+    // point in by the window, as the caret's reveal would have afterwards —
+    // unless a scroll lock holds the page, or the editor is in a fixed box,
+    // which the window does not move.
+    let off = if ty < 0.0 {
+        ty - hh
+    } else if ty >= view_h {
+        ty - view_h + hh
+    } else {
+        0.0
+    };
+    if off != 0.0 && !page_locked && !fixed {
+        let before = window.scroll_y().unwrap_or(0.0);
+        window.scroll_by_with_x_and_y(0.0, f64::from(off));
+        ty -= (window.scroll_y().unwrap_or(0.0) - before) as f32;
+    }
+    let edge = || {
+        let doc = handle.doc();
+        if down {
+            Selection::at_end(&doc).head()
+        } else {
+            Selection::at_start(&doc).head()
+        }
+    };
+    let target = resolve_editor_point(doc, gx, ty)
+        .filter(|hit| hit.container_nid == container_nid)
+        .and_then(|hit| hit.pos(handle))
+        .map(|p| {
+            let (affinity, rect) = hit_affinity(handle, p, ty);
+            (p, affinity, rect)
+        })
+        // On the document's last (first) line: Chrome goes to its end.
+        .filter(|&(_, _, rect)| {
+            let end = head_screen_rect(handle, edge());
+            !matches!((rect, end), (Some((_, py, ph)), Some((_, ey, _)))
+                if (py - ey).abs() < ph * 0.5)
+        });
+    let Some((p, affinity, _)) = target else {
+        let motion = if down {
+            CursorMotion::DocEnd
+        } else {
+            CursorMotion::DocStart
+        };
+        handle.move_cursor(motion, extend);
+        return true;
+    };
+    let sel = if extend {
+        Selection::text(handle.selection().anchor(), p)
+    } else {
+        Selection::cursor(p)
+    };
+    handle.set_selection_with_affinity(sel, affinity);
+    true
+}
+
 /// Vertical caret movement: hit-test at the goal column one line above/below the head's
 /// current screen position. Mirrors the desktop `vertical_step` with browser geometry.
 fn vertical_step(
     handle: &EditorHandle,
-    container_nid: usize,
+    container_nid: u64,
     doc: &web_sys::Document,
     down: bool,
     extend: bool,
@@ -3070,7 +3282,7 @@ fn head_screen_rect(handle: &EditorHandle, pos: Pos) -> Option<(f32, f32, f32)> 
 /// position, and nor does Select All in a document ending with one — at the
 /// selected node's outline, and failing that at the editor's own box, so a park
 /// there still carries the selection the menu's Copy acts on.
-fn key_menu_point(handle: &EditorHandle, container_nid: usize) -> Option<(f32, f32)> {
+fn key_menu_point(handle: &EditorHandle, container_nid: u64) -> Option<(f32, f32)> {
     if let Some((x, y, h)) = head_screen_rect(handle, handle.selection().head()) {
         return Some((x, y + h / 2.0));
     }
@@ -3099,7 +3311,7 @@ fn key_menu_point(handle: &EditorHandle, container_nid: usize) -> Option<(f32, f
 /// editor itself when the caret has none).
 fn key_menu_app_handler(
     handle: &EditorHandle,
-    container_nid: usize,
+    container_nid: u64,
 ) -> Option<(web_sys::Element, rinch_core::events::EventHandlerId)> {
     handle
         .caret_address(handle.selection().head())
@@ -3235,7 +3447,7 @@ struct ServicedTap {
     y: f32,
     /// The `pointerup`'s `timeStamp`, in the page's time origin (as every event's).
     at_ms: f64,
-    container_nid: usize,
+    container_nid: u64,
     /// The tap was a press on a link that the app's `on_link_click` claimed. Its
     /// compatibility `mousedown` is consumed whatever the focus state then: a claim
     /// commonly moves focus (a link popover's input), and running the press again

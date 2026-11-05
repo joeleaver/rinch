@@ -72,6 +72,7 @@ use rinch_platform::{AppAction, PlatformEvent};
 use crate::app::RinchApp;
 use crate::app::hit_testing::hit_test;
 pub use crate::app::{ImeChange, ImeState};
+use crate::font::{AppFont, FontData};
 /// The rect type of [`ImeState::cursor_area`].
 pub use rinch_core::ElementBounds;
 
@@ -107,7 +108,20 @@ pub struct RinchContextConfig {
     /// font and text would otherwise render as zero glyphs. (Registering a font
     /// *after* [`RinchContext::new`] via [`register_font`](RinchContext::register_font)
     /// is too late for the initial mount.)
-    pub fonts: Vec<&'static [u8]>,
+    ///
+    /// Each is font data that declares nothing
+    /// ([`RinchApp::register_font_data`]): reachable by its own family name,
+    /// a last-resort fallback for every script, and the answer to the generic
+    /// slots of its own class **only where the platform left them empty** —
+    /// on wasm, the first sans-serif face becomes `sans-serif`; on a desktop,
+    /// whose platform fills every slot, no generic changes (#2102). A face
+    /// meant to answer a generic the platform already fills is claimed with
+    /// [`RinchContext::register_app_font`].
+    ///
+    /// The bytes may be `'static` (`BYTES.into()`) or owned — a `Vec<u8>`, an
+    /// `Arc<[u8]>`, a `Blob<u8>` ([`FontData`]) — and an owned face is dropped
+    /// with the context (#2101).
+    pub fonts: Vec<FontData>,
 }
 
 // ── RinchContext ──────────────────────────────────────────────────────────────
@@ -204,7 +218,7 @@ impl RinchContext {
         // pass has glyphs (essential on wasm, which has no system fonts). These are
         // drained onto the document's render font context during mount_component.
         for font in &config.fonts {
-            app.register_font_data(font);
+            app.register_font_data(font.clone());
         }
 
         let width = config.width.max(1);
@@ -244,7 +258,7 @@ impl RinchContext {
         // `rinch-web`. Before the mount, so the component's own timers are
         // scheduled. Not the poll drain: `update()` does that once a frame,
         // and a second drain would sample every-frame polls twice.
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         crate::web_runtime::install_web_scheduling();
 
         // Mount the component (builds DOM, runs initial layout) at the
@@ -255,6 +269,17 @@ impl RinchContext {
         app.set_device_pixel_ratio(scale_factor);
         let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
         app.mount_component(logical_w as f32, logical_h as f32);
+        // On wasm32 the mount's image loads were only queued (a loader is app
+        // code, not run inside the document's borrow): run them now, and lay
+        // out again so the pictures they answer are in the first frame. A
+        // background is requested by that layout's cascade, hence the loop.
+        // Nothing is queued on native, where loads have threads of their own.
+        for _ in 0..2 {
+            if !rinch_dom::image_cache::run_queued_loads() {
+                break;
+            }
+            app.resolve_and_repaint(logical_w as f32, logical_h as f32);
+        }
 
         // Subscribe to signal changes so the game loop can detect dirty state.
         // A guard-based subscription (not the legacy single slot): each context
@@ -342,10 +367,22 @@ impl RinchContext {
             all_actions.push(AppAction::RequestRedraw);
         }
 
+        // Image loads queued since the last frame (wasm32 runs them here, on
+        // this thread, with no document borrowed: a loader may write
+        // signals). Their answers are drained by the layout below.
+        rinch_dom::image_cache::run_queued_loads();
+
         // If signals changed, resolve layout
         if self.dirty.swap(false, Ordering::AcqRel) || deferred_ran || self.app.has_dirty_nodes() {
             let (w, h) = self.logical_size();
-            if self.app.resolve_and_repaint(w, h) {
+            let mut repainted = self.app.resolve_and_repaint(w, h);
+            // That layout's cascade may have requested background images:
+            // run them and lay out once more, so a loader that answers at once
+            // is shown in this frame. (Never on native.)
+            if rinch_dom::image_cache::run_queued_loads() {
+                repainted |= self.app.resolve_and_repaint(w, h);
+            }
+            if repainted {
                 // Deduplicate RequestRedraw
                 if !all_actions.contains(&AppAction::RequestRedraw) {
                     all_actions.push(AppAction::RequestRedraw);
@@ -740,9 +777,27 @@ impl RinchContext {
     /// system fallback font — supply the font via
     /// [`RinchContextConfig::fonts`] instead.
     ///
-    /// The data should be a TrueType (`.ttf`) or OpenType (`.otf`) font file.
-    pub fn register_font(&mut self, data: &'static [u8]) {
+    /// The data should be a TrueType (`.ttf`) or OpenType (`.otf`) font file,
+    /// `'static` or owned ([`FontData`]); an owned face lives as long as this
+    /// context and is dropped with it (#2101). What the face answers to is
+    /// as for [`RinchContextConfig::fonts`]: it changes no generic slot the
+    /// platform (or an earlier face) already fills (#2102).
+    pub fn register_font(&mut self, data: impl Into<FontData>) {
         self.app.register_font_data(data);
+    }
+
+    /// Register a face and the generics it **claims** ([`AppFont`]): the
+    /// embed's form of [`App::fonts`](crate::App::fonts), for a face that is
+    /// to answer `sans-serif` (or `serif`, `monospace`) ahead of what the
+    /// platform maps there. The claim is explicit; plain font data never
+    /// takes a generic slot from the platform.
+    ///
+    /// Like [`register_font`](RinchContext::register_font), it reaches the
+    /// mounted document and applies to the layout passes after it; text laid
+    /// out by the mount inside [`new`](RinchContext::new) is re-measured
+    /// against it then.
+    pub fn register_app_font(&mut self, font: AppFont) {
+        self.app.register_app_font(font);
     }
 
     /// Whether the UI needs a repaint.
@@ -964,7 +1019,24 @@ pub struct RinchOverlayRenderer {
     /// Where Vello renders the UI while a viewport is split: the split
     /// compositor then writes `render_texture` from it.
     below: Option<Texture>,
+    /// A frame went out undrawn and no `render` has followed (#2071).
+    render_owed: bool,
 }
+
+/// What became of the frames a [`RinchOverlayRenderer`] rendered, from
+/// [`RinchOverlayRenderer::check_frames`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverlayCheck {
+    /// A frame overflowed Vello's buffers and went out undrawn, so the
+    /// texture is wrong until the next [`RinchOverlayRenderer::render`].
+    pub needs_render: bool,
+    /// When to check again, until this is `None`: not every frame's counters
+    /// are back from the GPU.
+    pub check_again_at: Option<rinch_platform::Instant>,
+}
+
+/// How soon a host looks again for Vello's counters: half a 60 Hz frame.
+const OVERLAY_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
 
 impl RinchOverlayRenderer {
     /// Create a new overlay renderer from the game engine's wgpu device.
@@ -999,6 +1071,32 @@ impl RinchOverlayRenderer {
             fed: 0,
             slice_error_logged: false,
             below: None,
+            render_owed: false,
+        }
+    }
+
+    /// What became of the frames [`Self::render`] submitted (#2071). This
+    /// never waits for the GPU.
+    ///
+    /// A host rendering every frame need not call this: `render` does. A host
+    /// that renders only when [`RinchContext::needs_update`] says so does: a
+    /// lost frame is a fact about this renderer's buffers, so the context
+    /// cannot know of it, and the texture would stay wrong until something
+    /// else changed. After each `render`, call this at `check_again_at` until
+    /// it is `None`, and `render` when `needs_render` is true.
+    ///
+    /// Do not call it after a device loss: see [`vello::Renderer::check_frames`].
+    pub fn check_frames(&mut self, device: &Device) -> OverlayCheck {
+        let check = self.renderer.check_frames(device);
+        if check == vello::FrameCheck::Lost {
+            // A stamp no frame has: the next `render` paints the slices again.
+            self.fed = 0;
+            self.render_owed = true;
+        }
+        OverlayCheck {
+            needs_render: self.render_owed,
+            check_again_at: (check != vello::FrameCheck::Settled)
+                .then(|| rinch_platform::Instant::now() + OVERLAY_CHECK_INTERVAL),
         }
     }
 
@@ -1027,12 +1125,20 @@ impl RinchOverlayRenderer {
     /// hold the context's last painted frame has it painted again, so its
     /// first `render` is complete with nothing changed in the document
     /// (#1976). Nothing needs marking dirty.
+    ///
+    /// This does not wait for the GPU. A frame that overflowed Vello's buffers
+    /// goes out undrawn and is found out from its counters a frame or so
+    /// later (#2071): the next `render` then draws it again, slices included,
+    /// so an overflow shows as a frame or two without the UI. A host that does
+    /// not render every frame asks [`Self::check_frames`] when to.
     pub fn render(
         &mut self,
         device: &Device,
         queue: &Queue,
         ctx: &mut RinchContext,
     ) -> TextureView {
+        self.check_frames(device);
+        self.render_owed = false;
         if let Some((stamp, slices)) = ctx.sliced_frame(self.fed) {
             self.fed = stamp;
             if let Err(e) = self.split.apply(

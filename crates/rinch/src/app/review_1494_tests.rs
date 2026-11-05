@@ -51,21 +51,21 @@ fn mount(
     app
 }
 
-fn node(app: &RinchApp, selector: &str) -> usize {
+fn node(app: &RinchApp, selector: &str) -> u64 {
     let doc = app.doc().unwrap().borrow();
     let found = rinch_dom::testing::query_selector(&doc.tree, selector);
     assert_eq!(found.len(), 1, "{selector}");
     found[0]
 }
 
-fn screen_box(app: &RinchApp, id: usize) -> (f32, f32, f32, f32) {
+fn screen_box(app: &RinchApp, id: u64) -> (f32, f32, f32, f32) {
     let doc = app.doc().unwrap().borrow();
     let (x, y) = rinch_dom::paint::compute_absolute_position(&doc.tree, id, 1.0);
     let n = doc.tree.get(id).unwrap();
     (x as f32, y as f32, n.layout.width, n.layout.height)
 }
 
-fn hit(app: &RinchApp, x: f32, y: f32) -> Option<usize> {
+fn hit(app: &RinchApp, x: f32, y: f32) -> Option<u64> {
     let doc = app.doc().unwrap().borrow();
     super::hit_testing::hit_test(&doc.tree, x, y)
 }

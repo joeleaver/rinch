@@ -32,7 +32,7 @@ pub const TITLE_TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_m
 #[derive(Debug)]
 struct Pending {
     /// The node whose `title` applies.
-    source: usize,
+    source: u64,
     /// The pointer, logical px, as of its last move.
     pointer: (f32, f32),
     due: Instant,
@@ -42,7 +42,7 @@ struct Pending {
 #[derive(Debug)]
 pub(crate) struct ShownTooltip {
     /// The node whose `title` it shows.
-    pub(crate) source: usize,
+    pub(crate) source: u64,
     /// The pointer it was placed for, logical px.
     pointer: (f32, f32),
     /// Its box's top-left corner, logical px.
@@ -59,9 +59,9 @@ pub(crate) struct TitleTooltipState {
     /// The `title` source a press, wheel or key hid the tooltip over: no
     /// tooltip for it until the pointer reaches another one (or untitled
     /// content).
-    suppressed: Option<usize>,
+    suppressed: Option<u64>,
     /// The source the pointer was last over, for [`Self::suppressed`].
-    over: Option<usize>,
+    over: Option<u64>,
     /// The framebuffer rect the tooltip covered in the frame on screen, in
     /// device px — the inspect highlight's twin.
     #[cfg(software_shell)]
@@ -136,7 +136,7 @@ impl RinchApp {
     /// A pointer move to `(x, y)` over `hit` (the move's hit test).
     pub(crate) fn note_title_tooltip_move(
         &mut self,
-        hit: Option<usize>,
+        hit: Option<u64>,
         x: f32,
         y: f32,
         now: Instant,
@@ -298,7 +298,7 @@ impl RinchApp {
         true
     }
 
-    fn in_document(tree: &rinch_dom::NodeTree, id: usize) -> bool {
+    fn in_document(tree: &rinch_dom::NodeTree, id: u64) -> bool {
         let mut cur = Some(id);
         while let Some(nid) = cur {
             if nid == tree.root_id {

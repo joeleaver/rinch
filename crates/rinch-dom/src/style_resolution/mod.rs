@@ -16,6 +16,7 @@ use style::context::QuirksMode;
 use crate::RinchDocument;
 use crate::computed_style::ComputedStyle;
 use crate::layout;
+use crate::node::RawNodeId;
 use crate::node::{DirtyFlags, DisplayMode, NodeKind, NodeTree};
 
 impl RinchDocument {
@@ -70,7 +71,7 @@ impl RinchDocument {
     /// If the given node is a `<style>` element, its text may have changed:
     /// its sheet is brought up to date at the next style resolve (#884,
     /// `sheets.rs`).
-    pub(crate) fn maybe_load_style_css(&mut self, node_id: usize) {
+    pub(crate) fn maybe_load_style_css(&mut self, node_id: RawNodeId) {
         self.note_style_text_changed(node_id);
     }
 
@@ -117,7 +118,7 @@ impl RinchDocument {
     fn install_device(&mut self, width: f32, height: f32) -> style::stylesheets::OriginSet {
         use style::shared_lock::StylesheetGuards;
 
-        self.viewport_units_used |= self.stylist.device().used_viewport_units();
+        self.viewport_units_used |= self.stylist.device().used_viewport_size();
         self.tree.viewport = crate::layout::Viewport { width, height };
         let device = crate::dom_impl::build_device(width, height, &self.device_params);
         let guard = self.tree.guard.read();
@@ -160,13 +161,13 @@ impl RinchDocument {
             self.tree
                 .note_full_restyle(crate::perf::FullRestyleReason::Viewport);
             for (node_id, _) in self.tree.nodes.iter() {
-                *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+                self.tree.nodes[node_id].stylo_element_data.clear();
             }
             self.tree.style_roots.clear(); // Force full tree walk
             self.tree.full_style_walk = true;
             self.tree.styles_dirty = true;
         } else if self.viewport_units_used {
-            let users: Vec<usize> = self
+            let users: Vec<RawNodeId> = self
                 .tree
                 .nodes
                 .iter()
@@ -184,7 +185,7 @@ impl RinchDocument {
         // is the initial one, has the viewport's size baked into its Taffy
         // style (`out_of_flow::apply_out_of_flow_size_overrides`), so its style
         // is re-synced — the cascade itself has nothing to redo for it.
-        let out_of_flow: Vec<usize> = self
+        let out_of_flow: Vec<RawNodeId> = self
             .tree
             .nodes
             .iter()
@@ -214,11 +215,11 @@ impl RinchDocument {
     /// Drop the cached style of `node_id` and of its whole subtree, and record
     /// `node_id` as a style root, so the next `resolve_styles` re-cascades all
     /// of it.
-    pub(crate) fn invalidate_subtree_styles(&mut self, node_id: usize) {
+    pub(crate) fn invalidate_subtree_styles(&mut self, node_id: RawNodeId) {
         if !self.tree.contains(node_id) {
             return;
         }
-        *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+        self.tree.nodes[node_id].stylo_element_data.clear();
         self.tree.style_roots.push(node_id);
         self.tree.styles_dirty = true;
         self.push_dirty_flags(node_id, DirtyFlags::STYLE | DirtyFlags::PAINT);
@@ -255,7 +256,7 @@ impl RinchDocument {
         self.tree
             .note_full_restyle(crate::perf::FullRestyleReason::Dpr);
         for (node_id, _) in self.tree.nodes.iter() {
-            *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+            self.tree.nodes[node_id].stylo_element_data.clear();
         }
         self.tree.style_roots.clear();
         self.tree.full_style_walk = true;
@@ -478,7 +479,7 @@ impl RinchDocument {
     }
 
     /// Get the default display type for a node based on its tag.
-    pub(crate) fn default_display_for_node(&self, node_id: usize) -> layout::DefaultDisplay {
+    pub(crate) fn default_display_for_node(&self, node_id: RawNodeId) -> layout::DefaultDisplay {
         if self.tree.nodes[node_id].display_mode.is_inline_level() {
             layout::DefaultDisplay::Inline
         } else {
@@ -533,7 +534,7 @@ impl RinchDocument {
     /// *resolution* changed.
     pub fn note_fonts_registered(&mut self) {
         self.tree.font_generation += 1;
-        let controls: Vec<usize> = self
+        let controls: Vec<RawNodeId> = self
             .tree
             .nodes
             .iter()
@@ -559,7 +560,7 @@ impl RinchDocument {
         // anonymous block box around text beside a block sibling) keeps its
         // `text_layout` and cached measure sizes until something drops them;
         // force that regardless of whether its content signature moved.
-        let ifc_roots: Vec<usize> = self.tree.ifc_root_registry.iter().copied().collect();
+        let ifc_roots: Vec<RawNodeId> = self.tree.ifc_root_registry.iter().copied().collect();
         for root_id in ifc_roots {
             self.invalidate_ifc_root(root_id);
         }
@@ -571,7 +572,8 @@ impl RinchDocument {
         // the next layout takes (full, scoped, or neither) drains through
         // `remeasure_dirty_atomic_inlines` — the same path a `set_text_content`
         // or restyle already relies on.
-        let atomic_inlines: Vec<usize> = self.tree.atomic_inline_registry.iter().copied().collect();
+        let atomic_inlines: Vec<RawNodeId> =
+            self.tree.atomic_inline_registry.iter().copied().collect();
         for id in atomic_inlines {
             self.mark_atomic_inline_dirty(id);
         }
@@ -619,12 +621,12 @@ impl RinchDocument {
         // every paragraph in the window. Generated `::before`/`::after`
         // content that is minted or freed still invalidates its root
         // regardless, in the cascade; a box that still generates is kept.
-        let node_ids: Vec<usize> = self.tree.nodes.iter().map(|(id, _)| id).collect();
+        let node_ids: Vec<RawNodeId> = self.tree.nodes.iter().map(|(id, _)| id).collect();
         for &nid in &node_ids {
             // A generated box keeps its pseudo style: its originator's cascade
             // replaces it, and finds the box by it (#1023).
             if !self.tree.nodes[nid].is_generated_box() {
-                *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
+                self.tree.nodes[nid].stylo_element_data.clear();
             }
         }
         // Disable transitions during full restyle — theme changes should apply
@@ -652,18 +654,18 @@ impl RinchDocument {
         // every spinner in the window would jump back to 0° on a dark-mode
         // toggle.
         //
-        // What the re-cascade keeps is the **clock**, and only the clock. A
-        // kept animation's keyframes, stops and timing were taken from the old
-        // sheet and the old base style, so while this pass runs
+        // What the re-cascade keeps is the **clock**, and only the clock: as on
+        // every cascade of an animated node (#766, #780, #781),
         // `start_animations` looks the rule up again (dropping the animation if
         // the new sheet no longer defines it — Chrome cancels it), re-extracts
-        // the stops from the new base style, and takes the new
-        // `animation-duration` / `animation-delay`. Chrome 153, measured under
-        // a seeked `currentTime`: a redefined `@keyframes` body plays at once on
-        // the kept clock, a 10s → 20s duration keeps `currentTime` and halves
-        // the progress, and an `em` stop follows the new font-size.
+        // the stops when the rule or their base-style inputs changed, and takes
+        // the new `animation-duration` / `animation-delay`. Chrome 153,
+        // measured under a seeked `currentTime`: a redefined `@keyframes` body
+        // plays at once on the kept clock, a 10s → 20s duration keeps
+        // `currentTime` and halves the progress, and an `em` stop follows the
+        // new font-size.
         //
-        // This also repairs what #747's restart walk does on this pass. The
+        // That also repairs what #747's restart walk does on this pass. The
         // walk runs on a shown panel's cascade, before its descendants', and
         // mints their entries from their pre-restyle `computed_style`; each
         // descendant's own cascade comes after it here — every node is
@@ -673,10 +675,8 @@ impl RinchDocument {
         self.tree.full_style_walk = true;
         // Resolve styles using Stylo
         self.tree.styles_dirty = true;
-        self.tree.refreshing_animations = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
-        self.tree.refreshing_animations = false;
         self.tree.transitions_enabled = transitions_were_enabled;
         // Run the whole-document IFC setup pass: the new sheet can change any
         // element's `display` or `position`, which moves the formatting
@@ -695,14 +695,14 @@ impl RinchDocument {
     /// Recompute Stylo styles for a node and all its descendants, then apply
     /// to Taffy. Called after bulk DOM operations to batch style resolution
     /// into a single pass.
-    pub fn recompute_node_styles_recursive(&mut self, node_id: usize) {
+    pub fn recompute_node_styles_recursive(&mut self, node_id: RawNodeId) {
         if !self.tree.nodes[node_id].is_element() {
             return;
         }
 
         // Invalidate cached Stylo data for this node and its descendants
-        fn invalidate_recursive(tree: &mut NodeTree, node_id: usize) {
-            *tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+        fn invalidate_recursive(tree: &mut NodeTree, node_id: RawNodeId) {
+            tree.nodes[node_id].stylo_element_data.clear();
             let children = tree.nodes[node_id].children.clone();
             for &child_id in &children {
                 invalidate_recursive(tree, child_id);
@@ -787,7 +787,11 @@ impl RinchDocument {
     /// maximum would cost a full scan of the preceding siblings on every
     /// insert, including the common append-to-a-long-list, so the cheap rule
     /// wins a choice between two guesses.
-    pub(crate) fn compute_taffy_child_index(&self, parent_id: usize, dom_index: usize) -> usize {
+    pub(crate) fn compute_taffy_child_index(
+        &self,
+        parent_id: RawNodeId,
+        dom_index: usize,
+    ) -> usize {
         let Some(parent_taffy) = self.tree.nodes[parent_id].taffy_id else {
             return 0;
         };
@@ -855,14 +859,14 @@ impl RinchDocument {
 
         // Nodes whose `display` was `none` when this cascade started. See the
         // push site below and [`Self::is_rendered_for_transition`] (#703).
-        let mut was_hidden: Vec<usize> = Vec::new();
+        let mut was_hidden: Vec<RawNodeId> = Vec::new();
         // Absolute descendants of a node that stopped or started being their
         // containing block; re-synced after this pass.
-        let mut resync_absolutes: Vec<usize> = Vec::new();
+        let mut resync_absolutes: Vec<RawNodeId> = Vec::new();
         // Nodes that ran, started or lost a `visibility` transition on this
         // pass: each hands its value down to the descendants that inherit it
         // once the loop is done (#759). Empty unless one is involved.
-        let mut visibility_roots: Vec<usize> = Vec::new();
+        let mut visibility_roots: Vec<RawNodeId> = Vec::new();
 
         for node_id in dirty_node_ids {
             // Skip root and html nodes - their Taffy styles are manually set
@@ -1032,6 +1036,7 @@ impl RinchDocument {
             // Capture old display before transitions overwrite computed_style
             let old_display = self.tree.nodes[node_id].computed_style.display;
             let old_table_part = self.tree.nodes[node_id].computed_style.table_part;
+            let old_height = self.tree.nodes[node_id].computed_style.height;
             let was_inline_level = self.tree.nodes[node_id]
                 .computed_style
                 .inline_level_before_blockify;
@@ -1263,6 +1268,14 @@ impl RinchDocument {
                 self.tree.nodes[node_id].computed_style = new_style.clone();
             }
 
+            // Lets the read-back skip `html_align_dx` in documents that
+            // never use the attribute (`NodeTree::html_align_seen`).
+            if self.tree.nodes[node_id].computed_style.html_align.is_some() {
+                self.tree.html_align_seen = true;
+            }
+            self.note_table_host(node_id);
+            self.note_cell_height(node_id, old_table_part, old_height);
+
             // An inline element that casts a `text-shadow` other than its
             // parent's makes its IFC's runs cast more than one list (#1048);
             // until one does, paint skips looking for them.
@@ -1430,16 +1443,6 @@ impl RinchDocument {
             }
             self.tree.nodes[node_id].has_been_styled = true;
 
-            // A table or row group lays out by its children's table parts
-            // (#1083), and a child's part can change on this same pass, after
-            // the container was synced (parents cascade first): re-derive the
-            // container this node is a layout child of after the loop, when
-            // this node's part changed or it crossed `display: contents` (its
-            // children became, or stopped being, the container's). A child
-            // inserted or removed queues the container itself
-            // (`note_table_children_changed`), and a restyle of the container
-            // alone derives it in the sync below from children that did not
-            // move.
             // An out-of-flow box that was inline-level keeps its static
             // position in its line, a block-level one below it (#634) — and
             // which it was is no Taffy value: `position` blockified both to
@@ -1455,14 +1458,37 @@ impl RinchDocument {
             }
 
             {
+                // A restyle wrote the cascade's values back over what the
+                // table's last rebuild left there, and any part's style can
+                // move the table. The `vertical-align` padding went with it,
+                // while the children keep their offset (`kids_shift`): the
+                // cell is aligned again at the end of this layout even when
+                // nothing reads it back — a colour change runs no compute,
+                // and left its content at the top of the cell (#2144).
+                let node = &mut self.tree.nodes[node_id];
+                if let Some(c) = node.table_cell.as_mut() {
+                    c.base = None;
+                    c.shift = 0.0;
+                    self.tree.cells_to_align.push(node_id);
+                }
+                if self.tree.nodes[node_id].computed_style.float.is_floated() {
+                    self.note_float(node_id);
+                }
                 let new = &self.tree.nodes[node_id].computed_style;
-                let contents = crate::computed_style::DisplayValue::Contents;
-                if (old_table_part != new.table_part
-                    || (old_display == contents) != (new.display == contents))
-                    && let Some(p) = self.tree.nodes[node_id].parent
-                    && let Some(table) = Self::table_container_of(&self.tree, p)
+                if new.table_part != crate::computed_style::values::TablePart::None
+                    || old_table_part != new.table_part
                 {
-                    self.tree.table_direction_owed.push(table);
+                    let from = if new.table_part == crate::computed_style::values::TablePart::Table
+                    {
+                        Some(node_id)
+                    } else {
+                        self.tree.nodes[node_id].parent
+                    };
+                    if let Some(table) = from.and_then(|p| Self::table_of(&self.tree, p))
+                        && self.tree.tables_owed.last() != Some(&table)
+                    {
+                        self.tree.tables_owed.push(table);
+                    }
                 }
             }
 
@@ -1708,8 +1734,13 @@ impl RinchDocument {
             // Only call set_style if the Taffy style actually changed.
             // This avoids marking the Taffy tree dirty for paint-only changes
             // (e.g. background-color on hover) which don't affect layout.
+            //
+            // A `Calc` layout value is stored resolved (`resolve_layout_calcs`)
+            // but rebuilt here as its length part, so it is compared resolved
+            // the same way (#767; see `taffy_style_for_compare`).
+            let compared = self.taffy_style_for_compare(node_id, taffy_id, &taffy_style);
             if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
-                if old_taffy_style != &taffy_style {
+                if old_taffy_style != compared.as_ref().unwrap_or(&taffy_style) {
                     // Only set ifc_dirty when display or position changes —
                     // that's what affects IFC structure. Display covers
                     // inline/block mixing, display:contents and display:none;
@@ -1764,7 +1795,7 @@ impl RinchDocument {
             }
         }
         // Children restyled on this pass carry their new table part now.
-        self.resolve_table_directions();
+        self.resolve_tables();
 
         let perf = &self.tree.perf;
         perf.add(
@@ -1795,7 +1826,7 @@ impl RinchDocument {
         if !visibility_roots.is_empty() {
             visibility_roots.sort_unstable();
             visibility_roots.dedup();
-            let depth = |tree: &crate::node::NodeTree, mut id: usize| {
+            let depth = |tree: &crate::node::NodeTree, mut id: RawNodeId| {
                 let mut d = 0usize;
                 while let Some(p) = tree.nodes.get(id).and_then(|n| n.parent) {
                     d += 1;
@@ -1825,7 +1856,11 @@ impl RinchDocument {
     }
 
     /// Every `position: absolute` element under `node_id` (not the node).
-    pub(crate) fn collect_absolute_descendants(&self, node_id: usize, out: &mut Vec<usize>) {
+    pub(crate) fn collect_absolute_descendants(
+        &self,
+        node_id: RawNodeId,
+        out: &mut Vec<RawNodeId>,
+    ) {
         for &c in &self.tree.nodes[node_id].children {
             let child = &self.tree.nodes[c];
             if matches!(
@@ -1843,116 +1878,43 @@ impl RinchDocument {
         }
     }
 
-    /// The flex direction a table or row group lays its children out in
-    /// (#1083), or `None` for any other box.
-    ///
-    /// rinch has no table formatting context; a table and a row group are
-    /// flex containers (`display_from_stylo`). CSS stacks a table's rows and
-    /// row groups, and puts a run of bare cells in one anonymous row, so the
-    /// container is a flex **column** when any of its layout children is a
-    /// row or a row group, and a flex **row** otherwise — a table of bare
-    /// cells, the old column idiom, keeps its cells side by side. The
-    /// children are read through `display: contents` wrappers, which generate
-    /// no box: every `for` in `rsx!` emits one. Chrome's own answer for a
-    /// table mixing the two (each run of bare cells a row of its own, between
-    /// the stacked rows) is approximated by stacking every child.
-    pub(crate) fn table_flex_direction(
-        tree: &crate::node::NodeTree,
-        node_id: usize,
-    ) -> Option<taffy::FlexDirection> {
-        let node = tree.nodes.get(node_id)?;
-        if !node.computed_style.table_part.holds_rows() {
-            return None;
-        }
-        fn any_row(tree: &crate::node::NodeTree, id: usize) -> bool {
-            tree.nodes[id].children.iter().any(|&c| {
-                let child = &tree.nodes[c];
-                child.is_element()
-                    && match child.computed_style.display {
-                        crate::computed_style::DisplayValue::Contents => any_row(tree, c),
-                        crate::computed_style::DisplayValue::None => false,
-                        _ => child.computed_style.table_part.is_row_like(),
-                    }
-            })
-        }
-        Some(if any_row(tree, node_id) {
-            taffy::FlexDirection::Column
-        } else {
-            taffy::FlexDirection::Row
-        })
-    }
-
-    /// The table or row group whose layout children include `node_id`'s own
-    /// (its nearest ancestor-or-self that is not `display: contents`), when
-    /// that box is one.
-    pub(crate) fn table_container_of(
-        tree: &crate::node::NodeTree,
-        node_id: usize,
-    ) -> Option<usize> {
-        let mut id = node_id;
-        loop {
-            let node = tree.nodes.get(id)?;
-            if node.computed_style.display != crate::computed_style::DisplayValue::Contents {
-                return node.computed_style.table_part.holds_rows().then_some(id);
-            }
-            id = node.parent?;
-        }
-    }
-
-    /// Owe `parent`'s table container a direction check after its child list
-    /// changed (#1083): which way it lays out depends on whether its children
-    /// are rows, and neither a removal nor a move of an already-styled row
-    /// restyles anything that would say so. Consecutive changes under one
-    /// container are pushed once.
-    pub(crate) fn note_table_children_changed(&mut self, parent: usize) {
-        if let Some(table) = Self::table_container_of(&self.tree, parent)
-            && self.tree.table_direction_owed.last() != Some(&table)
-        {
-            self.tree.table_direction_owed.push(table);
-            self.tree.layout_dirty = true;
-        }
-    }
-
-    /// Re-derive the flex direction of every table and row group owed one
-    /// ([`NodeTree::table_direction_owed`]) and write it to the Taffy style
-    /// where it moved — nothing else of the style, so this is no Taffy
-    /// re-sync. Run after the style sync and before every layout compute.
-    pub(crate) fn resolve_table_directions(&mut self) {
-        if self.tree.table_direction_owed.is_empty() {
-            return;
-        }
-        let mut owed = std::mem::take(&mut self.tree.table_direction_owed);
-        owed.sort_unstable();
-        owed.dedup();
-        for id in owed {
-            if !self.tree.contains(id) {
-                continue;
-            }
-            let Some(dir) = Self::table_flex_direction(&self.tree, id) else {
-                continue;
-            };
-            let Some(t) = self.tree.nodes[id].taffy_id else {
-                continue;
-            };
-            if let Ok(old) = self.tree.taffy.style(t)
-                && old.flex_direction != dir
-            {
-                let mut st = old.clone();
-                st.flex_direction = dir;
-                let _ = self.tree.taffy.set_style(t, st);
-                self.tree.layout_dirty = true;
-                self.mark_atomic_inline_dirty(id);
-                self.tree.perf.bump(crate::perf::Counter::TaffyStyleChanges);
-            }
-        }
-    }
-
     /// The Taffy style `node_id`'s computed values produce — the one
     /// rebuild every site that re-syncs a node's Taffy style from
     /// `computed_style` starts from (the cascade's sync and both tick
     /// re-syncs). It carries what the computed values alone cannot: a table's
-    /// or row group's direction, read from its children (#1083).
-    pub(crate) fn taffy_style_from_computed(&self, node_id: usize) -> taffy::Style {
+    /// part's place, from its table's last rebuild (`table_layout`).
+    /// Write `node_id`'s Taffy style again from its computed values, as the
+    /// cascade writes it (`apply_stylo_styles_to_taffy`): the body's
+    /// overrides, an out-of-flow box's containing-block size
+    /// (`bake_at_style_site`), a collapsed block's estimated height. A
+    /// `display: contents` wrapper's style is `sync_display_contents`'s, and is
+    /// left alone. For a site that changes what an already-cascaded box's
+    /// style is built from (a table's placement, a cell's height).
+    pub(crate) fn rewrite_taffy_style(&mut self, node_id: RawNodeId) {
+        let Some(node) = self.tree.nodes.get_live(node_id) else {
+            return;
+        };
+        let Some(t) = node.taffy_id else {
+            return;
+        };
+        if !node.is_element()
+            || node.computed_style.display == crate::computed_style::DisplayValue::Contents
+        {
+            return;
+        }
+        let mut style = self.taffy_style_from_computed(node_id);
+        if node_id == self.tree.body_id {
+            crate::node::body_taffy_overrides(&mut style);
+        }
+        crate::out_of_flow::bake_at_style_site(&mut self.tree, node_id, &mut style);
+        if let Some(est_h) = self.tree.nodes[node_id].estimated_height {
+            style.size.height = taffy::Dimension::length(est_h);
+        }
+        let _ = self.tree.taffy.set_style(t, style);
+        self.tree.layout_dirty = true;
+    }
+
+    pub(crate) fn taffy_style_from_computed(&self, node_id: RawNodeId) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
         // A block container does not stretch a replaced element to its width
@@ -1977,10 +1939,70 @@ impl RinchDocument {
         {
             style.aspect_ratio = None;
         }
-        if let Some(dir) = Self::table_flex_direction(&self.tree, node_id) {
-            style.flex_direction = dir;
-        }
+        self.apply_table_style(node_id, &mut style);
+        self.unresolve_heights_in_auto_cell(node_id, &mut style);
         style
+    }
+
+    /// A cell whose `height` became or stopped being a fixed length, or a box
+    /// that became or stopped being a cell, changes how its children's
+    /// percentage heights resolve
+    /// ([`Self::unresolve_heights_in_auto_cell`]), and their Taffy styles were
+    /// written from the cell it was: write them again. (A child cascaded on
+    /// this same pass writes its own after this.)
+    fn note_cell_height(
+        &mut self,
+        node_id: RawNodeId,
+        old_part: crate::computed_style::TablePart,
+        old_height: crate::computed_style::DimensionValue,
+    ) {
+        use crate::computed_style::{DimensionValue, TablePart};
+        let cs = &self.tree.nodes[node_id].computed_style;
+        let was_cell = old_part == TablePart::Cell;
+        let is_cell = cs.table_part == TablePart::Cell;
+        let fixed = |h: DimensionValue| matches!(h, DimensionValue::Length(_));
+        if !(was_cell || is_cell) || (was_cell == is_cell && fixed(cs.height) == fixed(old_height))
+        {
+            return;
+        }
+        let children = self.tree.nodes[node_id].children.clone();
+        for c in children {
+            self.rewrite_taffy_style(c);
+        }
+    }
+
+    /// A percentage `height`, `min-height` or `max-height` on a child of a
+    /// table cell with no fixed `height` behaves as `auto` (a cell's own
+    /// percentage height is not one rinch sizes it by; CSS 2.1
+    /// §10.5: its containing block's height depends on its content), as in
+    /// Chrome. Resolved against the cell's laid-out height instead, an
+    /// email's `min-height: 100%` blocks were each as tall as their whole
+    /// cell, and the cell did not grow to hold them: everything after the
+    /// first was laid out below the table and never drawn (a phone layout
+    /// whose cell content carries `min-height: 100%`).
+    fn unresolve_heights_in_auto_cell(&self, node_id: RawNodeId, style: &mut taffy::Style) {
+        use crate::computed_style::{DimensionValue, TablePart};
+        let Some(parent) = self.tree.nodes[node_id]
+            .parent
+            .and_then(|p| self.tree.nodes.get(p))
+        else {
+            return;
+        };
+        if parent.computed_style.table_part != TablePart::Cell
+            || matches!(parent.computed_style.height, DimensionValue::Length(_))
+        {
+            return;
+        }
+        let percent = |raw: taffy::CompactLength| raw.tag() == taffy::CompactLength::PERCENT_TAG;
+        if percent(style.size.height.into_raw()) {
+            style.size.height = taffy::Dimension::auto();
+        }
+        if percent(style.min_size.height.into_raw()) {
+            style.min_size.height = taffy::LengthPercentageAuto::auto();
+        }
+        if percent(style.max_size.height.into_raw()) {
+            style.max_size.height = taffy::LengthPercentageAuto::auto();
+        }
     }
 
     /// Set [`NodeTree::inline_text_shadows`] if `node_id` — just cascaded — is
@@ -1989,7 +2011,7 @@ impl RinchDocument {
     /// its parent's (#1048). A block, and every atomic inline, is an IFC root
     /// itself, or lends its list to the anonymous box that is one; its runs
     /// cast that root's list.
-    pub(crate) fn note_inline_text_shadow(&mut self, node_id: usize) {
+    pub(crate) fn note_inline_text_shadow(&mut self, node_id: RawNodeId) {
         let tree = &mut self.tree;
         let Some(node) = tree.nodes.get(node_id) else {
             return;
@@ -2004,7 +2026,7 @@ impl RinchDocument {
         }
         let parent = node
             .parent
-            .and_then(|p| tree.nodes.get(p))
+            .and_then(|p| tree.nodes.get_live(p))
             .map_or(&[][..], |p| p.computed_style.text_shadow.as_slice());
         if style.text_shadow.as_slice() != parent {
             tree.inline_text_shadows = true;
@@ -2070,10 +2092,10 @@ impl RinchDocument {
     /// *pass* costs is the sum of two independently guarded sets of nodes.
     fn is_rendered_for_transition(
         tree: &NodeTree,
-        node_id: usize,
+        node_id: RawNodeId,
         old_display: crate::computed_style::DisplayValue,
         new_display: crate::computed_style::DisplayValue,
-        was_hidden: &[usize],
+        was_hidden: &[RawNodeId],
     ) -> bool {
         use crate::computed_style::DisplayValue;
         if matches!(old_display, DisplayValue::None) || matches!(new_display, DisplayValue::None) {
@@ -2099,11 +2121,15 @@ impl RinchDocument {
     /// *now*", which the ancestors' post-cascade `display` answers on its own —
     /// pass `&[]`, or an ancestor that has just been shown would refuse the
     /// animation it is meant to be restarting.
-    fn ancestors_are_rendered(tree: &NodeTree, node_id: usize, was_hidden: &[usize]) -> bool {
+    fn ancestors_are_rendered(
+        tree: &NodeTree,
+        node_id: RawNodeId,
+        was_hidden: &[RawNodeId],
+    ) -> bool {
         use crate::computed_style::DisplayValue;
         let mut current = tree.nodes.get(node_id).and_then(|n| n.parent);
         while let Some(id) = current {
-            let Some(node) = tree.nodes.get(id) else {
+            let Some(node) = tree.nodes.get_live(id) else {
                 break;
             };
             if matches!(node.computed_style.display, DisplayValue::None) || was_hidden.contains(&id)
@@ -2132,7 +2158,7 @@ impl RinchDocument {
     /// before-change style and therefore about the state *before*.
     fn animation_is_rendered(
         tree: &NodeTree,
-        node_id: usize,
+        node_id: RawNodeId,
         new_display: crate::computed_style::DisplayValue,
     ) -> bool {
         if matches!(new_display, crate::computed_style::DisplayValue::None) {
@@ -2152,7 +2178,7 @@ impl RinchDocument {
     /// under different conditions — a transition is cancelled *and never restarted*,
     /// an animation is cancelled and started afresh when the element is
     /// rendered again.
-    fn cancel_transitions_in_subtree(&mut self, node_id: usize) {
+    fn cancel_transitions_in_subtree(&mut self, node_id: RawNodeId) {
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
             self.tree.active_transitions.remove(&id);
@@ -2175,7 +2201,7 @@ impl RinchDocument {
     /// another frame from whether `tree.active_animations` holds a running
     /// animation, so a running entry parked here would keep an app rendering
     /// at full rate with nothing on screen moving. [`Self::restart_animations_in_subtree`] is the other half.
-    fn cancel_animations_in_subtree(&mut self, node_id: usize) {
+    fn cancel_animations_in_subtree(&mut self, node_id: RawNodeId) {
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
             self.tree.active_animations.remove(&id);
@@ -2224,24 +2250,15 @@ impl RinchDocument {
     /// before children — so every descendant it visits is still carrying the
     /// `computed_style` it had *before* this pass. `start_animations` extracts
     /// keyframe stops from that, so an `em`, `rem` or `currentcolor` in a
-    /// keyframe resolves against the stale basis, and — **outside
-    /// `recompute_all_styles_full`** — the find-by-name in `start_animations`
-    /// then keeps those stops when the descendant's own cascade runs a moment
-    /// later. Measured with `width: 1em` keyframes on a box whose `font-size`
-    /// goes 10px → 40px in the same class write that un-hides its wrapper: stops
-    /// come out `10..100` where `40..400` is right.
-    ///
-    /// It is not a regression — `main` was equally stale, by never dropping the
-    /// entry at all — but this walk does foreclose the correct answer the
-    /// per-node path would have reached on the `set_attribute` route. The root
-    /// cause is that `start_animations` does not re-extract stops for a name it
-    /// already knows, which is older and wider than this function. The one
-    /// exception is the full restyle: there `NodeTree::refreshing_animations`
-    /// makes the descendant's own cascade, which follows this walk on that pass,
-    /// re-extract them from its new style, so a theme that un-hides a panel and
-    /// changes its font-size gets the right basis
-    /// (`full_restyle_animation_refresh_tests`). The `<style>`-append and
-    /// viewport-change passes do not set that flag.
+    /// keyframe resolves against the stale basis. When the descendant's own
+    /// cascade runs later on the same pass — a class write that un-hides its
+    /// wrapper and also changes its font-size, or any full restyle — that
+    /// cascade re-extracts the stops from its new style (`start_animations`
+    /// refreshes a kept animation whenever its stops' inputs moved, #766), so
+    /// the basis comes out right: `width: 1em` keyframes on a box whose
+    /// `font-size` goes 10px → 40px give `40..400`. A descendant whose own
+    /// cascade does not run keeps the basis the walk saw, which is its current
+    /// style unless something else changed it in the same pass.
     ///
     /// # Cost
     ///
@@ -2250,10 +2267,10 @@ impl RinchDocument {
     /// the walk is not the expensive half of what this change costs. There is
     /// deliberately no "does anything under here animate" guard, because there
     /// is no answer to that question cheaper than the walk itself.
-    fn restart_animations_in_subtree(&mut self, node_id: usize, current_time_ms: f64) {
+    fn restart_animations_in_subtree(&mut self, node_id: RawNodeId, current_time_ms: f64) {
         use crate::computed_style::DisplayValue;
 
-        let mut stack: Vec<usize> = match self.tree.nodes.get(node_id) {
+        let mut stack: Vec<RawNodeId> = match self.tree.nodes.get(node_id) {
             Some(node) => node.children.to_vec(),
             None => return,
         };
@@ -2277,7 +2294,7 @@ impl RinchDocument {
         let mut remeasure = Vec::new();
 
         while let Some(id) = stack.pop() {
-            let Some(node) = self.tree.nodes.get(id) else {
+            let Some(node) = self.tree.nodes.get_live(id) else {
                 continue;
             };
             if matches!(node.computed_style.display, DisplayValue::None) {

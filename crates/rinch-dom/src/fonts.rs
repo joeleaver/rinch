@@ -384,6 +384,145 @@ pub fn claim_generic_families(
     collection.set_generic_families(generic, families.chain(incumbents));
 }
 
+/// The CSS generic class a face declares for itself, read from its own tables
+/// (#2102). What a browser's generic matching keys on, and the only basis
+/// [`fill_empty_generics`] puts a face in a slot on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaceClass {
+    /// A sans-serif text face, or one that declares no class at all.
+    SansSerif,
+    /// A serif text face.
+    Serif,
+    /// A fixed-pitch face.
+    Monospace,
+    /// A face that declares itself something no text generic means: script,
+    /// handwritten, decorative, ornamental or symbol.
+    Display,
+}
+
+impl FaceClass {
+    /// The generic slots a face of this class can fill when they are empty:
+    /// the plain generic first, then its companions, which are filled only
+    /// together with it (see [`fill_empty_generics`]). `Display` fills none.
+    pub fn generics(self) -> &'static [GenericFamily] {
+        match self {
+            // `system-ui` with it: a theme's stack that names no family ends
+            // in one of the two, and on wasm there is nothing else for either
+            // to mean (what `register_font_data` always claimed).
+            FaceClass::SansSerif => &[
+                GenericFamily::SansSerif,
+                GenericFamily::SystemUi,
+                GenericFamily::UiSansSerif,
+            ],
+            FaceClass::Serif => &[GenericFamily::Serif, GenericFamily::UiSerif],
+            FaceClass::Monospace => &[GenericFamily::Monospace, GenericFamily::UiMonospace],
+            FaceClass::Display => &[],
+        }
+    }
+}
+
+/// The class face `index` of the font file `data` declares; see the match
+/// below for the order. [`FaceClass::SansSerif`] when it declares none (or
+/// cannot be read).
+///
+/// Not a text face at all, first (review of PR #2122): a face with color
+/// glyph tables (`COLR`, `CBDT`, `sbix`, `SVG `) is an emoji face, which
+/// Noto Color Emoji shows also *declares* itself fixed pitch (PANOSE
+/// proportion 9, `isFixedPitch` 1); and a face whose cmap has neither `A`
+/// nor `a` is an icon or symbol face (FontAwesome, Noto Sans Symbols), which
+/// declares no class at all. Both are [`FaceClass::Display`].
+///
+/// Then fixed pitch, so a monospaced slab serif is `Monospace`. Then the IBM
+/// class: 1–5 and 7 are serif classes, 8 sans serif, 9 ornamental, 10
+/// script and 12 symbolic. Then PANOSE, whose family kind is 2 for Latin text
+/// (its serif-style digit 11–15 is a sans, 2–10 a serif; its proportion 9 is
+/// monospaced) and 3, 4 and 5 for handwritten, decorative and symbol faces.
+/// Many text fonts leave both at 0 ("no classification"), and those are
+/// treated as sans serif, the class every face registered as data had before
+/// #2102.
+pub fn classify_face(data: &[u8], index: u32) -> FaceClass {
+    use skrifa::MetadataProvider;
+    use skrifa::raw::TableProvider;
+    use skrifa::raw::types::Tag;
+    let Ok(face) = skrifa::FontRef::from_index(data, index) else {
+        return FaceClass::SansSerif;
+    };
+    let color = [b"COLR", b"CBDT", b"sbix", b"SVG "]
+        .into_iter()
+        .any(|tag| face.table_data(Tag::new(tag)).is_some());
+    let charmap = face.charmap();
+    if color || (charmap.map('A').is_none() && charmap.map('a').is_none()) {
+        return FaceClass::Display;
+    }
+    if face.post().is_ok_and(|post| post.is_fixed_pitch() != 0) {
+        return FaceClass::Monospace;
+    }
+    let Ok(os2) = face.os2() else {
+        return FaceClass::SansSerif;
+    };
+    match (os2.s_family_class() >> 8) & 0xff {
+        1..=5 | 7 => return FaceClass::Serif,
+        8 => return FaceClass::SansSerif,
+        9 | 10 | 12 => return FaceClass::Display,
+        _ => {}
+    }
+    let panose = os2.panose_10();
+    match panose.first().copied() {
+        Some(2) => match (panose.get(3).copied(), panose.get(1).copied()) {
+            (Some(9), _) => FaceClass::Monospace,
+            (_, Some(2..=10)) => FaceClass::Serif,
+            _ => FaceClass::SansSerif,
+        },
+        Some(3..=5) => FaceClass::Display,
+        _ => FaceClass::SansSerif,
+    }
+}
+
+/// Put each family registered from `data` into the generic slots its class
+/// can fill ([`classify_face`], [`FaceClass::generics`]), **only where the
+/// slot is empty** (#2102).
+///
+/// For font data an app hands over without saying what it is
+/// (`RinchApp::register_font_data`, the embed's fonts): on a platform with no
+/// fonts of its own (wasm, an embed with none), `font-family: sans-serif` has
+/// to mean something, and the first face of the right class is it. A slot
+/// that is already filled — the platform's mapping on a desktop, or an
+/// earlier face — is left as it is, so a later registration never changes
+/// what a generic means. It used to prepend every face to `sans-serif`, so
+/// the last one registered, a script face as easily as a text face, became
+/// what every `sans-serif` element drew in. A face meant for a slot that is
+/// already filled is claimed explicitly (`AppFont::sans_serif`,
+/// [`claim_generic_families`]).
+///
+/// The companions of a plain generic (`system-ui` and `ui-sans-serif` for
+/// `sans-serif`, `ui-serif`, `ui-monospace`) are filled only together with
+/// it — when the plain slot was empty too. fontconfig maps the plain
+/// generics and `system-ui` but no `ui-*` one, so filling an empty `ui-*`
+/// slot on a desktop changed what the theme's monospace stack, which starts
+/// with `ui-monospace`, drew in (review of PR #2122). So on a desktop data
+/// fills nothing.
+pub fn fill_empty_generics(
+    collection: &mut Collection,
+    data: &[u8],
+    families: &[(FamilyId, Vec<parley::fontique::FontInfo>)],
+) {
+    for (family, fonts) in families {
+        let index = fonts.first().map_or(0, |font| font.index());
+        let generics = classify_face(data, index).generics();
+        let Some(plain) = generics.first() else {
+            continue;
+        };
+        if collection.generic_families(*plain).next().is_some() {
+            continue;
+        }
+        for generic in generics {
+            if collection.generic_families(*generic).next().is_none() {
+                collection.append_generic_families(*generic, core::iter::once(*family));
+            }
+        }
+    }
+}
+
 /// Monospace candidates, in preference order.
 ///
 /// `Roboto Mono` first because it is the face that matches the Roboto UI font
@@ -855,6 +994,160 @@ mod tests {
 
     /// `parley_font_family` (#1198) on a collection with no system fonts, so
     /// what resolves is exactly what the test registered.
+    /// What font data fills (#2102, review of PR #2122): a color-emoji face
+    /// and a face with no basic Latin are not text faces, and on a platform
+    /// that maps a plain generic its `ui-*` and `system-ui` companions are
+    /// left alone even where the platform leaves them empty.
+    mod data_fill {
+        use super::super::{FaceClass, classify_face, fill_empty_generics};
+        use parley::fontique::{
+            Blob, Collection, CollectionOptions, FamilyId, FontInfoOverride, GenericFamily,
+        };
+
+        const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+        /// Noto Color Emoji cut to U+1F600: `CBDT`/`CBLC` bitmaps,
+        /// `post.isFixedPitch` 1 and PANOSE proportion 9 — it *declares*
+        /// itself monospaced.
+        const EMOJI: &[u8] = include_bytes!("../assets/fonts/NotoColorEmoji-U1F600.ttf");
+
+        /// The offset of table `tag`'s record in the table directory.
+        fn record(data: &[u8], tag: &[u8; 4]) -> usize {
+            let count = u16::from_be_bytes([data[4], data[5]]) as usize;
+            (0..count)
+                .map(|i| 12 + 16 * i)
+                .find(|r| &data[*r..*r + 4] == tag)
+                .expect("table present")
+        }
+
+        fn table(data: &[u8], tag: &[u8; 4]) -> usize {
+            let r = record(data, tag);
+            u32::from_be_bytes(data[r + 8..r + 12].try_into().unwrap()) as usize
+        }
+
+        /// `post.isFixedPitch` set to `fixed`.
+        fn fixed_pitch(mut data: Vec<u8>, fixed: bool) -> Vec<u8> {
+            let post = table(&data, b"post");
+            data[post + 12..post + 16].copy_from_slice(&u32::from(fixed).to_be_bytes());
+            data
+        }
+
+        /// The emoji face with nothing color about it and no declared class:
+        /// `CBDT` renamed `CBDA` (still sorted ahead of `CBLC`), not fixed
+        /// pitch, IBM class and PANOSE zero. What is left is a face whose
+        /// cmap has no Latin — an icon or symbol font's shape.
+        fn symbol_face() -> Vec<u8> {
+            let mut data = fixed_pitch(EMOJI.to_vec(), false);
+            let r = record(&data, b"CBDT");
+            data[r..r + 4].copy_from_slice(b"CBDA");
+            let os2 = table(&data, b"OS/2");
+            data[os2 + 30..os2 + 42].fill(0);
+            data
+        }
+
+        fn bare() -> Collection {
+            Collection::new(CollectionOptions {
+                shared: false,
+                system_fonts: false,
+            })
+        }
+
+        /// Register `data` as family `name` and fill as `register_font_data`
+        /// does; the family's id.
+        fn register(collection: &mut Collection, data: Vec<u8>, name: &str) -> FamilyId {
+            let families = collection.register_fonts(
+                Blob::new(std::sync::Arc::new(data.clone())),
+                Some(FontInfoOverride {
+                    family_name: Some(name),
+                    ..Default::default()
+                }),
+            );
+            fill_empty_generics(collection, &data, &families);
+            families[0].0
+        }
+
+        fn slot(collection: &mut Collection, generic: GenericFamily) -> Vec<FamilyId> {
+            collection.generic_families(generic).collect()
+        }
+
+        #[test]
+        fn a_color_emoji_face_is_not_monospace() {
+            assert_eq!(classify_face(EMOJI, 0), FaceClass::Display);
+        }
+
+        /// A color table alone makes a face an emoji face, Latin or not
+        /// (color emoji fonts commonly map the ASCII digits and `#`): Inter
+        /// with its `GDEF` table renamed `COLR`, which keeps the directory
+        /// sorted.
+        #[test]
+        fn a_face_with_a_color_table_is_display_even_with_latin() {
+            let mut data = INTER.to_vec();
+            let r = record(&data, b"GDEF");
+            data[r..r + 4].copy_from_slice(b"COLR");
+            assert_eq!(classify_face(&data, 0), FaceClass::Display);
+            assert_eq!(classify_face(INTER, 0), FaceClass::SansSerif, "control");
+        }
+
+        #[test]
+        fn a_face_with_no_basic_latin_is_not_a_text_face() {
+            assert_eq!(classify_face(&symbol_face(), 0), FaceClass::Display);
+            // Positive control: the same rewrite on a Latin face is sans.
+            assert_eq!(
+                classify_face(&fixed_pitch(INTER.to_vec(), false), 0),
+                FaceClass::SansSerif
+            );
+        }
+
+        /// wasm shape: an emoji face registered before a monospaced text face
+        /// leaves `monospace` to the text face; an icon face registered
+        /// before a sans face leaves `sans-serif` to it.
+        #[test]
+        fn emoji_and_symbol_faces_leave_empty_slots_to_text_faces() {
+            let mut collection = bare();
+            register(&mut collection, EMOJI.to_vec(), "Emoji");
+            register(&mut collection, symbol_face(), "Icons");
+            let mono = register(&mut collection, fixed_pitch(INTER.to_vec(), true), "Mono");
+            let sans = register(&mut collection, INTER.to_vec(), "Sans");
+            assert_eq!(slot(&mut collection, GenericFamily::Monospace), [mono]);
+            assert_eq!(slot(&mut collection, GenericFamily::UiMonospace), [mono]);
+            assert_eq!(slot(&mut collection, GenericFamily::SansSerif), [sans]);
+        }
+
+        /// Desktop shape: the platform maps `sans-serif`, `serif` and
+        /// `monospace` (fontconfig does) but not their `ui-*` forms. Data
+        /// fills none of them: the theme's monospace stack starts with
+        /// `ui-monospace`, so filling it switched every code element's face.
+        #[test]
+        fn companions_stay_empty_where_the_platform_maps_the_plain_generic() {
+            let mut collection = bare();
+            // The platform's face: registered, not filled.
+            let platform = collection.register_fonts(
+                Blob::new(std::sync::Arc::new(INTER)),
+                Some(FontInfoOverride {
+                    family_name: Some("Platform"),
+                    ..Default::default()
+                }),
+            )[0]
+            .0;
+            for generic in [
+                GenericFamily::SansSerif,
+                GenericFamily::Serif,
+                GenericFamily::Monospace,
+            ] {
+                collection.set_generic_families(generic, core::iter::once(platform));
+            }
+            register(&mut collection, fixed_pitch(INTER.to_vec(), true), "Mono");
+            register(&mut collection, INTER.to_vec(), "Sans");
+            for generic in [
+                GenericFamily::UiMonospace,
+                GenericFamily::UiSansSerif,
+                GenericFamily::SystemUi,
+            ] {
+                assert!(slot(&mut collection, generic).is_empty(), "{generic:?}");
+            }
+            assert_eq!(slot(&mut collection, GenericFamily::Monospace), [platform]);
+        }
+    }
+
     mod finish_stack {
         use super::super::parley_font_family;
         use parley::fontique::{

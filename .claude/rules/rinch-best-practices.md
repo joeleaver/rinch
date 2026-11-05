@@ -113,6 +113,14 @@ There are two drag systems. The HTML5-port instinct of `draggable: true` + `ondr
 
 - **Element-to-element DnD (drag a card into a list):** use the data-attribute drag system. **`data-ondragmove` fires on the source every motion event**; **`data-ondragover` fires on the drop target every motion event** — both are per-frame, not just at endpoints. `data-ondragstart` / `data-ondragend` fire at endpoints; `data-ondragenter` / `data-ondragleave` fire on target boundary crossings.
 
+### 12. An `if let` / `match` branch that binds a value is rebuilt when that value changes
+
+`if let Some(page) = state.page.get() { … {page.title} … }` follows the page: each time the scrutinee's reactive reads change while the pattern still matches, the branch is disposed and built again from the new value (issue #2105). A branch that binds nothing (`Some(_)`, `None`, `0 =>`, `_`, a plain `if`) is built once per selection. Consequences:
+
+- A rebuild drops the branch's local state (focus, scroll, an inner keyed `for`'s rows). **A branch whose own controls write its scrutinee (a form, a panel of sliders) must opt out with `#[once]`**, or every keystroke or slider tick rebuilds it and the control loses focus: `#[once] if let Some(info) = mat.get() { … }`, `#[once] match … { … }`, or `#[once]` on one match arm. `#[once]` keeps today's build-once-per-selection behaviour; the branch keeps the value it bound when it was built, so read live values reactively inside it (`{|| …}`, `value_fn`).
+- There is no `PartialEq` check: `Signal::set` of an equal value rebuilds. Put the value behind a `Memo` (its equality cut-off stops the re-run) or write with `set_if_changed`.
+- An uppercase bare binding (`Some(N)`) is read as a constant or unit variant, so it is never rebuilt (as if `#[once]`). Name bindings in snake_case.
+
 ## Iterating & Debugging: rinch-debug + MCP server
 
 Rinch ships a debug bridge that lets an AI assistant **see and drive a running app** — screenshots, live DOM inspection (layout bounds + computed styles), and input injection. Use it to *visually verify* changes instead of guessing.

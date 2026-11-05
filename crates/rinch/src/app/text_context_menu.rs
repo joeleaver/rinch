@@ -140,9 +140,9 @@ pub enum TextContextMenuPresentation {
 /// `remove_node` (#723) — and every later layout walked the dead panels
 /// (measured by #817's review: 37x on the layout pass after 1000 opens).
 pub(crate) struct TextMenuPanel {
-    pub panel_id: usize,
+    pub panel_id: u64,
     /// `(action, row node id)` in menu order.
-    pub rows: Vec<(TextEditAction, usize)>,
+    pub rows: Vec<(TextEditAction, u64)>,
 }
 
 /// The open DOM menu: which target, the rows' states at open, the highlight.
@@ -151,7 +151,7 @@ pub(crate) struct OpenTextMenu {
     /// as this target holds the keyboard.
     pub target: FocusTarget,
     /// The panel showing — [`TextMenuPanel::panel_id`], copied for the readers.
-    pub panel_id: usize,
+    pub panel_id: u64,
     /// The item rows, in menu order.
     pub items: Vec<TextMenuRow>,
     /// The highlighted row, if any. None until the pointer or an arrow key
@@ -161,7 +161,7 @@ pub(crate) struct OpenTextMenu {
 
 pub(crate) struct TextMenuRow {
     pub action: TextEditAction,
-    pub node_id: usize,
+    pub node_id: u64,
     pub enabled: bool,
 }
 
@@ -169,10 +169,10 @@ pub(crate) struct TextMenuRow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TextTarget {
     /// A text-like `<input>` or a `<textarea>`.
-    Input(usize),
+    Input(u64),
     /// A rich-text editor, by container node id.
     #[cfg(feature = "desktop")]
-    Editor(usize),
+    Editor(u64),
 }
 
 /// An editor context press resolved on the tree as it was pressed — see
@@ -181,7 +181,7 @@ pub(super) enum TextTarget {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct EditorContextPress {
     /// The editor's container node id.
-    pub(crate) container: usize,
+    pub(crate) container: u64,
     /// What the press pointed at; `None` when it missed every textblock.
     pub(crate) at: Option<EditorPressAt>,
 }
@@ -984,7 +984,7 @@ impl RinchApp {
             return false;
         };
         let d = doc.borrow();
-        let in_document = |id: usize| {
+        let in_document = |id: u64| {
             let mut cur = Some(id);
             while let Some(nid) = cur {
                 if nid == d.tree.root_id {

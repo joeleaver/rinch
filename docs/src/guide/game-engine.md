@@ -209,11 +209,26 @@ let gpu = RinchGpuConfig {
         max_storage_buffers_per_shader_stage: 32, // wgpu default is 8
         ..Default::default()
     },
+    // Nice to have: requested only where the adapter supports it.
+    optional_features: wgpu::Features::TIMESTAMP_QUERY,
+    // Keeps this compiling when RinchGpuConfig gains a field.
+    ..Default::default()
 };
 App::new(app).gpu_config(gpu).run();
 ```
 
-After startup, `gpu_handle()` returns the shared `device`, `queue`, **and `adapter`** (use `adapter.limits()` to clamp, e.g. `max_buffer_size = min(adapter, 2 GiB)`). The requested features/limits are passed through verbatim — if the adapter can't satisfy them, device creation fails loudly rather than silently dropping a capability.
+After startup, `gpu_handle()` returns the shared `device`, `queue`, **and `adapter`** (use `adapter.limits()` to clamp, e.g. `max_buffer_size = min(adapter, 2 GiB)`). The required features and limits are passed through verbatim — if the adapter can't satisfy them, device creation fails loudly, naming the missing features, rather than silently dropping a capability.
+
+**Optional features** are the ones you can do without: rinch requests those the adapter has and leaves out the rest, and the device still starts. Experimental features (`Features::all_experimental_mask()`) are never requested from this set, since wgpu refuses them without an opt-in rinch does not give, so even `Features::all()` is safe here. `TIMESTAMP_QUERY` for timing GPU frames is the usual one. Ask the handle what you got:
+
+```rust
+let handle = gpu_handle().unwrap();
+if handle.granted_optional_features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+    // create the query set
+}
+```
+
+`granted_optional_features()` is empty when you asked for none, and with `App::external_gpu`, whose device is yours (read `device.features()` there). Build `RinchGpuConfig` with `..Default::default()` so a field added later does not break your code. In the browser rinch makes no device of its own — your canvas code requests its device — so the same idea is one line there: `required_features: adapter.features() & wanted`.
 
 **Bring your own device.** If you must keep your renderer's exact `DeviceDescriptor`, build the whole GPU stack and hand it to rinch. rinch creates only the window surface (from your `instance`), validates that your adapter can present to it, and composites directly onto your device — no `request_device`, no CPU readback:
 
@@ -297,7 +312,7 @@ no rinch API takes a winit type. rinch is on winit 0.31.0-beta.4 (#1962);
 naming the same dependency keeps one winit in the build:
 
 ```toml
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "34f153bd6e523de53f9da67c6db58bd1f8732542" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "d99384edd804a20e737c013b5f57b56ab931a611" }
 ```
 
 From beta.2, winit's public enums are `#[non_exhaustive]` (a `match` on
@@ -334,6 +349,7 @@ Events are dispatched to the handler set via `set_event_handler()`. Coordinates 
 | `TextInput` | `String` | Text input (when focused) |
 | `FocusGained` | — | Surface received keyboard focus |
 | `FocusLost` | — | Surface lost keyboard focus |
+| `PointerMotion` | `dx, dy` | Raw mouse motion while the surface holds the pointer lock (below) |
 
 **A press keeps the pointer.** From a press on the surface until the release of the button
 that started it, every move and release of that pointer go to the surface wherever it is
@@ -405,6 +421,33 @@ way — it already sees every key before a focused surface does, on both backend
 Space, PageUp/Down and the arrow keys can scroll the page, and Tab leaves the canvas. A web
 game steering with any of those must claim them via `set_key_handler`, or the page scrolls
 under it.
+
+### Mouse look (pointer lock)
+
+`surface.request_pointer_lock()` hides the cursor, keeps it in the window, and
+sends the mouse's raw motion to the surface as `SurfaceEvent::PointerMotion { dx,
+dy }`: deltas in the platform's units that do not stop at the window's or the
+screen's edge, for a first-person camera or an editor's fly camera (issue #2092).
+`rinch::window::pointer_lock()` says, reactively, whether it holds and how
+(`Locked`, or `Confined` on X11); `has_pointer_lock()` asks the surface. Call it
+from the surface's `MouseDown` (in a browser a lock needs a user gesture), and
+let go with `exit_pointer_lock()`:
+
+```rust
+let s = surface.clone();
+surface.set_event_handler(move |event| match event {
+    SurfaceEvent::MouseDown { .. } if pointer_lock().is_none() => {
+        let _ = s.request_pointer_lock();
+    }
+    SurfaceEvent::PointerMotion { dx, dy } => camera.turn(dx, dy),
+    _ => {}
+});
+```
+
+The lock ends on Escape (consumed: it closes nothing else), when the window
+loses focus, and when the surface unmounts. The whole API, the units and each
+platform's behaviour: [Pointer Lock and Raw Mouse Motion](windows.md#pointer-lock-and-raw-mouse-motion).
+`examples/pointer-lock` is a working mouse-look surface.
 
 ### How often the render callback runs
 
@@ -551,6 +594,7 @@ fn main() {
             height: 720,
             scale_factor: window.scale_factor(),
             theme: None,
+            fonts: Vec::new(),
         },
         game_hud,
     );
@@ -590,6 +634,18 @@ context, and for one renderer drawing several contexts in turn: a renderer
 that does not hold the context's last painted frame has that frame painted
 again for it. Steady state (one renderer, one context) paints only when the
 document changes.
+
+**A frame that does not fit.** `render` does not wait for the GPU, so a frame
+too large for Vello's buffers goes out undrawn and is found out a frame or so
+later; the buffers grow and the frame is drawn again. A host rendering every
+frame gets this from the next `render`. A host that renders only when
+`needs_update` says so does not: a lost frame is about the renderer's buffers,
+and the context cannot know of it. After each `render`, call
+`overlay.check_frames(&device)`, again at `check_again_at` until that is `None`,
+and `render` when `needs_render` is true. It never waits. (A lost device is
+different: wgpu's `Device::poll` panics on one rather than returning an error,
+so a call that polls cannot be your way of finding out. `set_device_lost_callback`
+is; stop calling into the renderer once it fires.)
 
 ### RinchContext
 
@@ -778,6 +834,46 @@ tooltip showing at the time otherwise stays until the next press, key or move.
 It answers whether a frame is owed. `ctx.app_mut().set_title_tooltips(false)`
 turns tooltips off for a HUD that does not want them.
 
+#### Pointer lock in a context
+
+Your engine owns the window, so it owns the cursor grab too. Pointer lock in a
+context (#2092) needs three things from the host, and without the first
+`request_pointer_lock` answers `PointerLockError::Unsupported`:
+
+1. **A `PointerLockHost`**, installed on the UI thread with
+   `rinch::window::set_pointer_lock_host(Some(Box::new(host)))`. Its `lock`
+   grabs the pointer and hides the cursor and answers what it got
+   (`Ok(Some(PointerLockMode::Locked))`, `Confined` where the platform cannot
+   hold the pointer still, an `Err` when it refused, or `Ok(None)` when the
+   platform answers later — then call `rinch::window::pointer_lock_changed`
+   when it does); `unlock` gives the pointer back. With winit it is
+   `set_cursor_grab(Locked)`, else `Confined`, and `set_cursor_visible`;
+   refuse with `PointerLockError::NotFocused` while the window has no focus
+   (X11's confinement is an active grab an unfocused window also gets). Call
+   `pointer_lock_changed(None)` too when the platform takes the grab away on
+   its own.
+2. **The raw motion**, as `PlatformEvent::PointerMotion { dx, dy }` in
+   `ctx.update` (winit's `DeviceEvent::PointerMotion`, SDL's relative motion).
+   Summing a burst into one event per frame is fine and cheaper.
+3. **Focus loss and Escape**, which the host already forwards:
+   `PlatformEvent::WindowFocus(false)` releases the lock, and an Escape
+   `KeyDown` while it holds releases it and is consumed, with its repeats until
+   the `KeyUp` (route it to rinch, not to your game, while `pointer_lock()` is
+   `Some`). An element holding the lock that leaves the document releases it
+   on the next `update`. With several contexts on one thread the lock belongs
+   to the context that asked (the one dispatching, or the element's): only its
+   focus loss and Escape end it, so feed those to every context as usual, and
+   feed `PointerMotion` to one.
+
+A WASI guest (`wasm32-wasip1`, rinch built with `components,theme`) has the
+same API and no `RinchApp` to feed events to, so it has no host either until
+the guest installs one: a `PointerLockHost` that forwards the grab across the
+plugin boundary to the real window. The guest's glue then calls
+`rinch::window::dispatch_pointer_motion(dx, dy)` with the motion the host sends
+it, and `pointer_lock_changed(None)` when the host reports the lock gone — on
+its Escape and its focus loss, which the host decides there, since nothing in
+the guest sees them. Or keep mouse look on the host's side of the boundary.
+
 ### Input methods (IME)
 
 Your engine owns the window, so it owns the platform input method (IBus, a
@@ -884,6 +980,13 @@ replaced under the viewport's visible part, edges included, on all three.
 > Vello and has no band. The desktop GPU window falls back to the same
 > in-scene clear for a frame in which the viewport sits in a group effect or
 > under a rotation (below), which the debug warnings name.
+>
+> Such a host also keeps its own Vello's buffers honest. `render_to_texture`
+> does not wait for the GPU, so a frame too large for its buffers goes out
+> undrawn and is found out a frame or so later. A host that renders every frame
+> repairs it by rendering the next one; one that stops rendering when nothing
+> changes calls `Renderer::check_frames` until it stops answering `Pending`, and
+> renders again on `Lost`.
 
 **The game fills the viewport's border box.** The viewport is a base layer,
 not a framed element: the game's layer (or, on the software window, its
@@ -1095,6 +1198,44 @@ a transformed subtree is hit where it is *painted*.
 
 [#202]: https://github.com/joeleaver/rinch/issues/202
 
+### Images in a context
+
+A context loads images as a desktop window does, on every target, for `<img
+src>` and `background-image: url(…)` alike:
+
+- **`data:` URLs** (base64 or percent-encoded) are decoded in place, by the layout that meets them,
+  and are never offered to a loader.
+- **The app's own schemes** (`register_image_scheme`, `App::image_scheme`) are
+  answered by the app's loader. This is how a game hands rinch the pictures it
+  keeps in memory: register a scheme over its asset store and name
+  `myassets:hero.png`.
+- **Files** and every other source go to the document's default loader, which
+  reads files: on the desktop, and in a WASI guest from the directories its
+  host preopened. In the browser it has no files to read.
+
+On **wasm32** (the browser, or a `wasm32-wasip1` guest) there are no load
+threads, so the loader is called **on the UI thread**, by the `update()` (or
+`RinchContext::new`) of the frame that first names the source, and its bytes
+are decoded there too (#2100). It is called with no document borrowed, never
+inside a DOM write or a layout, so it may write signals. A loader that answers
+from memory shows its picture in that same frame. What that costs and rules
+out:
+
+- **It must not block.** There is no `http(s)` loader on wasm32 (the default
+  loader only reads files), so a URL fails. To show a remote
+  picture, fetch it yourself (asynchronously), answer `ImageLoadResult::Failed`
+  until the bytes are in your store, then call `rinch::image::reload_image(src)`:
+  the next `update()` loads it again, lays it out and asks for a redraw.
+- **The decode is the frame's.** A large PNG or JPEG is decoded inside the
+  `update()` that asks for it, once per source; there is no background decode on
+  wasm32. An SVG file is parsed there too, and rasterised during the paint of
+  each new size it is drawn at (#2111), as on the desktop. Decode a very large picture ahead of time, off the frame, if a hitch
+  matters.
+
+On the desktop the loader runs on a background thread, and an image arrives on
+a later `update()`. Either way a landed image dirties the boxes that show it,
+so `update()` returns `AppAction::RequestRedraw` for it.
+
 ### Platform Events
 
 Translate your engine's events to `rinch_platform::PlatformEvent`:
@@ -1170,7 +1311,8 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `take_ime_change() -> Option<ImeChange>` | The `Enable` / `Update` / `Disable` that takes the host's IME from what it last reported to `ime_state()` |
 | `needs_update() -> bool` | True if UI needs repaint (including a due `next_wake` or a new `RenderSurface` frame) |
 | `next_wake() -> Option<Instant>` | When to call `update()` again with no input (the caret blink), or `None` |
-| `register_font(data)` | Register font data for text rendering |
+| `register_font(data)` | Register font data for text rendering after the mount: `&'static [u8]` or owned bytes (`Vec<u8>`, `Arc<[u8]>`, `Blob<u8>`; see [Fonts](#fonts)) |
+| `register_app_font(AppFont)` | Register a face **and the generics it claims** (`AppFont::sans_serif`, `.with_generics(..)`), ahead of the platform's mapping |
 | `app() / app_mut()` | Access the underlying RinchApp |
 
 **RinchOverlayRenderer:**
@@ -1190,6 +1332,36 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `height` | `u32` | Initial viewport height (physical pixels) |
 | `scale_factor` | `f64` | Display scale factor |
 | `theme` | `Option<ThemeProviderProps>` | Theme configuration |
+| `fonts` | `Vec<FontData>` | Font files registered before the mount, so the first layout has glyphs (mandatory on wasm). `BYTES.into()` for `&'static [u8]`, or owned bytes; see [Fonts](#fonts) |
+
+### Fonts
+
+The faces in `RinchContextConfig::fonts` and those given to `register_font`
+are font data that declares nothing. Each is reachable by its own family name
+(`font-family: "Liberation Sans"`), joins the last-resort fallback chain for
+every script, and fills the generic slots of its own class — `sans-serif` and
+`system-ui` for a sans-serif face, `serif` for a serif one, `monospace` for a
+fixed-pitch one, none for a script, symbol, icon or color-emoji face — **only
+where the plain slot is empty**. On wasm, where there are no platform fonts, the first sans-serif face
+you register is what `font-family: sans-serif` means, whatever else you
+register before or after it. On a desktop, where the platform fills every
+slot, registering data changes no generic slot (`ui-monospace` and the other
+`ui-*` slots included): `sans-serif` stays the platform's face. An embed that
+used its registered face as `sans-serif` before this change keeps it by
+claiming it or by naming its family (see [Fonts](./fonts.md#migrating-from-before-2102)). A face you want to *be* a generic there is claimed explicitly with
+`register_app_font(AppFont::sans_serif(BYTES))` (or
+`AppFont::from_data(bytes).with_generics(AppFont::SANS_SERIF)`); a claim goes
+ahead of the platform's face. Before issue #2102 every registered face was
+put at the head of `sans-serif`, so the one registered **last** — a game's
+script face as easily as the UI face — drew every `sans-serif` element.
+
+The bytes can be owned: `Vec<u8>`, `Box<[u8]>`, `Arc<[u8]>` or a parley
+`Blob<u8>` (`FontData`, each with `.into()`), as well as `&'static [u8]`. An
+owned face lives as long as the context that registered it and is released
+when the context is dropped, so fonts a game loads at run time need not be
+leaked (issue #2101). A face cannot be unregistered from a live context; a
+game whose fonts change for good builds a new context and drops the old one.
+See [Fonts](./fonts.md) for how a face is matched.
 
 **Theming is per-context.** Each `RinchContext` owns the theme CSS generated
 from its `config.theme` (or the default theme when `None`) — creating a second

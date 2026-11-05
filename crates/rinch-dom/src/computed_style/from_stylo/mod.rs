@@ -49,7 +49,7 @@ fn custom_property<R>(
     key.with(|name| {
         cv.custom_properties()
             .get(
-                style::properties_and_values::registry::PropertyRegistrationData::unregistered(),
+                style::properties_and_values::rule::Descriptors::unregistered(),
                 name,
             )
             .map(|v| f(v.to_variable_value().css.trim()))
@@ -86,15 +86,42 @@ impl ComputedStyle {
         // percentage basis can never disagree with the element's own computed
         // font-size.
         let font_size_px = font.font_size.computed_size().px();
+        let inherited_table = cv.get_inherited_table();
 
         Self {
             // Display/position
             display: display_from_stylo(&box_style.display),
             table_part: table_part_from_stylo(&box_style.display),
+            box_sizing_border_box: cv.get_position().box_sizing
+                == style::computed_values::box_sizing::T::BorderBox,
+            border_collapse: inherited_table.border_collapse
+                == style::computed_values::border_collapse::T::Collapse,
+            border_spacing: (
+                inherited_table.border_spacing.0.width().px(),
+                inherited_table.border_spacing.0.height().px(),
+            ),
+            table_layout_fixed: cv.get_table().table_layout
+                == style::computed_values::table_layout::T::Fixed,
+            caption_bottom: inherited_table.caption_side
+                == style::computed_values::caption_side::T::Bottom,
             inline_level_before_blockify: box_style.original_display.outside()
                 == style::values::specified::box_::DisplayOutside::Inline,
             position: position_from_stylo(&box_style.position),
-            vertical_align: vertical_align_from_stylo(&box_style.vertical_align),
+            float: match box_style.float {
+                style::computed_values::float::T::Left => taffy::Float::Left,
+                style::computed_values::float::T::Right => taffy::Float::Right,
+                _ => taffy::Float::None,
+            },
+            clear: match box_style.clear {
+                style::computed_values::clear::T::Left => taffy::Clear::Left,
+                style::computed_values::clear::T::Right => taffy::Clear::Right,
+                style::computed_values::clear::T::Both => taffy::Clear::Both,
+                _ => taffy::Clear::None,
+            },
+            vertical_align: vertical_align_from_stylo(
+                box_style.alignment_baseline,
+                &box_style.baseline_shift,
+            ),
             overflow_x: overflow_from_stylo(&box_style.overflow_x),
             overflow_y: overflow_from_stylo(&box_style.overflow_y),
             scrollbar_color: custom_property(cv, &SCROLLBAR_COLOR, ScrollbarColorValue::parse)
@@ -205,7 +232,7 @@ impl ComputedStyle {
             background_repeat_y: background_first.repeat_y,
             background_origin: background_first.origin,
             background_layers: background_layers_from_stylo(background, &text.color),
-            mask_image: mask_image_from_stylo(&cv.get_svg().mask_image, &text.color),
+            mask_image: mask_image_from_stylo(cv.get_svg(), &text.color),
             color: color_from_absolute(&text.color),
 
             // Visual
@@ -256,6 +283,7 @@ impl ComputedStyle {
 
             // Object fit
             object_fit: object_fit_from_stylo(&cv.clone_object_fit()),
+            image_rendering: image_rendering_from_stylo(&inherited_box.image_rendering),
             aspect_ratio: aspect_ratio_from_stylo(&cv.clone_aspect_ratio()),
 
             // Cursor
@@ -277,6 +305,7 @@ impl ComputedStyle {
             letter_spacing: letter_spacing_from_stylo(&text.letter_spacing, font_size_px),
             word_spacing: word_spacing_from_stylo(&text.word_spacing, font_size_px),
             text_align: text_align_from_stylo(&text.text_align),
+            html_align: html_align_from_stylo(&text.text_align),
             text_decoration: text_decoration_from_stylo(
                 &cv.get_text().clone_text_decoration_line(),
                 cv.get_text().clone_text_decoration_style(),
@@ -284,24 +313,17 @@ impl ComputedStyle {
                 &text.color,
             ),
             text_transform: text_transform_from_stylo(&text.text_transform),
-            // `text-underline-offset` is declared `engines="gecko"` at
-            // `stylo-0.11.0/properties/longhands/inherited_text.mako.rs:330`, and
-            // `build.rs` generates exactly one engine's property set — so the
-            // servo build emits no parser entry for it and Stylo discards the
-            // declaration as unknown before this function runs. Measured in a
-            // generated `properties.rs`: `text_underline_offset` 0 hits, the
-            // documented gecko-only `scrollbar_color` 0 hits, and
-            // `text_decoration_line` 52 hits as the positive control that the
-            // grep fires at all.
-            //
-            // There is nothing here to read it from, and **nothing anywhere else
-            // parses it either**: this line is the only place CSS could reach the
-            // field, and it writes `None` unconditionally (#580). The other two
-            // writers are not CSS paths — `Default`, and `for_anonymous_box`,
-            // which copies the parent's value because the property inherits.
-            // The witness is `crates/rinch-dom/tests/underline_offset_tests.rs`,
-            // whose header records what the consumers do once the field is made
-            // non-`None` by hand.
+            // `text-underline-offset` is not read (#580). With stylo 0.11 it
+            // was gecko-only and the servo build dropped the declaration at
+            // parse; since stylo 0.21 the servo build parses it (behind
+            // `layout.unimplemented`, which `set_stylo_prefs` turns on) and
+            // computes it into `get_inherited_text().text_underline_offset`,
+            // but this line still writes `None` unconditionally, and it is the
+            // only place CSS could reach the field. The other two writers are
+            // not CSS paths — `Default`, and `for_anonymous_box`, which copies
+            // the parent's value because the property inherits. The witness is
+            // `crates/rinch-dom/tests/underline_offset_tests.rs`, whose header
+            // records what the consumers do once the field is non-`None`.
             text_underline_offset: None,
             white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
             overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),

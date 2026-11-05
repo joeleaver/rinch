@@ -15,14 +15,32 @@ pub use values::*;
 
 use serde::Serialize;
 
+/// A Taffy keyword, which has no `Serialize`, as its name.
+fn serialize_debug<T: std::fmt::Debug, S: serde::Serializer>(
+    v: &T,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&format!("{v:?}"))
+}
+
 /// Pre-parsed CSS properties for efficient layout and paint.
 #[derive(Debug, Clone, Serialize)]
 pub struct ComputedStyle {
     // Display/position
     pub display: DisplayValue,
-    /// Which part of a CSS table this box is (#1083): `display` maps every
+    /// Which part of a CSS table this box is: `display` maps every
     /// table part to a flex or block container and cannot say.
     pub table_part: TablePart,
+    /// `box-sizing: border-box`.
+    pub box_sizing_border_box: bool,
+    /// `border-collapse: collapse`.
+    pub border_collapse: bool,
+    /// `border-spacing`, horizontal then vertical, in px.
+    pub border_spacing: (f32, f32),
+    /// `table-layout: fixed`.
+    pub table_layout_fixed: bool,
+    /// `caption-side: bottom`.
+    pub caption_bottom: bool,
     /// Whether the box was **inline-level before `position` blockified it**
     /// (Stylo's `original_display`): a `<span style="position: absolute">`,
     /// an `inline-block` one. `display` cannot say — an out-of-flow box
@@ -32,6 +50,12 @@ pub struct ComputedStyle {
     #[serde(skip)]
     pub inline_level_before_blockify: bool,
     pub position: PositionValue,
+    /// `float`. Read by Taffy's block layout only (`floats`).
+    #[serde(serialize_with = "serialize_debug")]
+    pub float: taffy::Float,
+    /// `clear`.
+    #[serde(serialize_with = "serialize_debug")]
+    pub clear: taffy::Clear,
     /// `vertical-align` (#724): non-inherited, not carried to an anonymous
     /// box (see [`ComputedStyle::for_anonymous_box`]).
     pub vertical_align: VerticalAlignValue,
@@ -152,15 +176,19 @@ pub struct ComputedStyle {
     /// single image (no allocation), and a layer with nothing to paint
     /// (`none`, a conic gradient) is left out.
     pub background_layers: Vec<BackgroundLayer>,
-    /// `mask-image` (#1798): its gradient layers, first listed first. Each
-    /// covers the border box (`mask-size`, `-position`, `-repeat`, `-origin`
-    /// and `-clip` are gecko-only in Stylo, so they keep their initial
-    /// values), and they are added together (`mask-composite: add`) into
-    /// an alpha mask over the element and its descendants, clipped to the
-    /// border box. A `url()` layer is not read, and neither is `mask-mode`
-    /// (gecko-only too; a gradient's `match-source` is `alpha`). Empty for
-    /// `none`, and for a list with no gradient.
-    pub mask_image: Vec<BackgroundValue>,
+    /// `mask-image` (#1798, #2099): its gradient and `url()` layers, first
+    /// listed first, each with its entries of `mask-size`, `mask-position`,
+    /// `mask-repeat` and `mask-origin` (a shorter list repeating, as the
+    /// background lists do). They are added together (`mask-composite:
+    /// add`) into an alpha mask over the element and its descendants,
+    /// clipped to the border box (`mask-clip` is not read). A `url()` layer's
+    /// image is loaded as a `background-image`'s is; until it has loaded, or
+    /// when it fails, it masks everything away (css-masking-1 §7.1: a
+    /// transparent black layer). `mask-mode` is not read: every layer is an
+    /// alpha mask (`match-source` is `alpha` for an image and a gradient
+    /// alike, so only an explicit `luminance` differs). Empty for `none`, and
+    /// for a list with nothing rinch can paint (a conic gradient).
+    pub mask_image: Vec<BackgroundLayer>,
     #[serde(serialize_with = "values::color_serde::serialize")]
     pub color: Option<peniko::Color>,
 
@@ -205,6 +233,9 @@ pub struct ComputedStyle {
 
     // Object fit (for <img> elements)
     pub object_fit: ObjectFitValue,
+    /// `image-rendering` (#2098): nearest-neighbour sampling for an `<img>`,
+    /// a `background-image` and a `mask-image` `url()` when not `auto`.
+    pub image_rendering: ImageRenderingValue,
 
     /// `aspect-ratio` (#1286). A non-replaced box hands it to Taffy
     /// ([`Self::to_taffy_style`]); a replaced element's measure reads it
@@ -233,6 +264,14 @@ pub struct ComputedStyle {
     pub letter_spacing: f32, // in pixels, 0.0 means normal
     pub word_spacing: f32,   // in pixels, 0.0 means normal
     pub text_align: TextAlignValue,
+    /// HTML's `align` attribute on a `div`, a cell, a row or a row group
+    /// (`-moz-center` / `-webkit-center` and the left and right forms):
+    /// besides the text, it aligns the block boxes under it that have a
+    /// width of their own, as `<td align="center"><table>` centres the table
+    /// (HTML rendering §15.3.3, "align descendants"). Inherited with
+    /// `text-align`; a table does not inherit it (Stylo resets it there, as
+    /// Chrome does).
+    pub html_align: Option<TextAlignValue>,
     pub text_decoration: TextDecorationValue,
     pub text_transform: TextTransformValue,
     /// `text-underline-offset` in CSS pixels, with **CSS's sign** — and
@@ -293,8 +332,15 @@ impl Default for ComputedStyle {
         Self {
             display: DisplayValue::default(),
             table_part: TablePart::None,
+            box_sizing_border_box: false,
+            border_collapse: false,
+            border_spacing: (0.0, 0.0),
+            table_layout_fixed: false,
+            caption_bottom: false,
             inline_level_before_blockify: false,
             position: PositionValue::default(),
+            float: taffy::Float::None,
+            clear: taffy::Clear::None,
             vertical_align: VerticalAlignValue::default(),
             overflow_x: OverflowValue::default(),
             overflow_y: OverflowValue::default(),
@@ -398,6 +444,7 @@ impl Default for ComputedStyle {
             filter_hue_rotate: 0.0,
 
             object_fit: ObjectFitValue::default(),
+            image_rendering: ImageRenderingValue::Auto,
             aspect_ratio: AspectRatioValue::default(),
 
             cursor: CursorValue::default(),
@@ -412,6 +459,7 @@ impl Default for ComputedStyle {
             letter_spacing: 0.0,
             word_spacing: 0.0,
             text_align: TextAlignValue::default(),
+            html_align: None,
             text_decoration: TextDecorationValue::default(),
             text_transform: TextTransformValue::default(),
             text_underline_offset: None,
@@ -498,6 +546,7 @@ impl ComputedStyle {
             letter_spacing: parent.letter_spacing,
             word_spacing: parent.word_spacing,
             text_align: parent.text_align,
+            html_align: parent.html_align,
             text_decoration: parent.text_decoration.clone(),
             text_transform: parent.text_transform,
             text_underline_offset: parent.text_underline_offset,
@@ -529,6 +578,17 @@ impl ComputedStyle {
                 BackgroundValue::Image { url } => Some(url.as_str()),
                 _ => None,
             })
+    }
+
+    /// Every `url()` paint loads for this style: the background layers'
+    /// ([`Self::background_image_urls`]) and then the `mask-image` layers'
+    /// (#2099).
+    pub fn paint_image_urls(&self) -> impl Iterator<Item = &str> {
+        self.background_image_urls()
+            .chain(self.mask_image.iter().filter_map(|l| match &l.image {
+                BackgroundValue::Image { url } => Some(url.as_str()),
+                _ => None,
+            }))
     }
 
     /// Get the background color (convenience accessor for BackgroundValue::Color).

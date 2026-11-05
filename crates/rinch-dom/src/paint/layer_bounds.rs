@@ -399,8 +399,41 @@ pub fn opacity_layer_bounds(
     x: f64,
     y: f64,
 ) -> Rect {
+    match opacity_layer_extent(tree, node_id, scale, x, y) {
+        // A zero-area answer is not worth trusting even when it is arrived at
+        // honestly: the layer is being pushed because paint is about to draw
+        // something into it, and a degenerate clip would blank whatever that
+        // is. The zero-area branch in `paint_node` reaches this with an element
+        // that has no box of its own and no children, and `UNBOUNDED` is
+        // exactly what that branch passed before this function existed.
+        Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => r,
+        _ => UNBOUNDED,
+    }
+}
+
+/// Whether the subtree at `node_id` provably paints nothing at all, whatever
+/// clips are open around it: the walk [`opacity_layer_bounds`] uses answers
+/// [`Extent::Nothing`], or that all it draws lies within a rect of no area
+/// (anything that draws a pixel, a border, a stroke or a glyph, gives its
+/// rect area). `x`/`y` are the node's painted origin, as there.
+pub(super) fn paints_nothing_at_all(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+) -> bool {
+    match opacity_layer_extent(tree, node_id, scale, x, y) {
+        Extent::Nothing => true,
+        Extent::Within(r) => !(r.width() > 0.0 && r.height() > 0.0),
+        Extent::Unknown | Extent::Escapes => false,
+    }
+}
+
+/// The subtree's extent as the walk finds it (see [`opacity_layer_bounds`]).
+fn opacity_layer_extent(tree: &NodeTree, node_id: RawNodeId, scale: f64, x: f64, y: f64) -> Extent {
     let Some(node) = tree.get(node_id) else {
-        return UNBOUNDED;
+        return Extent::Unknown;
     };
     // The walk re-derives every node's position as `offset + layout.x * scale`,
     // including the root's, so hand it the offset that reproduces the `x`/`y`
@@ -418,16 +451,7 @@ pub fn opacity_layer_bounds(
         absolutes_escape_clips: false,
         clipper_below_cb: false,
     };
-    match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
-        // A zero-area answer is not worth trusting even when it is arrived at
-        // honestly: the layer is being pushed because paint is about to draw
-        // something into it, and a degenerate clip would blank whatever that
-        // is. The zero-area branch in `paint_node` reaches this with an element
-        // that has no box of its own and no children, and `UNBOUNDED` is
-        // exactly what that branch passed before this function existed.
-        Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => r,
-        _ => UNBOUNDED,
-    }
+    walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0)
 }
 
 /// Where `node_id`'s subtree paints, for a damage computation: `Some(rect)`,
@@ -624,7 +648,14 @@ pub(super) fn subtree_is_entirely_outside(
     }
 }
 
-/// Convenience for the call sites, which all want a [`PaintShape`].
+/// The bounds of the layer an element with `opacity` below 1 is painted in,
+/// as the [`PaintShape`] the call sites push.
+///
+/// A subtree the walk proves paints **nothing** gets an empty rect at the
+/// element's own origin, where [`opacity_layer_bounds`] answers [`UNBOUNDED`]:
+/// Vello allocates a layer's tiles over its whole bounds, so a dimmed element
+/// that draws nothing would cost a window of tiles. Nothing is drawn into the
+/// layer, so an empty clip cuts nothing away.
 pub(super) fn opacity_layer_shape(
     tree: &NodeTree,
     node_id: RawNodeId,
@@ -632,7 +663,11 @@ pub(super) fn opacity_layer_shape(
     x: f64,
     y: f64,
 ) -> PaintShape {
-    opacity_layer_bounds(tree, node_id, scale, x, y).into()
+    match opacity_layer_extent(tree, node_id, scale, x, y) {
+        Extent::Nothing => Rect::new(x, y, x, y).into(),
+        Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => r.into(),
+        _ => UNBOUNDED.into(),
+    }
 }
 
 struct Walk<'a> {
@@ -674,6 +709,52 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
+    /// What an IFC root's own inline content draws. A root collapsed to no
+    /// area draws it too (it overflows the box), so both arms of [`Self::node`]
+    /// ask.
+    fn inline_extent(
+        &self,
+        node: &crate::Node,
+        x: f64,
+        y: f64,
+        scroll: Vec2,
+        transform: Affine,
+    ) -> Extent {
+        let Some(inline) = &node.text_layout else {
+            return Extent::Nothing;
+        };
+        let (off_x, off_y) = super::ifc_root_content_origin(node);
+        let content_x = x + off_x as f64 * self.scale - scroll.x;
+        let content_y = y + off_y as f64 * self.scale - scroll.y;
+        let mut text = Rect::new(
+            content_x,
+            content_y,
+            content_x + inline.painted_width() as f64 * self.scale,
+            content_y + inline.layout.height() as f64 * self.scale,
+        );
+        // What it draws past those line boxes: text `vertical-align`
+        // moves off its line, inline elements' backgrounds and borders
+        // (which reach past the line by their padding and border, #1762)
+        // and wavy underlines (#1817) — measured by the one function the
+        // damage ink reads too, from the geometry paint draws with.
+        // Before #1762 and #1817 a clip was elided whenever the unshifted
+        // lines fitted, and the pill, the raised text or the wave painted
+        // outside the box.
+        if let Some(past) =
+            super::text::inline_ink_past_lines(|id| self.tree.get(id), inline, self.scale)
+        {
+            text = text.union(past + Vec2::new(content_x, content_y));
+        }
+        // The shadows its inline elements declare are drawn with it (#1048).
+        let mut reach = text_shadow_reach(text, &node.computed_style.text_shadow, self.scale);
+        if self.tree.inline_text_shadows {
+            for list in super::member_text_shadows(node, true, |id| self.tree.get(id)) {
+                reach = reach.union(text_shadow_reach(text, list, self.scale));
+            }
+        }
+        Extent::Within(transform.transform_rect_bbox(reach))
+    }
+
     /// The extent of everything `paint_node` would draw for this node and its
     /// subtree, in the layer's coordinate space.
     ///
@@ -887,15 +968,19 @@ impl Walk<'_> {
             // smaller shape than the one this branch shipped before, and it is
             // the only branch of which that is true. The module doc's safety
             // property is stated with this exception; see "The one rule".
+            //
+            // `paint_node`'s zero-area arm draws the box's own inline content,
+            // which `children` skips as drawn by the IFC.
             let transform = self.own_transform(node, x, y, parent_transform, is_root);
-            return self.scoped_children(
+            let inline = self.inline_extent(node, x, y, scroll, transform);
+            return inline.union(self.scoped_children(
                 node,
                 x - scroll.x,
                 y - scroll.y,
                 transform,
                 depth,
                 is_root,
-            );
+            ));
         }
 
         let x = offset_x + layout.x as f64 * self.scale;
@@ -955,38 +1040,7 @@ impl Walk<'_> {
         // the enclosing element boxes are in the union, so it is a pre-existing
         // approximation left where it was rather than a new one introduced here.
         let mut extent = Extent::Within(transform.transform_rect_bbox(own));
-        if let Some(inline) = &node.text_layout {
-            let (off_x, off_y) = super::ifc_root_content_origin(node);
-            let content_x = x + off_x as f64 * self.scale - scroll.x;
-            let content_y = y + off_y as f64 * self.scale - scroll.y;
-            let mut text = Rect::new(
-                content_x,
-                content_y,
-                content_x + inline.painted_width() as f64 * self.scale,
-                content_y + inline.layout.height() as f64 * self.scale,
-            );
-            // What it draws past those line boxes: text `vertical-align`
-            // moves off its line, inline elements' backgrounds and borders
-            // (which reach past the line by their padding and border, #1762)
-            // and wavy underlines (#1817) — measured by the one function the
-            // damage ink reads too, from the geometry paint draws with.
-            // Before #1762 and #1817 a clip was elided whenever the unshifted
-            // lines fitted, and the pill, the raised text or the wave painted
-            // outside the box.
-            if let Some(past) =
-                super::text::inline_ink_past_lines(|id| self.tree.get(id), inline, self.scale)
-            {
-                text = text.union(past + Vec2::new(content_x, content_y));
-            }
-            // The shadows its inline elements declare are drawn with it (#1048).
-            let mut reach = text_shadow_reach(text, &node.computed_style.text_shadow, self.scale);
-            if self.tree.inline_text_shadows {
-                for list in super::member_text_shadows(node, true, |id| self.tree.get(id)) {
-                    reach = reach.union(text_shadow_reach(text, list, self.scale));
-                }
-            }
-            extent = extent.union(Extent::Within(transform.transform_rect_bbox(reach)));
-        }
+        extent = extent.union(self.inline_extent(node, x, y, scroll, transform));
 
         // A text node paints its cached Parley layout at its own origin. The
         // layout can be a little wider than the box Taffy sized for it (see the
@@ -1000,7 +1054,10 @@ impl Walk<'_> {
                 y + cached.height() as f64 * self.scale,
             );
             // Text shadows on a text node come from its parent's style.
-            let styled = node.parent.and_then(|p| self.tree.get(p)).unwrap_or(node);
+            let styled = node
+                .parent
+                .and_then(|p| self.tree.get_live(p))
+                .unwrap_or(node);
             extent = extent.union(Extent::Within(transform.transform_rect_bbox(
                 text_shadow_reach(text, &styled.computed_style.text_shadow, self.scale),
             )));
@@ -1100,7 +1157,7 @@ impl Walk<'_> {
 
         // The box tree, not the element tree (#566).
         for &child_id in crate::RinchDocument::box_tree_children(&self.tree.nodes, node.id).iter() {
-            let Some(child) = self.tree.get(child_id) else {
+            let Some(child) = self.tree.get_live(child_id) else {
                 continue;
             };
             if ifc_root && child.ifc_root == Some(node.id) && !child.creates_stacking_context() {

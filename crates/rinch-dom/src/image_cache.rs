@@ -10,13 +10,22 @@ use std::sync::{Arc, LazyLock, Mutex};
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 
 /// A decoded image ready to paint.
+///
+/// A raster image (PNG, JPEG, GIF, WebP) is its pixels. An SVG file (#2111)
+/// is a [`VectorImage`](crate::svg_image::VectorImage) ([`Self::vector`]),
+/// rasterised at each size it is drawn at; its `data` is empty and `width` x
+/// `height` is its [`concrete`](crate::svg_image::VectorImage::concrete) size
+/// rounded, so code that reads the pixels directly draws nothing.
 pub struct DecodedImage {
-    /// Raw RGBA8 pixel data, straight (not premultiplied) alpha.
+    /// Raw RGBA8 pixel data, straight (not premultiplied) alpha. Empty for
+    /// an SVG file.
     pub data: Vec<u8>,
     /// Image width in pixels.
     pub width: u32,
     /// Image height in pixels.
     pub height: u32,
+    /// The parsed SVG file, for an SVG source.
+    vector: Option<Arc<crate::svg_image::VectorImage>>,
     /// The same pixels premultiplied, made on the first software paint and
     /// kept (the software painter needs premultiplied pixels, and making them
     /// is a pass over the whole image). `None` inside means every pixel is
@@ -41,12 +50,36 @@ impl DecodedImage {
             data,
             width,
             height,
+            vector: None,
             premultiplied: std::sync::OnceLock::new(),
             blob: std::sync::OnceLock::new(),
             id: {
                 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             },
+        }
+    }
+
+    /// A decoded SVG file (#2111): no pixels of its own, rasterised per draw.
+    pub fn from_vector(vector: crate::svg_image::VectorImage) -> Self {
+        let (w, h) = vector.concrete();
+        let mut image = Self::new(Vec::new(), w.round() as u32, h.round() as u32);
+        image.vector = Some(Arc::new(vector));
+        image
+    }
+
+    /// The SVG file this image is, if it is one.
+    pub fn vector(&self) -> Option<&crate::svg_image::VectorImage> {
+        self.vector.as_deref()
+    }
+
+    /// The image's natural width, height and ratio, which lay an `<img>` out
+    /// and size an `auto` background. A raster image's pixel size; an SVG
+    /// file's root `width`/`height`/`viewBox`, any of which may be absent.
+    pub fn natural(&self) -> crate::svg_image::NaturalSize {
+        match &self.vector {
+            Some(v) => v.natural(),
+            None => crate::svg_image::NaturalSize::of_pixels(self.width, self.height),
         }
     }
 
@@ -409,17 +442,160 @@ impl ImageLoader for FileImageLoader {
     }
 }
 
-/// Spawn a background thread to load and decode an image.
+/// Decode encoded image bytes (PNG, JPEG, GIF, WebP) into straight-alpha
+/// RGBA8, or parse an SVG file (#2111), which is recognised by its content
+/// ([`crate::svg_image::sniff_svg`]).
+pub fn decode_image_bytes(bytes: &[u8]) -> Result<DecodedImage, String> {
+    decode_image_bytes_for(bytes, false)
+}
+
+/// [`decode_image_bytes`], told whether the source names an SVG
+/// ([`crate::svg_image::source_says_svg`]: a `.svg` path or an
+/// `image/svg+xml` data URL). Such bytes that the raster decoders do not know
+/// are parsed as SVG too, so their failure says why the SVG did not parse.
+pub fn decode_image_bytes_for(bytes: &[u8], says_svg: bool) -> Result<DecodedImage, String> {
+    if crate::svg_image::sniff_svg(bytes) {
+        return crate::svg_image::decode_svg(bytes).map(DecodedImage::from_vector);
+    }
+    match image::load_from_memory(bytes) {
+        Ok(img) => {
+            let rgba = img.to_rgba8();
+            let (w, h) = (rgba.width(), rgba.height());
+            Ok(DecodedImage::new(rgba.into_raw(), w, h))
+        }
+        Err(_) if says_svg => crate::svg_image::decode_svg(bytes).map(DecodedImage::from_vector),
+        Err(e) => Err(format!("Failed to decode image: {}", e)),
+    }
+}
+
+/// Decode a `data:` URL's image in place: no loader is ever offered one
+/// (#2100). The `<img>` and `background-image` paths both come here.
+pub fn decode_data_url_image(src: &str) -> Result<DecodedImage, String> {
+    let bytes = decode_data_uri(src).ok_or_else(|| "malformed data: URL".to_string())?;
+    decode_image_bytes_for(&bytes, crate::svg_image::source_says_svg(src))
+}
+
+/// Ask the loader that answers for `src` (the app's scheme loader, else the
+/// document's) and decode its answer: one load, wherever it runs.
 ///
-/// When complete, the result is pushed to the global pending queue.
-/// Call [`ImageCache::drain_pending()`] from the main thread to collect results.
-///
-/// On `wasm32-unknown-unknown` there are no OS threads (`std::thread::spawn` would
-/// panic), so file/remote loads are a no-op there. Synchronous `data:` URIs never
-/// reach this path — they are decoded inline via [`decode_data_uri`] — so embedded
-/// (base64) images still render on the web. (issue #97)
+/// Every load produces exactly one answer. A loader is app code (a closure
+/// over a blob store), and one that panics must not take the answer with it:
+/// the source would stay "loading" for the life of the document, and a reload
+/// of a loading source only waits for the answer on its way. So where panics
+/// unwind, a panic in the loader or the decode is a failed load, which a
+/// reload starts again like any other failure.
+fn load_and_decode(src: &str, loader: Arc<dyn ImageLoader>) -> Result<DecodedImage, String> {
+    // A scheme the app installed a loader for is the app's to answer;
+    // everything else is the document's loader's.
+    let loader = rinch_core::image::image_scheme_loader(src).unwrap_or(loader);
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if src.starts_with("data:") {
+            return decode_data_url_image(src);
+        }
+        // App code: untracked, so a signal it reads subscribes no effect
+        // that happens to be running (CLAUDE.md, "Every app-callback invoke
+        // runs untracked").
+        match rinch_core::untracked_handler(|| loader.load(src)) {
+            ImageLoadResult::Loaded(bytes) => {
+                decode_image_bytes_for(&bytes, crate::svg_image::source_says_svg(src))
+            }
+            ImageLoadResult::Failed(e) => Err(e),
+        }
+    }))
+    .unwrap_or_else(|panic| {
+        let message = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "(no message)".to_string());
+        Err(format!("image loader panicked: {message}"))
+    })
+}
+
+/// Queue a load's answer for `doc_key`'s next drain, if the document is still
+/// there: an answer queued for a dropped one is never drained. The live list
+/// is held across the push, and [`purge_pending`] leaves it first, so a
+/// document that drops meanwhile either purges this answer or stops it here.
+fn queue_answer(doc_key: u64, src: String, result: Result<DecodedImage, String>) -> bool {
+    let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
+    if !live.contains_key(&doc_key) {
+        return false;
+    }
+    PENDING_IMAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(PendingImage {
+            doc_key,
+            src,
+            result,
+        });
+    true
+}
+
+/// The loads [`request_image_load`] queued on wasm32, waiting for
+/// [`run_queued_loads`]: `(doc_key, src, loader)`.
 #[cfg(target_arch = "wasm32")]
-pub fn request_image_load(_doc_key: u64, _src: String, _loader: Arc<dyn ImageLoader>) {}
+type QueuedLoad = (u64, String, Arc<dyn ImageLoader>);
+#[cfg(target_arch = "wasm32")]
+static QUEUED_LOADS: Mutex<Vec<QueuedLoad>> = Mutex::new(Vec::new());
+
+/// Queue a load for [`run_queued_loads`] (wasm32).
+///
+/// `wasm32` has no OS threads (`std::thread::spawn` panics on
+/// `wasm32-unknown-unknown` and fails on `wasm32-wasip1`), so a load runs on
+/// the UI thread. Not here, though: this is reached from inside the
+/// document's borrow (`NodeHandle::set_attribute`, `resolve_layout`), and a
+/// loader is app code that may write a signal, whose effects write the DOM
+/// and would borrow the document again (review of #2107). The host runs the
+/// queue between its borrows: `RinchContext::update` and `RinchContext::new`
+/// do. Before #2100 this was a no-op: no scheme loader was asked and no
+/// `background-image` loaded in an embedded context in the browser.
+#[cfg(target_arch = "wasm32")]
+pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader>) {
+    QUEUED_LOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((doc_key, src, loader));
+}
+
+/// Run every image load requested since the last call, on this thread, and
+/// queue each answer for its document's next layout. Returns whether any ran.
+///
+/// On wasm32 a load is not run where it is requested (see
+/// [`request_image_load`]): a host that drives a [`RinchDocument`](crate::RinchDocument)
+/// itself calls this **with no document borrowed**, before the layout that
+/// should show the pictures, and lays out again when it returns `true` and
+/// the layout requested more (a background's URL is requested by the cascade
+/// inside layout). `RinchContext` does this in `new` and every `update`, so a
+/// loader that answers at once is shown in the frame that asked.
+///
+/// The loader (the app's scheme loader, else the document's) and the decode
+/// run here, so the cost is the frame's: a loader must answer from memory, and
+/// a large picture is decoded inside the frame. A loader may write signals.
+///
+/// On native targets loads run on their own threads and this does nothing.
+pub fn run_queued_loads() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut ran = false;
+        loop {
+            // Taken before running: a loader may (through an effect) request
+            // another load, which waits for the next round.
+            let loads =
+                std::mem::take(&mut *QUEUED_LOADS.lock().unwrap_or_else(|e| e.into_inner()));
+            if loads.is_empty() {
+                return ran;
+            }
+            for (doc_key, src, loader) in loads {
+                let result = load_and_decode(&src, loader);
+                queue_answer(doc_key, src, result);
+                ran = true;
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    false
+}
 
 /// Spawn a background thread to load and decode an image (native).
 ///
@@ -427,71 +603,37 @@ pub fn request_image_load(_doc_key: u64, _src: String, _loader: Arc<dyn ImageLoa
 /// requesting document's [`ImageCache::drain_pending`] picks it up.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader>) {
-    std::thread::spawn(move || {
-        // A scheme the app installed a loader for is the app's to answer;
-        // everything else is the document's loader's.
-        let loader = rinch_core::image::image_scheme_loader(&src).unwrap_or(loader);
-        // Every load pushes exactly one answer. A loader is app code (a
-        // closure over a blob store), and one that panics must not take the
-        // answer with it: the source would stay "loading" for the life of the
-        // document, and a reload of a loading source only waits for the answer
-        // on its way. So a panic, in the loader or in the decode, is a failed
-        // load, which a reload starts again like any other failure.
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match loader.load(&src) {
-                ImageLoadResult::Loaded(bytes) => match image::load_from_memory(&bytes) {
-                    Ok(img) => {
-                        let rgba = img.to_rgba8();
-                        let (w, h) = (rgba.width(), rgba.height());
-                        Ok(DecodedImage::new(rgba.into_raw(), w, h))
-                    }
-                    Err(e) => Err(format!("Failed to decode image: {}", e)),
-                },
-                ImageLoadResult::Failed(e) => Err(e),
-            }))
-            .unwrap_or_else(|panic| {
-                let message = panic
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "(no message)".to_string());
-                Err(format!("image loader panicked: {message}"))
-            });
-        {
-            // Only for a document that is still there: an answer queued for a
-            // dropped one is never drained. The live list is held across the
-            // push, and `purge_pending` leaves it first, so a document that
-            // drops meanwhile either purges this answer or stops it here.
-            let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
-            if !live.contains_key(&doc_key) {
+    // 8 MB of stack, not the 2 MB a spawned thread gets: a decoder recurses
+    // over its input (#2111's review: a nested SVG overflowed 2 MB, and a
+    // stack overflow aborts the process). The SVG limits keep well inside it.
+    let spawned = std::thread::Builder::new()
+        .name("rinch-image-load".into())
+        .stack_size(8 << 20)
+        .spawn(move || {
+            let result = load_and_decode(&src, loader);
+            if !queue_answer(doc_key, src, result) {
                 return;
             }
-            PENDING_IMAGES
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(PendingImage {
-                    doc_key,
-                    src,
-                    result,
-                });
-        }
 
-        // Wake the main thread. The desktop event loop runs on
-        // `ControlFlow::Wait`, so without this the decode sits in the queue
-        // until some other input happens to arrive — an `<img src>` set while
-        // the app is otherwise idle stays 0x0 and unpainted, in practice
-        // forever. Dispatching an empty callback is the cheapest thing that
-        // goes through the platform wake path.
-        //
-        // The wake is *promptness only*, never the correctness guarantee, and
-        // must not be treated as one: hosts install their own dispatcher, and
-        // an embedded one deliberately wakes nothing (its game loop is already
-        // turning); the desktop one coalesces, so a wake can be swallowed when
-        // another closure is already queued. What actually guarantees the drain
-        // is [`has_pending`], which every host's "is there anything to do?"
-        // gate consults.
-        rinch_core::run_on_main_thread(|| {});
-    });
+            // Wake the main thread. The desktop event loop runs on
+            // `ControlFlow::Wait`, so without this the decode sits in the queue
+            // until some other input happens to arrive — an `<img src>` set while
+            // the app is otherwise idle stays 0x0 and unpainted, in practice
+            // forever. Dispatching an empty callback is the cheapest thing that
+            // goes through the platform wake path.
+            //
+            // The wake is *promptness only*, never the correctness guarantee, and
+            // must not be treated as one: hosts install their own dispatcher, and
+            // an embedded one deliberately wakes nothing (its game loop is already
+            // turning); the desktop one coalesces, so a wake can be swallowed when
+            // another closure is already queued. What actually guarantees the drain
+            // is [`has_pending`], which every host's "is there anything to do?"
+            // gate consults.
+            rinch_core::run_on_main_thread(|| {});
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("image load thread not started: {e}");
+    }
 }
 
 /// Whether any decode is queued for this document.
@@ -502,6 +644,15 @@ pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader
 /// skips the drain and the image never gets its intrinsic size. Anything that
 /// gates layout on dirtiness has to ask this too.
 pub fn has_pending(doc_key: u64) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    if QUEUED_LOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|load| load.0 == doc_key)
+    {
+        return true;
+    }
     PENDING_IMAGES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -638,22 +789,67 @@ pub fn purge_pending(doc_key: u64) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&doc_key);
+    #[cfg(target_arch = "wasm32")]
+    QUEUED_LOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|load| load.0 != doc_key);
 }
 
 /// Decode a `data:` URI into raw bytes.
 ///
-/// Supports `data:[<mediatype>];base64,<data>` format.
-/// Returns `None` if the URI is malformed or not base64-encoded.
+/// `data:[<mediatype>][;base64],<data>`. The data is percent-decoded first,
+/// as the fetch standard does; then, with `;base64`, decoded by its
+/// forgiving base64: ASCII white space is ignored and padding is optional
+/// (as Chrome decodes a `data:` URL). Without it, the percent-decoded bytes
+/// are the data — the form an inline `data:image/svg+xml,%3Csvg…` takes
+/// (#2111; before, only padded base64 decoded). Returns `None` if the URI has
+/// no comma or its base64 is invalid.
 pub fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
     let comma = src.find(',')?;
     let header = &src[..comma];
-    let data = &src[comma + 1..];
-    if header.contains(";base64") {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.decode(data).ok()
-    } else {
-        None
+    let data = percent_decode(&src.as_bytes()[comma + 1..]);
+    let base64 = header
+        .split(';')
+        .skip(1)
+        .any(|p| p.trim().eq_ignore_ascii_case("base64"));
+    if !base64 {
+        return Some(data);
     }
+    use base64::Engine;
+    let forgiving = base64::engine::GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        base64::engine::GeneralPurposeConfig::new()
+            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
+    );
+    let data: Vec<u8> = data
+        .into_iter()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    forgiving.decode(data).ok()
+}
+
+/// `%XX` escapes to their bytes; a `%` not followed by two hex digits is kept
+/// as it is (the URL standard's percent-decode).
+fn percent_decode(input: &[u8]) -> Vec<u8> {
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'%'
+            && let (Some(hi), Some(lo)) = (
+                input.get(i + 1).copied().and_then(hex),
+                input.get(i + 2).copied().and_then(hex),
+            )
+        {
+            out.push(hi << 4 | lo);
+            i += 3;
+            continue;
+        }
+        out.push(input[i]);
+        i += 1;
+    }
+    out
 }
 
 #[cfg(test)]

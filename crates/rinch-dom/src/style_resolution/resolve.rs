@@ -9,6 +9,7 @@ use style::invalidation::element::restyle_hints::RestyleHint;
 
 use crate::RinchDocument;
 use crate::node::DirtyFlags;
+use crate::node::RawNodeId;
 
 /// Whether `style`'s **inside** is a flex or grid formatting context, by
 /// either outside — `flex`/`inline-flex`/`grid`/`inline-grid` all answer
@@ -75,7 +76,7 @@ pub(crate) fn child_cascade(old: Option<&ComputedValues>, new: &ComputedValues) 
         && same(old.get_inherited_table(), new.get_inherited_table())
         && same(old.get_inherited_ui(), new.get_inherited_ui())
         && same(old.get_list(), new.get_list())
-        && old.custom_properties_equal(new)
+        && old.custom_properties() == new.custom_properties()
         && old.clone_display() == new.clone_display();
     if !inherited_same {
         return ChildCascade::Cascade;
@@ -230,7 +231,7 @@ impl RinchDocument {
         // a root an earlier walk already reached — every node a walk cascades
         // has its hint and dirty-descendants bit cleared — is skipped as
         // having nothing left to do.
-        let mut sorted: Vec<(usize, usize)> = roots
+        let mut sorted: Vec<(RawNodeId, usize)> = roots
             .into_iter()
             .filter_map(|id| Some((id, self.depth_if_connected(id)?)))
             .collect();
@@ -253,7 +254,7 @@ impl RinchDocument {
     /// list, not `dirty_nodes`: the walk runs inside `resolve_layout`, after
     /// the shell has taken `dirty_nodes`, and an entry left there would read as
     /// "something is pending" and ask the next idle frame for a redraw.
-    pub(crate) fn mark_restyled_for_paint(&mut self, node_id: usize) {
+    pub(crate) fn mark_restyled_for_paint(&mut self, node_id: RawNodeId) {
         if let Some(node) = self.tree.nodes.get_mut(node_id) {
             node.dirty.insert(DirtyFlags::STYLE | DirtyFlags::PAINT);
             self.tree.paint_dirty_nodes.push(node_id);
@@ -276,7 +277,7 @@ impl RinchDocument {
     ///   would cascade against an ancestor style this frame is about to
     ///   replace, and its next cascade would then read as a *change* — a
     ///   transition on a node that was only just inserted.
-    pub(crate) fn resolve_inserted_subtree(&mut self, node_id: usize) -> bool {
+    pub(crate) fn resolve_inserted_subtree(&mut self, node_id: RawNodeId) -> bool {
         // Flush pending sheet changes (a `<style>` this insertion connected, a
         // `load_css` since the last resolve) first, so the subtree cascades
         // against the rules the next resolve will use: otherwise that
@@ -332,7 +333,7 @@ impl RinchDocument {
 
     /// Whether the style walk has anything to do at `node_id`: it has no
     /// style yet, carries a restyle hint, or some descendant does.
-    fn node_needs_style_visit(&self, node_id: usize) -> bool {
+    fn node_needs_style_visit(&self, node_id: RawNodeId) -> bool {
         let Some(node) = self.tree.nodes.get(node_id) else {
             return false;
         };
@@ -359,7 +360,7 @@ impl RinchDocument {
     /// `clear()` zeroed all 4096 of them — on every hover and every
     /// insertion. The recorded hashes are removed, not recomputed, so an
     /// ancestor whose attributes changed since cannot unbalance a counter.
-    fn fill_style_bloom_for(&mut self, node_id: usize) {
+    fn fill_style_bloom_for(&mut self, node_id: RawNodeId) {
         use selectors::bloom::BLOOM_HASH_MASK;
         for hash in self.style_bloom_filled.drain(..) {
             self.style_bloom.remove_hash(hash);
@@ -385,7 +386,7 @@ impl RinchDocument {
     /// Add `node_id`'s tag, id, classes and attribute names to the style bloom
     /// filter, which descendant-combinator matching consults to reject a
     /// selector whose ancestor compounds no ancestor can satisfy.
-    fn push_style_bloom(&mut self, node_id: usize) {
+    fn push_style_bloom(&mut self, node_id: RawNodeId) {
         use selectors::bloom::BLOOM_HASH_MASK;
         let bloom = &mut self.style_bloom;
         style::bloom::each_relevant_element_hash(
@@ -396,7 +397,7 @@ impl RinchDocument {
 
     /// Undo [`Self::push_style_bloom`] for `node_id` (its hashes are recomputed
     /// from the same, unchanged attributes).
-    fn pop_style_bloom(&mut self, node_id: usize) {
+    fn pop_style_bloom(&mut self, node_id: RawNodeId) {
         use selectors::bloom::BLOOM_HASH_MASK;
         let bloom = &mut self.style_bloom;
         style::bloom::each_relevant_element_hash(
@@ -410,12 +411,12 @@ impl RinchDocument {
     /// only those [`Self::node_needs_style_visit`] names.
     fn resolve_style_children(
         &mut self,
-        node_id: usize,
+        node_id: RawNodeId,
         style: &ServoArc<ComputedValues>,
         cascade: ChildCascade,
         visit_all: bool,
     ) {
-        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
+        let children: Vec<RawNodeId> = self.tree.nodes[node_id].children.clone();
         let mut pushed = false;
         for child_id in children {
             let visit = visit_all
@@ -451,10 +452,10 @@ impl RinchDocument {
     }
 
     /// Walk up to find the nearest ancestor with a valid computed style.
-    fn find_parent_computed_style(&self, node_id: usize) -> Option<ServoArc<ComputedValues>> {
+    fn find_parent_computed_style(&self, node_id: RawNodeId) -> Option<ServoArc<ComputedValues>> {
         let mut current = self.tree.nodes.get(node_id)?.parent;
         while let Some(pid) = current {
-            let node = self.tree.nodes.get(pid)?;
+            let node = self.tree.nodes.get_live(pid)?;
             let data = node.stylo_element_data.borrow();
             if let Some(style) = data.as_ref().and_then(|d| d.styles.primary.clone()) {
                 return Some(style);
@@ -482,7 +483,7 @@ impl RinchDocument {
     /// walk writes before it descends, so they are this pass's.
     pub(crate) fn layout_parent_style(
         &self,
-        node_id: usize,
+        node_id: RawNodeId,
         parent_style: Option<&ServoArc<ComputedValues>>,
     ) -> Option<ServoArc<ComputedValues>> {
         let parent = parent_style?;
@@ -498,11 +499,11 @@ impl RinchDocument {
     /// not `display: contents`.
     pub(crate) fn nearest_non_contents_style(
         &self,
-        start: Option<usize>,
+        start: Option<RawNodeId>,
     ) -> Option<ServoArc<ComputedValues>> {
         let mut current = start;
         while let Some(id) = current {
-            let node = self.tree.nodes.get(id)?;
+            let node = self.tree.nodes.get_live(id)?;
             let style = node
                 .stylo_element_data
                 .borrow()
@@ -545,7 +546,7 @@ impl RinchDocument {
     /// A `None` also covers an id that is no longer in the slab, or whose
     /// ancestor chain leaves it — a `style_roots` entry outlives the node it
     /// names.
-    pub(crate) fn depth_if_connected(&self, node_id: usize) -> Option<usize> {
+    pub(crate) fn depth_if_connected(&self, node_id: RawNodeId) -> Option<usize> {
         if node_id == self.tree.root_id {
             return self.tree.nodes.get(node_id).map(|_| 0);
         }
@@ -556,7 +557,7 @@ impl RinchDocument {
             if pid == self.tree.root_id {
                 return Some(depth);
             }
-            current = self.tree.nodes.get(pid)?.parent;
+            current = self.tree.nodes.get_live(pid)?.parent;
         }
         None
     }
@@ -570,18 +571,17 @@ impl RinchDocument {
     /// something below is marked (`style_dirty_descendants`).
     pub(crate) fn resolve_styles_recursive(
         &mut self,
-        node_id: usize,
+        node_id: RawNodeId,
         parent_style: Option<ServoArc<ComputedValues>>,
         inherited: ChildCascade,
         visit_all: bool,
     ) {
         use selectors::matching::{
-            IncludeStartingStyle, MatchingContext, MatchingForInvalidation, MatchingMode,
-            NeedsSelectorFlags, SelectorCaches, VisitedHandlingMode,
+            MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags,
+            SelectorCaches, VisitedHandlingMode,
         };
         use style::applicable_declarations::ApplicableDeclarationList;
         use style::context::CascadeInputs;
-        use style::data::ElementData;
         use style::properties::FirstLineReparenting;
         use style::rule_cache::RuleCacheConditions;
         use style::shared_lock::StylesheetGuards;
@@ -669,7 +669,7 @@ impl RinchDocument {
         let mut kept_before = None;
         let mut kept_after = None;
         {
-            let mut markers: Vec<usize> = Vec::new();
+            let mut markers: Vec<RawNodeId> = Vec::new();
             let had_pseudo = self.tree.nodes[node_id].children.iter().any(|&cid| {
                 self.tree
                     .nodes
@@ -678,7 +678,7 @@ impl RinchDocument {
             });
             if had_pseudo {
                 for &cid in &self.tree.nodes[node_id].children {
-                    let Some(n) = self.tree.nodes.get(cid) else {
+                    let Some(n) = self.tree.nodes.get_live(cid) else {
                         continue;
                     };
                     if !n.is_pseudo_element {
@@ -741,7 +741,6 @@ impl RinchDocument {
                 Some(&*self.style_bloom),
                 &mut selector_caches,
                 VisitedHandlingMode::AllLinksUnvisited,
-                IncludeStartingStyle::No,
                 self.stylist.quirks_mode(),
                 NeedsSelectorFlags::Yes,
                 MatchingForInvalidation::No,
@@ -774,6 +773,10 @@ impl RinchDocument {
                 .rule_tree()
                 .compute_rule_node(&mut applicable_declarations, &guards);
 
+            // Re-derived by this cascade and the pseudo passes below: each
+            // `attr()` they substitute sets it (`TElement::get_attr`).
+            self.tree.nodes[node_id].content_reads_attrs.set(false);
+
             // Cascade to compute final styles
             let parent_style_ref = parent_style.as_deref();
             let layout_parent_style_ref = layout_parent_style.as_deref();
@@ -782,10 +785,13 @@ impl RinchDocument {
             let computed = self.stylist.cascade_style_and_visited(
                 Some(rinch_node),
                 None, // pseudo
-                CascadeInputs {
+                &CascadeInputs {
                     rules: Some(rule_node),
                     visited_rules: None,
                     flags: matching_context.extra_data.cascade_input_flags,
+                    // Not `STARTING_STYLE`: `@starting-style` rules stay out,
+                    // as `IncludeStartingStyle::No` kept them before.
+                    included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
                 },
                 &guards,
                 parent_style_ref,        // parent_style
@@ -794,17 +800,13 @@ impl RinchDocument {
                 &Default::default(), // try_tactic (PositionTryFallbacksTryTactic)
                 None,                // rule_cache
                 &mut rule_cache_conditions,
+                &mut Default::default(), // tree_counting_caches
             );
 
             // Store the computed style in the node's ElementData
             {
-                let mut stylo_data = self.tree.nodes[node_id].stylo_element_data.borrow_mut();
-                if stylo_data.is_none() {
-                    *stylo_data = Some(ElementData::default());
-                }
-                if let Some(ref mut data) = *stylo_data {
-                    data.styles.primary = Some(computed.clone());
-                }
+                let mut data = self.tree.nodes[node_id].stylo_element_data.ensure();
+                data.styles.primary = Some(computed.clone());
             }
 
             // Mark this node as needing Taffy sync (style was recomputed)
@@ -832,9 +834,6 @@ impl RinchDocument {
                 .flags
                 .intersects(style::computed_value_flags::ComputedValueFlags::USES_VIEWPORT_UNITS),
         );
-
-        // Re-derived by the pseudo passes below.
-        self.tree.nodes[node_id].content_reads_attrs.set(false);
 
         // Check for ::before and ::after pseudo-elements — only when some
         // stylesheet has a rule for that pseudo at all. The UA sheet has none,
@@ -960,7 +959,7 @@ impl RinchDocument {
             if node_id == html_id || self.tree.nodes[node_id].is_generated_box() {
                 continue;
             }
-            *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+            self.tree.nodes[node_id].stylo_element_data.clear();
         }
         // A recascaded `rem` length is a Taffy style change; make sure the
         // relayout isn't skipped when nothing else marked layout dirty.

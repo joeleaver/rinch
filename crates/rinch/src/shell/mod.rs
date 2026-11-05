@@ -22,6 +22,9 @@ pub mod memory_profile;
 pub(crate) mod os_file_drag;
 #[cfg(feature = "desktop")]
 pub(crate) mod overlay_window;
+// The main window's pointer lock and raw motion (#2092).
+#[cfg(feature = "desktop")]
+pub(crate) mod pointer_lock;
 #[cfg(feature = "desktop")]
 pub mod renderer;
 #[cfg(feature = "desktop")]
@@ -271,6 +274,7 @@ pub fn run_with_window_props_and_menu<F>(
 ///     .gpu_config(RinchGpuConfig {
 ///         required_features: wgpu::Features::FLOAT32_FILTERABLE,
 ///         required_limits: limits,
+///         ..Default::default()
 ///     })
 ///     .run();
 /// ```

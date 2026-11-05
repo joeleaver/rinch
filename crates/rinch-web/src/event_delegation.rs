@@ -804,6 +804,10 @@ mod activation {
 struct WebDragState {
     /// The `draggable="true"` source element.
     source: web_sys::Element,
+    /// The element the press landed on: the source or a descendant. A press
+    /// that never becomes a drag clicks here, so a child's own `data-rid` runs
+    /// (#2133), as desktop clicks at the press point.
+    pressed: web_sys::Element,
     /// The `PointerEvent.pointerId` that owns this drag. Only events carrying this
     /// id drive it (the multi-touch guard — secondary contacts are ignored).
     pointer_id: i32,
@@ -1196,7 +1200,7 @@ fn pointer_hit_element(event: &web_sys::PointerEvent) -> Option<web_sys::Element
 /// drag or it is already active. Called from the movement-threshold path (mouse)
 /// and from the long-press timer (touch/pen).
 fn activate_web_drag() {
-    let Some((source, kind, pointer_id, cursor)) = WEB_DRAG.with(|d| {
+    let Some((source, kind, pointer_id, cursor, press)) = WEB_DRAG.with(|d| {
         let mut b = d.borrow_mut();
         let s = b.as_mut()?;
         if s.active {
@@ -1204,7 +1208,13 @@ fn activate_web_drag() {
         }
         s.active = true;
         clear_long_press_timer(s);
-        Some((s.source.clone(), s.kind, s.pointer_id, s.cursor))
+        Some((
+            s.source.clone(),
+            s.kind,
+            s.pointer_id,
+            s.cursor,
+            (s.start_x, s.start_y),
+        ))
     }) else {
         return;
     };
@@ -1228,7 +1238,9 @@ fn activate_web_drag() {
         });
     }
 
-    dispatch_plain_attr(&source, "data-ondragstart");
+    // The press point and the source's box, as desktop gives them (#2154): a
+    // source that draws its own ghost keeps the grabbed point under the pointer.
+    dispatch_drag_with_bounds(&source, "data-ondragstart", press.0, press.1);
     // Process the target at the current cursor on this same frame so a coarse
     // drag (few moves) still fires enter/over and can drop. (Desktop splits
     // dragstart and the first target frame to render a drag ghost first; web has
@@ -1351,19 +1363,46 @@ fn finish_active_drag(state: &WebDragState, x: f32, y: f32, do_drop: bool) {
         dispatch_plain_attr(t, "data-ondragleave");
     }
     dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
+    // The runtime's end, whatever happened to the source node (#2091).
+    events::notify_element_drag_ended();
 }
 
 // ── Drag auto-scroll ──────────────────────────────────────────────────────────
 //
-// While an element drag is active and its pointer rests in the band along the
-// top or bottom edge of a scroll container under it, that container scrolls a
-// frame at a time from `requestAnimationFrame`, at the speed
+// While an element drag is active and its pointer rests in the band along an
+// edge of a scroll container under it, that container scrolls a frame at a
+// time from `requestAnimationFrame`, at the speed
 // `events::drag_auto_scroll_velocity` gives (the curve desktop's `AboutToWait`
 // tick uses), and the drag target under the still pointer is resolved again
 // after each frame that scrolled, so the row arriving under it hears
-// `data-ondragenter`/`data-ondragover`. The loop stops itself when the pointer
-// is in no band (a pointer move starts it again) and when the drag ends. The
-// browser's own `scroll` event carries `data-onscroll`.
+// `data-ondragenter`/`data-ondragover`. Each axis on its own (#2091): the
+// nearest container that can move vertically toward a top/bottom band, and the
+// nearest that can move horizontally toward a left/right band. The loop stops
+// itself when the pointer is in no band (a pointer move starts it again) and
+// when the drag ends. The browser's own `scroll` event carries
+// `data-onscroll`.
+
+/// The two scroll axes, as the auto-scroll loop keeps them apart.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScrollAxis {
+    Vertical,
+    Horizontal,
+}
+
+/// One axis of the frame loop: what a frame's delta left below a whole pixel
+/// (`scrollTop`/`scrollLeft` are written in whole pixels through web-sys, and a
+/// slow band must still add up), and a container a frame's write did not move
+/// with the direction it was written in: it is at its end that way, whatever
+/// its sizes say (#1592: `scrollHeight` and `clientHeight` are rounded, so at a
+/// fractional device scale a list can stop short of `scrollHeight -
+/// clientHeight` by more than any fixed slack). Later frames skip it in that
+/// direction, so the loop moves on up the chain or stops. Cleared when the
+/// loop stops, and by a pointer move.
+#[derive(Clone, Default)]
+struct AxisLoop {
+    remainder: f64,
+    stuck: Option<(web_sys::Element, f32)>,
+}
 
 /// The frame loop of a drag auto-scroll in flight.
 struct AutoScrollLoop {
@@ -1372,17 +1411,8 @@ struct AutoScrollLoop {
     /// The timestamp of the last frame that scrolled, in ms; `None` before the
     /// first.
     last: Option<f64>,
-    /// What a frame's delta left below a whole pixel: `Element.scrollTop` is
-    /// written in whole pixels through web-sys, and a slow band must still add
-    /// up.
-    remainder: f64,
-    /// A container a frame's write did not move, and the direction it was
-    /// written in: it is at its end that way, whatever its sizes say (#1592:
-    /// `scrollHeight` and `clientHeight` are rounded, so at a fractional
-    /// device scale a list can stop short of `scrollHeight - clientHeight` by
-    /// more than any fixed slack). Later frames skip it in that direction, so
-    /// the loop moves on up the chain or stops. Cleared when the loop stops.
-    stuck: Option<(web_sys::Element, f32)>,
+    vertical: AxisLoop,
+    horizontal: AxisLoop,
 }
 
 thread_local! {
@@ -1406,7 +1436,15 @@ fn request_auto_scroll_frame() -> Option<i32> {
 fn ensure_drag_auto_scroll() {
     // A move while the loop runs lets a `stuck` container be tried again: its
     // content may have grown since (a list loading more rows).
-    let running = AUTO_SCROLL.with(|a| a.borrow_mut().as_mut().map(|r| r.stuck = None).is_some());
+    let running = AUTO_SCROLL.with(|a| {
+        a.borrow_mut()
+            .as_mut()
+            .map(|r| {
+                r.vertical.stuck = None;
+                r.horizontal.stuck = None;
+            })
+            .is_some()
+    });
     if running {
         return;
     }
@@ -1417,8 +1455,8 @@ fn ensure_drag_auto_scroll() {
         *a.borrow_mut() = Some(AutoScrollLoop {
             handle,
             last: None,
-            remainder: 0.0,
-            stuck: None,
+            vertical: AxisLoop::default(),
+            horizontal: AxisLoop::default(),
         })
     });
 }
@@ -1446,46 +1484,100 @@ pub fn __drag_auto_scroll_running() -> bool {
     AUTO_SCROLL.with(|a| a.borrow().is_some())
 }
 
-/// The element a drag's pointer at height `y` over `hit` auto-scrolls, and how
-/// fast: the nearest ancestor of `hit` (or `hit`) with a computed `overflow-y`
-/// of `auto`/`scroll` and content taller than its box, or the document's
-/// scrolling element, that has the pointer in one of its bands and can still
-/// move toward that band's edge, and is not locked out by a `lock_scroll`
-/// overlay ([`crate::web_document::scroll_locked_out`]). Bands are measured on
-/// the part of the box inside the viewport; the scrolling element's on the
-/// viewport. Clipping by an outer scroller is not taken into account.
+/// The element a drag's pointer at `at` (its `y` for the vertical axis, its
+/// `x` for the horizontal) over `hit` auto-scrolls on `axis`, and how fast: the
+/// nearest ancestor of `hit` (or `hit`) with a computed `overflow-y` (`-x`) of
+/// `auto`/`scroll` and content longer than its box on that axis, or the
+/// document's scrolling element, that has the pointer in one of its bands and
+/// can still move toward that band's edge, and is not locked out by a
+/// `lock_scroll` overlay ([`crate::web_document::scroll_locked_out`]). Bands
+/// are measured on the part of the box inside the viewport; the scrolling
+/// element's on the viewport. Clipping by an outer scroller is not taken into
+/// account.
 ///
 /// `stuck` is a container a frame found at its end in one direction; it is
 /// not picked for that direction.
 fn drag_auto_scroll_container(
     hit: &web_sys::Element,
-    y: f32,
+    axis: ScrollAxis,
+    at: f32,
     stuck: Option<&(web_sys::Element, f32)>,
 ) -> Option<(web_sys::Element, f32)> {
     let win = web_sys::window()?;
     let doc = win.document()?;
-    let viewport_h = win.inner_height().ok()?.as_f64()? as f32;
+    let vertical = axis == ScrollAxis::Vertical;
+    let viewport = if vertical {
+        win.inner_height().ok()?.as_f64()? as f32
+    } else {
+        win.inner_width().ok()?.as_f64()? as f32
+    };
     let scrolling = doc.scrolling_element();
-    // `scrollTop` read unrounded (web-sys's `scroll_top` is an `i32`) against
-    // a range of rounded sizes, with a pixel of slack: at a fractional device
-    // scale the browser keeps the offset on the device grid, and a container
-    // whose last fraction is out of reach must count as at its end, or the
-    // loop spins there and the page never takes over. The slack is not enough
-    // on its own (both sizes are rounded); a write that moves nothing marks
-    // the container `stuck`, which is what ends the loop in every case.
+    // The offset read unrounded (web-sys's getters are `i32`) against a range
+    // of rounded sizes, with a pixel of slack: at a fractional device scale
+    // the browser keeps the offset on the device grid, and a container whose
+    // last fraction is out of reach must count as at its end, or the loop
+    // spins there and the page never takes over. The slack is not enough on
+    // its own (both sizes are rounded); a write that moves nothing marks the
+    // container `stuck`, which is what ends the loop in every case. A
+    // right-to-left container's `scrollLeft` runs from `-range` to 0.
     let can_move = |el: &web_sys::Element, velocity: f32| {
         if stuck.is_some_and(|(s, v)| same_element(s, el) && same_direction(*v, velocity)) {
             return false;
         }
-        let top = scroll_top_f64(el);
-        let max = f64::from(el.scroll_height() - el.client_height());
-        (velocity < 0.0 && top > 1.0) || (velocity > 0.0 && top < max - 1.0)
+        let (offset, min, max) = if vertical {
+            (
+                scroll_offset_f64(el, ScrollAxis::Vertical),
+                0.0,
+                f64::from(el.scroll_height() - el.client_height()),
+            )
+        } else {
+            let range = f64::from(el.scroll_width() - el.client_width());
+            let rtl = win
+                .get_computed_style(el)
+                .ok()
+                .flatten()
+                .is_some_and(|s| s.get_property_value("direction").as_deref() == Ok("rtl"));
+            let offset = scroll_offset_f64(el, ScrollAxis::Horizontal);
+            if rtl {
+                (offset, -range, 0.0)
+            } else {
+                (offset, 0.0, range)
+            }
+        };
+        (velocity < 0.0 && offset > min + 1.0) || (velocity > 0.0 && offset < max - 1.0)
+    };
+    let overflow_property = if vertical { "overflow-y" } else { "overflow-x" };
+    // The page scrolls on this axis unless the viewport's overflow hides it:
+    // `<html>`'s computed value, or `<body>`'s when `<html>` is `visible` (it
+    // propagates to the viewport). A `scrollTop`/`scrollLeft` write ignores
+    // `overflow: hidden`, so a page that hides its sideways overflow would
+    // otherwise slide during a drag near the window's edge (desktop asks
+    // `scrolls_x`/`scrolls_y`).
+    let page_scrolls = {
+        let value = |el: Option<web_sys::Element>| -> String {
+            el.and_then(|el| win.get_computed_style(&el).ok().flatten())
+                .and_then(|style| style.get_property_value(overflow_property).ok())
+                .unwrap_or_default()
+        };
+        let html = value(doc.document_element());
+        let viewport = if html == "visible" || html.is_empty() {
+            value(doc.body().map(Into::into))
+        } else {
+            html
+        };
+        !matches!(viewport.as_str(), "hidden" | "clip")
     };
     let mut node = Some(hit.clone());
     while let Some(el) = node {
         let is_scrolling = scrolling.as_ref().is_some_and(|s| same_element(s, &el));
-        let scrolls = is_scrolling
-            || (el.scroll_height() > el.client_height()
+        let longer = if vertical {
+            el.scroll_height() > el.client_height()
+        } else {
+            el.scroll_width() > el.client_width()
+        };
+        let scrolls = (is_scrolling && page_scrolls)
+            || (!is_scrolling
+                && longer
                 && win
                     .get_computed_style(&el)
                     .ok()
@@ -1493,7 +1585,7 @@ fn drag_auto_scroll_container(
                     .is_some_and(|style| {
                         matches!(
                             style
-                                .get_property_value("overflow-y")
+                                .get_property_value(overflow_property)
                                 .unwrap_or_default()
                                 .as_str(),
                             "auto" | "scroll"
@@ -1503,16 +1595,18 @@ fn drag_auto_scroll_container(
         // overlay, is not scrolled: desktop's rule (`scroll_locked_out`). A
         // `scrollTop` write ignores `<html>`'s `overflow: hidden`.
         if scrolls && !crate::web_document::scroll_locked_out(&el) {
-            let (top, bottom) = if is_scrolling {
-                (0.0, viewport_h)
+            let (start, end) = if is_scrolling {
+                (0.0, viewport)
             } else {
                 let rect = el.get_bounding_client_rect();
-                (
-                    (rect.top() as f32).max(0.0),
-                    (rect.bottom() as f32).min(viewport_h),
-                )
+                let (start, end) = if vertical {
+                    (rect.top(), rect.bottom())
+                } else {
+                    (rect.left(), rect.right())
+                };
+                ((start as f32).max(0.0), (end as f32).min(viewport))
             };
-            let velocity = events::drag_auto_scroll_velocity(y, top, bottom);
+            let velocity = events::drag_auto_scroll_velocity(at, start, end);
             if velocity != 0.0 && can_move(&el, velocity) {
                 return Some((el, velocity));
             }
@@ -1525,19 +1619,23 @@ fn drag_auto_scroll_container(
     // `hit` was outside the scrolling element's subtree (it never is in a
     // document; kept so a detached hit still ends here).
     let el = scrolling?;
-    if crate::web_document::scroll_locked_out(&el) {
+    if !page_scrolls || crate::web_document::scroll_locked_out(&el) {
         return None;
     }
-    let velocity = events::drag_auto_scroll_velocity(y, 0.0, viewport_h);
+    let velocity = events::drag_auto_scroll_velocity(at, 0.0, viewport);
     (velocity != 0.0 && can_move(&el, velocity)).then_some((el, velocity))
 }
 
-/// `Element.scrollTop` unrounded (web-sys's `scroll_top` is an `i32`).
-fn scroll_top_f64(el: &web_sys::Element) -> f64 {
-    js_sys::Reflect::get(el, &"scrollTop".into())
+/// `Element.scrollTop` / `scrollLeft` unrounded (web-sys's getters are `i32`).
+fn scroll_offset_f64(el: &web_sys::Element, axis: ScrollAxis) -> f64 {
+    let (name, rounded) = match axis {
+        ScrollAxis::Vertical => ("scrollTop", el.scroll_top()),
+        ScrollAxis::Horizontal => ("scrollLeft", el.scroll_left()),
+    };
+    js_sys::Reflect::get(el, &name.into())
         .ok()
         .and_then(|v| v.as_f64())
-        .unwrap_or_else(|| f64::from(el.scroll_top()))
+        .unwrap_or_else(|| f64::from(rounded))
 }
 
 /// Whether two velocities point the same way.
@@ -1545,8 +1643,45 @@ fn same_direction(a: f32, b: f32) -> bool {
     (a < 0.0) == (b < 0.0)
 }
 
-/// One auto-scroll frame: scroll the container under the drag's pointer by
-/// its band's speed times the time since the last frame, resolve the drag
+/// Scroll one axis of one frame: `container` by `velocity` for `step`
+/// seconds, on top of `state`'s remainder. Answers whether it moved, and the
+/// axis state for the next frame.
+fn auto_scroll_axis(
+    container: &web_sys::Element,
+    axis: ScrollAxis,
+    velocity: f32,
+    step: f32,
+    state: AxisLoop,
+) -> (bool, AxisLoop) {
+    let precise = state.remainder + f64::from(velocity * step);
+    let whole = precise.trunc();
+    let before = scroll_offset_f64(container, axis);
+    if whole != 0.0 {
+        match axis {
+            ScrollAxis::Vertical => container.set_scroll_top(container.scroll_top() + whole as i32),
+            ScrollAxis::Horizontal => {
+                container.set_scroll_left(container.scroll_left() + whole as i32)
+            }
+        }
+    }
+    let moved = scroll_offset_f64(container, axis) != before;
+    // A write that moved nothing: the container is at its end this way.
+    let stuck = if whole != 0.0 && !moved {
+        Some((container.clone(), velocity))
+    } else {
+        state.stuck
+    };
+    (
+        moved,
+        AxisLoop {
+            remainder: precise - whole,
+            stuck,
+        },
+    )
+}
+
+/// One auto-scroll frame: scroll the containers under the drag's pointer by
+/// their bands' speed times the time since the last frame, resolve the drag
 /// target again if that moved anything, and schedule the next frame — or stop
 /// when there is no active drag or its pointer is in no band. No `WEB_DRAG` or
 /// `AUTO_SCROLL` borrow is held across a DOM call or a handler.
@@ -1561,32 +1696,49 @@ fn drag_auto_scroll_frame(timestamp: f64) {
         AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
         return;
     };
-    let Some((last, remainder, stuck)) = AUTO_SCROLL.with(|a| {
+    let Some((last, vertical, horizontal)) = AUTO_SCROLL.with(|a| {
         a.borrow()
             .as_ref()
-            .map(|r| (r.last, r.remainder, r.stuck.clone()))
+            .map(|r| (r.last, r.vertical.clone(), r.horizontal.clone()))
     }) else {
         return; // stopped since this frame was scheduled
     };
-    let pick = element_from_point(x, y)
-        .and_then(|hit| drag_auto_scroll_container(&hit, y, stuck.as_ref()));
-    let Some((container, velocity)) = pick else {
+    let hit = element_from_point(x, y);
+    let pick_v = hit.as_ref().and_then(|hit| {
+        drag_auto_scroll_container(hit, ScrollAxis::Vertical, y, vertical.stuck.as_ref())
+    });
+    let pick_h = hit.as_ref().and_then(|hit| {
+        drag_auto_scroll_container(hit, ScrollAxis::Horizontal, x, horizontal.stuck.as_ref())
+    });
+    if pick_v.is_none() && pick_h.is_none() {
         AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
         return;
-    };
-    let elapsed = last.map(|then| ((timestamp - then) / 1000.0) as f32);
-    let precise = remainder + f64::from(velocity * events::drag_auto_scroll_step(elapsed));
-    let whole = precise.trunc();
-    let before = scroll_top_f64(&container);
-    if whole != 0.0 {
-        container.set_scroll_top(container.scroll_top() + whole as i32);
     }
-    let moved = scroll_top_f64(&container) != before;
-    // A write that moved nothing: the container is at its end this way.
-    let stuck = if whole != 0.0 && !moved {
-        Some((container.clone(), velocity))
-    } else {
-        stuck
+    let elapsed = last.map(|then| ((timestamp - then) / 1000.0) as f32);
+    let step = events::drag_auto_scroll_step(elapsed);
+    let mut moved = false;
+    let vertical = match &pick_v {
+        Some((container, velocity)) => {
+            let (m, next) =
+                auto_scroll_axis(container, ScrollAxis::Vertical, *velocity, step, vertical);
+            moved |= m;
+            next
+        }
+        None => vertical,
+    };
+    let horizontal = match &pick_h {
+        Some((container, velocity)) => {
+            let (m, next) = auto_scroll_axis(
+                container,
+                ScrollAxis::Horizontal,
+                *velocity,
+                step,
+                horizontal,
+            );
+            moved |= m;
+            next
+        }
+        None => horizontal,
     };
     let Some(handle) = request_auto_scroll_frame() else {
         AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
@@ -1596,8 +1748,8 @@ fn drag_auto_scroll_frame(timestamp: f64) {
         *a.borrow_mut() = Some(AutoScrollLoop {
             handle,
             last: Some(timestamp),
-            remainder: precise - whole,
-            stuck,
+            vertical,
+            horizontal,
         })
     });
     if moved {
@@ -2064,7 +2216,11 @@ fn dispatch_click_at(
             focus_press_target(target);
         }
         let active = active_in(el);
+        // The link the press went through on its way to the handler
+        // (`events::click_link`), as on desktop.
+        events::set_click_link(link_in(el, &rid_el));
         let ran = dispatch_rid(rid);
+        events::set_click_link(None);
         if let PressFocus::Focus(target) = press_focus.clone()
             && touch
         {
@@ -2184,7 +2340,43 @@ fn dispatch_activation(
         events::MouseButton::Left,
         modifiers,
     );
-    dispatch_rid(rid).then_some(rid)
+    // A keyboard or AT activation of a link names it too.
+    events::set_click_link(link_in(el, &rid_el));
+    let ran = dispatch_rid(rid);
+    events::set_click_link(None);
+    ran.then_some(rid)
+}
+
+/// The `href` of the nearest `<a href>` at or above `el` that is inside the
+/// handler's element `rid_el` (`events::click_link`).
+fn link_in(el: &web_sys::Element, rid_el: &web_sys::Element) -> Option<String> {
+    el.closest("a[href]")
+        .ok()
+        .flatten()
+        .filter(|a| rid_el.contains(Some(a)))
+        .and_then(|a| a.get_attribute("href"))
+}
+
+/// The `<a href>` at or above `el` when an element around it claims its
+/// links (`data-claim-links`).
+fn claimed_link(el: &web_sys::Element) -> Option<web_sys::Element> {
+    let a = el.closest("a[href]").ok().flatten()?;
+    a.closest("[data-claim-links]").ok().flatten().map(|_| a)
+}
+
+/// Whether the browser's own ways to open a claimed link other than a click
+/// — its context menu ("Open link in new tab") and dragging it to the tab
+/// bar — are cancelled on `el`: on a claimed link, unless the claiming
+/// element allows them (`data-claim-links="menu"`).
+fn claimed_link_menu_blocked(el: &web_sys::Element) -> bool {
+    let Some(a) = claimed_link(el) else {
+        return false;
+    };
+    a.closest("[data-claim-links]")
+        .ok()
+        .flatten()
+        .and_then(|c| c.get_attribute("data-claim-links"))
+        .is_none_or(|v| !v.split_whitespace().any(|t| t == "menu"))
 }
 
 /// The rich-text editor `el` belongs to — its `[data-pm-editor]` container —
@@ -2240,6 +2432,7 @@ fn offer_element_key(
     if el.has_attribute("data-pm-capture") || editor_owning(&el).is_some() {
         return false;
     }
+    let data = &data.clone().with_target(crate::web_document::get_nid(&el));
     let mut ids = Vec::new();
     let mut cur = Some(el);
     while let Some(e) = cur {
@@ -2758,6 +2951,92 @@ fn move_tab(
     wrap
 }
 
+/// The `WheelEvent` an `onwheel` handler is given for a browser `wheel`:
+/// deltas in logical pixels with the DOM's sign — a `deltaMode` of lines is 40
+/// px a line (what the desktop scrolls a notch by), of pages the viewport's
+/// height — the pointer in client pixels, and the modifiers. A trackpad pinch
+/// already arrives as a wheel with `ctrlKey` set.
+fn wheel_event_data(event: &web_sys::WheelEvent) -> events::WheelEvent {
+    let unit = match event.delta_mode() {
+        web_sys::WheelEvent::DOM_DELTA_LINE => 40.0,
+        web_sys::WheelEvent::DOM_DELTA_PAGE => viewport_dims().1 as f64,
+        _ => 1.0,
+    };
+    let mouse: &web_sys::MouseEvent = event.as_ref();
+    events::WheelEvent::new(
+        (event.delta_x() * unit) as f32,
+        (event.delta_y() * unit) as f32,
+        mouse.client_x() as f32,
+        mouse.client_y() as f32,
+    )
+    .with_modifiers(modifiers_from_event(mouse))
+}
+
+/// Offer a `wheel` to the `data-onwheel` handler of its target and then its
+/// ancestors', nearest first, stopping at the first that consumes it; a
+/// consumed wheel is `preventDefault()`ed, so nothing scrolls and the
+/// browser does not zoom the page for a pinch. The ids are read before any
+/// handler runs.
+///
+/// The listener is on the document in the bubble phase and **not passive**: a
+/// passive one cannot cancel the scroll, and Chrome makes a document-level
+/// `wheel` listener passive unless told otherwise. A render surface's own
+/// wheel listener stops the event at the canvas, as on desktop, where a
+/// surface takes the wheel ahead of the element chain.
+fn install_wheel(doc: &web_sys::Document) {
+    let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let Ok(event) = event.dyn_into::<web_sys::WheelEvent>() else {
+            return;
+        };
+        let Some(el) = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let mut ids = Vec::new();
+        // `target`: the nearest element rinch created at or above the DOM's
+        // target (one an app's raw HTML made carries no `__nid`).
+        let mut target = None;
+        let mut cur = Some(el);
+        while let Some(e) = cur {
+            if target.is_none() {
+                target = crate::web_document::get_nid(&e);
+            }
+            if let Some(id) = e
+                .get_attribute("data-onwheel")
+                .and_then(|v| v.parse::<usize>().ok())
+            {
+                ids.push(events::EventHandlerId(id));
+            }
+            cur = e.parent_element();
+        }
+        if ids.is_empty() {
+            return;
+        }
+        // The platform rule `WheelEvent::scroll_deltas` follows: the browser
+        // turns a Shift wheel sideways itself on Linux and Windows, and macOS
+        // does it in the system, so a handler mirroring the default scroll
+        // turns it only off macOS. Read per wheel, so `__set_mac_platform`
+        // reaches it.
+        events::set_shift_wheel_turns_sideways(!crate::editor_input::is_mac());
+        let mut data = wheel_event_data(&event);
+        data.target = target;
+        if events::dispatch_wheel_handler_chain(ids, &data) {
+            event.prevent_default();
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    let opts = web_sys::AddEventListenerOptions::new();
+    opts.set_passive(false);
+    doc.add_event_listener_with_callback_and_add_event_listener_options(
+        "wheel",
+        closure.as_ref().unchecked_ref(),
+        &opts,
+    )
+    .ok();
+    closure.forget();
+}
+
 /// Set up global event listeners that delegate to rinch's event handler registry.
 ///
 /// Wires `pointerdown`/`pointermove`/`pointerup`/`pointercancel` (click dispatch,
@@ -2932,6 +3211,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 WEB_DRAG.with(|d| {
                     *d.borrow_mut() = Some(WebDragState {
                         source: source.clone(),
+                        pressed: el.clone(),
                         pointer_id: event.pointer_id(),
                         kind,
                         start_x: event.client_x() as f32,
@@ -3232,11 +3512,21 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 let y = event.client_y() as f32;
                 finish_active_drag(&state, x, y, true);
             } else {
-                // Never activated (a quick tap / sub-threshold press) — treat as a
-                // click on the draggable, which only the primary button makes
-                // (issue #1093), as on the pointerdown path.
+                // Never activated (a quick tap / sub-threshold press) — a click
+                // on what was pressed, which only the primary button makes
+                // (issue #1093), as on the pointerdown path. Desktop clicks at
+                // the press point (#2133): the pressed element, or, when a
+                // re-render took it out of the document, whatever is at that
+                // point now.
                 if event.button() == 0 {
-                    dispatch_click_at(&state.source, &browser_doc_for_up, event);
+                    let target = if state.pressed.is_connected() {
+                        Some(state.pressed.clone())
+                    } else {
+                        element_from_point(state.start_x, state.start_y)
+                    };
+                    if let Some(target) = target {
+                        dispatch_click_at(&target, &browser_doc_for_up, event);
+                    }
                 }
             }
         }
@@ -3327,6 +3617,15 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         let target_el = event
             .target()
             .and_then(|t| t.dyn_into::<web_sys::Element>().ok());
+        // A link inside an element that claims its links (`data-claim-links`,
+        // `HtmlView`) is the app's to follow: the browser never navigates
+        // the app's own tab to it, whatever input clicked it.
+        if target_el
+            .as_ref()
+            .is_some_and(|el| claimed_link(el).is_some())
+        {
+            event.prevent_default();
+        }
         if !activation::click_should_dispatch(acted_gesture, trusted)
             // A `<label>`'s forwarded click reaching a handler the press did
             // not run is the label's activation of its control, not the
@@ -3390,6 +3689,45 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .unwrap();
     click_closure.forget();
 
+    // A middle click on a claimed link (`data-claim-links`) opens it in a new
+    // tab, with no `click` at all: it is cancelled, and handed to the handler
+    // around it as a click with `MouseButton::Middle` and the link in
+    // `click_link`, so the app decides (and can tell it from a plain click).
+    let auxclick_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let Some(mouse) = event.dyn_ref::<web_sys::MouseEvent>() else {
+            return;
+        };
+        let Some(el) = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        if claimed_link(&el).is_none() {
+            return;
+        }
+        event.prevent_default();
+        if mouse.button() != 1 {
+            return;
+        }
+        if let Some((rid_el, rid)) = nearest_live_rid(&el) {
+            set_click_context_for(
+                &rid_el,
+                Some((mouse.client_x() as f32, mouse.client_y() as f32)),
+                events::TextHitInfo::default(),
+                events::MouseButton::Middle,
+                modifiers_from_event(mouse),
+            );
+            events::set_click_link(link_in(&el, &rid_el));
+            dispatch_rid(rid);
+            events::set_click_link(None);
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("auxclick", auxclick_closure.as_ref().unchecked_ref())
+        .unwrap();
+    auxclick_closure.forget();
+
     // Suppress the browser's native HTML5 drag for rinch draggables: the element
     // drag-and-drop above is synthesized from pointer events, and a native drag
     // would otherwise hijack the gesture (suppressing pointermove/pointerup).
@@ -3399,7 +3737,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     let dragstart_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
         if let Some(target) = event.target()
             && let Ok(el) = target.dyn_into::<web_sys::Element>()
-            && el.closest("[draggable=\"true\"]").ok().flatten().is_some()
+            && (el.closest("[draggable=\"true\"]").ok().flatten().is_some()
+                // A claimed link dragged to the tab bar would open it.
+                || claimed_link_menu_blocked(&el))
         {
             event.prevent_default();
         }
@@ -3836,6 +4176,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         let target = event
             .target()
             .and_then(|target| target.dyn_into::<web_sys::Element>().ok());
+        // "Open link in new tab" on a claimed link would open it.
+        if target.as_ref().is_some_and(claimed_link_menu_blocked) {
+            event.prevent_default();
+        }
         // A stale `data-oncontextmenu` — its scope disposed, the attribute
         // outliving the handler (issue #141) — is not a handler. Without this
         // check it both swallowed the browser's menu and dispatched nothing,
@@ -3951,6 +4295,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
 
     // Files dropped from outside the page on an `ondropfiles` element (#1771).
     install_file_drop(&browser_doc);
+
+    // `onwheel`: the element under the pointer, then its ancestors.
+    install_wheel(&browser_doc);
 
     // Scroll delegation: the native `scroll` event fires on the scrolled element
     // and does NOT bubble, so register in the capture phase to catch all

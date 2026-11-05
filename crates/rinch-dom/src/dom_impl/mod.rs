@@ -6,8 +6,9 @@ use servo_arc::Arc as ServoArc;
 // Stylo CSS engine imports
 use euclid::Scale;
 use style::context::QuirksMode;
+use style::device::Device;
 use style::font_metrics::FontMetrics;
-use style::media_queries::{Device, MediaType};
+use style::media_queries::MediaType;
 use style::properties::style_structs::Font as StyloFont;
 use style::properties::{ComputedValues, PropertyDeclarationBlock};
 use style::queries::values::PrefersColorScheme;
@@ -15,9 +16,9 @@ use style::stylist::Stylist;
 use style::values::computed::font::GenericFontFamily;
 use style::values::computed::{CSSPixelLength, Length};
 use style::values::specified::font::QueryFontMetricsFlags;
-use stylo_config as style_config;
 // CSSPixel and DevicePixel are used via euclid::Size2D type parameters
 
+use crate::node::RawNodeId;
 use crate::node::{DirtyFlags, NodeTree};
 
 mod dom_document_impl;
@@ -27,7 +28,7 @@ mod dom_document_impl;
 #[derive(Debug)]
 pub(crate) struct SimpleFontMetricsProvider;
 
-impl style::servo::media_queries::FontMetricsProvider for SimpleFontMetricsProvider {
+impl style::device::servo::FontMetricsProvider for SimpleFontMetricsProvider {
     fn query_font_metrics(
         &self,
         _vertical: bool,
@@ -98,14 +99,21 @@ pub(crate) fn build_device(width: f32, height: f32, params: &DeviceParams) -> De
     let default_font = StyloFont::initial_values();
     let default_computed_values = ComputedValues::initial_values_with_font_override(default_font);
 
+    // The window is the screen a rinch document knows: `device-width` and
+    // `device-height` (media features stylo 0.21 added for servo) answer the
+    // viewport's size, as they do for a full-screen page.
+    let device_size = viewport_size * device_pixel_ratio;
     let device = Device::new(
         MediaType::screen(),
         QuirksMode::NoQuirks,
         viewport_size,
+        device_size,
         device_pixel_ratio,
         font_metrics_provider,
         default_computed_values,
         PrefersColorScheme::Light,
+        Default::default(),
+        Default::default(),
     );
     // A fresh Device starts at the 16px initial — restore the root element's
     // font-size so a rebuild doesn't erase the `rem` basis.
@@ -148,7 +156,7 @@ pub struct RinchDocument {
     /// Every `<style>` element created in this document (#884), so the sheets
     /// can follow them in and out of it. May hold ids since freed or reused;
     /// [`Self::sync_style_element_sheets`] drops those.
-    pub(crate) style_elements: Vec<usize>,
+    pub(crate) style_elements: Vec<RawNodeId>,
     /// The sheets of the connected `<style>` elements, in tree order, each
     /// with the element and the CSS text it was parsed from. They cascade
     /// after `author_stylesheets`.
@@ -187,7 +195,7 @@ pub struct RinchDocument {
     /// (`style_resolution::invalidation`).
     pub(crate) snapshots: style::selector_parser::SnapshotMap,
     /// The elements in `snapshots`, in the order they were first changed.
-    pub(crate) snapshot_ids: Vec<usize>,
+    pub(crate) snapshot_ids: Vec<RawNodeId>,
     /// The ancestor bloom filter the style walk matches descendant
     /// combinators against. Boxed: it is a few kilobytes.
     pub(crate) style_bloom: Box<selectors::bloom::BloomFilter>,
@@ -214,6 +222,33 @@ impl Drop for RinchDocument {
     }
 }
 
+/// Set the Stylo preferences rinch depends on. They are process-global
+/// atomics (`stylo_static_prefs`), read while CSS is parsed, so this runs
+/// before any parsing (every [`RinchDocument::new`]).
+///
+/// - `layout.grid.enabled` and `layout.unimplemented` turn on CSS Grid and the
+///   longhands Servo marks unimplemented (`text-overflow` among them).
+/// - The rest hold every preference at the value stylo 0.11 answered, so the
+///   0.11 → 0.22 upgrade changes no stylesheet's meaning (see
+///   `docs/internals/dependencies.md`, "Stylo"). 0.11 read `layout.threads`
+///   through `stylo_config`, which answered `0` (no style thread pool) unless
+///   set; 0.22 defaults it to `-1` (a pool of up to six threads).
+///   `@property` (`properties-and-values`) was off in 0.11's static table; the
+///   other five gate syntax 0.11 did not parse at all, and upstream turns them
+///   on by default. Turning any of them on is its own change.
+pub(crate) fn set_stylo_prefs() {
+    use stylo_static_prefs::set_pref;
+    set_pref!("layout.grid.enabled", true);
+    set_pref!("layout.unimplemented", true);
+    set_pref!("layout.threads", 0);
+    set_pref!("layout.css.properties-and-values.enabled", false);
+    set_pref!("layout.css.alpha-color-function.enabled", false);
+    set_pref!("layout.css.calc-typed-arithmetic.enabled", false);
+    set_pref!("layout.css.color-mix-multi-color.enabled", false);
+    set_pref!("layout.css.revert-rule.enabled", false);
+    set_pref!("layout.css.supports.at-rule.enabled", false);
+}
+
 impl RinchDocument {
     /// Process-unique document identity (see
     /// [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)) —
@@ -225,10 +260,7 @@ impl RinchDocument {
 
     /// Create a new document with root and body nodes.
     pub fn new() -> Self {
-        // Enable CSS Grid and text-overflow support in Stylo
-        // This must be called before any CSS parsing happens
-        style_config::set_bool("layout.grid.enabled", true);
-        style_config::set_bool("layout.unimplemented", true);
+        set_stylo_prefs();
 
         // Create the Stylo Device with default viewport and settings
         let device_params = DeviceParams::default();
@@ -290,7 +322,7 @@ impl RinchDocument {
 
             html, body, div, section, article, aside, header, footer, main, nav,
             h1, h2, h3, h4, h5, h6, p, blockquote, pre, figure, figcaption,
-            ul, ol, menu, dir, dl, dt, dd, table, form, fieldset, legend, hr,
+            ul, ol, menu, dir, dl, dt, dd, form, fieldset, legend, hr,
             address, details, summary {
                 display: block;
             }
@@ -355,13 +387,7 @@ impl RinchDocument {
                 font-weight: bold;
             }
 
-            /* A browser also gives `<th>` `display: table-cell`, and this rule
-               deliberately does not: rinch has no table formatting context at
-               all — `DisplayValue` carries no table variant, `table` is
-               `display: block` above, and `tr`/`td`/`th`/`thead` keep Stylo's
-               default `inline`. Declaring a display the layout engine cannot
-               honour would buy nothing and mislead.
-               `the_th_rule_does_not_claim_a_table_display` is the pin.
+            /* A `<th>` is bold, and centred under a parent of no alignment.
 
                `font-weight` is plainly real. `text-align` is real as a computed
                value everywhere, and takes visible effect wherever the cell is
@@ -401,6 +427,26 @@ impl RinchDocument {
                 font-weight: bold;
                 text-align: -moz-center-or-inherit;
             }
+
+            center { display: block; text-align: -moz-center-or-inherit; }
+
+            /* The HTML Standard's tables section (rendering 15.3.8). */
+            table {
+                display: table;
+                box-sizing: border-box;
+                border-spacing: 2px;
+                border-collapse: separate;
+                text-indent: initial;
+            }
+            caption { display: table-caption; text-align: center; }
+            colgroup { display: table-column-group; }
+            col { display: table-column; }
+            thead { display: table-header-group; vertical-align: middle; }
+            tbody { display: table-row-group; vertical-align: middle; }
+            tfoot { display: table-footer-group; vertical-align: middle; }
+            tr { display: table-row; vertical-align: inherit; }
+            table > tr { vertical-align: middle; }
+            td, th { display: table-cell; vertical-align: inherit; padding: 1px; }
 
             u, ins {
                 text-decoration-line: underline;
@@ -549,6 +595,16 @@ impl RinchDocument {
                (it has no box either way); rinch reports `none`. */
             textarea > *, input > *, canvas > *, video > *, iframe > * {
                 display: none !important;
+            }
+
+            /* The controls Chrome 156 sizes as border boxes (`box-sizing`,
+               read since #1278; every other element is `content-box`, the
+               initial value, and `table` is above). */
+            select, button, meter, progress,
+            input:is([type=button i], [type=submit i], [type=reset i],
+                     [type=checkbox i], [type=radio i], [type=color i],
+                     [type=search i]) {
+                box-sizing: border-box;
             }
 
             select {
@@ -775,7 +831,7 @@ impl RinchDocument {
     }
 
     /// Mark a node and its ancestors as needing layout.
-    fn mark_dirty_up(&mut self, node_id: usize, flags: DirtyFlags) {
+    fn mark_dirty_up(&mut self, node_id: RawNodeId, flags: DirtyFlags) {
         let mut current = Some(node_id);
         while let Some(id) = current {
             if let Some(node) = self.tree.nodes.get_mut(id) {
@@ -788,12 +844,12 @@ impl RinchDocument {
     }
 
     /// Push a node to the dirty list with layout+paint flags.
-    fn push_dirty(&mut self, node_id: usize) {
+    fn push_dirty(&mut self, node_id: RawNodeId) {
         self.push_dirty_flags(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
     }
 
     /// Push a node to the dirty list with specific flags.
-    pub(crate) fn push_dirty_flags(&mut self, node_id: usize, flags: DirtyFlags) {
+    pub(crate) fn push_dirty_flags(&mut self, node_id: RawNodeId, flags: DirtyFlags) {
         if self.tree.contains(node_id) {
             self.tree.nodes[node_id].dirty.insert(flags);
             self.tree.push_dirty(node_id);
@@ -811,25 +867,41 @@ impl RinchDocument {
     /// removal of attribute `name`; a no-op for any attribute or element HTML
     /// maps nothing for. The restyle that re-reads them is
     /// `note_attribute_change`'s.
-    pub(crate) fn sync_presentational_hints(&mut self, node_id: usize, name: &str) {
-        if !matches!(name, "width" | "height") {
+    pub(crate) fn sync_presentational_hints(&mut self, node_id: RawNodeId, name: &str) {
+        let node = &self.tree.nodes[node_id];
+        let Some(tag) = node.tag() else {
+            return;
+        };
+        // A cell's spans are read when its table is placed (`table_layout`),
+        // which nothing else owes it when only they change.
+        if matches!(tag, "td" | "th")
+            && matches!(name, "colspan" | "rowspan")
+            && let Some(parent) = node.parent
+        {
+            self.note_table_children_changed(parent);
             return;
         }
         let node = &self.tree.nodes[node_id];
-        if !node
-            .tag()
-            .is_some_and(crate::replaced::maps_dimension_attributes)
+        let Some(tag) = node.tag() else {
+            return;
+        };
+        let replaced = crate::replaced::maps_dimension_attributes(tag);
+        if !(replaced && matches!(name, "width" | "height"))
+            && !crate::legacy_hints::maps_attribute(tag, name)
         {
             return;
         }
-        let css = crate::replaced::dimension_hints_css(node);
-        self.tree.nodes[node_id].presentational_hints =
-            css.map(|css| ServoArc::new(self.tree.guard.wrap(parse_inline_style(&css))));
+        let mut css = crate::legacy_hints::hints_css(node).unwrap_or_default();
+        if replaced && let Some(dims) = crate::replaced::dimension_hints_css(node) {
+            css.push_str(&dims);
+        }
+        self.tree.nodes[node_id].presentational_hints = (!css.is_empty())
+            .then(|| ServoArc::new(self.tree.guard.wrap(parse_inline_style(&css))));
     }
 
     /// Cache a parsed inline `style` block on the node for Stylo's next
     /// cascade of it. Pair with [`parse_inline_style`].
-    pub(crate) fn cache_inline_style(&mut self, node_id: usize, pdb: PropertyDeclarationBlock) {
+    pub(crate) fn cache_inline_style(&mut self, node_id: RawNodeId, pdb: PropertyDeclarationBlock) {
         self.tree.nodes[node_id].style_attribute_cache =
             Some(ServoArc::new(self.tree.guard.wrap(pdb)));
     }
@@ -840,7 +912,19 @@ impl RinchDocument {
     /// positions, ensuring borders, backgrounds, and other visuals are cleared.
     /// Saves the absolute rect of each node because the nodes will be deleted
     /// from the tree before `compute_dirty_region` runs.
-    pub(crate) fn mark_subtree_paint_dirty(&mut self, node_id: usize) {
+    pub(crate) fn mark_subtree_paint_dirty(&mut self, node_id: RawNodeId) {
+        // The range of a scroll container above the subtree may shrink with
+        // it gone, moving that container's bars with nothing of its own
+        // dirty (`paint::bar_watch_scrollers`). Its root's parent only: the
+        // boxes below leave with it.
+        if let Some(parent) = self.tree.get(node_id).and_then(|n| n.parent) {
+            self.tree.bar_check_parents.push(parent);
+        }
+        self.mark_subtree_paint_dirty_below(node_id);
+    }
+
+    /// [`Self::mark_subtree_paint_dirty`]'s walk.
+    fn mark_subtree_paint_dirty_below(&mut self, node_id: RawNodeId) {
         if self.tree.contains(node_id) {
             // Save the rect the node's pixels are in before it leaves the
             // tree: compute_dirty_region won't be able to reach it after.
@@ -897,7 +981,7 @@ impl RinchDocument {
             // node's painted state, which is forgotten below.
             let children = self.tree.nodes[node_id].children.clone();
             for child_id in children {
-                self.mark_subtree_paint_dirty(child_id);
+                self.mark_subtree_paint_dirty_below(child_id);
             }
             // Its old pixels are accounted for, and after the next paint it
             // has none: a detached node re-inserted later must not carry a
@@ -905,6 +989,11 @@ impl RinchDocument {
             let node = &mut self.tree.nodes[node_id];
             node.painted = None;
             node.prev_layout = node.layout;
+            // Its own bars, if it is a scroll container, are forgotten with
+            // the rest of its painted state.
+            if node.scrolls_x() || node.scrolls_y() {
+                self.tree.painted_bars.remove(&node_id);
+            }
         }
     }
 
@@ -927,8 +1016,12 @@ impl RinchDocument {
     /// the moves — records its pixels and forgets its painted state
     /// (`mark_subtree_paint_dirty`, #966), so an unpainted root has nothing
     /// painted below it.
-    pub(crate) fn record_pixels_left_by_move(&mut self, child: usize, new_parent: usize) -> bool {
-        let Some(node) = self.tree.nodes.get(child) else {
+    pub(crate) fn record_pixels_left_by_move(
+        &mut self,
+        child: RawNodeId,
+        new_parent: RawNodeId,
+    ) -> bool {
+        let Some(node) = self.tree.nodes.get_live(child) else {
             return false;
         };
         let moves = node.parent.is_some_and(|old| old != new_parent) && node.painted.is_some();
@@ -943,7 +1036,7 @@ impl RinchDocument {
     /// Adds node IDs to `paint_dirty_nodes` so `compute_dirty_region` can
     /// read their rects after layout. Unlike `mark_subtree_paint_dirty`,
     /// this doesn't save absolute rects (the nodes haven't been laid out yet).
-    pub(crate) fn mark_subtree_paint_dirty_ids(&mut self, node_id: usize) {
+    pub(crate) fn mark_subtree_paint_dirty_ids(&mut self, node_id: RawNodeId) {
         if self.tree.contains(node_id) {
             self.tree.paint_dirty_nodes.push(node_id);
             let children = self.tree.nodes[node_id].children.clone();
@@ -957,9 +1050,9 @@ impl RinchDocument {
     /// Used when a parent's class or interaction state changes, since descendant
     /// selectors (e.g. `.parent--active .child`) require descendants to be
     /// re-resolved against the updated ancestor.
-    pub(crate) fn invalidate_descendant_styles(&mut self, node_id: usize) {
+    pub(crate) fn invalidate_descendant_styles(&mut self, node_id: RawNodeId) {
         // Collect children first to avoid borrow issues
-        let children: Vec<usize> = self
+        let children: Vec<RawNodeId> = self
             .tree
             .nodes
             .get(node_id)
@@ -967,10 +1060,10 @@ impl RinchDocument {
             .unwrap_or_default();
 
         for child_id in children {
-            if let Some(node) = self.tree.nodes.get_mut(child_id) {
+            if let Some(node) = self.tree.nodes.get_live_mut(child_id) {
                 // Drop the cached match result so the descendant re-resolves against
                 // the new ancestor state (class / attribute).
-                *node.stylo_element_data.borrow_mut() = None;
+                node.stylo_element_data.clear();
                 // …and mark it paint-dirty: a re-resolved style that isn't repainted
                 // leaves the software renderer's dirty-region cache showing the stale
                 // pixels (e.g. a dark-mode toggle re-colored the tree but only the
@@ -995,7 +1088,10 @@ impl RinchDocument {
     /// Those of `nodes` that are `display: inline` elements with no
     /// background to draw — the ones a tick could give one
     /// ([`Self::settle_ticked_text`]).
-    fn inlines_without_background<'a>(&self, nodes: impl Iterator<Item = &'a usize>) -> Vec<usize> {
+    fn inlines_without_background<'a>(
+        &self,
+        nodes: impl Iterator<Item = &'a RawNodeId>,
+    ) -> Vec<RawNodeId> {
         nodes
             .copied()
             .filter(|&id| {
@@ -1027,7 +1123,7 @@ impl RinchDocument {
     ///   their own brushes.
     ///
     /// Neither sets `layout_dirty`: a rebuilt paint layout moves no box.
-    fn settle_ticked_text(&mut self, colour_done: Vec<usize>, bare_inlines: Vec<usize>) {
+    fn settle_ticked_text(&mut self, colour_done: Vec<RawNodeId>, bare_inlines: Vec<RawNodeId>) {
         for id in bare_inlines {
             if self
                 .tree
@@ -1071,14 +1167,17 @@ impl RinchDocument {
         // transition_reaches_the_inline_layout` was green. With the repair and
         // without this pre-pass, the same fixture comes back 30px tall around
         // 40px text.
-        let text_measure_nodes: Vec<usize> = self
+        let text_measure_nodes: Vec<RawNodeId> = self
             .tree
             .active_transitions
             .iter()
             .filter(|(id, props)| {
                 props.keys().any(|p| p.changes_text_measure())
-                    || (self.tree.nodes[**id].display_mode == crate::node::DisplayMode::Inline
-                        && props.keys().any(|p| p.changes_inline_edge()))
+                    // Checked (#723): the keys outlive a node unless every
+                    // free goes through `remove_subtree`, which drops them.
+                    || (self.tree.get(**id).is_some_and(|n| {
+                        n.display_mode == crate::node::DisplayMode::Inline
+                    }) && props.keys().any(|p| p.changes_inline_edge()))
             })
             .map(|(id, _)| *id)
             .collect();
@@ -1090,19 +1189,22 @@ impl RinchDocument {
         // descendants have the box they resolve against baked into their Taffy
         // style — the cascade re-syncs them when a restyle flips the answer,
         // and a tick writes `computed_style` with no cascade.
-        let transform_nodes: Vec<(usize, bool)> = self
+        let transform_nodes: Vec<(RawNodeId, bool)> = self
             .tree
             .active_transitions
             .iter()
             .filter(|(_, props)| {
                 props.contains_key(&crate::transition::TransitionProperty::Transform)
             })
-            .map(|(id, _)| (*id, self.tree.nodes[*id].establishes_abs_containing_block()))
+            .filter_map(|(id, _)| {
+                let node = self.tree.get(*id)?;
+                Some((*id, node.establishes_abs_containing_block()))
+            })
             .collect();
 
         // What the tick owes text it does not re-measure (#679): see
         // `settle_ticked_text`. Read before the tick, like the rest.
-        let colour_nodes: Vec<usize> = self
+        let colour_nodes: Vec<RawNodeId> = self
             .tree
             .active_transitions
             .iter()
@@ -1113,7 +1215,7 @@ impl RinchDocument {
 
         let any_active = crate::transition::tick_transitions(&mut self.tree, current_time_ms);
 
-        let colour_done: Vec<usize> = colour_nodes
+        let colour_done: Vec<RawNodeId> = colour_nodes
             .into_iter()
             .filter(|id| {
                 self.tree.active_transitions.get(id).is_none_or(|props| {
@@ -1125,8 +1227,10 @@ impl RinchDocument {
 
         let mut resync_absolutes = Vec::new();
         for (node_id, was) in transform_nodes {
-            if self.tree.contains(node_id)
-                && self.tree.nodes[node_id].establishes_abs_containing_block() != was
+            if self
+                .tree
+                .get(node_id)
+                .is_some_and(|n| n.establishes_abs_containing_block() != was)
             {
                 self.collect_absolute_descendants(node_id, &mut resync_absolutes);
             }
@@ -1149,7 +1253,7 @@ impl RinchDocument {
         // For layout-affecting transitions, we need to re-sync Taffy styles
         // from the updated computed_style values.
         // Collect nodes that had LAYOUT dirty set by tick_transitions.
-        let layout_dirty: Vec<usize> = self
+        let layout_dirty: Vec<RawNodeId> = self
             .tree
             .active_transitions
             .keys()
@@ -1223,8 +1327,13 @@ impl RinchDocument {
                 // the entire ancestor chain — unconditional calls here were causing
                 // 70%+ of Taffy nodes to lose their cache on every frame with
                 // active transitions, even when only paint-only properties changed.
+                // A `Calc` is compared resolved, as it is stored (#767; see
+                // `taffy_style_for_compare`).
+                let compared = self.taffy_style_for_compare(node_id, taffy_id, &taffy_style);
                 let taffy_style_changed = match self.tree.taffy.style(taffy_id) {
-                    Ok(old_taffy_style) => old_taffy_style != &taffy_style,
+                    Ok(old_taffy_style) => {
+                        old_taffy_style != compared.as_ref().unwrap_or(&taffy_style)
+                    }
                     // No style to compare against: treat it as changed, which is
                     // what the `else` arm this replaced did.
                     Err(_) => true,
@@ -1295,12 +1404,16 @@ impl RinchDocument {
         // which the desktop wake and the Android loop both read as a frame owed.
         // A filling animation that has *not* settled is still asked: the tick
         // below is the one that writes its fill.
-        let text_measure_nodes: Vec<usize> = self
+        let text_measure_nodes: Vec<RawNodeId> = self
             .tree
             .active_animations
             .iter()
             .filter(|(id, anims)| {
-                let inline = self.tree.nodes[**id].display_mode == crate::node::DisplayMode::Inline;
+                // Checked, as the transition twin is (#723).
+                let inline = self
+                    .tree
+                    .get(**id)
+                    .is_some_and(|n| n.display_mode == crate::node::DisplayMode::Inline);
                 anims.iter().any(|a| {
                     !a.is_paused()
                         && !a.settled
@@ -1319,7 +1432,7 @@ impl RinchDocument {
                     && a.animates(crate::transition::TransitionProperty::Color)
             })
         };
-        let colour_nodes: Vec<usize> = self
+        let colour_nodes: Vec<RawNodeId> = self
             .tree
             .active_animations
             .iter()
@@ -1350,7 +1463,7 @@ impl RinchDocument {
             }
         }
 
-        let colour_done: Vec<usize> = colour_nodes
+        let colour_done: Vec<RawNodeId> = colour_nodes
             .into_iter()
             .filter(|id| {
                 self.tree
@@ -1367,7 +1480,7 @@ impl RinchDocument {
         }
 
         // For layout-affecting animations, re-sync Taffy styles.
-        let layout_dirty: Vec<usize> = self
+        let layout_dirty: Vec<RawNodeId> = self
             .tree
             .active_animations
             .keys()
@@ -1414,8 +1527,13 @@ impl RinchDocument {
                     taffy_style = crate::node::display_contents_taffy_style();
                 }
 
+                // A `Calc` is compared resolved, as it is stored (#767; see
+                // `taffy_style_for_compare`).
+                let compared = self.taffy_style_for_compare(node_id, taffy_id, &taffy_style);
                 let taffy_style_changed = match self.tree.taffy.style(taffy_id) {
-                    Ok(old_taffy_style) => old_taffy_style != &taffy_style,
+                    Ok(old_taffy_style) => {
+                        old_taffy_style != compared.as_ref().unwrap_or(&taffy_style)
+                    }
                     // No style to compare against: treat it as changed, which is
                     // what the `else` arm this replaced did.
                     Err(_) => true,
@@ -1451,7 +1569,7 @@ impl RinchDocument {
     ///
     /// If the image is already decoded in the cache, updates intrinsic dimensions
     /// immediately. Otherwise kicks off an async load on a background thread.
-    pub(crate) fn request_image_load_for_node(&mut self, node_id: usize, src: &str) {
+    pub(crate) fn request_image_load_for_node(&mut self, node_id: RawNodeId, src: &str) {
         if src.is_empty() {
             return;
         }
@@ -1461,22 +1579,8 @@ impl RinchDocument {
         // triggers a re-render and creates a new img element, the cache lookup
         // in the "already in cache" path below finds the Decoded entry immediately.
         if src.starts_with("data:") {
-            if !self.tree.image_cache.contains(src)
-                && let Some(bytes) = crate::image_cache::decode_data_uri(src)
-            {
-                match image::load_from_memory(&bytes) {
-                    Ok(img) => {
-                        let rgba = img.to_rgba8();
-                        let (w, h) = (rgba.width(), rgba.height());
-                        self.tree.image_cache.insert_decoded(
-                            src.to_string(),
-                            crate::image_cache::DecodedImage::new(rgba.into_raw(), w, h),
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to decode data URI image: {}", e);
-                    }
-                }
+            if !self.tree.image_cache.contains(src) {
+                self.decode_data_url_in_place(src);
             }
             // Fall through to the "already in cache" path to set NodeContext
             // dimensions on this node (works for both first render and re-renders).
@@ -1485,15 +1589,14 @@ impl RinchDocument {
         // Check if already in cache
         if let Some(img) = self.tree.image_cache.get(src) {
             // Already decoded — update intrinsic dimensions on the Taffy node
-            let (iw, ih) = (img.width, img.height);
+            let natural = img.natural();
             let aspect = self.tree.nodes[node_id].computed_style.aspect_ratio;
             if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
                 let _ = self.tree.taffy.set_node_context(
                     taffy_id,
                     Some(crate::node::NodeContext::Image {
                         src: src.to_string(),
-                        width: iw,
-                        height: ih,
+                        natural: Some(natural),
                         aspect,
                     }),
                 );
@@ -1522,8 +1625,7 @@ impl RinchDocument {
                 taffy_id,
                 Some(crate::node::NodeContext::Image {
                     src: src.to_string(),
-                    width: 0,
-                    height: 0,
+                    natural: None,
                     aspect,
                 }),
             );
@@ -1549,26 +1651,52 @@ impl RinchDocument {
         }
     }
 
-    /// Scan for background-image URLs that need loading and trigger async loads.
-    pub fn request_background_image_loads(&mut self) {
-        let Some(loader) = self.tree.image_loader.clone() else {
-            return;
-        };
+    /// Decode a `data:` URL's picture into the cache now, on this thread: no
+    /// loader is offered one, and none is needed (#2100). A malformed one is
+    /// recorded as failed, so it is not decoded again per element.
+    fn decode_data_url_in_place(&mut self, src: &str) {
+        match crate::image_cache::decode_data_url_image(src) {
+            Ok(img) => self.tree.image_cache.insert_decoded(src.to_string(), img),
+            Err(e) => {
+                tracing::warn!("Failed to decode data URI image: {}", e);
+                self.tree.image_cache.mark_failed(src.to_string(), e);
+            }
+        }
+    }
 
+    /// Start the loads of the background-image URLs the cascade produced
+    /// since the last call.
+    ///
+    /// A `data:` URL is decoded here, in place, as an `<img>`'s is: it is in
+    /// the cache before this frame paints, and needs no loader (#2100; it
+    /// used to go to the document's loader, which read it as a file name).
+    pub fn request_background_image_loads(&mut self) {
         // Only URLs a cascade produced since the last call (see
         // `NodeTree::pending_background_urls`), never a walk of the slab.
         if self.tree.pending_background_urls.is_empty() {
             return;
         }
+        let loader = self.tree.image_loader.clone();
+        let mut kept = Vec::new();
         for url in std::mem::take(&mut self.tree.pending_background_urls) {
             // A URL two nodes share, or one that finished loading since it
             // was noted, is started once.
             if self.tree.image_cache.contains(&url) {
                 continue;
             }
+            if url.starts_with("data:") {
+                self.decode_data_url_in_place(&url);
+                continue;
+            }
+            // Kept for the first layout with a loader installed.
+            let Some(loader) = loader.clone() else {
+                kept.push(url);
+                continue;
+            };
             self.tree.image_cache.mark_loading(url.clone());
-            crate::image_cache::request_image_load(self.doc_key, url, loader.clone());
+            crate::image_cache::request_image_load(self.doc_key, url, loader);
         }
+        self.tree.pending_background_urls = kept;
     }
 
     /// Drain completed image loads and update Taffy nodes with intrinsic dimensions.
@@ -1603,16 +1731,17 @@ impl RinchDocument {
         // For each newly decoded image, find <img> nodes referencing it
         // and update their intrinsic dimensions
         for src in &newly_decoded {
-            // `background-image: url(src)` users: no intrinsic size feeds
-            // layout, but their pixels changed, so they must be in the dirty
-            // region the next paint clears and redraws.
-            let bg_ids: Vec<usize> = self
+            // `background-image: url(src)` and `mask-image: url(src)` users
+            // (#2099): no intrinsic size feeds layout, but their pixels
+            // changed, so they must be in the dirty region the next paint
+            // clears and redraws.
+            let bg_ids: Vec<RawNodeId> = self
                 .tree
                 .nodes
                 .iter()
                 .filter_map(|(id, node)| {
                     node.computed_style
-                        .background_image_urls()
+                        .paint_image_urls()
                         .any(|url| url == src)
                         .then_some(id)
                 })
@@ -1621,13 +1750,12 @@ impl RinchDocument {
                 self.push_dirty_flags(node_id, DirtyFlags::PAINT);
             }
 
-            let img_dims = self.tree.image_cache.get(src).map(|i| (i.width, i.height));
-            let Some((iw, ih)) = img_dims else {
+            let Some(natural) = self.tree.image_cache.get(src).map(|i| i.natural()) else {
                 continue;
             };
 
             // Scan all nodes for img elements with matching src
-            let node_ids: Vec<usize> = self
+            let node_ids: Vec<RawNodeId> = self
                 .tree
                 .nodes
                 .iter()
@@ -1649,8 +1777,7 @@ impl RinchDocument {
                         taffy_id,
                         Some(crate::node::NodeContext::Image {
                             src: src.clone(),
-                            width: iw,
-                            height: ih,
+                            natural: Some(natural),
                             aspect,
                         }),
                     );
@@ -1688,7 +1815,7 @@ impl RinchDocument {
     }
 
     /// Recursively collect text content from a node and its descendants.
-    pub(crate) fn collect_text_content(&self, node_id: usize, result: &mut String) {
+    pub(crate) fn collect_text_content(&self, node_id: RawNodeId, result: &mut String) {
         let Some(node) = self.tree.nodes.get(node_id) else {
             return;
         };
@@ -1708,7 +1835,7 @@ impl RinchDocument {
 /// way author content wants it: `about:blank`, no quirks, no error reporting.
 /// One place, so `set_attribute("style")`, `set_styles` and the inset fast
 /// path can't drift.
-pub(super) fn parse_inline_style(css: &str) -> PropertyDeclarationBlock {
+pub(crate) fn parse_inline_style(css: &str) -> PropertyDeclarationBlock {
     style::properties::parse_style_attribute(
         css,
         &crate::layout::BLANK_URL_DATA,

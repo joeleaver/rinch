@@ -608,6 +608,22 @@ inset: 0` overlay such as `LoadingOverlay` in a padded panel adds no scrollbar;
 and a `position: relative` child with an offset both where it is drawn and
 where it would have been.
 
+An `absolute` box counts wherever it sits, in the nearest scroll container at
+or above its containing block, as a browser counts it (#770): under a
+`position: relative` wrapper inside a scroll region it scrolls that region; a
+scroll region between the box and its containing block does not scroll to it
+(the box does not move with it); one with no positioned ancestor scrolls the
+page, which on desktop is the `<body>`. A `fixed` box scrolls nothing, and a
+box with no width or no height counts nothing.
+
+So an absolute overlay that hangs past the window's edge with no positioned
+scroll region above it — a tooltip or hover card on a control at the bottom or
+right of the window — gives the page a scroll range, and scrollbars, for as long
+as it is shown, as it does in a browser. (`Select`, `Popover` and `DropdownMenu`
+flip or shift to stay inside the window; `Tooltip` and `HoverCard` do not.) An
+app that does not want that sets `body { overflow: hidden }` (`ui-zoo-desktop`
+does), or keeps its overlays inside the window.
+
 Where desktop still differs from a browser:
 
 - **A grid item's margins** count nothing here: a browser counts the grid's
@@ -617,16 +633,9 @@ Where desktop still differs from a browser:
 - **A margin that collapses through a child's end** — the last child of a
   `height: auto` child carrying `margin-bottom` — is not counted; a browser
   counts it.
-- **An absolute whose containing block is further up than its parent** is
-  laid out in that containing block (#386) but counted by no scroll container
-  at all; a browser counts it in that ancestor (#770).
-  The exception is a parent that is a non-positioned inline element such as a
-  plain `<span>` (at any depth of them) sitting directly in the containing
-  block: the box then counts there, as a browser counts it. Under a
-  `position: relative` span — which is then the box's containing block — it
-  counts when the scroll container is the block holding the span's line,
-  placed against the span's text (#1049, #631); with another block between
-  them it is counted nowhere (#770).
+- **An in-flow box that overflows its own parent** — a 300px child of a
+  `height: 50px` child — is not counted: a browser scrolls 200 to it, desktop
+  0 (#2054). An absolute box in the same place is.
 
 ### Why not `scrollbar-color` / `scrollbar-width`?
 
@@ -685,6 +694,14 @@ properties work there.
 | `orange` | `#fff4e6` | `#fd7e14` | |
 
 > **Gotcha:** `--rinch-color-gray-0` is `#f8f9fa`, which matches the default body background. If you use it as a card background, it'll be invisible. Use `gray-1` or higher for visible backgrounds.
+
+## `box-sizing`
+
+rinch reads `box-sizing` as a browser does. Its initial value is `content-box`: a box's `width` and `height` size its content, and its padding and border go outside them, so `width: 200px; padding: 10px` is a box 220px wide. With `box-sizing: border-box` the padding and border are inside it, and the same box is 200px wide.
+
+The theme sets `*, *::before, *::after { box-sizing: border-box }`, so in a themed app every box is a border box unless you say otherwise, and the components are designed that way. Without the theme (an app that does not install it, or HTML you render as content, such as an email), boxes are `content-box`, as in a browser. The built-in stylesheet makes border boxes of the elements a browser does: tables, `select`, `button`, `meter`, `progress`, and button-like, checkbox, radio, colour and search inputs. The editor's root and the Popover's arrow declare `border-box` themselves, so they are the same size themed or not.
+
+Until joeleaver/rinch#1278, `box-sizing` was ignored and every box was sized as a border box. An unthemed app that gave a box a `width` or `height` together with padding or a border sees that box grow by them; add `box-sizing: border-box` to it, or the theme's global rule to your stylesheet, to keep the old size.
 
 ## CSS sizing keywords
 
@@ -766,10 +783,8 @@ block:
 | `min-height` | none | correct | **wrong** — should fill the containing block |
 | `max-height` | none | correct | correct |
 
-A browser shrink-wraps a float too. rinch does not, because **rinch implements
-no CSS float at all** — measured, `float: left` on the same box gives 800, the
-full containing block, where a browser gives 300. So a float is not a way to
-shrink-wrap a box here; `width: fit-content` (or `display: inline-block`) is.
+A float shrink-wraps too, as in a browser: `float: left` on the same box gives
+300.
 
 Where a `min-*`/`max-*` keyword is wrong, a declared length or percentage is
 the workaround: `min-height: 100%` gives `min-height: stretch`'s used size as

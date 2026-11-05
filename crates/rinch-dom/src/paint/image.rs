@@ -3,7 +3,7 @@
 use peniko::Fill;
 use peniko::kurbo::{Affine, Rect};
 
-use super::painter::{PaintImage, Painter};
+use super::painter::{ImageSampling, PaintImage, Painter};
 use crate::computed_style::ObjectFitValue;
 use crate::image_cache::DecodedImage;
 
@@ -15,6 +15,8 @@ use crate::image_cache::DecodedImage;
 /// - `Cover`: uniform scale to cover rect (clips overflow)
 /// - `None`: no scaling, image centered at natural size
 /// - `ScaleDown`: like `Contain`, but never scales up
+///
+/// `sampling` is the element's `image-rendering` (#2098).
 pub fn paint_image(
     painter: &mut dyn Painter,
     decoded: &DecodedImage,
@@ -22,7 +24,12 @@ pub fn paint_image(
     scale: f64,
     object_fit: ObjectFitValue,
     node_transform: Affine,
+    sampling: ImageSampling,
 ) {
+    if let Some(vector) = decoded.vector() {
+        paint_vector_image(painter, vector, rect, object_fit, node_transform, sampling);
+        return;
+    }
     paint_image_pixels(
         painter,
         &decoded.data,
@@ -35,7 +42,52 @@ pub fn paint_image(
         scale,
         object_fit,
         node_transform,
+        sampling,
     );
+}
+
+/// An SVG file (#2111): placed by `object_fit` as its
+/// [`concrete`](crate::svg_image::VectorImage::concrete) size, and drawn from
+/// a raster made at the size that covers on the device (`node_transform` and
+/// the DPI scale included), so it is as sharp as the device allows. The
+/// raster's pixels are the device's, so on a whole-pixel origin it is copied
+/// rather than resampled.
+fn paint_vector_image(
+    painter: &mut dyn Painter,
+    vector: &crate::svg_image::VectorImage,
+    rect: Rect,
+    object_fit: ObjectFitValue,
+    node_transform: Affine,
+    sampling: ImageSampling,
+) {
+    let (iw, ih) = vector.concrete();
+    let Some((img_transform, needs_clip)) = fit_image(iw, ih, rect, object_fit, node_transform)
+    else {
+        return;
+    };
+    let Some(raster) = vector.raster_for(iw, ih, img_transform) else {
+        return;
+    };
+    let (dw, dh) = raster.drawn;
+    let image = &raster.image;
+    if needs_clip {
+        painter.push_clip(Fill::NonZero, node_transform, &rect.into());
+    }
+    painter.draw_image(
+        &PaintImage {
+            data: &image.data,
+            width: image.width,
+            height: image.height,
+            decoded: Some(image),
+            frame: None,
+            opaque: false,
+            sampling,
+        },
+        img_transform * Affine::scale_non_uniform(iw / dw, ih / dh),
+    );
+    if needs_clip {
+        painter.pop_layer();
+    }
 }
 
 /// The same, over borrowed RGBA8 pixels rather than a [`DecodedImage`].
@@ -67,6 +119,7 @@ pub fn paint_image_data(
         _scale,
         object_fit,
         node_transform,
+        ImageSampling::Auto,
     );
 }
 
@@ -102,6 +155,7 @@ pub fn paint_frame_data(
         scale,
         object_fit,
         node_transform,
+        ImageSampling::Auto,
     );
 }
 
@@ -118,6 +172,7 @@ fn paint_image_pixels(
     _scale: f64,
     object_fit: ObjectFitValue,
     node_transform: Affine,
+    sampling: ImageSampling,
 ) {
     if width == 0 || height == 0 {
         return;
@@ -148,6 +203,7 @@ fn paint_image_pixels(
         decoded,
         frame,
         opaque,
+        sampling,
     };
     painter.draw_image(&paint_image, img_transform);
 

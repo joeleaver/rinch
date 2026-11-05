@@ -60,6 +60,95 @@ keys through `set_inner_html` and pseudo-element pruning on restyle, and
 `slab::Slab` recycles them (measured: `NodeId(4)` handed to a second node), so
 #304's recycled-slot hazard is live on desktop today, independently of this API.
 
+### Node ids: a slot and a generation (#723)
+
+`NodeId` is a `u64` on every target, wasm32 included: the **slot index** in the
+low 32 bits and the slot's **generation** in the high 32 (`NodeId::new(index,
+generation)`, `NodeId::index()`, `NodeId::generation()`). The tuple field stays
+public and holds the packed bits, so `NodeId(4)` is slot 4 at generation 0 —
+which is what every id is today, and why test literals, the debug server's wire
+ids, DevTools and `Debug` (`NodeId(4)`) read exactly as they did when the field
+was a `usize`. A non-zero generation prints as `NodeId(4@g1)`. Build an id from
+a `usize` slot with `NodeId::from_index`; never use `.0` as an index.
+
+Inside `rinch-dom` a `RawNodeId` is the same `u64` (`NodeId(raw)` and `id.0`
+convert for free), and `NodeTree::nodes` is a `node_slab::NodeSlab`, not a bare
+`slab::Slab`. It has **two lookups, and each site says which it is using**:
+
+- **Checked** — `get` / `get_mut` / `contains` (and `NodeTree::get`): compares
+  the id against the stored node's own `Node::id` and answers `None`/`false` for
+  a vacant slot **or a slot holding another generation**. Every id that comes
+  from **outside the tree** uses it: a `DomDocument` or `NodeHandle` argument, an
+  app-held handle, an event target, a side table or cache keyed by node id that
+  can outlive a node (`dirty_nodes`, the scroll-lock roots, the hover/focus
+  state, `abs_chain_marked`, …).
+- **Internal** — `get_live` / `get_live_mut` and indexing (`nodes[id]`): for ids
+  the tree handed itself during a walk — a node's `children`/`parent`, a layout,
+  paint or hit-test traversal, a list rebuilt by this pass. A release build looks
+  only at the slot; a debug build asserts the generation (indexing panics with a
+  message naming the slot and both generations), so a misuse fails the tests.
+  The compare is why: checked everywhere, it cost 4–7% on the hit-test and
+  relayout benchmarks.
+
+When unsure, a site keeps the checked lookup. A `pub(crate)` helper reached only
+from walks and from verbs that already checked their argument takes the
+internal one; a public helper an app can call with its own id (the paint and
+scrollbar queries, `RinchDocument::box_tree_*` are the walk helpers excepted)
+stays checked. The paint geometry queries
+(`paint::compute_absolute_position_and_transform` and the `painted_border_box`
+/ `point_in_painted_box` / `point_from_painted_box` / `rect_from_painted_box`
+family) check the caller's id once at the entry and walk the ancestors
+unchecked: a stale id answers the origin with the identity transform (an empty
+box, `None` from `point_in_painted_box`), never the slot's live node — pinned by
+`crates/rinch-dom/tests/stale_node_id_paint_tests.rs`. The debug assert in
+`get_live`/`get_live_mut` is pinned by `node_slab`'s
+`get_live_*_with_a_stale_generation_panics_in_debug` tests. A table indexed by slot (the hit-test cache's extents) takes
+`node_slab::slot_of(id)`. The browser backend's ids are its monotonic counter
+in the same `u64`.
+
+The `DomDocument` verbs on `RinchDocument` resolve the id they are handed with
+the fallible lookup before touching the tree, so an id that names no node is a
+no-op (a read answers `None`/empty), as it is on `rinch-web` and
+`MockDomDocument` — before #723 a vacant slot panicked in the slab's `Index`.
+Ids the tree hands itself (a node's `parent`/`children`, a layout walk) are
+indexed directly: they are live by construction.
+
+**What is not done yet (PR 2 of #723).** Nothing bumps a generation: a slot
+freed by `NodeTree::remove_subtree` (`set_inner_html`, pseudo-element pruning)
+or by the IFC passes' anonymous boxes is reused at generation 0, exactly as
+before, so the recycled-slot hazard above is unchanged and the slab still only
+grows on the `discard` route. PR 2 frees on `discard_node` and in
+`remove_subtree` (with `taffy.remove`), bumps the slot's generation, and clears
+the side tables still keyed by a raw id (`dirty_nodes`, `paint_dirty_nodes`,
+`taffy_map`, the style-snapshot map — keyed by Stylo's `OpaqueNode`, which
+carries only the slot on a 32-bit target — and the others the survey on #723
+lists). Until then a stale entry in such a table cannot name a freed slot,
+because none is freed on the routes that leave entries behind.
+
+What PR 2 must keep true, because PR 1's unchecked readers lean on it (found in
+review of #2017):
+
+- **Every free drops the hit cache.** `hit_testing`'s stacking-root probe reads
+  the cached paint order's ids with `get_live` (per entry, per probe — too hot
+  to check). `NodeTree::remove_subtree` calls `hit_cache.invalidate()`; a new
+  free route (free-on-discard) must go through it or do the same.
+- **Every free drops the node's `active_transitions`/`active_animations`
+  entries** (`remove_subtree` does). The tick's readers of those keys are now
+  checked, so a miss there costs a skipped node, not a wrong one, but the
+  entries would otherwise tick a node that is gone.
+- **`taffy.remove` prunes `taffy_map`.** The atomic-inline fit-content measure
+  filters the id `taffy_map` hands back through `contains` before indexing; any
+  new reader of `taffy_map` must do the same until the map is pruned.
+- **Wire ids past 2^53.** The debug protocol and the MCP server carry ids as
+  JSON integers; serde writes a `u64` exactly, but a JavaScript client (the MCP
+  host among them) rounds an integer above 2^53, which a packed id reaches once
+  one slot's generation passes 2^21. A rounded id fails closed (the lookup is
+  checked: "no node"), but PR 2 must decide before generations grow: cap or
+  wrap the generation at 21 bits (ids stay plain numbers, a slot reused 2^21
+  times aliases an old id again), or put ids on the wire as `"slot@gen"`
+  strings (exact, a protocol change for every client). PR 1 changes nothing
+  here: every id is generation 0. Recorded on #723.
+
 ### Who picks the verb: **scope ownership**, not a judgement call
 
 The four marker-based reactive helpers — `show_dom`, `match_dom`,
@@ -451,9 +540,10 @@ Three things it deliberately does not do.
   A hidden span on a line `text-overflow: ellipsis` cuts is hidden too: the
   cut keeps the lines and their text ranges (#853, #1100). Known exceptions, each filed: a hidden `data-viewport`'s layer is still composited (#854; paint stopped clearing its box in #1866), a
   ligature across a visibility boundary follows the wrong end (#852). A
-  `visibility: visible` descendant is drawn, as in CSS — but desktop hit
-  testing still skips the whole hidden subtree, so it is drawn and not
-  clickable (**#843**).
+  `visibility: visible` descendant is drawn, as in CSS, and since **#843**
+  hit testing hits it too. A closed overlay with no visible descendant is
+  skipped whole by paint and the stacking collector (**#2137**), so it costs a
+  frame nothing.
   `rinch/src/app/overlay_animation_audit_tests.rs` holds one fixture per overlay
   and fails the moment a transitioned property starts changing on a reveal pass.
   **The close animates too** (#413, #759): `TransitionProperty::Visibility`
@@ -702,24 +792,46 @@ re-cascade matches each running animation by name and **keeps its clock**
 (`start_time_ms`, `paused_elapsed_ms`, `play_state`). Measured in Chrome, replacing
 a `<style>` element's text under a running animation leaves `currentTime`
 untouched — so preserving is right and restarting would be the smaller wrong
-answer. **The clock is all it keeps on that pass.** While
-`recompute_all_styles_full` runs, `NodeTree::refreshing_animations` (a flag of
-its own, not `!transitions_enabled`) makes a kept animation look its
-`@keyframes` rule up again — **dropping it if the new sheet no longer defines
-it**, which Chrome does and which keeping the entry whole got wrong, since a
-theme sheet can carry `@keyframes` — re-extract its stops from the new base
-style, and take the new duration and delay. A paused animation keeps its frozen
-elapsed *time* across a re-timing, as Chrome keeps `currentTime`. That is
-`recompute_all_styles_full` **only**, and it is not the only pass that
-re-cascades the whole document: a stylesheet change Stylo cannot target — a
-`<style>` carrying a `@keyframes` rule is one (`flush_stylist`, #884) — and
-a viewport change that flips a media query do too, and set no flag — measured, a
-`<style>` appended after the first layout with a redefined `@keyframes` body
-leaves the running animation on its old one (tracked on **#781**). On those two
-passes and on every targeted restyle, an edited `@keyframes` body (**#766**), a
-changed duration or delay (**#780**) and a stop derived from the base style
-(**#781**) still stay stale, because a refresh per animated node per cascade is
-a cost a hover should not pay. One divergence the theme path reached, now
+answer. **The clock is all a kept animation keeps, on every cascade of its
+node** (#766, #780, #781; until then only `recompute_all_styles_full` refreshed,
+behind a `NodeTree::refreshing_animations` flag that is gone). On a class change,
+a hover, a `<style>` append (a sheet carrying `@keyframes` takes
+`flush_stylist`'s whole-document re-cascade, #884), a `@media` flip or a theme,
+`start_animations`
+takes the timing (duration, delay, direction, fill, count, easing) from the
+spec, looks the `@keyframes` rule up again — **dropping the animation if no rule
+of that name exists any more**, as Chrome does — and re-extracts the stops when
+`ActiveAnimation::stop_inputs` no longer holds: the rule's declaration blocks
+(held as `Arc`s, so a redefined, removed or newly winning rule compares unequal
+and a freed address cannot be reused under it), and **only the base-style
+inputs the authored stops read** at extraction. The extractor resolves through a
+`keyframes::StopBasis` that records each read (`StopDeps`): an `em` reads the
+element's `font-size`, a `rem` the root font size, a `currentcolor` the
+element's `color`, and `color: currentcolor` the parent's `color`. A
+`to { transform: rotate(…) }` spin reads none, so a hover that moves `color`
+re-extracts nothing; a `from { background-color: currentcolor }` reads the
+colour and is re-extracted by the same hover. (The "root font size" is
+`tree.root_id`'s, the document node's, which is always the initial 16px, so a
+`rem` stop ignores `html { font-size }` and that input never moves: #2058.)
+Otherwise it keeps the stops and re-reads only their **implicit** values
+(`keyframes::refresh_implicit_values`): a 0%/100% stop holds the element's base
+value for each property the rule animates and that stop does not author (Web
+Animations' neutral keyframe) — no other property, so a `to`-only `transform`
+spin never writes `color` — and that value follows the base style. Which
+properties those are is settled once at extraction (`KeyframeStop::implicit`),
+and a cascade reads just those from the base style
+(`keyframes::base_style_value`), layout properties included (#767, below). A paused
+animation keeps its frozen elapsed *time* across a re-timing, as Chrome keeps
+`currentTime`. Repeated names match by position from the end (`k 10s, k 20s`
+stays two animations); `ActiveAnimation::position` orders entries split between
+the running and finished maps. The cost on a cascade of an animated node is,
+per animation, a keyframes lookup, a pointer compare per keyframe plus the
+inputs its stops read, and the re-read of its implicit values; an extraction
+only when an input it read moved (500 spinning rows under a colour class:
+`rinch-bench`'s `animated_list_color`). A node with no animation never
+reaches `start_animations`. A viewport change re-cascades the animated node only
+if Stylo reports a media-query result changed, which is the case where a
+`@media`-held `@keyframes` can have moved. One divergence the theme path reached, now
 fixed (**#783**): **a finished one-shot animation replayed on a theme toggle**
 — its entry was dropped when it completed, so the full restyle minted it again
 from t=0. Chrome does not. The entry is now kept as a settled marker (below).
@@ -727,15 +839,35 @@ from t=0. Chrome does not. The entry is now kept as a settled marker (below).
 write its animations back — reads no flag either; it shipped behind this one, so
 a panel shown by such a write on a cascade before the first layout completed
 kept a still spinner until something unrelated re-cascaded it. The full restyle
-reaches the walk as well, and that half is **not** harmless without the refresh:
-the walk runs on a shown panel's cascade before its descendants' and mints their
-entries from their pre-restyle styles, so an `em`-sized spinner under a theme
-that also changed the font-size came out on the old basis. Each descendant's own
-cascade runs after the walk on that pass, and the refresh there re-extracts the
-stops.
-`crates/rinch-dom/tests/animation_start_gating_tests.rs` and
-`full_restyle_animation_refresh_tests.rs` are the pins, with the Chrome
+reaches the walk as well: the walk runs on a shown panel's cascade before its
+descendants' and mints their entries from their pre-restyle styles, so an
+`em`-sized spinner under a theme that also changed the font-size starts on the
+old basis. Each descendant's own cascade runs after the walk on that pass (and
+on a class write that restyles it), and the refresh there re-extracts the stops.
+`crates/rinch-dom/tests/animation_start_gating_tests.rs`,
+`full_restyle_animation_refresh_tests.rs` and
+`animation_restyle_refresh_tests.rs` are the pins, with the Chrome
 measurements and mutant-by-fixture tables in their module docs.
+
+**A `@keyframes` rule without a `from` or `to` stop starts (or ends) at the
+element's own computed value, layout properties included** (#767). Stylo hands
+the missing stop over as `KeyframesStepValue::ComputedValues`, and
+`animation::keyframes::base_style_value` fills it from `ComputedStyle`, one
+property at a time: opacity, the background, text and border colours,
+background position, transform, `width`, `height`, `padding-*`, `margin-*`,
+`border-*-width` and `font-size`. `refresh_implicit_values` fills only the
+properties the rule's authored stops animate (css-animations-1 §4, "the
+properties being animated"), so a transform-only spinner writes no width or
+margin on its ticks and costs no layout. Before, the implicit stop had no `width`, and `to { width: 200px }` on a
+100px box sat at 200 from the first frame (Chrome: 150 at 50%). A percentage
+base against a length stop interpolates as a `calc()`
+(`AnimatableValue::interpolate`, the mixed arms); an `auto` base or margin, or a
+sizing keyword, does not interpolate and flips at the midpoint, which is
+Chrome 156's answer with `interpolate-size` at its default. Pins:
+`crates/rinch-dom/tests/keyframe_implicit_base_767_tests.rs` (Chrome 156 table
+in its module doc). The implicit stop is re-read on every cascade of the node
+(#781, above), so a base width changed mid-animation is followed
+(`a_base_width_changed_mid_animation_is_re_read`).
 
 **A `transform` transitions and animates by function list, not matrix entry by
 entry** (#414). `TransformValue` keeps the list it was composed from
@@ -758,8 +890,8 @@ forwards and the after phase going backwards; a transition's delay is its easing
 at 0 with the flag, not always `from`), and an iteration's start and end
 are eased at interval distance 0 and 1 (`ActiveAnimation::interval`), not
 snapped to the keyframe. `TimingFunction` is not `Copy` (a `linear()` holds an
-`Arc`). The `jump-*` positions do not parse in Stylo's servo build, so such a
-declaration is dropped (#1581). Pins: `crates/rinch-dom/tests/easing_steps_linear_1564_tests.rs`
+`Arc`). The `jump-*` positions parse since stylo 0.21 (with 0.11 such a
+declaration was dropped, #1581). Pins: `crates/rinch-dom/tests/easing_steps_linear_1564_tests.rs`
 (Chrome 155).
 
 **The 3D transform functions are drawn flat** (#405; they used to compute to the

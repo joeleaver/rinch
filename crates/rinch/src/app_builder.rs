@@ -113,6 +113,9 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`title_tooltips`](App::title_tooltips).
     #[cfg(feature = "desktop")]
     pub(crate) title_tooltips: bool,
+    /// See [`vsync`](App::vsync); `None` leaves the setting as it is.
+    #[cfg(feature = "desktop")]
+    pub(crate) vsync: Option<bool>,
     /// See [`activation_policy`](App::activation_policy). `None` leaves it to
     /// winit (and a bundle's `Info.plist`).
     #[cfg(feature = "desktop")]
@@ -161,6 +164,8 @@ where
             prefer_x11: false,
             #[cfg(feature = "desktop")]
             title_tooltips: true,
+            #[cfg(feature = "desktop")]
+            vsync: None,
             #[cfg(feature = "desktop")]
             activation_policy: None,
             #[cfg(feature = "gpu")]
@@ -312,7 +317,7 @@ where
     /// On `wasm32` it returns an `App<F, WithMenuBar>` rather than `Self`, so
     /// that only an app that has a menu bar links it (see [`NoMenuBar`]); a
     /// chain reads the same either way.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn menu(mut self, menus: Vec<(&str, crate::menu::Menu)>) -> Self {
         self.menus = Some(owned_menus(menus));
         self
@@ -320,7 +325,7 @@ where
 
     /// See the non-`wasm32` [`menu`](App::menu): the same, in the
     /// [`WithMenuBar`] state.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub fn menu(self, menus: Vec<(&str, crate::menu::Menu)>) -> App<F, WithMenuBar> {
         App {
             component: self.component,
@@ -338,6 +343,8 @@ where
             prefer_x11: self.prefer_x11,
             #[cfg(feature = "desktop")]
             title_tooltips: self.title_tooltips,
+            #[cfg(feature = "desktop")]
+            vsync: self.vsync,
             #[cfg(feature = "desktop")]
             activation_policy: self.activation_policy,
             #[cfg(feature = "gpu")]
@@ -433,6 +440,23 @@ where
         self
     }
 
+    /// Start with vsync on (the default) or off (issue #2095). Off, the GPU
+    /// renderer presents uncapped (`Immediate`, or `Mailbox` where the
+    /// surface has no `Immediate`), so frames that follow each other — a
+    /// continuous `RenderSurface`, an animation — are drawn as fast as they
+    /// can be rather than once per display refresh. An idle window still
+    /// sleeps.
+    ///
+    /// Change it while the app runs with
+    /// [`rinch::window::set_vsync`](crate::window::set_vsync), which also
+    /// says what the surface honoured; [`rinch::window::presentation`](crate::window::presentation)
+    /// reads it. The software renderer has no present mode, and ignores it.
+    #[cfg(feature = "desktop")]
+    pub fn vsync(mut self, on: bool) -> Self {
+        self.vsync = Some(on);
+        self
+    }
+
     /// On Linux, run on X11 — under a Wayland session, through XWayland —
     /// whenever an X server is reachable (`DISPLAY` is set); otherwise on
     /// whatever winit picks, as without this (issue #1519).
@@ -507,6 +531,7 @@ where
             shortcut_matching: self.shortcut_matching,
             prefer_x11: self.prefer_x11,
             title_tooltips: self.title_tooltips,
+            vsync: self.vsync,
             activation_policy: self.activation_policy,
             #[cfg(feature = "gpu")]
             gpu: self.gpu,
@@ -576,11 +601,16 @@ where
             shortcut_matching,
             prefer_x11,
             title_tooltips,
+            vsync,
             activation_policy,
             #[cfg(feature = "gpu")]
             gpu,
         } = self.into_startup();
         crate::app::set_title_tooltips_default(title_tooltips);
+        // Stored before the window exists: its renderer takes it (#2095).
+        if let Some(on) = vsync {
+            crate::window::set_vsync(on);
+        }
 
         crate::shell::renderer::set_requested(renderer);
         crate::shell::overlay_window::set_prefer_x11(prefer_x11);
@@ -875,6 +905,8 @@ pub(crate) struct Startup<F> {
     pub(crate) prefer_x11: bool,
     /// See [`App::title_tooltips`].
     pub(crate) title_tooltips: bool,
+    /// See [`App::vsync`].
+    pub(crate) vsync: Option<bool>,
     /// See [`App::activation_policy`].
     pub(crate) activation_policy: Option<crate::shell::activation::ActivationPolicy>,
     #[cfg(feature = "gpu")]
@@ -1036,6 +1068,7 @@ mod tests {
                 max_texture_dimension_2d: 4096,
                 ..Default::default()
             },
+            ..Default::default()
         };
         let second = RinchGpuConfig {
             required_features: crate::wgpu::Features::empty(),
@@ -1043,6 +1076,7 @@ mod tests {
                 max_texture_dimension_2d: 8192,
                 ..Default::default()
             },
+            ..Default::default()
         };
         assert_ne!(
             first.required_limits.max_texture_dimension_2d,

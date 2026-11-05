@@ -235,7 +235,7 @@ impl RinchApp {
         // If we didn't land on a CE element, check if we hit selectable text.
         // Gather data from the doc borrow, then mutate after dropping the borrow.
         enum TextSelAction {
-            StartSelection { ifc_node_id: usize, offset: usize },
+            StartSelection { ifc_node_id: u64, offset: usize },
             Clear,
             Keep,
         }
@@ -293,7 +293,7 @@ impl RinchApp {
 
         // Walk up from hit target to detect text input focus (data-oninput).
         // This must happen before the data-rid walk which may return early.
-        let mut found_input_focus: Option<(usize, usize, String)> = None; // (node_id, handler_id, value)
+        let mut found_input_focus: Option<(u64, usize, String)> = None; // (node_id, handler_id, value)
         {
             let mut check = Some(hit_id);
             while let Some(nid) = check {
@@ -380,9 +380,12 @@ impl RinchApp {
         // modal wrapping it, silently and permanently.
         enum ClickClaim {
             /// (node_id, handler_id, the node is a `BACKDROP_ATTRIBUTE` backdrop)
-            Rid(usize, usize, bool),
+            Rid(u64, usize, bool),
             DragWindow,
         }
+        // The link the press went through on its way to the claim
+        // (`events::click_link`): the nearest `<a href>` from the hit up.
+        let mut click_link: Option<String> = None;
         let click_claim = {
             let mut claim = None;
             let mut cur = Some(hit_id);
@@ -390,6 +393,12 @@ impl RinchApp {
                 let Some(node) = d.tree.get(node_id) else {
                     break;
                 };
+                if click_link.is_none()
+                    && node.tag() == Some("a")
+                    && let Some(href) = node.attributes.get("href")
+                {
+                    click_link = Some(href.to_string());
+                }
                 if let Some(rid_str) = node.attributes.get("data-rid")
                     && let Ok(handler_id) = rid_str.parse::<usize>()
                     && events::has_click_handler(events::EventHandlerId(handler_id))
@@ -548,6 +557,7 @@ impl RinchApp {
                     (x, y),
                     button,
                     (viewport_width, viewport_height),
+                    click_link,
                 );
                 if let Some((label, control)) = label_press {
                     self.activate_label_control(
@@ -582,15 +592,19 @@ impl RinchApp {
     }
 
     /// Dispatch a `data-rid` click on `node_id`, with the click context a
-    /// handler reads, then apply the focus and selection requests it posted.
+    /// handler reads (and `link`, the `<a href>` the press went through, for
+    /// `events::click_link`), then apply the focus and selection requests it
+    /// posted.
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_rid_click(
         &mut self,
-        node_id: usize,
+        node_id: u64,
         handler_id: usize,
         text_hit: events::TextHitInfo,
         (x, y): (f32, f32),
         button: MouseButton,
         (viewport_width, viewport_height): (f32, f32),
+        link: Option<String>,
     ) {
         let Some(doc) = self.doc.clone() else {
             return;
@@ -626,7 +640,9 @@ impl RinchApp {
         events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
 
         drop(d);
+        events::set_click_link(link);
         events::dispatch_event(events::EventHandlerId(handler_id));
+        events::set_click_link(None);
         // Process any pending focus request from the event handler
         // (e.g., a handler may call request_focus on an input element).
         // No layout has run since the handler mutated state, so an
@@ -648,7 +664,7 @@ impl RinchApp {
     /// that element's alone, as in Chrome (whose label handler returns for a
     /// target inside interactive content). A `<label>` is interactive content
     /// too, so of nested labels only the innermost acts.
-    pub(super) fn pressed_label(tree: &rinch_dom::NodeTree, hit: usize) -> Option<usize> {
+    pub(super) fn pressed_label(tree: &rinch_dom::NodeTree, hit: u64) -> Option<u64> {
         let mut cur = Some(hit);
         while let Some(nid) = cur {
             let node = tree.get(nid)?;
@@ -701,7 +717,7 @@ impl RinchApp {
     /// that `id`, if it is labelable — a `for` that names nothing labelable
     /// labels nothing, it does not fall back to a descendant; without one, the
     /// label's first labelable descendant in tree order.
-    pub(super) fn labeled_control(tree: &rinch_dom::NodeTree, label: usize) -> Option<usize> {
+    pub(super) fn labeled_control(tree: &rinch_dom::NodeTree, label: u64) -> Option<u64> {
         let node = tree.get(label)?;
         if let Some(for_id) = node.attributes.get("for") {
             let mut root = label;
@@ -725,12 +741,15 @@ impl RinchApp {
     /// order, that `pred` accepts.
     fn first_in_tree_order(
         tree: &rinch_dom::NodeTree,
-        root: usize,
+        root: u64,
         pred: &dyn Fn(&rinch_dom::Node) -> bool,
-    ) -> Option<usize> {
+    ) -> Option<u64> {
         let mut stack = vec![root];
         while let Some(nid) = stack.pop() {
-            let Some(node) = tree.get(nid) else { continue };
+            // `root` and every id below it come from a walk of the tree.
+            let Some(node) = tree.get_live(nid) else {
+                continue;
+            };
             if node.tag().is_some() && pred(node) {
                 return Some(nid);
             }
@@ -759,9 +778,9 @@ impl RinchApp {
     /// suppresses (#272). One press, one toggle.
     fn activate_label_control(
         &mut self,
-        label: usize,
-        control: usize,
-        dispatched: Option<usize>,
+        label: u64,
+        control: u64,
+        dispatched: Option<u64>,
         point: (f32, f32),
         viewport: (f32, f32),
     ) {
@@ -805,6 +824,7 @@ impl RinchApp {
                 point,
                 MouseButton::Left,
                 viewport,
+                None,
             );
         }
     }
@@ -812,7 +832,7 @@ impl RinchApp {
     /// Compute text hit info for click-to-position in rich text editors.
     fn compute_text_hit_info(
         tree: &rinch_dom::NodeTree,
-        hit_id: usize,
+        hit_id: u64,
         click_x: f32,
         click_y: f32,
     ) -> events::TextHitInfo {
@@ -894,7 +914,7 @@ impl RinchApp {
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-        node_id: usize,
+        node_id: u64,
         click_x: f32,
         click_y: f32,
     ) -> usize {
@@ -952,7 +972,7 @@ impl RinchApp {
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-        node_id: usize,
+        node_id: u64,
         offset: usize,
     ) -> Option<(f32, f32, f32, f32)> {
         Self::input_caret_rect_with_affinity(
@@ -972,7 +992,7 @@ impl RinchApp {
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-        node_id: usize,
+        node_id: u64,
         offset: usize,
         affinity: rinch_core::dom::CaretAffinity,
     ) -> Option<(f32, f32, f32, f32)> {
@@ -1024,7 +1044,7 @@ impl RinchApp {
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-        node_id: usize,
+        node_id: u64,
         offset: usize,
     ) -> Option<(f32, f32, f32, f32)> {
         let it = Self::input_text_layout(tree, font_cx, layout_cx, node_id)?;
@@ -1060,7 +1080,7 @@ impl RinchApp {
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-        node_id: usize,
+        node_id: u64,
     ) -> Option<InputTextLayout> {
         let node = tree.get(node_id)?;
 
@@ -1116,7 +1136,7 @@ impl RinchApp {
     /// relative to the surface element's top-left corner.
     pub(crate) fn find_render_surface_at(
         tree: &rinch_dom::NodeTree,
-        hit_id: usize,
+        hit_id: u64,
         screen_x: f32,
         screen_y: f32,
     ) -> Option<(usize, f32, f32)> {
@@ -1127,10 +1147,10 @@ impl RinchApp {
     /// Like `find_render_surface_at` but also returns the surface's DOM node ID.
     pub(crate) fn find_render_surface_at_full(
         tree: &rinch_dom::NodeTree,
-        hit_id: usize,
+        hit_id: u64,
         screen_x: f32,
         screen_y: f32,
-    ) -> Option<(usize, usize, f32, f32)> {
+    ) -> Option<(usize, u64, f32, f32)> {
         let mut current = Some(hit_id);
         while let Some(nid) = current {
             if let Some(node) = tree.get(nid) {
@@ -1157,7 +1177,7 @@ impl RinchApp {
     /// rather than merely shifted (#203).
     pub(crate) fn surface_local_coords(
         tree: &rinch_dom::NodeTree,
-        surface_dom_node: usize,
+        surface_dom_node: u64,
         screen_x: f32,
         screen_y: f32,
     ) -> (f32, f32) {

@@ -18,7 +18,7 @@ pub enum DebugCommandKind {
         #[serde(default)]
         max_depth: Option<u32>,
         #[serde(default)]
-        root_id: Option<usize>,
+        root_id: Option<u64>,
         /// Include each node's computed styles. Defaults to `false` so existing
         /// clients keep the compact tree; the visual-regression harness needs
         /// them to rebuild the screen as HTML/CSS.
@@ -28,9 +28,9 @@ pub enum DebugCommandKind {
     #[serde(rename = "query_selector")]
     QuerySelector { selector: String },
     #[serde(rename = "get_node")]
-    GetNode { id: usize },
+    GetNode { id: u64 },
     #[serde(rename = "get_text_content")]
-    GetTextContent { id: usize },
+    GetTextContent { id: u64 },
     #[serde(rename = "click")]
     Click {
         x: f32,
@@ -53,7 +53,7 @@ pub enum DebugCommandKind {
     #[serde(rename = "close_app")]
     CloseApp,
     #[serde(rename = "get_computed_styles")]
-    GetComputedStyles { id: usize },
+    GetComputedStyles { id: u64 },
     #[serde(rename = "mouse_move")]
     MouseMove { x: f32, y: f32 },
     #[serde(rename = "mouse_down")]
@@ -153,9 +153,9 @@ pub enum DebugCommandKind {
         cursor: Option<(usize, usize)>,
     },
     #[serde(rename = "get_caret_position")]
-    GetCaretPosition { node_id: usize, byte_offset: usize },
+    GetCaretPosition { node_id: u64, byte_offset: usize },
     #[serde(rename = "get_glyph_bounds")]
-    GetGlyphBounds { node_id: usize, byte_offset: usize },
+    GetGlyphBounds { node_id: u64, byte_offset: usize },
     /// The document's performance counters (`rinch_dom::perf`): the last
     /// completed frame, the frame in progress, the running total and the
     /// frame count, each counter keyed by its `snake_case` name. `reset`

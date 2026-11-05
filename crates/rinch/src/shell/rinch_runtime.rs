@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, Position, Size};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::{WindowAttributes, WindowId};
 
@@ -278,6 +278,8 @@ pub enum RinchNativeEvent {
     SetWindowSize(f64, f64),
     /// Apply the title `rinch::window::set_window_title` stored (#1770).
     ApplyWindowTitle,
+    /// Apply the vsync setting `rinch::window::set_vsync` stored (#2095).
+    ApplyVsync,
     /// Show a Wayland layer-shell window on this output (#1523).
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).
@@ -554,6 +556,13 @@ pub struct RinchRuntime {
     /// been handed yet (logical px), and which pointer it is. See
     /// [`Self::flush_pointer_move`].
     pending_pointer_move: Option<(f32, f32, SurfacePointer)>,
+    /// The device's raw motion not yet handed to the app, summed (#2092). See
+    /// [`Self::flush_pointer_motion`].
+    pending_motion: super::pointer_lock::MotionSum,
+    /// The newest pointer position winit reported while a lock held it still
+    /// (a confined pointer on X11 moves): handed over as a move when the lock
+    /// ends. See [`Self::restore_held_pointer_move`].
+    held_pointer_move: Option<(f32, f32, SurfacePointer)>,
     /// The OS file drag over the main window, from winit's data transfer
     /// events (#1962).
     os_file_drag: super::os_file_drag::OsFileDrag,
@@ -611,10 +620,13 @@ pub struct RinchRuntime {
     devtools_renderer: Option<WgpuRenderer>,
     /// DevTools software renderer (used whenever `devtools_renderer` is `None`).
     devtools_soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
+    /// What the main window's surface does with vsync on and off (#2095),
+    /// while it has a renderer; `None` while it is hidden or not yet made.
+    pacing: Option<crate::window::PacingOutcomes>,
     /// DevTools keyboard modifier state.
     devtools_modifiers: winit::keyboard::ModifiersState,
     /// Previous hovered node ID (for detecting changes).
-    devtools_prev_hovered: Option<usize>,
+    devtools_prev_hovered: Option<u64>,
     /// Timestamp of the last paint (for FPS calculation).
     last_paint_time: Option<std::time::Instant>,
     /// Recent frame times in ms (ring buffer for FPS averaging).
@@ -732,6 +744,8 @@ impl RinchRuntime {
             native_menu: None,
             draining_native_events: false,
             pending_pointer_move: None,
+            pending_motion: Default::default(),
+            held_pointer_move: None,
             os_file_drag: Default::default(),
             pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
@@ -751,6 +765,7 @@ impl RinchRuntime {
             #[cfg(feature = "gpu")]
             devtools_renderer: None,
             devtools_soft_renderer: None,
+            pacing: None,
             devtools_modifiers: winit::keyboard::ModifiersState::empty(),
             devtools_prev_hovered: None,
             last_paint_time: None,
@@ -789,6 +804,10 @@ impl RinchRuntime {
 
         // 5. Window can now be dropped safely.
         drop(self.window.take());
+
+        // 6. Nothing presents any more: `set_vsync` answers `Pending` (#2095).
+        self.pacing = None;
+        crate::window::clear_pacing();
     }
 
     // ── DevTools window management ──────────────────────────────────────────
@@ -1562,10 +1581,15 @@ impl RinchRuntime {
         // creates.
         #[cfg(feature = "gpu")]
         if !hidden {
-            self.renderer = start_gpu_renderer(&*window, self.gpu_surface_transparent());
+            self.renderer_started(start_gpu_renderer(&*window, self.gpu_surface_transparent()));
         }
         #[cfg(not(feature = "gpu"))]
-        announce_software_renderer();
+        {
+            announce_software_renderer();
+            if !hidden {
+                self.note_renderer_pacing();
+            }
+        }
 
         // Attach native menu bar to the window if configured
         if let Some(menu) = &self.native_menu {
@@ -1582,6 +1606,7 @@ impl RinchRuntime {
         crate::render_surface::set_redraw_callback(Arc::new(move || {
             window_arc.request_redraw();
         }));
+        self.install_pointer_lock_host();
 
         // Mount the component at the *logical* viewport size — `size` above is
         // the physical surface size (see `to_logical`). The display scale goes
@@ -1643,11 +1668,17 @@ impl RinchRuntime {
         });
         // Clear the direct redraw callback before dropping the window.
         crate::render_surface::clear_redraw_callback();
+        // A lock ends with its window (#2092): released through the window,
+        // then no host until one is shown again.
+        crate::window::set_pointer_lock_host(None);
         // Drop renderer first — it holds a reference to the window surface.
         #[cfg(feature = "gpu")]
         drop(self.renderer.take());
         drop(self.soft_renderer.take());
         drop(self.window.take());
+        // Nothing presents until it is shown again (#2095).
+        self.pacing = None;
+        crate::window::publish_pacing(None);
         // Its position stays in `saved_geometry`; a gesture ends with it.
         self.layer = None;
         // A re-created window starts on the default cursor.
@@ -1684,9 +1715,9 @@ impl RinchRuntime {
         self.note_surface_kind(&*window, first_show);
 
         #[cfg(feature = "gpu")]
-        {
-            self.renderer = start_gpu_renderer(&*window, self.gpu_surface_transparent());
-        }
+        self.renderer_started(start_gpu_renderer(&*window, self.gpu_surface_transparent()));
+        #[cfg(not(feature = "gpu"))]
+        self.note_renderer_pacing();
 
         // The new window gets the menu bar the first one had (#1533: on
         // Windows the bar is per HWND, so a re-created window had none, and
@@ -1711,11 +1742,60 @@ impl RinchRuntime {
         crate::render_surface::set_redraw_callback(Arc::new(move || {
             window_arc.request_redraw();
         }));
+        self.install_pointer_lock_host();
 
         // Trigger a full repaint of the existing DOM: a new surface, and
         // nothing named what it should show.
         self.app.mark_scene_dirty();
         self.window.as_ref().unwrap().request_redraw();
+    }
+
+    /// Take the main window's new renderer (`None`: it presents with
+    /// software), note what it does with vsync on and off, and publish what
+    /// it does now (#2095): the GPU renderer's surface says; the software
+    /// renderer has no present mode to switch.
+    #[cfg(feature = "gpu")]
+    fn renderer_started(&mut self, renderer: Option<WgpuRenderer>) {
+        self.renderer = renderer;
+        self.note_renderer_pacing();
+    }
+
+    /// [`Self::renderer_started`]'s second half; a build without `gpu` has
+    /// only the software renderer, and calls it alone.
+    fn note_renderer_pacing(&mut self) {
+        #[cfg(feature = "gpu")]
+        let outcomes = self
+            .renderer
+            .as_ref()
+            .map_or(crate::window::PacingOutcomes::UNSUPPORTED, |r| {
+                r.pacing_outcomes()
+            });
+        #[cfg(not(feature = "gpu"))]
+        let outcomes = crate::window::PacingOutcomes::UNSUPPORTED;
+        self.pacing = Some(outcomes);
+        crate::window::publish_pacing(self.pacing);
+    }
+
+    /// Apply `rinch::window::set_vsync` (#2095) to every GPU surface this
+    /// runtime presents to — the main window's and the DevTools window's, so
+    /// a DevTools window repainting beside an uncapped main window does not
+    /// pace the loop to its refresh — publish what the main window's does,
+    /// and redraw both, so the new mode takes effect without waiting for
+    /// something else to ask for a frame. Each surface is configured at its
+    /// next present ([`WgpuRenderer::set_vsync`]).
+    fn apply_vsync(&mut self) {
+        #[cfg(feature = "gpu")]
+        super::desktop::apply_vsync_to(
+            crate::window::vsync_requested(),
+            [self.renderer.as_mut(), self.devtools_renderer.as_mut()],
+        );
+        crate::window::publish_pacing(self.pacing);
+        for window in [self.window.as_ref(), self.devtools_window.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            window.request_redraw();
+        }
     }
 
     /// Paint the current scene to the window.
@@ -2947,6 +3027,8 @@ impl ApplicationHandler for RinchRuntime {
         // event that names none (a key, an injected debug `mouse_down`) is
         // never read as the last pen or finger.
         let _forget_pointer = ForgetCurrentPointer;
+        // Raw motion that came before this event reaches the app first.
+        self.flush_pointer_motion(event_loop);
 
         // Pointer moves are coalesced (update-path audit F2.2): a high-rate
         // mouse reports several per frame, and each used to run hover, the
@@ -2969,6 +3051,19 @@ impl ApplicationHandler for RinchRuntime {
             // and `MouseWheel` below all read the position back out of
             // `app.cursor_pos`, which the flushed move sets.
             let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
+            // While the pointer is locked or confined (#2092) its position is
+            // held where the lock found it, as a browser holds it: a confined
+            // cursor (X11) still moves, and must not move hover under a
+            // camera the mouse is turning. The motion arrives as raw deltas.
+            // Where it really is is kept for when the lock ends
+            // (`restore_held_pointer_move`), so hover is not left stale.
+            if crate::pointer_lock::is_locked() {
+                let id = pointer_id_of(source);
+                let down = self.pressed_pointers.is_down(id);
+                let pointer = surface_pointer_of(source, *primary, down);
+                self.held_pointer_move = Some((lx as f32, ly as f32, pointer));
+                return;
+            }
             // A layer surface's move or resize (#1523) takes the pointer, as
             // a compositor move does.
             if self.update_layer_gesture((lx, ly), event_loop) {
@@ -3222,9 +3317,15 @@ impl ApplicationHandler for RinchRuntime {
             }
             // A trackpad pinch (macOS, iOS, Wayland): a `Pinch` for a
             // surface with pointer events under the cursor.
+            // A pinch no surface takes is an `onwheel` with Ctrl held, as a
+            // browser reports it.
             WindowEvent::PinchGesture { delta, .. } => {
-                if delta.is_finite() {
-                    self.app.surface_pinch_gesture(delta as f32);
+                if delta.is_finite()
+                    && !self.app.surface_pinch_gesture(delta as f32)
+                    && self.app.pinch_as_wheel(delta as f32)
+                    && let Some(w) = &self.window
+                {
+                    w.window.request_redraw();
                 }
                 return;
             }
@@ -3301,7 +3402,11 @@ impl ApplicationHandler for RinchRuntime {
                 // this physical key, ignoring Shift — issue #1170's letter
                 // chords match it before falling back to the physical key.
                 let mods = self.translate_modifiers();
-                if self.app.try_menu_shortcut(mods, key_code, win_kwm) {
+                // Escape while the pointer is locked is the lock's (#2092):
+                // `handle_event` ends it and consumes the key.
+                let lock_escape = key_code == winit::keyboard::KeyCode::Escape
+                    && crate::pointer_lock::is_locked();
+                if !lock_escape && self.app.try_menu_shortcut(mods, key_code, win_kwm) {
                     // Shortcut matched and callback dispatched; request redraw
                     if let Some(w) = &self.window {
                         w.request_redraw();
@@ -3398,8 +3503,20 @@ impl ApplicationHandler for RinchRuntime {
         self.dispatch_main_event(platform_event, event_loop);
     }
 
+    fn device_event(
+        &mut self,
+        _event_loop: &dyn ActiveEventLoop,
+        _device_id: Option<winit::event::DeviceId>,
+        event: DeviceEvent,
+    ) {
+        self.note_device_event(&event);
+    }
+
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
-        // The batch's last pointer move, before anything is laid out.
+        // The batch's raw motion and last pointer move, before anything is
+        // laid out.
+        self.flush_pointer_motion(event_loop);
+        self.restore_held_pointer_move();
         self.flush_pointer_move(event_loop);
         self.about_to_wait_inner(event_loop);
     }
@@ -3422,6 +3539,60 @@ impl RinchRuntime {
         for event in host.events {
             self.dispatch_main_event(event, event_loop);
         }
+    }
+
+    /// The main window's pointer lock goes through this window (#2092).
+    fn install_pointer_lock_host(&mut self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        crate::window::set_pointer_lock_host(Some(Box::new(
+            super::pointer_lock::WindowPointerLock {
+                window: Arc::downgrade(&window.window),
+            },
+        )));
+    }
+
+    /// One device motion (#2092): summed into the turn's motion when it has
+    /// anywhere to go (a lock is held, or an `on_pointer_motion` handler
+    /// listens), dropped otherwise, so an app that never asks pays nothing.
+    fn note_device_event(&mut self, event: &DeviceEvent) {
+        if let DeviceEvent::PointerMotion { delta } = event
+            && crate::pointer_lock::wants_motion()
+        {
+            tracing::trace!(dx = delta.0, dy = delta.1, "device motion");
+            self.pending_motion.add(delta.0, delta.1);
+        }
+    }
+
+    /// Hand the app the motion summed since the last flush, as one
+    /// `PointerMotion`: before any other event (so a press or a key comes
+    /// after the motion that preceded it) and when the turn ends.
+    fn flush_pointer_motion(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if let Some(motion) = self.take_pointer_motion() {
+            self.dispatch_main_event(motion, event_loop);
+        }
+    }
+
+    /// Once no lock holds the pointer, the position it reached meanwhile is
+    /// the move the app is owed (unless a newer one is already waiting): the
+    /// document's hover catches up with the pointer.
+    fn restore_held_pointer_move(&mut self) {
+        if crate::pointer_lock::is_locked() {
+            return;
+        }
+        if let Some(held) = self.held_pointer_move.take()
+            && self.pending_pointer_move.is_none()
+        {
+            self.pending_pointer_move = Some(held);
+        }
+    }
+
+    /// The motion [`Self::flush_pointer_motion`] hands the app, taken.
+    fn take_pointer_motion(&mut self) -> Option<PlatformEvent> {
+        self.pending_motion
+            .take()
+            .map(|(dx, dy)| PlatformEvent::PointerMotion { dx, dy })
     }
 
     /// Hand the app the pointer move [`Self::window_event`] held back, if any.
@@ -3586,10 +3757,46 @@ impl RinchRuntime {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
+        // Vello's counters on their way back from the GPU (#2071): the fifth.
+        // Armed only until they arrive, so a window at rest goes back to `Wait`.
+        #[cfg(feature = "gpu")]
+        let wake = match (wake, self.check_vello_frames()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         match wake {
             Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
+    }
+
+    /// See what became of the frames the windows gave Vello (#2071). A frame
+    /// that overflowed Vello's buffers went out undrawn, and on a window at rest
+    /// nothing else would ever draw it, so this asks for the redraw that does:
+    /// [`WgpuRenderer::check_frames`] has made the next frame a full one, at the
+    /// buffers' new sizes. Answers when to look again, `None` once every frame
+    /// is accounted for.
+    #[cfg(feature = "gpu")]
+    fn check_vello_frames(&mut self) -> Option<std::time::Instant> {
+        use vello::FrameCheck;
+        let main = self.renderer.as_mut().map(WgpuRenderer::check_frames);
+        if main == Some(FrameCheck::Lost)
+            && let Some(w) = &self.window
+        {
+            w.request_redraw();
+        }
+        let devtools = self
+            .devtools_renderer
+            .as_mut()
+            .map(WgpuRenderer::check_frames);
+        if devtools == Some(FrameCheck::Lost)
+            && let Some(w) = &self.devtools_window
+        {
+            w.request_redraw();
+        }
+        [main, devtools]
+            .contains(&Some(FrameCheck::Pending))
+            .then(|| std::time::Instant::now() + VELLO_CHECK_INTERVAL)
     }
 
     /// Push the focus arbiter's desired IME state to the window. Enables IME with
@@ -3794,6 +4001,10 @@ impl RinchRuntime {
             }
             RinchNativeEvent::ApplyWindowTitle => {
                 self.take_stored_title();
+                return;
+            }
+            RinchNativeEvent::ApplyVsync => {
+                self.apply_vsync();
                 return;
             }
             RinchNativeEvent::SetWindowOutput(output) => {
@@ -4132,6 +4343,12 @@ fn black_backdrop_layer(
 }
 
 // ── Renderer choice ──────────────────────────────────────────────────────────
+
+/// How soon the loop looks again for Vello's counters of a frame the GPU has
+/// not finished (#2071): half a 60 Hz frame. A window that overflowed is drawn
+/// again this much after the GPU finishes, at the worst.
+#[cfg(feature = "gpu")]
+const VELLO_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
 
 /// The GPU renderer for `window`, or `None` to present with software: when
 /// software was chosen (and the app did not configure the GPU device itself,
@@ -5511,7 +5728,7 @@ mod bundled_font_tests {
             .app
             .pending_fonts
             .iter()
-            .map(|f| f.generics[0])
+            .map(|f| f.font.generics[0])
             .collect();
         assert_eq!(
             generics,
@@ -5684,7 +5901,7 @@ mod bundled_font_tests {
             "the bundled face must reach the app the window will mount"
         );
         assert_eq!(
-            runtime.app.pending_fonts[0].generics[0],
+            runtime.app.pending_fonts[0].font.generics[0],
             parley::fontique::GenericFamily::Monospace,
             "and reach it with the generic it declared"
         );
@@ -6149,6 +6366,118 @@ mod pointer_source_tests {
 }
 
 #[cfg(test)]
+mod pointer_lock_2092_tests {
+    //! The shell's half of a pointer lock (#2092): winit's device motion,
+    //! summed over a turn and handed to the app as one `PointerMotion` only
+    //! when something listens, and the lock a hidden window gives back.
+    use super::*;
+    use crate::pointer_lock::test_host::install;
+    use crate::render_surface::{RenderSurfaceHandle, SurfaceEvent, create_render_surface};
+    use crate::window::{PointerLockError, PointerLockMode, pointer_lock, request_pointer_lock};
+    use rinch_core::Component;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    thread_local! {
+        static SURFACE: RefCell<Option<RenderSurfaceHandle>> = const { RefCell::new(None) };
+    }
+
+    fn component(scope: &mut RenderScope) -> NodeHandle {
+        let root = scope.create_element("div");
+        let surface = SURFACE.with(|s| s.borrow().clone()).unwrap();
+        let canvas = crate::render_surface::RenderSurface {
+            surface: Some(surface),
+        }
+        .render(scope, &[]);
+        root.append_child(&canvas);
+        root
+    }
+
+    /// The `PointerMotion` steps a surface heard.
+    type Heard = Rc<RefCell<Vec<(f32, f32)>>>;
+
+    fn device_motion(dx: f64, dy: f64) -> DeviceEvent {
+        DeviceEvent::PointerMotion { delta: (dx, dy) }
+    }
+
+    /// A runtime whose app has mounted a surface, and what the surface heard.
+    fn runtime() -> (RinchRuntime, RenderSurfaceHandle, Heard) {
+        crate::window::set_pointer_lock_host(None);
+        let surface = create_render_surface();
+        SURFACE.with(|s| *s.borrow_mut() = Some(surface.clone()));
+        let mut runtime = RinchRuntime::new("t", 640, 480, component, &[]);
+        runtime.app.mount_component(640.0, 480.0);
+        let heard: Heard = Rc::default();
+        let h = heard.clone();
+        surface.set_event_handler(move |e| {
+            if let SurfaceEvent::PointerMotion { dx, dy } = e {
+                h.borrow_mut().push((dx, dy));
+            }
+        });
+        (runtime, surface, heard)
+    }
+
+    #[test]
+    fn device_motion_nobody_wants_is_dropped() {
+        let (mut runtime, _surface, _heard) = runtime();
+        runtime.note_device_event(&device_motion(5.0, 5.0));
+        assert!(runtime.take_pointer_motion().is_none());
+    }
+
+    #[test]
+    fn device_motion_is_summed_and_reaches_the_locked_surface() {
+        let (mut runtime, surface, heard) = runtime();
+        let _log = install(Ok(Some(PointerLockMode::Locked)));
+        surface.request_pointer_lock().unwrap();
+        for (dx, dy) in [(3.0, -1.0), (0.5, 2.25), (-10.0, 0.0)] {
+            runtime.note_device_event(&device_motion(dx, dy));
+        }
+        // Not motion: ignored.
+        runtime.note_device_event(&DeviceEvent::MouseWheel {
+            delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+        });
+        let motion = runtime.take_pointer_motion().expect("the turn's motion");
+        assert!(runtime.take_pointer_motion().is_none(), "taken once");
+        runtime.app.handle_event(motion, (640, 480), 1.0);
+        assert_eq!(*heard.borrow(), [(-6.5, 1.25)]);
+        crate::window::set_pointer_lock_host(None);
+    }
+
+    /// A confined pointer that moved while locked: when the lock ends, its
+    /// real position is the app's next move, so hover is not left stale.
+    #[test]
+    fn the_position_a_lock_held_back_is_restored_when_it_ends() {
+        let (mut runtime, surface, _heard) = runtime();
+        let _log = install(Ok(Some(PointerLockMode::Confined)));
+        surface.request_pointer_lock().unwrap();
+        runtime.held_pointer_move = Some((310.0, 205.0, SurfacePointer::mouse(false)));
+        runtime.restore_held_pointer_move();
+        assert!(runtime.pending_pointer_move.is_none(), "still locked: held");
+        crate::window::exit_pointer_lock();
+        runtime.restore_held_pointer_move();
+        assert_eq!(
+            runtime.pending_pointer_move.map(|(x, y, _)| (x, y)),
+            Some((310.0, 205.0))
+        );
+        assert!(runtime.held_pointer_move.is_none());
+        crate::window::set_pointer_lock_host(None);
+    }
+
+    /// Hiding the window destroys it: the lock is given back first, through
+    /// it, and nothing can lock until a window is shown again.
+    #[test]
+    fn hiding_the_window_releases_the_lock() {
+        let (mut runtime, _surface, _heard) = runtime();
+        let log = install(Ok(Some(PointerLockMode::Locked)));
+        request_pointer_lock().unwrap();
+        runtime.hide_window();
+        assert_eq!(pointer_lock(), None);
+        assert_eq!(log.borrow().unlocks, 1);
+        assert_eq!(request_pointer_lock(), Err(PointerLockError::Unsupported));
+    }
+}
+
+#[cfg(test)]
 mod layer_drag_tests {
     use super::*;
     use rinch_core::element::WindowProps;
@@ -6423,6 +6752,48 @@ mod window_restore_tests {
     fn attributes(runtime: &mut RinchRuntime, first_appearance: bool) -> WindowAttributes {
         let steps = runtime.main_window_steps(Backend::X11, true);
         runtime.main_window_attributes(steps, Backend::X11, false, first_appearance)
+    }
+
+    /// #2095's runtime wiring, without a surface: a renderer that starts
+    /// publishes what it does (software: `Unsupported`), `apply_vsync`
+    /// publishes the request against it, hiding and shutting down return to
+    /// `Pending`.
+    #[test]
+    fn the_runtime_publishes_its_windows_pacing_2095() {
+        use crate::window::{Presentation, presentation, set_vsync};
+        let _lock = crate::window::VSYNC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set_vsync(true);
+        crate::window::publish_pacing(None);
+        let mut rt = runtime(WindowProps::default());
+        assert_eq!(presentation(), Presentation::Pending);
+
+        // The software renderer (no GPU renderer started).
+        #[cfg(feature = "gpu")]
+        rt.renderer_started(None);
+        #[cfg(not(feature = "gpu"))]
+        rt.note_renderer_pacing();
+        assert_eq!(presentation(), Presentation::Unsupported);
+        assert_eq!(set_vsync(false), Presentation::Unsupported);
+
+        // A GPU surface with Mailbox, as `pacing_outcomes` reports one.
+        rt.pacing = Some(crate::window::PacingOutcomes {
+            on: Presentation::Vsync,
+            off: Presentation::Mailbox,
+        });
+        rt.apply_vsync();
+        assert_eq!(presentation(), Presentation::Mailbox, "off, as applied");
+
+        rt.hide_window();
+        assert_eq!(presentation(), Presentation::Pending, "hidden");
+        assert_eq!(set_vsync(true), Presentation::Pending);
+
+        rt.pacing = Some(crate::window::PacingOutcomes::UNSUPPORTED);
+        crate::window::publish_pacing(rt.pacing);
+        drop(rt);
+        assert_eq!(set_vsync(true), Presentation::Pending, "shut down");
+        crate::window::publish_pacing(None);
     }
 
     impl RinchRuntime {

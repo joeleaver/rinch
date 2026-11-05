@@ -115,6 +115,33 @@ fn calc_width() {
     assert_near(doc.tree.get(a.0).unwrap().layout.width, 175.0, "width");
 }
 
+/// A restyle from `calc(50% + 10px)` (160 in 300) to `calc(10% + 160px)`
+/// (190; Chrome: 190). The new Taffy style carries a `Calc` as its length part,
+/// 160, until the layout resolves it, and the old one holds the resolved 160:
+/// compared as they were, the change was judged layout-neutral, the layout
+/// was skipped, and the box stayed 160 wide.
+#[test]
+fn calc_width_restyle_to_a_length_part_equal_to_the_old_width() {
+    let mut doc = RinchDocument::new();
+    let c = container(&mut doc);
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "style", "width: calc(50% + 10px); height: 10px;");
+    doc.append_child(c, a);
+    doc.resolve_layout(800.0, 600.0);
+    assert_near(
+        doc.tree.get(a.0).unwrap().layout.width,
+        160.0,
+        "width before",
+    );
+    doc.set_attribute(a, "style", "width: calc(10% + 160px); height: 10px;");
+    doc.resolve_layout(800.0, 600.0);
+    assert_near(
+        doc.tree.get(a.0).unwrap().layout.width,
+        190.0,
+        "width after",
+    );
+}
+
 /// `height: calc(50% - 20px)` against a definite 200px parent → 80 (Chrome: 80).
 #[test]
 fn calc_height() {
@@ -555,8 +582,8 @@ fn calc_size_pct_against_indefinite_behaves_as_auto() {
 /// An absolutely positioned child's percentages resolve against its
 /// containing block's *padding box*, not its content box — Taffy subtracts
 /// only the border (flexbox.rs:2166, block.rs:580) and so does CSS. On a
-/// 300×200 container with padding 20 (border-box 300 under Taffy's
-/// box-sizing), Chrome gives left 140 and width 160; resolving against the
+/// 300×200 `box-sizing: border-box` container with padding 20 (padding box
+/// 300), Chrome gives left 140 and width 160; resolving against the
 /// content box would give 120/140, off by exactly the parent padding and
 /// inconsistent with the plain-% twin (150/150) on the same box.
 #[test]
@@ -566,7 +593,7 @@ fn calc_abs_child_resolves_against_padding_box() {
     doc.set_attribute(
         c,
         "style",
-        "position: relative; width: 300px; height: 200px; padding: 20px;",
+        "position: relative; width: 300px; height: 200px; padding: 20px; box-sizing: border-box;",
     );
     let a = doc.create_element("div");
     doc.set_attribute(

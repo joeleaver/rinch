@@ -134,7 +134,21 @@ pub(super) fn text_align_from_stylo(align: &style::values::computed::TextAlign) 
         TextAlign::Right => TextAlignValue::Right,
         TextAlign::Center => TextAlignValue::Center,
         TextAlign::Justify => TextAlignValue::Justify,
-        _ => TextAlignValue::Start,
+        _ => html_align_from_stylo(align).unwrap_or_default(),
+    }
+}
+
+/// The alignment HTML's `align` attribute gives (`-moz-center` and its
+/// kin, which `legacy_hints` writes), if that is what `align` is.
+pub(super) fn html_align_from_stylo(
+    align: &style::values::computed::TextAlign,
+) -> Option<TextAlignValue> {
+    use style::values::computed::TextAlign;
+    match *align {
+        TextAlign::MozCenter => Some(TextAlignValue::Center),
+        TextAlign::MozLeft => Some(TextAlignValue::Start),
+        TextAlign::MozRight => Some(TextAlignValue::End),
+        _ => None,
     }
 }
 

@@ -443,8 +443,8 @@ fn a_detached_node_is_still_readable() {
         "a detached node's computed styles must still be reportable"
     );
     // The `query_node_layout` path, on the node and on its text child.
-    assert!(doc.query_node_layout(panel.0 as u64).is_some());
-    let _ = doc.query_node_layout(t.0 as u64);
+    assert!(doc.query_node_layout(panel.0).is_some());
+    let _ = doc.query_node_layout(t.0);
 
     // **Scoping is what decides whether a debug tool reaches a detached node,
     // not the tool.** `query_selector` and an unscoped `dom_tree` both start at
@@ -574,7 +574,7 @@ fn the_document_nodes_own_entry_is_resolved() {
     // What `set_attribute` on the document node used to do: drop every
     // element's cached style under it, and record the document node itself.
     for id in [doc.tree.html_id, doc.tree.body_id, kid.0] {
-        *doc.tree.nodes[id].stylo_element_data.borrow_mut() = None;
+        doc.tree.nodes[id].stylo_element_data.clear();
     }
     doc.tree.style_roots.push(doc.tree.root_id);
     doc.tree.styles_dirty = true;

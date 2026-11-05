@@ -100,13 +100,11 @@ pub enum DisplayValue {
     ListItem,
 }
 
-/// Which part of a CSS table a box is, from its computed `display` (#1083).
+/// Which part of a CSS table a box is, from its computed `display`.
 ///
-/// rinch has no table formatting context: `display_from_stylo` maps a table,
-/// a row and a row group to [`DisplayValue::Flex`] and a cell or caption to
-/// [`DisplayValue::Block`]. That loses the one fact a flex approximation needs
-/// to be the right *flex*: whether a table (or row group) holds rows, which
-/// stack, or bare cells, which share one anonymous row. This keeps it.
+/// `display_from_stylo` maps a table to [`DisplayValue::Grid`], a row or row
+/// group to [`DisplayValue::Contents`] and a cell or caption to
+/// [`DisplayValue::Block`], so `display` alone cannot say. See `table_layout`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub enum TablePart {
     /// Not a table part.
@@ -114,27 +112,30 @@ pub enum TablePart {
     None,
     /// `table` / `inline-table`.
     Table,
-    /// `table-row-group`, `table-header-group`, `table-footer-group`.
+    /// `table-row-group`.
     RowGroup,
+    /// `table-header-group`: its rows come first, wherever it stands.
+    HeaderGroup,
+    /// `table-footer-group`: its rows come last, wherever it stands.
+    FooterGroup,
     /// `table-row`.
     Row,
-    /// Any other table-internal box: a cell, a column or a column group.
+    /// `table-cell`.
+    Cell,
+    /// A column or a column group.
     Other,
     /// `table-caption`: a table part, but not an internal table box.
     Caption,
 }
 
 impl TablePart {
-    /// Whether this box is a flex container whose direction depends on its
-    /// children (`RinchDocument::table_flex_direction`).
-    pub fn holds_rows(self) -> bool {
-        matches!(self, Self::Table | Self::RowGroup)
-    }
-
-    /// Whether a box of this part, as a child of a table or row group, is a
-    /// row of its own — stacked, not sharing an anonymous row with bare cells.
+    /// Whether a box of this part, as a child of a table, is a row of its
+    /// own or a group of them.
     pub fn is_row_like(self) -> bool {
-        matches!(self, Self::RowGroup | Self::Row)
+        matches!(
+            self,
+            Self::RowGroup | Self::HeaderGroup | Self::FooterGroup | Self::Row
+        )
     }
 
     /// Whether this is an internal table box (css-tables-3: a row, a row
@@ -142,7 +143,7 @@ impl TablePart {
     /// caption). `aspect-ratio` does not apply to one (css-sizing-4 §5.1,
     /// #1286; Chrome 155).
     pub fn is_internal(self) -> bool {
-        matches!(self, Self::RowGroup | Self::Row | Self::Other)
+        self.is_row_like() || matches!(self, Self::Cell | Self::Other)
     }
 }
 
@@ -328,12 +329,11 @@ pub enum DimensionValue {
     /// `clamp(min-content, <lp>, max-content)`, a different value from the bare
     /// keyword, so it stays `Auto` and is reported separately.
     ///
-    /// None of them is gated, which is less obvious than it looks: Stylo guards
-    /// `stretch`, `-webkit-fill-available` and `fit-content()` on
-    /// `static_prefs::pref!(…)`, which is **not** the runtime preference store
-    /// `RinchDocument::new` pokes (`stylo_config`, which answers `false` for
-    /// every unset key). It is a compile-time macro in `stylo_static_prefs`
-    /// that hard-codes those keys to `true`.
+    /// None of them is gated: Stylo guards `stretch`, `-webkit-fill-available`
+    /// and `fit-content()` on `layout.css.stretch-size-keyword.enabled`,
+    /// `layout.css.webkit-fill-available.enabled` and
+    /// `layout.css.fit-content-function.enabled`, which `stylo_static_prefs`
+    /// defaults to `true` and `set_stylo_prefs` leaves alone.
     Intrinsic(IntrinsicSize),
 }
 
@@ -748,13 +748,12 @@ impl ScrollbarWidthValue {
 ///
 /// # Why this is not `scrollbar-color`
 ///
-/// The real property is **gecko-only in Stylo** (`engines="gecko"` on the
-/// longhand in `properties/longhands/inherited_ui.mako.rs`), and that is a
-/// codegen-time filter, not a `#[cfg]`: the servo build rinch uses emits no
-/// `LonghandId` for it, no parser entry and no field on any style struct, so
-/// `scrollbar-color: red blue` in a stylesheet is an unknown declaration and
-/// Stylo drops it. Grepping this repo's own generated `properties.rs` for
-/// `scrollbar_color` finds nothing.
+/// With stylo 0.11 the real property was **gecko-only** (`engines="gecko"`,
+/// a codegen-time filter): the servo build emitted no `LonghandId`, parser
+/// entry or style-struct field for it, so `scrollbar-color: red blue` was an
+/// unknown declaration and was dropped. Since stylo 0.21 the servo build
+/// parses it (behind `layout.unimplemented`, which rinch turns on), but
+/// nothing in rinch reads it.
 ///
 /// So the value arrives through a **custom property**, `--rinch-scrollbar-color`,
 /// which the servo build does support fully: it cascades, it inherits, and it
@@ -1229,6 +1228,39 @@ impl ObjectFitValue {
             Self::None => "none",
             Self::ScaleDown => "scale-down",
         }
+    }
+}
+
+/// CSS `image-rendering` (css-images-3 §5.3, #2098): how an image drawn at
+/// another size than its own is sampled. Inherited. Stylo's servo build
+/// parses `auto`, `crisp-edges` (and `-moz-crisp-edges`) and `pixelated`;
+/// `smooth` and the legacy `optimizeSpeed`/`optimizeQuality` are gecko-only
+/// there, so such a declaration is dropped and the inherited value stays.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum ImageRenderingValue {
+    /// The backend's own filter (bilinear on the GPU; see
+    /// [`ImageSampling::Auto`](crate::paint::painter::ImageSampling::Auto)).
+    #[default]
+    Auto,
+    /// Nearest-neighbour, up and down: Chrome 156 draws both keywords so.
+    CrispEdges,
+    /// Nearest-neighbour, up and down (Chrome 156; the spec lets a
+    /// downscale stay smooth, Chrome does not).
+    Pixelated,
+}
+
+impl ImageRenderingValue {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::CrispEdges => "crisp-edges",
+            Self::Pixelated => "pixelated",
+        }
+    }
+
+    /// Whether the value asks for nearest-neighbour sampling.
+    pub fn is_nearest(self) -> bool {
+        !matches!(self, Self::Auto)
     }
 }
 

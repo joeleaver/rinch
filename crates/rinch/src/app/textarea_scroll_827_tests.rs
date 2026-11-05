@@ -8,8 +8,9 @@
 //! loses focus. The desktop textarea painted every line from the top of its
 //! box down, over whatever lay below it, and nothing scrolled it.
 //!
-//! Text is set in the bundled Inter (`sans-serif`). The field has a 3px
-//! border and 5px/7px padding, so its content box `x ∈ [10, 210), y ∈ [8, 62)`
+//! Text is set in the bundled Inter (`sans-serif`). The field is a 220×70
+//! `box-sizing: border-box` box (a `<textarea>` is `content-box` by default,
+//! in Chrome as here) with a 3px border and 5px/7px padding, so its content box `x ∈ [10, 210), y ∈ [8, 62)`
 //! and padding box `x ∈ [3, 217), y ∈ [3, 67)` sit off the border-box origin,
 //! and the content box (54px) holds two and a fraction of a line — off every
 //! whole-line fixed point.
@@ -28,7 +29,7 @@ const CONTENT_BOTTOM: f32 = 62.0;
 /// The padding box, which a scroll container clips its content to.
 const PAD: (f32, f32, f32, f32) = (3.0, 3.0, 217.0, 67.0);
 
-const AREA_STYLE: &str = "display: block; width: 220px; height: 70px; padding: 5px 7px; \
+const AREA_STYLE: &str = "display: block; box-sizing: border-box; width: 220px; height: 70px; padding: 5px 7px; \
      margin: 0; border: 3px solid transparent; font-size: 16px; line-height: 20px; \
      font-family: sans-serif; color: rgb(255, 0, 0); background: transparent; resize: none";
 
@@ -109,7 +110,7 @@ fn repaint(app: &mut RinchApp) {
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
 }
 
-fn caret_pos(app: &RinchApp, id: usize) -> usize {
+fn caret_pos(app: &RinchApp, id: u64) -> usize {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .get(id)
@@ -118,7 +119,7 @@ fn caret_pos(app: &RinchApp, id: usize) -> usize {
         .expect("a focused field carries its caret")
 }
 
-fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+fn scroll_top(app: &RinchApp, id: u64) -> f64 {
     app.doc
         .as_ref()
         .unwrap()
@@ -136,9 +137,9 @@ fn page(
     tag: &'static str,
     style: &'static str,
     value: &'static str,
-) -> (RinchApp, usize, NodeHandle) {
+) -> (RinchApp, u64, NodeHandle) {
     let h = register_input_handler(InputCallback::new(|_| {}));
-    let id = Rc::new(Cell::new(0usize));
+    let id = Rc::new(Cell::new(0u64));
     let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let (id_in, handle_in) = (id.clone(), handle.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -167,11 +168,11 @@ fn page(
     (app, id.get(), field)
 }
 
-fn area(value: &'static str) -> (RinchApp, usize, NodeHandle) {
+fn area(value: &'static str) -> (RinchApp, u64, NodeHandle) {
     page("textarea", AREA_STYLE, value)
 }
 
-fn focus(app: &mut RinchApp, field: &NodeHandle, id: usize) {
+fn focus(app: &mut RinchApp, field: &NodeHandle, id: u64) {
     field.focus();
     repaint(app);
     ev(app, PlatformEvent::AboutToWait);
@@ -561,7 +562,7 @@ fn a_two_line_selection_is_partial_on_its_first_and_last_lines() {
 #[test]
 fn a_scrolled_inputs_selection_is_under_its_text() {
     const LONG: &str = "The quick brown fox jumps over the lazy dog, again and again!";
-    const STYLE: &str = "display: block; width: 120px; height: 30px; padding: 0 6px; margin: 0; \
+    const STYLE: &str = "display: block; box-sizing: border-box; width: 120px; height: 30px; padding: 0 6px; margin: 0; \
          border: 3px solid transparent; font-size: 16px; line-height: 20px; \
          font-family: sans-serif; color: rgb(255, 0, 0); background: transparent";
     let (mut app, id, field) = page("input", STYLE, LONG);
@@ -648,7 +649,7 @@ fn wheel_to_end(app: &mut RinchApp, x: f32) {
 }
 
 /// `(scroll_height, client_height)` as the DOM API answers them.
-fn heights(app: &RinchApp, id: usize) -> (f64, f64) {
+fn heights(app: &RinchApp, id: u64) -> (f64, f64) {
     let d = app.doc.as_ref().unwrap().borrow();
     let nid = rinch_core::dom::NodeId(id);
     (

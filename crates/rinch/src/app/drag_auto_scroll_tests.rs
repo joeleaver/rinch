@@ -25,7 +25,7 @@ const X: f32 = 100.0;
 
 struct Fixture {
     app: RinchApp,
-    list: usize,
+    list: u64,
     /// The row index each `data-ondragover` fired on, in order.
     over: Rc<RefCell<Vec<usize>>>,
     /// The row index each `data-ondragenter` fired on, in order.
@@ -111,7 +111,7 @@ fn fixture() -> Fixture {
     fixture_with("", None)
 }
 
-fn find_by_id(app: &RinchApp, wanted: &str) -> usize {
+fn find_by_id(app: &RinchApp, wanted: &str) -> u64 {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .nodes
@@ -139,13 +139,13 @@ fn asks_for_a_frame(actions: &[AppAction]) -> bool {
         .any(|a| matches!(a, AppAction::RequestRedraw))
 }
 
-fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+fn scroll_top(app: &RinchApp, id: u64) -> f64 {
     app.doc.as_ref().unwrap().borrow().tree.nodes[id]
         .scroll_offset
         .1
 }
 
-fn set_scroll_top(app: &mut RinchApp, id: usize, top: f64) {
+fn set_scroll_top(app: &mut RinchApp, id: u64, top: f64) {
     let mut d = app.doc.as_ref().unwrap().borrow_mut();
     d.tree.nodes[id].scroll_offset.1 = top;
     d.tree.mark_scrolled(id);

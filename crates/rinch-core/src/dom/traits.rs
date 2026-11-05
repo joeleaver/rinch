@@ -332,17 +332,24 @@ pub trait DomDocument {
     ///
     /// No backend hands a **discarded** id to a later node: `rinch-web`'s
     /// counter is a monotonic `fetch_add` with no free list, and `rinch-dom`
-    /// frees nothing on this route. So a stale *discard* handle can only ever
-    /// name nothing, never somebody else, and registries keyed by node id
+    /// frees nothing on this route yet. So a stale *discard* handle can only
+    /// ever name nothing, never somebody else, and registries keyed by node id
     /// (focus, the mounted-editor registry) cannot be aimed at the wrong node by
     /// a discard.
     ///
     /// That is a claim about **this route only**. `rinch-dom` does free slab
     /// keys elsewhere — `set_inner_html` and pseudo-element pruning on restyle
-    /// both reach `NodeTree::remove_subtree` — and `slab::Slab` has a free list,
-    /// so an id freed *that* way is handed to a different node (measured:
-    /// `NodeId(4)`). #304's recycled-slot hazard is live on desktop today,
-    /// independently of this method, and belongs to #723's audit.
+    /// both reach `NodeTree::remove_subtree` — and the slab has a free list, so
+    /// a slot freed *that* way is handed to a different node (measured:
+    /// `NodeId(4)`), still at generation 0. #304's recycled-slot hazard is live
+    /// on desktop today, independently of this method.
+    ///
+    /// What will keep the promise once `rinch-dom` frees on discard (#723,
+    /// PR 2) is the [`NodeId`] **generation**: a freed slot is reused under a
+    /// higher generation, so the old id still names nothing — `rinch-dom`'s
+    /// node storage checks the generation on every lookup of an id from
+    /// outside the tree, and its `DomDocument` verbs are no-ops for an id that
+    /// names no live node. The slot is re-issued; the id is not.
     ///
     /// The default is `remove_node`: correct but reclaiming nothing, which is
     /// what a backend whose bookkeeping dies with the document wants.
@@ -379,6 +386,21 @@ pub trait DomDocument {
 
     /// Get an attribute value.
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String>;
+
+    /// Every attribute of `node`, as (name, value) pairs in no promised order
+    /// (#2154: a component's copy of an element). Empty for a text node, a
+    /// node that is gone, and a host that cannot list them (the default).
+    fn attribute_list(&self, _node: NodeId) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// `node`'s border-box size as laid out, before any CSS transform on it
+    /// or an ancestor scales it (the web's `offsetWidth`/`offsetHeight`), in
+    /// logical pixels (#2154). `None` where the host has no layout (the
+    /// default) or the node is gone.
+    fn layout_size(&self, _node: NodeId) -> Option<(f32, f32)> {
+        None
+    }
 
     /// The text a form control **holds right now** — what the user sees and
     /// what the next keystroke edits — as opposed to its `value` *content
@@ -1469,6 +1491,19 @@ pub trait DomDocument {
     /// Equivalent to `element.clientWidth` in the web DOM.
     fn client_width(&self, _node: NodeId) -> f64 {
         0.0
+    }
+
+    /// Whether a wheel moving `(dx, dy)` would scroll `node` itself: on an
+    /// axis whose delta is non-zero, `node` is a scroll container (a computed
+    /// `overflow` of `auto` or `scroll` with content overflowing its box, the
+    /// rule the wheel follows), no `lock_scroll` overlay locks it out, and its
+    /// offset is not yet at the end of its range in that direction. Only the
+    /// signs count, in the DOM's sense (positive scrolls down / right). Either
+    /// axis answering yes is a yes.
+    ///
+    /// The default (a document that does not scroll) is `false`.
+    fn can_scroll_toward(&self, _node: NodeId, _dx: f64, _dy: f64) -> bool {
+        false
     }
 
     /// Request that the given node be scrolled into view after the next layout.
