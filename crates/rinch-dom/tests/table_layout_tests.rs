@@ -231,6 +231,33 @@ fn inline_block_tables_in_a_cell_wrap_inside_it() {
 }
 
 #[test]
+fn a_percentage_max_width_does_not_stop_a_responsive_column_wrapping() {
+    // MJML's columns (Stripe's mail): `display: inline-block; width: 100%;
+    // max-width: 100%` in a cell, under a `max-width` wrapper. The
+    // percentage `max-width` is as cyclic in the cell's min-content measure
+    // as the width (css-sizing-3 §5.2.1), so the box still contributes its
+    // min-content width there; lined up at its one-line width, the column
+    // ran out of the wrapper and its text never wrapped. Chrome 156: the
+    // column is the wrapper's 400 and its text three 20px lines.
+    let d = doc("<div style='max-width:400px'><table width='100%' style='border-spacing:0'><tr>
+        <td style='padding:0;font-size:0'>
+        <div id=col style='display:inline-block;width:100%;max-width:100%'>
+          <table width='100%' style='border-spacing:0'><tr>
+          <td id=text style='padding:0;font-size:16px;line-height:20px'>We are here to help you find the right payments solution. Compare options below and get ready to grow your business.</td></tr></table>
+        </div></td></tr></table></div>");
+    let (.., w, h) = abs(&d, "col");
+    assert_eq!(w, 400.0);
+    assert_eq!(h, 60.0);
+    // Two columns side by side, as the cards below the heading are.
+    let d = doc("<div style='max-width:400px'><table width='100%' style='border-spacing:0'><tr>
+        <td style='padding:0;font-size:0'>
+        <div id=a style='display:inline-block;width:48%;max-width:48%;font-size:16px;line-height:20px'>Create a payment page in just a few clicks and share the link.</div><div id=b style='display:inline-block;width:48%;max-width:48%;font-size:16px;line-height:20px'>Embed a conversion-optimized checkout form directly into your site.</div>
+        </td></tr></table></div>");
+    assert_eq!(abs(&d, "a").2, 192.0);
+    assert_eq!(abs(&d, "b"), (192.0, 0.0, 192.0, abs(&d, "b").3));
+}
+
+#[test]
 fn a_rows_block_children_stack_in_its_first_column() {
     // CSS wraps a row's children that are not cells in one anonymous cell
     // (in the first column), so they stack: email's phone layouts set their
