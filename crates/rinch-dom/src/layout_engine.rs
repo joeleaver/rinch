@@ -1871,7 +1871,11 @@ impl RinchDocument {
             // HTML's `align` on the parent places a block box with a width of
             // its own (`html_align_dx`). From Taffy's own answer, so it is the
             // same on every read.
-            new_layout.x += self.html_align_dx(node_id);
+            // Gated on the document having met the attribute at all: the
+            // parent lookup per box per layout is otherwise measurable.
+            if self.tree.html_align_seen {
+                new_layout.x += self.html_align_dx(node_id);
+            }
 
             // An atomic inline child of an IFC has its *position* assigned by the IFC
             // (`write_inline_positions`), not Taffy: it is detached from its parent's
