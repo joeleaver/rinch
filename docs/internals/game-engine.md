@@ -67,6 +67,28 @@ it `SurfaceEvent::PointerMotion` while the lock is granted;
 `PointerLockHost` and forwards `PlatformEvent::PointerMotion`; mechanism and
 pins: `app-and-windows.md`, "Pointer lock and raw motion (#2092)".
 
+**Bound elements** (#2219). A surface whose element the app builds (a named
+surface's `data-viewport` element, an app canvas) gets one with
+`RenderSurfaceHandle::bind_element`. The handle's `element` field is an
+`Rc<SurfaceElement>` shared by the clones: `mounted` is the component's element,
+and its `Drop` (the last clone gone) forgets the binding and calls
+`pointer_lock::surface_dropped` (a `try_with` release, safe in TLS teardown).
+Note the registry holds a clone of every registered surface, so a named or
+mounted surface's handle "drops" only after `unregister_render_surface`, which
+releases anyway. Bindings live in the thread-local `BINDINGS` (surface id,
+element, a serial, a `Weak` of the event handler), not in the handle, so a
+scoped binding's `on_cleanup` captures only `(id, serial)` and undoes only its
+own binding, never a later one. `element()` is the binding, else `mounted`.
+A binding change ends the surface's lock when `pointer_lock::held_element(id)`
+is some other element than the new one (and the other surface's, when the
+element is taken from it); `LockOnRebind::Move` calls `pointer_lock::request`
+on the new element instead, and releases only if that is refused. A lock's
+motion goes through `dispatch_locked_surface_event`: the registry like any
+surface event, else the binding's handler, so a handle that was never mounted
+still hears it. The element leaving the document is the existing element-lock
+path (`pointer_lock::prune` on desktop; the browser on the web). Pins:
+`app/surface_bind_element_2219_tests.rs`, `rinch-web/tests/surface_bind_element_2219.rs`.
+
 **A focused surface only swallows the keys it claims (issue #482).** `set_event_handler`
 still receives every `KeyDown`/`KeyUp` while the surface is focused — that delivery is
 unaffected. `set_key_handler(|key: &SurfaceKeyData| -> bool)` answers a separate, additive

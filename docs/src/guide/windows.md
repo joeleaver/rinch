@@ -661,7 +661,7 @@ the focus, which is why a click is the usual moment to ask.
 
 **In the browser** the lock is the Pointer Lock API: `requestPointerLock` on the
 element (the page's root element for `request_pointer_lock`, the surface's
-`<canvas>` for a surface). **The browser grants it only during a user gesture**
+`<canvas>` for a surface, or the element bound with `bind_element`). **The browser grants it only during a user gesture**
 — call it from a click, press or key handler; from a timer or at startup it is
 refused. It also answers later: `Ok` means asked, and `pointer_lock()` turns
 `Some(Locked)` when the browser has locked (or stays `None` if it refused).
@@ -671,7 +671,10 @@ click leaves nothing locked), as is any lock rinch did not ask for.
 
 **Release.** A lock ends on `exit_pointer_lock()`; when the window loses focus
 (alt-tab, another window, a tab switch); on **Escape**; when the element or
-surface that holds it unmounts; and when the desktop window is hidden. An
+surface that holds it unmounts (for a surface whose element the app bound,
+also when it is unbound or re-bound, or the handle's last clone drops: see
+[A surface whose element you built](game-engine.md#a-surface-whose-element-you-built));
+and when the desktop window is hidden. An
 Escape that ends a lock is the lock's alone: it closes no modal, popup or menu
 and reaches no key handler, as in a browser, and neither do its auto-repeats
 while it is held — the next press is the app's as usual. With several apps on

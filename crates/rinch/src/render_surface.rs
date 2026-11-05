@@ -1190,7 +1190,8 @@ impl Drop for SurfaceElement {
     }
 }
 
-type SurfaceEventHandler = std::rc::Rc<RefCell<Option<Box<dyn Fn(SurfaceEvent)>>>>;
+type SurfaceEventSlot = RefCell<Option<Box<dyn Fn(SurfaceEvent)>>>;
+type SurfaceEventHandler = std::rc::Rc<SurfaceEventSlot>;
 
 /// One [`RenderSurfaceHandle::bind_element`].
 struct Binding {
@@ -1202,7 +1203,7 @@ struct Binding {
     /// The surface's event handler, for the motion of a lock it holds while
     /// it is not registered (a handle the `RenderSurface` component never
     /// mounted). Weak: the binding keeps no handle alive.
-    handler: std::rc::Weak<RefCell<Option<Box<dyn Fn(SurfaceEvent)>>>>,
+    handler: std::rc::Weak<SurfaceEventSlot>,
 }
 
 thread_local! {
