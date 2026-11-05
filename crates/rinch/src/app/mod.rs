@@ -12537,6 +12537,8 @@ mod scroll_into_view_nested_842_tests;
 #[cfg(test)]
 mod scroll_into_view_review_2014_tests;
 #[cfg(test)]
+mod surface_bind_element_2219_tests;
+#[cfg(test)]
 mod window_facts_1770_tests;
 
 /// What [`RinchApp::collect_tab_stops_from`] found under a root.

@@ -449,6 +449,55 @@ loses focus, and when the surface unmounts. The whole API, the units and each
 platform's behaviour: [Pointer Lock and Raw Mouse Motion](windows.md#pointer-lock-and-raw-mouse-motion).
 `examples/pointer-lock` is a working mouse-look surface.
 
+#### A surface whose element you built
+
+The lock is held by the surface's element, which the `RenderSurface` component
+makes. A surface whose element the app builds itself — a named surface from
+`create_render_surface_with_name` whose `data-viewport` element you write, or a
+`<canvas>` of your own — has none, and `request_pointer_lock()` answers
+`PointerLockError::NotConnected` (issue #2219). Give it the element with
+`bind_element`:
+
+```rust
+let surface = create_render_surface_with_name("stage");
+// While rendering the component that builds the element:
+let stage = rsx! { div { "data-viewport": "stage", style: "width: 100%; height: 100%" } };
+surface.bind_element(&stage);
+```
+
+The surface's lock is then that element's and the surface's own: its motion
+reaches the surface's event handler (also for a handle no `RenderSurface`
+component mounted), `has_pointer_lock()` answers for it, and it ends with the
+binding. Binding gives the surface an element and nothing else: it does not
+mount the surface or route the element's pointer events to it. A binding wins
+over the component's element while both exist; `unbind_element()` goes back to
+it, and `element()` says which one is in force. A binding made where no
+component owns the running code lasts until it is unbound, re-bound, or the
+handle's last clone drops. Re-binding the same element inside its owner (a
+handler or an effect that binds on every run) changes nothing.
+
+| When | What happens (default) | Option |
+|------|------------------------|--------|
+| the binding was made inside a component (while it rendered, or in its event handlers or effects), and it unmounts | unbound; the lock ends at once | `BindElementOptions::scoped(false)` keeps it |
+| the element leaves the document | the lock ends (desktop: on the next event; web: the browser ends it), the binding stays | — |
+| `unbind_element()` | the bound element's lock ends | — |
+| re-bound to another element while locked (granted or pending) | the lock ends, as on unmount | `lock_on_rebind(LockOnRebind::Move)` asks for it on the new element without releasing first |
+| the element is bound to another surface | taken from it, as `appendChild` takes a node from its old parent; that surface's lock on it ends | `if_bound_elsewhere(IfBoundElsewhere::Refuse)` answers `BindElementError::BoundElsewhere` |
+| the handle's last clone is dropped | the binding and the surface's lock end | — |
+
+```rust
+surface.bind_element_with(
+    &other,
+    BindElementOptions::new().lock_on_rebind(LockOnRebind::Move),
+)?;
+```
+
+`Move` is granted at once on the desktop. In a browser it asks `requestPointerLock`
+on the new element while the old one is still locked, which is how the Pointer
+Lock API moves a lock between elements; if the browser refuses, the old lock is
+exited too and none is held. A move to an element that is not in a document ends
+the lock.
+
 ### How often the render callback runs
 
 `set_render_callback` keeps each backend's original pacing until you choose one: on desktop
