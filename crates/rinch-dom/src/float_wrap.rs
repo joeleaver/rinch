@@ -221,7 +221,7 @@ impl crate::ifc::PlaceFloats for BlockFloats<'_, '_> {
 
 /// Where `cluster` starts, from the content box's left edge.
 ///
-/// parley 0.11.1 places a line's glyph runs and inline boxes from the line's
+/// parley (0.11.1, and 0.12 still) places a line's glyph runs and inline boxes from the line's
 /// start (`LineMetrics::inline_min_coord`, its `line_x`), and so do its hit
 /// test and selection rectangles, but `Cluster::visual_offset` (and
 /// `Cursor::geometry`, which uses it) leave the start out. It is `0` but for a
@@ -232,16 +232,19 @@ pub(crate) fn cluster_x(cluster: &parley::layout::Cluster<'_, peniko::Brush>) ->
 
 /// `cursor`'s caret box in `layout`, with its line's start counted
 /// ([`cluster_x`]): `Cursor::geometry` at no width, moved to the line its top
-/// is the top of.
+/// is the top of (since parley 0.12 the higher of the line box's top and its
+/// content's).
 pub(crate) fn caret_box(
     layout: &parley::layout::Layout<peniko::Brush>,
     cursor: &parley::editing::Cursor,
 ) -> parley::BoundingBox {
     let mut geom = cursor.geometry(layout, 0.0);
-    if let Some(line) = layout
-        .lines()
-        .find(|l| f64::from(l.metrics().block_min_coord) == geom.y0)
-    {
+    // parley 0.12's caret top is the higher of the line box's top and its
+    // content's (`cursor_rect`), so the line is found by that.
+    if let Some(line) = layout.lines().find(|l| {
+        let m = l.metrics();
+        f64::from(m.block_min_coord.min(m.content_block_min_coord)) == geom.y0
+    }) {
         let start = f64::from(line.metrics().inline_min_coord);
         geom.x0 += start;
         geom.x1 += start;

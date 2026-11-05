@@ -1015,7 +1015,7 @@ fn width_keeping_nbsp(
     let mut extent = width;
     for line in layout.lines() {
         let m = line.metrics();
-        if m.trailing_whitespace <= 0.0 {
+        if m.hanging_advance <= 0.0 {
             continue;
         }
         // The line's clusters in logical order, last first: the trailing
@@ -1178,6 +1178,17 @@ pub struct Node {
     /// `natural_inline_size`, and what lets a still-resolved box be resolved
     /// against another width without measuring it again.
     pub(crate) natural_max_width: f32,
+    /// An atomic inline's baseline, from its border-box top, as its detached
+    /// compute last laid it out (`RinchDocument::measure_inline_blocks`):
+    /// what it hands parley as its `InlineBox::baseline` (#663). `None` lines
+    /// it up by its bottom edge — a replaced element, a box with no line in
+    /// it or one whose `overflow` is not `visible` (CSS 2.1 §10.8.1).
+    pub(crate) atomic_baseline: Option<f32>,
+    /// Whether `atomic_baseline` has been computed: the box has been measured
+    /// as an atomic inline at least once. A box that became one by a
+    /// restyle around it (a flex item whose container became a block) has
+    /// not, and is measured before the IFC that lines it up (#663).
+    pub(crate) atomic_baseline_known: bool,
     /// The box this node was last **painted** in, for dirty-region
     /// computation: where its old pixels are, and so what a frame that moves it
     /// has to clear.
@@ -1883,6 +1894,8 @@ impl Node {
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
             natural_max_width: 0.0,
+            atomic_baseline: None,
+            atomic_baseline_known: false,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Block,
@@ -1967,6 +1980,8 @@ impl Node {
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
             natural_max_width: 0.0,
+            atomic_baseline: None,
+            atomic_baseline_known: false,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode,
@@ -2050,6 +2065,8 @@ impl Node {
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
             natural_max_width: 0.0,
+            atomic_baseline: None,
+            atomic_baseline_known: false,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Inline,
@@ -2131,6 +2148,8 @@ impl Node {
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
             natural_max_width: 0.0,
+            atomic_baseline: None,
+            atomic_baseline_known: false,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Inline,
@@ -2943,6 +2962,11 @@ pub struct IfcRootMeasures {
     pub sizes: Vec<(u32, IfcMeasure)>,
 }
 
+/// One measure's line baselines, `(content width, content height, first,
+/// last)`, the baselines from the content-box top
+/// ([`NodeTree::atomic_line_baselines`], #663).
+pub(crate) type LineBaselines = (f32, f32, Option<f32>, Option<f32>);
+
 /// What an IFC root's measure answered under one available width: the content
 /// size Taffy was given and the first line's baseline (#1013), both from the
 /// same Parley build.
@@ -3624,6 +3648,14 @@ pub struct NodeTree {
     /// Before #904 they were dropped where they were built, so paint shaped
     /// every such label again on every frame.
     pub(crate) atomic_leaf_layouts: HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>>,
+    /// The first and last line baselines (from the content-box top) of each
+    /// IFC root and text leaf the detached atomic-inline compute measured, by
+    /// the content size it was laid out at: `(width, height, first, last)`, newest
+    /// last, a few per node. What an atomic inline's baseline is read from
+    /// once its compute is done (`ifc::atomic_inline_baseline`, #663) — Taffy
+    /// keeps no baseline in a node's layout, and may answer a later compute
+    /// from its cache without measuring again.
+    pub(crate) atomic_line_baselines: rustc_hash::FxHashMap<RawNodeId, Vec<LineBaselines>>,
     /// Nodes that have requested scroll-into-view (deferred until after layout).
     pub scroll_into_view_requests: Vec<RawNodeId>,
     /// Nodes that have requested a scroll to a fraction of their scroll
@@ -3876,6 +3908,7 @@ impl NodeTree {
             styled_unrendered: Vec::new(),
             ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),
+            atomic_line_baselines: Default::default(),
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
@@ -4375,6 +4408,7 @@ impl NodeTree {
             // The slab recycles ids: a node created later may be handed this
             // one, and must not inherit this node's measured sizes.
             self.ifc_measure_cache.remove(node_id);
+            self.atomic_line_baselines.remove(node_id);
             self.text_layout_stamps.remove(node_id);
             // Nor a freshness flag meant for a now-gone `<select>` (#757).
             self.select_value_fresh.remove(node_id);

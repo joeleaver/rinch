@@ -188,6 +188,13 @@ const CHROME: &[(&str, &str, &str)] = &[
         r##"<div style="width:400px;display:flex"><div data-m="f" style="min-width:0"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
         "f=400.0x40.0 t=400.0x40.0",
     ),
+    // A gap until parley 0.12 (#624/#1258): the line holding only the
+    // 10px box had no strut, and `t` was 30 tall.
+    (
+        "p26_img_child_maxw",
+        r##"<div style="width:400px"><span data-m="t" style="display:inline-block">short <span data-m="a" style="display:inline-block;width:100%;height:10px;background:red"></span></span></div>"##,
+        "t=43.5x40.0 a=43.5x10.0",
+    ),
     // A `GAPS` row until #2140: pass C re-resolved the percentage
     // `max-width` against the clamped width (100x160).
     (
@@ -201,22 +208,13 @@ const CHROME: &[(&str, &str, &str)] = &[
 /// (The five #1476 rows that were here — an `auto` box in a flex item, a grid
 /// item, a shrink-to-fit absolute box — are Chrome's now, and live in
 /// `atomic_inline_content_sized_cb_1476_tests.rs`.)
-const GAPS: &[(&str, &str, &str, &str, &str)] = &[
-    (
-        "p04_pct_padding_short",
-        r##"<div style="width:400px"><span data-m="t" style="display:inline-block;padding:0 10%">short text</span></div>"##,
-        "t=72.0x20.0",
-        "t=151.8x20.0",
-        "pre-existing: own percentage padding on a fitting auto box resolves against nothing (issue draft 2)",
-    ),
-    (
-        "p26_img_child_maxw",
-        r##"<div style="width:400px"><span data-m="t" style="display:inline-block">short <span data-m="a" style="display:inline-block;width:100%;height:10px;background:red"></span></span></div>"##,
-        "t=44.0x30.0 a=44.0x10.0",
-        "t=43.5x40.0 a=43.5x10.0",
-        "#624/#1258: a line holding only an atomic inline has no strut",
-    ),
-];
+const GAPS: &[(&str, &str, &str, &str, &str)] = &[(
+    "p04_pct_padding_short",
+    r##"<div style="width:400px"><span data-m="t" style="display:inline-block;padding:0 10%">short text</span></div>"##,
+    "t=72.0x20.0",
+    "t=151.8x20.0",
+    "pre-existing: own percentage padding on a fitting auto box resolves against nothing (issue draft 2)",
+)];
 
 #[test]
 fn matches_chrome_153() {

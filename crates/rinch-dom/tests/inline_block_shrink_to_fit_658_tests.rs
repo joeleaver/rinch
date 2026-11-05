@@ -183,10 +183,14 @@ fn nested_auto_width_atomic_inlines_are_capped() {
 
 /// The twin table's `two` content in a 150px block: min-content 100,
 /// max-content 200, so shrink-to-fit is the block's 150.
+///
+/// The block declares its `line-height`: since parley 0.12 each line box
+/// holds the block's strut, whose height under `normal` is the host font's
+/// (Noto Sans makes it 22px, so 44 here; Chrome's default face 40).
 #[test]
 fn two_boxes_in_a_narrow_block_wrap_at_the_block() {
     let doc = lay_out(
-        r#"<div style="width: 150px"><span data-m="t" style="display: inline-block"><span style="display: inline-block; width: 100px; height: 20px; vertical-align: top"></span><span style="display: inline-block; width: 100px; height: 20px; vertical-align: top"></span></span></div>"#,
+        r#"<div style="width: 150px; line-height: 20px"><span data-m="t" style="display: inline-block"><span style="display: inline-block; width: 100px; height: 20px; vertical-align: top"></span><span style="display: inline-block; width: 100px; height: 20px; vertical-align: top"></span></span></div>"#,
     );
     assert_size(&doc, "t", (150.0, 40.0));
 }

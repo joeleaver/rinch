@@ -101,6 +101,56 @@ pub const EDGE_BOX: u64 = 1 << 31;
 /// Set with [`EDGE_BOX`] on an element's inline-end box.
 pub const EDGE_BOX_END: u64 = 1 << 30;
 
+/// A line's typographic extent above its baseline: the tallest ascent of its
+/// glyphs and the part of its inline boxes over the baseline. parley 0.12
+/// dropped `LineMetrics::ascent` (linebender/parley#697); its
+/// `content_block_min_coord` is the top of that extent.
+pub(crate) fn line_ascent(m: &parley::LineMetrics) -> f32 {
+    m.baseline - m.content_block_min_coord
+}
+
+/// The top of what a line covers: its line box's (`block_min_coord`), or its
+/// glyphs' when they reach higher — under a negative half-leading, where they
+/// stand out of a line box shorter than they are (Chrome highlights and
+/// hit-tests that content area). The glyphs are the line's text runs, each
+/// its font's ascent above the baseline: what parley 0.11.1 folded into
+/// `block_min_coord`. Not 0.12's `content_block_min_coord`, which also holds
+/// the strut — the block's own font — so a 16px run in a 32px block reached
+/// 8px above its line (`review_1587_tests`, `span32`).
+pub(crate) fn line_top(line: &parley::layout::Line<'_, Brush>) -> f32 {
+    let m = line.metrics();
+    // Rounded as parley 0.11.1 rounded them in a quantized layout (every
+    // IFC's), so a highlight stays on whole pixels.
+    line.runs()
+        .map(|run| m.baseline - run.font_metrics().ascent.round())
+        .fold(m.block_min_coord, f32::min)
+}
+
+/// [`line_top`]'s counterpart at the bottom: the line box's, or its runs'
+/// descent below the baseline.
+pub(crate) fn line_bottom(line: &parley::layout::Line<'_, Brush>) -> f32 {
+    let m = line.metrics();
+    line.runs()
+        .map(|run| m.baseline + run.font_metrics().descent.round())
+        .fold(m.block_max_coord, f32::max)
+}
+
+/// [`line_ascent`]'s counterpart below the baseline (`LineMetrics::descent`
+/// before parley 0.12).
+pub(crate) fn line_descent(m: &parley::LineMetrics) -> f32 {
+    m.content_block_max_coord - m.baseline
+}
+
+/// The id of the zero-size out-of-flow box an IFC with no content at all
+/// (no text, no inline box) is handed: parley 0.12 gives a layout with no
+/// items one line holding the root's strut, kept for a caret, where CSS 2.1
+/// §9.4.2 makes such a line box zero-height (Chrome 153: a block holding only
+/// collapsible spaces, a comment, an empty `<span>` or an out-of-flow box is
+/// 0 tall). With one item that is no content parley makes the line invisible.
+/// It reads as an edge box ([`is_edge_box`]) of an owner no node has, so
+/// every walker skips it.
+pub const EMPTY_IFC_BOX: u64 = EDGE_BOX | EDGE_BOX_END | (EDGE_BOX_END - 1);
+
 /// Whether an inline box id is an edge box ([`EDGE_BOX`]) rather than an
 /// atomic inline's node id.
 pub fn is_edge_box(id: u64) -> bool {
@@ -132,7 +182,7 @@ pub(crate) fn float_box_node(id: u64) -> Option<RawNodeId> {
     (id & (EDGE_BOX | FLOAT_BOX) == EDGE_BOX | FLOAT_BOX).then_some(id & !(EDGE_BOX | FLOAT_BOX))
 }
 
-/// Push `b` into `builder`. parley 0.11.1's `TreeBuilder` commits the text
+/// Push `b` into `builder`. parley's `TreeBuilder` (0.11.1, and 0.12 still) commits the text
 /// pushed so far only before an `InFlow` box, and gives any box the length of
 /// the committed text as its position: a float's box (`CustomOutOfFlow`)
 /// would stand before all of the text since the last span. An empty span
@@ -151,7 +201,6 @@ fn push_inline_box(builder: &mut parley::TreeBuilder<'_, Brush>, b: &parley::Inl
 pub(crate) fn has_float_boxes(layout: &parley::Layout<Brush>) -> bool {
     layout
         .inline_boxes()
-        .iter()
         .any(|b| b.kind == parley::InlineBoxKind::CustomOutOfFlow)
 }
 
@@ -169,7 +218,7 @@ fn skip_float_boxes(
             Some(parley::layout::YieldData::InlineBoxBreak(b)) => {
                 breaker
                     .state_mut()
-                    .append_inline_box_to_line(b.advance, 0.0);
+                    .append_inline_box_to_line(b.advance, 0.0, 0.0);
             }
             other => return other,
         }
@@ -418,83 +467,34 @@ impl HangStats {
     }
 }
 
-/// Break `layout` into lines at `max_width`, hanging preserved spaces at a soft
-/// wrap the way CSS does.
+/// Break `layout` into lines at `max_width`, then commit again the lines
+/// parley ends where CSS does not.
 ///
-/// CSS Text 3 §4.1.3: with `white-space: pre-wrap`, a sequence of preserved
-/// spaces and tabs at the end of a line **hangs** — it may overflow the line
-/// and never starts the next one. Parley 0.11.1 hangs only the *first* space
-/// that overflows and then commits the line, so
+/// Since parley 0.12 the white space itself is parley's: preserved spaces at
+/// a soft wrap hang, those before a forced break or at the end hang only as
+/// far as they overflow, a `break-spaces` space never hangs
+/// ([`white_space_hanging`]), an NBSP never does, and a justified line's
+/// opportunities are CSS's. rinch's own fix-ups for those in 0.11.1 — a
+/// hang pass for preserved spaces, NBSPs hung at a soft wrap, alignment
+/// widths narrowed by trailing white space that does not hang (#1042) and
+/// justification opportunities recounted (#1056) — are gone.
 ///
-/// - the rest of the sequence starts the next line (`"ab  "` at the width of
-///   `"ab"` puts the second space on a line of its own), and
-/// - when nothing but the hanging space is left (`"ab "` at the width of
-///   `"ab"`), the breaker still emits one more, empty line, which counts in the
-///   layout's height.
-///
-/// Either way the text is one line taller than it is. That is what made an
-/// editor list item's paragraph two lines tall while its text ended in a space:
-/// the flex item was sized to the text without its trailing space and then laid
-/// out at that width. Upstream parley reworked hanging (#790, #785, unreleased
-/// at 0.11.1); this puts the sequence back on the line it hangs from.
-///
-/// A line needs it when parley ended it at the hang ([`BreakReason::Regular`])
-/// and what follows is a space or tab, a newline, or the end of the text. Such
-/// a line is broken again — [`BreakLines::revert_to`] the state it started
-/// from — with just enough room for its content, the following spaces and
-/// tabs, and 0.01px (no following word fits in that), and then
-/// [`set_prior_line_width`] puts its alignment width back at `max_width`, so
-/// `text-align: right`/`center` still line the text up against the box edge
-/// with the spaces hanging past it. The run's last space is left out of that
-/// room when anything but a newline follows it, so it is parley that hangs it
-/// and commits the line: widened for the whole run, the next thing to overflow
-/// would be whatever follows, and parley hangs an NBSP as readily as a space.
-/// NBSP does not hang (it is not white space to §4.1.3): it stays glued to the
-/// word it belongs to, and after a hung run it starts the next line.
-///
-/// **Linear in the paragraph.** The common case — no line needs it — costs the
-/// one ordinary break and a scan of the lines. Otherwise the paragraph is
-/// broken once more, line by line, and each line that needs it is broken a
-/// second time on the spot, so the whole thing is at most two breaks of the
-/// paragraph plus one extra break per fixed line. (The first version restarted
-/// the break from line 0 for every line it fixed, which is quadratic: seconds
-/// for a few thousand double-spaced lines.) The breaker gives no access to a
-/// line's text while it holds the layout, so where each line ends is followed
-/// through a table of the paragraph's clusters and inline boxes in logical
-/// order, advanced by each committed line's advance ([`line_end`]). If that
-/// ever disagrees with the breaker, fixing stops for the rest of the paragraph
-/// and it is broken exactly as parley breaks it.
-///
-/// Collapsible white space (`normal`, `nowrap`) has no trailing spaces left to
-/// hang, and an unconstrained layout has nothing to wrap, so both are broken
-/// exactly as before.
-///
-/// Whatever the white space, a line parley ended by hanging a no-break space
-/// — which it hangs like a space, though UAX #14 allows no break after one —
-/// is broken again where CSS breaks it ([`unglue`], #1218), in the same pass;
-/// and the pass then hangs preserved spaces on every line, since moving an
-/// NBSP can leave a line ending in spaces parley did not hang.
+/// What is left is a second break of the paragraph ([`hang_pass`]) when a line
+/// may end where CSS does not end it: next to an inline element's edge box
+/// (#1426), at a seam between atomic inlines or `pre` spaces (#1238, #1243),
+/// right after an inline box parley placed by its emergency branch (#1081),
+/// at an overflowing NBSP ([`unglue`], #1218) and in overflowing
+/// `break-spaces` spaces (#1043). It follows each line's end through a table
+/// of the paragraph's clusters and inline boxes in logical order, advanced by
+/// each committed line's advance ([`line_end`]); if that ever disagrees with
+/// the breaker, fixing stops for the rest of the paragraph and it is broken
+/// exactly as parley breaks it. A paragraph needing none of it costs the one
+/// ordinary break and a scan of its lines.
 ///
 /// And whatever the white space, a paragraph that ends in the empty line parley
 /// commits after an overflowing inline box or a final forced break
 /// ([`phantom_last_line`], #1050, #1172) is broken once more, the same way,
 /// without it.
-///
-/// And with `count_trailing` (the line is aligned `right`, `center` or
-/// `end`), white space at a line's end that does not hang is aligned as
-/// content (#1042), on a left-to-right paragraph: a no-break space anywhere,
-/// and preserved spaces at the end of the paragraph or before a forced break
-/// as far as they fit (CSS Text 3 §4.1.3 hangs those only conditionally).
-/// parley's `align` hangs every line's trailing white space, so the pass
-/// narrows such a line's alignment width by what counts
-/// ([`align_unhung_trailing`]). A paragraph with no such line, or aligned
-/// to the start, is not broken again for it.
-///
-/// And with `justify` (`text-align: justify`, left to right), a soft-wrapped
-/// line parley would count a different number of justification opportunities
-/// on than CSS ([`any_miscounted_justified_line`]) is committed again by
-/// length and given the alignment width that shares its free space among its
-/// opportunities only ([`justify_line`], #1056).
 ///
 /// And with `align_width`, a paragraph broken unconstrained (`max_width` is
 /// `None`: none of its text may wrap) is aligned within that width ([`AlignWidth`]) rather
@@ -504,18 +504,11 @@ impl HangStats {
 /// where parley would break a `nowrap` paragraph given a width (#1238) — and
 /// each line's alignment width is set to `align_width` as it is committed
 /// ([`break_unwrapped`]). A line wider than that overflows and parley starts
-/// it at the start edge, as CSS does. A line that ends in white space which
-/// does not hang (a `pre` space, an NBSP) at the end of the paragraph or
-/// before a forced break is broken once more to count that white space as
-/// content ([`align_unhung_trailing`]), as the paragraph broken at a width
-/// would be (in a left-to-right paragraph only). The caller passes
-/// `align_width` only for an alignment that moves a line from its start in a
-/// left-to-right block (`count_trailing`); parley infers the paragraph's
-/// direction from its text, so a right-to-left one is then still lined up
-/// by parley's rules for it (centred correctly, `end` at the left).
+/// it at the start edge, as CSS does. The caller passes `align_width` only
+/// for an alignment that moves a line from its start in a left-to-right
+/// block; parley infers the paragraph's direction from its text, so a
+/// right-to-left one is then still lined up by parley's rules for it.
 ///
-/// [`BreakReason::Regular`]: parley::layout::BreakReason::Regular
-/// [`BreakLines::revert_to`]: parley::layout::BreakLines::revert_to
 /// [`set_prior_line_width`]: parley::layout::BreakLines::set_prior_line_width
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn break_lines_hanging_spaces<'p>(
@@ -524,8 +517,6 @@ pub(crate) fn break_lines_hanging_spaces<'p>(
     max_width: Option<f32>,
     preserves_spaces: bool,
     unhung: &UnhungSpaces,
-    count_trailing: bool,
-    justify: bool,
     align_width: Option<AlignWidth>,
     floats: Option<&FloatBands>,
     placer: Option<&mut (dyn PlaceFloats + 'p)>,
@@ -547,7 +538,7 @@ pub(crate) fn break_lines_hanging_spaces<'p>(
         ));
     }
     if let Some(floats) = unwrapped_floats {
-        break_unwrapped(layout, floats.width(), None, None, Some(floats));
+        break_unwrapped(layout, floats.width(), None, Some(floats));
         return Broken::default();
     }
     // A paragraph holding floats' boxes is broken by a loop that consumes
@@ -570,42 +561,21 @@ pub(crate) fn break_lines_hanging_spaces<'p>(
     unhung
         .pre_seams
         .set(unhung.pre_candidate && max.is_some() && pre_seams_needed(layout, text, unhung));
-    // parley offsets a right-to-left line by its trailing white space, so a
-    // narrowed alignment width would move it the wrong way: left as it was.
-    let count_trailing = count_trailing && !layout.is_rtl();
-    // The same for justification: parley offsets and justifies a
-    // right-to-left line from its left end, so a widened width would push it
-    // past the box's right edge (an LTR block whose text starts with Hebrew:
-    // `justify_hanging_spaces_1056_tests::*_right_to_left_*`).
-    let justify = justify && !layout.is_rtl();
-    // The pass hangs preserved spaces on every line it breaks, whichever
-    // test sent the paragraph through it: a line [`unglue`] moves an NBSP onto
-    // can come out ending in spaces parley did not hang.
-    let fix = max.filter(|&max| {
+    let fix = max.filter(|_| {
         floats.is_some()
             || float_boxes
-            || (preserves_spaces
-                && (any_unhung_line(layout, text)
-                    || any_unhung_trailing_line(layout, text, unhung)))
-            || any_hung_nbsp_line(layout, text, max)
             || any_emergency_box_line_before_white_space(layout, text)
-            || (count_trailing && any_counted_trailing_line(layout, text, preserves_spaces))
-            || (justify && any_miscounted_justified_line(layout, text, max))
             || any_line_split_at_edge(layout)
             || unhung.active_seams().is_some()
     });
-    let fix = fix.map(|max| (max, preserves_spaces));
     let mut float_drop = 0.0f32;
     let mut stats = match fix {
-        Some((max, hang_spaces)) => hang_pass(
+        Some(max) => hang_pass(
             layout,
             text,
             max,
             None,
             unhung,
-            hang_spaces,
-            count_trailing,
-            justify,
             floats,
             placer.as_deref_mut(),
             &mut float_drop,
@@ -617,16 +587,13 @@ pub(crate) fn break_lines_hanging_spaces<'p>(
     // before it.
     if let Some(keep) = phantom_last_line(layout) {
         match fix {
-            Some((max, hang_spaces)) => {
+            Some(max) => {
                 stats = hang_pass(
                     layout,
                     text,
                     max,
                     Some(keep),
                     unhung,
-                    hang_spaces,
-                    count_trailing,
-                    justify,
                     floats,
                     placer,
                     &mut float_drop,
@@ -913,6 +880,170 @@ pub(crate) fn first_line_baseline(layout: &parley::layout::Layout<Brush>) -> Opt
     layout.lines().next().map(|line| line.metrics().baseline)
 }
 
+/// Its last line's baseline, from the layout's top (`None` when it has no
+/// line): an `inline-block`'s baseline is its last line box's (CSS 2.1
+/// §10.8.1, #663).
+pub(crate) fn last_line_baseline(layout: &parley::layout::Layout<Brush>) -> Option<f32> {
+    layout.lines().last().map(|line| line.metrics().baseline)
+}
+
+/// Atomic inline `id`'s baseline from its border-box top, read from the
+/// Taffy layout its detached compute just made (#663): what parley 0.12 lines
+/// the box up by (`InlineBox::baseline`) against the line's strut.
+///
+/// - an `inline-flex` / `inline-grid` takes its **first** baseline, the first
+///   in-flow item's (css-flexbox-1 §8.5, css-grid-1 §11.8; approximated: no
+///   baseline alignment groups, no reordering);
+/// - any other atomic inline (an `inline-block`, a `<button>`) its **last**
+///   line box's, found through its last in-flow block child that has one, or
+///   none — lined up by its bottom edge — when it has no line box or its
+///   `overflow` is neither `visible` nor `clip` (CSS 2.1 §10.8.1);
+/// - a replaced element and a form control with no line of its own, none.
+pub(crate) fn atomic_inline_baseline(tree: &crate::node::NodeTree, id: RawNodeId) -> Option<f32> {
+    use crate::computed_style::{DisplayValue, OverflowValue};
+    let node = tree.nodes.get(id)?;
+    let taffy_id = node.taffy_id?;
+    let style = &node.computed_style;
+    let first = matches!(
+        style.display,
+        DisplayValue::InlineFlex | DisplayValue::InlineGrid
+    );
+    let clips = |o: OverflowValue| !matches!(o, OverflowValue::Visible | OverflowValue::Clip);
+    if let Some(NodeContext::FormControl { .. }) = tree.taffy.get_node_context(taffy_id) {
+        let height = tree.taffy.unrounded_layout(taffy_id).size.height;
+        return crate::form_control::input_baseline(node, height);
+    }
+    if !first && (clips(style.overflow_x) || clips(style.overflow_y)) {
+        return None;
+    }
+    taffy_baseline(tree, taffy_id, first, 0)
+}
+
+/// [`atomic_inline_baseline`]'s walk over the Taffy subtree at `taffy_id`:
+/// its first (`first`) or last line's baseline, from its border-box top.
+fn taffy_baseline(
+    tree: &crate::node::NodeTree,
+    taffy_id: taffy::NodeId,
+    first: bool,
+    depth: usize,
+) -> Option<f32> {
+    // Deep enough for any real tree; a cycle cannot happen, a pathological
+    // nesting just lines the box up by its bottom.
+    if depth > 256 {
+        return None;
+    }
+    let taffy = &tree.taffy;
+    let layout = taffy.unrounded_layout(taffy_id);
+    let top = layout.padding.top + layout.border.top;
+    let leaf = match taffy.get_node_context(taffy_id) {
+        Some(NodeContext::InlineRoot(root)) => Some(*root),
+        Some(NodeContext::Text(text)) => Some(text.node_id),
+        _ => None,
+    };
+    if let Some(leaf) = leaf {
+        let width = layout.size.width
+            - layout.padding.left
+            - layout.padding.right
+            - layout.border.left
+            - layout.border.right;
+        // The measure at the width it has; the closest one when Taffy clamped
+        // the measured width (a box `380` wide whose line measured 380.86),
+        // the newest of equally close ones.
+        let height = layout.size.height
+            - layout.padding.top
+            - layout.padding.bottom
+            - layout.border.top
+            - layout.border.bottom;
+        let entry = tree
+            .atomic_line_baselines
+            .get(&leaf)?
+            .iter()
+            .rev()
+            .min_by(|a, b| {
+                let off =
+                    |e: &crate::node::LineBaselines| (e.0 - width).abs() + (e.1 - height).abs();
+                off(a).total_cmp(&off(b))
+            })?;
+        // Measured at the width the box has, the line is where that measure
+        // put it — a box whose declared height its lines overflow included
+        // (its baseline is its last line's, below its bottom). Measured at
+        // another width (Taffy answered the layout from a cache the records
+        // no longer match exactly), a last line keeps its distance from the
+        // content bottom.
+        let same_width = (entry.0 - width).abs() <= 0.5;
+        return if first {
+            entry.2
+        } else if same_width {
+            entry.3
+        } else {
+            entry.3.map(|b| height - (entry.1 - b))
+        }
+        .map(|b| top + b);
+    }
+    let count = taffy::TraversePartialTree::child_count(taffy, taffy_id);
+    let in_flow = |child: taffy::NodeId| {
+        let style = taffy.style(child).ok();
+        style.is_some_and(|s| {
+            s.display != taffy::Display::None && s.position != taffy::Position::Absolute
+        })
+    };
+    let at = |i: usize| -> Option<f32> {
+        let child = taffy.child_at_index(taffy_id, i).ok()?;
+        if !in_flow(child) {
+            return None;
+        }
+        let y = taffy.unrounded_layout(child).location.y;
+        taffy_baseline(tree, child, first, depth + 1).map(|b| y + b)
+    };
+    if first {
+        (0..count).find_map(at)
+    } else {
+        (0..count).rev().find_map(at)
+    }
+}
+
+/// The `white-space-collapse` parley 0.12 is handed for an element's text:
+/// which of its spaces hang at a line's end (CSS Text 4 §4.3). rinch
+/// collapses white space itself ([`IfcText`]), so everything parley sees is
+/// preserved — `Preserve` (hangs at a soft wrap, and only as far as it
+/// overflows before a forced break or the end) — except `break-spaces`, whose
+/// spaces never hang (`BreakSpaces`, #1043).
+pub(crate) fn white_space_hanging(
+    white_space: crate::computed_style::WhiteSpaceValue,
+) -> parley::style::WhiteSpaceCollapse {
+    match white_space {
+        crate::computed_style::WhiteSpaceValue::BreakSpaces => {
+            parley::style::WhiteSpaceCollapse::BreakSpaces
+        }
+        _ => parley::style::WhiteSpaceCollapse::Preserve,
+    }
+}
+
+/// An atomic inline's `vertical-align` as parley 0.12 lines a box up by it
+/// (CSS 2.1 §10.8.1; #663): every keyword, and a length or percentage (of the
+/// box's own `line-height`) raising it. Before 0.12 an atomic inline sat on
+/// the baseline whatever it declared. A text span's `vertical-align` is still
+/// rinch's own glyph shift ([`RinchDocument::vertical_align_shift_px`]).
+pub(crate) fn atomic_vertical_align(
+    style: &crate::computed_style::ComputedStyle,
+    scale: f32,
+) -> parley::style::VerticalAlign {
+    use parley::style::VerticalAlign as V;
+    match style.vertical_align {
+        VerticalAlignValue::Baseline => V::BASELINE,
+        VerticalAlignValue::Sub => V::SUB,
+        VerticalAlignValue::Super => V::SUPER,
+        VerticalAlignValue::Top => V::TOP,
+        VerticalAlignValue::Bottom => V::BOTTOM,
+        VerticalAlignValue::Middle => V::MIDDLE,
+        VerticalAlignValue::TextTop => V::TEXT_TOP,
+        VerticalAlignValue::TextBottom => V::TEXT_BOTTOM,
+        VerticalAlignValue::LengthPercentage(lp) => {
+            V::length(lp.resolve(style.line_height_px()) * scale)
+        }
+    }
+}
+
 /// A measure's `LayoutOutput` with its first baseline (#1013).
 ///
 /// `compute_leaf_layout` reports `Baselines::NONE` whatever the measure did, so
@@ -1007,6 +1138,7 @@ pub(crate) fn shape_text_leaf(
     let leaf = LeafText::of(&text.content, text.white_space);
     let font_family = crate::fonts::parley_text_family(font_cx, &text.font_family, &leaf.text);
     let mut builder = layout_cx.ranged_builder(font_cx, &leaf.text, 1.0, true);
+    builder.set_line_break_override(Some(SPACE_RUN_BREAKS));
     use parley::style::StyleProperty as P;
     builder.push_default(P::FontSize(text.font_size));
     if (text.font_weight - 400.0).abs() > 1.0 {
@@ -1027,6 +1159,7 @@ pub(crate) fn shape_text_leaf(
     // CSS pixels either way.
     builder.push_default(P::LetterSpacing(text.letter_spacing));
     builder.push_default(P::WordSpacing(text.word_spacing));
+    builder.push_default(P::WhiteSpaceCollapse(white_space_hanging(text.white_space)));
     let mut layout = builder.build(&leaf.text);
     let hang = break_lines_hanging_spaces(
         &mut layout,
@@ -1034,8 +1167,6 @@ pub(crate) fn shape_text_leaf(
         wrap_width,
         leaf.preserved,
         &leaf.unhung,
-        false,
-        false,
         None,
         // A text leaf is a flex or grid item, never beside a float.
         None,
@@ -1267,6 +1398,18 @@ pub(crate) struct IfcText<'a> {
     tabs: Vec<(usize, usize, usize)>,
     /// An edge box was pushed ([`Self::push_edge_box`], #1426).
     edge_boxes: bool,
+    /// Whether the text being pushed may wrap ([`Self::set_wraps`]).
+    wraps: bool,
+    /// Whether the last content pushed (not a collapsible space) could wrap.
+    last_wraps: Option<bool>,
+    /// The collapsible spaces of text that may not wrap right after content
+    /// that may: `(op, byte in the op's text)`. Each is handed to parley as
+    /// wrapping ([`Self::replay`]): Chrome 155 breaks at the first space
+    /// after a wrapping element's text in a `nowrap` parent
+    /// (`aa<span style="white-space:normal">dddd</span> ccc ccc`), and
+    /// parley 0.12 decides a soft wrap by the space's own wrap mode (0.11.1
+    /// hung an overflowing space whatever its mode, which broke there too).
+    wrap_spaces: Vec<(usize, usize)>,
 }
 
 /// Start a new stretch of a DOM↔flat `offset_map` at `(flat, dom)` when the
@@ -1402,7 +1545,16 @@ impl<'a> IfcText<'a> {
             out_of_flow: Vec::new(),
             tabs: Vec::new(),
             edge_boxes: false,
+            wraps: true,
+            last_wraps: None,
+            wrap_spaces: Vec::new(),
         }
+    }
+
+    /// Whether the text pushed next may wrap (its element's `white-space`
+    /// is not `nowrap` or `pre`): see [`Self::wrap_spaces`].
+    pub(crate) fn set_wraps(&mut self, wraps: bool) {
+        self.wraps = wraps;
     }
 
     /// Whether any text was pushed with its spaces preserved: only then can a
@@ -1459,6 +1611,8 @@ impl<'a> IfcText<'a> {
             width: 0.0,
             height: 0.0,
             kind: parley::InlineBoxKind::CustomOutOfFlow,
+            baseline: None,
+            vertical_align: parley::style::VerticalAlign::BASELINE,
         }));
     }
 
@@ -1469,6 +1623,8 @@ impl<'a> IfcText<'a> {
             width,
             height: 0.0,
             kind: parley::InlineBoxKind::InFlow,
+            baseline: None,
+            vertical_align: parley::style::VerticalAlign::BASELINE,
         });
         self.edge_boxes = true;
         if end {
@@ -1630,6 +1786,7 @@ impl<'a> IfcText<'a> {
                 self.pending = None;
                 self.prev_space = false;
                 self.line_start = raw.ends_with('\n');
+                self.last_wraps = Some(self.wraps);
             }
             if !may_rewrite_preserved(raw.as_ref()) {
                 let n = raw.len();
@@ -1702,6 +1859,7 @@ impl<'a> IfcText<'a> {
                 self.prev_space = false;
                 self.line_start = false;
                 self.pending = None;
+                self.last_wraps = Some(self.wraps);
             }
             if out.is_none() && ((space && c != ' ') || sub.is_some()) {
                 out = Some(raw[..i].to_string());
@@ -1710,6 +1868,9 @@ impl<'a> IfcText<'a> {
             note(&mut map, flat, i);
             if space {
                 self.pending = Some((op, flat, self.len + flat));
+                if !self.wraps && self.last_wraps == Some(true) {
+                    self.wrap_spaces.push((op, flat));
+                }
             }
             if let Some(o) = out.as_mut() {
                 match sub {
@@ -1760,7 +1921,8 @@ impl<'a> IfcText<'a> {
         emoji_family: Option<&parley::style::FontFamily<'static>>,
         tab_spacing: &[f32],
     ) {
-        builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
+        // parley 0.12 made `white-space-collapse` a style (`TextStyle::white_space_collapse`),
+        // `Preserve` by default and set by nothing in rinch: the builder collapses nothing.
         use parley::style::StyleProperty as P;
         let emoji_span = emoji_family.map(|f| [P::FontFamily(f.clone())]);
         let push_plain =
@@ -1783,6 +1945,8 @@ impl<'a> IfcText<'a> {
                 None => builder.push_text(text),
             };
         let mut tab = 0usize;
+        let mut wrap = 0usize;
+        let wrapping = [P::TextWrapMode(parley::style::TextWrapMode::Wrap)];
         for (i, op) in self.ops.iter().enumerate() {
             match op {
                 IfcOp::Span(props) => builder.push_style_modification_span(props.iter()),
@@ -1806,12 +1970,45 @@ impl<'a> IfcText<'a> {
                         at = byte + 1;
                         tab += 1;
                     }
+                    while let Some(&(op, byte)) = self.wrap_spaces.get(wrap) {
+                        if op != i {
+                            break;
+                        }
+                        wrap += 1;
+                        // A held space dropped at a line's end is gone.
+                        if text.as_bytes().get(byte) != Some(&b' ') || byte < at {
+                            continue;
+                        }
+                        if byte > at {
+                            push_plain(builder, &text[at..byte]);
+                        }
+                        builder.push_style_modification_span(wrapping.iter());
+                        builder.push_text(&text[byte..byte + 1]);
+                        builder.pop_style_span();
+                        at = byte + 1;
+                    }
                     if at < text.len() || at == 0 {
                         push_plain(builder, &text[at..]);
                     }
                 }
                 IfcOp::InlineBox(b) => push_inline_box(builder, b),
             }
+        }
+        let has_content = self.ops.iter().any(|op| match op {
+            IfcOp::Text(text) => !text.is_empty(),
+            IfcOp::InlineBox(_) => true,
+            _ => false,
+        });
+        if !has_content {
+            builder.push_inline_box(parley::InlineBox {
+                id: EMPTY_IFC_BOX,
+                index: 0,
+                width: 0.0,
+                height: 0.0,
+                kind: parley::InlineBoxKind::OutOfFlow,
+                baseline: None,
+                vertical_align: parley::style::VerticalAlign::BASELINE,
+            });
         }
     }
 
@@ -1947,7 +2144,7 @@ pub(crate) fn resolve_out_of_flow_marks(
                 } else {
                     // Not past the line's content: a space hung at a soft
                     // wrap takes no room there.
-                    (start + cluster.advance()).min(line_start + m.advance - m.trailing_whitespace)
+                    (start + cluster.advance()).min(line_start + m.advance - m.hanging_advance)
                 };
                 (x, top(index), top(index + 1))
             })
@@ -1984,11 +2181,9 @@ fn break_lines_up_to(layout: &mut parley::Layout<Brush>, max_width: Option<f32>,
 /// When the paragraph's own width (its widest line, as a measure counts it:
 /// [`crate::node::measured_width_of`]) turns out to lie between that and
 /// `align.up_to` — a shrink-to-fit box floored from it — the lines are
-/// aligned within that width instead; when a line ends in white space
-/// [`align_unhung_trailing`] counts as content
-/// ([`any_counted_trailing_line`]); and when parley left an empty line after
-/// a final forced break ([`phantom_last_line`]): for any of those the
-/// paragraph is broken once more, for all of them at once.
+/// aligned within that width instead; and when parley left an empty line
+/// after a final forced break ([`phantom_last_line`]): for either the
+/// paragraph is broken once more, for both at once.
 fn break_unwrapped_aligned(
     layout: &mut parley::Layout<Brush>,
     text: &str,
@@ -1997,7 +2192,7 @@ fn break_unwrapped_aligned(
     unhung: &UnhungSpaces,
     floats: Option<&FloatBands>,
 ) -> HangStats {
-    break_unwrapped(layout, align.width, None, None, floats);
+    break_unwrapped(layout, align.width, None, floats);
     let mut stats = HangStats::default();
     let own = crate::node::measured_width_of(
         layout,
@@ -2013,15 +2208,10 @@ fn break_unwrapped_aligned(
     let widened =
         align.up_to > align.width && own != align.width && (own - align.width).abs() < 1.0;
     let width = if widened { own } else { align.width };
-    // parley offsets a right-to-left line by its trailing white space, so a
-    // narrowed alignment width would move it the wrong way (as in
-    // `break_lines_hanging_spaces`): such a line is left as parley aligns it.
-    let trailing = !layout.is_rtl() && any_counted_trailing_line(layout, text, preserves_spaces);
     let keep = phantom_last_line(layout);
-    if widened || trailing || keep.is_some() {
-        let units = trailing.then(|| logical_units(layout, text, unhung));
-        break_unwrapped(layout, width, units.as_deref(), keep, floats);
-        stats.passes = u32::from(widened || trailing);
+    if widened || keep.is_some() {
+        break_unwrapped(layout, width, keep, floats);
+        stats.passes = u32::from(widened);
         stats.phantom_rebreaks = u32::from(keep.is_some());
     }
     stats
@@ -2029,22 +2219,16 @@ fn break_unwrapped_aligned(
 
 /// Break `layout` unconstrained — only forced breaks end its lines — giving
 /// each line `width` as its alignment width, so that `align` lines it up
-/// within `width` and not within the widest line (#1237). With `units` (the
-/// paragraph's [`logical_units`]), each line's white space that does not
-/// hang is then counted as content ([`align_unhung_trailing`]); with
-/// `limit`, only that many lines are committed (see [`phantom_last_line`]).
+/// within `width` and not within the widest line (#1237); with `limit`, only
+/// that many lines are committed (see [`phantom_last_line`]).
 fn break_unwrapped(
     layout: &mut parley::Layout<Brush>,
     width: f32,
-    units: Option<&[LineUnit]>,
     limit: Option<usize>,
     floats: Option<&FloatBands>,
 ) {
     use parley::layout::YieldData;
     let mut breaker = layout.break_lines();
-    // The first unit of the next line; `None` once the table and the breaker
-    // disagree, after which lines get the plain `width`.
-    let mut cursor = units.map(|_| 0usize);
     let mut committed = 0usize;
     while limit != Some(committed) {
         // Beside a float a line starts after it, and is aligned within the
@@ -2064,28 +2248,24 @@ fn break_unwrapped(
         let Some(yielded) = skip_float_boxes(&mut breaker) else {
             break;
         };
-        let YieldData::LineBreak(data) = yielded else {
+        let YieldData::LineBreak(_) = yielded else {
             continue;
         };
         committed += 1;
         breaker.set_prior_line_width(width);
-        if let (Some(units), Some(start)) = (units, cursor) {
-            cursor = line_end(units, start, data.advance);
-            if let Some(end) = cursor {
-                align_unhung_trailing(&mut breaker, &units[start..end], width, data.reason, true);
-            }
-        }
     }
     breaker.finish();
 }
 
-/// The hanging-space re-break of [`break_lines_hanging_spaces`], over a layout
-/// already broken at `max`, committing at most `limit` lines when given one.
-/// Spaces are hung only with `hang_spaces`; a line parley ended by hanging a
-/// no-break space is broken again ([`unglue`]) either way. With
-/// `count_trailing`, trailing white space that does not hang is aligned as
-/// content ([`align_unhung_trailing`]); with `justify`, a soft-wrapped line is
-/// justified over its opportunities only ([`justify_line`]).
+/// The re-break of [`break_lines_hanging_spaces`], over a layout already
+/// broken at `max`, committing at most `limit` lines when given one: lines
+/// parley ends where CSS does not — next to an edge box (#1426), at a seam
+/// (#1238, #1243), after an overflowing box (#1081), at an overflowing NBSP
+/// ([`unglue`], #1218) or in overflowing `break-spaces` spaces (#1043) — are
+/// committed again where CSS ends them, and lines beside floats are each
+/// given the room the floats leave them. (Hanging spaces, trailing white
+/// space in alignment and justification opportunities were also fixed up
+/// here until parley 0.12 got them right itself.)
 #[allow(clippy::too_many_arguments)]
 fn hang_pass<'p>(
     layout: &mut parley::Layout<Brush>,
@@ -2093,9 +2273,6 @@ fn hang_pass<'p>(
     full: f32,
     limit: Option<usize>,
     unhung: &UnhungSpaces,
-    hang_spaces: bool,
-    count_trailing: bool,
-    justify: bool,
     floats: Option<&FloatBands>,
     mut placer: Option<&mut (dyn PlaceFloats + 'p)>,
     float_drop: &mut f32,
@@ -2182,7 +2359,7 @@ fn hang_pass<'p>(
                     }
                     breaker
                         .state_mut()
-                        .append_inline_box_to_line(at.advance, 0.0);
+                        .append_inline_box_to_line(at.advance, 0.0, 0.0);
                 }
                 other => break other,
             }
@@ -2209,7 +2386,7 @@ fn hang_pass<'p>(
         let soft = matches!(data.reason, BreakReason::Regular | BreakReason::Emergency);
         let emergency = data.reason == BreakReason::Emergency;
         if (has_edges && soft) || seams {
-            let Some(end) = line_end(&units, cursor, data.advance) else {
+            let Some(end) = line_end(&units, cursor, data.metrics.advance) else {
                 in_step = false;
                 continue;
             };
@@ -2237,6 +2414,7 @@ fn hang_pass<'p>(
                     css_line(&units, &breaks, cursor, max, pre_seams)
                 })
                 .filter(|css| !same_end(&units, css.0, end));
+
             if let Some(css) = css {
                 let Some((reason, advance)) =
                     commit_css_line(&mut breaker, &units, cursor, css, &line_start, max)
@@ -2246,22 +2424,12 @@ fn hang_pass<'p>(
                 };
                 stats.lines += 1;
                 data.reason = reason;
-                data.advance = advance;
+                data.metrics.advance = advance;
             }
         }
         // The last line is committed as it is (`BreakReason::None`; an empty
-        // one after a final newline even copies the previous line's advance),
-        // but its unhung spaces still count for its alignment (#1212).
+        // one after a final newline even copies the previous line's advance).
         if data.reason == BreakReason::None {
-            if let Some(end) = line_end(&units, cursor, data.advance) {
-                align_unhung_trailing(
-                    &mut breaker,
-                    &units[cursor..end],
-                    max,
-                    BreakReason::None,
-                    count_trailing,
-                );
-            }
             continue;
         }
         // #1081: the white space or forced break after a box parley placed
@@ -2271,7 +2439,7 @@ fn hang_pass<'p>(
                 &mut breaker,
                 &units,
                 cursor,
-                data.advance,
+                data.metrics.advance,
                 &line_start,
                 max,
             ) {
@@ -2292,9 +2460,8 @@ fn hang_pass<'p>(
         // started from, with room for its content and every space and tab
         // after it. That can end at a hang again — an NBSP after the spaces
         // overflows too, and parley hangs NBSP itself — so until it does not.
-        let (mut reason, mut advance) = (data.reason, data.advance);
+        let (mut reason, mut advance) = (data.reason, data.metrics.advance);
         let mut line_max = max;
-        let mut widened_from = f32::NEG_INFINITY;
         let mut unglued = false;
         let mut spaces_broken = false;
         loop {
@@ -2345,70 +2512,9 @@ fn hang_pass<'p>(
                     continue;
                 }
             }
-            let hanging = match reason {
-                // The hang branch is the one Regular break that overflows.
-                BreakReason::Regular if hang_spaces && advance > line_max => {
-                    hanging_after(&units, end)
-                }
-                _ => None,
-            };
-            let Some(hanging) = hanging else {
-                align_unhung_trailing(
-                    &mut breaker,
-                    &units[cursor..end],
-                    max,
-                    reason,
-                    count_trailing,
-                );
-                // parley justifies every soft-wrapped line, `Emergency`
-                // included (see `any_miscounted_justified_line`).
-                if justify && matches!(reason, BreakReason::Regular | BreakReason::Emergency) {
-                    match justify_line(&mut breaker, &units, cursor, end, &line_start, max, advance)
-                    {
-                        Some(rebroken) => stats.lines += rebroken,
-                        None => {
-                            in_step = false;
-                            break;
-                        }
-                    }
-                }
-                cursor = end;
-                line_start = breaker.state().clone();
-                break;
-            };
-            // Each round takes in more of the paragraph, which is what ends
-            // the loop. One that hangs again having taken in nothing would
-            // repeat forever: stop fixing instead (the table would be wrong).
-            if advance <= widened_from {
-                in_step = false;
-                break;
-            }
-            widened_from = advance;
-            breaker.revert_to(line_start.clone());
-            // Room for every space and tab but the last, which is left to
-            // overflow: parley then hangs a real space and commits the line,
-            // rather than hanging whatever overflows after the run (an NBSP,
-            // which does not hang).
-            let run = units[end..].iter().take_while(|u| u.hangs).count();
-            let last = match units.get(end + run) {
-                // Something follows the run on this line's paragraph: leave the
-                // run's last space to overflow.
-                Some(u) if run > 0 && !u.newline => units[end + run - 1].advance,
-                // The end of the text or a newline: nothing can start the next
-                // line, so the whole run fits.
-                _ => 0.0,
-            };
-            line_max = advance + hanging - last + 0.01;
-            let state = breaker.state_mut();
-            state.set_layout_max_advance(line_max);
-            state.set_line_max_advance(line_max);
-            let Some(YieldData::LineBreak(again)) = skip_float_boxes(&mut breaker) else {
-                in_step = false;
-                break;
-            };
-            breaker.set_prior_line_width(max);
-            stats.lines += 1;
-            (reason, advance) = (again.reason, again.advance);
+            cursor = end;
+            line_start = breaker.state().clone();
+            break;
         }
     }
     breaker.finish();
@@ -2460,7 +2566,7 @@ fn place_line_beside_floats(
         // the paragraph or a forced break follows it, keeps it whole past the
         // room. A line it wrapped (`Regular`) fit, but for the space it hangs.
         let overflows = line.reason == BreakReason::Emergency
-            || (line.reason != BreakReason::Regular && line.advance > room + 0.01);
+            || (line.reason != BreakReason::Regular && line.metrics.advance > room + 0.01);
         if overflows
             && room < full
             && let Some(below) = floats.next_change_below(top)
@@ -2522,7 +2628,10 @@ fn fold_after_overflowing_box(
     // The table's cursor can sit on the zero-width newline that ended the
     // line before; a newline is never the first unit of a line.
     let first = cursor + units[cursor..end].iter().take_while(|u| u.newline).count();
-    let n = units[first..take].iter().filter(|u| u.counted).count();
+    let n = units[first..take]
+        .iter()
+        .map(|u| u.counted as usize)
+        .sum::<usize>();
     breaker.revert_to(line_start.clone());
     breaker
         .break_next_with_length(u32::try_from(n).map_err(|_| ())?)
@@ -2593,7 +2702,7 @@ fn unglue(
         state.set_layout_max_advance(line_max);
         state.set_line_max_advance(line_max);
         match skip_float_boxes(breaker)? {
-            YieldData::LineBreak(d) => Some((d.reason, d.advance)),
+            YieldData::LineBreak(d) => Some((d.reason, d.metrics.advance)),
             _ => None,
         }
     };
@@ -2618,7 +2727,7 @@ fn unglue(
             if (width - run_x).abs() > 0.005 {
                 return None;
             }
-            let n = before.iter().filter(|u| u.counted).count();
+            let n = before.iter().map(|u| u.counted as usize).sum::<usize>();
             rebreaks.set(rebreaks.get() + 1);
             breaker.revert_to(line_start.clone());
             breaker.break_next_with_length(u32::try_from(n).ok()?)?;
@@ -2817,11 +2926,22 @@ fn break_overflowing_spaces(
                 state.set_layout_max_advance(room);
                 state.set_line_max_advance(room);
                 if let Some(YieldData::LineBreak(d)) = skip_float_boxes(breaker) {
+                    // An opportunity `white-space` allows: parley breaks
+                    // after an atomic inline that starts a line whatever its
+                    // root's `white-space` (its wrap mode lags by an atom,
+                    // and a line starts as wrapping), which the seams of a
+                    // `nowrap` root rule out. #1238 corpus `p126`: `[B1][B2]
+                    // [B3]q-r<span nowrap>[B4]dddd <span break-spaces> mm…`
+                    // in a 55px `nowrap` root keeps `[B3]q-r` together.
+                    let allowed = || {
+                        line_end(units, cursor, d.metrics.advance)
+                            .is_none_or(|e| wrap_allowed_after(units, e))
+                    };
                     if d.reason == BreakReason::Emergency {
                         wraps_in_word = true;
-                    } else if d.advance <= room + TOL {
+                    } else if d.metrics.advance <= room + TOL && allowed() {
                         breaker.set_prior_line_width(max);
-                        return Some((d.reason, d.advance));
+                        return Some((d.reason, d.metrics.advance));
                     }
                 }
             }
@@ -2832,7 +2952,10 @@ fn break_overflowing_spaces(
             }
         }
     };
-    let n = units[first..through].iter().filter(|u| u.counted).count();
+    let n = units[first..through]
+        .iter()
+        .map(|u| u.counted as usize)
+        .sum::<usize>();
     breaker.revert_to(line_start.clone());
     breaker.break_next_with_length(u32::try_from(n).ok()?)?;
     breaker.set_prior_line_width(max);
@@ -2948,7 +3071,7 @@ impl WrapSeams {
             .filter(|(_, r)| r.flat_end > r.flat_start)
             .map(|(i, r)| ((r.flat_start, 1, i), r.node_id))
             .collect();
-        for (i, b) in layout.inline_boxes().iter().enumerate() {
+        for (i, b) in layout.inline_boxes().enumerate() {
             if !is_edge_box(b.id) && b.kind == parley::InlineBoxKind::InFlow {
                 leaves.push(((b.index, 0, i), b.id as RawNodeId));
             }
@@ -2966,7 +3089,7 @@ impl WrapSeams {
                 closes: next.is_some_and(|next| only_closes(nodes, root_id, node, next)),
             };
             if kind == 0 {
-                seams.boxes.push((layout.inline_boxes()[index].id, seam));
+                seams.boxes.push((node, seam));
             } else {
                 seams.text_ends.push((text_ranges[index].flat_end, seam));
             }
@@ -3135,14 +3258,6 @@ impl UnhungSpaces {
             .as_ref()
             .filter(|_| self.box_seams || self.pre_seams.get())
     }
-
-    fn is_empty(&self) -> bool {
-        self.pre.is_empty() && self.breaking.is_empty()
-    }
-
-    fn contains(&self, byte: usize) -> bool {
-        in_ranges(&self.pre, byte) || in_ranges(&self.breaking, byte)
-    }
 }
 
 /// An anonymous block box `cleanup_anonymous_block_boxes` took out of its
@@ -3196,7 +3311,7 @@ impl RetiredAnonBoxes {
 }
 
 /// One cluster or inline box of a paragraph, in logical order: what the line
-/// breaker adds to a line's advance, and what [`hanging_after`] needs to know.
+/// breaker adds to a line's advance, and what the hang pass needs to know.
 struct LineUnit {
     advance: f32,
     /// A space or tab that hangs at a soft wrap: one whose element wraps
@@ -3216,22 +3331,19 @@ struct LineUnit {
     newline: bool,
     /// A no-break space (U+00A0), which parley hangs and CSS glues (#1218).
     nbsp: bool,
-    /// A space or NBSP cluster (parley's `is_space_or_nbsp`): what parley
-    /// counts as a justification opportunity ([`justify_line`]). A preserved
-    /// tab is one too: it is pushed to parley as a space (#1122).
+    /// A space or NBSP cluster (parley's `is_space_or_nbsp`). A preserved tab
+    /// is one too: it is pushed to parley as a space (#1122).
     space: bool,
-    /// Counted by [`parley::layout::BreakLines::break_next_with_length`]:
-    /// every cluster and in-flow inline box, not an out-of-flow box.
-    counted: bool,
+    /// What [`parley::layout::BreakLines::break_next_with_length`] counts
+    /// for it: a cluster's characters — parley 0.12's clusters are grapheme
+    /// clusters, `ง่` is one cluster of two — an in-flow inline box 1, an
+    /// out-of-flow box 0.
+    counted: u32,
     /// An in-flow inline box.
     inline_box: bool,
     /// A hyphen or another UAX #14 class HY/BA character that is not white
     /// space: LB12a allows a break between it and an NBSP after it.
     breaks_before_glue: bool,
-    /// The shaped run a cluster belongs to, the same whatever line the table's
-    /// layout put it on (`usize::MAX` for a box): parley counts a line's
-    /// trailing white space in its last run only (#1042).
-    run: usize,
     /// An inline element's edge box (#1426): [`EDGE_START`] or [`EDGE_END`],
     /// else 0. Not an [`Self::inline_box`].
     edge: u8,
@@ -3491,6 +3603,35 @@ fn is_plain_space(u: &LineUnit) -> bool {
     u.space && !u.nbsp && !u.breaks
 }
 
+/// Chrome's soft wrap opportunity after a run of spaces, whatever follows
+/// (Blink's `NextBreakablePosition`): UAX #14 has none before a zero-width
+/// space (LB7) or a closing punctuation mark (LB13). parley's breaker is
+/// handed it ([`SPACE_RUN_BREAKS`]), and [`TextBreaks`] agrees.
+fn space_run_break(before: char, after: char) -> bool {
+    before == ' ' && !matches!(after, ' ' | '\t')
+}
+
+/// [`space_run_break`] at `byte` of `text`.
+fn after_a_space_run(text: &str, byte: usize) -> bool {
+    byte > 0
+        && text.as_bytes().get(byte - 1) == Some(&b' ')
+        && text[byte..]
+            .chars()
+            .next()
+            .is_some_and(|after| space_run_break(' ', after))
+}
+
+fn space_run_override(cx: parley::LineBreakContext) -> Option<bool> {
+    space_run_break(cx.before, cx.after).then_some(true)
+}
+
+/// [`space_run_break`] as parley's line-break override: every builder whose
+/// layout rinch breaks into lines sets it (`aaaa~bbbbbb ␣ZWSP␣cc` at 40px
+/// is `aaaa~bbbbbb ` / `ZWSP cc` in Chrome 153; parley alone broke after the
+/// ZWSP's space).
+pub(crate) static SPACE_RUN_BREAKS: &parley::LineBreakOverrideFn =
+    &(space_run_override as fn(parley::LineBreakContext) -> Option<bool>);
+
 /// The UAX #14 break opportunities of a paragraph's text, as parley's own
 /// analysis finds them: the same segmenter, with the complex-script
 /// dictionaries parley's `complex-scripts` feature turns on, so a line this
@@ -3517,6 +3658,9 @@ impl<'t> TextBreaks<'t> {
 
     /// Whether there is an opportunity at `byte`.
     fn at(&self, byte: usize) -> bool {
+        if after_a_space_run(self.text, byte) {
+            return true;
+        }
         if chrome_glues_ascii(self.text, byte) {
             return false;
         }
@@ -3647,7 +3791,10 @@ fn commit_css_line(
 ) -> Option<(parley::layout::BreakReason, f32)> {
     use parley::layout::BreakReason;
     let first = cursor + units[cursor..].iter().take_while(|u| u.newline).count();
-    let n = units[first..e].iter().filter(|u| u.counted).count();
+    let n = units[first..e]
+        .iter()
+        .map(|u| u.counted as usize)
+        .sum::<usize>();
     breaker.revert_to(line_start.clone());
     breaker.break_next_with_length(u32::try_from(n).ok()?)?;
     breaker.set_prior_line_width(max);
@@ -3706,13 +3853,34 @@ fn pre_seams_needed(layout: &parley::Layout<Brush>, text: &str, unhung: &UnhungS
             && !in_ranges(&unhung.pre, r.start - 1)
             && !in_ranges(&unhung.nowrap, r.start - 1)
     });
+    // A wrapping space right before `break-spaces` ones: CSS breaks between
+    // them (the first hangs, the run starts the next line, Chrome 155), and
+    // UAX #14 has no break between two spaces, so parley ends the line after
+    // the first `break-spaces` space instead (parley 0.11.1 hung that one
+    // and broke there too, the hang pass then moving it).
+    let breaking_space = |b: usize| is_space(b) && in_ranges(&unhung.breaking, b);
+    let wrapping_space = |b: usize| {
+        is_space(b)
+            && !in_ranges(&unhung.breaking, b)
+            && !in_ranges(&unhung.pre, b)
+            && !in_ranges(&unhung.nowrap, b)
+    };
+    let after_wrapping_space = |e: usize| {
+        let mut s = e;
+        while s > 0 && breaking_space(s - 1) {
+            s -= 1;
+        }
+        s < e && s > 0 && wrapping_space(s - 1)
+    };
     seam || layout.lines().any(|line| {
         matches!(
             line.break_reason(),
             BreakReason::Regular | BreakReason::Emergency
         ) && {
             let e = line.text_range().end;
-            (e > 0 && pre_space(e - 1)) || (e < text.len() && in_ranges(&unhung.pre, e))
+            (e > 0 && pre_space(e - 1))
+                || (e < text.len() && in_ranges(&unhung.pre, e))
+                || after_wrapping_space(e)
         }
     })
 }
@@ -3785,7 +3953,7 @@ fn any_line_split_at_edge(layout: &parley::Layout<Brush>) -> bool {
     use parley::PositionedLayoutItem;
     use parley::layout::BreakReason;
     let edge = |item: Option<PositionedLayoutItem<'_, Brush>>| matches!(item, Some(PositionedLayoutItem::InlineBox(b)) if is_edge_box(b.id));
-    if !layout.inline_boxes().iter().any(|b| is_edge_box(b.id)) {
+    if !layout.inline_boxes().any(|b| is_edge_box(b.id)) {
         return false;
     }
     // Items are in visual order: on a right-to-left line the logical end is
@@ -3810,192 +3978,6 @@ const EDGE_START: u8 = 1;
 /// [`LineUnit::edge`] of an inline element's inline-end box.
 const EDGE_END: u8 = 2;
 
-/// Re-set the alignment width of the line just committed, `line` its units
-/// and `reason` what ended it, when it ends in white space that does not
-/// hang. parley counts every trailing space (and NBSP) as hanging when it
-/// aligns a line: its free space is `width - advance + trailing`. Narrowed
-/// by the white space that counts, the free space is the box's width less the
-/// content and that white space, and a line that overflows is start-aligned.
-///
-/// - [`LineUnit::unhung`] spaces at the end (a `pre` root's spaces after a
-///   wrapping span) always count — Chrome 153's answer (#1212).
-/// - With `count_trailing` (#1042) the width is narrowed by exactly what
-///   parley adds back (the trailing white space of the line's **last shaped
-///   run**: parley does not look past it, and a tab or a span with its own
-///   font size or spacing is a run of its own) less what CSS hangs: the run
-///   of hanging spaces at the line's end at a soft wrap, nothing at the end
-///   of the paragraph or before a forced break, where CSS Text 3 §4.1.3
-///   hangs a preserved space only conditionally (and a line whose content
-///   and fitting spaces fill it is start-aligned whether or not the
-///   overflowing part is counted). An NBSP and a `pre` space never hang, so
-///   they count wherever they are. Chrome 155: `abc` and three `pre-wrap`
-///   spaces ending a 200px right-aligned paragraph start at 158.58, not
-///   172.08; `abc\t\t` at 128.
-fn align_unhung_trailing(
-    breaker: &mut parley::layout::BreakLines<'_, Brush>,
-    line: &[LineUnit],
-    max: f32,
-    reason: parley::layout::BreakReason,
-    count_trailing: bool,
-) {
-    use parley::layout::BreakReason;
-    let unhung: f32 = line
-        .iter()
-        .rev()
-        .skip_while(|u| u.newline)
-        .take_while(|u| u.unhung)
-        .map(|u| u.advance)
-        .sum();
-    let narrow = if count_trailing {
-        let added_back = parley_trailing_whitespace(line);
-        // What CSS hangs: the run of hanging spaces at the line's end at a
-        // soft wrap, whatever runs it spans; nothing at the end of the
-        // paragraph or before a forced break (only the part that overflows
-        // hangs there, and a line with no free space is start-aligned
-        // whether or not that part is counted).
-        let hangs: f32 = if matches!(reason, BreakReason::None | BreakReason::Explicit) {
-            0.0
-        } else {
-            line.iter()
-                .rev()
-                .skip_while(|u| u.newline)
-                .take_while(|u| u.hangs)
-                .map(|u| u.advance)
-                .sum()
-        };
-        // Negative when the hanging run spans more than the last run: the
-        // width then grows, so that all of it hangs.
-        added_back - hangs
-    } else {
-        unhung
-    };
-    if narrow != 0.0 {
-        breaker.set_prior_line_width(max - narrow);
-    }
-}
-
-/// What parley's `align` adds back to a line's free space (its
-/// `trailing_whitespace`): the white space at the end of the line's last
-/// shaped run only (a tab, a span with its own font size or spacing, starts a
-/// run of its own; an inline box ends none). White space in earlier runs is
-/// content to parley already.
-fn parley_trailing_whitespace(line: &[LineUnit]) -> f32 {
-    let last_run = line.last().map_or(usize::MAX, |u| u.run);
-    line.iter()
-        .rev()
-        .take_while(|u| {
-            u.run == last_run
-                && last_run != usize::MAX
-                && (u.newline || u.hangs || u.unhung || u.nbsp)
-        })
-        .map(|u| u.advance)
-        .sum()
-}
-
-/// Justify the soft-wrapped line just committed (#1056), `units[cursor..end]`
-/// its units and `line_start` the state it started from. Returns the number
-/// of times the line was broken again (0 or 1), or `None` when breaking it
-/// again failed (the paragraph is then broken as parley breaks it).
-///
-/// CSS shares a justified line's free space — the box's width less its
-/// content, its hanging spaces excluded — among its justification
-/// opportunities: the spaces and NBSPs of its content, less the last one when
-/// the content ends in one (a `break-spaces` space or an NBSP, which do not
-/// hang). That is Chrome 155's count, measured: three hanging `pre-wrap`
-/// spaces take no share, `a b c&nbsp;&nbsp;` widens its first NBSP and not its
-/// second, and a `break-spaces` line widens every space but its last.
-///
-/// parley 0.11.1 counts them as it breaks the line (`LineData::num_spaces`,
-/// not public): every space or NBSP that fits, less one when the line ends in
-/// one. So two or more hanging spaces that fit took shares, and a line parley
-/// ended by hanging the one space that did not fit (that space is not counted)
-/// lost a word gap to the "less one". Such a line is committed again **by
-/// length**, after which parley's count is exact — every space or NBSP on the
-/// line, less one, since the line ends in one — and never fewer than CSS's
-/// (the surplus is hanging spaces). parley gives each of the first `count`
-/// spaces `free / count`, so the alignment width is set to make that
-/// `css_free / opportunities`: the opportunities get exactly their share, and
-/// the hanging spaces after them the surplus (they are past the box's edge,
-/// so only a caret between two of them shows it). A line with no opportunity
-/// or no free space is start-aligned. Only lines ending in a space or NBSP
-/// need this: parley counts any other line as CSS does.
-fn justify_line(
-    breaker: &mut parley::layout::BreakLines<'_, Brush>,
-    units: &[LineUnit],
-    cursor: usize,
-    end: usize,
-    line_start: &parley::layout::BreakerState,
-    max: f32,
-    advance: f32,
-) -> Option<u32> {
-    // The table's cursor can sit on the zero-width newline that ended the
-    // line before (see `break_overflowing_spaces`).
-    let first = cursor + units[cursor..end].iter().take_while(|u| u.newline).count();
-    let line = &units[first..end];
-    if !line.last().is_some_and(|u| u.space) {
-        return Some(0);
-    }
-    let hanging = line.iter().rev().take_while(|u| u.hangs).count();
-    let content = &line[..line.len() - hanging];
-    let content_advance: f32 = content.iter().map(|u| u.advance).sum();
-    let content_ends_in_space = content.last().is_some_and(|u| u.space);
-    // One hanging space that fit (parley hangs only what overflows `max`) is
-    // counted as CSS counts it: parley counted it and its "less one" took it
-    // off again. Nothing to do.
-    if hanging == 1 && !content_ends_in_space && advance <= max {
-        return Some(0);
-    }
-    let opportunities =
-        content.iter().filter(|u| u.space).count() - usize::from(content_ends_in_space);
-    let n = u32::try_from(line.iter().filter(|u| u.counted).count()).ok()?;
-    breaker.revert_to(line_start.clone());
-    breaker.break_next_with_length(n)?;
-    // parley's count for a line committed by length that ends in a space.
-    let counted = line.iter().filter(|u| u.space).count() - 1;
-    let free = max - content_advance;
-    // parley's free space is `width - advance + trailing`.
-    let start_aligned = advance - parley_trailing_whitespace(line);
-    let width = if opportunities == 0 || free <= 0.0 {
-        start_aligned
-    } else {
-        start_aligned + free * counted as f32 / opportunities as f32
-    };
-    breaker.set_prior_line_width(width);
-    Some(1)
-}
-
-/// Whether some soft-wrapped line ends in white space parley may count
-/// differently from CSS when it justifies the line ([`justify_line`]): two or
-/// more spaces or NBSPs, or the space parley hung past `max`. A line ending in
-/// one space that fits is counted right. The cheap test that sends a
-/// justified paragraph through [`hang_pass`] for it (#1056).
-///
-/// Not common enough to be cheap: in justified prose some line's last word
-/// usually ends within a space of the box's edge, so most multi-line justified
-/// paragraphs take the pass (35 of 41 widths of a four-sentence paragraph,
-/// review of #1680; `perf_regression_scenarios::a_justified_paragraph_whose_word_ends_at_the_edge_pays_one_pass`).
-///
-/// A lone NBSP is not a case of its own: no break follows an NBSP (UAX #14
-/// GL) unless spaces come after it, which the two-character test sees, or
-/// parley hung it, which [`unglue`] breaks again first. `Emergency` is kept
-/// beside `Regular` because parley justifies both; such a break lands inside
-/// a word, so the line rarely ends in white space, and `justify_line` leaves
-/// one that does not.
-fn any_miscounted_justified_line(layout: &parley::Layout<Brush>, text: &str, max: f32) -> bool {
-    use parley::layout::BreakReason;
-    layout.lines().any(|line| {
-        if !matches!(
-            line.break_reason(),
-            BreakReason::Regular | BreakReason::Emergency
-        ) {
-            return false;
-        }
-        let body = text.get(line.text_range()).unwrap_or("");
-        let white = &body[body.trim_end_matches([' ', '\t', '\u{a0}']).len()..];
-        white.chars().nth(1).is_some() || (!white.is_empty() && line.metrics().advance > max)
-    })
-}
-
 /// Whether `node`'s computed CSS `direction` is `ltr`: read from the nearest
 /// node at or above it with a Stylo style (an anonymous block box has none
 /// and inherits its container's). `ltr` when nothing has one.
@@ -4012,64 +3994,10 @@ fn css_direction_is_ltr(nodes: &crate::node_slab::NodeSlab, node: RawNodeId) -> 
     true
 }
 
-/// Whether some line ends (before any newline) in white space
-/// [`align_unhung_trailing`] counts with `count_trailing`: a no-break space
-/// in its trailing white space, or, with `preserves_spaces`, any trailing
-/// white space at the end of the paragraph or before a forced break. The
-/// cheap test that sends a paragraph through [`hang_pass`] for it (#1042).
-fn any_counted_trailing_line(
-    layout: &parley::Layout<Brush>,
-    text: &str,
-    preserves_spaces: bool,
-) -> bool {
-    use parley::layout::BreakReason;
-    layout.lines().any(|line| {
-        if line.metrics().trailing_whitespace <= 0.0 {
-            return false;
-        }
-        let body = text.get(line.text_range()).unwrap_or("");
-        let trimmed = body.trim_end_matches(['\n', '\r']);
-        let white = &trimmed[trimmed.trim_end_matches([' ', '\t', '\u{a0}']).len()..];
-        !white.is_empty()
-            && (white.contains('\u{a0}')
-                || (preserves_spaces
-                    && matches!(
-                        line.break_reason(),
-                        BreakReason::None | BreakReason::Explicit
-                    )))
-    })
-}
-
 /// Whether `byte` is in one of the sorted, disjoint `ranges`.
 fn in_ranges(ranges: &[std::ops::Range<usize>], byte: usize) -> bool {
     let i = ranges.partition_point(|r| r.end <= byte);
     ranges.get(i).is_some_and(|r| r.contains(&byte))
-}
-
-/// Whether some line ends (before any newline) in a space or tab of an
-/// `unhung` range, or in a run of spaces and tabs that holds a `pre` one
-/// (#1243: wrapping spaces after it hang, the `pre` ones count) — the cheap
-/// test that sends a paragraph through [`hang_pass`] for
-/// [`align_unhung_trailing`], and for [`break_overflowing_spaces`] when the
-/// range is `break-spaces` text.
-fn any_unhung_trailing_line(
-    layout: &parley::Layout<Brush>,
-    text: &str,
-    unhung: &UnhungSpaces,
-) -> bool {
-    !unhung.is_empty()
-        && layout.lines().any(|line| {
-            let r = line.text_range();
-            let body = text.get(r.clone()).unwrap_or("");
-            let trimmed = body.trim_end_matches(['\n', '\r']);
-            let content = trimmed.trim_end_matches([' ', '\t']).len();
-            trimmed.len() > content
-                && (unhung.contains(r.start + trimmed.len() - 1)
-                    // #1243: `pre` spaces before the run of spaces that
-                    // hangs at the line's end count as content.
-                    || (r.start + content..r.start + trimmed.len())
-                        .any(|b| in_ranges(&unhung.pre, b)))
-        })
 }
 
 /// Every cluster and inline box of `layout`, in the logical order the line
@@ -4085,13 +4013,6 @@ fn logical_units(
     let mut keyed: Vec<((usize, u8, usize), LineUnit)> = Vec::new();
     for line in layout.lines() {
         for run in line.runs() {
-            // The shaped run's identity across lines. `Run::index` is the
-            // run's place on its line, so a run the table's layout broke
-            // across two lines (the spaces parley hung, then the rest of the
-            // run on the next line) took two indices, and a line the hang
-            // pass broke again around them saw two runs where parley sees
-            // one. Its metrics live in the layout's run data, one per run.
-            let run_index = std::ptr::from_ref(run.metrics()) as usize;
             for c in run.clusters() {
                 let range = c.text_range();
                 let n = keyed.len();
@@ -4113,13 +4034,14 @@ fn logical_units(
                                 .get(range.clone())
                                 .is_some_and(|t| t.starts_with('\u{a0}')),
                         space: c.is_space_or_nbsp(),
-                        counted: true,
+                        counted: text
+                            .get(range.clone())
+                            .map_or(1, |t| t.chars().count() as u32),
                         inline_box: false,
                         breaks_before_glue: text
                             .get(range.clone())
                             .and_then(|t| t.chars().next_back())
                             .is_some_and(breaks_before_glue),
-                        run: run_index,
                         edge: 0,
                         wrap_after: seam.map_or(own_wrap, |s| s.wraps),
                         own_wrap,
@@ -4135,7 +4057,7 @@ fn logical_units(
             }
         }
     }
-    for (i, b) in layout.inline_boxes().iter().enumerate() {
+    for (i, b) in layout.inline_boxes().enumerate() {
         let in_flow = matches!(b.kind, parley::InlineBoxKind::InFlow);
         let seam = unhung.active_seams().and_then(|s| s.after_box(b.id));
         let advance = if in_flow { b.width } else { 0.0 };
@@ -4149,10 +4071,9 @@ fn logical_units(
                 newline: false,
                 nbsp: false,
                 space: false,
-                counted: in_flow,
+                counted: u32::from(in_flow),
                 inline_box: in_flow && !is_edge_box(b.id),
                 breaks_before_glue: false,
-                run: usize::MAX,
                 edge: match edge_box_owner(b.id) {
                     Some((_, false)) => EDGE_START,
                     Some((_, true)) => EDGE_END,
@@ -4199,24 +4120,6 @@ fn line_end(units: &[LineUnit], start: usize, advance: f32) -> Option<usize> {
     None
 }
 
-/// The width of the spaces and tabs a line ending before `units[end]` has to
-/// keep, or `None` when a word (or box) follows it, which is an ordinary break.
-fn hanging_after(units: &[LineUnit], end: usize) -> Option<f32> {
-    match units.get(end) {
-        // Nothing follows: the empty line after the hang is spurious.
-        None => Some(0.0),
-        Some(u) if u.newline => Some(0.0),
-        Some(u) if u.hangs => Some(
-            units[end..]
-                .iter()
-                .take_while(|u| u.hangs)
-                .map(|u| u.advance)
-                .sum(),
-        ),
-        Some(_) => None,
-    }
-}
-
 /// Spaces and tabs hang; NBSP does not (§4.1.3 hangs white space, and NBSP is
 /// not white space for this rule — it glues).
 fn is_hanging_space(text: &str, c: &parley::layout::Cluster<'_, Brush>) -> bool {
@@ -4238,20 +4141,6 @@ fn breaks_before_glue(c: char) -> bool {
             | '\u{2013}'
             | '\u{2027}'
     )
-}
-
-/// Whether some line parley ended by hanging a no-break space (#1218): a
-/// regular break past `max` right after an U+00A0. The cheap test that sends a
-/// paragraph through [`hang_pass`] for [`unglue`].
-fn any_hung_nbsp_line(layout: &parley::Layout<Brush>, text: &str, max: f32) -> bool {
-    use parley::layout::BreakReason;
-    layout.lines().any(|line| {
-        line.break_reason() == BreakReason::Regular
-            && line.metrics().advance > max
-            && text
-                .get(..line.text_range().end)
-                .is_some_and(|t| t.ends_with('\u{a0}'))
-    })
 }
 
 /// Whether some line holds an inline box parley placed by its emergency
@@ -4280,20 +4169,6 @@ fn any_emergency_box_line_before_white_space(layout: &parley::Layout<Brush>, tex
         }
     }
     false
-}
-
-/// Whether some line parley ended by hanging one space while more hangable
-/// white space, a newline or nothing at all followed it. The cheap test that
-/// lets the common case skip [`break_lines_hanging_spaces`]'s second break.
-fn any_unhung_line(layout: &parley::Layout<Brush>, text: &str) -> bool {
-    use parley::layout::{BreakReason, Cluster};
-    layout.lines().any(|line| {
-        line.break_reason() == BreakReason::Regular
-            && match Cluster::from_byte_index(layout, line.text_range().end) {
-                None => true,
-                Some(c) => c.is_hard_line_break() || is_hanging_space(text, &c),
-            }
-    })
 }
 
 impl RinchDocument {
@@ -8210,7 +8085,9 @@ impl RinchDocument {
             if !node.display_mode.is_atomic_inline() {
                 continue;
             }
-            if !self.tree.taffy.dirty(taffy_id).unwrap_or(true) {
+            // Not dirty: measured already — unless it never was as an atomic
+            // inline, and so has no baseline to line it up by (#663).
+            if node.atomic_baseline_known && !self.tree.taffy.dirty(taffy_id).unwrap_or(true) {
                 continue;
             }
             let mut depth = 0usize;
@@ -8531,6 +8408,9 @@ impl RinchDocument {
         // paint (#904) — see `NodeTree::atomic_leaf_layouts`.
         let mut leaf_layouts: HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>> =
             HashMap::new();
+        // Each IFC root's and text leaf's line baselines, by the content
+        // width it was measured at (#663): `NodeTree::atomic_line_baselines`.
+        let mut baselines: Vec<(RawNodeId, crate::node::LineBaselines)> = Vec::new();
         // The bands the box's own IFC roots were laid out beside, as the
         // root compute keeps them (`NodeTree::ifc_float_bands`): `None` for a
         // root laid out with none.
@@ -8624,14 +8504,20 @@ impl RinchDocument {
                                 );
                                 inline_layout.hang.record(perf);
                                 first_baseline = first_line_baseline(&inline_layout.layout);
-                                taffy::Size {
-                                    width: known_dims
-                                        .width
-                                        .unwrap_or(inline_layout.measured_width()),
-                                    height: known_dims
-                                        .height
-                                        .unwrap_or(inline_layout.content_height()),
-                                }
+                                let width =
+                                    known_dims.width.unwrap_or(inline_layout.measured_width());
+                                let height =
+                                    known_dims.height.unwrap_or(inline_layout.content_height());
+                                baselines.push((
+                                    root_id,
+                                    (
+                                        width,
+                                        height,
+                                        first_baseline,
+                                        last_line_baseline(&inline_layout.layout),
+                                    ),
+                                ));
+                                taffy::Size { width, height }
                             }
                             Some(NodeContext::Text(text)) => {
                                 if text.content.is_empty() {
@@ -8647,11 +8533,20 @@ impl RinchDocument {
                                 let leaf = shape_text_leaf(font_cx, layout_cx, text, wrap_width);
                                 leaf.hang.record(perf);
                                 first_baseline = leaf.first_baseline();
+                                let last = if leaf.blank {
+                                    None
+                                } else {
+                                    last_line_baseline(&leaf.layout)
+                                };
                                 let layout = leaf.layout;
                                 let size = taffy::Size {
                                     width: known_dims.width.unwrap_or(leaf.width),
                                     height: known_dims.height.unwrap_or(leaf.height),
                                 };
+                                baselines.push((
+                                    text.node_id,
+                                    (size.width, size.height, first_baseline, last),
+                                ));
                                 // Keyed exactly as the root compute keys its own text
                                 // leaves, so `copy_cached_text_layouts` picks between
                                 // them by the same rule.
@@ -8719,6 +8614,15 @@ impl RinchDocument {
             |leaf, context| crate::float_wrap::is_measure_leaf(nodes, leaf, context),
         );
         tree.atomic_leaf_layouts.extend(leaf_layouts);
+        for (id, record) in baselines {
+            let (width, height, ..) = record;
+            let entry = tree.atomic_line_baselines.entry(id).or_default();
+            entry.retain(|e| (e.0 - width).abs() > 0.01 || (e.1 - height).abs() > 0.01);
+            if entry.len() >= 8 {
+                entry.remove(0);
+            }
+            entry.push(record);
+        }
         for (root, bands) in float_bands {
             match bands {
                 Some(bands) => {
@@ -8935,11 +8839,14 @@ impl RinchDocument {
             if let Ok(taffy_layout) = self.tree.taffy.layout(taffy_id) {
                 let layout_size = taffy_layout.size;
                 let node_id = self.tree.taffy_map.get(&taffy_id).copied();
+                let baseline = node_id.and_then(|nid| atomic_inline_baseline(&self.tree, nid));
                 if let Some(nid) = node_id
                     && let Some(node) = self.tree.nodes.get_mut(nid)
                 {
                     node.layout.width = layout_size.width;
                     node.layout.height = layout_size.height;
+                    node.atomic_baseline = baseline;
+                    node.atomic_baseline_known = true;
                 }
             }
 
@@ -10059,6 +9966,7 @@ impl RinchDocument {
         // after a `normal` span followed by the root's preserved spaces,
         // where Chrome breaks before the spaces and rinch does not.
         root_text_style.text_wrap_mode = Self::text_wrap_mode(root_computed);
+        root_text_style.white_space_collapse = white_space_hanging(root_computed.white_space);
 
         // Apply white-space mode from computed style.
         // Contenteditable elements always use Preserve (pre-wrap) to prevent
@@ -10269,26 +10177,30 @@ impl RinchDocument {
             )
         });
         let alignment = root_computed.text_align.to_parley();
-        // Trailing white space that does not hang moves only a line aligned
-        // away from its start (#1042).
-        // and only in a left-to-right block: rinch hands parley no CSS
-        // `direction`, so `break_lines_hanging_spaces`' own `is_rtl` test
-        // sees only the direction parley infers from the text.
-        let count_trailing = matches!(
+        // A line aligned away from its start in a left-to-right block is
+        // aligned within the content width even when nothing wraps (#1237):
+        // rinch hands parley no CSS `direction`.
+        let ltr = css_direction_is_ltr(nodes, root_id);
+        let aligned_away = matches!(
             alignment,
             parley::layout::Alignment::Right
                 | parley::layout::Alignment::Center
                 | parley::layout::Alignment::End
-        ) && css_direction_is_ltr(nodes, root_id);
-        // A justified line shares its free space among its opportunities
-        // only (#1056); left to right only, as above.
-        let justify = matches!(alignment, parley::layout::Alignment::Justify)
-            && css_direction_is_ltr(nodes, root_id);
+        ) && ltr;
         let mut hang = HangStats::default();
         let mut float_drop: f32;
         let mut builds = 0u32;
         let (text_layout, text_content) = loop {
             let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
+            builder.set_line_break_override(Some(SPACE_RUN_BREAKS));
+            // A `direction: rtl` block's paragraph is right to left whatever
+            // its text (parley 0.12 takes a base direction): its trailing
+            // spaces are at its visual left, inside the box (Chrome 155,
+            // review of #1669). A `ltr` one — the initial value, so nearly
+            // every block — is still left to parley's first-strong rule.
+            if !ltr {
+                builder.set_base_direction(parley::BaseDirection::Rtl);
+            }
             ifc_text.replay(&mut builder, emoji_family.as_ref(), &tab_spacing);
             let (mut text_layout, text_content) = builder.build();
             builds += 1;
@@ -10301,9 +10213,7 @@ impl RinchDocument {
                 effective_max_width,
                 preserves_spaces,
                 &unhung,
-                count_trailing,
-                justify,
-                align_width.filter(|_| count_trailing),
+                align_width.filter(|_| aligned_away),
                 floats,
                 placer.as_deref_mut(),
             );
@@ -10518,7 +10428,7 @@ impl RinchDocument {
         const EPS: f32 = 0.01;
         let overflowing = |line: &parley::layout::Line<'_, Brush>| {
             let m = line.metrics();
-            m.advance - m.trailing_whitespace > container_width
+            m.advance - m.hanging_advance > container_width
         };
         if !il.layout.lines().any(|l| overflowing(&l)) {
             return None;
@@ -10929,6 +10839,9 @@ impl RinchDocument {
         props.push(parley::style::StyleProperty::TextWrapMode(
             Self::text_wrap_mode(computed),
         ));
+        props.push(parley::style::StyleProperty::WhiteSpaceCollapse(
+            white_space_hanging(computed.white_space),
+        ));
         props
     }
 
@@ -11241,13 +11154,14 @@ impl RinchDocument {
                         // `white-space` of the element the text is in: its
                         // DOM parent, which inside an anonymous box is not
                         // `parent_id` (#1192).
-                        let mode = SpaceCollapse::of(
-                            child
-                                .parent
-                                .and_then(|dom_parent| nodes.get_live(dom_parent))
-                                .unwrap_or(&nodes[parent_id])
-                                .computed_style
-                                .white_space,
+                        let own = &child
+                            .parent
+                            .and_then(|dom_parent| nodes.get_live(dom_parent))
+                            .unwrap_or(&nodes[parent_id])
+                            .computed_style;
+                        let mode = SpaceCollapse::of(own.white_space);
+                        builder.set_wraps(
+                            Self::text_wrap_mode(own) == parley::style::TextWrapMode::Wrap,
                         );
                         let (flat_len, offset_map) = builder.push_text_node(raw, mode);
                         *flat_pos += flat_len;
@@ -11381,12 +11295,30 @@ impl RinchDocument {
                         Some(atomic) => atomic.size(child_id, child),
                         None => (child.layout.width, child.layout.height),
                     };
+                    // Its baseline (#663), as its compute last laid it out.
+                    // Lined up at another height than that one (a measure's
+                    // contribution), a last-line baseline keeps its distance
+                    // from the bottom and a first-line one from the top.
+                    let baseline = child.atomic_baseline.map(|b| {
+                        let first = matches!(
+                            child.computed_style.display,
+                            crate::computed_style::DisplayValue::InlineFlex
+                                | crate::computed_style::DisplayValue::InlineGrid
+                        );
+                        if first {
+                            b
+                        } else {
+                            b + (height - child.layout.height)
+                        }
+                    });
                     builder.push_inline_box(parley::InlineBox {
                         id: child_id,
                         index: 0, // will be set by builder
                         width: width * scale,
                         height: height * scale,
                         kind: parley::InlineBoxKind::InFlow,
+                        baseline: baseline.map(|b| b * scale),
+                        vertical_align: atomic_vertical_align(&child.computed_style, scale),
                     });
                     child_positions.push((child_id, LayoutResult::default()));
                 }
@@ -11894,10 +11826,6 @@ impl RinchDocument {
     }
 }
 
-#[cfg(test)]
-#[path = "hang_differential_tests.rs"]
-mod hang_differential_tests;
-
 /// `tab-size`'s initial value. Stylo parses `tab-size` for Gecko only, so
 /// no other value reaches rinch-dom (#1122).
 pub(crate) const TAB_SIZE: f32 = 8.0;
@@ -11942,7 +11870,8 @@ impl TabStops {
         scale: f32,
     ) -> Self {
         let mut builder = layout_cx.tree_builder(font_cx, scale, true, style);
-        builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
+        // parley 0.12 made `white-space-collapse` a style (`TextStyle::white_space_collapse`),
+        // `Preserve` by default and set by nothing in rinch: the builder collapses nothing.
         builder.push_text(" ");
         let (mut layout, _) = builder.build();
         layout.break_all_lines(None);
@@ -11975,7 +11904,6 @@ impl TabStops {
     pub(crate) fn deltas(&self, layout: &parley::Layout<Brush>, tabs: &[usize]) -> Vec<f32> {
         use parley::PositionedLayoutItem;
         let mut deltas = vec![0.0f32; tabs.len()];
-        let boxes = layout.inline_boxes();
         /// (byte, 0 = inline box / 1 = cluster, order), advance, tab index.
         type Unit = ((usize, u8, usize), f32, Option<usize>);
         let mut units: Vec<Unit> = Vec::new();
@@ -11990,7 +11918,7 @@ impl TabStops {
             }
             for item in line.items() {
                 if let PositionedLayoutItem::InlineBox(b) = item {
-                    let Some(ib) = boxes.iter().find(|ib| ib.id == b.id) else {
+                    let Some(ib) = layout.inline_boxes().find(|ib| ib.id == b.id) else {
                         continue;
                     };
                     let advance = if matches!(ib.kind, parley::InlineBoxKind::InFlow) {

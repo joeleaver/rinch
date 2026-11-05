@@ -47,17 +47,12 @@ fn lines_of(d: &RinchDocument, n: NodeId) -> Vec<(f32, f32, f32)> {
         .lines()
         .map(|l| {
             let m = l.metrics();
-            // The line box's top, as parley places it: the baseline less
-            // the ascent and the leading above it, each rounded as parley
-            // rounds them (ascent and descent each to a pixel, then half the
-            // leading floored). Not `block_min_coord`, which clamps a
-            // negative leading to 0 (a 16px font on a 20px line in some
-            // fonts), and not the unrounded metrics, a pixel off in others
-            // (DejaVu Sans, CI's).
-            let (ascent, descent) = (m.ascent.round(), m.descent.round());
-            let above = ((m.line_height - ascent - descent) * 0.5).floor();
+            // The line box's top. (Under parley 0.11.1 it was rebuilt from
+            // the baseline, the ascent and the leading: its
+            // `block_min_coord` clamped a negative leading to 0. Since 0.12
+            // it is the CSS line box's top.)
             (
-                (m.baseline - ascent - above).round(),
+                m.block_min_coord.round(),
                 m.inline_min_coord.round(),
                 m.inline_max_coord.round(),
             )

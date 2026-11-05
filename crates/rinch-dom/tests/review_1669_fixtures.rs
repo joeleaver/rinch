@@ -148,13 +148,15 @@ fn a_direction_rtl_paragraph_of_latin_text_is_not_narrowed() {
     assert!((x - 172.08).abs() < 0.05, "got {x}, Chrome 155: 172.08");
 }
 
-/// Review of #1669, finding 3: the claim "a start-aligned paragraph is not
-/// re-broken for it" has no pin (mutant `count_trailing = true` survives every
-/// test, perf baselines included).
+/// Review of #1669, finding 3, since parley 0.12: no alignment re-breaks
+/// the paragraph for its trailing spaces any more — parley hangs them only
+/// as far as they overflow itself, so the `right` and `center` lines that
+/// used to pay one pass for it (#1042) pay none. (The positions are
+/// `trailing_white_space_across_shaped_runs_is_counted_once`'s.)
 #[test]
-fn only_a_line_aligned_away_from_its_start_pays_the_pass() {
+fn no_alignment_pays_a_pass_for_its_trailing_spaces() {
     use rinch_dom::perf::Counter;
-    for (align, want) in [("left", 0), ("justify", 0), ("right", 1), ("center", 1)] {
+    for (align, want) in [("left", 0), ("justify", 0), ("right", 0), ("center", 0)] {
         let mut d = doc();
         let body = d.body();
         let c = d.create_element("div");
@@ -186,11 +188,11 @@ fn only_a_line_aligned_away_from_its_start_pays_the_pass() {
     }
 }
 
-/// Review of #1669, finding 4 (scope, not a regression): a flex item's own
-/// text (a text leaf, `shape_text_leaf`) is aligned by parley's rule still.
-/// Chrome 155: 158.58.
+/// Review of #1669, finding 4: a flex item's own text (a text leaf,
+/// `shape_text_leaf`) counts its trailing spaces too. Chrome 155: 158.58.
+/// Ignored until parley 0.12, which hangs them only as far as they overflow
+/// itself (#1669 covered IFCs only).
 #[test]
-#[ignore = "text leaves are not covered by #1669"]
 fn a_flex_items_own_text_counts_its_trailing_spaces() {
     let (d, c) = lay_out(
         &format!("{W}display:flex;flex-direction:column;white-space:pre-wrap;text-align:right"),
