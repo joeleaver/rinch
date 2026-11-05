@@ -14,6 +14,7 @@
 //!
 //! Enabled in the `rinch` facade by its `html` feature, as `rinch::html`.
 
+mod bound;
 mod clean;
 mod depth;
 mod links;

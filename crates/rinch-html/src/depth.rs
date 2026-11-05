@@ -11,10 +11,9 @@
 //! a flat arena ([`Arena`]), and written back with html5ever's serializer
 //! from an explicit stack. Nothing here recurses on the document's depth.
 //!
-//! html5ever's tree builder itself slows with depth (it walks its stack of
-//! open elements: 320 KB of unclosed `<div>`s took 6 s), so a linear pass
-//! first ([`open_bound`]) counts how many elements could be open at each
-//! tag, generously, and cuts the input where that passes [`MAX_OPEN`].
+//! html5ever's tree builder itself slows with depth, so the input is cut
+//! first where more elements could be open than it handles quickly
+//! ([`open_bound`](crate::bound::open_bound)).
 
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell};
@@ -27,10 +26,6 @@ use html5ever::{Attribute, QualName, parse_document};
 /// The deepest nesting kept, in elements below the document.
 pub const MAX_DEPTH: usize = 512;
 
-/// Where the input is cut before it is parsed: past this many elements that
-/// could be open at once ([`open_bound`]).
-pub const MAX_OPEN: usize = 1024;
-
 /// `document` with every element nested deeper than [`MAX_DEPTH`] left out,
 /// borrowed when nothing is. A document that is cut comes back as html5ever
 /// writes a parsed document (`<html><head>…<body>…`).
@@ -39,7 +34,7 @@ pub(crate) fn cap(document: &str) -> Cow<'_, str> {
     if document.bytes().filter(|&b| b == b'<').count() <= MAX_DEPTH {
         return Cow::Borrowed(document);
     }
-    let cut = open_bound(document);
+    let cut = crate::bound::open_bound(document);
     let input = &document[..cut.unwrap_or(document.len())];
     let arena = parse_document(Arena::default(), Default::default()).one(input);
     if cut.is_none() && arena.depth() <= MAX_DEPTH {
@@ -54,193 +49,6 @@ pub(crate) fn cap(document: &str) -> Cow<'_, str> {
         return Cow::Owned(String::new());
     }
     Cow::Owned(String::from_utf8(out).unwrap_or_default())
-}
-
-/// Where in `document` more than [`MAX_OPEN`] elements could be open at
-/// once, if anywhere. Linear, and generous: every start tag of an element
-/// that is not void opens one (`<div/>` too, as the parser has it), the
-/// common implied closes close (a `<p>` the next `<p>`, a cell the next
-/// cell), and an end tag closes only an element of its name it can reach:
-/// one of the top 64, with no table, cell, caption, template or object in
-/// between (where the parser would ignore it). Misnested mail counts high,
-/// never low.
-pub(crate) fn open_bound(document: &str) -> Option<usize> {
-    const REACH: usize = 64;
-    let bytes = document.as_bytes();
-    let mut stack: Vec<String> = Vec::new();
-    let mut i = 0;
-    while let Some(lt) = memchr(b'<', bytes, i) {
-        if bytes[lt..].starts_with(b"<!--") {
-            i = find_ascii(bytes, lt + 4, b"-->").map_or(bytes.len(), |p| p + 3);
-            continue;
-        }
-        let Some(gt) = memchr(b'>', bytes, lt) else {
-            break;
-        };
-        let tag = &document[lt + 1..gt];
-        i = gt + 1;
-        if let Some(name) = tag.strip_prefix('/') {
-            let name = tag_name(name);
-            let reach = stack
-                .iter()
-                .rev()
-                .take(REACH)
-                .position(|n| *n == name || (n != &name && is_scope_boundary(n)));
-            if let Some(from_top) = reach
-                && stack[stack.len() - 1 - from_top] == name
-            {
-                let at = stack.len() - 1 - from_top;
-                // Formatting elements closed out from under a formatting
-                // element are reopened and stay open (`<b><i></b>`): they
-                // count again. Under a block they are only rebuilt inside
-                // what follows it.
-                let reopened: Vec<String> = if is_formatting(&name) {
-                    stack[at + 1..]
-                        .iter()
-                        .filter(|n| is_formatting(n))
-                        .cloned()
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                stack.truncate(at);
-                stack.extend(reopened);
-                if stack.len() > MAX_OPEN {
-                    return Some(lt);
-                }
-            }
-            continue;
-        }
-        if !bytes.get(lt + 1).is_some_and(u8::is_ascii_alphabetic) {
-            continue;
-        }
-        let name = tag_name(tag);
-        if is_raw_text(&name) {
-            let mut close = b"</".to_vec();
-            close.extend_from_slice(name.as_bytes());
-            i = find_ascii(bytes, i, &close).map_or(bytes.len(), |p| p + close.len());
-            continue;
-        }
-        if is_void(&name) {
-            continue;
-        }
-        close_implied(&mut stack, &name);
-        stack.push(name);
-        if stack.len() > MAX_OPEN {
-            return Some(lt);
-        }
-    }
-    None
-}
-
-fn memchr(needle: u8, bytes: &[u8], from: usize) -> Option<usize> {
-    bytes
-        .get(from..)?
-        .iter()
-        .position(|&b| b == needle)
-        .map(|p| from + p)
-}
-
-/// Where `needle` (ASCII) starts in `bytes` from `from`, any case.
-fn find_ascii(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
-    bytes
-        .get(from..)?
-        .windows(needle.len())
-        .position(|w| w.eq_ignore_ascii_case(needle))
-        .map(|p| from + p)
-}
-
-fn tag_name(tag: &str) -> String {
-    tag.split(|c: char| c.is_whitespace() || c == '/' || c == '>')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-}
-
-fn is_raw_text(name: &str) -> bool {
-    matches!(
-        name,
-        "script" | "style" | "textarea" | "title" | "xmp" | "iframe" | "noembed" | "noframes"
-    )
-}
-
-/// The formatting elements HTML's parser reopens when they are misnested.
-fn is_formatting(name: &str) -> bool {
-    matches!(
-        name,
-        "a" | "b"
-            | "big"
-            | "code"
-            | "em"
-            | "font"
-            | "i"
-            | "nobr"
-            | "s"
-            | "small"
-            | "strike"
-            | "strong"
-            | "tt"
-            | "u"
-    )
-}
-
-fn is_scope_boundary(name: &str) -> bool {
-    matches!(
-        name,
-        "table" | "td" | "th" | "caption" | "template" | "object" | "applet" | "marquee" | "html"
-    )
-}
-
-fn is_void(name: &str) -> bool {
-    matches!(
-        name,
-        "area"
-            | "base"
-            | "br"
-            | "col"
-            | "embed"
-            | "hr"
-            | "img"
-            | "input"
-            | "link"
-            | "meta"
-            | "source"
-            | "track"
-            | "wbr"
-    )
-}
-
-/// Close what opening `name` closes in the parser: the nearest open element
-/// of the kinds it ends, with everything above it, unless one of the
-/// elements that bound it comes first (a `<td>` ends the open cell, not one
-/// past its table; an `<li>` ends the open item, not one past its list).
-fn close_implied(stack: &mut Vec<String>, name: &str) {
-    const REACH: usize = 64;
-    let (ends, bounds): (&[&str], &[&str]) = match name {
-        "td" | "th" => (&["td", "th"], &["table"]),
-        "tr" => (&["tr"], &["table"]),
-        "tbody" | "thead" | "tfoot" => (&["tbody", "thead", "tfoot"], &["table"]),
-        "li" => (&["li"], &["ul", "ol", "table", "td", "th"]),
-        "dt" | "dd" => (&["dt", "dd"], &["dl", "table", "td", "th"]),
-        "option" => (&["option"], &["select"]),
-        "p" | "div" | "table" | "ul" | "ol" | "dl" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
-        | "blockquote" | "pre" | "center" | "section" | "header" | "footer" | "form" => (
-            &["p"],
-            &["table", "td", "th", "button", "caption", "template", "html"],
-        ),
-        _ => return,
-    };
-    let found = stack
-        .iter()
-        .rev()
-        .take(REACH)
-        .position(|n| ends.contains(&n.as_str()) || bounds.contains(&n.as_str()));
-    if let Some(from_top) = found {
-        let at = stack.len() - 1 - from_top;
-        if ends.contains(&stack[at].as_str()) {
-            stack.truncate(at);
-        }
-    }
 }
 
 type Id = usize;
@@ -525,14 +333,6 @@ mod tests {
         let mut many_ps = "<p>x".repeat(5_000);
         many_ps.push_str("<div>end</div>");
         assert!(matches!(cap(&many_ps), std::borrow::Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn real_mails_unclosed_cells_and_paragraphs_do_not_count_as_depth() {
-        let rows = "<tr><td><p>one<td><p>two<li>x<li>y".repeat(5_000);
-        let sloppy = "<div><font>x</div><p><b>y<i>z</b></i>".repeat(3_000);
-        let doc = format!("<table>{rows}</table><font><b>bold</font></b>{sloppy}");
-        assert_eq!(super::open_bound(&doc), None);
     }
 
     #[test]

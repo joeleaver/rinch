@@ -230,6 +230,21 @@ fn the_font_shorthand_keeps_its_weight() {
 }
 
 #[test]
+fn a_product_sizing_text_counts_in_px() {
+    // The final check: the product rule did not reach the text size.
+    for style in [
+        "font: 700 calc(100px * 100) Arial",
+        "font-size: calc(10px * 50 * 50)",
+    ] {
+        let out = cleaned(&format!(r#"<div style="{style}; color: red">a</div>"#));
+        assert!(!out.contains("calc"), "{style}: {out}");
+        assert!(out.contains("color: red"), "{out}");
+    }
+    let ok = cleaned(r#"<div style="font-size: calc(1em * 1.2)">a</div>"#);
+    assert!(ok.contains("calc(1em * 1.2)"), "{ok}");
+}
+
+#[test]
 fn a_product_in_calc_counts_whole() {
     let out = cleaned(r#"<div style="height: calc(100000px * 100); color: red">a</div>"#);
     assert!(!out.contains("height"), "{out}");
@@ -248,6 +263,36 @@ fn shapes_html5ever_builds_slowly_are_cut_before_it_reads_them() {
         ("<template><div>, 320 KB", "<template><div>".repeat(21_000)),
         ("<div/>, 320 KB", "<div/>".repeat(53_000)),
         ("<b><i></b>, 1.28 MB", "<b><i></b>".repeat(128_000)),
+        // The final check: a short prefix that fooled the hand scanner, then
+        // 320 KB of `<div>`s.
+        (
+            "<!--> then divs",
+            format!("<!-->{}", "<div>".repeat(64_000)),
+        ),
+        (
+            "a quoted <!-- then divs",
+            format!(r#"<p a="><!--">{}"#, "<div>".repeat(64_000)),
+        ),
+        (
+            "a quoted <style> then divs",
+            format!(r#"<p a="><style>">{}"#, "<div>".repeat(64_000)),
+        ),
+        (
+            "<svg><style> then divs",
+            format!("<svg><style>{}", "<div>".repeat(64_000)),
+        ),
+        (
+            "<math><style> then divs",
+            format!("<math><style>{}", "<div>".repeat(64_000)),
+        ),
+        (
+            "<svg><title> then divs",
+            format!("<svg><title>{}", "<div>".repeat(64_000)),
+        ),
+        (
+            "<select><option><div>",
+            format!("<select>{}", "<option><div>".repeat(25_000)),
+        ),
     ] {
         let t = std::time::Instant::now();
         let _ = std::thread::Builder::new()

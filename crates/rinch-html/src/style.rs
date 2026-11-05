@@ -148,6 +148,8 @@ fn walk<'i>(
     // A run of numbers joined by `*` (in a `calc()`), multiplied so far.
     let mut product: Option<f32> = None;
     let mut times = false;
+    // The px per unit of the run's length, when it has one.
+    let mut scale: Option<f32> = None;
     // Past a `/`: in `font`, the line height.
     let mut after_slash = false;
     loop {
@@ -164,8 +166,18 @@ fn walk<'i>(
         };
         match (&token, magnitude) {
             (_, Some(m)) => {
+                let unit = match &token {
+                    Token::Dimension { unit, .. } => Some(unit_scale(unit)),
+                    _ => None,
+                };
+                let multiplied = times;
                 let m = if times { product.unwrap_or(1.0) * m } else { m };
+                scale = if times { scale.or(unit) } else { unit };
                 if m > MAX_LENGTH {
+                    return refuse();
+                }
+                // A product sizing text counts in px (a bare one at 16px).
+                if multiplied && sizes_text(property) && m * scale.unwrap_or(16.0) > MAX_FONT_SIZE {
                     return refuse();
                 }
                 product = Some(m);
@@ -226,16 +238,7 @@ fn walk<'i>(
             | Token::CloseSquareBracket
             | Token::CloseCurlyBracket => return refuse(),
             Token::Dimension { value, unit, .. } => {
-                let text_size = match unit.to_ascii_lowercase().as_str() {
-                    "px" => *value,
-                    "pt" => value * 4.0 / 3.0,
-                    "pc" => value * 16.0,
-                    "em" | "rem" | "ex" | "ch" | "lh" => value * 16.0,
-                    "in" => value * 96.0,
-                    "cm" => value * 96.0 / 2.54,
-                    "mm" => value * 96.0 / 25.4,
-                    _ => 0.0,
-                };
+                let text_size = value * unit_scale(unit);
                 if value.abs() > MAX_LENGTH || (sizes_text(property) && text_size > MAX_FONT_SIZE) {
                     return refuse();
                 }
@@ -261,6 +264,20 @@ fn walk<'i>(
             }
             _ => out.push_str(&token.to_css_string()),
         }
+    }
+}
+
+/// CSS px per `unit` (an `em` counted at 16px); 0 for a unit that is not a
+/// length.
+fn unit_scale(unit: &str) -> f32 {
+    match unit.to_ascii_lowercase().as_str() {
+        "px" => 1.0,
+        "pt" => 4.0 / 3.0,
+        "pc" | "em" | "rem" | "ex" | "ch" | "lh" => 16.0,
+        "in" => 96.0,
+        "cm" => 96.0 / 2.54,
+        "mm" => 96.0 / 25.4,
+        _ => 0.0,
     }
 }
 
