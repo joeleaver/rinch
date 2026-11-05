@@ -182,7 +182,7 @@ pub(crate) fn float_box_node(id: u64) -> Option<RawNodeId> {
     (id & (EDGE_BOX | FLOAT_BOX) == EDGE_BOX | FLOAT_BOX).then_some(id & !(EDGE_BOX | FLOAT_BOX))
 }
 
-/// Push `b` into `builder`. parley 0.11.1's `TreeBuilder` commits the text
+/// Push `b` into `builder`. parley's `TreeBuilder` (0.11.1, and 0.12 still) commits the text
 /// pushed so far only before an `InFlow` box, and gives any box the length of
 /// the committed text as its position: a float's box (`CustomOutOfFlow`)
 /// would stand before all of the text since the last span. An empty span

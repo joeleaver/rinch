@@ -221,7 +221,7 @@ impl crate::ifc::PlaceFloats for BlockFloats<'_, '_> {
 
 /// Where `cluster` starts, from the content box's left edge.
 ///
-/// parley 0.11.1 places a line's glyph runs and inline boxes from the line's
+/// parley (0.11.1, and 0.12 still) places a line's glyph runs and inline boxes from the line's
 /// start (`LineMetrics::inline_min_coord`, its `line_x`), and so do its hit
 /// test and selection rectangles, but `Cluster::visual_offset` (and
 /// `Cursor::geometry`, which uses it) leave the start out. It is `0` but for a
@@ -232,7 +232,8 @@ pub(crate) fn cluster_x(cluster: &parley::layout::Cluster<'_, peniko::Brush>) ->
 
 /// `cursor`'s caret box in `layout`, with its line's start counted
 /// ([`cluster_x`]): `Cursor::geometry` at no width, moved to the line its top
-/// is the top of.
+/// is the top of (since parley 0.12 the higher of the line box's top and its
+/// content's).
 pub(crate) fn caret_box(
     layout: &parley::layout::Layout<peniko::Brush>,
     cursor: &parley::editing::Cursor,
