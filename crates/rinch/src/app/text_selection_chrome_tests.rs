@@ -402,7 +402,7 @@ fn a_visible_child_of_a_hidden_span_is_copied() {
 }
 
 /// Select from the start of `#a` to the end of `#b` and copy.
-fn copy_a_to_b(html: &'static str) -> (RinchApp, String) {
+pub(super) fn copy_a_to_b(html: &'static str) -> (RinchApp, String) {
     let mut app = mount(html, SEL);
     let t = {
         let (a, b) = (at(&app, "a", 0.0), past_end(&app, "b"));

@@ -379,6 +379,9 @@ mod text_selection;
 mod text_selection_across_tests;
 #[cfg(test)]
 mod text_selection_chrome_tests;
+mod text_selection_copy;
+#[cfg(test)]
+mod text_selection_copy_tests;
 #[cfg(test)]
 mod text_selection_gestures_tests;
 #[cfg(test)]

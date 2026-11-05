@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use super::text_selection_text::{RootsCache, kept_ranges, separator};
+use super::text_selection_text::{RootsCache, kept_ranges};
 use super::*;
 use rinch_dom::computed_style::UserSelectValue;
 
@@ -523,32 +523,14 @@ impl RinchApp {
         self.text_selecting = false;
     }
 
-    /// The selected text, as Chrome's `getSelection().toString()` has it:
-    /// each covered root's kept text ([`kept_ranges`]), with a tab between
-    /// two cells of a row and line breaks between blocks ([`separator`]).
+    /// The selected text, as Chrome's `getSelection().toString()` has it
+    /// (`text_selection_copy`).
     pub(super) fn text_selection_text(&mut self) -> Option<String> {
         let doc = self.doc.clone()?;
         let sel = self.text_selection.as_mut().filter(|s| !s.is_empty())?;
         let d = doc.borrow();
-        let mut out = String::new();
-        let mut last: Option<u64> = None;
-        for (node, start, end) in sel.runs(&d.tree) {
-            // An end of the selection in a root with nothing to take adds
-            // nothing, not even a line break.
-            if !super::text_selection_text::has_content(&d.tree, node) {
-                continue;
-            }
-            let text = &d.tree.get(node)?.text_layout.as_ref()?.text_content;
-            let part: String = kept_ranges(&d.tree, node, start, end)
-                .into_iter()
-                .filter_map(|(a, b)| text.get(a..b))
-                .collect();
-            if let Some(prev) = last {
-                out.push_str(&separator(&d.tree, prev, node));
-            }
-            out.push_str(&part);
-            last = Some(node);
-        }
+        let runs = sel.runs(&d.tree);
+        let out = super::text_selection_copy::copy_text(&d.tree, &runs);
         (!out.is_empty()).then_some(out)
     }
 
