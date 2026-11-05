@@ -509,7 +509,9 @@ fn gpu_host_textures_across_contexts_and_renderers_2082() {
     let (dev, q) = (h.device.clone(), h.queue.clone());
     let sampled = wgpu::TextureUsages::TEXTURE_BINDING;
     let (red, green) = ([255, 0, 0, 255], [0, 255, 0, 255]);
-    // A converted (BGRA) texture in each, so a re-registration allocates.
+    // A converted (BGRA) texture in each, of different sizes, so the two
+    // contexts cannot share one registration: a re-registration allocates a
+    // converted texture.
     let a = texture(
         &dev,
         &q,
@@ -521,7 +523,7 @@ fn gpu_host_textures_across_contexts_and_renderers_2082() {
     let b = texture(
         &dev,
         &q,
-        (64, 32),
+        (32, 16),
         wgpu::TextureFormat::Bgra8Unorm,
         sampled,
         [0, 255, 0, 255],
@@ -573,19 +575,34 @@ fn gpu_host_textures_across_contexts_and_renderers_2082() {
         red,
     );
     ctx.register_texture("cam", &c).unwrap();
-    let target = h.overlay.texture().clone();
+    // A target cleared to transparent black before each render, so a
+    // render that draws nothing there cannot pass on the last one's pixels.
+    let target = dev.create_texture(&wgpu::TextureDescriptor {
+        label: Some("host target"),
+        size: wgpu::Extent3d {
+            width: W,
+            height: H,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
     let params = vello::RenderParams {
         base_color: vello::peniko::Color::TRANSPARENT,
         width: W,
         height: H,
         antialiasing_method: vello::AaConfig::Msaa16,
     };
-    let mut renderers = [
-        (new_vello(), HostTextureImages::new()),
-        (new_vello(), HostTextureImages::new()),
-    ];
-    for round in 0..2 {
-        for (k, (vello, images)) in renderers.iter_mut().enumerate() {
+    let draw =
+        |ctx: &mut RinchContext, vello: &mut vello::Renderer, images: &mut HostTextureImages| {
+            fill(&q, &target, [0; 4]);
+            ctx.reset_perf();
             let scene = ctx.scene_with_textures(&dev, &q, vello, images);
             vello
                 .render_to_texture(
@@ -596,13 +613,28 @@ fn gpu_host_textures_across_contexts_and_renderers_2082() {
                     &params,
                 )
                 .unwrap();
-            assert_eq!(
+            (
                 at(&read_back(&dev, &q, &target), 50, 35),
-                red,
-                "round {round}, renderer {k}"
+                ctx.perf_total().get(Counter::PaintFrames),
+            )
+        };
+    let mut renderers = [
+        (new_vello(), HostTextureImages::new()),
+        (new_vello(), HostTextureImages::new()),
+    ];
+    for round in 0..2 {
+        for (k, (vello, images)) in renderers.iter_mut().enumerate() {
+            let (got, paints) = draw(&mut ctx, vello, images);
+            assert_eq!(got, red, "round {round}, renderer {k}");
+            assert_eq!(
+                paints, 1,
+                "round {round}, renderer {k}: painted for this renderer"
             );
         }
     }
+    // The same renderer again: the scene it painted is still its own.
+    let (vello, images) = &mut renderers[1];
+    assert_eq!(draw(&mut ctx, vello, images), (red, 0));
 }
 
 /// What is refused, and that a refusal keeps the texture already under the
