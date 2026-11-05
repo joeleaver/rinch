@@ -50,10 +50,22 @@
 //! motion as deltas, [`pointer_lock`] says reactively whether (and how) the
 //! pointer is locked, and [`exit_pointer_lock`] lets it go. A host that does
 //! the grabbing itself (a native embed) installs a [`PointerLockHost`].
+//!
+//! # The composited frame (#2215, desktop GPU)
+//!
+//! `on_frame_composited` (with the `gpu` feature) hands the app every frame
+//! the window presents, as a GPU texture on the window's device
+//! (`CompositedFrame`), for recording or streaming the whole window without a
+//! CPU readback.
 
 use std::cell::Cell;
 
 use rinch_core::Signal;
+
+#[cfg(feature = "gpu")]
+pub use crate::composited_frame::{
+    CompositedFrame, FrameAlpha, FrameSubscription, on_frame_composited,
+};
 
 pub use crate::pointer_lock::{
     PointerLockError, PointerLockHost, PointerLockMode, PointerLockTarget, PointerMotion,

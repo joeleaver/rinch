@@ -376,6 +376,7 @@ pub(super) fn mask_image_from_stylo(
                     repeat_y,
                     origin: mask_origin_from_stylo(svg, i),
                 },
+                blend: BlendModeValue::Normal,
             })
         })
         .collect()
@@ -459,6 +460,7 @@ pub(super) fn background_layers_from_stylo(
             Some(BackgroundLayer {
                 image: background_image_from_stylo(image, text_color)?,
                 geometry: background_geometry_from_stylo(bg, i),
+                blend: background_blend_from_stylo(bg, i),
             })
         })
         .collect()
@@ -477,6 +479,34 @@ pub(super) fn background_geometry_from_stylo(
         repeat_x,
         repeat_y,
         origin: background_origin_from_stylo(bg, i),
+    }
+}
+
+/// Layer `i`'s `background-blend-mode` (#2221), indexed by the layer's place
+/// in the `background-image` list (a layer left out for having nothing to
+/// paint keeps its index), the list repeating.
+pub(super) fn background_blend_from_stylo(
+    bg: &style::properties::style_structs::Background,
+    i: usize,
+) -> BlendModeValue {
+    use style::properties::longhands::background_blend_mode::single_value::computed_value::T;
+    match nth(&bg.background_blend_mode.0, i) {
+        None | Some(T::Normal) => BlendModeValue::Normal,
+        Some(T::Multiply) => BlendModeValue::Multiply,
+        Some(T::Screen) => BlendModeValue::Screen,
+        Some(T::Overlay) => BlendModeValue::Overlay,
+        Some(T::Darken) => BlendModeValue::Darken,
+        Some(T::Lighten) => BlendModeValue::Lighten,
+        Some(T::ColorDodge) => BlendModeValue::ColorDodge,
+        Some(T::ColorBurn) => BlendModeValue::ColorBurn,
+        Some(T::HardLight) => BlendModeValue::HardLight,
+        Some(T::SoftLight) => BlendModeValue::SoftLight,
+        Some(T::Difference) => BlendModeValue::Difference,
+        Some(T::Exclusion) => BlendModeValue::Exclusion,
+        Some(T::Hue) => BlendModeValue::Hue,
+        Some(T::Saturation) => BlendModeValue::Saturation,
+        Some(T::Color) => BlendModeValue::Color,
+        Some(T::Luminosity) => BlendModeValue::Luminosity,
     }
 }
 

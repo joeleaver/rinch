@@ -13,6 +13,8 @@ mod backdrop_any_button_1093_tests;
 #[cfg(all(test, software_shell))]
 mod background_animation_component_tests;
 #[cfg(all(test, software_shell))]
+mod background_blend_damage_2221_tests;
+#[cfg(all(test, software_shell))]
 mod background_tile_phase_tests;
 #[cfg(test)]
 mod batched_handler_focus_tests;
@@ -207,6 +209,8 @@ mod game_viewport_inline_tests;
 mod gpu_bump_overflow_2071_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_clip_groups_1645_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_composited_frame_2215_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_hidden_subtree_cull_2137_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
@@ -12534,6 +12538,8 @@ mod review_1687_tests;
 mod scroll_into_view_nested_842_tests;
 #[cfg(test)]
 mod scroll_into_view_review_2014_tests;
+#[cfg(test)]
+mod surface_bind_element_2219_tests;
 #[cfg(test)]
 mod window_facts_1770_tests;
 

@@ -30,7 +30,9 @@
 //! [`exit_pointer_lock`]; when the window loses focus; on Escape, which is
 //! consumed (it closes no modal and reaches no handler: the browser's rule);
 //! when the element that holds it leaves the document or the `RenderSurface`
-//! that holds it unmounts; and when the desktop window is hidden.
+//! that holds it unmounts (or its element is unbound or re-bound, or its last
+//! handle is dropped: `RenderSurfaceHandle::bind_element`); and when the
+//! desktop window is hidden.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -424,6 +426,37 @@ pub(crate) fn surface_gone(id: usize) {
     }
 }
 
+/// The element `RenderSurface` `id`'s lock (granted or pending) is held by,
+/// if it holds one on an element.
+pub(crate) fn held_element(id: usize) -> Option<NodeHandle> {
+    HELD.with(|h| match h.borrow().as_ref() {
+        Some(Held {
+            target: PointerLockTarget::Element(element),
+            surface: Some(s),
+            ..
+        }) if *s == id => Some(element.clone()),
+        _ => None,
+    })
+}
+
+/// The last clone of `RenderSurface` `id`'s handle dropped: a lock it holds
+/// ends (#2219). Safe while the thread's storage is being torn down, where it
+/// does nothing.
+pub(crate) fn surface_dropped(id: usize) {
+    let holds = HELD
+        .try_with(|h| {
+            h.try_borrow()
+                .is_ok_and(|held| held.as_ref().is_some_and(|held| held.surface == Some(id)))
+        })
+        .unwrap_or(false);
+    let alive = HOST.try_with(|_| ()).is_ok()
+        && MODE.try_with(|_| ()).is_ok()
+        && MODE_SIGNAL.try_with(|_| ()).is_ok();
+    if holds && alive {
+        release();
+    }
+}
+
 /// Whether `RenderSurface` `id` holds the lock (granted or pending).
 pub(crate) fn held_by_surface(id: usize) -> bool {
     HELD.with(|h| {
@@ -459,7 +492,7 @@ pub fn dispatch_pointer_motion(dx: f64, dy: f64) {
     rinch_core::batch(|| {
         rinch_core::untracked_handler(|| {
             if let Some(id) = surface {
-                crate::render_surface::dispatch_surface_event(
+                crate::render_surface::dispatch_locked_surface_event(
                     id,
                     crate::render_surface::SurfaceEvent::PointerMotion {
                         dx: dx as f32,

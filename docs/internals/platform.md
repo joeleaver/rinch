@@ -172,7 +172,26 @@ the layers below it are `ComputedStyle::background_layers` (top to bottom, empty
 for one image, a `none` or conic layer left out). A transition or animation of
 `background-position` moves the **first** layer only; the others snap to their
 new values. Before #1142 every list was read at its first entry, so
-`ColorSwatch`'s four-layer checkerboard drew one layer. **Gradients**
+`ColorSwatch`'s four-layer checkerboard drew one layer. **`background-blend-mode`**
+(#2221): `ComputedStyle::background_blend_mode` (the first layer) and
+`BackgroundLayer::blend` (the others), each taken at the layer's index in the
+`background-image` list (`from_stylo::background_blend_from_stylo`), so a conic
+layer left out does not shift the entries of the layers after it. All sixteen
+keywords. When any entry is not `normal`, `background::paint_background` opens an
+isolated layer (`Painter::push_isolated_layer`) over the shape's bounding box,
+fills the colour into it, and paints each blending layer inside a
+`BlendMode::Mix(MixMode)` layer (Vello `peniko::Mix`, tiny-skia's blend mode of
+the same name, composited on the layer's pop; never elided at opacity 1), so a
+layer blends with the layers and colour under it and never with what is behind
+the element (compositing-1 §8.1). A background whose entries are all `normal` opens
+nothing, so it costs one scan of its layers. Both painters blend sRGB-encoded
+values, as Chrome does; against Chrome 156 they are within one 8-bit step, either
+way, for every mode. A `Mix` layer sets the Vello painter's `reads_backdrop`,
+and the split compositor already treats a non-`normal` layer outside an isolated
+one as a group effect. `mix-blend-mode` and `isolation` are not read. Pins:
+`background_blend_2221_tests`, `gpu_background_blend_2221`,
+`background_blend_damage_2221_tests` (partial frames), and rinch-web's
+`background_blend_2221` (the browser blends itself). **Gradients**
 (`paint/gradient.rs`, #1798): a stop's position is a `LengthPercentageValue`
 resolved against the gradient line at paint (a length was read as a hundredth
 of the line until #1798, so `31px` was `31%`), fixed up by css-images-3 §3.5.3

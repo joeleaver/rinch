@@ -1462,6 +1462,29 @@ impl TinySkiaPainter {
     }
 }
 
+/// tiny-skia's blend mode for a compositing-1 one (#2221). Its separable and
+/// non-separable modes are Skia's, the formulas compositing-1 gives.
+fn skia_mix(mode: super::painter::MixMode) -> tiny_skia::BlendMode {
+    use super::painter::MixMode as M;
+    match mode {
+        M::Multiply => tiny_skia::BlendMode::Multiply,
+        M::Screen => tiny_skia::BlendMode::Screen,
+        M::Overlay => tiny_skia::BlendMode::Overlay,
+        M::Darken => tiny_skia::BlendMode::Darken,
+        M::Lighten => tiny_skia::BlendMode::Lighten,
+        M::ColorDodge => tiny_skia::BlendMode::ColorDodge,
+        M::ColorBurn => tiny_skia::BlendMode::ColorBurn,
+        M::HardLight => tiny_skia::BlendMode::HardLight,
+        M::SoftLight => tiny_skia::BlendMode::SoftLight,
+        M::Difference => tiny_skia::BlendMode::Difference,
+        M::Exclusion => tiny_skia::BlendMode::Exclusion,
+        M::Hue => tiny_skia::BlendMode::Hue,
+        M::Saturation => tiny_skia::BlendMode::Saturation,
+        M::Color => tiny_skia::BlendMode::Color,
+        M::Luminosity => tiny_skia::BlendMode::Luminosity,
+    }
+}
+
 impl TinySkiaPainter {
     /// Draw what follows into a fresh (or pooled, already transparent) layer
     /// until the matching pop composites it back at `opacity` with `blend`.
@@ -2297,7 +2320,10 @@ impl Painter for TinySkiaPainter {
         // never takes the fast path below.
         if !matches!(
             blend,
-            BlendMode::Plus | BlendMode::DestinationIn | BlendMode::DestinationOut
+            BlendMode::Plus
+                | BlendMode::DestinationIn
+                | BlendMode::DestinationOut
+                | BlendMode::Mix(_)
         ) && (opacity - 1.0).abs() < f32::EPSILON
         {
             // Near-opaque: compositing a layer back at this alpha changes no
@@ -2346,6 +2372,7 @@ impl Painter for TinySkiaPainter {
             BlendMode::DestinationIn => tiny_skia::BlendMode::DestinationIn,
             BlendMode::DestinationOut => tiny_skia::BlendMode::DestinationOut,
             BlendMode::Normal | BlendMode::Saturation => tiny_skia::BlendMode::SourceOver,
+            BlendMode::Mix(mode) => skia_mix(mode),
         };
         self.open_layer(opacity, blend);
     }

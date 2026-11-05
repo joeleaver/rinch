@@ -67,6 +67,10 @@ pub use rinch_dom::perf;
 ))]
 pub mod app_builder;
 
+/// The window's composited frame handed to the app on the GPU (#2215); the
+/// API is re-exported through [`window`].
+#[cfg(feature = "gpu")]
+mod composited_frame;
 /// The ProseMirror-style desktop rich-text editor view. Part of the `desktop`
 /// feature; implements `rinch_editor_core::EditorView` over rinch-dom primitives.
 #[cfg(feature = "desktop")]
@@ -85,6 +89,10 @@ pub mod focus_registry;
 /// Built on every target (a web build accepts them in `App::fonts` and ignores
 /// them, #1769); only the desktop, Android and embed hosts register them.
 pub mod font;
+/// Host-owned GPU textures shown by embedded elements (#2082); the API is
+/// re-exported through [`embed`].
+#[cfg(any(feature = "gpu", feature = "embed"))]
+mod host_texture;
 /// [`Menu`](menu::Menu) / [`MenuItem`](menu::MenuItem) and the DOM menu bar.
 ///
 /// Deliberately **not** gated on `desktop`: the declaration types and the DOM
@@ -358,8 +366,8 @@ pub mod prelude {
     // Embed API for game engine integration
     #[cfg(any(feature = "gpu", feature = "embed"))]
     pub use crate::embed::{
-        GameViewport, ImeChange, ImeState, LayoutRect, RinchContext, RinchContextConfig,
-        RinchOverlayRenderer,
+        GameViewport, HostTexture, ImeChange, ImeState, LayoutRect, RinchContext,
+        RinchContextConfig, RinchOverlayRenderer,
     };
 
     // Focus lifecycle for custom keyboard-owning components (issue #147): a

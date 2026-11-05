@@ -474,7 +474,8 @@ impl PlatformWindow for WinitWindow {
 pub struct WgpuRenderer {
     pub(crate) renderer: VelloRenderer,
     pub(crate) render_texture: Texture,
-    pub(crate) surface: Surface<'static>,
+    /// `None` only for a renderer made without a window, in tests.
+    pub(crate) surface: Option<Surface<'static>>,
     pub(crate) surface_config: SurfaceConfiguration,
     pub(crate) device: Arc<Device>,
     pub(crate) queue: Arc<Queue>,
@@ -507,6 +508,10 @@ pub struct WgpuRenderer {
     /// `surface_config.present_mode` changed since the surface was last
     /// configured: [`Self::present`] configures it before acquiring a frame.
     reconfigure: bool,
+    /// Whether this window's presented frames go to the app's
+    /// `on_frame_composited` handlers (#2215): the app's window, not the
+    /// DevTools window.
+    pub(crate) hands_over_frames: bool,
 }
 
 /// A partial frame's target grows in steps of this many device pixels, so a
@@ -744,7 +749,7 @@ impl WgpuRenderer {
         Ok(Self {
             renderer,
             render_texture,
-            surface,
+            surface: Some(surface),
             surface_config,
             device,
             queue,
@@ -760,7 +765,64 @@ impl WgpuRenderer {
             partial_target: None,
             present_modes: caps.present_modes,
             reconfigure: false,
+            hands_over_frames: false,
         })
+    }
+
+    /// A renderer with no window, for tests that drive [`Self::compose`]
+    /// with a texture standing in for the swapchain's (#2215): `format` is
+    /// the surface format it pretends to have, opaque.
+    #[cfg(test)]
+    pub(crate) fn offscreen(
+        device: Arc<Device>,
+        queue: Arc<Queue>,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+    ) -> Self {
+        let renderer = VelloRenderer::new(
+            &device,
+            RendererOptions {
+                antialiasing_support: AaSupport::all(),
+                use_cpu: false,
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .expect("vello");
+        let render_texture =
+            Self::create_render_texture(&device, TextureFormat::Rgba8Unorm, width, height);
+        Self {
+            renderer,
+            render_texture,
+            surface: None,
+            surface_config: SurfaceConfiguration {
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
+                format,
+                width,
+                height,
+                present_mode: PresentMode::Fifo,
+                desired_maximum_frame_latency: 2,
+                alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+                view_formats: vec![],
+                color_space: wgpu::SurfaceColorSpace::Auto,
+            },
+            device,
+            queue,
+            layer_compositor: None,
+            layer_uploader: None,
+            composite_layers: Vec::new(),
+            surface_images: SurfaceImages::default(),
+            split: Default::default(),
+            split_compositor: None,
+            gpu_layers: Vec::new(),
+            composited_texture: None,
+            ui_state: UiTextureState::default(),
+            partial_target: None,
+            present_modes: vec![PresentMode::Fifo],
+            reconfigure: false,
+            hands_over_frames: false,
+        }
     }
 
     /// Turn vsync on or off for this window's surface (#2095), and say what
@@ -1118,15 +1180,18 @@ impl WgpuRenderer {
         use wgpu::CurrentSurfaceTexture as Current;
         // A new present mode (#2095), configured while this window holds no
         // frame of the surface's.
+        let Some(surface) = self.surface.as_ref() else {
+            return Ok(());
+        };
         if std::mem::take(&mut self.reconfigure) {
-            self.surface.configure(&self.device, &self.surface_config);
+            surface.configure(&self.device, &self.surface_config);
         }
-        let surface_texture = match self.surface.get_current_texture() {
+        let surface_texture = match surface.get_current_texture() {
             Current::Success(t) | Current::Suboptimal(t) => t,
             // Swapchain went stale (resize/DPI/occlusion/GPU reset) — recreate it and retry once.
             Current::Outdated | Current::Lost => {
-                self.surface.configure(&self.device, &self.surface_config);
-                match self.surface.get_current_texture() {
+                surface.configure(&self.device, &self.surface_config);
+                match surface.get_current_texture() {
                     Current::Success(t) | Current::Suboptimal(t) => t,
                     _ => return Ok(()), // try again on the next redraw
                 }
@@ -1140,6 +1205,25 @@ impl WgpuRenderer {
             }
         };
 
+        self.compose(&surface_texture.texture, base_color)?;
+        self.queue.present(surface_texture);
+        self.device
+            .poll(wgpu::PollType::Poll)
+            .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
+
+        Ok(())
+    }
+
+    /// Composite the frame into `target` (the swapchain texture, or a test's
+    /// stand-in for it), submit it, and hand the presented texture to the
+    /// app's `on_frame_composited` handlers (#2215). Everything
+    /// [`Self::present`] does between acquiring the surface texture and
+    /// presenting it.
+    pub(crate) fn compose(
+        &mut self,
+        target: &Texture,
+        base_color: Color,
+    ) -> Result<(), RenderError> {
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
@@ -1147,6 +1231,7 @@ impl WgpuRenderer {
             });
 
         let has_any_layers = !self.composite_layers.is_empty() || !self.gpu_layers.is_empty();
+        let split = !self.split.is_empty();
 
         if has_any_layers {
             // Composite layers + UI using the compositor pipeline.
@@ -1260,7 +1345,7 @@ impl WgpuRenderer {
                         aspect: wgpu::TextureAspect::All,
                     },
                     wgpu::TexelCopyTextureInfo {
-                        texture: &surface_texture.texture,
+                        texture: target,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
@@ -1272,9 +1357,7 @@ impl WgpuRenderer {
                     },
                 ),
                 PresentStep::Pass(alpha) => {
-                    let surface_view = surface_texture
-                        .texture
-                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    let surface_view = target.create_view(&wgpu::TextureViewDescriptor::default());
                     compositor.present(
                         &self.device,
                         &mut encoder,
@@ -1284,17 +1367,7 @@ impl WgpuRenderer {
                     );
                 }
             }
-
-            self.queue.submit(Some(encoder.finish()));
-            self.queue.present(surface_texture);
-            self.device
-                .poll(wgpu::PollType::Poll)
-                .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
-
-            return Ok(());
-        }
-
-        if !self.split.is_empty() {
+        } else if split {
             // Split surfaces (#1865): below (the UI texture), each surface and
             // its above slices, composited into the composited texture, which
             // is presented as the layered path presents it.
@@ -1343,7 +1416,7 @@ impl WgpuRenderer {
                         aspect: wgpu::TextureAspect::All,
                     },
                     wgpu::TexelCopyTextureInfo {
-                        texture: &surface_texture.texture,
+                        texture: target,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
@@ -1358,78 +1431,76 @@ impl WgpuRenderer {
                     let present = self.layer_compositor.get_or_insert_with(|| {
                         super::compositor::LayerCompositor::new(&self.device, format)
                     });
-                    let surface_view = surface_texture
-                        .texture
-                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    let surface_view = target.create_view(&wgpu::TextureViewDescriptor::default());
                     present.present(&self.device, &mut encoder, composited, &surface_view, alpha);
                 }
             }
-            self.queue.submit(Some(encoder.finish()));
-            self.queue.present(surface_texture);
-            self.device
-                .poll(wgpu::PollType::Poll)
-                .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
-            return Ok(());
-        }
+        } else {
+            // Standard path (no layers). The composited texture is no longer
+            // presented from: let it go (a window-sized texture), so nothing reads
+            // the last frame that had layers as the window's (#1799).
+            self.composited_texture = None;
 
-        // Standard path (no layers). The composited texture is no longer
-        // presented from: let it go (a window-sized texture), so nothing reads
-        // the last frame that had layers as the window's (#1799).
-        self.composited_texture = None;
-
-        // The render texture is always Rgba8Unorm
-        // (Vello's storage-texture requirement) and holds straight alpha; a
-        // raw copy is only legal when the surface matches and wants straight
-        // (or opaque) pixels. Otherwise one full-surface pass through the
-        // compositor converts the channel order and, for a premultiplied
-        // surface, the alpha (#1523).
-        let rgba_surface = self.surface_config.format == TextureFormat::Rgba8Unorm;
-        match present_step(self.surface_config.alpha_mode, false, rgba_surface) {
-            PresentStep::Copy => encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.render_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &surface_texture.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                Extent3d {
-                    width: self.surface_config.width,
-                    height: self.surface_config.height,
-                    depth_or_array_layers: 1,
-                },
-            ),
-            PresentStep::Pass(alpha) => {
-                let compositor = self.layer_compositor.get_or_insert_with(|| {
-                    super::compositor::LayerCompositor::new(
+            // The render texture is always Rgba8Unorm
+            // (Vello's storage-texture requirement) and holds straight alpha; a
+            // raw copy is only legal when the surface matches and wants straight
+            // (or opaque) pixels. Otherwise one full-surface pass through the
+            // compositor converts the channel order and, for a premultiplied
+            // surface, the alpha (#1523).
+            let rgba_surface = self.surface_config.format == TextureFormat::Rgba8Unorm;
+            match present_step(self.surface_config.alpha_mode, false, rgba_surface) {
+                PresentStep::Copy => encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.render_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: target,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    Extent3d {
+                        width: self.surface_config.width,
+                        height: self.surface_config.height,
+                        depth_or_array_layers: 1,
+                    },
+                ),
+                PresentStep::Pass(alpha) => {
+                    let compositor = self.layer_compositor.get_or_insert_with(|| {
+                        super::compositor::LayerCompositor::new(
+                            &self.device,
+                            self.surface_config.format,
+                        )
+                    });
+                    let surface_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+                    compositor.present(
                         &self.device,
-                        self.surface_config.format,
-                    )
-                });
-                let surface_view = surface_texture
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
-                compositor.present(
-                    &self.device,
-                    &mut encoder,
-                    &self.render_texture,
-                    &surface_view,
-                    alpha,
-                );
+                        &mut encoder,
+                        &self.render_texture,
+                        &surface_view,
+                        alpha,
+                    );
+                }
             }
         }
 
         self.queue.submit(Some(encoder.finish()));
-        self.queue.present(surface_texture);
-        self.device
-            .poll(wgpu::PollType::Poll)
-            .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
-
+        // The app's handlers get the texture the window is presented from,
+        // after the frame's commands and before the present (#2215). No copy
+        // is made for them: the UI texture is the whole frame (a partial
+        // frame updated it in place, #1718), and the composited one is what
+        // the layered and split paths present.
+        if self.hands_over_frames {
+            let (texture, alpha) = presented_frame(
+                self.composited_texture.as_ref(),
+                &self.render_texture,
+                has_any_layers || split,
+            );
+            crate::composited_frame::hand_over_frame(&self.device, &self.queue, texture, alpha);
+        }
         Ok(())
     }
 }
@@ -1440,7 +1511,9 @@ impl PlatformRenderer for WgpuRenderer {
         let height = height.max(1);
         self.surface_config.width = width;
         self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.surface_config);
+        }
         self.reconfigure = false;
         self.render_texture =
             Self::create_render_texture(&self.device, TextureFormat::Rgba8Unorm, width, height);
@@ -1556,9 +1629,21 @@ pub(crate) fn presented_texture<'a, T: ?Sized>(
     ui: &'a T,
     layers: bool,
 ) -> &'a T {
+    presented_frame(composited, ui, layers).0
+}
+
+/// [`presented_texture`] and how its colour carries alpha (#2215): the
+/// composited texture holds premultiplied colour, the UI texture Vello's
+/// straight colour. What `on_frame_composited` hands over.
+pub(crate) fn presented_frame<'a, T: ?Sized>(
+    composited: Option<&'a T>,
+    ui: &'a T,
+    layers: bool,
+) -> (&'a T, crate::composited_frame::FrameAlpha) {
+    use crate::composited_frame::FrameAlpha;
     match composited {
-        Some(c) if layers => c,
-        _ => ui,
+        Some(c) if layers => (c, FrameAlpha::Premultiplied),
+        _ => (ui, FrameAlpha::Straight),
     }
 }
 
@@ -1722,6 +1807,24 @@ mod presented_texture_tests {
         assert_eq!(*presented_texture(Some(&composited), &ui, false), "ui");
         assert_eq!(*presented_texture(None, &ui, false), "ui");
         assert_eq!(*presented_texture(None, &ui, true), "ui");
+    }
+
+    /// #2215: what `on_frame_composited` is handed is the presented texture,
+    /// with the alpha it holds: the composited texture's premultiplied
+    /// colour while there are layers, the UI texture's straight colour else.
+    #[test]
+    fn the_handed_over_frame_is_the_presented_texture_with_its_alpha() {
+        use super::presented_frame;
+        use crate::composited_frame::FrameAlpha::{Premultiplied, Straight};
+        let (composited, ui) = ("composited", "ui");
+        let got = |c: Option<&'static str>, layers| {
+            let (t, a) = presented_frame(c, ui, layers);
+            (t, a)
+        };
+        assert_eq!(got(Some(composited), true), ("composited", Premultiplied));
+        assert_eq!(got(Some(composited), false), ("ui", Straight));
+        assert_eq!(got(None, true), ("ui", Straight));
+        assert_eq!(got(None, false), ("ui", Straight));
     }
 }
 

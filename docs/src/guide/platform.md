@@ -225,6 +225,26 @@ others take their new value at once (#1742). Per layer:
   `content-box`. `background-clip` is not read, so the painting area is always
   the border box.
 - `background-color` is painted under the image.
+- `background-blend-mode` (#2221): every mode of the CSS list (`multiply`,
+  `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`,
+  `hard-light`, `soft-light`, `difference`, `exclusion`, `hue`, `saturation`,
+  `color`, `luminosity`; `normal` is the default). Each layer blends with the
+  layers and the colour under it, never with what is behind the element, as
+  in a browser.
+
+Tinting an image by a colour, the way a game UI multiplies an image by its
+tint, is an image layer multiplied by its `background-color` and masked by the
+same image, so its transparent parts stay clear:
+
+```rust
+div { style: "width: 64px; height: 64px; \
+              background-image: url(icon.png); background-size: 100% 100%; \
+              background-color: #ff8040; background-blend-mode: multiply; \
+              mask-image: url(icon.png); mask-size: 100% 100%;" }
+```
+
+`mix-blend-mode` and `isolation` are not read on desktop. On the web, the
+browser reads all of these itself.
 
 Gradients follow CSS Images (#1798): stop positions may be lengths or
 percentages, and a stop may carry two positions (`transparent 0 31px`);

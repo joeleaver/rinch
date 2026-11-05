@@ -67,6 +67,28 @@ it `SurfaceEvent::PointerMotion` while the lock is granted;
 `PointerLockHost` and forwards `PlatformEvent::PointerMotion`; mechanism and
 pins: `app-and-windows.md`, "Pointer lock and raw motion (#2092)".
 
+**Bound elements** (#2219). A surface whose element the app builds (a named
+surface's `data-viewport` element, an app canvas) gets one with
+`RenderSurfaceHandle::bind_element`. The handle's `element` field is an
+`Rc<SurfaceElement>` shared by the clones: `mounted` is the component's element,
+and its `Drop` (the last clone gone) forgets the binding and calls
+`pointer_lock::surface_dropped` (a `try_with` release, safe in TLS teardown).
+Note the registry holds a clone of every registered surface, so a named or
+mounted surface's handle "drops" only after `unregister_render_surface`, which
+releases anyway. Bindings live in the thread-local `BINDINGS` (surface id,
+element, a serial, a `Weak` of the event handler), not in the handle, so a
+scoped binding's `on_cleanup` captures only `(id, serial)` and undoes only its
+own binding, never a later one. `element()` is the binding, else `mounted`. A scoped re-bind of the same element whose binding is already `owned` returns early, so a handler or effect that binds on every run does not pile cleanups on its owner (a handler or effect runs with its component as owner, so its binding is scoped too).
+A binding change ends the surface's lock when `pointer_lock::held_element(id)`
+is some other element than the new one (and the other surface's, when the
+element is taken from it); `LockOnRebind::Move` calls `pointer_lock::request`
+on the new element instead, and releases only if that is refused. A lock's
+motion goes through `dispatch_locked_surface_event`: the registry like any
+surface event, else the binding's handler, so a handle that was never mounted
+still hears it. The element leaving the document is the existing element-lock
+path (`pointer_lock::prune` on desktop; the browser on the web). Pins:
+`app/surface_bind_element_2219_tests.rs`, `rinch-web/tests/surface_bind_element_2219.rs`.
+
 **A focused surface only swallows the keys it claims (issue #482).** `set_event_handler`
 still receives every `KeyDown`/`KeyUp` while the surface is focused — that delivery is
 unaffected. `set_key_handler(|key: &SurfaceKeyData| -> bool)` answers a separate, additive
@@ -361,6 +383,8 @@ build with `"gpu"`.
 | `GameViewport` | Component marking a transparent hole for game rendering. **Hittable by default** (#207): `wants_mouse` routes input by hit-testing the hole and walking up to `data-viewport`, so an unhittable hole makes the UI claim the mouse *everywhere*. `pointer-events: auto; background: transparent;` come from the UA stylesheet rule for `[data-viewport]` — not an inline style — so restyling the hole can't strip them, and a HUD root's inherited `pointer-events: none` can't reach it. Your own HUD controls under such a root still need `pointer-events: auto`. It also stamps **no** `data-viewport-ready`, and absence means ready, so its hole is unconditional (#186) — see the **Viewport holes** note under Rendering Backends. |
 | `LayoutRect` | `{x, y, width, height}` in logical pixels |
 
+**Host textures** (#2082, `crates/rinch/src/host_texture.rs`). `RinchContext::register_texture(_with)` stores the host's `wgpu::Texture` (a clone of the handle), its `HostTextureOptions` and its route (`Direct`: `Rgba8Unorm` + `COPY_SRC`; `Convert(view format)`: the other three 8-bit formats, or `Rgba8Unorm` without `COPY_SRC`, which need `TEXTURE_BINDING`) in `HostTextures`, by name, with a version bumped on every registration and `texture_changed`. Each Vello renderer keeps a `HostTextureImages` (the overlay renderer's own, or one the host keeps beside its Vello for `scene_with_textures`), which keeps **each context's registrations apart** (`per_context`, keyed by the context's `HostTextures::token`, an `Arc<()>` held as a `Weak`; a dropped context's images are unregistered at the next sync), so one renderer drawing several contexts in turn (#1976) registers nothing again. The context records which `HostTextureImages` its scene was painted with (`painted_with`, a per-value id) and repaints for another one, since the cached scene names that renderer's images. Before the paint, `RinchContext::install_host_textures` syncs it — a name whose texture has the same size, alpha and route keeps its `ImageData` (a swapped texture is pointed at with `vello::Renderer::override_image`, the same blob id, so the cached scene stays valid; a converted one is converted again into the same target), anything else is re-registered, a gone name unregistered, and any of those `mark_scene_dirty`s the context (one repaint); an `EveryRender` texture, or one whose version moved, is marked dirty for Vello's atlas (`mark_override_image_dirty`) or converted (a texel-for-texel `textureLoad` pass into an `Rgba8Unorm` texture that allows an `Rgba8UnormSrgb` view, written through that view for an sRGB source so the bytes survive the decode). The map goes to rinch-dom's `HOST_TEXTURE_IMAGES` (`paint::set_host_texture_images`) for the paint and is cleared after; `paint_host_texture` draws a `data-host-texture` element's image in its content box by its `object-fit` (initial `fill`), clipped by the inner radius, never split (#1865's `split_surface` is not offered it). `scene()` installs nothing, so it draws none. Cost with no host texture: two `is_empty` checks a render. Pins: `crates/rinch/tests/embed_host_texture_2082.rs` (5 `#[ignore]`d GPU tests: draw-into / swap / resize / `OnChange` / unregister with `paint_frames` counts; the converted formats and both alphas on four-quadrant textures sampled at eight points; refusals and the `scene_with_textures` route; `HostTexture`'s children over the texture; one overlay renderer taking turns on two contexts with a constant `host_texture_registrations`, and two Vello renderers taking turns on one context).
+
 **Typical game loop:**
 ```rust
 let mut ctx = RinchContext::new(config, my_ui);
@@ -461,6 +485,7 @@ the wrong one for input routing.
 
 **Source files:**
 - `crates/rinch/src/embed.rs` — `RinchContext`, `RinchOverlayRenderer`, `GameViewport`, `wants_keyboard()`
+- `crates/rinch/src/host_texture.rs` — host textures (#2082): `HostTexture`, `HostTextureImages`, the conversion pass
 - `crates/rinch/src/app/mod.rs` — `viewport_rect()`; `app/focus.rs` — `has_focused_input()`, `has_focused_contenteditable()`, `has_focused_node()`, `has_focused_key_consumer()`, `node_is_focus_visible()` (#548)
 - `crates/rinch/src/focus_registry.rs` — `wants_key_routing()`, the `FocusEntry::on_key` check behind `has_focused_key_consumer()`
 

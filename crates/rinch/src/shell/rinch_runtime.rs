@@ -1755,7 +1755,12 @@ impl RinchRuntime {
     /// it does now (#2095): the GPU renderer's surface says; the software
     /// renderer has no present mode to switch.
     #[cfg(feature = "gpu")]
-    fn renderer_started(&mut self, renderer: Option<WgpuRenderer>) {
+    fn renderer_started(&mut self, mut renderer: Option<WgpuRenderer>) {
+        if let Some(r) = renderer.as_mut() {
+            // The app's window hands its frames to `on_frame_composited`
+            // (#2215); the DevTools window's renderer is made elsewhere.
+            r.hands_over_frames = true;
+        }
         self.renderer = renderer;
         self.note_renderer_pacing();
     }
