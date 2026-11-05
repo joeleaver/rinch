@@ -163,7 +163,12 @@ fn background_blend_mode_is_computed_per_layer() {
     let plain = add(&mut doc, &format!("background-image: {CS}"));
     let modes: Vec<NodeId> = MODES
         .iter()
-        .map(|m| add(&mut doc, &format!("background-image: {CS}; background-blend-mode: {m}")))
+        .map(|m| {
+            add(
+                &mut doc,
+                &format!("background-image: {CS}; background-blend-mode: {m}"),
+            )
+        })
         .collect();
     let skipped = add(
         &mut doc,

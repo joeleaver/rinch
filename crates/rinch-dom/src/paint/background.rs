@@ -83,10 +83,10 @@ use peniko::Blob;
 use peniko::Fill;
 use peniko::kurbo::{Affine, Rect};
 
-use super::painter::{ImageSampling, PaintShape, Painter, RepeatTile};
+use super::painter::{BlendMode, ImageSampling, PaintShape, Painter, RepeatTile};
 use crate::computed_style::{
     BackgroundLayerGeometry, BackgroundOriginValue, BackgroundRepeatValue, BackgroundSizeValue,
-    BackgroundValue, BorderStyleValue, ComputedStyle, LengthPercentageAutoValue,
+    BackgroundValue, BlendModeValue, BorderStyleValue, ComputedStyle, LengthPercentageAutoValue,
     LengthPercentageValue, ObjectFitValue,
 };
 use crate::node::NodeTree;
@@ -108,6 +108,24 @@ pub(super) fn paint_background(
     shape: &PaintShape,
     transform: Affine,
 ) {
+    let has_image = !matches!(
+        cs.background,
+        BackgroundValue::None | BackgroundValue::Color(_)
+    );
+    // `background-blend-mode` (#2221): any layer that blends makes the
+    // background an isolated group, so its layers blend with the layers and
+    // the colour under them and never with what is behind the element
+    // (compositing-1 §8.1). A background where every entry is `normal` — all
+    // of them unless the property is written — opens nothing.
+    let blends = (has_image && cs.background_blend_mode != BlendModeValue::Normal)
+        || cs
+            .background_layers
+            .iter()
+            .any(|l| l.blend != BlendModeValue::Normal);
+    let group = PaintShape::Rect(shape.bounding_box());
+    if blends {
+        painter.push_isolated_layer(1.0, transform, &group);
+    }
     let colour = match &cs.background {
         BackgroundValue::None => None,
         BackgroundValue::Color(c) => Some(*c),
@@ -120,36 +138,35 @@ pub(super) fn paint_background(
             painter.fill_color(fill, transform, c, shape);
         }
     }
-    for layer in cs.background_layers.iter().rev() {
+    // One image layer, inside a layer of its blend mode when it has one.
+    let layer = |painter: &mut dyn Painter,
+                 image: &BackgroundValue,
+                 geometry: BackgroundLayerGeometry,
+                 blend: BlendModeValue| {
+        let mix = blend.mix();
+        if let Some(mode) = mix {
+            painter.push_layer(BlendMode::Mix(mode), 1.0, transform, &group);
+        }
         paint_layer(
-            painter,
-            tree,
-            cs,
-            &layer.image,
-            layer.geometry,
-            scale,
-            rect,
-            fill,
-            shape,
-            transform,
+            painter, tree, cs, image, geometry, scale, rect, fill, shape, transform,
         );
+        if mix.is_some() {
+            painter.pop_layer();
+        }
+    };
+    for l in cs.background_layers.iter().rev() {
+        layer(painter, &l.image, l.geometry, l.blend);
     }
-    if !matches!(
-        cs.background,
-        BackgroundValue::None | BackgroundValue::Color(_)
-    ) {
-        paint_layer(
+    if has_image {
+        layer(
             painter,
-            tree,
-            cs,
             &cs.background,
             cs.first_background_geometry(),
-            scale,
-            rect,
-            fill,
-            shape,
-            transform,
+            cs.background_blend_mode,
         );
+    }
+    if blends {
+        painter.pop_layer();
     }
 }
 
