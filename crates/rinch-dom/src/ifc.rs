@@ -3843,13 +3843,34 @@ fn pre_seams_needed(layout: &parley::Layout<Brush>, text: &str, unhung: &UnhungS
             && !in_ranges(&unhung.pre, r.start - 1)
             && !in_ranges(&unhung.nowrap, r.start - 1)
     });
+    // A wrapping space right before `break-spaces` ones: CSS breaks between
+    // them (the first hangs, the run starts the next line, Chrome 155), and
+    // UAX #14 has no break between two spaces, so parley ends the line after
+    // the first `break-spaces` space instead (parley 0.11.1 hung that one
+    // and broke there too, the hang pass then moving it).
+    let breaking_space = |b: usize| is_space(b) && in_ranges(&unhung.breaking, b);
+    let wrapping_space = |b: usize| {
+        is_space(b)
+            && !in_ranges(&unhung.breaking, b)
+            && !in_ranges(&unhung.pre, b)
+            && !in_ranges(&unhung.nowrap, b)
+    };
+    let after_wrapping_space = |e: usize| {
+        let mut s = e;
+        while s > 0 && breaking_space(s - 1) {
+            s -= 1;
+        }
+        s < e && s > 0 && wrapping_space(s - 1)
+    };
     seam || layout.lines().any(|line| {
         matches!(
             line.break_reason(),
             BreakReason::Regular | BreakReason::Emergency
         ) && {
             let e = line.text_range().end;
-            (e > 0 && pre_space(e - 1)) || (e < text.len() && in_ranges(&unhung.pre, e))
+            (e > 0 && pre_space(e - 1))
+                || (e < text.len() && in_ranges(&unhung.pre, e))
+                || after_wrapping_space(e)
         }
     })
 }
