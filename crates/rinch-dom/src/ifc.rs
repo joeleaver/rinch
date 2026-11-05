@@ -2927,9 +2927,20 @@ fn break_overflowing_spaces(
                 state.set_layout_max_advance(room);
                 state.set_line_max_advance(room);
                 if let Some(YieldData::LineBreak(d)) = skip_float_boxes(breaker) {
+                    // An opportunity `white-space` allows: parley breaks
+                    // after an atomic inline that starts a line whatever its
+                    // root's `white-space` (its wrap mode lags by an atom,
+                    // and a line starts as wrapping), which the seams of a
+                    // `nowrap` root rule out. #1238 corpus `p126`: `[B1][B2]
+                    // [B3]q-r<span nowrap>[B4]dddd <span break-spaces> mm…`
+                    // in a 55px `nowrap` root keeps `[B3]q-r` together.
+                    let allowed = || {
+                        line_end(units, cursor, d.metrics.advance)
+                            .is_none_or(|e| wrap_allowed_after(units, e))
+                    };
                     if d.reason == BreakReason::Emergency {
                         wraps_in_word = true;
-                    } else if d.metrics.advance <= room + TOL {
+                    } else if d.metrics.advance <= room + TOL && allowed() {
                         breaker.set_prior_line_width(max);
                         return Some((d.reason, d.metrics.advance));
                     }
