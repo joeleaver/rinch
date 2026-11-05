@@ -1268,6 +1268,11 @@ impl RinchDocument {
                 self.tree.nodes[node_id].computed_style = new_style.clone();
             }
 
+            // Lets the read-back skip `html_align_dx` in documents that
+            // never use the attribute (`NodeTree::html_align_seen`).
+            if self.tree.nodes[node_id].computed_style.html_align.is_some() {
+                self.tree.html_align_seen = true;
+            }
             self.note_table_host(node_id);
             self.note_cell_height(node_id, old_table_part, old_height);
 

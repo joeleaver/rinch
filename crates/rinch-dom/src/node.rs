@@ -3197,6 +3197,13 @@ pub struct NodeTree {
     /// and places them again once the lines exist — and does neither when
     /// this is `false`, which is every document without such a box.
     pub(crate) abs_inline_cb_seen: bool,
+    /// Whether any element has cascaded with an HTML `align` that aligns
+    /// blocks (`ComputedStyle::html_align`). Sticky: set by the cascade,
+    /// never cleared. `read_layout_results` asks `html_align_dx` about every
+    /// box only when it is set, so a document without the attribute does not
+    /// pay a parent lookup per box per layout (PR #2213 cost +1.4–3.6% on the
+    /// Perf benches without it).
+    pub(crate) html_align_seen: bool,
     /// Taffy layout tree.
     pub taffy: taffy::TaffyTree<NodeContext>,
     /// Reverse map from Taffy node ID to slab node ID.
@@ -3819,6 +3826,7 @@ impl NodeTree {
             abs_resolve_owed: false,
             abs_late_moves: false,
             abs_inline_cb_seen: false,
+            html_align_seen: false,
             taffy,
             taffy_map,
             viewport: crate::layout::Viewport::default(),
