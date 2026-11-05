@@ -580,8 +580,11 @@ pub struct RenderSurfaceHandle {
     pub(crate) pointer_events: std::rc::Rc<Cell<bool>>,
     /// The element the mounted `RenderSurface` component made (the `<div>` on
     /// desktop, the `<canvas>` on the web): what a pointer lock it asks for
-    /// is held by (#2092). `None` while unmounted.
-    pub(crate) element: std::rc::Rc<RefCell<Option<NodeHandle>>>,
+    /// is held by (#2092), unless the app bound one of its own
+    /// ([`bind_element`](RenderSurfaceHandle::bind_element), #2219, kept in
+    /// `BINDINGS`). Shared by the clones; the last one's drop ends the
+    /// surface's lock and binding.
+    pub(crate) element: std::rc::Rc<SurfaceElement>,
     /// Viewport name for hole-punch compositing.
     pub(crate) viewport_name: String,
     /// Whether this surface carries decoded **video** frames.
@@ -746,18 +749,88 @@ impl RenderSurfaceHandle {
     /// ends on [`exit_pointer_lock`](crate::window::exit_pointer_lock), on a
     /// window focus loss, on Escape, and when the surface unmounts.
     ///
+    /// The element is the one the app bound with
+    /// [`bind_element`](Self::bind_element), if it bound one, and else the
+    /// one the mounted `RenderSurface` component made.
+    ///
     /// [`PointerLockError::NotConnected`](crate::window::PointerLockError::NotConnected)
-    /// while the surface is not mounted.
+    /// while the surface has no element (no component mounted and none bound),
+    /// or its element is not in a document.
     pub fn request_pointer_lock(&self) -> Result<(), crate::window::PointerLockError> {
         let element = self
-            .element
-            .borrow()
-            .clone()
+            .element()
             .ok_or(crate::window::PointerLockError::NotConnected)?;
         crate::pointer_lock::request(
             crate::window::PointerLockTarget::Element(element),
             Some(self.id),
         )
+    }
+
+    /// The element this surface's pointer lock is held by: the one bound with
+    /// [`bind_element`](Self::bind_element), else the one the mounted
+    /// `RenderSurface` component made, else `None`.
+    pub fn element(&self) -> Option<NodeHandle> {
+        bound_element(self.id).or_else(|| self.element.mounted.borrow().clone())
+    }
+
+    /// Make `element`, which the app built, this surface's element (#2219):
+    /// for a surface whose element the app makes itself rather than through
+    /// the `RenderSurface` component — a named surface from
+    /// [`create_render_surface_with_name`] whose `data-viewport` element the
+    /// app builds, or a `<canvas>` the app made. The surface's
+    /// [`request_pointer_lock`](Self::request_pointer_lock) then locks to it,
+    /// and that lock is the surface's: its [`PointerMotion`](SurfaceEvent::PointerMotion)
+    /// reaches the surface's event handler, [`has_pointer_lock`](Self::has_pointer_lock)
+    /// answers for it, and it ends with the binding.
+    ///
+    /// The binding gives the surface an element and nothing else: it does
+    /// not mount the surface, route the element's pointer events to the
+    /// surface, or composite frames into it.
+    ///
+    /// With the default [`BindElementOptions`]:
+    ///
+    /// - **Made while a component renders, the binding is the component's**:
+    ///   it is undone when that component unmounts, and a lock it holds ends
+    ///   at once, as the `RenderSurface` component's does.
+    ///   ([`BindElementOptions::scoped`] turns this off.) Made where nothing
+    ///   owns it (an event handler), it lasts until
+    ///   [`unbind_element`](Self::unbind_element), another bind, or the last
+    ///   clone of the handle is dropped.
+    /// - **The element leaving the document** ends a lock held by it, as the
+    ///   browser's Pointer Lock API does (desktop: on the next event the app
+    ///   handles; web: the browser itself). The binding stays: put back in a
+    ///   document, the element can be locked again.
+    /// - **Re-binding** this surface to another element while it holds the
+    ///   lock (granted or pending) releases the lock, as an unmount does
+    ///   ([`LockOnRebind::Move`] asks for it again on the new element).
+    /// - **An element bound to another surface** is taken from it, as
+    ///   `appendChild` takes a node from its old parent: that surface is
+    ///   unbound and a lock it held on the element ends
+    ///   ([`IfBoundElsewhere::Refuse`] refuses instead).
+    ///
+    /// Binding takes precedence over the component's element while both
+    /// exist; [`unbind_element`](Self::unbind_element) goes back to it.
+    pub fn bind_element(&self, element: &NodeHandle) {
+        // The default options take an element bound elsewhere: no error.
+        let _ = self.bind_element_with(element, BindElementOptions::default());
+    }
+
+    /// [`bind_element`](Self::bind_element) with options. The error is
+    /// [`BindElementError::BoundElsewhere`], only under
+    /// [`IfBoundElsewhere::Refuse`]; then nothing changed.
+    pub fn bind_element_with(
+        &self,
+        element: &NodeHandle,
+        options: BindElementOptions,
+    ) -> Result<(), BindElementError> {
+        bind(self, element, options)
+    }
+
+    /// Undo [`bind_element`](Self::bind_element): the surface's element is the
+    /// mounted `RenderSurface` component's again, or none. A lock held by the
+    /// bound element ends. Nothing happens without a binding.
+    pub fn unbind_element(&self) {
+        unbind(self.id, None);
     }
 
     /// Whether this surface holds the pointer lock, granted or (in a browser)
@@ -1094,6 +1167,269 @@ impl GpuTextureRegistrar {
     }
 }
 
+// ── Bound elements (#2219) ───────────────────────────────────────────────────
+
+/// A handle's element slot, shared by its clones (see the `element` field).
+pub(crate) struct SurfaceElement {
+    id: usize,
+    /// The element the mounted `RenderSurface` component made.
+    pub(crate) mounted: RefCell<Option<NodeHandle>>,
+}
+
+impl Drop for SurfaceElement {
+    /// The handle's last clone is gone: nothing can ask for its surface's lock
+    /// or bind it again, so its binding and a lock it holds end.
+    fn drop(&mut self) {
+        let id = self.id;
+        let _ = BINDINGS.try_with(|b| {
+            if let Ok(mut b) = b.try_borrow_mut() {
+                b.retain(|binding| binding.surface != id);
+            }
+        });
+        crate::pointer_lock::surface_dropped(id);
+    }
+}
+
+type SurfaceEventHandler = std::rc::Rc<RefCell<Option<Box<dyn Fn(SurfaceEvent)>>>>;
+
+/// One [`RenderSurfaceHandle::bind_element`].
+struct Binding {
+    surface: usize,
+    element: NodeHandle,
+    /// Tells this binding from a later one of the same surface, for the
+    /// unmount of the component that made it.
+    serial: u64,
+    /// The surface's event handler, for the motion of a lock it holds while
+    /// it is not registered (a handle the `RenderSurface` component never
+    /// mounted). Weak: the binding keeps no handle alive.
+    handler: std::rc::Weak<RefCell<Option<Box<dyn Fn(SurfaceEvent)>>>>,
+}
+
+thread_local! {
+    static BINDINGS: RefCell<Vec<Binding>> = const { RefCell::new(Vec::new()) };
+    static NEXT_BINDING: Cell<u64> = const { Cell::new(1) };
+}
+
+/// What [`RenderSurfaceHandle::bind_element_with`] does with an element
+/// already bound to another surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum IfBoundElsewhere {
+    /// Take it: the other surface is unbound, and a lock it held on the
+    /// element ends (or, under [`LockOnRebind::Move`], is asked for again as
+    /// this surface's). The default.
+    #[default]
+    Take,
+    /// Refuse: [`BindElementError::BoundElsewhere`], and nothing changes.
+    Refuse,
+}
+
+/// What [`RenderSurfaceHandle::bind_element_with`] does with a pointer lock
+/// the surface (or, when it takes the element, the surface it takes it from)
+/// holds on an element other than the new one's holder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum LockOnRebind {
+    /// The lock ends, as when the surface unmounts. The default.
+    #[default]
+    Release,
+    /// The lock is asked for again on the new element, held by this surface,
+    /// without being released first. The desktop grants it at once. A browser
+    /// moves a granted lock to the new element (without a new user gesture,
+    /// as the Pointer Lock API moves one between elements of a locked
+    /// document); if it refuses, the old lock is given back and none is held.
+    /// A request refused outright ends the old lock.
+    Move,
+}
+
+/// Options for [`RenderSurfaceHandle::bind_element_with`]; the defaults are
+/// [`bind_element`](RenderSurfaceHandle::bind_element)'s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BindElementOptions {
+    /// An element bound to another surface: [`IfBoundElsewhere`].
+    pub if_bound_elsewhere: IfBoundElsewhere,
+    /// A lock held while the binding changes: [`LockOnRebind`].
+    pub lock_on_rebind: LockOnRebind,
+    /// Whether a binding made while a component renders is undone when that
+    /// component unmounts (`true`, the default). `false`: it lasts until
+    /// unbound, re-bound, or the handle's last clone drops, wherever it was
+    /// made.
+    pub scoped: bool,
+}
+
+impl Default for BindElementOptions {
+    fn default() -> Self {
+        Self {
+            if_bound_elsewhere: IfBoundElsewhere::Take,
+            lock_on_rebind: LockOnRebind::Release,
+            scoped: true,
+        }
+    }
+}
+
+impl BindElementOptions {
+    /// The defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set [`if_bound_elsewhere`](Self::if_bound_elsewhere).
+    pub fn if_bound_elsewhere(mut self, choice: IfBoundElsewhere) -> Self {
+        self.if_bound_elsewhere = choice;
+        self
+    }
+
+    /// Set [`lock_on_rebind`](Self::lock_on_rebind).
+    pub fn lock_on_rebind(mut self, choice: LockOnRebind) -> Self {
+        self.lock_on_rebind = choice;
+        self
+    }
+
+    /// Set [`scoped`](Self::scoped).
+    pub fn scoped(mut self, scoped: bool) -> Self {
+        self.scoped = scoped;
+        self
+    }
+}
+
+/// Why [`RenderSurfaceHandle::bind_element_with`] refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BindElementError {
+    /// The element is bound to another surface (its [`id`](RenderSurfaceHandle::id)),
+    /// and the options said [`IfBoundElsewhere::Refuse`].
+    BoundElsewhere {
+        /// The surface it is bound to.
+        surface: usize,
+    },
+}
+
+impl std::fmt::Display for BindElementError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BindElementError::BoundElsewhere { surface } => {
+                write!(f, "the element is bound to render surface {surface}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BindElementError {}
+
+fn same_node(a: &NodeHandle, b: &NodeHandle) -> bool {
+    a.node_id() == b.node_id() && a.doc_key() == b.doc_key()
+}
+
+fn bound_element(id: usize) -> Option<NodeHandle> {
+    BINDINGS.with(|b| {
+        b.borrow()
+            .iter()
+            .find(|binding| binding.surface == id)
+            .map(|binding| binding.element.clone())
+    })
+}
+
+/// Whether `surface`'s lock is held by an element other than `keep`: what a
+/// binding change ends (or moves).
+fn lock_elsewhere(surface: usize, keep: &NodeHandle) -> bool {
+    crate::pointer_lock::held_element(surface).is_some_and(|held| !same_node(&held, keep))
+}
+
+fn bind(
+    handle: &RenderSurfaceHandle,
+    element: &NodeHandle,
+    options: BindElementOptions,
+) -> Result<(), BindElementError> {
+    let id = handle.id;
+    let other = BINDINGS.with(|b| {
+        b.borrow()
+            .iter()
+            .find(|binding| binding.surface != id && same_node(&binding.element, element))
+            .map(|binding| binding.surface)
+    });
+    if let Some(other) = other
+        && options.if_bound_elsewhere == IfBoundElsewhere::Refuse
+    {
+        return Err(BindElementError::BoundElsewhere { surface: other });
+    }
+    // A lock that the change takes from its element (this surface's, held by
+    // its old element) or from its surface (the other's, on this element).
+    let ours = lock_elsewhere(id, element)
+        || other.is_some_and(|other| {
+            crate::pointer_lock::held_element(other).is_some_and(|held| same_node(&held, element))
+        });
+    let serial = NEXT_BINDING.with(|n| {
+        let serial = n.get();
+        n.set(serial + 1);
+        serial
+    });
+    BINDINGS.with(|b| {
+        let mut b = b.borrow_mut();
+        b.retain(|binding| binding.surface != id && Some(binding.surface) != other);
+        b.push(Binding {
+            surface: id,
+            element: element.clone(),
+            serial,
+            handler: std::rc::Rc::downgrade(&handle.event_handler),
+        });
+    });
+    if ours {
+        let moved = options.lock_on_rebind == LockOnRebind::Move
+            && crate::pointer_lock::request(
+                crate::window::PointerLockTarget::Element(element.clone()),
+                Some(id),
+            )
+            .is_ok();
+        if !moved {
+            crate::pointer_lock::release();
+        }
+    }
+    if options.scoped {
+        let _ = rinch_core::reactive::on_cleanup(move || unbind(id, Some(serial)));
+    }
+    Ok(())
+}
+
+/// Undo `surface`'s binding (only binding `serial`, if given); a lock its
+/// element holds for it ends.
+fn unbind(surface: usize, serial: Option<u64>) {
+    let removed = BINDINGS.with(|b| {
+        let mut b = b.borrow_mut();
+        let at = b.iter().position(|binding| {
+            binding.surface == surface && serial.is_none_or(|s| s == binding.serial)
+        })?;
+        Some(b.remove(at).element)
+    });
+    if let Some(element) = removed
+        && crate::pointer_lock::held_element(surface).is_some_and(|held| same_node(&held, &element))
+    {
+        crate::pointer_lock::release();
+    }
+}
+
+/// Deliver `event` (a locked surface's motion) to surface `id`: through the
+/// registry like any surface event, or, for a surface that is not registered
+/// but has an element bound, to its handler directly.
+pub(crate) fn dispatch_locked_surface_event(id: usize, event: SurfaceEvent) {
+    let registered = SURFACE_REGISTRY.with(|reg| reg.borrow().iter().any(|s| s.id == id));
+    if registered {
+        dispatch_surface_event(id, event);
+        return;
+    }
+    let handler: Option<SurfaceEventHandler> = BINDINGS.with(|b| {
+        b.borrow()
+            .iter()
+            .find(|binding| binding.surface == id)
+            .and_then(|binding| binding.handler.upgrade())
+    });
+    if let Some(handler) = handler
+        && let Some(ref handler) = *handler.borrow()
+    {
+        handler(event);
+    }
+}
+
 impl std::fmt::Debug for RenderSurfaceHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RenderSurfaceHandle")
@@ -1149,7 +1485,10 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
         event_handler: std::rc::Rc::new(RefCell::new(None)),
         key_handler: std::rc::Rc::new(RefCell::new(None)),
         pointer_events: std::rc::Rc::new(Cell::new(false)),
-        element: std::rc::Rc::new(RefCell::new(None)),
+        element: std::rc::Rc::new(SurfaceElement {
+            id,
+            mounted: RefCell::new(None),
+        }),
         viewport_name,
         is_video,
         layout_size: Arc::new(Mutex::new((0, 0))),
@@ -2618,7 +2957,7 @@ impl Component for RenderSurface {
             // listeners so nothing leaks.
             let surface = surface.clone();
             scope.on_cleanup(move || {
-                surface.element.borrow_mut().take();
+                surface.element.mounted.borrow_mut().take();
                 unregister_render_surface(surface.id);
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                 teardown_web_surface(&surface);
@@ -2636,7 +2975,7 @@ impl Component for RenderSurface {
             div.set_attribute("style", "width: 100%; height: 100%;");
 
             if let Some(ref surface) = self.surface {
-                *surface.element.borrow_mut() = Some(div.clone());
+                *surface.element.mounted.borrow_mut() = Some(div.clone());
             }
             div
         }
@@ -2657,7 +2996,7 @@ impl Component for RenderSurface {
                 canvas.set_attribute("data-render-surface", &surface.id.to_string());
                 // Defer canvas context acquisition to after DOM mount
                 schedule_canvas_init(surface.clone());
-                *surface.element.borrow_mut() = Some(canvas.clone());
+                *surface.element.mounted.borrow_mut() = Some(canvas.clone());
             }
 
             canvas
