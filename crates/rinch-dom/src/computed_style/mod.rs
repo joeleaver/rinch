@@ -169,6 +169,11 @@ pub struct ComputedStyle {
     pub background_repeat_x: BackgroundRepeatValue,
     pub background_repeat_y: BackgroundRepeatValue,
     pub background_origin: BackgroundOriginValue,
+    /// The first layer's `background-blend-mode` (#2221): how it blends with
+    /// the layers and the colour under it. The other layers carry theirs on
+    /// their [`BackgroundLayer`]. Any entry other than `normal` paints the
+    /// background as an isolated group (`paint::background`).
+    pub background_blend_mode: BlendModeValue,
     /// The `background-image` layers below the first, top to bottom (#1142).
     /// The first layer is `background` and the six fields above, which is
     /// what a transition or animation of `background-position` moves; these
@@ -415,6 +420,7 @@ impl Default for ComputedStyle {
             background_repeat_x: BackgroundRepeatValue::Repeat,
             background_repeat_y: BackgroundRepeatValue::Repeat,
             background_origin: BackgroundOriginValue::PaddingBox,
+            background_blend_mode: BlendModeValue::Normal,
             background_layers: Vec::new(),
             mask_image: Vec::new(),
             color: None,
