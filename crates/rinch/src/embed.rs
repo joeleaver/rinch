@@ -462,8 +462,11 @@ impl RinchContext {
     /// [`Self::scene`] with the context's host textures (#2082) drawn by
     /// their `data-host-texture` elements, for a host that renders the scene
     /// with its own Vello `renderer`: `images` holds what that renderer has
-    /// registered of them (keep one beside each renderer, and pass the same
-    /// one every frame). The textures due a copy are converted or marked for
+    /// registered of them (keep one beside each renderer and pass it every
+    /// frame; it keeps each context's registrations apart, so one renderer
+    /// may draw several contexts in turn). Two renderers taking turns on one
+    /// context are drawn correctly, at the price of painting the scene again
+    /// at each change of renderer: its images are each renderer's own. The textures due a copy are converted or marked for
     /// Vello to copy again here, so render the scene with `renderer` before
     /// the next call. [`RinchOverlayRenderer::render`] does this itself.
     pub fn scene_with_textures(
@@ -492,13 +495,16 @@ impl RinchContext {
         images: &mut HostTextureImages,
     ) -> bool {
         if self.host_textures.is_empty() {
-            if images.clear(renderer) {
+            if images.clear(renderer, &self.host_textures) {
                 self.app.mark_scene_dirty();
             }
             return false;
         }
         let (map, changed) = images.sync(device, queue, renderer, &self.host_textures);
-        if changed {
+        // A scene painted with another renderer's images names images this
+        // renderer has not registered: paint it again for this one.
+        let other = self.host_textures.paint_with(images);
+        if changed || other {
             self.app.mark_scene_dirty();
         }
         rinch_dom::paint::set_host_texture_images(Some(map));

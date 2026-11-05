@@ -30,6 +30,8 @@
 //! bytes as sRGB-encoded colour, as it does every image's.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use vello::peniko::{ImageAlphaType, ImageData};
@@ -185,6 +187,12 @@ struct Entry {
 pub(crate) struct HostTextures {
     by_name: HashMap<String, Entry>,
     next_version: u64,
+    /// Names this context to a [`HostTextureImages`], which keeps each
+    /// context's registrations apart, and tells it when the context is gone.
+    token: Arc<()>,
+    /// The [`HostTextureImages`] whose images the context's scene was last
+    /// painted with (`0`: none): another one's scene must be painted again.
+    painted_with: u64,
 }
 
 impl HostTextures {
@@ -221,6 +229,14 @@ impl HostTextures {
     pub(crate) fn is_empty(&self) -> bool {
         self.by_name.is_empty()
     }
+
+    /// Note that the scene is about to be painted with `images`' images:
+    /// `true` when they are not the ones it was painted with last, so the
+    /// cached scene names another renderer's images and must be painted
+    /// again.
+    pub(crate) fn paint_with(&mut self, images: &HostTextureImages) -> bool {
+        std::mem::replace(&mut self.painted_with, images.id) != images.id
+    }
 }
 
 /// One texture registered with a renderer.
@@ -237,23 +253,43 @@ struct Registered {
     version: u64,
 }
 
-/// What a Vello renderer holds of a context's host textures: the image each
-/// name is drawn as, registered with that renderer. One per
-/// `vello::Renderer`. [`RinchOverlayRenderer`](crate::embed::RinchOverlayRenderer)
+/// What a Vello renderer holds of its contexts' host textures: the image each
+/// name is drawn as, registered with that renderer, kept per context (one
+/// renderer may draw several contexts in turn; a dropped context's go at the
+/// next sync). One per `vello::Renderer`. [`RinchOverlayRenderer`](crate::embed::RinchOverlayRenderer)
 /// keeps one; a host that renders [`RinchContext::scene_with_textures`](crate::embed::RinchContext::scene_with_textures)
 /// with its own renderer keeps one beside it.
-#[derive(Default)]
 pub struct HostTextureImages {
+    /// The registrations of the context being synced, between `enter` and
+    /// `leave`; empty otherwise.
     by_name: HashMap<String, Registered>,
+    /// Every other context's registrations, by its token: a renderer that
+    /// draws several contexts in turn (#1976) keeps each one's.
+    per_context: Vec<(Weak<()>, HashMap<String, Registered>)>,
     converter: Option<Converter>,
     /// How many textures were registered with the renderer, ever.
     registrations: u64,
+    /// Unique per value: what [`HostTextures::paint_with`] compares.
+    id: u64,
+}
+
+impl Default for HostTextureImages {
+    fn default() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self {
+            by_name: HashMap::new(),
+            per_context: Vec::new(),
+            converter: None,
+            registrations: 0,
+            id: NEXT.fetch_add(1, Ordering::Relaxed),
+        }
+    }
 }
 
 impl std::fmt::Debug for HostTextureImages {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HostTextureImages")
-            .field("names", &self.by_name.keys().collect::<Vec<_>>())
+            .field("contexts", &self.per_context.len())
             .finish()
     }
 }
@@ -282,6 +318,7 @@ impl HostTextureImages {
         renderer: &mut vello::Renderer,
         textures: &HostTextures,
     ) -> (HashMap<String, ImageData>, bool) {
+        self.enter(renderer, textures);
         let mut changed = false;
         self.by_name.retain(|name, reg| {
             let keep = textures.by_name.contains_key(name);
@@ -376,12 +413,48 @@ impl HostTextureImages {
             .iter()
             .map(|(name, reg)| (name.clone(), reg.image.clone()))
             .collect();
+        self.leave(textures);
         (images, changed)
+    }
+
+    /// Make `textures`' context's registrations the current ones, after
+    /// unregistering those of every context that has been dropped.
+    fn enter(&mut self, renderer: &mut vello::Renderer, textures: &HostTextures) {
+        self.per_context.retain_mut(|(context, regs)| {
+            let alive = context.strong_count() > 0;
+            if !alive {
+                for (_, reg) in regs.drain() {
+                    renderer.unregister_texture(reg.image);
+                }
+            }
+            alive
+        });
+        let key = Arc::as_ptr(&textures.token);
+        self.by_name = self
+            .per_context
+            .iter()
+            .position(|(context, _)| std::ptr::eq(context.as_ptr(), key))
+            .map(|i| self.per_context.swap_remove(i).1)
+            .unwrap_or_default();
+    }
+
+    /// Put the current registrations back under their context.
+    fn leave(&mut self, textures: &HostTextures) {
+        let regs = std::mem::take(&mut self.by_name);
+        if !regs.is_empty() {
+            self.per_context
+                .push((Arc::downgrade(&textures.token), regs));
+        }
     }
 
     /// Unregister every texture from `renderer`, for a context that has
     /// none any more.
-    pub(crate) fn clear(&mut self, renderer: &mut vello::Renderer) -> bool {
+    pub(crate) fn clear(
+        &mut self,
+        renderer: &mut vello::Renderer,
+        textures: &HostTextures,
+    ) -> bool {
+        self.enter(renderer, textures);
         let had = !self.by_name.is_empty();
         for (_, reg) in self.by_name.drain() {
             renderer.unregister_texture(reg.image);
@@ -585,8 +658,12 @@ pub struct HostTexture {
 }
 
 impl rinch_core::Component for HostTexture {
-    fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
-        host_texture(scope, &self.name)
+    fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+        let div = host_texture(scope, &self.name);
+        for child in children {
+            div.append_child(child);
+        }
+        div
     }
 }
 

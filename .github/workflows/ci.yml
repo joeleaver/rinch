@@ -361,8 +361,8 @@ jobs:
           # the split oracles (`gpu_split_*`, #1865: 25 compositor, 34 runtime,
           # 3 pages incl. #2103's), #1866's GameViewport base layer (7), #2071's bump overflow (5),
           # #2085's optional device features (1), #2137's hidden-subtree skip (4),
-          # and #2215's composited frame handed to the app (1).
-          run 104 -p rinch --features gpu,video --lib -- \
+          # and #2215's composited frame handed to the app (2).
+          run 105 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --test-threads=1
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves),
@@ -371,8 +371,9 @@ jobs:
             --ignored --test-threads=1
           # #2082's host textures on the embed overlay: a texture's life (draw
           # into, swap, resize, OnChange, unregister), the converted formats and
-          # both alphas, refusals and the `scene_with_textures` route.
-          run 3 -p rinch --features gpu,video --test embed_host_texture_2082 -- \
+          # both alphas, refusals and the `scene_with_textures` route, children,
+          # and renderers or contexts taking turns.
+          run 5 -p rinch --features gpu,video --test embed_host_texture_2082 -- \
             --ignored --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \

@@ -1272,7 +1272,8 @@ the tree is not rebuilt.
   stretched, by default, as for a `<canvas>` or `<video>`; `contain`, `cover`,
   `none` and `scale-down` work too), inside its border, rounded by its
   `border-radius`, clipped and transformed as the element is, under its
-  children. Its background shows where the texture does not reach, and while
+  children (`HostTexture { name: "cam", div { class: "badge", "LIVE" } }`
+  draws the badge over the picture, as a canvas or video with overlays would). Its background shows where the texture does not reach, and while
   nothing is registered under the name.
 - **Every frame.** Draw into the texture before `render`, and that render shows
   it: a texture is copied again at every render by default. A picture that
@@ -1302,7 +1303,12 @@ the tree is not rebuilt.
   that renders the scene with its own Vello calls
   `ctx.scene_with_textures(&device, &queue, &mut vello, &mut images)` instead of
   `ctx.scene()`, keeping one `HostTextureImages` beside that Vello renderer;
-  plain `scene()` draws none.
+  plain `scene()` draws none. One renderer (an overlay renderer or a Vello
+  with its `HostTextureImages`) may draw several contexts in turn: it keeps
+  each context's textures registered, and drops a context's once that context
+  is dropped. Two renderers taking turns on one context also work, but the
+  scene is painted again at each change, since each renderer's images are its
+  own.
 - **Event-driven hosts.** The context cannot see the texture change. A host that
   renders only when `needs_update()` says so renders after it draws into a
   texture.
