@@ -268,15 +268,15 @@ fn text_extent(
     let mut r: Option<Rect> = None;
     let mut size = 0.0_f32;
     let mut add = |rect: Rect| r = Some(r.map_or(rect, |r| r.union(rect)));
-    for (index, line) in text.layout().lines().enumerate() {
-        // A shadow group's lines only (#1048): a span's mask covers its text.
-        if mask.is_some_and(|m| !m.may_show(line.text_range())) {
-            continue;
-        }
-        let m = line.metrics();
-        let top = m.block_min_coord.min(m.content_block_min_coord) as f64;
-        let bottom = m.block_max_coord.max(m.content_block_max_coord) as f64;
-        if mask.is_none() && valign.is_none() {
+    let line_box = |m: &parley::layout::LineMetrics| {
+        (
+            m.block_min_coord.min(m.content_block_min_coord) as f64,
+            m.block_max_coord.max(m.content_block_max_coord) as f64,
+        )
+    };
+    if mask.is_none() && valign.is_none() {
+        for line in text.layout().lines() {
+            let (top, bottom) = line_box(line.metrics());
             // All of the line: its glyph runs' extent.
             let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);
             for item in line.items() {
@@ -289,47 +289,57 @@ fn text_extent(
             if x0 <= x1 {
                 add(Rect::new(x0 as f64, top, x1 as f64, bottom));
             }
-            continue;
         }
-        for run in line.runs() {
-            let range = run.text_range();
-            if mask.is_some_and(|m| !m.may_show(range.clone())) {
-                continue;
-            }
-            let whole = valign.is_none() && mask.is_none_or(|m| m.shows_all(range.clone()));
-            let Some(mut x) = run
-                .visual_clusters()
-                .next()
-                .and_then(|c| crate::float_wrap::cluster_x(&c))
-            else {
-                continue;
-            };
-            let mut shown = false;
-            if whole {
-                add(Rect::new(x as f64, top, (x + run.advance()) as f64, bottom));
-                shown = true;
-            } else {
-                let limit = mask.and_then(|m| m.limit_for_line(index));
-                for cluster in super::text::shown_clusters(&run, limit) {
-                    let byte = cluster.text_range().start;
-                    let advance = cluster.advance();
-                    if mask.is_none_or(|m| !m.hidden_at(byte)) {
-                        let shift = valign.map_or(0.0, |l| l.vertical_align_shift_at(byte)) as f64;
+    } else {
+        // A shadow group's lines only (#1048): a span's mask covers its
+        // text, and `for_each_line` skips the lines it cannot show. Each
+        // glyph is looked up by its cluster's byte (`glyph_bytes`, one walk
+        // of the line shared by every pass); what an ellipsis cut hides was
+        // never collected.
+        text.for_each_line(mask, |line| {
+            let (top, bottom) = line_box(line.line.metrics());
+            let bytes = line.glyph_bytes();
+            for (glyph_run, glyphs, range) in line.glyph_runs_at() {
+                let run = glyph_run.run();
+                let text_range = run.text_range();
+                if mask.is_some_and(|m| !m.may_show(text_range.clone())) {
+                    continue;
+                }
+                let x0 = glyph_run.offset();
+                let whole = valign.is_none() && mask.is_none_or(|m| m.shows_all(text_range));
+                let mut shown = false;
+                if whole {
+                    if !glyphs.is_empty() {
                         add(Rect::new(
-                            x as f64,
-                            top + shift,
-                            (x + advance) as f64,
-                            bottom + shift,
+                            x0 as f64,
+                            top,
+                            (x0 + glyph_run.advance()) as f64,
+                            bottom,
                         ));
                         shown = true;
                     }
-                    x += advance;
+                } else {
+                    let mut x = x0;
+                    for (glyph, &byte) in glyphs.iter().zip(&bytes[range]) {
+                        if mask.is_none_or(|m| !m.hidden_at(byte)) {
+                            let shift =
+                                valign.map_or(0.0, |l| l.vertical_align_shift_at(byte)) as f64;
+                            add(Rect::new(
+                                x as f64,
+                                top + shift,
+                                (x + glyph.advance) as f64,
+                                bottom + shift,
+                            ));
+                            shown = true;
+                        }
+                        x += glyph.advance;
+                    }
+                }
+                if shown {
+                    size = size.max(run.font_size());
                 }
             }
-            if shown {
-                size = size.max(run.font_size());
-            }
-        }
+        });
     }
     // An italic's overhang, a tall accent, a wavy underline below the
     // descent: a quarter of the largest font size.

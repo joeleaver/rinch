@@ -1462,12 +1462,6 @@ impl TextMask {
         matches!(self.ranges.get(i), Some(&(s, e, false)) if s <= range.start && range.end <= e)
     }
 
-    /// The x past which everything on line `line` is hidden by an ellipsis
-    /// cut, if any.
-    pub(super) fn limit_for_line(&self, line: usize) -> Option<f32> {
-        limit_for_line(&self.limits, line)
-    }
-
     pub(super) fn hidden_at(&self, byte: usize) -> bool {
         let i = self.ranges.partition_point(|&(_, e, _)| e <= byte);
         match self.ranges.get(i) {
