@@ -1256,6 +1256,77 @@ impl ImageRenderingValue {
     }
 }
 
+/// A `<blend-mode>` (compositing-1 §9.2): one entry of
+/// `background-blend-mode` (#2221). `Normal` is source-over; every other
+/// keyword is a [`MixMode`](crate::paint::painter::MixMode) the painters
+/// blend with ([`Self::mix`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum BlendModeValue {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+impl BlendModeValue {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Multiply => "multiply",
+            Self::Screen => "screen",
+            Self::Overlay => "overlay",
+            Self::Darken => "darken",
+            Self::Lighten => "lighten",
+            Self::ColorDodge => "color-dodge",
+            Self::ColorBurn => "color-burn",
+            Self::HardLight => "hard-light",
+            Self::SoftLight => "soft-light",
+            Self::Difference => "difference",
+            Self::Exclusion => "exclusion",
+            Self::Hue => "hue",
+            Self::Saturation => "saturation",
+            Self::Color => "color",
+            Self::Luminosity => "luminosity",
+        }
+    }
+
+    /// The mode the painters blend with, `None` for `normal`.
+    pub fn mix(self) -> Option<crate::paint::painter::MixMode> {
+        use crate::paint::painter::MixMode as X;
+        Some(match self {
+            Self::Normal => return None,
+            Self::Multiply => X::Multiply,
+            Self::Screen => X::Screen,
+            Self::Overlay => X::Overlay,
+            Self::Darken => X::Darken,
+            Self::Lighten => X::Lighten,
+            Self::ColorDodge => X::ColorDodge,
+            Self::ColorBurn => X::ColorBurn,
+            Self::HardLight => X::HardLight,
+            Self::SoftLight => X::SoftLight,
+            Self::Difference => X::Difference,
+            Self::Exclusion => X::Exclusion,
+            Self::Hue => X::Hue,
+            Self::Saturation => X::Saturation,
+            Self::Color => X::Color,
+            Self::Luminosity => X::Luminosity,
+        })
+    }
+}
+
 /// CSS `aspect-ratio` (css-sizing-4 §2, #1286): `auto`, `<ratio>`, or
 /// `auto <ratio>`. `ratio` is width / height, `None` for `auto` alone and for
 /// a degenerate ratio (`0 / 1`, `1 / 0`), which behaves as `auto`.
@@ -1441,6 +1512,10 @@ pub struct BackgroundLayer {
     /// `Color`: a layer with nothing rinch can paint is not kept.
     pub image: BackgroundValue,
     pub geometry: BackgroundLayerGeometry,
+    /// Its `background-blend-mode` entry (#2221): how it blends with the
+    /// layers and the colour under it. Always `Normal` for a `mask-image`
+    /// layer.
+    pub blend: BlendModeValue,
 }
 
 /// A gradient color stop. `#[non_exhaustive]`, as the gradient variants

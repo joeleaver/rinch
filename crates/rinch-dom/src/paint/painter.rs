@@ -145,6 +145,34 @@ pub enum BlendMode {
     /// reaches it, so the compositor's layer under the UI shows there and
     /// nothing painted before it does (#1866). Never elided at opacity 1.
     DestinationOut,
+    /// Blend the layer with what is beneath it by a compositing-1 blend mode,
+    /// then composite source-over (#2221): `background-blend-mode`. Both
+    /// backends implement every mode (Vello's `peniko::Mix`, tiny-skia's
+    /// `BlendMode`), in sRGB-encoded values as CSS does. Reads its backdrop,
+    /// so it is never elided at opacity 1; open it inside an isolated layer
+    /// ([`Painter::push_isolated_layer`]) to bound what it blends with.
+    Mix(MixMode),
+}
+
+/// The compositing-1 blend modes other than `normal` (§9.2): the separable
+/// ones and the four non-separable ones (#2221).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MixMode {
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
 }
 
 // ── Image data ──────────────────────────────────────────────────────────────

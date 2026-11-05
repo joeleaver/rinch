@@ -542,8 +542,31 @@ pub(crate) fn push_layer_into(
         BlendMode::DestinationOut => {
             peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestOut)
         }
+        BlendMode::Mix(mode) => peniko::BlendMode::from(peniko_mix(mode)),
     };
     dispatch_push_layer!(scene, Fill::NonZero, mix, opacity, transform, bounds);
+}
+
+/// Vello's mix for a compositing-1 blend mode (#2221).
+fn peniko_mix(mode: super::painter::MixMode) -> peniko::Mix {
+    use super::painter::MixMode as M;
+    match mode {
+        M::Multiply => peniko::Mix::Multiply,
+        M::Screen => peniko::Mix::Screen,
+        M::Overlay => peniko::Mix::Overlay,
+        M::Darken => peniko::Mix::Darken,
+        M::Lighten => peniko::Mix::Lighten,
+        M::ColorDodge => peniko::Mix::ColorDodge,
+        M::ColorBurn => peniko::Mix::ColorBurn,
+        M::HardLight => peniko::Mix::HardLight,
+        M::SoftLight => peniko::Mix::SoftLight,
+        M::Difference => peniko::Mix::Difference,
+        M::Exclusion => peniko::Mix::Exclusion,
+        M::Hue => peniko::Mix::Hue,
+        M::Saturation => peniko::Mix::Saturation,
+        M::Color => peniko::Mix::Color,
+        M::Luminosity => peniko::Mix::Luminosity,
+    }
 }
 
 /// The device bounds of `shape` under `transform`.
@@ -803,7 +826,7 @@ impl Painter for VelloPainter {
         transform: Affine,
         bounds: &PaintShape,
     ) {
-        if matches!(blend, BlendMode::Saturation) {
+        if matches!(blend, BlendMode::Saturation | BlendMode::Mix(_)) {
             self.reads_backdrop = true;
         }
         self.opened(transform, bounds);

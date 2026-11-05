@@ -231,6 +231,7 @@ impl ComputedStyle {
             background_repeat_x: background_first.repeat_x,
             background_repeat_y: background_first.repeat_y,
             background_origin: background_first.origin,
+            background_blend_mode: background_blend_from_stylo(background, 0),
             background_layers: background_layers_from_stylo(background, &text.color),
             mask_image: mask_image_from_stylo(cv.get_svg(), &text.color),
             color: color_from_absolute(&text.color),
