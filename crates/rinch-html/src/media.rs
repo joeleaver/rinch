@@ -279,6 +279,7 @@ mod tests {
 
     use super::*;
 
+    #[cfg_attr(debug_assertions, ignore = "large inputs, timed: run with --release")]
     #[test]
     fn a_huge_sheet_of_comments_is_read_in_linear_time() {
         // A 1 MB sheet of comments inside @media took 2.1 s per resize.

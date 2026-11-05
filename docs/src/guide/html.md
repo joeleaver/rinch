@@ -144,7 +144,7 @@ that mixes look-alike alphabets or passes Cyrillic for Latin (shown in
 punycode; an international name in its own script, `münchen.de`, is fine),
 or link text naming another site than the one it opens. Addresses are read
 with the `url` crate, as a browser reads them, and sites compared by the
-Public Suffix List (`evil.github.io` is not `good.github.io`). `check_link(href, text)` gives the same answer as data
+Public Suffix List (`evil.github.io` is not `good.github.io`). A Latin-only look-alike (`paypa1.com`, `rnicrosoft.com`) is flagged only when the link's text names the real site; on its own it reads as just another address. `check_link(href, text)` gives the same answer as data
 (`LinkCheck`, `Warning`); `HtmlView`'s `tooltips` field chooses the words:
 `Tooltips::Default` (English), `Tooltips::Off`, or `Tooltips::Custom` with
 your own function.

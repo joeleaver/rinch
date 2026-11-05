@@ -164,6 +164,35 @@ fn looks_alike(host: &str) -> bool {
         return false;
     }
     let (unicode, _) = idna::domain_to_unicode(host);
+    // A name wholly in Cyrillic (or Greek) is how a country that writes in
+    // it names things (`москва.ru`); there only a mix of alphabets counts.
+    let tld = unicode.rsplit('.').next().unwrap_or_default();
+    let own_script_country = matches!(
+        tld,
+        "ru" | "su"
+            | "ua"
+            | "by"
+            | "bg"
+            | "kz"
+            | "kg"
+            | "mk"
+            | "rs"
+            | "uz"
+            | "tj"
+            | "mn"
+            | "gr"
+            | "cy"
+            | "рф"
+            | "бел"
+            | "укр"
+            | "срб"
+            | "мкд"
+            | "бг"
+            | "қаз"
+            | "мон"
+            | "рус"
+            | "ελ"
+    );
     unicode.split('.').any(|label| {
         let script = |c: char| match c as u32 {
             0x41..=0x5a | 0x61..=0x7a | 0xc0..=0x24f => Some(0),
@@ -179,7 +208,7 @@ fn looks_alike(host: &str) -> bool {
                 .chars()
                 .filter(|c| c.is_alphabetic())
                 .all(|c| LATIN_LOOKING.contains(c));
-        mixed || all_latin_looking
+        mixed || (all_latin_looking && !own_script_country)
     })
 }
 
@@ -241,6 +270,7 @@ mod tests {
         assert_eq!(warning("https://bücher.de/", "Bücher"), None);
         assert_eq!(warning("https://例え.jp/", "例え.jp"), None);
         assert_eq!(warning("https://paypal.com./", "paypal.com"), None);
+        assert_eq!(warning("https://москва.ru/", "Москва"), None);
         assert_eq!(
             check("https://xn--80ak6aa92e.com/", "").opens.as_deref(),
             Some("xn--80ak6aa92e.com")

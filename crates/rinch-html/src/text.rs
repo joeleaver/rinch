@@ -551,6 +551,7 @@ mod tests {
         assert_eq!(text(html).hidden, ["light"]);
     }
 
+    #[cfg_attr(debug_assertions, ignore = "large inputs, timed: run with --release")]
     #[test]
     fn unclosed_tags_are_read_in_linear_time() {
         // 640 KB of unclosed tags took 2.8 s.

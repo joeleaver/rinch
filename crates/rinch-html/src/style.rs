@@ -145,12 +145,40 @@ fn walk<'i>(
     property: &str,
     out: &mut String,
 ) -> Result<(), ParseError<()>> {
+    // A run of numbers joined by `*` (in a `calc()`), multiplied so far.
+    let mut product: Option<f32> = None;
+    let mut times = false;
+    // Past a `/`: in `font`, the line height.
+    let mut after_slash = false;
     loop {
         let token = match input.next_including_whitespace() {
             Ok(t) => t.clone(),
             Err(_) => return Ok(()),
         };
         let refuse = || Err(ParseError::custom(()));
+        // Each number counts as large as the product it is part of.
+        let magnitude = match &token {
+            Token::Number { value, .. } | Token::Dimension { value, .. } => Some(value.abs()),
+            Token::Percentage { unit_value, .. } => Some(unit_value.abs()),
+            _ => None,
+        };
+        match (&token, magnitude) {
+            (_, Some(m)) => {
+                let m = if times { product.unwrap_or(1.0) * m } else { m };
+                if m > MAX_LENGTH {
+                    return refuse();
+                }
+                product = Some(m);
+                times = false;
+            }
+            (Token::Delim('*'), _) => times = true,
+            (Token::Delim('/'), _) => after_slash = true,
+            (Token::WhiteSpace(_), _) => {}
+            _ => {
+                product = None;
+                times = false;
+            }
+        }
         match &token {
             Token::UnquotedUrl(src) => {
                 let Some(url) = picture_url(src, picture) else {
@@ -215,12 +243,18 @@ fn walk<'i>(
             }
             // A bare number (a `line-height` of 1.4) and a percentage
             // (`unit_value`: 1.0 is 100%) both scale the 16px text size.
+            // In `font`, a bare number before the `/` is a weight (700),
+            // not a size.
             Token::Number { value, .. }
             | Token::Percentage {
                 unit_value: value, ..
             } => {
                 let text_size = value * 16.0;
-                if value.abs() > MAX_LENGTH || (sizes_text(property) && text_size > MAX_FONT_SIZE) {
+                let bare_weight =
+                    property == "font" && matches!(token, Token::Number { .. }) && !after_slash;
+                if value.abs() > MAX_LENGTH
+                    || (sizes_text(property) && !bare_weight && text_size > MAX_FONT_SIZE)
+                {
                     return refuse();
                 }
                 out.push_str(&token.to_css_string());

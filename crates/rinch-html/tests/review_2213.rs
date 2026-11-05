@@ -120,6 +120,7 @@ fn absurd_sizes_are_left_out() {
     assert!(out.contains("color: red"), "{out}");
 }
 
+#[cfg_attr(debug_assertions, ignore = "large inputs, timed: run with --release")]
 #[test]
 fn deep_nesting_is_cut_short_not_a_crash() {
     // ~16k nested <div>s overflowed css-inline's recursive serializer and
@@ -152,6 +153,7 @@ fn details_stay_open_or_closed_as_written() {
     assert!(out.contains("<summary>More</summary>"), "{out}");
 }
 
+#[cfg_attr(debug_assertions, ignore = "large inputs, timed: run with --release")]
 #[test]
 fn nesting_the_parser_builds_is_cut_short_too() {
     // The second review: each nests deeper than its tags say (a `<div/>`
@@ -183,6 +185,7 @@ fn a_document_cannot_claim_or_fake_rinchs_own_attributes() {
     assert!(!out.contains("data-"), "{out}");
 }
 
+#[cfg_attr(debug_assertions, ignore = "large inputs, timed: run with --release")]
 #[test]
 fn deep_media_blocks_and_many_raw_text_elements_clean_in_linear_time() {
     // The second review: 32k nested @media took 10 s; 128k <title>s 3.5 s and
@@ -204,5 +207,55 @@ fn deep_media_blocks_and_many_raw_text_elements_clean_in_linear_time() {
             "took {:?}",
             t.elapsed()
         );
+    }
+}
+
+#[test]
+fn the_font_shorthand_keeps_its_weight() {
+    // The third review: a weight was counted as a size (700 x 16px), and
+    // common mail lost its whole `font`.
+    for style in [
+        "font: 700 16px/24px Helvetica, Arial, sans-serif",
+        "font: normal normal 400 13px/150% Arial",
+        "font: bold 14px/1.5 Arial",
+    ] {
+        let out = cleaned(&format!(r#"<div style="{style}">a</div>"#));
+        assert!(out.contains("font:"), "{style}: {out}");
+    }
+    let huge = cleaned(r#"<div style="font: 700 16px/99999 Arial">a</div>"#);
+    assert!(
+        !huge.contains("font:"),
+        "a huge line height in `font`: {huge}"
+    );
+}
+
+#[test]
+fn a_product_in_calc_counts_whole() {
+    let out = cleaned(r#"<div style="height: calc(100000px * 100); color: red">a</div>"#);
+    assert!(!out.contains("height"), "{out}");
+    assert!(out.contains("color: red"), "{out}");
+}
+
+#[cfg_attr(debug_assertions, ignore = "large inputs, timed: run with --release")]
+#[test]
+fn shapes_html5ever_builds_slowly_are_cut_before_it_reads_them() {
+    // The third review: html5ever's tree builder walks its open elements, so
+    // each of these took seconds in the depth cap's own parse.
+    let attrs: String = (0..12_000).map(|n| format!("<b i={n}>")).collect();
+    for (what, doc) in [
+        ("unclosed <div>, 320 KB", "<div>".repeat(64_000)),
+        ("<b> with distinct attributes, 165 KB", attrs),
+        ("<template><div>, 320 KB", "<template><div>".repeat(21_000)),
+        ("<div/>, 320 KB", "<div/>".repeat(53_000)),
+        ("<b><i></b>, 1.28 MB", "<b><i></b>".repeat(128_000)),
+    ] {
+        let t = std::time::Instant::now();
+        let _ = std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(move || clean(&doc, &Policy::default()).html.len())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(t.elapsed().as_secs_f32() < 0.5, "{what}: {:?}", t.elapsed());
     }
 }
