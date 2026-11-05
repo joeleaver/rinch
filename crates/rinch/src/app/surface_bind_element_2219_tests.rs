@@ -413,3 +413,38 @@ fn dropping_the_last_handle_releases_its_lock() {
 fn unregister_surface(surface: &RenderSurfaceHandle) {
     crate::render_surface::unregister_render_surface(surface.id());
 }
+
+/// A handler or an effect that binds on every run, inside its component:
+/// re-binding the same element registers one cleanup on the owner, not one
+/// per run, and the owner's dispose still undoes the binding (and its lock).
+/// A different element is a new binding with its own cleanup.
+#[test]
+fn rebinding_the_same_element_in_its_owner_registers_one_cleanup() {
+    use crate::render_surface::CLEANUPS_REGISTERED;
+    let surface = create_render_surface_with_name("bind-2219-one-cleanup");
+    let f = mount(&surface, BindInRender::No, false);
+    let log = install(Ok(Some(PointerLockMode::Locked)));
+    let (a, b) = (el(&f.a), el(&f.b));
+    let before = CLEANUPS_REGISTERED.with(|n| n.get());
+    let owner = rinch_core::Scope::new();
+    owner.run(|| {
+        for _ in 0..5 {
+            surface.bind_element(&a);
+        }
+    });
+    assert_eq!(CLEANUPS_REGISTERED.with(|n| n.get()) - before, 1);
+    assert!(same(&surface.element(), &a));
+    owner.run(|| surface.bind_element(&b));
+    assert_eq!(
+        CLEANUPS_REGISTERED.with(|n| n.get()) - before,
+        2,
+        "positive control: a new element is a new binding"
+    );
+    surface.request_pointer_lock().unwrap();
+    owner.dispose();
+    assert!(surface.element().is_none(), "the owner's dispose unbinds");
+    assert_eq!(pointer_lock(), None);
+    assert_eq!(unlocks(&log), 1);
+    set_pointer_lock_host(None);
+    unregister_surface(&surface);
+}

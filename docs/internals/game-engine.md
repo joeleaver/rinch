@@ -78,7 +78,7 @@ mounted surface's handle "drops" only after `unregister_render_surface`, which
 releases anyway. Bindings live in the thread-local `BINDINGS` (surface id,
 element, a serial, a `Weak` of the event handler), not in the handle, so a
 scoped binding's `on_cleanup` captures only `(id, serial)` and undoes only its
-own binding, never a later one. `element()` is the binding, else `mounted`.
+own binding, never a later one. `element()` is the binding, else `mounted`. A scoped re-bind of the same element whose binding is already `owned` returns early, so a handler or effect that binds on every run does not pile cleanups on its owner (a handler or effect runs with its component as owner, so its binding is scoped too).
 A binding change ends the surface's lock when `pointer_lock::held_element(id)`
 is some other element than the new one (and the other surface's, when the
 element is taken from it); `LockOnRebind::Move` calls `pointer_lock::request`

@@ -789,13 +789,16 @@ impl RenderSurfaceHandle {
     ///
     /// With the default [`BindElementOptions`]:
     ///
-    /// - **Made while a component renders, the binding is the component's**:
-    ///   it is undone when that component unmounts, and a lock it holds ends
-    ///   at once, as the `RenderSurface` component's does.
-    ///   ([`BindElementOptions::scoped`] turns this off.) Made where nothing
-    ///   owns it (an event handler), it lasts until
+    /// - **Made inside a component, the binding is the component's**: while
+    ///   it renders, and equally in its event handlers and effects (they run
+    ///   with the component as their owner). It is undone when that component
+    ///   unmounts, and a lock it holds ends at once, as the `RenderSurface`
+    ///   component's does. ([`BindElementOptions::scoped`] turns this off.)
+    ///   Made where no component owns the running code (outside any
+    ///   component, or under `rinch_core::unowned`), it lasts until
     ///   [`unbind_element`](Self::unbind_element), another bind, or the last
-    ///   clone of the handle is dropped.
+    ///   clone of the handle is dropped. Re-binding the same element to the
+    ///   same surface inside its owner changes nothing.
     /// - **The element leaving the document** ends a lock held by it, as the
     ///   browser's Pointer Lock API does (desktop: on the next event the app
     ///   handles; web: the browser itself). The binding stays: put back in a
@@ -1200,6 +1203,8 @@ struct Binding {
     /// Tells this binding from a later one of the same surface, for the
     /// unmount of the component that made it.
     serial: u64,
+    /// A component's scope undoes this binding (its cleanup is registered).
+    owned: bool,
     /// The surface's event handler, for the motion of a lock it holds while
     /// it is not registered (a handle the `RenderSurface` component never
     /// mounted). Weak: the binding keeps no handle alive.
@@ -1209,6 +1214,13 @@ struct Binding {
 thread_local! {
     static BINDINGS: RefCell<Vec<Binding>> = const { RefCell::new(Vec::new()) };
     static NEXT_BINDING: Cell<u64> = const { Cell::new(1) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many scope cleanups `bind` registered, for the fixture that pins
+    /// one per binding.
+    pub(crate) static CLEANUPS_REGISTERED: Cell<usize> = const { Cell::new(0) };
 }
 
 /// What [`RenderSurfaceHandle::bind_element_with`] does with an element
@@ -1252,10 +1264,10 @@ pub struct BindElementOptions {
     pub if_bound_elsewhere: IfBoundElsewhere,
     /// A lock held while the binding changes: [`LockOnRebind`].
     pub lock_on_rebind: LockOnRebind,
-    /// Whether a binding made while a component renders is undone when that
-    /// component unmounts (`true`, the default). `false`: it lasts until
-    /// unbound, re-bound, or the handle's last clone drops, wherever it was
-    /// made.
+    /// Whether a binding made inside a component (while it renders, or in
+    /// its event handlers or effects) is undone when that component unmounts
+    /// (`true`, the default). `false`: it lasts until unbound, re-bound, or
+    /// the handle's last clone drops, wherever it was made.
     pub scoped: bool,
 }
 
@@ -1354,6 +1366,17 @@ fn bind(
     {
         return Err(BindElementError::BoundElsewhere { surface: other });
     }
+    // The same element again, already owned by a scope: nothing to change,
+    // and no second cleanup piled on the owner (a handler or an effect that
+    // binds on every run).
+    let owned_already = BINDINGS.with(|b| {
+        b.borrow().iter().any(|binding| {
+            binding.surface == id && binding.owned && same_node(&binding.element, element)
+        })
+    });
+    if options.scoped && owned_already {
+        return Ok(());
+    }
     // A lock that the change takes from its element (this surface's, held by
     // its old element) or from its surface (the other's, on this element).
     let ours = lock_elsewhere(id, element)
@@ -1372,6 +1395,7 @@ fn bind(
             surface: id,
             element: element.clone(),
             serial,
+            owned: false,
             handler: std::rc::Rc::downgrade(&handle.event_handler),
         });
     });
@@ -1386,8 +1410,18 @@ fn bind(
             crate::pointer_lock::release();
         }
     }
-    if options.scoped {
-        let _ = rinch_core::reactive::on_cleanup(move || unbind(id, Some(serial)));
+    if options.scoped && rinch_core::reactive::on_cleanup(move || unbind(id, Some(serial))) {
+        #[cfg(test)]
+        CLEANUPS_REGISTERED.with(|n| n.set(n.get() + 1));
+        BINDINGS.with(|b| {
+            if let Some(binding) = b
+                .borrow_mut()
+                .iter_mut()
+                .find(|binding| binding.serial == serial)
+            {
+                binding.owned = true;
+            }
+        });
     }
     Ok(())
 }

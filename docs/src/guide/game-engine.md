@@ -471,11 +471,14 @@ component mounted), `has_pointer_lock()` answers for it, and it ends with the
 binding. Binding gives the surface an element and nothing else: it does not
 mount the surface or route the element's pointer events to it. A binding wins
 over the component's element while both exist; `unbind_element()` goes back to
-it, and `element()` says which one is in force.
+it, and `element()` says which one is in force. A binding made where no
+component owns the running code lasts until it is unbound, re-bound, or the
+handle's last clone drops. Re-binding the same element inside its owner (a
+handler or an effect that binds on every run) changes nothing.
 
 | When | What happens (default) | Option |
 |------|------------------------|--------|
-| the binding was made while a component rendered, and it unmounts | unbound; the lock ends at once | `BindElementOptions::scoped(false)` keeps it |
+| the binding was made inside a component (while it rendered, or in its event handlers or effects), and it unmounts | unbound; the lock ends at once | `BindElementOptions::scoped(false)` keeps it |
 | the element leaves the document | the lock ends (desktop: on the next event; web: the browser ends it), the binding stays | — |
 | `unbind_element()` | the bound element's lock ends | — |
 | re-bound to another element while locked (granted or pending) | the lock ends, as on unmount | `lock_on_rebind(LockOnRebind::Move)` asks for it on the new element without releasing first |
@@ -492,7 +495,7 @@ surface.bind_element_with(
 `Move` is granted at once on the desktop. In a browser it asks `requestPointerLock`
 on the new element while the old one is still locked, which is how the Pointer
 Lock API moves a lock between elements; if the browser refuses, the old lock is
-given back and none is held. A move to an element that is not in a document ends
+exited too and none is held. A move to an element that is not in a document ends
 the lock.
 
 ### How often the render callback runs
