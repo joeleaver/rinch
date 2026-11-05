@@ -100,6 +100,8 @@ pub(crate) use text_keymap::{TextKeyAction, TextKeymap, TextMotion, text_key_act
 #[cfg(test)]
 mod app_key_1784_tests;
 #[cfg(test)]
+mod click_link_tests;
+#[cfg(test)]
 mod device_pixel_ratio_tests;
 #[cfg(test)]
 mod disabled_input_tests;
@@ -218,6 +220,10 @@ mod hidden_subtree_cull_2137_tests;
 #[cfg(test)]
 mod hidpi_pointer_tests;
 pub(crate) mod hit_testing;
+#[cfg(test)]
+mod html_view_clip_tests;
+#[cfg(test)]
+mod html_view_tests;
 #[cfg(test)]
 mod implicit_focus_tests;
 #[cfg(all(test, software_shell))]
@@ -5702,8 +5708,18 @@ impl RinchApp {
         }
         let d = doc.borrow();
         let mut current = Some(node_id);
+        // The link the walk goes through on its way to the handler, as the
+        // pointer path records it (`events::click_link`): Enter on a focused
+        // link names it.
+        let mut link: Option<String> = None;
         while let Some(nid) = current {
             let Some(node) = d.tree.get(nid) else { break };
+            if link.is_none()
+                && node.tag() == Some("a")
+                && let Some(href) = node.attributes.get("href")
+            {
+                link = Some(href.clone());
+            }
             if let Some(rid_str) = node.attributes.get("data-rid")
                 && let Ok(handler_id) = rid_str.parse::<usize>()
                 && events::has_click_handler(events::EventHandlerId(handler_id))
@@ -5729,7 +5745,9 @@ impl RinchApp {
                 events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, nid));
 
                 drop(d);
+                events::set_click_link(link);
                 events::dispatch_event(events::EventHandlerId(handler_id));
+                events::set_click_link(None);
                 // The handler may have requested focus (e.g. opening a dialog
                 // that focuses an input) — honor it like the pointer path does.
                 // No layout has run since, so an overlay request is re-parked

@@ -107,6 +107,9 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-ondragover",
     "data-ondragleave",
     "data-oncontextmenu",
+    // An element whose links are the app's to follow (rinch-html's
+    // `HtmlView`): rinch-web cancels the browser's default on them.
+    "data-claim-links",
     "data-onenter",
     "data-onleave",
     "data-onmousedown",

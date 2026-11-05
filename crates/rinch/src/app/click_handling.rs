@@ -383,6 +383,9 @@ impl RinchApp {
             Rid(u64, usize, bool),
             DragWindow,
         }
+        // The link the press went through on its way to the claim
+        // (`events::click_link`): the nearest `<a href>` from the hit up.
+        let mut click_link: Option<String> = None;
         let click_claim = {
             let mut claim = None;
             let mut cur = Some(hit_id);
@@ -390,6 +393,12 @@ impl RinchApp {
                 let Some(node) = d.tree.get(node_id) else {
                     break;
                 };
+                if click_link.is_none()
+                    && node.tag() == Some("a")
+                    && let Some(href) = node.attributes.get("href")
+                {
+                    click_link = Some(href.to_string());
+                }
                 if let Some(rid_str) = node.attributes.get("data-rid")
                     && let Ok(handler_id) = rid_str.parse::<usize>()
                     && events::has_click_handler(events::EventHandlerId(handler_id))
@@ -548,6 +557,7 @@ impl RinchApp {
                     (x, y),
                     button,
                     (viewport_width, viewport_height),
+                    click_link,
                 );
                 if let Some((label, control)) = label_press {
                     self.activate_label_control(
@@ -582,7 +592,10 @@ impl RinchApp {
     }
 
     /// Dispatch a `data-rid` click on `node_id`, with the click context a
-    /// handler reads, then apply the focus and selection requests it posted.
+    /// handler reads (and `link`, the `<a href>` the press went through, for
+    /// `events::click_link`), then apply the focus and selection requests it
+    /// posted.
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_rid_click(
         &mut self,
         node_id: u64,
@@ -591,6 +604,7 @@ impl RinchApp {
         (x, y): (f32, f32),
         button: MouseButton,
         (viewport_width, viewport_height): (f32, f32),
+        link: Option<String>,
     ) {
         let Some(doc) = self.doc.clone() else {
             return;
@@ -626,7 +640,9 @@ impl RinchApp {
         events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
 
         drop(d);
+        events::set_click_link(link);
         events::dispatch_event(events::EventHandlerId(handler_id));
+        events::set_click_link(None);
         // Process any pending focus request from the event handler
         // (e.g., a handler may call request_focus on an input element).
         // No layout has run since the handler mutated state, so an
@@ -808,6 +824,7 @@ impl RinchApp {
                 point,
                 MouseButton::Left,
                 viewport,
+                None,
             );
         }
     }

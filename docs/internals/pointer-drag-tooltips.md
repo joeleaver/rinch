@@ -727,3 +727,15 @@ follows Chrome 155: an SVG element's `title` attribute is ignored and its first
 `title_sources` also counts every `<title>` element created. Not on
 `rinch-web` (the browser draws its own). Components declare no `title` prop, so
 it goes on an HTML element.
+
+**The link a click went through** (`click_link`, rinch-html): a pointer
+click's dispatch publishes the `href` of the nearest `<a href>` between the
+pressed element and the element whose `data-rid` runs (that element
+included), and clears it once the handler returns. Desktop records it in the
+claim walk (`click_handling.rs`, the same walk that finds the `data-rid`) and
+passes it to `dispatch_rid_click`; the web takes `closest("a[href]")` from
+the event's target, kept only inside the handler's element
+(`event_delegation::dispatch_click_at`). A keyboard activation and a label's
+forwarded click publish none. `rinch_html::HtmlView` puts one handler on the
+whole document and calls its `onlink` with it. Pins:
+`crates/rinch/src/app/click_link_tests.rs`.

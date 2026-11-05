@@ -219,6 +219,23 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
 }
 
+thread_local! {
+    pub(crate) static CLICK_LINK: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The link the click being dispatched went through: the `href` of the
+/// nearest `<a href>` from the element pressed up to the element whose
+/// handler runs (that element included). `None` outside a click handler, for
+/// a press on no link, and for a keyboard activation.
+///
+/// This is how a handler on a container learns which link inside it was
+/// clicked, for HTML it did not build itself (`set_inner_html`): read it in
+/// the container's `onclick`. The `href` is as written; check its scheme
+/// before acting on it.
+pub fn click_link() -> Option<String> {
+    CLICK_LINK.with(|c| c.borrow().clone())
+}
+
 /// Ancestors of the most recently dispatched click target, ordered from
 /// **immediate parent (index 0)** outward to the document root.
 ///

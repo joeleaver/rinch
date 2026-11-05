@@ -598,6 +598,18 @@ pub fn set_click_context(ctx: ClickContext) {
     });
 }
 
+/// Set the link the current click went through, read by [`click_link`].
+///
+/// Called by the runtime around a pointer click's dispatch: set before the
+/// handler runs, cleared (`None`) after it.
+///
+/// [`click_link`]: super::click_link
+pub fn set_click_link(href: Option<String>) {
+    super::CLICK_LINK.with(|c| {
+        *c.borrow_mut() = href;
+    });
+}
+
 /// Set the ancestor chain for the current click, used by [`click_ancestors`].
 ///
 /// Called by the runtime before dispatching a click handler. Pass an empty

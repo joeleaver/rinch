@@ -264,6 +264,14 @@ pub struct ComputedStyle {
     pub letter_spacing: f32, // in pixels, 0.0 means normal
     pub word_spacing: f32,   // in pixels, 0.0 means normal
     pub text_align: TextAlignValue,
+    /// HTML's `align` attribute on a `div`, a cell, a row or a row group
+    /// (`-moz-center` / `-webkit-center` and the left and right forms):
+    /// besides the text, it aligns the block boxes under it that have a
+    /// width of their own, as `<td align="center"><table>` centres the table
+    /// (HTML rendering §15.3.3, "align descendants"). Inherited with
+    /// `text-align`; a table does not inherit it (Stylo resets it there, as
+    /// Chrome does).
+    pub html_align: Option<TextAlignValue>,
     pub text_decoration: TextDecorationValue,
     pub text_transform: TextTransformValue,
     /// `text-underline-offset` in CSS pixels, with **CSS's sign** — and
@@ -451,6 +459,7 @@ impl Default for ComputedStyle {
             letter_spacing: 0.0,
             word_spacing: 0.0,
             text_align: TextAlignValue::default(),
+            html_align: None,
             text_decoration: TextDecorationValue::default(),
             text_transform: TextTransformValue::default(),
             text_underline_offset: None,
@@ -537,6 +546,7 @@ impl ComputedStyle {
             letter_spacing: parent.letter_spacing,
             word_spacing: parent.word_spacing,
             text_align: parent.text_align,
+            html_align: parent.html_align,
             text_decoration: parent.text_decoration.clone(),
             text_transform: parent.text_transform,
             text_underline_offset: parent.text_underline_offset,

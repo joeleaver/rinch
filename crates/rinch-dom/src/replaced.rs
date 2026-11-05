@@ -497,6 +497,39 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: crate::node::R
 /// sizer. Taffy adds the padding and border, and keeps any dimension it
 /// already knows.
 ///
+/// Whether a replaced box is *compressible* in the min-content sense
+/// (css-sizing-3 §5.2.2): its `width` or `max-width` is a percentage. (A
+/// `calc()` holding one is not detected.) Its min-content contribution is then zero,
+/// so `<td width="390"><img width="100%">` keeps a 390px column and the
+/// picture scales into it, as in Chrome, instead of the picture's natural
+/// width widening the column.
+pub(crate) fn is_compressible(style: &taffy::Style) -> bool {
+    let percent = |raw: taffy::CompactLength| raw.tag() == taffy::CompactLength::PERCENT_TAG;
+    percent(style.size.width.into_raw()) || percent(style.max_size.width.into_raw())
+}
+
+/// What a replaced box's measure answers: `size`, but with no width when the
+/// box is asked for its min-content contribution and is
+/// [compressible](is_compressible).
+pub(crate) fn contribution(
+    size: taffy::Size<f32>,
+    style: &taffy::Style,
+    known: taffy::Size<Option<f32>>,
+    available: taffy::Size<taffy::AvailableSpace>,
+) -> taffy::Size<f32> {
+    if known.width.is_none()
+        && available.width == taffy::AvailableSpace::MinContent
+        && is_compressible(style)
+    {
+        taffy::Size {
+            width: 0.0,
+            height: size.height,
+        }
+    } else {
+        size
+    }
+}
+
 /// A dimension known from `known` (Taffy's, border-box) or, when `inherent`,
 /// from the style's `width`/`height` gives the other through the ratio — its
 /// value **after** its own axis's `min-*`/`max-*` clamp, so `width: 100%;

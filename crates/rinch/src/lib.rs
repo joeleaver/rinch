@@ -223,6 +223,13 @@ pub mod components {
     pub use rinch_components::*;
 }
 
+/// Showing HTML you did not write (enable with the `html` feature): the
+/// allow-list cleaner and the `HtmlView` component. See `rinch_html`.
+#[cfg(feature = "html")]
+pub mod html {
+    pub use rinch_html::*;
+}
+
 /// Futures on the UI thread (issue #1767): [`spawn_local`](task::spawn_local),
 /// [`sleep`](task::sleep). The same on desktop, Android, embed and the web.
 pub mod task {
@@ -273,7 +280,8 @@ pub mod prelude {
     // Event handling - click context, drag support, input callbacks, file-drop callbacks
     pub use rinch_core::{
         ClickContext, Drag, DragContext, FileDropCallback, InputCallback, ModifierState,
-        MouseButton, ScrollEvent, get_click_context, restore_drag_ghost, suppress_drag_ghost,
+        MouseButton, ScrollEvent, click_link, get_click_context, restore_drag_ghost,
+        suppress_drag_ghost,
     };
     // Paste notification (issue #150): on the web this is the only place app paste
     // logic can see content copied outside the app, because the browser's `paste`
@@ -408,6 +416,10 @@ pub mod prelude {
     // Re-export components when the components feature is enabled
     #[cfg(feature = "components")]
     pub use rinch_components::*;
+
+    // Showing HTML you did not write
+    #[cfg(feature = "html")]
+    pub use rinch_html::HtmlView;
 
     // Video playback
     #[cfg(feature = "video")]
