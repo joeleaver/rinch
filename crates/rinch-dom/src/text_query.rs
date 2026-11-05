@@ -677,7 +677,7 @@ pub fn glyph_cluster_at_point(
     let (cluster, _) = parley::layout::Cluster::from_point_exact(layout, x, y)?;
     let baseline = cluster.line().metrics().baseline;
     let run = cluster.run();
-    let m = run.metrics();
+    let m = run.font_metrics();
     (y >= baseline - m.ascent && y <= baseline + m.descent).then(|| cluster.text_range())
 }
 
