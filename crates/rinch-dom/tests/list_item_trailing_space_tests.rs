@@ -433,7 +433,6 @@ fn a_narrow_word_after_hanging_spaces_still_wraps() {
 /// the text starts at the box's start. Chrome: 41.42 wide, `abc` at 0 for
 /// right and center alignment alike.
 #[test]
-#[ignore = "#1042: parley's `align` hangs every trailing space, so the text starts past its own box"]
 fn right_aligned_fit_content_text_starts_at_its_start() {
     for align in ["right", "center"] {
         let ((w, _), x) = fit_content(&format!("pre-wrap; text-align: {align}"), "abc   ", 0);

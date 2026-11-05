@@ -10121,7 +10121,7 @@ mod input_caret_hit_tests {
             .lines()
             .map(|line| {
                 let m = line.metrics();
-                (m.baseline - m.ascent, m.line_height, line.text_range())
+                (m.content_block_min_coord, m.line_height, line.text_range())
             })
             .collect();
         ((box_x + ox, box_y + oy), lines)

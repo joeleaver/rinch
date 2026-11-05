@@ -1,52 +1,25 @@
 //! A line box's height is the **maximum** over every inline-level box on it
 //! and the strut (CSS 2.1 §10.8.1) — #577 and #624.
 //!
-//! rinch does not do that today, and the defect is **not in rinch**. It is in
-//! parley, which is why this file is mostly `#[ignore]`d fixtures carrying
-//! Chrome's numbers rather than a fix. **#656** is the root-cause record and
-//! carries the reference patch. Read there at both revisions — a read, not a
-//! run — the defect is present verbatim at parley `v0.11.1` as well as at the
-//! `f6a8485` pin the workspace has since left, so the upgrade did not close
-//! these on its own. That read has since been checked against a run; see
-//! "What is live and what is ignored" below.
+//! Until parley 0.12 rinch did not do that, and the defect was in parley
+//! (#656 is the root-cause record): it took a line's height as one number,
+//! the largest line height of its shaping runs and inline boxes, with no
+//! strut, and its shaping runs were not split on `line_height` (and reported
+//! the style of the run after them, so `text <span> text` was one run with
+//! one, arbitrary, line height). The parley 0.11.1 upgrade changed nothing
+//! here: `--ignored` gave 0 passed, 10 failed with every number unmoved.
 //!
-//! # What was measured, and where the defect is
-//!
-//! rinch hands parley every span's `line-height`: `Ifc::inline_style_props`
-//! pushes a `StyleProperty::LineHeight` for any element whose computed
-//! `line-height` resolves (instrumented — a `line-height: 60px` span arrives as
-//! `Absolute(60.0)`). rinch does **not** post-process line metrics; the IFC
-//! root's measured height is `parley::Layout::height()` verbatim
-//! (`layout_engine.rs`'s `NodeContext::InlineRoot` arm). Parley does take a
-//! per-line maximum (`layout/line_break.rs`'s `add_line_height`). So all three
-//! halves of the obvious story are already in place, and the line is still
-//! wrong.
-//!
-//! The max is taken over **shaping runs**, and at this revision a shaping run
-//! gets its line-height from a single, arbitrary style:
-//!
-//! - `parley/src/shape/mod.rs` breaks a run on `font_size`, `locale`,
-//!   `font_variations`, `font_features`, `letter_spacing`, `word_spacing`, the
-//!   bidi level, the script and an inline box — **not** on `line_height`. So
-//!   `text <span> text` is one run with one line-height.
-//! - and that run's `style_index` is **off by one**: `item.style_index` is
-//!   advanced at the character where the style changes, *before* the pending
-//!   run is handed to `shape_item`, so a run reports the style of the run
-//!   *after* it. (Upstream parley has since fixed this half — its `HEAD` reads
-//!   `char_style_indices[shaped_run.range.char_range.start]`.)
-//!
-//! The off-by-one is why the symptom reads as incoherent rather than as "the
-//! span is ignored", and `a_span_on_the_second_line_raises_only_the_second` /
-//! `a_span_on_the_first_line_raises_only_the_first` are the pair that shows
-//! it: the *same* declaration on the *same* two-line shape gives 120 in one
-//! order and 40 in the other, where Chrome gives 80 for both. No rule of the
-//! form "take the maximum" applied on rinch's side can produce both numbers,
-//! because rinch is not the thing choosing.
+//! parley 0.12 sizes a line by the CSS line box model (linebender/parley#697,
+//! #863, #864): every span's box is on the line with its own line height, the
+//! root's box is the strut, and an inline box sits on the baseline by its own
+//! baseline (rinch hands it one: `ifc::atomic_inline_baseline`, #663). Every
+//! fixture below is live, and the right-hand column is history.
 //!
 //! # Chrome 150, standards mode (`CSS1Compat`), served over HTTP
 //!
 //! Container `width: 400px; font-size: 16px` throughout; `line-height` as
-//! noted. `rinch` is this tree's measurement at the time of writing.
+//! noted. `rinch` is the tree's measurement before parley 0.12; every row is
+//! Chrome's now.
 //!
 //! | shape | container `line-height` | Chrome | rinch |
 //! |---|---|---|---|
@@ -78,38 +51,23 @@
 //! here wraps text, either — the multi-line shapes use `<br>`, so no assertion
 //! depends on where a line would break.
 //!
-//! # What is live and what is ignored
+//! # What each fixture refuses
 //!
-//! The live tests are the shapes rinch already gets right. They are here so a
-//! fix for the ignored ones cannot buy the maximum by breaking them. Each of
-//! the three obvious wrong rules is refused by one of them:
+//! The ones that held before 0.12 are here so the maximum cannot be bought by
+//! breaking them. Each of the three obvious wrong rules is refused by one:
 //!
 //! - *ignore the spans, report the container's own* reads 60 as 20 at
 //!   `a_span_alone_on_a_line_sets_the_line_height` and 45 as 24 at
 //!   `a_larger_font_size_raises_a_shared_line`;
 //! - *report the styled span's own* reads 40 as 10 at
 //!   `a_smaller_span_line_height_does_not_shrink_the_line`;
-//! - *report the last style on the line*, which is close to what rinch does
-//!   today, reads 45 as 24 at `a_larger_font_size_raises_a_shared_line`.
+//! - *report the last style on the line* reads 45 as 24 at
+//!   `a_larger_font_size_raises_a_shared_line`.
 //!
-//! The ignored ones fail today and carry Chrome's number.
-//!
-//! **They are not the parley upgrade's acceptance test, and an earlier revision
-//! of this paragraph said they were.** The upgrade landed — the workspace moved
-//! from the `f6a8485` pin to the published `0.11.1` — and `--ignored` re-run on
-//! that tree gives **0 passed, 10 failed** with every number byte-identical to
-//! the ones in the `#[ignore]` reasons below. That is the run behind the header's
-//! read of parley's source, and it agrees with it. What un-ignores these is a
-//! fix to the mechanism #656 locates (upstream, or a rinch workaround), never a
-//! version bump. Running them with `--ignored` is still the fail-first for
-//! whoever writes that fix.
-//!
-//! #624 (the strut) is tracked separately from #577 (the per-span maximum) and
-//! measured to be a separate fix: with the run-splitting repaired, a line
-//! holding only an atomic inline still has no text run to carry a line-height,
-//! so it is still the box's own height. It needs a strut carrying an ascent
-//! and a descent around the baseline, which parley expresses only from `main`
-//! onwards — see #656.
+//! The rest (the bold rows) were `#[ignore]`d with rinch's old number until
+//! parley 0.12. #624's strut needed an ascent and a descent around the
+//! baseline, not a floor: a 55px box alone on a 40px line is 70 tall in
+//! Chrome, the strut's descent below the box's bottom.
 
 #![cfg(feature = "software-renderer")]
 
@@ -283,7 +241,6 @@ fn an_atomic_inline_beside_text_participates_in_the_maximum() {
 ///
 /// Chrome 60, rinch 20. This is #577's headline shape.
 #[test]
-#[ignore = "#577 (#656): rinch 20, Chrome 60 — unchanged by the parley 0.11.1 upgrade; un-ignore when the mechanism is fixed"]
 fn a_span_raises_a_line_it_shares_with_text() {
     let control = span_between_text(C20, "");
     assert_eq!(control, 20.0, "control: an undeclared span");
@@ -297,7 +254,6 @@ fn a_span_raises_a_line_it_shares_with_text() {
 /// to be built with the styled element as the whole line. Once the shared-line
 /// shape works, that fixture's shape stops being forced.
 #[test]
-#[ignore = "#577 (#656): rinch 20, Chrome 60, same as the real <span> — unchanged by the parley 0.11.1 upgrade; un-ignore when the mechanism is fixed"]
 fn a_contents_wrapper_raises_a_line_it_shares_with_text() {
     assert_eq!(
         span_between_text(C20, "display: contents; line-height: 60px"),
@@ -312,7 +268,6 @@ fn a_contents_wrapper_raises_a_line_it_shares_with_text() {
 /// container's own 20, and from a doubled strut's 40 — no wrong rule here lands
 /// on the right answer by arithmetic.
 #[test]
-#[ignore = "#577 (#656): rinch 20, Chrome 60 — unchanged by the parley 0.11.1 upgrade; un-ignore when the mechanism is fixed"]
 fn the_larger_of_two_spans_on_a_line_wins() {
     assert_eq!(
         container_height(C20, |d, c| {
@@ -333,7 +288,6 @@ fn the_larger_of_two_spans_on_a_line_wins() {
 /// Chrome 60, rinch 20. This is the shape that refuses "the innermost
 /// declaration wins".
 #[test]
-#[ignore = "#577 (#656): rinch 20, Chrome 60 — unchanged by the parley 0.11.1 upgrade; un-ignore when the mechanism is fixed"]
 fn an_outer_span_wins_over_a_smaller_nested_one() {
     assert_eq!(
         container_height(C20, |d, c| {
@@ -353,7 +307,6 @@ fn an_outer_span_wins_over_a_smaller_nested_one() {
 /// Chrome 80 (20 + 60), rinch **120** — rinch raises *both* lines. Half of the
 /// witness pair: this is the direction where rinch over-applies.
 #[test]
-#[ignore = "#577 (#656): rinch 120, Chrome 80, the value leaks onto the line above — unchanged by the parley 0.11.1 upgrade; un-ignore when the mechanism is fixed"]
 fn a_span_on_the_second_line_raises_only_the_second() {
     assert_eq!(
         container_height(C20, |d, c| {
@@ -373,7 +326,6 @@ fn a_span_on_the_second_line_raises_only_the_second() {
 /// correction applied to parley's answer can work: one input shape, one
 /// declaration, and the two orders need opposite corrections.
 #[test]
-#[ignore = "#577 (#656): rinch 40, Chrome 80, the value is lost — unchanged by the parley 0.11.1 upgrade; un-ignore when the mechanism is fixed"]
 fn a_span_on_the_first_line_raises_only_the_first() {
     assert_eq!(
         container_height(C20, |d, c| {
@@ -391,7 +343,6 @@ fn a_span_on_the_first_line_raises_only_the_first() {
 ///
 /// Chrome 80 (60 + 20), rinch 40.
 #[test]
-#[ignore = "#577 (#656): rinch 40, Chrome 80 — unchanged by the parley 0.11.1 upgrade; un-ignore when the mechanism is fixed"]
 fn a_mid_line_span_grows_its_line_and_not_the_next() {
     assert_eq!(
         container_height(C20, |d, c| {
@@ -416,7 +367,6 @@ fn a_mid_line_span_grows_its_line_and_not_the_next() {
 /// identically — a fix that reached only one of them would be fixing the wrong
 /// thing.
 #[test]
-#[ignore = "#624 (#656): rinch 10, Chrome 40, a line with no text run gets no strut — unchanged by the parley 0.11.1 upgrade; un-ignore when the mechanism is fixed"]
 fn an_atomic_inline_alone_on_a_line_still_gets_the_strut() {
     for display in ["inline-block", "inline-flex", "inline-grid"] {
         assert_eq!(
@@ -440,7 +390,6 @@ fn an_atomic_inline_alone_on_a_line_still_gets_the_strut() {
 /// distinguish a real strut from a scalar floor: a floor of 40 leaves this at
 /// 55, which is measured, not forecast.
 #[test]
-#[ignore = "#624 (#656): rinch exactly 55, Chrome 70, no strut below the baseline — unchanged by the parley 0.11.1 upgrade; un-ignore when the mechanism is fixed"]
 fn a_tall_atomic_inline_alone_still_gets_the_struts_descent() {
     let h = atomic_inline(C40, "inline-block", 55, false);
     assert!(
@@ -458,7 +407,6 @@ fn a_tall_atomic_inline_alone_still_gets_the_struts_descent() {
 /// but "the strut contributes a scalar height rather than an ascent and a
 /// descent around the baseline".
 #[test]
-#[ignore = "#624 (#656): rinch exactly 55, Chrome 70, the strut has no descent — unchanged by the parley 0.11.1 upgrade; un-ignore when the mechanism is fixed"]
 fn a_tall_atomic_inline_beside_text_still_gets_the_struts_descent() {
     let h = atomic_inline(C40, "inline-block", 55, true);
     assert!(

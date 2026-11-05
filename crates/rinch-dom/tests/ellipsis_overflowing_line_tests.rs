@@ -263,7 +263,7 @@ fn text_align_still_lines_up_against_the_box_after_the_cut() {
     let root = d.tree.get(t.0).unwrap().ifc_root.unwrap();
     let il = d.tree.get(root).unwrap().text_layout.as_ref().unwrap();
     let m = *il.layout.lines().next().unwrap().metrics();
-    let right = m.offset + m.advance - m.trailing_whitespace;
+    let right = m.offset + m.advance - m.hanging_advance;
     assert!(
         (right - 90.0).abs() < 0.5,
         "`ab` ends at {right}, want the box edge 90"

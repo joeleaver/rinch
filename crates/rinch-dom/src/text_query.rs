@@ -178,8 +178,8 @@ pub fn visual_line_range(
 
 /// The line box `(top, height)` of the visual line a caret at `byte_offset`
 /// with `affinity` is drawn on, in the layout's own space: the line Parley
-/// draws that caret on (as [`visual_line_range`] finds it), from its
-/// `block_min_coord` to its `block_max_coord` — the whole line, its leading
+/// draws that caret on (as [`visual_line_range`] finds it), from its top to
+/// its bottom ([`crate::ifc::line_top`]) — the whole line, its leading
 /// included, so every position on one line answers the same box. `None` for
 /// an empty layout.
 pub fn line_box_for_offset(
@@ -190,8 +190,10 @@ pub fn line_box_for_offset(
     let line = layout
         .lines()
         .nth(caret_line_index(layout, byte_offset, affinity)?)?;
-    let m = line.metrics();
-    Some((m.block_min_coord, m.block_max_coord - m.block_min_coord))
+    Some((
+        crate::ifc::line_top(&line),
+        crate::ifc::line_bottom(&line) - crate::ifc::line_top(&line),
+    ))
 }
 
 /// [`visual_line_range`] in the text-bearing element `node_id`'s layout.
@@ -314,7 +316,7 @@ pub fn caret_on_line(
         match item {
             PositionedLayoutItem::GlyphRun(g) => {
                 last_box = None;
-                let run = g.run().clone();
+                let run = *g.run();
                 if runs
                     .last()
                     .is_none_or(|(_, r): &(f32, parley::layout::Run<'_, Brush>)| {
@@ -466,13 +468,20 @@ pub fn caret_position_for_offset_layout_with_affinity(
     byte_offset: usize,
     affinity: CaretAffinity,
 ) -> (f32, f32) {
+    // The top of the line it is drawn on ([`crate::ifc::line_top`]). parley
+    // 0.12's `Cursor::geometry` tops a caret at the line's content area,
+    // which holds the strut — the block's own font, however small the text
+    // at the caret — so a 16px run in a 32px block put it 8px above its line.
+    let top = caret_line_index(layout, byte_offset, affinity)
+        .and_then(|i| layout.get(i))
+        .map(|line| crate::ifc::line_top(&line));
     let affinity = match affinity {
         CaretAffinity::Downstream => Affinity::Downstream,
         CaretAffinity::Upstream => Affinity::Upstream,
     };
     let cursor = Cursor::from_byte_index(layout, byte_offset, affinity);
     let geom = crate::float_wrap::caret_box(layout, &cursor);
-    (geom.x0 as f32, geom.y0 as f32)
+    (geom.x0 as f32, top.unwrap_or(geom.y0 as f32))
 }
 
 /// Get the bounding box for the glyph cluster containing the given byte offset in a layout.
@@ -497,11 +506,10 @@ pub fn glyph_bounds_for_offset_layout(
     let cluster = downstream.or(upstream)?;
 
     let line = cluster.line();
-    let line_metrics = line.metrics();
     // The line box's top, as the caret has it (`Cursor::geometry`) — the
     // content area's, under a line-height smaller than it — not
     // `baseline - ascent`, which is one half-leading lower (#1008).
-    let line_y = line_metrics.block_min_coord;
+    let line_y = crate::ifc::line_top(&line);
 
     // Use the cluster's advance for width
     let advance = cluster.advance();
@@ -513,7 +521,7 @@ pub fn glyph_bounds_for_offset_layout(
         x: geom.x0 as f32,
         y: line_y,
         width: advance,
-        height: line_metrics.block_max_coord - line_metrics.block_min_coord,
+        height: crate::ifc::line_bottom(&line) - crate::ifc::line_top(&line),
     })
 }
 
@@ -591,9 +599,12 @@ pub fn inline_box_caret(
             if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
                 && b.id == box_id
             {
-                let m = line.metrics();
                 let x = if after { b.x + b.width } else { b.x };
-                return Some((x, m.block_min_coord, m.block_max_coord - m.block_min_coord));
+                return Some((
+                    x,
+                    crate::ifc::line_top(&line),
+                    crate::ifc::line_bottom(&line) - crate::ifc::line_top(&line),
+                ));
             }
         }
     }
@@ -614,8 +625,7 @@ pub fn inline_box_at_point(
     y: f32,
 ) -> Option<(u64, bool)> {
     for line in layout.lines() {
-        let m = line.metrics();
-        if !(m.block_min_coord..m.block_max_coord).contains(&y) {
+        if !(crate::ifc::line_top(&line)..crate::ifc::line_bottom(&line)).contains(&y) {
             continue;
         }
         for item in line.items() {
@@ -667,7 +677,7 @@ pub fn glyph_cluster_at_point(
     let (cluster, _) = parley::layout::Cluster::from_point_exact(layout, x, y)?;
     let baseline = cluster.line().metrics().baseline;
     let run = cluster.run();
-    let m = run.metrics();
+    let m = run.font_metrics();
     (y >= baseline - m.ascent && y <= baseline + m.descent).then(|| cluster.text_range())
 }
 
@@ -716,7 +726,6 @@ fn line_inline_boxes(
             parley::layout::PositionedLayoutItem::InlineBox(bx) => {
                 let index = layout
                     .inline_boxes()
-                    .iter()
                     .find(|ib| ib.id == bx.id)
                     .map(|ib| ib.index)?;
                 Some((bx.id, index, bx.x, bx.x + bx.width))
@@ -758,7 +767,7 @@ fn selection_rects_impl(
         // line box and overlaps its neighbours, and Chrome paints that too.)
         // `baseline - ascent` is the top plus the half-leading, which put the
         // highlight half a leading below its line and into the next (#1008).
-        let top = metrics.block_min_coord;
+        let top = crate::ifc::line_top(&line);
         // The bottom is where the next line's box begins (#1024). Parley
         // quantizes each line's coords on its own — the top is the line's
         // rounded `y`, the bottom the rounded ascent, descent and leading added
@@ -770,8 +779,13 @@ fn selection_rects_impl(
         // overlapping the neighbours is what Chrome paints; and the last line
         // keeps its own bottom.
         let bottom = match lines.peek() {
-            Some(next) if metrics.leading >= 0.0 => next.metrics().block_min_coord,
-            _ => metrics.block_max_coord,
+            Some(next)
+                if metrics.line_height
+                    >= crate::ifc::line_ascent(metrics) + crate::ifc::line_descent(metrics) =>
+            {
+                crate::ifc::line_top(next)
+            }
+            _ => crate::ifc::line_bottom(&line),
         };
         let height = bottom - top;
         // A line holding a right-to-left run is walked in visual order: a
@@ -830,7 +844,8 @@ fn selection_rects_impl(
                 &Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream),
             )
             .x0 as f32;
-            before_break + (metrics.ascent + metrics.descent) * 0.25
+            before_break
+                + (crate::ifc::line_ascent(metrics) + crate::ifc::line_descent(metrics)) * 0.25
         } else {
             let end_affinity = if end == range.end {
                 Affinity::Upstream
@@ -901,7 +916,6 @@ fn bidi_line_pieces(
                 }
                 let index = layout
                     .inline_boxes()
-                    .iter()
                     .find(|ib| ib.id == bx.id)
                     .map(|ib| ib.index);
                 if index.is_some_and(|i| box_selected(bx.id, i)) {
@@ -945,7 +959,7 @@ fn bidi_line_pieces(
             &Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream),
         )
         .x0 as f32;
-        let nr = nx + (metrics.ascent + metrics.descent) * 0.25;
+        let nr = nx + (crate::ifc::line_ascent(metrics) + crate::ifc::line_descent(metrics)) * 0.25;
         match pieces.iter_mut().find(|(l, r)| *l <= nx && nx <= *r) {
             Some(piece) => piece.1 = piece.1.max(nr),
             None => pieces.push((nx, nr)),

@@ -294,10 +294,14 @@ there casts its own list too, up to the cut, and the "…" casts the block's
 distinct list is a pass over the lines its text is on, and so is each fragment
 of the per-fragment order. Those passes share one walk of each line they draw
 (`paint::text::PaintText`, #1066): the line's positioned items are collected
-the first time a masked pass draws it and kept for the rest of that paint, and
-each glyph run's glyphs are sliced out of one walk of its run. A paragraph with
+the first time a masked pass draws it and kept for the rest of that paint,
+with the byte each glyph's cluster starts at (`PaintLine::glyph_bytes`, built
+the first time a pass needs it: a mask, a `vertical-align` span and a live
+colour are all by byte). Since parley 0.12 a glyph run's glyphs come from
+`GlyphRun::glyphs`, which walks only that glyph run; only a line an ellipsis
+cuts is walked cluster by cluster, stopping at the cut. A paragraph with
 no such passes keeps nothing: each of its passes walks a line into one reused
-buffer. Parley's own `Line::items` and `GlyphRun::glyphs` re-walk a run from its
+buffer. Parley 0.11.1's `Line::items` and `GlyphRun::glyphs` re-walked a run from its
 start for every glyph run, and a pass each used to make a paragraph of 400
 spans with different lists cost 19 ms against 2.4 ms for one shared list; it is
 2.5–3.9 ms now (release, 800x600, software painter). A pass still visits every

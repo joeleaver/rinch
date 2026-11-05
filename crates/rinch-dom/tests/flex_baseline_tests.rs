@@ -292,16 +292,14 @@ fn a_percentage_top_padding_resolves_against_the_width() {
     near(y(&d, m), 20.0, "A");
 }
 
-/// **A stated divergence (#663), not a fix.** Chrome sets a line's baseline by
-/// its text, and an `inline-block`'s baseline is its own last line's baseline.
-/// rinch's IFC has no baseline model for atomic inlines: a line holding one is
-/// laid out with its baseline at that box's bottom. Since #1013 a
-/// flex item reports its first line's baseline, so the item is aligned by that
-/// bottom. Chrome puts `A` at 0; rinch puts it at 18. (Before #1013 it was 9,
-/// from the item's bottom edge, which was wrong for a different reason.) The
-/// number to change when #663 lands is the second `assert_eq!`.
+/// An item whose first line holds an `inline-block` is aligned by that
+/// box's baseline: its own last line's (#663). Chrome 156 puts `A` at 0 and
+/// the item at 1 — the 32px `A`'s baseline is a pixel below the box's.
+/// Until parley 0.12 rinch's IFC had no baseline model for atomic inlines: a
+/// line holding one had its baseline at that box's bottom, and `A` was at 18
+/// with the item at 0 (9 before #1013, from the item's bottom edge).
 #[test]
-fn an_items_first_line_holding_an_inline_block_is_aligned_by_its_bottom_issue_663() {
+fn an_items_first_line_holding_an_inline_block_is_aligned_by_its_baseline_issue_663() {
     let mut d = doc();
     let c = container(&mut d, "display: flex; align-items: baseline");
     let m = el(&mut d, c, "span", "font-size: 32px; line-height: 40px");
@@ -315,7 +313,6 @@ fn an_items_first_line_holding_an_inline_block_is_aligned_by_its_bottom_issue_66
     );
     text(&mut d, ib, "ok");
     d.resolve_layout(VW, VH);
-    assert_eq!(y(&d, b), 0.0, "block item");
-    // Chrome 153: 0.
-    assert_eq!(y(&d, m), 18.0, "A (#663)");
+    assert_eq!(y(&d, b), 1.0, "block item (Chrome 156: 1)");
+    assert_eq!(y(&d, m), 0.0, "A (Chrome 156: 0)");
 }

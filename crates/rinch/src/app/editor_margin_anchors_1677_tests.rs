@@ -432,9 +432,18 @@ fn a_line_of_mixed_sizes_reports_its_line_box() {
     let lines = last(&page);
     let (_, fy) = frame(&page.app);
     let p1 = para(&page.app, 1);
-    assert_eq!(p1.3, 24.0, "precondition: one 24px line");
-    assert_eq!(line(&lines, "plain"), (p1.1 - fy, 24.0));
-    assert_eq!(line(&lines, "code"), (p1.1 - fy, 24.0));
+    // One line, taller than the paragraph's 24px: since parley 0.12 the
+    // `code` run's box (0.9em of the host's monospace, its own half-leading)
+    // is on the line beside the text's, and they do not share a baseline.
+    // Chrome 156, the same styles with the bundled Inter: 27 (rinch 24 until
+    // the upgrade). The host's monospace is in it, so a range.
+    assert!(
+        (24.0..=28.0).contains(&p1.3),
+        "precondition: one line, got {}",
+        p1.3
+    );
+    assert_eq!(line(&lines, "plain"), (p1.1 - fy, p1.3));
+    assert_eq!(line(&lines, "code"), (p1.1 - fy, p1.3));
 }
 
 /// An anchor right beside a picture taller than the text reports the line the

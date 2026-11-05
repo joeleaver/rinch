@@ -5463,6 +5463,7 @@ fn paint_node_unmasked(
             // constraint below at fractional scale factors.)
             tree.perf.bump(crate::perf::Counter::ShapePaint);
             let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
+            builder.set_line_break_override(Some(crate::ifc::SPACE_RUN_BREAKS));
             builder.push_default(parley::style::StyleProperty::FontSize(font_size));
             builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
             font_family.push_to(&mut builder);
