@@ -816,6 +816,10 @@ fallback for a drag over no text) is not drawn to them.
   block ends with a line break. An `<svg>`, `<canvas>`, `<video>` or hidden
   picture is not written.
 - Pins: `app/text_selection_chrome_tests.rs` (each case with Chrome's string).
-- Known gap: a root's text is written before the atomic inlines inside it, so a
-  rendered space between two `inline-block` columns (Chrome writes " ") is not
-  copied.
+- Each text's own element gives its `white-space` (a `pre` span in a root
+  that collapses keeps its spaces), and a cell that cannot be selected has no
+  tab.
+- Known gap (#2242): a root's text is written before the atomic inlines,
+  floats and inline tables inside it, so text in them comes out of order
+  within its line, and a rendered space between two `inline-block` columns
+  (Chrome writes " ") is not copied.

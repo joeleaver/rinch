@@ -122,7 +122,7 @@ fn order(a: usize, b: usize) -> (usize, usize) {
 
 /// `node`'s `user-select` as `auto` resolves it: its own value, else its
 /// nearest ancestor's that is not `auto` (see the module docs).
-fn resolved_user_select(tree: &rinch_dom::NodeTree, node: u64) -> UserSelectValue {
+pub(crate) fn resolved_user_select(tree: &rinch_dom::NodeTree, node: u64) -> UserSelectValue {
     let mut id = Some(node);
     while let Some(n) = id.and_then(|i| tree.get(i)) {
         if n.computed_style.user_select != UserSelectValue::Auto {

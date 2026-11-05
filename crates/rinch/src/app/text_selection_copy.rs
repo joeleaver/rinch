@@ -68,8 +68,7 @@ pub(crate) fn copy_text(tree: &rinch_dom::NodeTree, runs: &[(u64, usize, usize)]
     };
     let mut active = false;
     let mut seen_boxes = HashSet::new();
-    // (node, leaving it)
-    let mut stack = vec![(tree.root_id, false)];
+    let mut stack = walk_from(tree, runs[0].0);
     while let Some((id, leaving)) = stack.pop() {
         let Some(n) = tree.get(id) else {
             continue;
@@ -118,18 +117,69 @@ pub(crate) fn copy_text(tree: &rinch_dom::NodeTree, runs: &[(u64, usize, usize)]
             continue;
         }
         stack.push((id, true));
-        for &c in n.children.iter().rev() {
-            // A root's own text is written with the root; its children are
-            // walked for the boxes and pictures inside it.
-            let child_is_text = tree
-                .get(c)
-                .is_some_and(|c| c.tag().is_none() && c.run_box.is_none());
-            if !child_is_text {
-                stack.push((c, false));
-            }
-        }
+        push_children(tree, &n.children, &mut stack);
     }
     out.text
+}
+
+/// Push `children` to walk next, in order. A root's own text is written
+/// with the root; its children are walked for the boxes and pictures inside
+/// it, so its text nodes are left out.
+fn push_children(tree: &rinch_dom::NodeTree, children: &[u64], stack: &mut Vec<(u64, bool)>) {
+    for &c in children.iter().rev() {
+        let text = tree
+            .get(c)
+            .is_some_and(|c| c.tag().is_none() && c.run_box.is_none());
+        if !text {
+            stack.push((c, false));
+        }
+    }
+}
+
+/// The walk's stack (node, leaving it) as it stands on reaching `first`, the
+/// selection's first root: the node there next, then the rest of each of
+/// its ancestors after it and the ancestor itself to leave, innermost first.
+/// Nothing before it in the document is walked (it could write nothing:
+/// nothing is written before the first text).
+fn walk_from(tree: &rinch_dom::NodeTree, first: u64) -> Vec<(u64, bool)> {
+    // An anonymous box is met at its first member.
+    let start = match tree.get(first) {
+        Some(n) if n.is_anonymous_block_box => n
+            .parent
+            .and_then(|p| tree.get(p))
+            .and_then(|p| {
+                p.children
+                    .iter()
+                    .copied()
+                    .find(|&c| tree.get(c).is_some_and(|c| c.run_box == Some(first)))
+            })
+            .unwrap_or(first),
+        _ => first,
+    };
+    let mut path = vec![start];
+    while let Some(p) = path
+        .last()
+        .and_then(|&c| tree.get(c))
+        .and_then(|n| n.parent)
+    {
+        path.push(p);
+    }
+    let mut stack = Vec::new();
+    for pair in path.windows(2).rev() {
+        let (child, parent) = (pair[0], pair[1]);
+        let Some(p) = tree.get(parent) else {
+            continue;
+        };
+        stack.push((parent, true));
+        let at = p
+            .children
+            .iter()
+            .position(|&c| c == child)
+            .map_or(0, |i| i + 1);
+        push_children(tree, &p.children[at..], &mut stack);
+    }
+    stack.push((start, false));
+    stack
 }
 
 /// An `<img>` or `<iframe>`: the pictures Blink's iterator writes as a
@@ -163,7 +213,10 @@ fn enter(tree: &rinch_dom::NodeTree, id: u64, out: &mut Out) {
         return;
     };
     if n.computed_style.table_part == TablePart::Cell {
-        if first_cell(tree, id) || !out.emitted || out.ends_in_newline() {
+        // Only a cell that can be selected has its tab.
+        let unselectable = super::text_selection::resolved_user_select(tree, id)
+            == rinch_dom::computed_style::UserSelectValue::None;
+        if unselectable || first_cell(tree, id) || !out.emitted || out.ends_in_newline() {
             return;
         }
         out.push("\t");
@@ -229,18 +282,28 @@ pub(crate) fn rendered_span(tree: &rinch_dom::NodeTree, root: u64) -> Option<(us
     let n = tree.get(root)?;
     let layout = n.text_layout.as_ref()?;
     let text = &layout.text_content;
-    let ws = n.computed_style.white_space;
-    let breaks: Vec<(usize, usize)> = layout
+    // Each text's own `white-space` (its element's), and whether it is a
+    // `<br>`'s line break.
+    let ranges: Vec<(usize, usize, bool, WhiteSpaceValue)> = layout
         .text_ranges
         .iter()
-        .filter(|r| r.is_br)
-        .map(|r| (r.flat_start, r.flat_end))
+        .map(|r| {
+            let ws = tree
+                .get(r.node_id)
+                .and_then(|t| t.parent)
+                .and_then(|p| tree.get(p))
+                .map_or(n.computed_style.white_space, |e| {
+                    e.computed_style.white_space
+                });
+            (r.flat_start, r.flat_end, r.is_br, ws)
+        })
         .collect();
     let drops = |i: usize, c: char| -> bool {
-        if breaks.iter().any(|&(a, b)| a <= i && i < b) {
+        let at = ranges.iter().find(|&&(a, b, ..)| a <= i && i < b);
+        if at.is_some_and(|r| r.2) {
             return false;
         }
-        match ws {
+        match at.map_or(n.computed_style.white_space, |r| r.3) {
             WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap | WhiteSpaceValue::BreakSpaces => false,
             WhiteSpaceValue::PreLine => matches!(c, ' ' | '\t'),
             WhiteSpaceValue::Normal | WhiteSpaceValue::NoWrap => {

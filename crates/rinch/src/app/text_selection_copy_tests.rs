@@ -138,3 +138,37 @@ fn pre_line_keeps_its_line_breaks() {
         "a\n\n\nb",
     )]);
 }
+
+#[test]
+fn white_space_is_read_from_the_texts_own_element() {
+    // A `white-space: pre` span in a root that collapses: its spaces are
+    // drawn, so they are copied (round 2 of #2240's review; main had it).
+    copies_as_chrome(&[(
+        "pre span",
+        r#"<div id="a">first</div><div> <span style="white-space:pre">   </span> </div><div id="b">second</div>"#,
+        "first\n   \nsecond",
+    )]);
+}
+
+#[test]
+fn an_unselectable_cell_has_no_tab() {
+    // Blink writes a cell's tab only when the cell can be selected (round 2
+    // of #2240's review).
+    copies_as_chrome(&[
+        (
+            "with text",
+            r#"<table><tr><td id="a">first</td><td style="user-select:none">mid</td><td id="b">second</td></tr></table>"#,
+            "first\tsecond",
+        ),
+        (
+            "empty",
+            r#"<table><tr><td id="a">first</td><td style="user-select:none"></td><td id="b">second</td></tr></table>"#,
+            "first\tsecond",
+        ),
+        (
+            "two",
+            r#"<table><tr><td id="a">first</td><td style="user-select:none">m1</td><td style="user-select:none">m2</td><td id="b">second</td></tr></table>"#,
+            "first\tsecond",
+        ),
+    ]);
+}
