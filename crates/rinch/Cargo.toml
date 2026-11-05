@@ -60,6 +60,7 @@ tray-icon = { workspace = true, optional = true }
 # Platform-independent optional deps
 rinch-theme = { workspace = true, optional = true }
 rinch-components = { workspace = true, optional = true }
+rinch-html = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
 # ProseMirror-style editor core. Pulled in by the `desktop` feature; the desktop
 # runtime's input/IME/focus glue (in `app`/`shell`) reads its `Selection`/`Pos`/
@@ -102,6 +103,9 @@ rinch-clipboard = { workspace = true, features = ["test-backend"] }
 # the optional `components` feature: the test then runs under `cargo test -p
 # rinch` with no flags, which is how it will actually be run.
 rinch-components = { workspace = true }
+# Test-only: `app::click_link_tests` mounts a real `HtmlView` and clicks a
+# link inside the HTML it was given.
+rinch-html = { workspace = true }
 # Test-only: `app::stepper_state_709_tests` needs a `TablerIcon` to name a
 # per-step icon with. The facade deliberately does not depend on this crate — the
 # icon enum is not in the prelude — so it is a dev-dependency.
@@ -296,6 +300,9 @@ system-tray = ["tray-icon", "gtk", "ksni"]
 memory-profile = ["memory-stats"]
 theme = ["dep:rinch-theme", "rinch-core/theme"]
 components = ["theme", "dep:rinch-components"]
+# `rinch::html`: the allow-list cleaner and `HtmlView`, for showing HTML the
+# app did not write (mail, feeds, help pages). Adds ammonia and css-inline.
+html = ["dep:rinch-html"]
 debug = ["dep:rinch-debug"]
 video = ["dep:rinch-video"]
 # Node-and-wire editors: the graph model and canvas (docs/design/node-graph.md).

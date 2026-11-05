@@ -145,6 +145,12 @@ pub(crate) fn hints_css(node: &Node) -> Option<String> {
     }
     if let Some(a) = attr("align").map(|a| a.trim().to_ascii_lowercase()) {
         let text = matches!(a.as_str(), "left" | "right" | "center" | "justify");
+        // These align the blocks under them too (HTML rendering §15.3.3):
+        // Stylo's `-moz-` values, which a table does not inherit.
+        let aligns_blocks = matches!(
+            tag,
+            "div" | "caption" | "thead" | "tbody" | "tfoot" | "tr" | "td" | "th"
+        );
         match tag {
             "table" if a == "center" => css.push_str("margin-left:auto;margin-right:auto;"),
             "table" | "img" if a == "left" || a == "right" => {
@@ -155,6 +161,12 @@ pub(crate) fn hints_css(node: &Node) -> Option<String> {
                 _ => {}
             },
             "table" => {}
+            _ if aligns_blocks && matches!(a.as_str(), "center" | "middle") => {
+                css.push_str("text-align:-moz-center;");
+            }
+            _ if aligns_blocks && matches!(a.as_str(), "left" | "right") => {
+                write!(css, "text-align:-moz-{a};").unwrap();
+            }
             _ if text && maps_attribute(tag, "align") => {
                 write!(css, "text-align:{a};").unwrap();
             }

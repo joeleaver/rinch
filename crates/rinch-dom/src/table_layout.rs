@@ -226,6 +226,9 @@ struct Row {
     id: Option<RawNodeId>,
     group: Option<RawNodeId>,
     cells: Vec<RawNodeId>,
+    /// A row's one child that is not a cell (`display: block` on a `<td>`),
+    /// in the first column ([`row_of`]).
+    stacked: bool,
 }
 
 #[derive(Default)]
@@ -259,7 +262,78 @@ fn flat_children(tree: &NodeTree, id: RawNodeId, out: &mut Vec<RawNodeId>) {
     }
 }
 
-fn row_of(tree: &NodeTree, row: RawNodeId, group: Option<RawNodeId>) -> Row {
+/// Whether `id` is a row group, a row or a cell: a part that needs a table.
+fn is_row_part(tree: &NodeTree, id: RawNodeId) -> bool {
+    tree.nodes[id].computed_style.table_part.is_row_like()
+        || tree.nodes[id].computed_style.table_part == TablePart::Cell
+}
+
+/// Whether `node` is a block standing for a table
+/// ([`RinchDocument::note_table_host`]).
+pub(crate) fn is_host(node: &crate::node::Node) -> bool {
+    node.computed_style.table_part == TablePart::Table
+        && matches!(
+            node.computed_style.display,
+            DisplayValue::Block | DisplayValue::ListItem
+        )
+}
+
+/// Whether `id` is a block whose in-flow children, seen through
+/// `display: contents` wrappers, are all rows, row groups or cells, at least
+/// one, with no text that shows. Stops at the first child that says no.
+fn qualifies_as_host(tree: &NodeTree, id: RawNodeId) -> bool {
+    let cs = &tree.nodes[id].computed_style;
+    if !matches!(cs.display, DisplayValue::Block | DisplayValue::ListItem)
+        || !matches!(cs.table_part, TablePart::None | TablePart::Table)
+    {
+        return false;
+    }
+    let mut any = false;
+    all_row_parts(tree, id, &mut any) && any
+}
+
+fn all_row_parts(tree: &NodeTree, id: RawNodeId, any: &mut bool) -> bool {
+    for &c in &tree.nodes[id].children {
+        let n = &tree.nodes[c];
+        if !n.is_element() {
+            if n.text_content()
+                .is_some_and(|t| !t.chars().all(char::is_whitespace))
+            {
+                return false;
+            }
+            continue;
+        }
+        let cs = &n.computed_style;
+        if cs.display == DisplayValue::None
+            || matches!(cs.position, PositionValue::Absolute | PositionValue::Fixed)
+            || cs.table_part == TablePart::Other
+        {
+            continue;
+        }
+        if cs.display == DisplayValue::Contents && cs.table_part == TablePart::None {
+            if !all_row_parts(tree, c, any) {
+                return false;
+            }
+            continue;
+        }
+        if !is_row_part(tree, c) {
+            return false;
+        }
+        *any = true;
+    }
+    true
+}
+
+/// A row's rows: itself, or, when none of its children is a table cell, one
+/// row for each child, in the first column. CSS wraps a row's consecutive
+/// children that are not cells in one anonymous cell, in the first column, so
+/// they stack there; HTML email's phone layouts rely on it (`<th
+/// style="display: block !important; width: 100% !important">` columns that
+/// stack under 600px, in a table of one row, so the first column is all of
+/// it). rinch has no anonymous cell box; a row of its own per child, in that
+/// column, draws the same. (A row mixing cells and blocks keeps each in a
+/// column of its own.)
+fn row_of(tree: &NodeTree, row: RawNodeId, group: Option<RawNodeId>) -> Vec<Row> {
     let mut kids = Vec::new();
     flat_children(tree, row, &mut kids);
     kids.retain(|&c| {
@@ -268,11 +342,27 @@ fn row_of(tree: &NodeTree, row: RawNodeId, group: Option<RawNodeId>) -> Row {
             && cs.position != PositionValue::Fixed
             && cs.table_part != TablePart::Other
     });
-    Row {
+    let blocks = !kids.is_empty()
+        && kids
+            .iter()
+            .all(|&c| tree.nodes[c].computed_style.table_part != TablePart::Cell);
+    if blocks && kids.len() > 1 {
+        return kids
+            .into_iter()
+            .map(|c| Row {
+                id: Some(row),
+                group,
+                cells: vec![c],
+                stacked: true,
+            })
+            .collect();
+    }
+    vec![Row {
         id: Some(row),
         group,
         cells: kids,
-    }
+        stacked: false,
+    }]
 }
 
 fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
@@ -295,10 +385,11 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                 id: None,
                 group: None,
                 cells: std::mem::take(&mut bare),
+                stacked: false,
             });
         }
         match part {
-            TablePart::Row => s.body.push(row_of(tree, c, None)),
+            TablePart::Row => s.body.extend(row_of(tree, c, None)),
             TablePart::RowGroup | TablePart::HeaderGroup | TablePart::FooterGroup => {
                 let mut rows = Vec::new();
                 flat_children(tree, c, &mut rows);
@@ -316,9 +407,10 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                                 id: None,
                                 group: Some(c),
                                 cells: std::mem::take(&mut cells),
+                                stacked: false,
                             });
                         }
-                        list.push(row_of(tree, r, Some(c)));
+                        list.extend(row_of(tree, r, Some(c)));
                     } else {
                         cells.push(r);
                     }
@@ -328,6 +420,7 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                         id: None,
                         group: Some(c),
                         cells,
+                        stacked: false,
                     });
                 }
             }
@@ -346,6 +439,7 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
             id: None,
             group: None,
             cells: bare,
+            stacked: false,
         });
     }
     s
@@ -404,11 +498,112 @@ impl RinchDocument {
         }
     }
 
+    /// A block whose in-flow children are all rows, row groups or cells (and
+    /// no text) is laid out as the table CSS wraps them in (CSS 2.1 §17.2.1,
+    /// "anonymous table objects"): email sets `display: block` on a `<table>`
+    /// for phones, and its cells stay side by side in Chrome. rinch has no
+    /// anonymous box, so the block takes the table's part itself
+    /// ([`is_host`]): it keeps its own width, as Chrome's block does, and its
+    /// columns pack at its start as the anonymous table's would
+    /// (`apply_table_style`).
+    ///
+    /// Not modelled: a block that mixes table parts with other content,
+    /// which CSS wraps run by run; it lays out as before (each part where
+    /// its own display puts it).
+    ///
+    /// Called as each node is cascaded. A block is marked when it is styled
+    /// with its rows already styled, or when a row is styled under it; it
+    /// gives the part up ([`Self::unhost`]) when it is restyled and no longer
+    /// qualifies, and a rebuild checks again ([`Self::resolve_tables`]), so a
+    /// row removed, added or restyled is seen too.
+    pub(crate) fn note_table_host(&mut self, node_id: RawNodeId) {
+        let cs = &self.tree.nodes[node_id].computed_style;
+        if cs.table_part == TablePart::None {
+            if qualifies_as_host(&self.tree, node_id) {
+                self.tree.nodes[node_id].computed_style.table_part = TablePart::Table;
+                self.owe_table(node_id);
+                // The table it stands in, if any, now holds it as a cell.
+                if let Some(p) = self.tree.nodes[node_id].parent {
+                    self.note_table_children_changed(p);
+                }
+            } else if self.tree.nodes[node_id].table_box.is_some() {
+                self.unhost(node_id);
+            }
+            return;
+        }
+        if !is_row_part(&self.tree, node_id) {
+            return;
+        }
+        let mut id = node_id;
+        let block = loop {
+            let Some(p) = self.tree.nodes[id].parent else {
+                return;
+            };
+            if self.tree.nodes[p].computed_style.display != DisplayValue::Contents {
+                break p;
+            }
+            id = p;
+        };
+        let part = self.tree.nodes[block].computed_style.table_part;
+        if part == TablePart::None && qualifies_as_host(&self.tree, block) {
+            self.tree.nodes[block].computed_style.table_part = TablePart::Table;
+            self.owe_table(block);
+        } else if is_host(&self.tree.nodes[block]) {
+            self.owe_table(block);
+        }
+    }
+
+    fn owe_table(&mut self, table: RawNodeId) {
+        if self.tree.tables_owed.last() != Some(&table) {
+            self.tree.tables_owed.push(table);
+        }
+        self.tree.layout_dirty = true;
+    }
+
+    /// A block that stood for a table ([`Self::note_table_host`]) and no
+    /// longer does: its part, its table box and its cells' places go, and
+    /// each takes the Taffy style of its own computed values again.
+    fn unhost(&mut self, host: RawNodeId) {
+        let node = &mut self.tree.nodes[host];
+        if node.computed_style.table_part == TablePart::Table
+            && matches!(
+                node.computed_style.display,
+                DisplayValue::Block | DisplayValue::ListItem
+            )
+        {
+            node.computed_style.table_part = TablePart::None;
+        }
+        let placed = node.table_box.take().map(|b| b.placed).unwrap_or_default();
+        self.tree.tables.retain(|&t| t != host);
+        self.show_blank_runs(host);
+        for id in placed.into_iter().chain([host]) {
+            let Some(n) = self.tree.nodes.get_mut(id) else {
+                continue;
+            };
+            n.table_cell = None;
+            self.rewrite_taffy_style(id);
+        }
+        self.tree.layout_dirty = true;
+        if let Some(p) = self.tree.nodes[host].parent {
+            self.note_table_children_changed(p);
+        }
+    }
+
     /// Owe `parent`'s table a rebuild after its child list changed: neither a
     /// removal nor a move of an already-styled row restyles anything that
     /// would say so. Consecutive changes under one table are pushed once.
+    ///
+    /// A plain block is owed a look too: one that lost its last child that is
+    /// not a row, or whose text went, may stand for a table now
+    /// ([`Self::note_table_host`]); [`Self::resolve_tables`] checks.
     pub(crate) fn note_table_children_changed(&mut self, parent: RawNodeId) {
-        if let Some(table) = Self::table_of(&self.tree, parent)
+        let owed = Self::table_of(&self.tree, parent).or_else(|| {
+            let cs = &self.tree.nodes.get_live(parent)?.computed_style;
+            (cs.table_part == TablePart::None
+                && matches!(cs.display, DisplayValue::Block | DisplayValue::ListItem))
+            .then_some(parent)
+        });
+        if let Some(table) = owed
             && self.tree.tables_owed.last() != Some(&table)
         {
             self.tree.tables_owed.push(table);
@@ -427,9 +622,24 @@ impl RinchDocument {
         owed.sort_unstable();
         owed.dedup();
         for id in owed {
-            if self.tree.contains(id)
-                && self.tree.nodes[id].computed_style.table_part == TablePart::Table
-            {
+            if !self.tree.contains(id) {
+                continue;
+            }
+            if is_host(&self.tree.nodes[id]) && !qualifies_as_host(&self.tree, id) {
+                self.unhost(id);
+                continue;
+            }
+            // A plain block owed a look (`note_table_children_changed`).
+            if self.tree.nodes[id].computed_style.table_part == TablePart::None {
+                if !qualifies_as_host(&self.tree, id) {
+                    continue;
+                }
+                self.tree.nodes[id].computed_style.table_part = TablePart::Table;
+                if let Some(p) = self.tree.nodes[id].parent {
+                    self.note_table_children_changed(p);
+                }
+            }
+            if self.tree.nodes[id].computed_style.table_part == TablePart::Table {
                 self.rebuild_table(id);
             }
         }
@@ -500,10 +710,13 @@ impl RinchDocument {
         let cols = open.len();
 
         let cs = &self.tree.nodes[table].computed_style;
-        let definite = !matches!(
-            cs.width,
-            DimensionValue::Auto | DimensionValue::Intrinsic(_)
-        );
+        // A host's own width is its block's: the anonymous table in it is
+        // as wide as its content.
+        let definite = !is_host(&self.tree.nodes[table])
+            && !matches!(
+                cs.width,
+                DimensionValue::Auto | DimensionValue::Intrinsic(_)
+            );
         let fixed = cs.table_layout_fixed && definite;
         let collapse = cs.border_collapse;
         let spacing = if collapse {
@@ -534,8 +747,10 @@ impl RinchDocument {
                 x += n;
             }
         }
+        // A stacked block's `width` is its own, inside the anonymous cell
+        // that holds it, whose width is auto.
         for (cell, slot, y) in &placed {
-            if slot.colspan == 1 && (!fixed || *y == 0) {
+            if slot.colspan == 1 && (!fixed || *y == 0) && !rows[*y].stacked {
                 let i = slot.col as usize - 1;
                 tracks[i] = merge_track(tracks[i], declared_track(&self.tree, *cell));
             }
@@ -655,6 +870,15 @@ impl RinchDocument {
     pub(crate) fn apply_table_style(&self, id: RawNodeId, style: &mut taffy::Style) {
         let node = &self.tree.nodes[id];
         if let Some(b) = &node.table_box {
+            // A block that hosts table parts ([`Self::note_table_host`]):
+            // a grid of its own width, its tracks packed at its start as the
+            // anonymous table's columns and rows would be.
+            let host = is_host(node);
+            if host {
+                style.display = taffy::Display::Grid;
+                style.justify_content = Some(taffy::JustifyContent::START);
+                style.align_content = Some(taffy::AlignContent::START);
+            }
             let can_weigh = b.definite && !b.fixed;
             let all_declared = b.tracks.iter().all(|t| *t != Track::Auto);
             style.grid_template_columns = b
@@ -690,7 +914,7 @@ impl RinchDocument {
                 left: length(cs.padding_left.to_px() + b.spacing.0),
                 right: length(cs.padding_right.to_px() + b.spacing.0),
             };
-            if !b.definite && matches!(node.computed_style.width, DimensionValue::Auto) {
+            if !host && !b.definite && matches!(node.computed_style.width, DimensionValue::Auto) {
                 style.size.width = taffy::Dimension::fit_content();
             }
         }
@@ -1089,6 +1313,26 @@ impl RinchDocument {
     /// The white space between a table's rows and cells generates no box
     /// (css-tables-3 §3.9). The IFC pass mints an anonymous block box around
     /// it, as around any run in a grid, which would be a stray grid item.
+    /// Undo [`Self::hide_blank_runs`] for a block that stops standing for a
+    /// table: its text runs are anonymous blocks again, shown whatever they
+    /// hold (one blank then is no longer blank).
+    fn show_blank_runs(&mut self, table: RawNodeId) {
+        let boxes: Vec<RawNodeId> = self.tree.nodes[table].run_boxes.clone();
+        for b in boxes {
+            let Some(t) = self.tree.nodes.get_live(b).and_then(|n| n.taffy_id) else {
+                continue;
+            };
+            if let Ok(old) = self.tree.taffy.style(t).cloned()
+                && old.display == taffy::Display::None
+            {
+                let mut st = old;
+                st.display = taffy::Display::Block;
+                let _ = self.tree.taffy.set_style(t, st);
+                self.tree.layout_dirty = true;
+            }
+        }
+    }
+
     fn hide_blank_runs(&mut self, table: RawNodeId) {
         let mut parts = vec![table];
         let mut boxes = Vec::new();
@@ -1191,6 +1435,11 @@ impl RinchDocument {
         let Some(cell) = &node.table_cell else {
             return;
         };
+        // A block that hosts a table in a cell's place ([`Self::note_table_host`])
+        // is that table, which its cell is exactly as tall as.
+        if node.table_box.is_some() {
+            return;
+        }
         if node.computed_style.table_part == TablePart::Caption {
             return;
         }

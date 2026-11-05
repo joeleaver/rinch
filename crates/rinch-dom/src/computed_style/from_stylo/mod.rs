@@ -305,6 +305,7 @@ impl ComputedStyle {
             letter_spacing: letter_spacing_from_stylo(&text.letter_spacing, font_size_px),
             word_spacing: word_spacing_from_stylo(&text.word_spacing, font_size_px),
             text_align: text_align_from_stylo(&text.text_align),
+            html_align: html_align_from_stylo(&text.text_align),
             text_decoration: text_decoration_from_stylo(
                 &cv.get_text().clone_text_decoration_line(),
                 cv.get_text().clone_text_decoration_style(),

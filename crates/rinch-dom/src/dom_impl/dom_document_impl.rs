@@ -593,6 +593,11 @@ impl DomDocument for RinchDocument {
         // Also invalidate parent's IFC
         if let Some(parent_id) = self.tree.nodes[n].parent {
             self.invalidate_parent_ifc(parent_id);
+            // Text gained or lost beside rows decides whether the block
+            // stands for a table (`note_table_host`).
+            if matches!(self.tree.nodes[n].kind, NodeKind::Text(_)) {
+                self.note_table_children_changed(parent_id);
+            }
         }
         // New text is new content to shrink-wrap: every atomic inline above
         // this node has to be measured again, and the root compute cannot do it

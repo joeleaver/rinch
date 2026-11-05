@@ -1036,6 +1036,7 @@ impl RinchDocument {
             // Capture old display before transitions overwrite computed_style
             let old_display = self.tree.nodes[node_id].computed_style.display;
             let old_table_part = self.tree.nodes[node_id].computed_style.table_part;
+            let old_height = self.tree.nodes[node_id].computed_style.height;
             let was_inline_level = self.tree.nodes[node_id]
                 .computed_style
                 .inline_level_before_blockify;
@@ -1266,6 +1267,14 @@ impl RinchDocument {
                 // No transitions — apply directly (current behavior)
                 self.tree.nodes[node_id].computed_style = new_style.clone();
             }
+
+            // Lets the read-back skip `html_align_dx` in documents that
+            // never use the attribute (`NodeTree::html_align_seen`).
+            if self.tree.nodes[node_id].computed_style.html_align.is_some() {
+                self.tree.html_align_seen = true;
+            }
+            self.note_table_host(node_id);
+            self.note_cell_height(node_id, old_table_part, old_height);
 
             // An inline element that casts a `text-shadow` other than its
             // parent's makes its IFC's runs cast more than one list (#1048);
@@ -1874,6 +1883,37 @@ impl RinchDocument {
     /// `computed_style` starts from (the cascade's sync and both tick
     /// re-syncs). It carries what the computed values alone cannot: a table's
     /// part's place, from its table's last rebuild (`table_layout`).
+    /// Write `node_id`'s Taffy style again from its computed values, as the
+    /// cascade writes it (`apply_stylo_styles_to_taffy`): the body's
+    /// overrides, an out-of-flow box's containing-block size
+    /// (`bake_at_style_site`), a collapsed block's estimated height. A
+    /// `display: contents` wrapper's style is `sync_display_contents`'s, and is
+    /// left alone. For a site that changes what an already-cascaded box's
+    /// style is built from (a table's placement, a cell's height).
+    pub(crate) fn rewrite_taffy_style(&mut self, node_id: RawNodeId) {
+        let Some(node) = self.tree.nodes.get_live(node_id) else {
+            return;
+        };
+        let Some(t) = node.taffy_id else {
+            return;
+        };
+        if !node.is_element()
+            || node.computed_style.display == crate::computed_style::DisplayValue::Contents
+        {
+            return;
+        }
+        let mut style = self.taffy_style_from_computed(node_id);
+        if node_id == self.tree.body_id {
+            crate::node::body_taffy_overrides(&mut style);
+        }
+        crate::out_of_flow::bake_at_style_site(&mut self.tree, node_id, &mut style);
+        if let Some(est_h) = self.tree.nodes[node_id].estimated_height {
+            style.size.height = taffy::Dimension::length(est_h);
+        }
+        let _ = self.tree.taffy.set_style(t, style);
+        self.tree.layout_dirty = true;
+    }
+
     pub(crate) fn taffy_style_from_computed(&self, node_id: RawNodeId) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
@@ -1900,7 +1940,69 @@ impl RinchDocument {
             style.aspect_ratio = None;
         }
         self.apply_table_style(node_id, &mut style);
+        self.unresolve_heights_in_auto_cell(node_id, &mut style);
         style
+    }
+
+    /// A cell whose `height` became or stopped being a fixed length, or a box
+    /// that became or stopped being a cell, changes how its children's
+    /// percentage heights resolve
+    /// ([`Self::unresolve_heights_in_auto_cell`]), and their Taffy styles were
+    /// written from the cell it was: write them again. (A child cascaded on
+    /// this same pass writes its own after this.)
+    fn note_cell_height(
+        &mut self,
+        node_id: RawNodeId,
+        old_part: crate::computed_style::TablePart,
+        old_height: crate::computed_style::DimensionValue,
+    ) {
+        use crate::computed_style::{DimensionValue, TablePart};
+        let cs = &self.tree.nodes[node_id].computed_style;
+        let was_cell = old_part == TablePart::Cell;
+        let is_cell = cs.table_part == TablePart::Cell;
+        let fixed = |h: DimensionValue| matches!(h, DimensionValue::Length(_));
+        if !(was_cell || is_cell) || (was_cell == is_cell && fixed(cs.height) == fixed(old_height))
+        {
+            return;
+        }
+        let children = self.tree.nodes[node_id].children.clone();
+        for c in children {
+            self.rewrite_taffy_style(c);
+        }
+    }
+
+    /// A percentage `height`, `min-height` or `max-height` on a child of a
+    /// table cell with no fixed `height` behaves as `auto` (a cell's own
+    /// percentage height is not one rinch sizes it by; CSS 2.1
+    /// §10.5: its containing block's height depends on its content), as in
+    /// Chrome. Resolved against the cell's laid-out height instead, an
+    /// email's `min-height: 100%` blocks were each as tall as their whole
+    /// cell, and the cell did not grow to hold them: everything after the
+    /// first was laid out below the table and never drawn (a phone layout
+    /// whose cell content carries `min-height: 100%`).
+    fn unresolve_heights_in_auto_cell(&self, node_id: RawNodeId, style: &mut taffy::Style) {
+        use crate::computed_style::{DimensionValue, TablePart};
+        let Some(parent) = self.tree.nodes[node_id]
+            .parent
+            .and_then(|p| self.tree.nodes.get(p))
+        else {
+            return;
+        };
+        if parent.computed_style.table_part != TablePart::Cell
+            || matches!(parent.computed_style.height, DimensionValue::Length(_))
+        {
+            return;
+        }
+        let percent = |raw: taffy::CompactLength| raw.tag() == taffy::CompactLength::PERCENT_TAG;
+        if percent(style.size.height.into_raw()) {
+            style.size.height = taffy::Dimension::auto();
+        }
+        if percent(style.min_size.height.into_raw()) {
+            style.min_size.height = taffy::LengthPercentageAuto::auto();
+        }
+        if percent(style.max_size.height.into_raw()) {
+            style.max_size.height = taffy::LengthPercentageAuto::auto();
+        }
     }
 
     /// Set [`NodeTree::inline_text_shadows`] if `node_id` — just cascaded — is

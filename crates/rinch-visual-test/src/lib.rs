@@ -7,6 +7,8 @@ pub mod browser;
 pub mod capture;
 pub mod compare;
 pub mod css_export;
+#[cfg(feature = "html-compare")]
+pub mod html_compare;
 pub mod html_serializer;
 pub mod report;
 pub mod runner;
