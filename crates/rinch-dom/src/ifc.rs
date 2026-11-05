@@ -742,21 +742,20 @@ pub(crate) fn plain_shrink_to_fit_margins(
     Some(margin(style.margin_left)? + margin(style.margin_right)?)
 }
 
-/// The margins of an atomic inline whose `width` is a percentage (and whose
-/// `min-width`/`max-width` are not), when they are lengths or `auto`. Such a
-/// box's percentage is cyclic in a min-content measure of the line it sits
-/// on, so there it contributes as `auto` does: its min-content width
-/// (css-sizing-3 §5.2.1). An email's "responsive columns" are exactly this,
-/// `display: inline-block; width: 100%` tables in a cell: lined up at their
-/// one-line width instead, they made the cell, and the table, as wide as
-/// their longest paragraph (#2159).
+/// The margins of an atomic inline whose `width` is a percentage, when they
+/// are lengths or `auto`. Such a box's percentage is cyclic in a min-content
+/// measure of the line it sits on, so there it contributes as `auto` does:
+/// its min-content width (css-sizing-3 §5.2.1). An email's "responsive
+/// columns" are exactly this, `display: inline-block; width: 100%` tables in
+/// a cell: lined up at their one-line width instead, they made the cell, and
+/// the table, as wide as their longest paragraph (#2159). A percentage
+/// `min-width` or `max-width` is as cyclic there, and changes nothing: a
+/// cyclic `max-width` is `none` and a cyclic `min-width` 0 in a min-content
+/// contribution. MJML writes `width: 100%; max-width: 100%` on every column.
 pub(crate) fn percent_width_margins(style: &crate::computed_style::ComputedStyle) -> Option<f32> {
     use crate::computed_style::DimensionValue::Percent;
     use crate::computed_style::LengthPercentageAutoValue as M;
-    if !matches!(style.width, Percent(_))
-        || matches!(style.min_width, Percent(_))
-        || matches!(style.max_width, Percent(_))
-    {
+    if !matches!(style.width, Percent(_)) {
         return None;
     }
     let margin = |m: M| match m {
