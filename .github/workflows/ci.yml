@@ -374,6 +374,9 @@ jobs:
           # #2098's image-rendering and #2099's url masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_image_rendering_mask_2098 -- \
             --ignored --test-threads=1
+          # #2221's background-blend-mode against Chrome's pixels.
+          run 1 -p rinch --features gpu,video --test gpu_background_blend_2221 -- \
+            --ignored --test-threads=1
           # #2111's SVG files as images against Chrome's pixels, at 1x and 2x.
           run 1 -p rinch --features gpu,video --test gpu_svg_images_2111 -- \
             --ignored --test-threads=1
