@@ -792,3 +792,34 @@ a repeat from a press: the honest field is the same three-state one, and
 home for the type first (**#797**).
 
 Guide: `docs/src/guide/focus.md`.
+
+**Read-only text selection** (desktop; #2229, #2240). A press in
+`user-select` text starts `RinchApp::text_selection` (`app/text_selection.rs`):
+an anchor and a focus, each an IFC root and a byte offset. `TextSelection::runs`
+gives every selectable root between them in document order with its part. The
+roots come from `RootsCache` (`app/text_selection_text.rs`, one build per
+hit-cache generation), which marks the roots with text (`has_content`: something
+drawn, not only the white space its lines drop; a `<br>` and a no-break space
+count). A mail is full of roots holding only the white space between its tables
+and columns: runs pass them, the highlight skips them, and `nearest` (the
+fallback for a drag over no text) is not drawn to them.
+- The copy (`app/text_selection_copy.rs`) is Blink's text iterator, measured as
+  Chrome 156's `getSelection().toString()`. It walks the document from the
+  selection's first root to its last and writes each root's part without the
+  white space its lines drop.
+- Entering or leaving a block (a block container, table or row, but not a cell,
+  inline-level box, float, absolutely positioned box or picture) writes a line
+  break, unless the last thing written was one. Leaving a `<p>` with height
+  writes one more.
+- Each cell but its row's first gets a tab, whatever it holds.
+- An `<img>` or `<iframe>` is written as nothing, but counts as written, so its
+  block ends with a line break. An `<svg>`, `<canvas>`, `<video>` or hidden
+  picture is not written.
+- Pins: `app/text_selection_chrome_tests.rs` (each case with Chrome's string).
+- Each text's own element gives its `white-space` (a `pre` span in a root
+  that collapses keeps its spaces), and a cell that cannot be selected has no
+  tab.
+- Known gap (#2242): a root's text is written before the atomic inlines,
+  floats and inline tables inside it, so text in them comes out of order
+  within its line, and a rendered space between two `inline-block` columns
+  (Chrome writes " ") is not copied.
