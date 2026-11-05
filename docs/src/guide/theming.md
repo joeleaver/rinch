@@ -523,9 +523,15 @@ nor copied. A press on a link in selectable text follows it on release, and
 a drag across it selects it instead.
 
 Ctrl+C (Cmd+C) copies what Chrome's `getSelection().toString()` gives for
-the same markup: a tab between cells of a row, a line break between blocks
-and rows, a blank line after a `<p>`, no list bullets or other generated
-content. `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
+the same markup:
+- a tab before each cell but a row's first, even an empty one;
+- a line break between blocks and rows, and a blank line after a `<p>`;
+- a line of its own for a `<br>`, or for an `<img>` or `<iframe>` between
+  blocks;
+- no list bullets or other generated content.
+
+The white space between a document's tables and columns is neither
+highlighted nor copied. `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
 they are. On the web the browser selects text itself, from the same CSS.
 
 ## Extending the Theme

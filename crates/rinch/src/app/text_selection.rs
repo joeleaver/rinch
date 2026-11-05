@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use super::text_selection_text::{RootsCache, kept_ranges, separator};
+use super::text_selection_text::{RootsCache, kept_ranges};
 use super::*;
 use rinch_dom::computed_style::UserSelectValue;
 
@@ -84,9 +84,13 @@ impl TextSelection {
         } else {
             ((f, fo), (a, ao), (ifo, ia))
         };
+        // Roots with nothing to take (white space between a mail's tables)
+        // are passed, as Chrome passes them.
         cache.roots[i0..=i1]
             .iter()
-            .map(|&r| {
+            .zip(&cache.content[i0..=i1])
+            .filter(|&(&r, &has)| has || r == a || r == f)
+            .map(|(&r, _)| {
                 if r == first {
                     (r, first_off.min(len(r)), len(r))
                 } else if r == last {
@@ -118,7 +122,7 @@ fn order(a: usize, b: usize) -> (usize, usize) {
 
 /// `node`'s `user-select` as `auto` resolves it: its own value, else its
 /// nearest ancestor's that is not `auto` (see the module docs).
-fn resolved_user_select(tree: &rinch_dom::NodeTree, node: u64) -> UserSelectValue {
+pub(crate) fn resolved_user_select(tree: &rinch_dom::NodeTree, node: u64) -> UserSelectValue {
     let mut id = Some(node);
     while let Some(n) = id.and_then(|i| tree.get(i)) {
         if n.computed_style.user_select != UserSelectValue::Auto {
@@ -519,27 +523,14 @@ impl RinchApp {
         self.text_selecting = false;
     }
 
-    /// The selected text, as Chrome's `getSelection().toString()` has it:
-    /// each covered root's kept text ([`kept_ranges`]), with a tab between
-    /// two cells of a row and line breaks between blocks ([`separator`]).
+    /// The selected text, as Chrome's `getSelection().toString()` has it
+    /// (`text_selection_copy`).
     pub(super) fn text_selection_text(&mut self) -> Option<String> {
         let doc = self.doc.clone()?;
         let sel = self.text_selection.as_mut().filter(|s| !s.is_empty())?;
         let d = doc.borrow();
-        let mut out = String::new();
-        let mut last: Option<u64> = None;
-        for (node, start, end) in sel.runs(&d.tree) {
-            let text = &d.tree.get(node)?.text_layout.as_ref()?.text_content;
-            let part: String = kept_ranges(&d.tree, node, start, end)
-                .into_iter()
-                .filter_map(|(a, b)| text.get(a..b))
-                .collect();
-            if let Some(prev) = last {
-                out.push_str(&separator(&d.tree, prev, node));
-            }
-            out.push_str(&part);
-            last = Some(node);
-        }
+        let runs = sel.runs(&d.tree);
+        let out = super::text_selection_copy::copy_text(&d.tree, &runs);
         (!out.is_empty()).then_some(out)
     }
 

@@ -1,8 +1,8 @@
 //! What a read-only selection holds, as Chrome has it: the selectable
-//! roots of a document in order ([`RootsCache`]), the parts of each a
-//! selection keeps ([`kept_ranges`]: not hidden text, not `user-select: none`
-//! text, not a list marker), and the text copied between two roots
-//! ([`separator`], measured against Chrome 156's `getSelection().toString()`).
+//! roots of a document in order ([`RootsCache`]), which of them have text
+//! ([`has_content`]), and the parts of each a selection keeps
+//! ([`kept_ranges`]: not hidden text, not `user-select: none` text, not a
+//! list marker). What a copy writes is `text_selection_copy`.
 
 use std::collections::HashMap;
 
@@ -18,6 +18,8 @@ pub(crate) struct RootsCache {
     pub(crate) roots: Vec<u64>,
     pub(crate) index: HashMap<u64, usize>,
     pub(crate) boxes: Vec<(f32, f32, f32, f32)>,
+    /// Whether each root has something a selection takes ([`has_content`]).
+    pub(crate) content: Vec<bool>,
 }
 
 impl RootsCache {
@@ -28,11 +30,13 @@ impl RootsCache {
             .iter()
             .map(|&r| super::hit_testing::painted_element_box(tree, r))
             .collect();
+        let content = roots.iter().map(|&r| has_content(tree, r)).collect();
         Self {
             generation: tree.hit_cache.generation(),
             roots,
             index,
             boxes,
+            content,
         }
     }
 
@@ -48,10 +52,22 @@ impl RootsCache {
         self.roots
             .iter()
             .zip(&self.boxes)
-            .map(|(&r, &(bx, by, bw, bh))| (gap(by, bh, y), gap(bx, bw, x), r))
+            .zip(&self.content)
+            .filter(|(_, has)| **has)
+            .map(|((&r, &(bx, by, bw, bh)), _)| (gap(by, bh, y), gap(bx, bw, x), r))
             .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)))
             .map(|(.., r)| r)
     }
+}
+
+/// Whether IFC root `root` has text a selection takes: something drawn,
+/// not only the white space its lines drop (a `<br>` and a no-break space
+/// are text). Mail is full of roots that hold nothing but the white space
+/// between its tables and columns, or only a picture; Chrome passes them, so
+/// a selection does too: they are not highlighted, and a drag is not drawn
+/// to them.
+pub(crate) fn has_content(tree: &rinch_dom::NodeTree, root: u64) -> bool {
+    super::text_selection_copy::rendered_span(tree, root).is_some()
 }
 
 /// Whether the text of `text_node` (inside IFC root `root`) is left out of
@@ -121,114 +137,4 @@ pub(crate) fn kept_ranges(
         }
     }
     out
-}
-
-/// The ancestors-or-self of `id`, nearest first.
-fn chain(tree: &rinch_dom::NodeTree, id: u64) -> Vec<u64> {
-    let mut out = vec![id];
-    let mut cur = id;
-    while let Some(p) = tree.get(cur).and_then(|n| n.parent) {
-        out.push(p);
-        cur = p;
-    }
-    out
-}
-
-fn tag(tree: &rinch_dom::NodeTree, id: u64) -> Option<&str> {
-    tree.get(id).and_then(|n| n.tag())
-}
-
-/// The real element a root stands for: itself, or the element an anonymous
-/// box's run belongs to.
-fn element_of(tree: &rinch_dom::NodeTree, root: u64) -> u64 {
-    match tree.get(root) {
-        Some(n) if n.is_anonymous_block_box => n.parent.unwrap_or(root),
-        _ => root,
-    }
-}
-
-/// What a copy puts between the text of root `a` and the root after it, `b`:
-/// a tab between two cells of a row; else a line break, and one more for
-/// each `<p>` the selection leaves on the way (the ones `a` is in, and any it
-/// passes whole), as Chrome's `getSelection().toString()` has it.
-pub(crate) fn separator(tree: &rinch_dom::NodeTree, a: u64, b: u64) -> String {
-    let (ea, eb) = (element_of(tree, a), element_of(tree, b));
-    let above_a = chain(tree, ea);
-    let above_b = chain(tree, eb);
-    let b_set: std::collections::HashSet<u64> = above_b.iter().copied().collect();
-    let lca = above_a.iter().copied().find(|id| b_set.contains(id));
-    let exited: Vec<u64> = above_a
-        .iter()
-        .copied()
-        .take_while(|&id| Some(id) != lca)
-        .collect();
-    let entered: Vec<u64> = above_b
-        .iter()
-        .copied()
-        .take_while(|&id| Some(id) != lca)
-        .collect();
-    let is_cell = |id: &u64| matches!(tag(tree, *id), Some("td" | "th"));
-    let is_row = |id: &u64| tag(tree, *id) == Some("tr");
-    if exited.iter().any(is_cell)
-        && entered.iter().any(is_cell)
-        && !exited.iter().any(is_row)
-        && !entered.iter().any(is_row)
-    {
-        return "\t".into();
-    }
-    // (An anonymous box stands for its parent element, which is not left
-    // when the next root is in it: then it is the common ancestor.)
-    let breaks = 1
-        + exited
-            .iter()
-            .filter(|&&id| tag(tree, id) == Some("p"))
-            .count()
-        + paragraphs_passed(tree, ea, eb, &b_set);
-    "\n".repeat(breaks)
-}
-
-/// The `<p>` elements wholly between `a` and `b` in document order (a
-/// selection passing an unselectable paragraph still leaves it).
-fn paragraphs_passed(
-    tree: &rinch_dom::NodeTree,
-    a: u64,
-    b: u64,
-    above_b: &std::collections::HashSet<u64>,
-) -> usize {
-    // The node after `id`'s subtree in document order.
-    let after = |mut id: u64| -> Option<u64> {
-        loop {
-            let parent = tree.get(id)?.parent?;
-            let siblings = &tree.get(parent)?.children;
-            let at = siblings.iter().position(|&c| c == id)?;
-            if let Some(&next) = siblings.get(at + 1) {
-                return Some(next);
-            }
-            id = parent;
-        }
-    };
-    let mut count = 0;
-    let mut cur = after(a);
-    let mut steps = 0;
-    while let Some(id) = cur {
-        steps += 1;
-        if id == b || steps > 10_000 {
-            break;
-        }
-        if above_b.contains(&id) {
-            cur = tree
-                .get(id)
-                .and_then(|n| n.children.first().copied())
-                .or_else(|| after(id));
-            continue;
-        }
-        let shown = tree.get(id).is_some_and(|n| {
-            n.computed_style.display != rinch_dom::computed_style::DisplayValue::None
-        });
-        if shown && tag(tree, id) == Some("p") {
-            count += 1;
-        }
-        cur = after(id);
-    }
-    count
 }
