@@ -1316,7 +1316,7 @@ impl<'a> TextFragment<'a> {
 /// visibility of its text node's **DOM parent**. That is per element, not per
 /// Parley run: two adjacent elements that differ only in visibility share one
 /// style, so Parley shapes them into one glyph run, and the split has to be
-/// made glyph by glyph (see [`GlyphCursor`]). Bytes no range covers take
+/// made glyph by glyph (see [`PaintLine::glyph_bytes`]). Bytes no range covers take
 /// the IFC root's visibility. What a `text-overflow: ellipsis` cut hides is
 /// hidden too ([`Self::cut`], #1100).
 pub(super) struct TextMask {
@@ -1583,112 +1583,6 @@ fn visual_segments(
     merged
 }
 
-/// Lines a hidden mask up with Parley's glyph runs.
-///
-/// A line item is one `Run` view, which Parley splits into consecutive glyph
-/// runs wherever the glyphs' `style_index` changes, and keeps each glyph run's
-/// start private. So the cursor walks the run's visual-order glyphs **once**
-/// per line item, recording each glyph's style index and whether its cluster
-/// is hidden, and then hands out consecutive slices of that walk, splitting
-/// them by style index exactly as Parley's own iterator does. Each glyph is
-/// visited a constant number of times however many glyph runs its run holds —
-/// re-walking the run per glyph run was the other half of F2.
-#[derive(Default)]
-struct GlyphCursor {
-    key: Option<(usize, usize)>,
-    next: usize,
-    /// `(style_index, hidden)` per glyph of the current run, visual order.
-    glyphs: Vec<(usize, bool)>,
-    /// The line's ellipsis limit: the walk stops where [`PaintLine::collect`]
-    /// stopped collecting (#1100).
-    limit: Option<f32>,
-}
-
-impl GlyphCursor {
-    /// This glyph run's hidden flags, or `None` when none of its glyphs is
-    /// hidden; advances past it either way.
-    fn take(
-        &mut self,
-        glyph_run: &parley::layout::GlyphRun<'_, Brush>,
-        mask: &TextMask,
-    ) -> Option<Vec<bool>> {
-        let run = glyph_run.run();
-        let key = (run.index(), run.cluster_range().start);
-        if self.key != Some(key) {
-            self.key = Some(key);
-            self.next = 0;
-            self.glyphs.clear();
-            for cluster in shown_clusters(run, self.limit) {
-                let hidden = mask.hidden_at(cluster.text_range().start);
-                self.glyphs.extend(
-                    cluster
-                        .glyphs()
-                        .map(|_| (usize::from(cluster.style_index()), hidden)),
-                );
-            }
-        }
-        let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
-        let style = rest.first()?.0;
-        let count = rest.iter().take_while(|&&(si, _)| si == style).count();
-        let slice = &rest[..count];
-        self.next += count;
-        slice
-            .iter()
-            .any(|&(_, h)| h)
-            .then(|| slice.iter().map(|&(_, h)| h).collect())
-    }
-}
-
-/// [`GlyphCursor`]'s shape, for `vertical-align` (#724) instead of
-/// visibility: a per-glyph shift in unscaled layout px rather than a bool.
-/// Needed because [`crate::node::InlineLayout::vertical_align_shift_at`]
-/// answers by **byte**, and a glyph carries no byte offset of its own — only
-/// its cluster does — so the shift has to be looked up once per cluster and
-/// expanded to one entry per glyph, exactly as the hidden flag is.
-#[derive(Default)]
-struct ValignCursor {
-    key: Option<(usize, usize)>,
-    next: usize,
-    /// `(style_index, shift_px)` per glyph of the current run, visual order.
-    glyphs: Vec<(usize, f32)>,
-}
-
-impl ValignCursor {
-    /// This glyph run's per-glyph shifts, or `None` when every one of them is
-    /// `0.0` (the common case, including whenever `inline_layout` has no
-    /// `vertical_align_spans` at all); advances past it either way.
-    fn take(
-        &mut self,
-        glyph_run: &parley::layout::GlyphRun<'_, Brush>,
-        inline_layout: &crate::node::InlineLayout,
-    ) -> Option<Vec<f32>> {
-        let run = glyph_run.run();
-        let key = (run.index(), run.cluster_range().start);
-        if self.key != Some(key) {
-            self.key = Some(key);
-            self.next = 0;
-            self.glyphs.clear();
-            for cluster in run.visual_clusters() {
-                let shift = inline_layout.vertical_align_shift_at(cluster.text_range().start);
-                self.glyphs.extend(
-                    cluster
-                        .glyphs()
-                        .map(|_| (usize::from(cluster.style_index()), shift)),
-                );
-            }
-        }
-        let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
-        let style = rest.first()?.0;
-        let count = rest.iter().take_while(|&&(si, _)| si == style).count();
-        let slice = &rest[..count];
-        self.next += count;
-        slice
-            .iter()
-            .any(|&(_, s)| s != 0.0)
-            .then(|| slice.iter().map(|&(_, s)| s).collect())
-    }
-}
-
 /// What a stretch of text is drawn in instead of the brush it was shaped
 /// with (#679).
 #[derive(Clone, Copy, PartialEq)]
@@ -1827,79 +1721,19 @@ fn decorations_follow_color(tree: &NodeTree, from: RawNodeId, stop: RawNodeId) -
     (underline, strikethrough)
 }
 
-/// [`GlyphCursor`]'s shape, for [`LiveColours`]: a [`Recolour`] per glyph.
-#[derive(Default)]
-struct ColourCursor {
-    key: Option<(usize, usize)>,
-    next: usize,
-    /// `(style_index, recolour)` per glyph of the current run, visual order.
-    glyphs: Vec<(usize, Recolour)>,
-}
-
-impl ColourCursor {
-    /// This glyph run's recolours, or `None` when none of its glyphs is
-    /// recoloured; advances past it either way.
-    fn take(
-        &mut self,
-        glyph_run: &parley::layout::GlyphRun<'_, Brush>,
-        live: &LiveColours,
-    ) -> Option<Vec<Recolour>> {
-        let run = glyph_run.run();
-        let key = (run.index(), run.cluster_range().start);
-        if self.key != Some(key) {
-            self.key = Some(key);
-            self.next = 0;
-            self.glyphs.clear();
-            for cluster in run.visual_clusters() {
-                let recolour = live.at(cluster.text_range().start);
-                self.glyphs.extend(
-                    cluster
-                        .glyphs()
-                        .map(|_| (usize::from(cluster.style_index()), recolour)),
-                );
-            }
-        }
-        let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
-        let style = rest.first()?.0;
-        let count = rest.iter().take_while(|&&(si, _)| si == style).count();
-        let slice = &rest[..count];
-        self.next += count;
-        slice
-            .iter()
-            .any(|&(_, r)| r != Recolour::KEEP)
-            .then(|| slice.iter().map(|&(_, r)| r).collect())
-    }
-}
-
-/// [`run_flags`]'s shape for [`ValignCursor`].
-///
-/// Short-circuits on an empty `vertical_align_spans` **before** touching the
-/// cursor, which is the fast path for the overwhelming majority of
-/// documents (nothing declares a non-`baseline` `vertical-align`): without
-/// this check every glyph run would re-walk its clusters for nothing, since
-/// `ValignCursor::take` has no cheaper way to answer "no span starts between
-/// here and the next style change" than building the per-glyph list and
-/// finding it all-zero.
-fn run_shifts(
-    cursor: &mut ValignCursor,
-    glyph_run: &parley::layout::GlyphRun<'_, Brush>,
-    inline_layout: Option<&crate::node::InlineLayout>,
-) -> Option<Vec<f32>> {
-    let inline_layout = inline_layout?;
-    if inline_layout.vertical_align_spans.is_empty() {
-        return None;
-    }
-    cursor.take(glyph_run, inline_layout)
-}
-
-/// A glyph run's hidden flags, or `None` when it is entirely shown (always,
-/// without a mask).
-fn run_flags(
-    cursor: &mut GlyphCursor,
-    glyph_run: &parley::layout::GlyphRun<'_, Brush>,
-    mask: Option<&TextMask>,
-) -> Option<Vec<bool>> {
-    cursor.take(glyph_run, mask?)
+/// One value per glyph of a glyph run, looked up by the byte its cluster
+/// starts at (`bytes`, a slice of [`PaintLine::glyph_bytes`]), or `None` when
+/// every glyph answers `keep`: a glyph carries no byte of its own, and a
+/// mask, a `vertical-align` span (#724) or a live colour (#679) is by byte.
+fn per_glyph<T: Copy + PartialEq>(
+    bytes: &[usize],
+    at: impl Fn(usize) -> T,
+    keep: T,
+) -> Option<Vec<T>> {
+    let first = bytes.iter().position(|&b| at(b) != keep)?;
+    let mut out = vec![keep; first];
+    out.extend(bytes[first..].iter().map(|&b| at(b)));
+    Some(out)
 }
 
 /// Render a Parley text layout using a Painter.
@@ -1997,9 +1831,85 @@ pub(super) struct PaintLine<'a> {
         std::ops::Range<usize>,
     )>,
     glyphs: Vec<parley::layout::Glyph>,
+    /// The ellipsis limit [`Self::collect`] stopped at.
+    limit: Option<f32>,
+    /// [`Self::glyph_bytes`], built the first time a pass asks for it.
+    bytes: std::cell::OnceCell<Vec<usize>>,
 }
 
 impl<'a> PaintLine<'a> {
+    /// A line not collected yet ([`Self::collect`]).
+    fn empty(index: usize, line: parley::layout::Line<'a, Brush>) -> Self {
+        Self {
+            index,
+            line,
+            items: Vec::new(),
+            glyphs: Vec::new(),
+            limit: None,
+            bytes: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The line's glyph runs, in order, each with its glyphs and their range
+    /// in [`Self::glyph_bytes`].
+    pub(super) fn glyph_runs_at(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &parley::layout::GlyphRun<'a, Brush>,
+            &[parley::layout::Glyph],
+            std::ops::Range<usize>,
+        ),
+    > + '_ {
+        self.items.iter().filter_map(|(item, range)| match item {
+            parley::layout::PositionedLayoutItem::GlyphRun(run) => {
+                Some((run, &self.glyphs[range.clone()], range.clone()))
+            }
+            parley::layout::PositionedLayoutItem::InlineBox(_) => None,
+        })
+    }
+
+    /// The layout byte each collected glyph's cluster starts at, in the
+    /// glyphs' order: what a mask, a `vertical-align` span or a live colour
+    /// is looked up by, a glyph carrying no byte of its own. One walk of the
+    /// line's clusters, the first time a pass asks, shared by every pass over
+    /// a kept line: a paint of 200 spans each casting its own `text-shadow`
+    /// is 200 masked passes, and parley 0.12's cluster walk (a
+    /// `Cluster::glyphs` iterator per grapheme) per pass was half its cost.
+    pub(super) fn glyph_bytes(&self) -> &[usize] {
+        self.bytes.get_or_init(|| {
+            let mut out = Vec::with_capacity(self.glyphs.len());
+            // The parley run the last glyph run came from, its glyphs' bytes,
+            // and where its next glyph run starts in them.
+            let mut key = None;
+            let mut run_bytes: Vec<usize> = Vec::new();
+            let mut next = 0;
+            for (item, range) in &self.items {
+                let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                    continue;
+                };
+                let run = glyph_run.run();
+                let k = (run.index(), run.cluster_range().start);
+                if key != Some(k) {
+                    key = Some(k);
+                    next = 0;
+                    run_bytes.clear();
+                    for cluster in shown_clusters(run, self.limit) {
+                        let byte = cluster.text_range().start;
+                        run_bytes.extend(cluster.glyphs().map(|_| byte));
+                    }
+                }
+                // The run's glyphs in visual order, as `collect` took them;
+                // a glyph past the walk (none should be) takes the run's
+                // last byte.
+                let last = run_bytes.last().copied().unwrap_or(run.text_range().start);
+                out.extend((next..next + range.len()).map(|i| *run_bytes.get(i).unwrap_or(&last)));
+                next += range.len();
+            }
+            out
+        })
+    }
+
     /// The line's glyph runs, in order, each with its glyphs.
     pub(super) fn glyph_runs(
         &self,
@@ -2031,6 +1941,8 @@ impl<'a> PaintLine<'a> {
         self.line = line;
         self.items.clear();
         self.glyphs.clear();
+        self.limit = limit;
+        self.bytes = std::cell::OnceCell::new();
         // The parley run the last glyph run came from, and where its next
         // glyph run starts in `run_glyphs`.
         let mut key = None;
@@ -2161,12 +2073,7 @@ impl<'a> PaintText<'a> {
             }
             if keep || (shared && self.kept.borrow().contains_key(&index)) {
                 if !self.kept.borrow().contains_key(&index) {
-                    let mut collected = PaintLine {
-                        index,
-                        line: line.clone(),
-                        items: Vec::new(),
-                        glyphs: Vec::new(),
-                    };
+                    let mut collected = PaintLine::empty(index, line.clone());
                     collected.collect(
                         index,
                         line,
@@ -2178,12 +2085,7 @@ impl<'a> PaintText<'a> {
                 f(&self.kept.borrow()[&index]);
             } else {
                 let mut scratch = self.scratch.borrow_mut();
-                let scratch = scratch.get_or_insert_with(|| PaintLine {
-                    index,
-                    line: line.clone(),
-                    items: Vec::new(),
-                    glyphs: Vec::new(),
-                });
+                let scratch = scratch.get_or_insert_with(|| PaintLine::empty(index, line.clone()));
                 scratch.collect(
                     index,
                     line,
@@ -2238,18 +2140,17 @@ pub(super) fn draw_text(
     let sf = scale as f32;
     let live = live.filter(|_| glyph_brush.is_none());
     text.for_each_line(mask, |line| {
-        let mut cursor = GlyphCursor {
-            limit: mask.and_then(|m| m.limit_for_line(line.index)),
-            ..Default::default()
-        };
-        let mut vcursor = ValignCursor::default();
-        let mut ccursor = ColourCursor::default();
-        for (glyph_run, run_glyphs) in line.glyph_runs() {
-            // Before the hidden test's `continue`: the cursor hands out a
-            // run's glyph runs in order and has to see each of them.
-            let recolours = live.and_then(|l| ccursor.take(glyph_run, l));
-            let shifts = run_shifts(&mut vcursor, glyph_run, valign);
-            let flags = run_flags(&mut cursor, glyph_run, mask);
+        // Nothing declares a non-`baseline` `vertical-align` in the
+        // overwhelming majority of documents: no lookup then.
+        let valign = valign.filter(|v| !v.vertical_align_spans.is_empty());
+        let bytes =
+            (mask.is_some() || valign.is_some() || live.is_some()).then(|| line.glyph_bytes());
+        for (glyph_run, run_glyphs, range) in line.glyph_runs_at() {
+            let bytes = bytes.map_or(&[][..], |b| &b[range]);
+            let recolours = live.and_then(|l| per_glyph(bytes, |b| l.at(b), Recolour::KEEP));
+            let shifts =
+                valign.and_then(|v| per_glyph(bytes, |b| v.vertical_align_shift_at(b), 0.0));
+            let flags = mask.and_then(|m| per_glyph(bytes, |b| m.hidden_at(b), false));
             // A glyph run past an ellipsis cut has no glyphs collected.
             if run_glyphs.is_empty() || flags.as_ref().is_some_and(|f| f.iter().all(|&h| h)) {
                 continue;
