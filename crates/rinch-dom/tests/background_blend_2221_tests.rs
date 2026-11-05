@@ -11,9 +11,10 @@
 //! `multiply` = `Cb × Cs` = (40.8, 61.2, 46.0), `screen` = `Cb + Cs − Cb × Cs`
 //! = (214.2, 193.8, 235.0), `difference` = `|Cb − Cs|` = (153, 51, 179), and
 //! `luminosity` = `SetLum(Cb, Lum(Cs))` = (207.9, 105.9, 54.9). The tolerance is
-//! 2 per channel: tiny-skia and Chrome's Skia round the 8-bit premultiplied
-//! intermediate steps differently (the non-separable modes go through a few
-//! of them), never by more than that here.
+//! [`TOL`], one step per channel: tiny-skia and Chrome's Skia round the
+//! 8-bit premultiplied intermediates differently, either way (`multiply`'s
+//! 40.8 is 41 here and 40 in Chrome; `color-dodge`'s exact 255 is Chrome's
+//! 254), and no case here differs by more.
 #![cfg(feature = "software-renderer")]
 
 use peniko::Brush;
@@ -22,6 +23,9 @@ use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::BlendModeValue as M;
 use rinch_dom::image_cache::DecodedImage;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+/// Per channel, against Chrome (see the module docs).
+const TOL: u8 = 1;
 
 const W: u32 = 400;
 const H: u32 = 220;
@@ -235,7 +239,7 @@ fn every_mode_matches_chrome() {
         .enumerate()
         .map(|(i, (m, c))| (*m, (i as u32 * 20 + 10, 10), c))
         .collect();
-    expect(&p, &want, 2);
+    expect(&p, &want, TOL);
 }
 
 /// A half-transparent layer: `B(Cb, Cs)` composited over `Cb` at the layer's
@@ -251,7 +255,7 @@ fn a_translucent_layer_blends_by_its_alpha() {
         ),
     );
     let p = paint(&mut doc);
-    expect(&p, &[("half-alpha multiply", (10, 40), [122, 81, 48])], 2);
+    expect(&p, &[("half-alpha multiply", (10, 40), [122, 81, 48])], TOL);
 }
 
 /// The element's background is an isolated group (compositing-1 §8.1): a
@@ -281,7 +285,7 @@ fn the_background_is_an_isolated_group() {
             ("isolated", (50, 40), [51, 153, 230]),
             ("parent", (35, 40), [255, 0, 0]),
         ],
-        2,
+        TOL,
     );
 }
 
@@ -316,7 +320,7 @@ fn each_layer_takes_its_own_entry() {
             ("multiply, screen", (90, 40), [43, 97, 60]),
             ("difference repeated", (120, 40), [59, 76, 115]),
         ],
-        2,
+        TOL,
     );
 }
 
@@ -343,7 +347,7 @@ fn an_image_is_tinted_by_its_colour() {
             ("blue texel", (10, 90), [80, 80, 60]),
             ("clear texel", (30, 90), [255, 255, 255]),
         ],
-        2,
+        TOL,
     );
 }
 
@@ -397,6 +401,6 @@ fn blending_under_opacity_transform_radius_and_clip() {
             ("clipped", (190, 70), [59, 146, 212]),
             ("outside the clip", (210, 70), [255, 255, 255]),
         ],
-        2,
+        TOL,
     );
 }
