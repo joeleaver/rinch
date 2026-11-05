@@ -67,6 +67,10 @@ pub use rinch_dom::perf;
 ))]
 pub mod app_builder;
 
+/// The window's composited frame handed to the app on the GPU (#2215); the
+/// API is re-exported through [`window`].
+#[cfg(feature = "gpu")]
+mod composited_frame;
 /// The ProseMirror-style desktop rich-text editor view. Part of the `desktop`
 /// feature; implements `rinch_editor_core::EditorView` over rinch-dom primitives.
 #[cfg(feature = "desktop")]

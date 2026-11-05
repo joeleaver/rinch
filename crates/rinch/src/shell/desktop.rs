@@ -507,6 +507,10 @@ pub struct WgpuRenderer {
     /// `surface_config.present_mode` changed since the surface was last
     /// configured: [`Self::present`] configures it before acquiring a frame.
     reconfigure: bool,
+    /// Whether this window's presented frames go to the app's
+    /// `on_frame_composited` handlers (#2215): the app's window, not the
+    /// DevTools window.
+    pub(crate) hands_over_frames: bool,
 }
 
 /// A partial frame's target grows in steps of this many device pixels, so a
@@ -760,6 +764,7 @@ impl WgpuRenderer {
             partial_target: None,
             present_modes: caps.present_modes,
             reconfigure: false,
+            hands_over_frames: false,
         })
     }
 
@@ -1147,6 +1152,7 @@ impl WgpuRenderer {
             });
 
         let has_any_layers = !self.composite_layers.is_empty() || !self.gpu_layers.is_empty();
+        let split = !self.split.is_empty();
 
         if has_any_layers {
             // Composite layers + UI using the compositor pipeline.
@@ -1284,17 +1290,7 @@ impl WgpuRenderer {
                     );
                 }
             }
-
-            self.queue.submit(Some(encoder.finish()));
-            self.queue.present(surface_texture);
-            self.device
-                .poll(wgpu::PollType::Poll)
-                .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
-
-            return Ok(());
-        }
-
-        if !self.split.is_empty() {
+        } else if split {
             // Split surfaces (#1865): below (the UI texture), each surface and
             // its above slices, composited into the composited texture, which
             // is presented as the layered path presents it.
@@ -1364,67 +1360,74 @@ impl WgpuRenderer {
                     present.present(&self.device, &mut encoder, composited, &surface_view, alpha);
                 }
             }
-            self.queue.submit(Some(encoder.finish()));
-            self.queue.present(surface_texture);
-            self.device
-                .poll(wgpu::PollType::Poll)
-                .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
-            return Ok(());
-        }
+        } else {
+            // Standard path (no layers). The composited texture is no longer
+            // presented from: let it go (a window-sized texture), so nothing reads
+            // the last frame that had layers as the window's (#1799).
+            self.composited_texture = None;
 
-        // Standard path (no layers). The composited texture is no longer
-        // presented from: let it go (a window-sized texture), so nothing reads
-        // the last frame that had layers as the window's (#1799).
-        self.composited_texture = None;
-
-        // The render texture is always Rgba8Unorm
-        // (Vello's storage-texture requirement) and holds straight alpha; a
-        // raw copy is only legal when the surface matches and wants straight
-        // (or opaque) pixels. Otherwise one full-surface pass through the
-        // compositor converts the channel order and, for a premultiplied
-        // surface, the alpha (#1523).
-        let rgba_surface = self.surface_config.format == TextureFormat::Rgba8Unorm;
-        match present_step(self.surface_config.alpha_mode, false, rgba_surface) {
-            PresentStep::Copy => encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.render_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &surface_texture.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                Extent3d {
-                    width: self.surface_config.width,
-                    height: self.surface_config.height,
-                    depth_or_array_layers: 1,
-                },
-            ),
-            PresentStep::Pass(alpha) => {
-                let compositor = self.layer_compositor.get_or_insert_with(|| {
-                    super::compositor::LayerCompositor::new(
+            // The render texture is always Rgba8Unorm
+            // (Vello's storage-texture requirement) and holds straight alpha; a
+            // raw copy is only legal when the surface matches and wants straight
+            // (or opaque) pixels. Otherwise one full-surface pass through the
+            // compositor converts the channel order and, for a premultiplied
+            // surface, the alpha (#1523).
+            let rgba_surface = self.surface_config.format == TextureFormat::Rgba8Unorm;
+            match present_step(self.surface_config.alpha_mode, false, rgba_surface) {
+                PresentStep::Copy => encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.render_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &surface_texture.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    Extent3d {
+                        width: self.surface_config.width,
+                        height: self.surface_config.height,
+                        depth_or_array_layers: 1,
+                    },
+                ),
+                PresentStep::Pass(alpha) => {
+                    let compositor = self.layer_compositor.get_or_insert_with(|| {
+                        super::compositor::LayerCompositor::new(
+                            &self.device,
+                            self.surface_config.format,
+                        )
+                    });
+                    let surface_view = surface_texture
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    compositor.present(
                         &self.device,
-                        self.surface_config.format,
-                    )
-                });
-                let surface_view = surface_texture
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
-                compositor.present(
-                    &self.device,
-                    &mut encoder,
-                    &self.render_texture,
-                    &surface_view,
-                    alpha,
-                );
+                        &mut encoder,
+                        &self.render_texture,
+                        &surface_view,
+                        alpha,
+                    );
+                }
             }
         }
 
         self.queue.submit(Some(encoder.finish()));
+        // The app's handlers get the texture the window is presented from,
+        // after the frame's commands and before the present (#2215). No copy
+        // is made for them: the UI texture is the whole frame (a partial
+        // frame updated it in place, #1718), and the composited one is what
+        // the layered and split paths present.
+        if self.hands_over_frames {
+            let (texture, alpha) = presented_frame(
+                self.composited_texture.as_ref(),
+                &self.render_texture,
+                has_any_layers || split,
+            );
+            crate::composited_frame::hand_over_frame(&self.device, &self.queue, texture, alpha);
+        }
         self.queue.present(surface_texture);
         self.device
             .poll(wgpu::PollType::Poll)
@@ -1556,9 +1559,21 @@ pub(crate) fn presented_texture<'a, T: ?Sized>(
     ui: &'a T,
     layers: bool,
 ) -> &'a T {
+    presented_frame(composited, ui, layers).0
+}
+
+/// [`presented_texture`] and how its colour carries alpha (#2215): the
+/// composited texture holds premultiplied colour, the UI texture Vello's
+/// straight colour. What `on_frame_composited` hands over.
+pub(crate) fn presented_frame<'a, T: ?Sized>(
+    composited: Option<&'a T>,
+    ui: &'a T,
+    layers: bool,
+) -> (&'a T, crate::composited_frame::FrameAlpha) {
+    use crate::composited_frame::FrameAlpha;
     match composited {
-        Some(c) if layers => c,
-        _ => ui,
+        Some(c) if layers => (c, FrameAlpha::Premultiplied),
+        _ => (ui, FrameAlpha::Straight),
     }
 }
 
@@ -1722,6 +1737,24 @@ mod presented_texture_tests {
         assert_eq!(*presented_texture(Some(&composited), &ui, false), "ui");
         assert_eq!(*presented_texture(None, &ui, false), "ui");
         assert_eq!(*presented_texture(None, &ui, true), "ui");
+    }
+
+    /// #2215: what `on_frame_composited` is handed is the presented texture,
+    /// with the alpha it holds: the composited texture's premultiplied
+    /// colour while there are layers, the UI texture's straight colour else.
+    #[test]
+    fn the_handed_over_frame_is_the_presented_texture_with_its_alpha() {
+        use super::presented_frame;
+        use crate::composited_frame::FrameAlpha::{Premultiplied, Straight};
+        let (composited, ui) = ("composited", "ui");
+        let got = |c: Option<&'static str>, layers| {
+            let (t, a) = presented_frame(c, ui, layers);
+            (t, a)
+        };
+        assert_eq!(got(Some(composited), true), ("composited", Premultiplied));
+        assert_eq!(got(Some(composited), false), ("ui", Straight));
+        assert_eq!(got(None, true), ("ui", Straight));
+        assert_eq!(got(None, false), ("ui", Straight));
     }
 }
 
