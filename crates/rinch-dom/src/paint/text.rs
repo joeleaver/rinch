@@ -2040,6 +2040,19 @@ impl<'a> PaintLine<'a> {
             if let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = &item {
                 if reference {
                     self.glyphs.extend(glyph_run.glyphs());
+                } else if limit.is_none() {
+                    // parley 0.12's `GlyphRun::glyphs` walks only the glyph
+                    // run's own clusters (0.11.1's walked its run from the
+                    // start, which made a line of many glyph runs quadratic,
+                    // #1066), and walking the run cluster by cluster is now
+                    // the dearer way: a `Cluster::glyphs` iterator per
+                    // grapheme tripled a text page's paint. A line an
+                    // ellipsis cuts still takes the walk below, which stops
+                    // at the cut.
+                    let before = self.glyphs.len();
+                    self.glyphs.extend(glyph_run.glyphs());
+                    let n = (self.glyphs.len() - before) as u64;
+                    GLYPHS_COLLECTED.with(|g| g.set(g.get() + n));
                 } else {
                     let run = glyph_run.run();
                     let k = (run.index(), run.cluster_range().start);
