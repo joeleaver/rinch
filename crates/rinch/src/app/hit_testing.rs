@@ -624,6 +624,30 @@ fn visible_text_at(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node, lx: f32, 
         .is_some_and(|el| !hides_own_hit(tree, el))
 }
 
+/// The text node whose glyph is under the window point `(x, y)` in the IFC
+/// root `root_id`, if any: an IFC's text is hit as its root (its text nodes
+/// stretch over the whole line box and are skipped), and this says which of
+/// its inline elements the point is in.
+pub(crate) fn text_node_at(
+    tree: &rinch_dom::NodeTree,
+    root_id: u64,
+    x: f32,
+    y: f32,
+) -> Option<u64> {
+    let node = tree.get(root_id)?;
+    let inline = node.text_layout.as_ref()?;
+    let (lx, ly) = pointer_in_node(tree, root_id, x, y);
+    let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
+    let rel_x = lx - ox + node.scroll_offset.0 as f32;
+    let rel_y = ly - oy + node.scroll_offset.1 as f32;
+    let cluster = rinch_dom::text_query::cluster_range_at_point(&inline.layout, rel_x, rel_y)?;
+    inline
+        .text_ranges
+        .iter()
+        .find(|r| !r.is_br && (r.flat_start..r.flat_end).contains(&cluster.start))
+        .map(|r| r.node_id)
+}
+
 /// Whether some element below `id` computes to `visibility: visible` (#843),
 /// i.e. whether a hidden `id`'s subtree can hold anything to hit. One memo with
 /// paint and the stacking collector, which skip the same subtrees (#2137):

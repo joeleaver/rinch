@@ -242,6 +242,8 @@ impl RinchApp {
         // A left press only (issue #1087): a right or middle press — a
         // context menu, or a chord while the left button drags a selection —
         // leaves the selection, and a selection drag in progress, alone.
+        let mut started_selection = false;
+        self.held_link_click = None;
         let text_sel_action = if button != MouseButton::Left {
             TextSelAction::Keep
         } else {
@@ -265,10 +267,9 @@ impl RinchApp {
                 ifc_node_id,
                 offset,
             } => {
-                self.clear_text_selection();
-                self.text_selection = Some(TextSelection::at(ifc_node_id, offset));
-                self.text_selecting = true;
-                self.paint_text_selection();
+                let shift = self.modifier_state().shift;
+                self.start_text_selection(ifc_node_id, offset, self.click_count, shift, (x, y));
+                started_selection = true;
                 actions.push(AppAction::RequestRedraw);
             }
             TextSelAction::Clear => {
@@ -377,10 +378,14 @@ impl RinchApp {
         }
         // The link the press went through on its way to the claim
         // (`events::click_link`): the nearest `<a href>` from the hit up.
+        // An IFC's text is hit as its root, so the walk starts at the text
+        // node under the point (`text_node_at`): an inline `<a>` or `onclick`
+        // span in a paragraph is on the way, as in a browser.
         let mut click_link: Option<String> = None;
         let click_claim = {
             let mut claim = None;
-            let mut cur = Some(hit_id);
+            let mut cur =
+                Some(super::hit_testing::text_node_at(&d.tree, hit_id, x, y).unwrap_or(hit_id));
             while let Some(node_id) = cur {
                 let Some(node) = d.tree.get(node_id) else {
                     break;
@@ -542,6 +547,24 @@ impl RinchApp {
                 }
                 let text_hit = Self::compute_text_hit_info(&d.tree, hit_id, x, y);
                 drop(d);
+                // A press on a link in selectable text: a click follows it,
+                // a drag selects it. Its click waits for the release
+                // (`release_held_link_click`); a double or triple click
+                // selects and follows nothing.
+                if started_selection && click_link.is_some() {
+                    if self.click_count == 1 {
+                        self.held_link_click = Some(HeldLinkClick {
+                            node_id,
+                            handler_id,
+                            text_hit,
+                            at: (x, y),
+                            viewport: (viewport_width, viewport_height),
+                            link: click_link,
+                        });
+                    }
+                    actions.push(AppAction::RequestRedraw);
+                    return actions;
+                }
                 self.dispatch_rid_click(
                     node_id,
                     handler_id,
@@ -588,7 +611,7 @@ impl RinchApp {
     /// `events::click_link`), then apply the focus and selection requests it
     /// posted.
     #[allow(clippy::too_many_arguments)]
-    fn dispatch_rid_click(
+    pub(super) fn dispatch_rid_click(
         &mut self,
         node_id: u64,
         handler_id: usize,

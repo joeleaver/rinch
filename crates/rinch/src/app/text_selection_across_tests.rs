@@ -11,7 +11,7 @@ const FONT: &str = "font: 16px/20px sans-serif; width: 600px; margin: 0";
 
 /// An app whose root holds `build`'s elements; returns it and the node ids by
 /// their `id` attribute.
-fn mount(html: &'static str, root_style: &'static str) -> RinchApp {
+pub(super) fn mount(html: &'static str, root_style: &'static str) -> RinchApp {
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
         root.set_attribute("style", root_style);
@@ -23,7 +23,7 @@ fn mount(html: &'static str, root_style: &'static str) -> RinchApp {
     app
 }
 
-fn node(app: &RinchApp, id: &str) -> u64 {
+pub(super) fn node(app: &RinchApp, id: &str) -> u64 {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree
         .nodes
@@ -34,29 +34,29 @@ fn node(app: &RinchApp, id: &str) -> u64 {
 }
 
 /// A point `fraction` of the way across the first line of `#id`.
-fn at(app: &RinchApp, id: &str, fraction: f32) -> (f32, f32) {
+pub(super) fn at(app: &RinchApp, id: &str, fraction: f32) -> (f32, f32) {
     let n = node(app, id);
     let d = app.doc.as_ref().unwrap().borrow();
     let (x, y, w, _) = painted_element_box(&d.tree, n);
     (x + w * fraction, y + 10.0)
 }
 
-fn press(app: &mut RinchApp, (x, y): (f32, f32)) {
+pub(super) fn press(app: &mut RinchApp, (x, y): (f32, f32)) {
     let button = MouseButton::Left;
     app.handle_event(PlatformEvent::MouseDown { x, y, button }, VP, 1.0);
 }
 
-fn drag(app: &mut RinchApp, (x, y): (f32, f32)) {
+pub(super) fn drag(app: &mut RinchApp, (x, y): (f32, f32)) {
     app.handle_event(PlatformEvent::MouseMove { x, y }, VP, 1.0);
 }
 
-fn release(app: &mut RinchApp, (x, y): (f32, f32)) {
+pub(super) fn release(app: &mut RinchApp, (x, y): (f32, f32)) {
     let button = MouseButton::Left;
     app.handle_event(PlatformEvent::MouseUp { x, y, button }, VP, 1.0);
 }
 
 /// The part of `#id` that carries the highlight, if any.
-fn highlighted(app: &RinchApp, id: &str) -> Option<(usize, usize)> {
+pub(super) fn highlighted(app: &RinchApp, id: &str) -> Option<(usize, usize)> {
     let n = node(app, id);
     let d = app.doc.as_ref().unwrap().borrow();
     let a = &d.tree.get(n)?.attributes;
@@ -66,7 +66,7 @@ fn highlighted(app: &RinchApp, id: &str) -> Option<(usize, usize)> {
     })
 }
 
-const THREE: &str = r#"<p id="a">first paragraph</p><p id="b">second paragraph</p><div><p id="c">third paragraph</p></div>"#;
+pub(super) const THREE: &str = r#"<p id="a">first paragraph</p><p id="b">second paragraph</p><div><p id="c">third paragraph</p></div>"#;
 
 #[test]
 fn a_containers_user_select_reaches_the_paragraphs_inside_it() {
@@ -300,4 +300,28 @@ fn a_document_in_an_html_view_can_be_selected_and_copied() {
         app.text_selection_text().unwrap(),
         "Dear Ada,\nYour order shipped."
     );
+}
+
+#[test]
+fn selectable_false_makes_an_html_views_document_unselectable() {
+    use rinch_core::Component;
+    let mut app = RinchApp::new(|scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "font: 16px/20px sans-serif; width: 600px");
+        let view = rinch_html::HtmlView {
+            html: r#"<div id="mail">Not for copying.</div>"#.into(),
+            selectable: false,
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        root.append_child(&view);
+        root
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    {
+        let p = at(&app, "mail", 0.1);
+        press(&mut app, p);
+    }
+    assert!(app.text_selection.is_none());
 }

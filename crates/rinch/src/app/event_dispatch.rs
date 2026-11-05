@@ -683,7 +683,15 @@ impl RinchApp {
                 }
 
                 // Handle read-only text selection drag
-                if self.text_selecting {
+                if self.text_selecting
+                    && let Some(sel) = &mut self.text_selection
+                    && !sel.dragged
+                {
+                    // Not a drag until the pointer leaves the press's spot.
+                    let (px, py) = sel.press;
+                    sel.dragged = (x - px).hypot(y - py) > 3.0;
+                }
+                if self.text_selecting && self.text_selection.as_ref().is_some_and(|s| s.dragged) {
                     if let Some(sel) = &self.text_selection {
                         // The focus moves into the selectable root under the
                         // pointer, or, over anything else, the one nearest it
@@ -1387,6 +1395,7 @@ impl RinchApp {
                 if primary {
                     self.scrollbar_drag = None;
                     self.text_selecting = false;
+                    self.release_held_link_click();
 
                     // Clear :active pseudo-class state on mouse release.
                     // Don't request redraw — AboutToWait batches dirty state.

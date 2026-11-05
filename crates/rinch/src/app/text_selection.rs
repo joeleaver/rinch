@@ -27,6 +27,8 @@ impl TextSelection {
             focus_node: ifc_node_id,
             focus_offset: offset,
             painted: Vec::new(),
+            press: (0.0, 0.0),
+            dragged: false,
         }
     }
 
@@ -147,6 +149,22 @@ pub(crate) fn selectable_roots(tree: &rinch_dom::NodeTree, top: u64) -> Vec<u64>
     out
 }
 
+/// The element that makes `node` selectable: its nearest ancestor-or-self
+/// with a `user-select` of its own.
+fn selection_host(tree: &rinch_dom::NodeTree, node: u64) -> u64 {
+    let mut host = node;
+    while let Some(n) = tree.get(host) {
+        if n.computed_style.user_select != UserSelectValue::Auto {
+            break;
+        }
+        match n.parent {
+            Some(p) => host = p,
+            None => break,
+        }
+    }
+    host
+}
+
 /// The selectable root a drag over no selectable text extends to: of those
 /// under the element that makes `anchor` selectable (its nearest
 /// ancestor-or-self with a `user-select` of its own), the one level with `y`,
@@ -157,14 +175,7 @@ pub(crate) fn nearest_selectable_root(
     anchor: u64,
     y: f32,
 ) -> Option<u64> {
-    let mut host = anchor;
-    while let Some(n) = tree.get(host) {
-        if n.computed_style.user_select != UserSelectValue::Auto {
-            break;
-        }
-        host = n.parent?;
-    }
-    let roots = selectable_roots(tree, host);
+    let roots = selectable_roots(tree, selection_host(tree, anchor));
     let mut above = None;
     for &r in &roots {
         let (_, top, _, height) = super::hit_testing::painted_element_box(tree, r);
@@ -274,6 +285,121 @@ impl RinchApp {
         }
         sel.painted = runs.iter().map(|r| r.0).collect();
         self.scene_dirty = true;
+    }
+
+    /// Start a selection at `offset` in `root` for a press `click_count`
+    /// times over (the word around it on a double click, the whole root on a
+    /// triple), or, with Shift held and a selection in place, move that
+    /// selection's focus there.
+    pub(super) fn start_text_selection(
+        &mut self,
+        root: u64,
+        offset: usize,
+        click_count: u8,
+        shift: bool,
+        press: (f32, f32),
+    ) {
+        if shift && let Some(sel) = &mut self.text_selection {
+            sel.focus_node = root;
+            sel.focus_offset = offset;
+            sel.press = press;
+            sel.dragged = true;
+        } else {
+            self.clear_text_selection();
+            let mut sel = TextSelection::at(root, offset);
+            sel.press = press;
+            if click_count >= 2
+                && let Some(doc) = &self.doc
+            {
+                let d = doc.borrow();
+                let text = d
+                    .tree
+                    .get(root)
+                    .and_then(|n| n.text_layout.as_ref())
+                    .map(|l| l.text_content.as_str())
+                    .unwrap_or_default();
+                let (start, end) = if click_count == 2 {
+                    super::word_around(text, offset).unwrap_or((offset, offset))
+                } else {
+                    (0, text.len())
+                };
+                sel.anchor_offset = start;
+                sel.focus_offset = end;
+            }
+            self.text_selection = Some(sel);
+        }
+        self.text_selecting = true;
+        self.paint_text_selection();
+    }
+
+    /// Select all the read-only text the current selection is in: every
+    /// selectable root under the element that makes it selectable. `false`
+    /// when there is no selection to go by.
+    pub(super) fn select_all_text(&mut self) -> bool {
+        let Some(anchor) = self.text_selection.as_ref().map(|s| s.ifc_node_id) else {
+            return false;
+        };
+        let Some(doc) = &self.doc else {
+            return false;
+        };
+        let ends = {
+            let d = doc.borrow();
+            let roots = selectable_roots(&d.tree, selection_host(&d.tree, anchor));
+            let len = |id: u64| {
+                d.tree
+                    .get(id)
+                    .and_then(|n| n.text_layout.as_ref())
+                    .map_or(0, |l| l.text_content.len())
+            };
+            roots
+                .first()
+                .zip(roots.last())
+                .map(|(&first, &last)| (first, last, len(last)))
+        };
+        let Some((first, last, end)) = ends else {
+            return false;
+        };
+        if let Some(sel) = &mut self.text_selection {
+            sel.ifc_node_id = first;
+            sel.anchor_offset = 0;
+            sel.focus_node = last;
+            sel.focus_offset = end;
+            sel.dragged = true;
+        }
+        self.paint_text_selection();
+        true
+    }
+
+    /// The release of the press that started a selection: a link click held
+    /// for it ([`HeldLinkClick`]) runs now, if nothing was selected.
+    pub(super) fn release_held_link_click(&mut self) {
+        let Some(held) = self.held_link_click.take() else {
+            return;
+        };
+        if self.text_selection.as_ref().is_some_and(|s| !s.is_empty()) {
+            return;
+        }
+        let live = self.doc.as_ref().is_some_and(|doc| {
+            doc.borrow()
+                .tree
+                .get(held.node_id)
+                .and_then(|n| n.attributes.get("data-rid"))
+                .and_then(|s| s.parse::<usize>().ok())
+                .is_some_and(|h| {
+                    h == held.handler_id && events::has_click_handler(events::EventHandlerId(h))
+                })
+        });
+        if live {
+            self.dispatch_rid_click(
+                held.node_id,
+                held.handler_id,
+                held.text_hit,
+                held.at,
+                MouseButton::Left,
+                held.viewport,
+                held.link,
+            );
+        }
     }
 
     /// Clear the current text selection state and DOM attributes.
