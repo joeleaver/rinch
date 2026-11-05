@@ -84,9 +84,13 @@ impl TextSelection {
         } else {
             ((f, fo), (a, ao), (ifo, ia))
         };
+        // Roots with nothing to take (white space between a mail's tables)
+        // are passed, as Chrome passes them.
         cache.roots[i0..=i1]
             .iter()
-            .map(|&r| {
+            .zip(&cache.content[i0..=i1])
+            .filter(|&(&r, &has)| has || r == a || r == f)
+            .map(|(&r, _)| {
                 if r == first {
                     (r, first_off.min(len(r)), len(r))
                 } else if r == last {
@@ -529,6 +533,11 @@ impl RinchApp {
         let mut out = String::new();
         let mut last: Option<u64> = None;
         for (node, start, end) in sel.runs(&d.tree) {
+            // An end of the selection in a root with nothing to take adds
+            // nothing, not even a line break.
+            if !super::text_selection_text::has_content(&d.tree, node) {
+                continue;
+            }
             let text = &d.tree.get(node)?.text_layout.as_ref()?.text_content;
             let part: String = kept_ranges(&d.tree, node, start, end)
                 .into_iter()

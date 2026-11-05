@@ -400,3 +400,55 @@ fn a_visible_child_of_a_hidden_span_is_copied() {
     };
     assert_eq!(t, "a V b");
 }
+
+/// Select from the start of `#a` to the end of `#b` and copy.
+fn copy_a_to_b(html: &'static str) -> (RinchApp, String) {
+    let mut app = mount(html, SEL);
+    let t = {
+        let (a, b) = (at(&app, "a", 0.0), past_end(&app, "b"));
+        select(&mut app, a, b)
+    };
+    (app, t)
+}
+
+#[test]
+fn white_space_between_blocks_is_passed() {
+    // Mail is full of roots that hold only the white space between its
+    // tables and columns. Chrome 156 copies nothing for them; a line break
+    // each made a selection across a mail dozens of lines long.
+    let (app, t) = copy_a_to_b(
+        r#"<div id="a">first block</div><div id="ws" style="font-size:0"> <span> </span> </div><div>   </div><div id="b">second block</div>"#,
+    );
+    assert_eq!(t, "first block\nsecond block");
+    assert_eq!(highlighted(&app, "ws"), None);
+}
+
+#[test]
+fn a_line_of_pictures_passed_is_a_line_break() {
+    // Chrome 156: a block picture, and a line of two inline ones, between
+    // two paragraphs: the paragraph's two breaks and one for each.
+    let (_, t) = copy_a_to_b(
+        r##"<p id="a" style="margin:0">first paragraph</p><div><a href="#"><img style="display:block" width="40" height="20"></a></div><div><img width="10" height="10"><img width="10" height="10"></div><p id="b" style="margin:0">second paragraph</p>"##,
+    );
+    assert_eq!(t, "first paragraph\n\n\n\nsecond paragraph");
+}
+
+#[test]
+fn a_no_break_space_spacer_is_copied() {
+    // Mail's spacer cells hold a no-break space, which is text (Chrome 156).
+    let (_, t) = copy_a_to_b(
+        r#"<div id="a">first block</div><div>&nbsp;</div><div id="b">second block</div>"#,
+    );
+    assert_eq!(t, "first block\n\u{a0}\nsecond block");
+}
+
+#[test]
+fn mjml_columns_copy_as_chrome_copies_them() {
+    // Stripe's mail: paragraphs in `inline-block` columns of nested tables,
+    // white space between the columns, and a card picture between the
+    // paragraphs. Chrome 156: the paragraph's two breaks and the picture's.
+    let (_, t) = copy_a_to_b(
+        r##"<table width="100%"><tr><td style="font-size:0"><div style="display:inline-block;width:100%"><table width="100%"><tr><td><div><p id="a" style="margin:0">first paragraph</p></div></td></tr></table></div></td></tr></table> <table width="100%"><tr><td style="font-size:0"> <div style="display:inline-block;width:48%"><table width="100%"><tr><td><div><a href="#"><img style="display:block" width="40" height="20"></a></div></td></tr><tr><td><div><p id="b" style="margin:0">second paragraph</p></div></td></tr></table></div> </td></tr></table>"##,
+    );
+    assert_eq!(t, "first paragraph\n\n\nsecond paragraph");
+}
