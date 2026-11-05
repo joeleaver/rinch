@@ -1139,6 +1139,7 @@ pub(crate) fn shape_text_leaf(
     let leaf = LeafText::of(&text.content, text.white_space);
     let font_family = crate::fonts::parley_text_family(font_cx, &text.font_family, &leaf.text);
     let mut builder = layout_cx.ranged_builder(font_cx, &leaf.text, 1.0, true);
+    builder.set_line_break_override(Some(SPACE_RUN_BREAKS));
     use parley::style::StyleProperty as P;
     builder.push_default(P::FontSize(text.font_size));
     if (text.font_weight - 400.0).abs() > 1.0 {
@@ -1398,6 +1399,18 @@ pub(crate) struct IfcText<'a> {
     tabs: Vec<(usize, usize, usize)>,
     /// An edge box was pushed ([`Self::push_edge_box`], #1426).
     edge_boxes: bool,
+    /// Whether the text being pushed may wrap ([`Self::set_wraps`]).
+    wraps: bool,
+    /// Whether the last content pushed (not a collapsible space) could wrap.
+    last_wraps: Option<bool>,
+    /// The collapsible spaces of text that may not wrap right after content
+    /// that may: `(op, byte in the op's text)`. Each is handed to parley as
+    /// wrapping ([`Self::replay`]): Chrome 155 breaks at the first space
+    /// after a wrapping element's text in a `nowrap` parent
+    /// (`aa<span style="white-space:normal">dddd</span> ccc ccc`), and
+    /// parley 0.12 decides a soft wrap by the space's own wrap mode (0.11.1
+    /// hung an overflowing space whatever its mode, which broke there too).
+    wrap_spaces: Vec<(usize, usize)>,
 }
 
 /// Start a new stretch of a DOM↔flat `offset_map` at `(flat, dom)` when the
@@ -1533,7 +1546,16 @@ impl<'a> IfcText<'a> {
             out_of_flow: Vec::new(),
             tabs: Vec::new(),
             edge_boxes: false,
+            wraps: true,
+            last_wraps: None,
+            wrap_spaces: Vec::new(),
         }
+    }
+
+    /// Whether the text pushed next may wrap (its element's `white-space`
+    /// is not `nowrap` or `pre`): see [`Self::wrap_spaces`].
+    pub(crate) fn set_wraps(&mut self, wraps: bool) {
+        self.wraps = wraps;
     }
 
     /// Whether any text was pushed with its spaces preserved: only then can a
@@ -1765,6 +1787,7 @@ impl<'a> IfcText<'a> {
                 self.pending = None;
                 self.prev_space = false;
                 self.line_start = raw.ends_with('\n');
+                self.last_wraps = Some(self.wraps);
             }
             if !may_rewrite_preserved(raw.as_ref()) {
                 let n = raw.len();
@@ -1837,6 +1860,7 @@ impl<'a> IfcText<'a> {
                 self.prev_space = false;
                 self.line_start = false;
                 self.pending = None;
+                self.last_wraps = Some(self.wraps);
             }
             if out.is_none() && ((space && c != ' ') || sub.is_some()) {
                 out = Some(raw[..i].to_string());
@@ -1845,6 +1869,9 @@ impl<'a> IfcText<'a> {
             note(&mut map, flat, i);
             if space {
                 self.pending = Some((op, flat, self.len + flat));
+                if !self.wraps && self.last_wraps == Some(true) {
+                    self.wrap_spaces.push((op, flat));
+                }
             }
             if let Some(o) = out.as_mut() {
                 match sub {
@@ -1919,6 +1946,8 @@ impl<'a> IfcText<'a> {
                 None => builder.push_text(text),
             };
         let mut tab = 0usize;
+        let mut wrap = 0usize;
+        let wrapping = [P::TextWrapMode(parley::style::TextWrapMode::Wrap)];
         for (i, op) in self.ops.iter().enumerate() {
             match op {
                 IfcOp::Span(props) => builder.push_style_modification_span(props.iter()),
@@ -1941,6 +1970,23 @@ impl<'a> IfcText<'a> {
                         builder.pop_style_span();
                         at = byte + 1;
                         tab += 1;
+                    }
+                    while let Some(&(op, byte)) = self.wrap_spaces.get(wrap) {
+                        if op != i {
+                            break;
+                        }
+                        wrap += 1;
+                        // A held space dropped at a line's end is gone.
+                        if text.as_bytes().get(byte) != Some(&b' ') || byte < at {
+                            continue;
+                        }
+                        if byte > at {
+                            push_plain(builder, &text[at..byte]);
+                        }
+                        builder.push_style_modification_span(wrapping.iter());
+                        builder.push_text(&text[byte..byte + 1]);
+                        builder.pop_style_span();
+                        at = byte + 1;
                     }
                     if at < text.len() || at == 0 {
                         push_plain(builder, &text[at..]);
@@ -3547,6 +3593,35 @@ fn is_plain_space(u: &LineUnit) -> bool {
     u.space && !u.nbsp && !u.breaks
 }
 
+/// Chrome's soft wrap opportunity after a run of spaces, whatever follows
+/// (Blink's `NextBreakablePosition`): UAX #14 has none before a zero-width
+/// space (LB7) or a closing punctuation mark (LB13). parley's breaker is
+/// handed it ([`SPACE_RUN_BREAKS`]), and [`TextBreaks`] agrees.
+fn space_run_break(before: char, after: char) -> bool {
+    before == ' ' && !matches!(after, ' ' | '\t')
+}
+
+/// [`space_run_break`] at `byte` of `text`.
+fn after_a_space_run(text: &str, byte: usize) -> bool {
+    byte > 0
+        && text.as_bytes().get(byte - 1) == Some(&b' ')
+        && text[byte..]
+            .chars()
+            .next()
+            .is_some_and(|after| space_run_break(' ', after))
+}
+
+fn space_run_override(cx: parley::LineBreakContext) -> Option<bool> {
+    space_run_break(cx.before, cx.after).then_some(true)
+}
+
+/// [`space_run_break`] as parley's line-break override: every builder whose
+/// layout rinch breaks into lines sets it (`aaaa~bbbbbb ␣ZWSP␣cc` at 40px
+/// is `aaaa~bbbbbb ` / `ZWSP cc` in Chrome 153; parley alone broke after the
+/// ZWSP's space).
+pub(crate) static SPACE_RUN_BREAKS: &parley::LineBreakOverrideFn =
+    &(space_run_override as fn(parley::LineBreakContext) -> Option<bool>);
+
 /// The UAX #14 break opportunities of a paragraph's text, as parley's own
 /// analysis finds them: the same segmenter, with the complex-script
 /// dictionaries parley's `complex-scripts` feature turns on, so a line this
@@ -3573,6 +3648,9 @@ impl<'t> TextBreaks<'t> {
 
     /// Whether there is an opportunity at `byte`.
     fn at(&self, byte: usize) -> bool {
+        if after_a_space_run(self.text, byte) {
+            return true;
+        }
         if chrome_glues_ascii(self.text, byte) {
             return false;
         }
@@ -10083,6 +10161,7 @@ impl RinchDocument {
         let mut builds = 0u32;
         let (text_layout, text_content) = loop {
             let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
+            builder.set_line_break_override(Some(SPACE_RUN_BREAKS));
             // A `direction: rtl` block's paragraph is right to left whatever
             // its text (parley 0.12 takes a base direction): its trailing
             // spaces are at its visual left, inside the box (Chrome 155,
@@ -11044,13 +11123,14 @@ impl RinchDocument {
                         // `white-space` of the element the text is in: its
                         // DOM parent, which inside an anonymous box is not
                         // `parent_id` (#1192).
-                        let mode = SpaceCollapse::of(
-                            child
-                                .parent
-                                .and_then(|dom_parent| nodes.get_live(dom_parent))
-                                .unwrap_or(&nodes[parent_id])
-                                .computed_style
-                                .white_space,
+                        let own = &child
+                            .parent
+                            .and_then(|dom_parent| nodes.get_live(dom_parent))
+                            .unwrap_or(&nodes[parent_id])
+                            .computed_style;
+                        let mode = SpaceCollapse::of(own.white_space);
+                        builder.set_wraps(
+                            Self::text_wrap_mode(own) == parley::style::TextWrapMode::Wrap,
                         );
                         let (flat_len, offset_map) = builder.push_text_node(raw, mode);
                         *flat_pos += flat_len;
