@@ -112,6 +112,11 @@ impl Component for HtmlView {
         // Its links are the app's to follow (`onlink`): on the web, the
         // browser never navigates the app's own tab to one.
         view.set_attribute("data-claim-links", if self.link_menu { "menu" } else { "" });
+        // A document's text can be selected and copied, as in a browser; an
+        // app's own controls cannot, by default. (rinch reads `user-select`
+        // from the `style` attribute, and the document's own elements take it
+        // from here unless they say otherwise.)
+        view.set_attribute("style", "user-select: text");
         let style = scope.create_element("style");
         style.append_child(&scope.create_text(CSS));
         view.append_child(&style);

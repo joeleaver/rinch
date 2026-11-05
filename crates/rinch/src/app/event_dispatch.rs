@@ -685,19 +685,32 @@ impl RinchApp {
                 // Handle read-only text selection drag
                 if self.text_selecting {
                     if let Some(sel) = &self.text_selection {
-                        let ifc_node_id = sel.ifc_node_id;
-                        let anchor = sel.anchor_offset;
-                        let new_offset = if let Some(doc) = &self.doc {
+                        // The focus moves into the selectable root under the
+                        // pointer, or, over anything else, the one nearest it
+                        // (`nearest_selectable_root`), at the nearest offset.
+                        let (current, anchor) = (sel.focus_node, sel.ifc_node_id);
+                        let focus = self.doc.as_ref().map(|doc| {
                             let d = doc.borrow();
-                            Self::compute_ifc_offset_from_click(&d.tree, ifc_node_id, x, y)
-                        } else {
-                            anchor
-                        };
-                        if let Some(sel) = &mut self.text_selection {
-                            sel.focus_offset = new_offset;
+                            let node = self
+                                .shared_hit(&d, x, y)
+                                .and_then(|hit| Self::find_selectable_ifc(&d.tree, hit))
+                                .or_else(|| {
+                                    super::text_selection::nearest_selectable_root(
+                                        &d.tree, anchor, y,
+                                    )
+                                })
+                                .unwrap_or(current);
+                            (
+                                node,
+                                Self::compute_ifc_offset_from_click(&d.tree, node, x, y),
+                            )
+                        });
+                        if let (Some((node, offset)), Some(sel)) = (focus, &mut self.text_selection)
+                        {
+                            sel.focus_node = node;
+                            sel.focus_offset = offset;
                         }
-                        self.set_text_selection_attributes(ifc_node_id, anchor, new_offset);
-                        self.scene_dirty = true;
+                        self.paint_text_selection();
                         actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Text));
                         actions.push(AppAction::RequestRedraw);
                         return actions;

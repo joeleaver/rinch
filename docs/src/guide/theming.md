@@ -497,6 +497,27 @@ line. A decoration propagates to descendants as in CSS: a wavy word inside an
 underlined link keeps the link's line and gains the wave. The wave follows the
 text on screen, right-to-left and mixed-direction runs included.
 
+## Selecting text (desktop)
+
+An app's own text is not selectable unless it says so: rinch reads an
+unset `user-select` (`auto`) as `none`, so labels, buttons and menus do not
+start a selection when pressed. `user-select: text` on an element makes it
+and everything inside it selectable, as `auto` takes its parent's value in
+CSS; an element inside that declares `user-select: none` is passed over.
+Only the `style` attribute is read for it (this engine's style sheets do not
+parse the property), so set it inline:
+
+```rust
+rsx! { div { style: "user-select: text", {article_body} } }
+```
+
+A press in selectable text starts a selection and a drag extends it into
+any selectable paragraph it reaches, every paragraph between included;
+dragging into the space beside or below text extends it to the nearest
+text, as a browser does. Ctrl+C (Cmd+C on macOS) copies it, a line per
+paragraph. `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
+they are. On the web the browser selects text itself, from the same CSS.
+
 ## Extending the Theme
 
 ### Scoped Overrides

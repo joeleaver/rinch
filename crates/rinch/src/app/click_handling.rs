@@ -265,18 +265,10 @@ impl RinchApp {
                 ifc_node_id,
                 offset,
             } => {
-                let prev_ifc = self.text_selection.as_ref().map(|s| s.ifc_node_id);
-                if prev_ifc.is_some() && prev_ifc != Some(ifc_node_id) {
-                    self.clear_text_selection();
-                }
-                self.text_selection = Some(TextSelection {
-                    ifc_node_id,
-                    anchor_offset: offset,
-                    focus_offset: offset,
-                });
+                self.clear_text_selection();
+                self.text_selection = Some(TextSelection::at(ifc_node_id, offset));
                 self.text_selecting = true;
-                self.set_text_selection_attributes(ifc_node_id, offset, offset);
-                self.scene_dirty = true;
+                self.paint_text_selection();
                 actions.push(AppAction::RequestRedraw);
             }
             TextSelAction::Clear => {

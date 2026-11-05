@@ -372,6 +372,8 @@ mod text_context_menu;
 mod text_context_menu_tests;
 mod text_selection;
 #[cfg(test)]
+mod text_selection_across_tests;
+#[cfg(test)]
 mod text_selection_range_552_tests;
 #[cfg(test)]
 mod textarea_home_end_tests;
@@ -768,14 +770,20 @@ const DRAG_THRESHOLD: f32 = 5.0;
 
 // ── Read-only text selection ────────────────────────────────────────────────
 
-/// State for read-only text selection (non-contenteditable).
+/// State for read-only text selection (non-contenteditable), which may run
+/// across several IFC roots (`text_selection.rs`).
 pub(crate) struct TextSelection {
-    /// The IFC root node where the selection lives (the block element containing the text).
+    /// The IFC root where the selection started (the anchor's root).
     pub(crate) ifc_node_id: u64,
-    /// Selection anchor (byte offset in IFC flat text, set on mousedown).
+    /// Selection anchor (byte offset in the anchor root's flat text, set on
+    /// mousedown).
     pub(crate) anchor_offset: usize,
-    /// Selection focus/cursor (byte offset, updated on mousemove).
+    /// The IFC root the focus is in (updated on mousemove).
+    pub(crate) focus_node: u64,
+    /// Selection focus/cursor (byte offset in the focus root's flat text).
     pub(crate) focus_offset: usize,
+    /// The roots that carry a part of the highlight now.
+    pub(crate) painted: Vec<u64>,
 }
 
 // ── Scrollbars ───────────────────────────────────────────────────────────────
@@ -4412,11 +4420,7 @@ impl RinchApp {
     }
     fn handle_copy(&mut self) {
         // Check for read-only text selection first
-        if self
-            .text_selection
-            .as_ref()
-            .is_some_and(|s| s.anchor_offset != s.focus_offset)
-        {
+        if self.text_selection.as_ref().is_some_and(|s| !s.is_empty()) {
             self.copy_text_selection();
             return;
         }
