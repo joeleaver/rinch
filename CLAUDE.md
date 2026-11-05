@@ -16,7 +16,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom (
 
 Load-bearing dependency facts (detail and history in `docs/internals/dependencies.md`):
 - **Taffy 0.14 from `joeleaver/taffy-fork` at a pinned rev** (#2080: a leaf's measure gets the float context, `compute_layout_with_block_measure`; a dependency, not a patch), declared in one place, `crates/rinch-dom/Cargo.toml`; its `[dependencies]` and `[dev-dependencies]` lines must agree, features included (four default features stay off, `float_layout` is on). See `docs/internals/dependencies.md` "Taffy Fork".
-- **parley 0.12.0** with `features = ["complex-scripts", "bytemuck"]`; `complex-scripts` must stay on (without it Thai/Lao/Khmer/Burmese text has no line breaks). `parley::Glyph::y` is Y-down.
+- **parley 0.12.0 from `joeleaver/parley-fork` at a pinned rev** (a dependency, not a patch; `rinch`'s `parlance` pins the same rev; see `docs/internals/dependencies.md` "Parley Fork") with `features = ["complex-scripts", "bytemuck"]`; `complex-scripts` must stay on (without it Thai/Lao/Khmer/Burmese text has no line breaks). `parley::Glyph::y` is Y-down.
 - **skrifa 0.44**, the version parley uses; move it with any parley bump.
 - **wgpu 30** (crates.io) and **Vello 0.11 from `joeleaver/vello-fork` at a pinned rev** (#1955, image-atlas fixes; a dependency, not a patch). Apps use `rinch::wgpu` and `rinch::vello`. See `docs/internals/app-and-windows.md` "Vello Fork".
 - **winit 0.31.0-beta.4 from `joeleaver/winit-fork` at a pinned rev** (#1962, the layer-shell role; a dependency, no `[patch]` lines anywhere). See `docs/internals/app-and-windows.md` "winit Fork".

@@ -10,7 +10,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
 
 **Key dependencies:**
 - **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.14** in one place, `crates/rinch-dom/Cargo.toml`, and comes from rinch's fork (see **Taffy Fork** below) (its `[dependencies]` and `[dev-dependencies]` lines must agree, **features included**: rinch builds Taffy without the four default features it never reads — `content_size`, `calc`, `flexbox_balance`, `detailed_layout_info`; `float_layout` was the fifth until floats came in — which cost about 4% of a structural edit's instructions whether read or not (#1260), and a dev-dependency left on the defaults would unify them back into every test build; the vendored `crates/stylo-taffy` that used to pin it too was unused and was deleted with the 0.14 bump, #1236). 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height. 0.12 numbered grid lines as `i16` and **panicked** on a grid past 32,767 lines (40,000 auto-placed rows, stacked `span`s, #1210) and on `repeat(auto-fill, 0px)` or `minmax(0px, 1fr)` at any width (#1231); 0.14 clamps each grid axis at **10,000 tracks** instead (css-grid-1 §7.2.4), which is not Chrome's geometry: every item past the 10,000th track lands in the last one and they overlap, so a grid of 10,001–32,767 lines that 0.12 laid out correctly now overlaps too (`crates/rinch-dom/tests/grid_line_overflow_tests.rs`). Both measure closures (`layout_engine.rs`, `ifc.rs`) return a `LayoutOutput` through `taffy::compute_leaf_layout` with the same `0.0` calc resolver 0.12 used, and set its first baseline (`ifc::with_first_baseline`, #1013): an IFC root's or text leaf's first Parley line's baseline plus the box's top padding and border, since Taffy measures from the border-box top. `ifc_measure_cache` keeps the baseline beside each size (`IfcMeasure`), and Taffy's block algorithm hands a block item its first in-flow child's, so flex/grid `align-items: baseline` lines items up by their first lines (`tests/flex_baseline_tests.rs`). It used to synthesize every item's from its bottom border edge. A **form control** still reports none and is aligned by its bottom edge (an `<input>` beside a 32px line sits 6px higher than Chrome's, #1273), and so is an image, which is right. An item whose first line holds an atomic inline (an `inline-block`, a `Button`) is aligned by that box's baseline since parley 0.12 (#663): beside a 32px line Chrome 156 puts the `A` at 0 and the item at 1, as rinch does (it put the `A` at 18 before, 9 before #1013), pinned by `an_items_first_line_holding_an_inline_block_is_aligned_by_its_baseline_issue_663`. `min_size`/`max_size` are `LengthPercentageAuto` in 0.14 (`DimensionValue::to_taffy_lpa`), and `size`/`flex_basis` carry the intrinsic keywords, which rinch hands over since #691 (see **Common Issues**). The bump itself moved layout in a few shapes, every one to Chrome 153's answer (`crates/rinch-dom/tests/taffy_014_layout_changes_tests.rs`): flex auto margins absorb free space **before** `justify-content` (0.12 justified first and pushed an auto-margin item off the end), a `min-height` parent keeps its last child's bottom margin inside it, and an empty scroll container's margins collapse through it — so a horizontal `Tabs` nested in a vertical `Tabs` now gets an inner panel 44px wide where 0.12 gave 85 (Chrome: 42.9). An editor table of more than 10,000 rows (which #1209 places by auto-placement past 9,999 tracks) now overlaps its rows from the 10,000th on, on desktop.
-- **parley** - Text shaping and line breaking, at the **published `0.12.0`** (from 0.11.1 by
+- **parley** - Text shaping and line breaking, at **`0.12.0` from rinch's fork** (see **Parley Fork** below; from 0.11.1 by
   the parley 0.12 upgrade, Refs #624; Joe's decision of 2026-10-29). It was a git `rev` on an
   unmerged 22-commit "Floats WIP" branch off `v0.7.0` until #659; upstream landed that work in
   0.9.0, so nothing was lost by moving to the release line. The workspace line is
@@ -404,3 +404,27 @@ candidates.
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7.
 
+
+## Parley Fork
+
+**Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
+https://github.com/joeleaver/parley-fork, pinned by rev
+(`f25dc8f3e32d5b1c589304391c9ba75f9721c8dc`, branch `rinch-patch`): commits on parley's
+`v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
+dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
+`fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
+crates.io's `parlance` beside it would be a second copy of `GenericFamily`. Moving the rev is a
+commit here; a parley bump rebases these commits onto the new tag. Nothing is filed upstream.
+
+1. **A box that does not fit breaks before it when its parent wraps** (`f25dc8f3`,
+   `parley/src/layout/line_break.rs`). The breaker allowed a break before an in-flow inline box
+   only by the wrap mode of the text before it (lagged by an atom), so a box after `pre` text
+   inside a `pre-wrap` span was appended past the line's end and the line went back to an
+   earlier opportunity. CSS Text 3 §5.1 gives that opportunity to the nearest common ancestor of
+   the two; the box's parent style wrapping now allows it too. #1238 corpus `p704`
+   (`[B2]q-refg` / `[I1]xyz`, Chrome 155), and with it `m420` and `p660`, known differences since
+   before 0.12.
+
+The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
+(`ifc::IfcText::wrap_spaces`, `ifc::SPACE_RUN_BREAKS`) and in the seams pass
+(`ifc::pre_seams_needed`, `ifc::break_overflowing_spaces`).

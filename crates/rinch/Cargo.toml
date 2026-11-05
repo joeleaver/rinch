@@ -24,7 +24,8 @@ log = "0.4"
 # parley/fontique re-export (`fontique::GenericFamily` is `parlance::GenericFamily`),
 # named here directly so `rinch::font` builds without the desktop text stack —
 # on wasm32 too. Already in Cargo.lock through parley; no dependencies of its own.
-parlance = { version = "0.1", default-features = false }
+# From parley's fork at parley's rev (the workspace Cargo.toml), or it is a second copy.
+parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "f25dc8f3e32d5b1c589304391c9ba75f9721c8dc", default-features = false }
 
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }
