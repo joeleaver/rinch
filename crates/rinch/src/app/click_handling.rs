@@ -176,8 +176,23 @@ impl RinchApp {
         let click_focus = {
             let d = doc.borrow();
             if let Some(hit_id) = self.shared_hit(&d, x, y) {
-                let mut walk = Some(hit_id);
                 let mut preserves = false;
+                // From where the click walk starts (an inline handler in a
+                // paragraph is on the way: phase 3 runs it), up to the hit.
+                let start = super::hit_testing::event_target_at(&d.tree, hit_id, x, y);
+                let mut inline = start.filter(|&s| s != hit_id);
+                while let Some(nid) = inline {
+                    if nid == hit_id {
+                        break;
+                    }
+                    let Some(node) = d.tree.get(nid) else { break };
+                    if node.attributes.contains_key("data-rid") || Self::node_is_nofocus(node) {
+                        preserves = true;
+                        break;
+                    }
+                    inline = node.parent;
+                }
+                let mut walk = (!preserves).then_some(hit_id);
                 while let Some(nid) = walk {
                     if let Some(node) = d.tree.get(nid) {
                         if node.attributes.contains_key("data-rid") || Self::node_is_nofocus(node) {
@@ -385,7 +400,7 @@ impl RinchApp {
         let click_claim = {
             let mut claim = None;
             let mut cur =
-                Some(super::hit_testing::text_node_at(&d.tree, hit_id, x, y).unwrap_or(hit_id));
+                Some(super::hit_testing::event_target_at(&d.tree, hit_id, x, y).unwrap_or(hit_id));
             while let Some(node_id) = cur {
                 let Some(node) = d.tree.get(node_id) else {
                     break;

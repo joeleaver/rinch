@@ -55,18 +55,23 @@ impl RootsCache {
 }
 
 /// Whether the text of `text_node` (inside IFC root `root`) is left out of
-/// a selection: drawn hidden, or `user-select: none` nearer than anything
-/// that says otherwise.
+/// a selection: generated content, drawn hidden (`visibility` inherits, so
+/// the text's own element says; a visible child of a hidden span is kept),
+/// or `user-select: none` nearer than anything that says otherwise.
 fn left_out(tree: &rinch_dom::NodeTree, root: u64, text_node: u64) -> bool {
-    let mut id = tree.get(text_node).and_then(|n| n.parent);
+    let parent = tree.get(text_node).and_then(|n| n.parent);
+    if let Some(p) = parent.and_then(|p| tree.get(p))
+        && p.computed_style.visibility != VisibilityValue::Visible
+    {
+        return true;
+    }
+    let mut id = parent;
     while let Some(i) = id {
         let Some(n) = tree.get(i) else {
             return false;
         };
         // Generated content (a list marker, `::before`) is no document text.
-        if n.is_pseudo_element
-            || (n.computed_style.visibility != VisibilityValue::Visible && i != root)
-        {
+        if n.is_pseudo_element {
             return true;
         }
         match n.computed_style.user_select {
@@ -217,7 +222,10 @@ fn paragraphs_passed(
                 .or_else(|| after(id));
             continue;
         }
-        if tag(tree, id) == Some("p") {
+        let shown = tree.get(id).is_some_and(|n| {
+            n.computed_style.display != rinch_dom::computed_style::DisplayValue::None
+        });
+        if shown && tag(tree, id) == Some("p") {
             count += 1;
         }
         cur = after(id);

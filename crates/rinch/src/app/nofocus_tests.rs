@@ -437,3 +437,53 @@ fn a_nofocus_toolbar_is_found_through_an_anonymous_box() {
          that stops at the box never sees it and blurs the editor"
     );
 }
+
+/// A click on an inline element with a handler, inside a paragraph, keeps the
+/// editor's focus as a button's does: phase 1 walks from where the click walk
+/// starts (the text under the glyphs, `hit_testing::event_target_at`), so it
+/// sees the handler phase 3 then runs (review of #2229).
+#[test]
+fn an_inline_handler_in_a_toolbar_paragraph_keeps_the_editors_focus() {
+    let ran = Rc::new(Cell::new(0u32));
+    let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
+    let (ran_in, ids_in) = (ran.clone(), ids.clone());
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let bar = scope.create_element("p");
+        bar.set_attribute(
+            "style",
+            "width: 400px; font: 16px/20px sans-serif; margin: 0",
+        );
+        let bold = scope.create_element("span");
+        let r = ran_in.clone();
+        let h = scope.register_handler(move || r.set(r.get() + 1));
+        bold.set_attribute("data-rid", &h.0.to_string());
+        bold.append_child(&scope.create_text("Bold"));
+        bar.append_child(&bold);
+        bar.append_child(&scope.create_text(" and the rest of the bar"));
+        let (editor_container, handle) = crate::editor::mount_editor(scope);
+        handle.load_html("<p>hello world</p>");
+        editor_container.set_attribute("style", "width: 400px; height: 100px");
+        root.append_child(&bar);
+        root.append_child(&editor_container);
+        ids_in.set(Some((bar.node_id().0, editor_container.node_id().0)));
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let (bar, editor) = ids.get().unwrap();
+    press(&mut app, editor);
+    assert_eq!(app.focus_target, FocusTarget::Editor(editor));
+    let (x, y) = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let (x, y, _, _) = super::hit_testing::painted_element_box(&d.tree, bar);
+        (x + 6.0, y + 10.0)
+    };
+    press_at(&mut app, x, y);
+    assert_eq!(ran.get(), 1, "the inline handler ran");
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::Editor(editor),
+        "and the editor kept its focus"
+    );
+}

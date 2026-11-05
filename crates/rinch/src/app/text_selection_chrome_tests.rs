@@ -360,3 +360,43 @@ fn an_inline_block_in_a_paragraph_takes_its_own_click() {
     click_at(&mut app, (x + 4.0, y));
     assert_eq!(*log.borrow(), vec!["ib", "p"]);
 }
+
+#[test]
+fn text_that_takes_no_pointer_events_gives_its_click_to_the_paragraph() {
+    // Chrome 156: a click on `pointer-events: none` or hidden text inside a
+    // paragraph is the paragraph's.
+    let (mut app, log) = clicks(
+        r#"<p id="p"><span id="pe" style="pointer-events: none">this</span> and <span id="hv" style="visibility: hidden">that</span></p>"#,
+        &["p", "pe", "hv"],
+    );
+    let (x, y) = at(&app, "p", 0.0);
+    click_at(&mut app, (x + 6.0, y)); // "this"
+    click_at(&mut app, (x + 70.0, y)); // "that"
+    assert_eq!(*log.borrow(), vec!["p", "p"]);
+}
+
+#[test]
+fn a_paragraph_that_is_not_displayed_is_not_a_paragraph_left() {
+    let mut app = mount(
+        r#"<p id="a">first</p><p style="display: none">gone</p><p id="c">third</p>"#,
+        SEL,
+    );
+    let t = {
+        let (a, b) = (at(&app, "a", 0.0), past_end(&app, "c"));
+        select(&mut app, a, b)
+    };
+    assert_eq!(t, "first\n\nthird");
+}
+
+#[test]
+fn a_visible_child_of_a_hidden_span_is_copied() {
+    let mut app = mount(
+        r#"<p id="a">a <span style="visibility: hidden">h <span style="visibility: visible">V</span> h</span> b</p>"#,
+        SEL,
+    );
+    let t = {
+        let (a, b) = (at(&app, "a", 0.0), past_end(&app, "a"));
+        select(&mut app, a, b)
+    };
+    assert_eq!(t, "a V b");
+}

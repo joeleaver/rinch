@@ -45,6 +45,7 @@
 //! | `abs_containing_block_passes` | `layout_engine.rs` `resolve_layout`'s fixpoint (#386) | [`an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resize`] (1 per resize of the block), [`a_position_only_absolute_box_under_a_grandparent_pays_no_compute`] (0) |
 //! | `paint_nodes_visited` | `paint/mod.rs` `paints_nothing_within` (a hidden subtree with nothing visible, asked one level up: no visit, #2137) | [`a_closed_panel_and_a_hidden_chip_cost_paint_one_visit`] |
 //! | `paint_nodes_visited` | `paint/mod.rs` `paint_node` (the same, entered directly — an IFC's atomic inline: one visit, #2137) | [`a_closed_panel_and_a_hidden_chip_cost_paint_one_visit`] |
+//! | `read_only_selection_writes` | `paint/contenteditable.rs` `RinchDocument::set_read_only_selection` (the app writes only the roots whose part of a selection changed, #2229) | [`a_read_only_selection_writes_one_root_and_repaints_it`] |
 //! | `inline_font_family_resolves` | `ifc.rs` `inline_style_props` (review of #1326's perf finding) — fires only when a span's own `font-family` differs from the enclosing style's | [`a_spans_unchanged_font_family_resolves_nothing`] (0), [`a_spans_changed_font_family_resolves_once_per_rebuild`] (nonzero) |
 //!
 //! Every frame is asserted whole, #877's contract: every non-timing counter
@@ -4452,4 +4453,37 @@ fn a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone() {
             s.get(TaffyMeasureCalls)
         );
     }
+}
+
+// ── read_only_selection_writes ─────────────────────────────────────────────
+
+/// A read-only selection's highlight written on one paragraph of three: one
+/// write and a paint-only frame: layout is skipped, as for any other
+/// paint-only attribute (#2229).
+#[test]
+fn a_read_only_selection_writes_one_root_and_repaints_it() {
+    let mut doc = doc_with(".p { line-height: 20px; }");
+    let body = doc.body();
+    let mut paragraphs = Vec::new();
+    for t in ["first paragraph", "second paragraph", "third paragraph"] {
+        let p = el(&mut doc, body, "div", "p");
+        text(&mut doc, p, t);
+        paragraphs.push(p);
+    }
+    let _ = cold_frame(&mut doc);
+    doc.set_read_only_selection(paragraphs[1].0, &[(0, 6)]);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "a read-only selection on one paragraph",
+        &s,
+        &[
+            (ReadOnlySelectionWrites, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 4),
+            (StackingOrderBuilds, 1),
+        ],
+    );
 }

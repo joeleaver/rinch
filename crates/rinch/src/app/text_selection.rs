@@ -287,40 +287,9 @@ impl RinchApp {
         )
     }
 
-    /// Write `node`'s highlight: `ranges` of its text (none to clear), as
-    /// the `data-text-sel*` attributes paint reads, and mark it for repaint.
+    /// Write `node`'s highlight (`RinchDocument::set_read_only_selection`).
     fn write_selection_part(d: &mut RinchDocument, node: u64, ranges: &[(usize, usize)]) {
-        if let Some(n) = d.tree.nodes.get_mut(node) {
-            match (ranges.first(), ranges.last()) {
-                (Some(&(start, _)), Some(&(_, end))) => {
-                    n.write_attribute("data-text-sel", "true");
-                    n.attributes
-                        .insert("data-text-sel-start".to_string(), start.to_string());
-                    n.attributes
-                        .insert("data-text-sel-end".to_string(), end.to_string());
-                    if ranges.len() > 1 {
-                        let list: Vec<String> =
-                            ranges.iter().map(|(a, b)| format!("{a}-{b}")).collect();
-                        n.attributes
-                            .insert("data-text-sel-ranges".to_string(), list.join(","));
-                    } else {
-                        n.attributes.remove("data-text-sel-ranges");
-                    }
-                }
-                _ => {
-                    n.erase_attribute("data-text-sel");
-                    n.attributes.remove("data-text-sel-start");
-                    n.attributes.remove("data-text-sel-end");
-                    n.attributes.remove("data-text-sel-ranges");
-                }
-            }
-        }
-        // The highlight is painted from these attributes on the IFC root,
-        // so the root is the damage.
-        d.tree.mark_paint_dirty(node);
-        d.tree
-            .perf
-            .bump(rinch_dom::perf::Counter::ReadOnlySelectionWrites);
+        d.set_read_only_selection(node, ranges);
     }
 
     /// Paint the current selection: each root it covers carries the ranges

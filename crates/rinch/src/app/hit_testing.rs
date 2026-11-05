@@ -648,6 +648,40 @@ pub(crate) fn text_node_at(
         .map(|r| r.node_id)
 }
 
+/// Where a press at `(x, y)` in IFC root `root_id` is delivered: the text
+/// node under the glyphs ([`text_node_at`]), or, when the element around it
+/// takes no pointer events (`pointer-events: none`, or not visible), the
+/// nearest element above it that does, as in Chrome. `None` past the glyphs
+/// (the root's own, then).
+pub(crate) fn event_target_at(
+    tree: &rinch_dom::NodeTree,
+    root_id: u64,
+    x: f32,
+    y: f32,
+) -> Option<u64> {
+    use rinch_dom::computed_style::{PointerEventsValue, VisibilityValue};
+    let text = text_node_at(tree, root_id, x, y)?;
+    let takes = |id: u64| {
+        tree.get(id).is_some_and(|n| {
+            n.computed_style.pointer_events != PointerEventsValue::None
+                && n.computed_style.visibility == VisibilityValue::Visible
+        })
+    };
+    let mut element = tree.get(text)?.parent?;
+    if takes(element) {
+        return Some(text);
+    }
+    loop {
+        if element == root_id {
+            return Some(root_id);
+        }
+        element = tree.get(element)?.parent?;
+        if takes(element) {
+            return Some(element);
+        }
+    }
+}
+
 /// Whether some element below `id` computes to `visibility: visible` (#843),
 /// i.e. whether a hidden `id`'s subtree can hold anything to hit. One memo with
 /// paint and the stacking collector, which skip the same subtrees (#2137):

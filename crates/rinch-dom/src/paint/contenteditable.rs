@@ -451,6 +451,51 @@ pub(super) fn paint_input_value(
     }
 }
 
+impl crate::RinchDocument {
+    /// Write IFC root `node`'s read-only selection highlight: `ranges` of its
+    /// laid-out text (none to clear), as the `data-text-sel*` attributes
+    /// [`read_only_selection`] reads, and mark it for repaint. The app's
+    /// selection calls it only for the roots whose part changed; each call is
+    /// one `read_only_selection_writes`.
+    pub fn set_read_only_selection(
+        &mut self,
+        node: crate::node::RawNodeId,
+        ranges: &[(usize, usize)],
+    ) {
+        if let Some(n) = self.tree.nodes.get_mut(node) {
+            match (ranges.first(), ranges.last()) {
+                (Some(&(start, _)), Some(&(_, end))) => {
+                    n.write_attribute("data-text-sel", "true");
+                    n.attributes
+                        .insert("data-text-sel-start".to_string(), start.to_string());
+                    n.attributes
+                        .insert("data-text-sel-end".to_string(), end.to_string());
+                    if ranges.len() > 1 {
+                        let list: Vec<String> =
+                            ranges.iter().map(|(a, b)| format!("{a}-{b}")).collect();
+                        n.attributes
+                            .insert("data-text-sel-ranges".to_string(), list.join(","));
+                    } else {
+                        n.attributes.remove("data-text-sel-ranges");
+                    }
+                }
+                _ => {
+                    n.erase_attribute("data-text-sel");
+                    n.attributes.remove("data-text-sel-start");
+                    n.attributes.remove("data-text-sel-end");
+                    n.attributes.remove("data-text-sel-ranges");
+                }
+            }
+        }
+        // The highlight is painted from these attributes on the IFC root, so
+        // the root is the damage.
+        self.tree.mark_paint_dirty(node);
+        self.tree
+            .perf
+            .bump(crate::perf::Counter::ReadOnlySelectionWrites);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
