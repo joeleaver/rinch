@@ -1236,6 +1236,81 @@ On the desktop the loader runs on a background thread, and an image arrives on
 a later `update()`. Either way a landed image dirties the boxes that show it,
 so `update()` returns `AppAction::RequestRedraw` for it.
 
+### Showing the host's own GPU textures
+
+A game often draws a picture into a texture every frame — a minimap, a
+security-camera monitor, a portrait from a second camera — and wants an element
+of its in-game UI to show it. Register the texture with the context under a
+name, and put a `HostTexture` (or any element with `data-host-texture="<name>"`)
+where it should show:
+
+```rust
+use rinch::embed::{HostTexture, HostTextureOptions, TextureRefresh};
+
+#[component]
+fn hud() -> NodeHandle {
+    rsx! {
+        div { class: "minimap-card",
+            HostTexture { name: "minimap", style: "width: 200px; height: 200px; border-radius: 8px;" }
+        }
+    }
+}
+
+// Once, and again whenever the texture behind the name changes:
+ctx.register_texture("minimap", &minimap_texture)?;
+
+// Each frame: draw into the texture on the shared device, then
+let ui = overlay.render(&device, &queue, &mut ctx);
+```
+
+The texture stays on the GPU: each render copies it into Vello's image atlas,
+and the element draws it as its content. Nothing is read back to the CPU, and
+the tree is not rebuilt.
+
+- **Layout.** The element is a `div`: it has no size of its own, so give it one
+  with CSS. The texture fills its content box, fitted by `object-fit` (`fill`,
+  stretched, by default, as for a `<canvas>` or `<video>`; `contain`, `cover`,
+  `none` and `scale-down` work too), inside its border, rounded by its
+  `border-radius`, clipped and transformed as the element is, under its
+  children. Its background shows where the texture does not reach, and while
+  nothing is registered under the name.
+- **Every frame.** Draw into the texture before `render`, and that render shows
+  it: a texture is copied again at every render by default. A picture that
+  changes now and then can say `HostTextureOptions::new().refresh(TextureRefresh::OnChange)`
+  and call `ctx.texture_changed(name)` after it draws, which saves the copy on
+  the other frames.
+- **Double buffering.** `register_texture` under a name that has one replaces
+  it. Swapping between two textures of the same size each frame is cheap: the
+  scene does not change, the renderer copies from the other texture. A texture
+  of a new size (or another alpha mode) repaints the UI once.
+- **Formats.** `Rgba8Unorm` with `COPY_SRC` is copied as it is.
+  `Rgba8UnormSrgb`, `Bgra8Unorm`, `Bgra8UnormSrgb` and `Rgba8Unorm` without
+  `COPY_SRC` need `TEXTURE_BINDING`: the renderer converts them, texel for
+  texel, with one render pass per copy into a texture of its own (4 bytes a
+  texel). The bytes are drawn as sRGB-encoded colour, like every image's;
+  an `…Srgb` texture's are decoded and encoded again, so they come through
+  unchanged. Anything else (a float HDR target, say) is refused with
+  `HostTextureError::UnsupportedFormat`: tone-map it into one of these.
+- **Alpha.** Premultiplied by default (what blending usually leaves in a render
+  target, and a WebGL canvas's default); `HostTextureOptions::new().alpha(TextureAlpha::Straight)`
+  for straight colour.
+- **Lifetime.** The context holds a handle to the texture until
+  `unregister_texture(name)` or a new registration under the name, and the
+  renderer one until its next `render`. Unregister a texture before you
+  `destroy()` it.
+- **Which renderer.** `RinchOverlayRenderer::render` draws host textures. A host
+  that renders the scene with its own Vello calls
+  `ctx.scene_with_textures(&device, &queue, &mut vello, &mut images)` instead of
+  `ctx.scene()`, keeping one `HostTextureImages` beside that Vello renderer;
+  plain `scene()` draws none.
+- **Event-driven hosts.** The context cannot see the texture change. A host that
+  renders only when `needs_update()` says so renders after it draws into a
+  texture.
+
+On a desktop window, the same picture comes from a `RenderSurface` with a GPU
+render callback ([Drawing with the GPU](#drawing-with-the-gpu-set_gpu_render_callback)),
+which draws into a texture rinch allocates.
+
 ### Platform Events
 
 Translate your engine's events to `rinch_platform::PlatformEvent`:
@@ -1300,7 +1375,11 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 |--------|-------------|
 | `new(config, component)` | Create and mount a rinch UI |
 | `update(&events) -> Vec<AppAction>` | Process events, update layout, return actions |
-| `scene() -> &Scene` | Get the Vello scene (lazy rebuild) |
+| `scene() -> &Scene` | Get the Vello scene (lazy rebuild). Draws no host texture |
+| `scene_with_textures(device, queue, &mut vello, &mut images) -> &Scene` | `scene()` with the host textures drawn, for a host rendering with its own Vello (one `HostTextureImages` per Vello renderer) — see [Showing the host's own GPU textures](#showing-the-hosts-own-gpu-textures) |
+| `register_texture(name, &texture)` / `register_texture_with(name, &texture, options)` | Show a host-owned texture in every `data-host-texture="<name>"` element (`HostTexture` component); again under the name replaces it. `Err(HostTextureError)` for an unsupported format or usage |
+| `unregister_texture(name) -> bool` | Stop showing it |
+| `texture_changed(name) -> bool` | Copy a `TextureRefresh::OnChange` texture at the next render |
 | `resize(w, h)` | Notify of window resize (physical pixels) |
 | `set_scale_factor(scale)` | Update DPI scale factor |
 | `set_theme(&props)` | Replace this context's theme (restyles on the next `update()`) |
@@ -1320,7 +1399,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | Method | Description |
 |--------|-------------|
 | `new(device, w, h, format)` | Create from game's wgpu device |
-| `render(device, queue, &mut ctx) -> TextureView` | Render the context's UI to a texture, transparent inside each `GameViewport` (straight alpha). Call it in place of `ctx.scene()`. Before #1866 it took `ctx.scene()`. A new renderer on an existing context (after a device loss) draws the whole UI on its first call (#1976) |
+| `render(device, queue, &mut ctx) -> TextureView` | Render the context's UI to a texture, transparent inside each `GameViewport` (straight alpha), with its host textures drawn. Call it in place of `ctx.scene()`. Before #1866 it took `ctx.scene()`. A new renderer on an existing context (after a device loss) draws the whole UI on its first call (#1976) |
 | `resize(device, w, h)` | Resize render target |
 | `texture()` | Get the underlying wgpu Texture |
 

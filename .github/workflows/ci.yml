@@ -369,6 +369,11 @@ jobs:
           # #1976's renderer replaced or taking turns (2), and #2071's lost frame (1).
           run 8 -p rinch --features gpu,video --test embed_game_viewport_base_layer_1866 -- \
             --ignored --test-threads=1
+          # #2082's host textures on the embed overlay: a texture's life (draw
+          # into, swap, resize, OnChange, unregister), the converted formats and
+          # both alphas, refusals and the `scene_with_textures` route.
+          run 3 -p rinch --features gpu,video --test embed_host_texture_2082 -- \
+            --ignored --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
             --ignored --test-threads=1

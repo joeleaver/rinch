@@ -73,6 +73,10 @@ use crate::app::RinchApp;
 use crate::app::hit_testing::hit_test;
 pub use crate::app::{ImeChange, ImeState};
 use crate::font::{AppFont, FontData};
+pub use crate::host_texture::{
+    HostTexture, HostTextureError, HostTextureImages, HostTextureOptions, TextureAlpha,
+    TextureRefresh, host_texture,
+};
 /// The rect type of [`ImeState::cursor_area`].
 pub use rinch_core::ElementBounds;
 
@@ -162,6 +166,9 @@ pub struct RinchContext {
     /// [`RinchOverlayRenderer`] that holds a different one holds another
     /// frame's slices, or none (#1976).
     sliced_stamp: u64,
+    /// The GPU textures the host registered for `data-host-texture`
+    /// elements, by name (#2082).
+    host_textures: crate::host_texture::HostTextures,
     /// This context's signal-change subscription. Multi-subscriber: several
     /// concurrent contexts (plus a mounted shell/web root) each hold their own,
     /// and dropping this context detaches only its own callback — creating or
@@ -300,6 +307,7 @@ impl RinchContext {
             surface_ids: Vec::new(),
             surface_passes: 0,
             sliced_stamp: 0,
+            host_textures: Default::default(),
             _signal_change_sub: signal_change_sub,
         }
     }
@@ -442,7 +450,120 @@ impl RinchContext {
     /// runs, and its latest frame is painted inline at its box. Call it once
     /// per frame: **every** call runs the render callbacks again, so a second
     /// `scene()` in one frame renders each callback-driven surface twice.
+    ///
+    /// It draws no host texture (#2082): an image drawn in a scene must be
+    /// registered with the renderer that renders it, which here is the
+    /// host's. Use [`Self::scene_with_textures`] with that renderer instead.
     pub fn scene(&mut self) -> &Scene {
+        self.paint_scene();
+        self.app.painter.scene()
+    }
+
+    /// [`Self::scene`] with the context's host textures (#2082) drawn by
+    /// their `data-host-texture` elements, for a host that renders the scene
+    /// with its own Vello `renderer`: `images` holds what that renderer has
+    /// registered of them (keep one beside each renderer, and pass the same
+    /// one every frame). The textures due a copy are converted or marked for
+    /// Vello to copy again here, so render the scene with `renderer` before
+    /// the next call. [`RinchOverlayRenderer::render`] does this itself.
+    pub fn scene_with_textures(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        renderer: &mut VelloRenderer,
+        images: &mut HostTextureImages,
+    ) -> &Scene {
+        let installed = self.install_host_textures(device, queue, renderer, images);
+        self.paint_scene();
+        if installed {
+            rinch_dom::paint::set_host_texture_images(None);
+        }
+        self.app.painter.scene()
+    }
+
+    /// Bring `images` up to this context's host textures for `renderer` and
+    /// hand them to the next paint; a change to what the scene draws marks
+    /// it dirty. `false` (nothing installed) while neither has a texture.
+    fn install_host_textures(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        renderer: &mut VelloRenderer,
+        images: &mut HostTextureImages,
+    ) -> bool {
+        if self.host_textures.is_empty() {
+            if images.clear(renderer) {
+                self.app.mark_scene_dirty();
+            }
+            return false;
+        }
+        let (map, changed) = images.sync(device, queue, renderer, &self.host_textures);
+        if changed {
+            self.app.mark_scene_dirty();
+        }
+        rinch_dom::paint::set_host_texture_images(Some(map));
+        true
+    }
+
+    /// Show `texture` in every element with `data-host-texture="<name>"`
+    /// (the [`HostTexture`] component), with the default
+    /// [`HostTextureOptions`]: see [`Self::register_texture_with`].
+    pub fn register_texture(
+        &mut self,
+        name: impl Into<String>,
+        texture: &Texture,
+    ) -> Result<(), HostTextureError> {
+        self.register_texture_with(name, texture, HostTextureOptions::default())
+    }
+
+    /// Show `texture`, a texture the host owns on the device it renders this
+    /// context with, in every element with `data-host-texture="<name>"`
+    /// (#2082), drawn as `options` says, until it is unregistered or another
+    /// is registered under the name.
+    ///
+    /// - **Replacing.** Registering again under a name replaces its texture.
+    ///   One of the same size and options is cheap (the double-buffered
+    ///   swap): the scene does not change, the renderer copies from the new
+    ///   texture. A new size, alpha mode or route repaints the scene once.
+    /// - **Lifetime.** The context keeps a handle to `texture` (and the
+    ///   renderer one, until its next render) — the GPU memory is freed only
+    ///   once both have let go. Unregister it before you `destroy()` it.
+    /// - **Formats and usages.** `Rgba8Unorm` with `COPY_SRC` is copied as it
+    ///   is; `Rgba8UnormSrgb`, `Bgra8Unorm`, `Bgra8UnormSrgb` (and
+    ///   `Rgba8Unorm` without `COPY_SRC`) need `TEXTURE_BINDING` and go
+    ///   through one conversion pass per refresh. Anything else is refused:
+    ///   [`HostTextureError`].
+    /// - **Refresh.** Copied again at every render unless `options` says
+    ///   [`TextureRefresh::OnChange`]; then only after [`Self::texture_changed`]
+    ///   or a new registration. Draw into the texture before the render that
+    ///   should show it; a host that renders only on demand renders after it
+    ///   draws (the context cannot know the texture changed).
+    /// - **Drawn by** [`RinchOverlayRenderer::render`] and
+    ///   [`Self::scene_with_textures`]; [`Self::scene`] draws none.
+    pub fn register_texture_with(
+        &mut self,
+        name: impl Into<String>,
+        texture: &Texture,
+        options: HostTextureOptions,
+    ) -> Result<(), HostTextureError> {
+        self.host_textures.register(name.into(), texture, options)
+    }
+
+    /// Stop showing the texture registered under `name`; its elements draw
+    /// their background only. `false` when none was.
+    pub fn unregister_texture(&mut self, name: &str) -> bool {
+        self.host_textures.unregister(name)
+    }
+
+    /// Say the texture under `name` was drawn into, so a
+    /// [`TextureRefresh::OnChange`] texture is copied at the next render.
+    /// `false` when no texture is registered under `name`.
+    pub fn texture_changed(&mut self, name: &str) -> bool {
+        self.host_textures.changed(name)
+    }
+
+    /// Paint the scene [`Self::scene`] returns.
+    fn paint_scene(&mut self) {
         // `build_scene`'s size reaches `paint_document` as its `viewport`, which
         // is in **logical** pixels — the unit every other caller passes, and the
         // unit it had to settle on once card K43 gave the parameter a job. This
@@ -464,7 +585,6 @@ impl RinchContext {
         if installed {
             rinch_dom::paint::set_surface_pixels(None);
         }
-        self.app.painter.scene()
     }
 
     /// [`Self::scene`] painted for [`RinchOverlayRenderer::render`] (#1866):
@@ -1021,6 +1141,8 @@ pub struct RinchOverlayRenderer {
     below: Option<Texture>,
     /// A frame went out undrawn and no `render` has followed (#2071).
     render_owed: bool,
+    /// The context's host textures registered with `renderer` (#2082).
+    host_images: HostTextureImages,
 }
 
 /// What became of the frames a [`RinchOverlayRenderer`] rendered, from
@@ -1072,6 +1194,7 @@ impl RinchOverlayRenderer {
             slice_error_logged: false,
             below: None,
             render_owed: false,
+            host_images: HostTextureImages::new(),
         }
     }
 
@@ -1139,7 +1262,15 @@ impl RinchOverlayRenderer {
     ) -> TextureView {
         self.check_frames(device);
         self.render_owed = false;
-        if let Some((stamp, slices)) = ctx.sliced_frame(self.fed) {
+        // Host textures (#2082) first: a change to what the scene draws
+        // marks it dirty, and the paint below reads the images.
+        let installed =
+            ctx.install_host_textures(device, queue, &mut self.renderer, &mut self.host_images);
+        let sliced = ctx.sliced_frame(self.fed);
+        if installed {
+            rinch_dom::paint::set_host_texture_images(None);
+        }
+        if let Some((stamp, slices)) = sliced {
             self.fed = stamp;
             if let Err(e) = self.split.apply(
                 device,
