@@ -231,9 +231,6 @@ struct Row {
     id: Option<RawNodeId>,
     group: Option<RawNodeId>,
     cells: Vec<RawNodeId>,
-    /// A row's one child that is not a cell (`display: block` on a `<td>`),
-    /// in the first column ([`row_of`]).
-    stacked: bool,
 }
 
 #[derive(Default)]
@@ -360,7 +357,6 @@ fn row_of(tree: &NodeTree, row: RawNodeId, group: Option<RawNodeId>) -> Vec<Row>
                 id: Some(row),
                 group,
                 cells: vec![c],
-                stacked: true,
             })
             .collect();
     }
@@ -368,7 +364,6 @@ fn row_of(tree: &NodeTree, row: RawNodeId, group: Option<RawNodeId>) -> Vec<Row>
         id: Some(row),
         group,
         cells: kids,
-        stacked: false,
     }]
 }
 
@@ -392,7 +387,6 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                 id: None,
                 group: None,
                 cells: std::mem::take(&mut bare),
-                stacked: false,
             });
         }
         match part {
@@ -414,7 +408,6 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                                 id: None,
                                 group: Some(c),
                                 cells: std::mem::take(&mut cells),
-                                stacked: false,
                             });
                         }
                         list.extend(row_of(tree, r, Some(c)));
@@ -427,7 +420,6 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                         id: None,
                         group: Some(c),
                         cells,
-                        stacked: false,
                     });
                 }
             }
@@ -446,7 +438,6 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
             id: None,
             group: None,
             cells: bare,
-            stacked: false,
         });
     }
     s
@@ -773,10 +764,14 @@ impl RinchDocument {
                 x += n;
             }
         }
-        // A stacked block's `width` is its own, inside the anonymous cell
-        // that holds it, whose width is auto.
+        // A block in a row (a `<td style="display: block">`, stacked or
+        // beside real cells) stands in an anonymous cell, whose width is
+        // auto: the block's `width` is its own, inside that cell, and does
+        // not declare the column (#2288; Chrome gives a wide table's free
+        // width to that auto column, not to the declared ones).
         for (cell, slot, y) in &placed {
-            if slot.colspan == 1 && (!fixed || *y == 0) && !rows[*y].stacked {
+            let real = self.tree.nodes[*cell].computed_style.table_part == TablePart::Cell;
+            if slot.colspan == 1 && (!fixed || *y == 0) && real {
                 let i = slot.col as usize - 1;
                 tracks[i] = merge_track(tracks[i], declared_track(&self.tree, *cell));
             }
@@ -972,15 +967,22 @@ impl RinchDocument {
             // table; email stacks its columns this way). Written on every
             // sync from the part alone, so no restyle strands it.
             let cell = node.computed_style.table_part != TablePart::Caption;
-            style.stretch_past_max_width = node.computed_style.table_part == TablePart::Cell;
+            let real = node.computed_style.table_part == TablePart::Cell;
+            style.stretch_past_max_width = real;
             if cell {
                 // A cell's `height` is a minimum, and its `width` is its
-                // column's. It fills its slot and has no margins.
-                if let DimensionValue::Length(h) = node.computed_style.height {
-                    style.min_size.height = length(h);
+                // column's. It fills its slot and has no margins. A block
+                // standing in an anonymous cell keeps its own size and
+                // margins, inside the cell (#2288): its `width` is what it
+                // asks of the column, which is `auto` ([`declared_track`] is
+                // not read for it).
+                if real {
+                    if let DimensionValue::Length(h) = node.computed_style.height {
+                        style.min_size.height = length(h);
+                    }
+                    style.size = taffy::Size::auto();
+                    style.margin = taffy::Rect::length(0.0);
                 }
-                style.size = taffy::Size::auto();
-                style.margin = taffy::Rect::length(0.0);
                 style.align_self = Some(taffy::AlignSelf::STRETCH);
                 style.justify_self = Some(taffy::JustifySelf::STRETCH);
                 if c.shift != 0.0 {
