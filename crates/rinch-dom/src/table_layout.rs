@@ -67,7 +67,11 @@
 //! one they are `minmax(<height>, auto)`, stretched by equal shares where
 //! Chrome shares in proportion to their heights. A percentage, a row group's
 //! `height` and the `height` of a row whose children stack (`Row::stacked`)
-//! size nothing. A collapsing table has no padding (CSS 2.1 §17.6.2).
+//! size nothing. A rowspan cell taller than the rows it spans grows them
+//! by equal shares (Chrome: in proportion to their heights), and a taller
+//! table's `auto` rows share its extra height equally (Chrome: by their
+//! content); these and the other differences are #2312. A collapsing table
+//! has no padding (CSS 2.1 §17.6.2).
 //!
 //! ## Vertical alignment
 //!

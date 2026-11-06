@@ -969,11 +969,22 @@ fn taffy_baseline(
         // (its baseline is its last line's, below its bottom). Measured at
         // another width (Taffy answered the layout from a cache the records
         // no longer match exactly), a last line keeps its distance from the
-        // content bottom.
+        // content bottom — when the content is what makes the box as tall as
+        // it is. A box with a declared `height` or `min-height` is not
+        // measured at its own width at all (Taffy needs no measure for a
+        // leaf whose size is known), and its lines stand at the top of its
+        // content box however tall it is: counted up from its bottom, a 40px
+        // box's one line was 20px too low, which only a zero top margin hid
+        // (review of #2308: `margin-top: -10px` put the box 10px above its
+        // line).
         let same_width = (entry.0 - width).abs() <= 0.5;
+        let content_sized = taffy.style(taffy_id).is_ok_and(|s| {
+            s.size.height == taffy::Dimension::auto()
+                && s.min_size.height == taffy::LengthPercentageAuto::auto()
+        });
         return if first {
             entry.2
-        } else if same_width {
+        } else if same_width || !content_sized {
             entry.3
         } else {
             entry.3.map(|b| height - (entry.1 - b))
@@ -11868,6 +11879,10 @@ impl RinchDocument {
                 if child.display_mode.is_atomic_inline() {
                     child.layout.width.to_bits().hash(&mut h);
                     child.layout.height.to_bits().hash(&mut h);
+                    // Its line lines up its margin box on the block axis.
+                    let (top, bottom) = atomic_vertical_margins(&child.computed_style);
+                    top.to_bits().hash(&mut h);
+                    bottom.to_bits().hash(&mut h);
                 }
                 let member = finish_member(h.finish());
                 let sig = sigs.entry(root).or_insert(0);
