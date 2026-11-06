@@ -336,6 +336,58 @@ pub fn inject_platform_event(event: PlatformEvent) {
 /// with the mouse (1) or a tablet tool (2).
 const TOUCH_POINTER_BASE: u64 = 1 << 32;
 
+/// One turn of the event loop for the DevTools window's app, which is sent
+/// no `AboutToWait` of its own: a frame of any wheel glide (#2287 — the
+/// DevTools window sends line wheels too, and a glide nothing ticks never
+/// moves), then resolve and repaint what changed. Answers whether the window
+/// needs a redraw: while a glide runs it does, so the loop keeps turning.
+pub(crate) fn devtools_turn(app: &mut RinchApp, width: f32, height: f32) -> bool {
+    let gliding = app.tick_wheel_scroll();
+    app.resolve_and_repaint(width, height) || gliding
+}
+
+/// The [`PlatformEvent`] a winit wheel delta becomes, with the pointer at the
+/// logical `cursor` on a window of `scale`: what both windows of the desktop
+/// shell send (#2287).
+///
+/// - A `LineDelta` — a mouse wheel's notches — is a
+///   [`PlatformEvent::MouseWheelLines`], whose default scroll glides as
+///   Chrome's does.
+/// - A `PixelDelta` — a trackpad, a high-resolution wheel — is a
+///   [`PlatformEvent::MouseWheel`], which scrolls directly. The delta is a
+///   *physical* distance compared against logical scroll extents, so it
+///   divides like a position does, or a HiDPI trackpad scrolls `scale` times
+///   too far (#299).
+/// - Any other kind (`MouseScrollDelta` is non-exhaustive) is `None`: it
+///   scrolls nothing.
+pub fn wheel_platform_event(
+    delta: winit::event::MouseScrollDelta,
+    cursor: (f32, f32),
+    scale: f64,
+) -> Option<PlatformEvent> {
+    let (x, y) = cursor;
+    match delta {
+        winit::event::MouseScrollDelta::LineDelta(lines_x, lines_y) => {
+            Some(PlatformEvent::MouseWheelLines {
+                x,
+                y,
+                lines_x: lines_x as f64,
+                lines_y: lines_y as f64,
+            })
+        }
+        winit::event::MouseScrollDelta::PixelDelta(pos) => {
+            let (delta_x, delta_y) = to_logical_point((pos.x, pos.y), scale);
+            Some(PlatformEvent::MouseWheel {
+                x,
+                y,
+                delta_x,
+                delta_y,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// A winit force as a pressure in `0.0..=1.0`; with none measured, the
 /// Pointer Events default (`0.5` while down, else `0`).
 fn force_pressure(force: Option<&winit::event::Force>, down: bool) -> f32 {
@@ -1076,8 +1128,7 @@ impl RinchRuntime {
             return;
         };
         let size = window.logical_size();
-        let changed = dt_app.resolve_and_repaint(size.0 as f32, size.1 as f32);
-        if changed {
+        if devtools_turn(dt_app, size.0 as f32, size.1 as f32) {
             window.request_redraw();
         }
     }
@@ -3335,30 +3386,11 @@ impl ApplicationHandler for RinchRuntime {
                 return;
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let (dx, dy) = match delta {
-                    // Lines, not pixels: the `* 40.0` is already a logical-px
-                    // convention, so there is nothing to convert.
-                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                        (x as f64 * 40.0, y as f64 * 40.0)
-                    }
-                    // A pixel delta is a *physical* distance, and it is compared
-                    // against logical scroll extents — so it divides like a
-                    // position does, or a HiDPI trackpad scrolls `scale` times
-                    // too far (#299).
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
-                        to_logical_point((pos.x, pos.y), self.scale_factor())
-                    }
-                    // `MouseScrollDelta` is non-exhaustive (winit 0.31.0-beta.3):
-                    // a kind of delta this shell does not know scrolls nothing.
-                    _ => return,
-                };
                 // Already logical: set from the converted `PointerMoved` above.
-                let (cx, cy) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
-                PlatformEvent::MouseWheel {
-                    x: cx,
-                    y: cy,
-                    delta_x: dx,
-                    delta_y: dy,
+                let cursor = self.app.cursor_pos.unwrap_or((0.0, 0.0));
+                match wheel_platform_event(delta, cursor, self.scale_factor()) {
+                    Some(event) => event,
+                    None => return,
                 }
             }
             WindowEvent::Focused(focused) => {
@@ -4212,28 +4244,12 @@ impl RinchRuntime {
             WindowEvent::MouseWheel { delta, .. } => {
                 let size = self.devtools_size();
                 let scale = self.devtools_scale_factor();
-                let (dx, dy) = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                        (x as f64 * 40.0, y as f64 * 40.0)
-                    }
-                    // Physical, like the main window's (#299).
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
-                        to_logical_point((pos.x, pos.y), scale)
-                    }
-                    _ => return,
-                };
                 if let Some(dt_app) = &mut self.devtools_app {
-                    let (cx, cy) = dt_app.cursor_pos.unwrap_or((0.0, 0.0));
-                    let actions = dt_app.handle_event(
-                        PlatformEvent::MouseWheel {
-                            x: cx,
-                            y: cy,
-                            delta_x: dx,
-                            delta_y: dy,
-                        },
-                        size,
-                        scale,
-                    );
+                    let cursor = dt_app.cursor_pos.unwrap_or((0.0, 0.0));
+                    let Some(event) = wheel_platform_event(delta, cursor, scale) else {
+                        return;
+                    };
+                    let actions = dt_app.handle_event(event, size, scale);
                     for action in actions {
                         if let AppAction::RequestRedraw = action {
                             if let Some(w) = &self.devtools_window {

@@ -57,6 +57,25 @@ pub enum PlatformEvent {
         delta_x: f64,
         delta_y: f64,
     },
+    /// A wheel that turned by whole *lines* — a mouse wheel's notches, winit's
+    /// `MouseScrollDelta::LineDelta` — at the **logical** pointer position
+    /// `x`/`y`. `lines_x`/`lines_y` have [`MouseWheel`](Self::MouseWheel)'s
+    /// signs (winit's: positive scrolls content toward the start).
+    ///
+    /// It is a [`MouseWheel`](Self::MouseWheel) of
+    /// [`WHEEL_LINE_PX`](crate::WHEEL_LINE_PX) logical pixels a line in every
+    /// respect — `onwheel`, render surfaces, which container scrolls, scroll
+    /// chaining — except that the default scroll it makes animates toward its
+    /// target over a fraction of a second, as Chrome's does (#2287), where a
+    /// `MouseWheel` scrolls its whole distance at once. A backend whose device
+    /// reports pixels (a trackpad, a high-resolution wheel) sends
+    /// `MouseWheel`.
+    MouseWheelLines {
+        x: f32,
+        y: f32,
+        lines_x: f64,
+        lines_y: f64,
+    },
     /// The pointer interaction in flight was taken away, and must not be
     /// completed.
     ///
@@ -523,3 +542,7 @@ pub enum KeyCode {
     /// The platform backend may include additional info in the event's `text` field.
     Other,
 }
+
+/// How far one line of a [`PlatformEvent::MouseWheelLines`] wheel scrolls, in
+/// logical pixels: the desktop shell's long-standing `LineDelta` convention.
+pub const WHEEL_LINE_PX: f64 = 40.0;
