@@ -136,13 +136,60 @@ fn resolve(env: Option<&str>, requested: Option<GpuAntialiasing>) -> GpuAntialia
 }
 
 /// The `AaConfig` every window and overlay scene is rendered with.
+///
+/// In this crate's own test build it is `TestAa`'s per-thread mode,
+/// `Msaa16` unless a test pins another: an area-coverage render of a scene is
+/// not repeatable on a parallel GPU (see the module docs), and the logic
+/// fixtures (damage, culls, split slices) compare renders exactly. The
+/// dedicated area-coverage fixtures pin [`GpuAntialiasing::Area`] and compare
+/// within 1/255.
 pub(crate) fn scene_aa() -> vello::AaConfig {
-    gpu_antialiasing().aa_config()
+    scene_mode().aa_config()
 }
 
-/// The `AaSupport` every window and overlay renderer is made with.
+#[cfg(not(test))]
+fn scene_mode() -> GpuAntialiasing {
+    gpu_antialiasing()
+}
+
+#[cfg(test)]
+fn scene_mode() -> GpuAntialiasing {
+    TEST_AA.with(|m| m.get())
+}
+
+/// The `AaSupport` every window and overlay renderer is made with (every
+/// mode in this crate's test build, so a test can pin either).
 pub(crate) fn scene_aa_support() -> vello::AaSupport {
-    gpu_antialiasing().aa_support()
+    if cfg!(test) {
+        vello::AaSupport::all()
+    } else {
+        gpu_antialiasing().aa_support()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_AA: std::cell::Cell<GpuAntialiasing> =
+        const { std::cell::Cell::new(GpuAntialiasing::Msaa16) };
+}
+
+/// Pins this thread's [`scene_aa`] to a mode until dropped (tests only).
+#[cfg(test)]
+pub(crate) struct TestAa(GpuAntialiasing);
+
+#[cfg(test)]
+impl TestAa {
+    /// Pin `mode` on this thread.
+    pub(crate) fn pin(mode: GpuAntialiasing) -> Self {
+        TestAa(TEST_AA.with(|m| m.replace(mode)))
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestAa {
+    fn drop(&mut self) {
+        TEST_AA.with(|m| m.set(self.0));
+    }
 }
 
 #[cfg(test)]

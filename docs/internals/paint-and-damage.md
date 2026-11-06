@@ -120,7 +120,25 @@ when an app selects MSAA. Pins: `gpu_the_window_draws_text_with_area_coverage_22
 (`app/gpu_text_aa_2286_tests.rs`, CI's `test-gpu`: more than 64 distinct partial
 levels in a text window, where Msaa16 has at most 15), and
 `gpu_antialiasing::tests` (the env and request order, one mode's pipelines).
-`text_aa_cost_probe_2286` (same file, not in CI's filter) times both modes.
+`text_aa_cost_probe_2286` (same file, skipped by name in CI) times both modes.
+
+**An area-coverage render is not repeatable on a parallel GPU (±1/255).**
+`path_count.wgsl` hands each tile's segments their slots with `atomicAdd`, so
+their order in the tile changes from run to run, and Area's `fill_path`
+(`fine.wgsl`) sums their float area contributions in that order: two renders of
+one scene differ by 1/255 here and there (the #2286 review: a dense page
+differed in 16 of 16 runs, up to 429 channels; Msaa16, whose coverage is an
+integer count of samples, differed in 0 of 16). This holds on any GPU that runs
+the segments in parallel, lavapipe included. So **exact pixel comparisons
+between two renders are pinned to Msaa16**: in `rinch`'s own test build
+`scene_aa()` is a per-thread mode that defaults to `Msaa16` (and every renderer
+`scene_aa_support()` makes has every mode), which keeps the damage, cull,
+clip-group, split and base-layer fixtures exact and keeps MSAA covered; the
+area fixtures pin `GpuAntialiasing::Area` with `TestAa::pin` and compare within
+1/255 (2/255 where an inversion's rounding adds another). The embed integration
+tests (`tests/embed_*`, built against the non-test library) call
+`rinch::set_gpu_antialiasing(Msaa16)` before their first renderer. A new
+fixture that compares two GPU renders exactly must not pin Area.
 
 **Text rendering policy (#2286 stages 1b and 1c).** `rinch_dom::paint::text_rendering`
 holds the app's `TextRendering` (`antialias`, `hinting`, `stem_darkening`, each

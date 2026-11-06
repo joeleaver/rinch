@@ -6,6 +6,7 @@
 //! a declared size and line height.
 
 use super::*;
+use crate::gpu_antialiasing::{GpuAntialiasing, TestAa};
 use crate::shell::desktop::WgpuRenderer;
 use rinch_dom::paint::text_rendering::{
     ResolvedTextRendering, StemDarkening, SystemTextSettings, TextRendering, reset_text_rendering,
@@ -122,6 +123,8 @@ fn coverage(rgba: &[u8], light_text: bool) -> Vec<f64> {
 #[test]
 #[ignore]
 fn gpu_the_window_draws_text_with_area_coverage_2286() {
+    // The production default; this crate's test build defaults to Msaa16.
+    let _aa = TestAa::pin(GpuAntialiasing::Area);
     let mut app = text_app("#000000", "#ffffff", W, H);
     let rgba = render_window(&mut app);
     let partial: std::collections::BTreeSet<u8> = rgba
@@ -145,6 +148,7 @@ fn gpu_the_window_draws_text_with_area_coverage_2286() {
 #[test]
 #[ignore]
 fn gpu_light_text_is_darkened_and_off_turns_it_off_2286() {
+    let _aa = TestAa::pin(GpuAntialiasing::Area);
     let render = |light: bool, policy: ResolvedTextRendering| {
         set_text_rendering(policy);
         let (fg, bg) = if light {
@@ -157,9 +161,12 @@ fn gpu_light_text_is_darkened_and_off_turns_it_off_2286() {
         reset_text_rendering();
         coverage(&rgba, light)
     };
-    // Two renders of one scene under area coverage are not bit-identical on
-    // lavapipe (measured: the same dark text twice differed by 1/255 at some
-    // pixel), so these compare per pixel within 2/255, not exactly.
+    // Two renders of one scene under area coverage are not bit-identical on a
+    // parallel GPU: a tile's segments are ordered by `atomicAdd` and the area
+    // fill sums their float coverage in that order (paint-and-damage.md,
+    // "GPU antialiasing"). So a scene against itself is compared within
+    // 1/255, and light against dark within 2/255 (that, plus the inversion's
+    // own rounding).
     let worst = |a: &[f64], b: &[f64]| {
         a.iter()
             .zip(b)
@@ -176,7 +183,7 @@ fn gpu_light_text_is_darkened_and_off_turns_it_off_2286() {
     let dark_off = render(false, off);
     let d = worst(&dark, &dark_off);
     assert!(
-        d <= 2.0 / 255.0 + 1e-9,
+        d <= 1.0 / 255.0 + 1e-9,
         "dark text moved with darkening: by {d} somewhere"
     );
     let light_off = render(true, off);
