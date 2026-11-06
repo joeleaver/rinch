@@ -229,6 +229,26 @@ impl ComputedStyle {
             && self.vertical_align == other.vertical_align
             && self.display.is_flex_or_grid_container() == other.display.is_flex_or_grid_container()
             && (!inline_level || self.same_inline_background_inputs(other))
+            && self.same_atomic_line_margins(other)
+    }
+
+    /// Whether an inline-level box's top and bottom margins, as its line lines
+    /// it up (`crate::ifc::atomic_vertical_margins`), are the same: an atomic
+    /// inline's margin box is its `InlineBox` on the block axis, so a change
+    /// moves its line and its place in it with no change in its own size,
+    /// which is all the re-measure of a dirty atomic inline compares (review
+    /// of #2308). Part of [`Self::same_text_layout_inputs`] only: a margin is
+    /// a Taffy property, so its change already sets `layout_dirty`, and it
+    /// moves no box's width, which is why it is not in
+    /// [`Self::same_measured_text_inputs`] (a mutant that dropped it from there
+    /// changed no answer). A block's margins change no line and are not
+    /// compared.
+    pub fn same_atomic_line_margins(&self, other: &ComputedStyle) -> bool {
+        use super::values::DisplayValue::{Inline, InlineBlock, InlineFlex, InlineGrid};
+        let inline_level = |d| matches!(d, Inline | InlineBlock | InlineFlex | InlineGrid);
+        !(inline_level(self.display) || inline_level(other.display))
+            || crate::ifc::atomic_vertical_margins(self)
+                == crate::ifc::atomic_vertical_margins(other)
     }
 
     /// The `InlineBackgroundSpan` half of [`Self::same_text_layout_inputs`],

@@ -969,11 +969,22 @@ fn taffy_baseline(
         // (its baseline is its last line's, below its bottom). Measured at
         // another width (Taffy answered the layout from a cache the records
         // no longer match exactly), a last line keeps its distance from the
-        // content bottom.
+        // content bottom — when the content is what makes the box as tall as
+        // it is. A box with a declared `height` or `min-height` is not
+        // measured at its own width at all (Taffy needs no measure for a
+        // leaf whose size is known), and its lines stand at the top of its
+        // content box however tall it is: counted up from its bottom, a 40px
+        // box's one line was 20px too low, which only a zero top margin hid
+        // (review of #2308: `margin-top: -10px` put the box 10px above its
+        // line).
         let same_width = (entry.0 - width).abs() <= 0.5;
+        let content_sized = taffy.style(taffy_id).is_ok_and(|s| {
+            s.size.height == taffy::Dimension::auto()
+                && s.min_size.height == taffy::LengthPercentageAuto::auto()
+        });
         return if first {
             entry.2
-        } else if same_width {
+        } else if same_width || !content_sized {
             entry.3
         } else {
             entry.3.map(|b| height - (entry.1 - b))
@@ -1017,6 +1028,23 @@ pub(crate) fn white_space_hanging(
         }
         _ => parley::style::WhiteSpaceCollapse::Preserve,
     }
+}
+
+/// An atomic inline's top and bottom margins, in CSS px: its line lines up
+/// its **margin box** (CSS 2.1 §10.8: the height of an inline-block's or a
+/// replaced element's inline box is its margin box's), so they grow the line,
+/// and a box with no baseline sits its bottom margin edge on it. A `<img
+/// style="margin-bottom: 16px">` in a line of its own took 16px less in
+/// rinch than in Chrome (#1405). `auto` is 0; a percentage (of the
+/// containing block's width) is not resolved and counts 0. The horizontal
+/// margins are still left out (#1405).
+pub(crate) fn atomic_vertical_margins(style: &crate::computed_style::ComputedStyle) -> (f32, f32) {
+    use crate::computed_style::LengthPercentageAutoValue as M;
+    let px = |m: M| match m {
+        M::Length(px) => px,
+        _ => 0.0,
+    };
+    (px(style.margin_top), px(style.margin_bottom))
 }
 
 /// An atomic inline's `vertical-align` as parley 0.12 lines a box up by it
@@ -4780,6 +4808,10 @@ impl RinchDocument {
                         }
                         let child_id = positioned_box.id as RawNodeId;
                         if let Some(child) = self.tree.nodes.get_live_mut(child_id) {
+                            // The inline box is its margin box on the block
+                            // axis ([`atomic_vertical_margins`]).
+                            let y =
+                                positioned_box.y + atomic_vertical_margins(&child.computed_style).0;
                             // A move is a move, whoever makes it: push the box
                             // paint-dirty like any other layout change, so the
                             // region clears where it was painted and draws where
@@ -4790,10 +4822,9 @@ impl RinchDocument {
                             // consumes it. Review of #880, probe N: unpushed, the
                             // chip's absolute kid was neither drawn at its new
                             // spot nor cleared from its old one.
-                            let moved = child.layout.x != positioned_box.x
-                                || child.layout.y != positioned_box.y;
+                            let moved = child.layout.x != positioned_box.x || child.layout.y != y;
                             child.layout.x = positioned_box.x;
-                            child.layout.y = positioned_box.y;
+                            child.layout.y = y;
                             if moved {
                                 self.tree.paint_dirty_nodes.push(child_id);
                                 // An absolute box placed past this one is
@@ -11472,6 +11503,11 @@ impl RinchDocument {
                         Some(atomic) => atomic.size(child_id, child),
                         None => (child.layout.width, child.layout.height),
                     };
+                    // Lined up by its margin box on the block axis
+                    // ([`atomic_vertical_margins`]); `write_inline_positions`
+                    // puts the border box back inside it.
+                    let (margin_top, margin_bottom) =
+                        atomic_vertical_margins(&child.computed_style);
                     // Its baseline (#663), as its compute last laid it out.
                     // Lined up at another height than that one (a measure's
                     // contribution), a last-line baseline keeps its distance
@@ -11506,9 +11542,9 @@ impl RinchDocument {
                         id: child_id,
                         index: 0, // will be set by builder
                         width: width * scale,
-                        height: height * scale,
+                        height: (height + margin_top + margin_bottom) * scale,
                         kind: parley::InlineBoxKind::InFlow,
-                        baseline: baseline.map(|b| b * scale),
+                        baseline: baseline.map(|b| (b + margin_top) * scale),
                         vertical_align: atomic_vertical_align(&child.computed_style, scale),
                     });
                     child_positions.push((child_id, LayoutResult::default()));
@@ -11843,6 +11879,10 @@ impl RinchDocument {
                 if child.display_mode.is_atomic_inline() {
                     child.layout.width.to_bits().hash(&mut h);
                     child.layout.height.to_bits().hash(&mut h);
+                    // Its line lines up its margin box on the block axis.
+                    let (top, bottom) = atomic_vertical_margins(&child.computed_style);
+                    top.to_bits().hash(&mut h);
+                    bottom.to_bits().hash(&mut h);
                 }
                 let member = finish_member(h.finish());
                 let sig = sigs.entry(root).or_insert(0);
