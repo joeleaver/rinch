@@ -421,6 +421,29 @@ fn gpu_fallbacks_draw_outlines() {
     );
 }
 
+/// The app's escape hatch: `TextRasterization::gpu_glyph_outlines(true)`
+/// draws every glyph as an outline, nothing from the atlas.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_outlines_on_request() {
+    use rinch_dom::paint::text_rasterization::{
+        SystemTextSettings, TextRasterization, reset_thread_policy, set_thread_policy,
+    };
+    set_thread_policy(
+        TextRasterization::default()
+            .gpu_glyph_outlines(true)
+            .resolve(&SystemTextSettings::default()),
+    );
+    let atlas = private_atlas(usize::MAX);
+    let mut d = doc(PAGE);
+    let (painter, stats) = paint_vello(&mut d, 1.0, &atlas);
+    reset_thread_policy();
+    assert_eq!(stats.atlas, Default::default(), "{stats:?}");
+    assert!(stats.outline_fallbacks > 100, "{stats:?}");
+    let px = Gpu::new().render(painter.scene(), W, H);
+    assert!(inked(&px) > 2000, "outlines are drawn");
+}
+
 /// The masks outlive the GPU: a renderer on a new device (a device lost and
 /// made again) draws the same scene to the same pixels, and painting it
 /// again rasterises and uploads nothing new — the atlas holds CPU blobs, and

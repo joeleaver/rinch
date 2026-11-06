@@ -392,8 +392,9 @@ jobs:
           run 1 -p rinch --features gpu,video --test gpu_svg_images_2111 -- \
             --ignored --test-threads=1
           # #2286's glyph-mask atlas: GPU glyphs against the software painter's,
-          # one mask in two colours, the fallbacks, a new renderer, eviction.
-          run 5 -p rinch --features gpu,video --test gpu_glyph_atlas_2286 -- \
+          # one mask in two colours, the fallbacks, a new renderer, eviction, and
+          # outlines on request.
+          run 6 -p rinch --features gpu,video --test gpu_glyph_atlas_2286 -- \
             --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).

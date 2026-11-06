@@ -929,6 +929,7 @@ impl Painter for VelloPainter {
         // From the glyph-mask atlas wherever it can draw the run (#2286).
         #[cfg(feature = "glyph-atlas")]
         if self.atlas_enabled
+            && !super::text_rasterization::thread_policy().gpu_glyph_outlines
             && self.draw_atlas_glyphs(
                 font,
                 font_size,

@@ -236,6 +236,7 @@ App::new(app)
 | `hinting` | The OS's hint style; `Slight` where it says nothing, `None` on macOS | `None`, `Slight`, `Medium`, `Full` (the last three all hint today) |
 | `stem_darkening` | Light text is grown by up to 0.10 px a side | `Off`, `Px(amount)` (up to 0.5) |
 | `antialias` | The OS's: none, subpixel, or grayscale (macOS: grayscale) | `Grayscale`, `Subpixel`, `None` |
+| `gpu_glyph_outlines` | `false`: the GPU draws glyphs from the glyph-mask atlas | `true`: from outlines (below) |
 
 **Stem darkening.** Both renderers blend a glyph's coverage in sRGB-encoded
 space, as FreeType's usual callers do, and that makes light text on a dark
@@ -272,7 +273,7 @@ scale, emoji and other colour glyphs, text larger than 64 device pixels and
 synthetic italics are drawn from outlines on the GPU instead; a uniform scale
 (a HiDPI display, CSS `scale()`) is rasterised at the scaled size. An app whose
 text changes size every frame (an animated zoom) can keep outlines with
-`VelloPainter::set_glyph_atlas_enabled(false)`.
+`TextRasterization::default().gpu_glyph_outlines(true)`.
 
 Today rinch draws grayscale whatever `antialias` resolves to: subpixel (LCD)
 text and aliased text come with the subpixel compositing planned in #2286. The subpixel order and LCD filter are stored for that. An
