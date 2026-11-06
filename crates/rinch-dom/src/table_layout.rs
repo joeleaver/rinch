@@ -29,14 +29,26 @@
 //! ## Column widths
 //!
 //! A column with no declared width is `minmax(min-content, <max-content>fr)`
-//! when the table has a width of its own, which spreads the room as the
-//! automatic table layout does: never under a cell's minimum, and in
-//! proportion to what each column would like. Its max-content is measured by
+//! when the table has a width of its own: never under a cell's minimum, and
+//! in proportion to what each column would like. That is the automatic table
+//! layout's share of a width past the columns' max-content; below it, Chrome
+//! interpolates between the min-content and max-content widths instead
+//! (#2281). Its max-content is measured by
 //! [`RinchDocument::measure_table_columns`]: the widest of its cells' own,
 //! each asked size-only and only again once it changed (#2141), or — with a
 //! spanning cell or a caption, which share their width between columns — by
-//! laying the table out detached with `auto` tracks. A table with no width of
-//! its own shrinks to fit on plain `auto` tracks and needs no measure.
+//! laying the table out detached with `auto` tracks.
+//!
+//! A table with no width of its own shrinks to fit on plain `auto` tracks and
+//! needs no measure. Its grid sets Taffy's `proportional_column_sizing`
+//! (#2280): when its content is wider than its room, each column is its
+//! min-content width plus the same fraction of its max-content minus
+//! min-content (CSS 2.1 §17.5.2.2, Blink's
+//! `DistributeInlineSizeToComputedInlineSizeAuto`), where a grid's equal
+//! shares gave a column that wants little as much as a wide one, and a
+//! `colspan` cell's max-content beyond its columns goes to them in proportion
+//! to their own. A spanning cell's min-content is still shared as a grid
+//! shares it (#2281).
 //!
 //! A cell's `max-width` caps what it asks of its column (its min-content,
 //! max-content and `width`), and the cell is still laid out at its column's
@@ -905,6 +917,10 @@ impl RinchDocument {
                 style.justify_content = Some(taffy::JustifyContent::START);
                 style.align_content = Some(taffy::AlignContent::START);
             }
+            // A table with no width of its own shares its room between its
+            // `auto` tracks as a table shares it between columns, not in a
+            // grid's equal shares (#2280, *Column widths*).
+            style.proportional_column_sizing = !b.definite;
             let can_weigh = b.definite && !b.fixed;
             let all_declared = b.tracks.iter().all(|t| *t != Track::Auto);
             style.grid_template_columns = b
