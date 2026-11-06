@@ -120,9 +120,9 @@ pub struct App<F, M = NoMenuBar> {
     /// winit (and a bundle's `Info.plist`).
     #[cfg(feature = "desktop")]
     pub(crate) activation_policy: Option<crate::shell::activation::ActivationPolicy>,
-    /// See [`text_rendering`](App::text_rendering).
+    /// See [`text_rasterization`](App::text_rasterization).
     #[cfg(any(feature = "desktop", feature = "android"))]
-    pub(crate) text_rendering: crate::text_rendering::TextRendering,
+    pub(crate) text_rasterization: crate::text_rasterization::TextRasterization,
     /// See [`gpu_antialiasing`](App::gpu_antialiasing); `None` leaves it to
     /// `RINCH_GPU_AA` and the default.
     #[cfg(feature = "gpu")]
@@ -176,7 +176,7 @@ where
             #[cfg(feature = "desktop")]
             activation_policy: None,
             #[cfg(any(feature = "desktop", feature = "android"))]
-            text_rendering: Default::default(),
+            text_rasterization: Default::default(),
             #[cfg(feature = "gpu")]
             gpu_antialiasing: None,
             #[cfg(feature = "gpu")]
@@ -359,7 +359,7 @@ where
             #[cfg(feature = "desktop")]
             activation_policy: self.activation_policy,
             #[cfg(any(feature = "desktop", feature = "android"))]
-            text_rendering: self.text_rendering,
+            text_rasterization: self.text_rasterization,
             #[cfg(feature = "gpu")]
             gpu_antialiasing: self.gpu_antialiasing,
             #[cfg(feature = "gpu")]
@@ -473,20 +473,23 @@ where
     }
 
     /// Choose how text is rendered (issue #2286). Every field of the default
-    /// [`TextRendering`](crate::text_rendering::TextRendering) is `Auto`,
+    /// [`TextRasterization`](crate::text_rasterization::TextRasterization) is `Auto`,
     /// which follows the OS's text settings
-    /// ([`system_text_settings`](crate::text_rendering::system_text_settings):
+    /// ([`system_text_settings`](crate::text_rasterization::system_text_settings):
     /// fontconfig on Linux, `SystemParametersInfo` on Windows, grayscale and
     /// unhinted on macOS), as Chrome does.
     ///
     /// Light text is thickened a little by default ("stem darkening"), which
     /// makes light-on-dark text as heavy as the same text dark-on-light; turn
     /// it off with
-    /// `.text_rendering(TextRendering::default().stem_darkening(StemDarkening::Off))`.
+    /// `.text_rasterization(TextRasterization::default().stem_darkening(StemDarkening::Off))`.
     /// Hinting follows the OS unless set. Both renderers apply both.
     #[cfg(any(feature = "desktop", feature = "android"))]
-    pub fn text_rendering(mut self, rendering: crate::text_rendering::TextRendering) -> Self {
-        self.text_rendering = rendering;
+    pub fn text_rasterization(
+        mut self,
+        rasterization: crate::text_rasterization::TextRasterization,
+    ) -> Self {
+        self.text_rasterization = rasterization;
         self
     }
 
@@ -578,7 +581,7 @@ where
             prefer_x11: self.prefer_x11,
             title_tooltips: self.title_tooltips,
             vsync: self.vsync,
-            text_rendering: self.text_rendering,
+            text_rasterization: self.text_rasterization,
             #[cfg(feature = "gpu")]
             gpu_antialiasing: self.gpu_antialiasing,
             activation_policy: self.activation_policy,
@@ -651,7 +654,7 @@ where
             prefer_x11,
             title_tooltips,
             vsync,
-            text_rendering,
+            text_rasterization,
             #[cfg(feature = "gpu")]
             gpu_antialiasing,
             activation_policy,
@@ -660,7 +663,7 @@ where
         } = self.into_startup();
         // The OS's text settings are read on a thread of their own from here
         // (#2286), while the window and the GPU start.
-        crate::text_rendering::set_text_rendering(text_rendering);
+        crate::text_rasterization::set_text_rasterization(text_rasterization);
         #[cfg(feature = "gpu")]
         if let Some(mode) = gpu_antialiasing {
             crate::gpu_antialiasing::set_gpu_antialiasing(mode);
@@ -738,7 +741,7 @@ where
             );
         }
 
-        crate::text_rendering::set_text_rendering(self.text_rendering);
+        crate::text_rasterization::set_text_rasterization(self.text_rasterization);
         crate::setup_theme_css(&self.theme.unwrap_or_default());
         crate::shell::android_runtime::run_component(android_app, self.component, &self.fonts);
     }
@@ -968,12 +971,12 @@ pub(crate) struct Startup<F> {
     /// See [`App::vsync`].
     pub(crate) vsync: Option<bool>,
     /// See [`App::activation_policy`].
-    /// See [`App::text_rendering`].
-    pub(crate) text_rendering: crate::text_rendering::TextRendering,
+    pub(crate) activation_policy: Option<crate::shell::activation::ActivationPolicy>,
+    /// See [`App::text_rasterization`].
+    pub(crate) text_rasterization: crate::text_rasterization::TextRasterization,
     /// See [`App::gpu_antialiasing`].
     #[cfg(feature = "gpu")]
     pub(crate) gpu_antialiasing: Option<crate::gpu_antialiasing::GpuAntialiasing>,
-    pub(crate) activation_policy: Option<crate::shell::activation::ActivationPolicy>,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }

@@ -1772,14 +1772,18 @@ impl Painter for TinySkiaPainter {
         // 0.100 px up. The `(0, -amount)` offset moves it back down, which
         // makes it kurbo's `expand_path` (Vello's) to within 0.03 px: the
         // amount on every side (`stem_darkening_2286_tests`).
-        let policy = super::text_rendering::text_rendering();
+        let policy = super::text_rasterization::thread_policy();
         let hint = hint && policy.hint();
         // The policy's amount is in device pixels; a glyph image is
         // rasterised at `font_size` and drawn through `transform`, which
         // scales it, so the image grows by the amount over that scale.
         let device = policy.run_darkening_px(brush, font_size, transform);
-        let scale = super::text_rendering::device_scale(transform) as f32;
-        let darkening = if device > 0.0 && scale > 0.0 { device / scale } else { 0.0 };
+        let scale = super::text_rasterization::device_scale(transform) as f32;
+        let darkening = if device > 0.0 && scale > 0.0 {
+            device / scale
+        } else {
+            0.0
+        };
         let darkening_bits = darkening.to_bits();
 
         let mut render = swash::scale::Render::new(&[

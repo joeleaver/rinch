@@ -14,9 +14,9 @@
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
-use rinch_dom::paint::text_rendering::{
-    ResolvedTextRendering, StemDarkening, SystemTextSettings, TextHinting, TextRendering,
-    reset_text_rendering, set_text_rendering,
+use rinch_dom::paint::text_rasterization::{
+    ResolvedTextRasterization, StemDarkening, SystemTextSettings, TextHinting, TextRasterization,
+    reset_thread_policy, set_thread_policy,
 };
 use rinch_dom::paint::vello_painter::VelloPainter;
 
@@ -59,8 +59,8 @@ fn document() -> RinchDocument {
 }
 
 /// The red channel of every pixel, painted by tiny-skia under `policy`.
-fn software(policy: ResolvedTextRendering) -> Vec<u8> {
-    set_text_rendering(policy);
+fn software(policy: ResolvedTextRasterization) -> Vec<u8> {
+    set_thread_policy(policy);
     let mut doc = document();
     let mut painter = TinySkiaPainter::new(W, H);
     let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
@@ -72,7 +72,7 @@ fn software(policy: ResolvedTextRendering) -> Vec<u8> {
         &mut doc.font_cx,
         &mut cx,
     );
-    reset_text_rendering();
+    reset_thread_policy();
     painter.pixels().chunks(4).map(|p| p[0]).collect()
 }
 
@@ -105,8 +105,8 @@ fn centroid(c: &[f64]) -> (f64, f64) {
     (sx / s, sy / s)
 }
 
-fn off() -> ResolvedTextRendering {
-    TextRendering::default()
+fn off() -> ResolvedTextRasterization {
+    TextRasterization::default()
         .stem_darkening(StemDarkening::Off)
         .resolve(&SystemTextSettings::default())
 }
@@ -138,7 +138,7 @@ fn software_light_text_is_darkened_evenly_and_dark_text_is_not() {
     let base = software(off());
     let dark_base = coverage(&base, false);
     let light_base = coverage(&base, true);
-    let red = software(ResolvedTextRendering::default());
+    let red = software(ResolvedTextRasterization::default());
     let (light, dark) = (coverage(&red, true), coverage(&red, false));
     assert_eq!(dark, dark_base, "dark text changed with darkening on");
     let gain = ink(&light) / ink(&dark);
@@ -161,8 +161,8 @@ fn software_light_text_is_darkened_evenly_and_dark_text_is_not() {
 /// None` turns the run's hinting off.
 #[test]
 fn vello_encodes_the_darkening_on_light_runs_only() {
-    let runs = |policy: ResolvedTextRendering| {
-        set_text_rendering(policy);
+    let runs = |policy: ResolvedTextRasterization| {
+        set_thread_policy(policy);
         let mut doc = document();
         let mut painter = VelloPainter::new();
         let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
@@ -174,7 +174,7 @@ fn vello_encodes_the_darkening_on_light_runs_only() {
             &mut doc.font_cx,
             &mut cx,
         );
-        reset_text_rendering();
+        reset_thread_policy();
         painter
             .scene()
             .encoding()
@@ -184,12 +184,12 @@ fn vello_encodes_the_darkening_on_light_runs_only() {
             .map(|r| (r.font_embolden.amount.xx, r.font_embolden.amount.yy, r.hint))
             .collect::<Vec<_>>()
     };
-    let on = runs(ResolvedTextRendering::default());
+    let on = runs(ResolvedTextRasterization::default());
     assert_eq!(on.len(), 2, "one run per row: {on:?}");
     assert_eq!(on[0], (6.0 / 64.0, 6.0 / 64.0, true), "the white run");
     assert_eq!(on[1], (0.0, 0.0, true), "the black run");
     assert_eq!(runs(off()), vec![(0.0, 0.0, true), (0.0, 0.0, true)]);
-    let unhinted = TextRendering::default()
+    let unhinted = TextRasterization::default()
         .hinting(TextHinting::None)
         .resolve(&SystemTextSettings::default());
     assert_eq!(
@@ -205,7 +205,7 @@ fn vello_encodes_the_darkening_on_light_runs_only() {
 fn software_hinting_none_draws_unhinted_outlines() {
     let hinted = software(off());
     let unhinted = software(
-        TextRendering::default()
+        TextRasterization::default()
             .hinting(TextHinting::None)
             .stem_darkening(StemDarkening::Off)
             .resolve(&SystemTextSettings::default()),
@@ -256,13 +256,13 @@ fn row(css: &str) -> RinchDocument {
 
 /// Every RGBA byte of `css`'s row painted by tiny-skia under `policy`, on
 /// this thread (whose text-shadow mask cache it shares).
-fn software_row(css: &str, policy: ResolvedTextRendering) -> Vec<u8> {
+fn software_row(css: &str, policy: ResolvedTextRasterization) -> Vec<u8> {
     paint_row(&mut row(css), policy)
 }
 
 /// Every RGBA byte of `doc` painted by tiny-skia under `policy`.
-fn paint_row(doc: &mut RinchDocument, policy: ResolvedTextRendering) -> Vec<u8> {
-    set_text_rendering(policy);
+fn paint_row(doc: &mut RinchDocument, policy: ResolvedTextRasterization) -> Vec<u8> {
+    set_thread_policy(policy);
     let mut painter = TinySkiaPainter::new(RW, RH);
     let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
     rinch_dom::paint::paint_document(
@@ -273,12 +273,12 @@ fn paint_row(doc: &mut RinchDocument, policy: ResolvedTextRendering) -> Vec<u8> 
         &mut doc.font_cx,
         &mut cx,
     );
-    reset_text_rendering();
+    reset_thread_policy();
     painter.pixels().to_vec()
 }
 
 /// [`software_row`] on a thread of its own: a fresh text-shadow mask cache.
-fn software_row_fresh(css: &'static str, policy: ResolvedTextRendering) -> Vec<u8> {
+fn software_row_fresh(css: &'static str, policy: ResolvedTextRasterization) -> Vec<u8> {
     std::thread::spawn(move || software_row(css, policy))
         .join()
         .unwrap()
@@ -291,16 +291,18 @@ fn software_row_fresh(css: &'static str, policy: ResolvedTextRendering) -> Vec<u
 /// every blurred shadow was thickened.)
 #[test]
 fn software_a_black_blurred_shadow_is_not_darkened() {
-    const CSS: &str =
-        "font: 13px/20px ProbeFace; color: #000000; background: #ffffff; text-shadow: 1px 2px 3px #000000";
-    let on = software_row_fresh(CSS, ResolvedTextRendering::default());
+    const CSS: &str = "font: 13px/20px ProbeFace; color: #000000; background: #ffffff; text-shadow: 1px 2px 3px #000000";
+    let on = software_row_fresh(CSS, ResolvedTextRasterization::default());
     let off = software_row_fresh(CSS, off());
     assert!(
         on.chunks(4).any(|p| p[0] > 0 && p[0] < 200),
         "no shadow or text drawn"
     );
     let differ = on.iter().zip(&off).filter(|(a, b)| a != b).count();
-    assert_eq!(differ, 0, "{differ} bytes moved: the black shadow was darkened");
+    assert_eq!(
+        differ, 0,
+        "{differ} bytes moved: the black shadow was darkened"
+    );
 }
 
 /// A light blurred shadow is darkened like light text, and the mask cache
@@ -308,15 +310,14 @@ fn software_a_black_blurred_shadow_is_not_darkened() {
 /// on, on one thread, is not the first mask again.
 #[test]
 fn software_a_light_blurred_shadow_is_darkened_and_cached_apart() {
-    const CSS: &str =
-        "font: 13px/20px ProbeFace; color: #333333; background: #000000; text-shadow: 0 0 2px #ffffff";
-    let fresh_on = software_row_fresh(CSS, ResolvedTextRendering::default());
+    const CSS: &str = "font: 13px/20px ProbeFace; color: #333333; background: #000000; text-shadow: 0 0 2px #ffffff";
+    let fresh_on = software_row_fresh(CSS, ResolvedTextRasterization::default());
     // One document painted twice: its font blob, and so the mask's key,
     // is the same both times.
     let (first_off, then_on) = std::thread::spawn(|| {
         let mut doc = row(CSS);
         let a = paint_row(&mut doc, off());
-        let b = paint_row(&mut doc, ResolvedTextRendering::default());
+        let b = paint_row(&mut doc, ResolvedTextRasterization::default());
         (a, b)
     })
     .join()
@@ -344,7 +345,7 @@ fn software_a_light_blurred_shadow_is_darkened_and_cached_apart() {
 #[test]
 fn vello_darkening_is_in_device_pixels_under_a_transform() {
     let amount = |css: &str| {
-        set_text_rendering(ResolvedTextRendering::default());
+        set_thread_policy(ResolvedTextRasterization::default());
         let mut doc = row(css);
         let mut painter = VelloPainter::new();
         let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
@@ -356,7 +357,7 @@ fn vello_darkening_is_in_device_pixels_under_a_transform() {
             &mut doc.font_cx,
             &mut cx,
         );
-        reset_text_rendering();
+        reset_thread_policy();
         let runs = &painter.scene().encoding().resources.glyph_runs;
         assert_eq!(runs.len(), 1, "one run");
         (runs[0].font_embolden.amount.xx, runs[0].hint)
@@ -384,14 +385,18 @@ fn software_darkening_is_in_device_pixels_under_a_transform() {
     let gain = |size_css: &str| {
         let light = software_row(
             &format!("{size_css}; color: #ffffff; background: #000000"),
-            ResolvedTextRendering::default(),
+            ResolvedTextRasterization::default(),
         );
         let dark = software_row(
             &format!("{size_css}; color: #000000; background: #ffffff"),
-            ResolvedTextRendering::default(),
+            ResolvedTextRasterization::default(),
         );
         // Over the row's own (opaque) background only.
-        let l: f64 = light.chunks(4).filter(|p| p[3] == 255).map(|p| p[0] as f64).sum();
+        let l: f64 = light
+            .chunks(4)
+            .filter(|p| p[3] == 255)
+            .map(|p| p[0] as f64)
+            .sum();
         let d: f64 = dark
             .chunks(4)
             .filter(|p| p[3] == 255)

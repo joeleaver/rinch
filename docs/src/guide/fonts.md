@@ -216,15 +216,15 @@ nobody tested.
 ## Text rendering
 
 How glyphs are rasterised is an app option with OS defaults, as in Chrome
-(issue #2286). `App::text_rendering` takes a `TextRendering`, every field of
+(issue #2286). `App::text_rasterization` takes a `TextRasterization`, every field of
 which defaults to `Auto`:
 
 ```rust
 use rinch::prelude::*;
 
 App::new(app)
-    .text_rendering(
-        TextRendering::default()
+    .text_rasterization(
+        TextRasterization::default()
             .stem_darkening(StemDarkening::Off) // no thickening of light text
             .hinting(TextHinting::None),        // exact outlines, whatever the OS says
     )
@@ -252,7 +252,7 @@ same amount, so the GPU and software renderers still draw the same glyphs.
 Blurred `text-shadow`s follow their own colour: a dark shadow is not thickened.
 
 **The OS's settings** are read once, on a thread of their own while the window
-starts, and `rinch::text_rendering::system_text_settings()` returns them:
+starts, and `rinch::text_rasterization::system_text_settings()` returns them:
 
 - **Linux**: fontconfig's match for `sans-serif` — `antialias`, `hinting`,
   `hintstyle`, `rgba`, `lcdfilter`. KDE's font settings write these into the
@@ -267,7 +267,7 @@ Today rinch draws grayscale whatever `antialias` resolves to: subpixel (LCD)
 text and aliased text come with the glyph-mask atlas and subpixel compositing
 planned in #2286. The subpixel order and LCD filter are stored for that. An
 embedding host that wants the OS's settings calls
-`rinch::text_rendering::set_text_rendering(TextRendering::default())` before its
+`rinch::text_rasterization::set_text_rasterization(TextRasterization::default())` before its
 first frame; without it an embedded document renders as if the OS said nothing
 (grayscale, slight hinting, stem darkening on).
 

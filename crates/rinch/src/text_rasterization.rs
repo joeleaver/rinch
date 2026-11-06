@@ -1,8 +1,9 @@
-//! Text rendering: the app's choice and the OS's text settings (#2286).
+//! Text rasterization: the app's choice and the OS's text settings (#2286).
 //!
-//! [`TextRendering`] is what [`App::text_rendering`] takes; every field is
-//! `Auto` by default, which follows [`system_text_settings`], the OS's own
-//! settings, read once and cached:
+//! [`TextRasterization`](crate::text_rasterization::TextRasterization) is what
+//! [`App::text_rasterization`] takes; every field is `Auto` by default, which
+//! follows [`system_text_settings`](crate::text_rasterization::system_text_settings),
+//! the OS's own settings, read once and cached:
 //!
 //! - **Linux**: fontconfig, as Chromium reads it. `sans-serif` is
 //!   substituted and matched (`FcConfigSubstitute`, `FcDefaultSubstitute`,
@@ -28,34 +29,34 @@
 //! if it has not finished (fontconfig's match takes a few milliseconds with
 //! its caches warm).
 //!
-//! [`App::text_rendering`]: crate::app_builder::App::text_rendering
+//! [`App::text_rasterization`]: crate::app_builder::App::text_rasterization
 //! [`App::run`]: crate::app_builder::App::run
 
 use std::sync::OnceLock;
 
-pub use rinch_dom::paint::text_rendering::{
+pub use rinch_dom::paint::text_rasterization::{
     DEFAULT_STEM_DARKENING_PX, LcdFilter, MAX_STEM_DARKENING_PX, ResolvedAntialias,
-    ResolvedTextRendering, StemDarkening, SubpixelOrder, SystemTextSettings, TextAntialias,
-    TextHinting, TextRendering,
+    ResolvedTextRasterization, StemDarkening, SubpixelOrder, SystemTextSettings, TextAntialias,
+    TextHinting, TextRasterization,
 };
 
-static APP: OnceLock<TextRendering> = OnceLock::new();
+static APP: OnceLock<TextRasterization> = OnceLock::new();
 static SYSTEM: OnceLock<SystemTextSettings> = OnceLock::new();
 
 /// Use `config` for every window's text, follow the OS where it says `Auto`,
 /// and start reading the OS's settings in the background. [`App::run`] calls
-/// it with the app's [`App::text_rendering`]; an embedding host calls it
+/// it with the app's [`App::text_rasterization`]; an embedding host calls it
 /// before its first frame (without a call an embedded document renders as if
 /// the OS said nothing). The first call wins; it applies to frames painted
 /// afterwards on threads that have not painted text yet.
 ///
 /// [`App::run`]: crate::app_builder::App::run
-/// [`App::text_rendering`]: crate::app_builder::App::text_rendering
-pub fn set_text_rendering(config: TextRendering) {
+/// [`App::text_rasterization`]: crate::app_builder::App::text_rasterization
+pub fn set_text_rasterization(config: TextRasterization) {
     if APP.set(config).is_err() && APP.get() != Some(&config) {
-        tracing::warn!("set_text_rendering({config:?}) after it was set: ignored");
+        tracing::warn!("set_text_rasterization({config:?}) after it was set: ignored");
     }
-    rinch_dom::paint::text_rendering::set_text_rendering_source(resolved);
+    rinch_dom::paint::text_rasterization::set_policy_source(resolved);
     if SYSTEM.get().is_none() {
         // A failed spawn only means the first frame reads it instead.
         let _ = std::thread::Builder::new()
@@ -66,14 +67,14 @@ pub fn set_text_rendering(config: TextRendering) {
     }
 }
 
-/// The app's [`TextRendering`] (the default before [`set_text_rendering`]).
-pub fn text_rendering() -> TextRendering {
+/// The app's [`TextRasterization`] (the default before [`set_text_rasterization`]).
+pub fn text_rasterization() -> TextRasterization {
     APP.get().copied().unwrap_or_default()
 }
 
 /// The app's choice resolved against the OS: what the painters use.
-pub fn resolved() -> ResolvedTextRendering {
-    text_rendering().resolve(&system_text_settings())
+pub fn resolved() -> ResolvedTextRasterization {
+    text_rasterization().resolve(&system_text_settings())
 }
 
 /// The OS's text settings, read on the first call (which a concurrent call
@@ -98,12 +99,10 @@ fn read_system() -> SystemTextSettings {
 
 #[cfg(target_os = "macos")]
 fn read_system() -> SystemTextSettings {
-    SystemTextSettings {
-        antialias: Some(true),
-        hinting: Some(TextHinting::None),
-        subpixel_order: Some(SubpixelOrder::None),
-        lcd_filter: None,
-    }
+    SystemTextSettings::default()
+        .with_antialias(Some(true))
+        .with_hinting(Some(TextHinting::None))
+        .with_subpixel_order(Some(SubpixelOrder::None))
 }
 
 #[cfg(not(any(
@@ -190,8 +189,9 @@ mod fontconfig {
             // libfontconfig in the process anyway, and a `dlclose` of a library
             // that has run its initialisers (fontconfig's, FreeType's under it)
             // is not worth the few kilobytes it would give back.
-            let lib: &'static libloading::Library =
-                Box::leak(Box::new(libloading::Library::new("libfontconfig.so.1").ok()?));
+            let lib: &'static libloading::Library = Box::leak(Box::new(
+                libloading::Library::new("libfontconfig.so.1").ok()?,
+            ));
             let init: libloading::Symbol<unsafe extern "C" fn() -> *mut Config> =
                 lib.get(b"FcInitLoadConfigAndFonts\0").ok()?;
             let config_destroy: libloading::Symbol<unsafe extern "C" fn(*mut Config)> =
@@ -241,15 +241,14 @@ mod fontconfig {
                 let mut v = 0;
                 (get_bool(matched, name.as_ptr(), 0, &mut v) == FC_RESULT_MATCH).then_some(v != 0)
             };
-            let settings = SystemTextSettings {
-                antialias: boolean(c"antialias"),
-                hinting: fc_values::hinting(
+            let settings = SystemTextSettings::default()
+                .with_antialias(boolean(c"antialias"))
+                .with_hinting(fc_values::hinting(
                     boolean(c"hinting"),
                     int(c"hintstyle").and_then(fc_values::hint_style),
-                ),
-                subpixel_order: int(c"rgba").and_then(fc_values::rgba),
-                lcd_filter: int(c"lcdfilter").and_then(fc_values::lcd_filter),
-            };
+                ))
+                .with_subpixel_order(int(c"rgba").and_then(fc_values::rgba))
+                .with_lcd_filter(int(c"lcdfilter").and_then(fc_values::lcd_filter));
             pattern_destroy(matched);
             config_destroy(config);
             Some(settings)
@@ -287,14 +286,12 @@ mod win32 {
         } else {
             smoothing.map(|_| SubpixelOrder::None)
         };
-        SystemTextSettings {
-            antialias: smoothing,
-            // Windows hints (DirectWrite's and GDI's ClearType both fit to
-            // the grid); "Full" names it, both painters hint the same.
-            hinting: Some(TextHinting::Full),
-            subpixel_order,
-            lcd_filter: None,
-        }
+        // Windows hints (DirectWrite's and GDI's ClearType both fit to the
+        // grid); "Full" names it, both painters hint the same.
+        SystemTextSettings::default()
+            .with_antialias(smoothing)
+            .with_hinting(Some(TextHinting::Full))
+            .with_subpixel_order(subpixel_order)
     }
 }
 
@@ -326,13 +323,12 @@ mod tests {
             fc_values::hinting(Some(true), Some(TextHinting::Slight)),
             Some(TextHinting::Slight)
         );
-        let kde = SystemTextSettings {
-            antialias: Some(true),
-            hinting: fc_values::hint_style(1),
-            subpixel_order: fc_values::rgba(1),
-            lcd_filter: fc_values::lcd_filter(1),
-        };
-        let r = TextRendering::default().resolve(&kde);
+        let kde = SystemTextSettings::default()
+            .with_antialias(Some(true))
+            .with_hinting(fc_values::hint_style(1))
+            .with_subpixel_order(fc_values::rgba(1))
+            .with_lcd_filter(fc_values::lcd_filter(1));
+        let r = TextRasterization::default().resolve(&kde);
         assert!(r.hint());
         assert_eq!(
             r.antialias,

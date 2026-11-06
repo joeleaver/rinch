@@ -372,7 +372,7 @@ fn encode_glyphs(
     normalized_coords: &[i16],
     glyphs: &[PaintGlyph],
 ) {
-    let policy = super::text_rendering::text_rendering();
+    let policy = super::text_rasterization::thread_policy();
     let hint = hint && policy.hint();
     // The darkening is in device pixels. Vello expands the outline in the
     // space it draws the glyph in: with hinting and a uniform-scale transform
@@ -386,8 +386,12 @@ fn encode_glyphs(
     } else {
         let [a, b, c, d, _, _] = transform.as_coeffs();
         let folds = hint && a as f32 == d as f32 && b as f32 == 0.0 && c as f32 == 0.0;
-        let scale = super::text_rendering::device_scale(transform);
-        if folds || scale == 0.0 { device } else { device / scale }
+        let scale = super::text_rasterization::device_scale(transform);
+        if folds || scale == 0.0 {
+            device
+        } else {
+            device / scale
+        }
     };
     scene
         .draw_glyphs(font)

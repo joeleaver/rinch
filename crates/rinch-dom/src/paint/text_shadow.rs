@@ -819,9 +819,12 @@ impl Painter for CallHasher {
         // text-rendering policy (#2286): its hinting and its stem darkening,
         // which the brush's colour decides; the colour itself is no part of
         // a coverage mask.
-        let policy = super::text_rendering::text_rendering();
-        self.0
-            .write_u32(policy.run_darkening_px(brush, font_size, transform).to_bits());
+        let policy = super::text_rasterization::thread_policy();
+        self.0.write_u32(
+            policy
+                .run_darkening_px(brush, font_size, transform)
+                .to_bits(),
+        );
         self.0.write_u8(policy.hint() as u8);
         self.0.write_u64(font.data.id());
         self.0.write_u32(font.index);

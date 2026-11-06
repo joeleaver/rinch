@@ -118,7 +118,7 @@ rinch-graph-view = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The OS's text settings (#2286): libfontconfig is opened at run time
-# (`text_rendering::fontconfig`), so nothing links it. Already in Cargo.lock.
+# (`text_rasterization::fontconfig`), so nothing links it. Already in Cargo.lock.
 libloading = { version = "0.8", optional = true }
 gtk = { version = "0.18", optional = true }
 ksni = { workspace = true, optional = true }

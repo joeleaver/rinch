@@ -144,17 +144,17 @@ tests (`tests/embed_*`, built against the non-test library) call
 `rinch::set_gpu_antialiasing(Msaa16)` before their first renderer. A new
 fixture that compares two GPU renders exactly must not pin Area.
 
-**Text rendering policy (#2286 stages 1b and 1c).** `rinch_dom::paint::text_rendering`
-holds the app's `TextRendering` (`antialias`, `hinting`, `stem_darkening`, each
+**Text rendering policy (#2286 stages 1b and 1c).** `rinch_dom::paint::text_rasterization`
+holds the app's `TextRasterization` (`antialias`, `hinting`, `stem_darkening`, each
 `Auto` by default; `#[non_exhaustive]` with setters, so stages 2 and 3 add
 fields — the subpixel order and LCD filter, a contrast curve), the OS's
-`SystemTextSettings`, and their resolution, `ResolvedTextRendering`. The resolved
-policy is a thread-local (`text_rendering()`), filled on a thread's first glyph
-run from the source the facade installs (`rinch::text_rendering::set_text_rendering`,
+`SystemTextSettings`, and their resolution, `ResolvedTextRasterization`. The resolved
+policy is a thread-local (`thread_policy()`), filled on a thread's first glyph
+run from the source the facade installs (`rinch::text_rasterization::set_text_rasterization`,
 called by `App::run`/`run_android`, resolves the app's choice against
 `system_text_settings()`); without a source, as in every test, it is the default
 resolved against nothing (grayscale, hinted, darkening 0.10 px). Tests override
-it per thread with `set_text_rendering`/`reset_text_rendering`, so parallel
+it per thread with `set_thread_policy`/`reset_thread_policy`, so parallel
 tests do not see each other's. Both leaf painters read it in their glyph draw —
 `vello_painter::encode_glyphs` and `TinySkiaPainter::draw_glyphs` — so every
 caller of `draw_text` (text, shadows, tooltips, the editor) gets it without a
@@ -208,8 +208,8 @@ parameter:
   filter }`, `None`) but both painters draw grayscale until the glyph atlas
   (stage 2) and subpixel compositing (stage 3).
 
-The OS read (`rinch::text_rendering`, on a `rinch-text-settings` thread started
-by `set_text_rendering`, cached in a `OnceLock`; the first paint waits for it if
+The OS read (`rinch::text_rasterization`, on a `rinch-text-settings` thread started
+by `set_text_rasterization`, cached in a `OnceLock`; the first paint waits for it if
 it is still running): Linux dlopens `libfontconfig.so.1` (`libloading`; nothing
 links it here, though fontique does) and runs `FcInitLoadConfigAndFonts`,
 `FcNameParse("sans-serif")`, `FcConfigSubstitute`, `FcDefaultSubstitute`,

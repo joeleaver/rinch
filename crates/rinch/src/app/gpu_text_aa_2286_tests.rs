@@ -8,9 +8,9 @@
 use super::*;
 use crate::gpu_antialiasing::{GpuAntialiasing, TestAa};
 use crate::shell::desktop::WgpuRenderer;
-use rinch_dom::paint::text_rendering::{
-    ResolvedTextRendering, StemDarkening, SystemTextSettings, TextRendering, reset_text_rendering,
-    set_text_rendering,
+use rinch_dom::paint::text_rasterization::{
+    ResolvedTextRasterization, StemDarkening, SystemTextSettings, TextRasterization,
+    reset_thread_policy, set_thread_policy,
 };
 use std::sync::Arc;
 
@@ -149,8 +149,8 @@ fn gpu_the_window_draws_text_with_area_coverage_2286() {
 #[ignore]
 fn gpu_light_text_is_darkened_and_off_turns_it_off_2286() {
     let _aa = TestAa::pin(GpuAntialiasing::Area);
-    let render = |light: bool, policy: ResolvedTextRendering| {
-        set_text_rendering(policy);
+    let render = |light: bool, policy: ResolvedTextRasterization| {
+        set_thread_policy(policy);
         let (fg, bg) = if light {
             ("#ffffff", "#000000")
         } else {
@@ -158,7 +158,7 @@ fn gpu_light_text_is_darkened_and_off_turns_it_off_2286() {
         };
         let mut app = text_app(fg, bg, W, H);
         let rgba = render_window(&mut app);
-        reset_text_rendering();
+        reset_thread_policy();
         coverage(&rgba, light)
     };
     // Two renders of one scene under area coverage are not bit-identical on a
@@ -174,10 +174,10 @@ fn gpu_light_text_is_darkened_and_off_turns_it_off_2286() {
             .fold(0.0, f64::max)
     };
     let sum = |c: &[f64]| c.iter().sum::<f64>();
-    let off = TextRendering::default()
+    let off = TextRasterization::default()
         .stem_darkening(StemDarkening::Off)
         .resolve(&SystemTextSettings::default());
-    let on = ResolvedTextRendering::default();
+    let on = ResolvedTextRasterization::default();
     let dark = render(false, on);
     assert!(sum(&dark) > 500.0, "no text was drawn: ink {}", sum(&dark));
     let dark_off = render(false, off);
@@ -240,14 +240,14 @@ fn text_aa_cost_probe_2286() {
     ] {
         for darkening in [true, false] {
             let policy = if darkening {
-                ResolvedTextRendering::default()
+                ResolvedTextRasterization::default()
             } else {
-                ResolvedTextRendering::default().with_darkening(0.0)
+                ResolvedTextRasterization::default().with_darkening(0.0)
             };
-            set_text_rendering(policy);
+            set_thread_policy(policy);
             let mut app = text_app(fg, bg, PW, PH);
             let scene = app.build_scene(1.0, (PW, PH)).clone();
-            reset_text_rendering();
+            reset_thread_policy();
             let glyphs: usize = scene
                 .encoding()
                 .resources

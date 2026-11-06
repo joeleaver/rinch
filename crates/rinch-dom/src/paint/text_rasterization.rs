@@ -1,16 +1,16 @@
 //! How glyphs are rasterised: the app's text-rendering choice, the OS's text
 //! settings it defaults to, and the policy both painters read (#2286).
 //!
-//! An app states what it wants in a [`TextRendering`]; every field defaults to
+//! An app states what it wants in a [`TextRasterization`]; every field defaults to
 //! `Auto`, which follows the OS as Chrome does. The OS's own settings are a
 //! [`SystemTextSettings`] (fontconfig on Linux, `SystemParametersInfo` on
 //! Windows, fixed on macOS; the facade crate reads them). The two resolve into
-//! a [`ResolvedTextRendering`], which is what a painter consults per glyph run.
+//! a [`ResolvedTextRasterization`], which is what a painter consults per glyph run.
 //!
 //! Stage 1 of #2286 uses three things out of it:
 //! - **hinting** — `hint` is off when the resolved hinting is
 //!   [`TextHinting::None`];
-//! - **stem darkening of light text** — [`ResolvedTextRendering::darkening_for`],
+//! - **stem darkening of light text** — [`ResolvedTextRasterization::darkening_for`],
 //!   applied by the Vello painter through `DrawGlyphs::font_embolden` and by
 //!   the tiny-skia painter through swash's embolden, so both thicken the same
 //!   glyphs by the same amount;
@@ -21,12 +21,12 @@
 //!   [`ResolvedAntialias::None`] (fontconfig `antialias=false`, Windows font
 //!   smoothing off) has no aliased path in Vello's compute renderer.
 //!
-//! The resolved policy is per thread ([`set_text_rendering`] /
-//! [`text_rendering`]): the runtime paints on the thread that runs its event
+//! The resolved policy is per thread ([`set_thread_policy`] /
+//! [`thread_policy`]): the runtime paints on the thread that runs its event
 //! loop, and a test that changes it changes only its own thread. A thread that
-//! never set one asks the source installed with [`set_text_rendering_source`]
+//! never set one asks the source installed with [`set_policy_source`]
 //! once (the facade installs one that reads the OS), and without a source
-//! takes [`ResolvedTextRendering::default`].
+//! takes [`ResolvedTextRasterization::default`].
 
 use std::cell::Cell;
 use std::sync::OnceLock;
@@ -34,7 +34,7 @@ use std::sync::OnceLock;
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::Affine;
 
-/// The app's text-rendering choice: what [`App::text_rendering`] takes.
+/// The app's text-rendering choice: what [`App::text_rasterization`] takes.
 ///
 /// Every field is `Auto` by default, which follows the OS (see
 /// [`SystemTextSettings`]) and, where the OS says nothing, Chrome. The struct
@@ -42,17 +42,17 @@ use peniko::kurbo::Affine;
 /// filter, contrast); build one with [`Default`] and the setters:
 ///
 /// ```
-/// use rinch_dom::paint::text_rendering::{StemDarkening, TextHinting, TextRendering};
-/// let r = TextRendering::default()
+/// use rinch_dom::paint::text_rasterization::{StemDarkening, TextHinting, TextRasterization};
+/// let r = TextRasterization::default()
 ///     .hinting(TextHinting::None)
 ///     .stem_darkening(StemDarkening::Off);
 /// assert_eq!(r.hinting, TextHinting::None);
 /// ```
 ///
-/// [`App::text_rendering`]: https://docs.rs/rinch/latest/rinch/app_builder/struct.App.html#method.text_rendering
+/// [`App::text_rasterization`]: https://docs.rs/rinch/latest/rinch/app_builder/struct.App.html#method.text_rasterization
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
-pub struct TextRendering {
+pub struct TextRasterization {
     /// Grayscale, subpixel (LCD) or no antialiasing. See [`TextAntialias`].
     pub antialias: TextAntialias,
     /// How hard outlines are fitted to the pixel grid. See [`TextHinting`].
@@ -61,7 +61,7 @@ pub struct TextRendering {
     pub stem_darkening: StemDarkening,
 }
 
-impl TextRendering {
+impl TextRasterization {
     /// Set [`antialias`](Self::antialias).
     #[must_use]
     pub fn antialias(mut self, antialias: TextAntialias) -> Self {
@@ -84,7 +84,7 @@ impl TextRendering {
     }
 
     /// Resolve every `Auto` against the OS's settings.
-    pub fn resolve(&self, system: &SystemTextSettings) -> ResolvedTextRendering {
+    pub fn resolve(&self, system: &SystemTextSettings) -> ResolvedTextRasterization {
         let antialias = match self.antialias {
             TextAntialias::Grayscale => ResolvedAntialias::Grayscale,
             TextAntialias::None => ResolvedAntialias::None,
@@ -116,7 +116,7 @@ impl TextRendering {
             StemDarkening::Px(px) if px.is_finite() => px.clamp(0.0, MAX_STEM_DARKENING_PX),
             StemDarkening::Px(_) => 0.0,
         };
-        ResolvedTextRendering {
+        ResolvedTextRasterization {
             antialias,
             hinting,
             darkening_px,
@@ -126,6 +126,7 @@ impl TextRendering {
 
 /// How glyph edges are antialiased.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TextAntialias {
     /// Follow the OS: no antialiasing where it turns it off, subpixel where it
     /// names a subpixel order, grayscale otherwise (macOS is always grayscale).
@@ -148,6 +149,7 @@ pub enum TextAntialias {
 /// `None` does not. The levels are kept apart for the OS's own value and for a
 /// later stage that can tell them apart.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TextHinting {
     /// Follow the OS (fontconfig `hintstyle`); `Slight` where it says nothing,
     /// and `None` on macOS, which does not hint.
@@ -172,6 +174,7 @@ pub enum TextHinting {
 /// Darkening grows each glyph's outline by a fraction of a pixel per side, for
 /// light text only, which brings it to about 0.93.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub enum StemDarkening {
     /// The default: up to [`DEFAULT_STEM_DARKENING_PX`] per side.
     #[default]
@@ -180,7 +183,7 @@ pub enum StemDarkening {
     Off,
     /// Up to this many device pixels per side (clamped to
     /// `0..=`[`MAX_STEM_DARKENING_PX`]); the luminance and size taper of
-    /// [`ResolvedTextRendering::darkening_for`] still apply.
+    /// [`ResolvedTextRasterization::darkening_for`] still apply.
     Px(f32),
 }
 
@@ -221,7 +224,32 @@ pub enum LcdFilter {
 
 /// What the OS says about text rendering. A `None` field is one it does not
 /// say (or could not be read); `Auto` falls back to Chrome's choice for it.
+///
+/// `#[non_exhaustive]`, like the other policy types here, so later stages can
+/// add fields and variants: outside this crate it is built with `default()`
+/// and the `with_` setters, and matches on the enums need a `_` arm.
+///
+/// ```compile_fail
+/// use rinch_dom::paint::text_rasterization::SystemTextSettings;
+/// let s = SystemTextSettings {
+///     antialias: None,
+///     hinting: None,
+///     subpixel_order: None,
+///     lcd_filter: None,
+/// };
+/// ```
+///
+/// ```compile_fail
+/// use rinch_dom::paint::text_rasterization::TextHinting;
+/// fn hints(h: TextHinting) -> bool {
+///     match h {
+///         TextHinting::Auto | TextHinting::Slight | TextHinting::Medium | TextHinting::Full => true,
+///         TextHinting::None => false,
+///     }
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SystemTextSettings {
     /// Whether text is antialiased at all (fontconfig `antialias`, Windows
     /// `SPI_GETFONTSMOOTHING`).
@@ -235,8 +263,40 @@ pub struct SystemTextSettings {
     pub lcd_filter: Option<LcdFilter>,
 }
 
-/// The antialiasing [`TextRendering::antialias`] resolved to.
+// `#[non_exhaustive]`, so built with `default()` and these.
+impl SystemTextSettings {
+    /// Set [`antialias`](Self::antialias).
+    #[must_use]
+    pub fn with_antialias(mut self, v: Option<bool>) -> Self {
+        self.antialias = v;
+        self
+    }
+
+    /// Set [`hinting`](Self::hinting).
+    #[must_use]
+    pub fn with_hinting(mut self, v: Option<TextHinting>) -> Self {
+        self.hinting = v;
+        self
+    }
+
+    /// Set [`subpixel_order`](Self::subpixel_order).
+    #[must_use]
+    pub fn with_subpixel_order(mut self, v: Option<SubpixelOrder>) -> Self {
+        self.subpixel_order = v;
+        self
+    }
+
+    /// Set [`lcd_filter`](Self::lcd_filter).
+    #[must_use]
+    pub fn with_lcd_filter(mut self, v: Option<LcdFilter>) -> Self {
+        self.lcd_filter = v;
+        self
+    }
+}
+
+/// The antialiasing [`TextRasterization::antialias`] resolved to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ResolvedAntialias {
     /// One coverage value per pixel.
     Grayscale,
@@ -252,9 +312,10 @@ pub enum ResolvedAntialias {
     None,
 }
 
-/// A [`TextRendering`] with every `Auto` resolved: what painters read.
+/// A [`TextRasterization`] with every `Auto` resolved: what painters read.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ResolvedTextRendering {
+#[non_exhaustive]
+pub struct ResolvedTextRasterization {
     /// The antialiasing.
     pub antialias: ResolvedAntialias,
     /// The hinting.
@@ -264,11 +325,11 @@ pub struct ResolvedTextRendering {
     pub darkening_px: f32,
 }
 
-impl Default for ResolvedTextRendering {
-    /// [`TextRendering::default`] with nothing known about the OS: grayscale,
+impl Default for ResolvedTextRasterization {
+    /// [`TextRasterization::default`] with nothing known about the OS: grayscale,
     /// hinted, darkening on.
     fn default() -> Self {
-        TextRendering::default().resolve(&SystemTextSettings::default())
+        TextRasterization::default().resolve(&SystemTextSettings::default())
     }
 }
 
@@ -284,7 +345,7 @@ const LIGHT_LUMA_FULL: f32 = 0.85;
 /// cache and the software glyph cache see a handful of distinct values.
 const DARKENING_STEPS_PER_PX: f32 = 64.0;
 
-impl ResolvedTextRendering {
+impl ResolvedTextRasterization {
     /// This policy with `darkening_px` replaced (for tests and tools).
     #[must_use]
     pub fn with_darkening(mut self, px: f32) -> Self {
@@ -337,7 +398,12 @@ impl ResolvedTextRendering {
     /// the amount its outline space needs, so both grow a glyph by the same
     /// device amount under any transform.
     #[inline]
-    pub fn run_darkening_px(&self, brush: &peniko::Brush, font_size: f32, transform: Affine) -> f32 {
+    pub fn run_darkening_px(
+        &self,
+        brush: &peniko::Brush,
+        font_size: f32,
+        transform: Affine,
+    ) -> f32 {
         match brush {
             peniko::Brush::Solid(color) => {
                 self.darkening_for(*color, font_size * device_scale(transform) as f32)
@@ -355,41 +421,40 @@ pub fn device_scale(transform: Affine) -> f64 {
     (a * d - b * c).abs().sqrt()
 }
 
-
 thread_local! {
-    static CURRENT: Cell<Option<ResolvedTextRendering>> = const { Cell::new(None) };
+    static CURRENT: Cell<Option<ResolvedTextRasterization>> = const { Cell::new(None) };
 }
 
-static SOURCE: OnceLock<fn() -> ResolvedTextRendering> = OnceLock::new();
+static SOURCE: OnceLock<fn() -> ResolvedTextRasterization> = OnceLock::new();
 
 /// Install the function a thread asks for its policy the first time it paints
-/// text without having [set](set_text_rendering) one. The first install wins.
-/// The facade installs one that resolves the app's [`TextRendering`] against
+/// text without having [set](set_thread_policy) one. The first install wins.
+/// The facade installs one that resolves the app's [`TextRasterization`] against
 /// the OS's settings.
-pub fn set_text_rendering_source(source: fn() -> ResolvedTextRendering) {
+pub fn set_policy_source(source: fn() -> ResolvedTextRasterization) {
     let _ = SOURCE.set(source);
 }
 
 /// Set this thread's text-rendering policy. Glyph runs painted on this thread
 /// afterwards use it.
-pub fn set_text_rendering(policy: ResolvedTextRendering) {
+pub fn set_thread_policy(policy: ResolvedTextRasterization) {
     CURRENT.with(|c| c.set(Some(policy)));
 }
 
 /// Forget this thread's policy, so the next glyph run asks the source again.
-pub fn reset_text_rendering() {
+pub fn reset_thread_policy() {
     CURRENT.with(|c| c.set(None));
 }
 
 /// This thread's text-rendering policy.
 #[inline]
-pub fn text_rendering() -> ResolvedTextRendering {
+pub fn thread_policy() -> ResolvedTextRasterization {
     CURRENT.with(|c| match c.get() {
         Some(policy) => policy,
         None => {
             let policy = SOURCE
                 .get()
-                .map_or_else(ResolvedTextRendering::default, |f| f());
+                .map_or_else(ResolvedTextRasterization::default, |f| f());
             c.set(Some(policy));
             policy
         }
@@ -406,7 +471,7 @@ mod tests {
 
     #[test]
     fn light_small_text_gets_the_whole_darkening() {
-        let p = ResolvedTextRendering::default();
+        let p = ResolvedTextRasterization::default();
         assert_eq!(p.darkening_for(rgb(0xfc, 0xfc, 0xfc), 13.0), 0.09375);
         // 0.10 quantised to 1/64: 6.4 steps round to 6.
         assert_eq!(p.darkening_for(rgb(0xff, 0xff, 0xff), 24.0), 6.0 / 64.0);
@@ -414,14 +479,14 @@ mod tests {
 
     #[test]
     fn dark_and_mid_text_gets_none() {
-        let p = ResolvedTextRendering::default();
+        let p = ResolvedTextRasterization::default();
         assert_eq!(p.darkening_for(rgb(0x23, 0x26, 0x29), 13.0), 0.0);
         assert_eq!(p.darkening_for(rgb(0x7f, 0x7f, 0x7f), 13.0), 0.0);
     }
 
     #[test]
     fn darkening_ramps_with_luma_and_tapers_with_size() {
-        let p = ResolvedTextRendering::default().with_darkening(0.32);
+        let p = ResolvedTextRasterization::default().with_darkening(0.32);
         // #b0b0b0: luma 0.690 -> light 0.543 -> 0.1737 px -> 11/64.
         assert_eq!(p.darkening_for(rgb(0xb0, 0xb0, 0xb0), 13.0), 11.0 / 64.0);
         // White at 44 px: taper 0.5 -> 0.16 px -> 10/64 (10.24 steps).
@@ -434,15 +499,15 @@ mod tests {
 
     #[test]
     fn off_turns_it_off() {
-        let p = TextRendering::default()
+        let p = TextRasterization::default()
             .stem_darkening(StemDarkening::Off)
             .resolve(&SystemTextSettings::default());
         assert_eq!(p.darkening_for(rgb(0xff, 0xff, 0xff), 13.0), 0.0);
-        let p = TextRendering::default()
+        let p = TextRasterization::default()
             .stem_darkening(StemDarkening::Px(f32::NAN))
             .resolve(&SystemTextSettings::default());
         assert_eq!(p.darkening_px, 0.0);
-        let p = TextRendering::default()
+        let p = TextRasterization::default()
             .stem_darkening(StemDarkening::Px(9.0))
             .resolve(&SystemTextSettings::default());
         assert_eq!(p.darkening_px, MAX_STEM_DARKENING_PX);
@@ -456,7 +521,7 @@ mod tests {
             subpixel_order: Some(SubpixelOrder::Rgb),
             lcd_filter: Some(LcdFilter::Default),
         };
-        let r = TextRendering::default().resolve(&kde);
+        let r = TextRasterization::default().resolve(&kde);
         assert_eq!(
             r.antialias,
             ResolvedAntialias::Subpixel {
@@ -471,7 +536,7 @@ mod tests {
             subpixel_order: Some(SubpixelOrder::Rgb),
             ..Default::default()
         };
-        let r = TextRendering::default().resolve(&none);
+        let r = TextRasterization::default().resolve(&none);
         assert_eq!(r.antialias, ResolvedAntialias::None);
         assert!(!r.hint());
         // `rgba=none` is grayscale.
@@ -479,10 +544,10 @@ mod tests {
             subpixel_order: Some(SubpixelOrder::None),
             ..Default::default()
         };
-        let r = TextRendering::default().resolve(&gray);
+        let r = TextRasterization::default().resolve(&gray);
         assert_eq!(r.antialias, ResolvedAntialias::Grayscale);
         // Nothing known: grayscale, hinted.
-        let r = ResolvedTextRendering::default();
+        let r = ResolvedTextRasterization::default();
         assert_eq!(r.antialias, ResolvedAntialias::Grayscale);
         assert_eq!(r.hinting, TextHinting::Slight);
     }
@@ -495,13 +560,13 @@ mod tests {
             subpixel_order: Some(SubpixelOrder::Bgr),
             lcd_filter: Some(LcdFilter::Light),
         };
-        let r = TextRendering::default()
+        let r = TextRasterization::default()
             .antialias(TextAntialias::Grayscale)
             .hinting(TextHinting::None)
             .resolve(&kde);
         assert_eq!(r.antialias, ResolvedAntialias::Grayscale);
         assert!(!r.hint());
-        let r = TextRendering::default()
+        let r = TextRasterization::default()
             .antialias(TextAntialias::Subpixel)
             .resolve(&SystemTextSettings::default());
         assert_eq!(
@@ -515,14 +580,14 @@ mod tests {
 
     #[test]
     fn the_policy_is_per_thread() {
-        set_text_rendering(ResolvedTextRendering::default().with_darkening(0.0));
-        assert_eq!(text_rendering().darkening_px, 0.0);
+        set_thread_policy(ResolvedTextRasterization::default().with_darkening(0.0));
+        assert_eq!(thread_policy().darkening_px, 0.0);
         std::thread::spawn(|| {
-            assert_eq!(text_rendering(), ResolvedTextRendering::default());
+            assert_eq!(thread_policy(), ResolvedTextRasterization::default());
         })
         .join()
         .unwrap();
-        reset_text_rendering();
-        assert_eq!(text_rendering(), ResolvedTextRendering::default());
+        reset_thread_policy();
+        assert_eq!(thread_policy(), ResolvedTextRasterization::default());
     }
 }
