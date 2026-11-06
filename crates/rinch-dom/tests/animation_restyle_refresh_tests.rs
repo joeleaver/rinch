@@ -74,6 +74,7 @@ const RED_GREEN: &str = "@keyframes k { from { background-color: rgb(255, 0, 0);
 
 fn document(author: &str) -> RinchDocument {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.set_viewport(VP.0, VP.1);
     doc.load_css(&format!("{BOX} {author}"));
     doc

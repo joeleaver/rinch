@@ -57,6 +57,8 @@ fn animated(base: &str, keyframes: &str) -> (RinchDocument, NodeId) {
 /// [`animated`] with the animation's timing function `timing`.
 fn animated_with(base: &str, keyframes: &str, timing: &str) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
+    // Pinned (#2267): `layout_at` samples at exactly the time it names.
+    doc.set_animation_clock_ms(Some(1_000_000.0));
     doc.load_css(&format!(
         "html, body {{ margin: 0; }}
          .c {{ width: 400px; font-size: 10px; line-height: 10px; }}
@@ -88,15 +90,10 @@ fn animated_with(base: &str, keyframes: &str, timing: &str) -> (RinchDocument, N
 /// `RinchDocument::tick_animations`, which also re-syncs the Taffy style — and
 /// lay out again; the box's laid-out `(width, height)`.
 ///
-/// That tick reads the wall clock, so the animation's start is moved to `ms`
-/// before now; the microseconds between the two reads are far below the
-/// half-pixel tolerance at these rates (100px/s).
+/// The document's animation clock is pinned (#2267), so moving the start to
+/// `ms` before it samples exactly `ms`.
 fn layout_at(doc: &mut RinchDocument, div: NodeId, ms: f64) -> (f32, f32) {
-    let now = web_time::SystemTime::now()
-        .duration_since(web_time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
-        * 1000.0;
+    let now = doc.animation_now_ms();
     for anim in doc.tree.active_animations.get_mut(&div.0).unwrap() {
         anim.start_time_ms = now - ms;
     }
@@ -124,7 +121,7 @@ fn sample(
 
 fn close(got: f32, want: f32, what: &str) {
     assert!(
-        (got - want).abs() < 0.5,
+        (got - want).abs() < 0.01,
         "{what}: Chrome gives {want}, got {got}"
     );
 }

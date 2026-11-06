@@ -78,6 +78,7 @@ const BOX: &str = "div.x { width: 10px; height: 10px; line-height: 10px; \
 /// that would drop every cached style on its own.
 fn document(theme: &str, author: &str) -> RinchDocument {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.set_viewport(VP.0, VP.1);
     doc.update_theme_variables(theme);
     doc.load_css(&format!("{BOX} {author}"));
@@ -167,14 +168,6 @@ fn px(value: &AnimatableValue) -> f32 {
     }
 }
 
-fn now_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
-        * 1000.0
-}
-
 // ── required: a `@keyframes` rule the new theme no longer carries ───────────
 
 /// **The regression #762 introduced and this round removes.** Chrome's third
@@ -237,7 +230,7 @@ fn a_theme_that_renames_the_animation_starts_a_new_one_from_zero() {
     doc.resolve_layout(VP.0, VP.1);
     let old_start = backdate(&mut doc, t, &[3000.0])[0];
 
-    let swap_started = now_ms();
+    let swap_started = doc.animation_now_ms();
     change_theme(
         &mut doc,
         ":root { --probe: 2; } body .t { animation-name: k2; }",
@@ -245,10 +238,9 @@ fn a_theme_that_renames_the_animation_starts_a_new_one_from_zero() {
 
     assert_eq!(names(&doc, t), ["k2"], "only the renamed animation runs");
     let new_start = start_times(&doc, t)[0];
-    assert!(
-        new_start >= swap_started,
-        "`k2` starts from t=0 at the swap ({new_start} < {swap_started}), not on \
-         `k`'s clock ({old_start})"
+    assert_eq!(
+        new_start, swap_started,
+        "`k2` starts from t=0 at the swap, not on `k`'s clock ({old_start})"
     );
     assert_eq!(
         rgb(&sample(

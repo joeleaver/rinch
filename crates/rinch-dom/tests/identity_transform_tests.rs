@@ -62,6 +62,7 @@ fn el(doc: &mut RinchDocument, tag: &str, parent: NodeId, style: &str) -> NodeId
 /// `div(transform) > abs(inset: 0)` under the body; returns (div, abs).
 fn containing(transform: &str) -> (RinchDocument, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     let body = doc.body();
     let div = el(
         &mut doc,
@@ -117,6 +118,7 @@ fn transform_none_is_neither() {
 fn an_identity_transform_on_an_inline_span_or_a_contents_box_is_neither() {
     for display in ["inline", "contents"] {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         let body = doc.body();
         let p = el(&mut doc, "p", body, "");
         let span = el(
@@ -184,6 +186,7 @@ fn becoming_an_identity_transform_re_resolves_the_absolute_child() {
 fn a_z_index_inside_an_identity_transform_is_trapped_in_its_context() {
     for (tf, trapped) in [("translateX(0)", true), ("none", false)] {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         let body = doc.body();
         let c = el(
             &mut doc,
@@ -236,6 +239,7 @@ fn a_z_index_inside_an_identity_transform_is_trapped_in_its_context() {
 /// transitions armed, holding an `inset: 0` abs.
 fn transition_doc(from: &str, to: &str) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     let body = doc.body();
     let style_el = doc.create_element("style");
     let css = doc.create_text(&format!(
@@ -376,6 +380,7 @@ fn a_transition_that_finishes_at_an_identity_stays_a_context() {
 #[test]
 fn an_animation_filled_at_an_identity_stays_a_context() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     let body = doc.body();
     let style_el = doc.create_element("style");
     let css = doc.create_text(
@@ -406,6 +411,7 @@ fn an_animation_filled_at_an_identity_stays_a_context() {
 #[test]
 fn an_animation_filled_at_a_none_keyframe_stays_a_context() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     let body = doc.body();
     let style_el = doc.create_element("style");
     let css = doc.create_text(

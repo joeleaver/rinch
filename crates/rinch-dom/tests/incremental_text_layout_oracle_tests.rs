@@ -206,6 +206,7 @@ fn twin<H>(
 ) {
     let make = |state: bool| {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(BASE_CSS);
         doc.load_css(css);
         let h = build(&mut doc, state);
@@ -341,6 +342,7 @@ fn a_font_change_drops_the_sizes_cached_at_other_widths() {
     let css = ".box { width: 180px; } .narrow .box { width: 120px; } .big { font-size: 23px; }";
     let make = |final_state: bool| {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(BASE_CSS);
         doc.load_css(css);
         let wrap = ifc_doc(&mut doc, false);
@@ -906,6 +908,7 @@ fn an_atomic_members_class_colour_reaches_the_pixels() {
     let css = ".chip.hot { color: rgb(200, 10, 10); }";
     let make = |on: bool| {
         let mut d = RinchDocument::new();
+        d.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         d.load_css(BASE_CSS);
         d.load_css(css);
         let w = chip_doc(&mut d, false);
@@ -1015,6 +1018,7 @@ fn a_span_that_was_briefly_atomic_keeps_no_layout_of_its_own() {
     let css = ".on span { display: inline-block; width: 50px; }";
     let make = || {
         let mut d = RinchDocument::new();
+        d.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         d.load_css(BASE_CSS);
         d.load_css(css);
         let w = ifc_doc(&mut d, false);
@@ -1046,6 +1050,7 @@ fn a_root_that_was_briefly_flex_keeps_no_stale_layout() {
     let css = ".on .box { display: flex; }";
     let make = || {
         let mut d = RinchDocument::new();
+        d.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         d.load_css(BASE_CSS);
         d.load_css(css);
         let w = ifc_doc(&mut d, false);
@@ -1089,6 +1094,7 @@ fn a_text_node_that_stops_being_a_leaf_answers_no_stale_caret_970() {
     let css = ".on .box { display: flex; }";
     let make = |on: bool| {
         let mut d = RinchDocument::new();
+        d.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         d.load_css(BASE_CSS);
         d.load_css(css);
         let w = ifc_doc(&mut d, on);
@@ -1759,6 +1765,7 @@ fn a_theme_change_that_reaches_no_text_reshapes_nothing() {
         ".wrap { background-color: var(--tbg); } .box { color: var(--tc-unused, rgb(1, 2, 3)); }";
     let make = |theme: &str| {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(BASE_CSS);
         doc.load_css(css);
         doc.set_theme_css(theme);
@@ -1808,6 +1815,7 @@ fn a_theme_colour_change_reaches_the_pixels() {
     let css = ".box { color: var(--tc); }";
     let make = |theme: &str| {
         let mut d = RinchDocument::new();
+        d.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         d.load_css(BASE_CSS);
         d.load_css(css);
         d.set_theme_css(theme);
@@ -2014,6 +2022,7 @@ leaf_text_case!(a_flex_row_label_takes_new_text, flex_row_doc, "frow");
 #[test]
 fn an_inline_flex_label_paints_the_same_from_its_cached_layout() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(BASE_CSS);
     doc.load_css(LEAF_CSS);
     let (_, t) = inline_flex_doc(&mut doc, "ichip hot", "chip label text");
@@ -2049,6 +2058,7 @@ fn a_finished_colour_transition_reaches_the_label(kind: &str) {
         .flex { display: flex; } .iflex { display: inline-flex; }";
     let make = |hot: bool| {
         let mut d = RinchDocument::new();
+        d.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         d.load_css(BASE_CSS);
         d.load_css(css);
         let body = d.body();
@@ -2122,6 +2132,7 @@ fn a_finished_colour_animation_reaches_an_inline_flex_label() {
         .iflex.hot { color: rgb(220, 0, 0); }";
     let make = |class: &str| {
         let mut d = RinchDocument::new();
+        d.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         d.load_css(BASE_CSS);
         d.load_css(css);
         let body = d.body();
@@ -2181,6 +2192,7 @@ fn a_class_colour_reaches_the_leaf_pixels(
 ) {
     let make = |class: &str| {
         let mut d = RinchDocument::new();
+        d.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         d.load_css(BASE_CSS);
         d.load_css(LEAF_CSS);
         let (c, _) = builder(&mut d, class, "chip label text");
@@ -2303,6 +2315,7 @@ fn rv_twin<H>(
     // Re-run the oracle, then the invariants on the incremental document.
     let make = |state: bool| {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(BASE_CSS);
         doc.load_css(css);
         let h = build(&mut doc, state);

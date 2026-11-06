@@ -64,6 +64,7 @@ fn animations(doc: &RinchDocument, node: NodeId) -> usize {
 
 fn mount(class: &str) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let node = doc.create_element("div");
@@ -189,7 +190,7 @@ fn a_positive_delay_runs_until_it_ends_then_settles() {
         "backwards fill in the delay"
     );
 
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    doc.advance_animation_clock_ms(300.0);
     hand_off(&mut doc, node);
     assert!(!doc.tick_animations(), "after the delay it is finished");
     assert!(
@@ -208,7 +209,7 @@ fn a_positive_delay_runs_until_it_ends_then_settles() {
 #[test]
 fn a_non_zero_infinite_animation_still_runs() {
     let (mut doc, node) = mount("box slow");
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    doc.advance_animation_clock_ms(120.0);
     hand_off(&mut doc, node);
     assert!(doc.tree.has_running_animations());
     assert!(

@@ -894,6 +894,24 @@ snapped to the keyframe. `TimingFunction` is not `Copy` (a `linear()` holds an
 declaration was dropped, #1581). Pins: `crates/rinch-dom/tests/easing_steps_linear_1564_tests.rs`
 (Chrome 155).
 
+**One clock, which a test can pin** (#2267). Every time a transition or an
+animation reads — the start a cascade stamps (`apply_stylo_styles_to_taffy`),
+and the sample `RinchDocument::tick_transitions` and `tick_animations` take —
+comes from `RinchDocument::animation_now_ms`: the wall clock (epoch
+milliseconds, through `web_time`), unless `set_animation_clock_ms(Some(t))`
+pinned it, after which time moves only by `advance_animation_clock_ms`. The shell
+never pins it. The free functions `animation::tick_animations(tree, now)` and
+`transition::tick_transitions(tree, now)` take an explicit time and read no
+clock, but they skip the document wrappers' pre- and post-passes (the text
+measure, the colour brushes, the restyle of a no-fill animation that ended), so
+a test of those passes needs the document's tick. Before the pin existed such
+tests back-dated `start_time_ms` and let the tick read the wall clock, so the
+sample drifted by however long the host stalled between the two: a loaded CI
+runner read 58.6px against 55 in `finished_animation_no_fill_783_tests`. The
+rinch-dom animation and transition tests pin the clock at `1_000_000.0` before
+their first cascade and assert exact samples; a test that needs real time to
+pass calls `advance_animation_clock_ms`, never `sleep`.
+
 **The 3D transform functions are drawn flat** (#405; they used to compute to the
 identity, `translate3d` aside). A list holding any of them is composed as 4×4
 matrices (`transition::transform::Mat4`) and **only the result** is flattened —

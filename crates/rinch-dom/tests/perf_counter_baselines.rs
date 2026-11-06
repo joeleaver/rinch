@@ -92,6 +92,7 @@ fn build_n(n_rows: usize, contents_wrapper: bool) -> Fixture {
 /// sheet.
 fn build_with(n_rows: usize, contents_wrapper: bool, extra_css: &str) -> Fixture {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     if !extra_css.is_empty() {
         doc.load_css(extra_css);
@@ -223,6 +224,7 @@ fn hover(f: &mut Fixture, row: Option<NodeId>) {
 #[test]
 fn every_rinch_dom_counter_fires_somewhere() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(
         "
         body { font-size: 16px; line-height: 20px; }
@@ -766,6 +768,7 @@ fn remove_one_row() {
 /// contents` wrapper, which is what a keyed `for` in `rsx!` emits.
 fn build_table(n: usize, rows: bool) -> Fixture {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     doc.load_css(
         ".t { display: table; } .tr { display: table-row; } .td { display: table-cell; }
@@ -985,7 +988,7 @@ fn transform_animation_tick() {
     f.doc.resolve_layout(VP.0, VP.1);
     paint(&mut f);
     f.doc.tree.perf.reset();
-    std::thread::sleep(std::time::Duration::from_millis(5));
+    f.doc.advance_animation_clock_ms(5.0);
     let s = frame(&mut f, |f| {
         f.doc.tick_animations();
     });
@@ -1038,7 +1041,7 @@ fn transform_animation_tick_beside_finished_one_shots() {
     );
     paint(&mut f);
     f.doc.tree.perf.reset();
-    std::thread::sleep(std::time::Duration::from_millis(5));
+    f.doc.advance_animation_clock_ms(5.0);
     let s = frame(&mut f, |f| {
         f.doc.tick_animations();
     });
@@ -1071,7 +1074,7 @@ fn to_only_transform_animation_tick() {
     f.doc.resolve_layout(VP.0, VP.1);
     paint(&mut f);
     f.doc.tree.perf.reset();
-    std::thread::sleep(std::time::Duration::from_millis(5));
+    f.doc.advance_animation_clock_ms(5.0);
     let s = frame(&mut f, |f| {
         f.doc.tick_animations();
     });

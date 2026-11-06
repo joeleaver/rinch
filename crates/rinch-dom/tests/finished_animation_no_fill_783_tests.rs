@@ -23,8 +23,9 @@
 //! sample a quarter of the way into the *second* iteration, and an end value
 //! (100px) that differs from both the base (10px) and the start (40px). The
 //! clock is moved by backdating each entry's `start_time_ms`, never by sleeping;
-//! the durations are long so that a loaded host's wall-clock drift between
-//! mount and sample (measured: up to ~45ms) moves a sample by under 1px.
+//! and every document pins the animation clock
+//! (`set_animation_clock_ms`, #2267), so the samples are exact. Before the
+//! clock was pinned, a loaded CI runner drifted a sample to 58.6px against 55.
 //!
 //! # Mutants, and what kills each
 //!
@@ -103,6 +104,11 @@ const CSS: &str = "
 
 const VP: (f32, f32) = (800.0, 600.0);
 
+/// The pinned animation clock (#2267). Every document here is pinned before
+/// its first cascade, so backdating an entry by `ms` moves its sample by
+/// exactly `ms`: no wall-clock time passes between mount and sample.
+const CLOCK_MS: f64 = 1_000_000.0;
+
 /// The delay, one iteration, and the iteration count of every animation above.
 const DELAY: f64 = 1600.0;
 const DURATION: f64 = 4000.0;
@@ -136,6 +142,7 @@ fn names(doc: &RinchDocument, node: NodeId) -> Vec<String> {
 
 fn mount(class: &str) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(CLOCK_MS));
     doc.load_css(CSS);
     let body = doc.body();
     let node = doc.create_element("div");
@@ -176,10 +183,10 @@ fn finished(class: &str) -> (RinchDocument, NodeId) {
     let (mut doc, node) = mount(class);
     age(&mut doc, node, DURING);
     assert!(frame(&mut doc), "precondition: it is running at {DURING}ms");
-    assert!(
-        (width_px(&doc, node) - 55.0).abs() < 3.0,
-        "precondition: a quarter into the second iteration is 55px, got {}",
-        width_px(&doc, node)
+    assert_eq!(
+        width_px(&doc, node),
+        55.0,
+        "precondition: a quarter into the second iteration is 55px"
     );
     age(&mut doc, node, AFTER - DURING);
     frame(&mut doc);
@@ -228,8 +235,8 @@ fn a_finished_animation_without_fill_returns_to_its_base_value() {
     age(&mut doc, node, DURING - DELAY / 2.0);
     assert!(frame(&mut doc));
     let during = width_px(&doc, node);
-    assert!((during - 55.0).abs() < 3.0, "during: 55px, got {during}");
-    assert!((layout_width(&doc, node) - during).abs() < 1.0);
+    assert_eq!(during, 55.0, "during: 55px");
+    assert_eq!(layout_width(&doc, node), during);
 
     age(&mut doc, node, AFTER - DURING);
     frame(&mut doc);
@@ -410,7 +417,7 @@ fn a_finished_animation_on_a_before_box_returns_to_its_base_value() {
     let pseudo = NodeId(pseudo);
     age(&mut doc, pseudo, DURING);
     assert!(frame(&mut doc));
-    assert!((width_px(&doc, pseudo) - 55.0).abs() < 3.0, "during: 55px");
+    assert_eq!(width_px(&doc, pseudo), 55.0, "during: 55px");
     age(&mut doc, pseudo, AFTER - DURING);
     frame(&mut doc);
     assert_eq!(
@@ -436,6 +443,7 @@ fn a_finished_animation_on_a_before_box_returns_to_its_base_value() {
 fn finished_one_shots_are_not_walked_by_the_tick() {
     const ROWS: usize = 50;
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(CLOCK_MS));
     doc.load_css(CSS);
     let body = doc.body();
     let rows: Vec<NodeId> = (0..ROWS)
@@ -570,6 +578,7 @@ fn a_colour_restyle_after_a_finished_font_size_animation_owes_no_layout() {
         ("text sized", "after the end"),
     ] {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(CLOCK_MS));
         doc.load_css(CSS);
         let body = doc.body();
         let p = doc.create_element("p");
