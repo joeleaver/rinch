@@ -404,13 +404,18 @@ candidates.
 9. **`Style::stretch_past_max_width`** (#2264). A stretched grid item with the flag fills its grid
    area's width past its `max_size.width`, which still caps the contributions the grid measures
    (`compute/grid/alignment.rs` for the final size, `GridItem::known_dimensions` for the width its
-   row height is measured at). rinch sets it on every table cell: a cell's `max-width` caps what
+   row height is measured at). rinch sets it on every `display: table-cell` box (not a `<td>`
+   displayed as a block or flex box, which is a block in an anonymous cell): a cell's `max-width` caps what
    it asks of its column and the cell is laid out at its column's width (Blink's
    `CreateCellInlineConstraint`, `SetupTableCellConstraintSpaceBuilder`); css-grid-1 §6.2 clamps
    a grid item proper, the default. With it, `compute_leaf_layout` no longer clamps a **known**
-   dimension by the leaf's own min/max size (the block algorithm never did; every parent hands a
-   known size already clamped except this one), so a cell that is itself an IFC leaf wraps its
-   lines at the column's width. Pins: the fork's `tests/stretch_past_max_width.rs` and
+   dimension by the leaf's own min/max size (the block algorithm never did), so a cell that is
+   itself an IFC leaf wraps its lines at the column's width. Most parents hand a leaf a known
+   size they have already clamped, so those don't move. Two hand it an unclamped one: the
+   flagged grid stretch, and flexbox's intrinsic main-size path (`compute/flexbox.rs`, about
+   line 1435), which measures an item at a known cross size it doesn't clamp by the item's
+   min/max. A leaf measured there now sees that size as given. The review of #2268 found no
+   case among 36 non-table and 8 aspect-ratio probes where it changes Chrome-matching output. Pins: the fork's `tests/stretch_past_max_width.rs` and
    `crates/rinch-dom/tests/table_cell_max_width_2264_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
