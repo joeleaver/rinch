@@ -91,6 +91,11 @@ struct Root {
     started: bool,
     /// Where each of its text nodes and `<br>`s stands in its text.
     texts: HashMap<u64, (usize, usize)>,
+    /// The ranges of its text a copy writes ([`rendered_ranges`]), worked out
+    /// once: each text node writes a slice of them.
+    drawn: Vec<(usize, usize)>,
+    /// The first of `drawn` not yet written past.
+    next: usize,
 }
 
 impl Root {
@@ -102,9 +107,14 @@ impl Root {
     ) -> Self {
         let mut texts: HashMap<u64, (usize, usize)> = HashMap::new();
         let mut len = 0;
+        let mut drawn = Vec::new();
         if let Some(layout) = tree.get(id).and_then(|n| n.text_layout.as_ref()) {
             len = layout.text_content.len();
+            if part.is_some() {
+                drawn = rendered_ranges(tree, id, 0, len);
+            }
             for r in &layout.text_ranges {
+                work(1);
                 let e = texts.entry(r.node_id).or_insert((r.flat_start, r.flat_end));
                 *e = (e.0.min(r.flat_start), e.1.max(r.flat_end));
             }
@@ -116,6 +126,8 @@ impl Root {
             cursor: 0,
             started,
             texts,
+            drawn,
+            next: 0,
         }
     }
 
@@ -142,8 +154,19 @@ impl Root {
             if a < b
                 && let Some(t) = tree.get(self.id).and_then(|n| n.text_layout.as_ref())
             {
-                for (a, b) in rendered_ranges(tree, self.id, a, b) {
-                    out.push(t.text_content.get(a..b).unwrap_or(""));
+                while let Some(&(x, y)) = self.drawn.get(self.next) {
+                    work(1);
+                    if x >= b {
+                        break;
+                    }
+                    let (from, to) = (x.max(a), y.min(b));
+                    if from < to {
+                        out.push(t.text_content.get(from..to).unwrap_or(""));
+                    }
+                    if y > b {
+                        break;
+                    }
+                    self.next += 1;
                 }
             }
         }
@@ -572,8 +595,9 @@ pub(crate) fn rendered_span(tree: &rinch_dom::NodeTree, root: u64) -> Option<(us
             (r.flat_start, r.flat_end, r.is_br, ws)
         })
         .collect();
-    let drops = |i: usize, c: char| -> bool {
-        let at = ranges.iter().find(|&&(a, b, ..)| a <= i && i < b);
+    // Whether character `c` at `i`, in text range `at`, is white space the
+    // lines drop.
+    let drops = |c: char, at: Option<&(usize, usize, bool, WhiteSpaceValue)>| -> bool {
         if at.is_some_and(|r| r.2) {
             return false;
         }
@@ -585,21 +609,33 @@ pub(crate) fn rendered_span(tree: &rinch_dom::NodeTree, root: u64) -> Option<(us
             }
         }
     };
+    // From the start, a cursor over the ranges (in text order) rather than a
+    // search per character.
+    let mut j = 0;
+    let first = text.char_indices().find(|&(i, c)| {
+        work(1);
+        while ranges.get(j).is_some_and(|r| r.1 <= i) {
+            work(1);
+            j += 1;
+        }
+        !drops(c, ranges.get(j).filter(|r| r.0 <= i))
+    });
+    // And from the end.
+    let mut j = ranges.len();
+    let last = text.char_indices().rev().find(|&(i, c)| {
+        work(1);
+        while j > 0 && ranges[j - 1].0 > i {
+            work(1);
+            j -= 1;
+        }
+        !drops(c, j.checked_sub(1).map(|k| &ranges[k]).filter(|r| r.1 > i))
+    });
     // An atomic inline is drawn too: the white space between two is kept
     // (Chrome writes the " " between two `inline-block` columns), and only
     // what is before the first and after the last thing drawn is dropped.
     let boxes = || layout.atomic_inline_offsets();
-    let first = text
-        .char_indices()
-        .find(|&(i, c)| !drops(i, c))
-        .map(|(i, _)| i)
-        .into_iter()
-        .chain(boxes())
-        .min()?;
-    let last = text
-        .char_indices()
-        .rev()
-        .find(|&(i, c)| !drops(i, c))
+    let first = first.map(|(i, _)| i).into_iter().chain(boxes()).min()?;
+    let last = last
         .map(|(i, c)| i + c.len_utf8())
         .into_iter()
         .chain(boxes())
@@ -709,4 +745,21 @@ fn before(tree: &rinch_dom::NodeTree, a: (u64, usize), b: (u64, usize)) -> bool 
     } else {
         node_before(tree, root_node(tree, a.0), root_node(tree, b.0))
     }
+}
+
+/// Count `n` steps of the copy's work over a root's text: a range or a
+/// character looked at. Tests read it ([`WORK`]) to pin that a copy is
+/// linear in the text it walks; it does nothing outside tests.
+#[inline]
+pub(crate) fn work(n: u64) {
+    #[cfg(test)]
+    WORK.with(|w| w.set(w.get() + n));
+    #[cfg(not(test))]
+    let _ = n;
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The steps [`work`] has counted on this thread.
+    pub(crate) static WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }

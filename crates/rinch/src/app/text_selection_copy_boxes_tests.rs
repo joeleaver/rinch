@@ -4,9 +4,9 @@
 //! #b.childNodes.length)` on the same markup, in the same 600px root with
 //! `font: 16px/20px sans-serif`.
 
-use super::TextSelection;
 use super::text_selection_across_tests::{mount, node};
 use super::text_selection_chrome_tests::SEL;
+use super::{RinchApp, TextSelection};
 
 /// The IFC root that lays out text node `text`, and where its text stands
 /// in the root's; `None` for text no root lays out (a flex container's).
@@ -41,6 +41,11 @@ fn texts(tree: &rinch_dom::NodeTree, id: u64, out: &mut Vec<u64>) {
 /// The copy of a selection from the start of `#a`'s first text to the end
 /// of `#b`'s last, as `setBaseAndExtent(#a, 0, #b, end)` makes it.
 fn copy_range(html: &'static str) -> String {
+    select_range(html).text_selection_text().unwrap_or_default()
+}
+
+/// An app holding `html` with that selection.
+fn select_range(html: &'static str) -> RinchApp {
     let mut app = mount(html, SEL);
     let (a, b) = (node(&app, "a"), node(&app, "b"));
     let sel = {
@@ -63,7 +68,7 @@ fn copy_range(html: &'static str) -> String {
         sel
     };
     app.text_selection = Some(sel);
-    app.text_selection_text().unwrap_or_default()
+    app
 }
 
 /// Copies of `cases` (name, markup, Chrome 156's string), checked together
@@ -918,4 +923,33 @@ fn a_selection_from_an_inline_block_into_its_paragraph_is_in_document_order() {
         "a in ib b after in span tail",
         "a in nested ib b after in outer ib",
     ]);
+}
+
+/// The work ([`super::text_selection_copy::WORK`]) a copy of a paragraph of
+/// `spans` spans, between two blocks, takes.
+fn copy_work(spans: usize) -> u64 {
+    let mut html = String::from(r#"<div id="a">first</div><div>"#);
+    for i in 0..spans {
+        html.push_str(&format!("<span>w{i} </span>"));
+    }
+    html.push_str(r#"</div><div id="b">last</div>"#);
+    let html: &'static str = Box::leak(html.into_boxed_str());
+    let mut app = select_range(html);
+    let work = || super::text_selection_copy::WORK.with(|w| w.get());
+    let before = work();
+    let t = app.text_selection_text().unwrap_or_default();
+    assert!(t.ends_with("\nlast"), "{t:?}");
+    work() - before
+}
+
+#[test]
+fn a_copy_is_linear_in_its_roots_text() {
+    // Review of #2249: writing a root's part per text node rebuilt the
+    // root's drawn ranges for each one, so a paragraph of 4,000 spans took
+    // 2 s. Four times the spans must be about four times the work.
+    let (small, big) = (copy_work(250), copy_work(1000));
+    assert!(
+        big <= 5 * small,
+        "{small} steps for 250 spans, {big} for 1000"
+    );
 }

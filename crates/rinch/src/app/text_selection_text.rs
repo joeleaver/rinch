@@ -127,6 +127,7 @@ pub(crate) fn kept_ranges(
     }
     let mut out: Vec<(usize, usize)> = Vec::new();
     for r in &layout.text_ranges {
+        super::text_selection_copy::work(1);
         let (a, b) = (r.flat_start.max(start), r.flat_end.min(end));
         if a >= b || left_out(tree, root, r.node_id) {
             continue;
