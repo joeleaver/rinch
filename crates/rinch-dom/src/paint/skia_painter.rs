@@ -2510,6 +2510,26 @@ fn reference_premultiply(data: &[u8]) -> Vec<u8> {
 
 // ── Glyph blitting helpers ────────────────────────────────────────────────
 
+/// Where a cached glyph image goes: `transform` after a translation to the
+/// image's top-left corner `(gx, gy)`.
+///
+/// When the result is a plain translation (no scale, rotation or skew: every
+/// glyph not under a CSS transform), the translation is rounded to whole
+/// device pixels here, half up, which is where nearest-neighbour sampling
+/// would put the image anyway. Left to tiny-skia, a translation of exactly
+/// `k + 0.5` covers pixels from `k + 1` but samples the image's row (or
+/// column) 1 there: row 0 is never drawn and the last row is drawn twice,
+/// which cut the tops (and the left edge) off text that layout centred on a
+/// half pixel. `half_pixel_glyph_blit_tests` is the fixture.
+fn glyph_placement(transform: Transform, gx: f32, gy: f32) -> Transform {
+    let ts = transform.pre_concat(Transform::from_translate(gx, gy));
+    if ts.sx == 1.0 && ts.sy == 1.0 && ts.kx == 0.0 && ts.ky == 0.0 {
+        Transform::from_translate((ts.tx + 0.5).floor(), (ts.ty + 0.5).floor())
+    } else {
+        ts
+    }
+}
+
 /// Blit an alpha mask glyph onto `pixmap` with the given straight-alpha
 /// colour.
 ///
@@ -2556,7 +2576,7 @@ fn blit_alpha_mask_into(
         return;
     };
     // Compose the transform: first translate to glyph position, then apply the node transform
-    let ts = transform.pre_concat(Transform::from_translate(gx, gy));
+    let ts = glyph_placement(transform, gx, gy);
     pixmap.draw_pixmap(0, 0, src, &PixmapPaint::default(), ts, clip);
 }
 
@@ -2586,7 +2606,7 @@ fn blit_premultiplied_into(
         opacity: alpha as f32 / 255.0,
         ..PixmapPaint::default()
     };
-    let ts = transform.pre_concat(Transform::from_translate(gx, gy));
+    let ts = glyph_placement(transform, gx, gy);
     pixmap.draw_pixmap(0, 0, src, &paint, ts, clip);
 }
 
@@ -2784,7 +2804,7 @@ fn blit_color_glyph_into(
     let Some(src) = PixmapRef::from_bytes(scratch, glyph_w, glyph_h) else {
         return;
     };
-    let ts = transform.pre_concat(Transform::from_translate(gx, gy));
+    let ts = glyph_placement(transform, gx, gy);
     pixmap.draw_pixmap(0, 0, src, &PixmapPaint::default(), ts, clip);
 }
 
