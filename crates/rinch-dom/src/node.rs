@@ -158,6 +158,12 @@ pub enum NodeContext {
         /// image's own ratio. Kept current by
         /// [`crate::replaced::sync_replaced_measure`].
         aspect: crate::computed_style::AspectRatioValue,
+        /// The box of the `alt` text an image shows in its place when it has
+        /// none and no size (#2309, [`crate::img_placeholder`]): `Some` only
+        /// while the element is an inline alt placeholder, when it is the
+        /// measure's natural size. Kept current by
+        /// [`crate::RinchDocument::sync_img_placeholder`].
+        alt: Option<crate::img_placeholder::AltBox>,
     },
     /// IFC root that needs Parley TreeBuilder measurement.
     ///

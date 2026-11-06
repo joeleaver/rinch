@@ -1686,6 +1686,59 @@ impl RinchDocument {
         any_active
     }
 
+    /// Make `<img>` `node_id`'s measure context say what its placeholder is
+    /// owed (#2309, [`crate::img_placeholder`]): the [`AltBox`] of an inline
+    /// alt placeholder, and no natural size once it has no picture (its
+    /// `src` removed or emptied after a picture loaded). Answers whether the
+    /// context changed; it then queues the node for layout and paint itself.
+    /// A placeholder that changes only what is drawn (a sized one whose load
+    /// failed) is the caller's to mark for paint.
+    ///
+    /// [`AltBox`]: crate::img_placeholder::AltBox
+    pub(crate) fn sync_img_placeholder(&mut self, node_id: RawNodeId) -> bool {
+        let Some(node) = self.tree.nodes.get(node_id) else {
+            return false;
+        };
+        if node.tag() != Some("img") {
+            return false;
+        }
+        let Some(taffy_id) = node.taffy_id else {
+            return false;
+        };
+        let want = crate::img_placeholder::wanted_alt_box(
+            &self.tree,
+            node,
+            &mut self.font_cx,
+            &mut self.layout_cx,
+        );
+        let no_src = node
+            .attributes
+            .get("src")
+            .is_none_or(|s| s.trim_ascii().is_empty());
+        let Some(crate::node::NodeContext::Image { natural, alt, .. }) =
+            self.tree.taffy.get_node_context_mut(taffy_id)
+        else {
+            return false;
+        };
+        let drop_natural = no_src && natural.is_some();
+        if *alt == want && !drop_natural {
+            return false;
+        }
+        *alt = want;
+        if drop_natural {
+            *natural = None;
+        }
+        let _ = self.tree.taffy.mark_dirty(taffy_id);
+        self.tree.layout_dirty = true;
+        // A default `<img>` is an atomic inline, measured detached from the
+        // root tree, as `drain_pending_images` explains.
+        self.tree
+            .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Subtree);
+        self.mark_atomic_inline_dirty(node_id);
+        self.push_dirty_flags(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+        true
+    }
+
     /// Request an image load for a node's `src` attribute.
     ///
     /// If the image is already decoded in the cache, updates intrinsic dimensions
@@ -1719,10 +1772,19 @@ impl RinchDocument {
                         src: src.to_string(),
                         natural: Some(natural),
                         aspect,
+                        alt: None,
                     }),
                 );
                 let _ = self.tree.taffy.mark_dirty(taffy_id);
             }
+            // A default `<img>` is an atomic inline, measured detached from
+            // the root tree (`drain_pending_images`): without this a picture
+            // written over an inline alt placeholder (#2309) kept the
+            // placeholder's box, and at an unchanged viewport no layout ran.
+            self.tree.layout_dirty = true;
+            self.tree
+                .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Subtree);
+            self.mark_atomic_inline_dirty(node_id);
             self.push_dirty_flags(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
             return;
         }
@@ -1748,6 +1810,7 @@ impl RinchDocument {
                     src: src.to_string(),
                     natural: None,
                     aspect,
+                    alt: None,
                 }),
             );
         }
@@ -1845,10 +1908,29 @@ impl RinchDocument {
                 crate::image_cache::request_image_load(self.doc_key, src, loader.clone());
             }
         }
-        if newly_decoded.is_empty() {
-            return false;
-        }
         let mut layout_changed = false;
+        // A failed load turns each `<img>` naming it into a placeholder
+        // (#2309): an inline one changes its box, a sized one only what it
+        // draws.
+        for src in self.tree.image_cache.take_newly_failed() {
+            let node_ids: Vec<RawNodeId> = self
+                .tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    node.tag() == Some("img")
+                        && node.attributes.get("src").map(|s| s.as_str()) == Some(src.as_str())
+                })
+                .map(|(id, _)| id)
+                .collect();
+            for node_id in node_ids {
+                layout_changed |= self.sync_img_placeholder(node_id);
+                self.push_dirty_flags(node_id, DirtyFlags::PAINT);
+            }
+        }
+        if newly_decoded.is_empty() {
+            return layout_changed;
+        }
         // For each newly decoded image, find <img> nodes referencing it
         // and update their intrinsic dimensions
         for src in &newly_decoded {
@@ -1900,6 +1982,7 @@ impl RinchDocument {
                             src: src.clone(),
                             natural: Some(natural),
                             aspect,
+                            alt: None,
                         }),
                     );
                     let _ = self.tree.taffy.mark_dirty(taffy_id);

@@ -104,7 +104,7 @@ fn the_pimble_flow_a_blob_that_arrives_after_its_image_was_shown() {
     });
     app.mount_component(800.0, 600.0);
 
-    // The miss lands; the app goes idle on an empty box.
+    // The miss lands; the app goes idle on the image's alt text.
     let failed = |app: &RinchApp| {
         app.doc
             .as_ref()
@@ -122,7 +122,11 @@ fn the_pimble_flow_a_blob_that_arrives_after_its_image_was_shown() {
     assert!(failed(&app), "control: the loader's miss is cached");
     idle(&mut app);
     assert_eq!(asked.load(Ordering::SeqCst), 1);
-    assert_eq!(img_boxes(&app), vec![(0.0, 0.0)]);
+    // A failed image with alt text and no size is its alt text, inline
+    // (#2309): one line box of the editor's paragraph as wide as the text.
+    let alt_box = |b: &(f32, f32)| b.0 > 3.0 && b.1 > 10.0;
+    let boxes = img_boxes(&app);
+    assert!(boxes.len() == 1 && boxes.iter().all(alt_box), "{boxes:?}");
     assert_eq!(frame(&mut app, false), 0, "control: nothing red yet");
 
     // The user types in the image's paragraph: the miss is not asked again.
@@ -142,7 +146,8 @@ fn the_pimble_flow_a_blob_that_arrives_after_its_image_was_shown() {
         1,
         "typing and a second element naming the source ask the loader nothing"
     );
-    assert_eq!(img_boxes(&app), vec![(0.0, 0.0), (0.0, 0.0)]);
+    let boxes = img_boxes(&app);
+    assert!(boxes.len() == 2 && boxes.iter().all(alt_box), "{boxes:?}");
 
     // The blob syncs; the sync thread says so.
     store

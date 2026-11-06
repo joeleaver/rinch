@@ -69,8 +69,10 @@
 //! it, `auto <ratio>` is used only when there is none (a video, an iframe,
 //! an image not loaded). A `<ratio>` without `auto` relates the
 //! `box-sizing` box's sizes; a natural ratio and `auto <ratio>`'s (the
-//! attributes' hint included) the content box's. An unloaded or failed image with `alt`
-//! text still reserves its attributes' box (Chrome lays out the alt text).
+//! attributes' hint included) the content box's. An image with no picture
+//! keeps its attributes' box and draws a placeholder in it, and one with
+//! `alt` text and no size is the size of its text ([`image_measure_input`],
+//! #2309, [`crate::img_placeholder`]).
 //!
 //! [`is_unstretched_replaced`] also covers a line-sized `<input>` /
 //! `<textarea>` (#1195): it is not sized here (its measure stays
@@ -391,6 +393,22 @@ pub(crate) fn image_natural_size(
             aspect.used_ratio(n.ratio),
         ),
         _ => ((0.0, 0.0), aspect.used_ratio(None)),
+    }
+}
+
+/// [`image_natural_size`] for an `<img>` measure context: an inline alt
+/// placeholder (#2309, `alt` is its [`AltBox`]) with no picture is the size
+/// of its text, with no ratio.
+///
+/// [`AltBox`]: crate::img_placeholder::AltBox
+pub(crate) fn image_measure_input(
+    natural: Option<crate::svg_image::NaturalSize>,
+    aspect: AspectRatioValue,
+    alt: Option<crate::img_placeholder::AltBox>,
+) -> ((f32, f32), Option<UsedRatio>) {
+    match (natural, alt) {
+        (None, Some(a)) => ((a.width, a.height), None),
+        _ => image_natural_size(natural, aspect),
     }
 }
 

@@ -1771,6 +1771,9 @@ impl RinchDocument {
                 self.tree.layout_dirty = true;
                 self.mark_atomic_inline_dirty(node_id);
             }
+            // An `<img>` with no picture: whether it is sized, its font and
+            // `--rinch-img-placeholder` are all computed style (#2309).
+            self.sync_img_placeholder(node_id);
         }
         // Children restyled on this pass carry their new table part now.
         self.resolve_tables();

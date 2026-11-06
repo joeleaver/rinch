@@ -913,6 +913,17 @@ pub(crate) fn atomic_inline_baseline(tree: &crate::node::NodeTree, id: RawNodeId
         let height = tree.taffy.unrounded_layout(taffy_id).size.height;
         return crate::form_control::input_baseline(node, height);
     }
+    // An inline alt placeholder (#2309) sits on its text's baseline, as the
+    // inline text a browser shows in its place does.
+    if let Some(NodeContext::Image {
+        natural: None,
+        alt: Some(alt),
+        ..
+    }) = tree.taffy.get_node_context(taffy_id)
+    {
+        let layout = tree.taffy.unrounded_layout(taffy_id);
+        return Some(layout.border.top + layout.padding.top + alt.baseline);
+    }
     if !first && (clips(style.overflow_x) || clips(style.overflow_y)) {
         return None;
     }
@@ -8661,7 +8672,10 @@ impl RinchDocument {
                                 size
                             }
                             Some(NodeContext::Image {
-                                natural, aspect, ..
+                                natural,
+                                aspect,
+                                alt,
+                                ..
                             }) => {
                                 // A loaded image's own ratio unless `aspect-ratio`
                                 // declares one without `auto`; before it loads (or when
@@ -8669,7 +8683,7 @@ impl RinchDocument {
                                 // `width` and `height` attributes map to (#684) unless an
                                 // author rule replaced it (#1286); with neither, none.
                                 let (natural, ratio) =
-                                    crate::replaced::image_natural_size(*natural, *aspect);
+                                    crate::replaced::image_measure_input(*natural, *aspect, *alt);
                                 // As the root compute measures one (#788, #1150).
                                 crate::replaced::contribution(
                                     crate::replaced::measure(

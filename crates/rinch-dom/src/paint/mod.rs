@@ -11,6 +11,7 @@ mod contenteditable;
 pub mod damage;
 mod gradient;
 pub mod image;
+mod img_placeholder;
 mod layer_bounds;
 pub mod painter;
 pub mod radii;
@@ -4723,6 +4724,21 @@ fn paint_node_unmasked(
                         fit,
                         node_transform,
                         painter::ImageSampling::of(node.computed_style.image_rendering),
+                    );
+                } else {
+                    // No picture: its placeholder, if it is owed one (#2309).
+                    img_placeholder::paint_img_placeholder(
+                        tree,
+                        node,
+                        painter,
+                        scale,
+                        x,
+                        y,
+                        w,
+                        h,
+                        font_cx,
+                        layout_cx,
+                        node_transform,
                     );
                 }
 
