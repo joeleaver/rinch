@@ -1318,7 +1318,8 @@ impl NodeHandle {
     /// the web, and on desktop rinch-dom's, which decodes character
     /// references in text and attribute values as the HTML standard does
     /// (`&#8203;`, `&#x200B;`, every named one; [`crate::html_entities`],
-    /// #2239) and leaves `<style>` and `<script>` text as written.
+    /// #2239) and leaves the text of HTML's raw text elements (`<style>`,
+    /// `<script>`, `<xmp>`, …) as written, but not in SVG or MathML.
     ///
     /// The existing children are **gone for good**, as after
     /// [`discard`](Self::discard). An [`on_child_removed`] observer above this

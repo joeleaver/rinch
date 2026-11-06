@@ -23,7 +23,7 @@ pub enum ParsedNode {
 /// Returns `None` if the HTML is empty or couldn't be parsed.
 pub fn parse_html_string(html: &str) -> Option<Vec<ParsedNode>> {
     let mut parser = HtmlParser::new(html);
-    parse_children(&mut parser, None, false)
+    parse_children(&mut parser, None, false, Ns::Html)
 }
 
 /// Simple HTML parser state.
@@ -90,12 +90,26 @@ impl<'a> HtmlParser<'a> {
     }
 }
 
-/// `foreign`: the children are SVG or MathML content (inside `<svg>` or
-/// `<math>`), where no element's text is raw.
+/// The namespace content is parsed in: what decides whether an element's
+/// text is raw (#2239). Tracked as the HTML standard's tree builder does,
+/// as far as that decides it: `<svg>` and `<math>` open foreign content, each
+/// language's integration points hold HTML again, and an HTML-only start tag
+/// breaks out of it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ns {
+    Html,
+    Svg,
+    MathMl,
+}
+
+/// The children of `end_tag` (the top level with `None`), parsed in `ns`.
+/// `raw`: the element holds raw text, whose character references are not
+/// decoded.
 fn parse_children(
     parser: &mut HtmlParser,
     end_tag: Option<&str>,
-    foreign: bool,
+    raw: bool,
+    ns: Ns,
 ) -> Option<Vec<ParsedNode>> {
     let mut children = Vec::new();
 
@@ -127,7 +141,7 @@ fn parse_children(
             break;
         } else if parser.peek_char() == Some('<') {
             // Parse element
-            if let Some(element) = parse_element(parser, foreign) {
+            if let Some(element) = parse_element(parser, ns) {
                 children.push(element);
             }
         } else {
@@ -137,7 +151,6 @@ fn parse_children(
                 // `<style>`, `<script>` and the other raw text elements hold
                 // text whose references are not decoded (the HTML standard's
                 // RAWTEXT and script data states), in HTML only.
-                let raw = !foreign && end_tag.is_some_and(is_raw_text_element);
                 children.push(ParsedNode::Text(if raw {
                     text.to_string()
                 } else {
@@ -150,7 +163,7 @@ fn parse_children(
     Some(children)
 }
 
-fn parse_element(parser: &mut HtmlParser, foreign: bool) -> Option<ParsedNode> {
+fn parse_element(parser: &mut HtmlParser, ns: Ns) -> Option<ParsedNode> {
     // Consume <
     parser.consume_char()?;
 
@@ -232,17 +245,38 @@ fn parse_element(parser: &mut HtmlParser, foreign: bool) -> Option<ParsedNode> {
     }
 
     // Parse children
-    // `<svg>` and `<math>` start foreign content; an SVG `<foreignObject>`,
-    // `<desc>` or `<title>` holds HTML again (the HTML standard's
-    // integration points).
-    let child_foreign = if foreign {
-        !["foreignObject", "desc", "title"]
-            .iter()
-            .any(|t| tag.eq_ignore_ascii_case(t))
-    } else {
-        tag.eq_ignore_ascii_case("svg") || tag.eq_ignore_ascii_case("math")
+    let is = |names: &[&str]| names.iter().any(|t| tag.eq_ignore_ascii_case(t));
+    // The element's own namespace: an HTML-only start tag in foreign content
+    // is HTML (the standard pops out of the foreign elements there).
+    let breaks_out = is(BREAKOUT_TAGS)
+        || (tag.eq_ignore_ascii_case("font")
+            && ["color", "face", "size"]
+                .iter()
+                .any(|a| attrs.keys().any(|k| k.eq_ignore_ascii_case(a))));
+    let own = match ns {
+        _ if is(&["svg"]) => Ns::Svg,
+        Ns::Html if is(&["math"]) => Ns::MathMl,
+        Ns::Svg | Ns::MathMl if breaks_out => Ns::Html,
+        ns => ns,
     };
-    let children = parse_children(parser, Some(&tag), child_foreign).unwrap_or_default();
+    // What its children are parsed in: each language's integration points
+    // hold HTML (SVG `<foreignObject>`, `<desc>`, `<title>`; MathML's text
+    // integration points and an `<annotation-xml>` of HTML).
+    let html_encoding = || {
+        attrs.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("encoding")
+                && (v.eq_ignore_ascii_case("text/html")
+                    || v.eq_ignore_ascii_case("application/xhtml+xml"))
+        })
+    };
+    let child_ns = match own {
+        Ns::Svg if is(&["foreignObject", "desc", "title"]) => Ns::Html,
+        Ns::MathMl if is(&["mi", "mo", "mn", "ms", "mtext"]) => Ns::Html,
+        Ns::MathMl if is(&["annotation-xml"]) && html_encoding() => Ns::Html,
+        own => own,
+    };
+    let raw = own == Ns::Html && is_raw_text_element(&tag);
+    let children = parse_children(parser, Some(&tag), raw, child_ns).unwrap_or_default();
 
     Some(ParsedNode::Element {
         tag,
@@ -276,6 +310,55 @@ pub fn is_void_element(tag: &str) -> bool {
 /// references are not decoded: the standard's RAWTEXT and script data
 /// elements, and `<noscript>` (scripting is on in a browser). Not in SVG or
 /// MathML, where a `<style>` or `<script>` is decoded.
+/// The start tags that break out of foreign content (`<font>` too, with a
+/// `color`, `face` or `size` attribute).
+const BREAKOUT_TAGS: &[&str] = &[
+    "b",
+    "big",
+    "blockquote",
+    "body",
+    "br",
+    "center",
+    "code",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "embed",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "hr",
+    "i",
+    "img",
+    "li",
+    "listing",
+    "menu",
+    "meta",
+    "nobr",
+    "ol",
+    "p",
+    "pre",
+    "ruby",
+    "s",
+    "small",
+    "span",
+    "strong",
+    "strike",
+    "sub",
+    "sup",
+    "table",
+    "tt",
+    "u",
+    "ul",
+    "var",
+];
+
 fn is_raw_text_element(tag: &str) -> bool {
     [
         "style", "script", "xmp", "iframe", "noembed", "noframes", "noscript",

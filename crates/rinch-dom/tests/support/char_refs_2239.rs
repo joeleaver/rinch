@@ -62,7 +62,7 @@ pub fn legacy_markup(value: &str, fast: bool) -> String {
     format!("<span title=\"{value}\"></span>{svg}")
 }
 
-/// `(markup, the text of its first element)`: raw text is not decoded, in
+/// `(markup, its text)`: raw text is not decoded, in
 /// HTML only (`<style>` and `<script>` in SVG or MathML are decoded, and an
 /// SVG `<foreignObject>` or `<desc>` holds HTML again; review of #2258).
 /// Chrome 156 and Firefox 155.
@@ -86,6 +86,60 @@ pub const RAW_TEXT: &[(&str, &str)] = &[
     ("<noembed>&amp;</noembed>", "&amp;"),
     ("<noframes>&amp;</noframes>", "&amp;"),
     ("<noscript>&amp;</noscript>", "&amp;"),
+    // Review of #2258, round 2: which namespace is open decides it. SVG's
+    // integration points are not MathML's (`<math><title>` is MathML), and
+    // MathML's text integration points, an `<annotation-xml>` of HTML and an
+    // HTML-only start tag (`<svg><p>`) hold HTML. Chrome 156.
+    ("<svg><title>&amp;</title></svg>", "&"),
+    ("<title>&amp;</title>", "&"),
+    ("<svg><title><style>&amp;</style></title></svg>", "&amp;"),
+    ("<svg><style>&amp;</style></svg>", "&"),
+    ("<svg><desc><script>&amp;</script></desc></svg>", "&amp;"),
+    (
+        "<math><annotation-xml encoding=\"text/html\"><style>&amp;</style></annotation-xml></math>",
+        "&amp;",
+    ),
+    (
+        "<math><annotation-xml><style>&amp;</style></annotation-xml></math>",
+        "&",
+    ),
+    ("<math><mi><style>&amp;</style></mi></math>", "&amp;"),
+    ("<math><mtext><style>&amp;</style></mtext></math>", "&amp;"),
+    (
+        "<svg><g><title>&amp;</title><style>&amp;</style></g></svg>",
+        "&&",
+    ),
+    (
+        "<svg><foreignObject><svg><style>&amp;</style></svg></foreignObject></svg>",
+        "&",
+    ),
+    (
+        "<svg><title><svg><style>&amp;</style></svg></title></svg>",
+        "&",
+    ),
+    ("<SVG><STYLE>&amp;</STYLE></SVG>", "&"),
+    (
+        "<svg><foreignobject><style>&amp;</style></foreignobject></svg>",
+        "&amp;",
+    ),
+    ("<svg><script>&amp;</script></svg>", "&"),
+    ("<math><mi><svg><style>&amp;</style></svg></mi></math>", "&"),
+    ("<svg><p><style>&amp;</style></p></svg>", "&amp;"),
+    ("<math><title><style>&amp;</style></title></math>", "&"),
+    ("<math><desc><style>&amp;</style></desc></math>", "&"),
+    ("<svg><title><title>&amp;</title></title></svg>", "&"),
+    (
+        "<math><annotation-xml encoding=\"application/xhtml+xml\"><style>&amp;</style></annotation-xml></math>",
+        "&amp;",
+    ),
+    (
+        "<math><mo><style>&amp;</style></mo><ms><style>&amp;</style></ms><mn><style>&amp;</style></mn></math>",
+        "&amp;&amp;&amp;",
+    ),
+    (
+        "<svg><desc>&amp;<style>&amp;</style></desc>&amp;</svg>",
+        "&&amp;&",
+    ),
     (
         "<style>.never-matches-2239::after{content:\"&amp;\"}</style>",
         ".never-matches-2239::after{content:\"&amp;\"}",
@@ -126,9 +180,10 @@ pub fn check(doc: &mut dyn DomDocument, host: NodeId) {
     }
     for &(html, want) in RAW_TEXT {
         doc.set_inner_html(host, html);
-        let el = doc.get_children(host)[0];
+        // The host's text, not its first child's: a browser closes the
+        // `<svg>` before `<svg><p>`'s `<p>`, which rinch keeps inside it.
         assert_eq!(
-            doc.text_content(el).as_deref(),
+            doc.text_content(host).as_deref(),
             Some(want),
             "raw text of {html:?}"
         );
