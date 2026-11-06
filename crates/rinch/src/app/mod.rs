@@ -383,6 +383,8 @@ mod text_selection_copy;
 #[cfg(test)]
 mod text_selection_copy_boxes_tests;
 #[cfg(test)]
+mod text_selection_copy_gesture_tests;
+#[cfg(test)]
 mod text_selection_copy_tests;
 #[cfg(test)]
 mod text_selection_gestures_tests;
@@ -809,11 +811,25 @@ pub(crate) struct TextSelection {
     /// paragraph is not collapsed by the jitter after the click.
     pub(crate) press: (f32, f32),
     pub(crate) dragged: bool,
-    /// Whether it was made whole (a triple click's paragraph, Select All, a
-    /// `user-select: all` element), so its ends take what stands at their
-    /// roots' own edges; a press or drag beside a box is on the text's side
-    /// (`text_selection_copy::Part`).
-    pub(crate) whole: bool,
+    /// Which side of the boxes standing at its offset each end is on: an
+    /// offset where an inline-block or a float stands cannot say. Set where
+    /// the end is made; the anchor keeps its side when the focus moves.
+    pub(crate) anchor_side: EndSide,
+    pub(crate) focus_side: EndSide,
+}
+
+/// Which side of the boxes at its offset a selection end is on (review of
+/// #2249, Chrome 156). The copy (`text_selection_copy`) reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct EndSide {
+    /// After the in-flow atomic inlines (`inline-block`, picture, inline
+    /// table) at its offset: a point past such a box hit-tests to after it.
+    /// A start after them leaves them out, an end after them takes them.
+    pub(crate) after_inline: bool,
+    /// Whether the floats and positioned boxes at its offset are in the
+    /// selection. A float is on no line, so only an end outside the
+    /// paragraph takes it: Select All's, not a press, drag or triple click.
+    pub(crate) takes_floats: bool,
 }
 
 /// A press on a link inside selectable text, held for the release: a click

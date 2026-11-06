@@ -823,10 +823,16 @@ impl InlineLayout {
     /// order. Not an element's edge box nor a float's mark, which are no
     /// content of a line.
     pub fn atomic_inline_offsets(&self) -> impl Iterator<Item = usize> + '_ {
+        self.atomic_inlines().map(|(_, at)| at)
+    }
+
+    /// Each atomic inline of [`Self::atomic_inline_offsets`] with its node id
+    /// (its box's id in [`Self::layout`]), in order.
+    pub fn atomic_inlines(&self) -> impl Iterator<Item = (RawNodeId, usize)> + '_ {
         self.layout
             .inline_boxes()
             .filter(|b| !crate::ifc::is_edge_box(b.id) && b.kind == parley::InlineBoxKind::InFlow)
-            .map(|b| b.index)
+            .map(|b| (b.id, b.index))
     }
 
     /// The height of the lines: parley's layout height, which sums the

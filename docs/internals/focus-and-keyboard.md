@@ -824,15 +824,28 @@ fallback for a drag over no text) is not drawn to them.
   `user-select: text` inside a `user-select: none` inline-block is copied.
 - What stands in a root's lines is copied when the root's part reaches past
   where it stands: a box before the part's start or after its end is passed.
-  What holds the last root is never passed, and leaving it ends the walk. An offset where
-  a box stands cannot say which side of the box it is on; Chrome puts a
-  selection that starts or ends in the text beside the box on the text's
-  side, so such a box is passed, at a root's own start or end too, unless
-  the selection was made whole (a triple click, Select All or a
-  `user-select: all` element: `TextSelection::whole`). A walk that
-  starts inside an `inline-block` writes the rest of each root it is inside,
-  up to the selection's end. The highlight still follows `runs`, so near a
-  box it can disagree with the copy (#2245).
+  What holds the last root is never passed, and leaving it ends the walk.
+  A walk that starts inside an `inline-block` writes the rest of each root
+  it is inside, up to the selection's end. The highlight still follows
+  `runs`, so near a box it can disagree with the copy (#2245).
+- An offset where a box stands cannot say which side of the box an end is
+  on, so each end carries its side (`TextSelection::anchor_side` and
+  `focus_side`, an `EndSide`), set where the end is made, as Chrome 156
+  decides it: a point past the middle of an in-flow atomic inline hit-tests
+  to after it (`side_at`), so a drag past a line's last inline-block takes
+  it and one from the padding before a leading inline-block takes that. A
+  float or positioned box is on no line, so only an end outside the
+  paragraph takes one (Select All's), never a press, drag or triple click.
+  A triple click takes its paragraph's edge inline-blocks, a double click
+  leaves out the boxes beside its word, and the anchor keeps its side when
+  Shift+click or a drag moves the focus. A start takes the boxes at its
+  offset when it is before them, an end when it is after them. Select All
+  ends at the end of the outermost root holding the last selectable one
+  (`outermost_root`), not inside an inline-block in the last paragraph.
+  `side_at` reads a box's right edge as its after side, as
+  `inline_box_caret` does (left to right). Known gaps: a triple click
+  inside an inline-block, its trailing line breaks and a paragraph-wise
+  Shift+click after it (#2256).
 - Atomic inlines count as drawn for the white space a root's lines drop
   (`InlineLayout::atomic_inline_offsets`): the space between two
   `inline-block` columns, or two pictures, is copied, as Chrome copies it.

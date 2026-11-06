@@ -27,6 +27,12 @@ use super::text_selection_text::{RootsCache, kept_ranges};
 use super::*;
 use rinch_dom::computed_style::UserSelectValue;
 
+/// An end after the in-flow boxes at its offset, taking no floats.
+const AFTER_INLINE: EndSide = EndSide {
+    after_inline: true,
+    takes_floats: false,
+};
+
 impl TextSelection {
     /// A selection collapsed at `offset` in `ifc_node_id`.
     pub(crate) fn at(ifc_node_id: u64, offset: usize) -> Self {
@@ -40,7 +46,8 @@ impl TextSelection {
             painted_generation: u64::MAX,
             press: (0.0, 0.0),
             dragged: false,
-            whole: false,
+            anchor_side: EndSide::default(),
+            focus_side: EndSide::default(),
         }
     }
 
@@ -260,6 +267,59 @@ impl RinchApp {
         None
     }
 
+    /// Which side of the in-flow atomic inlines standing at `offset` in
+    /// `root` the window point `(x, y)` is on: after one when it is past the
+    /// box's middle. Never after a float (it is on no line). Left to right:
+    /// a box's after side is its right edge (`inline_box_caret`).
+    pub(super) fn side_at(
+        tree: &rinch_dom::NodeTree,
+        root: u64,
+        x: f32,
+        y: f32,
+        offset: usize,
+    ) -> EndSide {
+        let Some(layout) = tree.get(root).and_then(|n| n.text_layout.as_ref()) else {
+            return EndSide::default();
+        };
+        let (rel_x, _) = Self::layout_point(tree, root, x, y);
+        let after_inline =
+            layout
+                .atomic_inlines()
+                .filter(|&(_, at)| at == offset)
+                .any(|(id, _)| {
+                    let edge = |after| {
+                        rinch_dom::text_query::inline_box_caret(&layout.layout, id, after)
+                            .map(|c| c.0)
+                    };
+                    edge(false)
+                        .zip(edge(true))
+                        .is_some_and(|(l, r)| rel_x >= (l + r) / 2.0)
+                });
+        EndSide {
+            after_inline,
+            takes_floats: false,
+        }
+    }
+
+    /// The window point `(x, y)` in IFC root `ifc_node_id`'s lines' own space.
+    fn layout_point(tree: &rinch_dom::NodeTree, ifc_node_id: u64, x: f32, y: f32) -> (f32, f32) {
+        let Some(node) = tree.get(ifc_node_id) else {
+            return (x, y);
+        };
+        // The point in the IFC root's own space — where Parley laid the text
+        // out — rather than a window point minus a transform-blind
+        // parent-chain sum (#203).
+        let (local_x, local_y) = pointer_in_node(tree, ifc_node_id, x, y);
+        let padding_left = node.computed_style.padding_left.to_px();
+        let padding_top = node.computed_style.padding_top.to_px();
+        let border_left = node.computed_style.border_left_width.to_px();
+        let border_top = node.computed_style.border_top_width.to_px();
+        (
+            local_x - padding_left - border_left + node.scroll_offset.0 as f32,
+            local_y - padding_top - border_top + node.scroll_offset.1 as f32,
+        )
+    }
+
     /// Compute a byte offset into an IFC layout from a click position.
     pub(super) fn compute_ifc_offset_from_click(
         tree: &rinch_dom::NodeTree,
@@ -273,16 +333,7 @@ impl RinchApp {
         let Some(ref inline_layout) = node.text_layout else {
             return 0;
         };
-        // The click in the IFC root's own space — where Parley laid the text out
-        // — rather than a window point minus a transform-blind parent-chain sum
-        // (#203).
-        let (local_x, local_y) = pointer_in_node(tree, ifc_node_id, click_x, click_y);
-        let padding_left = node.computed_style.padding_left.to_px();
-        let padding_top = node.computed_style.padding_top.to_px();
-        let border_left = node.computed_style.border_left_width.to_px();
-        let border_top = node.computed_style.border_top_width.to_px();
-        let rel_x = local_x - padding_left - border_left + node.scroll_offset.0 as f32;
-        let rel_y = local_y - padding_top - border_top + node.scroll_offset.1 as f32;
+        let (rel_x, rel_y) = Self::layout_point(tree, ifc_node_id, click_x, click_y);
         // Never inside a grapheme cluster (#1684).
         rinch_dom::text_query::grapheme_offset_from_position(
             &inline_layout.layout,
@@ -364,6 +415,7 @@ impl RinchApp {
                 .or_else(|| sel.cache(&d.tree).nearest(x, y))
                 .unwrap_or(sel.focus_node);
             let mut offset = Self::compute_ifc_offset_from_click(&d.tree, node, x, y);
+            let mut side = Self::side_at(&d.tree, node, x, y, offset);
             // Below a root's box is its end, above it its start.
             if hit.is_none() {
                 let (_, top, _, height) = super::hit_testing::painted_element_box(&d.tree, node);
@@ -373,21 +425,21 @@ impl RinchApp {
                         .get(node)
                         .and_then(|n| n.text_layout.as_ref())
                         .map_or(offset, |l| l.text_content.len());
+                    side = AFTER_INLINE;
                 } else if y < top {
                     offset = 0;
+                    side = EndSide::default();
                 }
             }
             let mut node = node;
             if let Some((start, end)) = all_extent(&d.tree, node, x, y) {
-                (node, offset) = if sel.before_anchor(&d.tree, node, offset) {
-                    start
+                ((node, offset), side) = if sel.before_anchor(&d.tree, node, offset) {
+                    (start, EndSide::default())
                 } else {
-                    end
+                    (end, AFTER_INLINE)
                 };
             }
-            if (sel.focus_node, sel.focus_offset) != (node, offset) {
-                sel.whole = false;
-            }
+            sel.focus_side = side;
             sel.focus_node = node;
             sel.focus_offset = offset;
         }
@@ -411,17 +463,21 @@ impl RinchApp {
             sel.focus_offset = offset;
             sel.press = press;
             sel.dragged = true;
-            sel.whole = false;
+            if let Some(doc) = &self.doc {
+                sel.focus_side = Self::side_at(&doc.borrow().tree, root, press.0, press.1, offset);
+            }
         } else {
             self.clear_text_selection();
             let mut sel = TextSelection::at(root, offset);
             sel.press = press;
             if let Some(doc) = &self.doc {
                 let d = doc.borrow();
+                sel.anchor_side = Self::side_at(&d.tree, root, press.0, press.1, offset);
+                sel.focus_side = sel.anchor_side;
                 if let Some(((a, ao), (f, fo))) = all_extent(&d.tree, root, press.0, press.1) {
                     (sel.ifc_node_id, sel.anchor_offset) = (a, ao);
                     (sel.focus_node, sel.focus_offset) = (f, fo);
-                    sel.whole = true;
+                    (sel.anchor_side, sel.focus_side) = (EndSide::default(), AFTER_INLINE);
                 } else if click_count >= 2 {
                     let text = d
                         .tree
@@ -436,7 +492,13 @@ impl RinchApp {
                     };
                     sel.anchor_offset = start;
                     sel.focus_offset = end;
-                    sel.whole = click_count > 2;
+                    // A word leaves the boxes beside it out; a paragraph takes
+                    // the inline-blocks at its edges, not its floats (Chrome 156).
+                    (sel.anchor_side, sel.focus_side) = if click_count == 2 {
+                        (AFTER_INLINE, EndSide::default())
+                    } else {
+                        (EndSide::default(), AFTER_INLINE)
+                    };
                 }
             }
             self.text_selection = Some(sel);
@@ -457,17 +519,20 @@ impl RinchApp {
         };
         let ends = {
             let d = doc.borrow();
-            let roots = selectable_roots(&d.tree, selection_host(&d.tree, anchor));
+            let host = selection_host(&d.tree, anchor);
+            let roots = selectable_roots(&d.tree, host);
             let len = |id: u64| {
                 d.tree
                     .get(id)
                     .and_then(|n| n.text_layout.as_ref())
                     .map_or(0, |l| l.text_content.len())
             };
-            roots
-                .first()
-                .zip(roots.last())
-                .map(|(&first, &last)| (first, last, len(last)))
+            roots.first().zip(roots.last()).map(|(&first, &last)| {
+                // The last root may be an inline-block inside the last
+                // paragraph: the selection ends at the paragraph's end.
+                let last = super::text_selection_copy::outermost_root(&d.tree, last, host);
+                (first, last, len(last))
+            })
         };
         let Some((first, last, end)) = ends else {
             return false;
@@ -478,7 +543,15 @@ impl RinchApp {
             sel.focus_node = last;
             sel.focus_offset = end;
             sel.dragged = true;
-            sel.whole = true;
+            // Its ends are outside the paragraphs: every box is in.
+            sel.anchor_side = EndSide {
+                after_inline: false,
+                takes_floats: true,
+            };
+            sel.focus_side = EndSide {
+                after_inline: true,
+                takes_floats: true,
+            };
         }
         self.paint_text_selection();
         true
@@ -541,7 +614,8 @@ impl RinchApp {
             &d.tree,
             (sel.ifc_node_id, sel.anchor_offset),
             (sel.focus_node, sel.focus_offset),
-            sel.whole,
+            sel.anchor_side,
+            sel.focus_side,
         );
         (!out.is_empty()).then_some(out)
     }

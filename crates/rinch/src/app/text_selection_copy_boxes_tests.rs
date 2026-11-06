@@ -65,6 +65,9 @@ fn select_range(html: &'static str) -> RinchApp {
         let mut sel = TextSelection::at(ra, sa);
         sel.focus_node = rb;
         sel.focus_offset = eb;
+        // As `setBaseAndExtent` puts them: the start of `#a`'s text is after
+        // the boxes before it, the end of `#b`'s before the boxes after it.
+        sel.anchor_side.after_inline = true;
         sel
     };
     app.text_selection = Some(sel);

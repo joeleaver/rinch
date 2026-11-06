@@ -1,6 +1,9 @@
 //! The text a read-only selection copies, as Chrome 156's
 //! `getSelection().toString()` gives it: Blink's text iterator, walking the
-//! document in order from the selection's first root to its last.
+//! document in order from the selection's first end to its last. It takes
+//! the two ends (each a root, an offset and its [`EndSide`]), not
+//! `TextSelection::runs`, and puts them in document order itself
+//! ([`before`]): a root inside another stands where its box stands.
 //!
 //! - Text is written where its node stands: each text node (and `<br>`) of
 //!   an IFC root writes the root's selected part up to its end
@@ -9,9 +12,10 @@
 //!   box inside a root is written between the text before it and the text
 //!   after it (#2242). The rest of a root's part is written on leaving it.
 //! - What stands in a root's lines is in the selection when the root's part
-//!   reaches where it stands: an `inline-block` before a selection's start,
-//!   or after its end, in the same root is not written, and one in a root the
-//!   selection covers is written whole, whatever the selection's runs say.
+//!   reaches past where it stands: an `inline-block` before a selection's
+//!   start, or after its end, in the same root is not written, and one in a
+//!   root between the ends is written whole. A box where an end stands is in
+//!   when the start is before it or the end after it (`Part`, [`EndSide`]).
 //! - The text of a flex or grid container (an anonymous item, laid out as a
 //!   text leaf, with no root) is written as its `white-space` draws it
 //!   (#2241).
@@ -33,6 +37,7 @@ use std::collections::HashMap;
 use rinch_dom::computed_style::WhiteSpaceValue;
 use rinch_dom::computed_style::{DisplayValue, PositionValue, TablePart, VisibilityValue};
 
+use super::EndSide;
 use super::text_selection_text::kept_ranges;
 
 /// What the walk has written.
@@ -82,23 +87,26 @@ enum Step {
 struct Part {
     start: usize,
     end: usize,
-    /// Whether a box standing at the root's own start (`start` is 0) or end
-    /// (`end` is its length) is taken. An offset where a box stands cannot
-    /// say which side of the box it is on: a selection that starts or ends
-    /// in the text beside the box is on the text's side (Chrome 156), and
-    /// one made whole (a triple click, Select All) takes it.
-    start_edge: bool,
-    end_edge: bool,
+    /// Whether the boxes standing at `start` and at `end` are taken: an
+    /// offset where a box stands cannot say which side of it the end is on,
+    /// so each end says ([`EndSide`]). `inline`: the in-flow atomic inlines;
+    /// `floats`: the floats and positioned boxes.
+    start_inline: bool,
+    start_floats: bool,
+    end_inline: bool,
+    end_floats: bool,
 }
 
 impl Part {
-    /// All of a root's text.
+    /// All of a root's text, and every box in it.
     fn whole(len: usize) -> Self {
         Self {
             start: 0,
             end: len,
-            start_edge: true,
-            end_edge: true,
+            start_inline: true,
+            start_floats: true,
+            end_inline: true,
+            end_floats: true,
         }
     }
 }
@@ -153,11 +161,16 @@ impl Root {
     /// Whether what stands at the walk's place in this root's lines (an
     /// atomic inline, a float, a picture) is in the selection: its part
     /// reaches past it (at the root's own edges, see [`Part`]).
-    fn takes_here(&self) -> bool {
+    fn takes_here(&self, float: bool) -> bool {
         let (p, c) = (self.part, self.cursor);
+        let (at_start, at_end) = if float {
+            (p.start_floats, p.end_floats)
+        } else {
+            (p.start_inline, p.end_inline)
+        };
         !self.started
-            || ((p.start < c || (p.start == 0 && p.start_edge))
-                && (c < p.end || (p.end == self.len && p.end_edge)))
+            || ((p.start < c || (p.start == c && at_start))
+                && (c < p.end || (c == p.end && at_end)))
     }
 
     /// Write its part up to `upto`.
@@ -215,33 +228,52 @@ fn close(tree: &rinch_dom::NodeTree, roots: &mut Vec<Root>, id: u64, out: &mut O
 }
 
 /// The copy of the selection between `a` and `b` (each a root and an offset
-/// in its text), whichever comes first in the document. `whole`: the
-/// selection was made whole (a triple click, Select All, a `user-select:
-/// all` element), so its ends take the boxes at their roots' own edges.
+/// in its text, with the side of the boxes at that offset it is on),
+/// whichever comes first in the document.
 pub(crate) fn copy_text(
     tree: &rinch_dom::NodeTree,
     a: (u64, usize),
     b: (u64, usize),
-    whole: bool,
+    a_side: EndSide,
+    b_side: EndSide,
 ) -> String {
     let (a, b) = (
         (a.0, a.1.min(text_len(tree, a.0))),
         (b.0, b.1.min(text_len(tree, b.0))),
     );
-    let ((first, start), (last_root, end)) = if before(tree, b, a) { (b, a) } else { (a, b) };
+    let (((first, start), s), ((last_root, end), e)) = if before(tree, b, a) {
+        ((b, b_side), (a, a_side))
+    } else {
+        ((a, a_side), (b, b_side))
+    };
+    // A start before the in-flow boxes at its offset takes them, an end
+    // after them takes them.
+    let (start_inline, end_inline) = (!s.after_inline, e.after_inline);
     let mut parts: HashMap<u64, Part> = HashMap::new();
-    let part = |start, end, start_edge, end_edge| Part {
+    let first_len = text_len(tree, first);
+    let mut first_part = Part {
         start,
-        end,
-        start_edge,
-        end_edge,
+        end: first_len,
+        start_inline,
+        start_floats: s.takes_floats,
+        ..Part::whole(first_len)
     };
     if first == last_root {
-        parts.insert(first, part(start, end, whole, whole));
+        first_part.end = end;
+        first_part.end_inline = end_inline;
+        first_part.end_floats = e.takes_floats;
     } else {
-        parts.insert(first, part(start, text_len(tree, first), whole, true));
-        parts.insert(last_root, part(0, end, true, whole));
+        parts.insert(
+            last_root,
+            Part {
+                end,
+                end_inline,
+                end_floats: e.takes_floats,
+                ..Part::whole(text_len(tree, last_root))
+            },
+        );
     }
+    parts.insert(first, first_part);
     // What holds the last root: never passed, and leaving it ends the walk
     // (the last root is then behind it).
     let holds_last = holders(tree, last_root);
@@ -290,7 +322,7 @@ pub(crate) fn copy_text(
             continue;
         }
         if n.tag().is_none() {
-            if n.cached_text_parley.is_some() && roots.last().is_none_or(Root::takes_here) {
+            if n.cached_text_parley.is_some() && roots.last().is_none_or(|r| r.takes_here(false)) {
                 write_leaf(tree, id, &mut out);
             }
             continue;
@@ -305,7 +337,15 @@ pub(crate) fn copy_text(
             n.computed_style.display,
             DisplayValue::Inline | DisplayValue::Contents
         ) && !is_picture(n);
-        if !in_line && !holds_last.contains(&id) && roots.last().is_some_and(|r| !r.takes_here()) {
+        let float = n.computed_style.float != Default::default()
+            || matches!(
+                n.computed_style.position,
+                PositionValue::Absolute | PositionValue::Fixed
+            );
+        if !in_line
+            && !holds_last.contains(&id)
+            && roots.last().is_some_and(|r| !r.takes_here(float))
+        {
             continue;
         }
         enter(tree, id, &mut out);
@@ -771,4 +811,33 @@ pub(crate) fn work(n: u64) {
 thread_local! {
     /// The steps [`work`] has counted on this thread.
     pub(crate) static WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The outermost root that holds root `id` in its lines (`id` itself when
+/// none does), not looking above `host`: a paragraph for an inline-block
+/// in it.
+pub(crate) fn outermost_root(tree: &rinch_dom::NodeTree, id: u64, host: u64) -> u64 {
+    let is_root = |i: u64| tree.get(i).is_some_and(|n| n.text_layout.is_some());
+    let mut out = id;
+    let node = root_node(tree, id);
+    let mut at = Some(node);
+    while let Some(i) = at {
+        let Some(n) = tree.get(i) else {
+            break;
+        };
+        if i != node && is_root(i) {
+            out = i;
+        }
+        if i == host {
+            break;
+        }
+        if let Some(b) = n.run_box
+            && b != id
+            && is_root(b)
+        {
+            out = b;
+        }
+        at = n.parent;
+    }
+    out
 }
