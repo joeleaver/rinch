@@ -42,6 +42,7 @@ fn vstart(doc: &RinchDocument, n: NodeId) -> Option<f64> {
 
 fn setup(kid_class: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let root = doc.create_element("div");
@@ -362,6 +363,7 @@ fn cost_close_pass_500_rows() {
 #[test]
 fn p9_fade_root_reopened_mid_close_stays_visible() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css("div{font-size:16px;line-height:20px} .r{width:100px;height:50px;transition: visibility 300ms linear} .shut{visibility:hidden}");
     let body = doc.body();
     let root = doc.create_element("div");

@@ -103,6 +103,7 @@ fn one_box(style: &str) -> TinySkiaPainter {
 
 fn mount(css: &str, style: &str) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(&format!(
         "html, body {{ margin: 0; background: rgb(255, 255, 255); }} {css}"
     ));
@@ -305,6 +306,7 @@ fn a_background_position_tick_dirties_paint_only() {
 /// content-box`, a 100x30 border box.
 fn styled_box(style: &str) -> TinySkiaPainter {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css("html, body { margin: 0; background: rgb(255, 255, 255); }");
     let body = doc.body();
     let node = doc.create_element("div");

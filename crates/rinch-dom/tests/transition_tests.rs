@@ -408,6 +408,7 @@ fn animated_div(keyframes: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::
     use rinch_core::dom::DomDocument;
 
     let mut doc = rinch_dom::RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     let body = doc.body();
     doc.set_attribute(body, "style", "color: rgb(7, 8, 9)");
 
@@ -515,6 +516,7 @@ fn transitioning_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::N
     use rinch_core::dom::DomDocument;
 
     let mut doc = rinch_dom::RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     let body = doc.body();
     let style_el = doc.create_element("style");
     let text = doc.create_text(css);
@@ -682,6 +684,7 @@ fn an_animation_that_ignores_transform_keeps_the_base_percentage_translate() {
     use rinch_core::dom::DomDocument;
 
     let mut doc = rinch_dom::RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     let body = doc.body();
     let style_el = doc.create_element("style");
     let css = doc.create_text(
@@ -1145,8 +1148,8 @@ fn a_finished_width_transition_reaches_the_layout() {
     doc.resolve_layout(800.0, 600.0);
 
     // Back-date the running transition past its own duration so the next tick
-    // completes it. This is what keeps the test clock-free —
-    // `RinchDocument::tick_transitions` reads `SystemTime::now()` itself.
+    // completes it. `RinchDocument::tick_transitions` reads the document.s
+    // animation clock, pinned here (#2267).
     let running = doc
         .tree
         .active_transitions
@@ -1173,6 +1176,7 @@ fn animated_width_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::
     use rinch_core::dom::DomDocument;
 
     let mut doc = rinch_dom::RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     let body = doc.body();
     let style_el = doc.create_element("style");
     let text = doc.create_text(css);
@@ -1205,7 +1209,8 @@ fn animated_width_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::
 /// behaved. Over the 150ms this fixture used to declare, the gap measured 4px
 /// on an idle machine, and on a loaded one it could run a 150ms animation out
 /// entirely before the first assertion — a fixture flaky by construction.
-/// Issue #768.
+/// Issue #768. Since #2267 the clock is pinned, so no time passes during
+/// construction and the opening width is exactly the `from` width.
 #[test]
 fn a_finished_width_animation_reaches_the_layout() {
     let (mut doc, div) = animated_width_div(
@@ -1213,15 +1218,14 @@ fn a_finished_width_animation_reaches_the_layout() {
          .grow { animation: grow 100000ms linear forwards; width: 100px; height: 40px; }",
     );
     let start_width = doc.tree.get(div.0).unwrap().layout.width;
-    assert!(
-        (100.0..101.0).contains(&start_width),
-        "near the start of a 100s animation the box should still be at (or a \
-         hair past) the `from` width, got {start_width}"
+    assert_eq!(
+        start_width, 100.0,
+        "at the start of the animation the box is at the `from` width"
     );
 
     // Back-date past the duration so the next tick lands in the `forwards`
-    // fill, clock-free — `RinchDocument::tick_animations` reads
-    // `SystemTime::now()` itself.
+    // fill — `RinchDocument::tick_animations` reads the document's pinned
+    // clock (#2267).
     for anim in doc
         .tree
         .active_animations
@@ -1247,6 +1251,7 @@ fn texted_div(css: &str, class: &str) -> (rinch_dom::RinchDocument, rinch_core::
     use rinch_core::dom::DomDocument;
 
     let mut doc = rinch_dom::RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     let body = doc.body();
     let style_el = doc.create_element("style");
     let sheet = doc.create_text(css);
@@ -1353,8 +1358,8 @@ fn width_transition(
 }
 
 /// Move the node's running `width` transition `by_ms` into the past, so that
-/// "now" — which `resolve_layout` reads off the wall clock itself — sits that
-/// far along the curve. Returns the back-dated start time.
+/// "now" — which `resolve_layout` reads off the document's pinned clock
+/// (#2267) — sits exactly that far along the curve. Returns the back-dated start time.
 fn backdate_width_transition(
     doc: &mut rinch_dom::RinchDocument,
     id: rinch_core::dom::NodeId,
@@ -1370,7 +1375,7 @@ fn backdate_width_transition(
     t.start_time_ms
 }
 
-/// A `width` transition from `css`, back-dated so the wall clock now reads
+/// A `width` transition from `css`, back-dated so the pinned clock now reads
 /// `elapsed_ms` into it. Returns the document, the node, and the (back-dated)
 /// start time.
 fn running_width_transition(
@@ -1394,11 +1399,12 @@ const LINEAR_20_TO_30: &str = ".slider { width: 20px; height: 40px; \
 /// seconds instead of milliseconds.
 ///
 /// For the one fixture that reads an **interpolated value** after a second
-/// `resolve_layout`. That resolve reads `SystemTime::now()` itself, so the
-/// progress it interpolates at is `back-dated elapsed + δ` for a δ of real wall
-/// time; scaling the ramp by 1000 divides what δ is worth by 1000. See
-/// [`a_reversals_delay_still_holds_the_box_still`] for the measurement (issue
-/// #710).
+/// `resolve_layout`. That resolve used to read the wall clock, so the progress
+/// it interpolated at was `back-dated elapsed + δ` for a δ of real wall time,
+/// and scaling the ramp by 1000 divided what δ was worth by 1000 (issue #710).
+/// The document's animation clock is pinned now (#2267), so δ is zero and the
+/// sample is exact; the scale stays, since `150s` is an exact `f32` where
+/// `0.15s` is not.
 const LINEAR_20_TO_30_SECONDS: &str = ".slider { width: 20px; height: 40px; \
      transition: width 150s linear; } \
      .slider.wide { width: 30px; }";
@@ -1466,9 +1472,9 @@ fn running(
 /// same 30px the running transition is already heading for. The transition must
 /// be left exactly as it is.
 ///
-/// The clock assertion is exact and jitter-free: the restyle happens at some
-/// wall-clock time strictly after the back-dated start, so a restart is
-/// *always* observable as a different `start_time_ms`.
+/// The clock assertion is exact and jitter-free: the restyle happens at the
+/// pinned "now", 50ms after the back-dated start, so a restart is *always*
+/// observable as a different `start_time_ms`.
 ///
 /// Kills two mutants: the unconditional `insert` this replaced, and a guard
 /// that compares the running transition's `from` (20) rather than its `to` (30)
@@ -1522,17 +1528,15 @@ fn the_leave_alone_path_keeps_the_interpolated_value_in_the_computed_style() {
     doc.set_style(div, "outline-width", "1px");
     doc.resolve_layout(800.0, 600.0);
 
-    // 50s into 150s of 20 → 30 is 23.333px. The restyle costs wall clock the
-    // test cannot control — `resolve_layout` reads the real clock to start and
-    // interpolate transitions — so the value drifts up by 10px per 150s of it.
-    // On the millisecond timings this fixture used to carry that was 10px per
-    // 150ms, and the old `(23.0..24.5)` bound tolerated only ~17.5ms of it;
-    // measured, a loaded host reaches 15.6ms. In seconds the same drift costs a
-    // thousandth as much, so the tolerance below is both **tighter** than the
-    // range it replaces and worth ~750ms of slack (issue #710).
+    // 50s into 150s of 20 → 30 is 23.333px. `resolve_layout` reads the
+    // document's animation clock to start and interpolate transitions; it used
+    // to be the wall clock, so the restyle's own cost drifted the value (issue
+    // #710, which moved the ramp to seconds to shrink the drift). It is pinned
+    // now (#2267): no time passes during the restyle, and the sample is exact
+    // to the `f32` it is stored in.
     let w = computed_width_px(&doc, div);
     assert!(
-        (w - 23.3333).abs() < 0.05,
+        (w - 23.333_334).abs() < 1e-4,
         "the restyle must leave the interpolated width in place, not the 30px \
          target it resolved, got {w}"
     );
@@ -1969,12 +1973,13 @@ fn a_reversal_does_shorten_a_negative_delay() {
 /// # Why the timings are in seconds (issue #710)
 ///
 /// Every other transition fixture here drives a manual clock, but this one
-/// cannot drive the whole path: the **reversal** is started by
-/// `resolve_layout`, which reads `SystemTime::now()` itself
-/// (`style_resolution::current_time_ms`). So the running transition's progress
+/// drives the whole path: the **reversal** is started by `resolve_layout`,
+/// which used to read the wall clock itself. So the running transition's progress
 /// at the moment it is reversed is `175ms + δ`, where δ is however long the
 /// host took to get from the first `resolve_layout` to the second — and that
-/// is wall time, not test time.
+/// is wall time, not test time. (Since #2267 the document's animation clock
+/// is pinned, so δ is zero; the history below is why the fixture is in
+/// seconds.)
 ///
 /// On the original 150ms/100ms timings δ moved the box by 10px/150ms, so the
 /// 0.3px tolerance bought **4.5ms** of slack, and a loaded host exceeded it: 60
@@ -1993,8 +1998,8 @@ fn a_reversal_does_shorten_a_negative_delay() {
 /// The assertion that actually pins the behaviour carries no δ at all: during
 /// its delay a transition reports `from` **verbatim** (`ActiveTransition::value_at`),
 /// so the box is compared against the reversal's own recorded start value
-/// rather than against a constant. The 25px check below is a separate, loose
-/// check that the reversal happened where the fixture meant it to.
+/// rather than against a constant. The 25px check below is a separate check
+/// that the reversal happened where the fixture meant it to.
 #[test]
 fn a_reversals_delay_still_holds_the_box_still() {
     use rinch_core::dom::DomDocument;
@@ -2027,10 +2032,10 @@ fn a_reversals_delay_still_holds_the_box_still() {
     let reversed_at = px_of(&reversal.from);
 
     // The regime check: the reversal really did happen half way up the ramp,
-    // and not at an endpoint where a held box and a moving one agree. This is
-    // the one assertion δ can reach, and at these timings it has 4.5s of room.
+    // and not at an endpoint where a held box and a moving one agree. On the
+    // pinned clock it is exact.
     assert!(
-        (reversed_at - 25.0).abs() < 0.3,
+        (reversed_at - 25.0).abs() < 1e-4,
         "the reversal should have been taken half way up the ramp, at 25px, \
          got {reversed_at}"
     );

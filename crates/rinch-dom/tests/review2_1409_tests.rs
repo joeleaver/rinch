@@ -14,6 +14,7 @@ const VP: (f32, f32) = (800.0, 600.0);
 
 fn build(html: &str) -> RinchDocument {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     let body = doc.body();
     let wrap = doc.create_element("div");
     doc.set_inner_html(wrap, html);
@@ -808,7 +809,7 @@ fn q2_transition_ticks_run_no_compute() {
     let mut ticks = vec![];
     for _ in 0..3 {
         let c = doc.tree.taffy_computes;
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        doc.advance_animation_clock_ms(20.0);
         doc.tick_transitions();
         frame(&mut doc);
         ticks.push(doc.tree.taffy_computes - c);

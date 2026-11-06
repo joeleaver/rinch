@@ -181,6 +181,7 @@ fn display_of(doc: &RinchDocument, node: NodeId) -> rinch_dom::computed_style::D
 /// Returns `(doc, wrap, spinner)`.
 fn mounted_spinner() -> (RinchDocument, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let wrap = doc.create_element("div");
@@ -264,6 +265,7 @@ fn hiding_an_ancestor_stops_a_descendant_animation() {
 #[test]
 fn hiding_a_grandparent_stops_a_descendant_animation() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let outer = doc.create_element("div");
@@ -295,6 +297,7 @@ fn hiding_a_grandparent_stops_a_descendant_animation() {
 #[test]
 fn an_animation_declared_under_a_hidden_ancestor_never_starts() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let wrap = doc.create_element("div");
@@ -330,6 +333,7 @@ fn an_animation_declared_under_a_hidden_ancestor_never_starts() {
 #[test]
 fn an_animation_declared_two_levels_under_a_hidden_ancestor_never_starts() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let outer = doc.create_element("div");
@@ -371,9 +375,7 @@ fn showing_an_ancestor_restarts_a_descendant_animation_from_zero() {
     doc.resolve_layout(VP.0, VP.1);
     assert_eq!(animations(&doc, spinner), 0, "precondition: dropped");
 
-    // Long enough that a resumed animation and a restarted one cannot be
-    // confused for one another by clock granularity.
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    doc.advance_animation_clock_ms(50.0);
 
     doc.set_style(wrap, "display", "block");
     doc.resolve_layout(VP.0, VP.1);
@@ -384,10 +386,11 @@ fn showing_an_ancestor_restarts_a_descendant_animation_from_zero() {
         "the spinner spins again once the panel is open"
     );
     let second = start_time(&doc, spinner);
-    assert!(
-        second >= first + 40.0,
+    assert_eq!(
+        second,
+        first + 50.0,
         "a browser starts a *new* animation when the element is rendered again, \
-         so its start time is now and its elapsed time is ~0; resumed it would \
+         so its start time is now (50ms after the first, on the pinned clock); resumed it would \
          still read {first}, and this reads {second}"
     );
 }
@@ -407,6 +410,7 @@ fn showing_an_ancestor_restarts_a_descendant_animation_from_zero() {
 #[test]
 fn showing_a_panel_restarts_a_spinner_three_levels_down() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let panel = doc.create_element("div");
@@ -461,14 +465,15 @@ fn showing_an_ancestor_by_class_restarts_a_descendant_animation() {
     doc.resolve_layout(VP.0, VP.1);
     assert_eq!(animations(&doc, spinner), 0, "precondition: dropped");
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    doc.advance_animation_clock_ms(50.0);
 
     doc.set_attribute(wrap, "class", "wrap wrap--here");
     doc.resolve_layout(VP.0, VP.1);
 
     assert_eq!(animations(&doc, spinner), 1, "running again");
-    assert!(
-        start_time(&doc, spinner) >= first + 40.0,
+    assert_eq!(
+        start_time(&doc, spinner),
+        first + 50.0,
         "and from t=0, by whichever route"
     );
 }
@@ -484,14 +489,15 @@ fn showing_the_spinner_itself_restarts_it_from_zero() {
     doc.resolve_layout(VP.0, VP.1);
     assert_eq!(animations(&doc, spinner), 0, "precondition: dropped");
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    doc.advance_animation_clock_ms(50.0);
 
     doc.set_style(spinner, "display", "block");
     doc.resolve_layout(VP.0, VP.1);
 
     assert_eq!(animations(&doc, spinner), 1, "running again");
-    assert!(
-        start_time(&doc, spinner) >= first + 40.0,
+    assert_eq!(
+        start_time(&doc, spinner),
+        first + 50.0,
         "restarted, not resumed"
     );
 }
@@ -506,6 +512,7 @@ fn showing_the_spinner_itself_restarts_it_from_zero() {
 #[test]
 fn showing_a_panel_leaves_a_box_hidden_in_its_own_right_alone() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let wrap = doc.create_element("div");
@@ -598,6 +605,7 @@ fn visibility_hidden_is_rendered_and_keeps_animating() {
 #[test]
 fn a_paused_animation_on_a_rendered_box_is_untouched() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let wrap = doc.create_element("div");
@@ -632,6 +640,7 @@ fn a_paused_animation_on_a_rendered_box_is_untouched() {
 #[test]
 fn hiding_a_box_drops_its_paused_animation_too() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let wrap = doc.create_element("div");
@@ -666,6 +675,7 @@ fn hiding_a_box_drops_its_paused_animation_too() {
 #[test]
 fn moving_a_spinner_into_a_hidden_panel_stops_it() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let open = doc.create_element("div");
@@ -716,6 +726,7 @@ fn moving_a_spinner_into_a_hidden_panel_stops_it() {
 #[test]
 fn showing_two_nested_wrappers_in_one_pass_restarts_the_spinner() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let outer = doc.create_element("div");
@@ -736,12 +747,12 @@ fn showing_two_nested_wrappers_in_one_pass_restarts_the_spinner() {
     doc.resolve_layout(VP.0, VP.1);
     assert_eq!(animations(&doc, spinner), 0, "precondition: dropped");
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    doc.advance_animation_clock_ms(50.0);
 
     doc.set_style(outer, "display", "block");
     doc.set_style(mid, "display", "block");
     doc.resolve_layout(VP.0, VP.1);
 
     assert_eq!(animations(&doc, spinner), 1, "both open, so it spins");
-    assert!(start_time(&doc, spinner) >= first + 40.0, "and from t=0");
+    assert_eq!(start_time(&doc, spinner), first + 50.0, "and from t=0");
 }

@@ -82,6 +82,7 @@ const BASE_CSS: &str = "body, input, select, button { font-family: PerfInter; }
 fn doc_with(css: &str) -> RinchDocument {
     use parley::fontique::{Blob, FontInfoOverride};
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.font_cx.collection.register_fonts(
         Blob::new(std::sync::Arc::new(INTER)),
         Some(FontInfoOverride {
@@ -960,11 +961,7 @@ fn colour_transition_frames() -> (FrameStats, FrameStats, FrameStats) {
     doc.set_attribute(d, "class", "row hot");
     doc.resolve_layout(VP.0, VP.1);
     paint(&mut doc);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
-        * 1000.0;
+    let now = doc.animation_now_ms();
     let frame = |doc: &mut RinchDocument, ago_ms: f64| {
         for t in doc
             .tree

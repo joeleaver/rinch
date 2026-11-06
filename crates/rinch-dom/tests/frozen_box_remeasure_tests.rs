@@ -44,6 +44,7 @@ const TYPOGRAPHY_CSS: &str = "
 
 fn typography_doc(class: &str) -> (RinchDocument, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(TYPOGRAPHY_CSS);
     let body = doc.body();
     let root = doc.create_element("div");
@@ -138,6 +139,7 @@ fn a_colour_only_restyle_still_skips_taffy() {
 /// if/for/match/component site. Returns the wrapper as well.
 fn contents_doc(class: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(TYPOGRAPHY_CSS);
     let body = doc.body();
     let root = doc.create_element("div");
@@ -295,6 +297,7 @@ const CONTENTS_TICK_CSS: &str = "
 /// with transitions enabled.
 fn contents_tick_doc(root_class: &str, wrapper_extra: &str) -> (RinchDocument, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CONTENTS_TICK_CSS);
     let body = doc.body();
     let root = doc.create_element("div");
@@ -430,6 +433,7 @@ const LONG: &str = "hello world hello world hello world hello world";
 /// test; `.wrap` is the IFC root that has to line-break around it.
 fn atomic_doc(display: &str, size: &str, text: &str) -> (RinchDocument, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(ATOMIC_CSS);
     let body = doc.body();
     let wrap = doc.create_element("div");
@@ -554,6 +558,7 @@ fn text_that_is_a_flex_item_is_remeasured_in_its_new_font() {
     ";
     fn build(class: &str) -> (RinchDocument, NodeId) {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(CSS);
         let body = doc.body();
         let d = doc.create_element("div");
@@ -613,6 +618,7 @@ fn a_font_size_transition_on_a_flex_row_remeasures_its_text() {
     ";
     fn build(class: &str) -> (RinchDocument, NodeId) {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(CSS);
         let body = doc.body();
         let d = doc.create_element("div");
@@ -677,6 +683,7 @@ fn a_font_size_animation_on_a_flex_row_remeasures_its_text() {
     ";
     fn build(extra: &str) -> (RinchDocument, NodeId) {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(CSS);
         let body = doc.body();
         let d = doc.create_element("div");
@@ -734,6 +741,7 @@ const NESTED_CSS: &str = "
 /// inline, sized in px so nothing here is measured from a font.
 fn block_in_atomic_inline(extra: &str) -> (RinchDocument, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(NESTED_CSS);
     let body = doc.body();
     let wrap = doc.create_element("div");
@@ -852,6 +860,7 @@ fn a_width_animation_inside_an_atomic_inline_regrows_it() {
     ";
     fn build(extra: &str) -> (RinchDocument, NodeId, NodeId) {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(CSS);
         let body = doc.body();
         let wrap = doc.create_element("div");
@@ -920,6 +929,7 @@ fn a_measure_leaf_root_reflows_when_an_atomic_inline_inside_it_grows() {
     ";
     fn build(label: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(CSS);
         let body = doc.body();
         let wrap = doc.create_element("div");
@@ -993,6 +1003,7 @@ fn nested_atomic_inlines_both_regrow() {
     ";
     fn build(text: &str) -> (RinchDocument, NodeId, NodeId) {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(CSS);
         let body = doc.body();
         let wrap = doc.create_element("div");
@@ -1063,6 +1074,7 @@ fn a_percentage_atomic_inline_tracks_a_viewport_resize() {
     ";
     fn build() -> (RinchDocument, NodeId) {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(CSS);
         let body = doc.body();
         let wrap = doc.create_element("div");
@@ -1142,6 +1154,7 @@ fn a_remeasured_atomic_inlines_root_keeps_its_shaped_text() {
     // `first` holds text plus an atomic inline; `second` holds text only.
     fn build(box_class: &str, second_text: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
         doc.load_css(CSS);
         let body = doc.body();
 
