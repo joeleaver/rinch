@@ -230,6 +230,8 @@ mod html_view_clip_tests;
 mod html_view_tests;
 #[cfg(test)]
 mod implicit_focus_tests;
+#[cfg(test)]
+mod inline_draggable_2233_tests;
 #[cfg(all(test, software_shell))]
 mod inline_ink_damage_1815_tests;
 #[cfg(all(test, software_shell, feature = "desktop", target_os = "linux"))]
