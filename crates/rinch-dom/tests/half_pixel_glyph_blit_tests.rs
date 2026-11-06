@@ -1,9 +1,10 @@
 //! A glyph placed on a half pixel lost its first row and its first column on
 //! the software painter.
 //!
-//! `TinySkiaPainter::draw_glyphs` rasterises a glyph once, at the origin, and
-//! places the coverage image by translating it with nearest-neighbour
-//! sampling (see `CachedGlyph` in `paint/skia_painter.rs`). tiny-skia's
+//! `TinySkiaPainter::draw_glyphs` rasterised a glyph once, at the origin, and
+//! placed the coverage image by translating it with nearest-neighbour
+//! sampling (it now blits glyph-atlas masks at whole device pixels, #2286;
+//! `paint/glyph_atlas.rs`). tiny-skia's
 //! `draw_pixmap` fills the image's rectangle and samples the image at each
 //! covered pixel's centre. At a translation of exactly `k + 0.5` the two
 //! disagree: the rectangle covers pixels `k + 1 ..`, but the centre of pixel
@@ -151,14 +152,26 @@ fn a_column_centred_on_a_half_pixel_keeps_its_first_glyphs_left_column() {
     let (at_half, half_right) = ink(&paint(&column(121)));
     assert_eq!(at_1.0, at_0.0 + 1, "122px cell: one column right");
     assert_eq!(one_right, whole, "122px cell: the same pixels");
-    assert_eq!(
-        at_half.0,
-        at_0.0 + 1,
-        "121px cell: the half pixel rounds to column +1"
+    // Horizontally a glyph is placed on the glyph atlas's quarter-pixel grid
+    // (#2286): at the half pixel it is the half-pixel mask, drawn at whole
+    // pixel `k`, so its pixels are not the whole-pixel ones shifted. What the
+    // bug did is still visible in its ink: the first column dropped and the
+    // last drawn twice changes the total coverage by a stem's column, and
+    // moves the ink's right edge two columns right of a whole-pixel copy's.
+    let total = |img: &[Vec<u8>]| img.iter().flatten().map(|&a| a as u64).sum::<u64>();
+    let (t0, th) = (total(&whole), total(&half_right));
+    assert!(
+        th.abs_diff(t0) * 50 < t0,
+        "121px cell: the half-pixel glyph has the same ink to 2% ({th} vs {t0}); \
+         a dropped first column and a doubled last one move it by a column"
     );
-    assert_eq!(
-        half_right, whole,
-        "121px cell: the glyph drawn at the half pixel is the same pixels \
-         (its first column was dropped and its last drawn twice)"
+    assert!(
+        at_half.0 == at_0.0 || at_half.0 == at_0.0 + 1,
+        "121px cell: the ink starts where the whole-pixel glyph's does, or one right"
+    );
+    let right = |at: (usize, usize), img: &[Vec<u8>]| at.0 + img[0].len();
+    assert!(
+        right(at_half, &half_right) <= right(at_0, &whole) + 1,
+        "121px cell: the ink ends at most one column right of the whole-pixel glyph's"
     );
 }
