@@ -17,7 +17,7 @@ use rinch_dom::paint::slicing::{SliceCoverage, SurfaceSlice};
 use rinch_dom::paint::vello_painter::VelloPainter;
 use vello::kurbo::Rect;
 use vello::peniko::{Blob, Color, ImageAlphaType, ImageData, ImageFormat};
-use vello::{AaConfig, RenderParams, Renderer, Scene};
+use vello::{RenderParams, Renderer, Scene};
 use wgpu::{Device, Queue, Texture, TextureFormat, TextureUsages};
 
 use super::split_compositor::SplitCompositor;
@@ -65,7 +65,7 @@ fn render(
             base_color: base,
             width: size.0.max(1),
             height: size.1.max(1),
-            antialiasing_method: AaConfig::Msaa16,
+            antialiasing_method: crate::gpu_antialiasing::scene_aa(),
         },
     )
     .expect("render");

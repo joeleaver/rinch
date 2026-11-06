@@ -56,6 +56,10 @@ fn context() -> RinchContext {
 }
 
 fn gpu() -> (wgpu::Device, wgpu::Queue) {
+    // These fixtures compare renders exactly, and an area-coverage render is
+    // not repeatable on a parallel GPU (#2286 review): MSAA, latched before the
+    // first renderer of this process is made.
+    rinch::set_gpu_antialiasing(rinch::GpuAntialiasing::Msaa16);
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -597,7 +601,7 @@ fn gpu_host_textures_across_contexts_and_renderers_2082() {
         base_color: vello::peniko::Color::TRANSPARENT,
         width: W,
         height: H,
-        antialiasing_method: vello::AaConfig::Msaa16,
+        antialiasing_method: rinch::gpu_antialiasing().aa_config(),
     };
     let draw =
         |ctx: &mut RinchContext, vello: &mut vello::Renderer, images: &mut HostTextureImages| {
@@ -694,7 +698,7 @@ fn gpu_host_texture_refusals_and_the_scene_route_2082() {
         base_color: vello::peniko::Color::TRANSPARENT,
         width: W,
         height: H,
-        antialiasing_method: vello::AaConfig::Msaa16,
+        antialiasing_method: rinch::gpu_antialiasing().aa_config(),
     };
     let mut ctx = context();
     ctx.register_texture("cam", &a).unwrap();

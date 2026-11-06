@@ -1617,11 +1617,30 @@ impl Painter for TinySkiaPainter {
         // mask at the run's size, placed through the transform, as this
         // painter always drew.
         let scale = atlas_scale(transform);
+        // This thread's text-rasterization policy (#2286 stage 1): hinting,
+        // and the stem darkening of light text, in device pixels. On the
+        // atlas's grid the mask is rasterised at the device size, so it takes
+        // the device amount; off it, the bucket-0 mask is drawn through
+        // `transform`, which scales it, so it takes the amount over that
+        // scale.
+        let policy = super::text_rasterization::thread_policy();
+        let device = policy.run_darkening_px(brush, font_size, transform);
+        let embolden = match scale {
+            Some(_) => device,
+            None => {
+                let s = super::text_rasterization::device_scale(transform) as f32;
+                if device > 0.0 && s > 0.0 {
+                    device / s
+                } else {
+                    0.0
+                }
+            }
+        };
         let spec = RunSpec {
             font,
             size: scale.map_or(font_size, |s| (font_size as f64 * s) as f32),
-            hint,
-            embolden: 0.0,
+            hint: hint && policy.hint(),
+            embolden,
             coords: normalized_coords,
         };
         let mut keys = std::mem::take(&mut self.glyph_keys);

@@ -5515,6 +5515,7 @@ dependencies = [
  "js-sys",
  "keyboard-types 0.7.0",
  "ksni",
+ "libloading 0.8.9",
  "log",
  "memory-stats",
  "muda",

@@ -342,6 +342,22 @@ impl GlyphAtlas {
         })
     }
 
+    /// The runs held, in the order they were first drawn: `(device size,
+    /// hinted, emboldening)` each. For tests that pin what a painter keyed.
+    #[doc(hidden)]
+    pub fn run_keys(&self) -> Vec<(f32, bool, f32)> {
+        self.runs
+            .iter()
+            .map(|r| {
+                (
+                    f32::from_bits(r.key.size_bits),
+                    r.key.hint,
+                    f32::from_bits(r.key.embolden_bits),
+                )
+            })
+            .collect()
+    }
+
     /// Drop every mask.
     pub fn clear(&mut self) {
         self.runs.clear();
@@ -601,25 +617,38 @@ fn rasterise(
     bucket: u8,
 ) -> Option<GlyphMask> {
     use swash::scale::{Render, Source};
-    let offset = swash::zeno::Vector::new(bucket as f32 / SUBPIXEL_BUCKETS as f32, 0.0);
-    let render = |sources: &[Source], s: &mut swash::scale::Scaler<'_>| {
+    // swash's embolden (FreeType's `FT_Outline_EmboldenXY` without its
+    // halving) grows a glyph by about the amount on each side horizontally
+    // but by twice it at the top and none at the bottom; the `(0, -amount)`
+    // offset re-centres it to Vello's `font_embolden` (`expand_path`) within
+    // 0.03 px (#2286 stage 1, `stem_darkening_2286_tests`). The sub-pixel
+    // bucket is the offset's x.
+    let em = spec.embolden;
+    let x = bucket as f32 / SUBPIXEL_BUCKETS as f32;
+    let render = |sources: &[Source], s: &mut swash::scale::Scaler<'_>, darken: bool| {
         let mut r = Render::new(sources);
-        r.offset(offset);
-        if spec.embolden != 0.0 {
-            r.embolden(spec.embolden);
+        if darken && em > 0.0 {
+            r.embolden(em).offset(swash::zeno::Vector::new(x, -em));
+        } else {
+            r.offset(swash::zeno::Vector::new(x, 0.0));
         }
         r.render(s, id as u16)
     };
-    if !scaler.has_color_bitmaps() {
-        return render(&[Source::ColorOutline(0), Source::Outline], scaler).and_then(to_mask);
+    // A darkened run on a face with colour outlines asks for the colour glyph
+    // on its own first: the re-centring offset is the whole `Render`'s, and a
+    // COLR glyph is not emboldened.
+    if !scaler.has_color_bitmaps() && (em == 0.0 || !scaler.has_color_outlines()) {
+        return render(&[Source::ColorOutline(0), Source::Outline], scaler, true).and_then(to_mask);
     }
-    if let Some(image) = render(&[Source::ColorOutline(0)], scaler) {
+    if let Some(image) = render(&[Source::ColorOutline(0)], scaler, false) {
         return to_mask(image);
     }
-    if let Some(g) = color_bitmap_glyph(bitmap_scale, font, spec.size, id as u16) {
+    if scaler.has_color_bitmaps()
+        && let Some(g) = color_bitmap_glyph(bitmap_scale, font, spec.size, id as u16)
+    {
         return Some(g);
     }
-    render(&[Source::Outline], scaler).and_then(to_mask)
+    render(&[Source::Outline], scaler, true).and_then(to_mask)
 }
 
 fn to_mask(image: swash::scale::image::Image) -> Option<GlyphMask> {

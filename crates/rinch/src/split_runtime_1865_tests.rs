@@ -245,7 +245,7 @@ impl Window {
             base_color: base,
             width: w,
             height: h,
-            antialiasing_method: vello::AaConfig::Msaa16,
+            antialiasing_method: crate::gpu_antialiasing::scene_aa(),
         };
         let kind = match frame {
             GpuFrame::Full(scene) => {
@@ -1568,7 +1568,7 @@ fn split_runtime_scratch_cost_probe() {
                             base_color: Color::TRANSPARENT,
                             width: r.2,
                             height: r.3,
-                            antialiasing_method: vello::AaConfig::Msaa16,
+                            antialiasing_method: crate::gpu_antialiasing::scene_aa(),
                         },
                     )
                     .unwrap();

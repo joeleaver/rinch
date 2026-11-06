@@ -489,11 +489,15 @@ impl VelloPainter {
             scratch.keys.push((g.id, pl.bucket));
             scratch.places.push(pl);
         }
+        // The thread's policy (#2286 stage 1), as `encode_glyphs` reads it:
+        // hinting, and light text's stem darkening in device pixels, which is
+        // the mask's own scale here.
+        let policy = super::text_rasterization::thread_policy();
         let spec = RunSpec {
             font,
             size,
-            hint,
-            embolden: 0.0,
+            hint: hint && policy.hint(),
+            embolden: policy.run_darkening_px(brush, font_size, transform),
             coords: normalized_coords,
         };
         let tint = *tint;
@@ -601,7 +605,10 @@ fn encode_mask(scene: &mut Scene, image: &ImageData, tint: peniko::Color, x: f64
     );
 }
 
-/// Encode one glyph run into `scene`.
+/// Encode one glyph run into `scene`, under this thread's text-rendering
+/// policy (#2286): hinted only where the policy hints, and light text
+/// thickened by its stem darkening through Vello's `font_embolden`
+/// (`kurbo::expand_path` on each outline, cached per amount).
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn encode_glyphs(
@@ -615,6 +622,27 @@ fn encode_glyphs(
     normalized_coords: &[i16],
     glyphs: &[PaintGlyph],
 ) {
+    let policy = super::text_rasterization::thread_policy();
+    let hint = hint && policy.hint();
+    // The darkening is in device pixels. Vello expands the outline in the
+    // space it draws the glyph in: with hinting and a uniform-scale transform
+    // it folds the scale into the font size and draws at device size
+    // (`vello_encoding::resolve`, the `GlyphRun` patch, compares the f32
+    // matrix this way), otherwise at `font_size`, scaled by `transform`
+    // afterwards.
+    let device = policy.run_darkening_px(brush, font_size, transform) as f64;
+    let darkening = if device == 0.0 {
+        0.0
+    } else {
+        let [a, b, c, d, _, _] = transform.as_coeffs();
+        let folds = hint && a as f32 == d as f32 && b as f32 == 0.0 && c as f32 == 0.0;
+        let scale = super::text_rasterization::device_scale(transform);
+        if folds || scale == 0.0 {
+            device
+        } else {
+            device / scale
+        }
+    };
     scene
         .draw_glyphs(font)
         .font_size(font_size)
@@ -622,6 +650,9 @@ fn encode_glyphs(
         .glyph_transform(glyph_transform)
         .brush(brush)
         .hint(hint)
+        .font_embolden(vello::FontEmbolden::new(peniko::kurbo::Diagonal2::new(
+            darkening, darkening,
+        )))
         .normalized_coords(normalized_coords)
         .draw(
             Fill::NonZero,

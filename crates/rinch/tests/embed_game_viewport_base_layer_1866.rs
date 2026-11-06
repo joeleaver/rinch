@@ -104,6 +104,10 @@ fn render(ctx: &mut RinchContext) -> Vec<[u8; 4]> {
 
 #[cfg(feature = "gpu")]
 fn gpu() -> (wgpu::Device, wgpu::Queue) {
+    // These fixtures compare renders exactly, and an area-coverage render is
+    // not repeatable on a parallel GPU (#2286 review): MSAA, latched before the
+    // first renderer of this process is made.
+    rinch::set_gpu_antialiasing(rinch::GpuAntialiasing::Msaa16);
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -146,7 +150,7 @@ fn render_via(ctx: &mut RinchContext, via: Via) -> Vec<[u8; 4]> {
                         base_color: vello::peniko::Color::TRANSPARENT,
                         width: W,
                         height: H,
-                        antialiasing_method: vello::AaConfig::Msaa16,
+                        antialiasing_method: rinch::gpu_antialiasing().aa_config(),
                     },
                 )
                 .expect("render");
