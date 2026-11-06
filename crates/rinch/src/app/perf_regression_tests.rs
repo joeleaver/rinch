@@ -1086,7 +1086,7 @@ fn a_gliding_wheel_frame_repaints_the_scroller_and_lays_out_nothing() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 122),
+            (GlyphAtlasHits, 122),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
         ],
