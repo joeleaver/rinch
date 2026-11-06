@@ -33,9 +33,9 @@ fn marker_text(doc: &RinchDocument, li: NodeId) -> Option<String> {
         .find(|&c| doc.tree.get(c).unwrap().is_pseudo_element)?;
     Some(get_text_content(&doc.tree, m))
 }
-const DISC: &str = "\u{2022}\u{2002}";
-const CIRCLE: &str = "\u{25E6}\u{2002}";
-const SQUARE: &str = "\u{25AA}\u{2002}";
+const DISC: &str = "\u{2022}";
+const CIRCLE: &str = "\u{25E6}";
+const SQUARE: &str = "\u{25AA}";
 
 /// Chrome 153: `<ol><li><ul><li>` is circle (html.css:
 /// `:is(dir, menu, ol, ul) :is(dir, menu, ul) { list-style-type: circle }`).
@@ -258,9 +258,9 @@ fn p10_ol_start_and_value() {
     doc.set_attribute(b, "value", "10");
     let c = el(&mut doc, ol, "li");
     doc.resolve_layout(800.0, 600.0);
-    assert_eq!(marker_text(&doc, a).as_deref(), Some("3.\u{2002}"));
-    assert_eq!(marker_text(&doc, b).as_deref(), Some("10.\u{2002}"));
-    assert_eq!(marker_text(&doc, c).as_deref(), Some("11.\u{2002}"));
+    assert_eq!(marker_text(&doc, a).as_deref(), Some("3. "));
+    assert_eq!(marker_text(&doc, b).as_deref(), Some("10. "));
+    assert_eq!(marker_text(&doc, c).as_deref(), Some("11. "));
 }
 
 /// An `<ol>` styled `list-style-type: square` draws a square (Chrome).

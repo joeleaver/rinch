@@ -4068,7 +4068,7 @@ const EDGE_END: u8 = 2;
 /// Whether `node`'s computed CSS `direction` is `ltr`: read from the nearest
 /// node at or above it with a Stylo style (an anonymous block box has none
 /// and inherits its container's). `ltr` when nothing has one.
-fn css_direction_is_ltr(nodes: &crate::node_slab::NodeSlab, node: RawNodeId) -> bool {
+pub(crate) fn css_direction_is_ltr(nodes: &crate::node_slab::NodeSlab, node: RawNodeId) -> bool {
     let mut at = Some(node);
     while let Some(id) = at {
         let Some(n) = nodes.get(id) else { break };
@@ -4604,6 +4604,8 @@ impl RinchDocument {
         // its text reaches the screen only through this root. Paint-only:
         // the layout that asked for this rebuild has already run.
         self.tree.paint_dirty_nodes.push(root_id);
+        // New lines can move an outside list marker that sits on them.
+        self.tree.note_marker_move(root_id, true);
     }
 
     /// Shape one IFC root's paint layout as `build_ifc_layouts` would, **even

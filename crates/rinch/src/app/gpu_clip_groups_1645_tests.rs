@@ -10,8 +10,8 @@ use super::gpu_partial_frame_1718_tests::readback;
 use super::*;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 
-const W: u32 = 320;
-const H: u32 = 200;
+pub(super) const W: u32 = 320;
+pub(super) const H: u32 = 200;
 
 /// Two panes with translucent rows alternating between them. `second` is pane
 /// B's left edge: clear of A at 171, over it at 139.
@@ -59,7 +59,7 @@ fn app(second: u32) -> RinchApp {
     app
 }
 
-fn software(app: &mut RinchApp) -> Vec<u8> {
+pub(super) fn software(app: &mut RinchApp) -> Vec<u8> {
     let mut doc = app.doc.as_ref().unwrap().borrow_mut();
     let doc = &mut *doc;
     let mut painter = TinySkiaPainter::new(W, H);
@@ -76,7 +76,7 @@ fn software(app: &mut RinchApp) -> Vec<u8> {
 }
 
 /// One device, one renderer and one target, for a run of scenes.
-struct Gpu {
+pub(super) struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: vello::Renderer,
@@ -84,7 +84,7 @@ struct Gpu {
 }
 
 impl Gpu {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter =
@@ -124,7 +124,7 @@ impl Gpu {
         }
     }
 
-    fn render(&mut self, app: &mut RinchApp) -> Vec<u8> {
+    pub(super) fn render(&mut self, app: &mut RinchApp) -> Vec<u8> {
         let GpuFrame::Full(scene) = app.build_gpu_frame(
             1.0,
             (W, H),

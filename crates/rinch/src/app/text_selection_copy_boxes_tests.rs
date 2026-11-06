@@ -363,6 +363,21 @@ const CORPUS: &[(&str, &str, &str)] = &[
         "first\none\ntwo\nsecond",
     ),
     (
+        "list, inside markers",
+        "<div id=\"a\">first</div><ul style=\"list-style-position:inside\"><li>one</li><li>two</li></ul><div id=\"b\">second</div>",
+        "first\none\ntwo\nsecond",
+    ),
+    (
+        "ol, inside markers, a paragraph item",
+        "<div id=\"a\">first</div><ol style=\"list-style-position:inside\"><li>one</li><li><p>two</p></li></ol><div id=\"b\">second</div>",
+        "first\none\ntwo\n\nsecond",
+    ),
+    (
+        "ol, outside markers, a paragraph item",
+        "<div id=\"a\">first</div><ol><li><p>one</p></li><li>two</li></ol><div id=\"b\">second</div>",
+        "first\none\n\ntwo\nsecond",
+    ),
+    (
         "block picture",
         "<div id=\"a\">first</div><img style=\"display:block\" width=\"10\" height=\"10\" src=\"data:image/gif;base64,R0lGODlhAQABAAAAACw=\"><div id=\"b\">second</div>",
         "first\n\nsecond",

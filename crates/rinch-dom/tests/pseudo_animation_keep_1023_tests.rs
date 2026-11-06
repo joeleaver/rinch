@@ -324,7 +324,9 @@ fn a_kept_inline_after_takes_new_content_into_the_originators_layout() {
 
 /// A list marker is still generated afresh, and one that appears on a
 /// restyle (an `<li>` back to `display: list-item`) is a structural change
-/// the item's inline layout has to see.
+/// the layout has to see. Since #1356 an outside marker is a box of its own,
+/// out of the item's lines: its own text is laid out and it is placed in the
+/// list's padding, left of the item.
 #[test]
 fn a_list_marker_that_appears_on_a_restyle_is_laid_out() {
     let mut doc = RinchDocument::new();
@@ -352,11 +354,8 @@ fn a_list_marker_that_appears_on_a_restyle_is_laid_out() {
 
     doc.set_attribute(li, "class", "");
     doc.resolve_layout(VW, VH);
-    assert!(
-        text(&doc).starts_with('\u{2022}') && text(&doc).ends_with("item"),
-        "the marker is laid out: {:?}",
-        text(&doc)
-    );
+    assert_eq!(text(&doc), "item", "the marker is not in the item's lines");
+    assert_marker_laid_out(&doc, li);
 }
 
 /// The same, where nothing about the `<li>`'s box changes: the marker comes
@@ -388,11 +387,8 @@ fn a_list_marker_that_comes_back_with_its_list_style_is_laid_out() {
 
     doc.set_attribute(ul, "class", "");
     doc.resolve_layout(VW, VH);
-    assert!(
-        text(&doc).starts_with('\u{2022}') && text(&doc).ends_with("item"),
-        "the marker is laid out: {:?}",
-        text(&doc)
-    );
+    assert_eq!(text(&doc), "item", "the marker is not in the item's lines");
+    assert_marker_laid_out(&doc, li);
 }
 
 /// A theme change re-cascades the whole document (`recompute_all_styles_full`)
@@ -504,5 +500,29 @@ fn a_kept_before_becomes_and_stops_being_a_flex_item() {
     assert!(
         !doc.tree.get(b).unwrap().creates_stacking_context(),
         "no longer a flex item"
+    );
+}
+
+/// `li`'s generated outside marker has its own text laid out, a size, and a
+/// place left of the item, in the list's padding (#1356).
+fn assert_marker_laid_out(doc: &RinchDocument, li: rinch_core::dom::NodeId) {
+    let node = doc.tree.get(li.0).unwrap();
+    let marker = node
+        .children
+        .iter()
+        .copied()
+        .find(|&c| doc.tree.get(c).unwrap().is_pseudo_element)
+        .expect("a marker is generated");
+    let marker = doc.tree.get(marker).unwrap();
+    let own = marker
+        .text_layout
+        .as_ref()
+        .map(|l| l.text_content.clone())
+        .unwrap_or_default();
+    assert_eq!(own, "\u{2022}", "the marker's own text is laid out");
+    assert!(
+        marker.layout.width > 0.0 && marker.layout.height > 0.0 && marker.layout.x < 0.0,
+        "the marker has a box, hung left of the item: {:?}",
+        marker.layout
     );
 }

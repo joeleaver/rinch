@@ -312,6 +312,12 @@ define_counters! {
     /// clusters, and each span's own clusters on its first and last line.
     /// Linear in the context for any number of sibling spans in it.
     AbsInlineMeasureSteps = "abs_inline_measure_steps",
+    /// Outside list markers placed beside their item's first line
+    /// (`crate::list_marker`, #1356): one per marker per layout that looks at
+    /// it — a marker newly generated (its item cascaded), or one whose item
+    /// had a box inside it move or resize, or gain new lines. A layout that
+    /// only moves whole items (a box above the list grew) places none.
+    ListMarkersPlaced = "list_markers_placed",
     /// The notes looked at to find an out-of-flow box's static position in
     /// its lines (`InlineLayout::out_of_flow`, #632): one per look, however
     /// many boxes the lines hold — the box carries its note's index.

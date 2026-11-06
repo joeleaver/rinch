@@ -96,17 +96,9 @@ fn nested_ul_markers_follow_the_ua_disc_circle_square_scale() {
     let li3 = el(&mut doc, ul3, "li");
     doc.resolve_layout(800.0, 600.0);
 
-    assert_eq!(marker_text(&doc, li1).unwrap(), "\u{2022}\u{2002}", "disc");
-    assert_eq!(
-        marker_text(&doc, li2).unwrap(),
-        "\u{25E6}\u{2002}",
-        "circle"
-    );
-    assert_eq!(
-        marker_text(&doc, li3).unwrap(),
-        "\u{25AA}\u{2002}",
-        "square"
-    );
+    assert_eq!(marker_text(&doc, li1).unwrap(), "\u{2022}", "disc");
+    assert_eq!(marker_text(&doc, li2).unwrap(), "\u{25E6}", "circle");
+    assert_eq!(marker_text(&doc, li3).unwrap(), "\u{25AA}", "square");
 }
 
 /// An explicit `list-style-type` wins over the UA default and is read for
@@ -180,6 +172,6 @@ fn ol_items_still_number() {
     let b = el(&mut doc, ol, "li");
     doc.resolve_layout(800.0, 600.0);
 
-    assert_eq!(marker_text(&doc, a).unwrap(), "1.\u{2002}");
-    assert_eq!(marker_text(&doc, b).unwrap(), "2.\u{2002}");
+    assert_eq!(marker_text(&doc, a).unwrap(), "1. ");
+    assert_eq!(marker_text(&doc, b).unwrap(), "2. ");
 }
