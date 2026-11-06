@@ -305,9 +305,14 @@ fn a_document_in_an_html_view_can_be_selected_and_copied() {
 #[test]
 fn selectable_false_makes_an_html_views_document_unselectable() {
     use rinch_core::Component;
+    // Under a `user-select: text` ancestor, so the view's own `none` is what
+    // makes it unselectable (under an `auto` root it would be anyway).
     let mut app = RinchApp::new(|scope: &mut RenderScope| {
         let root = scope.create_element("div");
-        root.set_attribute("style", "font: 16px/20px sans-serif; width: 600px");
+        root.set_attribute(
+            "style",
+            "font: 16px/20px sans-serif; width: 600px; user-select: text",
+        );
         let view = rinch_html::HtmlView {
             html: r#"<div id="mail">Not for copying.</div>"#.into(),
             selectable: false,
@@ -319,9 +324,78 @@ fn selectable_false_makes_an_html_views_document_unselectable() {
     });
     app.mount_component(VP.0 as f32, VP.1 as f32);
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
-    {
-        let p = at(&app, "mail", 0.1);
-        press(&mut app, p);
-    }
-    assert!(app.text_selection.is_none());
+    assert!(!press_drag_selects(&mut app, "mail"));
+}
+
+/// An `HtmlView` (`selectable` as given, and the app's `class` added to the
+/// view's own, as `class:` merges it) after a `<style>` of the app's holding
+/// `css`, under a root that declares no `user-select`.
+fn mount_view_with_css(
+    css: &'static str,
+    class: Option<&'static str>,
+    selectable: bool,
+) -> RinchApp {
+    use rinch_core::Component;
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "font: 16px/20px sans-serif; width: 600px");
+        let style = scope.create_element("style");
+        style.append_child(&scope.create_text(css));
+        root.append_child(&style);
+        let view = rinch_html::HtmlView {
+            html: r#"<div id="mail">Some mail text here</div>"#.into(),
+            selectable,
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        if let Some(c) = class {
+            let own = view.get_attribute("class").unwrap_or_default();
+            view.set_attribute("class", &format!("{own} {c}"));
+        }
+        root.append_child(&view);
+        root
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    app
+}
+
+/// Whether a press near the start of `#id` and a drag to its middle select
+/// anything.
+fn press_drag_selects(app: &mut RinchApp, id: &str) -> bool {
+    let (x, y, w, _) = {
+        let n = node(app, id);
+        let d = app.doc.as_ref().unwrap().borrow();
+        painted_element_box(&d.tree, n)
+    };
+    press(app, (x + 2.0, y + 10.0));
+    drag(app, (x + w * 0.5, y + 10.0));
+    let selected = app
+        .text_selection
+        .as_ref()
+        .is_some_and(|s| s.anchor_offset != s.focus_offset);
+    release(app, (x + w * 0.5, y + 10.0));
+    selected
+}
+
+/// The view's `user-select` rules have zero specificity (`:where()`), so an
+/// app's one-class rule on the view beats them both ways, though the view's
+/// sheet comes later in the document (#2231).
+#[test]
+fn an_apps_class_on_an_html_view_beats_its_selectability_both_ways() {
+    let mut app = mount_view_with_css("", None, true);
+    assert!(
+        press_drag_selects(&mut app, "mail"),
+        "positive control: the view is selectable"
+    );
+    let mut app = mount_view_with_css(".mail { user-select: none }", Some("mail"), true);
+    assert!(
+        !press_drag_selects(&mut app, "mail"),
+        "the app's `none` beats the view's `text`"
+    );
+    let mut app = mount_view_with_css(".mail { user-select: text }", Some("mail"), false);
+    assert!(
+        press_drag_selects(&mut app, "mail"),
+        "the app's `text` beats `selectable: false`"
+    );
 }

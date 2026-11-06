@@ -50,16 +50,22 @@ fn a_style_sheet_rule_sets_user_select() {
     let doc = doc_with(
         ".n { user-select: none } .t { user-select: text } \
          .a { user-select: all } .c { user-select: contain } \
+         .cn { user-select: none; user-select: contain } \
          .au { user-select: auto }",
         r#"<div id="n" class="n">n</div><div id="t" class="t">t</div>
-           <div id="a" class="a">a</div><div id="c" class="c">c</div>
+           <div id="a" class="a">a</div><div id="c" class="c">c</div><div id="cn" class="cn">cn</div>
            <div id="au" class="au">au</div><div id="plain">p</div>"#,
     );
     assert_eq!(us(&doc, "n"), U::None);
     assert_eq!(us(&doc, "t"), U::Text);
     assert_eq!(us(&doc, "a"), U::All);
-    assert_eq!(us(&doc, "c"), U::Contain);
+    // Chrome 156 does not support `contain` and computes `auto` for a lone
+    // one (measured); rinch reads it as `auto` too.
+    assert_eq!(us(&doc, "c"), U::Auto, "`contain` is not supported");
     assert_eq!(us(&doc, "au"), U::Auto);
+    // Chrome drops the `contain` and the earlier `none` wins there; Stylo has
+    // accepted it, so rinch computes `auto` (`user_select_from_stylo`).
+    assert_eq!(us(&doc, "cn"), U::Auto, "rinch, not Chrome's `none`");
     assert_eq!(us(&doc, "plain"), U::Auto, "no rule: the initial `auto`");
 }
 
