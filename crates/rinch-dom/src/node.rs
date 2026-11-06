@@ -1488,6 +1488,19 @@ pub struct Node {
     /// is the first. The insertion verbs read it to keep a child they insert
     /// between the two (#1629, `RinchDocument::clamp_between_generated`).
     pub(crate) is_generated_after: bool,
+    /// This node is the `outside` list marker `resolve_list_marker` generated
+    /// for its parent `<li>` (#1356): a box out of flow that
+    /// [`crate::list_marker`] places beside the item's first line box,
+    /// hanging in the list's padding, as a browser places an outside
+    /// `::marker`. `None` for every other node.
+    pub(crate) outside_marker: Option<crate::list_marker::OutsideMarker>,
+    /// On an `<li>` whose outside marker found no line box to sit on (an
+    /// empty item, one holding only a picture or an empty block): the
+    /// height of the marker's own line, which the item's content box is
+    /// then at least as tall as (Chrome 156: `<li></li>` is one line high,
+    /// `<li><div style="height:30px">` stays 30). Applied as a minimum height
+    /// by `taffy_style_from_computed`; `None` on every other node.
+    pub(crate) marker_line_floor: Option<f32>,
     /// Typed computed style derived from Stylo.
     /// This is the primary source for layout and paint after Stylo migration.
     pub computed_style: ComputedStyle,
@@ -1940,6 +1953,8 @@ impl Node {
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             is_generated_after: false,
+            outside_marker: None,
+            marker_line_floor: None,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
@@ -2026,6 +2041,8 @@ impl Node {
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             is_generated_after: false,
+            outside_marker: None,
+            marker_line_floor: None,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
@@ -2111,6 +2128,8 @@ impl Node {
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             is_generated_after: false,
+            outside_marker: None,
+            marker_line_floor: None,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
@@ -2194,6 +2213,8 @@ impl Node {
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             is_generated_after: false,
+            outside_marker: None,
+            marker_line_floor: None,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
@@ -3674,6 +3695,11 @@ pub struct NodeTree {
     /// keeps no baseline in a node's layout, and may answer a later compute
     /// from its cache without measuring again.
     pub(crate) atomic_line_baselines: rustc_hash::FxHashMap<RawNodeId, Vec<LineBaselines>>,
+    /// The outside list markers generated so far (#1356), for
+    /// [`crate::list_marker`] to place after each layout. A marker is
+    /// generated again on every cascade of its item, so ids that are no longer
+    /// a live marker are dropped as the pass meets them.
+    pub(crate) outside_markers: Vec<RawNodeId>,
     /// Nodes that have requested scroll-into-view (deferred until after layout).
     pub scroll_into_view_requests: Vec<RawNodeId>,
     /// Nodes that have requested a scroll to a fraction of their scroll
@@ -3927,6 +3953,7 @@ impl NodeTree {
             ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),
             atomic_line_baselines: Default::default(),
+            outside_markers: Vec::new(),
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),

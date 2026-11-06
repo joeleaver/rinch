@@ -958,25 +958,72 @@ const ROWS: &[Row] = &[
         html: r##"alpha beta gamma delta epsilon <span data-m="abs" style="position: fixed; width: 40px; height: 30px;"></span>zeta eta theta"##,
         want: [69.875, 47.0],
     },
+    // The `<li>` rows of finding F3: the marker was inline content of the
+    // item, ahead of the box's static position, until #1356 made it an
+    // outside marker box.
+    Row {
+        name: "a_li_first",
+        c: r##""##,
+        html: r##"<ul style='margin:0;padding-left:40px'><li><div data-m="abs" style="position: absolute; width: 40px; height: 30px;"></div>item</li></ul>"##,
+        want: [51.0, 7.0],
+    },
+    Row {
+        name: "a_ol_first",
+        c: r##""##,
+        html: r##"<ol style='margin:0;padding-left:40px'><li><div data-m="abs" style="position: absolute; width: 40px; height: 30px;"></div>item</li></ol>"##,
+        want: [51.0, 7.0],
+    },
+    Row {
+        name: "ai_li_first",
+        c: r##""##,
+        html: r##"<ul style='margin:0;padding-left:40px'><li><span data-m="abs" style="position: absolute; width: 40px; height: 30px;"></span>item</li></ul>"##,
+        want: [51.0, 7.0],
+    },
+    Row {
+        name: "ai_li_mid",
+        c: r##""##,
+        html: r##"<ul style='margin:0;padding-left:40px'><li>item<span data-m="abs" style="position: absolute; width: 40px; height: 30px;"></span>more</li></ul>"##,
+        want: [83.297, 7.0],
+    },
+    Row {
+        name: "ai_ol_first",
+        c: r##""##,
+        html: r##"<ol style='margin:0;padding-left:40px'><li><span data-m="abs" style="position: absolute; width: 40px; height: 30px;"></span>item</li></ol>"##,
+        want: [51.0, 7.0],
+    },
+    Row {
+        name: "f_li_first",
+        c: r##""##,
+        html: r##"<ul style='margin:0;padding-left:40px'><li><div data-m="abs" style="position: fixed; width: 40px; height: 30px;"></div>item</li></ul>"##,
+        want: [51.0, 7.0],
+    },
+    Row {
+        name: "f_ol_first",
+        c: r##""##,
+        html: r##"<ol style='margin:0;padding-left:40px'><li><div data-m="abs" style="position: fixed; width: 40px; height: 30px;"></div>item</li></ol>"##,
+        want: [51.0, 7.0],
+    },
+    Row {
+        name: "fi_li_first",
+        c: r##""##,
+        html: r##"<ul style='margin:0;padding-left:40px'><li><span data-m="abs" style="position: fixed; width: 40px; height: 30px;"></span>item</li></ul>"##,
+        want: [51.0, 7.0],
+    },
+    Row {
+        name: "fi_li_mid",
+        c: r##""##,
+        html: r##"<ul style='margin:0;padding-left:40px'><li>item<span data-m="abs" style="position: fixed; width: 40px; height: 30px;"></span>more</li></ul>"##,
+        want: [83.297, 7.0],
+    },
+    Row {
+        name: "fi_ol_first",
+        c: r##""##,
+        html: r##"<ol style='margin:0;padding-left:40px'><li><span data-m="abs" style="position: fixed; width: 40px; height: 30px;"></span>item</li></ol>"##,
+        want: [51.0, 7.0],
+    },
 ];
 
 const KNOWN: &[Known] = &[
-    Known {
-        name: "a_li_first",
-        why: "F3",
-        c: r##""##,
-        html: r##"<ul style='margin:0;padding-left:40px'><li><div data-m="abs" style="position: absolute; width: 40px; height: 30px;"></div>item</li></ul>"##,
-        chrome: [51.0, 7.0],
-        rinch: [51.0, 27.0],
-    },
-    Known {
-        name: "a_ol_first",
-        why: "F3",
-        c: r##""##,
-        html: r##"<ol style='margin:0;padding-left:40px'><li><div data-m="abs" style="position: absolute; width: 40px; height: 30px;"></div>item</li></ol>"##,
-        chrome: [51.0, 7.0],
-        rinch: [51.0, 27.0],
-    },
     Known {
         name: "a_rtl",
         why: "direction: rtl is not modelled",
@@ -1026,30 +1073,6 @@ const KNOWN: &[Known] = &[
         rinch: [192.0, 17.0],
     },
     Known {
-        name: "ai_li_first",
-        why: "F3",
-        c: r##""##,
-        html: r##"<ul style='margin:0;padding-left:40px'><li><span data-m="abs" style="position: absolute; width: 40px; height: 30px;"></span>item</li></ul>"##,
-        chrome: [51.0, 7.0],
-        rinch: [68.0, 7.0],
-    },
-    Known {
-        name: "ai_li_mid",
-        why: "F3 (marker is inline content, #1356)",
-        c: r##""##,
-        html: r##"<ul style='margin:0;padding-left:40px'><li>item<span data-m="abs" style="position: absolute; width: 40px; height: 30px;"></span>more</li></ul>"##,
-        chrome: [83.297, 7.0],
-        rinch: [100.0, 7.0],
-    },
-    Known {
-        name: "ai_ol_first",
-        why: "F3",
-        c: r##""##,
-        html: r##"<ol style='margin:0;padding-left:40px'><li><span data-m="abs" style="position: absolute; width: 40px; height: 30px;"></span>item</li></ol>"##,
-        chrome: [51.0, 7.0],
-        rinch: [70.0, 7.0],
-    },
-    Known {
         name: "ai_prewrap_spaces",
         why: "F4",
         c: r##"white-space:pre-wrap;width:131px;"##,
@@ -1080,22 +1103,6 @@ const KNOWN: &[Known] = &[
         html: r##"<span data-m="abs" style="position: absolute; width: 40px; height: 30px;"></span>tail"##,
         chrome: [360.0, 7.0],
         rinch: [378.0, 7.0],
-    },
-    Known {
-        name: "f_li_first",
-        why: "F3",
-        c: r##""##,
-        html: r##"<ul style='margin:0;padding-left:40px'><li><div data-m="abs" style="position: fixed; width: 40px; height: 30px;"></div>item</li></ul>"##,
-        chrome: [51.0, 7.0],
-        rinch: [51.0, 27.0],
-    },
-    Known {
-        name: "f_ol_first",
-        why: "F3",
-        c: r##""##,
-        html: r##"<ol style='margin:0;padding-left:40px'><li><div data-m="abs" style="position: fixed; width: 40px; height: 30px;"></div>item</li></ol>"##,
-        chrome: [51.0, 7.0],
-        rinch: [51.0, 27.0],
     },
     Known {
         name: "f_rtl",
@@ -1144,30 +1151,6 @@ const KNOWN: &[Known] = &[
         html: r##"<div style='height:10px'></div><span data-m="abs" style="position: fixed; width: 40px; height: 30px;"></span><span data-m="abs2" style="position: fixed; width: 40px; height: 30px;"></span>text"##,
         chrome: [205.5, 17.0],
         rinch: [192.0, 17.0],
-    },
-    Known {
-        name: "fi_li_first",
-        why: "F3",
-        c: r##""##,
-        html: r##"<ul style='margin:0;padding-left:40px'><li><span data-m="abs" style="position: fixed; width: 40px; height: 30px;"></span>item</li></ul>"##,
-        chrome: [51.0, 7.0],
-        rinch: [68.0, 7.0],
-    },
-    Known {
-        name: "fi_li_mid",
-        why: "F3 (marker is inline content, #1356)",
-        c: r##""##,
-        html: r##"<ul style='margin:0;padding-left:40px'><li>item<span data-m="abs" style="position: fixed; width: 40px; height: 30px;"></span>more</li></ul>"##,
-        chrome: [83.297, 7.0],
-        rinch: [100.0, 7.0],
-    },
-    Known {
-        name: "fi_ol_first",
-        why: "F3",
-        c: r##""##,
-        html: r##"<ol style='margin:0;padding-left:40px'><li><span data-m="abs" style="position: fixed; width: 40px; height: 30px;"></span>item</li></ol>"##,
-        chrome: [51.0, 7.0],
-        rinch: [70.0, 7.0],
     },
     Known {
         name: "fi_prewrap_spaces",

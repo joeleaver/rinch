@@ -157,8 +157,19 @@ impl RinchDocument {
         let t0 = web_time::Instant::now();
         let style_before = self.tree.perf.get(Counter::TimeStyleNs);
         self.tree.perf.bump(Counter::LayoutResolves);
+        let epoch = self.tree.layout_epoch;
         self.resolve_layout_inner(width, height);
         self.align_table_cells();
+        // Outside list markers are placed from the finished lines (#1356). An
+        // item that gained or lost the marker's minimum line is laid out
+        // again, once: the second pass cannot change what the first found
+        // (the floor only grows a box that has no line).
+        if self.tree.layout_epoch != epoch && self.place_list_markers() {
+            self.tree.layout_dirty = true;
+            self.resolve_layout_inner(width, height);
+            self.align_table_cells();
+            self.place_list_markers();
+        }
         let total = t0.elapsed().as_nanos() as u64;
         let style = self
             .tree
@@ -1782,6 +1793,7 @@ impl RinchDocument {
             // is checked against what the style sites recorded.
             if self.tree.nodes[node_id].computed_style.position
                 == crate::computed_style::PositionValue::Absolute
+                && self.tree.nodes[node_id].outside_marker.is_none()
             {
                 // (`out_of_flow_kind` answers `None` for a `display: contents`
                 // element, which generates no box to place.)
@@ -1887,6 +1899,14 @@ impl RinchDocument {
             {
                 let node = &self.tree.nodes[node_id];
                 if node.display_mode.is_atomic_inline() && node.ifc_root.is_some() {
+                    new_layout.x = node.layout.x;
+                    new_layout.y = node.layout.y;
+                }
+                // An outside list marker keeps the place `crate::list_marker`
+                // wrote (#1356): Taffy's is its static position, which it does
+                // not use, and writing it would repaint the marker on every
+                // layout.
+                if node.outside_marker.is_some() {
                     new_layout.x = node.layout.x;
                     new_layout.y = node.layout.y;
                 }

@@ -514,7 +514,7 @@ impl RinchDocument {
     /// `list-style-type` (#725):
     /// - `disc` → "•", `circle` → "◦", `square` → "▪"
     /// - `decimal` (or any `<ol>`/`<li>` combination not in that set, kept for
-    ///   back-compat) → "1.", "2.", … via [`Self::compute_list_item_counters`]
+    ///   back-compat) → "1. ", "2. ", … via [`Self::compute_list_item_counters`]
     /// - anything else not covered above falls back to the old tag-based
     ///   heuristic (a bullet under `<ul>`, a number under `<ol>`) rather than
     ///   drawing nothing, so an unsupported keyword (`lower-alpha`,
@@ -523,19 +523,11 @@ impl RinchDocument {
     ///   Stylo's servo-build `list-style-type` keyword set for roman numerals).
     /// - `none` → no marker, as before.
     ///
-    /// Each gets a trailing en-space (`\u{2002}`) — wider than a normal space
-    /// and not subject to whitespace collapsing in the IFC.
-    ///
-    /// This is still the #725 "inside"-shaped marker: the span is an ordinary
-    /// first inline child of the `<li>`, so it participates in the item's own
-    /// line rather than being painted in the parent `<ul>`/`<ol>`'s padding
-    /// as a real `outside` marker box would be. For a single-line item that
-    /// is visually indistinguishable from `outside`; it diverges on a
-    /// wrapped multi-line item, where a real `outside` marker leaves every
-    /// continuation line flush with the first line's text and this one
-    /// leaves it indented by the marker's own width instead. Filed as a
-    /// follow-up (paint-side marker box, `list-style-position: inside`
-    /// support) rather than landed here.
+    /// The span carries `rinch-list-marker`, which the UA sheet keys the
+    /// marker's own rules on. For `list-style-position: outside` (#1356) it
+    /// is taken out of flow there and placed beside the item's first line box
+    /// by [`crate::list_marker`]; for `inside` it stays the item's first inline
+    /// content.
     ///
     /// Answers whether a marker was generated.
     pub(crate) fn resolve_list_marker(&mut self, node_id: RawNodeId) -> bool {
@@ -569,7 +561,7 @@ impl RinchDocument {
             Decimal,
             Other,
         }
-        let keyword = {
+        let (keyword, inside) = {
             let stylo_data = node.stylo_element_data.borrow();
             match &stylo_data {
                 Some(data) => match &data.styles.primary {
@@ -585,7 +577,7 @@ impl RinchDocument {
                         // keyword enum): the four names this picks a glyph
                         // for, anything else `Other`.
                         let is = |name: &str| kw.is_name(&style::Atom::from(name));
-                        if is("disc") {
+                        let marker = if is("disc") {
                             Marker::Disc
                         } else if is("circle") {
                             Marker::Circle
@@ -595,7 +587,10 @@ impl RinchDocument {
                             Marker::Decimal
                         } else {
                             Marker::Other
-                        }
+                        };
+                        use style::properties::longhands::list_style_position::computed_value::T as Position;
+                        let inside = primary.get_list().list_style_position == Position::Inside;
+                        (marker, inside)
                     }
                     None => return false,
                 },
@@ -634,21 +629,44 @@ impl RinchDocument {
         // (#725's core complaint: `list-style-type` was parsed and ignored).
         // `Decimal`, and any keyword this match doesn't know yet, fall back
         // to the pre-#725 tag-based heuristic.
-        let marker_text = match keyword {
-            Marker::Disc => "\u{2022}\u{2002}".to_string(),   // •
-            Marker::Circle => "\u{25E6}\u{2002}".to_string(), // ◦
-            Marker::Square => "\u{25AA}\u{2002}".to_string(), // ▪
-            _ if parent_tag == "ol" || keyword == Marker::Decimal => {
+        //
+        // The text is Chrome 156's, measured with the bundled Inter: a
+        // number is followed by ". " (an ordinary space), inside or outside.
+        // A symbol is drawn by Chrome as a shape, not a glyph, and the glyph
+        // stands alone here: `inside`, the UA sheet gives the marker the width
+        // Chrome gives the shape and its 1em margin (`1.3em + 1px` is within a
+        // pixel of it at 12-32px); `outside`, `crate::list_marker` centres it
+        // where Chrome centres the shape.
+        let symbol = match keyword {
+            Marker::Disc => Some('\u{2022}'),   // •
+            Marker::Circle => Some('\u{25E6}'), // ◦
+            Marker::Square => Some('\u{25AA}'), // ▪
+            _ if parent_tag == "ol" || keyword == Marker::Decimal => None,
+            _ => Some('\u{2022}'),
+        };
+        let marker_text = match symbol {
+            Some(glyph) => glyph.to_string(),
+            None => {
                 let counters = self.compute_list_item_counters(node_id);
                 let num = counters.get("list-item").copied().unwrap_or(1);
-                format!("{}.\u{2002}", num)
+                format!("{num}. ")
             }
-            _ => "\u{2022}\u{2002}".to_string(),
         };
 
-        // Create the marker pseudo-element (span + text node)
+        // Create the marker pseudo-element (span + text node). The attribute
+        // is what the UA sheet keys the marker's own rules on: an `outside`
+        // one is taken out of flow there (#1356).
         use rinch_core::dom::DomDocument;
         let span_id = self.create_element("span");
+        self.set_attribute(
+            span_id,
+            "rinch-list-marker",
+            match (inside, symbol.is_some()) {
+                (true, true) => "inside symbol",
+                (true, false) => "inside",
+                (false, _) => "outside",
+            },
+        );
         let text_node_id = self.create_text(&marker_text);
 
         // Append text node to span
@@ -672,6 +690,13 @@ impl RinchDocument {
                 self.tree.nodes[node_id].computed_style.clone();
             self.tree.nodes[span_raw].is_pseudo_element = true;
             self.tree.style_dirty_nodes.push(span_raw);
+            if !inside {
+                self.tree.nodes[span_raw].outside_marker =
+                    Some(crate::list_marker::OutsideMarker {
+                        symbol: symbol.is_some(),
+                    });
+                self.tree.outside_markers.push(span_raw);
+            }
         }
 
         // Insert as first child of the <li>

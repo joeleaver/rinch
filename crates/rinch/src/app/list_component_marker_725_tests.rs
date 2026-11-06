@@ -73,7 +73,7 @@ fn plain_list_still_has_bullets() {
     assert_eq!(it.len(), 2);
     for (_, ps, d) in &it {
         assert_eq!(d, "ListItem");
-        assert_eq!(ps, &vec!["\u{2022}\u{2002}".to_string()]);
+        assert_eq!(ps, &vec!["\u{2022}".to_string()]);
     }
 }
 
@@ -84,5 +84,5 @@ fn ordered_list_numbers() {
     });
     let it = items(&app);
     eprintln!("ordered list items: {it:?}");
-    assert_eq!(it[1].1, vec!["2.\u{2002}".to_string()]);
+    assert_eq!(it[1].1, vec!["2. ".to_string()]);
 }

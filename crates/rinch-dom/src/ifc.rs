@@ -3981,7 +3981,7 @@ const EDGE_END: u8 = 2;
 /// Whether `node`'s computed CSS `direction` is `ltr`: read from the nearest
 /// node at or above it with a Stylo style (an anonymous block box has none
 /// and inherits its container's). `ltr` when nothing has one.
-fn css_direction_is_ltr(nodes: &crate::node_slab::NodeSlab, node: RawNodeId) -> bool {
+pub(crate) fn css_direction_is_ltr(nodes: &crate::node_slab::NodeSlab, node: RawNodeId) -> bool {
     let mut at = Some(node);
     while let Some(id) = at {
         let Some(n) = nodes.get(id) else { break };

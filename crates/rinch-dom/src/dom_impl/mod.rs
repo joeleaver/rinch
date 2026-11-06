@@ -626,7 +626,47 @@ impl RinchDocument {
                in any rule at all, so both were `display: inline` — a silent
                desktop/web divergence for one token per rule. */
             ul, ol, menu, dir {
-                padding-left: 40px;
+                padding-inline-start: 40px;
+            }
+
+            /* The list marker `resolve_list_marker` generates (#1356). A
+               browser's `::marker` takes only a few properties, and no author
+               rule written for a `<span>` reaches it; this one is a span in
+               the tree, so its box is reset here, `!important` so that a
+               `li > span` or `li span` rule cannot move it either. An
+               `outside` marker is out of flow, and `crate::list_marker` places
+               it beside the item's first line, in the list's padding; an
+               `inside` one stays inline content at the start of the item. */
+            span[rinch-list-marker] {
+                margin: 0 !important;
+                padding: 0 !important;
+                border: 0 !important;
+                float: none !important;
+                transform: none !important;
+                white-space: pre !important;
+                text-indent: 0 !important;
+                vertical-align: baseline !important;
+            }
+            span[rinch-list-marker~="inside"] {
+                display: inline !important;
+                position: static !important;
+            }
+            /* Chrome 156 draws an inside disc/circle/square as a shape
+               followed by a 1em margin: 17, 22, 27, 33 and 43px before the
+               text at 12, 16, 20, 24 and 32px. */
+            span[rinch-list-marker="inside symbol"] {
+                display: inline-block !important;
+                width: calc(1.3em + 1px) !important;
+            }
+            span[rinch-list-marker="outside"] {
+                position: absolute !important;
+                inset: auto !important;
+                width: auto !important;
+                height: auto !important;
+                min-width: 0 !important;
+                min-height: 0 !important;
+                max-width: none !important;
+                max-height: none !important;
             }
 
             /* Default marker shape (#725): Chrome's own html.css rules,
