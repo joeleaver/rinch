@@ -164,6 +164,23 @@ fn a_declared_column_is_weighed_by_its_content_when_wider() {
 }
 
 #[test]
+fn a_blocks_side_margins_weigh_its_column() {
+    // A 40px block with 30px side margins asks 100 of its column, beside two
+    // auto cells of 50. Chrome: x 100, b at 130 (40 wide), z at 300.
+    let d = doc(&format!(
+        "<table id=t width=400 cellspacing=0 cellpadding=0><tr>\
+         <td id=x>{}</td>\
+         <td id=b style='display:block;width:40px;margin:0 30px;height:10px'></td>\
+         <td id=z>{}</td></tr></table>",
+        bx("xi", 50.0, 10.0),
+        bx("zi", 50.0, 10.0),
+    ));
+    assert_eq!(abs(&d, "x").2, 100.0);
+    assert_eq!(abs(&d, "b"), (130.0, 0.0, 40.0, 10.0));
+    assert_eq!(abs(&d, "z").0, 300.0);
+}
+
+#[test]
 fn a_declared_column_is_weighed_by_its_min_content_not_its_max_content() {
     // A `width=50` cell holding three 100px inline-blocks with spaces
     // between them: min-content 100, max-content over 300. Blink weighs a

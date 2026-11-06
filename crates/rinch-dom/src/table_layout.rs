@@ -515,6 +515,21 @@ fn declared_track(tree: &NodeTree, id: RawNodeId) -> Track {
     }
 }
 
+/// The horizontal margins of a block standing in an anonymous cell (a `<td
+/// style="display: block">`), which are inside that cell and part of what it
+/// asks of its column (#2288). A real cell has none.
+fn anon_cell_margins(tree: &NodeTree, id: RawNodeId) -> f32 {
+    let cs = &tree.nodes[id].computed_style;
+    if cs.table_part == TablePart::Cell {
+        return 0.0;
+    }
+    let px = |m: &crate::computed_style::values::LengthPercentageAutoValue| match m {
+        crate::computed_style::values::LengthPercentageAutoValue::Length(v) => *v,
+        _ => 0.0,
+    };
+    px(&cs.margin_left) + px(&cs.margin_right)
+}
+
 /// A real cell's declared length width, as its column reads it.
 fn declared_px(tree: &NodeTree, id: RawNodeId) -> Option<f32> {
     if tree.nodes[id].computed_style.table_part != TablePart::Cell {
@@ -1428,13 +1443,15 @@ impl RinchDocument {
         // the larger of that width and its min-content, so a declared column
         // whose content cannot fit is weighed by the content and a picture
         // that scales into it (min-content 0) is not; any other cell its
-        // max-content.
+        // max-content, a block in an anonymous cell with its side margins.
         let mut weights = vec![0.0f32; cols];
         for (id, _, col) in cells {
             let c = self.tree.nodes[id].table_cell.as_ref();
             let w = match declared_px(&self.tree, id) {
                 Some(p) => p.max(c.and_then(|c| c.min_content).unwrap_or(0.0)),
-                None => c.and_then(|c| c.max_content).unwrap_or(0.0),
+                None => {
+                    c.and_then(|c| c.max_content).unwrap_or(0.0) + anon_cell_margins(&self.tree, id)
+                }
             };
             weights[col] = weights[col].max(w);
         }
@@ -1512,7 +1529,10 @@ impl RinchDocument {
                 // this layout has its max-content, not its min-content.
                 let w = match declared_px(&self.tree, c) {
                     Some(p) => p,
-                    None => self.tree.taffy.layout(n.taffy_id?).ok()?.size.width,
+                    None => {
+                        self.tree.taffy.layout(n.taffy_id?).ok()?.size.width
+                            + anon_cell_margins(&self.tree, c)
+                    }
                 };
                 Some((slot.col, slot.colspan, w))
             })
