@@ -541,7 +541,7 @@ fn a_glide_in_the_devtools_window_runs_to_its_end() {
         "the DevTools glide never moved"
     );
     assert!(!f.app.wheel_scroll_animating());
-    assert!(asked >= 19 && asked < 40, "redraws asked: {asked}");
+    assert!((19..40).contains(&asked), "redraws asked: {asked}");
 }
 
 /// The clock stepping back mid-glide (a wall-clock correction) neither
