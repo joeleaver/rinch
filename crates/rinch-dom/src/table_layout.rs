@@ -38,6 +38,11 @@
 //! laying the table out detached with `auto` tracks. A table with no width of
 //! its own shrinks to fit on plain `auto` tracks and needs no measure.
 //!
+//! A cell's `max-width` caps what it asks of its column (its min-content,
+//! max-content and `width`), and the cell is still laid out at its column's
+//! width (#2264): its Taffy `max_size` caps the contributions, and
+//! `stretch_past_max_width` lets the grid stretch it past that.
+//!
 //! ## Vertical alignment
 //!
 //! Taffy's block layout has no `align-content`, and a table cell is a block
@@ -454,7 +459,9 @@ fn span_attr(tree: &NodeTree, id: RawNodeId, name: &str) -> Option<usize> {
 }
 
 /// A cell's or column's contribution to its column: `width`, grown to the
-/// border box when it declares a content box.
+/// border box when it declares a content box. A cell's is capped at its
+/// `max-width` (#2264; Blink's `CreateCellInlineConstraint`): `width: 300px;
+/// max-width: 120px` asks 120 of the column, in either table layout.
 fn declared_track(tree: &NodeTree, id: RawNodeId) -> Track {
     let cs = &tree.nodes[id].computed_style;
     match cs.width {
@@ -466,6 +473,10 @@ fn declared_track(tree: &NodeTree, id: RawNodeId) -> Track {
                     + cs.padding_right.to_px()
                     + cs.border_left_width.to_px()
                     + cs.border_right_width.to_px()
+            };
+            let w = match cs.max_width {
+                DimensionValue::Length(m) if cs.table_part == TablePart::Cell => w.min(m),
+                _ => w,
             };
             Track::Px(w + extra)
         }
@@ -934,7 +945,16 @@ impl RinchDocument {
                     end: span(c.colspan.max(1)),
                 }
             };
-            if node.computed_style.table_part != TablePart::Caption {
+            // A cell's `max-width` caps what it asks of its column (its
+            // min-content, max-content and `width`, [`declared_track`]), and
+            // the cell is laid out at its column's width, past it (#2264;
+            // Blink: `CreateCellInlineConstraint`,
+            // `SetupTableCellConstraintSpaceBuilder`). Taffy keeps `max_size`
+            // for the contributions and lets the stretch pass it. Written on
+            // every sync from the part alone, so no restyle strands it.
+            let cell = node.computed_style.table_part != TablePart::Caption;
+            style.stretch_past_max_width = cell;
+            if cell {
                 // A cell's `height` is a minimum, and its `width` is its
                 // column's. It fills its slot and has no margins.
                 if let DimensionValue::Length(h) = node.computed_style.height {

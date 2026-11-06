@@ -307,12 +307,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`317d532abadd38755b46d15c298fd0a522f0f672`, branch `rinch-patch`): eight
+(`6015309f18f5b584fc3a6ad90617b5dd3ea088f6`, branch `rinch-patch`): nine
 commits on the taffy `v0.14.0` tag. It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the eight commits onto the new tag. All are upstream
+and a Taffy bump rebases the nine commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -401,8 +401,21 @@ candidates.
    edit. Pins: `crates/rinch-dom/tests/table_column_weights_2141_tests.rs` and
    the `a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone` scenario.
 
+9. **`Style::stretch_past_max_width`** (#2264). A stretched grid item with the flag fills its grid
+   area's width past its `max_size.width`, which still caps the contributions the grid measures
+   (`compute/grid/alignment.rs` for the final size, `GridItem::known_dimensions` for the width its
+   row height is measured at). rinch sets it on every table cell: a cell's `max-width` caps what
+   it asks of its column and the cell is laid out at its column's width (Blink's
+   `CreateCellInlineConstraint`, `SetupTableCellConstraintSpaceBuilder`); css-grid-1 §6.2 clamps
+   a grid item proper, the default. With it, `compute_leaf_layout` no longer clamps a **known**
+   dimension by the leaf's own min/max size (the block algorithm never did; every parent hands a
+   known size already clamped except this one), so a cell that is itself an IFC leaf wraps its
+   lines at the column's width. Pins: the fork's `tests/stretch_past_max_width.rs` and
+   `crates/rinch-dom/tests/table_cell_max_width_2264_tests.rs`.
+
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
-fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7.
+fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
+and 9.
 
 
 ## Parley Fork
