@@ -1,11 +1,16 @@
 //! #2286 stage 1 on a real adapter (CI's `test-gpu (lavapipe)`): the window
-//! draws its scene with area coverage (1a).
+//! draws its scene with area coverage (1a), and light text is darkened on the
+//! GPU painter as on the software one (1b).
 //!
 //! The text is the bundled Inter as `sans-serif` (`perf_expect::new_app`), at
 //! a declared size and line height.
 
 use super::*;
 use crate::shell::desktop::WgpuRenderer;
+use rinch_dom::paint::text_rendering::{
+    ResolvedTextRendering, StemDarkening, SystemTextSettings, TextRendering, reset_text_rendering,
+    set_text_rendering,
+};
 use std::sync::Arc;
 
 const W: u32 = 320;
@@ -99,6 +104,17 @@ fn render_window(app: &mut RinchApp) -> Vec<u8> {
     out
 }
 
+/// The red channel's coverage of `fg` over `bg` (both pure black or white):
+/// `0` is ground, `1` is ink.
+fn coverage(rgba: &[u8], light_text: bool) -> Vec<f64> {
+    rgba.chunks(4)
+        .map(|p| {
+            let v = p[0] as f64 / 255.0;
+            if light_text { v } else { 1.0 - v }
+        })
+        .collect()
+}
+
 /// The window draws text with area coverage (#2286 1a): an edge takes any of
 /// ~240 levels, where `Msaa16` gives at most 15 between ground and ink (it
 /// counts 16 samples a pixel). Black text on white, the red channel's
@@ -123,7 +139,61 @@ fn gpu_the_window_draws_text_with_area_coverage_2286() {
     );
 }
 
-/// What a full page of text costs the GPU per AA mode (`--ignored --nocapture`; CI's `test-gpu` skips it by name). The
+/// Light text is darkened on the GPU painter (#2286 1b): white on black
+/// carries more ink than the same text black on white, and with darkening off
+/// the two are each other's inverse, as both blend in encoded sRGB.
+#[test]
+#[ignore]
+fn gpu_light_text_is_darkened_and_off_turns_it_off_2286() {
+    let render = |light: bool, policy: ResolvedTextRendering| {
+        set_text_rendering(policy);
+        let (fg, bg) = if light {
+            ("#ffffff", "#000000")
+        } else {
+            ("#000000", "#ffffff")
+        };
+        let mut app = text_app(fg, bg, W, H);
+        let rgba = render_window(&mut app);
+        reset_text_rendering();
+        coverage(&rgba, light)
+    };
+    // Two renders of one scene under area coverage are not bit-identical on
+    // lavapipe (measured: the same dark text twice differed by 1/255 at some
+    // pixel), so these compare per pixel within 2/255, not exactly.
+    let worst = |a: &[f64], b: &[f64]| {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f64::max)
+    };
+    let sum = |c: &[f64]| c.iter().sum::<f64>();
+    let off = TextRendering::default()
+        .stem_darkening(StemDarkening::Off)
+        .resolve(&SystemTextSettings::default());
+    let on = ResolvedTextRendering::default();
+    let dark = render(false, on);
+    assert!(sum(&dark) > 500.0, "no text was drawn: ink {}", sum(&dark));
+    let dark_off = render(false, off);
+    let d = worst(&dark, &dark_off);
+    assert!(
+        d <= 2.0 / 255.0 + 1e-9,
+        "dark text moved with darkening: by {d} somewhere"
+    );
+    let light_off = render(true, off);
+    let d = worst(&light_off, &dark_off);
+    assert!(
+        d <= 2.0 / 255.0 + 1e-9,
+        "with darkening off light text should be dark text's inverse; they differ by {d}"
+    );
+    let gain = sum(&render(true, on)) / sum(&dark);
+    assert!(
+        (1.08..1.35).contains(&gain),
+        "light text should carry visibly more ink than dark text by default: {gain:.4}x"
+    );
+}
+
+/// What a full page of text costs the GPU per AA mode and with darkening on
+/// and off (`--ignored --nocapture`; CI's `test-gpu` skips it by name). The
 /// frame is `render_to_texture` plus the wait, median of 20, after 3 warm-up
 /// renders, on whatever adapter wgpu picks (lavapipe in CI's image).
 #[test]
@@ -161,9 +231,16 @@ fn text_aa_cost_probe_2286() {
         ("dark-on-light", "#232629", "#ffffff"),
         ("light-on-dark", "#fcfcfc", "#202326"),
     ] {
-        {
+        for darkening in [true, false] {
+            let policy = if darkening {
+                ResolvedTextRendering::default()
+            } else {
+                ResolvedTextRendering::default().with_darkening(0.0)
+            };
+            set_text_rendering(policy);
             let mut app = text_app(fg, bg, PW, PH);
             let scene = app.build_scene(1.0, (PW, PH)).clone();
+            reset_text_rendering();
             let glyphs: usize = scene
                 .encoding()
                 .resources
@@ -199,7 +276,7 @@ fn text_aa_cost_probe_2286() {
                 }
                 ms.sort_by(f64::total_cmp);
                 eprintln!(
-                    "text_aa_cost_2286 {scheme} {name}: median {:.2} ms \
+                    "text_aa_cost_2286 {scheme} darkening={darkening} {name}: median {:.2} ms \
                      (min {:.2}, max {:.2}), {glyphs} glyphs",
                     ms[ms.len() / 2],
                     ms[0],

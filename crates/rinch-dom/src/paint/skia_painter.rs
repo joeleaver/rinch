@@ -577,6 +577,9 @@ struct GlyphRunKey {
     /// pixel oracle, and real documents use a handful of sizes.
     size_bits: u32,
     hint: bool,
+    /// The stem darkening the run is rasterised with, in 1/64 px per side
+    /// (#2286): `0` for none.
+    darkening: u16,
     coords: Box<[i16]>,
 }
 
@@ -635,6 +638,7 @@ impl GlyphCache {
         font_index: u32,
         size: f32,
         hint: bool,
+        darkening: u16,
         coords: &[i16],
     ) -> usize {
         let size_bits = size.to_bits();
@@ -643,6 +647,7 @@ impl GlyphCache {
                 && k.font_index == font_index
                 && k.size_bits == size_bits
                 && k.hint == hint
+                && k.darkening == darkening
                 && *k.coords == *coords
         };
         if self.runs.get(self.last).is_some_and(|r| matches(&r.key)) {
@@ -661,6 +666,7 @@ impl GlyphCache {
                 font_index,
                 size_bits,
                 hint,
+                darkening,
                 coords: coords.into(),
             },
             glyphs: std::collections::HashMap::new(),
@@ -1756,12 +1762,35 @@ impl Painter for TinySkiaPainter {
         let ts = affine_to_transform(transform);
         let glyph_ts = glyph_transform.map(affine_to_transform);
 
-        let render = swash::scale::Render::new(&[
+        // This thread's text-rendering policy (#2286): hinting, and the stem
+        // darkening of light text, which is the Vello painter's
+        // `font_embolden` amount for the same run. swash's embolden (FreeType's
+        // `FT_Outline_EmboldenXY` without its halving) grows a glyph by about
+        // the amount on each side horizontally but by twice the amount at the
+        // top and none at the bottom (y is up in its outline space): measured
+        // on Inter 13px at 6/64 px, the ink's centre moved 0.022 px right and
+        // 0.100 px up. The `(0, -amount)` offset moves it back down, which
+        // makes it kurbo's `expand_path` (Vello's) to within 0.03 px: the
+        // amount on every side (`stem_darkening_2286_tests`).
+        let policy = super::text_rendering::text_rendering();
+        let hint = hint && policy.hint();
+        let darkening_steps = match brush {
+            Brush::Solid(c) => (policy.darkening_for(*c, font_size) * 64.0).round() as u16,
+            _ => 0,
+        };
+        let darkening = darkening_steps as f32 / 64.0;
+
+        let mut render = swash::scale::Render::new(&[
             swash::scale::Source::ColorOutline(0),
             swash::scale::Source::Outline,
         ]);
         let render_color = swash::scale::Render::new(&[swash::scale::Source::ColorOutline(0)]);
-        let render_outline = swash::scale::Render::new(&[swash::scale::Source::Outline]);
+        let mut render_outline = swash::scale::Render::new(&[swash::scale::Source::Outline]);
+        if darkening_steps != 0 {
+            let back = swash::zeno::Vector::new(0.0, -darkening);
+            render.embolden(darkening).offset(back);
+            render_outline.embolden(darkening).offset(back);
+        }
         let to_cached = |image: swash::scale::image::Image| -> Option<CachedGlyph> {
             if image.placement.width == 0 || image.placement.height == 0 {
                 return None;
@@ -1794,13 +1823,18 @@ impl Painter for TinySkiaPainter {
         // bitmap read at its strike's own size and scaled here (#804). Any
         // other face takes the one `Render` it always did.
         let mut rasterise = |s: &mut swash::scale::Scaler<'_>, id: u32| -> Option<CachedGlyph> {
-            if !s.has_color_bitmaps() {
+            // A darkened run on a face with colour outlines asks for the colour
+            // glyph on its own first: the darkening's re-centring offset is the
+            // whole `Render`'s, and a COLR glyph is not emboldened.
+            if !s.has_color_bitmaps() && (darkening_steps == 0 || !s.has_color_outlines()) {
                 return render.render(s, id as u16).and_then(to_cached);
             }
             if let Some(image) = render_color.render(s, id as u16) {
                 return to_cached(image);
             }
-            if let Some(g) = color_bitmap_glyph(bitmap_cx, font_ref, font_size, id as u16) {
+            if s.has_color_bitmaps()
+                && let Some(g) = color_bitmap_glyph(bitmap_cx, font_ref, font_size, id as u16)
+            {
                 return Some(g);
             }
             render_outline.render(s, id as u16).and_then(to_cached)
@@ -1814,6 +1848,7 @@ impl Painter for TinySkiaPainter {
                 font.index,
                 font_size,
                 hint,
+                darkening_steps,
                 normalized_coords,
             ))
         };

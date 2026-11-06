@@ -355,7 +355,10 @@ impl VelloPainter {
     }
 }
 
-/// Encode one glyph run into `scene`.
+/// Encode one glyph run into `scene`, under this thread's text-rendering
+/// policy (#2286): hinted only where the policy hints, and light text
+/// thickened by its stem darkening through Vello's `font_embolden`
+/// (`kurbo::expand_path` on each outline, cached per amount).
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn encode_glyphs(
@@ -369,13 +372,21 @@ fn encode_glyphs(
     normalized_coords: &[i16],
     glyphs: &[PaintGlyph],
 ) {
+    let policy = super::text_rendering::text_rendering();
+    let darkening = match brush {
+        Brush::Solid(color) => policy.darkening_for(*color, font_size) as f64,
+        _ => 0.0,
+    };
     scene
         .draw_glyphs(font)
         .font_size(font_size)
         .transform(transform)
         .glyph_transform(glyph_transform)
         .brush(brush)
-        .hint(hint)
+        .hint(hint && policy.hint())
+        .font_embolden(vello::FontEmbolden::new(peniko::kurbo::Diagonal2::new(
+            darkening, darkening,
+        )))
         .normalized_coords(normalized_coords)
         .draw(
             Fill::NonZero,

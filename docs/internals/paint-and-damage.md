@@ -122,6 +122,49 @@ levels in a text window, where Msaa16 has at most 15), and
 `gpu_antialiasing::tests` (the env and request order, one mode's pipelines).
 `text_aa_cost_probe_2286` (same file, not in CI's filter) times both modes.
 
+**Text rendering policy (#2286 stages 1b and 1c).** `rinch_dom::paint::text_rendering`
+holds the app's `TextRendering` (`antialias`, `hinting`, `stem_darkening`, each
+`Auto` by default; `#[non_exhaustive]` with setters, so stages 2 and 3 add
+fields — the subpixel order and LCD filter, a contrast curve), the OS's
+`SystemTextSettings`, and their resolution, `ResolvedTextRendering`. The resolved
+policy is a thread-local (`text_rendering()`), filled on a thread's first glyph
+run from the source the facade installs (`rinch::text_rendering::set_text_rendering`,
+called by `App::run`/`run_android`, resolves the app's choice against
+`system_text_settings()`); without a source, as in every test, it is the default
+resolved against nothing (grayscale, hinted, darkening 0.10 px). Tests override
+it per thread with `set_text_rendering`/`reset_text_rendering`, so parallel
+tests do not see each other's. Both leaf painters read it in their glyph draw —
+`vello_painter::encode_glyphs` and `TinySkiaPainter::draw_glyphs` — so every
+caller of `draw_text` (text, shadows, tooltips, the editor) gets it without a
+parameter:
+- **hinting**: the run's `hint` is ANDed with `policy.hint()` (off only for
+  `TextHinting::None`; both painters have one hinted mode).
+- **stem darkening**: `darkening_for(colour, device font size)` — only a solid
+  brush, judged by the text colour alone (Skia keys its contrast LUT the same
+  way; paint does not know the backdrop): sRGB luma × alpha ramps 0.5 → 0.85,
+  full up to 24 device px per em, none from 64, × the policy's amount (0.10 px
+  per side by default), quantised to 1/64 px so the glyph caches see few
+  values. Vello gets it as `DrawGlyphs::font_embolden` (`kurbo::expand_path`,
+  the amount on every side; Vello's glyph cache keys on it). tiny-skia gets
+  swash's `Render::embolden` with `offset(0, -a)`: swash's embolden
+  (FreeType's `EmboldenXY` without the halving) grows a glyph about evenly
+  left and right but by `2a` at the top and none at the bottom (measured: the
+  ink's centre moved 0.022 px right and 0.100 px up at `a` = 6/64), so the
+  offset moves it back down to the same per-side growth as Vello's within
+  0.03 px; the amount is in `GlyphRunKey` (`darkening`, 1/64 px steps). A face with colour
+  outlines asks for the COLR glyph without the offset first (COLR glyphs are not
+  emboldened by swash). Why: sRGB-encoded blending gives light-on-dark text
+  0.73–0.79 of its linear-light weight against 1.21–1.27 dark-on-light; 0.10 px
+  lifts it to 0.93 (#2286 §5). Pins: `crates/rinch-dom/tests/stem_darkening_2286_tests.rs`
+  (software: with `Off` the white row is the black row's exact inverse; on, it
+  carries 8–35% more ink, the black row is byte-identical, the ink's centroid does
+  not move; Vello: the encoded `font_embolden` and `hint` per run),
+  `gpu_light_text_is_darkened_and_off_turns_it_off_2286` (the same on lavapipe),
+  and the module's unit tests.
+- **antialias** is resolved and recorded (`ResolvedAntialias::Subpixel { order,
+  filter }`, `None`) but both painters draw grayscale until the glyph atlas
+  (stage 2) and subpixel compositing (stage 3).
+
 The software renderer includes **dirty region caching**: when only a few nodes change, only the affected rectangular area is cleared and repainted. Subtrees outside the dirty region are skipped during paint traversal.
 
 **The damage is named, and it is a short list of rects** (`paint::compute_damage` → `paint::DamageRegion`). A software frame repaints what its damage names: the paint-dirty nodes, removed nodes' rects, and the drag ghost's and inspect highlight's old *and* new rects (`last_ghost_rect`, `last_inspect_rect` — both translucent, so their rect is repainted every frame they are up). **A frame in which nothing was marked paints nothing** (`repaint_none`): an empty damage used to mean "repaint everything", which made every alt-tab, focus move, selection clear, IME preedit and scroll into view a full repaint and hid sites that forgot to name their node. So a change that reaches pixels without a `DomDocument` write — a shell-written attribute such as `data-text-sel`, `data-focused`, `data-preedit`, a `scroll_offset` — must call `NodeTree::mark_paint_dirty` on its node. **A marked node that names no rect of its own still damages something**: `compute_damage` falls back to the ancestor that paints it (`boxed_owner`: the `<select>` for an `<option>` or its text, else the nearest ancestor with a box), and names nothing only for a node that is detached or has a `display: none` *ancestor* (its own `display` is not asked: a span that has just become `display: none` still has last frame's glyphs on screen). An IFC root whose text layout is rebuilt, or that stops being a root, is pushed paint-dirty too: new glyphs are a paint change whether or not its box moved. "Stops being a root" is read from the root's IFC signature, not from its `text_layout`, which a move verb has usually dropped already — a block whose only span was moved to another parent kept its glyphs on screen until #1064. `<style>`, `<script>`, `<head>`, `<meta>`, `<link>` and `<title>` compute `display: none` (the UA sheet's value; `apply_stylo_styles_to_taffy` skips them and used to leave the default `Flex`, which made a `<style>`'s CSS text an IFC line that flipped its box every structural pass and dragged the fallback to the page root). A box-less element with children (a `display: contents` wrapper, a 0x0 positioned anchor) names its subtree's painted bounds now *and* where they were last painted, so a moved tooltip anchor takes its child's old pixels along. `RinchApp::request_repaint` schedules a frame whose damage is named; `RinchApp::mark_scene_dirty` says "something changed, I don't know what" and repaints in full when nothing else is damaged (`repaint_full_unattributed` — the framework's own caller is window re-creation; the software `GameViewport` frames were one until #361 painted them inline with the viewport's box as their damage). A whole-document restyle (`NodeTree::note_full_restyle`: stylesheet, viewport, DPR, root font-size, theme) sets `whole_document_damaged` and repaints in full (`repaint_full_restyle`). The rects are up to `MAX_DAMAGE_RECTS` (8), pairwise disjoint, merged only where they overlap or one rect wastes little; each is cleared on its own, paint prunes subtrees touching none of them, and draws through one clip — their union as a path, opened with `TinySkiaPainter::push_damage_clip`, not a plain `push_clip`. That clip is not a mask to what it contains (#1007): tiny-skia draws an opaque fill through a different pipeline with a mask than without one (`Source` + lerp against scale + `SourceOver`), and the two round an anti-aliased edge pixel one LSB apart, so while it is the only clip open, a fill or stroke lying inside one damage rect is drawn unmasked, as the full repaint draws it. Any clip pushed above it — one `push_clip` skips as covering the damage included — ends that until its pop; an opacity layer does not. A box that straddles a damage rect's edge is still masked, so its opaque edge pixels inside the damage can still be one LSB from a full repaint's. Pins: `crates/rinch-dom/tests/damage_clip_pipeline_tests.rs`, `damage_clip_escape_tests.rs` (nothing drawn unmasked leaves the damage, miter spikes included), and `r2d-round` in `game_viewport_inline_tests::fresh_frames_match_the_reference_draw`. "Too big" is the **sum** of their areas against `FULL_REPAINT_FRACTION`. Pins: `crates/rinch/src/app/named_damage_tests.rs` (a local pixel oracle per converted site, each killed by removing that site's damage) and `rinch_dom::paint::damage`'s unit tests.
