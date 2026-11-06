@@ -77,6 +77,11 @@ mod composited_frame;
 pub mod editor;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub mod embed;
+/// The antialiasing the GPU renderer draws a window's scene with (#2286).
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub mod gpu_antialiasing;
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub use gpu_antialiasing::{GpuAntialiasing, gpu_antialiasing, set_gpu_antialiasing};
 /// Files from the user on the desktop and the web (issue #1771): the
 /// [`FilePicker`](file::FilePicker) and the [`LocalFile`](file::LocalFile)s an
 /// `ondropfiles` handler receives.
@@ -254,6 +259,8 @@ pub mod prelude {
     ))]
     pub use crate::app_builder::App;
     pub use crate::font::{AppFont, FontData, GenericFamily};
+    #[cfg(feature = "gpu")]
+    pub use crate::gpu_antialiasing::GpuAntialiasing;
     #[cfg(feature = "desktop")]
     pub use crate::shell::activation::ActivationPolicy;
     #[cfg(all(feature = "android", target_os = "android"))]

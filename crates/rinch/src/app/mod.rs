@@ -217,6 +217,8 @@ mod gpu_hidden_subtree_cull_2137_tests;
 mod gpu_list_marker_clip_1356_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_partial_frame_1718_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_text_aa_2286_tests;
 #[cfg(test)]
 mod graph_canvas_wheel_tests;
 #[cfg(test)]

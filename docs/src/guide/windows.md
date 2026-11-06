@@ -1208,6 +1208,24 @@ It accepts `auto`, `gpu`, `software`, and `cpu` (an alias of `software`), trimme
 
 Everywhere else, `gpu_handle()` returns `None` for the whole session while the software renderer presents, so code that reads it should handle `None`.
 
+### GPU antialiasing
+
+The GPU renderer antialiases every shape, image edge and glyph with **area coverage** (`GpuAntialiasing::Area`, Vello's `AaConfig::Area`), which gives an edge any of about 240 levels and is the cheapest mode Vello has. Until issue #2286 the desktop window and the embed overlay drew with 16-sample MSAA, which gives an edge at most 15 levels between ground and ink; on lavapipe a full page of 13px text took 37.7 ms with it and 24.8 ms with area coverage, and on a phone GPU MSAA cost 3.5 times as much for the whole frame (Android always drew with area coverage).
+
+MSAA stays available as an escape hatch:
+
+```rust
+use rinch::prelude::*;
+
+App::new(app).gpu_antialiasing(GpuAntialiasing::Msaa16).run();
+```
+
+```bash
+RINCH_GPU_AA=msaa16 ./my-app      # area, msaa8 or msaa16; overrides the app
+```
+
+Area coverage blends two antialiased edges that meet inside one pixel as if they did not overlap, so two curved shapes that abut exactly (SVG paths sharing an edge, overlapping contours in a variable font) can show a faint seam where MSAA shows none. rinch's own boxes are snapped to the device grid and never meet that way. The mode is fixed when the first GPU renderer is made: an embedding host calls `rinch::set_gpu_antialiasing` before it creates its `RinchOverlayRenderer`, and a later call is logged and ignored. The software renderer and Android ignore the setting.
+
 ### Vsync on and off
 
 The GPU renderer presents with vsync on: each frame waits for the display's next refresh, so on a 60 Hz panel frame-to-frame times never read below 16.7 ms, however cheap the frame. To see what a frame costs — profiling, a benchmark, comparing against another engine — or to offer it as a player setting, turn vsync off, at startup or while the app runs:

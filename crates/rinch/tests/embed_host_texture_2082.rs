@@ -597,7 +597,7 @@ fn gpu_host_textures_across_contexts_and_renderers_2082() {
         base_color: vello::peniko::Color::TRANSPARENT,
         width: W,
         height: H,
-        antialiasing_method: vello::AaConfig::Msaa16,
+        antialiasing_method: rinch::gpu_antialiasing().aa_config(),
     };
     let draw =
         |ctx: &mut RinchContext, vello: &mut vello::Renderer, images: &mut HostTextureImages| {
@@ -694,7 +694,7 @@ fn gpu_host_texture_refusals_and_the_scene_route_2082() {
         base_color: vello::peniko::Color::TRANSPARENT,
         width: W,
         height: H,
-        antialiasing_method: vello::AaConfig::Msaa16,
+        antialiasing_method: rinch::gpu_antialiasing().aa_config(),
     };
     let mut ctx = context();
     ctx.register_texture("cam", &a).unwrap();

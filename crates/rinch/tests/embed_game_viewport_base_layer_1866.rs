@@ -146,7 +146,7 @@ fn render_via(ctx: &mut RinchContext, via: Via) -> Vec<[u8; 4]> {
                         base_color: vello::peniko::Color::TRANSPARENT,
                         width: W,
                         height: H,
-                        antialiasing_method: vello::AaConfig::Msaa16,
+                        antialiasing_method: rinch::gpu_antialiasing().aa_config(),
                     },
                 )
                 .expect("render");

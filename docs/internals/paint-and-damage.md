@@ -94,6 +94,34 @@ Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):
 - `VelloPainter` — records commands into `vello::Scene`
 - `TinySkiaPainter` — rasterizes directly to RGBA pixmap
 
+**GPU antialiasing is area coverage (#2286 stage 1a).** Every Vello render of a
+window or overlay scene reads `crate::gpu_antialiasing::scene_aa()` and every
+renderer is made with `scene_aa_support()` (`crates/rinch/src/gpu_antialiasing.rs`):
+`desktop.rs`'s window and offscreen renderers, `render_ui` and `render_partial`,
+`split_frame::render_slice`, `embed.rs`'s `RinchOverlayRenderer`, and the test
+oracles that stand in for them. The default is `AaConfig::Area`; it was `Msaa16`
+on the desktop and the embed overlay until #2286 (Android was already `Area`, and
+`android_runtime.rs` keeps its own constant and ignores the option). The mode is
+`App::gpu_antialiasing`, `rinch::set_gpu_antialiasing` or `RINCH_GPU_AA`
+(`area`/`msaa8`/`msaa16`, over the app's), and is latched by the first renderer
+made, since a Vello renderer has the pipelines of the modes in its `AaSupport`
+only (a renderer made with `area_only()` cannot render `Msaa16`; a later set is
+logged and ignored). Why: Msaa16 gave text edges at most 15 partial levels
+(#2286's probe: mean coverage error to FreeType 0.049 against Area's 0.041), and
+its fine pass (`fill_path_ms`, workgroup atomics and barriers per fill) cost
+37.7 ms for a 1280×800 page of 13px text on lavapipe against 24.8 ms for Area's
+pure-ALU `fill_path`; on an Adreno 619 the whole frame was 58 ms against 17. The
+risk is conflation where two paths' antialiased edges share a pixel; rinch
+snaps boxes to the device grid, and #2286's probe found no seam between abutting
+cells, borders or rounded grids at scales 1, 1.25 and 1.5 (≤ 81 pixels differed
+from Msaa16 by more than 8/255, none by more than 32). MSAA stays selectable for
+SVG-heavy scenes with abutting curves. The MSAA even-odd race below matters only
+when an app selects MSAA. Pins: `gpu_the_window_draws_text_with_area_coverage_2286`
+(`app/gpu_text_aa_2286_tests.rs`, CI's `test-gpu`: more than 64 distinct partial
+levels in a text window, where Msaa16 has at most 15), and
+`gpu_antialiasing::tests` (the env and request order, one mode's pipelines).
+`text_aa_cost_probe_2286` (same file, not in CI's filter) times both modes.
+
 The software renderer includes **dirty region caching**: when only a few nodes change, only the affected rectangular area is cleared and repainted. Subtrees outside the dirty region are skipped during paint traversal.
 
 **The damage is named, and it is a short list of rects** (`paint::compute_damage` → `paint::DamageRegion`). A software frame repaints what its damage names: the paint-dirty nodes, removed nodes' rects, and the drag ghost's and inspect highlight's old *and* new rects (`last_ghost_rect`, `last_inspect_rect` — both translucent, so their rect is repainted every frame they are up). **A frame in which nothing was marked paints nothing** (`repaint_none`): an empty damage used to mean "repaint everything", which made every alt-tab, focus move, selection clear, IME preedit and scroll into view a full repaint and hid sites that forgot to name their node. So a change that reaches pixels without a `DomDocument` write — a shell-written attribute such as `data-text-sel`, `data-focused`, `data-preedit`, a `scroll_offset` — must call `NodeTree::mark_paint_dirty` on its node. **A marked node that names no rect of its own still damages something**: `compute_damage` falls back to the ancestor that paints it (`boxed_owner`: the `<select>` for an `<option>` or its text, else the nearest ancestor with a box), and names nothing only for a node that is detached or has a `display: none` *ancestor* (its own `display` is not asked: a span that has just become `display: none` still has last frame's glyphs on screen). An IFC root whose text layout is rebuilt, or that stops being a root, is pushed paint-dirty too: new glyphs are a paint change whether or not its box moved. "Stops being a root" is read from the root's IFC signature, not from its `text_layout`, which a move verb has usually dropped already — a block whose only span was moved to another parent kept its glyphs on screen until #1064. `<style>`, `<script>`, `<head>`, `<meta>`, `<link>` and `<title>` compute `display: none` (the UA sheet's value; `apply_stylo_styles_to_taffy` skips them and used to leave the default `Flex`, which made a `<style>`'s CSS text an IFC line that flipped its box every structural pass and dragged the fallback to the page root). A box-less element with children (a `display: contents` wrapper, a 0x0 positioned anchor) names its subtree's painted bounds now *and* where they were last painted, so a moved tooltip anchor takes its child's old pixels along. `RinchApp::request_repaint` schedules a frame whose damage is named; `RinchApp::mark_scene_dirty` says "something changed, I don't know what" and repaints in full when nothing else is damaged (`repaint_full_unattributed` — the framework's own caller is window re-creation; the software `GameViewport` frames were one until #361 painted them inline with the viewport's box as their damage). A whole-document restyle (`NodeTree::note_full_restyle`: stylesheet, viewport, DPR, root font-size, theme) sets `whole_document_damaged` and repaints in full (`repaint_full_restyle`). The rects are up to `MAX_DAMAGE_RECTS` (8), pairwise disjoint, merged only where they overlap or one rect wastes little; each is cleared on its own, paint prunes subtrees touching none of them, and draws through one clip — their union as a path, opened with `TinySkiaPainter::push_damage_clip`, not a plain `push_clip`. That clip is not a mask to what it contains (#1007): tiny-skia draws an opaque fill through a different pipeline with a mask than without one (`Source` + lerp against scale + `SourceOver`), and the two round an anti-aliased edge pixel one LSB apart, so while it is the only clip open, a fill or stroke lying inside one damage rect is drawn unmasked, as the full repaint draws it. Any clip pushed above it — one `push_clip` skips as covering the damage included — ends that until its pop; an opacity layer does not. A box that straddles a damage rect's edge is still masked, so its opaque edge pixels inside the damage can still be one LSB from a full repaint's. Pins: `crates/rinch-dom/tests/damage_clip_pipeline_tests.rs`, `damage_clip_escape_tests.rs` (nothing drawn unmasked leaves the damage, miter spikes included), and `r2d-round` in `game_viewport_inline_tests::fresh_frames_match_the_reference_draw`. "Too big" is the **sum** of their areas against `FULL_REPAINT_FRACTION`. Pins: `crates/rinch/src/app/named_damage_tests.rs` (a local pixel oracle per converted site, each killed by removing that site's damage) and `rinch_dom::paint::damage`'s unit tests.

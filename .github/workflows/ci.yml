@@ -363,9 +363,10 @@ jobs:
           # #2085's optional device features (1), #2137's hidden-subtree skip (4),
           # #2215's composited frame handed to the app (2), and #1356's outside
           # list marker clipped by its scroller
-          # (`gpu_an_outside_marker_is_clipped_by_its_items_scroller`, 1).
-          run 106 -p rinch --features gpu,video --lib -- \
-            --ignored gpu_ --skip gpu_hover_probe --test-threads=1
+          # (`gpu_an_outside_marker_is_clipped_by_its_items_scroller`, 1), and
+          # #2286's area-coverage text (1; its cost probe is skipped).
+          run 107 -p rinch --features gpu,video --lib -- \
+            --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --test-threads=1
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves),
           # #1976's renderer replaced or taking turns (2), and #2071's lost frame (1).

@@ -120,6 +120,10 @@ pub struct App<F, M = NoMenuBar> {
     /// winit (and a bundle's `Info.plist`).
     #[cfg(feature = "desktop")]
     pub(crate) activation_policy: Option<crate::shell::activation::ActivationPolicy>,
+    /// See [`gpu_antialiasing`](App::gpu_antialiasing); `None` leaves it to
+    /// `RINCH_GPU_AA` and the default.
+    #[cfg(feature = "gpu")]
+    pub(crate) gpu_antialiasing: Option<crate::gpu_antialiasing::GpuAntialiasing>,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
     /// Whether a web build was given a menu bar — see [`NoMenuBar`].
@@ -168,6 +172,8 @@ where
             vsync: None,
             #[cfg(feature = "desktop")]
             activation_policy: None,
+            #[cfg(feature = "gpu")]
+            gpu_antialiasing: None,
             #[cfg(feature = "gpu")]
             gpu: None,
             menu_bar: PhantomData,
@@ -348,6 +354,8 @@ where
             #[cfg(feature = "desktop")]
             activation_policy: self.activation_policy,
             #[cfg(feature = "gpu")]
+            gpu_antialiasing: self.gpu_antialiasing,
+            #[cfg(feature = "gpu")]
             gpu: self.gpu,
             menu_bar: PhantomData,
         }
@@ -457,6 +465,18 @@ where
         self
     }
 
+    /// Choose the antialiasing the GPU renderer draws every window with
+    /// (issue #2286): [`GpuAntialiasing::Area`](crate::GpuAntialiasing::Area),
+    /// the default, or MSAA, for a scene whose abutting curved shapes show
+    /// seams under area coverage. The `RINCH_GPU_AA` environment variable
+    /// (`area`, `msaa8`, `msaa16`) overrides it. The software renderer and
+    /// Android ignore it.
+    #[cfg(feature = "gpu")]
+    pub fn gpu_antialiasing(mut self, mode: crate::GpuAntialiasing) -> Self {
+        self.gpu_antialiasing = Some(mode);
+        self
+    }
+
     /// On Linux, run on X11 — under a Wayland session, through XWayland —
     /// whenever an X server is reachable (`DISPLAY` is set); otherwise on
     /// whatever winit picks, as without this (issue #1519).
@@ -532,6 +552,8 @@ where
             prefer_x11: self.prefer_x11,
             title_tooltips: self.title_tooltips,
             vsync: self.vsync,
+            #[cfg(feature = "gpu")]
+            gpu_antialiasing: self.gpu_antialiasing,
             activation_policy: self.activation_policy,
             #[cfg(feature = "gpu")]
             gpu: self.gpu,
@@ -602,10 +624,16 @@ where
             prefer_x11,
             title_tooltips,
             vsync,
+            #[cfg(feature = "gpu")]
+            gpu_antialiasing,
             activation_policy,
             #[cfg(feature = "gpu")]
             gpu,
         } = self.into_startup();
+        #[cfg(feature = "gpu")]
+        if let Some(mode) = gpu_antialiasing {
+            crate::gpu_antialiasing::set_gpu_antialiasing(mode);
+        }
         crate::app::set_title_tooltips_default(title_tooltips);
         // Stored before the window exists: its renderer takes it (#2095).
         if let Some(on) = vsync {
@@ -908,6 +936,9 @@ pub(crate) struct Startup<F> {
     /// See [`App::vsync`].
     pub(crate) vsync: Option<bool>,
     /// See [`App::activation_policy`].
+    /// See [`App::gpu_antialiasing`].
+    #[cfg(feature = "gpu")]
+    pub(crate) gpu_antialiasing: Option<crate::gpu_antialiasing::GpuAntialiasing>,
     pub(crate) activation_policy: Option<crate::shell::activation::ActivationPolicy>,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,

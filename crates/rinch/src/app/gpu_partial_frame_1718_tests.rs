@@ -385,7 +385,7 @@ fn gpu_hover_probe() {
                     base_color: vello::peniko::Color::WHITE,
                     width: W,
                     height: H,
-                    antialiasing_method: vello::AaConfig::Msaa16,
+                    antialiasing_method: crate::gpu_antialiasing::scene_aa(),
                 },
             )
             .unwrap();
@@ -467,7 +467,7 @@ fn gpu_hover_probe() {
                     base_color: vello::peniko::Color::WHITE,
                     width: W,
                     height: H,
-                    antialiasing_method: vello::AaConfig::Msaa16,
+                    antialiasing_method: crate::gpu_antialiasing::scene_aa(),
                 },
             )
             .unwrap();
@@ -546,7 +546,7 @@ fn gpu_hover_probe() {
                     base_color: vello::peniko::Color::WHITE,
                     width: W,
                     height: H,
-                    antialiasing_method: vello::AaConfig::Msaa16,
+                    antialiasing_method: crate::gpu_antialiasing::scene_aa(),
                 },
             )
             .unwrap();
@@ -586,7 +586,7 @@ fn gpu_hover_probe() {
                             base_color: vello::peniko::Color::WHITE,
                             width: sw,
                             height: sh,
-                            antialiasing_method: vello::AaConfig::Msaa16,
+                            antialiasing_method: crate::gpu_antialiasing::scene_aa(),
                         },
                     )
                     .unwrap();
@@ -696,7 +696,7 @@ fn gpu_partial_frames_match_a_full_render() {
         base_color: vello::peniko::Color::WHITE,
         width: w,
         height: h,
-        antialiasing_method: vello::AaConfig::Msaa16,
+        antialiasing_method: crate::gpu_antialiasing::scene_aa(),
     };
     let ui = mk(W, H);
     let reference = mk(W, H);
