@@ -577,9 +577,9 @@ struct GlyphRunKey {
     /// pixel oracle, and real documents use a handful of sizes.
     size_bits: u32,
     hint: bool,
-    /// The stem darkening the run is rasterised with, in 1/64 px per side
-    /// (#2286): `0` for none.
-    darkening: u16,
+    /// `f32::to_bits` of the stem darkening the run is rasterised with, in
+    /// glyph-image pixels per side (#2286): `0` for none.
+    darkening: u32,
     coords: Box<[i16]>,
 }
 
@@ -638,7 +638,7 @@ impl GlyphCache {
         font_index: u32,
         size: f32,
         hint: bool,
-        darkening: u16,
+        darkening: u32,
         coords: &[i16],
     ) -> usize {
         let size_bits = size.to_bits();
@@ -1774,11 +1774,13 @@ impl Painter for TinySkiaPainter {
         // amount on every side (`stem_darkening_2286_tests`).
         let policy = super::text_rendering::text_rendering();
         let hint = hint && policy.hint();
-        let darkening_steps = match brush {
-            Brush::Solid(c) => (policy.darkening_for(*c, font_size) * 64.0).round() as u16,
-            _ => 0,
-        };
-        let darkening = darkening_steps as f32 / 64.0;
+        // The policy's amount is in device pixels; a glyph image is
+        // rasterised at `font_size` and drawn through `transform`, which
+        // scales it, so the image grows by the amount over that scale.
+        let device = policy.run_darkening_px(brush, font_size, transform);
+        let scale = super::text_rendering::device_scale(transform) as f32;
+        let darkening = if device > 0.0 && scale > 0.0 { device / scale } else { 0.0 };
+        let darkening_bits = darkening.to_bits();
 
         let mut render = swash::scale::Render::new(&[
             swash::scale::Source::ColorOutline(0),
@@ -1786,7 +1788,7 @@ impl Painter for TinySkiaPainter {
         ]);
         let render_color = swash::scale::Render::new(&[swash::scale::Source::ColorOutline(0)]);
         let mut render_outline = swash::scale::Render::new(&[swash::scale::Source::Outline]);
-        if darkening_steps != 0 {
+        if darkening > 0.0 {
             let back = swash::zeno::Vector::new(0.0, -darkening);
             render.embolden(darkening).offset(back);
             render_outline.embolden(darkening).offset(back);
@@ -1826,7 +1828,7 @@ impl Painter for TinySkiaPainter {
             // A darkened run on a face with colour outlines asks for the colour
             // glyph on its own first: the darkening's re-centring offset is the
             // whole `Render`'s, and a COLR glyph is not emboldened.
-            if !s.has_color_bitmaps() && (darkening_steps == 0 || !s.has_color_outlines()) {
+            if !s.has_color_bitmaps() && (darkening == 0.0 || !s.has_color_outlines()) {
                 return render.render(s, id as u16).and_then(to_cached);
             }
             if let Some(image) = render_color.render(s, id as u16) {
@@ -1848,7 +1850,7 @@ impl Painter for TinySkiaPainter {
                 font.index,
                 font_size,
                 hint,
-                darkening_steps,
+                darkening_bits,
                 normalized_coords,
             ))
         };

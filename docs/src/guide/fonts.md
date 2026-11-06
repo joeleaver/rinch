@@ -244,8 +244,12 @@ light text is thickened a little: by up to 0.10 device pixels on every side for
 text whose colour is light (its sRGB luma, over black, from 0.5 to 0.85 ramps
 from none to all of it), at sizes up to 24 device pixels, tapering to none at 64.
 Only the text colour decides, as in Skia: paint does not know what lies under
-the text. Dark text is untouched. Both renderers apply the same amount, so the
-GPU and software renderers still draw the same glyphs.
+the text, so light-grey text on a light background (the light theme's
+placeholder grey, `#adb5bd` on white) is thickened too. Dark text is untouched.
+The amount and the size taper are in device pixels, under CSS transforms too
+(13px text under `scale(2)` is treated as 26px), and both renderers apply the
+same amount, so the GPU and software renderers still draw the same glyphs.
+Blurred `text-shadow`s follow their own colour: a dark shadow is not thickened.
 
 **The OS's settings** are read once, on a thread of their own while the window
 starts, and `rinch::text_rendering::system_text_settings()` returns them:

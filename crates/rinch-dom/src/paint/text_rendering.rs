@@ -32,6 +32,7 @@ use std::cell::Cell;
 use std::sync::OnceLock;
 
 use peniko::color::{AlphaColor, Srgb};
+use peniko::kurbo::Affine;
 
 /// The app's text-rendering choice: what [`App::text_rendering`] takes.
 ///
@@ -309,6 +310,9 @@ impl ResolvedTextRendering {
     /// 0.85. The amount tapers off with size, whole up to 24 device pixels per
     /// em and none from 64: a large glyph's stems are wide enough that the
     /// thinning is not seen. The result is quantised to 1/64 px.
+    ///
+    /// `font_size` is the size in **device** pixels; for a run drawn under a
+    /// transform, use [`run_darkening_px`](Self::run_darkening_px).
     #[inline]
     pub fn darkening_for(&self, color: AlphaColor<Srgb>, font_size: f32) -> f32 {
         if self.darkening_px <= 0.0 {
@@ -326,7 +330,31 @@ impl ResolvedTextRendering {
         let px = self.darkening_px * light * taper;
         (px * DARKENING_STEPS_PER_PX).round() / DARKENING_STEPS_PER_PX
     }
+
+    /// The stem darkening of a glyph run, in **device** pixels per side: a
+    /// solid `brush` only, judged at the run's device size, `font_size` times
+    /// the scale of `transform` ([`device_scale`]). Each painter turns it into
+    /// the amount its outline space needs, so both grow a glyph by the same
+    /// device amount under any transform.
+    #[inline]
+    pub fn run_darkening_px(&self, brush: &peniko::Brush, font_size: f32, transform: Affine) -> f32 {
+        match brush {
+            peniko::Brush::Solid(color) => {
+                self.darkening_for(*color, font_size * device_scale(transform) as f32)
+            }
+            _ => 0.0,
+        }
+    }
 }
+
+/// How much `transform` scales lengths: the square root of its linear part's
+/// determinant (`1` for a translation or a rotation, `2` for `scale(2)`). A degenerate transform reads as `0`.
+#[inline]
+pub fn device_scale(transform: Affine) -> f64 {
+    let [a, b, c, d, _, _] = transform.as_coeffs();
+    (a * d - b * c).abs().sqrt()
+}
+
 
 thread_local! {
     static CURRENT: Cell<Option<ResolvedTextRendering>> = const { Cell::new(None) };

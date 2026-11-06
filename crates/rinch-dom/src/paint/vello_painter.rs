@@ -373,9 +373,21 @@ fn encode_glyphs(
     glyphs: &[PaintGlyph],
 ) {
     let policy = super::text_rendering::text_rendering();
-    let darkening = match brush {
-        Brush::Solid(color) => policy.darkening_for(*color, font_size) as f64,
-        _ => 0.0,
+    let hint = hint && policy.hint();
+    // The darkening is in device pixels. Vello expands the outline in the
+    // space it draws the glyph in: with hinting and a uniform-scale transform
+    // it folds the scale into the font size and draws at device size
+    // (`vello_encoding::resolve`, the `GlyphRun` patch, compares the f32
+    // matrix this way), otherwise at `font_size`, scaled by `transform`
+    // afterwards.
+    let device = policy.run_darkening_px(brush, font_size, transform) as f64;
+    let darkening = if device == 0.0 {
+        0.0
+    } else {
+        let [a, b, c, d, _, _] = transform.as_coeffs();
+        let folds = hint && a as f32 == d as f32 && b as f32 == 0.0 && c as f32 == 0.0;
+        let scale = super::text_rendering::device_scale(transform);
+        if folds || scale == 0.0 { device } else { device / scale }
     };
     scene
         .draw_glyphs(font)
@@ -383,7 +395,7 @@ fn encode_glyphs(
         .transform(transform)
         .glyph_transform(glyph_transform)
         .brush(brush)
-        .hint(hint && policy.hint())
+        .hint(hint)
         .font_embolden(vello::FontEmbolden::new(peniko::kurbo::Diagonal2::new(
             darkening, darkening,
         )))
