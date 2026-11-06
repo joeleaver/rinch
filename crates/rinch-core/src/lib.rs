@@ -29,6 +29,7 @@ pub mod event;
 pub mod events;
 pub mod file;
 pub mod for_loop;
+pub mod html_entities;
 pub mod image;
 pub mod main_thread;
 pub mod match_dom;

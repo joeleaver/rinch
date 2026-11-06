@@ -7,6 +7,9 @@ description = "Pure, renderer-agnostic core of the Rinch rich-text editor: docum
 
 [dependencies]
 thiserror.workspace = true
+# HTML character references (`rinch_core::html_entities`), shared with
+# rinch-dom's `set_inner_html` parser (#2239). Pure and wasm-clean.
+rinch-core = { workspace = true }
 # Input rules (M4): markdown-shortcut pattern matching. Pure Rust, wasm-clean.
 regex = "1"
 # Total, attr-aware serialization (M3). Both optional and wasm-clean.

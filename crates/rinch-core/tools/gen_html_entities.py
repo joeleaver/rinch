@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate src/serialize/html_entities_table.rs from the HTML standard's
+"""Generate src/html_entities/table.rs from the HTML standard's
 named character references.
 
     curl -o entities.json https://html.spec.whatwg.org/entities.json
-    python3 tools/gen_html_entities.py entities.json > src/serialize/html_entities_table.rs
+    python3 tools/gen_html_entities.py entities.json > src/html_entities/table.rs
 
 The table is not typed by hand and not edited: run this again when the
 standard adds a name (it has not since 2014).

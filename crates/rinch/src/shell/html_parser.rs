@@ -129,7 +129,15 @@ fn parse_children(parser: &mut HtmlParser, end_tag: Option<&str>) -> Option<Vec<
             // Parse text
             let text = parser.consume_until("<");
             if !text.is_empty() {
-                children.push(ParsedNode::Text(decode_html_entities(text)));
+                // `<style>` and `<script>` hold raw text, whose references
+                // are not decoded (the HTML standard's RAWTEXT and script
+                // data states).
+                let raw = end_tag.is_some_and(is_raw_text_element);
+                children.push(ParsedNode::Text(if raw {
+                    text.to_string()
+                } else {
+                    decode_html_entities(text)
+                }));
             }
         }
     }
@@ -191,17 +199,15 @@ fn parse_element(parser: &mut HtmlParser) -> Option<ParsedNode> {
                 parser.consume_char(); // "
                 let value = parser.consume_until("\"").to_string();
                 parser.consume_char(); // "
-                decode_html_entities(&value)
+                decode_attribute_value(&value)
             } else if parser.peek_char() == Some('\'') {
                 parser.consume_char(); // '
                 let value = parser.consume_until("'").to_string();
                 parser.consume_char(); // '
-                decode_html_entities(&value)
+                decode_attribute_value(&value)
             } else {
                 // Unquoted value
-                parser
-                    .consume_while(|c| !c.is_whitespace() && c != '>')
-                    .to_string()
+                decode_attribute_value(parser.consume_while(|c| !c.is_whitespace() && c != '>'))
             }
         } else {
             // Boolean attribute
@@ -251,14 +257,26 @@ pub fn is_void_element(tag: &str) -> bool {
     )
 }
 
-/// Decode common HTML entities.
+/// Whether `tag`'s content is raw text, in which character references are
+/// not decoded (`<style>`, `<script>`).
+fn is_raw_text_element(tag: &str) -> bool {
+    tag.eq_ignore_ascii_case("style") || tag.eq_ignore_ascii_case("script")
+}
+
+/// Decode the character references of an element's text as the HTML
+/// standard does (#2239): every named reference, decimal and hexadecimal
+/// ones (`&#8203;`, `&#x200B;`), in one pass
+/// ([`rinch_core::html_entities::decode_text`]).
 pub fn decode_html_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", "\u{00A0}")
+    rinch_core::html_entities::decode_text(s)
+}
+
+/// Decode the character references of an attribute's value
+/// ([`rinch_core::html_entities::decode_attribute`]): as in text, except that
+/// a legacy name with no `;` before `=`, a letter or a digit is left alone
+/// (`?a=1&copy=2`).
+pub fn decode_attribute_value(s: &str) -> String {
+    rinch_core::html_entities::decode_attribute(s)
 }
 
 #[cfg(test)]
@@ -320,5 +338,14 @@ mod tests {
     fn test_decode_entities() {
         assert_eq!(decode_html_entities("&lt;div&gt;"), "<div>");
         assert_eq!(decode_html_entities("&amp;"), "&");
+        // #2239: numeric references, every named one, one pass.
+        assert_eq!(
+            decode_html_entities("a&#8203;b&#x41;&#X42;&#67&hellip;&amp;lt;"),
+            "a\u{200b}bABC\u{2026}&lt;"
+        );
+        assert_eq!(
+            decode_attribute_value("?a=1&copy=2&#8203;"),
+            "?a=1&copy=2\u{200b}"
+        );
     }
 }
