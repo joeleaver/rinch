@@ -98,6 +98,12 @@ pub(crate) struct SmoothWheelState {
     /// is being handled as the `MouseWheel` it stands for, so that arm knows
     /// its default scroll animates.
     pub(crate) line_wheel: bool,
+    /// The glides' own time, in ms: it moves by the document clock's forward
+    /// steps only (`glide_now`), so a wall clock set back mid-glide neither
+    /// replays the curve backwards nor stalls it until the clock catches up.
+    glide_ms: f64,
+    /// The document clock's reading at the last `glide_now`.
+    clock_seen: Option<f64>,
 }
 
 impl Default for SmoothWheelState {
@@ -106,6 +112,8 @@ impl Default for SmoothWheelState {
             enabled: !SMOOTH_OFF_BY_DEFAULT.get(),
             running: Vec::new(),
             line_wheel: false,
+            glide_ms: 0.0,
+            clock_seen: None,
         }
     }
 }
@@ -296,7 +304,8 @@ impl ScrollCurve {
             old_duration,
             new_delta,
         ));
-        if new_duration < EPSILON {
+        // `kEpsilon` is compared with the duration in *seconds* there.
+        if new_duration < EPSILON * 1000.0 {
             self.initial = current;
             self.target = new_target;
             self.segment_start = now;
@@ -377,6 +386,18 @@ impl RinchApp {
 }
 
 impl SmoothWheelState {
+    /// The glides' time for a document clock reading of `clock` ms: the last
+    /// one plus however far the clock moved *forward* since. A step back (the
+    /// wall clock corrected) counts as no time, and the next frame carries on
+    /// from there.
+    pub(crate) fn glide_now(&mut self, clock: f64) -> f64 {
+        if let Some(seen) = self.clock_seen {
+            self.glide_ms += (clock - seen).max(0.0);
+        }
+        self.clock_seen = Some(clock);
+        self.glide_ms
+    }
+
     /// A line wheel's `delta` content px on `axis` of `id`: start an
     /// animation toward it, or move the running one's target on by it.
     /// Answers whether the target moved (a notch into a scroller whose
@@ -391,7 +412,7 @@ impl SmoothWheelState {
         let Some((offset, remainder)) = precise_offset(doc, id, axis) else {
             return false;
         };
-        let now = doc.animation_now_ms();
+        let now = self.glide_now(doc.animation_now_ms());
         let max = max_offset(doc, id, axis);
         let running = self
             .running
@@ -441,13 +462,17 @@ impl RinchApp {
         let mut moved_any = false;
         {
             let mut d = doc.borrow_mut();
-            let now = d.animation_now_ms();
+            let now = self.smooth_wheel.glide_now(d.animation_now_ms());
             self.smooth_wheel.running.retain_mut(|anim| {
                 let Some((offset, remainder)) = precise_offset(&d, anim.node, anim.axis) else {
                     return false;
                 };
-                // Something else scrolled it, or the scrollbar has it.
-                if offset != anim.written || dragged == Some(anim.node) {
+                // Something else scrolled it, the scrollbar has it, or a
+                // `lock_scroll` (#474) now keeps the user's gestures off it.
+                if offset != anim.written
+                    || dragged == Some(anim.node)
+                    || d.tree.scroll_locked_out(anim.node)
+                {
                     return false;
                 }
                 let finished = !enabled || anim.curve.is_finished(now);
@@ -490,6 +515,9 @@ impl RinchApp {
         }
         // A frame that moved something must be drawn even when it was the
         // last one.
+        if self.smooth_wheel.running.is_empty() {
+            self.smooth_wheel.clock_seen = None;
+        }
         moved_any || !self.smooth_wheel.running.is_empty()
     }
 }
