@@ -56,7 +56,15 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     (`ifc::atomic_vertical_align`; a text span's is still rinch's glyph shift).
     `tests/atomic_inline_baseline_663_tests.rs` pins Chrome 156. Not done: a zero-height atomic
     inline alone on a line still makes a 0px line (Chrome: the strut's; parley counts a box with
-    no extent as no content), and margins of an atomic inline take no room on its line.
+    no extent as no content), and the **horizontal** margins of an atomic inline take no room on
+    its line (#1405). Its top and bottom margins do: the `InlineBox` parley lines up is the box's
+    margin box on the block axis (`ifc::atomic_vertical_margins`, its length margins; a
+    percentage counts 0), its baseline moved down by the top margin, and
+    `write_inline_positions` puts the border box back inside it, so a box with no baseline (an
+    `<img>`) sits its bottom margin edge on the baseline, as CSS 2.1 §10.8 says. Before, an
+    `<img style="margin: 20px 0 35px">` in a line of its own took 55px less than in Chrome. No
+    other reader of a positioned inline box reads its `y` or `height` (they read `x`/`width`,
+    or the node's own layout). `tests/atomic_inline_vertical_margin_tests.rs` pins Chrome 156.
   - **A layout with no item keeps one line, the strut's**, for a caret. CSS makes such a line box
     zero-height, so an IFC with no text and no inline box is handed one zero-size out-of-flow box
     (`ifc::EMPTY_IFC_BOX`, an edge-box id no node owns): parley then makes the line invisible.
