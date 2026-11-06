@@ -963,11 +963,17 @@ impl RinchApp {
                 self.claim_press_focus(x, y, true);
 
                 // Check for draggable element — enter pending drag instead of
-                // immediate click handling
+                // immediate click handling. An IFC's text is hit as its root,
+                // so the walk starts where the click walk starts, at the text
+                // node under the glyphs (`event_target_at`): an inline
+                // `<span draggable>` or `<a draggable>` in a paragraph is on
+                // the way, as Chrome starts its drag (#2233).
                 let draggable_node = if let Some(doc) = &self.doc {
                     let d = doc.borrow();
                     if let Some(hit_id) = self.shared_hit(&d, x, y) {
-                        Self::find_draggable(&d.tree, hit_id)
+                        let from = super::hit_testing::event_target_at(&d.tree, hit_id, x, y)
+                            .unwrap_or(hit_id);
+                        Self::find_draggable(&d.tree, from)
                     } else {
                         None
                     }

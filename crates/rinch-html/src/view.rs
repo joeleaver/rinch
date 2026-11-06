@@ -65,8 +65,9 @@ pub struct HtmlView {
     pub link_menu: bool,
     /// Whether the document's text can be selected and copied, as in a
     /// browser (the default). `false` makes it unselectable, as an app's own
-    /// text is. This is the switch on desktop: a style sheet's `user-select`
-    /// is not read there yet, only an element's own `style`.
+    /// text is. It sets the view's `user-select` by a rule of zero
+    /// specificity, so an app's own `user-select` on the view (a style sheet
+    /// rule for a `class:` it gives the view, or a `style:`) overrides it.
     pub selectable: bool,
 }
 
@@ -113,12 +114,19 @@ impl std::fmt::Debug for HtmlView {
 ///   black on white, whatever the app's own theme (a dark theme's light text
 ///   would otherwise reach mail written for a white page).
 /// - Links show a pointer.
+/// - Its text is selectable (`user-select: text`), or not under
+///   `selectable: false`. Both rules are inside `:where()`, specificity zero,
+///   so any rule of the app's that names the view (a `class:` on it, an
+///   ancestor) overrides them per instance, wherever its sheet comes in the
+///   document (#2231).
 ///
 /// An app may restyle `.rinch-html-view` through the cascade (its own
 /// colours, its font); one that lets content overflow takes that on.
 const CSS: &str = "\
 .rinch-html-view { position: relative; z-index: 0; overflow-x: auto; overflow-y: hidden; \
 background-color: #ffffff; color: #000000; }
+:where(.rinch-html-view) { user-select: text; }
+:where(.rinch-html-view.rinch-html-unselectable) { user-select: none; }
 .rinch-html-view a[href] { cursor: pointer; }";
 
 /// The width a document is first cleaned at, before the view has one: wide,
@@ -128,22 +136,22 @@ const FIRST_WIDTH: f32 = 10_000.0;
 impl Component for HtmlView {
     fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let view = scope.create_element("div");
-        view.set_attribute("class", "rinch-html-view");
+        // A document's text can be selected and copied, as in a browser; an
+        // app's own controls cannot, by default (`selectable`). Set by class
+        // rules of zero specificity (`CSS`), so the app's own `user-select`
+        // on the view wins; the document's elements take it from here
+        // unless they say otherwise.
+        view.set_attribute(
+            "class",
+            if self.selectable {
+                "rinch-html-view"
+            } else {
+                "rinch-html-view rinch-html-unselectable"
+            },
+        );
         // Its links are the app's to follow (`onlink`): on the web, the
         // browser never navigates the app's own tab to one.
         view.set_attribute("data-claim-links", if self.link_menu { "menu" } else { "" });
-        // A document's text can be selected and copied, as in a browser; an
-        // app's own controls cannot, by default (`selectable`). rinch reads
-        // `user-select` from the `style` attribute on desktop, and the
-        // document's own elements take it from here unless they say otherwise.
-        view.set_attribute(
-            "style",
-            if self.selectable {
-                "user-select: text"
-            } else {
-                "user-select: none"
-            },
-        );
         let style = scope.create_element("style");
         style.append_child(&scope.create_text(CSS));
         view.append_child(&style);

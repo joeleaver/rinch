@@ -201,8 +201,8 @@ fn an_important_declaration_survives_the_collapse_in_one_case() {
 }
 
 /// A reader that scans the attribute for one property by name sees the
-/// normalised name. `user-select` is read this way in `style_resolution`
-/// (Stylo's servo build does not carry the property), so `USER-SELECT: none`
+/// normalised name. `user-select` was read this way in `style_resolution`
+/// until #2231 (it now comes from Stylo's cascade), and `USER-SELECT: none`
 /// used to resolve to the default `Auto` — nothing rewrites the attribute
 /// here, so this is the raw parse, not the merge path.
 #[test]

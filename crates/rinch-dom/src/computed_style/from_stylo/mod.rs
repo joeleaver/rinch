@@ -293,9 +293,10 @@ impl ComputedStyle {
             // Pointer events
             pointer_events: pointer_events_from_stylo(&inherited_ui.pointer_events),
 
-            // User select (not available in Stylo servo build — defaults to Auto,
-            // resolved per-tag in style_resolution/mod.rs)
-            user_select: UserSelectValue::Auto,
+            // `user-select` and its `-webkit-`/`-moz-` aliases, from every
+            // origin through the cascade (#2231). Not inherited: `auto` is
+            // resolved from the parent where selection asks.
+            user_select: user_select_from_stylo(cv.get_ui().user_select),
 
             // Typography
             font_size: font_size_px,
