@@ -658,15 +658,8 @@ impl RinchDocument {
                 vertical-align: baseline !important;
                 position: static !important;
             }
-            rinch-marker[rinch-list-marker~="inside"] {
+            rinch-marker[rinch-list-marker="inside"] {
                 display: inline !important;
-            }
-            /* Chrome 156 draws an inside disc/circle/square as a shape
-               followed by a 1em margin: 17, 22, 27, 33 and 43px before the
-               text at 12, 16, 20, 24 and 32px. */
-            rinch-marker[rinch-list-marker="inside symbol"] {
-                display: inline-block !important;
-                width: calc(1.3em + 1px) !important;
             }
             rinch-marker[rinch-list-marker="outside"] {
                 display: block !important;

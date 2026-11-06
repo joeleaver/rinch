@@ -632,11 +632,15 @@ impl RinchDocument {
         //
         // The text is Chrome 156's, measured with the bundled Inter: a
         // number is followed by ". " (an ordinary space), inside or outside.
-        // A symbol is drawn by Chrome as a shape, not a glyph, and the glyph
-        // stands alone here: `inside`, the UA sheet gives the marker the width
-        // Chrome gives the shape and its 1em margin (`1.3em + 1px` is within a
-        // pixel of it at 12-32px); `outside`, `crate::list_marker` centres it
-        // where Chrome centres the shape.
+        // A symbol is drawn by Chrome as a shape, not a glyph. `outside`, the
+        // glyph stands alone and `crate::list_marker` centres it where Chrome
+        // centres the shape. `inside`, it is followed by an en space and a
+        // four-per-em space, which with the bundled Inter's 0.625em bullet
+        // come to Chrome's shape and 1em margin (17, 22, 27, 33 and 43px at
+        // 12-32px) within a pixel. Text, not an `inline-block` of that width:
+        // parley gives an inline box at the start of a paragraph the left-to-
+        // right bidi level, which put the marker at the end of an RTL line
+        // (review of #2271); text takes the paragraph's level.
         let symbol = match keyword {
             Marker::Disc => Some('\u{2022}'),   // •
             Marker::Circle => Some('\u{25E6}'), // ◦
@@ -645,6 +649,7 @@ impl RinchDocument {
             _ => Some('\u{2022}'),
         };
         let marker_text = match symbol {
+            Some(glyph) if inside => format!("{glyph}\u{2002}\u{2005}"),
             Some(glyph) => glyph.to_string(),
             None => {
                 let counters = self.compute_list_item_counters(node_id);
@@ -665,11 +670,7 @@ impl RinchDocument {
         self.set_attribute(
             span_id,
             "rinch-list-marker",
-            match (inside, symbol.is_some()) {
-                (true, true) => "inside symbol",
-                (true, false) => "inside",
-                (false, _) => "outside",
-            },
+            if inside { "inside" } else { "outside" },
         );
         let text_node_id = self.create_text(&marker_text);
 
