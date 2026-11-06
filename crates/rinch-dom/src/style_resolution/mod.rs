@@ -855,7 +855,7 @@ impl RinchDocument {
         let taffy_style_changed_count = std::cell::Cell::new(0u32);
 
         // Get current time for transition start timestamps
-        let current_time_ms = self.current_time_ms();
+        let current_time_ms = self.animation_now_ms();
 
         // Nodes whose `display` was `none` when this cascade started. See the
         // push site below and [`Self::is_rendered_for_transition`] (#703).
@@ -2329,15 +2329,5 @@ impl RinchDocument {
             self.invalidate_text_measure_for_node(id);
             self.tree.layout_dirty = true;
         }
-    }
-
-    /// Get a monotonic timestamp in milliseconds for transition timing.
-    fn current_time_ms(&self) -> f64 {
-        use web_time::SystemTime;
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64()
-            * 1000.0
     }
 }

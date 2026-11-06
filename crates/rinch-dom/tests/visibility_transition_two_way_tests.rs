@@ -39,6 +39,7 @@ fn tr(doc: &RinchDocument, n: NodeId, p: TP) -> Option<rinch_dom::transition::Ac
 }
 fn build(root_class: &str, chain: &[&str]) -> (RinchDocument, NodeId, Vec<NodeId>) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let root = doc.create_element("div");
@@ -157,7 +158,7 @@ fn q4_declared_visible_kid_stays_visible() {
     assert_eq!(vis(&doc, root), V::Hidden);
 }
 
-/// q5 (real clock): a node with BOTH a transform and a visibility transition reopened
+/// q5 (pinned clock, #2267): a node with BOTH a transform and a visibility transition reopened
 /// mid-close: visibility cancelled, transform reverses (shortened) from its current position.
 #[test]
 fn q5_transform_reversal_untouched_by_visibility_cancel() {
@@ -167,8 +168,9 @@ fn q5_transform_reversal_untouched_by_visibility_cancel() {
     doc.resolve_layout(801.0, 600.0);
     let t0 = tr(&doc, root, TP::Transform).expect("slide out");
     assert!(tr(&doc, root, TP::Visibility).is_some());
-    std::thread::sleep(std::time::Duration::from_millis(150));
-    tick(&mut doc, now());
+    doc.advance_animation_clock_ms(150.0);
+    let now = doc.animation_now_ms();
+    tick(&mut doc, now);
     doc.set_attribute(root, "class", "root slide");
     doc.resolve_layout(802.0, 600.0);
     let back = tr(&doc, root, TP::Transform).expect("reversal running");
@@ -178,7 +180,7 @@ fn q5_transform_reversal_untouched_by_visibility_cancel() {
         back.from, back.duration_ms
     );
     assert!(
-        (back.duration_ms - el).abs() < 2.0,
+        (back.duration_ms - el).abs() < 1e-3,
         "shortened reversal: dur {} vs elapsed {el}",
         back.duration_ms
     );
@@ -194,7 +196,7 @@ fn q5_transform_reversal_untouched_by_visibility_cancel() {
             .parse()
             .unwrap();
         let expect = -100.0 * el / 300.0;
-        assert!((px - expect).abs() < 3.0, "from {px} vs {expect}");
+        assert!((px - expect).abs() < 1e-3, "from {px} vs {expect}");
     } else {
         panic!()
     }
@@ -203,17 +205,11 @@ fn q5_transform_reversal_untouched_by_visibility_cancel() {
         "pending hide cancelled"
     );
     for _ in 0..4 {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        tick(&mut doc, now());
+        doc.advance_animation_clock_ms(100.0);
+        let now = doc.animation_now_ms();
+        tick(&mut doc, now);
         doc.resolve_layout(803.0, 600.0);
         assert_eq!(vis(&doc, root), V::Visible);
         assert_eq!(vis(&doc, kid), V::Visible);
     }
-}
-fn now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
-        * 1000.0
 }

@@ -113,6 +113,7 @@ fn spinner_document() -> (RinchDocument, NodeId) {
 /// CI as `(253, 2, 0)` where an idle machine gave `(255, 0, 0)`.
 fn spinner_document_ms(duration_ms: f64) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(&format!(
         "@keyframes spin {{ \
            from {{ background-color: rgb({}, {}, {}); }} \
@@ -372,6 +373,7 @@ fn a_theme_change_that_removes_the_declaration_stops_the_animation() {
 #[test]
 fn a_transition_declared_before_the_first_layout_does_not_run() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(
         ".box { width: 10px; height: 10px; line-height: 10px; \
                 background-color: rgb(0, 0, 255); \
@@ -428,6 +430,7 @@ fn a_transition_declared_before_the_first_layout_does_not_run() {
 #[test]
 fn a_stylesheet_appended_during_construction_does_not_transition() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     let body = doc.body();
     let div = doc.create_element("div");
     doc.set_attribute(
@@ -490,6 +493,7 @@ fn a_stylesheet_appended_during_construction_does_not_transition() {
 #[test]
 fn a_theme_change_starts_no_transitions() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(
         ".box { width: 10px; height: 10px; line-height: 10px; \
                 background-color: var(--probe, rgb(0, 0, 255)); \
@@ -529,16 +533,6 @@ fn a_theme_change_starts_no_transitions() {
 
 // ── (f) a subtree shown on a pass the flag is off for gets its animations back ──
 
-/// Wall-clock milliseconds, on the same clock `ActiveAnimation::start_time_ms`
-/// is written from.
-fn now_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
-        * 1000.0
-}
-
 /// `body > div.panel > div > div.spin`, **not laid out**, with the panel's
 /// `display` written inline — the route `restart_animations_in_subtree` exists
 /// for, since an inline write re-cascades the node it was written to and
@@ -558,6 +552,7 @@ fn now_ms() -> f64 {
 /// Returns `(doc, panel, spinner)`.
 fn panel_document(panel_display: &str) -> (RinchDocument, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.set_viewport(VIEWPORT.0, VIEWPORT.1);
     doc.load_css(&format!(
         "@keyframes spin {{ \
@@ -657,8 +652,8 @@ fn a_panel_shown_before_the_first_layout_starts_its_spinner() {
 ///
 /// Off the fixed point twice over. The original clock is backdated 400ms, so a
 /// resurrected entry and a restarted one carry timestamps 400ms apart rather
-/// than a wall-clock tie; and the assertion is that the new clock started
-/// **inside** the show pass, which a stale entry cannot satisfy.
+/// than a tie; and the assertion is that the new clock is the show pass's own
+/// time (the pinned clock, #2267), which a stale entry cannot satisfy.
 ///
 /// Kills M9 as well — measured — so it is not the fixture above twice: that one
 /// never had a clock to be wrong about.
@@ -691,7 +686,7 @@ fn a_spinner_hidden_and_shown_before_the_first_layout_restarts_from_zero() {
         !doc.tree.transitions_enabled,
         "precondition: the pass below is the first layout, with the flag off"
     );
-    let show_started = now_ms();
+    let show_started = doc.animation_now_ms();
     doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
 
     assert_eq!(
@@ -700,9 +695,9 @@ fn a_spinner_hidden_and_shown_before_the_first_layout_restarts_from_zero() {
         "a spinner shown again on the first layout spins again"
     );
     let new_start = start_time(&doc, spinner);
-    assert!(
-        new_start >= show_started,
-        "…from a clock started by the show ({new_start} < {show_started}), \
-         not the one it had before the hide ({old_start})"
+    assert_eq!(
+        new_start, show_started,
+        "…from a clock started by the show, not the one it had before the hide \
+         ({old_start})"
     );
 }

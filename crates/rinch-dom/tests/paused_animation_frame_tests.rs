@@ -86,6 +86,11 @@ const CSS: &str = "
 
 const VP: (f32, f32) = (800.0, 600.0);
 
+/// The pinned animation clock (#2267). Every document here is pinned before
+/// its first cascade, and time passes only by `advance_animation_clock_ms`,
+/// so a sample is taken at exactly the time a test says.
+const CLOCK_MS: f64 = 1_000_000.0;
+
 fn animations(doc: &RinchDocument, node: NodeId) -> usize {
     doc.tree
         .active_animations
@@ -106,6 +111,7 @@ fn width_px(doc: &RinchDocument, node: NodeId) -> Option<f32> {
 /// armed. Returns the boxes in the order given.
 fn mount(classes: &[&str]) -> (RinchDocument, Vec<NodeId>) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(CLOCK_MS));
     doc.load_css(CSS);
     let body = doc.body();
     let boxes = classes
@@ -313,24 +319,21 @@ fn resuming_a_paused_animation_asks_for_frames_again() {
 /// neither jumps the pause nor starts over.
 ///
 /// `k763-slide` is 0px→10000px over 10000ms, linear, so its `width` in px *is*
-/// its elapsed time in ms. The animation runs for at least 80ms before it is
-/// paused, which keeps the frozen sample off zero — at zero, "resume from where
+/// its elapsed time in ms. The animation runs for 80ms before it is
+/// paused (the clock is pinned, so exactly 80ms), which keeps the frozen sample off zero — at zero, "resume from where
 /// it was" and "restart from t=0" are the same answer.
 #[test]
 fn a_resumed_animation_continues_from_where_it_was_paused() {
     let (mut doc, boxes) = mount(&["box slide"]);
     let node = boxes[0];
-    std::thread::sleep(std::time::Duration::from_millis(80));
+    doc.advance_animation_clock_ms(80.0);
 
     doc.set_attribute(node, "class", "box slide slide--held");
     doc.resolve_layout(VP.0, VP.1);
     let frozen = width_px(&doc, node).expect("a length");
-    assert!(
-        frozen >= 80.0,
-        "precondition: paused after at least 80ms of running, read {frozen}"
-    );
+    assert_eq!(frozen, 80.0, "precondition: paused after 80ms of running");
 
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    doc.advance_animation_clock_ms(150.0);
     assert!(!doc.tick_animations(), "paused, so nothing to advance");
     assert_eq!(
         width_px(&doc, node),
@@ -343,15 +346,13 @@ fn a_resumed_animation_continues_from_where_it_was_paused() {
     assert!(doc.tick_animations(), "running again");
     let resumed = width_px(&doc, node).expect("a length");
 
-    assert!(
-        resumed >= frozen,
-        "resumed at {resumed}px, before the {frozen}px it was paused at — \
-         that is a restart, not a resume"
-    );
-    assert!(
-        resumed < frozen + 100.0,
-        "resumed at {resumed}px against a pause at {frozen}px: the 150ms spent \
-         paused was counted as running time"
+    // The resuming tick reads the same pinned time as the resuming cascade, so
+    // no running time has passed since: a resume is exactly where it paused.
+    // A restart reads 0px; a clock that jumped the pause reads 230px.
+    assert_eq!(
+        resumed, frozen,
+        "resumed at {resumed}px against a pause at {frozen}px: below is a \
+         restart, above counts the 150ms spent paused as running time"
     );
 }
 
@@ -390,7 +391,7 @@ fn a_finished_transition_does_not_displace_a_paused_sample() {
         "precondition: and the cascade still shows the paused sample"
     );
 
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    doc.advance_animation_clock_ms(120.0);
     doc.tick_transitions();
     assert_eq!(
         width_px(&doc, node),
@@ -426,6 +427,7 @@ const WORDS: &str = "aaaa bbbb cccc dddd eeee ffff gggg hhhh";
 
 fn text_box(classes: &str, inline_font_size: Option<f32>) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(CLOCK_MS));
     doc.load_css(TEXT_CSS);
     let body = doc.body();
     let node = doc.create_element("div");
@@ -534,8 +536,8 @@ fn a_class_that_adds_a_paused_font_size_animation_measures_its_text() {
 /// resolves to agree — and the paused sample, taken later, does not.
 ///
 /// `k763-hold` holds 16px (the base) for its first 300ms. The first tick lands
-/// inside the hold, the pause lands at least 500ms in, so its sample is above
-/// 16px whatever the scheduler does: past the end, `forwards` holds 48px.
+/// inside the hold, the pause lands 500ms in (the clock is pinned), at
+/// 16 + 32 × 200/700 ≈ 25.14px.
 #[test]
 fn pausing_after_a_tick_that_sampled_the_base_size_measures_the_paused_size() {
     let (mut doc, node) = text_box("tb hold", None);
@@ -546,7 +548,7 @@ fn pausing_after_a_tick_that_sampled_the_base_size_measures_the_paused_size() {
         "precondition: the last tick before the pause sampled the base size"
     );
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    doc.advance_animation_clock_ms(500.0);
     doc.set_attribute(node, "class", "tb hold p");
     doc.resolve_layout(VP.0, VP.1);
     let paused = font_size(&doc, node);
@@ -581,6 +583,7 @@ fn pausing_after_a_tick_that_sampled_the_base_size_measures_the_paused_size() {
 #[test]
 fn an_animation_paused_inside_its_delay_keeps_its_place() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(CLOCK_MS));
     doc.load_css(
         "
         @keyframes k763-slide { from { width: 0px; } to { width: 10000px; } }
@@ -596,15 +599,15 @@ fn an_animation_paused_inside_its_delay_keeps_its_place() {
     doc.tree.transitions_enabled = true;
     doc.resolve_layout(VP.0, VP.1);
 
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    doc.advance_animation_clock_ms(150.0);
     doc.set_attribute(node, "class", "box dly p");
     doc.resolve_layout(VP.0, VP.1);
     let spent = doc.tree.active_animations[&node.0][0]
         .paused_elapsed_ms
         .expect("precondition: paused");
-    assert!(
-        (140.0..400.0).contains(&spent),
-        "precondition: paused inside the 400ms delay, {spent}ms in"
+    assert_eq!(
+        spent, 150.0,
+        "precondition: paused 150ms into the 400ms delay"
     );
 
     assert!(!doc.tick_animations(), "paused, so no frame");
@@ -615,22 +618,18 @@ fn an_animation_paused_inside_its_delay_keeps_its_place() {
         "and the entry is kept although, inside its delay, it has no value"
     );
 
+    // Time passes while it is paused, so the resume is not at the original
+    // start plus `spent`: a resumed start is the resume minus `spent`, a
+    // re-minted one is the resume itself.
+    doc.advance_animation_clock_ms(70.0);
     doc.set_attribute(node, "class", "box dly");
     doc.resolve_layout(VP.0, VP.1);
-    // Read *after* the resume, so it is later than the cascade's own clock: a
-    // resumed start is `cascade - spent`, at most `after - spent`; a re-minted
-    // one is `cascade`, above that bound whenever the resuming pass took less
-    // than the 140ms+ already spent.
-    let after = web_time::SystemTime::now()
-        .duration_since(web_time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
-        * 1000.0;
+    let resume = doc.animation_now_ms();
     let start = doc.tree.active_animations[&node.0][0].start_time_ms;
-    assert!(
-        start <= after - spent + 1.0,
-        "the resume kept the {spent}ms already spent in the delay: start \
-         {start} should lie at least that far before {after}"
+    assert_eq!(
+        start,
+        resume - spent,
+        "the resume kept the {spent}ms already spent in the delay"
     );
 }
 
@@ -653,6 +652,7 @@ fn an_animation_paused_inside_its_delay_keeps_its_place() {
 #[test]
 fn a_paused_font_size_animation_restarted_by_showing_its_panel_measures_its_text() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(CLOCK_MS));
     doc.load_css(TEXT_CSS);
     let body = doc.body();
     let panel = doc.create_element("div");
@@ -728,6 +728,7 @@ fn a_paused_font_size_animation_on_a_span_resizes_its_inline_block() {
     ";
     fn build(inline: Option<&str>) -> (RinchDocument, NodeId, NodeId) {
         let mut doc = RinchDocument::new();
+        doc.set_animation_clock_ms(Some(CLOCK_MS));
         doc.load_css(CSS);
         let body = doc.body();
         let ib = doc.create_element("div");
@@ -800,6 +801,7 @@ fn atomic_inline_panel(
     panel_class: &str,
 ) -> (RinchDocument, NodeId, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(CLOCK_MS));
     doc.load_css(ATOMIC_CSS);
     let body = doc.body();
     let panel = doc.create_element("div");
@@ -864,7 +866,7 @@ fn shown_panel_case(inline_route: bool) {
     );
 
     let (mut doc, panel, ib, span) = atomic_inline_panel("tb grows", "panel--here");
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    doc.advance_animation_clock_ms(120.0);
     frame(&mut doc);
     doc.set_attribute(span, "class", "tb grows p");
     doc.resolve_layout(VP.0, VP.1);

@@ -64,6 +64,9 @@ pub struct Heights {
     /// The last row of ink on each side.
     pub chrome_ink: Option<u32>,
     pub rinch_ink: Option<u32>,
+    /// Chrome's screenshot hit [`TALLEST`](super::chrome::TALLEST): its ink
+    /// row is the window's, not a height.
+    pub chrome_capped: bool,
 }
 
 impl Heights {
@@ -81,6 +84,7 @@ impl Heights {
             chrome_page: chrome.and_then(|c| c.cleaned.height()),
             rinch_page: rinch.as_ref().and_then(|v| v["height"].as_f64()),
             chrome_ink: chrome.map(|c| c.cleaned.last_ink),
+            chrome_capped: chrome.is_some_and(|c| c.cleaned.capped),
             rinch_ink: rinch
                 .as_ref()
                 .and_then(|v| v["last_ink"].as_u64())
@@ -96,11 +100,17 @@ impl Heights {
 
     /// The same for the last rows of ink.
     pub fn ink_diff(&self) -> Option<f64> {
+        if self.chrome_capped {
+            return None;
+        }
         relative(f64::from(self.rinch_ink?), f64::from(self.chrome_ink?))
     }
 
     /// How far apart the last ink rows are, as `distance`'s height term.
     pub fn ink_height_distance(&self) -> Option<f64> {
+        if self.chrome_capped {
+            return None;
+        }
         let (a, b) = (f64::from(self.chrome_ink?), f64::from(self.rinch_ink?));
         Some(if a.max(b) > 0.0 {
             (a - b).abs() / a.max(b)
@@ -120,19 +130,26 @@ impl Heights {
             }
             _ => format!("{what}: not measured"),
         };
+        let ink = if self.chrome_capped {
+            format!(
+                "last ink row: Chrome's screenshot is capped at {}px, so not compared",
+                super::chrome::TALLEST
+            )
+        } else {
+            pair(
+                self.chrome_ink.map(f64::from),
+                self.rinch_ink.map(f64::from),
+                self.ink_diff(),
+                "last ink row",
+            )
+        };
         format!(
-            "{} · {}",
+            "{} · {ink}",
             pair(
                 self.chrome_page,
                 self.rinch_page,
                 self.page_diff(),
                 "document height"
-            ),
-            pair(
-                self.chrome_ink.map(f64::from),
-                self.rinch_ink.map(f64::from),
-                self.ink_diff(),
-                "last ink row"
             ),
         )
     }
@@ -282,6 +299,7 @@ mod tests {
             rinch_page: Some(1000.0),
             chrome_ink: Some(940),
             rinch_ink: Some(940),
+            chrome_capped: false,
         };
         assert_eq!(h.page_diff(), Some(0.0));
         assert_eq!(h.ink_diff(), Some(0.0));
@@ -296,6 +314,21 @@ mod tests {
         let text = taller.describe();
         assert!(text.contains("document height: Chrome 1000px, rinch 1100px (+10.0%)"));
         assert!(text.contains("last ink row: Chrome 940px, rinch 1034px (+10.0%)"));
+    }
+
+    #[test]
+    fn a_capped_screenshot_is_not_a_height() {
+        let h = Heights {
+            chrome_page: Some(5341.0),
+            rinch_page: Some(5400.0),
+            chrome_ink: Some(11999),
+            rinch_ink: Some(5380),
+            chrome_capped: true,
+        };
+        assert_eq!(h.ink_diff(), None);
+        assert_eq!(h.ink_height_distance(), None);
+        assert!(h.describe().contains("capped at 12000px"));
+        assert!(h.page_diff().is_some());
     }
 
     #[test]
@@ -316,6 +349,8 @@ mod tests {
             page_height: Some(page),
             document_height: Some(page),
             viewport_height: Some(513.0),
+            scroll_height: None,
+            capped: false,
             trimmed_height: ink + 16,
             last_ink: ink,
         };

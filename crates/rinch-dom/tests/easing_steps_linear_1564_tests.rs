@@ -73,6 +73,7 @@ fn width_px(doc: &RinchDocument, node: NodeId) -> Option<f32> {
 /// The width the box shows under `animation`.
 fn animated_width(animation: &str) -> Option<f32> {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let node = doc.create_element("div");
@@ -404,6 +405,7 @@ fn a_jump_keyword_animates_as_chrome_does() {
 /// transition.
 fn start_transition(transition: &str) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let node = doc.create_element("div");

@@ -68,6 +68,7 @@ fn animations(doc: &RinchDocument, node: NodeId) -> usize {
 
 fn mount(class: &str) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let node = doc.create_element("div");
@@ -95,7 +96,7 @@ fn finished(class: &str) -> (RinchDocument, NodeId) {
         doc.tree.has_running_animations(),
         "precondition: it is running before it finishes"
     );
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    doc.advance_animation_clock_ms(150.0);
     hand_off(&mut doc, node);
 
     doc.tick_animations();
@@ -206,7 +207,7 @@ fn a_restyle_that_extends_a_finished_animation_runs_it_again() {
 #[test]
 fn a_finished_font_size_fill_owes_no_layout() {
     let (mut doc, node) = mount("box once-type");
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    doc.advance_animation_clock_ms(150.0);
     hand_off(&mut doc, node);
     doc.tick_animations();
     assert_eq!(
@@ -244,7 +245,7 @@ fn a_theme_change_that_lengthens_a_finished_animation_runs_it_again() {
     assert!(!doc.tree.has_running_animations(), "precondition: settled");
 
     // The theme: the same animation, eight times longer. The clock is kept, so
-    // the ~150ms already spent is now a fraction of the run rather than past
+    // the 150ms already spent is now a fraction of the run rather than past
     // its end.
     doc.load_css(".once-fwd { animation: k782-grow 400ms linear 1 forwards; }");
     doc.recompute_all_styles_full();
@@ -259,14 +260,12 @@ fn a_theme_change_that_lengthens_a_finished_animation_runs_it_again() {
     hand_off(&mut doc, node);
     assert!(doc.tick_animations(), "and the tick advances it");
     let mid = width_px(&doc, node).expect("a length");
-    assert!(
-        (40.0..100.0).contains(&mid),
-        "precondition: mid-run, not at the fill — read {mid}px"
-    );
+    // The clock is pinned (#2267): 150ms into 400ms, 40 + 60 × 150/400.
+    assert_eq!(mid, 62.5, "precondition: mid-run, not at the fill");
 
     // …and it finishes a second time, properly: that tick dirties the node and
     // writes the fill, and the entry settles again.
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    doc.advance_animation_clock_ms(400.0);
     hand_off(&mut doc, node);
     doc.tick_animations();
     assert!(

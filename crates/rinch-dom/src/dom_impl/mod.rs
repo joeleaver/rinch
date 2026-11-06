@@ -135,6 +135,11 @@ pub struct RinchDocument {
     /// per-node-id state in thread-local registries so two documents on one
     /// thread never collide (issue #134).
     pub(crate) doc_key: u64,
+    /// A pinned animation clock (#2267), read in place of the wall clock by
+    /// [`Self::animation_now_ms`]. `None` — the default, and the only state
+    /// the shell ever leaves it in — reads the wall clock. See
+    /// [`Self::set_animation_clock_ms`].
+    animation_clock_ms: Option<f64>,
     /// The node tree.
     pub tree: NodeTree,
     /// Parley font context for text shaping.
@@ -270,6 +275,7 @@ impl RinchDocument {
 
         let mut doc = Self {
             doc_key: rinch_core::dom::next_doc_key(),
+            animation_clock_ms: None,
             tree: NodeTree::new(),
             font_cx: crate::fonts::new_font_context(),
             layout_cx: parley::LayoutContext::new(),
@@ -1152,15 +1158,63 @@ impl RinchDocument {
         }
     }
 
-    /// Advance all active CSS transitions by one frame.
-    /// Returns true if any transitions are still active (caller should keep polling).
-    pub fn tick_transitions(&mut self) -> bool {
+    /// The time, in milliseconds, that CSS transitions and animations read:
+    /// when one starts (the cascade), and when [`Self::tick_transitions`] and
+    /// [`Self::tick_animations`] sample it.
+    ///
+    /// The wall clock (milliseconds since the UNIX epoch), unless a clock was
+    /// pinned with [`Self::set_animation_clock_ms`].
+    pub fn animation_now_ms(&self) -> f64 {
+        if let Some(now) = self.animation_clock_ms {
+            return now;
+        }
         use web_time::SystemTime;
-        let current_time_ms = SystemTime::now()
+        SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64()
-            * 1000.0;
+            * 1000.0
+    }
+
+    /// Pin the animation clock at `now_ms`, or give it back to the wall clock
+    /// with `None` (#2267).
+    ///
+    /// While it is pinned, time stands still for this document's transitions
+    /// and animations: one started by a cascade starts at the pinned time, and
+    /// a tick samples exactly that time, however long the host took between
+    /// the two. It moves only by another call, or by
+    /// [`Self::advance_animation_clock_ms`]. Tests use it to sample an
+    /// animation at an exact time on a loaded machine; a sample read through
+    /// the wall clock drifts by however long the host stalled. The shell never
+    /// pins it.
+    ///
+    /// Pin it before the cascade that starts the animations you want to time,
+    /// or their start time is the wall clock's and the pinned one is
+    /// unrelated to it.
+    pub fn set_animation_clock_ms(&mut self, now_ms: Option<f64>) {
+        self.animation_clock_ms = now_ms;
+    }
+
+    /// Move a pinned animation clock forward by `ms` (see
+    /// [`Self::set_animation_clock_ms`]). Every transition and animation on
+    /// the document sees the same `ms` pass at its next tick.
+    ///
+    /// # Panics
+    ///
+    /// If the clock is not pinned: advancing the wall clock is not something
+    /// this can do, and doing nothing would leave a test sampling real time.
+    pub fn advance_animation_clock_ms(&mut self, ms: f64) {
+        let now = self
+            .animation_clock_ms
+            .as_mut()
+            .expect("advance_animation_clock_ms: the clock is not pinned; call set_animation_clock_ms first");
+        *now += ms;
+    }
+
+    /// Advance all active CSS transitions by one frame.
+    /// Returns true if any transitions are still active (caller should keep polling).
+    pub fn tick_transitions(&mut self) -> bool {
+        let current_time_ms = self.animation_now_ms();
 
         // Which nodes are having their *typography* interpolated, read **before**
         // the tick, which removes a transition the moment it completes.
@@ -1393,12 +1447,7 @@ impl RinchDocument {
     /// The node of one that finishes on this tick without a forwards fill is
     /// restyled at the next resolve, which puts its cascaded values back.
     pub fn tick_animations(&mut self) -> bool {
-        use web_time::SystemTime;
-        let current_time_ms = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64()
-            * 1000.0;
+        let current_time_ms = self.animation_now_ms();
 
         // The animation twin of the pre-pass in `tick_transitions` — same reason,
         // same issue (#678). An animation's property set lives in its keyframes

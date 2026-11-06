@@ -18,13 +18,19 @@
 //! **Heights.** `b-cleaned.png` is cut 16px below the last row that differs
 //! from the background, so its height is "last ink + 16", not the
 //! document's. Compare like with like: [`chrome::case`] writes `chrome.json`
-//! (Chrome's `page_height`, `document.scrollingElement.scrollHeight` after
-//! fonts, pictures and two frames; the `trimmed_height` of the png; the
+//! (Chrome's `page_height`, the content's real extent after fonts, pictures
+//! and two frames: the largest of the `scrollHeight`s of the scrolling element,
+//! `<html>` and `<body>`, the bottom of every laid-out box, and the content of
+//! every `overflow: auto|scroll` element, so a viewport-high scroller does not
+//! hide it; `capped` when the screenshot hit [`chrome::TALLEST`]; the `trimmed_height` of the png; the
 //! `last_ink` row), [`capture::capture`] writes `rinch.json` with the card's
 //! `height` and its `last_ink` row in `c-rinch.png`, and the report sets
 //! Chrome's page height against rinch's `height` and the two `last_ink` rows
 //! against each other, each labelled. A case folder without these files
-//! shows "not measured". `chrome::case`'s signature is unchanged;
+//! shows "not measured". Chrome's copy of a page keeps a leading `<!doctype>`
+//! first (the policy `<meta>` goes after it), so pages render in standards
+//! mode; earlier runs put the meta first, which made every page quirks mode,
+//! so their `b-cleaned.png` baselines are not comparable. `chrome::case`'s signature is unchanged;
 //! [`chrome::screenshot_measured`] is the same step returning the measure.
 //!
 //! The `html-compare` binary runs all of it on plain HTML files. An app that

@@ -35,6 +35,7 @@ fn text(doc: &mut RinchDocument, parent: NodeId, s: &str) {
 
 fn page() -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css("body { margin: 0; font-size: 14px; line-height: 18px; }");
     let body = doc.body();
     (doc, body)

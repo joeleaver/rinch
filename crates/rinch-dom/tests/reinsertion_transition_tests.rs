@@ -166,6 +166,7 @@ fn styled(doc: &RinchDocument, node: NodeId) -> bool {
 /// Returns `(doc, wrapper, box)`.
 fn mounted_box() -> (RinchDocument, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let wrap = doc.create_element("div");
@@ -237,6 +238,7 @@ fn a_reinserted_subtree_does_not_animate_from_its_pre_detach_style() {
 #[test]
 fn a_deep_node_in_a_reinserted_subtree_does_not_animate_either() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let wrap = doc.create_element("div");
@@ -725,6 +727,7 @@ fn set_text_content_is_a_detach_too() {
 #[test]
 fn a_detached_animation_stops_asking_for_frames() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(
         "@keyframes sp { from { width: 10px; } to { width: 100px; } } \
          .spin { animation: sp 1000s linear infinite; width: 10px; height: 10px; \

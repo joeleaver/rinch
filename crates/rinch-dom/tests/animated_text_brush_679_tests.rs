@@ -39,6 +39,8 @@ const GREEN: Rgb = (10, 160, 10);
 fn doc_with(css: &str) -> RinchDocument {
     use parley::fontique::{Blob, FontInfoOverride};
     let mut doc = RinchDocument::new();
+    // Pinned (#2267): an aged entry is sampled at exactly its age.
+    doc.set_animation_clock_ms(Some(1_000_000.0));
     doc.font_cx.collection.register_fonts(
         Blob::new(std::sync::Arc::new(INTER)),
         Some(FontInfoOverride {
@@ -118,7 +120,7 @@ fn colour_of(doc: &RinchDocument, id: NodeId) -> Rgb {
 
 /// Move every transition running on `id` so that it started `ago_ms` ago.
 fn age_transitions(doc: &mut RinchDocument, id: NodeId, ago_ms: f64) {
-    let now = now_ms();
+    let now = doc.animation_now_ms();
     for t in doc
         .tree
         .active_transitions
@@ -132,7 +134,7 @@ fn age_transitions(doc: &mut RinchDocument, id: NodeId, ago_ms: f64) {
 
 /// Move every animation running on `id` so that it started `ago_ms` ago.
 fn age_animations(doc: &mut RinchDocument, id: NodeId, ago_ms: f64) {
-    let now = now_ms();
+    let now = doc.animation_now_ms();
     for a in doc
         .tree
         .active_animations
@@ -141,14 +143,6 @@ fn age_animations(doc: &mut RinchDocument, id: NodeId, ago_ms: f64) {
     {
         a.start_time_ms = now - ago_ms;
     }
-}
-
-fn now_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
-        * 1000.0
 }
 
 /// One frame the way a host runs it: tick, lay out, paint — with the frame's
