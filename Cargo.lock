@@ -7292,7 +7292,7 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.14.0"
-source = "git+https://github.com/joeleaver/taffy-fork?rev=317d532abadd38755b46d15c298fd0a522f0f672#317d532abadd38755b46d15c298fd0a522f0f672"
+source = "git+https://github.com/joeleaver/taffy-fork?rev=6015309f18f5b584fc3a6ad90617b5dd3ea088f6#6015309f18f5b584fc3a6ad90617b5dd3ea088f6"
 dependencies = [
  "arrayvec",
  "serde",
