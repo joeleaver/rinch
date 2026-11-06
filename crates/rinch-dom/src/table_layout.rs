@@ -1596,7 +1596,11 @@ impl RinchDocument {
         if node.table_box.is_some() {
             return;
         }
-        if node.computed_style.table_part == TablePart::Caption {
+        // A caption is not aligned, and neither is a block standing in an
+        // anonymous cell (a `<td style="display: block">`): that cell's
+        // `vertical-align` is the initial `baseline`, whatever the `<td>`'s UA
+        // `middle` says to the block (#2288).
+        if node.computed_style.table_part != TablePart::Cell {
             return;
         }
         let (old, kids_old) = (cell.shift, cell.kids_shift);

@@ -181,6 +181,24 @@ fn a_blocks_side_margins_weigh_its_column() {
 }
 
 #[test]
+fn a_blocks_content_is_not_moved_by_the_tds_vertical_align() {
+    // A `<td>`'s UA `vertical-align: middle` does not reach a block in an
+    // anonymous cell, whose own is `baseline`: its content stays at the top
+    // of a 40px row. Chrome: bi at y 0 (the block is 20 tall there; rinch
+    // stretches it to the row, a known difference).
+    let d = doc(&format!(
+        "<table id=t width=400 cellspacing=0 cellpadding=0><tr>\
+         <td id=x style='height:40px'>{}</td>\
+         <td id=b style='display:block'>{}</td></tr></table>",
+        bx("xi", 50.0, 10.0),
+        bx("bi", 20.0, 20.0),
+    ));
+    assert_eq!(abs(&d, "bi").1, 0.0);
+    // Chrome: x 285.7, b 114.3, by the weights 50 : 20.
+    assert!((abs(&d, "b").0 - 285.7).abs() <= 0.5, "{:?}", abs(&d, "b"));
+}
+
+#[test]
 fn a_declared_column_is_weighed_by_its_min_content_not_its_max_content() {
     // A `width=50` cell holding three 100px inline-blocks with spaces
     // between them: min-content 100, max-content over 300. Blink weighs a
