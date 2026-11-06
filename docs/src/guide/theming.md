@@ -269,8 +269,11 @@ gives it the item's font and colour and resets its box with `!important`, so
 `li span:first-child { font-size: 30px }` or `li * { color: blue }` leaves it
 as it is. There is no `::marker` selector to style it with. Still not Chrome's: a number is drawn without Chrome's
 tabular digits (its far edge is up to 3px in); an `inside` disc's glyph sits
-about 0.12em right of Chrome's shape; and a marker whose own line is taller
-than the first line it sits on does not push the item's content down. The
+about 0.12em right of Chrome's shape; a marker whose own line is taller
+than the first line it sits on does not push the item's content down; and a
+later block's background pulled up over the item (a negative margin) hides the
+marker, as it hides any earlier text in rinch, where Chrome paints inline
+content above in-flow backgrounds (#2276). The
 rich-text editor's task-list checkbox is a `::before` hung against the item's
 left edge the same way (#1246).
 
