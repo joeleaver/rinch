@@ -528,10 +528,18 @@ the same markup:
 - a line break between blocks and rows, and a blank line after a `<p>`;
 - a line of its own for a `<br>`, or for an `<img>` or `<iframe>` between
   blocks;
+- the text of an `inline-block`, `inline-flex`, float, inline table or
+  positioned box where it stands in its line (`before mid after`), and only
+  when the selection reaches it; a space before and after an inline table;
+- the text of a flex or grid container, even text placed directly in one
+  (an `inline-flex` button's label);
 - no list bullets or other generated content.
 
 The white space between a document's tables and columns is neither
-highlighted nor copied. `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
+highlighted nor copied, but a space drawn between two `inline-block`
+columns is copied, as Chrome copies it. Text placed directly in a flex or
+grid container is copied when a selection crosses it, but is not
+highlighted, and a selection does not start or end inside it (#2244). `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
 they are. On the web the browser selects text itself, from the same CSS.
 
 ## Extending the Theme

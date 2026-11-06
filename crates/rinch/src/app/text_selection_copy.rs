@@ -2,13 +2,25 @@
 //! `getSelection().toString()` gives it: Blink's text iterator, walking the
 //! document in order from the selection's first root to its last.
 //!
-//! - Text is each root's selected part ([`rendered_ranges`]: its kept text,
-//!   without the white space a line drops at its start and end); a `<br>` is
-//!   its line break.
+//! - Text is written where its node stands: each text node (and `<br>`) of
+//!   an IFC root writes the root's selected part up to its end
+//!   ([`rendered_ranges`]: its kept text, without the white space a line
+//!   drops at its start and end), so an atomic inline, float or positioned
+//!   box inside a root is written between the text before it and the text
+//!   after it (#2242). The rest of a root's part is written on leaving it.
+//! - What stands in a root's lines is in the selection when the root's part
+//!   reaches where it stands: an `inline-block` before a selection's start,
+//!   or after its end, in the same root is not written, and one in a root the
+//!   selection covers is written whole, whatever the selection's runs say.
+//! - The text of a flex or grid container (an anonymous item, laid out as a
+//!   text leaf, with no root) is written as its `white-space` draws it
+//!   (#2241).
 //! - Entering a block (a block container, a table or a row; not a cell, an
 //!   inline-level box, a float, an absolutely positioned box or a picture)
 //!   writes a line break, and leaving one writes one, unless the last thing
 //!   written is a line break. Leaving a `<p>` with height writes one more.
+//! - An inline table writes a space before it (unless at a line's start) and
+//!   one after it.
 //! - Entering a table cell other than its row's first writes a tab, unless
 //!   the last thing written is a line break.
 //! - An `<img>` or `<iframe>` is written as nothing, but is something
@@ -16,7 +28,7 @@
 //! - Nothing is written before the first text, and what is not displayed is
 //!   passed whole.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use rinch_dom::computed_style::WhiteSpaceValue;
 use rinch_dom::computed_style::{DisplayValue, PositionValue, TablePart, VisibilityValue};
@@ -54,6 +66,132 @@ impl Out {
     }
 }
 
+/// One step of the walk.
+#[derive(Clone, Copy)]
+enum Step {
+    Enter(u64),
+    Leave(u64),
+    /// The first member of an anonymous box's run: the box's root opens.
+    EnterRun(u64),
+    /// Past the last member of an anonymous box's run.
+    LeaveRun(u64),
+}
+
+/// An IFC root the walk is inside, and how far its text is written.
+struct Root {
+    id: u64,
+    /// The part of its text the selection takes, `None` when it takes none
+    /// of it (a root that cannot be selected, or one beside the selection).
+    part: Option<(usize, usize)>,
+    len: usize,
+    /// Its text before this is written (or passed).
+    cursor: usize,
+    /// Whether the walk has met its text: not yet for a root the walk starts
+    /// inside, whose text before the start is no part of the selection.
+    started: bool,
+    /// Where each of its text nodes and `<br>`s stands in its text.
+    texts: HashMap<u64, (usize, usize)>,
+}
+
+impl Root {
+    fn new(
+        tree: &rinch_dom::NodeTree,
+        id: u64,
+        part: Option<(usize, usize)>,
+        started: bool,
+    ) -> Self {
+        let mut texts: HashMap<u64, (usize, usize)> = HashMap::new();
+        let mut len = 0;
+        if let Some(layout) = tree.get(id).and_then(|n| n.text_layout.as_ref()) {
+            len = layout.text_content.len();
+            for r in &layout.text_ranges {
+                let e = texts.entry(r.node_id).or_insert((r.flat_start, r.flat_end));
+                *e = (e.0.min(r.flat_start), e.1.max(r.flat_end));
+            }
+        }
+        Self {
+            id,
+            part,
+            len,
+            cursor: 0,
+            started,
+            texts,
+        }
+    }
+
+    /// Whether what stands at the walk's place in this root's lines (an
+    /// atomic inline, a float, a picture) is in the selection: its part
+    /// reaches past it. A part that starts or ends where a box stands has the
+    /// box only at the root's own start or end: an offset there cannot say
+    /// which side of the box it is on, and a selection that starts or ends
+    /// in the text beside a box (Chrome 156) is on the text's side. A root
+    /// the selection takes none of leaves that to the roots inside.
+    fn takes_here(&self) -> bool {
+        match self.part {
+            None => true,
+            Some((s, e)) => {
+                !self.started || ((s < self.cursor || s == 0) && (self.cursor < e || e == self.len))
+            }
+        }
+    }
+
+    /// Write its part up to `upto`.
+    fn write_to(&mut self, tree: &rinch_dom::NodeTree, upto: usize, out: &mut Out) {
+        if let Some((s, e)) = self.part {
+            let (a, b) = (self.cursor.max(s), upto.min(e));
+            if a < b
+                && let Some(t) = tree.get(self.id).and_then(|n| n.text_layout.as_ref())
+            {
+                for (a, b) in rendered_ranges(tree, self.id, a, b) {
+                    out.push(t.text_content.get(a..b).unwrap_or(""));
+                }
+            }
+        }
+        self.cursor = self.cursor.max(upto);
+    }
+}
+
+/// Whether the root `id` (an anonymous box: its run's) can be selected.
+fn selectable(tree: &rinch_dom::NodeTree, id: u64) -> bool {
+    let at = tree
+        .get(id)
+        .filter(|n| n.is_anonymous_block_box)
+        .and_then(|n| n.run_members.first().copied())
+        .unwrap_or(id);
+    super::text_selection::resolved_user_select(tree, at).is_selectable()
+}
+
+/// Open root `id`, met by the walk: its part is the selection's, or, when the
+/// selection's runs do not name it, all of it when it stands inside a root
+/// the selection takes (an `inline-block` in a paragraph).
+fn open(
+    tree: &rinch_dom::NodeTree,
+    parts: &HashMap<u64, (usize, usize)>,
+    roots: &mut Vec<Root>,
+    id: u64,
+) {
+    let part = parts.get(&id).copied().or_else(|| {
+        let len = tree
+            .get(id)
+            .and_then(|n| n.text_layout.as_ref())
+            .map_or(0, |l| l.text_content.len());
+        (roots.last().is_some_and(|r| r.part.is_some()) && selectable(tree, id)).then_some((0, len))
+    });
+    roots.push(Root::new(tree, id, part, true));
+}
+
+/// Close root `id` if it is the innermost open one, writing the rest of its
+/// part.
+fn close(tree: &rinch_dom::NodeTree, roots: &mut Vec<Root>, id: u64, out: &mut Out) {
+    if roots.last().is_some_and(|r| r.id == id)
+        && let Some(mut r) = roots.pop()
+        && r.started
+    {
+        let len = r.len;
+        r.write_to(tree, len, out);
+    }
+}
+
 /// The copy of `runs` (each selected root with its part, in document order,
 /// as `TextSelection::runs` gives them).
 pub(crate) fn copy_text(tree: &rinch_dom::NodeTree, runs: &[(u64, usize, usize)]) -> String {
@@ -66,95 +204,166 @@ pub(crate) fn copy_text(tree: &rinch_dom::NodeTree, runs: &[(u64, usize, usize)]
         emitted: false,
         after_picture: false,
     };
-    let mut active = false;
-    let mut seen_boxes = HashSet::new();
-    let mut stack = walk_from(tree, runs[0].0);
-    while let Some((id, leaving)) = stack.pop() {
+    let (mut stack, mut roots) = walk_from(tree, runs[0].0);
+    while let Some(step) = stack.pop() {
+        let id = match step {
+            Step::EnterRun(b) => {
+                open(tree, &parts, &mut roots, b);
+                continue;
+            }
+            Step::LeaveRun(b) => {
+                close(tree, &mut roots, b, &mut out);
+                if b == last_root {
+                    break;
+                }
+                continue;
+            }
+            Step::Leave(id) => {
+                close(tree, &mut roots, id, &mut out);
+                if id == last_root {
+                    break;
+                }
+                leave(tree, id, &mut out);
+                continue;
+            }
+            Step::Enter(id) => id,
+        };
         let Some(n) = tree.get(id) else {
             continue;
         };
-        if leaving {
-            if active {
-                leave(tree, id, &mut out);
-            }
-            continue;
-        }
-        let element = n.tag().is_some();
-        if element && n.computed_style.display == DisplayValue::None {
-            continue;
-        }
-        // Loose text beside blocks: its anonymous box stands in at its
-        // first member, as `selectable_roots` orders them.
-        let root = match n.run_box {
-            Some(b) if !seen_boxes.insert(b) => continue,
-            Some(b) => Some(b),
-            None => n.text_layout.is_some().then_some(id),
-        };
-        if active && element {
-            enter(tree, id, &mut out);
-        }
-        if let Some(r) = root
-            && let Some(&(start, end)) = parts.get(&r)
+        // A text node or `<br>` of the root it is in: the root's text up to
+        // its end.
+        if let Some(r) = roots.last_mut()
+            && let Some(&(a, b)) = r.texts.get(&id)
         {
-            active = true;
-            for (a, b) in rendered_ranges(tree, r, start, end) {
-                if let Some(t) = tree.get(r).and_then(|n| n.text_layout.as_ref()) {
-                    out.push(t.text_content.get(a..b).unwrap_or(""));
-                }
+            if !r.started {
+                r.cursor = a;
+                r.started = true;
             }
-            if r == last_root {
-                break;
-            }
-        }
-        if n.run_box.is_some() {
+            r.write_to(tree, b, &mut out);
             continue;
         }
-        if active && element && is_picture(n) {
+        if n.tag().is_none() {
+            if n.cached_text_parley.is_some() && roots.last().is_none_or(Root::takes_here) {
+                write_leaf(tree, id, &mut out);
+            }
+            continue;
+        }
+        if n.computed_style.display == DisplayValue::None {
+            continue;
+        }
+        // An atomic inline, float, positioned box or picture is there only
+        // when the part of the root it stands in reaches it.
+        let in_line = matches!(
+            n.computed_style.display,
+            DisplayValue::Inline | DisplayValue::Contents
+        ) && !is_picture(n);
+        if !in_line && roots.last().is_some_and(|r| !r.takes_here()) {
+            continue;
+        }
+        enter(tree, id, &mut out);
+        if n.text_layout.is_some() {
+            open(tree, &parts, &mut roots, id);
+        }
+        if is_picture(n) {
             if n.computed_style.visibility == VisibilityValue::Visible {
                 out.emitted = true;
                 out.after_picture = true;
             }
             continue;
         }
-        stack.push((id, true));
-        push_children(tree, &n.children, &mut stack);
+        stack.push(Step::Leave(id));
+        push_children(tree, id, 0, None, &mut stack);
     }
     out.text
 }
 
-/// Push `children` to walk next, in order. A root's own text is written
-/// with the root; its children are walked for the boxes and pictures inside
-/// it, so its text nodes are left out.
-fn push_children(tree: &rinch_dom::NodeTree, children: &[u64], stack: &mut Vec<(u64, bool)>) {
-    for &c in children.iter().rev() {
-        let text = tree
-            .get(c)
-            .is_some_and(|c| c.tag().is_none() && c.run_box.is_none());
-        if !text {
-            stack.push((c, false));
-        }
+/// Write text leaf `id`, the text of a flex or grid container, as its
+/// `white-space` draws it: an anonymous item's lines drop the spaces at
+/// their start and end.
+fn write_leaf(tree: &rinch_dom::NodeTree, id: u64, out: &mut Out) {
+    let Some(n) = tree.get(id) else {
+        return;
+    };
+    let Some(parent) = n.parent.and_then(|p| tree.get(p).map(|e| (p, e))) else {
+        return;
+    };
+    if parent.1.computed_style.visibility != VisibilityValue::Visible
+        || !super::text_selection::resolved_user_select(tree, parent.0).is_selectable()
+    {
+        return;
     }
+    let Some(text) = n.text_content() else {
+        return;
+    };
+    let collapse = |s: &str| -> String {
+        s.split([' ', '\t', '\n', '\r', '\u{c}'])
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let drawn = match parent.1.computed_style.white_space {
+        WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap | WhiteSpaceValue::BreakSpaces => {
+            text.to_string()
+        }
+        WhiteSpaceValue::PreLine => text
+            .split('\n')
+            .map(collapse)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        WhiteSpaceValue::Normal | WhiteSpaceValue::NoWrap => collapse(text),
+    };
+    out.push(&drawn);
 }
 
-/// The walk's stack (node, leaving it) as it stands on reaching `first`, the
-/// selection's first root: the node there next, then the rest of each of
-/// its ancestors after it and the ancestor itself to leave, innermost first.
-/// Nothing before it in the document is walked (it could write nothing:
-/// nothing is written before the first text).
-fn walk_from(tree: &rinch_dom::NodeTree, first: u64) -> Vec<(u64, bool)> {
+/// Push `parent`'s children from index `from` to walk next, in order. A run
+/// of children an anonymous box lays out opens the box's root at its first
+/// member (unless it is `open` already) and closes it after its last.
+fn push_children(
+    tree: &rinch_dom::NodeTree,
+    parent: u64,
+    from: usize,
+    open: Option<u64>,
+    stack: &mut Vec<Step>,
+) {
+    let Some(p) = tree.get(parent) else {
+        return;
+    };
+    let mut steps = Vec::new();
+    for &c in p.children.iter().skip(from) {
+        let run = tree.get(c).and_then(|n| n.run_box);
+        match run.and_then(|b| tree.get(b).map(|n| (b, &n.run_members))) {
+            Some((b, members)) => {
+                if members.first() == Some(&c) && open != Some(b) {
+                    steps.push(Step::EnterRun(b));
+                }
+                steps.push(Step::Enter(c));
+                if members.last() == Some(&c) {
+                    steps.push(Step::LeaveRun(b));
+                }
+            }
+            None => steps.push(Step::Enter(c)),
+        }
+    }
+    stack.extend(steps.into_iter().rev());
+}
+
+/// The walk's stack as it stands on reaching `first`, the selection's first
+/// root, and the roots it is inside then: the node there next, then the rest
+/// of each of its ancestors after it and the ancestor itself to leave,
+/// innermost first. Nothing before it in the document is walked (it could
+/// write nothing: nothing is written before the first text). A root it
+/// starts inside (an `inline-block`'s paragraph) writes its text from the
+/// next of its text nodes the walk meets.
+fn walk_from(tree: &rinch_dom::NodeTree, first: u64) -> (Vec<Step>, Vec<Root>) {
     // An anonymous box is met at its first member.
-    let start = match tree.get(first) {
-        Some(n) if n.is_anonymous_block_box => n
-            .parent
-            .and_then(|p| tree.get(p))
-            .and_then(|p| {
-                p.children
-                    .iter()
-                    .copied()
-                    .find(|&c| tree.get(c).is_some_and(|c| c.run_box == Some(first)))
-            })
-            .unwrap_or(first),
-        _ => first,
+    let anonymous = tree.get(first).is_some_and(|n| n.is_anonymous_block_box);
+    let start = if anonymous {
+        tree.get(first)
+            .and_then(|n| n.run_members.first().copied())
+            .unwrap_or(first)
+    } else {
+        first
     };
     let mut path = vec![start];
     while let Some(p) = path
@@ -164,22 +373,60 @@ fn walk_from(tree: &rinch_dom::NodeTree, first: u64) -> Vec<(u64, bool)> {
     {
         path.push(p);
     }
+    // A root the walk starts inside: all of it after the start.
+    let around = |id: u64| {
+        let len = tree
+            .get(id)
+            .and_then(|n| n.text_layout.as_ref())
+            .map_or(0, |l| l.text_content.len());
+        Root::new(tree, id, selectable(tree, id).then_some((0, len)), false)
+    };
     let mut stack = Vec::new();
+    let mut roots = Vec::new();
     for pair in path.windows(2).rev() {
         let (child, parent) = (pair[0], pair[1]);
         let Some(p) = tree.get(parent) else {
             continue;
         };
-        stack.push((parent, true));
+        if p.text_layout.is_some() {
+            roots.push(around(parent));
+        }
+        let run = tree.get(child).and_then(|c| c.run_box);
+        if let Some(b) = run
+            && !(child == start && anonymous)
+        {
+            roots.push(around(b));
+        }
+        stack.push(Step::Leave(parent));
         let at = p
             .children
             .iter()
             .position(|&c| c == child)
-            .map_or(0, |i| i + 1);
-        push_children(tree, &p.children[at..], &mut stack);
+            .map_or(p.children.len(), |i| i + 1);
+        push_children(tree, parent, at, run, &mut stack);
+        if let Some(b) = run
+            && tree
+                .get(b)
+                .is_some_and(|n| n.run_members.last() == Some(&child))
+        {
+            stack.push(Step::LeaveRun(b));
+        }
     }
-    stack.push((start, false));
-    stack
+    stack.push(Step::Enter(start));
+    if anonymous {
+        stack.push(Step::EnterRun(first));
+    }
+    (stack, roots)
+}
+
+/// Whether element `n` is an inline table, which Blink writes a space before
+/// and after.
+fn is_inline_table(n: &rinch_dom::Node) -> bool {
+    n.computed_style.table_part == TablePart::Table
+        && matches!(
+            n.computed_style.display,
+            DisplayValue::InlineBlock | DisplayValue::InlineFlex | DisplayValue::InlineGrid
+        )
 }
 
 /// An `<img>` or `<iframe>`: the pictures Blink's iterator writes as a
@@ -222,6 +469,8 @@ fn enter(tree: &rinch_dom::NodeTree, id: u64, out: &mut Out) {
         out.push("\t");
     } else if breaks_around(n) {
         out.line_break();
+    } else if is_inline_table(n) && out.emitted && !out.ends_in_newline() {
+        out.push(" ");
     }
 }
 
@@ -229,6 +478,10 @@ fn leave(tree: &rinch_dom::NodeTree, id: u64, out: &mut Out) {
     let Some(n) = tree.get(id) else {
         return;
     };
+    if is_inline_table(n) && out.emitted {
+        out.push(" ");
+        return;
+    }
     if !breaks_around(n) || !out.emitted {
         return;
     }
@@ -276,8 +529,9 @@ pub(crate) fn rendered_ranges(
 }
 
 /// The part of `root`'s text that is drawn: from its first character that
-/// is not white space its lines drop to just after its last. `None` when it
-/// has none.
+/// is not white space its lines drop, or its first atomic inline, to just
+/// after its last such character or its last atomic inline. `None` when it
+/// is empty (white space only, or a lone picture).
 pub(crate) fn rendered_span(tree: &rinch_dom::NodeTree, root: u64) -> Option<(usize, usize)> {
     let n = tree.get(root)?;
     let layout = n.text_layout.as_ref()?;
@@ -311,7 +565,24 @@ pub(crate) fn rendered_span(tree: &rinch_dom::NodeTree, root: u64) -> Option<(us
             }
         }
     };
-    let first = text.char_indices().find(|&(i, c)| !drops(i, c))?.0;
-    let (last, c) = text.char_indices().rev().find(|&(i, c)| !drops(i, c))?;
-    Some((first, last + c.len_utf8()))
+    // An atomic inline is drawn too: the white space between two is kept
+    // (Chrome writes the " " between two `inline-block` columns), and only
+    // what is before the first and after the last thing drawn is dropped.
+    let boxes = || layout.atomic_inline_offsets();
+    let first = text
+        .char_indices()
+        .find(|&(i, c)| !drops(i, c))
+        .map(|(i, _)| i)
+        .into_iter()
+        .chain(boxes())
+        .min()?;
+    let last = text
+        .char_indices()
+        .rev()
+        .find(|&(i, c)| !drops(i, c))
+        .map(|(i, c)| i + c.len_utf8())
+        .into_iter()
+        .chain(boxes())
+        .max()?;
+    (first < last).then_some((first, last))
 }

@@ -817,6 +817,18 @@ pub(crate) struct OutOfFlowMark {
 }
 
 impl InlineLayout {
+    /// Where each atomic inline (an `inline-block`, `inline-flex`,
+    /// `inline-grid`, inline table or replaced element) stands in
+    /// [`Self::text_content`]: the flat byte offset of the text after it, in
+    /// order. Not an element's edge box nor a float's mark, which are no
+    /// content of a line.
+    pub fn atomic_inline_offsets(&self) -> impl Iterator<Item = usize> + '_ {
+        self.layout
+            .inline_boxes()
+            .filter(|b| !crate::ifc::is_edge_box(b.id) && b.kind == parley::InlineBoxKind::InFlow)
+            .map(|b| b.index)
+    }
+
     /// The height of the lines: parley's layout height, which sums the
     /// lines' heights, and the gaps left above lines moved down below a
     /// float.

@@ -8,7 +8,7 @@ use super::text_selection_across_tests::{at, drag, highlighted, mount, node, pre
 use super::*;
 
 const VP: (u32, u32) = (800, 600);
-const SEL: &str = "user-select: text; font: 16px/20px sans-serif; width: 600px";
+pub(super) const SEL: &str = "user-select: text; font: 16px/20px sans-serif; width: 600px";
 
 fn select(app: &mut RinchApp, a: (f32, f32), b: (f32, f32)) -> String {
     press(app, a);
