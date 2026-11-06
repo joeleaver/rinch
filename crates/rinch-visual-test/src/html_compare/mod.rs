@@ -15,6 +15,18 @@
 //!    over rinch's debug server, stitching each document's screenshots;
 //! 3. [`report::report`] writes `report.html`, worst first.
 //!
+//! **Heights.** `b-cleaned.png` is cut 16px below the last row that differs
+//! from the background, so its height is "last ink + 16", not the
+//! document's. Compare like with like: [`chrome::case`] writes `chrome.json`
+//! (Chrome's `page_height`, `document.scrollingElement.scrollHeight` after
+//! fonts, pictures and two frames; the `trimmed_height` of the png; the
+//! `last_ink` row), [`capture::capture`] writes `rinch.json` with the card's
+//! `height` and its `last_ink` row in `c-rinch.png`, and the report sets
+//! Chrome's page height against rinch's `height` and the two `last_ink` rows
+//! against each other, each labelled. A case folder without these files
+//! shows "not measured". `chrome::case`'s signature is unchanged;
+//! [`chrome::screenshot_measured`] is the same step returning the measure.
+//!
 //! The `html-compare` binary runs all of it on plain HTML files. An app that
 //! shows HTML in its own frame (a mail reader's card, its fonts) passes a
 //! [`Setup`] so the comparison draws as the app does.

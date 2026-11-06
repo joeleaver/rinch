@@ -44,10 +44,15 @@ fn drive(child: &Child, dirs: &[PathBuf], width: u32) -> Result<()> {
         settle(&mut probe)?;
         let (image, height) = stitch(&mut probe, width)?;
         image.save(dir.join("c-rinch.png"))?;
+        let last_ink = super::chrome::last_ink_row(&image);
         std::fs::write(
             dir.join("rinch.json"),
             serde_json::to_vec(&serde_json::json!({
+                // The card's height: rinch's document height.
                 "height": height,
+                // The last row that differs from the background, in
+                // `c-rinch.png`: compare with `chrome.json`'s `last_ink`.
+                "last_ink": last_ink,
                 "cut_off": height > f64::from(super::chrome::TALLEST),
             }))?,
         )?;
