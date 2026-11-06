@@ -1920,6 +1920,19 @@ impl RinchDocument {
         self.apply_table_style(node_id, &mut style);
         self.unresolve_heights_in_auto_cell(node_id, &mut style);
         self.apply_marker_line_floor(node_id, &mut style);
+        // An outside list marker is `position: static` for paint, clipping and
+        // stacking (it paints in its item's flow, as a `::marker` does), and
+        // out of flow for layout: Taffy lays it out as an absolute child of its
+        // item, and `crate::list_marker` places it (#1356).
+        if self.tree.nodes[node_id].outside_marker.is_some() {
+            style.position = taffy::Position::Absolute;
+            style.inset = taffy::Rect {
+                left: taffy::LengthPercentageAuto::auto(),
+                right: taffy::LengthPercentageAuto::auto(),
+                top: taffy::LengthPercentageAuto::auto(),
+                bottom: taffy::LengthPercentageAuto::auto(),
+            };
+        }
         style
     }
 

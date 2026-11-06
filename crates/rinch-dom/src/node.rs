@@ -2718,15 +2718,17 @@ impl Node {
     /// question is "is this inline content" and the **wrong** one where it is
     /// "does this break the flow" — which is issues #406 and #289.
     ///
-    /// Keys on `position` alone. `PositionValue::Static` is the default, so a
-    /// text node — which never goes through style resolution — answers `false`,
-    /// which is what #342 was about when a wrong default hoisted text nodes.
+    /// Keys on `position`, and on an outside list marker (#1356), which is
+    /// `static` for paint but out of flow for layout. `PositionValue::Static`
+    /// is the default, so a text node — which never goes through style
+    /// resolution — answers `false`, which is what #342 was about when a
+    /// wrong default hoisted text nodes.
     pub fn is_out_of_flow(&self) -> bool {
         matches!(
             self.computed_style.position,
             crate::computed_style::PositionValue::Absolute
                 | crate::computed_style::PositionValue::Fixed
-        )
+        ) || self.outside_marker.is_some()
     }
 
     /// Get the text content if this is a text node.

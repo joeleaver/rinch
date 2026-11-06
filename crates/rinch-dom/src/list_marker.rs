@@ -3,11 +3,14 @@
 //! `resolve_list_marker` generates an item's marker as a `<span>` at the start
 //! of the `<li>`. For `list-style-position: inside` that span is ordinary
 //! inline content and is laid out where it stands. For `outside` (the
-//! initial value) it is taken **out of flow** (the UA sheet gives it
-//! `position: absolute`, keyed on the `rinch-list-marker` attribute), so it
-//! takes no line of the item's and no width from the item's lines, and this
-//! module places it after every layout, as Chrome places an outside
-//! `::marker`:
+//! initial value) it is a static block for style, paint, clipping and
+//! stacking (the UA sheet, keyed on the `rinch-list-marker` attribute), so
+//! it paints in its item's flow and is clipped by whatever clips the item, as
+//! a `::marker` is; but its Taffy box is **out of flow** (`position:
+//! absolute` in Taffy only, `taffy_style_from_computed`, and
+//! `Node::is_out_of_flow` for the inline formatting context), so it takes no
+//! line of the item's and no width from the item's lines, and this module
+//! places it after every layout, as Chrome places an outside `::marker`:
 //!
 //! - **vertically**, its baseline on the baseline of the item's **first line
 //!   box**, found in tree order through the item's in-flow block descendants
@@ -30,16 +33,14 @@
 //!
 //! The position is written into the marker's `layout` here and nowhere else:
 //! the read-back keeps the one this pass wrote (`read_layout_results`), and
-//! the out-of-flow passes do not look at a marker (`out_of_flow_kind`
-//! answers `None`, `place_static_after_lines` returns early), so a layout
+//! the out-of-flow passes do not look at a marker (it is not positioned,
+//! and `place_static_after_lines` returns early), so a layout
 //! that does not move the item's first line does not move or repaint its
 //! marker.
 //!
 //! Known differences from Chrome: a marker whose own line is taller than the
 //! first line it sits on (an item's `line-height` above its block's) does
-//! not push the item's content down; an `<li>` whose first line is a `<br>`
-//! alone or an empty inline element is treated as having that line (Chrome
-//! has none there).
+//! not push the item's content down.
 
 use crate::RinchDocument;
 use crate::computed_style::{DisplayValue, TablePart};

@@ -567,3 +567,261 @@ fn an_empty_item_that_loses_its_outside_marker_loses_its_line() {
     doc.resolve_layout(802.0, 600.0);
     assert_eq!(li_box(&doc), [40, 0, 360, 20]);
 }
+
+/// Review of PR #2271: shapes measured in Chrome 156 by the reviewer (same
+/// font and size; the item `#t` red, its content `.k` black, a 400px host).
+/// The content ink is looked for inside `#t`'s box only.
+mod review_2271 {
+    use super::*;
+    use peniko::Fill;
+    use peniko::kurbo::{Affine, Rect};
+    use rinch_core::dom::NodeId;
+    use rinch_dom::paint::painter::{PaintShape, Painter};
+
+    const VP: (f32, f32) = (800.0, 600.0);
+
+    fn doc(markup: &str, css: &str, scroll: Option<f64>) -> RinchDocument {
+        use parley::fontique::{Blob, FontInfoOverride};
+        let mut doc = RinchDocument::new();
+        doc.font_cx.collection.register_fonts(
+            Blob::new(std::sync::Arc::new(FACE)),
+            Some(FontInfoOverride {
+                family_name: Some("ProbeFace"),
+                ..Default::default()
+            }),
+        );
+        doc.load_css(&format!(
+            "html, body {{ margin: 0; padding: 0 }} body {{ font: 16px/20px ProbeFace; color: #000 }} \
+             #t {{ color: rgb(255,0,0) }} .k {{ color: #000 }} {css}"
+        ));
+        let body = doc.body();
+        let host = doc.create_element("div");
+        doc.set_attribute(host, "style", "width: 400px");
+        doc.append_child(body, host);
+        doc.set_inner_html(host, markup);
+        doc.resolve_layout(VP.0, VP.1);
+        if let Some(top) = scroll {
+            let sc = NodeId(query_selector(&doc.tree, "#sc")[0]);
+            doc.set_scroll_top(sc, top);
+            doc.resolve_layout(VP.0 + 1.0, VP.1);
+        }
+        doc
+    }
+
+    fn painter(doc: &mut RinchDocument) -> TinySkiaPainter {
+        let mut p = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+        p.fill_white();
+        let mut cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(&doc.tree, &mut p, 1.0, VP, &mut doc.font_cx, &mut cx);
+        p
+    }
+
+    fn t_box(doc: &RinchDocument) -> [i32; 4] {
+        let t = query_selector(&doc.tree, "#t")[0];
+        let abs = &get_node_summary(&doc.tree, t).unwrap()["absolute"];
+        let at = |k: &str| abs[k].as_f64().unwrap().round() as i32;
+        [at("x"), at("y"), at("width"), at("height")]
+    }
+
+    /// Red ink anywhere in the top 400x200, and dark ink inside `rect`.
+    fn inks(p: &TinySkiaPainter, rect: [i32; 4]) -> (Ink, Ink) {
+        let (d, w) = (p.pixels(), p.width() as usize);
+        let (mut red, mut dark): (Ink, Ink) = (None, None);
+        for y in 0..200usize {
+            for x in 0..400usize {
+                let i = (y * w + x) * 4;
+                let (r, g, b) = (d[i] as i32, d[i + 1] as i32, d[i + 2] as i32);
+                let (xi, yi) = (x as i32, y as i32);
+                let inside = xi >= rect[0]
+                    && xi < rect[0] + rect[2]
+                    && yi >= rect[1]
+                    && yi < rect[1] + rect[3];
+                let slot = if r > 200 && g < 90 && b < 90 {
+                    &mut red
+                } else if r < 100 && g < 100 && b < 100 && inside {
+                    &mut dark
+                } else {
+                    continue;
+                };
+                let e = slot.get_or_insert([xi, yi, xi + 1, yi + 1]);
+                e[0] = e[0].min(xi);
+                e[1] = e[1].min(yi);
+                e[2] = e[2].max(xi + 1);
+                e[3] = e[3].max(yi + 1);
+            }
+        }
+        (red, dark)
+    }
+
+    /// `(name, markup, extra css, scroll of #sc, Chrome's #t box, marker ink,
+    /// content ink)`.
+    #[allow(clippy::type_complexity)]
+    const CASES: &[(&str, &str, &str, Option<f64>, [i32; 4], Ink, Ink)] = &[
+        // An outside marker is clipped by the boxes that clip its item (1).
+        (
+            "scroll_under_header",
+            "<div style='height:50px'></div><div id=sc style='height:60px;overflow:auto;width:300px'><ul id=t style='margin:0'><li><span class=k>a</span></li><li><span class=k>b</span></li><li><span class=k>c</span></li><li><span class=k>d</span></li><li><span class=k>e</span></li><li><span class=k>f</span></li></ul></div>",
+            "",
+            Some(40.0),
+            [0, 10, 285, 120],
+            Some([23, 59, 28, 104]),
+            Some([41, 57, 48, 106]),
+        ),
+        (
+            "scrolled",
+            "<div id=sc style='height:40px;overflow:auto;width:300px'><ul style='margin:0'><li><span class=k>a</span></li><li id=t><span class=k>b</span></li><li><span class=k>c</span></li><li><span class=k>d</span></li></ul></div>",
+            "",
+            Some(25.0),
+            [40, -5, 245, 20],
+            Some([23, 4, 28, 9]),
+            Some([42, 2, 49, 11]),
+        ),
+        (
+            "hidden_under_header",
+            "<div style='height:50px'></div><div style='height:30px;overflow:hidden;width:300px'><ul id=t style='margin:0;margin-top:-35px'><li><span class=k>a</span></li><li><span class=k>b</span></li><li><span class=k>c</span></li></ul></div>",
+            "",
+            None,
+            [0, 15, 300, 60],
+            Some([23, 64, 28, 69]),
+            Some([41, 50, 47, 71]),
+        ),
+        (
+            "clip_parent",
+            "<div style='height:15px;overflow:hidden'><ul style='margin:0'><li><span class=k>a</span></li><li id=t><span class=k>b</span></li></ul></div>",
+            "",
+            None,
+            [40, 20, 360, 20],
+            None,
+            None,
+        ),
+        // ... including the item's own `overflow: hidden` (6).
+        (
+            "li_overflow_hidden",
+            "<ul style='margin:0'><li id=t style='overflow:hidden'><span class=k>hid</span></li></ul>",
+            "",
+            None,
+            [40, 0, 360, 20],
+            None,
+            Some([42, 4, 61, 16]),
+        ),
+        // It paints in its item's flow, under a later-painted positioned box (2).
+        (
+            "positioned_cover",
+            "<div style='position:relative;height:0'><div style='position:absolute;top:0;left:0;width:40px;height:20px;background:#fff'></div></div><ul style='margin:0'><li id=t><span class=k>under</span></li></ul>",
+            "",
+            None,
+            [40, 0, 360, 20],
+            None,
+            Some([42, 7, 83, 16]),
+        ),
+        // An author rule for the item's children does not reach the marker,
+        // as none reaches a `::marker` (4).
+        (
+            "li_font_rule",
+            "<ul style='margin:0'><li id=t><span class=k>x</span></li></ul>",
+            "li span:first-child{font-size:30px}",
+            None,
+            [40, 0, 360, 25],
+            Some([23, 14, 28, 19]),
+            Some([42, 4, 55, 21]),
+        ),
+        (
+            "li_star_rule",
+            "<ul style='margin:0'><li id=t><span class=k>x</span></li></ul>",
+            "li *{font-size:30px}",
+            None,
+            [40, 0, 360, 25],
+            Some([23, 14, 28, 19]),
+            Some([42, 4, 55, 21]),
+        ),
+        // An inside marker starts an RTL line (5).
+        (
+            "rtl_inside",
+            "<ul style='margin:0;direction:rtl;list-style-position:inside'><li id=t><span class=k>in</span></li></ul>",
+            "",
+            None,
+            [0, 0, 360, 20],
+            Some([355, 9, 360, 14]),
+            Some([326, 4, 336, 16]),
+        ),
+    ];
+
+    #[test]
+    fn the_reviews_shapes_match_chrome_156() {
+        let mut wrong = Vec::new();
+        for &(name, markup, css, scroll, chrome_box, chrome_marker, chrome_text) in CASES {
+            let mut d = doc(markup, css, scroll);
+            let b = t_box(&d);
+            let p = painter(&mut d);
+            let (m, t) = inks(&p, b);
+            let mut why = Vec::new();
+            // Not the width: in a scroller Chrome takes a 15px classic scrollbar
+            // out of it, and rinch's scrollbar overlays the content (older than
+            // this; the marker hangs from the left edge either way).
+            if [b[0], b[1], b[3]] != [chrome_box[0], chrome_box[1], chrome_box[3]] {
+                why.push(format!("#t {b:?}, Chrome {chrome_box:?}"));
+            }
+            match (m, chrome_marker) {
+                (Some(m), Some(c)) if (0..4).all(|i| (m[i] - c[i]).abs() <= 1) => {}
+                (None, None) => {}
+                (m, c) => why.push(format!("marker ink {m:?}, Chrome {c:?}")),
+            }
+            match (t, chrome_text) {
+                (Some(t), Some(c)) if (t[0] - c[0]).abs() <= 2 && (t[1] - c[1]).abs() <= 3 => {}
+                (None, None) => {}
+                (t, c) => why.push(format!("content ink {t:?}, Chrome {c:?}")),
+            }
+            if !why.is_empty() {
+                wrong.push(format!("{name}: {}", why.join("; ")));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// A damage-only repaint after a scroll paints what a full repaint does:
+    /// the markers move and are clipped with the scroller's content.
+    #[test]
+    fn a_partial_repaint_after_a_scroll_equals_a_full_one() {
+        let markup = "<div style='height:50px'></div><div id=sc style='height:60px;overflow:auto;width:300px'><ul style='margin:0'><li><span class=k>a</span></li><li><span class=k>b</span></li><li><span class=k>c</span></li><li><span class=k>d</span></li><li><span class=k>e</span></li><li><span class=k>f</span></li></ul></div>";
+        let mut d = doc(markup, "li { color: rgb(255,0,0) }", None);
+        let mut p = painter(&mut d);
+        d.tree.consume_paint_dirty();
+        let sc = NodeId(query_selector(&d.tree, "#sc")[0]);
+        d.set_scroll_top(sc, 40.0);
+        d.resolve_layout(VP.0, VP.1);
+        let damage = rinch_dom::paint::compute_damage(&d.tree, 1.0, VP.0 as f64, VP.1 as f64);
+        assert!(!damage.is_full(), "precondition: a partial repaint");
+        let rects = damage.rects().to_vec();
+        for r in &rects {
+            let r = r.intersect(Rect::new(0.0, 0.0, VP.0 as f64, VP.1 as f64));
+            if r.width() <= 0.0 || r.height() <= 0.0 {
+                continue;
+            }
+            p.clear_rect_white(
+                r.x0 as u32,
+                r.y0 as u32,
+                r.width().ceil() as u32,
+                r.height().ceil() as u32,
+            );
+        }
+        rinch_dom::paint::set_dirty_rects(Some(&rects));
+        for r in &rects {
+            p.push_clip(Fill::NonZero, Affine::IDENTITY, &PaintShape::Rect(*r));
+            let mut cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+            rinch_dom::paint::paint_document(&d.tree, &mut p, 1.0, VP, &mut d.font_cx, &mut cx);
+            p.pop_layer();
+        }
+        rinch_dom::paint::set_dirty_region(None);
+        let partial = p.pixels().to_vec();
+        d.tree.consume_paint_dirty();
+        let full = painter(&mut d);
+        let differing = partial
+            .chunks(4)
+            .zip(full.pixels().chunks(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(differing, 0, "pixels a partial repaint got wrong");
+        let (marker, _) = inks(&full, [0, 0, 0, 0]);
+        assert_eq!(marker, Some([23, 59, 28, 104]), "Chrome 156's marker ink");
+    }
+}

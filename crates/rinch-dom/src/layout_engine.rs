@@ -1793,7 +1793,6 @@ impl RinchDocument {
             // is checked against what the style sites recorded.
             if self.tree.nodes[node_id].computed_style.position
                 == crate::computed_style::PositionValue::Absolute
-                && self.tree.nodes[node_id].outside_marker.is_none()
             {
                 // (`out_of_flow_kind` answers `None` for a `display: contents`
                 // element, which generates no box to place.)
