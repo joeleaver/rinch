@@ -810,13 +810,62 @@ gives every selectable root between them in document order with its part. The
 roots come from `RootsCache` (`app/text_selection_text.rs`, one build per
 hit-cache generation), which marks the roots with text (`has_content`: something
 drawn, not only the white space its lines drop; a `<br>` and a no-break space
-count). A mail is full of roots holding only the white space between its tables
+count, and so does the white space between two atomic inlines). A mail is full of roots holding only the white space between its tables
 and columns: runs pass them, the highlight skips them, and `nearest` (the
 fallback for a drag over no text) is not drawn to them.
 - The copy (`app/text_selection_copy.rs`) is Blink's text iterator, measured as
   Chrome 156's `getSelection().toString()`. It walks the document from the
-  selection's first root to its last and writes each root's part without the
-  white space its lines drop.
+  selection's first root to its last, and writes text where its node stands:
+  each text node (or `<br>`) of a root writes the root's part up to that
+  node's end in the root's text, without the white space its lines drop, and
+  leaving the root writes the rest. So an `inline-block`, float, inline table
+  or positioned box inside a root comes out between the text before it and
+  the text after it (#2242). The walk keeps a stack of the roots it is in,
+  each with how far its text is written; an anonymous box's root opens at the
+  first member of its run and closes after the last.
+- The copy takes the selection's two ends, not `TextSelection::runs`, and
+  orders them itself (`before`): a root inside another stands where its box
+  stands in that root's text. `runs` orders roots with a paragraph before
+  the inline-blocks in it, which put a selection from inside an
+  inline-block to later text in its paragraph back to front (review of
+  #2249). Every root the walk meets between the ends is taken whole,
+  and what cannot be selected is left out text by text (`kept_ranges`: the
+  nearest `user-select` that is not `auto`, read past the root), so
+  `user-select: text` inside a `user-select: none` inline-block is copied.
+- What stands in a root's lines is copied when the root's part reaches past
+  where it stands: a box before the part's start or after its end is passed.
+  What holds the last root is never passed, and leaving it ends the walk.
+  A walk that starts inside an `inline-block` writes the rest of each root
+  it is inside, up to the selection's end. The highlight still follows
+  `runs`, so near a box it can disagree with the copy (#2245).
+- An offset where a box stands cannot say which side of the box an end is
+  on, so each end carries its side (`TextSelection::anchor_side` and
+  `focus_side`, an `EndSide`), set where the end is made, as Chrome 156
+  decides it: a point past the middle of an in-flow atomic inline hit-tests
+  to after it (`side_at`), so a drag past a line's last inline-block takes
+  it and one from the padding before a leading inline-block takes that. A
+  float or positioned box is on no line, so only an end outside the
+  paragraph takes one (Select All's), never a press, drag or triple click.
+  A triple click takes its paragraph's edge inline-blocks, a double click
+  leaves out the boxes beside its word, and the anchor keeps its side when
+  Shift+click or a drag moves the focus. A start takes the boxes at its
+  offset when it is before them, an end when it is after them. Select All
+  ends at the end of the outermost root holding the last selectable one
+  (`outermost_root`), not inside an inline-block in the last paragraph.
+  `side_at` reads a box's right edge as its after side, as
+  `inline_box_caret` does (left to right). Known gaps: a triple click
+  inside an inline-block, its trailing line breaks and a paragraph-wise
+  Shift+click after it (#2256).
+- Atomic inlines count as drawn for the white space a root's lines drop
+  (`InlineLayout::atomic_inline_offsets`): the space between two
+  `inline-block` columns, or two pictures, is copied, as Chrome copies it.
+- Text placed directly in a flex or grid container is an anonymous item laid
+  out as a text leaf (`cached_text_parley`), in no root. The copy writes it
+  where the walk meets it, as its `white-space` draws it (#2241). It is not
+  highlighted, and a selection does not start or end in it: no root holds it
+  (#2244).
+- An inline table writes a space before it (unless at a line's start) and
+  one after it, besides its rows' line breaks.
 - Entering or leaving a block (a block container, table or row, but not a cell,
   inline-level box, float, absolutely positioned box or picture) writes a line
   break, unless the last thing written was one. Leaving a `<p>` with height
@@ -825,11 +874,11 @@ fallback for a drag over no text) is not drawn to them.
 - An `<img>` or `<iframe>` is written as nothing, but counts as written, so its
   block ends with a line break. An `<svg>`, `<canvas>`, `<video>` or hidden
   picture is not written.
-- Pins: `app/text_selection_chrome_tests.rs` (each case with Chrome's string).
+- Pins: `app/text_selection_chrome_tests.rs`, `app/text_selection_copy_tests.rs`
+  and `app/text_selection_copy_boxes_tests.rs` (each case with Chrome's
+  string; the last selects as `setBaseAndExtent(#a, 0, #b, end)` does).
 - Each text's own element gives its `white-space` (a `pre` span in a root
   that collapses keeps its spaces), and a cell that cannot be selected has no
   tab.
-- Known gap (#2242): a root's text is written before the atomic inlines,
-  floats and inline tables inside it, so text in them comes out of order
-  within its line, and a rendered space between two `inline-block` columns
-  (Chrome writes " ") is not copied.
+- The walk runs only on copy; a drag's move reads `runs` and the roots
+  cache, never the walk.
