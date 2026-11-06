@@ -117,6 +117,9 @@ rinch-tabler-icons = { workspace = true }
 rinch-graph-view = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The OS's text settings (#2286): libfontconfig is opened at run time
+# (`text_rendering::fontconfig`), so nothing links it. Already in Cargo.lock.
+libloading = { version = "0.8", optional = true }
 gtk = { version = "0.18", optional = true }
 ksni = { workspace = true, optional = true }
 # AT-SPI (D-Bus) accessibility adapter for Linux. Pulls zbus/atspi/async-io; only
@@ -222,7 +225,7 @@ desktop = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
     "dep:peniko", "dep:serde_json",
     "dep:winit", "dep:muda",
-    "dep:x11rb", "dep:objc2",
+    "dep:x11rb", "dep:objc2", "dep:libloading",
     "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types", "dep:url",
     "dep:bytemuck",

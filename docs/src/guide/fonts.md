@@ -213,6 +213,60 @@ stack already covers the character, fallback is never consulted. That makes it
 worse, not better — the breakage shows up only for the scripts and stacks
 nobody tested.
 
+## Text rendering
+
+How glyphs are rasterised is an app option with OS defaults, as in Chrome
+(issue #2286). `App::text_rendering` takes a `TextRendering`, every field of
+which defaults to `Auto`:
+
+```rust
+use rinch::prelude::*;
+
+App::new(app)
+    .text_rendering(
+        TextRendering::default()
+            .stem_darkening(StemDarkening::Off) // no thickening of light text
+            .hinting(TextHinting::None),        // exact outlines, whatever the OS says
+    )
+    .run();
+```
+
+| Field | `Auto` means | Other values |
+|---|---|---|
+| `hinting` | The OS's hint style; `Slight` where it says nothing, `None` on macOS | `None`, `Slight`, `Medium`, `Full` (the last three all hint today) |
+| `stem_darkening` | Light text is grown by up to 0.10 px a side | `Off`, `Px(amount)` (up to 0.5) |
+| `antialias` | The OS's: none, subpixel, or grayscale (macOS: grayscale) | `Grayscale`, `Subpixel`, `None` |
+
+**Stem darkening.** Both renderers blend a glyph's coverage in sRGB-encoded
+space, as FreeType's usual callers do, and that makes light text on a dark
+background look about a quarter thinner than the same text dark on light. So
+light text is thickened a little: by up to 0.10 device pixels on every side for
+text whose colour is light (its sRGB luma, over black, from 0.5 to 0.85 ramps
+from none to all of it), at sizes up to 24 device pixels, tapering to none at 64.
+Only the text colour decides, as in Skia: paint does not know what lies under
+the text. Dark text is untouched. Both renderers apply the same amount, so the
+GPU and software renderers still draw the same glyphs.
+
+**The OS's settings** are read once, on a thread of their own while the window
+starts, and `rinch::text_rendering::system_text_settings()` returns them:
+
+- **Linux**: fontconfig's match for `sans-serif` — `antialias`, `hinting`,
+  `hintstyle`, `rgba`, `lcdfilter`. KDE's font settings write these into the
+  user's `fonts.conf`. GNOME's own font settings reach only GTK apps (through
+  XSETTINGS) and are not read; fontconfig's defaults are GNOME's defaults.
+  libfontconfig is opened at run time, so a system without it reads nothing.
+- **Windows**: font smoothing and ClearType, with ClearType's subpixel order
+  (`SystemParametersInfo`).
+- **macOS**: grayscale and unhinted.
+
+Today rinch draws grayscale whatever `antialias` resolves to: subpixel (LCD)
+text and aliased text come with the glyph-mask atlas and subpixel compositing
+planned in #2286. The subpixel order and LCD filter are stored for that. An
+embedding host that wants the OS's settings calls
+`rinch::text_rendering::set_text_rendering(TextRendering::default())` before its
+first frame; without it an embedded document renders as if the OS said nothing
+(grayscale, slight hinting, stem darkening on).
+
 ## Where the bytes come from
 
 `include_bytes!` puts the file in the binary — in the `.so`, for an Android

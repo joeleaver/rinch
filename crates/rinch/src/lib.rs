@@ -117,6 +117,10 @@ pub mod shell;
 pub(crate) mod split_compositor;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub(crate) mod split_frame;
+/// Text rendering: the app's choice ([`App::text_rendering`](app_builder::App::text_rendering))
+/// and the OS's text settings it follows (#2286).
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub mod text_rendering;
 /// Window-level facts and acts that work on the desktop and in the browser
 /// alike (issue #1770): [`open_url`](window::open_url),
 /// [`set_window_title`](window::set_window_title), and the reactive
@@ -273,6 +277,8 @@ pub mod prelude {
     #[cfg(feature = "desktop")]
     #[allow(deprecated)]
     pub use crate::shell::{run, run_with_theme};
+    #[cfg(any(feature = "desktop", feature = "android"))]
+    pub use crate::text_rendering::{StemDarkening, TextAntialias, TextHinting, TextRendering};
     #[cfg(all(feature = "android", target_os = "android"))]
     pub use android_activity::AndroidApp;
     pub use rinch_core::element::*;
