@@ -342,6 +342,41 @@ hears a touch pan too.
 
 [`WheelEvent`]: https://docs.rs/rinch/latest/rinch/prelude/struct.WheelEvent.html
 
+### Smooth wheel scrolling
+
+On desktop a mouse wheel's notch **glides**: the scroller moves its 40 px a
+line over a fifth of a second, easing in and out, as Chrome scrolls, rather
+than jumping there in one frame. A notch that arrives mid-glide adds to where
+the glide is headed and carries on at the speed it has, so a fast spin of the
+wheel is one continuous movement. The curve is Chromium's own: CSS
+`ease-in-out`, 200 ms for a notch of up to 120 px, falling to 100 ms for 480 px
+or more.
+
+- A **trackpad** or a **high-resolution wheel** reports pixels, and scrolls
+  directly, as in a browser. So does the debug server's `scroll`.
+- The notch picks its scroller when it arrives, by the same rule as before: the
+  nearest under the pointer that can still move that way, so a list at its end
+  hands the notch to the scroller around it. A notch into a scroller whose
+  glide is already headed for its end goes nowhere, as a browser latches it.
+- `onwheel` hears the notch once, when it arrives, with its whole distance.
+  `onscroll` fires on every frame the glide moves the scroller, as in Chrome.
+- A frame of a glide is a scroll offset change and a repaint of the scroller,
+  never a layout.
+- Anything else that scrolls the scroller mid-glide wins, and the glide stops
+  there: a `set_scroll_top`/`set_scroll_left`, a press on its scrollbar, the
+  editor revealing its caret as you type, a trackpad. So does a `lock_scroll`
+  dialog opening over it.
+
+It is a choice an app can turn off: `App::new(app).smooth_wheel_scroll(false)`
+makes every notch scroll its whole distance at once, and
+`RinchApp::set_smooth_wheel_scroll` changes it while the app runs (an embedded
+`RinchContext`: through `app_mut()`; send `PlatformEvent::MouseWheelLines` for a
+line wheel and it glides there too). rinch does not read the OS's
+reduced-motion setting on the desktop yet
+([#2209](https://github.com/joeleaver/rinch/issues/2209)); an app that reads it
+can pass the answer to `smooth_wheel_scroll`. On the web the browser scrolls,
+with its own smoothing and its own settings, and none of this applies.
+
 ### Pointer moves are coalesced
 
 On desktop, winit can report several pointer moves between two frames — a

@@ -361,6 +361,9 @@ mod selection_highlight_damage_1106_tests;
 mod shared_hit_tests;
 #[cfg(test)]
 mod single_line_insert_824_tests;
+mod smooth_wheel;
+#[cfg(all(test, feature = "desktop"))]
+mod smooth_wheel_2287_tests;
 #[cfg(all(test, software_shell))]
 mod stacking_flip_damage_1384_review_tests;
 #[cfg(all(test, software_shell))]
@@ -432,6 +435,7 @@ mod zero_box_overlay_1696_tests;
 #[cfg(any(feature = "desktop", feature = "embed", test))]
 pub use focus::{ImeChange, ImeState};
 pub(crate) use hit_testing::*;
+pub use smooth_wheel::set_smooth_wheel_scroll_default;
 pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};
 pub use title_tooltip::{TITLE_TOOLTIP_DELAY, set_title_tooltips_default};
 
@@ -1293,6 +1297,9 @@ pub struct RinchApp {
     pub(crate) inspect_highlight: Option<(f32, f32, f32, f32)>,
     /// The `title` tooltip (#1646): waiting, showing, or neither.
     pub(crate) title_tooltip: title_tooltip::TitleTooltipState,
+    /// Smooth wheel scrolling (#2287): whether it is on, and the scrollers
+    /// gliding now.
+    pub(crate) smooth_wheel: smooth_wheel::SmoothWheelState,
     /// App-bundled fonts, kept for the life of the app rather than drained.
     ///
     /// `mount_component` builds a *new* document with its own font context and
@@ -1422,6 +1429,7 @@ impl RinchApp {
             file_drag: None,
             inspect_highlight: None,
             title_tooltip: Default::default(),
+            smooth_wheel: Default::default(),
             pending_fonts: Vec::new(),
             scope_context_to_doc: false,
             #[cfg(feature = "debug")]
