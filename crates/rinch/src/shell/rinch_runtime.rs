@@ -337,10 +337,13 @@ pub fn inject_platform_event(event: PlatformEvent) {
 const TOUCH_POINTER_BASE: u64 = 1 << 32;
 
 /// One turn of the event loop for the DevTools window's app, which is sent
-/// no `AboutToWait` of its own: resolve and repaint what changed. Answers
-/// whether the window needs a redraw.
+/// no `AboutToWait` of its own: a frame of any wheel glide (#2287 — the
+/// DevTools window sends line wheels too, and a glide nothing ticks never
+/// moves), then resolve and repaint what changed. Answers whether the window
+/// needs a redraw: while a glide runs it does, so the loop keeps turning.
 pub(crate) fn devtools_turn(app: &mut RinchApp, width: f32, height: f32) -> bool {
-    app.resolve_and_repaint(width, height)
+    let gliding = app.tick_wheel_scroll();
+    app.resolve_and_repaint(width, height) || gliding
 }
 
 /// The [`PlatformEvent`] a winit wheel delta becomes, with the pointer at the
