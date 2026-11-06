@@ -1488,6 +1488,22 @@ pub struct Node {
     /// is the first. The insertion verbs read it to keep a child they insert
     /// between the two (#1629, `RinchDocument::clamp_between_generated`).
     pub(crate) is_generated_after: bool,
+    /// This node is the `outside` list marker `resolve_list_marker` generated
+    /// for its parent `<li>` (#1356): a box out of flow that
+    /// [`crate::list_marker`] places beside the item's first line box,
+    /// hanging in the list's padding, as a browser places an outside
+    /// `::marker`. `None` for every other node.
+    pub(crate) outside_marker: Option<crate::list_marker::OutsideMarker>,
+    /// On an `<li>` whose outside marker found no line box to sit on (an
+    /// empty item, one holding only a picture or an empty block): the
+    /// height of the marker's own line, which the item's content box is
+    /// then at least as tall as (Chrome 156: `<li></li>` is one line high,
+    /// `<li><div style="height:30px">` stays 30). Applied as a minimum height
+    /// by `taffy_style_from_computed`; `None` on every other node.
+    pub(crate) marker_line_floor: Option<f32>,
+    /// The marker pass that last walked up through this node
+    /// (`NodeTree::marker_walk_stamp`).
+    pub(crate) marker_walk: u64,
     /// Typed computed style derived from Stylo.
     /// This is the primary source for layout and paint after Stylo migration.
     pub computed_style: ComputedStyle,
@@ -1940,6 +1956,9 @@ impl Node {
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             is_generated_after: false,
+            outside_marker: None,
+            marker_line_floor: None,
+            marker_walk: 0,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
@@ -2026,6 +2045,9 @@ impl Node {
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             is_generated_after: false,
+            outside_marker: None,
+            marker_line_floor: None,
+            marker_walk: 0,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
@@ -2111,6 +2133,9 @@ impl Node {
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             is_generated_after: false,
+            outside_marker: None,
+            marker_line_floor: None,
+            marker_walk: 0,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
@@ -2194,6 +2219,9 @@ impl Node {
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             is_generated_after: false,
+            outside_marker: None,
+            marker_line_floor: None,
+            marker_walk: 0,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
@@ -2697,15 +2725,17 @@ impl Node {
     /// question is "is this inline content" and the **wrong** one where it is
     /// "does this break the flow" — which is issues #406 and #289.
     ///
-    /// Keys on `position` alone. `PositionValue::Static` is the default, so a
-    /// text node — which never goes through style resolution — answers `false`,
-    /// which is what #342 was about when a wrong default hoisted text nodes.
+    /// Keys on `position`, and on an outside list marker (#1356), which is
+    /// `static` for paint but out of flow for layout. `PositionValue::Static`
+    /// is the default, so a text node — which never goes through style
+    /// resolution — answers `false`, which is what #342 was about when a
+    /// wrong default hoisted text nodes.
     pub fn is_out_of_flow(&self) -> bool {
         matches!(
             self.computed_style.position,
             crate::computed_style::PositionValue::Absolute
                 | crate::computed_style::PositionValue::Fixed
-        )
+        ) || self.outside_marker.is_some()
     }
 
     /// Get the text content if this is a text node.
@@ -3674,6 +3704,22 @@ pub struct NodeTree {
     /// keeps no baseline in a node's layout, and may answer a later compute
     /// from its cache without measuring again.
     pub(crate) atomic_line_baselines: rustc_hash::FxHashMap<RawNodeId, Vec<LineBaselines>>,
+    /// The outside list markers generated since the last marker pass
+    /// (#1356), which it places whatever moved. A marker is generated again
+    /// on every cascade of its item, so this also holds every restyled item's.
+    pub(crate) outside_markers: Vec<RawNodeId>,
+    /// Whether any outside marker was ever generated: until one is, the
+    /// read-back records nothing for [`Self::marker_moves`].
+    pub(crate) has_outside_markers: bool,
+    /// The boxes whose layout (or, for an IFC root, lines) changed since the
+    /// last marker pass, each with whether its size changed: the marker pass
+    /// re-places only the markers of the items above them (review of #2271:
+    /// placing every marker on every layout cost 2000 `<li><p>` items 0.9ms
+    /// an unrelated relayout).
+    pub(crate) marker_moves: Vec<(RawNodeId, bool)>,
+    /// Stamped on the nodes one marker pass walked up through
+    /// (`Node::marker_walk`), so no ancestor chain is walked twice.
+    pub(crate) marker_walk_stamp: u64,
     /// Nodes that have requested scroll-into-view (deferred until after layout).
     pub scroll_into_view_requests: Vec<RawNodeId>,
     /// Nodes that have requested a scroll to a fraction of their scroll
@@ -3927,6 +3973,10 @@ impl NodeTree {
             ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),
             atomic_line_baselines: Default::default(),
+            outside_markers: Vec::new(),
+            has_outside_markers: false,
+            marker_moves: Vec::new(),
+            marker_walk_stamp: 0,
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
@@ -4226,6 +4276,27 @@ impl NodeTree {
             // this node is between no such box and its containing block.
             crate::out_of_flow::replace_after_scroll(self, id);
         }
+    }
+
+    /// Note for the outside-marker pass that `node_id`'s box moved (or, with
+    /// `resized`, changed size, or for an IFC root got new lines): the items
+    /// above it re-place their markers (`crate::list_marker`). Nothing is
+    /// recorded in a document that never had an outside marker.
+    #[inline]
+    pub(crate) fn note_marker_move(&mut self, node_id: RawNodeId, resized: bool) {
+        if !self.has_outside_markers {
+            return;
+        }
+        // Inline content's own box says nothing about a line: an IFC root's
+        // new lines are noted for the root itself.
+        if self
+            .nodes
+            .get(node_id)
+            .is_some_and(|n| n.ifc_root.is_some())
+        {
+            return;
+        }
+        self.marker_moves.push((node_id, resized));
     }
 
     /// The paint that consumed `paint_dirty_nodes` has run: forget them, and

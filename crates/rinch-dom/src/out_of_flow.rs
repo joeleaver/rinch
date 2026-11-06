@@ -315,7 +315,9 @@ fn generates_layout_box(node: &Node) -> bool {
 /// overwhelmingly common node costs one enum compare.
 pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<OutOfFlowKind> {
     let node = tree.get_live(node_id)?;
-    if matches!(node.computed_style.display, DisplayValue::None) {
+    // An outside list marker is out of flow but resolves against nothing:
+    // `crate::list_marker` places it against its item (#1356).
+    if matches!(node.computed_style.display, DisplayValue::None) || node.outside_marker.is_some() {
         return None;
     }
     // `box_position`, not the computed `position`: a `display: contents`
@@ -2064,6 +2066,11 @@ pub(crate) fn place_static_after_lines(tree: &mut NodeTree, node_id: RawNodeId) 
     let Some(node) = tree.get_live(node_id) else {
         return;
     };
+    // An outside list marker has no static position to keep: its place is
+    // `crate::list_marker`'s (#1356).
+    if node.outside_marker.is_some() {
+        return;
+    }
     let (horizontal, vertical) = static_axes(&node.computed_style);
     if !horizontal && !vertical {
         return;

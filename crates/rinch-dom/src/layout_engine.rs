@@ -157,8 +157,19 @@ impl RinchDocument {
         let t0 = web_time::Instant::now();
         let style_before = self.tree.perf.get(Counter::TimeStyleNs);
         self.tree.perf.bump(Counter::LayoutResolves);
+        let epoch = self.tree.layout_epoch;
         self.resolve_layout_inner(width, height);
         self.align_table_cells();
+        // Outside list markers are placed from the finished lines (#1356). An
+        // item that gained or lost the marker's minimum line is laid out
+        // again, once: the second pass cannot change what the first found
+        // (the floor only grows a box that has no line).
+        if self.tree.layout_epoch != epoch && self.place_list_markers() {
+            self.tree.layout_dirty = true;
+            self.resolve_layout_inner(width, height);
+            self.align_table_cells();
+            self.place_list_markers();
+        }
         let total = t0.elapsed().as_nanos() as u64;
         let style = self
             .tree
@@ -1459,8 +1470,11 @@ impl RinchDocument {
         };
         let node = &mut self.tree.nodes[anon_id];
         if node.layout != new_layout {
+            let resized =
+                node.layout.width != new_layout.width || node.layout.height != new_layout.height;
             node.layout = new_layout;
             self.tree.paint_dirty_nodes.push(anon_id);
+            self.tree.note_marker_move(anon_id, resized);
             // Read back after the element walk placed the absolute boxes
             // (`out_of_flow::replace_all`).
             self.tree.abs_late_moves = true;
@@ -1890,6 +1904,14 @@ impl RinchDocument {
                     new_layout.x = node.layout.x;
                     new_layout.y = node.layout.y;
                 }
+                // An outside list marker keeps the place `crate::list_marker`
+                // wrote (#1356): Taffy's is its static position, which it does
+                // not use, and writing it would repaint the marker on every
+                // layout.
+                if node.outside_marker.is_some() {
+                    new_layout.x = node.layout.x;
+                    new_layout.y = node.layout.y;
+                }
             }
 
             // `prev_layout` is deliberately not written: it is the box this
@@ -1899,8 +1921,11 @@ impl RinchDocument {
             // old rect is lost and the move ghosts.
             let node = &mut self.tree.nodes[node_id];
             if node.layout != new_layout {
+                let resized = node.layout.width != new_layout.width
+                    || node.layout.height != new_layout.height;
                 node.layout = new_layout;
                 self.tree.paint_dirty_nodes.push(node_id);
+                self.tree.note_marker_move(node_id, resized);
             }
         }
 

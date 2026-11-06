@@ -1919,7 +1919,66 @@ impl RinchDocument {
         }
         self.apply_table_style(node_id, &mut style);
         self.unresolve_heights_in_auto_cell(node_id, &mut style);
+        self.apply_marker_line_floor(node_id, &mut style);
+        // An outside list marker is `position: static` for paint, clipping and
+        // stacking (it paints in its item's flow, as a `::marker` does), and
+        // out of flow for layout: Taffy lays it out as an absolute child of its
+        // item, and `crate::list_marker` places it (#1356).
+        if self.tree.nodes[node_id].outside_marker.is_some() {
+            style.position = taffy::Position::Absolute;
+            style.inset = taffy::Rect {
+                left: taffy::LengthPercentageAuto::auto(),
+                right: taffy::LengthPercentageAuto::auto(),
+                top: taffy::LengthPercentageAuto::auto(),
+                bottom: taffy::LengthPercentageAuto::auto(),
+            };
+        }
         style
+    }
+
+    /// An `<li>` whose outside marker found no line box is at least the
+    /// marker's line high (`Node::marker_line_floor`, #1356): a minimum
+    /// content height, raised by the box's padding and border when it sizes
+    /// its border box. An `auto` height only — Chrome keeps a declared one
+    /// (`<li style="height: 5px">` is 5px with its marker overflowing) — and
+    /// over a `min-height` that is a length or `auto`; a percentage one is
+    /// left as it is.
+    fn apply_marker_line_floor(&self, node_id: RawNodeId, style: &mut taffy::Style) {
+        use crate::computed_style::DimensionValue;
+        let node = &self.tree.nodes[node_id];
+        let Some(floor) = node.marker_line_floor else {
+            return;
+        };
+        // Only while the item still has its outside marker (generated as its
+        // first child): an item restyled off `list-item` or to `inside` keeps
+        // the field until a marker pass sees it again, and must not keep the
+        // height.
+        let has_marker = node
+            .children
+            .first()
+            .and_then(|&c| self.tree.nodes.get_live(c))
+            .is_some_and(|c| c.outside_marker.is_some());
+        if !has_marker {
+            return;
+        }
+        let cs = &node.computed_style;
+        if !matches!(cs.height, DimensionValue::Auto) {
+            return;
+        }
+        let declared = match cs.min_height {
+            DimensionValue::Auto => 0.0,
+            DimensionValue::Length(l) => l,
+            _ => return,
+        };
+        let mut floor = floor;
+        if cs.box_sizing_border_box {
+            let px = |v: crate::computed_style::LengthPercentageValue| v.resolve(0.0);
+            floor += px(cs.padding_top)
+                + px(cs.padding_bottom)
+                + px(cs.border_top_width)
+                + px(cs.border_bottom_width);
+        }
+        style.min_size.height = taffy::LengthPercentageAuto::length(floor.max(declared));
     }
 
     /// A cell whose `height` became or stopped being a fixed length, or a box

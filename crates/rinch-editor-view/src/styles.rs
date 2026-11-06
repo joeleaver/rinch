@@ -113,12 +113,10 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 /* A list item is an ordinary block whose marker hangs outside it, as a browser's
    `display: list-item` does. rinch-web keeps the browser's own `::marker` (it sets
    `ul > li, ol > li { display: list-item }`). rinch-dom has `DisplayValue::ListItem`
-   too now (#725), but no native marker *box*: `resolve_list_marker` generates the
-   marker as a `span` holding a glyph from the item's own `list-style-type`
-   ("•"/"◦"/"▪" for disc/circle/square, "N." for decimal) and an en space at the
-   start of the `li`, which `li > span:not([data-pm-type])` picks out (an item's
-   own children are blocks, each carrying `data-pm-type`) and takes out of flow,
-   right-aligned against the item's left edge on its first line.
+   too (#725), and since #1356 an outside marker box of its own: the marker
+   `resolve_list_marker` generates is out of flow and placed beside the item's
+   first line box, in the list's padding, so this sheet does not hang it (it
+   did, with a `li > span` rule, before #1356).
 
    The item used to be a wrapping flex row of the marker and its blocks. A
    paragraph there has `flex-basis: auto`, so it was sized at its max-content
@@ -131,7 +129,6 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
    last line; fixed by #1013). */
 [data-pm-editor] ul, [data-pm-editor] ol { padding-left: 1.6em; margin: 0 0 0.75em; }
 [data-pm-editor] li { position: relative; margin: 0.15em 0; }
-[data-pm-editor] li > span:not([data-pm-type]) { position: absolute; top: 0; right: 100%; white-space: pre; }
 [data-pm-editor] li > ul, [data-pm-editor] li > ol,
 [data-pm-editor] li > [data-pm-type="task_list"] { margin: 0.15em 0 0; }
 

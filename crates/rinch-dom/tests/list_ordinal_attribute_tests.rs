@@ -35,7 +35,7 @@ fn el(doc: &mut RinchDocument, parent: NodeId, tag: &str, attrs: &[(&str, &str)]
     e
 }
 
-/// The number in an `<li>`'s generated marker (`"3.\u{2002}"` → `"3"`).
+/// The number in an `<li>`'s generated marker (`"3. "` → `"3"`).
 fn marker(doc: &RinchDocument, li: NodeId) -> String {
     let node = doc.tree.get(li.0).unwrap();
     let m = node
@@ -45,7 +45,7 @@ fn marker(doc: &RinchDocument, li: NodeId) -> String {
         .find(|&c| doc.tree.get(c).unwrap().is_pseudo_element)
         .expect("the <li> generates a marker");
     get_text_content(&doc.tree, m)
-        .trim_end_matches(['\u{2002}', '.'])
+        .trim_end_matches([' ', '.'])
         .to_string()
 }
 

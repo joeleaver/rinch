@@ -238,19 +238,52 @@ List markers on `<li>` (issue #725) are partly part of this. `li` computes
 ul` is `circle`, measured in Chrome 153. A block-level `list-item` box lays out
 as a `block` one does (its children stack, its height is theirs); `display: inline list-item` stays inline.
 
-What desktop draws is a text marker followed by an en space: `•`, `◦` or `▪`
-for `disc`, `circle` or `square`, `N.` for `decimal` (`<ol start>` and
-`<li value>` included), and the old bullet or number for any other keyword. It
-is generated as a span at the start of an `<li>` whose parent is a `<ul>` or
-`<ol>`, whose computed `display` is `list-item`, whose `list-style-type` is not
-`none` and which has no `::before` or `::after` of its own (Chrome draws the
-marker beside either; a `menu`/`dir` item gets none yet — #1370). So an item
-restyled to `display: flex` — a `List` item with an icon — draws no marker.
-The marker is inline content of the item, not an outside marker hanging in its
-padding, and `list-style-position` is not read (#1356). The rich-text editor's
-stylesheet takes that span out of flow and hangs it against the item's left
-edge, as a browser's outside marker hangs, and draws its task-list checkbox
-itself as a `::before` hung the same way (#1246).
+What desktop draws is a text marker: `•`, `◦` or `▪` for `disc`, `circle` or
+`square`, `N. ` for `decimal` (`<ol start>` and `<li value>` included), and
+the old bullet or number for any other keyword. It is generated as a
+`<rinch-marker>` element at the start of an `<li>` whose parent is a `<ul>` or `<ol>`, whose computed
+`display` is `list-item`, whose `list-style-type` is not `none` and which has
+no `::before` or `::after` of its own (Chrome draws the marker beside either; a
+`menu`/`dir` item gets none yet — #1370). So an item restyled to `display:
+flex` — a `List` item with an icon — draws no marker.
+
+`list-style-position` is read (#1356). An **`outside`** marker (the default)
+is a box of its own, out of the item's flow, hung in the list's padding
+beside the item's first line box, as Chrome hangs it: an item whose first
+child is a block (`<li><div>`, `<li><p>`, `<li><table>`) is as tall as the
+block, not a line taller, and a wrapped item's later lines start under its
+first line's text. The first line is found through the item's block children
+(a padded or bordered `<div>`'s first line, past an empty block or a picture);
+beside a table the marker sits at its first row's content bottom; an item with
+no line at all (`<li></li>`, `<li><img style="display: block">`) is at least
+one marker line high. A disc ends `ascent * 2 / 3 + 8` px before the item's
+border box (Blink's rule; Chrome draws it as a shape, rinch as a glyph centred
+where the shape is), a number ends at that edge, and under `direction: rtl`
+both hang on the right. An **`inside`** marker is inline content at the start
+of the item, so it does take a line of its own above a block child, as in
+Chrome. The marker paints in its item's flow: whatever clips the item
+(`overflow: hidden` on it or an ancestor, a scroller) clips the marker, and a
+later positioned box covers it. It is a `<rinch-marker>` element, so a rule
+naming an element (`li span:first-child`, `li > div`) never matches it. A
+universal rule (`li *`, `#t > *`) or one naming `rinch-marker` does match it,
+but the UA sheet resets with `!important` everything such a rule could change
+about how it looks: its box (margin, padding, border, size, position, float,
+transform), its font, colour and visibility (taken from the item), and its
+opacity, background, outline, shadows and filter. So `#t > * { opacity: 0 }`
+or `li * { color: blue }` leaves it as Chrome leaves a `::marker`. A property
+not in that list, such as `text-decoration` or `cursor`, does still reach it.
+There is no `::marker` selector to style it with. On desktop the marker is a
+node in the tree, so `text_content` of an `<li>` includes its glyph or number,
+as it includes any generated box (#1629); `query_selector`, structural selectors
+(`:first-child`, `:nth-child`) and copying a selection skip it. Still not Chrome's: a number is drawn without Chrome's
+tabular digits (its far edge is up to 3px in); an `inside` disc's glyph sits
+about 0.12em right of Chrome's shape; a marker whose own line is taller
+than the first line it sits on does not push the item's content down; and a
+later block's background pulled up over the item (a negative margin) hides the
+marker, as it hides any earlier text in rinch, where Chrome paints inline
+content above in-flow backgrounds (#2276). The
+rich-text editor's task-list checkbox is a `::before` hung against the item's
+left edge the same way (#1246).
 
 **Components are unaffected**, and that is pinned rather than assumed —
 `Divider`, `List`, `Breadcrumbs`, `Tree`, `Image`, `Blockquote` and `Code` all

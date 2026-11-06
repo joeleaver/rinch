@@ -1999,3 +1999,80 @@ pub fn setup_collab_table_keystroke_after_remote(rows: usize) -> CollabFixture {
         session: host.1,
     }
 }
+
+// ── list items with outside markers (#1356, review of #2271) ───────────────
+
+/// A `<ul>` of 500 `<li><p>` items, Outlook's and Gmail's list shape: each
+/// item has an outside marker that `rinch_dom`'s marker pass places beside
+/// its paragraph's first line. The div-row lists above have no marker, so
+/// they cannot see what that pass costs. `other` is a box after the list.
+pub struct MarkerListFixture {
+    pub doc: RinchDocument,
+    pub list: NodeId,
+    pub other: NodeId,
+    pub grow: f32,
+}
+
+fn build_marker_list() -> MarkerListFixture {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; font-family: Inter; font-size: 16px; line-height: 20px; }
+         p { margin: 0; }",
+    );
+    let body = doc.body();
+    let list = doc.create_element("ul");
+    for i in 0..LIST_ROWS {
+        let li = doc.create_element("li");
+        let p = doc.create_element("p");
+        let t = doc.create_text(&format!("Row number {i} with some text"));
+        doc.append_child(p, t);
+        doc.append_child(li, p);
+        doc.append_child(list, li);
+    }
+    doc.append_child(body, list);
+    let other = doc.create_element("div");
+    let t = doc.create_text("after the list");
+    doc.append_child(other, t);
+    doc.append_child(body, other);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    MarkerListFixture {
+        doc,
+        list,
+        other,
+        grow: 10.0,
+    }
+}
+
+/// The marker list, after one item was appended and laid out.
+pub fn setup_marker_list_append() -> MarkerListFixture {
+    op_marker_list_append(build_marker_list())
+}
+
+/// Append one `<li><p>` item to the marker list, then layout: one new
+/// marker to place.
+pub fn op_marker_list_append(mut f: MarkerListFixture) -> MarkerListFixture {
+    let doc = &mut f.doc;
+    let li = doc.create_element("li");
+    let p = doc.create_element("p");
+    let t = doc.create_text("new row");
+    doc.append_child(p, t);
+    doc.append_child(li, p);
+    doc.append_child(f.list, li);
+    doc.resolve_layout(VP.0, VP.1);
+    f
+}
+
+/// The marker list, after the box below it changed height once.
+pub fn setup_marker_list_unrelated() -> MarkerListFixture {
+    op_marker_list_unrelated(build_marker_list())
+}
+
+/// Grow the box after the list, then layout: no marker can have moved.
+pub fn op_marker_list_unrelated(mut f: MarkerListFixture) -> MarkerListFixture {
+    f.grow += 1.0;
+    let style = format!("height: {}px", f.grow);
+    f.doc.set_attribute(f.other, "style", &style);
+    f.doc.resolve_layout(VP.0, VP.1);
+    f
+}
