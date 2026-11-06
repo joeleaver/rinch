@@ -701,6 +701,7 @@ impl RinchDocument {
                         symbol: symbol.is_some(),
                     });
                 self.tree.outside_markers.push(span_raw);
+                self.tree.has_outside_markers = true;
             }
         }
 

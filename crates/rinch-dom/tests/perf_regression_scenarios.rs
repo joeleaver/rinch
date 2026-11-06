@@ -4553,3 +4553,151 @@ fn a_read_only_selection_writes_one_root_and_repaints_it() {
         ],
     );
 }
+
+// ── list_markers_placed ────────────────────────────────────────────────────
+
+/// Twenty `<li><p>` items (#1356; review of #2271). The marker pass places a
+/// marker only when it can have moved: all twenty on the first layout, none
+/// when a box after the list or before it changes height (the items only
+/// move), one when an item is appended (its new marker), one when an item's
+/// text changes (its paragraph got new lines).
+#[test]
+fn outside_list_markers_are_placed_only_when_they_can_have_moved() {
+    let mut doc = doc_with("p { margin: 0 } ul { margin: 0 }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let above = el(&mut doc, body, "div", "");
+    let ul = el(&mut doc, body, "ul", "");
+    let mut paras = Vec::new();
+    for i in 0..20 {
+        let li = el(&mut doc, ul, "li", "");
+        let p = el(&mut doc, li, "p", "");
+        paras.push(text(&mut doc, p, &format!("item {i}")));
+    }
+    let below = el(&mut doc, body, "div", "");
+    text(&mut doc, below, "below");
+    let s = cold_frame(&mut doc);
+    expect(
+        "markers: first frame",
+        &s,
+        &[
+            (StyleResolves, 44),
+            (ElementsCascaded, 65),
+            (StyleNodesVisited, 65),
+            (FullStyleWalks, 1),
+            (TaffyStyleSyncs, 85),
+            (TaffyStyleChanges, 64),
+            (ShapeMeasureIfc, 61),
+            (ShapeIfcBuild, 41),
+            (IfcMeasureInvalidations, 84),
+            (IfcSignatureChanges, 41),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 62),
+            (ListMarkersPlaced, 20),
+            (PaintNodesVisited, 60),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+
+    doc.set_attribute(below, "style", "height: 37px");
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "markers: a box below grows",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (IfcMeasureCacheHits, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 60),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+
+    doc.set_attribute(above, "style", "height: 23px");
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "markers: a box above grows",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 57),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+
+    let li = el(&mut doc, ul, "li", "");
+    let p = el(&mut doc, li, "p", "");
+    text(&mut doc, p, "appended");
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "markers: an item appended",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 3),
+            (TaffyStyleSyncs, 4),
+            (TaffyStyleChanges, 3),
+            (ShapeMeasureIfc, 3),
+            (ShapeIfcBuild, 2),
+            (IfcMeasureInvalidations, 4),
+            (IfcSignatureChanges, 2),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 4),
+            (IfcScopeNodes, 26),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 3),
+            (ListMarkersPlaced, 1),
+            (PaintNodesVisited, 57),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+
+    doc.set_text_content(paras[3], "item three, edited");
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "markers: an item's text edited",
+        &s,
+        &[
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (ListMarkersPlaced, 1),
+            (PaintNodesVisited, 57),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}

@@ -68,6 +68,22 @@ fn inset_move(f: InsetFixture) -> InsetFixture {
     black_box(measure(black_box(f), op_inset_move))
 }
 
+// A `<ul>` of `<li><p>` items, whose outside markers the div-row lists
+// above do not have (#1356): appending an item places one marker, and a
+// relayout that only moves boxes outside the list places none (pinned as
+// `list_markers_placed` in `rinch-dom/tests/perf_regression_scenarios.rs`).
+#[library_benchmark]
+#[bench::items_500(setup = setup_marker_list_append)]
+fn marker_list_append(f: MarkerListFixture) -> MarkerListFixture {
+    black_box(measure(black_box(f), op_marker_list_append))
+}
+
+#[library_benchmark]
+#[bench::items_500(setup = setup_marker_list_unrelated)]
+fn marker_list_unrelated(f: MarkerListFixture) -> MarkerListFixture {
+    black_box(measure(black_box(f), op_marker_list_unrelated))
+}
+
 // The scenarios that must cost what they cost on a tree with no out-of-flow
 // correction at all: a box Taffy already resolves, a box whose containing
 // block needs no size check, a scroller that is between no box and its
@@ -189,6 +205,8 @@ library_benchmark_group!(
         drawer_toggle,
         abs_badge_extents,
         inset_move,
+        marker_list_append,
+        marker_list_unrelated,
         abs_badge_relayout,
         abs_badge_scroll,
         card_grid_count_edit,

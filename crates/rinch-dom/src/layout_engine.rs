@@ -1470,8 +1470,11 @@ impl RinchDocument {
         };
         let node = &mut self.tree.nodes[anon_id];
         if node.layout != new_layout {
+            let resized =
+                node.layout.width != new_layout.width || node.layout.height != new_layout.height;
             node.layout = new_layout;
             self.tree.paint_dirty_nodes.push(anon_id);
+            self.tree.note_marker_move(anon_id, resized);
             // Read back after the element walk placed the absolute boxes
             // (`out_of_flow::replace_all`).
             self.tree.abs_late_moves = true;
@@ -1918,8 +1921,11 @@ impl RinchDocument {
             // old rect is lost and the move ghosts.
             let node = &mut self.tree.nodes[node_id];
             if node.layout != new_layout {
+                let resized = node.layout.width != new_layout.width
+                    || node.layout.height != new_layout.height;
                 node.layout = new_layout;
                 self.tree.paint_dirty_nodes.push(node_id);
+                self.tree.note_marker_move(node_id, resized);
             }
         }
 

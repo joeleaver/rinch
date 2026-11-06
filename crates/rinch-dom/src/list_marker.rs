@@ -228,24 +228,65 @@ impl RinchDocument {
     /// Place every outside list marker (module doc). Answers whether an
     /// item's [`Node::marker_line_floor`](crate::node::Node) changed, which
     /// changes its Taffy style: the caller lays the document out again.
+    ///
+    /// Only the markers that can have moved are placed (review of #2271):
+    /// the ones generated since the last pass, and those of the items above a
+    /// box the read-back saw move or resize, or an IFC root that got new
+    /// lines (`NodeTree::marker_moves`). A marker's place is relative to its
+    /// item and depends only on what is inside it, so a box that only moved
+    /// counts from its parent up, and only a resize counts the box itself: a
+    /// list pushed down by a box above it places none.
     pub(crate) fn place_list_markers(&mut self) -> bool {
-        if self.tree.outside_markers.is_empty() {
+        let tree = &mut self.tree;
+        if tree.outside_markers.is_empty() && tree.marker_moves.is_empty() {
             return false;
         }
-        let mut markers = std::mem::take(&mut self.tree.outside_markers);
+        let mut markers = std::mem::take(&mut tree.outside_markers);
+        let moves = std::mem::take(&mut tree.marker_moves);
+        if !moves.is_empty() {
+            tree.marker_walk_stamp += 1;
+            let stamp = tree.marker_walk_stamp;
+            for (id, resized) in moves {
+                let mut at = if resized {
+                    Some(id)
+                } else {
+                    tree.nodes.get(id).and_then(|n| n.parent)
+                };
+                while let Some(cur) = at {
+                    let Some(node) = tree.nodes.get_mut(cur) else {
+                        break;
+                    };
+                    // Everything above a node already walked was walked too.
+                    if node.marker_walk == stamp {
+                        break;
+                    }
+                    node.marker_walk = stamp;
+                    at = node.parent;
+                    if let Some(&first) = tree.nodes[cur].children.first()
+                        && tree
+                            .nodes
+                            .get(first)
+                            .is_some_and(|c| c.outside_marker.is_some())
+                    {
+                        markers.push(first);
+                    }
+                }
+            }
+        }
         markers.sort_unstable();
         markers.dedup();
-        markers.retain(|&m| {
-            self.tree
+        let mut floors_changed = false;
+        for m in markers {
+            let live = self
+                .tree
                 .nodes
                 .get_live(m)
-                .is_some_and(|n| n.outside_marker.is_some() && n.parent.is_some())
-        });
-        let mut floors_changed = false;
-        for &m in &markers {
-            floors_changed |= self.place_list_marker(m);
+                .is_some_and(|n| n.outside_marker.is_some() && n.parent.is_some());
+            if live {
+                self.tree.perf.bump(crate::perf::Counter::ListMarkersPlaced);
+                floors_changed |= self.place_list_marker(m);
+            }
         }
-        self.tree.outside_markers = markers;
         floors_changed
     }
 
