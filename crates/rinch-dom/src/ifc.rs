@@ -1417,8 +1417,14 @@ pub(crate) struct IfcText<'a> {
     /// too, and so do `aa<span><span normal>hello</span></span> ccc` and
     /// `aa<span normal><span nowrap>hello</span></span> ccc`; but
     /// `…hello</span><span></span> ccc` and `…hello</span><span> ccc</span>`
-    /// do not (#2238).
+    /// do not (#2238). An element ends into its nearest ancestor with a box
+    /// (a `display: contents` one has none), text that does not wrap in a
+    /// contents element whose boxed ancestor wraps takes the opportunity
+    /// away, and a `<wbr>` gives one that elements after it do not take
+    /// away ([`Self::push_wbr`], review of #2258).
     last_wraps: Option<bool>,
+    /// A `<wbr>` was met since the last content ([`Self::push_wbr`]).
+    wbr: bool,
     /// The collapsible spaces of text that may not wrap that
     /// [`Self::last_wraps`] gives an opportunity before: `(op, byte in the
     /// op's text)`. Each is handed to parley as wrapping ([`Self::replay`]):
@@ -1567,6 +1573,7 @@ impl<'a> IfcText<'a> {
             edge_boxes: false,
             wraps: true,
             last_wraps: None,
+            wbr: false,
             wrap_spaces: Vec::new(),
             break_before: Vec::new(),
         }
@@ -1583,7 +1590,7 @@ impl<'a> IfcText<'a> {
     /// opportunity before a run of spaces that does not wrap is the
     /// element's from here ([`Self::last_wraps`]).
     pub(crate) fn open_element(&mut self, wraps: bool) {
-        if self.last_wraps.is_some() {
+        if self.last_wraps.is_some() && !self.wbr {
             self.last_wraps = Some(wraps);
         }
     }
@@ -1593,9 +1600,20 @@ impl<'a> IfcText<'a> {
     /// an element that does not wrap closes into one that does
     /// ([`Self::last_wraps`]).
     pub(crate) fn close_element(&mut self, wraps: bool, parent_wraps: bool) {
-        if !wraps && parent_wraps && self.last_wraps.is_some() {
+        if !wraps && parent_wraps && self.last_wraps.is_some() && !self.wbr {
             self.last_wraps = Some(true);
         }
+    }
+
+    /// A `<wbr>`: an opportunity whatever the `white-space` (Chrome 156:
+    /// `aa<span nowrap>hello</span><wbr> ccc` breaks after `hello`), which
+    /// elements starting or ending after it, before the next content, do not
+    /// take away (review of #2258). It reaches a run of spaces after it; a
+    /// `<wbr>` right before text that does not wrap gets no opportunity of
+    /// its own here.
+    pub(crate) fn push_wbr(&mut self) {
+        self.last_wraps = Some(true);
+        self.wbr = true;
     }
 
     /// The runs of spaces that do not wrap and have a break opportunity
@@ -1638,6 +1656,7 @@ impl<'a> IfcText<'a> {
         self.line_start = false;
         self.prev_space = false;
         self.last_wraps = Some(self.wraps);
+        self.wbr = false;
         self.last_box = Some((inline_box.id as RawNodeId, self.len));
         self.ops.push(IfcOp::InlineBox(inline_box));
     }
@@ -1845,6 +1864,7 @@ impl<'a> IfcText<'a> {
                     self.break_before.push((self.len, false));
                 }
                 self.last_wraps = Some(self.wraps);
+                self.wbr = false;
             }
             if !may_rewrite_preserved(raw.as_ref()) {
                 let n = raw.len();
@@ -1918,6 +1938,7 @@ impl<'a> IfcText<'a> {
                 self.line_start = false;
                 self.pending = None;
                 self.last_wraps = Some(self.wraps);
+                self.wbr = false;
             }
             if out.is_none() && ((space && c != ' ') || sub.is_some()) {
                 out = Some(raw[..i].to_string());
@@ -3262,12 +3283,20 @@ fn wraps_between(
         }
         false
     };
+    // A `display: contents` element has no box, and its `white-space` is
+    // not the one in effect at an element's end there (Chrome 156, review of
+    // #2258: `aa<span contents normal><span nowrap>dddd[1]</span></span>
+    // ccc` in a `nowrap` root has no break after `[1]`).
     let mut el = nodes.get(leaf).and_then(|n| n.parent);
     while let Some(id) = el {
         let Some(node) = nodes.get(id) else {
             return true;
         };
-        if RinchDocument::text_wrap_mode(&node.computed_style) == parley::style::TextWrapMode::Wrap
+        let contents = id != root_id
+            && node.computed_style.display == crate::computed_style::values::DisplayValue::Contents;
+        if !contents
+            && RinchDocument::text_wrap_mode(&node.computed_style)
+                == parley::style::TextWrapMode::Wrap
         {
             return true;
         }
@@ -10761,6 +10790,18 @@ impl RinchDocument {
     /// which is what draws its `text-overflow: ellipsis`. The IFC root's own
     /// mode is its root text style's (#1212), so a wrapping span inside a
     /// `nowrap`/`pre` root wraps while the root's own text does not.
+    /// `id`, or its nearest ancestor that is not `display: contents`: the
+    /// element whose box an inline item of `id` sits in.
+    fn box_ancestor(nodes: &crate::node_slab::NodeSlab, mut id: RawNodeId) -> RawNodeId {
+        while nodes[id].computed_style.display
+            == crate::computed_style::values::DisplayValue::Contents
+            && let Some(up) = nodes[id].parent.filter(|&up| nodes.get_live(up).is_some())
+        {
+            id = up;
+        }
+        id
+    }
+
     fn text_wrap_mode(
         computed: &crate::computed_style::ComputedStyle,
     ) -> parley::style::TextWrapMode {
@@ -11223,9 +11264,28 @@ impl RinchDocument {
                             .unwrap_or(&nodes[parent_id])
                             .computed_style;
                         let mode = SpaceCollapse::of(own.white_space);
-                        builder.set_wraps(
-                            Self::text_wrap_mode(own) == parley::style::TextWrapMode::Wrap,
-                        );
+                        let own_wraps =
+                            Self::text_wrap_mode(own) == parley::style::TextWrapMode::Wrap;
+                        builder.set_wraps(own_wraps);
+                        // Text that does not wrap, in a `display: contents`
+                        // element whose nearest boxed ancestor wraps, takes
+                        // the opportunity before its spaces away (Chrome 156,
+                        // review of #2258: `aa<span contents nowrap><span
+                        // normal>hello</span> ccc</span>` in a `normal` root
+                        // does not break after `hello`).
+                        if !own_wraps
+                            && let Some(dom_parent) = child.parent.filter(|&p| {
+                                nodes.get_live(p).is_some_and(|n| {
+                                    n.computed_style.display
+                                        == crate::computed_style::values::DisplayValue::Contents
+                                })
+                            })
+                            && Self::text_wrap_mode(
+                                &nodes[Self::box_ancestor(nodes, dom_parent)].computed_style,
+                            ) == parley::style::TextWrapMode::Wrap
+                        {
+                            builder.open_element(false);
+                        }
                         let (flat_len, offset_map) = builder.push_text_node(raw, mode);
                         *flat_pos += flat_len;
                         debug_assert_eq!(*flat_pos, builder.len());
@@ -11290,7 +11350,12 @@ impl RinchDocument {
                     let wraps = |style: &crate::computed_style::ComputedStyle| {
                         Self::text_wrap_mode(style) == parley::style::TextWrapMode::Wrap
                     };
-                    builder.open_element(wraps(child_computed));
+                    let wbr = child.tag() == Some("wbr");
+                    if wbr {
+                        builder.push_wbr();
+                    } else {
+                        builder.open_element(wraps(child_computed));
+                    }
                     child_positions.push((child_id, LayoutResult::default()));
 
                     // #1426: the room its inline-start margin, border and
@@ -11328,10 +11393,21 @@ impl RinchDocument {
                         builder.push_edge_box(child_id, true, edge_end * scale);
                     }
                     builder.pop_span();
-                    builder.close_element(
-                        wraps(child_computed),
-                        wraps(&nodes[parent_id].computed_style),
-                    );
+                    // It closes into its nearest ancestor with a box: a
+                    // `display: contents` parent has none, and its
+                    // `white-space` is not the one in effect after the end
+                    // (Chrome 156, review of #2258: `aa<span contents
+                    // normal><span nowrap>hello</span></span> ccc` in a
+                    // `nowrap` root does not break after `hello`, and
+                    // `aa<span normal><span contents nowrap><span
+                    // nowrap>hello</span></span></span> ccc` does).
+                    let into = Self::box_ancestor(nodes, parent_id);
+                    if !wbr {
+                        builder.close_element(
+                            wraps(child_computed),
+                            wraps(&nodes[into].computed_style),
+                        );
+                    }
 
                     // Record background and/or vertical-align span if the
                     // inline element has one. Through the shared helper, so

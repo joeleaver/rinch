@@ -1208,3 +1208,144 @@ fn a_re_broken_line_keeps_thai_word_breaks() {
     rest.retain(|c| c != 'w');
     assert_eq!(rest, words.concat());
 }
+
+/// Review of #2258: an element's end inside a `display: contents` element
+/// closes into the nearest ancestor with a box (`K1`–`K9`: the contents
+/// element's own `white-space` is not the one in effect there); text that
+/// does not wrap in a contents element whose boxed ancestor wraps takes the
+/// opportunity before its spaces away (`K12`, `K13`, `K17`, `K18`); and a
+/// `<wbr>` is an opportunity that the empty elements after it do not take
+/// away (`M5`, `V2`–`V5`). Chrome 156; the reviewer's probe ids.
+const CONTENTS_AND_WBR: Rows = &[
+    (
+        "K1",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:nowrap">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K2",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal">dd<span style="white-space:nowrap">ddhello</span></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K3",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="display:contents;white-space:nowrap"><span style="white-space:nowrap">ddddhello</span></span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "K4",
+        "width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap">dddd<span style="white-space:nowrap">hello</span> ccc ccc</span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K5",
+        "white-space:pre;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:nowrap">ddddhello</span></span>  ccc"#,
+        &["aaddddhello__ccc"],
+    ),
+    (
+        "K6",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:nowrap">ddddhello</span> ccc ccc</span>"#,
+        &["aaddddhello", "ccc", "ccc"],
+    ),
+    (
+        "K7",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:nowrap">ddddhello</span></span><span style="display:contents;white-space:nowrap"> ccc ccc</span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K8",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:pre">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K9",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:nowrap">dddd<b id="1" style="display:inline-block;width:30px;height:10px;"></b></span></span> ccc ccc"#,
+        &["aadddd[1]_ccc_ccc"],
+    ),
+    (
+        "K12",
+        "width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap"><span style="white-space:normal">ddddhello</span> ccc ccc</span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K13",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="display:contents;white-space:nowrap"><span style="white-space:normal">ddddhello</span> ccc ccc</span></span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K14",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap"><span style="white-space:normal">ddddhello</span> ccc ccc</span>"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "K15",
+        "width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap">dddd<span style="white-space:nowrap">hello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc", "ccc"],
+    ),
+    (
+        "K16",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="display:contents;white-space:nowrap">dddd<span style="white-space:nowrap">hello</span></span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "K17",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="display:contents;white-space:nowrap"><span style="white-space:nowrap">ddddhello</span> ccc ccc</span></span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K18",
+        "width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap"><span style="display:contents;white-space:normal"><span style="white-space:nowrap">ddddhello</span></span> ccc ccc</span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "M5",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><wbr> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "V2",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><wbr><span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "V3",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><wbr>  ccc"#,
+        &["aaddddhello", "ccc"],
+    ),
+    (
+        "V4",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:nowrap">ddddhello</span><wbr> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "V5",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello<wbr></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+];
+
+#[test]
+fn display_contents_ends_and_wbr_follow_chrome() {
+    check_rows(CONTENTS_AND_WBR);
+}

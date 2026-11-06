@@ -509,7 +509,11 @@ input a shaped layout is built from:
   away when it does not, even an empty one (`<span normal>ccc<span nowrap>
   mm</span>` and `…hello</span><span></span> ccc` do not break; end padding
   on the span does not stop the break, nor does a plain span closing around
-  it). A
+  it). An end inside a `display: contents` element closes into the nearest
+  boxed ancestor, text that does not wrap in a contents element whose boxed
+  ancestor wraps takes the opportunity away, and `<wbr>` gives one that
+  elements after it do not take away; the box seams skip contents elements
+  too (`ifc::wraps_between`, review of #2258). A
   collapsible such space is handed to parley as wrapping
   (`IfcText::wrap_spaces`) and counts as wrapping in the seams and edge-box
   passes; a preserved one keeps its own `white-space` there and takes the

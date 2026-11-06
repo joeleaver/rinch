@@ -443,6 +443,10 @@ when it does not, even an empty one. So `aa<span normal>hello</span> ccc` in a `
 breaks after `hello` with end padding, a border or a margin on the span, or a padded child at
 its end, and so do `aa<span><span normal>hello</span></span> ccc` and `aa<span normal><span
 nowrap>hello</span></span> ccc`; `…hello</span><span></span> ccc` and `…hello</span><span
-nowrap> ccc</span>` do not (Chrome 156). The seams and edge-box passes ask the same answer
+nowrap> ccc</span>` do not (Chrome 156). An element's end inside a `display: contents` element
+closes into the nearest ancestor with a box, text that does not wrap in a contents element whose
+boxed ancestor wraps takes the opportunity away, and a `<wbr>` gives one that empty elements after
+it do not take away (review of #2258); a `<wbr>` right before text that does not wrap still makes
+no opportunity of its own. The seams and edge-box passes ask the same answer
 (`ifc::UnhungSpaces::space_breaks`), and a paragraph with such a space is broken at its width
 even when none of its text wraps.
