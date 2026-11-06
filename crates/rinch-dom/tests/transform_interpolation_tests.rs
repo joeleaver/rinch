@@ -474,21 +474,16 @@ fn a_full_turn_is_a_change_and_spins() {
 /// `rotate(45deg)`, so it too goes by function. Chrome: 500ms back, and a
 /// fifth of the way in (100ms) it is `rotate(36deg)`.
 ///
-/// Style resolution stamps a transition with the wall clock, so the forward
-/// transition is back-dated half its duration rather than ticked there: the
-/// reversal measures its shortening against the clock too.
+/// Style resolution stamps a transition with the document's animation clock,
+/// so the forward transition is back-dated half its duration rather than
+/// ticked there: the reversal measures its shortening against that clock. It
+/// is pinned (#2267), so the reversal starts exactly half way.
 #[test]
 fn a_reversal_starts_from_the_interpolated_function_list() {
-    let now = || {
-        web_time::SystemTime::now()
-            .duration_since(web_time::SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64()
-            * 1000.0
-    };
     let (mut doc, div) = transition_doc("rotate(0deg)", "rotate(90deg)");
+    doc.set_animation_clock_ms(Some(1_000_000.0));
     start(&mut doc, div, "t on");
-    let back_dated = now() - 500.0;
+    let back_dated = doc.animation_now_ms() - 500.0;
     doc.tree
         .active_transitions
         .get_mut(&div.0)
@@ -505,9 +500,9 @@ fn a_reversal_starts_from_the_interpolated_function_list() {
     let t1 = start(&mut doc, div, "t");
     let reversal = &doc.tree.active_transitions[&div.0][&TransitionProperty::Transform];
     let duration = reversal.duration_ms;
-    // The reversal starts from the style at the wall-clock moment the class
-    // changed, a little past 45° under a loaded test run. What matters is its
-    // *shape*: still a single `rotate()`, so it goes on pairing by function.
+    // The reversal starts from the style at the moment the class changed:
+    // exactly half way, on the pinned clock. And its *shape* is still a single
+    // `rotate()`, so it goes on pairing by function.
     let AnimatableValue::Transform(from) = &reversal.from else {
         panic!("a transform transition starts from a transform");
     };
@@ -519,8 +514,8 @@ fn a_reversal_starts_from_the_interpolated_function_list() {
     };
     let from_deg = from_rad.to_degrees();
     assert!(
-        (from_deg - 45.0).abs() < 5.0 && (duration - 500.0).abs() < 60.0,
-        "reversing half way: from about 45° over about half the duration, \
+        (from_deg - 45.0).abs() < 1e-3 && (duration - 500.0).abs() < 1e-3,
+        "reversing half way: from 45° over half the duration, \
          got {from_deg}° over {duration}ms"
     );
 

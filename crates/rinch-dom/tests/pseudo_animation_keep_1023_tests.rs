@@ -50,6 +50,7 @@ const CSS: &str = "\
 /// `body > div.p > div.w`, laid out once.
 fn doc_with(class: &str) -> (RinchDocument, NodeId, NodeId) {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(CSS);
     let body = doc.body();
     let p = doc.create_element("div");
@@ -327,6 +328,7 @@ fn a_kept_inline_after_takes_new_content_into_the_originators_layout() {
 #[test]
 fn a_list_marker_that_appears_on_a_restyle_is_laid_out() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css("li { font-size: 16px; line-height: 20px } .nomark { display: block }");
     let body = doc.body();
     let ul = doc.create_element("ul");
@@ -362,6 +364,7 @@ fn a_list_marker_that_appears_on_a_restyle_is_laid_out() {
 #[test]
 fn a_list_marker_that_comes_back_with_its_list_style_is_laid_out() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css("li { font-size: 16px; line-height: 20px } .none { list-style-type: none }");
     let body = doc.body();
     let ul = doc.create_element("ul");
@@ -448,6 +451,7 @@ fn pseudo_children(doc: &RinchDocument, n: NodeId) -> Vec<u64> {
 #[test]
 fn a_before_whose_rule_leaves_with_the_theme_sheet_is_removed() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.set_theme_css(".w::before { content: 'T'; }");
     let body = doc.body();
     let w = doc.create_element("div");
@@ -477,6 +481,7 @@ fn a_before_whose_rule_leaves_with_the_theme_sheet_is_removed() {
 #[test]
 fn a_kept_before_becomes_and_stops_being_a_flex_item() {
     let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
     doc.load_css(".w::before { content: 'z'; z-index: 3; } .w.fx { display: flex; }");
     let body = doc.body();
     let w = doc.create_element("div");
