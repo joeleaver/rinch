@@ -865,9 +865,10 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`f010985c43f499f76e7d587e2c5ee3c6f0877817`, joeleaver/vello-fork#5 on branch
-`rinch-patch`): the vello `v0.11.0` tag plus the image atlas below, **Bump
-buffers** and the **Blend stack** after it. The
+(`04fb11def44d7cde0dd53852bad6002fa02da3f9`, branch `atlas-tint-2286` on top of
+joeleaver/vello-fork#5 on `rinch-patch`): the vello `v0.11.0` tag plus the image
+atlas below, **Bump buffers**, the **Blend stack** and **Tinted alpha-mask
+images** after it. The
 fork's `vello` takes `vello_encoding` and `vello_shaders` by path, so all three
 come from the fork.
 It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
@@ -980,6 +981,20 @@ in-scene frame, past D10's one. The window's scene changes too, by at most a
 level in tiles a clip's edge crosses, towards the float result. Pinned by
 `shell::split_pages_1865_tests::gpu_split_pages_2103_glyph_edge_shadow_tail`
 (red with the 8-bit stack).
+
+**Tinted alpha-mask images (#2286).** An image draw carries one more word, a
+premultiplied tint, and a mask mode in bits 16-17 of its sample word
+(`DrawTag::IMAGE` is `0x2D0`, info 11 and scene 4 words; upstream `0x28C`, 10
+and 3). In mode 1 (`IMAGE_MASK_ALPHA`) the fine shader's `image_paint` reads the
+sampled texel's alpha as coverage and paints the tint in it, in every quality
+arm; the pixel format is read as one bit, so the mode never reaches it.
+`Encoding::encode_image_mask`, `Scene::fill_image_mask` and
+`Scene::draw_image_mask` are the API. The glyph-mask atlas draws every glyph
+this way (`paint-and-damage.md`, "Glyph-mask atlas"): one mask for every colour.
+Mode 2 is kept for stage 3's per-channel (subpixel) mask, whose composite needs
+the destination pixel and goes in the same arm. Pins: the fork's
+`encoding::tests::image_mask_draw_data` (the draw data and the tag's sizes) and
+`gpu_glyph_atlas_2286` (pixels).
 
 An overflow costs a visible frame, or one per buffer that runs out, since a stage
 after one that failed stops short of saying what it needs: 400 window-sized

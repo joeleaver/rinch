@@ -21,9 +21,9 @@ use vello::Scene;
 
 const VIEWPORT: (f32, f32) = (200.0, 120.0);
 
-/// `vello_encoding::DrawTag` values (its field is public, its type is not
-/// re-exported): an image fill, a clip's begin.
-const IMAGE: u32 = 0x28C;
+/// `vello_encoding::DrawTag` values: an image fill (the fork's, #2286), a
+/// clip's begin.
+const IMAGE: u32 = vello::low_level::vello_encoding::DrawTag::IMAGE.0;
 const BEGIN_CLIP: u32 = 0x49;
 
 /// A page, one surface (id 1, its content box at (20, 12), 40x26) and
