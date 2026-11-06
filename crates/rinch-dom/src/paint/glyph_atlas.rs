@@ -780,7 +780,7 @@ impl SizeChurn {
     /// Start a frame.
     pub fn begin_frame(&mut self) {
         self.frame += 1;
-        if self.frame % SIZE_MEMORY_FRAMES == 0 {
+        if self.frame.is_multiple_of(SIZE_MEMORY_FRAMES) {
             let horizon = self.frame.saturating_sub(SIZE_MEMORY_FRAMES);
             self.seen.retain(|_, (f, _)| *f >= horizon);
             self.last_new.retain(|_, (f, _)| *f >= horizon);
