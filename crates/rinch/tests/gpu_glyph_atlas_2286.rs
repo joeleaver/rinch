@@ -278,14 +278,6 @@ fn gpu_atlas_glyphs_match_the_software_painter() {
         let (pw, ph) = ((W as f64 * scale) as u32, (H as f64 * scale) as u32);
         let gpu_px = gpu.render(painter.scene(), pw, ph);
         let cpu_px = paint_skia(&mut d, scale, &atlas);
-        assert_eq!(
-            stats.outline_fallbacks, 0,
-            "{scale}x: every glyph from the atlas"
-        );
-        assert!(
-            stats.atlas.misses > 0 && stats.atlas.uploads > 0,
-            "{stats:?}"
-        );
         let ink = inked(&cpu_px);
         assert!(
             ink > 2000,
@@ -296,6 +288,14 @@ fn gpu_atlas_glyphs_match_the_software_painter() {
             n, 0,
             "{scale}x: {n} pixels differ by more than 2 levels (worst {worst}) \
              between the GPU and the software painter"
+        );
+        assert_eq!(
+            stats.outline_fallbacks, 0,
+            "{scale}x: every glyph from the atlas"
+        );
+        assert!(
+            stats.atlas.misses > 0 && stats.atlas.uploads > 0,
+            "{stats:?}"
         );
     }
 }
