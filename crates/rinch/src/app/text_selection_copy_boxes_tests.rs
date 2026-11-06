@@ -955,3 +955,16 @@ fn a_selection_beside_a_box_at_its_roots_edge_leaves_the_box_out() {
         "end before ib at root end",
     ]);
 }
+
+#[test]
+fn selectable_text_in_an_unselectable_box_is_copied() {
+    // Review of #2249: `user-select: text` inside a `user-select: none`
+    // inline-block is selectable (Chrome 156); the copy passed the whole
+    // box because the box's root could not be selected.
+    review_cases(&[
+        "unsel ib selectable child",
+        "unsel ib nested ib",
+        "unsel para selectable ib",
+        "unsel ib between ibs",
+    ]);
+}

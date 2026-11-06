@@ -70,11 +70,14 @@ pub(crate) fn has_content(tree: &rinch_dom::NodeTree, root: u64) -> bool {
     super::text_selection_copy::rendered_span(tree, root).is_some()
 }
 
-/// Whether the text of `text_node` (inside IFC root `root`) is left out of
-/// a selection: generated content, drawn hidden (`visibility` inherits, so
-/// the text's own element says; a visible child of a hidden span is kept),
-/// or `user-select: none` nearer than anything that says otherwise.
-fn left_out(tree: &rinch_dom::NodeTree, root: u64, text_node: u64) -> bool {
+/// Whether the text of `text_node` is left out of a selection: generated
+/// content, drawn hidden (`visibility` inherits, so the text's own element
+/// says; a visible child of a hidden span is kept), or not selectable: the
+/// nearest `user-select` that is not `auto`, at or above its element, says
+/// `none`, or none says anything (rinch reads that as `none`). Read past the
+/// text's root: `user-select: text` inside a `user-select: none`
+/// inline-block is selectable (review of #2249).
+fn left_out(tree: &rinch_dom::NodeTree, text_node: u64) -> bool {
     let parent = tree.get(text_node).and_then(|n| n.parent);
     if let Some(p) = parent.and_then(|p| tree.get(p))
         && p.computed_style.visibility != VisibilityValue::Visible
@@ -84,7 +87,7 @@ fn left_out(tree: &rinch_dom::NodeTree, root: u64, text_node: u64) -> bool {
     let mut id = parent;
     while let Some(i) = id {
         let Some(n) = tree.get(i) else {
-            return false;
+            return true;
         };
         // Generated content (a list marker, `::before`) is no document text.
         if n.is_pseudo_element {
@@ -92,15 +95,12 @@ fn left_out(tree: &rinch_dom::NodeTree, root: u64, text_node: u64) -> bool {
         }
         match n.computed_style.user_select {
             UserSelectValue::Auto => {}
-            UserSelectValue::None => return i != root,
+            UserSelectValue::None => return true,
             _ => return false,
-        }
-        if i == root {
-            return false;
         }
         id = n.parent;
     }
-    false
+    true
 }
 
 /// The byte ranges of `root`'s text in `start..end` that a selection keeps:
@@ -129,7 +129,7 @@ pub(crate) fn kept_ranges(
     for r in &layout.text_ranges {
         super::text_selection_copy::work(1);
         let (a, b) = (r.flat_start.max(start), r.flat_end.min(end));
-        if a >= b || left_out(tree, root, r.node_id) {
+        if a >= b || left_out(tree, r.node_id) {
             continue;
         }
         match out.last_mut() {

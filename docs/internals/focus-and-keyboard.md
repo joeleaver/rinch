@@ -818,8 +818,10 @@ fallback for a drag over no text) is not drawn to them.
   stands in that root's text. `runs` orders roots with a paragraph before
   the inline-blocks in it, which put a selection from inside an
   inline-block to later text in its paragraph back to front (review of
-  #2249). Every root the walk meets between the ends is taken whole
-  (when it can be selected).
+  #2249). Every root the walk meets between the ends is taken whole,
+  and what cannot be selected is left out text by text (`kept_ranges`: the
+  nearest `user-select` that is not `auto`, read past the root), so
+  `user-select: text` inside a `user-select: none` inline-block is copied.
 - What stands in a root's lines is copied when the root's part reaches past
   where it stands: a box before the part's start or after its end is passed.
   What holds the last root is never passed, and leaving it ends the walk. An offset where

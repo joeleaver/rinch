@@ -106,9 +106,9 @@ impl Part {
 /// An IFC root the walk is inside, and how far its text is written.
 struct Root {
     id: u64,
-    /// The part of its text the selection takes, `None` when it takes none
-    /// of it (a root that cannot be selected, or one beside the selection).
-    part: Option<Part>,
+    /// The part of its text the selection takes. What in it cannot be
+    /// selected is left out text by text (`kept_ranges`).
+    part: Part,
     len: usize,
     /// Its text before this is written (or passed).
     cursor: usize,
@@ -125,15 +125,13 @@ struct Root {
 }
 
 impl Root {
-    fn new(tree: &rinch_dom::NodeTree, id: u64, part: Option<Part>, started: bool) -> Self {
+    fn new(tree: &rinch_dom::NodeTree, id: u64, part: Part, started: bool) -> Self {
         let mut texts: HashMap<u64, (usize, usize)> = HashMap::new();
         let mut len = 0;
         let mut drawn = Vec::new();
         if let Some(layout) = tree.get(id).and_then(|n| n.text_layout.as_ref()) {
             len = layout.text_content.len();
-            if part.is_some() {
-                drawn = rendered_ranges(tree, id, 0, len);
-            }
+            drawn = rendered_ranges(tree, id, 0, len);
             for r in &layout.text_ranges {
                 work(1);
                 let e = texts.entry(r.node_id).or_insert((r.flat_start, r.flat_end));
@@ -154,55 +152,37 @@ impl Root {
 
     /// Whether what stands at the walk's place in this root's lines (an
     /// atomic inline, a float, a picture) is in the selection: its part
-    /// reaches past it (at the root's own edges, see [`Part`]). A root the
-    /// selection takes none of leaves that to the roots inside.
+    /// reaches past it (at the root's own edges, see [`Part`]).
     fn takes_here(&self) -> bool {
-        match self.part {
-            None => true,
-            Some(p) => {
-                let c = self.cursor;
-                !self.started
-                    || ((p.start < c || (p.start == 0 && p.start_edge))
-                        && (c < p.end || (p.end == self.len && p.end_edge)))
-            }
-        }
+        let (p, c) = (self.part, self.cursor);
+        !self.started
+            || ((p.start < c || (p.start == 0 && p.start_edge))
+                && (c < p.end || (p.end == self.len && p.end_edge)))
     }
 
     /// Write its part up to `upto`.
     fn write_to(&mut self, tree: &rinch_dom::NodeTree, upto: usize, out: &mut Out) {
-        if let Some(p) = self.part {
-            let (a, b) = (self.cursor.max(p.start), upto.min(p.end));
-            if a < b
-                && let Some(t) = tree.get(self.id).and_then(|n| n.text_layout.as_ref())
-            {
-                while let Some(&(x, y)) = self.drawn.get(self.next) {
-                    work(1);
-                    if x >= b {
-                        break;
-                    }
-                    let (from, to) = (x.max(a), y.min(b));
-                    if from < to {
-                        out.push(t.text_content.get(from..to).unwrap_or(""));
-                    }
-                    if y > b {
-                        break;
-                    }
-                    self.next += 1;
+        let (a, b) = (self.cursor.max(self.part.start), upto.min(self.part.end));
+        if a < b
+            && let Some(t) = tree.get(self.id).and_then(|n| n.text_layout.as_ref())
+        {
+            while let Some(&(x, y)) = self.drawn.get(self.next) {
+                work(1);
+                if x >= b {
+                    break;
                 }
+                let (from, to) = (x.max(a), y.min(b));
+                if from < to {
+                    out.push(t.text_content.get(from..to).unwrap_or(""));
+                }
+                if y > b {
+                    break;
+                }
+                self.next += 1;
             }
         }
         self.cursor = self.cursor.max(upto);
     }
-}
-
-/// Whether the root `id` (an anonymous box: its run's) can be selected.
-fn selectable(tree: &rinch_dom::NodeTree, id: u64) -> bool {
-    let at = tree
-        .get(id)
-        .filter(|n| n.is_anonymous_block_box)
-        .and_then(|n| n.run_members.first().copied())
-        .unwrap_or(id);
-    super::text_selection::resolved_user_select(tree, at).is_selectable()
 }
 
 /// The length of root `id`'s text.
@@ -213,12 +193,12 @@ fn text_len(tree: &rinch_dom::NodeTree, id: u64) -> usize {
 }
 
 /// Open root `id`, met by the walk: its part is the selection's at an end
-/// of it, and all of it between (when it can be selected).
+/// of it, and all of it between.
 fn open(tree: &rinch_dom::NodeTree, parts: &HashMap<u64, Part>, roots: &mut Vec<Root>, id: u64) {
     let part = parts
         .get(&id)
         .copied()
-        .or_else(|| selectable(tree, id).then_some(Part::whole(text_len(tree, id))));
+        .unwrap_or_else(|| Part::whole(text_len(tree, id)));
     roots.push(Root::new(tree, id, part, true));
 }
 
@@ -450,7 +430,7 @@ fn walk_from(
         let part = parts
             .get(&id)
             .copied()
-            .or_else(|| selectable(tree, id).then_some(Part::whole(text_len(tree, id))));
+            .unwrap_or_else(|| Part::whole(text_len(tree, id)));
         Root::new(tree, id, part, false)
     };
     let mut stack = Vec::new();
