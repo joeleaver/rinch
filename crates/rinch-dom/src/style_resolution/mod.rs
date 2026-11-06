@@ -941,7 +941,7 @@ impl RinchDocument {
             node.filter_creates_stacking_context
                 .set(new_style.has_non_identity_filter());
 
-            // The HTML presentational defaults — `font-weight: bold` on
+            // The HTML presentational defaults — `font-weight: bolder` on
             // `<b>`/`<strong>`, `font-style: italic` on `<em>`/`<i>`, the
             // `text-decoration-line` on `<u>`/`<ins>`/`<s>`/`<strike>`/`<del>`,
             // and rinch's `user-select: text` on the code-ish elements (#2231)
