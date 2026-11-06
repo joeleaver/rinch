@@ -307,12 +307,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`9a7ae9e1518164ebf68dc4bad9731df9be197e4e`, branch `rinch-2280`, one commit
-on `rinch-patch`): ten commits on the taffy `v0.14.0` tag. It is a dependency, not a
+(`25caf91e87ad8ef2929ba4625f760e41e2765a80`, branch `rinch-patch`): eleven
+commits on the taffy `v0.14.0` tag (item 10 is two of them). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the ten commits onto the new tag. All are upstream
+and a Taffy bump rebases the eleven commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -417,24 +417,32 @@ candidates.
    min/max. A leaf measured there now sees that size as given. The review of #2268 found no
    case among 36 non-table and 8 aspect-ratio probes where it changes Chrome-matching output. Pins: the fork's `tests/stretch_past_max_width.rs` and
    `crates/rinch-dom/tests/table_cell_max_width_2264_tests.rs`.
-10. **`Style::proportional_column_sizing`** (#2280). The inline axis shares space between its
-   tracks as CSS tables share it between `auto` columns. The Maximise Tracks step
-   (`maximise_tracks`) gives the free space to the columns in proportion to each one's room to
-   grow (growth limit minus base size), so every column reaches its growth limit at once: each is
-   its min-content width plus the same fraction of its max-content minus min-content (CSS 2.1
-   §17.5.2.2, Blink's `DistributeInlineSizeToComputedInlineSizeAuto`). A grid gives equal shares.
-   And a spanning item's space beyond the growth limits of the tracks it spans goes to them in
-   proportion to those limits (`distribute_item_space_to_growth_limit`), as Blink shares a colspan
-   cell's max-content width (`DistributeColspanCellToColumnsAuto`). The block axis, and a
-   spanning item's base-size (min-content) contribution, are unchanged. rinch sets it on a table
-   with no width of its own (`apply_table_style`), whose columns are `auto` tracks; a table with
-   a width uses `fr` weights and is not affected. Pins: the fork's
+10. **`Style::proportional_column_sizing`** (#2280; commits `9a7ae9e1` and `25caf91e` on
+   `rinch-patch`). The inline axis shares space between its tracks as CSS tables share it
+   between columns. The Maximise Tracks step (`maximise_tracks`) shares the free space in
+   stages, as a table distributes its width between the guesses of css-tables-3 (Blink's
+   `DistributeInlineSizeToComputedInlineSizeAuto`): first to the tracks whose max track sizing
+   function is a percentage, then to those whose max is a fixed length (a `<td width=N>`
+   column, `minmax(min-content, Npx)`), then to every track; within a stage in proportion to
+   each track's room to grow (growth limit minus base size), so the stage's tracks reach their
+   limits at once. An `auto` column is then its min-content width plus the same fraction of its
+   max-content minus min-content (CSS 2.1 §17.5.2.2). A grid gives equal shares in one pass. The
+   first commit shared a fixed column's room with the auto ones' in one pass, which squeezed
+   mail's spacer columns (20/560/20 came out 6/588/6); the second adds the stages. And a
+   spanning item's space beyond the growth limits of the tracks it spans goes to them in
+   proportion to those limits (`distribute_item_space_to_growth_limit`), as Blink shares a
+   colspan cell's max-content width (`DistributeColspanCellToColumnsAuto`). The block axis, and
+   a spanning item's base-size (min-content) contribution, are unchanged. rinch sets it on a
+   table with no width of its own (`apply_table_style`), whose columns are `auto` tracks or
+   `minmax(min-content, Npx)`; a percentage column there is still an `auto` track (a
+   percentage track alone squeezes the other columns when the table should widen, #2284), and a
+   table with a width uses `fr` weights and is not affected. Pins: the fork's
    `tests/proportional_column_sizing.rs` and
    `crates/rinch-dom/tests/table_auto_column_shares_2280_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
-and 9, and (6,285 tests) with 10.
+and 9, and (6,286 tests) with 10.
 
 
 ## Parley Fork

@@ -47,8 +47,10 @@
 //! `DistributeInlineSizeToComputedInlineSizeAuto`), where a grid's equal
 //! shares gave a column that wants little as much as a wide one, and a
 //! `colspan` cell's max-content beyond its columns goes to them in proportion
-//! to their own. A spanning cell's min-content is still shared as a grid
-//! shares it (#2281).
+//! to their own. A column with a `width` (`minmax(min-content, Npx)`) reaches
+//! it before the `auto` columns grow, as Blink's "specified guess" does. A
+//! percentage column stays an `auto` track here (#2284), and a spanning
+//! cell's min-content is still shared as a grid shares it (#2281).
 //!
 //! A cell's `max-width` caps what it asks of its column (its min-content,
 //! max-content and `width`), and the cell is still laid out at its column's

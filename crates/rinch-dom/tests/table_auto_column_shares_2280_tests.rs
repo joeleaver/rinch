@@ -6,7 +6,7 @@
 //! A `colspan` cell's max-content width beyond its columns goes to them in
 //! proportion to their own (Blink's `DistributeColspanCellToColumnsAuto`).
 //! The table's Taffy grid sets `proportional_column_sizing` (the Taffy
-//! fork's commit 10).
+//! fork's item 10 in `docs/internals/dependencies.md`).
 //!
 //! No text: each cell holds `n` 40px inline-blocks at `font-size: 0`, so its
 //! min-content width is 40 and its max-content width `40 n`, on any host.
