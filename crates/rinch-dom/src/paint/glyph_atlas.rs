@@ -256,12 +256,28 @@ pub struct GlyphAtlas {
     font_keys: HashMap<(u64, u32), swash::CacheKey>,
     /// Per font file: does the face hold colour glyphs (COLR, CBDT, sbix)?
     color_faces: HashMap<(u64, u32), bool>,
-    /// Accounted bytes of the entries the current generation has drawn.
-    frame_bytes: usize,
-    /// The same for the last few generations, newest last: what eviction
-    /// keeps whatever the budget (see [`Self::working_set`]).
-    recent_frame_bytes: [usize; 4],
+    /// Per painter drawing from this atlas: the generations its last
+    /// finished frame and its current frame started at. What any painter's
+    /// last frame or current frame drew is protected from eviction
+    /// ([`Self::protected_from`]).
+    painters: HashMap<u32, PainterFrames>,
+    next_painter: u32,
 }
+
+/// See [`GlyphAtlas::painters`].
+#[derive(Clone, Copy)]
+struct PainterFrames {
+    last: u64,
+    current: u64,
+}
+
+/// A painter whose frames started longer ago than this many generations no
+/// longer protects anything (a hidden window, a snapshot painter kept but
+/// idle, the text-shadow scratch painter).
+const PAINTER_STALE_GENERATIONS: u64 = 64;
+
+/// The painter id [`GlyphAtlas::begin_frame`] stands for.
+const ANONYMOUS_PAINTER: u32 = 0;
 
 impl Default for GlyphAtlas {
     fn default() -> Self {
@@ -338,8 +354,8 @@ impl GlyphAtlas {
             bitmap_scale: swash::scale::ScaleContext::new(),
             font_keys: HashMap::new(),
             color_faces: HashMap::new(),
-            frame_bytes: 0,
-            recent_frame_bytes: [0; 4],
+            painters: HashMap::new(),
+            next_painter: ANONYMOUS_PAINTER + 1,
         }
     }
 
@@ -404,33 +420,67 @@ impl GlyphAtlas {
         self.runs.clear();
         self.last = 0;
         self.bytes = 0;
-        self.frame_bytes = 0;
         self.font_keys.clear();
         self.color_faces.clear();
     }
 
-    /// Start a new generation: what is drawn from now on is newer than what
-    /// was drawn before, for eviction. Painters call it when they start a
-    /// frame; several painters a frame only make generations finer.
-    pub fn begin_frame(&mut self) {
-        self.recent_frame_bytes.rotate_left(1);
-        self.recent_frame_bytes[3] = self.frame_bytes;
-        self.frame_bytes = 0;
-        self.generation += 1;
+    /// A new painter drawing from this atlas: the id it starts its frames with
+    /// ([`Self::begin_painter_frame`]) and gives back when dropped
+    /// ([`Self::forget_painter`]).
+    pub fn register_painter(&mut self) -> u32 {
+        let id = self.next_painter;
+        self.next_painter = self.next_painter.wrapping_add(1).max(ANONYMOUS_PAINTER + 1);
+        id
     }
 
-    /// The bytes eviction keeps whatever the budget: the most any of the last
-    /// few generations drew (several painters may start a generation in one
-    /// frame), or the current one's. A page whose masks are bigger than the
-    /// budget is not rasterised again on every repaint; the atlas overshoots
-    /// the budget by what one frame needs instead.
-    fn working_set(&self) -> usize {
-        self.recent_frame_bytes
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or(0)
-            .max(self.frame_bytes)
+    /// The painter `id` is gone: its frames protect nothing any more.
+    pub fn forget_painter(&mut self, id: u32) {
+        self.painters.remove(&id);
+    }
+
+    /// Start a new generation for a frame of the painter `id` (each painter's
+    /// `reset`). What it drew in its last frame stays protected while this
+    /// one runs, as does what every other painter drew in its own last and
+    /// current frames: two windows sharing the atlas never evict each other's
+    /// screens (#2301 review). Then trims what nothing protects down to the
+    /// budget, so the overshoot of a frame bigger than the budget is given
+    /// back on the frames after it, whether or not they draw text.
+    ///
+    /// Answers the masks that trim evicted, for the painter's counters.
+    pub fn begin_painter_frame(&mut self, id: u32) -> u64 {
+        self.generation += 1;
+        let generation = self.generation;
+        let f = self.painters.entry(id).or_insert(PainterFrames {
+            last: generation,
+            current: generation,
+        });
+        f.last = f.current;
+        f.current = generation;
+        let mut stats = AtlasStats::default();
+        if self.bytes > self.budget {
+            self.evict(&mut stats);
+        }
+        stats.evictions
+    }
+
+    /// [`Self::begin_painter_frame`] for an anonymous painter (tests, and any
+    /// caller with one painter and no id).
+    pub fn begin_frame(&mut self) -> u64 {
+        self.begin_painter_frame(ANONYMOUS_PAINTER)
+    }
+
+    /// The oldest generation eviction must keep: the start of the last
+    /// finished frame of every painter that has started a frame recently.
+    /// With no such painter, the current generation.
+    fn protected_from(&self) -> u64 {
+        let generation = self.generation;
+        self.painters
+            .values()
+            .filter(|f| generation - f.current <= PAINTER_STALE_GENERATIONS)
+            .map(|f| f.last)
+            .min()
+            .unwrap_or(generation)
+            .min(generation)
     }
 
     /// Whether the face of `font` holds colour glyphs (a COLR, CBDT or sbix
@@ -527,7 +577,6 @@ impl GlyphAtlas {
         let Self {
             runs,
             bytes,
-            frame_bytes,
             scale,
             bitmap_scale,
             ..
@@ -574,18 +623,13 @@ impl GlyphAtlas {
                     v.insert(e)
                 }
             };
-            if entry.used != generation {
-                entry.used = generation;
-                *frame_bytes += entry.bytes();
-            }
+            entry.used = generation;
             if want_gpu
                 && let Some(m) = entry.mask.as_mut()
                 && m.kind == MaskKind::Coverage
                 && m.gpu.is_none()
             {
-                let n = m.make_gpu();
-                *bytes += n;
-                *frame_bytes += n;
+                *bytes += m.make_gpu();
                 stats.uploads += 1;
             }
             draw(
@@ -597,7 +641,7 @@ impl GlyphAtlas {
                 },
             );
         }
-        if self.bytes > self.budget.max(self.working_set()) {
+        if self.bytes > self.budget {
             self.evict(stats);
         }
         true
@@ -633,10 +677,11 @@ impl GlyphAtlas {
         }
     }
 
-    /// Evict, oldest generation first, down to three quarters of the budget.
+    /// Evict, oldest generation first, down to three quarters of the budget,
+    /// never what [`Self::protected_from`] keeps.
     fn evict(&mut self, stats: &mut AtlasStats) {
-        let target = (self.budget / 4 * 3).max(self.working_set());
-        let generation = self.generation;
+        let target = self.budget / 4 * 3;
+        let keep_from = self.protected_from();
         let mut all: Vec<(u64, usize, u32)> = Vec::new();
         for (ri, run) in self.runs.iter().enumerate() {
             for (&k, e) in &run.glyphs {
@@ -645,9 +690,10 @@ impl GlyphAtlas {
         }
         all.sort_unstable();
         for (used, ri, k) in all {
-            // Never what this generation drew: the frame still draws it, and
-            // dropping it would rasterise it again next frame.
-            if self.bytes <= target || used == generation {
+            // Never what a painter's last or current frame drew: the frame
+            // still draws it, and dropping it would rasterise it again the
+            // next time that painter repaints the same screen.
+            if self.bytes <= target || used >= keep_from {
                 break;
             }
             if let Some(e) = self.runs[ri].glyphs.remove(&k) {
@@ -668,11 +714,11 @@ impl GlyphAtlas {
             .map(|(i, r)| (r.used, i))
             .collect();
         order.sort_unstable();
-        let generation = self.generation;
+        let keep_from = self.protected_from();
         let drop: std::collections::HashSet<usize> = order
             .iter()
             .take(self.runs.len() / 4 + 1)
-            .filter(|&&(used, _)| used != generation)
+            .filter(|&&(used, _)| used < keep_from)
             .map(|&(_, i)| i)
             .collect();
         let mut i = 0;
@@ -704,28 +750,41 @@ impl GlyphAtlas {
 /// per painter, whose `reset` starts a frame.
 ///
 /// A run's **family** is its font file; its **size** is the device size, the
-/// emboldening and the variation coordinates. A size the family did not draw
-/// in the previous frame is new. A new size in a family that also drew a new
-/// size in the previous frame is animating, and is drawn as outlines; when
-/// the size stops changing it was drawn in the previous frame, and goes back
-/// to the atlas (one frame of misses, then hits). A still page draws no new
-/// sizes after its first frame, and a translation changes no size, so
-/// neither ever falls back.
+/// emboldening, the hinting and the variation coordinates. A size is **new**
+/// when the painter has not drawn it in its family in the last
+/// [`SIZE_MEMORY_FRAMES`] frames. A new size in a family that also drew a new
+/// size in the previous frame is animating, and is drawn as outlines. When the
+/// size stops changing it is no longer new, and goes back to the atlas.
+///
+/// Remembering sizes for several frames, not one, matters for partial frames,
+/// which draw only their damage: a caret line and a clock in one face
+/// repainted on alternate frames are both "seen recently", and a size that
+/// comes back after a frame away (A, B, A) is not new either. A still page
+/// draws no new size after its first frame, and a translation changes no
+/// size, so neither ever falls back.
 #[derive(Default)]
 pub struct SizeChurn {
-    prev: rustc_hash::FxHashMap<(u64, u32), Vec<(u64, bool)>>,
-    cur: rustc_hash::FxHashMap<(u64, u32), Vec<(u64, bool)>>,
-    prev_new: rustc_hash::FxHashSet<(u64, u32)>,
-    cur_new: rustc_hash::FxHashSet<(u64, u32)>,
+    frame: u64,
+    /// `(family, size)` -> the frame it was last drawn in, and the decision
+    /// made for it then.
+    seen: rustc_hash::FxHashMap<((u64, u32), u64), (u64, bool)>,
+    /// family -> the last frame it drew a new size in, and how many frames
+    /// running (ending there) did.
+    last_new: rustc_hash::FxHashMap<(u64, u32), (u64, u32)>,
 }
+
+/// How many frames [`SizeChurn`] remembers a size for.
+pub const SIZE_MEMORY_FRAMES: u64 = 8;
 
 impl SizeChurn {
     /// Start a frame.
     pub fn begin_frame(&mut self) {
-        std::mem::swap(&mut self.prev, &mut self.cur);
-        self.cur.clear();
-        std::mem::swap(&mut self.prev_new, &mut self.cur_new);
-        self.cur_new.clear();
+        self.frame += 1;
+        if self.frame % SIZE_MEMORY_FRAMES == 0 {
+            let horizon = self.frame.saturating_sub(SIZE_MEMORY_FRAMES);
+            self.seen.retain(|_, (f, _)| *f >= horizon);
+            self.last_new.retain(|_, (f, _)| *f >= horizon);
+        }
     }
 
     /// Whether the run `spec` is animating its size, and should be drawn as
@@ -739,18 +798,41 @@ impl SizeChurn {
         spec.hint.hash(&mut h);
         spec.coords.hash(&mut h);
         let size = h.finish();
-        let cur = self.cur.entry(family).or_default();
-        if let Some(&(_, outline)) = cur.iter().find(|(k, _)| *k == size) {
+        let frame = self.frame;
+        let slot = self.seen.entry((family, size));
+        let last = match &slot {
+            std::collections::hash_map::Entry::Occupied(o) => Some(*o.get()),
+            std::collections::hash_map::Entry::Vacant(_) => None,
+        };
+        if let Some((f, outline)) = last
+            && f == frame
+        {
             return outline;
         }
-        let new = !self
-            .prev
-            .get(&family)
-            .is_some_and(|sizes| sizes.iter().any(|(k, _)| *k == size));
-        let outline = new && self.prev_new.contains(&family);
-        cur.push((size, outline));
+        let new = last.is_none_or(|(f, _)| frame - f > SIZE_MEMORY_FRAMES);
+        // Animating: new now, and new sizes in each of the two frames before.
+        // Two first sizes in a row (a page drawn over two partial frames)
+        // are not yet an animation.
+        let streak = match self.last_new.get(&family) {
+            Some(&(f, n)) if f + 1 == frame => n,
+            _ => 0,
+        };
+        let outline = new && streak >= 2;
+        match slot {
+            std::collections::hash_map::Entry::Occupied(mut o) => {
+                *o.get_mut() = (frame, outline);
+            }
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert((frame, outline));
+            }
+        }
         if new {
-            self.cur_new.insert(family);
+            let e = self.last_new.entry(family).or_insert((frame, 0));
+            *e = match *e {
+                (f, n) if f == frame => (f, n),
+                (f, n) if f + 1 == frame => (frame, n + 1),
+                _ => (frame, 1),
+            };
         }
         outline
     }
@@ -1304,12 +1386,12 @@ mod tests {
         let mut stats = AtlasStats::default();
         // One glyph a generation.
         for &id in &ids {
-            atlas.begin_frame();
+            stats.evictions += atlas.begin_frame();
             atlas.lookup(&spec(&f, 24.0), &[(id, 0)], false, &mut stats, |_, _| {});
         }
         let total = atlas.bytes();
         // Touch the oldest glyph again: it is now the newest.
-        atlas.begin_frame();
+        stats.evictions += atlas.begin_frame();
         atlas.lookup(
             &spec(&f, 24.0),
             &[(ids[0], 0)],
@@ -1320,7 +1402,7 @@ mod tests {
         assert_eq!(stats.evictions, 0);
         // Shrink the budget so about half must go, and trigger it with a hit.
         atlas.set_budget(total / 2);
-        atlas.begin_frame();
+        stats.evictions += atlas.begin_frame();
         atlas.lookup(
             &spec(&f, 24.0),
             &[(ids[0], 0)],
@@ -1374,7 +1456,7 @@ mod tests {
         // drops them, down to the working set of what is drawn now.
         let digit = [(glyph_id(INTER, '1'), 0)];
         for _ in 0..5 {
-            atlas.begin_frame();
+            stats.evictions += atlas.begin_frame();
             let _ = atlas.lookup(&spec(&f, 40.0), &digit, false, &mut stats, |_, _| {});
         }
         assert!(stats.evictions >= 20, "most letters went: {stats:?}");
@@ -1401,10 +1483,11 @@ mod tests {
             assert!(!churn.animating(&run(13.0)));
             assert!(!churn.animating(&run(24.0)));
         }
-        // 13px starts growing: the first new size is drawn from the atlas,
-        // the next ones as outlines; 24px beside it stays on the atlas.
+        // 13px starts growing: the first two new sizes are drawn from the
+        // atlas (two first sizes in a row are not yet an animation), the
+        // next ones as outlines; 24px beside it stays on the atlas.
         let mut seen = Vec::new();
-        for i in 1..=4 {
+        for i in 1..=5 {
             churn.begin_frame();
             seen.push(churn.animating(&run(13.0 + i as f32 * 0.5)));
             assert!(
@@ -1412,13 +1495,19 @@ mod tests {
                 "a still size in the same face"
             );
         }
-        assert_eq!(seen, [false, true, true, true]);
-        // It stops at 15px: the first settled frame is still "new"? No: it
-        // was drawn last frame, so it is back on the atlas at once.
+        assert_eq!(seen, [false, false, true, true, true]);
+        // It stops at 15.5px: drawn last frame, so back on the atlas at once.
         churn.begin_frame();
-        assert!(!churn.animating(&run(15.0)));
+        assert!(!churn.animating(&run(15.5)));
         churn.begin_frame();
-        assert!(!churn.animating(&run(15.0)));
+        assert!(!churn.animating(&run(15.5)));
+        // A size seen a few frames ago is not new: 14px -> 24px -> 14px.
+        churn.begin_frame();
+        assert!(!churn.animating(&run(14.0)));
+        churn.begin_frame();
+        assert!(!churn.animating(&run(24.0)));
+        churn.begin_frame();
+        assert!(!churn.animating(&run(14.0)));
         // Asked twice in one frame, the answer is the frame's.
         churn.begin_frame();
         let a = churn.animating(&run(16.0));

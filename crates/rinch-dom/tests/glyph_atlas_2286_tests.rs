@@ -338,7 +338,7 @@ fn alternating_damage_in_one_face_stays_on_the_atlas() {
         "<p id=\"s\">caret line</p><p id=\"b\">12:34:56</p>",
     );
     let (sn, bn) = (by_id(&d, "s"), by_id(&d, "b"));
-    let mut only = |d: &mut RinchDocument, small: bool| {
+    let only = |d: &mut RinchDocument, small: bool| {
         d.set_attribute(sn, "class", if small { "" } else { "h" });
         d.set_attribute(bn, "class", if small { "h" } else { "" });
     };

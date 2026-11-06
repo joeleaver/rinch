@@ -673,6 +673,8 @@ pub struct TinySkiaPainter {
     /// every other painter on it (#2286), unless [`Self::set_glyph_atlas`]
     /// gave this painter its own.
     atlas: SharedAtlas,
+    /// This painter's id in `atlas` (its frames protect what they drew).
+    atlas_painter: u32,
     /// Scratch RGBA buffer a glyph is coloured into before it is drawn.
     glyph_scratch: Vec<u8>,
     /// Scratch for a run's atlas keys and glyph origins, reused across runs.
@@ -697,16 +699,27 @@ pub struct TinySkiaPainter {
     damage_rects: Vec<DeviceRect>,
 }
 
+impl Drop for TinySkiaPainter {
+    fn drop(&mut self) {
+        if let Ok(mut a) = self.atlas.try_borrow_mut() {
+            a.forget_painter(self.atlas_painter);
+        }
+    }
+}
+
 impl TinySkiaPainter {
     /// Create a new painter with the given dimensions.
     ///
     /// Panics if width or height is 0.
     pub fn new(width: u32, height: u32) -> Self {
+        let atlas = thread_atlas();
+        let atlas_painter = atlas.borrow_mut().register_painter();
         Self {
             pixmap: Pixmap::new(width.max(1), height.max(1)).expect("invalid pixmap dimensions"),
             clip_mask: None,
             layer_stack: Vec::new(),
-            atlas: thread_atlas(),
+            atlas_painter,
+            atlas,
             glyph_scratch: Vec::new(),
             glyph_keys: Vec::new(),
             glyph_origins: Vec::new(),
@@ -758,6 +771,8 @@ impl TinySkiaPainter {
     /// Draw text from `atlas` instead of the thread's (a test's own, or one
     /// with a smaller budget).
     pub fn set_glyph_atlas(&mut self, atlas: SharedAtlas) {
+        self.atlas.borrow_mut().forget_painter(self.atlas_painter);
+        self.atlas_painter = atlas.borrow_mut().register_painter();
         self.atlas = atlas;
     }
 
@@ -1433,7 +1448,10 @@ impl Painter for TinySkiaPainter {
         self.touched = None;
         self.mask_use.live = 0;
         self.layer_use.live = 0;
-        self.atlas.borrow_mut().begin_frame();
+        self.stats.atlas.evictions += self
+            .atlas
+            .borrow_mut()
+            .begin_painter_frame(self.atlas_painter);
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {

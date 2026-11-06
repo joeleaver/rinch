@@ -493,9 +493,9 @@ fn gpu_eviction_keeps_drawing() {
     for round in 0..2 {
         // The page over budget: what it evicts is old text, never its own
         // masks, so painting it again rasterises nothing.
-        small.borrow_mut().begin_frame();
+        evicted += small.borrow_mut().begin_frame();
         let _ = paint_vello(&mut d, 1.0, &small);
-        small.borrow_mut().begin_frame();
+        evicted += small.borrow_mut().begin_frame();
         let (painter, stats) = paint_vello(&mut d, 1.0, &small);
         assert_eq!(
             (stats.atlas.misses, stats.atlas.evictions),
@@ -506,7 +506,7 @@ fn gpu_eviction_keeps_drawing() {
         let (n, worst) = differ(&got, &want, 1);
         assert_eq!(n, 0, "round {round}: {n} pixels differ (worst {worst})");
         for _ in 0..5 {
-            small.borrow_mut().begin_frame();
+            evicted += small.borrow_mut().begin_frame();
             let (painter, stats) = paint_vello(&mut other, 1.0, &small);
             evicted += stats.atlas.evictions;
             let _ = gpu.render(painter.scene(), W, H);

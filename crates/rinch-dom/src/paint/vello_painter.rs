@@ -39,6 +39,9 @@ pub struct VelloPainter {
     /// painter its own.
     #[cfg(feature = "glyph-atlas")]
     atlas: super::glyph_atlas::SharedAtlas,
+    /// This painter's id in `atlas` (its frames protect what they drew).
+    #[cfg(feature = "glyph-atlas")]
+    atlas_painter: u32,
     /// See [`Self::take_glyph_stats`].
     glyph_stats: GlyphStats,
     /// See [`Self::set_glyph_atlas_enabled`].
@@ -190,6 +193,10 @@ macro_rules! route {
 impl VelloPainter {
     /// Create a new `VelloPainter` with an empty scene.
     pub fn new() -> Self {
+        #[cfg(feature = "glyph-atlas")]
+        let atlas = super::glyph_atlas::thread_atlas();
+        #[cfg(feature = "glyph-atlas")]
+        let atlas_painter = atlas.borrow_mut().register_painter();
         Self {
             scene: Scene::new(),
             slicing: None,
@@ -200,7 +207,9 @@ impl VelloPainter {
             tile_target: EVERYWHERE,
             clip_tiles: 0,
             #[cfg(feature = "glyph-atlas")]
-            atlas: super::glyph_atlas::thread_atlas(),
+            atlas_painter,
+            #[cfg(feature = "glyph-atlas")]
+            atlas,
             glyph_stats: GlyphStats::default(),
             #[cfg(feature = "glyph-atlas")]
             atlas_enabled: true,
@@ -221,6 +230,8 @@ impl VelloPainter {
     /// Draw text from `atlas` instead of the thread's.
     #[cfg(feature = "glyph-atlas")]
     pub fn set_glyph_atlas(&mut self, atlas: super::glyph_atlas::SharedAtlas) {
+        self.atlas.borrow_mut().forget_painter(self.atlas_painter);
+        self.atlas_painter = atlas.borrow_mut().register_painter();
         self.atlas = atlas;
     }
 
@@ -690,6 +701,15 @@ fn encode_glyphs(
         );
 }
 
+#[cfg(feature = "glyph-atlas")]
+impl Drop for VelloPainter {
+    fn drop(&mut self) {
+        if let Ok(mut a) = self.atlas.try_borrow_mut() {
+            a.forget_painter(self.atlas_painter);
+        }
+    }
+}
+
 impl Default for VelloPainter {
     fn default() -> Self {
         Self::new()
@@ -902,7 +922,10 @@ impl Painter for VelloPainter {
         self.reads_backdrop = false;
         #[cfg(feature = "glyph-atlas")]
         {
-            self.atlas.borrow_mut().begin_frame();
+            self.glyph_stats.atlas.evictions += self
+                .atlas
+                .borrow_mut()
+                .begin_painter_frame(self.atlas_painter);
             self.churn.begin_frame();
         }
     }

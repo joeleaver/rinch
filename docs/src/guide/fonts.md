@@ -274,7 +274,10 @@ synthetic italics are drawn from outlines on the GPU instead; a uniform scale
 (a HiDPI display, CSS `scale()`) is rasterised at the scaled size. Text whose
 size is animating (a `font-size` or `scale()` transition or animation) is
 drawn from outlines while it changes, since each size would be a new set of
-masks, and goes back to the atlas once it settles. An app can keep outlines
+masks, and goes back to the atlas once it settles. The two rasterisers differ
+slightly, so on the frame the text starts or stops animating its glyph edges
+shift by up to about half a pixel and its weight by about 1%; the animation
+itself hides the first, and the second is one frame. An app can keep outlines
 for everything with `TextRasterization::default().gpu_glyph_outlines(true)`.
 
 Today rinch draws grayscale whatever `antialias` resolves to: subpixel (LCD)

@@ -862,25 +862,44 @@ in the `embed` build without it). Stage 2 of the text-antialiasing plan in
 - **Eviction.** Each entry remembers the generation it was last drawn in
   (`begin_frame`, called from each painter's `reset`). Past the budget (32 MiB
   accounted: mask bytes, the GPU copies, 128 a entry) the oldest go first, down
-  to three quarters of it, but **never what the current generation drew, and
-  never below the working set**: the most any of the last four generations
-  drew. So a screen whose masks are bigger than the budget (6,000 distinct CJK
-  glyphs at 2x are about 40 MB) overshoots it by what one frame needs and is
-  not rasterised again on every repaint (#2301 review: it was, 2,550 glyphs a
-  static frame). The budget bounds what no recent frame drew. Past 512 runs,
-  the quarter drawn longest ago go whole, none drawn this generation.
+  to three quarters of it, but **never what any painter's last or current
+  frame drew**. Each painter registers with the atlas (`register_painter`,
+  given back on drop) and starts its frames with `begin_painter_frame`; the
+  atlas keeps, per painter, the generations its last two frames started at,
+  and protects everything drawn since the oldest of those (painters that have
+  not started a frame in 64 generations, a hidden window or an idle scratch
+  painter, protect nothing). So a screen bigger than the budget (6,000 distinct
+  CJK glyphs at 2x are about 40 MB) is not rasterised again on every repaint
+  (#2301 review: it was, 2,550 glyphs a static frame), and two windows sharing
+  the thread's atlas, each a big screen, do not evict each other's (round 2:
+  they did, about 4,000 glyphs a repaint). The bound is the budget, or what the
+  painters' last frames drew, whichever is larger: one huge text node (all its
+  lines are painted, off-screen ones too, #2314) can take a frame far past the
+  budget. That overshoot is given back as each painter starts its next frames,
+  whether or not they draw text, once nothing drew it in the protected frames;
+  an app that paints no frame at all keeps it until it does. Past 512 runs, the
+  quarter drawn longest ago go whole, none protected.
 - **Animated sizes.** A `font-size` or `scale()` animation, or animated
   variation coordinates, would make a new set of masks every frame: about twice
   the CPU of outlines. `SizeChurn`, one per Vello painter, calls a run's size
   (device size, emboldening, hinting, coords) new when its font file did not
-  draw it in the previous frame; a new size in a font file that also drew a new
-  size in the previous frame is animating and is drawn as outlines. When it
-  stops changing, it was drawn in the previous frame and is back on the atlas.
-  A still page draws no new size after its first frame, and a translation
-  changes no size, so neither falls back; a static heading beside an animating
-  run in the same face keeps the atlas. Per painter, because a frame may reset
-  several painters; a painter made fresh each frame never sees an animation.
-  The global switch is `TextRasterization::gpu_glyph_outlines`. Evicting is safe at any point
+  draw it in the last 8 frames (`SIZE_MEMORY_FRAMES`); a new size in a font
+  file that drew new sizes in each of the two frames before is animating and is
+  drawn as outlines. When it stops changing it is no longer new and is back on
+  the atlas. Remembering 8 frames matters for partial frames, which draw only
+  their damage: a caret line and a clock in one face repainted on alternate
+  frames, or a size that comes back (A, B, A), are not new (round 2 of the
+  review: they were, and stayed on outlines). A still page draws no new size
+  after its first frame, and a translation changes no size, so neither falls
+  back; a static heading beside an animating run in the same face keeps the
+  atlas. Per painter, because a frame may reset several painters; a painter
+  made fresh each frame never sees an animation. The global switch is
+  `TextRasterization::gpu_glyph_outlines`. **The switch is visible**: outlines
+  (Vello's rasteriser) and masks (swash) differ, so the frame an animation
+  starts drawing outlines, and the frame it settles back onto masks, moves
+  glyph edges by about a quarter pixel and changes the ink by about 1%
+  (measured in the review: +0.23 to 0.42 px horizontally, 0.9% ink). Accepted:
+  a mask per animation frame costs about twice the CPU of outlines. Evicting is safe at any point
   between lookups: a Vello scene holds its own reference to every image it
   draws.
 - **GPU lifetime.** rinch holds no GPU object here. The texture is Vello's image
