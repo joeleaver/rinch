@@ -263,9 +263,19 @@ starts, and `rinch::text_rasterization::system_text_settings()` returns them:
   (`SystemParametersInfo`).
 - **macOS**: grayscale and unhinted.
 
+**How glyphs are drawn.** Both renderers draw text from one cache of glyph
+masks (the glyph-mask atlas, #2286): each glyph is rasterised once per font,
+device size and quarter-pixel horizontal position, and drawn at a whole device
+pixel, so letters keep their fractional spacing and the GPU and software
+renderers draw the same pixels. Text under a rotation, a skew or an uneven
+scale, emoji and other colour glyphs, text larger than 64 device pixels and
+synthetic italics are drawn from outlines on the GPU instead; a uniform scale
+(a HiDPI display, CSS `scale()`) is rasterised at the scaled size. An app whose
+text changes size every frame (an animated zoom) can keep outlines with
+`VelloPainter::set_glyph_atlas_enabled(false)`.
+
 Today rinch draws grayscale whatever `antialias` resolves to: subpixel (LCD)
-text and aliased text come with the glyph-mask atlas and subpixel compositing
-planned in #2286. The subpixel order and LCD filter are stored for that. An
+text and aliased text come with the subpixel compositing planned in #2286. The subpixel order and LCD filter are stored for that. An
 embedding host that wants the OS's settings calls
 `rinch::text_rasterization::set_text_rasterization(TextRasterization::default())` before its
 first frame; without it an embedded document renders as if the OS said nothing
