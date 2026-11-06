@@ -968,3 +968,23 @@ fn selectable_text_in_an_unselectable_box_is_copied() {
         "unsel ib between ibs",
     ]);
 }
+
+/// The review's cases whose markup holds `&#10;`, which `set_inner_html`
+/// does not decode yet (#2239): Chrome reads a line break there.
+const NOT_DECODED: &[&str] = &[
+    "pre-line regression",
+    "flex nowrap pre-line leaf",
+    "pre-line regression2",
+];
+
+#[test]
+fn the_review_corpus_copies_as_chrome() {
+    // The review of #2249's 84 cases against Chrome 156, all but the three
+    // the HTML reader cannot give the copy yet.
+    let cases: Vec<(&str, &'static str, &str)> = REVIEW
+        .iter()
+        .copied()
+        .filter(|c| !NOT_DECODED.contains(&c.0))
+        .collect();
+    copies_as_chrome(&cases);
+}
