@@ -144,8 +144,11 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `stacking_order_builds` | Stacking sequences built, by paint and by hit testing |
 | | `inline_span_line_visits` | (span, line) pairs looked at to measure what paragraphs draw past their line boxes — inline backgrounds and borders, `vertical-align`-shifted text, wavy underlines — by paint, the clip check, damage and the painted-state refresh. A span costs only the lines it is on, and a paragraph is refreshed once per frame however many of its spans changed (#1815, #1817) |
 | | `inset_shadow_mask_px` | Pixels of blurred `inset` box-shadow computed by paint, cropped to the render target, the open clips and a partial repaint's damage. Rebuilt on every paint of the box, so a caret-sized repaint inside a large shadowed panel costs about its own area here (#974) |
-| Software painter | `glyph_cache_hits` / `glyph_cache_misses` | Glyphs drawn from the rasterised-glyph cache, and glyphs rasterised (then cached). A steady frame has no misses |
-| | `clip_masks`, `clip_mask_px` | Clip masks pushed, and the mask pixels they were filled and intersected over (each clip's own bounds, not the surface; none for a clip that fully covers the clip enclosing it, which a scroller around a partial repaint does, and no intersection for one lying wholly inside the enclosing clip's fully covered area). An element with an outer `box-shadow` its border box escapes — any offset shadow, Mantine's `sm` included — pushes one, around all its shadows, to keep them out of the box (#976) |
+| Glyphs (both painters) | `glyph_atlas_hits` / `glyph_atlas_misses` | Glyphs drawn from the glyph-mask atlas, and glyphs rasterised (then kept). A mask is per font, device size and quarter-pixel x position, so a glyph moved by a fraction of a pixel can miss. A steady frame has no misses |
+| | `glyph_atlas_uploads` | GPU only: masks a Vello scene drew for the first time (each becomes the image Vello uploads once and keeps while it is drawn). Vello's own re-uploads, after a renderer is made again or its atlas ran short, are not counted |
+| | `glyph_atlas_evictions` | Masks dropped to keep the atlas within its budget (32 MiB accounted, shared by every painter on the thread). Zero for any ordinary UI |
+| | `glyph_outline_fallbacks` | GPU only: glyphs drawn as outlines rather than from the atlas: colour glyphs (emoji), text over 64 device px, text under a rotation, skew or uneven scale, synthetic italic, a non-solid brush |
+| Software painter | `clip_masks`, `clip_mask_px` | Clip masks pushed, and the mask pixels they were filled and intersected over (each clip's own bounds, not the surface; none for a clip that fully covers the clip enclosing it, which a scroller around a partial repaint does, and no intersection for one lying wholly inside the enclosing clip's fully covered area). An element with an outer `box-shadow` its border box escapes — any offset shadow, Mantine's `sm` included — pushes one, around all its shadows, to keep them out of the box (#976) |
 | | `paint_layers`, `layer_px` | Opacity layers opened, and the layer pixels composited back (the part of each layer anything was drawn into) |
 | | `paint_surface_allocs` | Surface-sized masks and layer pixmaps allocated rather than reused from the painter's pool. Zero in a steady state |
 | | `paint_surface_trims` | Pooled masks and layer pixmaps released at the end of a frame because none of the last 8 frames needed that many at once |
@@ -203,8 +206,9 @@ Some limits on what these numbers mean:
   `take_stats()`), which the shell folds into the frame after each software
   paint. A test painting through `paint_document` directly reads the painter,
   not the document.
-- **What the software painter keeps between frames.** Its glyph cache (cleared
-  past about 16 MB of accounted bytes or 512 font/size runs); a premultiplied
+- **What the software painter keeps between frames.** The glyph-mask atlas,
+  shared with every painter on the thread (the least recently drawn masks go
+  past 32 MiB of accounted bytes or 512 font/size runs); a premultiplied
   copy of each translucent cached image; and a pool of up to 8 clip masks
   (1 byte per surface pixel each) and 8 layer pixmaps (4 bytes per pixel each —
   33 MB at 4K). The pool is trimmed after every software frame to the most any

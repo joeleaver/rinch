@@ -9,6 +9,8 @@ mod borders;
 pub mod clip;
 mod contenteditable;
 pub mod damage;
+#[cfg(feature = "glyph-atlas")]
+pub mod glyph_atlas;
 mod gradient;
 pub mod image;
 mod layer_bounds;

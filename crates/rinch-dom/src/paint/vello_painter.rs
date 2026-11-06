@@ -34,6 +34,61 @@ pub struct VelloPainter {
     tile_target: Rect,
     /// See [`Self::clip_tiles`].
     clip_tiles: u64,
+    /// The glyph masks text is drawn from (#2286): the thread's atlas, shared
+    /// with every painter on it, unless [`Self::set_glyph_atlas`] gave this
+    /// painter its own.
+    #[cfg(feature = "glyph-atlas")]
+    atlas: super::glyph_atlas::SharedAtlas,
+    /// See [`Self::take_glyph_stats`].
+    glyph_stats: GlyphStats,
+    /// See [`Self::set_glyph_atlas_enabled`].
+    #[cfg(feature = "glyph-atlas")]
+    atlas_enabled: bool,
+    /// Scratch reused across glyph runs.
+    #[cfg(feature = "glyph-atlas")]
+    glyph_scratch: GlyphScratch,
+}
+
+/// What the Vello painter's glyph draws did, since the last
+/// [`VelloPainter::take_glyph_stats`] (the `glyph_atlas_*` and
+/// `glyph_outline_fallbacks` counters).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GlyphStats {
+    /// The atlas's hits, misses, uploads and evictions.
+    #[cfg(feature = "glyph-atlas")]
+    pub atlas: super::glyph_atlas::AtlasStats,
+    /// Glyphs drawn as outlines: every glyph without the `glyph-atlas`
+    /// feature; with it, the ones the atlas does not draw.
+    pub outline_fallbacks: u64,
+}
+
+impl GlyphStats {
+    /// Add these counts to the current frame of `perf`.
+    pub fn add_to(&self, perf: &crate::perf::PerfCounters) {
+        #[cfg(feature = "glyph-atlas")]
+        self.atlas.add_to(perf);
+        perf.add(
+            crate::perf::Counter::GlyphOutlineFallbacks,
+            self.outline_fallbacks,
+        );
+    }
+}
+
+/// One glyph the atlas draws: its mask's image, at a whole device pixel.
+#[cfg(feature = "glyph-atlas")]
+struct MaskDraw {
+    image: ImageData,
+    x: f64,
+    y: f64,
+}
+
+#[cfg(feature = "glyph-atlas")]
+#[derive(Default)]
+struct GlyphScratch {
+    keys: Vec<(u32, u8)>,
+    places: Vec<super::glyph_atlas::Placement>,
+    draws: Vec<MaskDraw>,
+    outlines: Vec<PaintGlyph>,
 }
 
 /// One clip or layer [`VelloPainter`] has open.
@@ -141,7 +196,41 @@ impl VelloPainter {
             open: Vec::new(),
             tile_target: EVERYWHERE,
             clip_tiles: 0,
+            #[cfg(feature = "glyph-atlas")]
+            atlas: super::glyph_atlas::thread_atlas(),
+            glyph_stats: GlyphStats::default(),
+            #[cfg(feature = "glyph-atlas")]
+            atlas_enabled: true,
+            #[cfg(feature = "glyph-atlas")]
+            glyph_scratch: GlyphScratch::default(),
         }
+    }
+
+    /// What this painter's glyph draws did since the last call, zeroing it:
+    /// the atlas's hits, misses, uploads and evictions, and the glyphs drawn
+    /// as outlines. The shell adds the window painter's to each GPU frame.
+    pub fn take_glyph_stats(&mut self) -> GlyphStats {
+        std::mem::take(&mut self.glyph_stats)
+    }
+
+    /// Draw text from `atlas` instead of the thread's.
+    #[cfg(feature = "glyph-atlas")]
+    pub fn set_glyph_atlas(&mut self, atlas: super::glyph_atlas::SharedAtlas) {
+        self.atlas = atlas;
+    }
+
+    /// The atlas this painter draws text from.
+    #[cfg(feature = "glyph-atlas")]
+    pub fn glyph_atlas(&self) -> &super::glyph_atlas::SharedAtlas {
+        &self.atlas
+    }
+
+    /// Draw text from the glyph-mask atlas (the default) or, with `false`,
+    /// every glyph as Vello's outlines, as before #2286: for text whose size
+    /// animates every frame (each size is a new set of masks), or to compare.
+    #[cfg(feature = "glyph-atlas")]
+    pub fn set_glyph_atlas_enabled(&mut self, on: bool) {
+        self.atlas_enabled = on;
     }
 
     /// The render target this frame's scene will be drawn to, in device
@@ -353,6 +442,163 @@ impl VelloPainter {
             )
         });
     }
+}
+
+#[cfg(feature = "glyph-atlas")]
+impl VelloPainter {
+    /// Draw a glyph run from the atlas (#2286): each glyph the mask for its
+    /// device size and sub-pixel bucket, an image at a whole device pixel
+    /// painted in the brush colour through the fork's tinted alpha mask. A
+    /// colour glyph in the run is drawn as Vello draws it (outlines, COLR,
+    /// bitmap). `false`: the atlas does not draw this run at all (see
+    /// [`super::glyph_atlas`]), and the caller draws outlines.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_atlas_glyphs(
+        &mut self,
+        font: &FontData,
+        font_size: f32,
+        transform: Affine,
+        glyph_transform: Option<Affine>,
+        brush: &Brush,
+        hint: bool,
+        normalized_coords: &[i16],
+        glyphs: &[PaintGlyph],
+    ) -> bool {
+        use super::glyph_atlas::{ATLAS_MAX_FONT_PX, MaskKind, RunSpec, atlas_scale, place};
+        let Brush::Solid(tint) = brush else {
+            return false;
+        };
+        if glyph_transform.is_some() {
+            return false;
+        }
+        let Some(scale) = atlas_scale(transform) else {
+            return false;
+        };
+        let size = (font_size as f64 * scale) as f32;
+        if !(size > 0.0 && size <= ATLAS_MAX_FONT_PX) {
+            return false;
+        }
+        let mut scratch = std::mem::take(&mut self.glyph_scratch);
+        scratch.keys.clear();
+        scratch.places.clear();
+        scratch.draws.clear();
+        scratch.outlines.clear();
+        for g in glyphs {
+            let p = transform * peniko::kurbo::Point::new(g.x as f64, g.y as f64);
+            let pl = place(p.x, p.y);
+            scratch.keys.push((g.id, pl.bucket));
+            scratch.places.push(pl);
+        }
+        let spec = RunSpec {
+            font,
+            size,
+            hint,
+            embolden: 0.0,
+            coords: normalized_coords,
+        };
+        let tint = *tint;
+        let routing = self.routing;
+        {
+            let GlyphScratch {
+                keys,
+                places,
+                draws,
+                outlines,
+            } = &mut scratch;
+            let scene = &mut self.scene;
+            self.atlas.borrow_mut().lookup(
+                &spec,
+                keys,
+                true,
+                &mut self.glyph_stats.atlas,
+                |i, mask| match mask {
+                    Some(m) if m.kind == MaskKind::Coverage => {
+                        if let Some(image) = m.gpu_image() {
+                            let (x, y) =
+                                ((places[i].x + m.left) as f64, (places[i].y - m.top) as f64);
+                            if routing {
+                                // Routed below, once the run's bounds are known.
+                                draws.push(MaskDraw {
+                                    image: image.clone(),
+                                    x,
+                                    y,
+                                });
+                            } else {
+                                // The common frame: straight into the scene, the
+                                // image borrowed (the encoding takes its own
+                                // reference for the resolve).
+                                encode_mask(scene, image, tint, x, y);
+                            }
+                        }
+                    }
+                    Some(_) => outlines.push(glyphs[i]),
+                    None => {}
+                },
+            );
+        }
+        self.glyph_stats.outline_fallbacks += scratch.outlines.len() as u64;
+        let encode = |scene: &mut Scene| {
+            for d in &scratch.draws {
+                encode_mask(scene, &d.image, tint, d.x, d.y);
+            }
+            if !scratch.outlines.is_empty() {
+                encode_glyphs(
+                    scene,
+                    font,
+                    font_size,
+                    transform,
+                    None,
+                    brush,
+                    hint,
+                    normalized_coords,
+                    &scratch.outlines,
+                );
+            }
+        };
+        if routing {
+            let bounds = || {
+                let mut r: Option<Rect> = None;
+                for d in &scratch.draws {
+                    let b = Rect::new(
+                        d.x,
+                        d.y,
+                        d.x + d.image.width as f64,
+                        d.y + d.image.height as f64,
+                    );
+                    r = Some(r.map_or(b, |r| r.union(b)));
+                }
+                if !scratch.outlines.is_empty() {
+                    let em = 2.0 * font_size as f64;
+                    for g in &scratch.outlines {
+                        let o = transform.transform_rect_bbox(
+                            Rect::new(g.x as f64, g.y as f64, g.x as f64, g.y as f64)
+                                .inflate(em, em),
+                        );
+                        r = Some(r.map_or(o, |r| r.union(o)));
+                    }
+                }
+                r
+            };
+            self.draw_routed(&bounds, &encode);
+        } else {
+            encode(&mut self.scene);
+        }
+        self.glyph_scratch = scratch;
+        true
+    }
+}
+
+/// Encode one atlas mask: its image, at the whole device pixel `(x, y)`,
+/// painted in `tint` (the fork's tinted alpha mask), sampled nearest, so the
+/// texels are copied as they are.
+#[cfg(feature = "glyph-atlas")]
+#[inline]
+fn encode_mask(scene: &mut Scene, image: &ImageData, tint: peniko::Color, x: f64, y: f64) {
+    scene.draw_image_mask(
+        peniko::ImageBrushRef::from(image).with_quality(peniko::ImageQuality::Low),
+        tint,
+        Affine::translate((x, y)),
+    );
 }
 
 /// Encode one glyph run into `scene`.
@@ -597,6 +843,8 @@ impl Painter for VelloPainter {
         self.slicing = None;
         self.routing = false;
         self.reads_backdrop = false;
+        #[cfg(feature = "glyph-atlas")]
+        self.atlas.borrow_mut().begin_frame();
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
@@ -647,9 +895,27 @@ impl Painter for VelloPainter {
         normalized_coords: &[i16],
         glyphs: &[PaintGlyph],
     ) {
-        // The hottest draw: with nothing split it is exactly the encode, and
-        // the routed draw is a call out of line (#1899 review: through
-        // `route!` the glyph path still cost 8.1k instructions a text page).
+        // From the glyph-mask atlas wherever it can draw the run (#2286).
+        #[cfg(feature = "glyph-atlas")]
+        if self.atlas_enabled
+            && self.draw_atlas_glyphs(
+                font,
+                font_size,
+                transform,
+                glyph_transform,
+                brush,
+                hint,
+                normalized_coords,
+                glyphs,
+            )
+        {
+            return;
+        }
+        self.glyph_stats.outline_fallbacks += glyphs.len() as u64;
+        // The hottest outline draw: with nothing split it is exactly the
+        // encode, and the routed draw is a call out of line (#1899 review:
+        // through `route!` the glyph path still cost 8.1k instructions a text
+        // page).
         if self.routing {
             return self.draw_glyphs_routed(
                 font,

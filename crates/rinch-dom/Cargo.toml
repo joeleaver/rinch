@@ -110,7 +110,11 @@ swash = { version = "0.2", optional = true }
 
 [features]
 default = ["software-renderer"]
-software-renderer = ["tiny-skia", "swash"]
+software-renderer = ["tiny-skia", "glyph-atlas"]
+# The glyph-mask atlas both painters draw text from (#2286): swash masks per
+# glyph and sub-pixel bucket. Without it the Vello painter draws every glyph as
+# an outline. The embed build turns it on without the software painter.
+glyph-atlas = ["swash"]
 
 [dev-dependencies]
 # The `#[ignore]`d GPU probes of `background_tiling_embed_tests.rs` (#1158)

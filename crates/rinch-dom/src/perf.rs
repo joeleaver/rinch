@@ -410,10 +410,23 @@ define_counters! {
     /// moves across it: a fling over a scroller of shadowed text rasterises a
     /// few masks a frame (3 to 10 in the review of #1020, round 3).
     TextShadowMasksRasterised = "text_shadow_masks_rasterised",
-    /// Software painter: glyphs drawn from its rasterised-glyph cache.
-    GlyphCacheHits = "glyph_cache_hits",
-    /// Software painter: glyphs it had to rasterise (and then cached).
-    GlyphCacheMisses = "glyph_cache_misses",
+    /// Glyphs drawn from the glyph-mask atlas (#2286): a mask already
+    /// rasterised for the glyph's font, size and sub-pixel bucket. Both
+    /// painters draw from one atlas a thread.
+    GlyphAtlasHits = "glyph_atlas_hits",
+    /// Glyphs the atlas had to rasterise (and then kept).
+    GlyphAtlasMisses = "glyph_atlas_misses",
+    /// GPU only: atlas masks a Vello scene drew for the first time, each made
+    /// into the image Vello uploads once and keeps resident while it is drawn.
+    /// Vello's own re-uploads (a new renderer, its atlas short of space) are
+    /// not seen here.
+    GlyphAtlasUploads = "glyph_atlas_uploads",
+    /// Atlas masks evicted to keep within its byte budget.
+    GlyphAtlasEvictions = "glyph_atlas_evictions",
+    /// GPU only: glyphs a Vello scene drew as outlines rather than from the
+    /// atlas: a colour glyph, a device size past `ATLAS_MAX_FONT_PX`, a
+    /// rotation, skew or uneven scale, a synthetic italic, a non-solid brush.
+    GlyphOutlineFallbacks = "glyph_outline_fallbacks",
     /// Software painter: clip masks pushed.
     ClipMasks = "clip_masks",
     /// Software painter: mask pixels those clips were filled and intersected
