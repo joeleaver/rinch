@@ -75,9 +75,8 @@
 //! `auto` tracks a taller table stretches, so the table's extra height goes
 //! to the rows that declare none, as Chrome gives it. When every row declares
 //! one they are `minmax(<height>, auto)`, stretched by equal shares where
-//! Chrome shares in proportion to their heights. A percentage, a row group's
-//! `height` and the `height` of a row whose children stack (`Row::stacked`)
-//! size nothing. A rowspan cell taller than the rows it spans grows them
+//! Chrome shares in proportion to their heights. A percentage and a row
+//! group's `height` size nothing. A rowspan cell taller than the rows it spans grows them
 //! by equal shares (Chrome: in proportion to their heights), and a taller
 //! table's `auto` rows share its extra height equally (Chrome: by their
 //! content); these and the other differences are #2312. A collapsing table
@@ -805,16 +804,16 @@ impl RinchDocument {
         }
         let cols = open.len();
         // A row's `height` is the least its track is (*Row heights*). A
-        // percentage, or one on a row whose children stack in the first
-        // column, sizes nothing.
+        // percentage sizes nothing. (A row of blocks is a row of anonymous
+        // cells since #2288, so its height applies like any other row's.)
         let row_heights: Vec<Option<f32>> = rows
             .iter()
-            .map(|r| match (r.id, r.stacked) {
-                (Some(id), false) => match self.tree.nodes[id].computed_style.height {
+            .map(|r| match r.id {
+                Some(id) => match self.tree.nodes[id].computed_style.height {
                     DimensionValue::Length(h) if h > 0.0 => Some(h),
                     _ => None,
                 },
-                _ => None,
+                None => None,
             })
             .collect();
 
