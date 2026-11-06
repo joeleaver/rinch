@@ -3989,7 +3989,11 @@ impl RinchRuntime {
                 // The shell's alone, like click-through. A non-activating
                 // window never takes focus, so it is only restored.
                 w.set_minimized(false);
-                let non_activating = self.app.window_props.as_ref().is_some_and(|p| p.non_activating);
+                let non_activating = self
+                    .app
+                    .window_props
+                    .as_ref()
+                    .is_some_and(|p| p.non_activating);
                 if !non_activating {
                     w.raw().focus_window();
                 }
