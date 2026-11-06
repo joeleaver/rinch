@@ -31,7 +31,7 @@
 //! blanket tolerance, so a regression anywhere else fails the test.
 use vello::kurbo::{Affine, Circle, Rect, RoundedRect};
 use vello::peniko::{Color, Fill, ImageAlphaType};
-use vello::{AaConfig, RenderParams, Renderer, Scene};
+use vello::{RenderParams, Renderer, Scene};
 use wgpu::{Device, Queue, Texture, TextureFormat, TextureUsages};
 
 use super::split_compositor::{Coverage, SplitCompositor, SurfaceDraw};
@@ -253,7 +253,7 @@ fn render(
                 base_color: base,
                 width: size.0,
                 height: size.1,
-                antialiasing_method: AaConfig::Msaa16,
+                antialiasing_method: crate::gpu_antialiasing::scene_aa(),
             },
         )
         .expect("render");

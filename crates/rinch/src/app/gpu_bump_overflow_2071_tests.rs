@@ -103,7 +103,7 @@ impl Gpu {
                     base_color: vello::peniko::Color::TRANSPARENT,
                     width: target.width(),
                     height: target.height(),
-                    antialiasing_method: vello::AaConfig::Msaa16,
+                    antialiasing_method: crate::gpu_antialiasing::scene_aa(),
                 },
             )
             .unwrap();
@@ -129,7 +129,7 @@ impl Gpu {
                             base_color: base,
                             width: W,
                             height: H,
-                            antialiasing_method: vello::AaConfig::Msaa16,
+                            antialiasing_method: crate::gpu_antialiasing::scene_aa(),
                         },
                     )
                     .unwrap();

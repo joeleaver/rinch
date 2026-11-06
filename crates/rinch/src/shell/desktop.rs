@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 
 use peniko::Color;
 use rinch_platform::{CompositeLayer, PlatformRenderer, PlatformWindow, RenderError};
-use vello::{AaConfig, AaSupport, RenderParams, Renderer as VelloRenderer, RendererOptions, Scene};
+use vello::{RenderParams, Renderer as VelloRenderer, RendererOptions, Scene};
 use wgpu::{
     Adapter, Backends, CommandEncoderDescriptor, Device, Extent3d, Features, Instance,
     InstanceDescriptor, Limits, MemoryHints, PresentMode, Queue, Surface, SurfaceConfiguration,
@@ -712,7 +712,7 @@ impl WgpuRenderer {
         let renderer = VelloRenderer::new(
             &device,
             RendererOptions {
-                antialiasing_support: AaSupport::all(),
+                antialiasing_support: crate::gpu_antialiasing::scene_aa_support(),
                 use_cpu: false,
                 num_init_threads: None,
                 pipeline_cache: None,
@@ -783,7 +783,7 @@ impl WgpuRenderer {
         let renderer = VelloRenderer::new(
             &device,
             RendererOptions {
-                antialiasing_support: AaSupport::all(),
+                antialiasing_support: crate::gpu_antialiasing::scene_aa_support(),
                 use_cpu: false,
                 num_init_threads: None,
                 pipeline_cache: None,
@@ -977,7 +977,7 @@ impl WgpuRenderer {
                     base_color: base,
                     width,
                     height,
-                    antialiasing_method: AaConfig::Msaa16,
+                    antialiasing_method: crate::gpu_antialiasing::scene_aa(),
                 },
             )
             .map_err(|e| RenderError::Internal(format!("render_to_texture failed: {:?}", e)))?;
@@ -1132,7 +1132,7 @@ pub(crate) fn render_partial(
                 base_color: base,
                 width: tw,
                 height: th,
-                antialiasing_method: AaConfig::Msaa16,
+                antialiasing_method: crate::gpu_antialiasing::scene_aa(),
             },
         )
         .map_err(|e| RenderError::Internal(format!("render_to_texture failed: {:?}", e)))?;
