@@ -9,26 +9,22 @@ use super::text_selection_across_tests::{mount, node};
 use super::text_selection_chrome_tests::SEL;
 
 /// The IFC root that lays out text node `text`, and where its text stands
-/// in the root's.
-fn root_of(tree: &rinch_dom::NodeTree, text: u64) -> (u64, usize, usize) {
+/// in the root's; `None` for text no root lays out (a flex container's).
+fn root_of(tree: &rinch_dom::NodeTree, text: u64) -> Option<(u64, usize, usize)> {
     let mut id = text;
     let root = loop {
-        let n = tree.get(id).expect("in the tree");
-        if let Some(b) = n.run_box {
-            break b;
-        }
+        let n = tree.get(id)?;
         if id != text && n.text_layout.is_some() {
             break id;
         }
-        id = n.parent.expect("a root above");
+        if let Some(b) = n.run_box {
+            break b;
+        }
+        id = n.parent?;
     };
-    let r = tree.get(root).unwrap().text_layout.as_ref().unwrap();
-    let range = r
-        .text_ranges
-        .iter()
-        .find(|r| r.node_id == text)
-        .expect("the text is the root's");
-    (root, range.flat_start, range.flat_end)
+    let r = tree.get(root)?.text_layout.as_ref()?;
+    let range = r.text_ranges.iter().find(|r| r.node_id == text)?;
+    Some((root, range.flat_start, range.flat_end))
 }
 
 /// The text nodes under `id`, in document order.
@@ -52,8 +48,15 @@ fn copy_range(html: &'static str) -> String {
         let (mut ta, mut tb) = (Vec::new(), Vec::new());
         texts(&d.tree, a, &mut ta);
         texts(&d.tree, b, &mut tb);
-        let (ra, sa, _) = root_of(&d.tree, ta[0]);
-        let (rb, _, eb) = root_of(&d.tree, *tb.last().unwrap());
+        let (ra, sa, _) = ta
+            .iter()
+            .find_map(|&t| root_of(&d.tree, t))
+            .expect("#a holds text a root lays out");
+        let (rb, _, eb) = tb
+            .iter()
+            .rev()
+            .find_map(|&t| root_of(&d.tree, t))
+            .expect("#b holds text a root lays out");
         let mut sel = TextSelection::at(ra, sa);
         sel.focus_node = rb;
         sel.focus_offset = eb;
@@ -462,4 +465,457 @@ fn a_root_selected_whole_has_the_boxes_at_its_ends() {
         (starts.as_str(), ends.as_str()),
         ("mid after", "before mid")
     );
+}
+
+/// The review of #2249's cases.
+const REVIEW: &[(&str, &str, &str)] = &[
+    (
+        "nested ib",
+        "<div id=\"a\">first</div><div>x <span style=\"display:inline-block\">o1 <span style=\"display:inline-block\">in</span> o2</span> y</div><div id=\"b\">second</div>",
+        "first\nx o1 in o2 y\nsecond",
+    ),
+    (
+        "nested ib start inner",
+        "<div>x <span style=\"display:inline-block\">o1 <span id=\"a\" style=\"display:inline-block\">in</span> o2</span> y</div><div id=\"b\">second</div>",
+        "in o2 y\nsecond",
+    ),
+    (
+        "nested ib end inner",
+        "<div id=\"a\">first</div><div>x <span style=\"display:inline-block\">o1 <span id=\"b\" style=\"display:inline-block\">in</span> o2</span> y</div>",
+        "first\nx o1 in",
+    ),
+    (
+        "nested ib start outer text",
+        "<div>x <span style=\"display:inline-block\"><span id=\"a\">o1</span> <span style=\"display:inline-block\">in</span> o2</span> y</div><div id=\"b\">second</div>",
+        "o1 in o2 y\nsecond",
+    ),
+    (
+        "nested ib end outer text",
+        "<div id=\"a\">first</div><div>x <span style=\"display:inline-block\">o1 <span style=\"display:inline-block\">in</span> <span id=\"b\">o2</span></span> y</div>",
+        "first\nx o1 in o2",
+    ),
+    (
+        "same line a before b after",
+        "<div><span id=\"a\">x</span> <span style=\"display:inline-block\">mid</span> <span id=\"b\">y</span></div>",
+        "x mid y",
+    ),
+    (
+        "a in ib b after same para",
+        "<div>x <span id=\"a\" style=\"display:inline-block\">mid</span> <span id=\"b\">y</span> z</div>",
+        "mid y",
+    ),
+    (
+        "a before b in ib same para",
+        "<div>x <span id=\"a\">w</span> <span id=\"b\" style=\"display:inline-block\">mid</span> y</div>",
+        "w mid",
+    ),
+    (
+        "a b in same ib",
+        "<div>x <span style=\"display:inline-block\"><span id=\"a\">m1</span> <span id=\"b\">m2</span> m3</span> y</div>",
+        "m1 m2",
+    ),
+    (
+        "a in ib1 b in ib2",
+        "<div>x <span id=\"a\" style=\"display:inline-block\">one</span> mid <span id=\"b\" style=\"display:inline-block\">two</span> y</div>",
+        "one mid two",
+    ),
+    (
+        "a in ib1 b in later block",
+        "<div>x <span id=\"a\" style=\"display:inline-block\">one</span> mid <span style=\"display:inline-block\">two</span> y</div><div id=\"b\">second</div>",
+        "one mid two y\nsecond",
+    ),
+    (
+        "ib holds p",
+        "<div id=\"a\">first</div><div>before <span style=\"display:inline-block\"><p>para</p></span> after</div><div id=\"b\">second</div>",
+        "first\nbefore \npara\n\n after\nsecond",
+    ),
+    (
+        "ib holds two p start second",
+        "<div>before <span style=\"display:inline-block\"><p>p1</p><p id=\"a\">p2</p></span> after</div><div id=\"b\">second</div>",
+        "p2\n\n after\nsecond",
+    ),
+    (
+        "ib holds table",
+        "<div id=\"a\">first</div><div>before <span style=\"display:inline-block\"><table><tr><td>c1</td><td>c2</td></tr></table></span> after</div><div id=\"b\">second</div>",
+        "first\nbefore \nc1\tc2\n after\nsecond",
+    ),
+    (
+        "ib holds table start in cell",
+        "<div>before <span style=\"display:inline-block\"><table><tr><td>c1</td><td id=\"a\">c2</td></tr></table></span> after</div><div id=\"b\">second</div>",
+        "c2\n after\nsecond",
+    ),
+    (
+        "inline-flex mixed",
+        "<div id=\"a\">first</div><div>before <span style=\"display:inline-flex\">t1 <b>bold</b> <div>blk</div> t2</span> after</div><div id=\"b\">second</div>",
+        "first\nbefore t1\nbold\nblk\nt2 after\nsecond",
+    ),
+    (
+        "inline-flex holds ib",
+        "<div id=\"a\">first</div><div>before <span style=\"display:inline-flex\"><span style=\"display:inline-block\">ib</span>txt</span> after</div><div id=\"b\">second</div>",
+        "first\nbefore \nib\ntxt after\nsecond",
+    ),
+    (
+        "inline-flex start inside item",
+        "<div>before <span style=\"display:inline-flex\">t1 <b id=\"a\">bold</b> t2</span> after</div><div id=\"b\">second</div>",
+        "bold\nt2 after\nsecond",
+    ),
+    (
+        "grid loose",
+        "<div id=\"a\">first</div><div style=\"display:grid;grid-template-columns:1fr 1fr\">g1<div>g2</div>g3 <span>g4</span></div><div id=\"b\">second</div>",
+        "first\ng1\ng2\ng3\ng4\nsecond",
+    ),
+    (
+        "grid cells",
+        "<div id=\"a\">first</div><div style=\"display:grid;grid-template-columns:1fr 1fr\"><div>c1</div><div>c2</div><div>c3</div></div><div id=\"b\">second</div>",
+        "first\nc1\nc2\nc3\nsecond",
+    ),
+    (
+        "grid start in item",
+        "<div style=\"display:grid;grid-template-columns:1fr 1fr\"><div id=\"a\">c1</div>loose<div>c3</div></div><div id=\"b\">second</div>",
+        "c1\nloose\nc3\nsecond",
+    ),
+    (
+        "flex end in item",
+        "<div id=\"a\">first</div><div style=\"display:flex\">loose<div id=\"b\">item</div>tail</div>",
+        "first\nloose\nitem",
+    ),
+    (
+        "float at line start",
+        "<div id=\"a\">first</div><div><span style=\"float:left\">fl</span>text after</div><div id=\"b\">second</div>",
+        "first\nfltext after\nsecond",
+    ),
+    (
+        "float at line end",
+        "<div id=\"a\">first</div><div>text before<span style=\"float:right\">fr</span></div><div id=\"b\">second</div>",
+        "first\ntext beforefr\nsecond",
+    ),
+    (
+        "float block div mid",
+        "<div id=\"a\">first</div><div>text <div style=\"float:right;width:100px\">fdiv</div> more</div><div id=\"b\">second</div>",
+        "first\ntext fdivmore\nsecond",
+    ),
+    (
+        "start after float",
+        "<div><span style=\"float:left\">fl</span><span id=\"a\">after</span></div><div id=\"b\">second</div>",
+        "after\nsecond",
+    ),
+    (
+        "end before float",
+        "<div id=\"a\">first</div><div><span id=\"b\">before</span><span style=\"float:right\">fr</span></div>",
+        "first\nbefore",
+    ),
+    (
+        "start in float",
+        "<div>text <span id=\"a\" style=\"float:right\">fl</span> more</div><div id=\"b\">second</div>",
+        "flmore\nsecond",
+    ),
+    (
+        "abs in line",
+        "<div id=\"a\">first</div><div style=\"position:relative\">before <span style=\"position:absolute;left:0;top:30px\">abs</span> after</div><div id=\"b\">second</div>",
+        "first\nbefore absafter\nsecond",
+    ),
+    (
+        "fixed in line",
+        "<div id=\"a\">first</div><div>before <span style=\"position:fixed;left:0;top:300px\">fix</span> after</div><div id=\"b\">second</div>",
+        "first\nbefore fixafter\nsecond",
+    ),
+    (
+        "abs div in line",
+        "<div id=\"a\">first</div><div style=\"position:relative\">before <div style=\"position:absolute;top:40px\">absdiv</div> after</div><div id=\"b\">second</div>",
+        "first\nbefore absdivafter\nsecond",
+    ),
+    (
+        "abs at line start",
+        "<div id=\"a\">first</div><div style=\"position:relative\"><span style=\"position:absolute;top:30px\">abs</span>after</div><div id=\"b\">second</div>",
+        "first\nabsafter\nsecond",
+    ),
+    (
+        "contents in flex",
+        "<div id=\"a\">first</div><div style=\"display:flex\"><div style=\"display:contents\">c1 <span>c2</span></div>loose</div><div id=\"b\">second</div>",
+        "first\nc1\nc2\nloose\nsecond",
+    ),
+    (
+        "contents spans in flex",
+        "<div id=\"a\">first</div><div style=\"display:flex\"><span style=\"display:contents\">x</span><span style=\"display:contents\"><b>y</b></span></div><div id=\"b\">second</div>",
+        "first\nx\ny\nsecond",
+    ),
+    (
+        "rtl ib",
+        "<div id=\"a\">first</div><div dir=\"rtl\">שלום <span style=\"display:inline-block\">mid</span> עולם</div><div id=\"b\">second</div>",
+        "first\nשלום mid עולם\nsecond",
+    ),
+    (
+        "rtl start in ib",
+        "<div dir=\"rtl\">שלום <span id=\"a\" style=\"display:inline-block\">mid</span> עולם</div><div id=\"b\">second</div>",
+        "mid עולם\nsecond",
+    ),
+    (
+        "rtl latin ib",
+        "<div id=\"a\">first</div><div dir=\"rtl\">abc <span style=\"display:inline-block\">אב</span> def</div><div id=\"b\">second</div>",
+        "first\nabc אב def\nsecond",
+    ),
+    (
+        "unsel ib selectable child",
+        "<div id=\"a\">first</div><div>before <span style=\"display:inline-block;user-select:none\">no <span style=\"user-select:text\">yes</span></span> after</div><div id=\"b\">second</div>",
+        "first\nbefore yes after\nsecond",
+    ),
+    (
+        "unsel ib nested ib",
+        "<div id=\"a\">first</div><div>before <span style=\"display:inline-block;user-select:none\">no <span style=\"display:inline-block\">nest</span></span> after</div><div id=\"b\">second</div>",
+        "first\nbefore  after\nsecond",
+    ),
+    (
+        "unsel para selectable ib",
+        "<div id=\"a\">first</div><div style=\"user-select:none\">before <span style=\"display:inline-block;user-select:text\">mid</span> after</div><div id=\"b\">second</div>",
+        "first\nmid\nsecond",
+    ),
+    (
+        "unsel ib between ibs",
+        "<div id=\"a\">first</div><div><span style=\"display:inline-block\">one</span> <span style=\"display:inline-block;user-select:none\">no</span> <span style=\"display:inline-block\">two</span></div><div id=\"b\">second</div>",
+        "first\none  two\nsecond",
+    ),
+    (
+        "br around ib",
+        "<div id=\"a\">first</div><div>before<br><span style=\"display:inline-block\">mid</span><br>after</div><div id=\"b\">second</div>",
+        "first\nbefore\nmid\nafter\nsecond",
+    ),
+    (
+        "br inside ib",
+        "<div id=\"a\">first</div><div>before <span style=\"display:inline-block\">m1<br>m2</span> after</div><div id=\"b\">second</div>",
+        "first\nbefore m1\nm2 after\nsecond",
+    ),
+    (
+        "br then float",
+        "<div id=\"a\">first</div><div>before<br><span style=\"float:left\">fl</span>after</div><div id=\"b\">second</div>",
+        "first\nbefore\nflafter\nsecond",
+    ),
+    (
+        "ib then br at end",
+        "<div id=\"a\">first</div><div>before <span style=\"display:inline-block\">mid</span><br></div><div id=\"b\">second</div>",
+        "first\nbefore mid\nsecond",
+    ),
+    (
+        "br then ib at end",
+        "<div id=\"a\">first</div><div>before<br><span style=\"display:inline-block\">mid</span></div><div id=\"b\">second</div>",
+        "first\nbefore\nmid\nsecond",
+    ),
+    (
+        "pre-wrap ib",
+        "<div id=\"a\">first</div><div style=\"white-space:pre-wrap\">  before  <span style=\"display:inline-block\">mid</span>  after  </div><div id=\"b\">second</div>",
+        "first\n  before  mid  after  \nsecond",
+    ),
+    (
+        "pre-wrap two ibs",
+        "<div id=\"a\">first</div><div style=\"white-space:pre-wrap\"><span style=\"display:inline-block\">one</span>   <span style=\"display:inline-block\">two</span></div><div id=\"b\">second</div>",
+        "first\none   two\nsecond",
+    ),
+    (
+        "pre-wrap only ib with spaces",
+        "<div id=\"a\">first</div><div style=\"white-space:pre-wrap\">  <span style=\"display:inline-block\">mid</span>  </div><div id=\"b\">second</div>",
+        "first\n  mid  \nsecond",
+    ),
+    (
+        "pre-line ib",
+        "<div id=\"a\">first</div><div style=\"white-space:pre-line\">  a  <span style=\"display:inline-block\">mid</span>  b  </div><div id=\"b\">second</div>",
+        "first\na mid b\nsecond",
+    ),
+    (
+        "normal only ib with spaces",
+        "<div id=\"a\">first</div><div>  <span style=\"display:inline-block\">mid</span>  </div><div id=\"b\">second</div>",
+        "first\nmid\nsecond",
+    ),
+    (
+        "empty ib between text",
+        "<div id=\"a\">first</div><div>a<span style=\"display:inline-block;width:10px;height:10px\"></span>b</div><div id=\"b\">second</div>",
+        "first\nab\nsecond",
+    ),
+    (
+        "empty ibs spaced",
+        "<div id=\"a\">first</div><div><span style=\"display:inline-block;width:10px;height:10px\"></span> <span style=\"display:inline-block;width:10px;height:10px\"></span></div><div id=\"b\">second</div>",
+        "first\n \nsecond",
+    ),
+    (
+        "ib of spaces",
+        "<div id=\"a\">first</div><div>before<span style=\"display:inline-block\"> </span>after</div><div id=\"b\">second</div>",
+        "first\nbeforeafter\nsecond",
+    ),
+    (
+        "img and ib",
+        "<div id=\"a\">first</div><div><img style=\"width:10px;height:10px\"> <span style=\"display:inline-block\">mid</span></div><div id=\"b\">second</div>",
+        "first\n mid\nsecond",
+    ),
+    (
+        "ib in anon run start",
+        "<div><div>blk</div>loose <span id=\"a\" style=\"display:inline-block\">mid</span> tail</div><div id=\"b\">second</div>",
+        "mid tail\nsecond",
+    ),
+    (
+        "anon run two ibs",
+        "<div id=\"a\">first</div><div>loose <span style=\"display:inline-block\">ib</span><div>blk</div>tail <span style=\"display:inline-block\">ib2</span></div><div id=\"b\">second</div>",
+        "first\nloose ib\nblk\ntail ib2\nsecond",
+    ),
+    (
+        "ib in cell",
+        "<table><tr><td id=\"a\">c1</td><td><span style=\"display:inline-block\">ib</span> t</td><td id=\"b\">c3</td></tr></table>",
+        "c1\tib t\tc3",
+    ),
+    (
+        "table regression",
+        "<div id=\"a\">first</div><table><tr><td>a1</td><td>a2</td></tr><tr><td>b1</td><td>b2</td></tr></table><div id=\"b\">second</div>",
+        "first\na1\ta2\nb1\tb2\nsecond",
+    ),
+    (
+        "table start in cell",
+        "<table><tr><td>a1</td><td id=\"a\">a2</td></tr><tr><td>b1</td><td id=\"b\">b2</td></tr></table>",
+        "a2\nb1\tb2",
+    ),
+    (
+        "br regression",
+        "<div><span id=\"a\">l1</span><br>l2<br><br>l3 <span id=\"b\">end</span></div>",
+        "l1\nl2\n\nl3 end",
+    ),
+    (
+        "picture regression",
+        "<div id=\"a\">first</div><div><img style=\"width:10px;height:10px\"></div><div id=\"b\">second</div>",
+        "first\n\nsecond",
+    ),
+    (
+        "pre-line regression",
+        "<div id=\"a\">first</div><div style=\"white-space:pre-line\">  x  &#10;  y  </div><div id=\"b\">second</div>",
+        "first\nx\ny\nsecond",
+    ),
+    (
+        "nested table regression",
+        "<div id=\"a\">first</div><table><tr><td><table><tr><td>i1</td><td>i2</td></tr></table></td><td>o2</td></tr></table><div id=\"b\">second</div>",
+        "first\ni1\ti2\no2\nsecond",
+    ),
+    (
+        "inline-table at start",
+        "<div id=\"a\">first</div><div><table style=\"display:inline-table\"><tr><td>x</td></tr></table>after</div><div id=\"b\">second</div>",
+        "first\nx\n after\nsecond",
+    ),
+    (
+        "two inline-tables",
+        "<div id=\"a\">first</div><div><table style=\"display:inline-table\"><tr><td>x</td></tr></table><table style=\"display:inline-table\"><tr><td>y</td></tr></table></div><div id=\"b\">second</div>",
+        "first\nx\n  \ny\n \nsecond",
+    ),
+    (
+        "start in inline-table",
+        "<div>before <table style=\"display:inline-table\"><tr><td id=\"a\">x</td></tr></table> after</div><div id=\"b\">second</div>",
+        "x\n  after\nsecond",
+    ),
+    (
+        "a in ib b after then more",
+        "<div>x <span id=\"a\" style=\"display:inline-block\">mid</span> <span id=\"b\">y</span> z</div><div>after</div><div style=\"display:flex\">leaf</div><table><tr><td>t1</td><td>t2</td></tr></table>",
+        "mid y",
+    ),
+    (
+        "a in ib b after in span tail",
+        "<div>x <span id=\"a\" style=\"display:inline-block\">mid</span> w <b id=\"b\">y</b> z</div><div>next</div>",
+        "mid w y",
+    ),
+    (
+        "a in nested ib b after in outer ib",
+        "<div>x <span style=\"display:inline-block\">o1 <span id=\"a\" style=\"display:inline-block\">in</span> <span id=\"b\">o2</span> o3</span> y</div><div>next</div>",
+        "in o2",
+    ),
+    (
+        "a in ib b at para end",
+        "<div>x <span id=\"a\" style=\"display:inline-block\">mid</span> <span id=\"b\">y</span></div><div>next</div>",
+        "mid y",
+    ),
+    (
+        "start after ib at root start",
+        "<div><span style=\"display:inline-block\">mid</span><span id=\"a\">after</span></div><div id=\"b\">second</div>",
+        "after\nsecond",
+    ),
+    (
+        "end before ib at root end",
+        "<div id=\"a\">first</div><div><span id=\"b\">before</span><span style=\"display:inline-block\">mid</span></div>",
+        "first\nbefore",
+    ),
+    (
+        "flex leaf before start in same flex",
+        "<div style=\"display:flex\">leaf<div id=\"a\">item</div></div><div id=\"b\">second</div>",
+        "item\nsecond",
+    ),
+    (
+        "flex leaf after end in same flex",
+        "<div id=\"a\">first</div><div style=\"display:flex\"><div id=\"b\">item</div>leaf</div><div>tail</div>",
+        "first\nitem",
+    ),
+    (
+        "inline-flex leaf before start same para",
+        "<div><span style=\"display:inline-flex\">leaf</span> <span id=\"a\">after</span></div><div id=\"b\">second</div>",
+        "after\nsecond",
+    ),
+    (
+        "inline-flex leaf after end same para",
+        "<div id=\"a\">first</div><div><span id=\"b\">before</span> <span style=\"display:inline-flex\">leaf</span></div><div>tail</div>",
+        "first\nbefore",
+    ),
+    (
+        "unsel inline-flex leaf",
+        "<div id=\"a\">first</div><div>before <span style=\"display:inline-flex;user-select:none\">leaf</span> after</div><div id=\"b\">second</div>",
+        "first\nbefore  after\nsecond",
+    ),
+    (
+        "hidden child of visible flex",
+        "<div id=\"a\">first</div><div style=\"display:flex\"><span style=\"visibility:hidden\">h</span>vis</div><div id=\"b\">second</div>",
+        "first\nvis\nsecond",
+    ),
+    (
+        "visible leaf of hidden flex",
+        "<div id=\"a\">first</div><div style=\"display:flex;visibility:hidden\"><span style=\"visibility:visible\">v</span>leaf</div><div id=\"b\">second</div>",
+        "first\nv\nsecond",
+    ),
+    (
+        "flex nowrap pre-line leaf",
+        "<div id=\"a\">first</div><div style=\"display:flex;white-space:pre-line\">  a  &#10;  b  </div><div id=\"b\">second</div>",
+        "first\na\nb\nsecond",
+    ),
+    (
+        "pre-line regression2",
+        "<div id=\"a\">first</div><div style=\"white-space:pre-line\">  x  &#10;  y  </div><div id=\"b\">second</div>",
+        "first\nx\ny\nsecond",
+    ),
+    (
+        "ib in anon run start2",
+        "<div><div>blk</div>loose <span id=\"a\" style=\"display:inline-block\">mid</span> tail</div><div id=\"b\">second</div>",
+        "mid tail\nsecond",
+    ),
+    (
+        "abs before start same para",
+        "<div style=\"position:relative\"><span style=\"position:absolute;top:30px\">abs</span>x <span id=\"a\">after</span></div><div id=\"b\">second</div>",
+        "after\nsecond",
+    ),
+];
+
+/// The cases of [`REVIEW`] named `names`, checked as [`copies_as_chrome`].
+fn review_cases(names: &[&str]) {
+    let cases: Vec<(&str, &'static str, &str)> = names
+        .iter()
+        .map(|&n| {
+            *REVIEW
+                .iter()
+                .find(|c| c.0 == n)
+                .unwrap_or_else(|| panic!("no case {n}"))
+        })
+        .collect();
+    copies_as_chrome(&cases);
+}
+
+#[test]
+fn a_selection_from_an_inline_block_into_its_paragraph_is_in_document_order() {
+    // Review of #2249: the root order puts a paragraph before the
+    // inline-blocks in it, so a selection from inside one to the text after
+    // it took the paragraph as its start, refused the box and ran on to the
+    // end of the document. The ends are ordered by where the box stands.
+    review_cases(&[
+        "a in ib b after same para",
+        "a in ib b at para end",
+        "a in ib b after then more",
+        "a in ib b after in span tail",
+        "a in nested ib b after in outer ib",
+    ]);
 }

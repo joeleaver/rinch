@@ -529,8 +529,11 @@ impl RinchApp {
         let doc = self.doc.clone()?;
         let sel = self.text_selection.as_mut().filter(|s| !s.is_empty())?;
         let d = doc.borrow();
-        let runs = sel.runs(&d.tree);
-        let out = super::text_selection_copy::copy_text(&d.tree, &runs);
+        let out = super::text_selection_copy::copy_text(
+            &d.tree,
+            (sel.ifc_node_id, sel.anchor_offset),
+            (sel.focus_node, sel.focus_offset),
+        );
         (!out.is_empty()).then_some(out)
     }
 

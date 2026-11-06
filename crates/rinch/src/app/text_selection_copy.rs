@@ -161,22 +161,25 @@ fn selectable(tree: &rinch_dom::NodeTree, id: u64) -> bool {
     super::text_selection::resolved_user_select(tree, at).is_selectable()
 }
 
-/// Open root `id`, met by the walk: its part is the selection's, or, when the
-/// selection's runs do not name it, all of it when it stands inside a root
-/// the selection takes (an `inline-block` in a paragraph).
+/// The length of root `id`'s text.
+fn text_len(tree: &rinch_dom::NodeTree, id: u64) -> usize {
+    tree.get(id)
+        .and_then(|n| n.text_layout.as_ref())
+        .map_or(0, |l| l.text_content.len())
+}
+
+/// Open root `id`, met by the walk: its part is the selection's at an end
+/// of it, and all of it between (when it can be selected).
 fn open(
     tree: &rinch_dom::NodeTree,
     parts: &HashMap<u64, (usize, usize)>,
     roots: &mut Vec<Root>,
     id: u64,
 ) {
-    let part = parts.get(&id).copied().or_else(|| {
-        let len = tree
-            .get(id)
-            .and_then(|n| n.text_layout.as_ref())
-            .map_or(0, |l| l.text_content.len());
-        (roots.last().is_some_and(|r| r.part.is_some()) && selectable(tree, id)).then_some((0, len))
-    });
+    let part = parts
+        .get(&id)
+        .copied()
+        .or_else(|| selectable(tree, id).then_some((0, text_len(tree, id))));
     roots.push(Root::new(tree, id, part, true));
 }
 
@@ -192,19 +195,30 @@ fn close(tree: &rinch_dom::NodeTree, roots: &mut Vec<Root>, id: u64, out: &mut O
     }
 }
 
-/// The copy of `runs` (each selected root with its part, in document order,
-/// as `TextSelection::runs` gives them).
-pub(crate) fn copy_text(tree: &rinch_dom::NodeTree, runs: &[(u64, usize, usize)]) -> String {
-    let Some(&(last_root, ..)) = runs.last() else {
-        return String::new();
-    };
-    let parts: HashMap<u64, (usize, usize)> = runs.iter().map(|&(r, a, b)| (r, (a, b))).collect();
+/// The copy of the selection between `a` and `b` (each a root and an offset
+/// in its text), whichever comes first in the document.
+pub(crate) fn copy_text(tree: &rinch_dom::NodeTree, a: (u64, usize), b: (u64, usize)) -> String {
+    let (a, b) = (
+        (a.0, a.1.min(text_len(tree, a.0))),
+        (b.0, b.1.min(text_len(tree, b.0))),
+    );
+    let ((first, start), (last_root, end)) = if before(tree, b, a) { (b, a) } else { (a, b) };
+    let mut parts: HashMap<u64, (usize, usize)> = HashMap::new();
+    if first == last_root {
+        parts.insert(first, (start, end));
+    } else {
+        parts.insert(first, (start, text_len(tree, first)));
+        parts.insert(last_root, (0, end));
+    }
+    // What holds the last root: never passed, and leaving it ends the walk
+    // (the last root is then behind it).
+    let holds_last = holders(tree, last_root);
     let mut out = Out {
         text: String::new(),
         emitted: false,
         after_picture: false,
     };
-    let (mut stack, mut roots) = walk_from(tree, runs[0].0);
+    let (mut stack, mut roots) = walk_from(tree, &parts, first);
     while let Some(step) = stack.pop() {
         let id = match step {
             Step::EnterRun(b) => {
@@ -213,14 +227,14 @@ pub(crate) fn copy_text(tree: &rinch_dom::NodeTree, runs: &[(u64, usize, usize)]
             }
             Step::LeaveRun(b) => {
                 close(tree, &mut roots, b, &mut out);
-                if b == last_root {
+                if b == last_root || holds_last.contains(&b) {
                     break;
                 }
                 continue;
             }
             Step::Leave(id) => {
                 close(tree, &mut roots, id, &mut out);
-                if id == last_root {
+                if id == last_root || holds_last.contains(&id) {
                     break;
                 }
                 leave(tree, id, &mut out);
@@ -253,12 +267,13 @@ pub(crate) fn copy_text(tree: &rinch_dom::NodeTree, runs: &[(u64, usize, usize)]
             continue;
         }
         // An atomic inline, float, positioned box or picture is there only
-        // when the part of the root it stands in reaches it.
+        // when the part of the root it stands in reaches it (what holds the
+        // last root always does).
         let in_line = matches!(
             n.computed_style.display,
             DisplayValue::Inline | DisplayValue::Contents
         ) && !is_picture(n);
-        if !in_line && roots.last().is_some_and(|r| !r.takes_here()) {
+        if !in_line && !holds_last.contains(&id) && roots.last().is_some_and(|r| !r.takes_here()) {
             continue;
         }
         enter(tree, id, &mut out);
@@ -355,7 +370,11 @@ fn push_children(
 /// write nothing: nothing is written before the first text). A root it
 /// starts inside (an `inline-block`'s paragraph) writes its text from the
 /// next of its text nodes the walk meets.
-fn walk_from(tree: &rinch_dom::NodeTree, first: u64) -> (Vec<Step>, Vec<Root>) {
+fn walk_from(
+    tree: &rinch_dom::NodeTree,
+    parts: &HashMap<u64, (usize, usize)>,
+    first: u64,
+) -> (Vec<Step>, Vec<Root>) {
     // An anonymous box is met at its first member.
     let anonymous = tree.get(first).is_some_and(|n| n.is_anonymous_block_box);
     let start = if anonymous {
@@ -373,13 +392,14 @@ fn walk_from(tree: &rinch_dom::NodeTree, first: u64) -> (Vec<Step>, Vec<Root>) {
     {
         path.push(p);
     }
-    // A root the walk starts inside: all of it after the start.
+    // A root the walk starts inside: its part after the start (all of it, or
+    // up to the selection's end when that is in it).
     let around = |id: u64| {
-        let len = tree
-            .get(id)
-            .and_then(|n| n.text_layout.as_ref())
-            .map_or(0, |l| l.text_content.len());
-        Root::new(tree, id, selectable(tree, id).then_some((0, len)), false)
+        let part = parts
+            .get(&id)
+            .copied()
+            .or_else(|| selectable(tree, id).then_some((0, text_len(tree, id))));
+        Root::new(tree, id, part, false)
     };
     let mut stack = Vec::new();
     let mut roots = Vec::new();
@@ -585,4 +605,108 @@ pub(crate) fn rendered_span(tree: &rinch_dom::NodeTree, root: u64) -> Option<(us
         .chain(boxes())
         .max()?;
     (first < last).then_some((first, last))
+}
+
+// ── Document order ─────────────────────────────────────────────────────────
+
+/// The node root `id` stands at in the element tree: an anonymous box at
+/// its run's first member.
+fn root_node(tree: &rinch_dom::NodeTree, id: u64) -> u64 {
+    tree.get(id)
+        .filter(|n| n.is_anonymous_block_box)
+        .and_then(|n| n.run_members.first().copied())
+        .unwrap_or(id)
+}
+
+/// The elements (and anonymous boxes) that hold root `id`: its ancestors,
+/// and the box of each run one of them (or it) is in.
+fn holders(tree: &rinch_dom::NodeTree, id: u64) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    let node = root_node(tree, id);
+    let mut at = Some(node);
+    while let Some(i) = at {
+        let Some(n) = tree.get(i) else {
+            break;
+        };
+        if i != node {
+            out.insert(i);
+        }
+        if let Some(b) = n.run_box
+            && b != id
+        {
+            out.insert(b);
+        }
+        at = n.parent;
+    }
+    out
+}
+
+/// The path from the document down to node `id`.
+fn path_to(tree: &rinch_dom::NodeTree, id: u64) -> Vec<u64> {
+    let mut path = vec![id];
+    while let Some(p) = path
+        .last()
+        .and_then(|&i| tree.get(i))
+        .and_then(|n| n.parent)
+    {
+        path.push(p);
+    }
+    path.reverse();
+    path
+}
+
+/// Whether node `a` comes before node `b` in the document (an ancestor
+/// before what it holds).
+fn node_before(tree: &rinch_dom::NodeTree, a: u64, b: u64) -> bool {
+    let (pa, pb) = (path_to(tree, a), path_to(tree, b));
+    let common = pa.iter().zip(&pb).take_while(|(x, y)| x == y).count();
+    match (pa.get(common), pb.get(common)) {
+        (None, Some(_)) => true,
+        (_, None) => false,
+        (Some(&x), Some(&y)) => {
+            let siblings = common
+                .checked_sub(1)
+                .and_then(|i| tree.get(pa[i]))
+                .map_or(&[][..], |p| &p.children[..]);
+            let at = |c: u64| siblings.iter().position(|&s| s == c);
+            at(x) < at(y)
+        }
+    }
+}
+
+/// Whether root `inner` stands inside root `outer`'s lines (an
+/// `inline-block` in a paragraph, at any depth).
+fn holds(tree: &rinch_dom::NodeTree, outer: u64, inner: u64) -> bool {
+    outer != inner && holders(tree, inner).contains(&outer)
+}
+
+/// Where the box holding root `inner` stands in root `outer`'s text: after
+/// the last of `outer`'s text before it.
+fn box_offset(tree: &rinch_dom::NodeTree, outer: u64, inner: u64) -> usize {
+    let at = root_node(tree, inner);
+    tree.get(outer)
+        .and_then(|n| n.text_layout.as_ref())
+        .map_or(0, |l| {
+            l.text_ranges
+                .iter()
+                .take_while(|r| node_before(tree, r.node_id, at))
+                .last()
+                .map_or(0, |r| r.flat_end)
+        })
+}
+
+/// Whether selection end `a` comes before end `b` in the document. A root
+/// inside another stands where its box stands in that root's text, not
+/// where the root order puts it (after the root holding it); an offset where
+/// the box stands is before it.
+fn before(tree: &rinch_dom::NodeTree, a: (u64, usize), b: (u64, usize)) -> bool {
+    if a.0 == b.0 {
+        a.1 < b.1
+    } else if holds(tree, a.0, b.0) {
+        a.1 <= box_offset(tree, a.0, b.0)
+    } else if holds(tree, b.0, a.0) {
+        box_offset(tree, b.0, a.0) < b.1
+    } else {
+        node_before(tree, root_node(tree, a.0), root_node(tree, b.0))
+    }
 }
