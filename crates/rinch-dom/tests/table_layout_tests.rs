@@ -348,3 +348,92 @@ fn a_row_made_a_block_holds_its_cells_in_a_table_of_its_own() {
     assert_eq!(abs(&d, "r").3, 26.0);
     assert_eq!(abs(&d, "a").1, 4.0);
 }
+
+#[test]
+fn an_inline_block_table_keeps_its_cells_side_by_side() {
+    // `display: inline-block` on a `<table>` (email's centred rows of
+    // buttons and badges) leaves its rows and cells table parts, which CSS
+    // wraps in an anonymous table inside the inline-block (CSS 2.1 §17.2.1),
+    // as it does for `display: block`. rinch stacked the cells one above the
+    // other, each as wide as the widest. Chrome 156: the table is 330x36,
+    // centred, its cells side by side.
+    let cell = "<td style='padding:0 5px'><div style='width:100px;height:36px'></div></td>";
+    let d = doc(&format!(
+        "<div style='width:596px;text-align:center'><table id=t style='display:inline-block;border-spacing:0'>\
+         <tr>{}{}{}</tr></table></div>",
+        cell.replace("<td", "<td id=a"),
+        cell.replace("<td", "<td id=b"),
+        cell.replace("<td", "<td id=c"),
+    ));
+    assert_eq!(abs(&d, "t"), (133.0, 0.0, 330.0, 36.0));
+    assert_eq!(abs(&d, "a"), (133.0, 0.0, 110.0, 36.0));
+    assert_eq!(abs(&d, "b"), (243.0, 0.0, 110.0, 36.0));
+    assert_eq!(abs(&d, "c"), (353.0, 0.0, 110.0, 36.0));
+}
+
+#[test]
+fn an_inline_block_table_keeps_its_border_spacing_and_its_own_width() {
+    // The UA's 2px spacing stays (Chrome 156: 156x40, the second cell at
+    // x=104); a declared width is the inline-block's, and the anonymous
+    // table in it packs at its start (Chrome 156: 400 wide, the cells at 0
+    // and 100).
+    let d = doc("<table id=t style='display:inline-block'><tr>\
+         <td id=a style='padding:0'><div style='width:100px;height:36px'></div></td>\
+         <td id=b style='padding:0'><div style='width:50px;height:20px'></div></td></tr></table>");
+    assert_eq!(abs(&d, "t"), (0.0, 0.0, 156.0, 40.0));
+    assert_eq!(abs(&d, "a"), (2.0, 2.0, 100.0, 36.0));
+    assert_eq!(abs(&d, "b"), (104.0, 2.0, 50.0, 36.0));
+    let d = doc(
+        "<table id=t style='display:inline-block;width:400px;border-spacing:0'><tr>\
+         <td id=a style='padding:0'><div style='width:100px;height:10px'></div></td>\
+         <td id=b style='padding:0'><div style='width:50px;height:10px'></div></td></tr></table>",
+    );
+    // Shorter than its line, the box sits on the baseline, a font's ascent
+    // down; only its own size and its cells' places in it are asserted.
+    let (tx, ty, tw, th) = abs(&d, "t");
+    assert_eq!((tx, tw, th), (0.0, 400.0, 10.0));
+    let at = |id| {
+        let (x, y, w, h) = abs(&d, id);
+        (x - tx, y - ty, w, h)
+    };
+    assert_eq!(at("a"), (0.0, 0.0, 100.0, 10.0));
+    assert_eq!(at("b"), (100.0, 0.0, 50.0, 10.0));
+}
+
+#[test]
+fn an_inline_block_row_holds_its_cells_in_a_row() {
+    // Email builders' social-icon rows: `display: inline-block` on a `<tr>`. The
+    // row is the outer table's one (anonymous) cell, and its cells sit in an
+    // anonymous table inside it, the same whether it was made inline-block
+    // after layout or from the start. Chrome 156: the row is 132x24 in a
+    // centred 132-wide table, its cells at 0, 44 and 88.
+    let cell = "<td style='padding:0 10px'><div style='width:24px;height:24px'></div></td>";
+    let html = format!(
+        "<div style='width:596px'><table id=t align=center style='border-collapse:collapse'>\
+         <tr id=r>{}{}{}</tr></table></div>",
+        cell.replace("<td", "<td id=a"),
+        cell.replace("<td", "<td id=b"),
+        cell.replace("<td", "<td id=c"),
+    );
+    let fresh = doc(&html.replace("id=r", "id=r style='display:inline-block'"));
+    assert_eq!(abs(&fresh, "t"), (232.0, 0.0, 132.0, 24.0));
+    assert_eq!(abs(&fresh, "r"), (232.0, 0.0, 132.0, 24.0));
+    assert_eq!(abs(&fresh, "a"), (232.0, 0.0, 44.0, 24.0));
+    assert_eq!(abs(&fresh, "b"), (276.0, 0.0, 44.0, 24.0));
+    assert_eq!(abs(&fresh, "c"), (320.0, 0.0, 44.0, 24.0));
+    let mut d = doc(&html);
+    let r = d.query_selector("#r").unwrap();
+    d.set_attribute(r, "style", "display: inline-block");
+    d.resolve_layout(600.0, 800.0);
+    for id in ["t", "r", "a", "b", "c"] {
+        assert_eq!(abs(&d, id), abs(&fresh, id), "{id}");
+    }
+    // And back: a row again, its cells where a plain row's are.
+    d.set_attribute(r, "style", "");
+    d.resolve_layout(601.0, 800.0);
+    d.resolve_layout(600.0, 800.0);
+    let plain = doc(&html);
+    for id in ["t", "a", "b", "c"] {
+        assert_eq!(abs(&d, id), abs(&plain, id), "{id} after the restyle back");
+    }
+}

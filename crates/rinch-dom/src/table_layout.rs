@@ -268,23 +268,25 @@ fn is_row_part(tree: &NodeTree, id: RawNodeId) -> bool {
         || tree.nodes[id].computed_style.table_part == TablePart::Cell
 }
 
-/// Whether `node` is a block standing for a table
+/// Whether `node` is a block (or inline-block) standing for a table
 /// ([`RinchDocument::note_table_host`]).
 pub(crate) fn is_host(node: &crate::node::Node) -> bool {
     node.computed_style.table_part == TablePart::Table
         && matches!(
             node.computed_style.display,
-            DisplayValue::Block | DisplayValue::ListItem
+            DisplayValue::Block | DisplayValue::ListItem | DisplayValue::InlineBlock
         )
 }
 
-/// Whether `id` is a block whose in-flow children, seen through
+/// Whether `id` is a block or inline-block whose in-flow children, seen through
 /// `display: contents` wrappers, are all rows, row groups or cells, at least
 /// one, with no text that shows. Stops at the first child that says no.
 fn qualifies_as_host(tree: &NodeTree, id: RawNodeId) -> bool {
     let cs = &tree.nodes[id].computed_style;
-    if !matches!(cs.display, DisplayValue::Block | DisplayValue::ListItem)
-        || !matches!(cs.table_part, TablePart::None | TablePart::Table)
+    if !matches!(
+        cs.display,
+        DisplayValue::Block | DisplayValue::ListItem | DisplayValue::InlineBlock
+    ) || !matches!(cs.table_part, TablePart::None | TablePart::Table)
     {
         return false;
     }
@@ -498,10 +500,12 @@ impl RinchDocument {
         }
     }
 
-    /// A block whose in-flow children are all rows, row groups or cells (and
-    /// no text) is laid out as the table CSS wraps them in (CSS 2.1 §17.2.1,
-    /// "anonymous table objects"): email sets `display: block` on a `<table>`
-    /// for phones, and its cells stay side by side in Chrome. rinch has no
+    /// A block or inline-block whose in-flow children are all rows, row
+    /// groups or cells (and no text) is laid out as the table CSS wraps them
+    /// in (CSS 2.1 §17.2.1, "anonymous table objects"): email sets
+    /// `display: block` on a `<table>` for phones, and `display:
+    /// inline-block` on a `<table>` or a `<tr>` to centre a row of buttons
+    /// or icons, and its cells stay side by side in Chrome. rinch has no
     /// anonymous box, so the block takes the table's part itself
     /// ([`is_host`]): it keeps its own width, as Chrome's block does, and its
     /// columns pack at its start as the anonymous table's would
@@ -568,7 +572,7 @@ impl RinchDocument {
         if node.computed_style.table_part == TablePart::Table
             && matches!(
                 node.computed_style.display,
-                DisplayValue::Block | DisplayValue::ListItem
+                DisplayValue::Block | DisplayValue::ListItem | DisplayValue::InlineBlock
             )
         {
             node.computed_style.table_part = TablePart::None;
@@ -600,7 +604,10 @@ impl RinchDocument {
         let owed = Self::table_of(&self.tree, parent).or_else(|| {
             let cs = &self.tree.nodes.get_live(parent)?.computed_style;
             (cs.table_part == TablePart::None
-                && matches!(cs.display, DisplayValue::Block | DisplayValue::ListItem))
+                && matches!(
+                    cs.display,
+                    DisplayValue::Block | DisplayValue::ListItem | DisplayValue::InlineBlock
+                ))
             .then_some(parent)
         });
         if let Some(table) = owed
