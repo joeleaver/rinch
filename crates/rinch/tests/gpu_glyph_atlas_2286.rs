@@ -491,11 +491,16 @@ fn gpu_eviction_keeps_drawing() {
     let mut other = doc(r#"<div style="font: 13px/18px ProbeFace">0 1 2</div>"#);
     let mut evicted = 0;
     for round in 0..2 {
+        // The page over budget: what it evicts is old text, never its own
+        // masks, so painting it again rasterises nothing.
+        small.borrow_mut().begin_frame();
+        let _ = paint_vello(&mut d, 1.0, &small);
         small.borrow_mut().begin_frame();
         let (painter, stats) = paint_vello(&mut d, 1.0, &small);
         assert_eq!(
-            stats.atlas.evictions, 0,
-            "round {round}: the frame keeps its masks"
+            (stats.atlas.misses, stats.atlas.evictions),
+            (0, 0),
+            "round {round}: the page's masks were kept"
         );
         let got = gpu.render(painter.scene(), W, H);
         let (n, worst) = differ(&got, &want, 1);
