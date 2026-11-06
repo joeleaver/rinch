@@ -71,7 +71,7 @@
 //! `box-sizing` box's sizes; a natural ratio and `auto <ratio>`'s (the
 //! attributes' hint included) the content box's. An image with no picture
 //! keeps its attributes' box and draws a placeholder in it, and one with
-//! `alt` text and no size is the size of its text ([`image_measure_input`],
+//! `alt` text and not both dimensions is an inline-block of its text ([`measure_image`],
 //! #2309, [`crate::img_placeholder`]).
 //!
 //! [`is_unstretched_replaced`] also covers a line-sized `<input>` /
@@ -396,20 +396,42 @@ pub(crate) fn image_natural_size(
     }
 }
 
-/// [`image_natural_size`] for an `<img>` measure context: an inline alt
-/// placeholder (#2309, `alt` is its [`AltBox`]) with no picture is the size
-/// of its text, with no ratio.
-///
-/// [`AltBox`]: crate::img_placeholder::AltBox
-pub(crate) fn image_measure_input(
+/// The measure answer of an `<img>` (both the root compute's and the
+/// atomic-inline sizer's arms): a replaced element with its natural size and
+/// ratio ([`image_natural_size`], [`measure`], [`contribution`]), except an
+/// inline alt placeholder with no picture (#2309), which is an inline-block
+/// of its alt text ([`crate::img_placeholder::measure_inline_alt`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn measure_image(
     natural: Option<crate::svg_image::NaturalSize>,
     aspect: AspectRatioValue,
-    alt: Option<crate::img_placeholder::AltBox>,
-) -> ((f32, f32), Option<UsedRatio>) {
-    match (natural, alt) {
-        (None, Some(a)) => ((a.width, a.height), None),
-        _ => image_natural_size(natural, aspect),
+    alt: Option<&crate::img_placeholder::AltText>,
+    known: taffy::Size<Option<f32>>,
+    style: &taffy::Style,
+    parent: taffy::Size<Option<f32>>,
+    inherent: bool,
+    available: taffy::Size<taffy::AvailableSpace>,
+) -> taffy::Size<f32> {
+    if let (None, Some(alt)) = (natural, alt)
+        && alt.inline
+    {
+        return crate::img_placeholder::measure_inline_alt(
+            alt, known, style, parent, inherent, available,
+        );
     }
+    // A loaded image's own ratio unless `aspect-ratio` declares one without
+    // `auto`; before it loads (or when it failed), the declared one, which is
+    // the one its `width` and `height` attributes map to (#684) unless an
+    // author rule replaced it (#1286); with neither, none. A style width or
+    // height gives the other through the ratio, and so do `min-*`/`max-*`
+    // clamps (#788, #1150).
+    let (natural, ratio) = image_natural_size(natural, aspect);
+    contribution(
+        measure(natural, ratio, known, style, parent, inherent),
+        style,
+        known,
+        available,
+    )
 }
 
 /// The measure context `node` is owed, or `None` for any other element.

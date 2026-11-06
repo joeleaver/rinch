@@ -33,59 +33,73 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 **Placeholders for an `<img>` with no picture** (#2309, Joe's rules;
 `crates/rinch-dom/src/img_placeholder.rs`, painted by
 `paint/img_placeholder.rs` for both painters). "No picture" is no `src`
-(absent, empty or blank) or a source the cache holds as `Failed`
-(`img_placeholder::has_no_picture`); a load in flight is not one. Then
-`img_placeholder::placeholder` answers `Box` when the computed `width` or
-`height` is not `auto` (the attributes reach both through the #684 hints),
-`None` when every declared one is a length of at most 1px (a tracking pixel)
-or there is no size and no alt text, else `Inline`; and `None` everywhere
-under `--rinch-img-placeholder: none` (custom property, inherited, read off
-the Stylo primary style like `paint/tooltip.rs`'s). **Box**: no layout
-change (the box was already the declared size; `max-width: 100%; height: auto`
-keeps the attributes' ratio through the hint); paint fills
+(absent, empty or blank) or a source the cache holds as `Failed`, or one
+being reloaded after a failure (`ImageCache::shows_failure`, the
+`retrying_failed` set that `begin_reload` fills and the drain empties, so a
+reload keeps the placeholder up until its answer instead of blanking it); a
+first load in flight is not one. `img_placeholder::placeholder` answers
+`None` when every declared size is a length of at most 1px (a tracking
+pixel), `Box` when the box has both dimensions without its picture (computed
+`width` and `height` non-`auto`, or one with a ratio, the #684 hint), else
+`Inline` with alt text, else `None`; and `None` everywhere under
+`--rinch-img-placeholder: none` (custom property, inherited, read off the
+Stylo primary style like `paint/tooltip.rs`'s). **Box**: no layout change;
+paint draws nothing when the content box is under `min_box` on either axis
+(`MIN_BOX_NO_SRC` 3px with no `src`, `MIN_BOX_FAILED` 18px with one: Chrome
+156, measured on a grid of `WxH` images, `.scratch/chrome/m4` of the PR —
+held-back spacers and dividers draw nothing), else fills
 `--rinch-img-placeholder-background` (default none) and an even-odd ring of
-`--rinch-img-placeholder-border-width` (default 1px, `px` or `0`) in
+`--rinch-img-placeholder-border-width` (default 1px; an absolute length,
+`em` or `0`, through `replaced::svg_length`) in
 `--rinch-img-placeholder-border-color` (default `silver`, `currentcolor`
-allowed) on the **content box**'s edge, then the alt text from
-`build_parley_layout` wrapped at the box less border and 1px of padding,
-clipped to the inside of the ring (Chrome 156's alt container: `border: 1px
-solid silver; padding: 1px; box-sizing: border-box; overflow: hidden`, in
-the content box). **Inline**: the measure context carries the text's box,
-`NodeContext::Image::alt` (`AltBox`: the one line's advance, its line box
-height and baseline, so it adds to its line what a `<span>` of the text does —
-the font's content area can be taller than `line-height`, and sizing to it
-pushed the line's baseline down a pixel); `replaced::image_measure_input`
-hands it to both measure arms (root compute and atomic-inline sizer) as the
-natural size with no ratio, and `ifc::atomic_inline_baseline` returns its
-baseline, so it lines up as text. It is written by
+allowed) on the **content box**'s edge, then the alt text wrapped at the box
+less border and 1px of padding, clipped to the inside of the ring (Chrome
+156's alt container: `border: 1px solid silver; padding: 1px; box-sizing:
+border-box; overflow: hidden`, in the content box). **Inline**: an
+inline-block of the alt text, as Chrome's alt container is: the measure
+(`replaced::measure_image` → `img_placeholder::measure_inline_alt`, both
+measure arms) takes a declared width (found by asking `replaced::measure`
+with two natural widths: one it ignores is decided by the style or Taffy),
+else shrink-to-fit (`min(max-content, max(min-content, available))`), and a
+declared height, else its lines' at that width; `ifc::atomic_inline_baseline`
+returns its last line's baseline. So `width=600 alt=Banner style="width:
+100%; height: auto"` in a 150px column is 150 by one line, and a long alt
+text in an 80px column 80 wide, wrapped, on a line of its own after text
+(all Chrome 156's sizes). Its text is `NodeContext::Image::alt`
+(`AltText`): shaped once on one line in `build_parley_layout`, with its min-
+and max-content widths and line metrics, keyed by the text, every
+typography input and `NodeTree::font_generation`; measure and paint only
+re-break a clone (`AltText::broken`), so no paint shapes it. Its line box,
+not the font's content area (which can be taller than `line-height` and
+pushed the line's baseline down a pixel), is what it adds to a line.  A change
+of kind alone (the escape hatch toggled on a box) is repainted by the restyle
+that made it. It is written by
 `RinchDocument::sync_img_placeholder`, called from the cascade (for every
-restyled node, after `sync_replaced_measure`), from `set_attribute` /
-`remove_attribute` of `src` and `alt` (neither need restyle), and from
-`drain_pending_images` for each source `ImageCache::take_newly_failed` names
-(a failure pushed by `drain_pending` when no decoded picture is kept), which
-also marks each such `<img>` paint-dirty (a sized one changes only what it
-draws). A changed context seeds the IFC, marks the atomic inline dirty and
-sets `layout_dirty`. It also drops a stale natural size when the `src` is
-removed or emptied (before, the old picture's size stayed); and the
-cached-`src` path of `request_image_load_for_node` now seeds the IFC and sets
+restyled node, after `sync_replaced_measure`), `note_fonts_registered`,
+`set_attribute` / `remove_attribute` of `src` and `alt` (neither need
+restyle), and `drain_pending_images` for each source
+`ImageCache::take_newly_failed` names (which also marks each such `<img>`
+paint-dirty). A changed context seeds the IFC, marks the atomic inline dirty
+and sets `layout_dirty`. The sync also drops a natural size the cache holds
+no picture for (the `src` removed, emptied, switched to a failed source or to
+one still loading; before, the old picture's size stayed); and the
+cached-`src` path of `request_image_load_for_node` seeds the IFC and sets
 `layout_dirty` (before, a cached picture written over an inline image at an
-unchanged viewport never re-laid it out). Paint shapes the alt text at each
-paint of the placeholder (`ShapePaint`, as a `<select>` label does); nothing
-is cached. Hit-testing and the cursor are the image's (the box is the
-element's). Selection copy writes an `<img>` as nothing, alt or not
-(`text_selection_copy::is_picture`), which is Chrome 156's
-`getSelection().toString()`. Measured in Chrome 156 (standards mode, `.scratch` pages of the PR): the
-ring is Chrome's box for a sized image **without** alt (`#c0c0c0` at the
-content edge, white padding, its icon from 2px in); a sized image **with**
-alt is inline alt text there (100x50 attributes, `alt="Hello world"`: a
-95x20 inline box, the 16px icon and the text), whether `src` is missing or
-failed — so drawing the box with the alt text is Joe's rule, Chrome's
-quirks-mode rendering. Not Chrome's (the guide's list): no 16x16
-broken-image icon anywhere, the box for a sized image with alt, nothing for
-a failed unsized image without alt or a failed 1x1, and unsized alt text
-that never wraps. The web
-backend is the browser's `<img>`. Pins: `rinch-dom/tests/img_placeholder_2309_tests.rs`
-(software, 1x and 2x, a partial repaint after a `src` arrives) and
+unchanged viewport never re-laid it out). Hit-testing and the cursor are the
+image's (the box is the element's). Selection copy writes an `<img>` as
+nothing, alt or not (`text_selection_copy::is_picture`), which is Chrome
+156's `getSelection().toString()`. Measured in Chrome 156 (standards mode,
+`.scratch` pages of the PR): the ring is Chrome's box for a sized image
+**without** alt (`#c0c0c0` at the content edge, white padding, from 18px its
+icon from 2px in); a sized image **with** alt is inline alt text there (100x50
+attributes, `alt="Hello world"`: a 95x20 inline box, the 16px icon and the
+text), whether `src` is missing or failed — so drawing the box with the alt
+text is Joe's rule, Chrome's quirks-mode rendering. Not Chrome's (the guide's
+list): no broken-image icon anywhere, the box for a sized image with alt, and
+a failed image with no size 0x0 (Chrome: an empty 16x16 box). The web backend
+is the browser's `<img>`. Pins: `rinch-dom/tests/img_placeholder_2309_tests.rs`
+(software, 1x and 2x, a partial repaint after a `src` arrives, the review of
+#2313's thresholds, one-dimension and wrapping cases) and
 `rinch/tests/gpu_img_placeholder_2309.rs`.
 
 **SVG files as images** (#2111, `crates/rinch-dom/src/svg_image.rs`). An SVG *file* — an
@@ -458,8 +472,8 @@ size from the ratio (400x0, Chrome 400x100 — #1571). Also not
 Chrome's: an image with no picture (no `src`, or failed) and a non-empty `alt`
 keeps its attributes' 100x50 and draws a placeholder box in it (#2309, above)
 where Chrome 156 lays out the alt text inline (both attributes ignored), and a failed one with no `alt`
-and one attribute is 100x0 with an empty box, or with none 0x0, where Chrome
-draws its 16x16 broken-image box; an out-of-flow image with an `auto`
+and one attribute is 100x0, or with none 0x0, where Chrome lays out an empty
+16x16 box (it draws nothing in a box under 18px); an out-of-flow image with an `auto`
 dimension fills its containing block (#1432, older than the hints); a percentage `height`
 attribute does nothing on an inline-level image, as a CSS one does not
 (#1420); a `<video>` with a mapped ratio and both dimensions `auto` is 300

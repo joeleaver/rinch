@@ -534,6 +534,18 @@ impl RinchDocument {
     /// *resolution* changed.
     pub fn note_fonts_registered(&mut self) {
         self.tree.font_generation += 1;
+        // An image's alt text placeholder is shaped once (#2309), keyed by the
+        // font generation: shape it again with the new fonts.
+        let images: Vec<RawNodeId> = self
+            .tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.tag() == Some("img"))
+            .map(|(id, _)| id)
+            .collect();
+        for node_id in images {
+            self.sync_img_placeholder(node_id);
+        }
         let controls: Vec<RawNodeId> = self
             .tree
             .nodes

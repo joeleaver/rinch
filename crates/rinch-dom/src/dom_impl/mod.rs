@@ -1687,14 +1687,16 @@ impl RinchDocument {
     }
 
     /// Make `<img>` `node_id`'s measure context say what its placeholder is
-    /// owed (#2309, [`crate::img_placeholder`]): the [`AltBox`] of an inline
-    /// alt placeholder, and no natural size once it has no picture (its
-    /// `src` removed or emptied after a picture loaded). Answers whether the
-    /// context changed; it then queues the node for layout and paint itself.
-    /// A placeholder that changes only what is drawn (a sized one whose load
-    /// failed) is the caller's to mark for paint.
+    /// owed (#2309, [`crate::img_placeholder`]): its shaped alt text
+    /// ([`AltText`]) while it is a placeholder with alt, and no natural size
+    /// while the cache holds no picture for its `src` (removed, emptied,
+    /// failed, or another source still loading: the old picture's size
+    /// stayed before). Answers whether the context changed; it then queues
+    /// the node for layout and paint itself. A change of what is drawn alone
+    /// (a sized one's load failed) is the caller's to mark for paint; a
+    /// restyle (the escape hatch toggled) marks it already.
     ///
-    /// [`AltBox`]: crate::img_placeholder::AltBox
+    /// [`AltText`]: crate::img_placeholder::AltText
     pub(crate) fn sync_img_placeholder(&mut self, node_id: RawNodeId) -> bool {
         let Some(node) = self.tree.nodes.get(node_id) else {
             return false;
@@ -1705,27 +1707,35 @@ impl RinchDocument {
         let Some(taffy_id) = node.taffy_id else {
             return false;
         };
-        let want = crate::img_placeholder::wanted_alt_box(
+        let Some(crate::node::NodeContext::Image {
+            alt: have, natural, ..
+        }) = self.tree.taffy.get_node_context(taffy_id)
+        else {
+            return false;
+        };
+        let (have, has_natural) = (have.clone(), natural.is_some());
+        let want = crate::img_placeholder::wanted_alt(
             &self.tree,
             node,
+            have.as_ref(),
             &mut self.font_cx,
             &mut self.layout_cx,
         );
-        let no_src = node
-            .attributes
-            .get("src")
-            .is_none_or(|s| s.trim_ascii().is_empty());
+        let stale = has_natural
+            && node
+                .attributes
+                .get("src")
+                .is_none_or(|s| self.tree.image_cache.get(s).is_none());
+        if want == have && !stale {
+            return false;
+        }
         let Some(crate::node::NodeContext::Image { natural, alt, .. }) =
             self.tree.taffy.get_node_context_mut(taffy_id)
         else {
             return false;
         };
-        let drop_natural = no_src && natural.is_some();
-        if *alt == want && !drop_natural {
-            return false;
-        }
         *alt = want;
-        if drop_natural {
+        if stale {
             *natural = None;
         }
         let _ = self.tree.taffy.mark_dirty(taffy_id);

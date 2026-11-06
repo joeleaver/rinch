@@ -17,22 +17,25 @@ fn colour_property(node: &Node, name: &str, current: peniko::Color) -> Option<pe
     crate::layout::parse_color_with_current(&value, current)
 }
 
-/// The border width property: a `px` length or a bare `0`.
+/// The border width property, in CSS px: an absolute length (`px`, `pt`,
+/// `pc`, `in`, `cm`, `mm`, `q`), an `em` (against the element's font size)
+/// or a bare `0`. `None` for anything else, which keeps the default.
 fn width_property(node: &Node) -> Option<f32> {
     let value = ph::custom_property(node, ph::BORDER_WIDTH_PROPERTY)?;
-    let value = value.trim();
-    let n = value
-        .strip_suffix("px")
-        .or_else(|| value.strip_suffix("PX"))
-        .unwrap_or(value);
-    if n != value || n.parse::<f32>().ok() == Some(0.0) {
-        n.trim()
-            .parse::<f32>()
-            .ok()
-            .filter(|v| v.is_finite() && *v >= 0.0)
-    } else {
-        None
-    }
+    let (v, unit) = crate::replaced::svg_length(&value)?;
+    let px = match unit.as_str() {
+        "px" => v,
+        "" if v == 0.0 => 0.0,
+        "in" => v * 96.0,
+        "cm" => v * 96.0 / 2.54,
+        "mm" => v * 96.0 / 25.4,
+        "q" => v * 96.0 / 101.6,
+        "pt" => v * 96.0 / 72.0,
+        "pc" => v * 16.0,
+        "em" => v * f64::from(node.computed_style.font_size),
+        _ => return None,
+    } as f32;
+    (px.is_finite() && px >= 0.0).then_some(px)
 }
 
 /// Draw `node`'s placeholder, if it is owed one, in its content box (the
@@ -65,15 +68,28 @@ pub(super) fn paint_img_placeholder(
         return;
     }
     let content = Rect::new(cx, cy, cx + cw, cy + chh);
+    // A box too thin for Chrome to draw one in draws nothing: a held-back
+    // spacer or divider is not a silver line (3px with no `src`, 18px after
+    // a failed load, on each axis).
+    if kind == Placeholder::Box {
+        let min = f64::from(ph::min_box(node)) * scale;
+        if cw < min - 1e-3 || chh < min - 1e-3 {
+            return;
+        }
+    }
     let current = cs
         .color
         .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
-    let Some(text) = ph::alt_text(node).or_else(|| (kind == Placeholder::Box).then(String::new))
-    else {
-        return;
-    };
+    // The alt text, shaped when the element was synced
+    // (`RinchDocument::sync_img_placeholder`).
+    let alt = node
+        .taffy_id
+        .and_then(|t| match tree.taffy.get_node_context(t) {
+            Some(crate::node::NodeContext::Image { alt, .. }) => alt.clone(),
+            _ => None,
+        });
 
-    // The text's origin and the box it is clipped to.
+    // The text's origin, the box it is clipped to and the width it wraps at.
     let (origin_x, origin_y, clip, max_width) = match kind {
         Placeholder::Box => {
             let bw = width_property(node).unwrap_or(ph::BORDER_WIDTH);
@@ -110,28 +126,35 @@ pub(super) fn paint_img_placeholder(
                 text_box.x0,
                 text_box.y0,
                 inner,
-                Some((text_box.width() / scale).max(0.0) as f32),
+                (text_box.width() / scale).max(0.0) as f32,
             )
         }
-        _ => (cx, cy, content, None),
+        // Laid out in whole pixels, so up to a pixel narrower than the width
+        // its lines were measured at: broken there, not a word earlier.
+        _ => (cx, cy, content, (cw / scale) as f32 + 1.0),
     };
-    if text.is_empty() || clip.width() <= 0.0 || clip.height() <= 0.0 {
+    if clip.width() <= 0.0 || clip.height() <= 0.0 {
         return;
     }
-
-    tree.perf.bump(crate::perf::Counter::ShapePaint);
-    let layout = ph::alt_layout(node, &text, font_cx, layout_cx, max_width);
-    // An inline one's box is its line box (`AltBox`), from its top.
-    let shift = if kind == Placeholder::Inline {
-        -f64::from(
-            layout
-                .lines()
-                .next()
-                .map_or(0.0, |l| l.metrics().block_min_coord),
-        ) * scale
-    } else {
-        0.0
+    let layout = match &alt {
+        Some(alt) if max_width + 0.01 >= alt.max_content => (*alt.layout).clone(),
+        Some(alt) => alt.broken(max_width),
+        // Not synced yet (no layout has run since the alt text appeared).
+        None => {
+            let Some(text) = ph::alt_text(node) else {
+                return;
+            };
+            tree.perf.bump(crate::perf::Counter::ShapePaint);
+            ph::alt_layout(node, &text, font_cx, layout_cx, Some(max_width))
+        }
     };
+    // Its lines from the top of its box.
+    let shift = -f64::from(
+        layout
+            .lines()
+            .next()
+            .map_or(0.0, |l| l.metrics().block_min_coord),
+    ) * scale;
     painter.push_clip(Fill::NonZero, transform, &clip.into());
     render_text_with_shadow(
         painter,

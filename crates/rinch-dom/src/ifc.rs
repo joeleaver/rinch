@@ -913,16 +913,22 @@ pub(crate) fn atomic_inline_baseline(tree: &crate::node::NodeTree, id: RawNodeId
         let height = tree.taffy.unrounded_layout(taffy_id).size.height;
         return crate::form_control::input_baseline(node, height);
     }
-    // An inline alt placeholder (#2309) sits on its text's baseline, as the
-    // inline text a browser shows in its place does.
+    // An inline alt placeholder (#2309) is an inline-block of its text, on
+    // its last line's baseline, as Chrome's alt container is.
     if let Some(NodeContext::Image {
         natural: None,
         alt: Some(alt),
         ..
     }) = tree.taffy.get_node_context(taffy_id)
+        && alt.inline
     {
         let layout = tree.taffy.unrounded_layout(taffy_id);
-        return Some(layout.border.top + layout.padding.top + alt.baseline);
+        let content = layout.size.height
+            - layout.padding.top
+            - layout.padding.bottom
+            - layout.border.top
+            - layout.border.bottom;
+        return Some(layout.border.top + layout.padding.top + alt.last_baseline(content));
     }
     if !first && (clips(style.overflow_x) || clips(style.overflow_y)) {
         return None;
@@ -8676,29 +8682,16 @@ impl RinchDocument {
                                 aspect,
                                 alt,
                                 ..
-                            }) => {
-                                // A loaded image's own ratio unless `aspect-ratio`
-                                // declares one without `auto`; before it loads (or when
-                                // it failed), the declared one, which is the one its
-                                // `width` and `height` attributes map to (#684) unless an
-                                // author rule replaced it (#1286); with neither, none.
-                                let (natural, ratio) =
-                                    crate::replaced::image_measure_input(*natural, *aspect, *alt);
-                                // As the root compute measures one (#788, #1150).
-                                crate::replaced::contribution(
-                                    crate::replaced::measure(
-                                        natural,
-                                        ratio,
-                                        known_dims,
-                                        style,
-                                        inputs.parent_size,
-                                        inputs.sizing_mode == taffy::SizingMode::InherentSize,
-                                    ),
-                                    style,
-                                    known_dims,
-                                    inputs.available_space,
-                                )
-                            }
+                            }) => crate::replaced::measure_image(
+                                *natural,
+                                *aspect,
+                                alt.as_ref(),
+                                known_dims,
+                                style,
+                                inputs.parent_size,
+                                inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                inputs.available_space,
+                            ),
                             Some(NodeContext::FormControl {
                                 content_width,
                                 content_height,

@@ -295,12 +295,14 @@ draws nothing until it arrives.
 
 | The image | What it draws |
 |---|---|
-| has a size (its `width`/`height` attributes, or a CSS `width` or `height`) | a box of that size with a faint 1px `silver` border inside its content box, and its `alt` text inside that (1px in from the border), wrapped to the box and clipped to it |
-| has `alt` text but no size | the alt text on one line, in the line as text: the image is as wide as the text and sits on its baseline |
-| has neither, or a declared size of 1x1 or less (a tracking pixel) | nothing, and it takes up only its declared size |
+| has both dimensions without its picture (its `width` and `height` attributes or CSS, or one of them and the attributes' ratio) | a box of that size with a faint 1px `silver` border inside its content box, and its `alt` text inside that (1px in from the border), wrapped to the box and clipped to it — but nothing when the box is thinner than **3px** on either axis (no `src`) or **18px** (a failed load), as in Chrome, so spacers and dividers stay invisible |
+| has `alt` text and not both dimensions | the alt text as text, an inline-block of it: as wide as the text up to the room it has (a long one wraps), or its declared width; as tall as its lines, or its declared height |
+| has neither, or every declared size is 1px or less (a tracking pixel) | nothing, and it takes up only its declared size |
 
 The alt text is drawn in the image's own font, `line-height` and `color`, so
-`img { color: gray; font-size: 12px }` styles it. A sized placeholder keeps
+`img { color: gray; font-size: 12px }` styles it. It is shaped once, when the
+image is styled or its `alt` changes, not on each paint. Reloading a failed
+source (`reload_image`) keeps its placeholder up until the answer lands. A sized placeholder keeps
 the ratio of its `width` and `height` attributes under the usual responsive
 rule (`max-width: 100%; height: auto`), so a page does not jump when the
 picture arrives; a `src` set later replaces the placeholder.
@@ -317,7 +319,7 @@ sets them for the whole app, and a rule on one image sets its own. The
 ```css
 :root {
   --rinch-img-placeholder-border-color: #ddd;   /* a colour; default silver */
-  --rinch-img-placeholder-border-width: 2px;    /* px, or 0 for no border; default 1px */
+  --rinch-img-placeholder-border-width: 2px;    /* an absolute length or em, 0 for none; default 1px */
   --rinch-img-placeholder-background: #f6f6f6;  /* a colour; default transparent */
 }
 /* The escape hatch: nothing drawn, and an alt-only image 0x0, as before. */
@@ -330,18 +332,21 @@ no state a selector can see.
 
 **How this differs from Chrome.** Measured in Chrome 156 (standards mode):
 the bordered box — 1px `#c0c0c0` inside the content box, 1px of padding — is
-what Chrome draws for a sized image with **no** alt text (with a 16x16
-broken-image icon in its corner when a load failed). A sized image **with**
-alt text is shown as its alt text inline, its size ignored, after the 16px
-icon, whether its `src` failed or is missing; rinch keeps the size and draws
-the alt text in the box (Joe's rule, and what Chrome does in quirks mode), so
-held-back pictures keep their place. An unsized image with alt text is, in
-Chrome, the icon and the text on one line, a line box tall; in rinch the text
-alone, also a line box tall. A failed image with neither alt nor a size, or a
-failed tracking pixel, is Chrome's 16x16 icon; rinch draws nothing. Long alt
-text with no size stays on one line in rinch, where Chrome wraps it. Chrome
-copies no alt text (`getSelection().toString()` of `a<img alt="Hello">b` is
-`"ab"`), and neither does rinch. **On the web** (rinch-web) the browser draws
+what Chrome draws for a sized image with **no** alt text, and only when the
+box is at least 3px on each axis with no `src`, 18px after a failed load
+(from 18px it adds a 16x16 broken-image icon in the corner, which rinch does
+not draw). A sized image **with** alt text is shown as its alt text inline,
+its size ignored, after the 16px icon, whether its `src` failed or is
+missing; rinch keeps the size and draws the alt text in the box (Joe's rule,
+and what Chrome does in quirks mode), so held-back pictures keep their place.
+An image with alt text and one dimension is laid out as Chrome lays it out
+(`width: 100%; height: auto` with no ratio is the column's width by the
+text's lines). An unsized image with alt text is, in Chrome, an inline-block
+of the icon and the text; in rinch of the text alone. A failed image with no
+size is an empty 16x16 box in Chrome, 0x0 in rinch; neither draws anything.
+Chrome copies no alt text (`getSelection().toString()` of
+`a<img alt="Hello">b` is `"ab"`), and neither does rinch. **On the web**
+(rinch-web) the browser draws
 its own `<img>`, so there you get the browser's fallback and these properties
 do nothing.
 

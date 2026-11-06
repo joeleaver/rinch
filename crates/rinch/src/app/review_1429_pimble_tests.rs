@@ -123,10 +123,27 @@ fn the_pimble_flow_a_blob_that_arrives_after_its_image_was_shown() {
     idle(&mut app);
     assert_eq!(asked.load(Ordering::SeqCst), 1);
     // A failed image with alt text and no size is its alt text, inline
-    // (#2309): one line box of the editor's paragraph as wide as the text.
-    let alt_box = |b: &(f32, f32)| b.0 > 3.0 && b.1 > 10.0;
-    let boxes = img_boxes(&app);
-    assert!(boxes.len() == 1 && boxes.iter().all(alt_box), "{boxes:?}");
+    // (#2309): the box a `<span>` of the text in the image's own style gets,
+    // its advance and line box, in whole pixels.
+    let span = |app: &RinchApp, text: &str| -> (f32, f32) {
+        let doc = app.doc.as_ref().expect("mounted");
+        let mut d = doc.borrow_mut();
+        let id = d
+            .tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.tag() == Some("img") && n.parent.is_some())
+            .map(|(id, _)| id)
+            .expect("an image");
+        let style = d.tree.nodes[id].computed_style.clone();
+        let (font_cx, layout_cx) = (&mut d.font_cx, &mut parley::LayoutContext::new());
+        let layout = style.build_parley_layout(text, 1.0, font_cx, layout_cx, None);
+        let m = *layout.lines().next().expect("a line").metrics();
+        (m.advance.round(), m.line_height.round())
+    };
+    let first = span(&app, "a picture");
+    assert!(first.0 > 3.0, "{first:?}");
+    assert_eq!(img_boxes(&app), vec![first]);
     assert_eq!(frame(&mut app, false), 0, "control: nothing red yet");
 
     // The user types in the image's paragraph: the miss is not asked again.
@@ -146,8 +163,11 @@ fn the_pimble_flow_a_blob_that_arrives_after_its_image_was_shown() {
         1,
         "typing and a second element naming the source ask the loader nothing"
     );
-    let boxes = img_boxes(&app);
-    assert!(boxes.len() == 2 && boxes.iter().all(alt_box), "{boxes:?}");
+    let mut boxes = img_boxes(&app);
+    boxes.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut want = vec![first, span(&app, "again")];
+    want.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(boxes, want);
 
     // The blob syncs; the sync thread says so.
     store

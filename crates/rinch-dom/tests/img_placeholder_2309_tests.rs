@@ -10,7 +10,10 @@
 //! it (its broken-image icon, which rinch does not draw, starts 2px in). A
 //! sized image *with* alt is inline alt text in Chrome, its size ignored;
 //! drawing the box with the alt text inside is Joe's rule (#2309), Chrome's
-//! quirks-mode rendering. An unsized `<img alt>` is a line box tall in
+//! quirks-mode rendering. Chrome draws the box only when its content box is
+//! at least 3px on each axis with no `src`, 18px after a failed load. An
+//! image with alt and one dimension is an inline-block of its text there,
+//! the declared dimension kept. An unsized `<img alt>` is a line box tall in
 //! Chrome (20px at `line-height: 20px`, where a `<span>` of the text is its
 //! 17px content area), as rinch's is; Chrome puts its 16px icon before the
 //! text. `getSelection().toString()` copies no alt text (`a<img alt>b` is
@@ -703,4 +706,397 @@ fn a_style_size_turns_the_inline_placeholder_into_a_box() {
     let p = paint(&mut doc);
     assert_eq!(size(&doc, i), (100.0, 50.0));
     assert_box(&p, [10, 10, 100, 50], "now sized");
+}
+
+// ---- Review of PR #2313 -------------------------------------------------
+
+/// Chrome 156 draws a box only when its content box is at least 3px on each
+/// axis with no `src` and 18px after a failed load (measured on a grid of
+/// `WxH` images: a ring at 3x100 and 300x3, nothing at 2x100 or 300x2; after
+/// a failed load nothing at 17x100 or 300x17, the ring at 18). A held-back
+/// spacer or divider is not a silver line.
+#[test]
+fn thin_spacers_and_dividers_draw_nothing() {
+    for (w, h, src, drawn) in [
+        ("1", "20", None, false),
+        ("2", "20", None, false),
+        ("2", "100", None, false),
+        ("280", "1", None, false),
+        ("280", "2", None, false),
+        ("3", "100", None, true),
+        ("280", "3", None, true),
+        ("17", "100", Some(BROKEN), false),
+        ("280", "17", Some(BROKEN), false),
+        ("40", "17", Some(BROKEN), false),
+        ("18", "100", Some(BROKEN), true),
+        ("280", "18", Some(BROKEN), true),
+    ] {
+        let mut doc = new_doc("");
+        let mut attrs = vec![("style", POS), ("width", w), ("height", h)];
+        if let Some(src) = src {
+            attrs.push(("src", src));
+        }
+        img(&mut doc, &attrs);
+        let p = paint(&mut doc);
+        let silver = count(&p, |c| c == SILVER);
+        assert_eq!(
+            silver > 0,
+            drawn,
+            "{w}x{h} src={src:?}: {silver} silver pixels"
+        );
+        if !drawn {
+            assert_eq!(non_white(&p), 0, "{w}x{h} src={src:?} draws nothing");
+        }
+    }
+}
+
+/// The reviewer's mail case: spacers laid out in a table.
+#[test]
+fn spacers_in_a_table_draw_nothing() {
+    let mut doc = new_doc(
+        "table { border-collapse: collapse; position: absolute; left: 10px; top: 10px } \
+         td { padding: 0 }",
+    );
+    let body = doc.body();
+    let t = el(&mut doc, body, "table", &[]);
+    let tb = el(&mut doc, t, "tbody", &[]);
+    let tr = el(&mut doc, tb, "tr", &[]);
+    let td = el(&mut doc, tr, "td", &[]);
+    let a = el(
+        &mut doc,
+        td,
+        "img",
+        &[("width", "1"), ("height", "20"), ("style", "display:block")],
+    );
+    let td2 = el(&mut doc, tr, "td", &[]);
+    let b = el(&mut doc, td2, "img", &[("width", "200"), ("height", "1")]);
+    let p = paint(&mut doc);
+    assert_eq!((size(&doc, a), size(&doc, b)), ((1.0, 20.0), (200.0, 1.0)));
+    assert_eq!(non_white(&p), 0);
+}
+
+/// The width an inline-block `<span>` of `text` is given in `doc` (the
+/// reference for the alt text's box), and its height.
+fn span_box(doc: &mut RinchDocument, text: &str, style: &str) -> (f32, f32) {
+    let body = doc.body();
+    let s = el(
+        doc,
+        body,
+        "span",
+        &[(
+            "style",
+            &format!("position: absolute; top: 120px; left: 0; display: inline-block; {style}"),
+        )],
+    );
+    let t = doc.create_text(text);
+    doc.append_child(s, t);
+    doc.resolve_layout(VP.0 + 3.0, VP.1);
+    size(doc, s)
+}
+
+/// An image with alt text and only one dimension is laid out as Chrome lays
+/// it out: an inline-block of its text, its declared dimension kept, the
+/// other its text's (Chrome 156: `width=600 alt=Banner style="display:block;
+/// width:100%; height:auto"` in a 150px column is 150x20).
+#[test]
+fn alt_with_one_dimension_takes_the_other_from_its_text() {
+    let mut doc = new_doc(".c { position: absolute; left: 10px; top: 10px; width: 150px }");
+    let body = doc.body();
+    let c = el(&mut doc, body, "div", &[("class", "c")]);
+    let banner = el(
+        &mut doc,
+        c,
+        "img",
+        &[
+            ("width", "600"),
+            ("alt", "Banner"),
+            ("style", "display:block;width:100%;height:auto"),
+        ],
+    );
+    let w = img(
+        &mut doc,
+        &[
+            ("style", "position:absolute;left:10px;top:40px"),
+            ("width", "100"),
+            ("alt", "Hello world"),
+        ],
+    );
+    let h = img(
+        &mut doc,
+        &[
+            ("style", "position:absolute;left:10px;top:70px"),
+            ("height", "40"),
+            ("alt", "Hello world"),
+        ],
+    );
+    let p = paint(&mut doc);
+    assert_eq!(size(&doc, banner), (150.0, 20.0), "Chrome's 150x20");
+    assert_eq!(size(&doc, w), (100.0, 20.0));
+    let (tw, _) = span_box(&mut doc, "Hello world", "");
+    assert_eq!(size(&doc, h), (tw, 40.0), "its text's width");
+    let p_ink = |area| bbox(&p, area, ink).is_some();
+    assert!(p_ink([10, 10, 160, 30]), "the banner's alt text");
+    assert!(p_ink([10, 40, 110, 60]), "the width-only one's");
+    assert!(
+        p_ink([10, 70, 10 + tw as u32, 110]),
+        "the height-only one's"
+    );
+}
+
+/// A long alt text wraps like text: in an 80px column it is an 80px-wide
+/// inline-block of its lines, on a line of its own after text before it
+/// (Chrome 156: 80x160 for this text, its parent 20 + 160 with "xx " first).
+#[test]
+fn a_long_inline_alt_text_wraps_in_its_column() {
+    let alt = "A very long alt text that will not fit in this narrow column at all";
+    let mut doc = new_doc(".c { position: absolute; left: 10px; top: 0; width: 80px }");
+    let body = doc.body();
+    let c = el(&mut doc, body, "div", &[("class", "c")]);
+    let i = el(&mut doc, c, "img", &[("alt", alt)]);
+    let d = el(
+        &mut doc,
+        body,
+        "div",
+        &[(
+            "style",
+            "position: absolute; left: 150px; top: 0; width: 80px",
+        )],
+    );
+    let xx = doc.create_text("xx ");
+    doc.append_child(d, xx);
+    let j = el(&mut doc, d, "img", &[("alt", alt)]);
+    let p = paint(&mut doc);
+    let (w, h) = size(&doc, i);
+    assert_eq!(w, 80.0, "as wide as its column");
+    assert!(h >= 100.0 && h % 20.0 == 0.0, "lines of 20px: {h}");
+    let ink_box = bbox(&p, [0, 0, 140, H], ink).expect("its text");
+    assert!(
+        ink_box[0] >= 10 && ink_box[2] < 90,
+        "inside its column: {ink_box:?}"
+    );
+    assert!(ink_box[3] > 60, "on several lines: {ink_box:?}");
+    assert_eq!(size(&doc, j), (w, h));
+    let dn = &doc.tree.nodes[d.0];
+    assert_eq!(dn.layout.height, 20.0 + h, "after the line of \"xx \"");
+}
+
+/// Switching a loaded `src` to one that already failed, or one still
+/// loading, drops the picture's size; and back to the picture restores it.
+#[test]
+fn switching_from_a_loaded_src_to_a_failed_or_loading_one_drops_its_size() {
+    let mut doc = new_doc("");
+    let _failed = img(&mut doc, &[("src", BROKEN)]);
+    let i = img(&mut doc, &[("alt", "Hello"), ("src", RED_3X2)]);
+    let j = img(&mut doc, &[("src", RED_3X2), ("width", "30")]);
+    doc.resolve_layout(VP.0, VP.1);
+    assert!(doc.tree.image_cache.is_failed(BROKEN));
+    assert_eq!((size(&doc, i), size(&doc, j)), ((3.0, 2.0), (30.0, 20.0)));
+    doc.set_attribute(i, "src", BROKEN);
+    doc.set_attribute(j, "src", BROKEN);
+    doc.resolve_layout(VP.0, VP.1);
+    let (tw, th) = span_box(&mut doc, "Hello", "");
+    assert_eq!(
+        size(&doc, i),
+        (tw, th),
+        "its alt text's box, as a fresh failed one"
+    );
+    assert_eq!(size(&doc, j), (30.0, 0.0), "as a fresh failed one");
+    // Back to the picture.
+    doc.set_attribute(i, "src", RED_3X2);
+    doc.set_attribute(j, "src", RED_3X2);
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!((size(&doc, i), size(&doc, j)), ((3.0, 2.0), (30.0, 20.0)));
+    // And to a source still loading (another element asked for it first).
+    struct Slow;
+    impl ImageLoader for Slow {
+        fn load(&self, _: &str) -> ImageLoadResult {
+            std::thread::sleep(Duration::from_secs(2));
+            ImageLoadResult::Failed("slow".into())
+        }
+    }
+    doc.tree.image_loader = Some(Arc::new(Slow));
+    let _first = img(&mut doc, &[("src", "slow-2313.png")]);
+    doc.set_attribute(j, "src", "slow-2313.png");
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        size(&doc, j),
+        (30.0, 0.0),
+        "a loading source has no size yet"
+    );
+}
+
+/// Reloading a failed source keeps its placeholder up until the answer
+/// lands, so no stale or blank frame is drawn; a second failure keeps it.
+#[test]
+fn reloading_a_failed_source_keeps_its_placeholder() {
+    struct AlwaysFails;
+    impl ImageLoader for AlwaysFails {
+        fn load(&self, src: &str) -> ImageLoadResult {
+            std::thread::sleep(Duration::from_millis(30));
+            ImageLoadResult::Failed(format!("{src}: no"))
+        }
+    }
+    let mut doc = new_doc("");
+    doc.tree.image_loader = Some(Arc::new(AlwaysFails));
+    let i = img(
+        &mut doc,
+        &[
+            ("style", POS),
+            ("width", "100"),
+            ("height", "50"),
+            ("alt", "Hello"),
+            ("src", "r-2313.png"),
+        ],
+    );
+    let j = img(&mut doc, &[("alt", "Inline"), ("src", "r-2313.png")]);
+    let wait = |doc: &mut RinchDocument| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !doc.tree.image_cache.is_failed("r-2313.png") {
+            assert!(Instant::now() < deadline, "never failed");
+            std::thread::sleep(Duration::from_millis(5));
+            doc.resolve_layout(VP.0, VP.1);
+        }
+    };
+    wait(&mut doc);
+    let p = paint(&mut doc);
+    assert_box(&p, [10, 10, 100, 50], "failed");
+    let inline = size(&doc, j);
+    assert!(inline.0 > 0.0);
+    doc.reload_image("r-2313.png");
+    doc.resolve_layout(VP.0, VP.1);
+    assert!(!doc.tree.image_cache.is_failed("r-2313.png"), "reloading");
+    let p = paint(&mut doc);
+    assert_box(&p, [10, 10, 100, 50], "while it reloads");
+    assert_eq!(size(&doc, j), inline, "the inline one keeps its box");
+    doc.tree.consume_paint_dirty();
+    wait(&mut doc);
+    assert!(
+        doc.tree.paint_dirty_nodes.contains(&i.0),
+        "the answer repaints it"
+    );
+    let p = paint(&mut doc);
+    assert_box(&p, [10, 10, 100, 50], "failed again");
+}
+
+/// Turning placeholders off from CSS repaints a box (its size is unchanged)
+/// and collapses an inline one; turning them on brings both back.
+#[test]
+fn toggling_the_escape_hatch_repaints() {
+    let mut doc = new_doc(".off { --rinch-img-placeholder: none }");
+    let i = img(
+        &mut doc,
+        &[
+            ("style", POS),
+            ("width", "100"),
+            ("height", "50"),
+            ("alt", "Hi"),
+        ],
+    );
+    let j = img(
+        &mut doc,
+        &[
+            ("alt", "Hello"),
+            ("style", "position:absolute;left:10px;top:100px"),
+        ],
+    );
+    let p = paint(&mut doc);
+    assert_box(&p, [10, 10, 100, 50], "on");
+    let inline = size(&doc, j);
+    doc.tree.consume_paint_dirty();
+    let body = doc.body();
+    doc.set_attribute(body, "class", "off");
+    doc.resolve_layout(VP.0, VP.1);
+    assert!(
+        doc.tree.paint_dirty_nodes.contains(&i.0),
+        "the box repaints"
+    );
+    assert_eq!(size(&doc, j), (0.0, 0.0));
+    let p = paint(&mut doc);
+    assert_eq!(non_white(&p), 0);
+    doc.set_attribute(body, "class", "");
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(size(&doc, j), inline);
+}
+
+/// The border width takes any absolute length (and `em`).
+#[test]
+fn the_border_width_takes_absolute_lengths() {
+    for (value, px_w) in [("0.125in", 12u32), ("6pt", 8), ("0.5em", 8), ("3px", 3)] {
+        let mut doc = new_doc(&format!(
+            "img {{ --rinch-img-placeholder-border-width: {value} }}"
+        ));
+        img(
+            &mut doc,
+            &[("style", POS), ("width", "100"), ("height", "50")],
+        );
+        let p = paint(&mut doc);
+        assert_eq!(
+            px(&p, 10 + px_w - 1, 35),
+            SILVER,
+            "{value}: its last column"
+        );
+        assert_eq!(px(&p, 10 + px_w, 35), WHITE, "{value}: inside it");
+    }
+}
+
+/// The alt text is shaped when the element is synced, not on every paint.
+#[test]
+fn the_alt_text_is_not_shaped_per_paint() {
+    let mut doc = new_doc("");
+    img(
+        &mut doc,
+        &[
+            ("style", POS),
+            ("width", "100"),
+            ("height", "50"),
+            ("alt", "Hello world"),
+        ],
+    );
+    let body = doc.body();
+    let d = el(
+        &mut doc,
+        body,
+        "div",
+        &[("style", "position:absolute;top:80px")],
+    );
+    el(&mut doc, d, "img", &[("alt", "Hello")]);
+    let _ = paint(&mut doc);
+    let before = doc.tree.perf.get(rinch_dom::perf::Counter::ShapePaint);
+    for _ in 0..3 {
+        let p = paint(&mut doc);
+        assert!(count(&p, ink) > 0);
+    }
+    assert_eq!(
+        doc.tree.perf.get(rinch_dom::perf::Counter::ShapePaint),
+        before,
+        "three paints shaped nothing"
+    );
+}
+
+/// An alt text that wraps in its declared width sits on its **last** line's
+/// baseline, as an inline-block does: the text beside it lines up with its
+/// bottom line, not its top one.
+#[test]
+fn a_wrapped_alt_box_sits_on_its_last_line() {
+    let mut doc = new_doc(".c { position: absolute; left: 10px; top: 10px; width: 280px }");
+    let body = doc.body();
+    let c = el(&mut doc, body, "div", &[("class", "c")]);
+    let x = doc.create_text("x");
+    doc.append_child(c, x);
+    let i = el(
+        &mut doc,
+        c,
+        "img",
+        &[("width", "40"), ("alt", "Hi Hi Hi Hi")],
+    );
+    let p = paint(&mut doc);
+    let (_, h) = size(&doc, i);
+    assert!(h >= 40.0, "it wraps: {h}");
+    // The "x" before it, left of the image.
+    let x_ink = bbox(&p, [10, 0, 17, H], ink).expect("the x");
+    let line_top = 10.0 + h - 20.0;
+    assert!(
+        x_ink[1] as f32 >= line_top,
+        "the x {x_ink:?} is on the image's last line (from {line_top})"
+    );
 }

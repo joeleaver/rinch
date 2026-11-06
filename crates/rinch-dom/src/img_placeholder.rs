@@ -1,34 +1,43 @@
 //! What an `<img>` with no picture draws in its place (#2309).
 //!
 //! An `<img>` has no picture when it has no `src` (absent, or empty or white
-//! space only) or its load **failed** ([`crate::image_cache::ImageCache::is_failed`]).
-//! One still loading has none yet and draws nothing, as in a browser. Mail
-//! is the case that matters: Postrinch strips the `src` of every held-back
+//! space only) or its load **failed** ([`crate::image_cache::ImageCache::shows_failure`],
+//! which stays true while a failed source is being reloaded, so a reload
+//! does not blank the placeholder before its answer lands). One loading for
+//! the first time has none yet and draws nothing, as in a browser. Mail is
+//! the case that matters: Postrinch strips the `src` of every held-back
 //! remote picture and keeps its `width`, `height`, `alt` and `style`.
 //!
-//! Joe's rules ([`placeholder`]):
+//! Joe's rules ([`placeholder`]), with Chrome 156's thresholds:
 //!
-//! 1. **Sized** — its computed `width` or `height` is not `auto` (from the
-//!    attributes, which map to both, #684, or from CSS): a [`Placeholder::Box`],
-//!    the size layout already gives it (a sized placeholder keeps its
-//!    attributes' ratio under `max-width: 100%; height: auto`, the
-//!    `aspect-ratio: auto w / h` hint of #684), a faint border inside its
-//!    content box and the `alt` text inside that, wrapped to the box and
-//!    clipped to it, in the element's own font and colour. The ring is what
-//!    Chrome 156 draws for a sized image with no alt text (1px `#c0c0c0` on
-//!    the content box's edge, 1px of padding); for one *with* alt text
-//!    Chrome shows the text inline and ignores the size (it draws this box
-//!    only in quirks mode). Rinch draws the box, so held-back pictures keep
-//!    their place in a layout.
-//! 2. **`alt` but no size**: [`Placeholder::Inline`], the alt text on one line
-//!    in the element's font, laid out as an atomic inline box the size of the
-//!    text's line box ([`AltBox`]) whose baseline is the text's, so it sits
-//!    in the line as a `<span>` of the same text does in Chrome.
-//! 3. **Neither, or a declared size of at most 1x1** (a tracking pixel):
-//!    [`Placeholder::None`], nothing drawn and the declared size only.
-//!    Chrome draws a 16x16 broken-image icon for a failed one; this is
-//!    Joe's deliberate exception. Rinch draws that icon nowhere (Chrome puts
-//!    it before the alt text of a failed or missing image too).
+//! 1. **Sized** — its box has both dimensions without its picture: computed
+//!    `width` and `height` both non-`auto`, or one with a ratio (the
+//!    `aspect-ratio: auto w / h` hint of #684, so `max-width: 100%; height:
+//!    auto` keeps the attributes' ratio): a [`Placeholder::Box`], a faint
+//!    border inside its content box and the `alt` text inside that, wrapped
+//!    to the box and clipped to it, in the element's own font and colour.
+//!    The ring is what Chrome 156 draws for a sized image with no alt text
+//!    (1px `#c0c0c0` on the content box's edge, 1px of padding), and only
+//!    when the content box is at least [`MIN_BOX_NO_SRC`] (3px) on both axes
+//!    with no `src`, [`MIN_BOX_FAILED`] (18px) after a failed load: a thinner
+//!    spacer or divider draws nothing. For one *with* alt text Chrome shows
+//!    the text inline and ignores the size (it draws this box only in quirks
+//!    mode); rinch draws the box, so held-back pictures keep their place.
+//! 2. **`alt`, and not both dimensions**: [`Placeholder::Inline`], the alt
+//!    text as Chrome lays it out, an inline-block of it ([`AltText`]): as
+//!    wide as the text up to the room it has (it wraps), or its declared
+//!    width; as tall as its wrapped lines, or its declared height; on its
+//!    last line's baseline. `<img width=600 alt=Banner style="display:block;
+//!    width:100%; height:auto">` in a 150px column is 150 by one line, as in
+//!    Chrome; a long alt text in an 80px column is 80 wide and wraps.
+//! 3. **No alt and not both dimensions, or every declared size at most 1px**
+//!    (a tracking pixel): nothing drawn, the declared size only. Chrome lays
+//!    a failed image without a size out as an empty 16x16 box; rinch keeps
+//!    the declared size (0x0).
+//!
+//! Rinch draws Chrome's broken-image icon nowhere (Chrome draws it in the
+//! box's corner after a failed load at 18px and up, and before the alt text
+//! of an inline one).
 //!
 //! **Overriding the look.** The box is drawn from custom properties, read only
 //! while the element is a placeholder, inherited like any custom property (so
@@ -39,20 +48,21 @@
 //!   all, today's behaviour (nothing drawn, an alt-only image 0x0). Any other
 //!   value, or none, is `auto`.
 //! - `--rinch-img-placeholder-border-color` (a CSS colour, default `silver`)
-//!   and `--rinch-img-placeholder-border-width` (a `px` length, default
-//!   `1px`; `0` draws no border).
+//!   and `--rinch-img-placeholder-border-width` (an absolute length or `em`,
+//!   default `1px`; `0` draws no border).
 //! - `--rinch-img-placeholder-background` (a colour, default `transparent`),
 //!   filled inside the border.
 //!
 //! The alt text takes the element's own `color`, `font-*` and `line-height`,
-//! so `img { color: gray }` styles it. A selector can target a placeholder
-//! with no `src` directly (`img:not([src])`); a failed load has no state a
-//! selector sees, which is why the look is carried by properties read only
-//! in that state.
+//! so `img { color: gray }` styles it. It is shaped once, when the element is
+//! restyled or its `alt` changes ([`AltText`], on its measure context), and
+//! only re-broken to a width by layout and paint. A selector can target a
+//! placeholder with no `src` directly (`img:not([src])`); a failed load has
+//! no state a selector sees, which is why the look is carried by properties
+//! read only in that state.
 //!
 //! The web backend is the browser's own `<img>`, so there the browser's
-//! fallback applies (Chrome's inline alt text for a missing `src`, its
-//! 16x16 icon for a failed tracking pixel) and these properties do nothing.
+//! fallback applies and these properties do nothing.
 
 use crate::computed_style::DimensionValue;
 use crate::node::{Node, NodeTree};
@@ -63,6 +73,13 @@ pub const BORDER_COLOR: [u8; 3] = [0xc0, 0xc0, 0xc0];
 pub const BORDER_WIDTH: f32 = 1.0;
 /// The padding between the border and the alt text, in CSS px.
 pub const PADDING: f32 = 1.0;
+
+/// The smallest content box, on each axis, that an image with no `src` draws
+/// its box in (Chrome 156: a ring at 3x100 and 300x3, nothing at 2x100).
+pub const MIN_BOX_NO_SRC: f32 = 3.0;
+/// The same after a failed load (Chrome 156: nothing at 17x100 or 300x17,
+/// the ring and its icon at 18).
+pub const MIN_BOX_FAILED: f32 = 18.0;
 
 /// The escape hatch: `none` turns placeholders off.
 pub const PROPERTY: &str = "rinch-img-placeholder";
@@ -85,13 +102,67 @@ pub enum Placeholder {
     Inline,
 }
 
-/// The box of an inline alt placeholder's text, in CSS px: its advance, its
-/// line box's height and the baseline from the top of that box.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AltBox {
-    pub width: f32,
-    pub height: f32,
+/// An image's alt text, shaped once in its typography (at scale 1, on one
+/// line) and re-broken to a width when it is measured or painted.
+#[derive(Clone)]
+pub struct AltText {
+    /// What it was shaped from (the text, its typography, the font set), so
+    /// a restyle that changes none of it keeps it.
+    pub key: u64,
+    /// The shaped text, broken onto one line.
+    pub layout: std::sync::Arc<parley::Layout<peniko::Brush>>,
+    /// Its one line's advance (max-content width).
+    pub max_content: f32,
+    /// Its widest unbreakable run (min-content width).
+    pub min_content: f32,
+    /// One line box's height.
+    pub line_height: f32,
+    /// The baseline from the top of a line box.
     pub baseline: f32,
+    /// Whether the image is an inline alt placeholder, which the measure
+    /// sizes from the text ([`Placeholder::Inline`]); a box's is only drawn.
+    pub inline: bool,
+}
+
+impl PartialEq for AltText {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.inline == other.inline
+    }
+}
+
+impl std::fmt::Debug for AltText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AltText")
+            .field("max_content", &self.max_content)
+            .field("min_content", &self.min_content)
+            .field("line_height", &self.line_height)
+            .field("inline", &self.inline)
+            .finish()
+    }
+}
+
+impl AltText {
+    /// The text broken at `width` (CSS px): its layout.
+    pub fn broken(&self, width: f32) -> parley::Layout<peniko::Brush> {
+        let mut layout = (*self.layout).clone();
+        layout.break_all_lines(Some(width.max(0.0)));
+        layout
+    }
+
+    /// Its size broken at `width`: the widest line and the lines' height.
+    pub fn wrapped(&self, width: f32) -> (f32, f32) {
+        if width >= self.max_content {
+            return (self.max_content, self.layout.height());
+        }
+        let layout = self.broken(width);
+        (layout.width(), layout.height())
+    }
+
+    /// The last line's baseline from the top of a box `height` tall holding
+    /// its lines (every line one line box).
+    pub fn last_baseline(&self, height: f32) -> f32 {
+        height - (self.line_height - self.baseline)
+    }
 }
 
 /// One unregistered custom property's computed token string on `node`, `name`
@@ -121,7 +192,7 @@ pub fn has_no_picture(tree: &NodeTree, node: &Node) -> bool {
     match node.attributes.get("src") {
         None => true,
         Some(src) if src.trim_ascii().is_empty() => true,
-        Some(src) => tree.image_cache.is_failed(src),
+        Some(src) => tree.image_cache.shows_failure(src),
     }
 }
 
@@ -150,21 +221,31 @@ pub fn placeholder(tree: &NodeTree, node: &Node) -> Placeholder {
         return Placeholder::None;
     }
     let cs = &node.computed_style;
-    let sizes: Vec<Option<f32>> = [&cs.width, &cs.height]
-        .into_iter()
-        .filter_map(declared)
-        .collect();
-    if !sizes.is_empty() {
-        // A tracking pixel: every declared size a length of at most 1px.
-        if sizes.iter().all(|s| s.is_some_and(|px| px <= 1.0)) {
-            return Placeholder::None;
-        }
+    let (w, h) = (declared(&cs.width), declared(&cs.height));
+    // A tracking pixel: every declared size a length of at most 1px.
+    let sizes: Vec<Option<f32>> = [w, h].into_iter().flatten().collect();
+    if !sizes.is_empty() && sizes.iter().all(|s| s.is_some_and(|px| px <= 1.0)) {
+        return Placeholder::None;
+    }
+    // Both dimensions without the picture: both declared, or one and a ratio.
+    let ratio = cs.aspect_ratio.used_ratio(None).is_some();
+    if (w.is_some() && h.is_some()) || ((w.is_some() || h.is_some()) && ratio) {
         return Placeholder::Box;
     }
     if alt_text(node).is_some() {
         Placeholder::Inline
     } else {
         Placeholder::None
+    }
+}
+
+/// The smallest content box, on each axis, that `node`'s box placeholder is
+/// drawn in: [`MIN_BOX_NO_SRC`] with no `src`, [`MIN_BOX_FAILED`] after a
+/// failed load.
+pub fn min_box(node: &Node) -> f32 {
+    match node.attributes.get("src") {
+        Some(src) if !src.trim_ascii().is_empty() => MIN_BOX_FAILED,
+        _ => MIN_BOX_NO_SRC,
     }
 }
 
@@ -181,48 +262,133 @@ pub(crate) fn alt_layout(
         .build_parley_layout(text, 1.0, font_cx, layout_cx, max_width)
 }
 
-/// The [`AltBox`] of `node`'s alt text `text`: its one line's advance and
-/// line box, so it adds to its line exactly what a `<span>` of the text
-/// does (its `line-height`, not its font's content area, which may be
-/// taller).
-pub(crate) fn alt_box(
+/// What [`AltText::key`] is made of: the text, every typography input
+/// [`ComputedStyle::build_parley_layout`] reads, and the font set.
+///
+/// [`ComputedStyle::build_parley_layout`]: crate::computed_style::ComputedStyle::build_parley_layout
+fn alt_key(node: &Node, text: &str, font_generation: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let cs = &node.computed_style;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    cs.font_family.hash(&mut h);
+    cs.font_size.to_bits().hash(&mut h);
+    cs.font_weight.to_bits().hash(&mut h);
+    format!(
+        "{:?}{:?}{:?}",
+        cs.font_style, cs.line_height, cs.overflow_wrap
+    )
+    .hash(&mut h);
+    cs.letter_spacing.to_bits().hash(&mut h);
+    cs.word_spacing.to_bits().hash(&mut h);
+    font_generation.hash(&mut h);
+    h.finish()
+}
+
+/// `node`'s alt text `text` shaped ([`AltText`]).
+pub(crate) fn shape_alt(
     node: &Node,
     text: &str,
+    key: u64,
+    inline: bool,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-) -> AltBox {
+) -> AltText {
     let layout = alt_layout(node, text, font_cx, layout_cx, None);
-    let Some(m) = layout.lines().next().map(|l| *l.metrics()) else {
-        return AltBox {
-            width: 0.0,
-            height: 0.0,
-            baseline: 0.0,
-        };
-    };
-    AltBox {
-        width: m.advance,
-        height: m.line_height,
-        baseline: m.baseline - m.block_min_coord,
+    let (line_height, baseline, max_content) = layout
+        .lines()
+        .next()
+        .map(|l| {
+            let m = l.metrics();
+            (m.line_height, m.baseline - m.block_min_coord, m.advance)
+        })
+        .unwrap_or_default();
+    let mut narrow = layout.clone();
+    narrow.break_all_lines(Some(0.0));
+    AltText {
+        key,
+        min_content: narrow.width().min(max_content),
+        layout: std::sync::Arc::new(layout),
+        max_content,
+        line_height,
+        baseline,
+        inline,
     }
 }
 
-/// The [`AltBox`] `node` is owed: `Some` only for [`Placeholder::Inline`].
-pub(crate) fn wanted_alt_box(
+/// What [`AltText`] `node` is owed, given the one it has (`have`): `None`
+/// when it shows no alt text, `have` again when nothing it was made from
+/// changed, else the text shaped anew.
+pub(crate) fn wanted_alt(
     tree: &NodeTree,
     node: &Node,
+    have: Option<&AltText>,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
-) -> Option<AltBox> {
-    if placeholder(tree, node) != Placeholder::Inline {
+) -> Option<AltText> {
+    let kind = placeholder(tree, node);
+    if kind == Placeholder::None {
         return None;
     }
     let text = alt_text(node)?;
-    Some(alt_box(node, &text, font_cx, layout_cx))
+    let key = alt_key(node, &text, tree.font_generation);
+    let inline = kind == Placeholder::Inline;
+    if let Some(have) = have
+        && have.key == key
+        && have.inline == inline
+    {
+        return Some(have.clone());
+    }
+    Some(shape_alt(node, &text, key, inline, font_cx, layout_cx))
+}
+
+/// The measure answer of an inline alt placeholder (#2309): the content box
+/// of an inline-block holding its text. Its width is its declared one when it
+/// has one, else shrink-to-fit (the text's advance, down to the room it has,
+/// never under its widest word); its height its declared one, else its
+/// lines' at that width. `min-*`/`max-*` clamp both, as
+/// [`crate::replaced::measure`] does.
+pub(crate) fn measure_inline_alt(
+    alt: &AltText,
+    known: taffy::Size<Option<f32>>,
+    style: &taffy::Style,
+    parent: taffy::Size<Option<f32>>,
+    inherent: bool,
+    available: taffy::Size<taffy::AvailableSpace>,
+) -> taffy::Size<f32> {
+    use taffy::ResolveOrZero;
+    let m =
+        |nw: f32, nh: f32| crate::replaced::measure((nw, nh), None, known, style, parent, inherent);
+    // A width the style or Taffy decides answers the same whatever the
+    // natural width is.
+    let (lo, hi) = (m(0.0, 0.0).width, m(1.0e6, 0.0).width);
+    let width = if lo == hi {
+        lo
+    } else {
+        let calc = |_: *const (), _: f32| 0.0;
+        let pb = (style.padding.resolve_or_zero(parent.width, calc)
+            + style.border.resolve_or_zero(parent.width, calc))
+        .sum_axes()
+        .width;
+        let room = match available.width {
+            taffy::AvailableSpace::Definite(a) => (a - pb).max(0.0),
+            taffy::AvailableSpace::MinContent => alt.min_content,
+            taffy::AvailableSpace::MaxContent => alt.max_content,
+        };
+        m(alt.max_content.min(room.max(alt.min_content)), 0.0).width
+    };
+    let (_, lines) = alt.wrapped(width);
+    m(width, lines)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_thresholds_are_chromes() {
+        assert_eq!((MIN_BOX_NO_SRC, MIN_BOX_FAILED), (3.0, 18.0));
+    }
 
     #[test]
     fn declared_sizes() {
