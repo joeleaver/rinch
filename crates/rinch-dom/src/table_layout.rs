@@ -826,26 +826,6 @@ impl RinchDocument {
                 }
             }
         }
-        let was_definite = self.tree.nodes[table]
-            .table_box
-            .as_ref()
-            .map(|b| b.definite);
-        // The cells were placed under the last rebuild's box; the ones whose
-        // `max-width` depends on the table's own width
-        // ([`Self::in_table_of_its_own_width`]) are written again when that
-        // changed.
-        let recheck: Vec<RawNodeId> = if was_definite == Some(definite) {
-            Vec::new()
-        } else {
-            ids.iter()
-                .copied()
-                .filter(|&c| {
-                    let cs = &self.tree.nodes[c].computed_style;
-                    cs.table_part == TablePart::Cell
-                        && !matches!(cs.max_width, DimensionValue::Auto)
-                })
-                .collect()
-        };
         self.tree.nodes[table].table_box = Some(Box::new(TableBox {
             tracks,
             weights,
@@ -856,9 +836,6 @@ impl RinchDocument {
             placed: ids,
         }));
         self.sync_table_style(table);
-        for c in recheck {
-            self.sync_table_style(c);
-        }
     }
 
     /// Record a cell's place and write it to its Taffy style.
@@ -971,21 +948,6 @@ impl RinchDocument {
                     style.min_size.height = length(h);
                 }
                 style.size = taffy::Size::auto();
-                // A cell's `max-width` caps what it asks of its column
-                // (Chrome 156: a lone `max-width: 90px` cell of nowrap text
-                // is 90), but a table with a width of its own still hands
-                // its columns that width past it (CSS 2.1 §17.5.2 leaves
-                // it undefined): email writes `width: 540px; max-width:
-                // 540px` on the one cell of a 665px table, and the cell is
-                // 665 in Chrome. Held to 540, the inline-block cards in it
-                // wrapped a row early. Taffy clamps both the contribution
-                // and the stretch by `max_size`, so it is dropped where the
-                // table's width, not the cell's content, sizes the column.
-                if node.computed_style.table_part == TablePart::Cell
-                    && self.in_table_of_its_own_width(id)
-                {
-                    style.max_size.width = taffy::style_helpers::auto();
-                }
                 style.margin = taffy::Rect::length(0.0);
                 style.align_self = Some(taffy::AlignSelf::STRETCH);
                 style.justify_self = Some(taffy::JustifySelf::STRETCH);
@@ -995,20 +957,6 @@ impl RinchDocument {
                 }
             }
         }
-    }
-
-    /// Whether the table `cell` sits in has a width of its own
-    /// ([`TableBox::definite`]).
-    fn in_table_of_its_own_width(&self, cell: RawNodeId) -> bool {
-        let mut id = self.tree.nodes[cell].parent;
-        while let Some(p) = id {
-            let n = &self.tree.nodes[p];
-            if let Some(b) = &n.table_box {
-                return b.definite;
-            }
-            id = n.parent;
-        }
-        false
     }
 
     /// Resolve every shared edge of a collapsing table and write the winners

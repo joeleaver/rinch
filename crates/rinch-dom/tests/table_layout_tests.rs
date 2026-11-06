@@ -437,38 +437,3 @@ fn an_inline_block_row_holds_its_cells_in_a_row() {
         assert_eq!(abs(&d, id), abs(&plain, id), "{id} after the restyle back");
     }
 }
-
-#[test]
-fn a_cells_max_width_does_not_narrow_it_in_a_table_of_its_own_width() {
-    // A table with a width of its own hands its column that width past a
-    // cell's `max-width` (CSS 2.1 §17.5.2 leaves it undefined). Email writes
-    // `width: 540px; max-width: 540px` on the one cell of a 665px table,
-    // around two 260px inline-block cards and a 20px spacer: in Chrome the
-    // cell is 665 and they sit in one row; held to 540, the spacer wrapped
-    // and every row of cards took two lines.
-    // Chrome 156: the cell is 665, the second card at x=280 on the first
-    // line.
-    let card =
-        "<div style='display:inline-block;width:260px;height:30px;vertical-align:top'></div>";
-    let d = doc(&format!(
-        "<table style='width:665px;border-spacing:0'><tr>\
-         <td id=c width=540 style='width:540px;max-width:540px;padding:0;font-size:0'>\
-         {}<div style='display:inline-block;width:20px;height:0'></div>{}</td></tr></table>",
-        card.replace("<div", "<div id=a"),
-        card.replace("<div", "<div id=b"),
-    ));
-    assert_eq!(abs(&d, "c").2, 665.0);
-    assert_eq!(abs(&d, "a"), (0.0, 0.0, 260.0, 30.0));
-    assert_eq!(abs(&d, "b"), (280.0, 0.0, 260.0, 30.0));
-    // In a table with no width of its own the cap holds: what the cell asks
-    // of its column is at most its `max-width`. Chrome 156: five 40x10
-    // boxes in a `max-width: 90px` cell are 90 wide, two to a line.
-    let b = "<span style='display:inline-block;width:40px;height:10px;vertical-align:top'></span>";
-    let d = doc(&format!(
-        "<table style='border-spacing:0'><tr>\
-         <td id=c style='max-width:90px;padding:0;font-size:0;line-height:0'>{b} {b} {b} {b} {b}</td>\
-         </tr></table>"
-    ));
-    assert_eq!(abs(&d, "c").2, 90.0);
-    assert_eq!(abs(&d, "c").3, 30.0);
-}
