@@ -865,8 +865,8 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`04fb11def44d7cde0dd53852bad6002fa02da3f9`, branch `atlas-tint-2286` on top of
-joeleaver/vello-fork#5 on `rinch-patch`): the vello `v0.11.0` tag plus the image
+(`04fb11def44d7cde0dd53852bad6002fa02da3f9`, joeleaver/vello-fork#6 on branch
+`rinch-patch`): the vello `v0.11.0` tag plus the image
 atlas below, **Bump buffers**, the **Blend stack** and **Tinted alpha-mask
 images** after it. The
 fork's `vello` takes `vello_encoding` and `vello_shaders` by path, so all three
