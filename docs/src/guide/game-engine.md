@@ -1379,6 +1379,7 @@ PlatformEvent::MouseUp { x: 100.0, y: 200.0, button: MouseButton::Left }
 PlatformEvent::MouseWheel { x: 100.0, y: 200.0, delta_x: 0.0, delta_y: -30.0 }
 // A mouse wheel's notches, in lines (40 logical px each): its default scroll
 // glides, as Chrome's does (#2287). `MouseWheel` above is pixels, and direct.
+// While it glides `needs_update()` is true: keep calling `update` each frame.
 PlatformEvent::MouseWheelLines { x: 100.0, y: 200.0, lines_x: 0.0, lines_y: -1.0 }
 PlatformEvent::KeyDown {
     key: KeyCode::KeyA,
@@ -1446,7 +1447,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `wants_keyboard() -> bool` | True for a text input, the editor, an open `<select>` popup, a generic node that registered `on_key`, or a *keyboard-focused* (Tab/`NodeHandle::focus()`) generic node — **not** a plain button/link a mouse click merely focused (issue #548; the click-vs-Tab split follows `:focus-visible`) |
 | `ime_state() -> ImeState` | Whether the focused target wants the platform IME, and its caret area (logical px) — see [Input methods](#input-methods-ime) |
 | `take_ime_change() -> Option<ImeChange>` | The `Enable` / `Update` / `Disable` that takes the host's IME from what it last reported to `ime_state()` |
-| `needs_update() -> bool` | True if UI needs repaint (including a due `next_wake` or a new `RenderSurface` frame) |
+| `needs_update() -> bool` | True if UI needs repaint (including a due `next_wake`, a new `RenderSurface` frame, or a wheel glide still running, #2287) |
 | `next_wake() -> Option<Instant>` | When to call `update()` again with no input (the caret blink), or `None` |
 | `register_font(data)` | Register font data for text rendering after the mount: `&'static [u8]` or owned bytes (`Vec<u8>`, `Arc<[u8]>`, `Blob<u8>`; see [Fonts](#fonts)) |
 | `register_app_font(AppFont)` | Register a face **and the generics it claims** (`AppFont::sans_serif`, `.with_generics(..)`), ahead of the platform's mapping |

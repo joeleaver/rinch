@@ -708,7 +708,9 @@ closes, the file-drag end — is the `MouseWheel`'s, unchanged.
   `cubic-bezier(0.42, 0.42 × slope, 0.58, 1)`. `UpdateTarget` starts a new
   segment at the current value with the slope that keeps the velocity, its
   duration the smaller of the new distance's and `VelocityBasedDurationBound`
-  (2.5 × the remaining distance at the present velocity). Measured in
+  (2.5 × the remaining distance at the present velocity). A retarget whose
+  segment would last under 10 ms lands at once (`kEpsilon` against
+  `InSecondsF()`). Measured in
   Chromium 153 on Linux (Playwright's build, a non-precise wheel synthesised
   by `chrome.gpuBenchmarking.smoothScrollByXY(…, MOUSE_INPUT, …, false)` —
   CDP's `Input.dispatchMouseEvent` wheel is a *precise* one and Chrome does
@@ -725,7 +727,14 @@ closes, the file-drag end — is the `MouseWheel`'s, unchanged.
   (one per container per frame, read after both axes) — and the tick asks for
   a redraw while any runs and on the frame that lands. Then nothing: an idle
   loop asks for no frame. Time is the document's animation clock
-  (`RinchDocument::animation_now_ms`, #2267), so a test pins it and steps it.
+  (`RinchDocument::animation_now_ms`, #2267), so a test pins it and steps it;
+  the curves run on `SmoothWheelState::glide_now`, which moves by that
+  clock's *forward* steps only, so a wall clock set back mid-glide (it is
+  `SystemTime`) neither replays the curve backwards nor stalls it (review of
+  #2290). The DevTools window's app is sent no `AboutToWait`: its loop turn,
+  `shell::rinch_runtime::devtools_turn`, ticks its glides before resolving.
+  An embedded `RinchContext` ticks them in `update`, and `needs_update()` is
+  true while one runs.
   No layout and no restyle per frame: `a_gliding_wheel_frame_repaints_the_
   scroller_and_lays_out_nothing` pins the frame's counters, which are a
   direct notch's less its hit test.
@@ -735,7 +744,8 @@ closes, the file-drag end — is the `MouseWheel`'s, unchanged.
   caret reveal), a keyboard scroll, a pixel wheel, a layout that clamped the
   range — wins, and the animation is dropped without writing. A scrollbar
   press on the container drops it too (`scrollbar_drag`), before the thumb
-  moves. Turning smooth scrolling off lands every running animation on its
+  moves, and so does a `lock_scroll` (#474) taken mid-glide that locks the
+  container out (`scroll_locked_out`). Turning smooth scrolling off lands every running animation on its
   target at the next frame. A notch into a container whose animation is
   headed for its end moves nothing and does not chain (a browser latches the
   wheel to the animating scroller); once it has landed there, the next notch

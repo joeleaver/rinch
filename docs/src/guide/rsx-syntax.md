@@ -364,7 +364,8 @@ or more.
   never a layout.
 - Anything else that scrolls the scroller mid-glide wins, and the glide stops
   there: a `set_scroll_top`/`set_scroll_left`, a press on its scrollbar, the
-  editor revealing its caret as you type, a trackpad.
+  editor revealing its caret as you type, a trackpad. So does a `lock_scroll`
+  dialog opening over it.
 
 It is a choice an app can turn off: `App::new(app).smooth_wheel_scroll(false)`
 makes every notch scroll its whole distance at once, and
