@@ -473,31 +473,43 @@ fn gpu_masks_survive_a_new_renderer() {
     assert_eq!(differ(&a, &c, 1).0, 0, "the repaint from a third renderer");
 }
 
-/// An atlas a fraction of the page's masks evicts on every frame and still
-/// paints the page exactly as an unbounded one does, frame after frame, on
-/// one renderer (whose own image atlas then holds blobs the glyph atlas has
-/// dropped, and gets new ones for the same glyphs).
+/// An atlas a fraction of the page's masks keeps what a frame draws (review
+/// of #2301: a frame's own masks are never evicted), drops them once other
+/// text has been drawn for a few frames, and paints the page again exactly as
+/// an unbounded atlas does: re-rasterised masks are new blobs, on one renderer
+/// whose own image atlas still holds the dropped ones.
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_eviction_keeps_drawing() {
     let mut gpu = Gpu::new();
     let mut d = doc(PAGE);
     let full = private_atlas(usize::MAX);
-    let (painter, all) = paint_vello(&mut d, 1.0, &full);
+    let (painter, _) = paint_vello(&mut d, 1.0, &full);
     let want = gpu.render(painter.scene(), W, H);
     let need = full.borrow().bytes();
     let small = private_atlas(need / 8);
+    let mut other = doc(r#"<div style="font: 13px/18px ProbeFace">0 1 2</div>"#);
     let mut evicted = 0;
-    for frame in 0..3 {
+    for round in 0..2 {
+        small.borrow_mut().begin_frame();
         let (painter, stats) = paint_vello(&mut d, 1.0, &small);
-        evicted += stats.atlas.evictions;
-        assert!(
-            small.borrow().bytes() <= need / 8,
-            "frame {frame}: within budget"
+        assert_eq!(
+            stats.atlas.evictions, 0,
+            "round {round}: the frame keeps its masks"
         );
         let got = gpu.render(painter.scene(), W, H);
         let (n, worst) = differ(&got, &want, 1);
-        assert_eq!(n, 0, "frame {frame}: {n} pixels differ (worst {worst})");
+        assert_eq!(n, 0, "round {round}: {n} pixels differ (worst {worst})");
+        for _ in 0..5 {
+            small.borrow_mut().begin_frame();
+            let (painter, stats) = paint_vello(&mut other, 1.0, &small);
+            evicted += stats.atlas.evictions;
+            let _ = gpu.render(painter.scene(), W, H);
+        }
+        assert!(
+            small.borrow().bytes() <= need / 8,
+            "round {round}: back within budget"
+        );
     }
-    assert!(evicted > 0, "the small atlas evicted ({all:?})");
+    assert!(evicted > 0, "the page's masks were evicted");
 }
