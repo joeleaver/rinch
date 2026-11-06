@@ -512,8 +512,9 @@ input a shaped layout is built from:
   it). An end inside a `display: contents` element closes into the nearest
   boxed ancestor, text that does not wrap in a contents element whose boxed
   ancestor wraps takes the opportunity away, and `<wbr>` gives one that
-  elements after it do not take away; the box seams skip contents elements
-  too (`ifc::wraps_between`, review of #2258). A
+  elements after it do not take away; the box seams pass through contents
+  elements too, and an atomic inline in one takes its boxed ancestor's
+  `white-space` (`ifc::wraps_between`, review of #2258). A
   collapsible such space is handed to parley as wrapping
   (`IfcText::wrap_spaces`) and counts as wrapping in the seams and edge-box
   passes; a preserved one keeps its own `white-space` there and takes the

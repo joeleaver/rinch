@@ -1215,7 +1215,10 @@ fn a_re_broken_line_keeps_thai_word_breaks() {
 /// does not wrap in a contents element whose boxed ancestor wraps takes the
 /// opportunity before its spaces away (`K12`, `K13`, `K17`, `K18`); and a
 /// `<wbr>` is an opportunity that the empty elements after it do not take
-/// away (`M5`, `V2`–`V5`). Chrome 156; the reviewer's probe ids.
+/// away (`M5`, `V2`–`V5`). An atomic inline in a contents element takes
+/// the `white-space` of its nearest boxed ancestor, and the opportunity it
+/// gives survives the contents element's own text (`Q7`, `Q8`, `Q20`, round
+/// 2). Chrome 156; the reviewer's probe ids.
 const CONTENTS_AND_WBR: Rows = &[
     (
         "K1",
@@ -1343,9 +1346,38 @@ const CONTENTS_AND_WBR: Rows = &[
         r#"aa<span style="white-space:normal">ddddhello<wbr></span> ccc ccc"#,
         &["aaddddhello", "ccc_ccc"],
     ),
+    (
+        "Q7",
+        "width:55px",
+        r#"<span style="display:contents;white-space:nowrap"><b id="1" style="display:inline-block;width:30px;height:10px"></b><span style="white-space:normal"><b id="2" style="display:inline-block;width:30px;height:10px"></b></span> <b id="3" style="display:inline-block;width:30px;height:10px"></b> <b id="4" style="display:inline-block;width:30px;height:10px"></b></span>"#,
+        &["[1]", "[2]", "[3]", "[4]"],
+    ),
+    (
+        "Q8",
+        "white-space:nowrap;width:55px",
+        r#"<span style="display:contents;white-space:normal"><b id="1" style="display:inline-block;width:30px;height:10px"></b><b id="2" style="display:inline-block;width:30px;height:10px"></b><b id="3" style="display:inline-block;width:30px;height:10px"></b></span> ccc"#,
+        &["[1][2][3]_ccc"],
+    ),
+    (
+        "Q20",
+        "width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap"><span style="white-space:normal">ddddhello</span><b id="1" style="display:inline-block;width:30px;height:10px"></b> ccc</span>"#,
+        &["aaddddhello", "[1]", "ccc"],
+    ),
 ];
 
 #[test]
 fn display_contents_ends_and_wbr_follow_chrome() {
     check_rows(CONTENTS_AND_WBR);
+    // No row has a forced break, so every later line starts where a soft
+    // wrap does: at x 0 in Chrome, unless the root is `pre` (`Q7`'s `[3]`
+    // and `[4]`, `Q20`'s `ccc` started at 4.5px behind their space).
+    for (name, style, inner, want) in CONTENTS_AND_WBR {
+        let laid = lay_out(style, inner);
+        assert_eq!(laid.lines, *want, "{name}");
+        let pre = style.contains("white-space:pre;");
+        for line in &laid.raw[1..] {
+            assert_eq!(line.starts_with('_'), pre, "{name}: {:?}", laid.raw);
+        }
+    }
 }
