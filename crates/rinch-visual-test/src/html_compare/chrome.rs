@@ -43,6 +43,22 @@ fn policy(remote: bool, nonce: Option<&str>) -> String {
     )
 }
 
+/// `html` with the policy `<meta>` in front of its content but after a
+/// leading `<!doctype>`: a doctype that is not first is ignored and Chrome
+/// lays the page out in quirks mode (the body then fills the viewport),
+/// which is not how any browser shows a mail that has one.
+fn with_policy(policy: &str, html: &str) -> String {
+    let text = html.trim_start_matches('\u{feff}');
+    let lead = text.len() - text.trim_start().len();
+    let rest = &text[lead..];
+    let at = if rest.len() >= 9 && rest[..9].eq_ignore_ascii_case("<!doctype") {
+        rest.find('>').map_or(0, |i| lead + i + 1)
+    } else {
+        0
+    };
+    format!("{}{policy}{}", &text[..at], &text[at..])
+}
+
 /// [`screenshot`], and what Chrome says about the page's height
 /// ([`PageMeasure`]). The measurement is a second, scripted-by-us-only run;
 /// when it fails the screenshot is still taken and the measure has no
@@ -57,7 +73,10 @@ pub fn screenshot_measured(
     let page = std::fs::canonicalize(page)?;
     let policy = policy(remote, None);
     let copy = page.with_extension("chrome.html");
-    std::fs::write(&copy, policy + &std::fs::read_to_string(&page)?)?;
+    std::fs::write(
+        &copy,
+        with_policy(&policy, &std::fs::read_to_string(&page)?),
+    )?;
     let mut chrome = Command::new(chrome());
     if !remote {
         // Every host name fails to resolve: no request leaves the machine.
@@ -94,6 +113,8 @@ pub fn screenshot_measured(
         page_height: heights.map(|h| h.0),
         document_height: heights.map(|h| h.1),
         viewport_height: heights.map(|h| h.2),
+        scroll_height: heights.map(|h| h.3),
+        capped: last_ink + 1 >= TALLEST || heights.is_some_and(|h| h.0 > f64::from(TALLEST)),
         trimmed_height,
         last_ink,
     })
@@ -106,16 +127,33 @@ pub fn screenshot_measured(
 /// with rinch's document height, and `last_ink` with rinch's `last_ink`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PageMeasure {
-    /// `document.scrollingElement.scrollHeight` at the screenshot's viewport
-    /// width, read after the fonts and pictures loaded and two animation
-    /// frames. Never less than the measuring window's height
-    /// (`viewport_height`). `None` when the measuring run failed.
+    /// The content's real extent, at the screenshot's width, read after the
+    /// fonts and pictures loaded and two animation frames: the largest of
+    /// `scrollingElement`, `<html>` and `<body>` `scrollHeight`, the bottom
+    /// of every laid-out box (`getBoundingClientRect().bottom + scrollY`,
+    /// skipping `position: fixed`, `display: none` and empty boxes), and
+    /// the bottom of each `overflow: auto|scroll` element's scrollable
+    /// content. A page whose `html`/`body` is a viewport-high scroller has a
+    /// small `scrollingElement.scrollHeight` and its content in the
+    /// scroller; this still finds it. Never less than the measuring
+    /// window's height (`viewport_height`). `None` when the measuring run
+    /// failed.
     pub page_height: Option<f64>,
     /// `document.documentElement`'s border-box height: the content's height,
     /// whatever the viewport. `None` when the measuring run failed.
     pub document_height: Option<f64>,
     /// `window.innerHeight` of the measuring run: the floor of `page_height`.
     pub viewport_height: Option<f64>,
+    /// `se().scrollHeight` alone, as `page_height` was
+    /// before: kept to show when a scroller hid the content. `None` when
+    /// the measuring run failed, or in an older `chrome.json`.
+    #[serde(default)]
+    pub scroll_height: Option<f64>,
+    /// The screenshot hit [`TALLEST`] (ink on its last row), or the content
+    /// is taller than that: `last_ink` and `trimmed_height` are the window's,
+    /// not the page's, and are not a height.
+    #[serde(default)]
+    pub capped: bool,
     /// The height of the saved png (last ink row + [`MARGIN`]).
     pub trimmed_height: u32,
     /// The last row (0-based) that differs from the page's background.
@@ -139,8 +177,21 @@ impl PageMeasure {
 /// not always deliver animation frames, so a timer reads them anyway after
 /// 500ms (virtual) rather than leave the page unmeasured.
 const MEASURE: &str = "(()=>{const h=document.documentElement;let done=false;\
+const se=()=>document.scrollingElement||document.body||h;\
+const extent=()=>{const sy=window.scrollY;\
+let m=Math.max(se().scrollHeight,h.scrollHeight,document.body?document.body.scrollHeight:0);\
+for(const e of document.querySelectorAll('*')){const r=e.getBoundingClientRect();\
+if(r.width===0&&r.height===0)continue;\
+let b=r.bottom+sy;\
+if(b>m){const cs=getComputedStyle(e);if(cs.position==='fixed'||cs.display==='none')b=0;}\
+if(b>m)m=b;\
+if(e.scrollHeight>e.clientHeight+1){const o=getComputedStyle(e);\
+if(/auto|scroll/.test(o.overflowY)){const t=r.top+sy-e.scrollTop+e.scrollHeight;if(t>m)m=t;}}}\
+return Math.ceil(m);};\
 const set=()=>{if(done)return;done=true;\
-h.setAttribute('data-rinch-page-height',String(document.scrollingElement.scrollHeight));\
+let x=0;try{x=extent();}catch(err){h.setAttribute('data-rinch-error',String(err));}\
+h.setAttribute('data-rinch-page-height',String(x));\
+h.setAttribute('data-rinch-scroll-height',String(se().scrollHeight));\
 h.setAttribute('data-rinch-document-height',String(h.getBoundingClientRect().height));\
 h.setAttribute('data-rinch-viewport-height',String(window.innerHeight));};\
 const ready=()=>document.fonts.status==='loaded'&&[...document.images].every(i=>i.complete);\
@@ -160,11 +211,9 @@ const NONCE: &str = "rinchmeasure";
 /// two heights out of the dumped DOM. `None` if anything goes wrong.
 fn measure_page(page: &Path, width: u32, profile: &Path, remote: bool) -> Option<Heights> {
     let copy = page.with_extension("measure.html");
-    let text = std::fs::read_to_string(page).ok()?;
-    let page_with_script = format!(
-        "{}{text}<script nonce=\"{NONCE}\">{MEASURE}</script>",
-        policy(remote, Some(NONCE))
-    );
+    let text = strip_policies(&std::fs::read_to_string(page).ok()?);
+    let page_with_script = with_policy(&policy(remote, Some(NONCE)), &text)
+        + &format!("<script nonce=\"{NONCE}\">{MEASURE}</script>");
     std::fs::write(&copy, page_with_script).ok()?;
     let mut chrome = Command::new(chrome());
     if !remote {
@@ -189,8 +238,33 @@ fn measure_page(page: &Path, width: u32, profile: &Path, remote: bool) -> Option
     parse_heights(&String::from_utf8_lossy(&out.ok()?.stdout))
 }
 
-/// `(scroll height, document height, viewport height)`.
-type Heights = (f64, f64, f64);
+/// Remove the `<meta http-equiv="Content-Security-Policy">` tags a page
+/// carries. Policies add up (the strictest wins), so a page's own
+/// `script-src 'none'` (an email's original often has one) would block the
+/// measuring script too, and its height came out `null`. The measuring
+/// copy's own policy still blocks the page's scripts.
+fn strip_policies(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len());
+    let mut at = 0;
+    while let Some(start) = lower[at..].find("<meta").map(|i| i + at) {
+        let Some(end) = lower[start..].find('>').map(|i| i + start + 1) else {
+            break;
+        };
+        let tag = &lower[start..end];
+        out.push_str(&html[at..start]);
+        if !(tag.contains("http-equiv") && tag.contains("content-security-policy")) {
+            out.push_str(&html[start..end]);
+        }
+        at = end;
+    }
+    out.push_str(&html[at..]);
+    out
+}
+
+/// `(content height, document height, viewport height, scrollingElement's
+/// scroll height)`.
+type Heights = (f64, f64, f64, f64);
 
 /// The heights from a dumped DOM.
 fn parse_heights(dom: &str) -> Option<Heights> {
@@ -202,6 +276,7 @@ fn parse_heights(dom: &str) -> Option<Heights> {
         attr("data-rinch-page-height")?,
         attr("data-rinch-document-height")?,
         attr("data-rinch-viewport-height")?,
+        attr("data-rinch-scroll-height")?,
     ))
 }
 
@@ -286,8 +361,8 @@ mod tests {
 
     #[test]
     fn parses_the_dumped_dom() {
-        let dom = r#"<html data-rinch-page-height="1234" data-rinch-document-height="1233.5" data-rinch-viewport-height="513"><body></body></html>"#;
-        assert_eq!(parse_heights(dom), Some((1234.0, 1233.5, 513.0)));
+        let dom = r#"<html data-rinch-page-height="1234" data-rinch-document-height="1233.5" data-rinch-viewport-height="513" data-rinch-scroll-height="600"><body></body></html>"#;
+        assert_eq!(parse_heights(dom), Some((1234.0, 1233.5, 513.0, 600.0)));
         assert_eq!(parse_heights("<html></html>"), None);
     }
 
@@ -297,6 +372,8 @@ mod tests {
             page_height: p,
             document_height: d,
             viewport_height: Some(513.0),
+            scroll_height: None,
+            capped: false,
             trimmed_height: 0,
             last_ink: 0,
         };
@@ -307,11 +384,41 @@ mod tests {
     }
 
     #[test]
+    fn the_policy_goes_after_the_doctype() {
+        assert_eq!(
+            with_policy("<P>", "\n<!DOCTYPE html><p>x"),
+            "\n<!DOCTYPE html><P><p>x"
+        );
+        assert_eq!(with_policy("<P>", "<p>x"), "<P><p>x");
+        assert_eq!(with_policy("<P>", ""), "<P>");
+    }
+
+    #[test]
+    fn strips_only_the_policies() {
+        let html = "<META HTTP-EQUIV=\"Content-Security-Policy\" content=\"script-src 'none'\"><meta charset=\"utf-8\"><p>hi</p><meta name=a content=b>";
+        assert_eq!(
+            strip_policies(html),
+            "<meta charset=\"utf-8\"><p>hi</p><meta name=a content=b>"
+        );
+        assert_eq!(strip_policies("<p>no meta"), "<p>no meta");
+    }
+
+    #[test]
+    fn old_chrome_json_still_reads() {
+        let old = r#"{"page_height":1.0,"document_height":1.0,"viewport_height":2.0,"trimmed_height":5,"last_ink":4}"#;
+        let m: PageMeasure = serde_json::from_str(old).unwrap();
+        assert!(!m.capped);
+        assert_eq!(m.scroll_height, None);
+    }
+
+    #[test]
     fn json_shape() {
         let m = PageMeasure {
             page_height: Some(1000.0),
             document_height: Some(990.0),
             viewport_height: Some(513.0),
+            scroll_height: None,
+            capped: false,
             trimmed_height: 956,
             last_ink: 940,
         };
@@ -363,5 +470,29 @@ mod tests {
         assert_eq!(m.page_height, Some(1500.0));
         assert_ne!(f64::from(m.trimmed_height), 1500.0);
         assert!(m.trimmed_height <= m.last_ink + MARGIN);
+    }
+
+    /// Needs Chrome. A page whose html/body is a viewport-high scroller:
+    /// `scrollingElement.scrollHeight` is the viewport's, the content is in
+    /// the scroller. Its own CSP (`script-src 'none'`) must not blind the
+    /// measure either (the original of a real mail did).
+    #[test]
+    #[ignore = "needs Chrome"]
+    fn chrome_finds_the_content_in_a_scroller() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = dir.path().join("s.html");
+        std::fs::write(
+            &page,
+            "<!doctype html><meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'none'\">\
+             <style>html,body{margin:0;height:100%;overflow:hidden}\
+             #s{height:100%;overflow:auto}</style>\
+             <body><div id=s><div style=\"height:3000px;background:#ccc\">x</div></div>",
+        )
+        .unwrap();
+        let png = dir.path().join("s.png");
+        let m = screenshot_measured(&page, &png, 720, &dir.path().join("profile"), false).unwrap();
+        assert!(m.scroll_height.unwrap() < 700.0, "{m:?}");
+        assert_eq!(m.page_height, Some(3000.0), "{m:?}");
+        assert!(!m.capped);
     }
 }
