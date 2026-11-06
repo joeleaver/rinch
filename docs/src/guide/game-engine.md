@@ -1377,6 +1377,9 @@ PlatformEvent::MouseMove { x: 100.0, y: 200.0 }
 PlatformEvent::MouseDown { x: 100.0, y: 200.0, button: MouseButton::Left }
 PlatformEvent::MouseUp { x: 100.0, y: 200.0, button: MouseButton::Left }
 PlatformEvent::MouseWheel { x: 100.0, y: 200.0, delta_x: 0.0, delta_y: -30.0 }
+// A mouse wheel's notches, in lines (40 logical px each): its default scroll
+// glides, as Chrome's does (#2287). `MouseWheel` above is pixels, and direct.
+PlatformEvent::MouseWheelLines { x: 100.0, y: 200.0, lines_x: 0.0, lines_y: -1.0 }
 PlatformEvent::KeyDown {
     key: KeyCode::KeyA,
     // The layout-produced `KeyboardEvent.key` value, case-accurate ("A" under

@@ -113,6 +113,9 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`title_tooltips`](App::title_tooltips).
     #[cfg(feature = "desktop")]
     pub(crate) title_tooltips: bool,
+    /// See [`smooth_wheel_scroll`](App::smooth_wheel_scroll).
+    #[cfg(feature = "desktop")]
+    pub(crate) smooth_wheel_scroll: bool,
     /// See [`vsync`](App::vsync); `None` leaves the setting as it is.
     #[cfg(feature = "desktop")]
     pub(crate) vsync: Option<bool>,
@@ -164,6 +167,8 @@ where
             prefer_x11: false,
             #[cfg(feature = "desktop")]
             title_tooltips: true,
+            #[cfg(feature = "desktop")]
+            smooth_wheel_scroll: true,
             #[cfg(feature = "desktop")]
             vsync: None,
             #[cfg(feature = "desktop")]
@@ -344,6 +349,8 @@ where
             #[cfg(feature = "desktop")]
             title_tooltips: self.title_tooltips,
             #[cfg(feature = "desktop")]
+            smooth_wheel_scroll: self.smooth_wheel_scroll,
+            #[cfg(feature = "desktop")]
             vsync: self.vsync,
             #[cfg(feature = "desktop")]
             activation_policy: self.activation_policy,
@@ -440,6 +447,23 @@ where
         self
     }
 
+    /// Whether a mouse wheel's notch glides to where it scrolls, as
+    /// Chrome's does, rather than jumping there in one frame (issue #2287).
+    /// On by default; `false` makes every notch scroll its whole distance at
+    /// once, for every window of the app. Only a *line* wheel glides: a
+    /// trackpad or a high-resolution wheel reports pixels, and scrolls
+    /// directly either way. Change it while the app runs with
+    /// [`RinchApp::set_smooth_wheel_scroll`](crate::app::RinchApp::set_smooth_wheel_scroll)
+    /// (an embedded `RinchContext` reaches it through `app_mut()`).
+    ///
+    /// rinch does not read the OS's reduced-motion setting on the desktop
+    /// yet (#2209); an app that does can pass its answer here.
+    #[cfg(feature = "desktop")]
+    pub fn smooth_wheel_scroll(mut self, enabled: bool) -> Self {
+        self.smooth_wheel_scroll = enabled;
+        self
+    }
+
     /// Start with vsync on (the default) or off (issue #2095). Off, the GPU
     /// renderer presents uncapped (`Immediate`, or `Mailbox` where the
     /// surface has no `Immediate`), so frames that follow each other — a
@@ -531,6 +555,7 @@ where
             shortcut_matching: self.shortcut_matching,
             prefer_x11: self.prefer_x11,
             title_tooltips: self.title_tooltips,
+            smooth_wheel_scroll: self.smooth_wheel_scroll,
             vsync: self.vsync,
             activation_policy: self.activation_policy,
             #[cfg(feature = "gpu")]
@@ -601,12 +626,14 @@ where
             shortcut_matching,
             prefer_x11,
             title_tooltips,
+            smooth_wheel_scroll,
             vsync,
             activation_policy,
             #[cfg(feature = "gpu")]
             gpu,
         } = self.into_startup();
         crate::app::set_title_tooltips_default(title_tooltips);
+        crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
         // Stored before the window exists: its renderer takes it (#2095).
         if let Some(on) = vsync {
             crate::window::set_vsync(on);
@@ -905,6 +932,8 @@ pub(crate) struct Startup<F> {
     pub(crate) prefer_x11: bool,
     /// See [`App::title_tooltips`].
     pub(crate) title_tooltips: bool,
+    /// See [`App::smooth_wheel_scroll`].
+    pub(crate) smooth_wheel_scroll: bool,
     /// See [`App::vsync`].
     pub(crate) vsync: Option<bool>,
     /// See [`App::activation_policy`].
@@ -1131,6 +1160,19 @@ mod tests {
                 .title_tooltips(false)
                 .into_startup()
                 .title_tooltips
+        );
+    }
+
+    /// `smooth_wheel_scroll` reaches the startup (issue #2287): on unless
+    /// turned off.
+    #[test]
+    fn smooth_wheel_scroll_is_on_unless_turned_off() {
+        assert!(App::new(component).into_startup().smooth_wheel_scroll);
+        assert!(
+            !App::new(component)
+                .smooth_wheel_scroll(false)
+                .into_startup()
+                .smooth_wheel_scroll
         );
     }
 
