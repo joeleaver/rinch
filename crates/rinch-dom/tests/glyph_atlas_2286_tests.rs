@@ -292,3 +292,103 @@ fn an_unreadable_font_draws_nothing_and_does_not_panic() {
     assert_eq!(s, GlyphStats::default(), "{s:?}");
     assert!(a.borrow().is_empty());
 }
+
+// ── Round 2 of the #2301 review ────────────────────────────────────────────
+
+/// Item 1: two windows sharing the thread's atlas, each page bigger than
+/// half the budget, painted in turn. Every repaint after the first of each
+/// rasterises, uploads and evicts nothing: what each painter's last frame drew
+/// is protected, not just the largest one's.
+#[test]
+fn two_windows_sharing_the_atlas_do_not_evict_each_other() {
+    let css = "p { font: 40px/48px ProbeFace; color: #111; }";
+    let mut a_doc = doc_with(css, "<p>ABCDEFGHIJKLM</p><p>NOPQRSTUVWXYZ</p>");
+    let mut b_doc = doc_with(css, "<p>abcdefghijklm</p><p>nopqrstuvwxyz</p>");
+    let full = atlas(usize::MAX);
+    frame(&mut a_doc, &mut painter(&full), T0);
+    let one = full.borrow().bytes();
+    // Room for one page, not both.
+    let shared = atlas(one * 3 / 2);
+    let mut a = painter(&shared);
+    let mut b = painter(&shared);
+    frame(&mut a_doc, &mut a, T0);
+    frame(&mut b_doc, &mut b, T0);
+    for n in 0..3 {
+        for (name, d, p) in [("a", &mut a_doc, &mut a), ("b", &mut b_doc, &mut b)] {
+            let s = frame(d, p, T0);
+            assert_eq!(
+                (s.atlas.misses, s.atlas.uploads, s.atlas.evictions),
+                (0, 0, 0),
+                "round {n}, window {name}: {s:?}"
+            );
+        }
+    }
+}
+
+/// Items 2 and 3: GPU partial frames draw only their damage. A 14px line and
+/// a 20px line in one face, repainted on alternate frames (a caret blink
+/// beside a clock; here the other line is hidden, so the frame draws only the
+/// one), stay on the atlas; so does a size that comes back after one frame
+/// away (A -> B -> A).
+#[test]
+fn alternating_damage_in_one_face_stays_on_the_atlas() {
+    let mut d = doc_with(
+        "#s { font: 14px/20px ProbeFace; color: #111; } \
+         #b { font: 20px/28px ProbeFace; color: #111; } .h { visibility: hidden; }",
+        "<p id=\"s\">caret line</p><p id=\"b\">12:34:56</p>",
+    );
+    let (sn, bn) = (by_id(&d, "s"), by_id(&d, "b"));
+    let mut only = |d: &mut RinchDocument, small: bool| {
+        d.set_attribute(sn, "class", if small { "" } else { "h" });
+        d.set_attribute(bn, "class", if small { "h" } else { "" });
+    };
+    let a = atlas(usize::MAX);
+    let mut p = painter(&a);
+    for n in 0..8 {
+        only(&mut d, n % 2 == 0);
+        let s = frame(&mut d, &mut p, T0);
+        assert!(
+            s.atlas.hits + s.atlas.misses > 0,
+            "frame {n} draws text: {s:?}"
+        );
+        assert_eq!(s.outline_fallbacks, 0, "frame {n}: {s:?}");
+    }
+    // A -> B -> A after a still stretch: the return is not "new".
+    only(&mut d, true);
+    for _ in 0..3 {
+        frame(&mut d, &mut p, T0);
+    }
+    only(&mut d, false);
+    let to_b = frame(&mut d, &mut p, T0);
+    only(&mut d, true);
+    let back = frame(&mut d, &mut p, T0);
+    assert_eq!(to_b.outline_fallbacks, 0, "{to_b:?}");
+    assert_eq!(back.outline_fallbacks, 0, "{back:?}");
+}
+
+/// Item 5: past the budget, the atlas comes back within it on the frames
+/// after the big text stops being drawn, whether or not anything else draws
+/// text: the trim runs as a painter starts a frame.
+#[test]
+fn the_overshoot_is_trimmed_on_the_next_frames_even_with_no_text() {
+    let mut big = doc_with(
+        "p { font: 40px/48px ProbeFace; color: #111; }",
+        "<p>ABCDEFGHIJKLM</p><p>NOPQRSTUVWXYZ</p><p>abcdefghijklm</p>",
+    );
+    let mut blank = doc_with("", "<div style=\"height: 10px\"></div>");
+    let full = atlas(usize::MAX);
+    frame(&mut big, &mut painter(&full), T0);
+    let budget = full.borrow().bytes() / 4;
+    let a = atlas(budget);
+    let mut p = painter(&a);
+    frame(&mut big, &mut p, T0);
+    assert!(a.borrow().bytes() > budget * 3, "overshoots while drawn");
+    for _ in 0..3 {
+        frame(&mut blank, &mut p, T0);
+    }
+    assert!(
+        a.borrow().bytes() <= budget,
+        "{} > {budget} after three text-free frames",
+        a.borrow().bytes()
+    );
+}
