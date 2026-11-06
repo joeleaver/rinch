@@ -263,11 +263,19 @@ both hang on the right. An **`inside`** marker is inline content at the start
 of the item, so it does take a line of its own above a block child, as in
 Chrome. The marker paints in its item's flow: whatever clips the item
 (`overflow: hidden` on it or an ancestor, a scroller) clips the marker, and a
-later positioned box covers it. Like a `::marker`, it is out of reach of the
-rules for the item's children: no `span` rule matches it, and the UA sheet
-gives it the item's font and colour and resets its box with `!important`, so
-`li span:first-child { font-size: 30px }` or `li * { color: blue }` leaves it
-as it is. There is no `::marker` selector to style it with. Still not Chrome's: a number is drawn without Chrome's
+later positioned box covers it. It is a `<rinch-marker>` element, so a rule
+naming an element (`li span:first-child`, `li > div`) never matches it. A
+universal rule (`li *`, `#t > *`) or one naming `rinch-marker` does match it,
+but the UA sheet resets with `!important` everything such a rule could change
+about how it looks: its box (margin, padding, border, size, position, float,
+transform), its font, colour and visibility (taken from the item), and its
+opacity, background, outline, shadows and filter. So `#t > * { opacity: 0 }`
+or `li * { color: blue }` leaves it as Chrome leaves a `::marker`. A property
+not in that list, such as `text-decoration` or `cursor`, does still reach it.
+There is no `::marker` selector to style it with. On desktop the marker is a
+node in the tree, so `text_content` of an `<li>` includes its glyph or number,
+as it includes any generated box (#1629); `query_selector`, structural selectors
+(`:first-child`, `:nth-child`) and copying a selection skip it. Still not Chrome's: a number is drawn without Chrome's
 tabular digits (its far edge is up to 3px in); an `inside` disc's glyph sits
 about 0.12em right of Chrome's shape; a marker whose own line is taller
 than the first line it sits on does not push the item's content down; and a
