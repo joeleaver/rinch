@@ -62,8 +62,30 @@ pub fn legacy_markup(value: &str, fast: bool) -> String {
     format!("<span title=\"{value}\"></span>{svg}")
 }
 
-/// `(markup, the text of its first element)`: raw text is not decoded.
+/// `(markup, the text of its first element)`: raw text is not decoded, in
+/// HTML only (`<style>` and `<script>` in SVG or MathML are decoded, and an
+/// SVG `<foreignObject>` or `<desc>` holds HTML again; review of #2258).
+/// Chrome 156 and Firefox 155.
 pub const RAW_TEXT: &[(&str, &str)] = &[
+    (
+        "<svg><style>.a{content:\"&amp;\"}</style></svg>",
+        ".a{content:\"&\"}",
+    ),
+    (
+        "<svg><script>var a=\"&lt;\";</script></svg>",
+        "var a=\"<\";",
+    ),
+    ("<math><style>&amp;</style></math>", "&"),
+    (
+        "<svg><foreignObject><style>&amp;</style></foreignObject></svg>",
+        "&amp;",
+    ),
+    ("<svg><desc><style>&amp;</style></desc></svg>", "&amp;"),
+    ("<xmp>&amp;</xmp>", "&amp;"),
+    ("<iframe>&amp;</iframe>", "&amp;"),
+    ("<noembed>&amp;</noembed>", "&amp;"),
+    ("<noframes>&amp;</noframes>", "&amp;"),
+    ("<noscript>&amp;</noscript>", "&amp;"),
     (
         "<style>.never-matches-2239::after{content:\"&amp;\"}</style>",
         ".never-matches-2239::after{content:\"&amp;\"}",

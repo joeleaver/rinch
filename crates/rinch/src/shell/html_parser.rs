@@ -24,7 +24,7 @@ pub enum ParsedNode {
 /// Returns `None` if the HTML is empty or couldn't be parsed.
 pub fn parse_html_string(html: &str) -> Option<Vec<ParsedNode>> {
     let mut parser = HtmlParser::new(html);
-    parse_children(&mut parser, None)
+    parse_children(&mut parser, None, false)
 }
 
 /// Simple HTML parser state.
@@ -91,7 +91,13 @@ impl<'a> HtmlParser<'a> {
     }
 }
 
-fn parse_children(parser: &mut HtmlParser, end_tag: Option<&str>) -> Option<Vec<ParsedNode>> {
+/// `foreign`: the children are SVG or MathML content (inside `<svg>` or
+/// `<math>`), where no element's text is raw.
+fn parse_children(
+    parser: &mut HtmlParser,
+    end_tag: Option<&str>,
+    foreign: bool,
+) -> Option<Vec<ParsedNode>> {
     let mut children = Vec::new();
 
     while !parser.is_at_end() {
@@ -122,17 +128,17 @@ fn parse_children(parser: &mut HtmlParser, end_tag: Option<&str>) -> Option<Vec<
             break;
         } else if parser.peek_char() == Some('<') {
             // Parse element
-            if let Some(element) = parse_element(parser) {
+            if let Some(element) = parse_element(parser, foreign) {
                 children.push(element);
             }
         } else {
             // Parse text
             let text = parser.consume_until("<");
             if !text.is_empty() {
-                // `<style>` and `<script>` hold raw text, whose references
-                // are not decoded (the HTML standard's RAWTEXT and script
-                // data states).
-                let raw = end_tag.is_some_and(is_raw_text_element);
+                // `<style>`, `<script>` and the other raw text elements hold
+                // text whose references are not decoded (the HTML standard's
+                // RAWTEXT and script data states), in HTML only.
+                let raw = !foreign && end_tag.is_some_and(is_raw_text_element);
                 children.push(ParsedNode::Text(if raw {
                     text.to_string()
                 } else {
@@ -145,7 +151,7 @@ fn parse_children(parser: &mut HtmlParser, end_tag: Option<&str>) -> Option<Vec<
     Some(children)
 }
 
-fn parse_element(parser: &mut HtmlParser) -> Option<ParsedNode> {
+fn parse_element(parser: &mut HtmlParser, foreign: bool) -> Option<ParsedNode> {
     // Consume <
     parser.consume_char()?;
 
@@ -227,7 +233,17 @@ fn parse_element(parser: &mut HtmlParser) -> Option<ParsedNode> {
     }
 
     // Parse children
-    let children = parse_children(parser, Some(&tag)).unwrap_or_default();
+    // `<svg>` and `<math>` start foreign content; an SVG `<foreignObject>`,
+    // `<desc>` or `<title>` holds HTML again (the HTML standard's
+    // integration points).
+    let child_foreign = if foreign {
+        !["foreignObject", "desc", "title"]
+            .iter()
+            .any(|t| tag.eq_ignore_ascii_case(t))
+    } else {
+        tag.eq_ignore_ascii_case("svg") || tag.eq_ignore_ascii_case("math")
+    };
+    let children = parse_children(parser, Some(&tag), child_foreign).unwrap_or_default();
 
     Some(ParsedNode::Element {
         tag,
@@ -257,10 +273,16 @@ pub fn is_void_element(tag: &str) -> bool {
     )
 }
 
-/// Whether `tag`'s content is raw text, in which character references are
-/// not decoded (`<style>`, `<script>`).
+/// Whether an HTML element `tag`'s content is raw text, in which character
+/// references are not decoded: the standard's RAWTEXT and script data
+/// elements, and `<noscript>` (scripting is on in a browser). Not in SVG or
+/// MathML, where a `<style>` or `<script>` is decoded.
 fn is_raw_text_element(tag: &str) -> bool {
-    tag.eq_ignore_ascii_case("style") || tag.eq_ignore_ascii_case("script")
+    [
+        "style", "script", "xmp", "iframe", "noembed", "noframes", "noscript",
+    ]
+    .iter()
+    .any(|t| tag.eq_ignore_ascii_case(t))
 }
 
 /// Decode the character references of an element's text as the HTML
