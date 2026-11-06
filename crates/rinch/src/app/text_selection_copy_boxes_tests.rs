@@ -436,24 +436,12 @@ fn the_2240_corpus_still_copies_as_chrome() {
     copies_as_chrome(CORPUS);
 }
 
-/// The copy of all of `#p`'s root, as a triple click selects it.
+/// The copy of all of `#p`'s root, as a triple click on it selects it.
 fn copy_whole(html: &'static str) -> String {
     let mut app = mount(html, SEL);
     let p = node(&app, "p");
-    let len = {
-        let d = app.doc.as_ref().unwrap().borrow();
-        d.tree
-            .get(p)
-            .unwrap()
-            .text_layout
-            .as_ref()
-            .unwrap()
-            .text_content
-            .len()
-    };
-    let mut sel = TextSelection::at(p, 0);
-    sel.focus_offset = len;
-    app.text_selection = Some(sel);
+    let at = super::text_selection_across_tests::at(&app, "p", 0.9);
+    app.start_text_selection(p, 0, 3, false, at);
     app.text_selection_text().unwrap_or_default()
 }
 
@@ -952,4 +940,18 @@ fn a_copy_is_linear_in_its_roots_text() {
         big <= 5 * small,
         "{small} steps for 250 spans, {big} for 1000"
     );
+}
+
+#[test]
+fn a_selection_beside_a_box_at_its_roots_edge_leaves_the_box_out() {
+    // Review of #2249: a selection that ends in the text before a box at
+    // its root's end, or starts in the text after a box at its root's
+    // start, stands on the text's side of the box (Chrome 156). Only a
+    // selection made whole (a triple click, Select All) takes such a box.
+    review_cases(&[
+        "start after float",
+        "end before float",
+        "start after ib at root start",
+        "end before ib at root end",
+    ]);
 }

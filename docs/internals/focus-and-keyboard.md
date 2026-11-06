@@ -825,7 +825,9 @@ fallback for a drag over no text) is not drawn to them.
   What holds the last root is never passed, and leaving it ends the walk. An offset where
   a box stands cannot say which side of the box it is on; Chrome puts a
   selection that starts or ends in the text beside the box on the text's
-  side, so the box is in only at the root's own start or end. A walk that
+  side, so such a box is passed, at a root's own start or end too, unless
+  the selection was made whole (a triple click, Select All or a
+  `user-select: all` element: `TextSelection::whole`). A walk that
   starts inside an `inline-block` writes the rest of each root it is inside,
   up to the selection's end. The highlight still follows `runs`, so near a
   box it can disagree with the copy (#2245).

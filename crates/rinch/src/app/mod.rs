@@ -809,6 +809,11 @@ pub(crate) struct TextSelection {
     /// paragraph is not collapsed by the jitter after the click.
     pub(crate) press: (f32, f32),
     pub(crate) dragged: bool,
+    /// Whether it was made whole (a triple click's paragraph, Select All, a
+    /// `user-select: all` element), so its ends take what stands at their
+    /// roots' own edges; a press or drag beside a box is on the text's side
+    /// (`text_selection_copy::Part`).
+    pub(crate) whole: bool,
 }
 
 /// A press on a link inside selectable text, held for the release: a click

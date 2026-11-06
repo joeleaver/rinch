@@ -77,12 +77,38 @@ enum Step {
     LeaveRun(u64),
 }
 
+/// The part of a root's text a selection takes.
+#[derive(Clone, Copy)]
+struct Part {
+    start: usize,
+    end: usize,
+    /// Whether a box standing at the root's own start (`start` is 0) or end
+    /// (`end` is its length) is taken. An offset where a box stands cannot
+    /// say which side of the box it is on: a selection that starts or ends
+    /// in the text beside the box is on the text's side (Chrome 156), and
+    /// one made whole (a triple click, Select All) takes it.
+    start_edge: bool,
+    end_edge: bool,
+}
+
+impl Part {
+    /// All of a root's text.
+    fn whole(len: usize) -> Self {
+        Self {
+            start: 0,
+            end: len,
+            start_edge: true,
+            end_edge: true,
+        }
+    }
+}
+
 /// An IFC root the walk is inside, and how far its text is written.
 struct Root {
     id: u64,
     /// The part of its text the selection takes, `None` when it takes none
     /// of it (a root that cannot be selected, or one beside the selection).
-    part: Option<(usize, usize)>,
+    part: Option<Part>,
     len: usize,
     /// Its text before this is written (or passed).
     cursor: usize,
@@ -99,12 +125,7 @@ struct Root {
 }
 
 impl Root {
-    fn new(
-        tree: &rinch_dom::NodeTree,
-        id: u64,
-        part: Option<(usize, usize)>,
-        started: bool,
-    ) -> Self {
+    fn new(tree: &rinch_dom::NodeTree, id: u64, part: Option<Part>, started: bool) -> Self {
         let mut texts: HashMap<u64, (usize, usize)> = HashMap::new();
         let mut len = 0;
         let mut drawn = Vec::new();
@@ -133,24 +154,24 @@ impl Root {
 
     /// Whether what stands at the walk's place in this root's lines (an
     /// atomic inline, a float, a picture) is in the selection: its part
-    /// reaches past it. A part that starts or ends where a box stands has the
-    /// box only at the root's own start or end: an offset there cannot say
-    /// which side of the box it is on, and a selection that starts or ends
-    /// in the text beside a box (Chrome 156) is on the text's side. A root
-    /// the selection takes none of leaves that to the roots inside.
+    /// reaches past it (at the root's own edges, see [`Part`]). A root the
+    /// selection takes none of leaves that to the roots inside.
     fn takes_here(&self) -> bool {
         match self.part {
             None => true,
-            Some((s, e)) => {
-                !self.started || ((s < self.cursor || s == 0) && (self.cursor < e || e == self.len))
+            Some(p) => {
+                let c = self.cursor;
+                !self.started
+                    || ((p.start < c || (p.start == 0 && p.start_edge))
+                        && (c < p.end || (p.end == self.len && p.end_edge)))
             }
         }
     }
 
     /// Write its part up to `upto`.
     fn write_to(&mut self, tree: &rinch_dom::NodeTree, upto: usize, out: &mut Out) {
-        if let Some((s, e)) = self.part {
-            let (a, b) = (self.cursor.max(s), upto.min(e));
+        if let Some(p) = self.part {
+            let (a, b) = (self.cursor.max(p.start), upto.min(p.end));
             if a < b
                 && let Some(t) = tree.get(self.id).and_then(|n| n.text_layout.as_ref())
             {
@@ -193,16 +214,11 @@ fn text_len(tree: &rinch_dom::NodeTree, id: u64) -> usize {
 
 /// Open root `id`, met by the walk: its part is the selection's at an end
 /// of it, and all of it between (when it can be selected).
-fn open(
-    tree: &rinch_dom::NodeTree,
-    parts: &HashMap<u64, (usize, usize)>,
-    roots: &mut Vec<Root>,
-    id: u64,
-) {
+fn open(tree: &rinch_dom::NodeTree, parts: &HashMap<u64, Part>, roots: &mut Vec<Root>, id: u64) {
     let part = parts
         .get(&id)
         .copied()
-        .or_else(|| selectable(tree, id).then_some((0, text_len(tree, id))));
+        .or_else(|| selectable(tree, id).then_some(Part::whole(text_len(tree, id))));
     roots.push(Root::new(tree, id, part, true));
 }
 
@@ -219,19 +235,32 @@ fn close(tree: &rinch_dom::NodeTree, roots: &mut Vec<Root>, id: u64, out: &mut O
 }
 
 /// The copy of the selection between `a` and `b` (each a root and an offset
-/// in its text), whichever comes first in the document.
-pub(crate) fn copy_text(tree: &rinch_dom::NodeTree, a: (u64, usize), b: (u64, usize)) -> String {
+/// in its text), whichever comes first in the document. `whole`: the
+/// selection was made whole (a triple click, Select All, a `user-select:
+/// all` element), so its ends take the boxes at their roots' own edges.
+pub(crate) fn copy_text(
+    tree: &rinch_dom::NodeTree,
+    a: (u64, usize),
+    b: (u64, usize),
+    whole: bool,
+) -> String {
     let (a, b) = (
         (a.0, a.1.min(text_len(tree, a.0))),
         (b.0, b.1.min(text_len(tree, b.0))),
     );
     let ((first, start), (last_root, end)) = if before(tree, b, a) { (b, a) } else { (a, b) };
-    let mut parts: HashMap<u64, (usize, usize)> = HashMap::new();
+    let mut parts: HashMap<u64, Part> = HashMap::new();
+    let part = |start, end, start_edge, end_edge| Part {
+        start,
+        end,
+        start_edge,
+        end_edge,
+    };
     if first == last_root {
-        parts.insert(first, (start, end));
+        parts.insert(first, part(start, end, whole, whole));
     } else {
-        parts.insert(first, (start, text_len(tree, first)));
-        parts.insert(last_root, (0, end));
+        parts.insert(first, part(start, text_len(tree, first), whole, true));
+        parts.insert(last_root, part(0, end, true, whole));
     }
     // What holds the last root: never passed, and leaving it ends the walk
     // (the last root is then behind it).
@@ -395,7 +424,7 @@ fn push_children(
 /// next of its text nodes the walk meets.
 fn walk_from(
     tree: &rinch_dom::NodeTree,
-    parts: &HashMap<u64, (usize, usize)>,
+    parts: &HashMap<u64, Part>,
     first: u64,
 ) -> (Vec<Step>, Vec<Root>) {
     // An anonymous box is met at its first member.
@@ -421,7 +450,7 @@ fn walk_from(
         let part = parts
             .get(&id)
             .copied()
-            .or_else(|| selectable(tree, id).then_some((0, text_len(tree, id))));
+            .or_else(|| selectable(tree, id).then_some(Part::whole(text_len(tree, id))));
         Root::new(tree, id, part, false)
     };
     let mut stack = Vec::new();

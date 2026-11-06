@@ -40,6 +40,7 @@ impl TextSelection {
             painted_generation: u64::MAX,
             press: (0.0, 0.0),
             dragged: false,
+            whole: false,
         }
     }
 
@@ -384,6 +385,9 @@ impl RinchApp {
                     end
                 };
             }
+            if (sel.focus_node, sel.focus_offset) != (node, offset) {
+                sel.whole = false;
+            }
             sel.focus_node = node;
             sel.focus_offset = offset;
         }
@@ -407,6 +411,7 @@ impl RinchApp {
             sel.focus_offset = offset;
             sel.press = press;
             sel.dragged = true;
+            sel.whole = false;
         } else {
             self.clear_text_selection();
             let mut sel = TextSelection::at(root, offset);
@@ -416,6 +421,7 @@ impl RinchApp {
                 if let Some(((a, ao), (f, fo))) = all_extent(&d.tree, root, press.0, press.1) {
                     (sel.ifc_node_id, sel.anchor_offset) = (a, ao);
                     (sel.focus_node, sel.focus_offset) = (f, fo);
+                    sel.whole = true;
                 } else if click_count >= 2 {
                     let text = d
                         .tree
@@ -430,6 +436,7 @@ impl RinchApp {
                     };
                     sel.anchor_offset = start;
                     sel.focus_offset = end;
+                    sel.whole = click_count > 2;
                 }
             }
             self.text_selection = Some(sel);
@@ -471,6 +478,7 @@ impl RinchApp {
             sel.focus_node = last;
             sel.focus_offset = end;
             sel.dragged = true;
+            sel.whole = true;
         }
         self.paint_text_selection();
         true
@@ -533,6 +541,7 @@ impl RinchApp {
             &d.tree,
             (sel.ifc_node_id, sel.anchor_offset),
             (sel.focus_node, sel.focus_offset),
+            sel.whole,
         );
         (!out.is_empty()).then_some(out)
     }
