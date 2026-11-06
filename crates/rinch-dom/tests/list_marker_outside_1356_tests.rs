@@ -744,6 +744,37 @@ mod review_2271 {
             Some([355, 9, 360, 14]),
             Some([326, 4, 336, 16]),
         ),
+        // A universal rule for the item's children leaves the marker alone,
+        // as it leaves a `::marker` (review round 2 of #2271).
+        (
+            "child_opacity",
+            "<ul style='margin:0'><li id=t><div class=k>x</div></li></ul>",
+            "#t > * { opacity: 0 }",
+            None,
+            [40, 0, 360, 20],
+            Some([23, 9, 28, 14]),
+            None,
+        ),
+        (
+            "child_visibility",
+            "<ul style='margin:0'><li id=t><span class=k>x</span></li></ul>",
+            "#t > * { visibility: hidden }",
+            None,
+            [40, 0, 360, 20],
+            Some([23, 9, 28, 14]),
+            None,
+        ),
+        // ... and so does a rule naming the marker's own element, for every
+        // property the UA sheet resets.
+        (
+            "type_selector",
+            "<ul style='margin:0'><li id=t><span class=k>x</span></li></ul>",
+            "rinch-marker { opacity: 0; color: #00f }",
+            None,
+            [40, 0, 360, 20],
+            Some([23, 9, 28, 14]),
+            Some([41, 7, 47, 16]),
+        ),
     ];
 
     #[test]
@@ -824,4 +855,73 @@ mod review_2271 {
         let (marker, _) = inks(&full, [0, 0, 0, 0]);
         assert_eq!(marker, Some([23, 59, 28, 104]), "Chrome 156's marker ink");
     }
+}
+
+/// Round 2 of the review of #2271: a universal rule's background, outline,
+/// shadows and filter do not reach the marker (Chrome 156: its ink is the
+/// plain disc, and nothing blue is drawn left of x 34, where the content
+/// span's own shadow reaches).
+#[test]
+fn a_universal_rule_paints_nothing_on_the_marker() {
+    use parley::fontique::{Blob, FontInfoOverride};
+    let mut doc = RinchDocument::new();
+    doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(FACE)),
+        Some(FontInfoOverride {
+            family_name: Some("ProbeFace"),
+            ..Default::default()
+        }),
+    );
+    doc.load_css(
+        "html, body { margin: 0; padding: 0 } body { font: 16px/20px ProbeFace; color: #000 } \
+         #t { color: rgb(255,0,0) } .k { color: #000 } \
+         #t * { background: #00f; outline: 3px solid #00f; box-shadow: 0 0 0 4px #00f; \
+                text-shadow: 2px 2px #00f; filter: blur(3px) }",
+    );
+    let body = doc.body();
+    let host = doc.create_element("div");
+    doc.set_attribute(host, "style", "width: 400px");
+    doc.append_child(body, host);
+    doc.set_inner_html(
+        host,
+        "<ul style='margin:0'><li id=t><span class=k>x</span></li></ul>",
+    );
+    doc.resolve_layout(800.0, 600.0);
+    let mut p = TinySkiaPainter::new(800, 600);
+    p.fill_white();
+    let mut cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut p,
+        1.0,
+        (800.0, 600.0),
+        &mut doc.font_cx,
+        &mut cx,
+    );
+    let (d, w) = (p.pixels(), p.width() as usize);
+    let mut blue = 0;
+    let mut red: Ink = None;
+    for y in 0..60usize {
+        for x in 0..40usize {
+            let i = (y * w + x) * 4;
+            let (r, g, b) = (d[i] as i32, d[i + 1] as i32, d[i + 2] as i32);
+            if b > 150 && r < 100 && x < 34 {
+                blue += 1;
+            }
+            if r > 200 && g < 90 && b < 90 {
+                let (x, y) = (x as i32, y as i32);
+                let e = red.get_or_insert([x, y, x + 1, y + 1]);
+                e[0] = e[0].min(x);
+                e[1] = e[1].min(y);
+                e[2] = e[2].max(x + 1);
+                e[3] = e[3].max(y + 1);
+            }
+        }
+    }
+    assert_eq!(blue, 0, "blue drawn on the marker");
+    let m = red.expect("the marker is drawn");
+    assert!(
+        (0..4).all(|i| (m[i] - [23, 9, 28, 14][i]).abs() <= 1),
+        "marker ink {m:?}, Chrome [23, 9, 28, 14]"
+    );
 }

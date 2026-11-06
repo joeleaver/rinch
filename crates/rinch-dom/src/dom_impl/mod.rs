@@ -632,19 +632,30 @@ impl RinchDocument {
             /* The list marker `resolve_list_marker` generates (#1356), a
                `<rinch-marker>` element. A browser's `::marker` takes only a
                few properties and no rule for the item's children reaches it;
-               this one is an element in the tree, which no `span` rule matches,
-               and its box, font and colour are reset here with `!important`, so
-               that a universal rule (`li *`, `* { margin }`) cannot change it
-               either: it takes the item's font and colour. It is never
+               this one is an element in the tree, which no `span` or other
+               element-name rule matches. What a universal rule (`li *`,
+               `#t > *`), or a rule naming `rinch-marker` itself, could set on it
+               is reset here with `!important`: its box, font, colour,
+               visibility, opacity, background, outline, shadows and filter,
+               so it takes the item's font, colour and visibility and paints
+               nothing else. A property not listed here (`text-decoration`,
+               `cursor`, …) such a rule does still reach. It is never
                positioned: an `outside` marker is a static block here, painted
                and clipped in its item's flow as a `::marker` is, and only its
                Taffy box is out of flow (`taffy_style_from_computed`), placed by
                `crate::list_marker` beside the item's first line, in the list's
                padding; an `inside` one stays inline content at the start of the
                item. */
-            rinch-marker[rinch-list-marker] {
+            [rinch-list-marker] {
                 font: inherit !important;
                 color: inherit !important;
+                visibility: inherit !important;
+                opacity: 1 !important;
+                background: none !important;
+                outline: none !important;
+                text-shadow: none !important;
+                box-shadow: none !important;
+                filter: none !important;
                 letter-spacing: inherit !important;
                 word-spacing: inherit !important;
                 text-transform: none !important;
@@ -658,10 +669,10 @@ impl RinchDocument {
                 vertical-align: baseline !important;
                 position: static !important;
             }
-            rinch-marker[rinch-list-marker="inside"] {
+            [rinch-list-marker="inside"] {
                 display: inline !important;
             }
-            rinch-marker[rinch-list-marker="outside"] {
+            [rinch-list-marker="outside"] {
                 display: block !important;
                 width: auto !important;
                 height: auto !important;
