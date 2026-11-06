@@ -104,6 +104,22 @@ pub(super) fn pointer_events_from_stylo(
     }
 }
 
+/// `user-select` (#2231). Stylo's servo build parses all five keywords (and
+/// `-moz-none` as `none`), with the `-webkit-` and `-moz-` spellings as
+/// aliases of the one longhand.
+pub(super) fn user_select_from_stylo(
+    us: style::values::specified::ui::UserSelect,
+) -> UserSelectValue {
+    use style::values::specified::ui::UserSelect;
+    match us {
+        UserSelect::Auto => UserSelectValue::Auto,
+        UserSelect::Text => UserSelectValue::Text,
+        UserSelect::None => UserSelectValue::None,
+        UserSelect::Contain => UserSelectValue::Contain,
+        UserSelect::All => UserSelectValue::All,
+    }
+}
+
 pub(super) fn z_index_from_stylo(z: &style::values::computed::ZIndex) -> Option<i32> {
     use style::values::generics::position::ZIndex;
     match z {
