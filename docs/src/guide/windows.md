@@ -1224,7 +1224,7 @@ App::new(app).gpu_antialiasing(GpuAntialiasing::Msaa16).run();
 RINCH_GPU_AA=msaa16 ./my-app      # area, msaa8 or msaa16; overrides the app
 ```
 
-Area coverage blends two antialiased edges that meet inside one pixel as if they did not overlap, so two curved shapes that abut exactly (SVG paths sharing an edge, overlapping contours in a variable font) can show a faint seam where MSAA shows none. rinch's own boxes are snapped to the device grid and never meet that way. The mode is fixed when the first GPU renderer is made: an embedding host calls `rinch::set_gpu_antialiasing` before it creates its `RinchOverlayRenderer`, and a later call is logged and ignored. The software renderer and Android ignore the setting.
+Area coverage adds up a path's signed area in each pixel, so where one path overlaps itself (a self-crossing stroke, overlapping contours in a variable font) an edge pixel is shaded by the sum of the overlaps, where MSAA counts the samples their union covers. That is the case for choosing MSAA. It does not help seams between separate shapes that abut: the GPU renderer blends each shape with its own coverage in either mode, and such seams look about the same under area coverage, MSAA and the software renderer. The mode is fixed when the first GPU renderer is made: an embedding host calls `rinch::set_gpu_antialiasing` before it creates its `RinchOverlayRenderer`, and a later call is logged and ignored. The software renderer and Android ignore the setting.
 
 ### Vsync on and off
 

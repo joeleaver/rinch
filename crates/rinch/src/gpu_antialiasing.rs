@@ -12,11 +12,13 @@
 //! `Msaa16` and `Msaa8` stay selectable, through
 //! [`App::gpu_antialiasing`](crate::app_builder::App::gpu_antialiasing),
 //! [`set_gpu_antialiasing`] or `RINCH_GPU_AA=area|msaa8|msaa16`, as an escape
-//! hatch: area coverage conflates where two antialiased edges of different
-//! paths meet inside one pixel (abutting non-rectangular paths such as SVG
-//! shapes, overlapping contours in a variable font), where MSAA does not.
-//! rinch snaps boxes to the device grid, so its own boxes never meet that way
-//! (#2286 measured no seam between abutting cells at scales 1, 1.25 and 1.5).
+//! hatch for a path that overlaps itself: area coverage adds up a path's
+//! signed area in each pixel, so where one path crosses itself or its contours
+//! overlap (a self-crossing stroke, overlapping contours in a variable font)
+//! an edge pixel is shaded by the sum, where MSAA counts the samples the union
+//! covers. It is not a cure for seams between separate paths that abut: Vello
+//! blends each path with its own coverage in both modes, and the #2286 review
+//! measured such seams about equal under tiny-skia, Msaa16 and Area.
 //!
 //! The mode is fixed for the process the first time a renderer asks for it,
 //! because a Vello renderer is built with the pipelines for one mode: a

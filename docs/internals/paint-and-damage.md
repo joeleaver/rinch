@@ -110,13 +110,17 @@ logged and ignored). Why: Msaa16 gave text edges at most 15 partial levels
 (#2286's probe: mean coverage error to FreeType 0.049 against Area's 0.041), and
 its fine pass (`fill_path_ms`, workgroup atomics and barriers per fill) cost
 37.7 ms for a 1280×800 page of 13px text on lavapipe against 24.8 ms for Area's
-pure-ALU `fill_path`; on an Adreno 619 the whole frame was 58 ms against 17. The
-risk is conflation where two paths' antialiased edges share a pixel; rinch
-snaps boxes to the device grid, and #2286's probe found no seam between abutting
-cells, borders or rounded grids at scales 1, 1.25 and 1.5 (≤ 81 pixels differed
-from Msaa16 by more than 8/255, none by more than 32). MSAA stays selectable for
-SVG-heavy scenes with abutting curves. The MSAA even-odd race below matters only
-when an app selects MSAA. Pins: `gpu_the_window_draws_text_with_area_coverage_2286`
+pure-ALU `fill_path`; on an Adreno 619 the whole frame was 58 ms against 17. MSAA stays
+selectable for a path that overlaps itself: area coverage sums a path's signed
+area per pixel, so a self-crossing stroke or overlapping contours (variable
+fonts) shade an edge pixel by the sum, where MSAA counts the samples the union
+covers. It is not a fix for seams between separate abutting paths: Vello
+blends each path with its own coverage in both modes (`fine.wgsl`, the blend
+after the fill), and the #2286 review measured those seams about equal under
+tiny-skia, Msaa16 and Area. (#2286's probe: ≤ 81 pixels of abutting cells,
+borders and rounded grids differed from Msaa16 by more than 8/255, none by more
+than 32, at scales 1, 1.25 and 1.5.) The MSAA even-odd race below matters wherever
+MSAA renders: an app that selects it, and the exact-comparison fixtures. Pins: `gpu_the_window_draws_text_with_area_coverage_2286`
 (`app/gpu_text_aa_2286_tests.rs`, CI's `test-gpu`: more than 64 distinct partial
 levels in a text window, where Msaa16 has at most 15), and
 `gpu_antialiasing::tests` (the env and request order, one mode's pipelines).

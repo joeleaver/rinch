@@ -492,8 +492,9 @@ where
 
     /// Choose the antialiasing the GPU renderer draws every window with
     /// (issue #2286): [`GpuAntialiasing::Area`](crate::GpuAntialiasing::Area),
-    /// the default, or MSAA, for a scene whose abutting curved shapes show
-    /// seams under area coverage. The `RINCH_GPU_AA` environment variable
+    /// the default, or MSAA, for paths that overlap themselves (self-crossing
+    /// strokes, overlapping contours), whose edges area coverage shades by the
+    /// sum of the overlaps. The `RINCH_GPU_AA` environment variable
     /// (`area`, `msaa8`, `msaa16`) overrides it. The software renderer and
     /// Android ignore it.
     #[cfg(feature = "gpu")]
