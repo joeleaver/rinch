@@ -461,7 +461,8 @@ fn span_attr(tree: &NodeTree, id: RawNodeId, name: &str) -> Option<usize> {
 /// A cell's or column's contribution to its column: `width`, grown to the
 /// border box when it declares a content box. A cell's is capped at its
 /// `max-width` (#2264; Blink's `CreateCellInlineConstraint`): `width: 300px;
-/// max-width: 120px` asks 120 of the column, in either table layout.
+/// max-width: 120px` asks 120 of the column, in either table layout, and
+/// with `min-width: 200px` as well, 200.
 fn declared_track(tree: &NodeTree, id: RawNodeId) -> Track {
     let cs = &tree.nodes[id].computed_style;
     match cs.width {
@@ -474,8 +475,15 @@ fn declared_track(tree: &NodeTree, id: RawNodeId) -> Track {
                     + cs.border_left_width.to_px()
                     + cs.border_right_width.to_px()
             };
-            let w = match cs.max_width {
-                DimensionValue::Length(m) if cs.table_part == TablePart::Cell => w.min(m),
+            // `min-width` wins over `max-width`, as everywhere in CSS.
+            let w = match (cs.max_width, cs.min_width) {
+                (DimensionValue::Length(m), min) if cs.table_part == TablePart::Cell => {
+                    let w = w.min(m);
+                    match min {
+                        DimensionValue::Length(n) => w.max(n),
+                        _ => w,
+                    }
+                }
                 _ => w,
             };
             Track::Px(w + extra)

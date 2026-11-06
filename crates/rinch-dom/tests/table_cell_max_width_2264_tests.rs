@@ -387,3 +387,36 @@ fn a_restyle_between_a_cell_and_a_block_td_keeps_each_rule() {
     d.resolve_layout(602.0, 800.0);
     assert_eq!(abs(&d, "a"), (0.0, 0.0, 400.0, 20.0), "block -> cell");
 }
+
+#[test]
+fn a_cells_min_width_wins_over_its_max_width() {
+    // CSS: min-width beats max-width, so `width:300px; max-width:120px;
+    // min-width:200px` asks 200 of the column.
+    let a = "padding:0;width:300px;max-width:120px;min-width:200px";
+    let fixed = doc(&format!(
+        "<table id=t style='border-spacing:0;width:400px;table-layout:fixed'><tr>\
+         <td id=a style='{a}'>{}</td><td id=b style='padding:0'>{}</td></tr></table>",
+        bx(50.0, 20.0),
+        bx(50.0, 20.0)
+    ));
+    assert_eq!(abs(&fixed, "a"), (0.0, 0.0, 200.0, 20.0));
+    assert_eq!(abs(&fixed, "b"), (200.0, 0.0, 200.0, 20.0));
+    // Chrome: a 333.328, b 166.672 (200 and 100 share 500).
+    let sized = doc(&format!(
+        "<table id=t style='border-spacing:0;width:500px'><tr>\
+         <td id=a style='{a}'>{}</td><td id=b style='padding:0;width:100px'>{}</td></tr></table>",
+        bx(50.0, 20.0),
+        bx(50.0, 20.0)
+    ));
+    assert_eq!(abs(&sized, "a"), (0.0, 0.0, 333.0, 20.0));
+    assert_eq!(abs(&sized, "b"), (333.0, 0.0, 167.0, 20.0));
+    let auto = doc(&format!(
+        "<table id=t style='border-spacing:0'><tr>\
+         <td id=a style='{a}'>{}</td><td id=b style='padding:0'>{}</td></tr></table>",
+        bx(50.0, 20.0),
+        bx(50.0, 20.0)
+    ));
+    assert_eq!(abs(&auto, "t").2, 250.0);
+    assert_eq!(abs(&auto, "a"), (0.0, 0.0, 200.0, 20.0));
+    assert_eq!(abs(&auto, "b"), (200.0, 0.0, 50.0, 20.0));
+}
