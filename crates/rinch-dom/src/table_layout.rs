@@ -67,6 +67,22 @@
 //! width (#2264): its Taffy `max_size` caps the contributions, and
 //! `stretch_past_max_width` lets the grid stretch it past that.
 //!
+//! ## Row heights
+//!
+//! A row has no box, so its `height` is a statement about its track: a
+//! length one is the track's minimum, `minmax(<height>, max-content)`. A
+//! taller cell grows the row past it, and the track is not one of the
+//! `auto` tracks a taller table stretches, so the table's extra height goes
+//! to the rows that declare none, as Chrome gives it. When every row declares
+//! one they are `minmax(<height>, auto)`, stretched by equal shares where
+//! Chrome shares in proportion to their heights. A percentage, a row group's
+//! `height` and the `height` of a row whose children stack (`Row::stacked`)
+//! size nothing. A rowspan cell taller than the rows it spans grows them
+//! by equal shares (Chrome: in proportion to their heights), and a taller
+//! table's `auto` rows share its extra height equally (Chrome: by their
+//! content); these and the other differences are #2312. A collapsing table
+//! has no padding (CSS 2.1 §17.6.2).
+//!
 //! ## Vertical alignment
 //!
 //! Taffy's block layout has no `align-content`, and a table cell is a block
@@ -152,6 +168,14 @@ pub struct TableBox {
     /// `table-layout: fixed` in force.
     fixed: bool,
     spacing: (f32, f32),
+    /// `border-collapse: collapse`: the table has no padding (CSS 2.1
+    /// §17.6.2, Chrome), whatever it declares.
+    collapse: bool,
+    /// The grid line of the first row, after the top captions.
+    first_row: usize,
+    /// Each row's declared `height` in px, when it has a length one: the
+    /// least its track is (see *Row heights*).
+    row_heights: Vec<Option<f32>>,
     /// The borders the cascade gave it, while it collapses them onto cells.
     base: Option<BorderSides>,
     /// The boxes the last rebuild placed.
@@ -780,6 +804,19 @@ impl RinchDocument {
             }
         }
         let cols = open.len();
+        // A row's `height` is the least its track is (*Row heights*). A
+        // percentage, or one on a row whose children stack in the first
+        // column, sizes nothing.
+        let row_heights: Vec<Option<f32>> = rows
+            .iter()
+            .map(|r| match (r.id, r.stacked) {
+                (Some(id), false) => match self.tree.nodes[id].computed_style.height {
+                    DimensionValue::Length(h) if h > 0.0 => Some(h),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
 
         let cs = &self.tree.nodes[table].computed_style;
         // A host's own width is its block's: the anonymous table in it is
@@ -906,6 +943,9 @@ impl RinchDocument {
             definite,
             fixed,
             spacing,
+            collapse,
+            first_row: first_line,
+            row_heights,
             base,
             placed: ids,
         }));
@@ -991,16 +1031,45 @@ impl RinchDocument {
                     })
                 })
                 .collect();
+            // Rows are implicit `auto` tracks, but one with a declared
+            // height: `minmax(<height>, max-content)`, never under it, and
+            // not one of the `auto` tracks a taller table stretches, as
+            // Chrome gives a table's extra height to its rows of no declared
+            // height. When every row declares one, they all stretch.
+            let every = b.row_heights.iter().all(Option::is_some);
+            style.grid_template_rows = match b.row_heights.iter().rposition(Option::is_some) {
+                None => Vec::new(),
+                Some(last) => (1..b.first_row)
+                    .map(|_| None)
+                    .chain(b.row_heights[..=last].iter().copied())
+                    .map(|h| {
+                        taffy::GridTemplateComponent::Single(match h {
+                            Some(h) if every => minmax(length(h), taffy::style_helpers::auto()),
+                            Some(h) => minmax(length(h), taffy::style_helpers::max_content()),
+                            None => taffy::style_helpers::auto(),
+                        })
+                    })
+                    .collect(),
+            };
             style.gap = taffy::Size {
                 width: length(b.spacing.0),
                 height: length(b.spacing.1),
             };
+            // A collapsing table has no padding, and no spacing either. (A
+            // block standing for one keeps its own: the table is inside it.)
             let cs = &node.computed_style;
+            let pad = |p: crate::computed_style::LengthPercentageValue, spacing: f32| {
+                if b.collapse && !host {
+                    0.0
+                } else {
+                    p.to_px() + spacing
+                }
+            };
             style.padding = taffy::Rect {
-                top: length(cs.padding_top.to_px() + b.spacing.1),
-                bottom: length(cs.padding_bottom.to_px() + b.spacing.1),
-                left: length(cs.padding_left.to_px() + b.spacing.0),
-                right: length(cs.padding_right.to_px() + b.spacing.0),
+                top: length(pad(cs.padding_top, b.spacing.1)),
+                bottom: length(pad(cs.padding_bottom, b.spacing.1)),
+                left: length(pad(cs.padding_left, b.spacing.0)),
+                right: length(pad(cs.padding_right, b.spacing.0)),
             };
             if !host && !b.definite && matches!(node.computed_style.width, DimensionValue::Auto) {
                 style.size.width = taffy::Dimension::fit_content();

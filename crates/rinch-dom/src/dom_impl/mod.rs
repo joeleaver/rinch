@@ -1304,6 +1304,17 @@ impl RinchDocument {
                     || (self.tree.get(**id).is_some_and(|n| {
                         n.display_mode == crate::node::DisplayMode::Inline
                     }) && props.keys().any(|p| p.changes_inline_edge()))
+                    // An atomic inline's top and bottom margins are its line's
+                    // (`ifc::atomic_vertical_margins`): a frame of one moves
+                    // the line with no change in the box's own size.
+                    || (self.tree.get(**id).is_some_and(|n| n.display_mode.is_atomic_inline())
+                        && props.keys().any(|p| {
+                            matches!(
+                                p,
+                                crate::transition::TransitionProperty::MarginTop
+                                    | crate::transition::TransitionProperty::MarginBottom
+                            )
+                        }))
             })
             .map(|(id, _)| *id)
             .collect();
