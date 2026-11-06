@@ -1,10 +1,33 @@
+use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Mutex;
 
-/// Wire protocol types (mirrored from rinch-debug)
+// Wire protocol types (mirrored from rinch-debug)
 
+/// The unit of a [`DebugCommandKind::Scroll`] delta (mirrored from
+/// `rinch-debug` in lockstep). Also the `scroll` tool's `unit` parameter.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ScrollUnit {
+    /// Pixels, injected as a pixel `MouseWheel` (a trackpad): scrolls at once.
+    #[default]
+    Pixel,
+    /// Wheel notches, injected as `MouseWheelLines` (a mouse wheel): the
+    /// default scroll glides over about 200 ms.
+    Line,
+}
+
+impl ScrollUnit {
+    fn is_pixel(&self) -> bool {
+        *self == ScrollUnit::Pixel
+    }
+}
+
+/// The different commands the debug server can receive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum DebugCommandKind {
@@ -78,6 +101,10 @@ pub enum DebugCommandKind {
         y: f32,
         delta_x: f64,
         delta_y: f64,
+        /// `"pixel"` (the default; also what a request without the field
+        /// means) or `"line"`: notches of a mouse wheel, which glide.
+        #[serde(default, skip_serializing_if = "ScrollUnit::is_pixel")]
+        unit: ScrollUnit,
     },
     #[serde(rename = "key_press")]
     KeyPress {

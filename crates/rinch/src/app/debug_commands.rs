@@ -632,6 +632,7 @@ impl RinchApp {
                 y,
                 delta_x,
                 delta_y,
+                unit,
             } => {
                 // Route through the real input path so MCP matches a real
                 // wheel, exactly as `Click`/`MouseDown`/`MouseUp`/`MouseMove`/
@@ -658,16 +659,28 @@ impl RinchApp {
                 // scroll offset). Negating makes both the document and any
                 // render surface see what the physical gesture would produce.
                 self.cursor_pos = Some((x, y));
-                actions.extend(self.handle_event(
-                    PlatformEvent::MouseWheel {
+                // A `line` scroll is a mouse wheel's notches (#2303): the
+                // `MouseWheelLines` event `shell::rinch_runtime::
+                // wheel_platform_event` makes of a winit `LineDelta`, so it
+                // glides (#2290) exactly like a notch from a real wheel. It is
+                // built here rather than through that function because `debug`
+                // does not imply `desktop` (no winit on Android). A pixel one
+                // is a trackpad's delta and scrolls directly.
+                let event = match unit {
+                    rinch_debug::ScrollUnit::Line => PlatformEvent::MouseWheelLines {
+                        x,
+                        y,
+                        lines_x: -delta_x,
+                        lines_y: -delta_y,
+                    },
+                    rinch_debug::ScrollUnit::Pixel => PlatformEvent::MouseWheel {
                         x,
                         y,
                         delta_x: -delta_x,
                         delta_y: -delta_y,
                     },
-                    window_size,
-                    scale_factor,
-                ));
+                };
+                actions.extend(self.handle_event(event, window_size, scale_factor));
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
@@ -1099,6 +1112,17 @@ mod tests {
     }
 
     fn mcp_scroll(app: &mut RinchApp, x: f32, y: f32, delta_x: f64, delta_y: f64) {
+        mcp_scroll_in(app, x, y, delta_x, delta_y, rinch_debug::ScrollUnit::Pixel);
+    }
+
+    fn mcp_scroll_in(
+        app: &mut RinchApp,
+        x: f32,
+        y: f32,
+        delta_x: f64,
+        delta_y: f64,
+        unit: rinch_debug::ScrollUnit,
+    ) {
         let mut actions = Vec::new();
         app.execute_debug_command(
             DebugCommandKind::Scroll {
@@ -1106,6 +1130,7 @@ mod tests {
                 y,
                 delta_x,
                 delta_y,
+                unit,
             },
             &mut actions,
             1.0,
@@ -1115,6 +1140,64 @@ mod tests {
 
     fn offsets(app: &RinchApp, id: u64) -> (f64, f64) {
         app.doc.as_ref().unwrap().borrow().tree.nodes[id].scroll_offset
+    }
+
+    /// A `line` debug scroll is a mouse wheel's notch (#2303): it starts the
+    /// wheel glide (#2290) and moves nothing until the frames run, where a
+    /// `pixel` one lands at once and starts no glide. Offsets are sampled off
+    /// 0, mid-curve, and the glide must end at the same place a real one-notch
+    /// `LineDelta` ends (40px per notch, positive `delta_y` = down).
+    #[test]
+    fn a_line_mcp_scroll_glides_and_a_pixel_one_does_not() {
+        let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
+        let mut app = app_with_scroller(ids.clone());
+        let (sc, _) = ids.get().expect("the node ids");
+
+        mcp_scroll_in(
+            &mut app,
+            100.0,
+            50.0,
+            0.0,
+            1.0,
+            rinch_debug::ScrollUnit::Line,
+        );
+        assert!(app.wheel_scroll_animating(), "a line scroll starts a glide");
+        assert_eq!(
+            offsets(&app, sc),
+            (0.0, 0.0),
+            "the notch moves nothing itself"
+        );
+        let mut mid = None;
+        for i in 0..40 {
+            app.doc
+                .as_ref()
+                .unwrap()
+                .borrow_mut()
+                .advance_animation_clock_ms(10.0);
+            app.handle_event(PlatformEvent::AboutToWait, VIEWPORT, 1.0);
+            if i == 5 {
+                mid = Some(offsets(&app, sc).1);
+            }
+        }
+        let mid = mid.unwrap();
+        assert!(mid > 0.0 && mid < 40.0, "mid-glide offset {mid}");
+        assert!(!app.wheel_scroll_animating());
+        assert_eq!(offsets(&app, sc), (0.0, 40.0));
+
+        // A pixel scroll of 30px lands at once and glides nothing.
+        mcp_scroll_in(
+            &mut app,
+            100.0,
+            50.0,
+            0.0,
+            30.0,
+            rinch_debug::ScrollUnit::Pixel,
+        );
+        assert!(
+            !app.wheel_scroll_animating(),
+            "a pixel scroll starts no glide"
+        );
+        assert_eq!(offsets(&app, sc), (0.0, 70.0));
     }
 
     /// The bug itself: `push_dirty` is what fills `paint_dirty_nodes`, which is
