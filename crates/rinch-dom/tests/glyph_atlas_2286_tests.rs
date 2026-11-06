@@ -77,7 +77,7 @@ fn by_id(doc: &RinchDocument, id: &str) -> NodeId {
             .nodes
             .iter()
             .find(|(_, n)| n.attributes.get("id").is_some_and(|v| v == id))
-            .map(|(i, _)| i as u64)
+            .map(|(i, _)| i)
             .expect("the element"),
     )
 }
