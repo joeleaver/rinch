@@ -26,13 +26,18 @@ fn cell(attrs: &str, n: usize) -> String {
 }
 
 fn layout(rows: &[String]) -> RinchDocument {
+    layout_in(600, rows)
+}
+
+/// [`layout`] in a room `room` px wide.
+fn layout_in(room: u32, rows: &[String]) -> RinchDocument {
     let mut d = RinchDocument::new();
     d.load_css(CSS);
     let body = d.body();
     let rows: String = rows.iter().map(|r| format!("<tr>{r}</tr>")).collect();
     d.set_inner_html(
         body,
-        &format!("<div class=room><table id=t>{rows}</table></div>"),
+        &format!("<div style=\"width:{room}px\"><table id=t>{rows}</table></div>"),
     );
     d.resolve_layout(VP.0, VP.1);
     d
@@ -127,4 +132,60 @@ fn an_auto_table_that_fits_is_at_its_max_content() {
         &widths(&d, &["a", "b", "c", "d"]).0,
         &[120.0, 80.0, 40.0, 80.0],
     );
+}
+
+// A column with a `width` reaches it before the `auto` columns grow (Blink's
+// "specified guess"), as it did before #2280 in all but the last case: the
+// first cut of the fix shared its room with theirs and squeezed it
+// (20/560/20 came out 6/588/6). Mail's spacer `<td width=N>` columns.
+
+#[test]
+fn spacer_columns_keep_their_width() {
+    let d = layout(&[[
+        cell("id=a width=20", 0),
+        cell("id=b", 50),
+        cell("id=c width=20", 0),
+    ]
+    .concat()]);
+    assert_near(&widths(&d, &["a", "b", "c"]).0, &[20.0, 560.0, 20.0]);
+}
+
+#[test]
+fn a_width_column_beside_a_long_one_keeps_its_width() {
+    let d = layout(&[[cell("id=a width=300", 3), cell("id=b", 30)].concat()]);
+    assert_near(&widths(&d, &["a", "b"]).0, &[300.0, 300.0]);
+    let d = layout_in(
+        300,
+        &[[cell("id=a style=\"width:150px\"", 2), cell("id=b", 10)].concat()],
+    );
+    assert_near(&widths(&d, &["a", "b"]).0, &[150.0, 150.0]);
+}
+
+#[test]
+fn a_width_column_takes_its_width_before_the_auto_column_grows() {
+    // min 40 + 40 into 300: the 200px column takes its 160 first, the auto
+    // one the 60 left. Before #2280 equal shares gave 150 / 150.
+    let d = layout_in(
+        300,
+        &[[cell("id=a width=200", 1), cell("id=b", 10)].concat()],
+    );
+    assert_near(&widths(&d, &["a", "b"]).0, &[200.0, 100.0]);
+    // The 120 left after it goes to two auto columns by their room to grow.
+    let d = layout_in(
+        400,
+        &[[cell("id=a width=200", 1), cell("id=b", 6), cell("id=c", 3)].concat()],
+    );
+    assert_near(&widths(&d, &["a", "b", "c"]).0, &[200.0, 125.7, 74.3]);
+}
+
+#[test]
+fn a_colspan_over_a_width_column_keeps_its_width() {
+    let d = layout_in(
+        300,
+        &[
+            [cell("id=a width=100", 1), cell("id=b", 2)].concat(),
+            cell("colspan=2", 20),
+        ],
+    );
+    assert_near(&widths(&d, &["a", "b"]).0, &[100.0, 200.0]);
 }
