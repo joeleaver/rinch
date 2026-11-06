@@ -39,6 +39,16 @@
 //! spanning cell or a caption, which share their width between columns — by
 //! laying the table out detached with `auto` tracks.
 //!
+//! When every column of such a table declares a width, each is
+//! `minmax(min-content, <weight>fr)`, its weight the widest of its cells'
+//! asks, as in Blink's `ComputeColumnInlineConstraints` (#2288): a cell with
+//! a `width` asks the larger of that width and its min-content, any other
+//! cell (a block in an anonymous cell among them) its max-content. So a
+//! `width=50` cell holding a 100px box is weighed by 100, and a picture that
+//! scales into its cell (min-content 0) by the cell's width alone. Under a
+//! spanning cell or a caption (the detached layout) a cell with a `width`
+//! asks just that width.
+//!
 //! A table with no width of its own shrinks to fit on plain `auto` tracks and
 //! needs no measure. Its grid sets Taffy's `proportional_column_sizing`
 //! (#2280): when its content is wider than its room, each column is its
@@ -117,6 +127,11 @@ pub struct TableCell {
     /// last asked it; asked again once Taffy has dropped the cell's sizes
     /// (a change inside it, or to its style).
     pub max_content: Option<f32>,
+    /// The same for its min-content width, asked only of a cell with a
+    /// `width` of its own, which weighs its column by the larger of the two
+    /// (#2288). The width itself is read at each weighing: a cell's `width`
+    /// never reaches its Taffy style, so a change to it leaves this valid.
+    pub min_content: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -500,6 +515,17 @@ fn declared_track(tree: &NodeTree, id: RawNodeId) -> Track {
     }
 }
 
+/// A real cell's declared length width, as its column reads it.
+fn declared_px(tree: &NodeTree, id: RawNodeId) -> Option<f32> {
+    if tree.nodes[id].computed_style.table_part != TablePart::Cell {
+        return None;
+    }
+    match declared_track(tree, id) {
+        Track::Px(p) => Some(p),
+        _ => None,
+    }
+}
+
 fn merge_track(a: Track, b: Track) -> Track {
     match (a, b) {
         (Track::Percent(x), Track::Percent(y)) => Track::Percent(x.max(y)),
@@ -837,6 +863,11 @@ impl RinchDocument {
         }
 
         let prev = self.tree.nodes[table].table_box.take();
+        // A declared column's weight reads its width (#2288), which never
+        // reaches a cell's Taffy style: tracks that moved owe a weighing.
+        if prev.as_ref().is_some_and(|p| p.tracks != tracks) {
+            self.tree.tables_owed_columns.push(table);
+        }
         let (weights, base, was) = prev
             .map(|p| (p.weights, p.base, p.placed))
             .unwrap_or_default();
@@ -874,6 +905,7 @@ impl RinchDocument {
             slot.shift = old.shift;
             slot.kids_shift = old.kids_shift;
             slot.max_content = old.max_content;
+            slot.min_content = old.min_content;
             if old.under != slot.under {
                 self.tree.paint_dirty_nodes.push(id);
             }
@@ -933,8 +965,10 @@ impl RinchDocument {
                             _ => taffy::style_helpers::auto(),
                         },
                         Track::Px(p) if b.fixed => length(p),
+                        // Weighed by its cells' asks, never under its width
+                        // (*Column widths*).
                         Track::Px(p) if can_weigh && all_declared => {
-                            minmax(min_content(), fr(p.max(1.0)))
+                            minmax(min_content(), fr(p.max(w.unwrap_or(0.0)).max(1.0)))
                         }
                         Track::Px(p) => minmax(min_content(), length(p)),
                         Track::Percent(p) if b.definite => minmax(min_content(), percent(p)),
@@ -1175,6 +1209,7 @@ impl RinchDocument {
                     && let Some(cell) = self.tree.nodes[c].table_cell.as_mut()
                 {
                     cell.max_content = None;
+                    cell.min_content = None;
                 }
             }
             self.tree.tables_owed_columns.push(id);
@@ -1206,7 +1241,14 @@ impl RinchDocument {
                 self.tree.nodes[id]
                     .table_box
                     .as_ref()
-                    .is_some_and(|b| b.definite && !b.fixed && b.tracks.contains(&Track::Auto))
+                    // An `auto` column is weighed by its cells, and so is a
+                    // declared one in a table whose columns all declare
+                    // theirs (*Column widths*).
+                    .is_some_and(|b| {
+                        b.definite
+                            && !b.fixed
+                            && b.tracks.iter().any(|t| !matches!(t, Track::Percent(_)))
+                    })
             })
             .map(|id| {
                 let mut depth = 0;
@@ -1330,10 +1372,10 @@ impl RinchDocument {
         let ask: Vec<(RawNodeId, taffy::NodeId)> = cells
             .iter()
             .filter(|&&(id, tid, _)| {
-                self.tree.nodes[id]
-                    .table_cell
-                    .as_ref()
-                    .is_none_or(|c| c.max_content.is_none())
+                let c = self.tree.nodes[id].table_cell.as_ref();
+                c.is_none_or(|c| c.max_content.is_none())
+                    || (c.is_some_and(|c| c.min_content.is_none())
+                        && declared_px(&self.tree, id).is_some())
                     || self.tree.taffy.dirty(tid).unwrap_or(true)
             })
             .map(|&(id, tid, _)| (id, tid))
@@ -1350,20 +1392,50 @@ impl RinchDocument {
             self.tree
                 .perf
                 .add(crate::perf::Counter::TableColumnMeasures, ask.len() as u64);
+            // A cell with a `width` of its own is asked its min-content too
+            // (see the weighing below).
+            let declared: Vec<(RawNodeId, taffy::NodeId)> = ask
+                .iter()
+                .copied()
+                .filter(|&(id, _)| declared_px(&self.tree, id).is_some())
+                .collect();
+            let mins = if declared.is_empty() {
+                Vec::new()
+            } else {
+                let tids: Vec<taffy::NodeId> = declared.iter().map(|&(_, tid)| tid).collect();
+                self.measure_taffy_sizes(
+                    &tids,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::MinContent,
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                )
+            };
             for ((id, _), size) in ask.into_iter().zip(sizes) {
                 if let Some(c) = self.tree.nodes[id].table_cell.as_mut() {
                     // Rounded, as the detached layout's boxes are.
                     c.max_content = Some(size.width.round());
                 }
             }
+            for ((id, _), size) in declared.into_iter().zip(mins) {
+                if let Some(c) = self.tree.nodes[id].table_cell.as_mut() {
+                    c.min_content = Some(size.width.round());
+                }
+            }
         }
+        // What each cell asks of its column's weight (#2288; Blink's
+        // `ComputeColumnInlineConstraints`): a cell with a `width` of its own
+        // the larger of that width and its min-content, so a declared column
+        // whose content cannot fit is weighed by the content and a picture
+        // that scales into it (min-content 0) is not; any other cell its
+        // max-content.
         let mut weights = vec![0.0f32; cols];
         for (id, _, col) in cells {
-            let w = self.tree.nodes[id]
-                .table_cell
-                .as_ref()
-                .and_then(|c| c.max_content)
-                .unwrap_or(0.0);
+            let c = self.tree.nodes[id].table_cell.as_ref();
+            let w = match declared_px(&self.tree, id) {
+                Some(p) => p.max(c.and_then(|c| c.min_content).unwrap_or(0.0)),
+                None => c.and_then(|c| c.max_content).unwrap_or(0.0),
+            };
             weights[col] = weights[col].max(w);
         }
         Some(weights)
@@ -1436,7 +1508,12 @@ impl RinchDocument {
             .filter_map(|&c| {
                 let n = &self.tree.nodes[c];
                 let slot = n.table_cell.as_ref()?;
-                let w = self.tree.taffy.layout(n.taffy_id?).ok()?.size.width;
+                // A cell with a `width` of its own asks for that width here:
+                // this layout has its max-content, not its min-content.
+                let w = match declared_px(&self.tree, c) {
+                    Some(p) => p,
+                    None => self.tree.taffy.layout(n.taffy_id?).ok()?.size.width,
+                };
                 Some((slot.col, slot.colspan, w))
             })
             .collect()

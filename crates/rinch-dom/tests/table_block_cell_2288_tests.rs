@@ -136,3 +136,44 @@ fn an_auto_table_packs_the_block_at_its_own_width() {
     assert_eq!((bx_, bw), (50.0, 15.0));
     assert_eq!(abs(&d, "c").0, 65.0);
 }
+
+#[test]
+fn a_declared_column_is_weighed_by_its_block_when_wider() {
+    // Every column declares a width (50, 60), so the 400px table shares its
+    // room by weight; the first column's weight is the larger of its width
+    // and its max-content, here the 100px block's. Chrome: 250 / 150.
+    let d = doc("<table id=t width=400 cellspacing=0 cellpadding=0>\
+         <tr><td id=b width=100 style='display:block'></td></tr>\
+         <tr><td id=x width=50></td><td id=y width=60></td></tr></table>");
+    assert_eq!(abs(&d, "x").2, 250.0);
+    assert_eq!(abs(&d, "y").0, 250.0);
+    assert_eq!(abs(&d, "y").2, 150.0);
+}
+
+#[test]
+fn a_declared_column_is_weighed_by_its_content_when_wider() {
+    // The same weighing with a real cell: `width=50` holding 100px.
+    // Chrome: 250 / 150.
+    let d = doc(&format!(
+        "<table id=t width=400 cellspacing=0 cellpadding=0><tr>\
+         <td id=x width=50>{}</td><td id=y width=60></td></tr></table>",
+        bx("xi", 100.0, 10.0)
+    ));
+    assert_eq!(abs(&d, "x").2, 250.0);
+    assert_eq!(abs(&d, "y").0, 250.0);
+}
+
+#[test]
+fn a_declared_column_is_weighed_by_its_min_content_not_its_max_content() {
+    // A `width=50` cell holding three 100px inline-blocks with spaces
+    // between them: min-content 100, max-content over 300. Blink weighs a
+    // cell with a width by max(width, min-content), here 100 against 60.
+    // Chrome: 250 / 150 (by max-content it would be about 334 / 66).
+    let ib = "<span style='display:inline-block;width:100px;height:10px'></span>";
+    let d = doc(&format!(
+        "<table id=t width=400 cellspacing=0 cellpadding=0><tr>\
+         <td id=x width=50>{ib} {ib} {ib}</td><td id=y width=60></td></tr></table>"
+    ));
+    assert_eq!(abs(&d, "x").2, 250.0);
+    assert_eq!(abs(&d, "y").0, 250.0);
+}
