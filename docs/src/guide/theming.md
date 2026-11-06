@@ -240,8 +240,8 @@ as a `block` one does (its children stack, its height is theirs); `display: inli
 
 What desktop draws is a text marker: `•`, `◦` or `▪` for `disc`, `circle` or
 `square`, `N. ` for `decimal` (`<ol start>` and `<li value>` included), and
-the old bullet or number for any other keyword. It is generated as a span at
-the start of an `<li>` whose parent is a `<ul>` or `<ol>`, whose computed
+the old bullet or number for any other keyword. It is generated as a
+`<rinch-marker>` element at the start of an `<li>` whose parent is a `<ul>` or `<ol>`, whose computed
 `display` is `list-item`, whose `list-style-type` is not `none` and which has
 no `::before` or `::after` of its own (Chrome draws the marker beside either; a
 `menu`/`dir` item gets none yet — #1370). So an item restyled to `display:
@@ -261,9 +261,13 @@ border box (Blink's rule; Chrome draws it as a shape, rinch as a glyph centred
 where the shape is), a number ends at that edge, and under `direction: rtl`
 both hang on the right. An **`inside`** marker is inline content at the start
 of the item, so it does take a line of its own above a block child, as in
-Chrome. Author rules written for a `span` (`li > span`, `li span`) cannot move
-the marker's box: the UA sheet resets its margin, padding, border and position
-with `!important`. Still not Chrome's: a number is drawn without Chrome's
+Chrome. The marker paints in its item's flow: whatever clips the item
+(`overflow: hidden` on it or an ancestor, a scroller) clips the marker, and a
+later positioned box covers it. Like a `::marker`, it is out of reach of the
+rules for the item's children: no `span` rule matches it, and the UA sheet
+gives it the item's font and colour and resets its box with `!important`, so
+`li span:first-child { font-size: 30px }` or `li * { color: blue }` leaves it
+as it is. There is no `::marker` selector to style it with. Still not Chrome's: a number is drawn without Chrome's
 tabular digits (its far edge is up to 3px in); an `inside` disc's glyph sits
 about 0.12em right of Chrome's shape; and a marker whose own line is taller
 than the first line it sits on does not push the item's content down. The

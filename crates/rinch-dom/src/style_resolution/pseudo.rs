@@ -653,11 +653,15 @@ impl RinchDocument {
             }
         };
 
-        // Create the marker pseudo-element (span + text node). The attribute
-        // is what the UA sheet keys the marker's own rules on: an `outside`
-        // one is taken out of flow there (#1356).
+        // Create the marker pseudo-element (an element + text node). It is a
+        // `<rinch-marker>`, not a `<span>`, so that no author rule written for
+        // the item's children (`li span`, `li > span:first-child`) matches it,
+        // as none matches a `::marker` (review of #2271); the UA sheet makes
+        // it inherit its font and colour from the item whatever a universal
+        // rule says. The attribute is what the UA sheet keys the marker's own
+        // rules on (#1356).
         use rinch_core::dom::DomDocument;
-        let span_id = self.create_element("span");
+        let span_id = self.create_element("rinch-marker");
         self.set_attribute(
             span_id,
             "rinch-list-marker",

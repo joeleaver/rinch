@@ -629,18 +629,25 @@ impl RinchDocument {
                 padding-inline-start: 40px;
             }
 
-            /* The list marker `resolve_list_marker` generates (#1356). A
-               browser's `::marker` takes only a few properties, and no author
-               rule written for a `<span>` reaches it; this one is a span in
-               the tree, so its box is reset here, `!important` so that a
-               `li > span` or `li span` rule cannot move it either. It is never
+            /* The list marker `resolve_list_marker` generates (#1356), a
+               `<rinch-marker>` element. A browser's `::marker` takes only a
+               few properties and no rule for the item's children reaches it;
+               this one is an element in the tree, which no `span` rule matches,
+               and its box, font and colour are reset here with `!important`, so
+               that a universal rule (`li *`, `* { margin }`) cannot change it
+               either: it takes the item's font and colour. It is never
                positioned: an `outside` marker is a static block here, painted
                and clipped in its item's flow as a `::marker` is, and only its
                Taffy box is out of flow (`taffy_style_from_computed`), placed by
                `crate::list_marker` beside the item's first line, in the list's
                padding; an `inside` one stays inline content at the start of the
                item. */
-            span[rinch-list-marker] {
+            rinch-marker[rinch-list-marker] {
+                font: inherit !important;
+                color: inherit !important;
+                letter-spacing: inherit !important;
+                word-spacing: inherit !important;
+                text-transform: none !important;
                 margin: 0 !important;
                 padding: 0 !important;
                 border: 0 !important;
@@ -651,17 +658,17 @@ impl RinchDocument {
                 vertical-align: baseline !important;
                 position: static !important;
             }
-            span[rinch-list-marker~="inside"] {
+            rinch-marker[rinch-list-marker~="inside"] {
                 display: inline !important;
             }
             /* Chrome 156 draws an inside disc/circle/square as a shape
                followed by a 1em margin: 17, 22, 27, 33 and 43px before the
                text at 12, 16, 20, 24 and 32px. */
-            span[rinch-list-marker="inside symbol"] {
+            rinch-marker[rinch-list-marker="inside symbol"] {
                 display: inline-block !important;
                 width: calc(1.3em + 1px) !important;
             }
-            span[rinch-list-marker="outside"] {
+            rinch-marker[rinch-list-marker="outside"] {
                 display: block !important;
                 width: auto !important;
                 height: auto !important;
