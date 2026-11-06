@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::client::{DebugClient, DebugCommandKind, DebugResult};
+use crate::client::{DebugClient, DebugCommandKind, DebugResult, ScrollUnit};
 use crate::discovery;
 
 #[derive(Clone)]
@@ -109,11 +109,15 @@ pub struct ScrollParams {
     pub x: f64,
     /// Y coordinate where the scroll occurs
     pub y: f64,
-    /// Horizontal scroll delta in pixels (positive = right)
+    /// Horizontal scroll delta (positive = right), in `unit`
     #[serde(default)]
     pub delta_x: f64,
-    /// Vertical scroll delta in pixels (positive = scroll down, negative = scroll up)
+    /// Vertical scroll delta (positive = scroll down, negative = scroll up), in `unit`
     pub delta_y: f64,
+    /// `"pixel"` (default): a trackpad-style wheel that scrolls at once.
+    /// `"line"`: mouse-wheel notches (1 = one notch), which glide.
+    #[serde(default)]
+    pub unit: ScrollUnit,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -502,13 +506,16 @@ impl RinchMcpServer {
         .await
     }
 
-    #[tool(description = "Simulate a scroll wheel event at the given coordinates.")]
+    #[tool(
+        description = "Simulate a scroll wheel event at the given coordinates. `unit` is \"pixel\" (default; a trackpad, scrolls at once) or \"line\" (mouse-wheel notches, delta 1 = one notch). A line scroll glides to its target over about 200 ms, as a real mouse wheel does, so wait (wait_frame, or a short pause) before taking a screenshot or reading the offset; a pixel scroll has landed by the time the call returns."
+    )]
     async fn scroll(&self, params: Parameters<ScrollParams>) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::Scroll {
             x: params.0.x as f32,
             y: params.0.y as f32,
             delta_x: params.0.delta_x,
             delta_y: params.0.delta_y,
+            unit: params.0.unit,
         })
         .await
     }
