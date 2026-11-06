@@ -521,6 +521,20 @@ mod tests {
         assert!(c.is_finished(200.0) && !c.is_finished(199.0));
     }
 
+    /// Chromium stops a retarget whose new segment would last under
+    /// `kEpsilon` *seconds* (10 ms): the curve is at its new target at once.
+    /// A fast glide nudged 2px on is such a one (the velocity bound is about
+    /// 0.5 ms).
+    #[test]
+    fn a_retarget_under_ten_ms_lands_at_once() {
+        let mut c = ScrollCurve::new(0.0, 600.0, 0.0);
+        let t = 50.0;
+        let at = c.value(t);
+        c.update_target(t, at + 2.0);
+        assert_eq!(c.value(t), at + 2.0);
+        assert!(c.is_finished(t));
+    }
+
     /// A retarget keeps the position and the velocity continuous.
     #[test]
     fn a_retarget_keeps_position_and_velocity() {

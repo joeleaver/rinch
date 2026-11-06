@@ -50,6 +50,14 @@ fn mount() -> Fixture {
         inner.set_attribute("style", "height: 3000px");
         scroller.append_child(&inner);
         root.append_child(&scroller);
+        // Somewhere else for a `lock_scroll` to be taken from.
+        let overlay = scope.create_element("div");
+        overlay.set_attribute("id", "overlay");
+        overlay.set_attribute(
+            "style",
+            "position: absolute; left: 400px; top: 0px; width: 10px; height: 10px",
+        );
+        root.append_child(&overlay);
         root
     });
     app.mount_component(VP.0 as f32, VP.1 as f32);
@@ -504,4 +512,141 @@ fn typing_mid_glide_reveals_the_caret_and_ends_the_glide() {
         "the pane is at {after}: the glide dragged it away from the caret"
     );
     assert!(!app.wheel_scroll_animating());
+}
+
+// ── Review of PR #2290 ──────────────────────────────────────────────────────
+
+/// The DevTools window's app is sent no `AboutToWait`; its loop turn is
+/// `devtools_turn`. A notch there must glide to its end and go idle, not sit
+/// at the start with the glide "running" for ever.
+#[test]
+fn a_glide_in_the_devtools_window_runs_to_its_end() {
+    let mut f = mount();
+    notch(&mut f.app);
+    let mut asked = 0;
+    for _ in 0..40 {
+        f.app
+            .doc
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .advance_animation_clock_ms(FRAME_MS);
+        if crate::shell::rinch_runtime::devtools_turn(&mut f.app, VP.0 as f32, VP.1 as f32) {
+            asked += 1;
+        }
+    }
+    assert_eq!(
+        top(&f.app, f.scroller),
+        START + 40.0,
+        "the DevTools glide never moved"
+    );
+    assert!(!f.app.wheel_scroll_animating());
+    assert!(asked >= 19 && asked < 40, "redraws asked: {asked}");
+}
+
+/// The clock stepping back mid-glide (a wall-clock correction) neither
+/// scrolls backwards nor stalls the glide: it carries on from where it was as
+/// soon as the clock moves forward again.
+#[test]
+fn a_clock_step_back_mid_glide_neither_reverses_nor_stalls() {
+    let mut f = mount();
+    notch(&mut f.app);
+    let first = run(&mut f, 10);
+    let mid = *first.last().unwrap();
+    assert!(
+        mid > 0.0 && mid < 40.0,
+        "positive control: mid-glide at {mid}"
+    );
+    f.app
+        .doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .advance_animation_clock_ms(-5000.0);
+    let rest = run(&mut f, 200);
+    assert!(
+        rest.iter().all(|&s| s >= mid),
+        "it scrolled back past {mid}: {rest:?}"
+    );
+    assert_eq!(*rest.last().unwrap(), 40.0);
+    assert!(
+        rest.len() <= 15,
+        "{} frames to finish after the step: {rest:?}",
+        rest.len()
+    );
+}
+
+/// A `lock_scroll` (#474) taken mid-glide, by an overlay elsewhere, locks the
+/// gliding scroller out: the glide stops where it is.
+#[test]
+fn a_scroll_lock_mid_glide_stops_the_glide() {
+    let mut f = mount();
+    notch(&mut f.app);
+    run(&mut f, 6);
+    let at = top(&f.app, f.scroller);
+    assert!(at > START, "positive control: it moved");
+    let overlay = by_id(&f.app, "overlay");
+    f.app
+        .doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .set_scroll_locked(true, rinch_core::dom::NodeId(overlay));
+    let after = run(&mut f, 30);
+    assert!(
+        after.iter().all(|&s| s == at - START),
+        "the glide went on under the lock: {after:?}"
+    );
+    assert!(!f.app.wheel_scroll_animating());
+}
+
+/// At a fractional scale (1.25) a trackpad's physical pixels divide by the
+/// scale (#299): 50 physical px are 40 logical, on the device grid.
+#[test]
+fn a_pixel_delta_divides_by_a_fractional_scale() {
+    let mut f = mount();
+    f.app.set_device_pixel_ratio(1.25);
+    set_top(&mut f.app, f.scroller, 332.8);
+    let s0 = top(&f.app, f.scroller);
+    assert_eq!(s0, 332.8);
+    let (x, y) = (100.0, 150.0);
+    f.app
+        .handle_event(PlatformEvent::MouseMove { x, y }, VP, 1.0);
+    let event = crate::shell::rinch_runtime::wheel_platform_event(
+        MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, -50.0)),
+        (x, y),
+        1.25,
+    )
+    .unwrap();
+    f.app.handle_event(event, VP, 1.0);
+    assert_eq!(top(&f.app, f.scroller), s0 + 40.0);
+}
+
+/// At 1.25 a line glide's every frame is on the device grid (a whole number
+/// of device pixels) and it lands on its 40px.
+#[test]
+fn a_line_glide_at_a_fractional_scale_stays_on_the_grid_and_lands() {
+    let mut f = mount();
+    f.app.set_device_pixel_ratio(1.25);
+    set_top(&mut f.app, f.scroller, 332.8);
+    let s0 = top(&f.app, f.scroller);
+    notch(&mut f.app);
+    let mut tops = Vec::new();
+    for _ in 0..40 {
+        let asked = frame(&mut f.app);
+        tops.push(top(&f.app, f.scroller));
+        if !asked {
+            break;
+        }
+    }
+    for t in &tops {
+        let device = t * 1.25;
+        assert!(
+            (device - device.round()).abs() < 1e-6,
+            "{t} is off the grid: {tops:?}"
+        );
+    }
+    assert!(tops.windows(2).all(|w| w[1] >= w[0]), "{tops:?}");
+    assert_eq!(*tops.last().unwrap(), s0 + 40.0, "{tops:?}");
+    assert!(tops.len() > 15, "it glided: {tops:?}");
 }
