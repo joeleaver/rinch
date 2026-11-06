@@ -1152,6 +1152,12 @@ mod tests {
         let ids: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
         let mut app = app_with_scroller(ids.clone());
         let (sc, _) = ids.get().expect("the node ids");
+        // Pin the animation clock so the frames below are exact 10 ms steps.
+        app.doc
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .set_animation_clock_ms(Some(1_000_000.0));
 
         mcp_scroll_in(
             &mut app,
