@@ -495,4 +495,24 @@ mod tests {
         assert_eq!(m.page_height, Some(3000.0), "{m:?}");
         assert!(!m.capped);
     }
+
+    /// Needs Chrome. The doctype must stay first: after the policy `<meta>`
+    /// it is ignored and the page is laid out in quirks mode, where the body
+    /// fills the viewport (here: a border on the window's last row).
+    #[test]
+    #[ignore = "needs Chrome"]
+    fn chrome_lays_out_in_standards_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = dir.path().join("d.html");
+        std::fs::write(
+            &page,
+            "<!doctype html><body style=\"margin:0;border-bottom:5px solid #000\">\
+             <div style=\"height:100px\">x</div>",
+        )
+        .unwrap();
+        let png = dir.path().join("d.png");
+        let m = screenshot_measured(&page, &png, 720, &dir.path().join("profile"), false).unwrap();
+        assert!(!m.capped, "{m:?}");
+        assert!(m.last_ink < 200, "{m:?}");
+    }
 }
