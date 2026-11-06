@@ -163,7 +163,13 @@ fn gpu_split_a_registered_texture_no_scene_draws_is_not_read() {
         &Rect::new(4.0, 4.0, 20.0, 20.0),
     );
     for _ in 0..3 {
-        render(&device, &queue, &mut renderer, &without, AaConfig::Msaa16);
+        render(
+            &device,
+            &queue,
+            &mut renderer,
+            &without,
+            crate::gpu_antialiasing::scene_aa(),
+        );
     }
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     assert_eq!(
@@ -189,7 +195,7 @@ fn gpu_split_a_registered_texture_no_scene_draws_is_not_read() {
             base_color: Color::WHITE,
             width: W,
             height: H,
-            antialiasing_method: AaConfig::Msaa16,
+            antialiasing_method: crate::gpu_antialiasing::scene_aa(),
         },
     );
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
@@ -297,7 +303,7 @@ fn ancestor_clip() -> RoundedRect {
 }
 
 /// The below slice's construction against the in-scene render it stands in
-/// for, with Msaa16 (the desktop GPU window's). The ancestor clip `A` is open
+/// for, with the desktop GPU window's antialiasing. The ancestor clip `A` is open
 /// when the surface is reached; `before` was painted inside it, `inside_a`
 /// after the surface inside it, and `later` after it outside every clip.
 /// Below cuts the after-content out of `r` with an inverse clip, popped and
@@ -370,9 +376,27 @@ fn below_against_in_scene(
     before(&mut before_only);
     before_only.pop_layer();
 
-    let want_out = render(device, queue, renderer, &in_scene, AaConfig::Msaa16);
-    let got = render(device, queue, renderer, &below, AaConfig::Msaa16);
-    let want_in = render(device, queue, renderer, &before_only, AaConfig::Msaa16);
+    let want_out = render(
+        device,
+        queue,
+        renderer,
+        &in_scene,
+        crate::gpu_antialiasing::scene_aa(),
+    );
+    let got = render(
+        device,
+        queue,
+        renderer,
+        &below,
+        crate::gpu_antialiasing::scene_aa(),
+    );
+    let want_in = render(
+        device,
+        queue,
+        renderer,
+        &before_only,
+        crate::gpu_antialiasing::scene_aa(),
+    );
     let interior = want_in[(24 * W + 32) as usize];
     let mut wrong = Vec::new();
     let mut fractional_a = 0;
@@ -492,7 +516,7 @@ fn render_sized(
                 base_color: Color::TRANSPARENT,
                 width: w,
                 height: h,
-                antialiasing_method: AaConfig::Msaa16,
+                antialiasing_method: crate::gpu_antialiasing::scene_aa(),
             },
         )
         .expect("render");

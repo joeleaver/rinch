@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use rinch_dom::paint::slicing::{BaseSlice, SliceCoverage, SurfaceSlice};
 use vello::peniko::Color;
-use vello::{AaConfig, RenderParams, Renderer, Scene};
+use vello::{RenderParams, Renderer, Scene};
 use wgpu::{
     CommandEncoder, Device, Queue, Texture, TextureFormat, TextureUsages, TextureView,
     TextureViewDescriptor,
@@ -215,10 +215,11 @@ pub fn over_cap(kept: &[SliceCost], new: &[SliceCost], cap: u64) -> Vec<usize> {
 
 /// Render `scene` (encoded in window coordinates) where the window draws it,
 /// into `scratch` (grown to reach `region`'s far corner), over transparent,
-/// with Msaa16 as the window's scene is, and keep `region` of it as a new
-/// region-sized texture. Rendering it moved to R's origin instead would not
-/// give the same pixels: an MSAA sample on a curve's edge flips under a
-/// translation.
+/// with the window's antialiasing ([`crate::gpu_antialiasing`]), and keep
+/// `region` of it as a new region-sized texture. Rendering it moved to R's
+/// origin instead would not give the same pixels: under MSAA a sample on a
+/// curve's edge flips under a translation, and under either mode the tiles a
+/// path is binned into move.
 fn render_slice(
     device: &Device,
     queue: &Queue,
@@ -256,7 +257,7 @@ fn render_slice(
                 base_color: Color::TRANSPARENT,
                 width: want_w,
                 height: want_h,
-                antialiasing_method: AaConfig::Msaa16,
+                antialiasing_method: crate::gpu_antialiasing::scene_aa(),
             },
         )
         .map_err(|e| format!("split slice render: {e:?}"))?;

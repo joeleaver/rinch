@@ -160,7 +160,7 @@ fn gpu_the_handed_over_frame_is_whole_after_a_partial_frame_2215() {
                 base_color: vello::peniko::Color::WHITE,
                 width: W,
                 height: H,
-                antialiasing_method: vello::AaConfig::Msaa16,
+                antialiasing_method: crate::gpu_antialiasing::scene_aa(),
             },
         )
         .unwrap();
@@ -325,7 +325,7 @@ fn gpu_the_documented_readback_reads_the_layered_frame_2215() {
                 base_color: vello::peniko::Color::TRANSPARENT,
                 width: W,
                 height: H,
-                antialiasing_method: vello::AaConfig::Msaa16,
+                antialiasing_method: crate::gpu_antialiasing::scene_aa(),
             },
         )
         .unwrap();
