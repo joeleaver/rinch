@@ -184,9 +184,14 @@ mod fontconfig {
     pub(super) fn read() -> Option<SystemTextSettings> {
         // SAFETY: the symbols are fontconfig's public API with the C
         // signatures below (fontconfig.h); every pattern and the config made
-        // here are destroyed here, and nothing outlives the library handle.
+        // here are destroyed here, and the library is never unloaded.
         unsafe {
-            let lib = libloading::Library::new("libfontconfig.so.1").ok()?;
+            // Never unloaded (leaked, on every path): fontique keeps
+            // libfontconfig in the process anyway, and a `dlclose` of a library
+            // that has run its initialisers (fontconfig's, FreeType's under it)
+            // is not worth the few kilobytes it would give back.
+            let lib: &'static libloading::Library =
+                Box::leak(Box::new(libloading::Library::new("libfontconfig.so.1").ok()?));
             let init: libloading::Symbol<unsafe extern "C" fn() -> *mut Config> =
                 lib.get(b"FcInitLoadConfigAndFonts\0").ok()?;
             let config_destroy: libloading::Symbol<unsafe extern "C" fn(*mut Config)> =
