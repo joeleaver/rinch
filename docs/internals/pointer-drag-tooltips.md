@@ -609,8 +609,12 @@ at the first `true`, each call in its own `batch`.
   consumed wheel skips both scroll-container halves (vertical and horizontal)
   and requests a redraw. `PlatformEvent::MouseWheel` has winit's sign (positive
   `delta_y` = wheel away from the user), so the `WheelEvent` is built with
-  both deltas negated into the DOM's sign. Lines are already 40 px in the
-  runtime, pixel deltas already logical (#299). A `WindowEvent::PinchGesture`
+  both deltas negated into the DOM's sign. A line wheel arrives as
+  `PlatformEvent::MouseWheelLines` (#2287) and is handled as the
+  `MouseWheel` of 40 px a line (`WHEEL_LINE_PX`) — `handle_event` re-enters
+  itself with that event and `SmoothWheelState::line_wheel` set — so every
+  site that matches `MouseWheel` sees it; pixel deltas are already logical
+  (#299). A `WindowEvent::PinchGesture`
   no surface takes goes to `RinchApp::pinch_as_wheel`: a Ctrl wheel with
   `delta_y = -100 ln(1 + delta)`, so `WheelEvent::zoom_factor()` gives back
   winit's `1 + delta` — the same e-per-100-px curve as
@@ -681,6 +685,81 @@ sets it per wheel from `navigator.platform` (the browser does its own turning
 for its default scroll; the setting is for a handler that reads
 `scroll_deltas`, such as the node-graph canvas). The `onwheel` payload's
 deltas are not turned.
+
+**Smooth wheel scrolling** (#2287, `rinch/src/app/smooth_wheel.rs`, whose
+module doc has the derivation). The shell turns winit's wheel into an event in
+one place, `shell::rinch_runtime::wheel_platform_event`, for the main window
+and DevTools alike: `LineDelta` → `MouseWheelLines`, `PixelDelta` →
+`MouseWheel` (divided by the scale, #299). The `MouseWheel` arm takes the
+`line_wheel` flag, and when it is set and smooth scrolling is on (the
+default; `App::smooth_wheel_scroll`, `RinchApp::set_smooth_wheel_scroll`,
+a thread-local default as `title_tooltips` has) the scroll write on each axis
+becomes `SmoothWheelState::animate`: the same `wheel_scroll_target` picks the
+container, at the notch, and an animation per (container, axis) starts toward
+`offset + remainder + delta`, clamped to the range, or the running one is
+retargeted by `delta` from its *target*. Everything before the scroll write —
+`onwheel`, render surfaces, Shift-sideways, the text menu and tooltip a wheel
+closes, the file-drag end — is the `MouseWheel`'s, unchanged.
+
+- **The curve** (`ScrollCurve`) is a port of Chromium's
+  `cc::ScrollOffsetAnimationCurve` for `ScrollType::kMouseWheel`:
+  `DurationBehavior::kInverseDelta` (12 frames of 60 Hz up to 120 px, 6 from
+  480 px, linear between) and `EaseInOutWithInitialSlope` —
+  `cubic-bezier(0.42, 0.42 × slope, 0.58, 1)`. `UpdateTarget` starts a new
+  segment at the current value with the slope that keeps the velocity, its
+  duration the smaller of the new distance's and `VelocityBasedDurationBound`
+  (2.5 × the remaining distance at the present velocity). A retarget whose
+  segment would last under 10 ms lands at once (`kEpsilon` against
+  `InSecondsF()`). Measured in
+  Chromium 153 on Linux (Playwright's build, a non-precise wheel synthesised
+  by `chrome.gpuBenchmarking.smoothScrollByXY(…, MOUSE_INPUT, …, false)` —
+  CDP's `Input.dispatchMouseEvent` wheel is a *precise* one and Chrome does
+  not animate it; `scrollTop` sampled every rAF): 40 px fits `ease-in-out`
+  over 172 ms, 200 px over 154 ms, 600 px over 78 ms, each ~25 ms under the
+  source's figure because Chromium takes the event-to-first-tick delay off
+  the curve (`delayed_by`). rinch starts the curve when it handles the notch,
+  so it uses the source's durations. The ease is `ease-in-out`, not an
+  ease-out: Chrome's 40 px samples are 1, 3, 7, 13, 19, 26, 31, 36, 39, 40.
+- **The frames** come from the `AboutToWait` clock (`tick_wheel_scroll`, after
+  drag auto-scroll and before the resolve): each animation writes its curve's
+  value through `scroll_vertically_by` / `scroll_horizontally_by` — the
+  device-grid snap, the remainder, `mark_scrolled`'s damage, the `onscroll`
+  (one per container per frame, read after both axes) — and the tick asks for
+  a redraw while any runs and on the frame that lands. Then nothing: an idle
+  loop asks for no frame. Time is the document's animation clock
+  (`RinchDocument::animation_now_ms`, #2267), so a test pins it and steps it;
+  the curves run on `SmoothWheelState::glide_now`, which moves by that
+  clock's *forward* steps only, so a wall clock set back mid-glide (it is
+  `SystemTime`) neither replays the curve backwards nor stalls it (review of
+  #2290). The DevTools window's app is sent no `AboutToWait`: its loop turn,
+  `shell::rinch_runtime::devtools_turn`, ticks its glides before resolving.
+  An embedded `RinchContext` ticks them in `update`, and `needs_update()` is
+  true while one runs.
+  No layout and no restyle per frame: `a_gliding_wheel_frame_repaints_the_
+  scroller_and_lays_out_nothing` pins the frame's counters, which are a
+  direct notch's less its hit test.
+- **What ends one**: the offset is compared each frame with what the
+  animation last wrote (`WheelAnimation::written`); anything else that moved
+  it — `set_scroll_top`, a scrollbar drag, scroll-into-view (the editor's
+  caret reveal), a keyboard scroll, a pixel wheel, a layout that clamped the
+  range — wins, and the animation is dropped without writing. A scrollbar
+  press on the container drops it too (`scrollbar_drag`), before the thumb
+  moves, and so does a `lock_scroll` (#474) taken mid-glide that locks the
+  container out (`scroll_locked_out`). Turning smooth scrolling off lands every running animation on its
+  target at the next frame. A notch into a container whose animation is
+  headed for its end moves nothing and does not chain (a browser latches the
+  wheel to the animating scroller); once it has landed there, the next notch
+  chains as a direct one does.
+- **Not here**: the web (the browser scrolls, and smooths, by itself) and
+  Android (its wheels are touch pans and flings, pixels). The OS's
+  reduced-motion setting is not read (#2209); the app passes it. CSS
+  `scroll-behavior` for programmatic and keyboard scrolls is not modelled.
+
+Tests: `rinch/src/app/smooth_wheel_2287_tests.rs` (the sampled curve at
+100 Hz and idle after, `onscroll` per frame, a retarget keeping its speed,
+pixel deltas direct, the switch, cancel by `scroll_top` and by a scrollbar
+press, nested scrollers and chaining, typing in the editor mid-glide), the
+curve's unit tests in `smooth_wheel.rs`, and the perf scenario above.
 
 Tests: `rinch/src/app/element_wheel_tests.rs` (order, consumption stopping the
 scroll, modifiers and sign, pinch, `target`, `can_scroll_toward`, Shift on

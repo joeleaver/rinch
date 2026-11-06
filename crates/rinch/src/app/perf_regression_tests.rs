@@ -1022,6 +1022,89 @@ fn a_second_wheel_notch_recomputes_no_extent() {
     );
 }
 
+/// One mouse-wheel notch, 100px, as the desktop shell reports a `LineDelta`
+/// (#2287): it glides.
+fn line_notch(app: &mut RinchApp) {
+    app.handle_event(
+        PlatformEvent::MouseWheelLines {
+            x: 50.0,
+            y: 100.0,
+            lines_x: 0.0,
+            lines_y: -2.5,
+        },
+        SIZE,
+        1.0,
+    );
+}
+
+/// One frame of a gliding wheel notch (#2287), mid-curve: a scroll write on
+/// the paint-cached path — the scroller's box repaints, no element is
+/// restyled or laid out, nothing is shaped — and **no hit test**: the
+/// scroller was picked at the notch. The same repaint as a direct notch's
+/// (`a_second_wheel_notch_recomputes_no_extent`: the scroller's box, 122816
+/// px), less its hit test and the stacking order that hit test built (1, not
+/// 2). 25 nodes painted and 122 glyph hits, against its 24 and 126: a
+/// mid-glide offset that is not a whole row shows a row more, cut. Every frame
+/// of the glide is this frame.
+///
+/// And the clock stops: once the glide has landed, idle turns ask for no
+/// frame.
+#[test]
+fn a_gliding_wheel_frame_repaints_the_scroller_and_lays_out_nothing() {
+    let (mut app, scroller) = mount_scroller();
+    let clock = |app: &mut RinchApp, ms: f64| {
+        let doc = app.doc.as_ref().unwrap();
+        doc.borrow_mut().advance_animation_clock_ms(ms);
+    };
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .set_animation_clock_ms(Some(1_000_000.0));
+    // Warm: the first notch's frame finds the hit cache cold (see above).
+    interaction(&mut app, line_notch);
+    clock(&mut app, 30.0);
+    interaction(&mut app, |_| {});
+    let before = scroller.scroll_top();
+    clock(&mut app, 30.0);
+    let s = interaction(&mut app, |_| {});
+    let after = scroller.scroll_top();
+    assert!(
+        before > 0.0 && after > before && after < 100.0,
+        "positive control: mid-glide ({before} -> {after})"
+    );
+    expect_frame(
+        "gliding wheel frame, 500 rows",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 122816),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 25),
+            (StackingOrderBuilds, 1),
+            (GlyphCacheHits, 122),
+            (ClipMasks, 2),
+            (ClipMaskPx, 245640),
+        ],
+    );
+    for _ in 0..30 {
+        clock(&mut app, 10.0);
+        if !about_to_wait(&mut app) {
+            break;
+        }
+        paint(&mut app);
+    }
+    assert_eq!(scroller.scroll_top(), 100.0, "the glide landed");
+    app.reset_perf();
+    let (redraws, idle) = idle_turns(&mut app, 3);
+    assert_eq!(redraws, 0, "the clock kept turning after the glide");
+    expect_frame("idle after a glide", &idle, &[]);
+}
+
 // ── Drag ───────────────────────────────────────────────────────────────────
 
 /// A panel dragged by `Drag::absolute` over ten moves queued before one frame:

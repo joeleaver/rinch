@@ -929,12 +929,17 @@ impl RinchContext {
     /// Whether the UI needs a repaint.
     ///
     /// Useful for game engines that want to skip rendering unchanged frames.
+    /// True while a wheel glide (#2287) runs: each `update` moves it a
+    /// frame's worth, so a host that updates only when this says so keeps it
+    /// going.
     pub fn needs_update(&self) -> bool {
         self.dirty.load(Ordering::Acquire)
             || self.app.has_dirty_nodes()
             || self.app.has_deferred_work()
             || crate::render_surface::inline_surfaces_dirty(&self.surface_ids)
             || crate::render_surface::surfaces_want_frame(&self.surface_ids)
+            // A wheel glide (#2287) moves a frame's worth at each `update`.
+            || self.app.wheel_scroll_animating()
             || self
                 .next_wake()
                 .is_some_and(|t| rinch_platform::Instant::now() >= t)

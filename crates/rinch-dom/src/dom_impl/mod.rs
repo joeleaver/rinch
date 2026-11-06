@@ -351,8 +351,16 @@ impl RinchDocument {
                 display: inline;
             }
 
+            /* `bolder`, not `bold`: the HTML Standard's rule and Chrome's.
+               A `<strong>` is one step heavier than its parent, by CSS Fonts'
+               relative-weight table (under 350: 400; under 550: 700; under
+               900: 900), so inside a bold heading it is 900, and under a 300
+               parent it is 400. `bold` gave 700 everywhere, the same answer
+               only under a parent of 350 to 549. Where a family has a face
+               heavier than its bold (a host whose Arial includes Arial Black),
+               a `<strong>` in a bold heading takes that face, as in Chrome. */
             strong, b {
-                font-weight: bold;
+                font-weight: bolder;
             }
 
             em, i {

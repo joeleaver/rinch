@@ -176,10 +176,12 @@ thread_local! {
 }
 
 /// Pins this thread's [`scene_aa`] to a mode until dropped (tests only).
-#[cfg(test)]
+// Only the window GPU tests use it; gated like them so `--features embed`
+// test builds (no window shell) don't warn it is dead.
+#[cfg(all(test, software_shell, feature = "gpu"))]
 pub(crate) struct TestAa(GpuAntialiasing);
 
-#[cfg(test)]
+#[cfg(all(test, software_shell, feature = "gpu"))]
 impl TestAa {
     /// Pin `mode` on this thread.
     pub(crate) fn pin(mode: GpuAntialiasing) -> Self {
@@ -187,7 +189,7 @@ impl TestAa {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, software_shell, feature = "gpu"))]
 impl Drop for TestAa {
     fn drop(&mut self) {
         TEST_AA.with(|m| m.set(self.0));

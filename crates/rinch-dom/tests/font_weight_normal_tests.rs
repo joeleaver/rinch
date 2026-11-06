@@ -1,6 +1,7 @@
 //! Issue #616 — `font-weight: normal` must override a UA `bold`.
 //!
-//! `<b>`/`<strong>` get `font-weight: bold` from the UA stylesheet. An author
+//! `<b>`/`<strong>` get `font-weight: bolder` from the UA stylesheet (700 under a
+//! normal parent; `ua_strong_bolder_tests` covers the other parents). An author
 //! declaration of `normal` computes to 400 and should beat it, exactly as
 //! `300` or `bold` do. The same shape applies to `font-style: normal` on
 //! `<em>`/`<i>` and to `text-decoration: none` on `<u>`/`<s>`.

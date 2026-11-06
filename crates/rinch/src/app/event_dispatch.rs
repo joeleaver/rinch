@@ -251,6 +251,31 @@ impl RinchApp {
         window_size: (u32, u32),
         scale_factor: f64,
     ) -> Vec<AppAction> {
+        // A line wheel (#2287) is the `MouseWheel` of its pixel distance in
+        // every respect — `onwheel`, surfaces, the menus and tooltips a wheel
+        // closes, which container scrolls — except that its default scroll
+        // glides; the `MouseWheel` arm reads `line_wheel` for that.
+        if let PlatformEvent::MouseWheelLines {
+            x,
+            y,
+            lines_x,
+            lines_y,
+        } = event
+        {
+            let outer = std::mem::replace(&mut self.smooth_wheel.line_wheel, true);
+            let actions = self.handle_event(
+                PlatformEvent::MouseWheel {
+                    x,
+                    y,
+                    delta_x: lines_x * rinch_platform::WHEEL_LINE_PX,
+                    delta_y: lines_y * rinch_platform::WHEEL_LINE_PX,
+                },
+                window_size,
+                scale_factor,
+            );
+            self.smooth_wheel.line_wheel = outer;
+            return actions;
+        }
         // Mark this document as the one dispatching, for the whole of the call
         // (issue #139). Several `RinchApp`s share one thread — an app and its
         // DevTools panel, or two embedded `RinchContext`s — and process-lifetime
@@ -1390,6 +1415,11 @@ impl RinchApp {
                 delta_y,
             } => {
                 self.cursor_pos = Some((x, y));
+                // A line wheel's default scroll glides (#2287) unless the app
+                // turned that off. Taken, so nothing this wheel dispatches
+                // reads it as its own.
+                let glide =
+                    std::mem::take(&mut self.smooth_wheel.line_wheel) && self.smooth_wheel.enabled;
 
                 // One hit test serves both questions below — is the wheel
                 // over a render surface, and which container does it scroll —
@@ -1510,12 +1540,28 @@ impl RinchApp {
                                 rinch_dom::paint::scrollbar::ScrollbarAxis::Vertical,
                             )
                         {
-                            let (moved, handler_id) =
-                                Self::scroll_vertically_by(&mut doc_mut, scroll_node_id, -delta_y);
-                            if moved {
-                                self.scene_dirty = true;
-                                if let Some(hid) = handler_id {
-                                    scrolled.push((scroll_node_id, hid));
+                            if glide {
+                                // A glide moves nothing yet: its frames do,
+                                // from the `AboutToWait` clock
+                                // (`tick_wheel_scroll`), each a scroll write
+                                // and an `onscroll` of its own.
+                                self.smooth_wheel.animate(
+                                    &doc_mut,
+                                    scroll_node_id,
+                                    smooth_wheel::WheelAxis::Vertical,
+                                    -delta_y,
+                                );
+                            } else {
+                                let (moved, handler_id) = Self::scroll_vertically_by(
+                                    &mut doc_mut,
+                                    scroll_node_id,
+                                    -delta_y,
+                                );
+                                if moved {
+                                    self.scene_dirty = true;
+                                    if let Some(hid) = handler_id {
+                                        scrolled.push((scroll_node_id, hid));
+                                    }
                                 }
                             }
                         }
@@ -1527,17 +1573,26 @@ impl RinchApp {
                                 rinch_dom::paint::scrollbar::ScrollbarAxis::Horizontal,
                             )
                         {
-                            let (moved, handler_id) = Self::scroll_horizontally_by(
-                                &mut doc_mut,
-                                scroll_node_id,
-                                -delta_x,
-                            );
-                            if moved {
-                                self.scene_dirty = true;
-                                if let Some(hid) = handler_id
-                                    && !scrolled.iter().any(|(n, _)| *n == scroll_node_id)
-                                {
-                                    scrolled.push((scroll_node_id, hid));
+                            if glide {
+                                self.smooth_wheel.animate(
+                                    &doc_mut,
+                                    scroll_node_id,
+                                    smooth_wheel::WheelAxis::Horizontal,
+                                    -delta_x,
+                                );
+                            } else {
+                                let (moved, handler_id) = Self::scroll_horizontally_by(
+                                    &mut doc_mut,
+                                    scroll_node_id,
+                                    -delta_x,
+                                );
+                                if moved {
+                                    self.scene_dirty = true;
+                                    if let Some(hid) = handler_id
+                                        && !scrolled.iter().any(|(n, _)| *n == scroll_node_id)
+                                    {
+                                        scrolled.push((scroll_node_id, hid));
+                                    }
                                 }
                             }
                         }
@@ -2383,6 +2438,11 @@ impl RinchApp {
                 // A drag resting in an edge band scrolls a frame's worth, and
                 // keeps the clock turning for the next one.
                 if self.tick_drag_auto_scroll(Instant::now(), vp_w, vp_h, had_running) {
+                    actions.push(AppAction::RequestRedraw);
+                }
+                // A wheel notch gliding (#2287) moves a frame's worth; the
+                // clock stops once the last one has arrived.
+                if self.tick_wheel_scroll() {
                     actions.push(AppAction::RequestRedraw);
                 }
 

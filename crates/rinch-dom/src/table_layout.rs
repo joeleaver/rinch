@@ -39,6 +39,16 @@
 //! spanning cell or a caption, which share their width between columns — by
 //! laying the table out detached with `auto` tracks.
 //!
+//! When every column of such a table declares a width, each is
+//! `minmax(min-content, <weight>fr)`, its weight the widest of its cells'
+//! asks, as in Blink's `ComputeColumnInlineConstraints` (#2288): a cell with
+//! a `width` asks the larger of that width and its min-content, any other
+//! cell (a block in an anonymous cell among them) its max-content. So a
+//! `width=50` cell holding a 100px box is weighed by 100, and a picture that
+//! scales into its cell (min-content 0) by the cell's width alone. Under a
+//! spanning cell or a caption (the detached layout) a cell with a `width`
+//! asks just that width.
+//!
 //! A table with no width of its own shrinks to fit on plain `auto` tracks and
 //! needs no measure. Its grid sets Taffy's `proportional_column_sizing`
 //! (#2280): when its content is wider than its room, each column is its
@@ -117,6 +127,11 @@ pub struct TableCell {
     /// last asked it; asked again once Taffy has dropped the cell's sizes
     /// (a change inside it, or to its style).
     pub max_content: Option<f32>,
+    /// The same for its min-content width, asked only of a cell with a
+    /// `width` of its own, which weighs its column by the larger of the two
+    /// (#2288). The width itself is read at each weighing: a cell's `width`
+    /// never reaches its Taffy style, so a change to it leaves this valid.
+    pub min_content: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -245,9 +260,6 @@ struct Row {
     id: Option<RawNodeId>,
     group: Option<RawNodeId>,
     cells: Vec<RawNodeId>,
-    /// A row's one child that is not a cell (`display: block` on a `<td>`),
-    /// in the first column ([`row_of`]).
-    stacked: bool,
 }
 
 #[derive(Default)]
@@ -374,7 +386,6 @@ fn row_of(tree: &NodeTree, row: RawNodeId, group: Option<RawNodeId>) -> Vec<Row>
                 id: Some(row),
                 group,
                 cells: vec![c],
-                stacked: true,
             })
             .collect();
     }
@@ -382,7 +393,6 @@ fn row_of(tree: &NodeTree, row: RawNodeId, group: Option<RawNodeId>) -> Vec<Row>
         id: Some(row),
         group,
         cells: kids,
-        stacked: false,
     }]
 }
 
@@ -406,7 +416,6 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                 id: None,
                 group: None,
                 cells: std::mem::take(&mut bare),
-                stacked: false,
             });
         }
         match part {
@@ -428,7 +437,6 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                                 id: None,
                                 group: Some(c),
                                 cells: std::mem::take(&mut cells),
-                                stacked: false,
                             });
                         }
                         list.extend(row_of(tree, r, Some(c)));
@@ -441,7 +449,6 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
                         id: None,
                         group: Some(c),
                         cells,
-                        stacked: false,
                     });
                 }
             }
@@ -460,7 +467,6 @@ fn structure_of(tree: &NodeTree, table: RawNodeId) -> Structure {
             id: None,
             group: None,
             cells: bare,
-            stacked: false,
         });
     }
     s
@@ -506,6 +512,32 @@ fn declared_track(tree: &NodeTree, id: RawNodeId) -> Track {
         }
         DimensionValue::Percent(p) => Track::Percent(p),
         _ => Track::Auto,
+    }
+}
+
+/// The horizontal margins of a block standing in an anonymous cell (a `<td
+/// style="display: block">`), which are inside that cell and part of what it
+/// asks of its column (#2288). A real cell has none.
+fn anon_cell_margins(tree: &NodeTree, id: RawNodeId) -> f32 {
+    let cs = &tree.nodes[id].computed_style;
+    if cs.table_part == TablePart::Cell {
+        return 0.0;
+    }
+    let px = |m: &crate::computed_style::values::LengthPercentageAutoValue| match m {
+        crate::computed_style::values::LengthPercentageAutoValue::Length(v) => *v,
+        _ => 0.0,
+    };
+    px(&cs.margin_left) + px(&cs.margin_right)
+}
+
+/// A real cell's declared length width, as its column reads it.
+fn declared_px(tree: &NodeTree, id: RawNodeId) -> Option<f32> {
+    if tree.nodes[id].computed_style.table_part != TablePart::Cell {
+        return None;
+    }
+    match declared_track(tree, id) {
+        Track::Px(p) => Some(p),
+        _ => None,
     }
 }
 
@@ -787,10 +819,14 @@ impl RinchDocument {
                 x += n;
             }
         }
-        // A stacked block's `width` is its own, inside the anonymous cell
-        // that holds it, whose width is auto.
+        // A block in a row (a `<td style="display: block">`, stacked or
+        // beside real cells) stands in an anonymous cell, whose width is
+        // auto: the block's `width` is its own, inside that cell, and does
+        // not declare the column (#2288; Chrome gives a wide table's free
+        // width to that auto column, not to the declared ones).
         for (cell, slot, y) in &placed {
-            if slot.colspan == 1 && (!fixed || *y == 0) && !rows[*y].stacked {
+            let real = self.tree.nodes[*cell].computed_style.table_part == TablePart::Cell;
+            if slot.colspan == 1 && (!fixed || *y == 0) && real {
                 let i = slot.col as usize - 1;
                 tracks[i] = merge_track(tracks[i], declared_track(&self.tree, *cell));
             }
@@ -842,6 +878,11 @@ impl RinchDocument {
         }
 
         let prev = self.tree.nodes[table].table_box.take();
+        // A declared column's weight reads its width (#2288), which never
+        // reaches a cell's Taffy style: tracks that moved owe a weighing.
+        if prev.as_ref().is_some_and(|p| p.tracks != tracks) {
+            self.tree.tables_owed_columns.push(table);
+        }
         let (weights, base, was) = prev
             .map(|p| (p.weights, p.base, p.placed))
             .unwrap_or_default();
@@ -879,6 +920,7 @@ impl RinchDocument {
             slot.shift = old.shift;
             slot.kids_shift = old.kids_shift;
             slot.max_content = old.max_content;
+            slot.min_content = old.min_content;
             if old.under != slot.under {
                 self.tree.paint_dirty_nodes.push(id);
             }
@@ -938,8 +980,10 @@ impl RinchDocument {
                             _ => taffy::style_helpers::auto(),
                         },
                         Track::Px(p) if b.fixed => length(p),
+                        // Weighed by its cells' asks, never under its width
+                        // (*Column widths*).
                         Track::Px(p) if can_weigh && all_declared => {
-                            minmax(min_content(), fr(p.max(1.0)))
+                            minmax(min_content(), fr(p.max(w.unwrap_or(0.0)).max(1.0)))
                         }
                         Track::Px(p) => minmax(min_content(), length(p)),
                         Track::Percent(p) if b.definite => minmax(min_content(), percent(p)),
@@ -990,15 +1034,22 @@ impl RinchDocument {
             // table; email stacks its columns this way). Written on every
             // sync from the part alone, so no restyle strands it.
             let cell = node.computed_style.table_part != TablePart::Caption;
-            style.stretch_past_max_width = node.computed_style.table_part == TablePart::Cell;
+            let real = node.computed_style.table_part == TablePart::Cell;
+            style.stretch_past_max_width = real;
             if cell {
                 // A cell's `height` is a minimum, and its `width` is its
-                // column's. It fills its slot and has no margins.
-                if let DimensionValue::Length(h) = node.computed_style.height {
-                    style.min_size.height = length(h);
+                // column's. It fills its slot and has no margins. A block
+                // standing in an anonymous cell keeps its own size and
+                // margins, inside the cell (#2288): its `width` is what it
+                // asks of the column, which is `auto` ([`declared_track`] is
+                // not read for it).
+                if real {
+                    if let DimensionValue::Length(h) = node.computed_style.height {
+                        style.min_size.height = length(h);
+                    }
+                    style.size = taffy::Size::auto();
+                    style.margin = taffy::Rect::length(0.0);
                 }
-                style.size = taffy::Size::auto();
-                style.margin = taffy::Rect::length(0.0);
                 style.align_self = Some(taffy::AlignSelf::STRETCH);
                 style.justify_self = Some(taffy::JustifySelf::STRETCH);
                 if c.shift != 0.0 {
@@ -1173,6 +1224,7 @@ impl RinchDocument {
                     && let Some(cell) = self.tree.nodes[c].table_cell.as_mut()
                 {
                     cell.max_content = None;
+                    cell.min_content = None;
                 }
             }
             self.tree.tables_owed_columns.push(id);
@@ -1204,7 +1256,14 @@ impl RinchDocument {
                 self.tree.nodes[id]
                     .table_box
                     .as_ref()
-                    .is_some_and(|b| b.definite && !b.fixed && b.tracks.contains(&Track::Auto))
+                    // An `auto` column is weighed by its cells, and so is a
+                    // declared one in a table whose columns all declare
+                    // theirs (*Column widths*).
+                    .is_some_and(|b| {
+                        b.definite
+                            && !b.fixed
+                            && b.tracks.iter().any(|t| !matches!(t, Track::Percent(_)))
+                    })
             })
             .map(|id| {
                 let mut depth = 0;
@@ -1328,10 +1387,10 @@ impl RinchDocument {
         let ask: Vec<(RawNodeId, taffy::NodeId)> = cells
             .iter()
             .filter(|&&(id, tid, _)| {
-                self.tree.nodes[id]
-                    .table_cell
-                    .as_ref()
-                    .is_none_or(|c| c.max_content.is_none())
+                let c = self.tree.nodes[id].table_cell.as_ref();
+                c.is_none_or(|c| c.max_content.is_none())
+                    || (c.is_some_and(|c| c.min_content.is_none())
+                        && declared_px(&self.tree, id).is_some())
                     || self.tree.taffy.dirty(tid).unwrap_or(true)
             })
             .map(|&(id, tid, _)| (id, tid))
@@ -1348,20 +1407,52 @@ impl RinchDocument {
             self.tree
                 .perf
                 .add(crate::perf::Counter::TableColumnMeasures, ask.len() as u64);
+            // A cell with a `width` of its own is asked its min-content too
+            // (see the weighing below).
+            let declared: Vec<(RawNodeId, taffy::NodeId)> = ask
+                .iter()
+                .copied()
+                .filter(|&(id, _)| declared_px(&self.tree, id).is_some())
+                .collect();
+            let mins = if declared.is_empty() {
+                Vec::new()
+            } else {
+                let tids: Vec<taffy::NodeId> = declared.iter().map(|&(_, tid)| tid).collect();
+                self.measure_taffy_sizes(
+                    &tids,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::MinContent,
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                )
+            };
             for ((id, _), size) in ask.into_iter().zip(sizes) {
                 if let Some(c) = self.tree.nodes[id].table_cell.as_mut() {
                     // Rounded, as the detached layout's boxes are.
                     c.max_content = Some(size.width.round());
                 }
             }
+            for ((id, _), size) in declared.into_iter().zip(mins) {
+                if let Some(c) = self.tree.nodes[id].table_cell.as_mut() {
+                    c.min_content = Some(size.width.round());
+                }
+            }
         }
+        // What each cell asks of its column's weight (#2288; Blink's
+        // `ComputeColumnInlineConstraints`): a cell with a `width` of its own
+        // the larger of that width and its min-content, so a declared column
+        // whose content cannot fit is weighed by the content and a picture
+        // that scales into it (min-content 0) is not; any other cell its
+        // max-content, a block in an anonymous cell with its side margins.
         let mut weights = vec![0.0f32; cols];
         for (id, _, col) in cells {
-            let w = self.tree.nodes[id]
-                .table_cell
-                .as_ref()
-                .and_then(|c| c.max_content)
-                .unwrap_or(0.0);
+            let c = self.tree.nodes[id].table_cell.as_ref();
+            let w = match declared_px(&self.tree, id) {
+                Some(p) => p.max(c.and_then(|c| c.min_content).unwrap_or(0.0)),
+                None => {
+                    c.and_then(|c| c.max_content).unwrap_or(0.0) + anon_cell_margins(&self.tree, id)
+                }
+            };
             weights[col] = weights[col].max(w);
         }
         Some(weights)
@@ -1434,7 +1525,15 @@ impl RinchDocument {
             .filter_map(|&c| {
                 let n = &self.tree.nodes[c];
                 let slot = n.table_cell.as_ref()?;
-                let w = self.tree.taffy.layout(n.taffy_id?).ok()?.size.width;
+                // A cell with a `width` of its own asks for that width here:
+                // this layout has its max-content, not its min-content.
+                let w = match declared_px(&self.tree, c) {
+                    Some(p) => p,
+                    None => {
+                        self.tree.taffy.layout(n.taffy_id?).ok()?.size.width
+                            + anon_cell_margins(&self.tree, c)
+                    }
+                };
                 Some((slot.col, slot.colspan, w))
             })
             .collect()
@@ -1497,7 +1596,11 @@ impl RinchDocument {
         if node.table_box.is_some() {
             return;
         }
-        if node.computed_style.table_part == TablePart::Caption {
+        // A caption is not aligned, and neither is a block standing in an
+        // anonymous cell (a `<td style="display: block">`): that cell's
+        // `vertical-align` is the initial `baseline`, whatever the `<td>`'s UA
+        // `middle` says to the block (#2288).
+        if node.computed_style.table_part != TablePart::Cell {
             return;
         }
         let (old, kids_old) = (cell.shift, cell.kids_shift);
