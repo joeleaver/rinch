@@ -3767,7 +3767,7 @@ pub(crate) mod compositor_routing_tests {
                     base_color: vello::peniko::Color::WHITE,
                     width: 400,
                     height: 300,
-                    antialiasing_method: vello::AaConfig::Msaa16,
+                    antialiasing_method: crate::gpu_antialiasing::scene_aa(),
                 },
             )
             .expect("render");

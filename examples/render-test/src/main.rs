@@ -2118,7 +2118,7 @@ fn render_to_png(
     let mut renderer = vello::Renderer::new(
         &device,
         vello::RendererOptions {
-            antialiasing_support: vello::AaSupport::all(),
+            antialiasing_support: rinch::gpu_antialiasing().aa_support(),
             use_cpu: false,
             num_init_threads: None,
             pipeline_cache: None,
@@ -2135,7 +2135,8 @@ fn render_to_png(
                 base_color: vello::peniko::Color::TRANSPARENT,
                 width,
                 height,
-                antialiasing_method: vello::AaConfig::Msaa16,
+                // The window's own antialiasing (#2286).
+                antialiasing_method: rinch::gpu_antialiasing().aa_config(),
             },
         )
         .expect("Vello render_to_texture failed");

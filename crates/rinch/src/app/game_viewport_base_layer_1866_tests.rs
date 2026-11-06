@@ -643,7 +643,7 @@ mod gpu {
                             base_color: base,
                             width: W,
                             height: H,
-                            antialiasing_method: vello::AaConfig::Msaa16,
+                            antialiasing_method: crate::gpu_antialiasing::scene_aa(),
                         },
                     )
                     .expect("render"),
@@ -795,7 +795,7 @@ mod gpu {
                             base_color: base,
                             width: W,
                             height: H,
-                            antialiasing_method: vello::AaConfig::Msaa16,
+                            antialiasing_method: crate::gpu_antialiasing::scene_aa(),
                         },
                     )
                     .expect("render"),

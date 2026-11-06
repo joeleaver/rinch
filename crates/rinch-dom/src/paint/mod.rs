@@ -20,6 +20,7 @@ mod select;
 pub mod slicing;
 mod svg;
 mod text;
+pub mod text_rasterization;
 mod text_shadow;
 pub mod tooltip;
 pub mod vello_painter;

@@ -77,6 +77,11 @@ mod composited_frame;
 pub mod editor;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub mod embed;
+/// The antialiasing the GPU renderer draws a window's scene with (#2286).
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub mod gpu_antialiasing;
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub use gpu_antialiasing::{GpuAntialiasing, gpu_antialiasing, set_gpu_antialiasing};
 /// Files from the user on the desktop and the web (issue #1771): the
 /// [`FilePicker`](file::FilePicker) and the [`LocalFile`](file::LocalFile)s an
 /// `ondropfiles` handler receives.
@@ -112,6 +117,10 @@ pub mod shell;
 pub(crate) mod split_compositor;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub(crate) mod split_frame;
+/// Text rasterization: the app's choice ([`App::text_rasterization`](app_builder::App::text_rasterization))
+/// and the OS's text settings it follows (#2286).
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub mod text_rasterization;
 /// Window-level facts and acts that work on the desktop and in the browser
 /// alike (issue #1770): [`open_url`](window::open_url),
 /// [`set_window_title`](window::set_window_title), and the reactive
@@ -254,6 +263,8 @@ pub mod prelude {
     ))]
     pub use crate::app_builder::App;
     pub use crate::font::{AppFont, FontData, GenericFamily};
+    #[cfg(feature = "gpu")]
+    pub use crate::gpu_antialiasing::GpuAntialiasing;
     #[cfg(feature = "desktop")]
     pub use crate::shell::activation::ActivationPolicy;
     #[cfg(all(feature = "android", target_os = "android"))]
@@ -266,6 +277,10 @@ pub mod prelude {
     #[cfg(feature = "desktop")]
     #[allow(deprecated)]
     pub use crate::shell::{run, run_with_theme};
+    #[cfg(any(feature = "desktop", feature = "android"))]
+    pub use crate::text_rasterization::{
+        StemDarkening, TextAntialias, TextHinting, TextRasterization,
+    };
     #[cfg(all(feature = "android", target_os = "android"))]
     pub use android_activity::AndroidApp;
     pub use rinch_core::element::*;

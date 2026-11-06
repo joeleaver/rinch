@@ -472,6 +472,11 @@ fn draw_masked(
     // its true offset; only the key is quantised ([`CallHasher`]), so a
     // scroll by a fraction of a pixel that moves no glyph to another pixel
     // hits (review of #1020, rounds 2 and 3).
+    // The copy is drawn in the shadow's own colour, opaque: coverage is its
+    // alpha whatever the colour, and the colour is what the stem darkening of
+    // light text judges (#2286), so a black shadow is not thickened as a white
+    // copy would be. The key holds the darkening, not the colour.
+    let opaque = Brush::Solid(color.with_alpha(1.0));
     let key = {
         let mut hasher = CallHasher::default();
         draw_shadow_copy(
@@ -479,7 +484,7 @@ fn draw_masked(
             text,
             ox - area.x0,
             oy - area.y0,
-            &Brush::Solid(AlphaColor::<Srgb>::from_rgba8(255, 255, 255, 255)),
+            &opaque,
             Affine::IDENTITY,
             scale,
             mask,
@@ -525,13 +530,12 @@ fn draw_masked(
             );
         }
         sp.clear_rect_transparent(0, 0, w as u32, h as u32);
-        let white = Brush::Solid(AlphaColor::<Srgb>::from_rgba8(255, 255, 255, 255));
         draw_shadow_copy(
             sp,
             text,
             ox - area.x0,
             oy - area.y0,
-            &white,
+            &opaque,
             Affine::IDENTITY,
             scale,
             mask,
@@ -804,13 +808,24 @@ impl Painter for CallHasher {
         font_size: f32,
         transform: Affine,
         glyph_transform: Option<Affine>,
-        _: &Brush,
+        brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
         glyphs: &[super::painter::PaintGlyph],
     ) {
         use std::hash::Hasher;
         self.0.write_u8(4);
+        // What the painter rasterises the run with under this thread's
+        // text-rendering policy (#2286): its hinting and its stem darkening,
+        // which the brush's colour decides; the colour itself is no part of
+        // a coverage mask.
+        let policy = super::text_rasterization::thread_policy();
+        self.0.write_u32(
+            policy
+                .run_darkening_px(brush, font_size, transform)
+                .to_bits(),
+        );
+        self.0.write_u8(policy.hint() as u8);
         self.0.write_u64(font.data.id());
         self.0.write_u32(font.index);
         self.0.write_u32(font_size.to_bits());
