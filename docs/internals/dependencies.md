@@ -420,11 +420,29 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    `parley/src/layout/line_break.rs`). The breaker allowed a break before an in-flow inline box
    only by the wrap mode of the text before it (lagged by an atom), so a box after `pre` text
    inside a `pre-wrap` span was appended past the line's end and the line went back to an
-   earlier opportunity. CSS Text 3 §5.1 gives that opportunity to the nearest common ancestor of
-   the two; the box's parent style wrapping now allows it too. #1238 corpus `p704`
+   earlier opportunity. Now the break is allowed when the text before the box wraps **or** the
+   box's parent style wraps. That is wider than CSS Text 3 §5.1, which gives the opportunity to
+   the nearest common ancestor of the two (`aa<span normal>[B]</span>` in a `nowrap` root has
+   none between `aa` and `[B]`, and the fork's rule allows one); the fork's commit message and
+   its code comment call the rule "nearest common ancestor", which is not what the code does
+   (#2238). rinch matches Chrome anyway: a paragraph that holds an atomic inline and an element
+   that does not wrap is broken where CSS breaks next to its boxes (`ifc::WrapSeams`), not where
+   parley does, and without such an element the two rules agree. #1238 corpus `p704`
    (`[B2]q-refg` / `[I1]xyz`, Chrome 155), and with it `m420` and `p660`, known differences since
    before 0.12.
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::SPACE_RUN_BREAKS`) and in the seams pass
-(`ifc::pre_seams_needed`, `ifc::break_overflowing_spaces`).
+(`ifc::pre_seams_needed`, `ifc::break_overflowing_spaces`). `wrap_spaces` hands parley a `nowrap`
+or `pre` element's collapsible space as wrapping where Chrome has an opportunity before it, which
+Chrome decides item by item from the content before the space (`ifc::IfcText::last_wraps`,
+#2238): text or a box whose element wraps allows it and one whose element does not takes it
+away, an element's end passes it on (and allows it where an element that does not wrap closes
+into one that does), and an element's start allows it when that element wraps and takes it away
+when it does not, even an empty one. So `aa<span normal>hello</span> ccc` in a `nowrap` root
+breaks after `hello` with end padding, a border or a margin on the span, or a padded child at
+its end, and so do `aa<span><span normal>hello</span></span> ccc` and `aa<span normal><span
+nowrap>hello</span></span> ccc`; `…hello</span><span></span> ccc` and `…hello</span><span
+nowrap> ccc</span>` do not (Chrome 156). The seams and edge-box passes ask the same answer
+(`ifc::UnhungSpaces::space_breaks`), and a paragraph with such a space is broken at its width
+even when none of its text wraps.
