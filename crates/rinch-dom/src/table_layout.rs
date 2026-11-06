@@ -950,10 +950,14 @@ impl RinchDocument {
             // the cell is laid out at its column's width, past it (#2264;
             // Blink: `CreateCellInlineConstraint`,
             // `SetupTableCellConstraintSpaceBuilder`). Taffy keeps `max_size`
-            // for the contributions and lets the stretch pass it. Written on
-            // every sync from the part alone, so no restyle strands it.
+            // for the contributions and lets the stretch pass it. Only a
+            // `display: table-cell` box: a `<td style="display: block">` (or
+            // `flex`, …) is a block in an anonymous cell, which its
+            // `max-width` clamps as any block's (Chrome 156: 90 in a 400px
+            // table; email stacks its columns this way). Written on every
+            // sync from the part alone, so no restyle strands it.
             let cell = node.computed_style.table_part != TablePart::Caption;
-            style.stretch_past_max_width = cell;
+            style.stretch_past_max_width = node.computed_style.table_part == TablePart::Cell;
             if cell {
                 // A cell's `height` is a minimum, and its `width` is its
                 // column's. It fills its slot and has no margins.

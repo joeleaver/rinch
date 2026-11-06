@@ -337,3 +337,53 @@ fn a_fixed_table_lays_a_capped_cell_out_at_its_column() {
     assert_eq!(abs(&d, "a"), (0.0, 0.0, 120.0, 20.0));
     assert_eq!(abs(&d, "b"), (120.0, 0.0, 280.0, 20.0));
 }
+
+/// Six 40x20 inline-blocks, laid two to a line at 90px, six at 400.
+fn six() -> String {
+    "<div style='display:inline-block;width:40px;height:20px'></div>".repeat(6)
+}
+
+#[test]
+fn a_td_displayed_as_a_block_keeps_its_max_width() {
+    // Responsive email stacks its columns with `display: block` on a `td`:
+    // it is then a block in an anonymous cell, and its `max-width` clamps
+    // it as any block's does. Chrome 156: 90x60, its boxes two to a line.
+    let d = doc(&format!(
+        "<table id=t style='border-spacing:0;width:400px'><tr>\
+         <td id=a style='padding:0;max-width:90px;display:block;font-size:0;line-height:0'>{}</td>\
+         </tr></table>",
+        six()
+    ));
+    assert_eq!(abs(&d, "a"), (0.0, 0.0, 90.0, 60.0));
+}
+
+#[test]
+fn a_td_displayed_as_a_flex_box_keeps_its_max_width() {
+    let item = "<div style='width:40px;height:20px;flex:none'></div>".repeat(6);
+    let d = doc(&format!(
+        "<table id=t style='border-spacing:0;width:400px'><tr>\
+         <td id=a style='padding:0;max-width:90px;display:flex;flex-wrap:wrap'>{item}</td>\
+         </tr></table>"
+    ));
+    assert_eq!(abs(&d, "a"), (0.0, 0.0, 90.0, 60.0));
+}
+
+#[test]
+fn a_restyle_between_a_cell_and_a_block_td_keeps_each_rule() {
+    // A cell stretches past its max-width (400x20); the block it becomes is
+    // clamped (90x60); the cell again stretches.
+    let cell = "padding:0;max-width:90px;font-size:0;line-height:0";
+    let mut d = doc(&format!(
+        "<table id=t style='border-spacing:0;width:400px'><tr>\
+         <td id=a style='{cell}'>{}</td></tr></table>",
+        six()
+    ));
+    assert_eq!(abs(&d, "a"), (0.0, 0.0, 400.0, 20.0));
+    let a = d.query_selector("#a").unwrap();
+    d.set_attribute(a, "style", &format!("{cell};display:block"));
+    d.resolve_layout(601.0, 800.0);
+    assert_eq!(abs(&d, "a"), (0.0, 0.0, 90.0, 60.0), "cell -> block");
+    d.set_attribute(a, "style", cell);
+    d.resolve_layout(602.0, 800.0);
+    assert_eq!(abs(&d, "a"), (0.0, 0.0, 400.0, 20.0), "block -> cell");
+}
