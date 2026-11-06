@@ -12,7 +12,7 @@ use tiny_skia::{
 };
 
 use super::glyph_atlas::{
-    AtlasStats, GlyphMask, MaskKind, RunSpec, SharedAtlas, atlas_scale, place, thread_atlas,
+    AtlasStats, GlyphMask, Looked, MaskKind, RunSpec, SharedAtlas, atlas_scale, place, thread_atlas,
 };
 use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
 
@@ -1696,7 +1696,12 @@ impl Painter for TinySkiaPainter {
                 blit(i, mask.as_ref());
             }
         } else {
-            atlas.lookup(&spec, &keys, false, &mut stats.atlas, blit);
+            // A font swash cannot read draws nothing here, as it always did.
+            let _ = atlas.lookup(&spec, &keys, false, &mut stats.atlas, |i, looked| {
+                if let Looked::Mask(m) = looked {
+                    blit(i, Some(m));
+                }
+            });
         }
         self.glyph_keys = keys;
         self.glyph_origins = origins;

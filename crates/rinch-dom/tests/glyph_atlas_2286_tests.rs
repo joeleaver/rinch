@@ -221,12 +221,13 @@ fn a_colour_face_is_not_rasterised() {
     assert!(a.borrow().is_empty(), "nothing kept");
 }
 
-/// Review of #2301, item 3: a font swash cannot read drew nothing at all on
-/// the GPU. It is now drawn as Vello's outlines (whatever Vello makes of it),
-/// counted as fallbacks, with nothing cached.
+/// Review of #2301, item 3: a glyph swash cannot render (here, an id past
+/// the face's glyph count) was cached as empty and drew nothing on the GPU; it
+/// is now handed to Vello's outlines, counted as a fallback, every frame. Its
+/// neighbours stay on the atlas.
 #[test]
-fn an_unreadable_font_draws_outlines() {
-    let junk = FontData::new(Blob::new(std::sync::Arc::new(vec![0_u8; 64])), 0);
+fn a_glyph_swash_cannot_render_draws_as_an_outline() {
+    let inter = FontData::new(Blob::new(std::sync::Arc::new(INTER)), 0);
     let a = atlas(usize::MAX);
     let mut p = painter(&a);
     let glyphs = [
@@ -236,7 +237,7 @@ fn an_unreadable_font_draws_outlines() {
             y: 20.0,
         },
         PaintGlyph {
-            id: 4,
+            id: 60_000,
             x: 20.0,
             y: 20.0,
         },
@@ -246,6 +247,37 @@ fn an_unreadable_font_draws_outlines() {
             y: 20.0,
         },
     ];
+    for n in 0..2 {
+        p.reset();
+        p.draw_glyphs(
+            &inter,
+            13.0,
+            peniko::kurbo::Affine::IDENTITY,
+            None,
+            &Brush::Solid(peniko::color::palette::css::BLACK),
+            true,
+            &[],
+            &glyphs,
+        );
+        let s = p.take_glyph_stats();
+        assert_eq!(s.outline_fallbacks, 1, "frame {n}: {s:?}");
+        assert_eq!(s.atlas.hits + s.atlas.misses, 3, "frame {n}: {s:?}");
+    }
+}
+
+/// A font no reader can parse draws nothing and does not panic (Vello's own
+/// `draw_glyphs` unwraps the font, so it is not handed one), and nothing is
+/// cached.
+#[test]
+fn an_unreadable_font_draws_nothing_and_does_not_panic() {
+    let junk = FontData::new(Blob::new(std::sync::Arc::new(vec![0_u8; 64])), 0);
+    let a = atlas(usize::MAX);
+    let mut p = painter(&a);
+    let glyphs = [PaintGlyph {
+        id: 3,
+        x: 10.0,
+        y: 20.0,
+    }];
     p.draw_glyphs(
         &junk,
         13.0,
@@ -257,7 +289,6 @@ fn an_unreadable_font_draws_outlines() {
         &glyphs,
     );
     let s = p.take_glyph_stats();
-    assert_eq!(s.outline_fallbacks, 3, "{s:?}");
-    assert_eq!((s.atlas.misses, s.atlas.hits), (0, 0), "{s:?}");
+    assert_eq!(s, GlyphStats::default(), "{s:?}");
     assert!(a.borrow().is_empty());
 }

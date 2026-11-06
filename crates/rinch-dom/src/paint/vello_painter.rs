@@ -44,6 +44,9 @@ pub struct VelloPainter {
     /// See [`Self::set_glyph_atlas_enabled`].
     #[cfg(feature = "glyph-atlas")]
     atlas_enabled: bool,
+    /// Runs changing size frame after frame, drawn as outlines meanwhile.
+    #[cfg(feature = "glyph-atlas")]
+    churn: super::glyph_atlas::SizeChurn,
     /// Scratch reused across glyph runs.
     #[cfg(feature = "glyph-atlas")]
     glyph_scratch: GlyphScratch,
@@ -201,6 +204,8 @@ impl VelloPainter {
             glyph_stats: GlyphStats::default(),
             #[cfg(feature = "glyph-atlas")]
             atlas_enabled: true,
+            #[cfg(feature = "glyph-atlas")]
+            churn: Default::default(),
             #[cfg(feature = "glyph-atlas")]
             glyph_scratch: GlyphScratch::default(),
         }
@@ -464,7 +469,9 @@ impl VelloPainter {
         normalized_coords: &[i16],
         glyphs: &[PaintGlyph],
     ) -> bool {
-        use super::glyph_atlas::{ATLAS_MAX_FONT_PX, MaskKind, RunSpec, atlas_scale, place};
+        use super::glyph_atlas::{
+            ATLAS_MAX_FONT_PX, Looked, MaskKind, RunSpec, atlas_scale, place,
+        };
         let Brush::Solid(tint) = brush else {
             return false;
         };
@@ -478,6 +485,26 @@ impl VelloPainter {
         if !(size > 0.0 && size <= ATLAS_MAX_FONT_PX) {
             return false;
         }
+        // The thread's policy (#2286 stage 1), as `encode_glyphs` reads it:
+        // the app's escape hatch, hinting, and light text's stem darkening in
+        // device pixels, which is the mask's own scale here.
+        let policy = super::text_rasterization::thread_policy();
+        if policy.gpu_glyph_outlines {
+            return false;
+        }
+        let spec = RunSpec {
+            font,
+            size,
+            hint: hint && policy.hint(),
+            embolden: policy.run_darkening_px(brush, font_size, transform),
+            coords: normalized_coords,
+        };
+        // A colour face is Vello's to draw (COLR, bitmaps): not rasterised
+        // here just to be thrown away. A run whose size is animating draws
+        // as outlines until it settles.
+        if self.atlas.borrow_mut().face_has_color(font) || self.churn.animating(&spec) {
+            return false;
+        }
         let mut scratch = std::mem::take(&mut self.glyph_scratch);
         scratch.keys.clear();
         scratch.places.clear();
@@ -489,17 +516,6 @@ impl VelloPainter {
             scratch.keys.push((g.id, pl.bucket));
             scratch.places.push(pl);
         }
-        // The thread's policy (#2286 stage 1), as `encode_glyphs` reads it:
-        // hinting, and light text's stem darkening in device pixels, which is
-        // the mask's own scale here.
-        let policy = super::text_rasterization::thread_policy();
-        let spec = RunSpec {
-            font,
-            size,
-            hint: hint && policy.hint(),
-            embolden: policy.run_darkening_px(brush, font_size, transform),
-            coords: normalized_coords,
-        };
         let tint = *tint;
         let routing = self.routing;
         {
@@ -510,13 +526,13 @@ impl VelloPainter {
                 outlines,
             } = &mut scratch;
             let scene = &mut self.scene;
-            self.atlas.borrow_mut().lookup(
+            let read = self.atlas.borrow_mut().lookup(
                 &spec,
                 keys,
                 true,
                 &mut self.glyph_stats.atlas,
-                |i, mask| match mask {
-                    Some(m) if m.kind == MaskKind::Coverage => {
+                |i, looked| match looked {
+                    Looked::Mask(m) if m.kind == MaskKind::Coverage => {
                         if let Some(image) = m.gpu_image() {
                             let (x, y) =
                                 ((places[i].x + m.left) as f64, (places[i].y - m.top) as f64);
@@ -535,10 +551,20 @@ impl VelloPainter {
                             }
                         }
                     }
-                    Some(_) => outlines.push(glyphs[i]),
-                    None => {}
+                    // A colour mask (a face without COLR/CBDT/sbix tables that
+                    // still gave one) or a glyph swash could not render.
+                    Looked::Mask(_) | Looked::Failed => outlines.push(glyphs[i]),
+                    Looked::Empty => {}
                 },
             );
+            if !read {
+                // swash cannot read the font. Vello's outlines, as before
+                // the atlas, if skrifa (Vello's reader) can: its `draw_glyphs`
+                // panics on a font it cannot read, so not otherwise.
+                self.glyph_scratch = scratch;
+                let data: &[u8] = font.data.as_ref();
+                return skrifa::FontRef::from_index(data, font.index).is_err();
+            }
         }
         self.glyph_stats.outline_fallbacks += scratch.outlines.len() as u64;
         let encode = |scene: &mut Scene| {
@@ -875,7 +901,10 @@ impl Painter for VelloPainter {
         self.routing = false;
         self.reads_backdrop = false;
         #[cfg(feature = "glyph-atlas")]
-        self.atlas.borrow_mut().begin_frame();
+        {
+            self.atlas.borrow_mut().begin_frame();
+            self.churn.begin_frame();
+        }
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
@@ -929,7 +958,6 @@ impl Painter for VelloPainter {
         // From the glyph-mask atlas wherever it can draw the run (#2286).
         #[cfg(feature = "glyph-atlas")]
         if self.atlas_enabled
-            && !super::text_rasterization::thread_policy().gpu_glyph_outlines
             && self.draw_atlas_glyphs(
                 font,
                 font_size,

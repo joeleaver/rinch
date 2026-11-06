@@ -822,7 +822,10 @@ in the `embed` build without it). Stage 2 of the text-antialiasing plan in
   sub-pixel bucket: `place` rounds the device x to the nearest quarter pixel,
   and a fraction past the last bucket rounds up to the next pixel's bucket 0
   (glifo clamps it to bucket 3 instead, up to 0.25 px off; this is at most
-  0.125). The baseline is rounded to a whole row, half up, as hinting assumes.
+  0.125). The baseline is rounded to a whole device row, half up, as hinting
+  assumes and as Chrome draws text: so on the GPU too a line's glyphs now sit
+  on whole rows (Vello's outlines were placed at the exact fractional
+  baseline), the same rows as the software painter's.
 - **Transforms.** `atlas_scale` admits a transform with no rotation or skew and
   the same positive scale on both axes: the glyph is rasterised at `font_size ×
   scale` (so a HiDPI factor or a CSS `scale()` stays crisp) and its origin
@@ -835,8 +838,12 @@ in the `embed` build without it). Stage 2 of the text-antialiasing plan in
   mask's life, so Vello's image atlas (keyed by blob id) uploads it once and
   keeps it resident while it is drawn; drawn at a whole device pixel with
   `ImageQuality::Low`, it is copied texel for texel, under Area and MSAA alike.
-  Not drawn from the atlas, and counted in `glyph_outline_fallbacks`: a colour
-  glyph (Vello's own COLR and bitmap paths), a device size past
+  Not drawn from the atlas, and counted in `glyph_outline_fallbacks`: a run in
+  a face with colour glyphs (a COLR, CBDT or sbix table, checked once per font,
+  so nothing is rasterised to be thrown away; Vello's own COLR and bitmap
+  paths), a glyph swash cannot render (cached as failed; a font swash cannot
+  read at all goes to Vello only if skrifa can, as Vello's `draw_glyphs`
+  panics on an unreadable font), a run whose size is animating (below), a device size past
   `ATLAS_MAX_FONT_PX` (64), a run with a glyph transform (synthetic italic), a
   non-solid brush, and a transform off the grid. A split frame routes a run by
   the union of its masks' rects.
@@ -855,9 +862,25 @@ in the `embed` build without it). Stage 2 of the text-antialiasing plan in
 - **Eviction.** Each entry remembers the generation it was last drawn in
   (`begin_frame`, called from each painter's `reset`). Past the budget (32 MiB
   accounted: mask bytes, the GPU copies, 128 a entry) the oldest go first, down
-  to three quarters; when one frame draws more than the budget, its own masks go
-  too and the next frame rasterises again (it never fails to draw). Past 512
-  runs, the quarter drawn longest ago go whole. Evicting is safe at any point
+  to three quarters of it, but **never what the current generation drew, and
+  never below the working set**: the most any of the last four generations
+  drew. So a screen whose masks are bigger than the budget (6,000 distinct CJK
+  glyphs at 2x are about 40 MB) overshoots it by what one frame needs and is
+  not rasterised again on every repaint (#2301 review: it was, 2,550 glyphs a
+  static frame). The budget bounds what no recent frame drew. Past 512 runs,
+  the quarter drawn longest ago go whole, none drawn this generation.
+- **Animated sizes.** A `font-size` or `scale()` animation, or animated
+  variation coordinates, would make a new set of masks every frame: about twice
+  the CPU of outlines. `SizeChurn`, one per Vello painter, calls a run's size
+  (device size, emboldening, hinting, coords) new when its font file did not
+  draw it in the previous frame; a new size in a font file that also drew a new
+  size in the previous frame is animating and is drawn as outlines. When it
+  stops changing, it was drawn in the previous frame and is back on the atlas.
+  A still page draws no new size after its first frame, and a translation
+  changes no size, so neither falls back; a static heading beside an animating
+  run in the same face keeps the atlas. Per painter, because a frame may reset
+  several painters; a painter made fresh each frame never sees an animation.
+  The global switch is `TextRasterization::gpu_glyph_outlines`. Evicting is safe at any point
   between lookups: a Vello scene holds its own reference to every image it
   draws.
 - **GPU lifetime.** rinch holds no GPU object here. The texture is Vello's image
@@ -872,7 +895,12 @@ in the `embed` build without it). Stage 2 of the text-antialiasing plan in
   `glyph_y`) is the atlas's placement, the quarter pixel and the row.
 
 Pins: `glyph_atlas::tests` (placement, keys, buckets, the GPU copy, colour
-glyphs, eviction order, a frame over budget), the `#[ignore]`d
+glyphs, eviction order, a frame over budget, size churn),
+`crates/rinch-dom/tests/glyph_atlas_2286_tests.rs` (counted frames: a static
+page over budget rasterises nothing again; `font-size` and `scale()`
+transitions draw outlines with 0 uploads mid-animation and settle back; a
+`translateX` one never falls back; a colour face is not rasterised; a glyph
+swash cannot render is an outline; an unreadable font does not panic), the `#[ignore]`d
 `crates/rinch/tests/gpu_glyph_atlas_2286.rs` (GPU pixels equal to the software
 painter's at 1x and 1.5x, one mask in two colours, every fallback, a new
 renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.

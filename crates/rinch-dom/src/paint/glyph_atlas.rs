@@ -196,7 +196,38 @@ struct RunKey {
 /// and the generation it was last drawn in.
 struct Entry {
     mask: Option<GlyphMask>,
+    /// swash produced no image for a glyph (as opposed to an empty one): the
+    /// GPU painter draws it as an outline.
+    failed: bool,
     used: u64,
+}
+
+impl Entry {
+    fn bytes(&self) -> usize {
+        self.mask.as_ref().map_or(0, GlyphMask::bytes) + ENTRY_OVERHEAD
+    }
+}
+
+/// What [`GlyphAtlas::lookup`] hands `draw` for one glyph.
+#[derive(Clone, Copy)]
+pub enum Looked<'a> {
+    /// The glyph's mask.
+    Mask(&'a GlyphMask),
+    /// The glyph has no pixels (a space).
+    Empty,
+    /// swash could not rasterise it: a painter with another way to draw it
+    /// (Vello's outlines) should.
+    Failed,
+}
+
+impl<'a> Looked<'a> {
+    /// The mask, if the glyph has one.
+    pub fn mask(self) -> Option<&'a GlyphMask> {
+        match self {
+            Looked::Mask(m) => Some(m),
+            Looked::Empty | Looked::Failed => None,
+        }
+    }
 }
 
 struct Run {
@@ -223,6 +254,13 @@ pub struct GlyphAtlas {
     /// One swash cache key per font file, so swash's own scaler cache is hit
     /// across calls (`FontRef::from_index` mints a fresh key every time).
     font_keys: HashMap<(u64, u32), swash::CacheKey>,
+    /// Per font file: does the face hold colour glyphs (COLR, CBDT, sbix)?
+    color_faces: HashMap<(u64, u32), bool>,
+    /// Accounted bytes of the entries the current generation has drawn.
+    frame_bytes: usize,
+    /// The same for the last few generations, newest last: what eviction
+    /// keeps whatever the budget (see [`Self::working_set`]).
+    recent_frame_bytes: [usize; 4],
 }
 
 impl Default for GlyphAtlas {
@@ -299,6 +337,9 @@ impl GlyphAtlas {
             scale: swash::scale::ScaleContext::new(),
             bitmap_scale: swash::scale::ScaleContext::new(),
             font_keys: HashMap::new(),
+            color_faces: HashMap::new(),
+            frame_bytes: 0,
+            recent_frame_bytes: [0; 4],
         }
     }
 
@@ -363,14 +404,50 @@ impl GlyphAtlas {
         self.runs.clear();
         self.last = 0;
         self.bytes = 0;
+        self.frame_bytes = 0;
         self.font_keys.clear();
+        self.color_faces.clear();
     }
 
     /// Start a new generation: what is drawn from now on is newer than what
     /// was drawn before, for eviction. Painters call it when they start a
     /// frame; several painters a frame only make generations finer.
     pub fn begin_frame(&mut self) {
+        self.recent_frame_bytes.rotate_left(1);
+        self.recent_frame_bytes[3] = self.frame_bytes;
+        self.frame_bytes = 0;
         self.generation += 1;
+    }
+
+    /// The bytes eviction keeps whatever the budget: the most any of the last
+    /// few generations drew (several painters may start a generation in one
+    /// frame), or the current one's. A page whose masks are bigger than the
+    /// budget is not rasterised again on every repaint; the atlas overshoots
+    /// the budget by what one frame needs instead.
+    fn working_set(&self) -> usize {
+        self.recent_frame_bytes
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .max(self.frame_bytes)
+    }
+
+    /// Whether the face of `font` holds colour glyphs (a COLR, CBDT or sbix
+    /// table), read once per font file. The GPU painter draws such a run as
+    /// Vello does (its COLR and bitmap paths), without rasterising it here.
+    pub fn face_has_color(&mut self, font: &FontData) -> bool {
+        *self
+            .color_faces
+            .entry((font.data.id(), font.index))
+            .or_insert_with(|| {
+                let data: &[u8] = font.data.as_ref();
+                swash::FontRef::from_index(data, font.index as usize).is_some_and(|f| {
+                    [*b"COLR", *b"CBDT", *b"sbix"]
+                        .iter()
+                        .any(|t| f.table(u32::from_be_bytes(*t)).is_some())
+                })
+            })
     }
 
     fn run_index(&mut self, spec: &RunSpec<'_>) -> usize {
@@ -413,31 +490,30 @@ impl GlyphAtlas {
 
     /// Look up (rasterising on a miss) each glyph of `glyphs` — `(id,
     /// bucket)` pairs — in the run `spec`, calling `draw` with its index in
-    /// `glyphs` and its mask (`None`: the glyph has no pixels, or the font
-    /// could not be read). With `want_gpu`, a coverage mask's GPU image is
-    /// made before `draw` sees it.
+    /// `glyphs` and what the atlas has for it ([`Looked`]). With `want_gpu`, a
+    /// coverage mask's GPU image is made before `draw` sees it.
+    ///
+    /// `false` (and no `draw`): swash cannot read the font at all; the GPU
+    /// painter draws the run as outlines.
     ///
     /// Counts into `stats`. Evicts (after the last `draw`) when the budget is
-    /// exceeded.
+    /// exceeded, never what the current generation has drawn.
     pub fn lookup(
         &mut self,
         spec: &RunSpec<'_>,
         glyphs: &[(u32, u8)],
         want_gpu: bool,
         stats: &mut AtlasStats,
-        mut draw: impl FnMut(usize, Option<&GlyphMask>),
-    ) {
-        if glyphs.is_empty() {
-            return;
-        }
+        mut draw: impl FnMut(usize, Looked<'_>),
+    ) -> bool {
         let font_data: &[u8] = spec.font.data.as_ref();
         let Some(mut font_ref) = swash::FontRef::from_index(font_data, spec.font.index as usize)
         else {
-            for i in 0..glyphs.len() {
-                draw(i, None);
-            }
-            return;
+            return false;
         };
+        if glyphs.is_empty() {
+            return true;
+        }
         if self.runs.len() >= MAX_RUNS {
             self.evict_runs(stats);
         }
@@ -451,54 +527,80 @@ impl GlyphAtlas {
         let Self {
             runs,
             bytes,
+            frame_bytes,
             scale,
             bitmap_scale,
             ..
         } = self;
         let cached = &mut runs[run].glyphs;
-        // Built only when something misses: a fully cached run never pays for
-        // a scaler (which is where swash sets up hinting state).
-        let mut scaler = glyphs
-            .iter()
-            .any(|&(id, b)| !cached.contains_key(&key(id, b)))
-            .then(|| {
-                scale
-                    .builder(font_ref)
-                    .size(spec.size)
-                    .hint(spec.hint)
-                    .normalized_coords(spec.coords)
-                    .build()
-            });
+        // Built on the first miss: a fully cached run never pays for a scaler
+        // (which is where swash sets up hinting state).
+        let mut scaler: Option<swash::scale::Scaler<'_>> = None;
+        let mut context = Some(scale);
         for (i, &(id, bucket)) in glyphs.iter().enumerate() {
-            let k = key(id, bucket);
-            let entry = match cached.entry(k) {
+            let entry = match cached.entry(key(id, bucket)) {
                 std::collections::hash_map::Entry::Occupied(o) => {
                     stats.hits += 1;
                     o.into_mut()
                 }
                 std::collections::hash_map::Entry::Vacant(v) => {
                     stats.misses += 1;
-                    let mask = scaler
-                        .as_mut()
-                        .and_then(|s| rasterise(s, bitmap_scale, font_ref, spec, id, bucket));
-                    *bytes += mask.as_ref().map_or(0, GlyphMask::bytes) + ENTRY_OVERHEAD;
-                    v.insert(Entry { mask, used: 0 })
+                    if scaler.is_none()
+                        && let Some(cx) = context.take()
+                    {
+                        scaler = Some(
+                            cx.builder(font_ref)
+                                .size(spec.size)
+                                .hint(spec.hint)
+                                .normalized_coords(spec.coords)
+                                .build(),
+                        );
+                    }
+                    let Some(s) = scaler.as_mut() else {
+                        unreachable!("the scaler is built on the first miss")
+                    };
+                    let (mask, failed) =
+                        match rasterise(s, bitmap_scale, font_ref, spec, id, bucket) {
+                            Raster::Mask(m) => (Some(m), false),
+                            Raster::Empty => (None, false),
+                            Raster::Failed => (None, true),
+                        };
+                    let e = Entry {
+                        mask,
+                        failed,
+                        used: 0,
+                    };
+                    *bytes += e.bytes();
+                    v.insert(e)
                 }
             };
-            entry.used = generation;
+            if entry.used != generation {
+                entry.used = generation;
+                *frame_bytes += entry.bytes();
+            }
             if want_gpu
                 && let Some(m) = entry.mask.as_mut()
                 && m.kind == MaskKind::Coverage
                 && m.gpu.is_none()
             {
-                *bytes += m.make_gpu();
+                let n = m.make_gpu();
+                *bytes += n;
+                *frame_bytes += n;
                 stats.uploads += 1;
             }
-            draw(i, entry.mask.as_ref());
+            draw(
+                i,
+                match (&entry.mask, entry.failed) {
+                    (Some(m), _) => Looked::Mask(m),
+                    (None, true) => Looked::Failed,
+                    (None, false) => Looked::Empty,
+                },
+            );
         }
-        if self.bytes > self.budget {
+        if self.bytes > self.budget.max(self.working_set()) {
             self.evict(stats);
         }
+        true
     }
 
     /// Rasterise one glyph without keeping it (the software painter's
@@ -518,19 +620,23 @@ impl GlyphAtlas {
             .hint(spec.hint)
             .normalized_coords(spec.coords)
             .build();
-        rasterise(
+        match rasterise(
             &mut scaler,
             &mut self.bitmap_scale,
             font_ref,
             spec,
             id,
             bucket,
-        )
+        ) {
+            Raster::Mask(m) => Some(m),
+            Raster::Empty | Raster::Failed => None,
+        }
     }
 
     /// Evict, oldest generation first, down to three quarters of the budget.
     fn evict(&mut self, stats: &mut AtlasStats) {
-        let target = self.budget / 4 * 3;
+        let target = (self.budget / 4 * 3).max(self.working_set());
+        let generation = self.generation;
         let mut all: Vec<(u64, usize, u32)> = Vec::new();
         for (ri, run) in self.runs.iter().enumerate() {
             for (&k, e) in &run.glyphs {
@@ -538,12 +644,14 @@ impl GlyphAtlas {
             }
         }
         all.sort_unstable();
-        for (_, ri, k) in all {
-            if self.bytes <= target {
+        for (used, ri, k) in all {
+            // Never what this generation drew: the frame still draws it, and
+            // dropping it would rasterise it again next frame.
+            if self.bytes <= target || used == generation {
                 break;
             }
             if let Some(e) = self.runs[ri].glyphs.remove(&k) {
-                self.bytes -= e.mask.as_ref().map_or(0, GlyphMask::bytes) + ENTRY_OVERHEAD;
+                self.bytes -= e.bytes();
                 stats.evictions += 1;
             }
         }
@@ -560,9 +668,11 @@ impl GlyphAtlas {
             .map(|(i, r)| (r.used, i))
             .collect();
         order.sort_unstable();
+        let generation = self.generation;
         let drop: std::collections::HashSet<usize> = order
             .iter()
             .take(self.runs.len() / 4 + 1)
+            .filter(|&&(used, _)| used != generation)
             .map(|&(_, i)| i)
             .collect();
         let mut i = 0;
@@ -572,7 +682,7 @@ impl GlyphAtlas {
             i += 1;
             if !keep {
                 for e in r.glyphs.values() {
-                    *bytes -= e.mask.as_ref().map_or(0, GlyphMask::bytes) + ENTRY_OVERHEAD;
+                    *bytes -= e.bytes();
                     stats.evictions += 1;
                 }
             }
@@ -585,6 +695,64 @@ impl GlyphAtlas {
             .map(|r| (r.key.font_id, r.key.font_index))
             .collect();
         self.font_keys.retain(|k, _| live.contains(k));
+    }
+}
+
+/// Which glyph runs are changing size frame after frame (#2301 review): a
+/// `font-size` or `scale()` animation, or animated variation coordinates,
+/// would make a new set of masks every frame, costing more than outlines. One
+/// per painter, whose `reset` starts a frame.
+///
+/// A run's **family** is its font file; its **size** is the device size, the
+/// emboldening and the variation coordinates. A size the family did not draw
+/// in the previous frame is new. A new size in a family that also drew a new
+/// size in the previous frame is animating, and is drawn as outlines; when
+/// the size stops changing it was drawn in the previous frame, and goes back
+/// to the atlas (one frame of misses, then hits). A still page draws no new
+/// sizes after its first frame, and a translation changes no size, so
+/// neither ever falls back.
+#[derive(Default)]
+pub struct SizeChurn {
+    prev: rustc_hash::FxHashMap<(u64, u32), Vec<(u64, bool)>>,
+    cur: rustc_hash::FxHashMap<(u64, u32), Vec<(u64, bool)>>,
+    prev_new: rustc_hash::FxHashSet<(u64, u32)>,
+    cur_new: rustc_hash::FxHashSet<(u64, u32)>,
+}
+
+impl SizeChurn {
+    /// Start a frame.
+    pub fn begin_frame(&mut self) {
+        std::mem::swap(&mut self.prev, &mut self.cur);
+        self.cur.clear();
+        std::mem::swap(&mut self.prev_new, &mut self.cur_new);
+        self.cur_new.clear();
+    }
+
+    /// Whether the run `spec` is animating its size, and should be drawn as
+    /// outlines this frame. Records the run's size either way.
+    pub fn animating(&mut self, spec: &RunSpec<'_>) -> bool {
+        use std::hash::{Hash, Hasher};
+        let family = (spec.font.data.id(), spec.font.index);
+        let mut h = rustc_hash::FxHasher::default();
+        spec.size.to_bits().hash(&mut h);
+        spec.embolden.to_bits().hash(&mut h);
+        spec.hint.hash(&mut h);
+        spec.coords.hash(&mut h);
+        let size = h.finish();
+        let cur = self.cur.entry(family).or_default();
+        if let Some(&(_, outline)) = cur.iter().find(|(k, _)| *k == size) {
+            return outline;
+        }
+        let new = !self
+            .prev
+            .get(&family)
+            .is_some_and(|sizes| sizes.iter().any(|(k, _)| *k == size));
+        let outline = new && self.prev_new.contains(&family);
+        cur.push((size, outline));
+        if new {
+            self.cur_new.insert(family);
+        }
+        outline
     }
 }
 
@@ -615,7 +783,7 @@ fn rasterise(
     spec: &RunSpec<'_>,
     id: u32,
     bucket: u8,
-) -> Option<GlyphMask> {
+) -> Raster {
     use swash::scale::{Render, Source};
     // swash's embolden (FreeType's `FT_Outline_EmboldenXY` without its
     // halving) grows a glyph by about the amount on each side horizontally
@@ -638,17 +806,39 @@ fn rasterise(
     // on its own first: the re-centring offset is the whole `Render`'s, and a
     // COLR glyph is not emboldened.
     if !scaler.has_color_bitmaps() && (em == 0.0 || !scaler.has_color_outlines()) {
-        return render(&[Source::ColorOutline(0), Source::Outline], scaler, true).and_then(to_mask);
+        return Raster::from(render(
+            &[Source::ColorOutline(0), Source::Outline],
+            scaler,
+            true,
+        ));
     }
     if let Some(image) = render(&[Source::ColorOutline(0)], scaler, false) {
-        return to_mask(image);
+        return Raster::from(Some(image));
     }
     if scaler.has_color_bitmaps()
         && let Some(g) = color_bitmap_glyph(bitmap_scale, font, spec.size, id as u16)
     {
-        return Some(g);
+        return Raster::Mask(g);
     }
-    render(&[Source::Outline], scaler, true).and_then(to_mask)
+    Raster::from(render(&[Source::Outline], scaler, true))
+}
+
+/// What rasterising one glyph gave.
+enum Raster {
+    Mask(GlyphMask),
+    /// An image with no pixels: the glyph is empty (a space).
+    Empty,
+    /// No image at all: swash could not render the glyph.
+    Failed,
+}
+
+impl From<Option<swash::scale::image::Image>> for Raster {
+    fn from(image: Option<swash::scale::image::Image>) -> Self {
+        match image {
+            None => Raster::Failed,
+            Some(image) => to_mask(image).map_or(Raster::Empty, Raster::Mask),
+        }
+    }
 }
 
 fn to_mask(image: swash::scale::image::Image) -> Option<GlyphMask> {
@@ -989,7 +1179,7 @@ mod tests {
         let mut centroids = [0.0; 4];
         for b in 0..4u8 {
             atlas.lookup(&spec(&f, 13.0), &[(l, b)], false, &mut stats, |_, m| {
-                centroids[b as usize] = ink_centroid(m.expect("an inked glyph"));
+                centroids[b as usize] = ink_centroid(m.mask().expect("an inked glyph"));
             });
         }
         assert_eq!((stats.misses, stats.hits), (4, 0));
@@ -1017,7 +1207,7 @@ mod tests {
             &[(space, 0), (space, 0)],
             false,
             &mut stats,
-            |_, m| seen.push(m.is_none()),
+            |_, m| seen.push(m.mask().is_none()),
         );
         assert_eq!(seen, [true, true]);
         assert_eq!((stats.misses, stats.hits), (5, 3));
@@ -1033,7 +1223,7 @@ mod tests {
         let mut atlas = GlyphAtlas::default();
         let mut stats = AtlasStats::default();
         atlas.lookup(&spec(&f, 13.0), &[(a, 1)], false, &mut stats, |_, m| {
-            assert!(m.unwrap().gpu_image().is_none());
+            assert!(m.mask().unwrap().gpu_image().is_none());
         });
         let before = atlas.bytes();
         let mut checked = false;
@@ -1043,7 +1233,7 @@ mod tests {
             true,
             &mut stats,
             |_, m| {
-                let m = m.unwrap();
+                let m = m.mask().unwrap();
                 let img = m.gpu_image().expect("made for a GPU draw");
                 assert_eq!((img.width, img.height), (m.width, m.height));
                 assert_eq!(img.alpha_type, ImageAlphaType::AlphaPremultiplied);
@@ -1069,7 +1259,7 @@ mod tests {
             &[(id, 1)],
             false,
             &mut AtlasStats::default(),
-            |_, m| n = m.unwrap().data.len(),
+            |_, m| n = m.mask().unwrap().data.len(),
         );
         n
     }
@@ -1086,7 +1276,7 @@ mod tests {
         let mut stats = AtlasStats::default();
         let mut kind = None;
         atlas.lookup(&spec(&f, 20.0), &[(id, 0)], true, &mut stats, |_, m| {
-            let m = m.expect("an emoji has pixels");
+            let m = m.mask().expect("an emoji has pixels");
             kind = Some(m.kind);
             assert!(m.gpu_image().is_none());
             assert_eq!(m.data.len(), (m.width * m.height * 4) as usize);
@@ -1171,12 +1361,68 @@ mod tests {
         let mut atlas = GlyphAtlas::with_budget(4096);
         let mut stats = AtlasStats::default();
         let mut drawn = 0;
-        atlas.lookup(&spec(&f, 40.0), &ids, false, &mut stats, |_, m| {
-            drawn += m.is_some() as usize
+        let _ = atlas.lookup(&spec(&f, 40.0), &ids, false, &mut stats, |_, m| {
+            drawn += m.mask().is_some() as usize
         });
         assert_eq!(drawn, ids.len());
+        // The frame's own masks are kept, over budget (review of #2301): the
+        // next frame of the same page draws them again from the atlas.
+        let big = atlas.bytes();
+        assert!(big > 3 * 4096, "{big}");
+        assert_eq!(stats.evictions, 0);
+        // Once no recent frame draws them, the next lookup past the budget
+        // drops them, down to the working set of what is drawn now.
+        let digit = [(glyph_id(INTER, '1'), 0)];
+        for _ in 0..5 {
+            atlas.begin_frame();
+            let _ = atlas.lookup(&spec(&f, 40.0), &digit, false, &mut stats, |_, _| {});
+        }
+        assert!(stats.evictions >= 20, "most letters went: {stats:?}");
         assert!(atlas.bytes() <= 4096, "{}", atlas.bytes());
-        assert!(stats.evictions > 0);
+        assert!(atlas.holds(&spec(&f, 40.0), digit[0].0, 0));
+    }
+
+    /// A size new two frames running is animating; a still page, and a size
+    /// that stops changing, are not.
+    #[test]
+    fn size_churn_marks_only_changing_sizes() {
+        let f = font(INTER);
+        let mut churn = SizeChurn::default();
+        let run = |size: f32| RunSpec {
+            font: &f,
+            size,
+            hint: true,
+            embolden: 0.0,
+            coords: &[],
+        };
+        // A page with two sizes: first frame new, never animating; still.
+        for _ in 0..3 {
+            churn.begin_frame();
+            assert!(!churn.animating(&run(13.0)));
+            assert!(!churn.animating(&run(24.0)));
+        }
+        // 13px starts growing: the first new size is drawn from the atlas,
+        // the next ones as outlines; 24px beside it stays on the atlas.
+        let mut seen = Vec::new();
+        for i in 1..=4 {
+            churn.begin_frame();
+            seen.push(churn.animating(&run(13.0 + i as f32 * 0.5)));
+            assert!(
+                !churn.animating(&run(24.0)),
+                "a still size in the same face"
+            );
+        }
+        assert_eq!(seen, [false, true, true, true]);
+        // It stops at 15px: the first settled frame is still "new"? No: it
+        // was drawn last frame, so it is back on the atlas at once.
+        churn.begin_frame();
+        assert!(!churn.animating(&run(15.0)));
+        churn.begin_frame();
+        assert!(!churn.animating(&run(15.0)));
+        // Asked twice in one frame, the answer is the frame's.
+        churn.begin_frame();
+        let a = churn.animating(&run(16.0));
+        assert_eq!(churn.animating(&run(16.0)), a);
     }
 
     /// The device size, the emboldening and the hinting are in the key.
@@ -1201,7 +1447,7 @@ mod tests {
                 coords: &[],
             };
             atlas.lookup(&s, &[(a, 0)], false, &mut stats, |_, m| {
-                let m = m.unwrap();
+                let m = m.mask().unwrap();
                 widths.push((m.width, m.data.iter().map(|&c| c as u64).sum::<u64>()));
             });
         }
