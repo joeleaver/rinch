@@ -1398,18 +1398,47 @@ pub(crate) struct IfcText<'a> {
     tabs: Vec<(usize, usize, usize)>,
     /// An edge box was pushed ([`Self::push_edge_box`], #1426).
     edge_boxes: bool,
-    /// Whether the text being pushed may wrap ([`Self::set_wraps`]).
+    /// Whether the text or atomic inline being pushed may wrap
+    /// ([`Self::set_wraps`]).
     wraps: bool,
-    /// Whether the last content pushed (not a collapsible space) could wrap.
+    /// Whether a run of spaces that does not wrap, pushed next, has a break
+    /// opportunity before it: `None` before any content, then what the
+    /// items since the last content (not a collapsible space) say
+    /// ([`Self::open_element`], [`Self::close_element`]).
+    ///
+    /// Chrome 156 decides it item by item, as its line breaker carries the
+    /// opportunity after its last item: text or an atomic inline whose
+    /// element wraps allows it and one whose element does not takes it away;
+    /// an element's end passes it on, and allows it when the element does
+    /// not wrap and the one it closes into does; an element's start allows
+    /// it when that element wraps and takes it away when it does not, even
+    /// an empty one. So `aa<span normal>hello</span> ccc` in a `nowrap` root
+    /// breaks after `hello`, with end padding on the span or a padded child
+    /// too, and so do `aa<span><span normal>hello</span></span> ccc` and
+    /// `aa<span normal><span nowrap>hello</span></span> ccc`; but
+    /// `…hello</span><span></span> ccc` and `…hello</span><span> ccc</span>`
+    /// do not (#2238). An element ends into its nearest ancestor with a box
+    /// (a `display: contents` one has none), text that does not wrap in a
+    /// contents element whose boxed ancestor wraps takes the opportunity
+    /// away, and a `<wbr>` gives one that elements after it do not take
+    /// away ([`Self::push_wbr`], review of #2258).
     last_wraps: Option<bool>,
-    /// The collapsible spaces of text that may not wrap right after content
-    /// that may: `(op, byte in the op's text)`. Each is handed to parley as
-    /// wrapping ([`Self::replay`]): Chrome 155 breaks at the first space
-    /// after a wrapping element's text in a `nowrap` parent
-    /// (`aa<span style="white-space:normal">dddd</span> ccc ccc`), and
+    /// A `<wbr>` was met since the last content ([`Self::push_wbr`]).
+    wbr: bool,
+    /// [`Self::last_wraps`] is an atomic inline's own, passed on by element
+    /// ends only ([`Self::nowrap_text_in_wrapping_box`]).
+    from_box: bool,
+    /// The collapsible spaces of text that may not wrap that
+    /// [`Self::last_wraps`] gives an opportunity before: `(op, byte in the
+    /// op's text)`. Each is handed to parley as wrapping ([`Self::replay`]):
     /// parley 0.12 decides a soft wrap by the space's own wrap mode (0.11.1
     /// hung an overflowing space whatever its mode, which broke there too).
     wrap_spaces: Vec<(usize, usize)>,
+    /// The flat offset (in [`Self::len`]'s terms) of the first space of every
+    /// run of spaces, collapsible (`true`) or preserved, that
+    /// [`Self::last_wraps`] gives an opportunity before
+    /// ([`Self::breaks_before_spaces`]).
+    break_before: Vec<(usize, bool)>,
 }
 
 /// Start a new stretch of a DOM↔flat `offset_map` at `(flat, dom)` when the
@@ -1547,14 +1576,75 @@ impl<'a> IfcText<'a> {
             edge_boxes: false,
             wraps: true,
             last_wraps: None,
+            wbr: false,
+            from_box: false,
             wrap_spaces: Vec::new(),
+            break_before: Vec::new(),
         }
     }
 
-    /// Whether the text pushed next may wrap (its element's `white-space`
-    /// is not `nowrap` or `pre`): see [`Self::wrap_spaces`].
+    /// Whether the text or atomic inline pushed next may wrap (the
+    /// `white-space` of the element it is in is not `nowrap` or `pre`): see
+    /// [`Self::last_wraps`].
     pub(crate) fn set_wraps(&mut self, wraps: bool) {
         self.wraps = wraps;
+    }
+
+    /// An inline element starts, `wraps` by its `white-space`: the
+    /// opportunity before a run of spaces that does not wrap is the
+    /// element's from here ([`Self::last_wraps`]).
+    pub(crate) fn open_element(&mut self, wraps: bool) {
+        if self.last_wraps.is_some() && !self.wbr {
+            self.last_wraps = Some(wraps);
+            self.from_box = false;
+        }
+    }
+
+    /// An inline element ends, `wraps` by its `white-space`, into one that
+    /// `parent_wraps`: the opportunity is passed on, and one is given where
+    /// an element that does not wrap closes into one that does
+    /// ([`Self::last_wraps`]).
+    pub(crate) fn close_element(&mut self, wraps: bool, parent_wraps: bool) {
+        if !wraps && parent_wraps && self.last_wraps.is_some() && !self.wbr {
+            self.last_wraps = Some(true);
+            self.from_box = false;
+        }
+    }
+
+    /// A `<wbr>`: an opportunity whatever the `white-space` (Chrome 156:
+    /// `aa<span nowrap>hello</span><wbr> ccc` breaks after `hello`), which
+    /// elements starting or ending after it, before the next content, do not
+    /// take away (review of #2258). It reaches a run of spaces after it; a
+    /// `<wbr>` right before text that does not wrap gets no opportunity of
+    /// its own here.
+    /// Text that does not wrap starts in a `display: contents` element whose
+    /// nearest boxed ancestor wraps: the opportunity before its spaces goes,
+    /// unless an atomic inline gave it (Chrome 156, review of #2258:
+    /// `aa<span contents nowrap><span normal>hello</span> ccc</span>` in a
+    /// `normal` root does not break after `hello`, and `…[1] ccc</span>`
+    /// breaks after `[1]`), or a `<wbr>`.
+    pub(crate) fn nowrap_text_in_wrapping_box(&mut self) {
+        if self.last_wraps.is_some() && !self.wbr && !self.from_box {
+            self.last_wraps = Some(false);
+        }
+    }
+
+    pub(crate) fn push_wbr(&mut self) {
+        self.last_wraps = Some(true);
+        self.wbr = true;
+    }
+
+    /// The runs of spaces that do not wrap and have a break opportunity
+    /// before them ([`Self::last_wraps`]), ascending: the flat offset in the
+    /// final text (after [`Self::finish`]) of each run's first space, and
+    /// whether the run is collapsible. A collapsible space [`Self::finish`]
+    /// removed (held at the end) is left out.
+    pub(crate) fn breaks_before_spaces(&self) -> Vec<(usize, bool)> {
+        self.break_before
+            .iter()
+            .filter(|(f, _)| self.dropped.binary_search(f).is_err())
+            .map(|&(f, collapsible)| (self.remap(f), collapsible))
+            .collect()
     }
 
     /// Whether any text was pushed with its spaces preserved: only then can a
@@ -1583,6 +1673,9 @@ impl<'a> IfcText<'a> {
         self.pending = None;
         self.line_start = false;
         self.prev_space = false;
+        self.last_wraps = Some(self.wraps);
+        self.wbr = false;
+        self.from_box = true;
         self.last_box = Some((inline_box.id as RawNodeId, self.len));
         self.ops.push(IfcOp::InlineBox(inline_box));
     }
@@ -1786,7 +1879,12 @@ impl<'a> IfcText<'a> {
                 self.pending = None;
                 self.prev_space = false;
                 self.line_start = raw.ends_with('\n');
+                if !self.wraps && self.last_wraps == Some(true) && raw.starts_with([' ', '\t']) {
+                    self.break_before.push((self.len, false));
+                }
                 self.last_wraps = Some(self.wraps);
+                self.wbr = false;
+                self.from_box = false;
             }
             if !may_rewrite_preserved(raw.as_ref()) {
                 let n = raw.len();
@@ -1860,6 +1958,8 @@ impl<'a> IfcText<'a> {
                 self.line_start = false;
                 self.pending = None;
                 self.last_wraps = Some(self.wraps);
+                self.wbr = false;
+                self.from_box = false;
             }
             if out.is_none() && ((space && c != ' ') || sub.is_some()) {
                 out = Some(raw[..i].to_string());
@@ -1870,6 +1970,7 @@ impl<'a> IfcText<'a> {
                 self.pending = Some((op, flat, self.len + flat));
                 if !self.wraps && self.last_wraps == Some(true) {
                     self.wrap_spaces.push((op, flat));
+                    self.break_before.push((self.len + flat, true));
                 }
             }
             if let Some(o) = out.as_mut() {
@@ -2974,8 +3075,13 @@ pub(crate) struct UnhungSpaces {
     pub breaking: Vec<std::ops::Range<usize>>,
     /// Text whose element does not wrap (`nowrap`, `pre`), filled only for
     /// an IFC holding edge boxes (#1426) or [`Self::seams`]: no soft wrap
-    /// after it ([`LineUnit::wrap_after`]).
+    /// after it ([`LineUnit::wrap_after`]). Less the collapsible spaces of
+    /// [`Self::space_breaks`], which are handed to parley as wrapping.
     pub nowrap: Vec<std::ops::Range<usize>>,
+    /// The first space of each run of spaces that does not wrap but has a
+    /// break opportunity before it (`IfcText::last_wraps`, #2238), as a
+    /// sorted flat byte ([`LineUnit::break_before`]).
+    pub space_breaks: Vec<usize>,
     /// Where `white-space` allows a soft wrap after a text node or an atomic
     /// inline, in a paragraph broken at a width that holds atomic inlines
     /// and some element that does not wrap (#1238); `None` otherwise, where
@@ -3021,10 +3127,11 @@ pub(crate) struct UnhungSpaces {
 /// `aa` and `[1]` (the root holds both). Only the edge of a leaf is decided
 /// here; inside a text node the break is its element's, as parley has it.
 ///
-/// A run of spaces is different (review of #1878): Chrome 155 decides its
-/// opportunity by the spaces' own `white-space`, or, when the spaces are in
-/// an element the text before them closes into, by any wrapping element
-/// that closes there ([`Seam::closes_into_wrap`], [`wrap_allowed_after`]).
+/// A run of spaces is different (review of #1878): Chrome decides the
+/// opportunity after it by the spaces' own `white-space`
+/// ([`wrap_allowed_after`]), and the one before it by the items between it
+/// and the content before it, element starts and ends included
+/// (`IfcText::last_wraps`, [`UnhungSpaces::space_breaks`], #2238).
 #[derive(Default)]
 pub(crate) struct WrapSeams {
     /// The flat byte each text node's run ends at, ascending, and its seam.
@@ -3038,11 +3145,6 @@ pub(crate) struct WrapSeams {
 pub(crate) struct Seam {
     /// A soft wrap may follow the leaf.
     wraps: bool,
-    /// The next leaf's element contains this one's, and an element that
-    /// closes between them (inside that one) wraps: `<span normal>hello
-    /// </span>` then the root's `nowrap` space. What decides a break after
-    /// a run of spaces that follows the leaf.
-    closes_into_wrap: bool,
     /// An element closes between this leaf and the next into one that does
     /// not wrap: `<span pre-wrap>aa  </span>` then a `pre` root's spaces.
     /// What makes the break between a wrapping run of spaces and a `pre`
@@ -3082,8 +3184,6 @@ impl WrapSeams {
             let next = leaves.get(i + 1).map(|&(_, next)| next);
             let seam = Seam {
                 wraps: next.is_none_or(|next| wraps_between(nodes, root_id, node, next)),
-                closes_into_wrap: next
-                    .is_some_and(|next| closes_into_wrap(nodes, root_id, node, next)),
                 closes_into_nowrap: next
                     .is_some_and(|next| closes_into_nowrap(nodes, root_id, node, next)),
                 closes: next.is_some_and(|next| only_closes(nodes, root_id, node, next)),
@@ -3116,36 +3216,6 @@ impl WrapSeams {
             .filter(|&&(b, _)| b == id)
             .map(|&(_, w)| w)
     }
-}
-
-/// Whether `next`'s parent element contains `leaf`, and some element from
-/// `leaf`'s parent up to (not including) it wraps ([`Seam::closes_into_wrap`]).
-fn closes_into_wrap(
-    nodes: &crate::node_slab::NodeSlab,
-    root_id: RawNodeId,
-    leaf: RawNodeId,
-    next: RawNodeId,
-) -> bool {
-    let Some(target) = nodes.get_live(next).and_then(|n| n.parent) else {
-        return false;
-    };
-    let mut wraps = false;
-    let mut el = nodes.get(leaf).and_then(|n| n.parent);
-    while let Some(id) = el {
-        if id == target {
-            return wraps;
-        }
-        if id == root_id {
-            return false;
-        }
-        let Some(node) = nodes.get(id) else {
-            return false;
-        };
-        wraps |= RinchDocument::text_wrap_mode(&node.computed_style)
-            == parley::style::TextWrapMode::Wrap;
-        el = node.parent;
-    }
-    false
 }
 
 /// Whether `next`'s parent element is a proper ancestor of `leaf`'s: elements
@@ -3234,11 +3304,24 @@ fn wraps_between(
         }
         false
     };
+    // A `display: contents` element has no box, and its `white-space` is
+    // not the one in effect at an element's end there (Chrome 156, review of
+    // #2258: `aa<span contents normal><span nowrap>dddd[1]</span></span>
+    // ccc` in a `nowrap` root has no break after `[1]`).
     let mut el = nodes.get(leaf).and_then(|n| n.parent);
     while let Some(id) = el {
         let Some(node) = nodes.get(id) else {
             return true;
         };
+        let contents = id != root_id
+            && node.computed_style.display == crate::computed_style::values::DisplayValue::Contents;
+        if contents {
+            // Passed through: neither its `white-space` nor its holding the
+            // next leaf decides (`<span contents nowrap>[1] [2]</span>` in a
+            // `normal` root breaks between the boxes).
+            el = node.parent;
+            continue;
+        }
         if RinchDocument::text_wrap_mode(&node.computed_style) == parley::style::TextWrapMode::Wrap
         {
             return true;
@@ -3356,9 +3439,9 @@ struct LineUnit {
     /// [`UnhungSpaces::nowrap`]); what decides a break after a space
     /// ([`wrap_allowed_after`]).
     own_wrap: bool,
-    /// [`Seam::closes_into_wrap`] at the end of a text run or after an
-    /// atomic inline.
-    closes_into_wrap: bool,
+    /// The first space of a run of spaces that does not wrap but has a break
+    /// opportunity before it ([`UnhungSpaces::space_breaks`]).
+    break_before: bool,
     /// [`Seam::closes_into_nowrap`] at the end of a text run or after an
     /// atomic inline.
     closes_into_nowrap: bool,
@@ -3431,6 +3514,16 @@ fn edge_break_allowed(
     let Some(n) = units.get(i1) else {
         return true;
     };
+    // A run of spaces that does not wrap, where the items before it give it
+    // an opportunity (`IfcText::last_wraps`, #2238: a wrapping element
+    // closing right before it), breaks before the run (Chrome keeps a `pre`
+    // run at the start of the next line), where UAX #14 has no break before
+    // a space. A collapsible run is wrapping text to parley and here. Asked
+    // before whether what precedes may wrap after it: the opportunity is
+    // the items', not the leaves' (an empty wrapping span between gives it).
+    if is_plain_space(n) && !n.own_wrap && !is_plain_space(p) && n.break_before {
+        return true;
+    }
     if !wrap_allowed_after(units, i0) {
         return false;
     }
@@ -3451,13 +3544,6 @@ fn edge_break_allowed(
     // seams for `pre` spaces: elsewhere (the #1426 edge-box path) it is
     // left as it was.
     if between_spaces && pre_seams && is_plain_space(p) && p.own_wrap && n.breaks {
-        return true;
-    }
-    // A run of spaces that does not wrap, in an element a wrapping one
-    // closes into right before it, breaks before the run (Chrome 155 keeps
-    // the spaces at the start of the next line), where UAX #14 has no break
-    // before a space.
-    if is_plain_space(n) && !n.own_wrap && !is_plain_space(p) && p.closes_into_wrap {
         return true;
     }
     // And a run of spaces that wraps then one that does not breaks between
@@ -3577,12 +3663,12 @@ enum PreSeam {
 /// offer an opportunity after each) it is the spaces' own `white-space`
 /// ([`LineUnit::own_wrap`]), not the element they close into (review of
 /// #1878, Chrome 155): `<span nowrap>abc def </span>[box]` in a `normal`
-/// root has none. Spaces that do not wrap, in an element a wrapping one
-/// closes into right before them, have their opportunity before the run
-/// instead ([`edge_break_allowed`]): `aa<span normal>hello</span> ccc` in a
-/// `nowrap` or `pre` root breaks after `hello` and keeps the space at the
-/// start of the next line (but `<span normal>ccc<span nowrap> mm</span>`
-/// does not break: the `nowrap` element opens there).
+/// root has none. Spaces that do not wrap may have their opportunity before
+/// the run instead, as the items before them say ([`LineUnit::break_before`],
+/// [`edge_break_allowed`]): `aa<span normal>hello</span> ccc` in a `nowrap`
+/// or `pre` root breaks after `hello` (a `pre` root keeps the space at the
+/// start of the next line), but `<span normal>ccc<span nowrap> mm</span>`
+/// does not break: the `nowrap` element opens there.
 fn wrap_allowed_after(units: &[LineUnit], end: usize) -> bool {
     let mut i = end.min(units.len());
     while i > 0 && units[i - 1].edge != 0 {
@@ -3835,7 +3921,7 @@ fn line_overflows(line: &[LineUnit], max: f32) -> bool {
 /// into: a `pre` element's text that starts with a space or tab right after
 /// text that wraps (a run of wrapping spaces before it is a [`pre_seam`],
 /// where parley has no break; a word of a wrapping element that closes
-/// there has its break before the `pre` run, [`Seam::closes_into_wrap`]),
+/// there has its break before the `pre` run, [`UnhungSpaces::space_breaks`]),
 /// or a soft-wrapped line that parley ended in a `pre` space (it hung one,
 /// breaking the `pre` run) or right before `pre` text (it went back to its
 /// last break when the `pre` text overflowed, where CSS may hang the spaces
@@ -3851,7 +3937,8 @@ fn pre_seams_needed(layout: &parley::Layout<Brush>, text: &str, unhung: &UnhungS
         r.start > 0
             && pre_space(r.start)
             && !in_ranges(&unhung.pre, r.start - 1)
-            && !in_ranges(&unhung.nowrap, r.start - 1)
+            && (!in_ranges(&unhung.nowrap, r.start - 1)
+                || unhung.space_breaks.binary_search(&r.start).is_ok())
     });
     // A wrapping space right before `break-spaces` ones: CSS breaks between
     // them (the first hangs, the run starts the next line, Chrome 155), and
@@ -3994,6 +4081,23 @@ fn css_direction_is_ltr(nodes: &crate::node_slab::NodeSlab, node: RawNodeId) -> 
     true
 }
 
+/// Take `byte` out of the sorted, disjoint `ranges`, splitting the one that
+/// holds it.
+fn remove_byte(ranges: &mut Vec<std::ops::Range<usize>>, byte: usize) {
+    let i = ranges.partition_point(|r| r.end <= byte);
+    let Some(r) = ranges.get(i).filter(|r| r.contains(&byte)).cloned() else {
+        return;
+    };
+    let mut keep = Vec::with_capacity(2);
+    if r.start < byte {
+        keep.push(r.start..byte);
+    }
+    if byte + 1 < r.end {
+        keep.push(byte + 1..r.end);
+    }
+    ranges.splice(i..=i, keep);
+}
+
 /// Whether `byte` is in one of the sorted, disjoint `ranges`.
 fn in_ranges(ranges: &[std::ops::Range<usize>], byte: usize) -> bool {
     let i = ranges.partition_point(|r| r.end <= byte);
@@ -4045,7 +4149,7 @@ fn logical_units(
                         edge: 0,
                         wrap_after: seam.map_or(own_wrap, |s| s.wraps),
                         own_wrap,
-                        closes_into_wrap: seam.is_some_and(|s| s.closes_into_wrap),
+                        break_before: unhung.space_breaks.binary_search(&range.start).is_ok(),
                         closes_into_nowrap: seam.is_some_and(|s| s.closes_into_nowrap),
                         text_end: seam.is_some(),
                         closes: seam.is_some_and(|s| s.closes),
@@ -4081,7 +4185,7 @@ fn logical_units(
                 },
                 wrap_after: seam.is_none_or(|s| s.wraps),
                 own_wrap: true,
-                closes_into_wrap: seam.is_some_and(|s| s.closes_into_wrap),
+                break_before: false,
                 closes_into_nowrap: seam.is_some_and(|s| s.closes_into_nowrap),
                 text_end: false,
                 closes: false,
@@ -10051,6 +10155,7 @@ impl RinchDocument {
         }
         let flat_len = ifc_text.final_len();
         let mut out_of_flow = ifc_text.out_of_flow_marks();
+        let space_breaks = ifc_text.breaks_before_spaces();
 
         // The IFC root's own wavy underline covers everything the walk produced.
         // (An inline element's covers its own range and is pushed by the walk.)
@@ -10069,7 +10174,12 @@ impl RinchDocument {
         // `nowrap`/`pre` root (#1212) — is broken at the available width, and
         // the per-cluster `TextWrapMode` keeps the rest of it on its lines.
         let boxes: Vec<RawNodeId> = ifc_text.atomic_box_ids().collect();
-        let effective_max_width = if Self::wraps_anywhere(nodes, root_id, &text_ranges, &boxes) {
+        // A space with an opportunity before it (#2238) wraps too, though
+        // all the text may not: `aa<span nowrap>hello</span><span
+        // normal></span> ccc` breaks before ` ccc` in Chrome.
+        let effective_max_width = if !space_breaks.is_empty()
+            || Self::wraps_anywhere(nodes, root_id, &text_ranges, &boxes)
+        {
             max_width
         } else {
             None
@@ -10161,7 +10271,15 @@ impl RinchDocument {
                     unhung.nowrap.push(r.flat_start..r.flat_end);
                 }
             }
+            // A collapsible space with an opportunity before it is handed to
+            // parley as wrapping (`IfcText::replay`): it wraps here too.
+            for &(byte, collapsible) in &space_breaks {
+                if collapsible {
+                    remove_byte(&mut unhung.nowrap, byte);
+                }
+            }
         }
+        unhung.space_breaks = space_breaks.iter().map(|&(byte, _)| byte).collect();
         // Build and break; with preserved tabs, again until each tab ends at
         // its stop (#1122): a tab's width depends on where its line puts it.
         let tabs = ifc_text.tab_offsets();
@@ -10692,6 +10810,18 @@ impl RinchDocument {
             && a.word_spacing == b.word_spacing
     }
 
+    /// `id`, or its nearest ancestor that is not `display: contents`: the
+    /// element whose box an inline item of `id` sits in.
+    fn box_ancestor(nodes: &crate::node_slab::NodeSlab, mut id: RawNodeId) -> RawNodeId {
+        while nodes[id].computed_style.display
+            == crate::computed_style::values::DisplayValue::Contents
+            && let Some(up) = nodes[id].parent.filter(|&up| nodes.get_live(up).is_some())
+        {
+            id = up;
+        }
+        id
+    }
+
     /// Whether an element's text may wrap: `nowrap` and `pre` forbid it
     /// (#1091). Pushed per inline element, so a `nowrap` span inside a
     /// wrapping root keeps its text on one line — and overflows that line,
@@ -11160,9 +11290,28 @@ impl RinchDocument {
                             .unwrap_or(&nodes[parent_id])
                             .computed_style;
                         let mode = SpaceCollapse::of(own.white_space);
-                        builder.set_wraps(
-                            Self::text_wrap_mode(own) == parley::style::TextWrapMode::Wrap,
-                        );
+                        let own_wraps =
+                            Self::text_wrap_mode(own) == parley::style::TextWrapMode::Wrap;
+                        builder.set_wraps(own_wraps);
+                        // Text that does not wrap, in a `display: contents`
+                        // element whose nearest boxed ancestor wraps, takes
+                        // the opportunity before its spaces away (Chrome 156,
+                        // review of #2258: `aa<span contents nowrap><span
+                        // normal>hello</span> ccc</span>` in a `normal` root
+                        // does not break after `hello`).
+                        if !own_wraps
+                            && let Some(dom_parent) = child.parent.filter(|&p| {
+                                nodes.get_live(p).is_some_and(|n| {
+                                    n.computed_style.display
+                                        == crate::computed_style::values::DisplayValue::Contents
+                                })
+                            })
+                            && Self::text_wrap_mode(
+                                &nodes[Self::box_ancestor(nodes, dom_parent)].computed_style,
+                            ) == parley::style::TextWrapMode::Wrap
+                        {
+                            builder.nowrap_text_in_wrapping_box();
+                        }
                         let (flat_len, offset_map) = builder.push_text_node(raw, mode);
                         *flat_pos += flat_len;
                         debug_assert_eq!(*flat_pos, builder.len());
@@ -11222,6 +11371,17 @@ impl RinchDocument {
                         font_cx,
                         font_family_resolves,
                     ));
+                    // #2238: where a run of spaces that does not wrap may
+                    // break before it, item by item ([`IfcText::last_wraps`]).
+                    let wraps = |style: &crate::computed_style::ComputedStyle| {
+                        Self::text_wrap_mode(style) == parley::style::TextWrapMode::Wrap
+                    };
+                    let wbr = child.tag() == Some("wbr");
+                    if wbr {
+                        builder.push_wbr();
+                    } else {
+                        builder.open_element(wraps(child_computed));
+                    }
                     child_positions.push((child_id, LayoutResult::default()));
 
                     // #1426: the room its inline-start margin, border and
@@ -11259,6 +11419,21 @@ impl RinchDocument {
                         builder.push_edge_box(child_id, true, edge_end * scale);
                     }
                     builder.pop_span();
+                    // It closes into its nearest ancestor with a box: a
+                    // `display: contents` parent has none, and its
+                    // `white-space` is not the one in effect after the end
+                    // (Chrome 156, review of #2258: `aa<span contents
+                    // normal><span nowrap>hello</span></span> ccc` in a
+                    // `nowrap` root does not break after `hello`, and
+                    // `aa<span normal><span contents nowrap><span
+                    // nowrap>hello</span></span></span> ccc` does).
+                    let into = Self::box_ancestor(nodes, parent_id);
+                    if !wbr {
+                        builder.close_element(
+                            wraps(child_computed),
+                            wraps(&nodes[into].computed_style),
+                        );
+                    }
 
                     // Record background and/or vertical-align span if the
                     // inline element has one. Through the shared helper, so
@@ -11311,6 +11486,20 @@ impl RinchDocument {
                             b + (height - child.layout.height)
                         }
                     });
+                    // The `white-space` of the element the box is in (its
+                    // own styles its contents); inside a `display: contents`
+                    // element, that of its nearest boxed ancestor (Chrome
+                    // 156, review of #2258).
+                    let box_parent = child
+                        .parent
+                        .filter(|&dom_parent| nodes.get_live(dom_parent).is_some())
+                        .map_or(parent_id, |dom_parent| {
+                            Self::box_ancestor(nodes, dom_parent)
+                        });
+                    builder.set_wraps(
+                        Self::text_wrap_mode(&nodes[box_parent].computed_style)
+                            == parley::style::TextWrapMode::Wrap,
+                    );
                     builder.push_inline_box(parley::InlineBox {
                         id: child_id,
                         index: 0, // will be set by builder

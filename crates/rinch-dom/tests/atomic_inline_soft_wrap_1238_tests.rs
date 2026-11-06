@@ -569,6 +569,509 @@ fn nowrap_spaces_after_wrapping_text_still_break_before_them() {
     }
 }
 
+/// #2238: the `nowrap` (or `pre`) spaces right after a wrapping element's
+/// text. Chrome 156 decides the opportunity before them item by item: text
+/// or a box whose element wraps allows it and one whose element does not
+/// takes it away, an element's end passes it on (and allows it where an
+/// element that does not wrap closes into one that does), and an element's
+/// start allows it when that element wraps and takes it away when it does
+/// not, even an empty one. A row is
+/// `(Chrome probe id, root style, inner HTML, Chrome 156's lines)`.
+///
+/// The second line (every row's first break is a soft wrap) starts at x 0
+/// in Chrome, its space collapsed away, except in a `pre` root, where the
+/// preserved space starts it (at 4.5px): [`check_rows`] checks that too,
+/// which the trimmed lines cannot show.
+type Rows = &'static [(
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+)];
+
+/// The rule was too narrow: end padding, a border or a margin on the
+/// wrapping span, or a padded child at its end (the edge-box path asked the
+/// space's own `white-space`), `nowrap` text closed into a wrapping span,
+/// and an empty wrapping span after `nowrap` text (that paragraph was not
+/// even broken at its width), broke nowhere in rinch. And with an atomic
+/// inline in the paragraph (`E1`, `G*`, `H1`) the lines were right but the
+/// break was taken before the collapsible space, which then started the
+/// next line at 4.5px.
+const BREAKS_BEFORE_NOWRAP_SPACES: Rows = &[
+    (
+        "B1",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal;padding-right:5px">ddddhello</span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "B2",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal;border-right:2px solid">ddddhello</span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "B3",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal;margin-right:5px">ddddhello</span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "B4",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">dddd<span style="padding-right:5px">hello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "B6",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">dddd<span style="white-space:nowrap;padding-right:5px">hello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "B7",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal;padding-right:5px"><span style="padding-right:3px">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "C8",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="white-space:nowrap">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "H7",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="white-space:nowrap;padding-right:4px">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "F2",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:normal"><span style="white-space:nowrap">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "Q6",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:nowrap">ddddhello</span><span style="white-space:normal"></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "Q11",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="white-space:nowrap"><span style="white-space:nowrap">ddddhello</span></span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "Q12",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:nowrap;padding-right:4px"><span style="white-space:normal">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "R6",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:nowrap">ddddhello</span><span style="white-space:normal"></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "E1",
+        "white-space:nowrap;width:80px",
+        r#"aa<span style="white-space:normal;padding-right:5px">ddddhello</span> ccc ccc<b id="B2" style="display:inline-block;width:30px;height:10px"></b>"#,
+        &["aaddddhello", "ccc_ccc[B2]"],
+    ),
+    (
+        "G2",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="white-space:nowrap">ddddhello</span></span> ccc ccc<b id="B2" style="display:inline-block;width:30px;height:10px"></b>"#,
+        &["aaddddhello", "ccc_ccc[B2]"],
+    ),
+    (
+        "G3",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello<span style="white-space:nowrap"></span></span> ccc ccc<b id="B2" style="display:inline-block;width:30px;height:10px"></b>"#,
+        &["aaddddhello", "ccc_ccc[B2]"],
+    ),
+    (
+        "G4",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal;padding-right:5px">ddddhello</span> ccc ccc<b id="B2" style="display:inline-block;width:30px;height:10px"></b>"#,
+        &["aaddddhello", "ccc_ccc[B2]"],
+    ),
+    (
+        "G6",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="white-space:normal"></span> ccc ccc<b id="B2" style="display:inline-block;width:30px;height:10px"></b>"#,
+        &["aaddddhello", "ccc_ccc[B2]"],
+    ),
+    (
+        "H1",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello<b id="B2" style="display:inline-block;width:30px;height:10px"></b></span> ccc ccc"#,
+        &["aaddddhello", "[B2]", "ccc_ccc"],
+    ),
+];
+
+/// The rule was too wide: an element that does not wrap opening between the
+/// wrapping text and the spaces (a `nowrap` span holding them, a plain span,
+/// an empty span), with or without end padding and an atomic inline later
+/// in the paragraph, takes the opportunity away; rinch broke after `hello`.
+const NO_BREAK_BEFORE_NOWRAP_SPACES: Rows = &[
+    (
+        "C1",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="white-space:nowrap"> ccc</span> ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "C2",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span> ccc</span>"#,
+        &["aaddddhello_ccc"],
+    ),
+    (
+        "C3",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "C13",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span><span> ccc</span></span>"#,
+        &["aaddddhello_ccc"],
+    ),
+    (
+        "C18",
+        "white-space:nowrap;width:55px",
+        r#"<span style="white-space:normal">aa ddddhello</span><span style="white-space:normal"></span><span> ccc</span>"#,
+        &["aa", "ddddhello_ccc"],
+    ),
+    (
+        "H4",
+        "white-space:nowrap;width:55px",
+        r#"<span style="white-space:normal">aa ddddhello</span><span style="white-space:nowrap">  ccc</span><span style="white-space:normal"> eee</span>"#,
+        &["aa", "ddddhello_ccc", "eee"],
+    ),
+    (
+        "F1",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "F5",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:normal;padding-right:5px">ddddhello</span><span></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "G1",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span></span> ccc ccc<b id="B2" style="display:inline-block;width:30px;height:10px"></b>"#,
+        &["aaddddhello_ccc_ccc[B2]"],
+    ),
+    (
+        "Q3",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="white-space:nowrap"></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "Q10",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:nowrap"><span style="white-space:normal">ddddhello</span><span></span></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+];
+
+/// Neighbours that matched Chrome before the change and must still match:
+/// an empty wrapping span, an empty `nowrap` span inside the wrapping one,
+/// a wrapping span closing through elements that do not wrap (`P*`, `Q2`,
+/// `Q4`: the end passes the opportunity on; #1238 corpus `p470`), spaces
+/// that wrap themselves, atomic inlines, out-of-flow and hidden elements,
+/// comments, and `pre` roots.
+const UNCHANGED_NEIGHBOURS: Rows = &[
+    (
+        "A",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "B5",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal;padding-left:5px">ddddhello</span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "C4",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="white-space:normal"></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "C5",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="white-space:normal"> ccc</span> ccc"#,
+        &["aaddddhello", "ccc", "ccc"],
+    ),
+    (
+        "C6",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><b id="B2" style="display:inline-block;width:30px;height:10px"></b> ccc"#,
+        &["aaddddhello", "[B2]_ccc"],
+    ),
+    (
+        "C7",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="white-space:normal">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "C9",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello<span style="white-space:nowrap"></span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "C10",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello<span></span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "C11",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="position:absolute"></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "C12",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="padding-left:5px"> ccc</span>"#,
+        &["aaddddhello_ccc"],
+    ),
+    (
+        "C14",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="white-space:nowrap;padding-left:3px"></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "C15",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal;padding-right:5px">ddddhello</span><span></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "C16",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><!-- x --> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "C17",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="display:none">zz</span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "D1",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:normal;padding-right:5px">ddddhello</span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "D2",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span> ccc</span>"#,
+        &["aaddddhello_ccc"],
+    ),
+    (
+        "D3",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:normal">dddd<span style="padding-right:5px">hello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "E2",
+        "white-space:nowrap;width:80px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span> ccc</span> ccc<b id="B2" style="display:inline-block;width:30px;height:10px"></b>"#,
+        &["aaddddhello_ccc_ccc[B2]"],
+    ),
+    (
+        "F3",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello<span style="white-space:nowrap"></span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "F4",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="white-space:normal"></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "G5",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="white-space:nowrap"> ccc</span> ccc<b id="B2" style="display:inline-block;width:30px;height:10px"></b>"#,
+        &["aaddddhello_ccc_ccc[B2]"],
+    ),
+    (
+        "H2",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">dddd</span><b id="B2" style="display:inline-block;width:30px;height:10px"></b> ccc ccc"#,
+        &["aadddd", "[B2]_ccc_ccc"],
+    ),
+    (
+        "H3",
+        "white-space:nowrap;width:90px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="white-space:nowrap"><b id="B2" style="display:inline-block;width:30px;height:10px"></b> ccc</span>"#,
+        &["aaddddhello", "[B2]_ccc"],
+    ),
+    (
+        "H5",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">dd</span><span style="white-space:nowrap">hello</span> ccc ccc"#,
+        &["aaddhello_ccc_ccc"],
+    ),
+    (
+        "H6",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="white-space:nowrap;padding-left:4px"> ccc</span> ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "H8",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><span style="white-space:nowrap"><span style="white-space:normal"></span> ccc</span>"#,
+        &["aaddddhello", "ccc"],
+    ),
+    (
+        "H9",
+        "white-space:nowrap;width:55px",
+        r#"<span style="white-space:normal">x</span>aa<span style="white-space:nowrap">ddddhello</span> ccc ccc"#,
+        &["xaaddddhello_ccc_ccc"],
+    ),
+    (
+        "P1",
+        "white-space:pre;width:90px",
+        r#"<span><span><b id="B1" style="display:inline-block;width:45px;height:10px"></b>hello bb <b id="B2" style="display:inline-block;width:20px;height:10px"></b></span><span style="padding:0 3px"><span style="white-space:pre-line">bb</span></span> <span style="white-space:pre"><b id="B3" style="display:inline-block;width:10px;height:10px"></b><br><span style="white-space:pre-wrap">xy z</span></span></span>"#,
+        &["[B1]hello_bb_[B2]bb", "[B3]", "xy_z"],
+    ),
+    (
+        "P2",
+        "white-space:pre;width:90px",
+        r#"<span><span><b id="B1" style="display:inline-block;width:45px;height:10px"></b>hello bb <b id="B2" style="display:inline-block;width:20px;height:10px"></b></span><span><span style="white-space:pre-line">bb</span></span> <span style="white-space:pre"><b id="B3" style="display:inline-block;width:10px;height:10px"></b><br><span style="white-space:pre-wrap">xy z</span></span></span>"#,
+        &["[B1]hello_bb_[B2]bb", "[B3]", "xy_z"],
+    ),
+    (
+        "P3",
+        "white-space:pre;width:90px",
+        r#"<span><span><b id="B1" style="display:inline-block;width:45px;height:10px"></b>hello bb <b id="B2" style="display:inline-block;width:20px;height:10px"></b></span><span style="padding:0 3px"><span style="white-space:pre-line">bb</span></span> <b id="B3" style="display:inline-block;width:10px;height:10px"></b></span>"#,
+        &["[B1]hello_bb_[B2]bb", "[B3]"],
+    ),
+    (
+        "P4",
+        "white-space:pre;width:90px",
+        r#"<span><span><b id="B1" style="display:inline-block;width:45px;height:10px"></b>hello bb <b id="B2" style="display:inline-block;width:20px;height:10px"></b></span><span style="padding:0 3px"><span style="white-space:pre-line">bb</span></span> x</span>"#,
+        &["[B1]hello_bb_[B2]bb", "x"],
+    ),
+    (
+        "P5",
+        "white-space:pre;width:90px",
+        r#"<span><b id="B1" style="display:inline-block;width:45px;height:10px"></b>hello bb <b id="B2" style="display:inline-block;width:20px;height:10px"></b><span><span style="white-space:pre-line">bb</span></span> x</span>"#,
+        &["[B1]hello_bb_[B2]bb", "x"],
+    ),
+    (
+        "P6",
+        "white-space:pre;width:70px",
+        r#"aa<span><span style="white-space:normal">hello</span></span> ccc"#,
+        &["aahello", "ccc"],
+    ),
+    (
+        "P7",
+        "white-space:nowrap;width:55px",
+        r#"aa<span><span style="white-space:normal">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "P8",
+        "white-space:pre;width:55px",
+        r#"aa<span><span style="white-space:normal">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "Q2",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:nowrap"><span style="white-space:normal">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "Q4",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:nowrap">dd<span style="white-space:normal">ddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "Q7",
+        "white-space:nowrap;width:55px",
+        r#"<span style="white-space:normal">aa</span><span style="white-space:nowrap">ddddhello</span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "Q9",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:nowrap"><span style="white-space:normal">dd</span>ddhello</span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "R1",
+        "white-space:pre;width:55px",
+        r#"aa<span><span style="white-space:normal">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "R4",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:nowrap">dd<span style="white-space:normal">ddhello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+];
+
+fn check_rows(rows: Rows) {
+    for (name, style, inner, want) in rows {
+        let laid = check(name, style, inner, want);
+        let pre = style.contains("white-space:pre;");
+        if let Some(second) = laid.raw.get(1) {
+            assert_eq!(
+                second.starts_with('_'),
+                pre,
+                "{name}: the second line starts with a space only in a `pre` root: {:?}",
+                laid.raw
+            );
+        }
+    }
+}
+
+#[test]
+fn nowrap_spaces_after_a_wrapping_elements_end_break_before_them() {
+    check_rows(BREAKS_BEFORE_NOWRAP_SPACES);
+}
+
+#[test]
+fn an_element_opening_before_nowrap_spaces_takes_their_opportunity_away() {
+    check_rows(NO_BREAK_BEFORE_NOWRAP_SPACES);
+}
+
+#[test]
+fn the_neighbours_of_the_nowrap_space_rule_still_match_chrome() {
+    check_rows(UNCHANGED_NEIGHBOURS);
+}
+
 /// Review of #1878, class C: a `pre-wrap` space hangs at a forced break
 /// even with the span's end padding after it: `[B1]q-r` fits 71.5px. A
 /// `break-spaces` space does not hang, and the line breaks after `q-`.
@@ -704,4 +1207,177 @@ fn a_re_broken_line_keeps_thai_word_breaks() {
     }
     rest.retain(|c| c != 'w');
     assert_eq!(rest, words.concat());
+}
+
+/// Review of #2258: an element's end inside a `display: contents` element
+/// closes into the nearest ancestor with a box (`K1`–`K9`: the contents
+/// element's own `white-space` is not the one in effect there); text that
+/// does not wrap in a contents element whose boxed ancestor wraps takes the
+/// opportunity before its spaces away (`K12`, `K13`, `K17`, `K18`); and a
+/// `<wbr>` is an opportunity that the empty elements after it do not take
+/// away (`M5`, `V2`–`V5`). An atomic inline in a contents element takes
+/// the `white-space` of its nearest boxed ancestor, and the opportunity it
+/// gives survives the contents element's own text (`Q7`, `Q8`, `Q20`, round
+/// 2). Chrome 156; the reviewer's probe ids.
+const CONTENTS_AND_WBR: Rows = &[
+    (
+        "K1",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:nowrap">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K2",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal">dd<span style="white-space:nowrap">ddhello</span></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K3",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="display:contents;white-space:nowrap"><span style="white-space:nowrap">ddddhello</span></span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "K4",
+        "width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap">dddd<span style="white-space:nowrap">hello</span> ccc ccc</span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K5",
+        "white-space:pre;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:nowrap">ddddhello</span></span>  ccc"#,
+        &["aaddddhello__ccc"],
+    ),
+    (
+        "K6",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:nowrap">ddddhello</span> ccc ccc</span>"#,
+        &["aaddddhello", "ccc", "ccc"],
+    ),
+    (
+        "K7",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:nowrap">ddddhello</span></span><span style="display:contents;white-space:nowrap"> ccc ccc</span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K8",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:pre">ddddhello</span></span> ccc ccc"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K9",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:normal"><span style="white-space:nowrap">dddd<b id="1" style="display:inline-block;width:30px;height:10px;"></b></span></span> ccc ccc"#,
+        &["aadddd[1]_ccc_ccc"],
+    ),
+    (
+        "K12",
+        "width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap"><span style="white-space:normal">ddddhello</span> ccc ccc</span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K13",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="display:contents;white-space:nowrap"><span style="white-space:normal">ddddhello</span> ccc ccc</span></span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K14",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap"><span style="white-space:normal">ddddhello</span> ccc ccc</span>"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "K15",
+        "width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap">dddd<span style="white-space:nowrap">hello</span></span> ccc ccc"#,
+        &["aaddddhello", "ccc", "ccc"],
+    ),
+    (
+        "K16",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="display:contents;white-space:nowrap">dddd<span style="white-space:nowrap">hello</span></span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "K17",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal"><span style="display:contents;white-space:nowrap"><span style="white-space:nowrap">ddddhello</span> ccc ccc</span></span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "K18",
+        "width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap"><span style="display:contents;white-space:normal"><span style="white-space:nowrap">ddddhello</span></span> ccc ccc</span>"#,
+        &["aaddddhello_ccc_ccc"],
+    ),
+    (
+        "M5",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><wbr> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "V2",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><wbr><span></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "V3",
+        "white-space:pre;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello</span><wbr>  ccc"#,
+        &["aaddddhello", "ccc"],
+    ),
+    (
+        "V4",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:nowrap">ddddhello</span><wbr> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "V5",
+        "white-space:nowrap;width:55px",
+        r#"aa<span style="white-space:normal">ddddhello<wbr></span> ccc ccc"#,
+        &["aaddddhello", "ccc_ccc"],
+    ),
+    (
+        "Q7",
+        "width:55px",
+        r#"<span style="display:contents;white-space:nowrap"><b id="1" style="display:inline-block;width:30px;height:10px"></b><span style="white-space:normal"><b id="2" style="display:inline-block;width:30px;height:10px"></b></span> <b id="3" style="display:inline-block;width:30px;height:10px"></b> <b id="4" style="display:inline-block;width:30px;height:10px"></b></span>"#,
+        &["[1]", "[2]", "[3]", "[4]"],
+    ),
+    (
+        "Q8",
+        "white-space:nowrap;width:55px",
+        r#"<span style="display:contents;white-space:normal"><b id="1" style="display:inline-block;width:30px;height:10px"></b><b id="2" style="display:inline-block;width:30px;height:10px"></b><b id="3" style="display:inline-block;width:30px;height:10px"></b></span> ccc"#,
+        &["[1][2][3]_ccc"],
+    ),
+    (
+        "Q20",
+        "width:55px",
+        r#"aa<span style="display:contents;white-space:nowrap"><span style="white-space:normal">ddddhello</span><b id="1" style="display:inline-block;width:30px;height:10px"></b> ccc</span>"#,
+        &["aaddddhello", "[1]", "ccc"],
+    ),
+];
+
+#[test]
+fn display_contents_ends_and_wbr_follow_chrome() {
+    check_rows(CONTENTS_AND_WBR);
+    // No row has a forced break, so every later line starts where a soft
+    // wrap does: at x 0 in Chrome, unless the root is `pre` (`Q7`'s `[3]`
+    // and `[4]`, `Q20`'s `ccc` started at 4.5px behind their space).
+    for (name, style, inner, want) in CONTENTS_AND_WBR {
+        let laid = lay_out(style, inner);
+        assert_eq!(laid.lines, *want, "{name}");
+        let pre = style.contains("white-space:pre;");
+        for line in &laid.raw[1..] {
+            assert_eq!(line.starts_with('_'), pre, "{name}: {:?}", laid.raw);
+        }
+    }
 }

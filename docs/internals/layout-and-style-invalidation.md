@@ -498,12 +498,27 @@ input a shaped layout is built from:
   inside a wrapping root stay together. **A run of spaces is decided by the
   spaces' own `white-space`** (`ifc::wrap_allowed_after`, review of #1878):
   `<span nowrap>abc def </span>[box]` has no break after its space, though
-  the span closes into a wrapping root. Spaces that do not wrap, in an
-  element a wrapping one closes into right before them, break *before* the
-  run and start the next line with it (`aa<span normal>hello</span> ccc` in a
-  `nowrap` or `pre` root: Chrome keeps the space at the start of line 2;
-  `ifc::Seam::closes_into_wrap`); one that opens there does not
-  (`<span normal>ccc<span nowrap> mm</span>`). A wrapping space followed by a
+  the span closes into a wrapping root. Spaces that do not wrap break
+  *before* the run where the items before them give them an opportunity
+  (`aa<span normal>hello</span> ccc` in a `nowrap` or `pre` root: Chrome
+  keeps a `pre` space at the start of line 2; #2238, `ifc::IfcText::last_wraps`,
+  `ifc::UnhungSpaces::space_breaks`): text or a box whose element wraps gives
+  one and one whose element does not takes it away, an element's end passes
+  it on (and gives one where an element that does not wrap closes into one
+  that does), and an element's start gives one when it wraps and takes it
+  away when it does not, even an empty one (`<span normal>ccc<span nowrap>
+  mm</span>` and `…hello</span><span></span> ccc` do not break; end padding
+  on the span does not stop the break, nor does a plain span closing around
+  it). An end inside a `display: contents` element closes into the nearest
+  boxed ancestor, text that does not wrap in a contents element whose boxed
+  ancestor wraps takes the opportunity away, and `<wbr>` gives one that
+  elements after it do not take away; the box seams pass through contents
+  elements too, and an atomic inline in one takes its boxed ancestor's
+  `white-space` (`ifc::wraps_between`, review of #2258). A
+  collapsible such space is handed to parley as wrapping
+  (`IfcText::wrap_spaces`) and counts as wrapping in the seams and edge-box
+  passes; a preserved one keeps its own `white-space` there and takes the
+  break before it. A wrapping space followed by a
   non-wrapping one breaks between them. An element's end padding right
   after hanging spaces hangs with them (Chrome
   fits `<span padding:0 3px>[B]q-r </span>` before a `<br>` in 71.5px, its
