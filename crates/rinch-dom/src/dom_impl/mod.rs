@@ -723,6 +723,17 @@ impl RinchDocument {
                 font-family: monospace;
             }
 
+            /* rinch's own default, not Chrome's (Chrome's UA sheet sets no
+               `user-select`): an app's text is unselectable unless something
+               says `text` (`auto` at the root resolves to not selectable), and
+               code is the text a user most often wants to copy. A UA rule, so
+               any author rule or inline style overrides it per element
+               (#2231; it was patched on by tag after the cascade before, which
+               only an inline style could beat). */
+            code, kbd, samp, pre {
+                user-select: text;
+            }
+
             /* `<hr>` rendered *nothing* before this (issue #674): the
                `* { border-width: 0 }` reset at the top of this sheet — which is
                here to undo Stylo's `medium` initial — applied to `<hr>` too,

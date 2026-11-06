@@ -875,9 +875,9 @@ fn an_important_priority_survives_the_next_set_style() {
     }
 }
 
-/// The inline `user-select` override — Stylo's servo build does not carry the
-/// property, so `style_resolution` reads it off the attribute itself — reads
-/// through the same parser as everything else (#670).
+/// An inline `user-select` reads through the same parser as everything else
+/// (#670). `style_resolution` read it off the attribute itself until #2231;
+/// it now comes from Stylo's cascade, and this stays as the regression pin.
 ///
 /// A bare `split(';')` fabricates a "declaration" out of the inside of a
 /// quoted value: `content: "a; user-select: none; b"` gives it the part

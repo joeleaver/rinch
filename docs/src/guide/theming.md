@@ -504,12 +504,20 @@ unset `user-select` (`auto`) as `none`, so labels, buttons and menus do not
 start a selection when pressed. `user-select: text` on an element makes it
 and everything inside it selectable, as `auto` takes its parent's value in
 CSS; an element inside that declares `user-select: none` is passed over.
-Only the `style` attribute is read for it (this engine's style sheets do not
-parse the property), so set it inline:
+It cascades like any property: from a style sheet rule, an inline `style`,
+with specificity and `!important`, and `-webkit-user-select` is the same
+property:
 
 ```rust
-rsx! { div { style: "user-select: text", {article_body} } }
+rsx! { div { class: "article", {article_body} } }
+// .article { user-select: text; }
 ```
+
+The built-in components that are pressed rather than read (checkbox,
+radio, switch, slider, select, tree, the menu bar, …) say
+`user-select: none` in their own styles, so they stay unselectable inside
+selectable text; a rule of yours that is more specific, or as specific and
+later, overrides that.
 
 A press in selectable text starts a selection and a drag extends it into
 any selectable paragraph it reaches, every paragraph between included;

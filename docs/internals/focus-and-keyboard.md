@@ -793,7 +793,17 @@ home for the type first (**#797**).
 
 Guide: `docs/src/guide/focus.md`.
 
-**Read-only text selection** (desktop; #2229, #2240). A press in
+**Read-only text selection** (desktop; #2229, #2240). `user-select` comes
+through the cascade like any property since #2231: Stylo 0.22's servo build
+parses it and its `-webkit-`/`-moz-` aliases (`from_stylo::visual::user_select_from_stylo`),
+so UA, component, app and inline declarations all count, with specificity and
+`!important`. It is not inherited (`ComputedStyle::user_select` is `Auto` on a
+child that declares nothing, where Chrome's `getComputedStyle` reports the
+inherited value); `auto` is resolved from the nearest ancestor that is not
+`auto` where selection asks (`resolved_user_select`), which gives the same
+selection. rinch's UA sheet makes `code, kbd, samp, pre` `text`. Before #2231
+only the inline `style` attribute was read and the code default was patched on
+by tag after the cascade. A press in
 `user-select` text starts `RinchApp::text_selection` (`app/text_selection.rs`):
 an anchor and a focus, each an IFC root and a byte offset. `TextSelection::runs`
 gives every selectable root between them in document order with its part. The

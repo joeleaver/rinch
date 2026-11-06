@@ -104,6 +104,29 @@ pub(super) fn pointer_events_from_stylo(
     }
 }
 
+/// `user-select` (#2231). Stylo's servo build parses all five keywords (and
+/// `-moz-none` as `none`), with the `-webkit-` and `-moz-` spellings as
+/// aliases of the one longhand.
+///
+/// `contain` is read as `auto`. Chrome 156 does not support it
+/// (`CSS.supports("user-select", "contain")` is false), so it drops the
+/// declaration, and a lone `user-select: contain` computes as if nothing were
+/// declared. Stylo has already accepted the declaration by the time it gets
+/// here, so where Chrome would let an earlier or less specific declaration win
+/// (`user-select: none; user-select: contain` is `none` there) rinch computes
+/// `auto`.
+pub(super) fn user_select_from_stylo(
+    us: style::values::specified::ui::UserSelect,
+) -> UserSelectValue {
+    use style::values::specified::ui::UserSelect;
+    match us {
+        UserSelect::Text => UserSelectValue::Text,
+        UserSelect::None => UserSelectValue::None,
+        UserSelect::Auto | UserSelect::Contain => UserSelectValue::Auto,
+        UserSelect::All => UserSelectValue::All,
+    }
+}
+
 pub(super) fn z_index_from_stylo(z: &style::values::computed::ZIndex) -> Option<i32> {
     use style::values::generics::position::ZIndex;
     match z {

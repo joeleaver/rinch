@@ -153,9 +153,10 @@ your own function.
 
 Its text can be selected and copied, as in a browser, though your app's own
 text is not ([Selecting text](theming.md#selecting-text-desktop)): the view
-sets `user-select: text` on itself. `selectable: false` turns that off (on
-desktop that prop is the switch: a style sheet's `user-select` is not read
-there yet, only an element's own `style`).
+sets `user-select: text` on itself. `selectable: false` turns that off. Both
+come from rules of zero specificity, so your own `user-select` on the view
+wins: give it a class (`HtmlView { class: "mail", … }`) and style
+`.mail { user-select: none }`, per view.
 
 Nothing a document draws reaches outside its view: the view clips (a
 document wider than it scrolls sideways) and is the stacking context and

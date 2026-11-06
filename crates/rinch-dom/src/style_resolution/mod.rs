@@ -941,27 +941,21 @@ impl RinchDocument {
             node.filter_creates_stacking_context
                 .set(new_style.has_non_identity_filter());
 
-            // `user-select` has no UA rule and this Stylo build does not parse
-            // the property at all (which is also why the inline `style`
-            // attribute is re-read for it further down), so the presentational
-            // default for the code-ish elements has to be applied by tag here.
-            //
-            // The other HTML presentational defaults — `font-weight: bold` on
+            // The HTML presentational defaults — `font-weight: bold` on
             // `<b>`/`<strong>`, `font-style: italic` on `<em>`/`<i>`, the
-            // `text-decoration-line` on `<u>`/`<ins>`/`<s>`/`<strike>`/`<del>`
+            // `text-decoration-line` on `<u>`/`<ins>`/`<s>`/`<strike>`/`<del>`,
+            // and rinch's `user-select: text` on the code-ish elements (#2231)
             // — are UA *rules* in `load_ua_stylesheet` and must stay there.
-            // They used to be patched onto `new_style` here as well, and a
-            // post-cascade patch gets two things wrong (issue #616). It cannot
-            // tell "the author declared nothing" from "the author declared the
-            // initial value", so `font-weight: normal` on a `<b>` lost to the
-            // patch and computed 700 while `300` and `bold` worked. And it
+            // They used to be patched onto `new_style` here, and a post-cascade
+            // patch gets two things wrong (issue #616). It cannot tell "the
+            // author declared nothing" from "the author declared the initial
+            // value", so `font-weight: normal` on a `<b>` lost to the patch and
+            // computed 700 while `300` and `bold` worked (and a style sheet's
+            // `user-select: none` on a `<code>` lost the same way). And it
             // cannot inherit, because inheritance happens inside the cascade —
             // so a descendant block of that `<b>` read the cascaded 400 while
             // the `<b>` itself read the patched 700, one cause presenting as
             // two consumers disagreeing.
-            if matches!(node.tag(), Some("code" | "pre" | "kbd" | "samp")) {
-                new_style.user_select = crate::computed_style::UserSelectValue::Text;
-            }
 
             // A `<textarea>` is a scroll container whatever the author says:
             // Chrome 153 computes `overflow: visible` on one as `auto` (and
@@ -1015,22 +1009,6 @@ impl RinchDocument {
                     &self.tree.perf,
                 );
                 node.select_label_width.set(Some((key, widest)));
-            }
-
-            // Check inline style for user-select override (Stylo servo build
-            // doesn't handle this property).
-            //
-            // Through the one inline-style parser (#670), not a bare
-            // `split(';')`: a `content: "…;…"` or a `url(data:…;base64,…)`
-            // earlier in the attribute is one declaration, and splitting on the
-            // `;` inside it fabricates a fragment that can carry a `:` and be
-            // read as a declaration of its own.
-            if let Some(style_str) = node.attributes.get("style")
-                && let Some((_, value)) = rinch_core::dom::split_declarations(style_str)
-                    .iter()
-                    .find(|(key, _)| key == "user-select")
-            {
-                new_style.user_select = crate::computed_style::UserSelectValue::parse(value);
             }
 
             // Capture old display before transitions overwrite computed_style
