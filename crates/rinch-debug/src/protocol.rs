@@ -7,6 +7,25 @@ pub struct DebugCommand {
     pub response_tx: mpsc::Sender<DebugResult>,
 }
 
+/// The unit of a [`DebugCommandKind::Scroll`] delta (mirrored in
+/// `rinch-mcp-server`'s client in lockstep).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScrollUnit {
+    /// Pixels, injected as a pixel `MouseWheel` (a trackpad): scrolls at once.
+    #[default]
+    Pixel,
+    /// Wheel notches, injected as `MouseWheelLines` (a mouse wheel): the
+    /// default scroll glides over about 200 ms.
+    Line,
+}
+
+impl ScrollUnit {
+    fn is_pixel(&self) -> bool {
+        *self == ScrollUnit::Pixel
+    }
+}
+
 /// The different commands the debug server can receive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -86,6 +105,10 @@ pub enum DebugCommandKind {
         y: f32,
         delta_x: f64,
         delta_y: f64,
+        /// `"pixel"` (the default; also what a request without the field
+        /// means) or `"line"`: notches of a mouse wheel, which glide.
+        #[serde(default, skip_serializing_if = "ScrollUnit::is_pixel")]
+        unit: ScrollUnit,
     },
     #[serde(rename = "key_press")]
     KeyPress {
@@ -298,6 +321,59 @@ mod key_press_modifiers_tests {
         fold_modifier_names(&modifiers, &mut shift, &mut ctrl, &mut alt, &mut meta).unwrap();
         assert!(ctrl);
         assert!(!shift && !alt && !meta);
+    }
+
+    #[test]
+    fn scroll_unit_defaults_to_pixel_and_round_trips() {
+        // An old client sends no `unit`: pixel, as before.
+        let req: Request = serde_json::from_str(
+            r#"{"id":1,"method":"scroll","params":{"x":1.0,"y":2.0,"delta_x":0.0,"delta_y":5.0}}"#,
+        )
+        .unwrap();
+        let DebugCommandKind::Scroll { unit, delta_y, .. } = req.command else {
+            panic!("expected Scroll");
+        };
+        assert_eq!(unit, ScrollUnit::Pixel);
+        assert_eq!(delta_y, 5.0);
+
+        // Line round-trips; pixel is left off the wire so an old server still reads it.
+        let line = Request {
+            id: 2,
+            command: DebugCommandKind::Scroll {
+                x: 1.0,
+                y: 2.0,
+                delta_x: 0.0,
+                delta_y: 1.0,
+                unit: ScrollUnit::Line,
+            },
+        };
+        let json = serde_json::to_string(&line).unwrap();
+        assert!(json.contains(r#""unit":"line""#), "{json}");
+        let back: Request = serde_json::from_str(&json).unwrap();
+        let DebugCommandKind::Scroll { unit, .. } = back.command else {
+            panic!("expected Scroll");
+        };
+        assert_eq!(unit, ScrollUnit::Line);
+
+        let pixel = Request {
+            id: 3,
+            command: DebugCommandKind::Scroll {
+                x: 1.0,
+                y: 2.0,
+                delta_x: 0.0,
+                delta_y: 1.0,
+                unit: ScrollUnit::Pixel,
+            },
+        };
+        assert!(!serde_json::to_string(&pixel).unwrap().contains("unit"));
+
+        // An unknown unit fails loud instead of scrolling the wrong way.
+        assert!(
+            serde_json::from_str::<Request>(
+                r#"{"id":4,"method":"scroll","params":{"x":1.0,"y":2.0,"delta_x":0.0,"delta_y":1.0,"unit":"page"}}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
