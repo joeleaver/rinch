@@ -33,8 +33,9 @@ impl ComputedStyle {
         // Set font size (scaled for DPI)
         builder.push_default(StyleProperty::FontSize(scaled_font_size));
 
-        // Font family: empty is sans-serif, a stack that resolves to nothing
-        // is finished with the primary sans-serif face (#1198).
+        // Font family: empty is sans-serif, a missing family takes its Blink
+        // alternate, and a stack that resolves to nothing is finished with
+        // the default font (#1198, #2250, #2255).
         font_family.push_to(&mut builder);
 
         // Set font weight if not normal (400)

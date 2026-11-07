@@ -1100,29 +1100,80 @@ and, in Chrome, `embed_web_fonts_2102.rs` (in both CI wasm embed steps);
 their text fixtures are Inter with its `name` table and class rewritten
 (`crates/rinch/tests/support/font_variants.rs`).
 
-**A font stack that resolves to nothing ends in the primary `sans-serif` face**
-(`rinch_dom::fonts::parley_font_family`, #1198). parley queries a cluster with
-the Unicode `Emoji` property — the ASCII digits, `#` and `*` have it, as keycap
-bases — against the stack and then the `emoji` generic, *ahead of* the script
-fallback. So in a stack whose every family is missing (`font-family:
-Helvetica` on Linux, which fontique cannot alias to Nimbus Sans as Chrome's
-fontconfig does, or any typo), digits were drawn from Noto Color Emoji at
-1.245em while the letters took the script fallback. **Every** parley layout
-rinch builds takes its family from `parley_font_family` (twelve sites across
-`rinch-dom` and `rinch`; `missing_family_fallback_tests::no_source_builds_a_parley_font_family_by_hand`
-fails on a new site that builds a `FontFamily::Source` itself): an empty stack is
-`sans-serif`, and a stack that resolves to no family *in that font context* gets
-the slot's first family appended **by name** — the face, not the generic,
-because the generic expands to the platform's whole list, whose text faces
-(DejaVu Sans, FreeSans) cover emoji and would win them ahead of the `emoji`
-generic. Where no app font claims `sans-serif` that face is where the letters
-already fell back to; with a claim (`AppFont::sans_serif`) the letters of such a
-stack move to the claimed face too. A stack that resolves to anything is untouched, emoji included, and a
-context with no `sans-serif` face (wasm/embed before any font is registered)
-appends nothing. **Accepted consequence:** on a host whose primary sans is
-DejaVu Sans, an emoji in a missing-only stack is DejaVu's monochrome glyph,
-because the appended face is *named* and a named family that covers an emoji
-draws it (below). Cached per thread by (primary `sans-serif` family id, stack).
+**A font stack is resolved as Chrome resolves it: alternates, then the default
+font** (`rinch_dom::fonts::parley_font_family`; #1198, #2250, #2255). **Every**
+parley layout rinch builds takes its family from `parley_font_family` (twelve
+sites across `rinch-dom` and `rinch`;
+`missing_family_fallback_tests::no_source_builds_a_parley_font_family_by_hand`
+fails on a new site that builds a `FontFamily::Source` itself). An empty stack
+is `sans-serif`. Otherwise:
+
+- **A missing named family is replaced, in place, by its Blink alternate** where
+  that is installed (`alternate_family_name`, Blink's `AlternateFamilyName`):
+  Helvetica↔Arial, Times↔Times New Roman, Courier→Courier New, and Courier
+  New→Courier except on Windows. Not fontconfig's aliases: `fc-match Helvetica`
+  is Nimbus Sans on the #2250 host (165.77px), and Chrome drew Arial (166.53px).
+  Past the first family that resolves only a name with an alternate is looked
+  up, because each lookup of an installed family loads its faces.
+- **A stack that still resolves to no family** *in that font context* ends in
+  the **default font**, appended **by name**: the first family of the thread's
+  `FontDefaults::standard` (rinch-core, `'Times New Roman'` by default, `Times`
+  on macOS — Chrome's standard font) the context has, a named family or its
+  alternate or a generic's first face; else the `sans-serif` slot's first face.
+  Chrome drew `font-family: Oswald` in Times New Roman, 501.66px for a
+  74-character line where rinch drew 547px (#2255). The default names Times
+  **alone**, no `serif` after it: on a host with no Times New Roman Chrome 156
+  draws an exhausted stack in fontconfig's "Sans" (DejaVu Sans, 609.94px, on a
+  DejaVu-only host, by `CSS.getPlatformFontsForNode`), never its serif setting;
+  `'Times New Roman', serif` gave DejaVu Serif, 618px (review of PR #2337). So
+  on CI (DejaVu only) an exhausted stack is the `sans-serif` face, as before
+  #2255. Why append at all (#1198): parley queries a
+  cluster with the Unicode `Emoji` property — the ASCII digits, `#` and `*`
+  have it, as keycap bases — against the stack and then the `emoji` generic,
+  *ahead of* the script fallback, so in a missing-only stack digits were drawn
+  from Noto Color Emoji at 1.245em. One face by name, not a generic: a generic
+  expands to the platform's whole list, whose text faces (DejaVu Sans,
+  FreeSans) cover emoji and would win them ahead of the `emoji` generic.
+  **Accepted consequence:** where the appended face is DejaVu, an emoji in a
+  missing-only stack is DejaVu's monochrome glyph, because a named family that
+  covers an emoji draws it (below). wasm and an embed whose only faces are sans
+  still end in the `sans-serif` face, as before; a context with no face at all
+  appends nothing.
+
+A stack that resolves to anything gets no default, so a theme's stack (it ends
+in `sans-serif`) is never changed by it. Cached per thread by (first
+`sans-serif` face, first `serif` face, stack); `set_font_defaults` clears the
+cache. A context with neither generic gets its stack back as written, with no
+lookup (two bare contexts would share the key, so it is not cached).
+`FontDefaults` is `#[non_exhaustive]` with `with_*` builders, so a later
+setting (`monospace`) breaks no caller.
+
+**The `serif` and `sans-serif` slots are headed by Chrome's settings on a
+desktop** (`apply_generic_defaults`, from `new_font_context`; not Android or
+wasm). `FontDefaults::serif` (Times New Roman; Times on macOS) and
+`sans_serif` (Arial; Helvetica) are moved to the head of their slot where the
+family or its alternate is installed, the platform's families behind. Chrome's
+`serif` is its setting, not fontconfig's `serif` (Noto Serif on the #2255
+host, 593px against Chrome's 501.66px). A host without the family keeps the
+platform's slot, so CI (DejaVu, no Times or Arial) is unchanged. A claim
+(`AppFont::serif`) is a prepend made later, so it still goes first.
+`FontDefaults` is per thread (`set_font_defaults`); `App::font_defaults` sets it
+on the UI thread before the first document, and an embedder calls
+`rinch::font::set_font_defaults` before building its context. The pins are
+`fonts::tests::finish_stack` (bare contexts with stand-ins registered under the
+real names, so they are host-independent) and `app_builder`'s
+`font_defaults_reach_the_startup`.
+
+**fontconfig: a font is in every family it lists** (parley fork, #2294).
+fontique's fontconfig backend made a font's second `FC_FAMILY` name an alias of
+its first, and collected a family only from fonts whose *first* name matched,
+so `'Arial Black'` was Arial Regular on a host whose
+`/usr/local/share/fonts/a/ariblk.ttf` lists "Arial, Arial Black" (or nothing,
+when msttcorefonts' "Arial Black" copy was scanned first). The fork now makes
+every listed name a family and collects the fonts that list it at any index.
+Pinned by `crates/rinch-dom/tests/fontconfig_second_family_name_2294.rs`, which
+runs fontconfig on a private `FONTCONFIG_FILE` holding two rewritten Inter
+copies laid out as those two files (Linux/BSD only; it touches no host font).
 
 **An emoji-presentation cluster counts each generic as its primary face**
 (`rinch_dom::fonts::TextFamily`, #1204). parley shapes an `Emoji`-property

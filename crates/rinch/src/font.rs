@@ -55,6 +55,19 @@
 /// `fangsong`.
 pub use parlance::GenericFamily;
 
+/// The browser's font settings: the default font and what `serif` and
+/// `sans-serif` mean. Chrome's unless an app sets others with
+/// [`App::font_defaults`](crate::App::font_defaults) (#2255).
+pub use rinch_core::font_defaults::FontDefaults;
+
+/// Set this thread's [`FontDefaults`], for an embedder that builds its
+/// context itself (`App::font_defaults` does this for an app). Call it on
+/// the thread that lays out, before the first context is created.
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub fn set_font_defaults(defaults: FontDefaults) {
+    rinch_dom::fonts::set_font_defaults(defaults);
+}
+
 /// The bytes of a font file: borrowed for the life of the program, or owned
 /// and shared (#2101).
 ///
