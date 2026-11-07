@@ -398,6 +398,13 @@ pub trait Painter {
     /// Fill a shape with the given brush (solid color or gradient).
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape);
 
+    /// A hint for the fills that follow until it is turned off: they
+    /// approximate something soft (the layers of a blurred shadow), so their
+    /// curves need not be drawn to the painter's finest tolerance (#2321).
+    /// The Vello painter then leaves their curves to Vello's own flattening;
+    /// the default ignores it.
+    fn set_coarse_curves(&mut self, _coarse: bool) {}
+
     /// Fill a shape with a solid color (convenience — avoids Brush allocation).
     fn fill_color(
         &mut self,

@@ -142,6 +142,10 @@ fn full_paint(f: PaintFixture) -> PaintFixture {
 #[bench::text_page_unsliced(setup = setup_vello_paint_unsliced)]
 #[bench::split_140_unsliced(setup = setup_vello_paint_split_unsliced)]
 #[bench::text_page_subpixel(setup = setup_vello_paint_subpixel)]
+#[bench::rounded_border_140(setup = setup_vello_paint_rounded_border)]
+#[bench::soft_shadow_140(setup = setup_vello_paint_soft_shadow)]
+#[bench::hard_shadow_140(setup = setup_vello_paint_hard_shadow)]
+#[bench::cards_140(setup = setup_vello_paint_cards)]
 fn vello_paint(f: VelloPaintFixture) -> VelloPaintFixture {
     black_box(measure(black_box(f), op_vello_paint))
 }
