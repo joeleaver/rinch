@@ -923,11 +923,11 @@ pub(crate) fn atomic_inline_baseline(tree: &crate::node::NodeTree, id: RawNodeId
         && alt.inline
     {
         let layout = tree.taffy.unrounded_layout(taffy_id);
-        let content = layout.size.height
-            - layout.padding.top
-            - layout.padding.bottom
-            - layout.border.top
-            - layout.border.bottom;
+        let content = layout.size.width
+            - layout.padding.left
+            - layout.padding.right
+            - layout.border.left
+            - layout.border.right;
         return Some(layout.border.top + layout.padding.top + alt.last_baseline(content));
     }
     if !first && (clips(style.overflow_x) || clips(style.overflow_y)) {

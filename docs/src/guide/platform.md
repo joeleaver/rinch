@@ -296,7 +296,7 @@ draws nothing until it arrives.
 | The image | What it draws |
 |---|---|
 | has both dimensions without its picture (its `width` and `height` attributes or CSS, or one of them and the attributes' ratio) | a box of that size with a faint 1px `silver` border inside its content box, and its `alt` text inside that (1px in from the border), wrapped to the box and clipped to it — but nothing when the box is thinner than **3px** on either axis (no `src`) or **18px** (a failed load), as in Chrome, so spacers and dividers stay invisible (one with alt text shows the text inline instead, its size ignored, as Chrome does) |
-| has `alt` text and not both dimensions | the alt text as text, an inline-block of it: as wide as the text up to the room it has (a long one wraps), or its declared width; as tall as its lines, or its declared height |
+| has `alt` text and not both dimensions | the alt text as text, an inline-block of it: as wide as the text up to the room it has (a long one wraps), or its declared width; as tall as its lines, or its declared height, and at least 16px (Chrome's alt box holds a 16x16 icon), with its text clipped to it |
 | has neither, or every declared size is 1px or less (a tracking pixel) | nothing, and it takes up only its declared size |
 
 The alt text is drawn in the image's own font, `line-height` and `color`, so
