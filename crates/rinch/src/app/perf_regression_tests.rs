@@ -166,7 +166,7 @@ fn an_idle_app_redraws_nothing() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 5),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 15),
+            (GlyphAtlasHits, 15),
             (ClipMasks, 1),
             (ClipMaskPx, 25600),
             (HitTests, 1),
@@ -234,8 +234,8 @@ fn a_focused_input_idles_for_free() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 5),
-            (GlyphCacheMisses, 1),
+            (GlyphAtlasHits, 3),
+            (GlyphAtlasMisses, 3),
             (ClipMasks, 2),
             (ClipMaskPx, 12432),
         ],
@@ -517,7 +517,7 @@ fn a_closed_drawer_full_of_content_costs_a_full_repaint_nothing() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 12),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 50),
+            (GlyphAtlasHits, 50),
         ],
     );
 }
@@ -550,7 +550,7 @@ fn a_hover_under_a_closed_drawer_enters_none_of_it() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 5),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 15),
+            (GlyphAtlasHits, 15),
             (ClipMasks, 1),
             (ClipMaskPx, 25600),
             (PaintSurfaceAllocs, 1),
@@ -637,7 +637,7 @@ fn row_count(app: &RinchApp) -> usize {
 ///   change moved below the scroller's viewport, invisible, named damage.
 ///   Each rect is now intersected with its node's clip chain
 ///   (`paint::clip_chain_bounds`). The glyphs of the rows in the band that
-///   no longer repaints went with it (`glyph_cache_hits` 201 → 138 over both
+///   no longer repaints went with it (`glyph_atlas_hits` 201 → 138 over both
 ///   fixes).
 /// - **Two clip masks cover 245 640 px** for that 122 816 px repaint: the
 ///   damage's own clip (124 236 with its pad) and the scroller's (121 404),
@@ -677,7 +677,7 @@ fn a_keyed_for_moves_one_row() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 138),
+            (GlyphAtlasHits, 138),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
@@ -730,7 +730,7 @@ fn a_keyed_for_inserts_one_row_in_the_middle() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 137),
+            (GlyphAtlasHits, 137),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
@@ -769,7 +769,7 @@ fn a_keyed_for_removes_one_row_from_the_middle() {
             (RemovalDamageSteps, 9),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 137),
+            (GlyphAtlasHits, 137),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
@@ -813,7 +813,8 @@ fn a_keyed_for_replaces_every_row() {
             (RemovalDamageSteps, 1800),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 168),
+            (GlyphAtlasHits, 158),
+            (GlyphAtlasMisses, 10),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
@@ -951,7 +952,8 @@ fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 121),
+            (GlyphAtlasHits, 119),
+            (GlyphAtlasMisses, 2),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
@@ -1010,7 +1012,8 @@ fn a_second_wheel_notch_recomputes_no_extent() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 126),
+            (GlyphAtlasHits, 122),
+            (GlyphAtlasMisses, 4),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (HitTests, 1),
@@ -1083,7 +1086,7 @@ fn a_gliding_wheel_frame_repaints_the_scroller_and_lays_out_nothing() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 122),
+            (GlyphAtlasHits, 122),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
         ],
@@ -1229,7 +1232,7 @@ fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 136),
+            (GlyphAtlasHits, 136),
             // #536, see `full_repaint_resize` above: `.field`'s UA `overflow:
             // clip` now clips to its padding box, 2px inset for its `border:
             // 2px inset`, tight enough that `clip_cuts_nothing`'s elision no
@@ -1280,8 +1283,8 @@ fn a_scale_factor_change_restyles_and_repaints_in_full() {
             // The field's "typed" is in the UA sheet's 13.3333px since #1194,
             // not the body's 14px, so its `e` and `d` no longer share the
             // 14px images "side" rasterised: two hits became misses.
-            (GlyphCacheHits, 113),
-            (GlyphCacheMisses, 23),
+            (GlyphAtlasHits, 102),
+            (GlyphAtlasMisses, 34),
             // #536: the field's UA `overflow: clip` now clips to its padding
             // box (2px inset for its `border: 2px inset`), which is tight
             // enough that `clip_cuts_nothing` no longer elides the push — see
@@ -1327,8 +1330,7 @@ fn full_repaint_first_frame() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 1),
-            (GlyphCacheMisses, 4),
+            (GlyphAtlasMisses, 5),
         ],
     );
 }
@@ -1360,7 +1362,7 @@ fn full_repaint_resize() {
             (SurfacePx, 480600),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 136),
+            (GlyphAtlasHits, 136),
             // #536: `.field`'s UA `overflow: clip` now clips to its padding
             // box, 2px inset on every side for its `border: 2px inset` — tight
             // enough that `clip_cuts_nothing` no longer elides the push (see
@@ -1392,7 +1394,7 @@ fn full_repaint_unattributed() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 136),
+            (GlyphAtlasHits, 136),
             // #536, see `full_repaint_resize` above.
             (ClipMasks, 2),
             (ClipMaskPx, 38656),
@@ -1610,7 +1612,7 @@ fn full_repaint_restyle() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 136),
+            (GlyphAtlasHits, 136),
             // #536, see `full_repaint_resize` above.
             (ClipMasks, 2),
             (ClipMaskPx, 38656),
@@ -1669,7 +1671,7 @@ fn late_class_rule_restyles_and_repaints_what_it_matches() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 12),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 50),
+            (GlyphAtlasHits, 50),
             (ClipMasks, 1),
             (ClipMaskPx, 164800),
         ],
@@ -1695,7 +1697,7 @@ fn full_repaint_invalidated() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 136),
+            (GlyphAtlasHits, 136),
             // #536, see `full_repaint_resize` above.
             (ClipMasks, 2),
             (ClipMaskPx, 38656),
@@ -1732,6 +1734,44 @@ fn full_repaint_gpu() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
+            // The glyph-mask atlas (#2286) is the thread's, shared with the
+            // software painter that painted this page's first frame in
+            // `static_page`: every glyph is a hit, and each of the 25 masks is
+            // made into its GPU image, once.
+            (GlyphAtlasHits, 136),
+            (GlyphAtlasUploads, 25),
+            (VelloClipTiles, 186),
+        ],
+    );
+}
+
+/// The second `build_scene` of the same page (#2286): every glyph drawn from
+/// the glyph-mask atlas the first frame filled, nothing rasterised or handed
+/// to the GPU again.
+#[cfg(any(feature = "gpu", feature = "embed"))]
+#[test]
+fn full_repaint_gpu_warm_atlas() {
+    let mut app = static_page();
+    app.request_repaint();
+    let _ = app.build_scene(1.0, SIZE);
+    let _ = app.end_perf_frame().unwrap();
+    app.request_repaint();
+    let _ = app.build_scene(1.0, SIZE);
+    let s = app.end_perf_frame().unwrap();
+    expect_frame(
+        "full repaint: gpu, warm atlas",
+        &s,
+        &[
+            (ShapePaint, 1),
+            (PaintFrames, 1),
+            (RepaintFull, 1),
+            (RepaintFullGpu, 1),
+            (RepaintedPx, 480000),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 27),
+            (StackingOrderBuilds, 1),
+            // The same 136 glyphs, and no upload: the GPU images are kept.
+            (GlyphAtlasHits, 136),
             (VelloClipTiles, 186),
         ],
     );
@@ -2119,7 +2159,8 @@ fn a_second_wheel_notch_with_an_escaping_absolute_recomputes_no_extent() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 25),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 126),
+            (GlyphAtlasHits, 122),
+            (GlyphAtlasMisses, 4),
             (ClipMasks, 2),
             (ClipMaskPx, 290300),
             (HitTests, 1),
@@ -2484,7 +2525,7 @@ fn a_scrolled_open_tree_paints_the_rows_on_screen() {
             (PaintNodesVisited, 172),
             (StackingOrderBuilds, 9),
             (DeferredScrollbarsPainted, 1),
-            (GlyphCacheHits, 325),
+            (GlyphAtlasHits, 325),
             (ClipMasks, 3),
             (ClipMaskPx, 367044),
             (HitTests, 1),

@@ -236,6 +236,7 @@ App::new(app)
 | `hinting` | The OS's hint style; `Slight` where it says nothing, `None` on macOS | `None`, `Slight`, `Medium`, `Full` (the last three all hint today) |
 | `stem_darkening` | Light text is grown by up to 0.10 px a side | `Off`, `Px(amount)` (up to 0.5) |
 | `antialias` | The OS's: none, subpixel, or grayscale (macOS: grayscale) | `Grayscale`, `Subpixel`, `None` |
+| `gpu_glyph_outlines` | `false`: the GPU draws glyphs from the glyph-mask atlas | `true`: from outlines (below) |
 
 **Stem darkening.** Both renderers blend a glyph's coverage in sRGB-encoded
 space, as FreeType's usual callers do, and that makes light text on a dark
@@ -263,9 +264,24 @@ starts, and `rinch::text_rasterization::system_text_settings()` returns them:
   (`SystemParametersInfo`).
 - **macOS**: grayscale and unhinted.
 
+**How glyphs are drawn.** Both renderers draw text from one cache of glyph
+masks (the glyph-mask atlas, #2286): each glyph is rasterised once per font,
+device size and quarter-pixel horizontal position, and drawn at a whole device
+pixel, so letters keep their fractional spacing and the GPU and software
+renderers draw the same pixels. Text under a rotation, a skew or an uneven
+scale, emoji and other colour glyphs, text larger than 64 device pixels and
+synthetic italics are drawn from outlines on the GPU instead; a uniform scale
+(a HiDPI display, CSS `scale()`) is rasterised at the scaled size. Text whose
+size is animating (a `font-size` or `scale()` transition or animation) is
+drawn from outlines while it changes, since each size would be a new set of
+masks, and goes back to the atlas once it settles. The two rasterisers differ
+slightly, so on the frame the text starts or stops animating its glyph edges
+shift by up to about half a pixel and its weight by about 1%; the animation
+itself hides the first, and the second is one frame. An app can keep outlines
+for everything with `TextRasterization::default().gpu_glyph_outlines(true)`.
+
 Today rinch draws grayscale whatever `antialias` resolves to: subpixel (LCD)
-text and aliased text come with the glyph-mask atlas and subpixel compositing
-planned in #2286. The subpixel order and LCD filter are stored for that. An
+text and aliased text come with the subpixel compositing planned in #2286. The subpixel order and LCD filter are stored for that. An
 embedding host that wants the OS's settings calls
 `rinch::text_rasterization::set_text_rasterization(TextRasterization::default())` before its
 first frame; without it an embedded document renders as if the OS said nothing

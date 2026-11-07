@@ -1304,11 +1304,15 @@ fn rv_l_strikethrough_with_declared_colour_and_currentcolor_underline_parent() {
     let now = colour_of(&doc, w);
     let (r, n) = (exact(&px, RED), exact(&px, now));
     eprintln!("L: red={r} now={n}");
-    // same text both halves: equal ink both halves including underline
+    // same text both halves: equal ink both halves including underline. Not
+    // to the pixel: the second half starts at another fraction of a pixel,
+    // and glyphs are drawn at their quarter-pixel position (#2286), so its
+    // fully covered pixels differ (measured 2166 vs 2111). A recolour that
+    // missed the half paints none of `now` at all.
     let d = (r as i64 - n as i64).abs();
     assert!(
-        d < 40,
-        "halves should match (glyphs + underline): {r} vs {n}"
+        d * 25 < r as i64,
+        "halves should match to 4% (glyphs + underline): {r} vs {n}"
     );
 }
 

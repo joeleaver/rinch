@@ -150,7 +150,11 @@ fn vello_brush_matches_the_pattern_path() {
         &mut layout_cx,
     );
     let enc = vp.scene().encoding();
-    let n_img = enc.draw_tags.iter().filter(|t| t.0 == 0x28C).count();
+    let n_img = enc
+        .draw_tags
+        .iter()
+        .filter(|t| t.0 == vello::low_level::vello_encoding::DrawTag::IMAGE.0)
+        .count();
     eprintln!("patches: {}", enc.resources.patches.len());
     eprintln!(
         "transforms: {:?}",

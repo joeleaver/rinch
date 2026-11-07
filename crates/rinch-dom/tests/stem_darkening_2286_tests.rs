@@ -165,6 +165,9 @@ fn vello_encodes_the_darkening_on_light_runs_only() {
         set_thread_policy(policy);
         let mut doc = document();
         let mut painter = VelloPainter::new();
+        // The outline path (the atlas's fallback, #2286 stage 2); the atlas
+        // keys the same amounts (`vello_atlas_keys_the_darkening_*`).
+        painter.set_glyph_atlas_enabled(false);
         let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
         rinch_dom::paint::paint_document(
             &doc.tree,
@@ -348,6 +351,7 @@ fn vello_darkening_is_in_device_pixels_under_a_transform() {
         set_thread_policy(ResolvedTextRasterization::default());
         let mut doc = row(css);
         let mut painter = VelloPainter::new();
+        painter.set_glyph_atlas_enabled(false);
         let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
         rinch_dom::paint::paint_document(
             &doc.tree,
@@ -413,5 +417,65 @@ fn software_darkening_is_in_device_pixels_under_a_transform() {
     assert!(
         (scaled - native).abs() < 0.02,
         "scale(2) gains {scaled:.4}x, 26px unscaled {native:.4}x: not the same device growth"
+    );
+}
+
+/// The glyph-mask atlas (#2286 stage 2) keys the same amounts the outline
+/// path encodes: the light run's darkening, none for the dark run or under
+/// `Off`, the policy's hinting; and under `scale(2)` the device amount at the
+/// device size, since its masks are rasterised there.
+#[test]
+fn vello_atlas_keys_the_darkening_on_light_runs_only() {
+    use rinch_dom::paint::glyph_atlas::{GlyphAtlas, SharedAtlas};
+    let keys = |doc: &mut RinchDocument, policy: ResolvedTextRasterization, vw: u32, vh: u32| {
+        set_thread_policy(policy);
+        let atlas: SharedAtlas = std::rc::Rc::new(std::cell::RefCell::new(GlyphAtlas::default()));
+        let mut painter = VelloPainter::new();
+        painter.set_glyph_atlas(atlas.clone());
+        let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            1.0,
+            (vw as f32, vh as f32),
+            &mut doc.font_cx,
+            &mut cx,
+        );
+        reset_thread_policy();
+        assert!(
+            painter.scene().encoding().resources.glyph_runs.is_empty(),
+            "every glyph from the atlas"
+        );
+        let k = atlas.borrow().run_keys();
+        k.into_iter().map(|(_, h, e)| (e, h)).collect::<Vec<_>>()
+    };
+    let on = keys(&mut document(), ResolvedTextRasterization::default(), W, H);
+    assert_eq!(
+        on,
+        vec![(6.0 / 64.0, true), (0.0, true)],
+        "white, then black"
+    );
+    assert_eq!(
+        keys(&mut document(), off(), W, H),
+        vec![(0.0, true)],
+        "Off: both rows are one run (one face and size, no darkening)"
+    );
+    let unhinted = TextRasterization::default()
+        .hinting(TextHinting::None)
+        .resolve(&SystemTextSettings::default());
+    assert_eq!(
+        keys(&mut document(), unhinted, W, H),
+        vec![(6.0 / 64.0, false), (0.0, false)]
+    );
+    let base = "font: 20px/24px ProbeFace; color: #ffffff; background: #000000";
+    assert_eq!(
+        keys(
+            &mut row(&format!("{base}; transform: scale(2)")),
+            ResolvedTextRasterization::default(),
+            RW,
+            RH
+        ),
+        vec![(4.0 / 64.0, true)],
+        "scale(2): 40 device px masks, the device amount"
     );
 }

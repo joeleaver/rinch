@@ -1182,7 +1182,22 @@ mod text_shadow_bench_tests {
     /// The highlighted page goes per fragment: a 40%-black 4px blur over
     /// `rgb(28, 0, 207)` stays above the 2-level order tolerance for about
     /// 3.95px, past the 3.91px space before the next span, so it rasterises a
-    /// mask a fragment (377).
+    /// mask a fragment: 410.
+    ///
+    /// It was 377 before the glyph-mask atlas (#2286): glyphs were drawn at
+    /// whole pixels, so fragments of the same text at different fractions of
+    /// a pixel had the same coverage and shared a mask. The atlas draws each
+    /// glyph at its quarter-pixel position, so those fragments' coverage now
+    /// differs, and the mask key (`CallHasher::glyph_x`) says so: 33 more
+    /// fragments rasterise a mask of their own. Measured by taking the key
+    /// apart: 6 of them are fragments at other quarter-pixel positions, and
+    /// 27 sit within 1/64 px of a quarter boundary, where the key holds the
+    /// exact position so that float error cannot round it to the neighbouring
+    /// bucket (the old key did the same at the half pixel only). The
+    /// whole-pixel key with the quarter-boundary guard gives 404; the old key,
+    /// whole pixel and half-pixel guard, gives 377 again. That key shares
+    /// masks whose pixels differ: a shadow drawn up to a quarter pixel off
+    /// its text before the blur.
     ///
     /// Kills: the colour difference left out (the one-colour pages go per
     /// fragment); a tolerance that lets the highlighted page keep one pass
@@ -1195,7 +1210,7 @@ mod text_shadow_bench_tests {
                 super::setup_text_shadow_spans as fn() -> super::PaintFixture,
                 30,
             ),
-            ("coloured", super::setup_text_shadow_coloured, 377),
+            ("coloured", super::setup_text_shadow_coloured, 410),
             ("count", super::setup_text_shadow_count, 30),
         ] {
             let mut f = setup();

@@ -2368,6 +2368,7 @@ impl RinchApp {
             perf.add(Counter::RepaintedPx, surface_px);
             perf.add(Counter::SurfacePx, surface_px);
             perf.add(Counter::VelloClipTiles, self.painter.clip_tiles());
+            self.painter.take_glyph_stats().add_to(perf);
             perf.add_elapsed(Counter::TimePaintNs, paint_start);
         }
 
@@ -2926,6 +2927,9 @@ impl RinchApp {
             if full.is_some() || partial {
                 perf.add(Counter::VelloClipTiles, self.painter.clip_tiles());
             }
+            // What this frame's glyph draws did (#2286): the atlas's hits,
+            // misses, uploads and evictions, and the outlines.
+            self.painter.take_glyph_stats().add_to(perf);
             perf.add_elapsed(Counter::TimePaintNs, paint_start);
         }
         self.scene_dirty = false;

@@ -58,7 +58,11 @@ fn draws_with_images(style: &str) -> (usize, usize, usize) {
         .filter(|t| t.0 == 0x29c || t.0 == 0x114 || t.0 == 0x254)
         .count();
     // DrawTag::IMAGE
-    let images = e.draw_tags.iter().filter(|t| t.0 == 0x28C).count();
+    let images = e
+        .draw_tags
+        .iter()
+        .filter(|t| t.0 == vello::low_level::vello_encoding::DrawTag::IMAGE.0)
+        .count();
     (e.draw_tags.len(), grads, images)
 }
 
@@ -146,7 +150,13 @@ fn an_svg_background_and_img_are_drawn_without_the_software_painter() {
         &mut lcx,
     );
     let e = vp.scene().encoding();
-    assert_eq!(e.draw_tags.iter().filter(|t| t.0 == 0x28C).count(), 1);
+    assert_eq!(
+        e.draw_tags
+            .iter()
+            .filter(|t| t.0 == vello::low_level::vello_encoding::DrawTag::IMAGE.0)
+            .count(),
+        1
+    );
     let raster = doc.tree.image_cache.get(svg).unwrap().vector().unwrap();
     assert_eq!(raster.rasters_made(), 1);
     // At 2x the 16px image is rasterised at 32 device pixels.
