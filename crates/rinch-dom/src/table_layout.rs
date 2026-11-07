@@ -91,17 +91,26 @@
 //! ## Row heights
 //!
 //! A row has no box, so its `height` is a statement about its track: a
-//! length one is the track's minimum, `minmax(<height>, max-content)`. A
-//! taller cell grows the row past it, and the track is not one of the
-//! `auto` tracks a taller table stretches, so the table's extra height goes
-//! to the rows that declare none, as Chrome gives it. When every row declares
-//! one they are `minmax(<height>, auto)`, stretched by equal shares where
-//! Chrome shares in proportion to their heights. A percentage and a row
-//! group's `height` size nothing. A rowspan cell taller than the rows it spans grows them
-//! by equal shares (Chrome: in proportion to their heights), and a taller
-//! table's `auto` rows share its extra height equally (Chrome: by their
-//! content); these and the other differences are #2312. A collapsing table
-//! has no padding (CSS 2.1 §17.6.2).
+//! length one (`0` included) is the track's minimum, `minmax(<height>,
+//! auto)`. The Taffy fork's `table_rows` sizes the rows as Blink does
+//! (item 15 in `docs/internals/dependencies.md`), not as a grid's tracks:
+//! each row is as tall as its tallest cell of span 1 and at least its
+//! `height`, and a row with a `height`, or holding a cell with one, is
+//! constrained. A rowspan cell taller than its rows grows the rows where
+//! another spanning cell starts, else its unconstrained rows that hold
+//! something in proportion to their heights, else (all empty) the last, else
+//! every row by its height. A taller table gives its extra height to its
+//! body sections by their heights, and each section to its rows the same
+//! way, empty rows growing when every other is constrained (a section's
+//! share is by its rows' heights before any rowspan grew them); a caption
+//! takes none (the table is its `height` plus its captions), and a table
+//! shorter than its rows grows to them (#2312), unless its parent imposes
+//! its height: a flex item, an absolutely positioned table or a grid item
+//! stays at it (#2358). `rebuild_table`
+//! hands the fork each row's section (`TableBox::sections`) and which rows
+//! are captions. A block standing for an anonymous table keeps its own
+//! height. A percentage and a row group's `height` size nothing. A
+//! collapsing table has no padding (CSS 2.1 §17.6.2).
 //!
 //! ## Vertical alignment
 //!
@@ -196,6 +205,12 @@ pub struct TableBox {
     /// Each row's declared `height` in px, when it has a length one: the
     /// least its track is (see *Row heights*).
     row_heights: Vec<Option<f32>>,
+    /// Each row's section (a run of rows of one row group, or of bare rows)
+    /// and whether it is body-like (not a `thead` or `tfoot`), which takes a
+    /// taller table's extra height first.
+    sections: Vec<(u16, bool)>,
+    /// How many captions follow the rows.
+    bottom_captions: usize,
     /// The borders the cascade gave it, while it collapses them onto cells.
     base: Option<BorderSides>,
     /// The boxes the last rebuild placed.
@@ -831,12 +846,28 @@ impl RinchDocument {
             .iter()
             .map(|r| match r.id {
                 Some(id) => match self.tree.nodes[id].computed_style.height {
-                    DimensionValue::Length(h) if h > 0.0 => Some(h),
+                    DimensionValue::Length(h) if h >= 0.0 => Some(h),
                     _ => None,
                 },
                 None => None,
             })
             .collect();
+
+        // Sections: a new one at each change of row group, and between the
+        // header, body and footer.
+        let mut sections = Vec::with_capacity(rows.len());
+        let mut section = 0u16;
+        for (y, row) in rows.iter().enumerate() {
+            let part = |y: usize| match y {
+                y if y < s.head.len() => 0,
+                y if y < s.head.len() + s.body.len() => 1,
+                _ => 2,
+            };
+            if y > 0 && (row.group != rows[y - 1].group || part(y) != part(y - 1)) {
+                section = section.saturating_add(1);
+            }
+            sections.push((section, part(y) == 1));
+        }
 
         let cs = &self.tree.nodes[table].computed_style;
         // A host's own width is its block's: the anonymous table in it is
@@ -966,6 +997,8 @@ impl RinchDocument {
             collapse,
             first_row: first_line,
             row_heights,
+            sections,
+            bottom_captions: s.bottom_captions.len(),
             base,
             placed: ids,
         }));
@@ -1062,12 +1095,10 @@ impl RinchDocument {
                     })
                 })
                 .collect();
-            // Rows are implicit `auto` tracks, but one with a declared
-            // height: `minmax(<height>, max-content)`, never under it, and
-            // not one of the `auto` tracks a taller table stretches, as
-            // Chrome gives a table's extra height to its rows of no declared
-            // height. When every row declares one, they all stretch.
-            let every = b.row_heights.iter().all(Option::is_some);
+            // The fork sizes the rows as Blink sizes a table's (*Row
+            // heights*, Taffy's `table_rows`): it reads a row's declared
+            // height as its track's minimum, `minmax(<height>, auto)`, and
+            // which rows are captions and which section each row is in.
             style.grid_template_rows = match b.row_heights.iter().rposition(Option::is_some) {
                 None => Vec::new(),
                 Some(last) => (1..b.first_row)
@@ -1075,13 +1106,31 @@ impl RinchDocument {
                     .chain(b.row_heights[..=last].iter().copied())
                     .map(|h| {
                         taffy::GridTemplateComponent::Single(match h {
-                            Some(h) if every => minmax(length(h), taffy::style_helpers::auto()),
-                            Some(h) => minmax(length(h), taffy::style_helpers::max_content()),
+                            Some(h) => minmax(length(h), taffy::style_helpers::auto()),
                             None => taffy::style_helpers::auto(),
                         })
                     })
                     .collect(),
             };
+            let caption = taffy::TableRow {
+                caption: true,
+                section: 0,
+                body: false,
+            };
+            style.table_rows = Some(taffy::TableRows {
+                rows: (1..b.first_row)
+                    .map(|_| caption)
+                    .chain(b.sections.iter().map(|&(section, body)| taffy::TableRow {
+                        caption: false,
+                        section,
+                        body,
+                    }))
+                    .chain((0..b.bottom_captions).map(|_| caption))
+                    .collect(),
+                // A block standing for an anonymous table keeps its own
+                // height: the table in it is as tall as its rows.
+                sized: !host,
+            });
             style.gap = taffy::Size {
                 width: length(b.spacing.0),
                 height: length(b.spacing.1),
@@ -1150,7 +1199,16 @@ impl RinchDocument {
                     style.size = taffy::Size::auto();
                     style.margin = taffy::Rect::length(0.0);
                 }
-                style.align_self = Some(taffy::AlignSelf::STRETCH);
+                // A cell is as tall as its row. A block in an anonymous
+                // cell is as tall as its content. The anonymous cell's
+                // `vertical-align` is `baseline`, which rinch aligns as `top`
+                // (#2359), so the block sits at the row's top (Chrome:
+                // a 10px block in a `height: 40px` row is 10 tall, #2312).
+                style.align_self = Some(if real {
+                    taffy::AlignSelf::STRETCH
+                } else {
+                    taffy::AlignSelf::START
+                });
                 style.justify_self = Some(taffy::JustifySelf::STRETCH);
                 if c.shift != 0.0 {
                     style.padding.top =
