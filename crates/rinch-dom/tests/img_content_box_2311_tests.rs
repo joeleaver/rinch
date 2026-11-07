@@ -56,7 +56,25 @@ const BOXES: &[(&str, &str, &str)] = &[
     ("a pb", "g.png", "left: 280px; top: 10px; object-fit: none"),
     ("a r", "q.png", "left: 10px; top: 70px"),
     ("a r", "g.png", "left: 190px; top: 70px; object-fit: cover"),
+    // A percentage padding (2% of the 400px containing block: 8px), which
+    // only layout resolves (review of #2311).
+    (
+        "a",
+        "q.png",
+        "left: 300px; top: 70px; width: 16px; height: 16px; padding: 2%; \
+         border: 1px solid rgb(128, 128, 128); background: rgb(255, 0, 255)",
+    ),
+    // A failed load, rounded: its #2309 placeholder is clipped to the curve.
+    (
+        "a",
+        BROKEN,
+        "left: 340px; top: 100px; width: 50px; height: 50px; border-radius: 25px; \
+         background: rgb(255, 0, 255)",
+    ),
 ];
+
+/// A `data:` URL that is not a picture: its load fails, synchronously.
+const BROKEN: &str = "data:image/png;base64,AAAA";
 
 /// `q.png`: 2x2, red green / blue white. `g.png`: 80x40, its left half red
 /// and its right half green.
@@ -151,6 +169,22 @@ pub const CHROME: &[((u32, u32), [u8; 3])] = &[
     ((229, 110), R),
     ((230, 110), G),
     ((255, 110), G),
+    // The percentage padding: border 300..301, padding 8px, content 309..325.
+    // (Its 1px border is not sampled: rinch blends that edge.)
+    ((308, 79), BG),
+    ((309, 78), BG),
+    ((309, 79), R),
+    ((316, 79), R),
+    ((317, 79), G),
+    ((309, 87), B),
+    ((324, 94), WH),
+    ((325, 94), BG),
+    ((324, 95), BG),
+    // The rounded placeholder: nothing outside the curve, the page there.
+    ((340, 100), WH),
+    ((343, 103), WH),
+    ((340, 149), WH),
+    ((389, 100), WH),
 ];
 
 #[test]
@@ -166,4 +200,13 @@ fn an_img_is_drawn_in_its_content_box_as_chrome_draws_it() {
         .map(|&((x, y), want)| ((x, y), at(x, y), want))
         .collect();
     assert!(bad.is_empty(), "(point, tiny-skia, chrome): {bad:?}");
+    // The placeholder's ring still runs along the top of the curve (Chrome
+    // 156: (195, 183, 195) at (365, 100), silver anti-aliased over the
+    // background), and the background is inside it.
+    let ring = at(365, 100);
+    assert!(
+        ring.iter().all(|&c| c > 150),
+        "the ring at the top of the rounded placeholder: {ring:?}"
+    );
+    assert_eq!(at(365, 101), BG, "inside the ring, the background");
 }

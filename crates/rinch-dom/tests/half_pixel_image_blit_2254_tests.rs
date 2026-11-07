@@ -171,6 +171,59 @@ fn an_image_on_a_half_pixel_rounds_its_edges_half_up() {
     );
 }
 
+/// The inked columns and rows of a `w` x `h` ramp drawn through `ts` on a
+/// 32x32 transparent surface, and the texel at the inked top-left pixel.
+fn landing(w: u32, h: u32, ts: Affine) -> (Vec<u32>, Vec<u32>, Option<(u32, u32)>) {
+    let data = ramp(w, h, true);
+    let mut painter = TinySkiaPainter::new(32, 32);
+    painter.fill_transparent();
+    painter.draw_image(
+        &PaintImage {
+            data: &data,
+            width: w,
+            height: h,
+            decoded: None,
+            frame: None,
+            opaque: true,
+            sampling: ImageSampling::Nearest,
+        },
+        ts,
+    );
+    let px = painter.pixels().as_chunks::<4>().0;
+    let cols: Vec<u32> = (0..32)
+        .filter(|&x| (0..32).any(|y| px[y * 32 + x as usize][3] != 0))
+        .collect();
+    let rows: Vec<u32> = (0..32_usize)
+        .filter(|&y| (0..32).any(|x| px[y * 32 + x][3] != 0))
+        .map(|y| y as u32)
+        .collect();
+    let first = match (cols.first(), rows.first()) {
+        (Some(&x), Some(&y)) => texel(px[(y * 32 + x) as usize], true),
+        _ => None,
+    };
+    (cols, rows, first)
+}
+
+/// Half up below zero too, as Chrome rounds `left: -0.5px` to 0 (a
+/// round-half-away-from-zero `-0.5 -> -1` would put texel 0 off the surface).
+#[test]
+fn an_image_at_a_negative_half_pixel_rounds_up_to_the_pixel_above() {
+    let (cols, rows, first) = landing(3, 2, Affine::translate((-0.5, -0.5)));
+    assert_eq!(cols, vec![0, 1, 2], "x -0.5 covers columns 0..3");
+    assert_eq!(rows, vec![0, 1], "y -0.5 covers rows 0..2");
+    assert_eq!(first, Some((0, 0)), "texel (0, 0) at the surface's corner");
+}
+
+/// Each edge is rounded on its own: the far edge is `round(x0 + width)`, not
+/// `round(x0) + round(width)`. Three texels at scale 0.8 from 10.3 span
+/// 10.3..12.7, so columns 10..13; rounding the width alone gives 10..12.
+#[test]
+fn an_image_s_far_edge_is_rounded_where_it_falls() {
+    let (cols, rows, _) = landing(3, 3, Affine::translate((10.3, 4.3)) * Affine::scale(0.8));
+    assert_eq!(cols, vec![10, 11, 12], "x 10.3..12.7");
+    assert_eq!(rows, vec![4, 5, 6], "y 4.3..6.7");
+}
+
 /// A blurred shadow's coverage mask is drawn through the text's transform
 /// when that is not a translation (`text_shadow::draw_masked`): the same
 /// half-pixel loss, through `draw_alpha_mask`.

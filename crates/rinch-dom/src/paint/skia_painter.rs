@@ -2375,10 +2375,15 @@ fn glyph_placement(transform: Transform, gx: f32, gy: f32, width: u32, height: u
 /// and 1 and takes texel 1: row (or column) 0 is never drawn and the last one
 /// is drawn twice. Scaled, the same skew of the sampling grid draws the first
 /// texel once and the last one three times at `scale(2)`. With whole-pixel
-/// edges every pixel centre falls inside a texel, each texel gets its share
-/// of the rect, and a scale-1 image is a plain translation again, which
-/// [`TinySkiaPainter::copy_opaque_image`] can copy. Chrome snaps a replaced
-/// element's image rect to device pixels the same way.
+/// edges the first pixel samples texel 0 and the last the last texel; at a
+/// whole-number scale every pixel centre falls inside a texel and each texel
+/// gets exactly its share (at other scales nearest sampling still puts some
+/// centres on texel boundaries, as it would at a whole-pixel origin). A
+/// scale-1 image is a plain translation again, which
+/// [`TinySkiaPainter::copy_opaque_image`] can copy. Chrome rounds a replaced
+/// element's layout position to device pixels the same way; it does not snap
+/// a CSS transform's own translation (`translate(0.5px, 0.5px)` blends the
+/// edge pixels there), which this painter, sampling nearest, rounds too.
 ///
 /// A rect that would round to nothing on an axis, and a rotated or skewed
 /// `ts`, keep `ts` as it is.

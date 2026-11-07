@@ -1725,6 +1725,23 @@ pub fn content_box_insets(node: &Node) -> (f32, f32, f32, f32) {
     )
 }
 
+/// [`content_box_insets`] as layout resolved them: the border and padding
+/// Taffy gave `node`, a percentage padding included (#2311 review). Falls back
+/// to the computed style for a node with no Taffy layout.
+pub fn content_box_insets_in(tree: &NodeTree, node: &Node) -> (f32, f32, f32, f32) {
+    if let Some(id) = node.taffy_id
+        && let Ok(l) = tree.taffy.layout(id)
+    {
+        return (
+            l.border.left + l.padding.left,
+            l.border.top + l.padding.top,
+            l.border.right + l.padding.right,
+            l.border.bottom + l.padding.bottom,
+        );
+    }
+    content_box_insets(node)
+}
+
 /// Draw a `RenderSurface` element's frame — its GPU image or its CPU pixels,
 /// whichever this paint was handed — into its content box, `contain`-fitted,
 /// clipped to the inner (content-edge) radius (#1768). The border box is
@@ -4726,11 +4743,18 @@ fn paint_node_unmasked(
                 // The picture: a replaced element's content, so it is fitted
                 // into the content box (inside the padding and border, #2311)
                 // and clipped to the content edge's curve, as a browser draws
-                // it.
-                if let Some(src) = node.attributes.get("src")
-                    && let Some(decoded) = tree.image_cache.get(src)
-                {
-                    let (l, t, r, b) = content_box_insets(node);
+                // it. A placeholder (#2309) is drawn in the same box under the
+                // same clip. The insets are the resolved ones, so a percentage
+                // padding counts.
+                let decoded = node
+                    .attributes
+                    .get("src")
+                    .and_then(|src| tree.image_cache.get(src));
+                let owes_placeholder = decoded.is_none()
+                    && crate::img_placeholder::placeholder(tree, node)
+                        != crate::img_placeholder::Placeholder::None;
+                if decoded.is_some() || owes_placeholder {
+                    let (l, t, r, b) = content_box_insets_in(tree, node);
                     let (l, t, r, b) = (
                         f64::from(l) * scale,
                         f64::from(t) * scale,
@@ -4744,33 +4768,31 @@ fn paint_node_unmasked(
                     if rounded {
                         painter.push_clip(Fill::NonZero, node_transform, &inner.shape(content));
                     }
-                    image::paint_image(
-                        painter,
-                        decoded,
-                        content,
-                        scale,
-                        fit,
-                        node_transform,
-                        painter::ImageSampling::of(node.computed_style.image_rendering),
-                    );
+                    if let Some(decoded) = decoded {
+                        image::paint_image(
+                            painter,
+                            decoded,
+                            content,
+                            scale,
+                            fit,
+                            node_transform,
+                            painter::ImageSampling::of(node.computed_style.image_rendering),
+                        );
+                    } else {
+                        img_placeholder::paint_img_placeholder(
+                            tree,
+                            node,
+                            painter,
+                            scale,
+                            content,
+                            font_cx,
+                            layout_cx,
+                            node_transform,
+                        );
+                    }
                     if rounded {
                         painter.pop_layer();
                     }
-                } else {
-                    // No picture: its placeholder, if it is owed one (#2309).
-                    img_placeholder::paint_img_placeholder(
-                        tree,
-                        node,
-                        painter,
-                        scale,
-                        x,
-                        y,
-                        w,
-                        h,
-                        font_cx,
-                        layout_cx,
-                        node_transform,
-                    );
                 }
 
                 paint_borders(painter, node, scale, x, y, w, h, radii, node_transform);
