@@ -214,3 +214,14 @@ fn text_that_fits_keeps_its_own_width() {
     ));
     near(x_w(&d, "f"), (0.0, 284.5));
 }
+
+/// A word broken anywhere (`overflow-wrap: anywhere`) wraps by parley's
+/// emergency break, which counts as a wrap: its min-content width is a
+/// letter's, so the box takes the room, Chrome 156's 100. Its widest line
+/// alone is 92.
+#[test]
+fn a_word_broken_anywhere_takes_the_room() {
+    let d = doc("<div style='width:100px'>\
+         <div id=f style='float:left;overflow-wrap:anywhere'>Supercalifragilistic</div></div>");
+    near(x_w(&d, "f"), (0.0, 100.0));
+}
