@@ -292,7 +292,30 @@ struct Run {
     /// Keyed by `glyph_id << 2 | bucket`. Fx-hashed: a lookup a glyph a frame
     /// is on the hottest draw path.
     glyphs: rustc_hash::FxHashMap<u32, Entry>,
+    /// Each glyph's hinted outline, kept so another sub-pixel bucket of it
+    /// costs a rasterisation, not the TrueType hinting program again (about
+    /// 360k instructions a glyph for Inter at 14px, against ~20k for the
+    /// rasterisation). `None`: no outline. Only for faces with no colour
+    /// glyphs.
+    outlines: rustc_hash::FxHashMap<u16, Option<swash::scale::outline::Outline>>,
+    /// The accounted bytes of `outlines`.
+    outline_bytes: usize,
     used: u64,
+}
+
+impl Run {
+    /// Every accounted byte this run holds.
+    fn bytes(&self) -> usize {
+        self.glyphs.values().map(Entry::bytes).sum::<usize>() + self.outline_bytes
+    }
+}
+
+/// What a kept outline is charged: its points and verbs, and the map slot.
+fn outline_bytes(o: &Option<swash::scale::outline::Outline>) -> usize {
+    ENTRY_OVERHEAD
+        + o.as_ref().map_or(0, |o| {
+            std::mem::size_of_val(o.points()) + std::mem::size_of_val(o.verbs())
+        })
 }
 
 /// The glyph-mask cache. One per thread by default ([`thread_atlas`]), shared
@@ -601,6 +624,8 @@ impl GlyphAtlas {
                 lcd: spec.lcd,
             },
             glyphs: Default::default(),
+            outlines: Default::default(),
+            outline_bytes: 0,
             used: generation,
         });
         self.last = self.runs.len() - 1;
@@ -650,7 +675,12 @@ impl GlyphAtlas {
             bitmap_scale,
             ..
         } = self;
-        let cached = &mut runs[run].glyphs;
+        let Run {
+            glyphs: cached,
+            outlines,
+            outline_bytes: run_outline_bytes,
+            ..
+        } = &mut runs[run];
         // Built on the first miss: a fully cached run never pays for a scaler
         // (which is where swash sets up hinting state).
         let mut scaler: Option<swash::scale::Scaler<'_>> = None;
@@ -677,12 +707,24 @@ impl GlyphAtlas {
                     let Some(s) = scaler.as_mut() else {
                         unreachable!("the scaler is built on the first miss")
                     };
-                    let (mask, failed) =
-                        match rasterise(s, bitmap_scale, font_ref, spec, id, bucket) {
-                            Raster::Mask(m) => (Some(m), false),
-                            Raster::Empty => (None, false),
-                            Raster::Failed => (None, true),
-                        };
+                    let mut kept = Kept {
+                        outlines: &mut *outlines,
+                        bytes: &mut *run_outline_bytes,
+                        total: &mut *bytes,
+                    };
+                    let (mask, failed) = match rasterise(
+                        s,
+                        bitmap_scale,
+                        Some(&mut kept),
+                        font_ref,
+                        spec,
+                        id,
+                        bucket,
+                    ) {
+                        Raster::Mask(m) => (Some(m), false),
+                        Raster::Empty => (None, false),
+                        Raster::Failed => (None, true),
+                    };
                     let e = Entry {
                         mask,
                         failed,
@@ -736,6 +778,7 @@ impl GlyphAtlas {
         match rasterise(
             &mut scaler,
             &mut self.bitmap_scale,
+            None,
             font_ref,
             spec,
             id,
@@ -765,12 +808,27 @@ impl GlyphAtlas {
             if self.bytes <= target || used >= keep_from {
                 break;
             }
-            if let Some(e) = self.runs[ri].glyphs.remove(&k) {
+            let run = &mut self.runs[ri];
+            if let Some(e) = run.glyphs.remove(&k) {
                 self.bytes -= e.bytes();
                 stats.evictions += 1;
+                // The glyph's kept outline goes with any of its masks: another
+                // bucket of it hints it again.
+                if let Some(o) = run.outlines.remove(&((k >> 2) as u16)) {
+                    let n = outline_bytes(&o);
+                    self.bytes -= n;
+                    run.outline_bytes -= n;
+                }
             }
         }
-        self.runs.retain(|r| !r.glyphs.is_empty());
+        let bytes = &mut self.bytes;
+        self.runs.retain(|r| {
+            let keep = !r.glyphs.is_empty();
+            if !keep {
+                *bytes -= r.outline_bytes;
+            }
+            keep
+        });
         self.last = 0;
     }
 
@@ -796,10 +854,8 @@ impl GlyphAtlas {
             let keep = !drop.contains(&i);
             i += 1;
             if !keep {
-                for e in r.glyphs.values() {
-                    *bytes -= e.bytes();
-                    stats.evictions += 1;
-                }
+                *bytes -= r.bytes();
+                stats.evictions += r.glyphs.len() as u64;
             }
             keep
         });
@@ -925,12 +981,42 @@ fn key(id: u32, bucket: u8) -> u32 {
 }
 
 /// Rasterise `id` at sub-pixel `bucket`: a colour outline or bitmap strike
+/// A run's kept outlines, and the byte counts they are charged to.
+struct Kept<'a> {
+    outlines: &'a mut rustc_hash::FxHashMap<u16, Option<swash::scale::outline::Outline>>,
+    bytes: &'a mut usize,
+    total: &'a mut usize,
+}
+
+impl Kept<'_> {
+    /// The hinted outline of `id`, scaled once per run and kept.
+    fn outline(
+        &mut self,
+        scaler: &mut swash::scale::Scaler<'_>,
+        id: u16,
+    ) -> Option<&swash::scale::outline::Outline> {
+        match self.outlines.entry(id) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                let o = scaler.scale_outline(id);
+                let n = outline_bytes(&o);
+                *self.bytes += n;
+                *self.total += n;
+                v.insert(o)
+            }
+        }
+        .as_ref()
+    }
+}
+
+/// Rasterise `id` at sub-pixel `bucket`: a colour outline or bitmap strike
 /// as colour, else the outline as coverage (subpixel coverage for an LCD
 /// run, [`lcd_mask`]). The order is swash's own, as the software painter has
 /// always asked (#804).
 fn rasterise(
     scaler: &mut swash::scale::Scaler<'_>,
     bitmap_scale: &mut swash::scale::ScaleContext,
+    kept: Option<&mut Kept<'_>>,
     font: swash::FontRef<'_>,
     spec: &RunSpec<'_>,
     id: u32,
@@ -946,7 +1032,7 @@ fn rasterise(
     let em = spec.embolden;
     let x = bucket as f32 / SUBPIXEL_BUCKETS as f32;
     if let Some(mode) = spec.lcd {
-        return rasterise_lcd(scaler, bitmap_scale, font, spec, id, x, mode);
+        return rasterise_lcd(scaler, bitmap_scale, kept, font, spec, id, x, mode);
     }
     let render = |sources: &[Source], s: &mut swash::scale::Scaler<'_>, darken: bool| {
         let mut r = Render::new(sources);
@@ -957,6 +1043,50 @@ fn rasterise(
         }
         r.render(s, id as u16)
     };
+    // A face with no colour glyphs, the common case: the hinted outline is
+    // kept per glyph, and each bucket only rasterises it. The same steps as
+    // swash's `Render` for `Source::Outline` (embolden, then a bottom-left
+    // origin mask at the offset), so the pixels are its pixels.
+    if let Some(kept) = kept
+        && !scaler.has_color_bitmaps()
+        && !scaler.has_color_outlines()
+    {
+        let Some(outline) = kept.outline(scaler, id as u16) else {
+            return Raster::Failed;
+        };
+        let emboldened;
+        let outline = if em > 0.0 {
+            let mut o = outline.clone();
+            o.embolden(em, em);
+            emboldened = o;
+            &emboldened
+        } else {
+            outline
+        };
+        let offset = swash::zeno::Vector::new(x, if em > 0.0 { -em } else { 0.0 });
+        // `render_into` with `inspect`, as `Render` calls it: zeno's `render()`
+        // leaves the bottom-left origin out of the placement it returns.
+        let mut data = Vec::new();
+        let placement = swash::zeno::Mask::new(outline.path())
+            .format(swash::zeno::Format::Alpha)
+            .origin(swash::zeno::Origin::BottomLeft)
+            .offset(offset)
+            .render_offset(offset)
+            .inspect(|fmt, w, h| data.resize(fmt.buffer_size(w, h), 0))
+            .render_into(&mut data[..], None);
+        if placement.width == 0 || placement.height == 0 {
+            return Raster::Empty;
+        }
+        return Raster::Mask(GlyphMask {
+            left: placement.left,
+            top: placement.top,
+            width: placement.width,
+            height: placement.height,
+            kind: MaskKind::Coverage,
+            data,
+            gpu: None,
+        });
+    }
     // A darkened run on a face with colour outlines asks for the colour glyph
     // on its own first: the re-centring offset is the whole `Render`'s, and a
     // COLR glyph is not emboldened.
@@ -988,6 +1118,7 @@ fn rasterise(
 fn rasterise_lcd(
     scaler: &mut swash::scale::Scaler<'_>,
     bitmap_scale: &mut swash::scale::ScaleContext,
+    kept: Option<&mut Kept<'_>>,
     font: swash::FontRef<'_>,
     spec: &RunSpec<'_>,
     id: u32,
@@ -1020,6 +1151,36 @@ fn rasterise_lcd(
             swash::zeno::Vector::new(3.0 * x, -em),
         )
     };
+    // A face with no colour glyphs: the kept hinted outline, emboldened and
+    // stretched as `Render` would, so the same pixels.
+    if let Some(kept) = kept
+        && !scaler.has_color_bitmaps()
+        && !scaler.has_color_outlines()
+    {
+        let Some(outline) = kept.outline(scaler, id as u16) else {
+            return Raster::Failed;
+        };
+        let mut o = outline.clone();
+        if em > 0.0 {
+            o.embolden(em, em);
+        }
+        o.transform(&stretch);
+        let mut data = Vec::new();
+        let placement = swash::zeno::Mask::new(o.path())
+            .format(swash::zeno::Format::Alpha)
+            .origin(swash::zeno::Origin::BottomLeft)
+            .offset(offset)
+            .render_offset(offset)
+            .inspect(|fmt, w, h| data.resize(fmt.buffer_size(w, h), 0))
+            .render_into(&mut data[..], None);
+        let mut image = swash::scale::image::Image::new();
+        image.placement = placement;
+        image.data = data;
+        if image.placement.width == 0 || image.placement.height == 0 {
+            return Raster::Empty;
+        }
+        return lcd_mask(&image, mode).map_or(Raster::Empty, Raster::Mask);
+    }
     let mut r = Render::new(&[Source::Outline]);
     r.transform(Some(stretch)).offset(offset);
     if em > 0.0 {
@@ -2058,5 +2219,74 @@ mod tests {
             widths[2].1 > widths[0].1,
             "emboldened has more ink: {widths:?}"
         );
+    }
+}
+/// The kept-outline path (hint once per glyph, rasterise each bucket from the
+/// outline, review of #2317's Perf job) gives swash `Render`'s masks byte for
+/// byte, placement included, at every bucket and with emboldening, grey and
+/// subpixel (LCD). Red with
+/// zeno's `render()` (which loses the bottom-left origin) or a missing
+/// re-centring offset.
+#[cfg(test)]
+mod kept_outline_tests {
+    use super::*;
+
+    #[test]
+    fn kept_outline_masks_are_renders_masks() {
+        const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+        let f = FontData::new(Blob::new(std::sync::Arc::new(INTER)), 0);
+        let face = swash::FontRef::from_index(INTER, 0).unwrap();
+        let lcd = |order| {
+            Some(LcdMode {
+                order,
+                filter: LcdFilter::Default,
+            })
+        };
+        for (embolden, lcd) in [
+            (0.0, None),
+            (6.0 / 64.0, None),
+            // Stage 3: an LCD run stretches the kept outline as `Render`
+            // stretches the one it scales.
+            (0.0, lcd(SubpixelOrder::Rgb)),
+            (6.0 / 64.0, lcd(SubpixelOrder::Rgb)),
+            (6.0 / 64.0, lcd(SubpixelOrder::VBgr)),
+        ] {
+            let spec = RunSpec {
+                font: &f,
+                size: 13.0,
+                hint: true,
+                embolden,
+                coords: &[],
+                lcd,
+            };
+            let mut atlas = GlyphAtlas::default();
+            let mut n = 0;
+            for ch in "aHg1 ".chars() {
+                let id = face.charmap().map(ch) as u32;
+                for b in 0..SUBPIXEL_BUCKETS {
+                    let want = atlas.rasterise_uncached(&spec, id, b);
+                    let _ = atlas.lookup(
+                        &spec,
+                        &[(id, b)],
+                        false,
+                        &mut AtlasStats::default(),
+                        |_, m| {
+                            let got = m.mask();
+                            assert_eq!(want.is_some(), got.is_some(), "{ch} bucket {b}");
+                            if let (Some(w), Some(g)) = (&want, got) {
+                                assert_eq!(
+                                    (w.left, w.top, w.width, w.height),
+                                    (g.left, g.top, g.width, g.height),
+                                    "{ch} bucket {b} embolden {embolden}"
+                                );
+                                assert_eq!(w.data, g.data, "{ch} bucket {b} embolden {embolden}");
+                                n += 1;
+                            }
+                        },
+                    );
+                }
+            }
+            assert!(n >= 16, "four inked glyphs at four buckets: {n}");
+        }
     }
 }

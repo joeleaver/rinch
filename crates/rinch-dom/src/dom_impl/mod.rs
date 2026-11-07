@@ -1697,6 +1697,78 @@ impl RinchDocument {
         any_active
     }
 
+    /// Make `<img>` `node_id`'s measure context say what its placeholder is
+    /// owed (#2309, [`crate::img_placeholder`]): its shaped alt text
+    /// ([`AltText`]) while it is a placeholder with alt, and no natural size
+    /// while the cache holds no picture for its `src` (removed, emptied,
+    /// failed, or another source still loading: the old picture's size
+    /// stayed before). Answers whether the context changed; it then queues
+    /// the node for layout and paint itself. A change of what is drawn alone
+    /// (a sized one's load failed) is the caller's to mark for paint; a
+    /// restyle (the escape hatch toggled) marks it already.
+    ///
+    /// [`AltText`]: crate::img_placeholder::AltText
+    pub(crate) fn sync_img_placeholder(&mut self, node_id: RawNodeId) -> bool {
+        let Some(node) = self.tree.nodes.get(node_id) else {
+            return false;
+        };
+        if node.tag() != Some("img") {
+            return false;
+        }
+        let Some(taffy_id) = node.taffy_id else {
+            return false;
+        };
+        let Some(crate::node::NodeContext::Image {
+            alt: have, natural, ..
+        }) = self.tree.taffy.get_node_context(taffy_id)
+        else {
+            return false;
+        };
+        let (have, has_natural) = (have.clone(), natural.is_some());
+        let want = crate::img_placeholder::wanted_alt(
+            &self.tree,
+            node,
+            have.as_ref(),
+            &mut self.font_cx,
+            &mut self.layout_cx,
+        );
+        let stale = has_natural
+            && node
+                .attributes
+                .get("src")
+                .is_none_or(|s| self.tree.image_cache.get(s).is_none());
+        // Whether its Taffy style should drop its size (an alt placeholder
+        // too small for its box), against whether it does: a failure or a
+        // picture arriving changes that without a restyle.
+        let ignore = crate::img_placeholder::ignores_size(&self.tree, node);
+        let ignored = node.img_size_ignored;
+        if ignore != ignored {
+            self.tree.nodes[node_id].img_size_ignored = ignore;
+            self.rewrite_taffy_style(node_id);
+        }
+        if want == have && !stale && ignore == ignored {
+            return false;
+        }
+        let Some(crate::node::NodeContext::Image { natural, alt, .. }) =
+            self.tree.taffy.get_node_context_mut(taffy_id)
+        else {
+            return false;
+        };
+        *alt = want;
+        if stale {
+            *natural = None;
+        }
+        let _ = self.tree.taffy.mark_dirty(taffy_id);
+        self.tree.layout_dirty = true;
+        // A default `<img>` is an atomic inline, measured detached from the
+        // root tree, as `drain_pending_images` explains.
+        self.tree
+            .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Subtree);
+        self.mark_atomic_inline_dirty(node_id);
+        self.push_dirty_flags(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+        true
+    }
+
     /// Request an image load for a node's `src` attribute.
     ///
     /// If the image is already decoded in the cache, updates intrinsic dimensions
@@ -1730,10 +1802,19 @@ impl RinchDocument {
                         src: src.to_string(),
                         natural: Some(natural),
                         aspect,
+                        alt: None,
                     }),
                 );
                 let _ = self.tree.taffy.mark_dirty(taffy_id);
             }
+            // A default `<img>` is an atomic inline, measured detached from
+            // the root tree (`drain_pending_images`): without this a picture
+            // written over an inline alt placeholder (#2309) kept the
+            // placeholder's box, and at an unchanged viewport no layout ran.
+            self.tree.layout_dirty = true;
+            self.tree
+                .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Subtree);
+            self.mark_atomic_inline_dirty(node_id);
             self.push_dirty_flags(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
             return;
         }
@@ -1759,6 +1840,7 @@ impl RinchDocument {
                     src: src.to_string(),
                     natural: None,
                     aspect,
+                    alt: None,
                 }),
             );
         }
@@ -1856,10 +1938,29 @@ impl RinchDocument {
                 crate::image_cache::request_image_load(self.doc_key, src, loader.clone());
             }
         }
-        if newly_decoded.is_empty() {
-            return false;
-        }
         let mut layout_changed = false;
+        // A failed load turns each `<img>` naming it into a placeholder
+        // (#2309): an inline one changes its box, a sized one only what it
+        // draws.
+        for src in self.tree.image_cache.take_newly_failed() {
+            let node_ids: Vec<RawNodeId> = self
+                .tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    node.tag() == Some("img")
+                        && node.attributes.get("src").map(|s| s.as_str()) == Some(src.as_str())
+                })
+                .map(|(id, _)| id)
+                .collect();
+            for node_id in node_ids {
+                layout_changed |= self.sync_img_placeholder(node_id);
+                self.push_dirty_flags(node_id, DirtyFlags::PAINT);
+            }
+        }
+        if newly_decoded.is_empty() {
+            return layout_changed;
+        }
         // For each newly decoded image, find <img> nodes referencing it
         // and update their intrinsic dimensions
         for src in &newly_decoded {
@@ -1911,6 +2012,7 @@ impl RinchDocument {
                             src: src.clone(),
                             natural: Some(natural),
                             aspect,
+                            alt: None,
                         }),
                     );
                     let _ = self.tree.taffy.mark_dirty(taffy_id);

@@ -400,8 +400,7 @@ fn gpu_fallbacks_draw_outlines() {
     }
     // The scaled text's masks are the 26px ones: about what the same word
     // set at 26px with no transform keeps (the buckets may differ), and well
-    // over twice the 13px word's (four times the pixels, less the per-entry
-    // overhead).
+    // over the 13px word's.
     let bytes = |html: &str| {
         let atlas = private_atlas(usize::MAX);
         let mut d = doc(html);
@@ -415,9 +414,12 @@ fn gpu_fallbacks_draw_outlines() {
         scaled * 10 > big * 9 && scaled * 9 < big * 10,
         "scale(2) keeps 26px masks: {scaled} vs {big} bytes"
     );
+    // Over 1.5x: four times the mask pixels, but the accounted bytes also
+    // hold each glyph's kept outline (about the same at either size) and a
+    // per-entry overhead.
     assert!(
-        scaled * 5 > small * 11,
-        "more than 2.2x the 13px masks: {scaled} vs {small}"
+        scaled * 2 > small * 3,
+        "well over the 13px masks: {scaled} vs {small}"
     );
 }
 

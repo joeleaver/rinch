@@ -50,7 +50,8 @@ another shape, the `viewBox` is fitted by the file's `preserveAspectRatio`
 An SVG file is untrusted input. rinch draws one only if everything in it is
 inside a **profile** of SVG, the features icon sets and editors use that are
 cheap and bounded to draw. A file that uses anything outside the profile is
-**refused whole**: it draws nothing (a failed image: an `<img>` is 0x0, a
+**refused whole**: it draws nothing (a failed image: an `<img>` shows its
+[placeholder](#missing-and-failed-images-placeholders), a
 background is not painted, a mask hides its box), and the reason is logged
 once. It is never drawn in part. Measured on 11,843 real files (all 5,986
 Tabler icons; samples of KDE Breeze, Oxygen, GNOME Adwaita and hicolor app
@@ -159,9 +160,9 @@ reset `img { width: 100%; height: auto }` keeps the right height from the
 first frame; once the image has loaded its own ratio is used. The ratio is
 a hint too (`aspect-ratio: auto w / h`), so your own `aspect-ratio` replaces
 it: `aspect-ratio: auto` drops it, and `aspect-ratio: 1` makes even a loaded
-image square. And an image that has not loaded or failed reserves
-its attributes' box even with `alt` text, where a browser lays the alt text
-out instead. `<video>` reads
+image square. An image with no picture (no `src`, or a failed load) keeps
+its attributes' box and draws a placeholder in it
+([below](#missing-and-failed-images-placeholders)). `<video>` reads
 the same two attributes with the same ratio, and `<iframe>` reads them with
 no ratio. The other legacy attributes (`hspace`, `vspace`, `border`, `align`,
 `<hr width>`, a table's `width`/`bgcolor`/…) still do nothing on desktop
@@ -285,6 +286,72 @@ An SVG file is a mask image like any other (#2111): `background-color` under
 `mask-image: url(icon.svg)` is the usual way to tint an icon, and the icon is
 rasterised at the size the mask draws it. A `data:` URL works, as it does for
 `background-image`. On the web, the browser reads all of these itself.
+
+### Missing and failed images: placeholders
+
+An `<img>` with no picture — no `src` (or an empty one), or a load that
+failed — draws a **placeholder** in its place (#2309). One still loading
+draws nothing until it arrives.
+
+| The image | What it draws |
+|---|---|
+| has both dimensions without its picture (its `width` and `height` attributes or CSS, or one of them and the attributes' ratio) | a box of that size with a faint 1px `silver` border inside its content box, and its `alt` text inside that (1px in from the border), wrapped to the box and clipped to it — but nothing when the box is thinner than **3px** on either axis (no `src`) or **18px** (a failed load), as in Chrome, so spacers and dividers stay invisible (one with alt text shows the text inline instead, its size ignored, as Chrome does) |
+| has `alt` text and not both dimensions | the alt text as text, an inline-block of it: as wide as the text up to the room it has (a long one wraps), or its declared width; as tall as its lines, or its declared height, and at least 16px (Chrome's alt box holds a 16x16 icon), with its text clipped to it |
+| has neither, or every declared size is 1px or less (a tracking pixel) | nothing, and it takes up only its declared size |
+
+The alt text is drawn in the image's own font, `line-height` and `color`, so
+`img { color: gray; font-size: 12px }` styles it. It is shaped once, when the
+image is styled or its `alt` changes, not on each paint. Reloading a failed
+source (`reload_image`) keeps its placeholder up until the answer lands. A sized placeholder keeps
+the ratio of its `width` and `height` attributes under the usual responsive
+rule (`max-width: 100%; height: auto`), so a page does not jump when the
+picture arrives; a `src` set later replaces the placeholder.
+
+This is for mail above all: a mail client that holds back remote pictures
+(Postrinch strips their `src` and keeps `width`, `height`, `alt` and `style`)
+gets a layout with every picture's place kept and labelled.
+
+**Restyling or turning it off.** The look is read from custom properties,
+only while the image is a placeholder. They inherit, so a rule on `:root`
+sets them for the whole app, and a rule on one image sets its own. The
+`img { border: 0 }` resets mail is full of do not touch them.
+
+```css
+:root {
+  --rinch-img-placeholder-border-color: #ddd;   /* a colour; default silver */
+  --rinch-img-placeholder-border-width: 2px;    /* an absolute length or em, 0 for none; default 1px */
+  --rinch-img-placeholder-background: #f6f6f6;  /* a colour; default transparent */
+}
+/* The escape hatch: nothing drawn, and an alt-only image 0x0, as before. */
+.no-placeholders { --rinch-img-placeholder: none }
+.no-placeholders .keep { --rinch-img-placeholder: auto }
+```
+
+An image with no `src` is also matched by `img:not([src])`; a failed load has
+no state a selector can see.
+
+**How this differs from Chrome.** Measured in Chrome 156 (standards mode):
+the bordered box — 1px `#c0c0c0` inside the content box, 1px of padding — is
+what Chrome draws for a sized image with **no** alt text, and only when the
+box is at least 3px on each axis with no `src`, 18px after a failed load
+(from 18px it adds a 16x16 broken-image icon in the corner, which rinch does
+not draw). A sized image **with** alt text is shown as its alt text inline,
+its size ignored, after the 16px icon, whether its `src` failed or is
+missing; rinch keeps the size and draws the alt text in the box (Joe's rule,
+and what Chrome does in quirks mode), so held-back pictures keep their place.
+An image with alt text and one dimension is laid out as Chrome lays it out
+(`width: 100%; height: auto` with no ratio is the column's width by the
+text's lines). An unsized image with alt text is, in Chrome, an inline-block
+of the icon and the text; in rinch of the text alone. A sized image too small
+for its box that has alt text (a failed 16x16 `alt="Facebook"` icon) shows
+the alt text inline in both, its size ignored. A failed image with no alt and
+one or no dimension is, in Chrome, a 16x16 box holding the broken-image icon;
+rinch draws nothing there and keeps its declared size (0x0 with none).
+Chrome copies no alt text (`getSelection().toString()` of
+`a<img alt="Hello">b` is `"ab"`), and neither does rinch. **On the web**
+(rinch-web) the browser draws
+its own `<img>`, so there you get the browser's fallback and these properties
+do nothing.
 
 ### `image-rendering`
 
