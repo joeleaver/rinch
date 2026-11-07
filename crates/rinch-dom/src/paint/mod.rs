@@ -1546,6 +1546,9 @@ impl Painter for ClipTrackingPainter<'_> {
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
         self.inner.fill(fill, transform, brush, shape);
     }
+    fn set_coarse_curves(&mut self, coarse: bool) {
+        self.inner.set_coarse_curves(coarse);
+    }
     fn fill_color(
         &mut self,
         fill: Fill,

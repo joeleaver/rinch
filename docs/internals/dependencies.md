@@ -315,12 +315,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`4d5e0b8cd43014ca6dbf6f5f2817a5c8b03ac1fb`, branch `rinch-patch`): twenty-three commits on the taffy `v0.14.0` tag
-(item 10 is two of them, item 15 three, item 18 two). It is a dependency, not a
+(`4d5e0b8cd43014ca6dbf6f5f2817a5c8b03ac1fb`, branch `rinch-patch`): twenty-seven commits on the taffy `v0.14.0` tag
+(item 10 is two of them, item 15 three, item 18 four, item 19 two). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the twenty-three commits onto the new tag. All are upstream
+and a Taffy bump rebases the twenty-seven commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -535,7 +535,7 @@ candidates.
    and captions grows to them (block layout hands it no height,
    `BlockItemStyle::resolves_own_height`, and a size request does not stop at
    its `height`; a height handed down as `known_dimensions` grows too since
-   item 18). Not modelled: percentage row
+   item 19). Not modelled: percentage row
    heights and row baselines. `Style` is 32 bytes bigger. rinch sets it on
    every table, `sized` off for a block standing for an anonymous table
    (`apply_table_style`). Pins: the fork's `tests/table_rows.rs` and
@@ -564,7 +564,28 @@ candidates.
    `out_of_flow::absolute_leaf_inputs`, which put them back for an absolute leaf, is gone).
    Pins: the fork's `tests/leaf_margins.rs` (eleven shapes) and
    `crates/rinch-dom/tests/float_room_round3_tests.rs`.
-18. **A table's captions and imposed heights** (#2350 and #2358, commits `68e87bfc` and
+18. **A row flex container sized to fit its content wraps in its room** (#2370, commits
+   `f7079d5a`, `8fdef733`, `7eac0940` and `cac51813`). A row flex container whose width is fit-content (a float, an
+   absolutely positioned box, `width: fit-content`, a grid item aligned to its start, a row in a
+   column aligned to its start) took its longest line, the sum of its items' max-content flex
+   bases, whatever the room: a float holding `alpha beta … kappa` (431px of Inter) in 260px of
+   room was 431 x 20, Chrome 156 260 x 40; with `flex: 1 1 0` items it was 0 wide. Its width is
+   now `min(max-content, max(min-content, room))` (CSS Sizing 3 §5.2,
+   `flexbox.rs` `fit_content_main_size`). The max-content size is the sum of the items'
+   max-content contributions: their flex bases clamped by their max and then min widths (a
+   `max-width: 80px` item counts 80, not its text's width), except an item whose basis a
+   `flex-basis` set, which is measured. The min-content size is the sum of the items'
+   min-content contributions in a single-line container and the largest in a multi-line one
+   (css-flexbox-1 §9.9.1), measured only when the max-content size does not fit, so a container
+   whose content fits measures nothing new. As in Chrome, a contribution is not clamped by the
+   flex base size (a `flex-shrink: 0` item overflows the float), and a scroll container item
+   contributes its content's min-content size. A multi-line container whose lines fit was
+   the room less its padding (it compared a border-box size with its content box's room). A
+   column's main size is its height, its max-content size, and is unchanged; its width, the
+   cross size, was already fit to its items. `inline-flex` was already right: rinch sizes an
+   atomic inline itself. Pins: the fork's `tests/fit_content_flex.rs` (27 shapes) and
+   `crates/rinch-dom/tests/fit_content_flex_tests.rs` (Chrome's numbers).
+19. **A table's captions and imposed heights** (#2350 and #2358, commits `68e87bfc` and
    `4d5e0b8c`). `size_table_rows` empties the gutters on either side of a caption row: a caption
    is outside the table box, with no `border-spacing` between it and the rows or another caption
    (rinch takes the table's padding out of the caption's margins, `table_layout.rs` *Captions*).
@@ -581,7 +602,8 @@ candidates.
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
-with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, and (6,345 in all, on top of #2370's commits) with 18.
+with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
+`tests/fit_content_flex.rs`) with 18, and (6,345 in all) with 19.
 
 
 ## Parley Fork
