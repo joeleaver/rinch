@@ -1004,8 +1004,13 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   more ALU operations on text pixels only, and reads the blend stack only
   inside clips). The atlas holds 50% more bytes (70 KiB to 105 KiB for that
   page: three coverage bytes a pixel, masks a pixel wider each side). The
-  instruction benches `full_paint::text_page_subpixel_warm` and
-  `vello_paint::text_page_subpixel` track the warm paint.
+  instruction benches track the warm paint: on the Vello painter
+  `vello_paint::text_page_subpixel` is 3,579,697 instructions against the grey
+  `text_page_unsliced`'s 3,577,349 (+0.07%); on tiny-skia
+  `full_paint::text_page_subpixel_warm` is 28.7M against the grey
+  `text_page_warm`'s 39.8M, cheaper, because `blit_subpixel_mask_into` writes
+  the pixmap directly where a grey glyph is coloured into scratch and drawn
+  through `draw_pixmap` (the subpixel page also fills a white background).
 - **Pins.** `glyph_atlas::tests` (`an_lcd_run_is_per_channel_coverage`,
   `subpixel_orders`, `the_filters_are_freetypes`,
   `lcd_masks_are_keyed_and_uploaded_as_rgb`, `lcd_masks_take_the_stem_darkening`),
