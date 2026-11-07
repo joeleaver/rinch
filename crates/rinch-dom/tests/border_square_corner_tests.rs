@@ -200,25 +200,27 @@ fn joins(style: &str) -> Vec<(Join, f64)> {
     painter.0
 }
 
-/// Solid and dashed borders reach the painter with a miter join — on the
-/// Vello path as on tiny-skia, since both are handed this `Stroke`.
+/// A solid border reaches the painter with a miter join — on the Vello path
+/// as on tiny-skia, since both are handed this `Stroke`.
 #[test]
-fn solid_and_dashed_border_strokes_carry_a_miter_join() {
-    for style in ["solid", "dashed"] {
-        let got = joins(&format!("{BOX}border: 20px {style} rgb(0, 128, 0)"));
-        assert_eq!(got.len(), 1, "{style}: one stroke for a uniform border");
-        assert!(
-            matches!(got[0].0, Join::Miter),
-            "{style}: a square corner needs a miter join, got {:?} (#1022)",
-            got[0].0
-        );
-    }
+fn solid_border_strokes_carry_a_miter_join() {
+    let got = joins(&format!("{BOX}border: 20px solid rgb(0, 128, 0)"));
+    assert_eq!(got.len(), 1, "one stroke for a uniform border");
+    assert!(
+        matches!(got[0].0, Join::Miter),
+        "a square corner needs a miter join, got {:?} (#1022)",
+        got[0].0
+    );
 }
 
-/// Dotted keeps its round join, as its round caps: a dot is round.
+/// Dashed and dotted borders are laid out as Chrome lays them out and reach
+/// the painter as filled dashes and dots, not as a stroke with a dash pattern
+/// (#2371, #2372), so no join is involved; their corners are pinned by
+/// `border_dashes_2371_tests`.
 #[test]
-fn dotted_border_strokes_keep_a_round_join() {
-    let got = joins(&format!("{BOX}border: 20px dotted rgb(0, 128, 0)"));
-    assert_eq!(got.len(), 1);
-    assert!(matches!(got[0].0, Join::Round), "got {:?}", got[0].0);
+fn dashed_and_dotted_square_borders_are_not_strokes() {
+    for style in ["dashed", "dotted"] {
+        let got = joins(&format!("{BOX}border: 20px {style} rgb(0, 128, 0)"));
+        assert!(got.is_empty(), "{style}: strokes {got:?}");
+    }
 }

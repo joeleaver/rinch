@@ -5,6 +5,7 @@
 
 pub(crate) mod background;
 mod blur;
+mod border_dashes;
 mod borders;
 pub mod clip;
 mod contenteditable;

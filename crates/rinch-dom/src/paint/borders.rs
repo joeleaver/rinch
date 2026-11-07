@@ -5,6 +5,7 @@ use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Shape, Stroke, Vec2};
 
 use super::blur::Blur1d;
+use super::border_dashes::{self, Dash};
 use super::painter::{PaintShape, Painter};
 use super::radii::BorderRadii;
 use crate::computed_style::BorderStyleValue;
@@ -245,7 +246,22 @@ pub(super) fn paint_borders(
             let half = bw * 0.5;
             let border_rect = Rect::new(x + half, y + half, x + w - half, y + h - half);
 
-            if radii.is_square() {
+            if let Some(dash) = Dash::of(style) {
+                // Chrome's dash layout (#2371, #2372): `border_dashes`.
+                let outer = Rect::new(x, y, x + w, y + h);
+                if radii.is_square() {
+                    border_dashes::paint_square_uniform(painter, transform, bc, outer, bw, dash);
+                } else {
+                    let centre = border_dashes::centre_line(
+                        border_rect,
+                        radii.inner(half, half, half, half),
+                    );
+                    let ring = border_ring(outer, radii, [bw; 4]);
+                    border_dashes::paint_rounded(
+                        painter, transform, bc, &centre, &ring, None, bw, bw, dash,
+                    );
+                }
+            } else if radii.is_square() {
                 painter.stroke_color(&stroke, transform, bc, &border_rect.into());
             } else if matches!(style, BorderStyleValue::Solid) {
                 // A solid rounded border is exactly the ring between the
@@ -262,11 +278,11 @@ pub(super) fn paint_borders(
                 }
                 painter.fill_color(Fill::NonZero, transform, bc, &ring.into());
             } else {
-                // The dashed, dotted and double strokes run along the
-                // border's centre line, whose radii are the outer ones less
-                // half the width — the stroke's outer edge then has the
-                // border box's radius. (It used to stroke the centre line
-                // with the outer radii, half a width too round, #977.)
+                // The double stroke runs along the border's centre line,
+                // whose radii are the outer ones less half the width — the
+                // stroke's outer edge then has the border box's radius. (It
+                // used to stroke the centre line with the outer radii, half
+                // a width too round, #977.)
                 let centre = radii.inner(half, half, half, half);
                 painter.stroke_color(&stroke, transform, bc, &centre.shape(border_rect));
             }
@@ -305,62 +321,87 @@ pub(super) fn paint_borders(
         return;
     }
 
-    // Fallback: straight lines per side (no border-radius)
-    if let Some(bc) = sides[0].1 {
-        paint_border_side(
-            painter,
-            bevel::Side::Top,
-            top_w,
-            sides[0].2,
-            bc,
-            x,
-            y,
-            w,
-            h,
-            transform,
-        );
+    // Fallback: straight lines per side (no border-radius).
+    //
+    // A dashed or dotted side is cut on the diagonal at a corner where the
+    // colour or the style changes. Chrome cuts the neighbour there too (a
+    // solid side paints only its own half of the corner), but this painter's
+    // solid and 3D sides fill the whole corner square. So the dashed and
+    // dotted sides paint last, over them, and the corner comes out split as
+    // Chrome's does.
+    let widths = [top_w, right_w, bottom_w, left_w];
+    const SIDES: [bevel::Side; 4] = [
+        bevel::Side::Top,
+        bevel::Side::Right,
+        bevel::Side::Bottom,
+        bevel::Side::Left,
+    ];
+    let mut order = [0usize, 1, 2, 3];
+    order.sort_by_key(|&i| Dash::of(sides[i].2).is_some());
+    let edges = border_dashes::BoxEdges {
+        rect: Rect::new(x, y, x + w, y + h),
+        widths,
+    };
+    for i in order {
+        let (_, color, style) = sides[i];
+        let Some(bc) = color else { continue };
+        if let Some(dash) = Dash::of(style) {
+            let cuts = dash_side_cuts(&sides, &widths, &edges, i);
+            let mut path = BezPath::new();
+            border_dashes::straight_side(&mut path, &edges, DASH_SIDES[i], dash, &cuts);
+            if !path.is_empty() {
+                painter.fill_color(Fill::NonZero, transform, bc, &path.into());
+            }
+        } else {
+            paint_border_side(
+                painter, SIDES[i], widths[i], style, bc, x, y, w, h, transform,
+            );
+        }
     }
-    if let Some(bc) = sides[1].1 {
-        paint_border_side(
-            painter,
-            bevel::Side::Right,
-            right_w,
-            sides[1].2,
-            bc,
-            x,
-            y,
-            w,
-            h,
-            transform,
-        );
+}
+
+/// [`bevel::Side`]'s order, as `border_dashes` names it.
+const DASH_SIDES: [border_dashes::Side; 4] = [
+    border_dashes::Side::Top,
+    border_dashes::Side::Right,
+    border_dashes::Side::Bottom,
+    border_dashes::Side::Left,
+];
+
+/// The corner cuts for dashed or dotted side `i` of a border whose sides
+/// differ: on the diagonal from the outer corner to the inner one, wherever
+/// the neighbour is present and differs in colour or style (Blink's miter,
+/// `ComputeMiter`). Two sides of one style and colour overlap in the corner
+/// instead, each with a whole dash or dot there.
+fn dash_side_cuts(
+    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
+    widths: &[f64; 4],
+    edges: &border_dashes::BoxEdges,
+    i: usize,
+) -> Vec<border_dashes::Cut> {
+    let (_, color, style) = sides[i];
+    let mut cuts = Vec::new();
+    for a in [(i + 3) % 4, (i + 1) % 4] {
+        let (_, a_color, a_style) = sides[a];
+        let present = widths[a] > 0.0
+            && !matches!(a_style, BorderStyleValue::None | BorderStyleValue::Hidden);
+        if present && (a_color != color || a_style != style) {
+            cuts.push(edges.miter(DASH_SIDES[i], DASH_SIDES[a]));
+        }
     }
-    if let Some(bc) = sides[2].1 {
-        paint_border_side(
-            painter,
-            bevel::Side::Bottom,
-            bottom_w,
-            sides[2].2,
-            bc,
-            x,
-            y,
-            w,
-            h,
-            transform,
-        );
-    }
-    if let Some(bc) = sides[3].1 {
-        paint_border_side(
-            painter,
-            bevel::Side::Left,
-            left_w,
-            sides[3].2,
-            bc,
-            x,
-            y,
-            w,
-            h,
-            transform,
-        );
+    cuts
+}
+
+/// The ring a border covers, the border box less the padding box, for a
+/// clip: `widths` top, right, bottom, left.
+fn border_ring(outer: Rect, radii: BorderRadii, widths: [f64; 4]) -> BezPath {
+    let [t, r, b, l] = widths;
+    let ring = radii.path(outer);
+    let inner = Rect::new(outer.x0 + l, outer.y0 + t, outer.x1 - r, outer.y1 - b);
+    if inner.width() > 0.0 && inner.height() > 0.0 {
+        punched(ring, &radii.inner(t, r, b, l).path(inner))
+    } else {
+        ring
     }
 }
 
@@ -540,10 +581,52 @@ fn paint_borders_arc_per_side(
                 ),
                 _ => bc,
             };
+            if let Some(dash) = Dash::of(style) {
+                // Chrome strokes the whole dashed centre line for each such
+                // side, clipped to that side's part of the ring.
+                let outer = Rect::new(x, y, x + w, y + h);
+                let centre_line =
+                    border_dashes::centre_line(Rect::new(ix, iy, ix + iw, iy + ih), centre);
+                let ring = border_ring(outer, radii, [bw; 4]);
+                let clip = side_quad(outer, SIDE_ORDER[i]);
+                border_dashes::paint_rounded(
+                    painter,
+                    transform,
+                    resolved,
+                    &centre_line,
+                    &ring,
+                    Some(&clip),
+                    bw,
+                    bw,
+                    dash,
+                );
+                continue;
+            }
             let stroke = make_border_stroke(bw, style);
             painter.stroke_color(&stroke, transform, resolved, &path.clone().into());
         }
     }
+}
+
+/// The part of a box that belongs to one side, for clipping a rounded
+/// border's side: the outer edge and the 45° diagonals in from its corners,
+/// which meet where the arc paths' halves do (a corner split at its middle).
+fn side_quad(outer: Rect, side: bevel::Side) -> BezPath {
+    let Rect { x0, y0, x1, y1 } = outer;
+    let d = outer.width().min(outer.height()) / 2.0;
+    let pts = match side {
+        bevel::Side::Top => [(x0, y0), (x1, y0), (x1 - d, y0 + d), (x0 + d, y0 + d)],
+        bevel::Side::Right => [(x1, y0), (x1, y1), (x1 - d, y1 - d), (x1 - d, y0 + d)],
+        bevel::Side::Bottom => [(x1, y1), (x0, y1), (x0 + d, y1 - d), (x1 - d, y1 - d)],
+        bevel::Side::Left => [(x0, y1), (x0, y0), (x0 + d, y0 + d), (x0 + d, y1 - d)],
+    };
+    let mut path = BezPath::new();
+    path.move_to(pts[0]);
+    for p in &pts[1..] {
+        path.line_to(*p);
+    }
+    path.close_path();
+    path
 }
 
 /// Build BezPath for each side of a rounded rect.
@@ -668,25 +751,22 @@ fn midpt(a: Point, b: Point) -> Point {
     Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
 }
 
-/// Create a Stroke with dash pattern based on border style.
+/// The stroke for a border or outline of `style`.
 ///
-/// Every style but `dotted` takes a **miter** join. A uniform border or an
-/// outline is one stroke around the rectangle through the middle of its band,
-/// and kurbo's `Stroke::new` defaults to `Join::Round`, which leaves each
-/// outer corner square of the band unpainted — a notch `width / 2` on a side,
-/// enough to make a 50px border on a 100px box read as rounded (#1022). A 90°
-/// miter reaches exactly the corner (ratio √2, under the default limit of 4),
-/// so the band is the border box minus the padding box, as CSS draws it. On a
+/// Every style takes a **miter** join. A uniform border or an outline is one
+/// stroke around the rectangle through the middle of its band, and kurbo's
+/// `Stroke::new` defaults to `Join::Round`, which leaves each outer corner
+/// square of the band unpainted — a notch `width / 2` on a side, enough to
+/// make a 50px border on a 100px box read as rounded (#1022). A 90° miter
+/// reaches exactly the corner (ratio √2, under the default limit of 4), so
+/// the band is the border box minus the padding box, as CSS draws it. On a
 /// rounded rect the path is smooth at every joint and the join is moot.
-/// `dotted` keeps its round join along with its round caps.
+///
+/// `dashed` and `dotted` never reach a painter as a dash pattern: they are
+/// laid out by `border_dashes` (#2371, #2372), and this returns them a plain
+/// stroke.
 pub(super) fn make_border_stroke(width: f64, style: BorderStyleValue) -> Stroke {
     match style {
-        BorderStyleValue::Dashed => Stroke::new(width)
-            .with_join(Join::Miter)
-            .with_dashes(0.0, [width * 3.0, width * 3.0]),
-        BorderStyleValue::Dotted => Stroke::new(width)
-            .with_dashes(0.0, [width, width])
-            .with_caps(Cap::Round),
         BorderStyleValue::Double => {
             // For double, draw at 1/3 width (the caller draws two passes)
             // We approximate by drawing a single thinner stroke
@@ -737,7 +817,24 @@ pub(super) fn paint_outline(
         y + h + offset + half,
     );
 
-    if radii.as_circular().is_none() && matches!(cs.outline_style, BorderStyleValue::Solid) {
+    if let Some(dash) = Dash::of(cs.outline_style) {
+        // Laid out as a uniform border on the outline's own box (Chrome
+        // paints an outline with its border painter, #2371).
+        let inner_rect = Rect::new(x - offset, y - offset, x + w + offset, y + h + offset);
+        let outer_rect = inner_rect.inflate(ow, ow);
+        if radii.is_square() {
+            border_dashes::paint_square_uniform(painter, transform, color, outer_rect, ow, dash);
+        } else {
+            let centre = border_dashes::centre_line(outline_rect, radii.grown(offset + half));
+            let mut ring = radii.grown(offset + ow).path(outer_rect);
+            if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
+                ring = punched(ring, &radii.grown(offset).path(inner_rect));
+            }
+            border_dashes::paint_rounded(
+                painter, transform, color, &centre, &ring, None, ow, ow, dash,
+            );
+        }
+    } else if radii.as_circular().is_none() && matches!(cs.outline_style, BorderStyleValue::Solid) {
         // A solid outline round an elliptical corner (#977) is the ring
         // between the border box grown by the offset and that grown by the
         // offset and the width, each radius grown by the same amount on both
