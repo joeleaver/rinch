@@ -865,10 +865,10 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`04fb11def44d7cde0dd53852bad6002fa02da3f9`, joeleaver/vello-fork#6 on branch
+(`a0a608c5a871c17154863a6ce33ee03d35aa1b5c`, the merge of joeleaver/vello-fork#7 on branch
 `rinch-patch`): the vello `v0.11.0` tag plus the image
-atlas below, **Bump buffers**, the **Blend stack** and **Tinted alpha-mask
-images** after it. The
+atlas below, **Bump buffers**, the **Blend stack**, **Tinted alpha-mask
+images** and **Subpixel (LCD) mask images** after it. The
 fork's `vello` takes `vello_encoding` and `vello_shaders` by path, so all three
 come from the fork.
 It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
@@ -991,10 +991,23 @@ arm; the pixel format is read as one bit, so the mode never reaches it.
 `Encoding::encode_image_mask`, `Scene::fill_image_mask` and
 `Scene::draw_image_mask` are the API. The glyph-mask atlas draws every glyph
 this way (`paint-and-damage.md`, "Glyph-mask atlas"): one mask for every colour.
-Mode 2 is kept for stage 3's per-channel (subpixel) mask, whose composite needs
-the destination pixel and goes in the same arm. Pins: the fork's
-`encoding::tests::image_mask_draw_data` (the draw data and the tag's sizes) and
-`gpu_glyph_atlas_2286` (pixels).
+Pins: the fork's `encoding::tests::image_mask_draw_data` (the draw data and the
+tag's sizes) and `gpu_glyph_atlas_2286` (pixels).
+
+**Subpixel (LCD) mask images (#2286 stage 3, joeleaver/vello-fork#7).** Mask
+mode 2 (`IMAGE_MASK_LCD`; `Encoding::encode_image_lcd_mask`,
+`Scene::draw_image_lcd_mask`): the texel's RGB is per-channel coverage, its
+alpha their mean. Only the nearest arm composites it per channel
+(`lcd_composite` in `fine.wgsl`; `image_paint` draws any mask mode as grey
+coverage in the bilinear and bicubic arms). `lcd_composite` takes the current
+layer's pixel and, while it is not opaque, composites it over the next clip's
+backdrop down the blend stack (registers, then the spill buffer at depth four
+and past); over an opaque result it blends per channel and writes the opaque
+pixel into the current layer, else it paints the grey coverage as mode 1. The
+fold is exact only for source-over layers, so rinch draws mode 2 only with no
+opacity, blend or isolated layer open (`paint-and-damage.md`, "Subpixel (LCD)
+text"). Pins: `image_mask_draw_data` (mode 2's words) and
+`gpu_subpixel_text_2286` (pixels, including the spill at depth 6).
 
 An overflow costs a visible frame, or one per buffer that runs out, since a stage
 after one that failed stops short of saying what it needs: 400 window-sized

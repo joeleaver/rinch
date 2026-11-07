@@ -365,9 +365,9 @@ jobs:
           # list marker clipped by its scroller
           # (`gpu_an_outside_marker_is_clipped_by_its_items_scroller`, 1), and
           # #2286's area-coverage text and light-text darkening (2; its cost
-          # probe is skipped).
+          # probe and stage 3's are skipped).
           run 108 -p rinch --features gpu,video --lib -- \
-            --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --test-threads=1
+            --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 --test-threads=1
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves),
           # #1976's renderer replaced or taking turns (2), and #2071's lost frame (1).
@@ -395,6 +395,11 @@ jobs:
           # one mask in two colours, the fallbacks, a new renderer, eviction, and
           # outlines on request.
           run 6 -p rinch --features gpu,video --test gpu_glyph_atlas_2286 -- \
+            --ignored --test-threads=1
+          # #2286 stage 3's subpixel (LCD) text: against the software painter
+          # under Area and Msaa16, inside nested clips, the page found in the
+          # blend stack's spill, grey in layers and over transparency, and BGR.
+          run 5 -p rinch --features gpu,video --test gpu_subpixel_text_2286 -- \
             --ignored --test-threads=1
           # #2309's image placeholders (the box, its ring and alt text), at 1x and 2x.
           run 1 -p rinch --features gpu,video --test gpu_img_placeholder_2309 -- \

@@ -669,6 +669,12 @@ pub struct TinySkiaPainter {
     clip_mask: Option<ClipMask>,
     /// Stack of saved layer states.
     layer_stack: Vec<LayerState>,
+    /// The depth of `layer_stack` at each open `push_layer` /
+    /// `push_isolated_layer` (not clips): subpixel (LCD) text is grey while
+    /// any is open, as on the GPU, whatever the push saved (#2286 stage 3).
+    layer_marks: Vec<usize>,
+    /// See [`Self::set_subpixel_text`].
+    subpixel_text: bool,
     /// The glyph masks text is drawn from: the thread's atlas, shared with
     /// every other painter on it (#2286), unless [`Self::set_glyph_atlas`]
     /// gave this painter its own.
@@ -718,6 +724,8 @@ impl TinySkiaPainter {
             pixmap: Pixmap::new(width.max(1), height.max(1)).expect("invalid pixmap dimensions"),
             clip_mask: None,
             layer_stack: Vec::new(),
+            layer_marks: Vec::new(),
+            subpixel_text: true,
             atlas_painter,
             atlas,
             glyph_scratch: Vec::new(),
@@ -768,6 +776,14 @@ impl TinySkiaPainter {
         self.atlas.borrow_mut().clear();
     }
 
+    /// Whether this painter may draw subpixel (LCD) text where the thread's
+    /// policy asks for it (the default), or, with `false`, draws grey text
+    /// whatever the policy (#2286 stage 3): a scratch surface composited
+    /// somewhere else (a blurred `text-shadow`).
+    pub fn set_subpixel_text(&mut self, on: bool) {
+        self.subpixel_text = on;
+    }
+
     /// Draw text from `atlas` instead of the thread's (a test's own, or one
     /// with a smaller budget).
     pub fn set_glyph_atlas(&mut self, atlas: SharedAtlas) {
@@ -810,6 +826,7 @@ impl TinySkiaPainter {
             self.pixmap = Pixmap::new(width, height).expect("invalid pixmap dimensions");
             self.clip_mask = None;
             self.layer_stack.clear();
+            self.layer_marks.clear();
             self.touched = None;
             self.mask_pool.clear();
             self.layer_pool.clear();
@@ -1445,6 +1462,7 @@ impl Painter for TinySkiaPainter {
         // Anything still open is dropped, not pooled: no longer live.
         self.clip_mask = None;
         self.layer_stack.clear();
+        self.layer_marks.clear();
         self.touched = None;
         self.mask_use.live = 0;
         self.layer_use.live = 0;
@@ -1660,6 +1678,14 @@ impl Painter for TinySkiaPainter {
             hint: hint && policy.hint(),
             embolden,
             coords: normalized_coords,
+            // Subpixel masks on the device grid, outside any layer, where the
+            // policy asks for them (#2286 stage 3), as the GPU painter
+            // decides; blitted per channel only over an opaque pixel.
+            lcd: if scale.is_some() && self.subpixel_text && self.layer_marks.is_empty() {
+                policy.lcd_mode()
+            } else {
+                None
+            },
         };
         let mut keys = std::mem::take(&mut self.glyph_keys);
         keys.clear();
@@ -2110,6 +2136,7 @@ impl Painter for TinySkiaPainter {
         _transform: Affine,
         _bounds: &PaintShape,
     ) {
+        self.layer_marks.push(self.layer_stack.len());
         // A `Plus` layer at opacity 1 still adds rather than covers, so it
         // never takes the fast path below.
         if !matches!(
@@ -2172,6 +2199,7 @@ impl Painter for TinySkiaPainter {
     }
 
     fn push_isolated_layer(&mut self, opacity: f32, _transform: Affine, _bounds: &PaintShape) {
+        self.layer_marks.push(self.layer_stack.len());
         // No near-opaque fast path: what is drawn inside may add (`Plus`)
         // rather than cover, which only an empty layer of its own makes right.
         self.open_layer(opacity, tiny_skia::BlendMode::SourceOver);
@@ -2181,6 +2209,9 @@ impl Painter for TinySkiaPainter {
         let Some(state) = self.layer_stack.pop() else {
             return;
         };
+        if self.layer_marks.last() == Some(&self.layer_stack.len()) {
+            self.layer_marks.pop();
+        }
 
         match state {
             // Nothing was saved because nothing was changed (`push_layer`'s
@@ -2372,6 +2403,83 @@ fn blit_glyph(
         MaskKind::Coverage => blit_alpha_mask_into(
             pixmap, mask, scratch, &g.data, g.width, g.height, gx, gy, rgba, ts,
         ),
+        // Only ever on the device grid (`ts` the identity, `gx`/`gy` whole
+        // pixels): a run off it is rasterised grey.
+        MaskKind::Subpixel => blit_subpixel_mask_into(
+            pixmap,
+            mask,
+            g,
+            (gx + ts.tx).round() as i32,
+            (gy + ts.ty).round() as i32,
+            rgba,
+        ),
+    }
+}
+
+/// Blit a subpixel (LCD) mask at the whole device pixel `(x0, y0)` in the
+/// straight-alpha colour `rgba`, through the clip `clip` (#2286 stage 3).
+///
+/// Over an opaque pixel each channel takes the colour by its own coverage,
+/// `d + (colour - d) * cov * alpha * clip`; over any other pixel the mask
+/// paints its grey coverage (the mean of the three) source-over, as there
+/// is no alpha per channel to keep. The GPU's mask mode 2 does the same
+/// (`fine.wgsl`'s `lcd_composite`), in `f32`, as this does before rounding.
+fn blit_subpixel_mask_into(
+    pixmap: &mut Pixmap,
+    clip: Option<&Mask>,
+    g: &GlyphMask,
+    x0: i32,
+    y0: i32,
+    [cr, cg, cb, ca]: [u8; 4],
+) {
+    if ca == 0 {
+        return;
+    }
+    let (pw, ph) = (pixmap.width() as i32, pixmap.height() as i32);
+    let alpha = ca as f32 / 255.0;
+    let colour = [cr as f32, cg as f32, cb as f32];
+    let clip_data = clip.map(|m| (m.data(), m.width() as i32));
+    let data = pixmap.data_mut();
+    for my in 0..g.height as i32 {
+        let y = y0 + my;
+        if y < 0 || y >= ph {
+            continue;
+        }
+        for mx in 0..g.width as i32 {
+            let x = x0 + mx;
+            if x < 0 || x >= pw {
+                continue;
+            }
+            let i = (my * g.width as i32 + mx) as usize * 3;
+            let cov = [g.data[i], g.data[i + 1], g.data[i + 2]];
+            if cov == [0, 0, 0] {
+                continue;
+            }
+            let k = match clip_data {
+                Some((m, mw)) => m[(y * mw + x) as usize] as f32 / 255.0,
+                None => 1.0,
+            };
+            if k == 0.0 {
+                continue;
+            }
+            let d = (y * pw + x) as usize * 4;
+            let px = &mut data[d..d + 4];
+            if px[3] == 255 {
+                for c in 0..3 {
+                    let a = cov[c] as f32 / 255.0 * alpha * k;
+                    let v = px[c] as f32 + (colour[c] - px[c] as f32) * a;
+                    px[c] = v.round().clamp(0.0, 255.0) as u8;
+                }
+            } else {
+                let a = super::glyph_atlas::grey_of(cov) as f32 / 255.0 * alpha * k;
+                for c in 0..3 {
+                    let v = px[c] as f32 * (1.0 - a) + colour[c] * a;
+                    px[c] = v.round().clamp(0.0, 255.0) as u8;
+                }
+                let v = px[3] as f32 * (1.0 - a) + 255.0 * a;
+                px[3] = v.round().clamp(0.0, 255.0) as u8;
+            }
+        }
     }
 }
 

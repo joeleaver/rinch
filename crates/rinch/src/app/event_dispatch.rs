@@ -3930,6 +3930,9 @@ impl RinchApp {
         #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
         let snapshot = {
             let mut painter = VelloPainter::new();
+            // Grey text: the ghost is appended at the pointer's fractional
+            // translate, off the subpixel grid (#2286 stage 3).
+            painter.set_subpixel_text(false);
             let mut d = doc.borrow_mut();
             let d = &mut *d;
             // Its clips reach the frame's count through `append_scene`: an
@@ -3969,6 +3972,9 @@ impl RinchApp {
 
             let mut painter = TinySkiaPainter::new(sw, sh);
             painter.fill_transparent();
+            // Grey text, as the GPU ghost (#2286 stage 3): drawn at the
+            // pointer, off the subpixel grid.
+            painter.set_subpixel_text(false);
 
             rinch_dom::paint::paint_subtree(
                 &d.tree,

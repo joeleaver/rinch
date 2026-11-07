@@ -521,8 +521,13 @@ fn draw_masked(
     let mut any = false;
     SCRATCH.with(|s| {
         let mut s = s.borrow_mut();
-        let sp =
-            s.get_or_insert_with(|| super::skia_painter::TinySkiaPainter::new(w as u32, h as u32));
+        // Grey text: the scratch is blurred into a coverage map, so a subpixel
+        // mask would only be rasterised to be averaged (#2286 stage 3).
+        let sp = s.get_or_insert_with(|| {
+            let mut p = super::skia_painter::TinySkiaPainter::new(w as u32, h as u32);
+            p.set_subpixel_text(false);
+            p
+        });
         if (sp.width() as usize) < w || (sp.height() as usize) < h {
             sp.resize(
                 (sp.width() as usize).max(w) as u32,

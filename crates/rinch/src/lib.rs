@@ -279,7 +279,7 @@ pub mod prelude {
     pub use crate::shell::{run, run_with_theme};
     #[cfg(any(feature = "desktop", feature = "android"))]
     pub use crate::text_rasterization::{
-        StemDarkening, TextAntialias, TextHinting, TextRasterization,
+        LcdFilter, StemDarkening, SubpixelOrder, TextAntialias, TextHinting, TextRasterization,
     };
     #[cfg(all(feature = "android", target_os = "android"))]
     pub use android_activity::AndroidApp;
