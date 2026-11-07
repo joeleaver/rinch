@@ -8,9 +8,20 @@
 //! hands Vello the curves of a fill, stroke or clip already flattened at a
 //! finer tolerance, so the corner is the area to within a few levels.
 //!
-//! The page is `tests/fixtures/rounded_corners_2321.html`; Chrome's
-//! screenshots of it (`--headless=new --disable-gpu`, so software raster, the
-//! red channel) are `tests/fixtures/rounded_corners_2321_chrome_{1,2}x.png`.
+//! The page is `tests/fixtures/rounded_corners_2321.html`; Chrome 156's
+//! screenshots of it are `tests/fixtures/rounded_corners_2321_chrome_{1,2}x.png`:
+//! software raster, the red channel of the top-left 240x140 CSS px (480x280 at
+//! 2x). They reproduce byte for byte with, for `S` in 1 and 2,
+//!
+//! ```text
+//! google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars \
+//!     --force-device-scale-factor=S --window-size=240,260 \
+//!     --user-data-dir=<a fresh dir> --screenshot=out.png file://<the page>
+//! ```
+//!
+//! then cropping `out.png` to that rect and keeping its red channel. The
+//! window is taller than the page because headless Chrome's viewport is about
+//! 87 px shorter than `--window-size`: at 240x140 the lower boxes are cut off.
 //! Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_rounded_corners_2321 -- --ignored`.
 #![cfg(feature = "gpu")]

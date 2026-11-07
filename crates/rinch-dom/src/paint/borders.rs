@@ -1082,7 +1082,7 @@ pub(super) fn paint_box_shadow(
 /// One layer of an outer shadow: its colour, its rect, its shape, whether
 /// the element's border box lies inside it (`hole_fits`), and whether it is
 /// one of a blur's soft layers (painted with `Painter::set_coarse_curves`:
-/// eight layers approximating a blur need no 0.02px edge, #2321).
+/// eight layers approximating a blur need no 0.03px edge, #2321).
 type ShadowLayer = (AlphaColor<Srgb>, Rect, BezPath, bool, bool);
 
 /// Paint an element's outer-shadow layers, in paint order, outside its border

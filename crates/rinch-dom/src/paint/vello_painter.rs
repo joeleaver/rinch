@@ -2890,7 +2890,9 @@ mod flattened_tests {
     fn a_rings_arcs_are_drawn_as_circular_polygons() {
         // A solid rounded border's ring: kurbo's rounded rect with the
         // inner one wound against it. Both outlines' arcs are recognised as
-        // circular (vertices outside the circle, as `ArcPolygon` puts them),
+        // circular (vertices a good part of the tolerance outside the
+        // circle, as `ArcPolygon` puts them; kurbo's cubic is only 0.03% of
+        // the radius out, which is where Wang's steps would put them),
         // within the tolerance, and the ring keeps both subpaths' starts and
         // their directions.
         let outer = RoundedRect::new(10.0, 10.0, 60.0, 40.0, 6.0).to_path(0.1);
@@ -2909,7 +2911,7 @@ mod flattened_tests {
         let v = vertices(&f);
         let outside = v
             .iter()
-            .filter(|v| v.x < 16.0 && v.y < 16.0 && (**v - c).hypot() > 6.0 + 1e-6)
+            .filter(|v| v.x < 16.0 && v.y < 16.0 && (**v - c).hypot() > 6.0 + CURVE_TOLERANCE / 4.0)
             .count();
         assert!(outside > 0, "not drawn as an ArcPolygon");
         let corner = |v: Point| v.x <= 16.0 && v.y <= 16.0 && (v - c).hypot() > 5.5;
