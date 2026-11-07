@@ -9,7 +9,7 @@ license.workspace = true
 rinch-words.workspace = true
 rinch-core = { workspace = true }
 slab = "0.4"
-# Taffy 0.14 from joeleaver/taffy-fork, branch `rinch-patch-2306`: v0.14.0 plus fourteen commits (six for floats, the
+# Taffy 0.14 from joeleaver/taffy-fork, branch `rinch-patch`: v0.14.0 plus fourteen commits (six for floats, the
 # last laying a float out in its container's run mode, review of #2313; the measure
 # cache's sixteen entries, an auto-height grid's rows sized to their content,
 # #2139, a size-only measure, #2141, a table cell stretched past its

@@ -315,7 +315,7 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`54fac8c091f62681e0a8550f98e7e9637c4127cb`, branch `rinch-patch-2306`, which is `rinch-patch` plus item 12's two commits): fourteen commits on the taffy `v0.14.0` tag
+(`54fac8c091f62681e0a8550f98e7e9637c4127cb`, branch `rinch-patch`): fourteen commits on the taffy `v0.14.0` tag
 (item 10 is two of them). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
@@ -449,7 +449,7 @@ candidates.
    `crates/rinch-dom/tests/table_auto_column_shares_2280_tests.rs`.
 
 12. **A table's excess, a spanning cell's minimum and a table's width floor** (#2306, #2281,
-   #2266; commits `1566e27e` and `54fac8c0` on `rinch-patch-2306`). With `proportional_column_sizing`:
+   #2266; commits `1566e27e` and `54fac8c0` on `rinch-patch`). With `proportional_column_sizing`:
    the Stretch auto Tracks step gives the width past every column's limit (Blink's "max
    guess") to the tracks with an intrinsic max and a non-zero size in proportion to their
    sizes; when every such track is empty (size 0, an email's filler cell beside its logo), to
