@@ -153,10 +153,11 @@ fn installed_family(collection: &mut Collection, name: &str) -> Option<FamilyId>
 ///   missing (a typo, a web font the host lacks) and no generic, or only
 ///   generics this platform left empty — **ends in the default font**, by
 ///   name (#2255): the first family of this thread's
-///   [`FontDefaults::standard`] the context has, Times New Roman by default
-///   as in Chrome, or the `serif` slot's first face where the host has no
-///   Times; and the `sans-serif` slot's first face when `standard` resolves
-///   to nothing either (wasm or an embed whose only faces are sans).
+///   [`FontDefaults::standard`] the context has, Times New Roman (or
+///   Times) by default as in Chrome; else the `sans-serif` slot's first
+///   face. Chrome on a host with no Times New Roman draws such a stack in
+///   fontconfig's "Sans" (DejaVu Sans, 609.94px on a DejaVu-only host), not
+///   in its serif setting, so the default `standard` names Times alone.
 ///
 /// Why the default font is appended at all (#1198): CSS falls back to the user
 /// agent's default font once the list is exhausted, and parley has none. An
@@ -172,7 +173,7 @@ fn installed_family(collection: &mut Collection, name: &str) -> Option<FamilyId>
 /// One face by name, not a generic: a generic expands to the platform's whole
 /// list, whose text faces (DejaVu Sans, FreeSans) cover many emoji and would
 /// win them ahead of the `emoji` generic. One face covers the digits and
-/// letters and, where it has no emoji (Times New Roman, Noto Serif), leaves an
+/// letters and, where it has no emoji (Times New Roman, Noto Sans), leaves an
 /// emoji to the `emoji` generic as before. **Accepted consequence:** where
 /// that face is DejaVu, an emoji in such a stack is drawn in DejaVu's
 /// monochrome glyph: the appended face is named, and a named family that
@@ -181,7 +182,9 @@ fn installed_family(collection: &mut Collection, name: &str) -> Option<FamilyId>
 ///
 /// A stack that resolves to anything gets no default, emoji included, so a
 /// theme's stack (which ends in a generic) is never changed by it. A context
-/// with no face to append appends nothing.
+/// with no face to append appends nothing, and one with no generic family at
+/// all (wasm or an embed before any font is registered) gets its stack back
+/// as written (no alternates either), without a lookup.
 ///
 /// fontconfig's metric-compatible aliases (Liberation Sans for a missing
 /// Arial) are not followed: only installed names and the alternates count.
@@ -189,7 +192,7 @@ fn installed_family(collection: &mut Collection, name: &str) -> Option<FamilyId>
 /// Cached per thread, keyed by the context's first `sans-serif` and `serif`
 /// faces (unique per loaded collection, and changed by a claim on either
 /// slot) and the stack, so a layout pays one lookup; [`set_font_defaults`]
-/// drops the cache. A context with neither generic is not cached. A family
+/// drops the cache. A family
 /// registered after a stack was cached as resolving to nothing leaves the
 /// appended face behind the newly found one, which changes nothing it draws;
 /// registration cannot make a resolving stack stop resolving.
@@ -207,8 +210,10 @@ pub fn parley_font_family(
     let serif = collection.generic_families(GenericFamily::Serif).next();
     let key = (sans, serif);
     if key == (None, None) {
-        let finished = finish_stack(collection, stack);
-        return FontFamily::Source(Cow::Owned(finished.unwrap_or_else(|| stack.to_owned())));
+        // No generic at all (wasm or an embed before any font is registered):
+        // used as written, as before #2255, with no scan per call. Not
+        // cached, because every such context would share the key.
+        return FontFamily::Source(Cow::Owned(stack.to_owned()));
     }
     let cached = STACK_CACHE.with(|cache| {
         cache
@@ -1443,11 +1448,14 @@ mod tests {
         }
 
         #[test]
-        fn without_times_an_exhausted_stack_ends_in_the_serif_face() {
+        fn without_times_an_exhausted_stack_ends_in_the_sans_serif_face() {
+            // Not the serif face: on a host with no Times New Roman, Chrome
+            // draws such a stack in fontconfig's "Sans" (DejaVu Sans,
+            // 609.94px), never in its serif setting (review of PR #2337).
             let mut cx = context_with_generics();
             assert_eq!(
                 source(parley_font_family(&mut cx, "Oswald, NoSuchFamilyX")),
-                r#"Oswald, NoSuchFamilyX, "Serif2255""#
+                r#"Oswald, NoSuchFamilyX, "Sans2255""#
             );
             // The standard font's alternate counts: Times stands for Times
             // New Roman.
@@ -1464,28 +1472,26 @@ mod tests {
             let mut cx = context_with_generics();
             register(&mut cx, "Times New Roman");
             register(&mut cx, "AppFace2255");
-            crate::fonts::set_font_defaults(crate::fonts::FontDefaults {
-                standard: "NotHere2255, AppFace2255, serif".into(),
-                ..Default::default()
-            });
+            crate::fonts::set_font_defaults(
+                crate::fonts::FontDefaults::default()
+                    .with_standard("NotHere2255, AppFace2255, serif"),
+            );
             assert_eq!(
                 source(parley_font_family(&mut cx, "Oswald")),
                 r#"Oswald, "AppFace2255""#
             );
             // A generic in it means that slot's first face.
-            crate::fonts::set_font_defaults(crate::fonts::FontDefaults {
-                standard: "sans-serif".into(),
-                ..Default::default()
-            });
+            crate::fonts::set_font_defaults(
+                crate::fonts::FontDefaults::default().with_standard("sans-serif"),
+            );
             assert_eq!(
                 source(parley_font_family(&mut cx, "Oswald")),
                 r#"Oswald, "Sans2255""#
             );
             // One that resolves to nothing falls to the `sans-serif` face.
-            crate::fonts::set_font_defaults(crate::fonts::FontDefaults {
-                standard: "NotHere2255".into(),
-                ..Default::default()
-            });
+            crate::fonts::set_font_defaults(
+                crate::fonts::FontDefaults::default().with_standard("NotHere2255"),
+            );
             assert_eq!(
                 source(parley_font_family(&mut cx, "Oswald")),
                 r#"Oswald, "Sans2255""#
@@ -1600,10 +1606,7 @@ mod tests {
             let serif = cx.collection.generic_families(GenericFamily::Serif).next();
             apply_generic_defaults(
                 &mut cx.collection,
-                &FontDefaults {
-                    serif: None,
-                    ..Default::default()
-                },
+                &FontDefaults::default().with_serif(None),
             );
             assert_eq!(
                 slot(&mut cx, GenericFamily::SansSerif),

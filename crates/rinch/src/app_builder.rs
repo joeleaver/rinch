@@ -280,18 +280,16 @@ where
     /// Without it they are Chrome's: Times New Roman for the default font and
     /// `serif`, Arial for `sans-serif` (Times, Times and Helvetica on macOS),
     /// each where the host has it. So `font-family: Oswald` on a host without
-    /// Oswald is drawn in Times New Roman, as in Chrome. An app whose own face
-    /// should take that role names it:
+    /// Oswald is drawn in Times New Roman, as in Chrome, and in the
+    /// `sans-serif` face on a host without Times New Roman either, as Chrome
+    /// does there. An app whose own face should take that role names it:
     ///
     /// ```ignore
     /// use rinch::prelude::*;
     ///
     /// App::new(app)
     ///     .fonts(&[AppFont::sans_serif(include_bytes!("../assets/Inter.ttf"))])
-    ///     .font_defaults(FontDefaults {
-    ///         standard: "Inter, sans-serif".into(),
-    ///         ..Default::default()
-    ///     })
+    ///     .font_defaults(FontDefaults::default().with_standard("Inter, sans-serif"))
     ///     .run();
     /// ```
     ///
@@ -1289,11 +1287,10 @@ mod tests {
     fn font_defaults_reach_the_startup() {
         use crate::font::FontDefaults;
         assert_eq!(App::new(component).into_startup().font_defaults, None);
-        let mine = FontDefaults {
-            standard: "Inter, sans-serif".into(),
-            serif: None,
-            sans_serif: None,
-        };
+        let mine = FontDefaults::default()
+            .with_standard("Inter, sans-serif")
+            .with_serif(None)
+            .with_sans_serif(None);
         assert_eq!(
             App::new(component)
                 .font_defaults(FontDefaults::default())

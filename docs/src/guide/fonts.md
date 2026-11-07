@@ -139,9 +139,11 @@ rinch resolves a `font-family` list the way Chrome does:
   on a Linux machine with Arial and Tahoma but no Helvetica draws Arial, as
   Chrome does, not Tahoma.
 - **A list whose every family is missing ends in the default font**: Times
-  New Roman, Chrome's "standard font", or the first face of `serif` where the
-  machine has no Times. So `font-family: Oswald` without Oswald draws its
-  letters *and digits* in Times New Roman, as in Chrome.
+  New Roman, Chrome's "standard font", or the first face of `sans-serif`
+  where the machine has no Times (Chrome then takes fontconfig's sans face,
+  not its serif setting). So `font-family: Oswald` without Oswald draws its
+  letters *and digits* in Times New Roman, as in Chrome, and in DejaVu Sans
+  on a machine whose only fonts are DejaVu.
 - **`serif` means Times New Roman and `sans-serif` Arial** where the machine
   has them (Times and Helvetica on macOS), ahead of the platform's own
   choice for the slot: these are Chrome's font settings, and on Linux they
@@ -158,11 +160,11 @@ as the default font, or the platform's `serif`, says so:
 ```rust,ignore
 App::new(app)
     .fonts(&[AppFont::sans_serif(include_bytes!("../assets/Inter.ttf"))])
-    .font_defaults(FontDefaults {
-        standard: "Inter, sans-serif".into(), // the default font
-        serif: None,                          // keep the platform's `serif`
-        ..Default::default()                  // `sans-serif`: Arial
-    })
+    .font_defaults(
+        FontDefaults::default()
+            .with_standard("Inter, sans-serif") // the default font
+            .with_serif(None),                  // keep the platform's `serif`
+    )                                           // `sans-serif`: still Arial
     .run();
 ```
 
@@ -171,7 +173,10 @@ generic's first face) is the default font; when it has none, the first face of
 `sans-serif` is. A face claimed for a generic with `AppFont` still heads that
 slot, ahead of `serif` and `sans_serif` here. An embedder that builds its
 context itself calls `rinch::font::set_font_defaults` before creating it. On
-the web the browser's own settings apply.
+the web the browser's own settings apply. `FontDefaults` is
+`#[non_exhaustive]` (a later setting is not a breaking change), so it is built
+from `FontDefaults::default()` with its `with_*` methods, or by assigning its
+fields.
 
 rinch does not follow fontconfig's metric-compatible aliases (Liberation Sans
 for a missing Arial): it knows the families installed or registered and the

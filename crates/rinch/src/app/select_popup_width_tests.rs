@@ -220,11 +220,11 @@ fn the_popup_moves_left_to_end_where_the_select_ends_1132() {
     // The platform's own `sans-serif`, as before #2255: in Chrome's Arial (a
     // host that has it) the long label fits beside the select, and the
     // positive control fails. CI has no Arial.
-    rinch_dom::fonts::set_font_defaults(rinch_dom::fonts::FontDefaults {
-        serif: None,
-        sans_serif: None,
-        ..Default::default()
-    });
+    rinch_dom::fonts::set_font_defaults(
+        rinch_dom::fonts::FontDefaults::default()
+            .with_serif(None)
+            .with_sans_serif(None),
+    );
     let o = probe(
         &["A really very long option label indeed", "b"],
         "position: absolute; left: 540px; width: 200px; font-size: 12px",

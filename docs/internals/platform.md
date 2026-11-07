@@ -1117,11 +1117,17 @@ is `sans-serif`. Otherwise:
   up, because each lookup of an installed family loads its faces.
 - **A stack that still resolves to no family** *in that font context* ends in
   the **default font**, appended **by name**: the first family of the thread's
-  `FontDefaults::standard` (rinch-core, `'Times New Roman', serif` by default —
-  Chrome's standard font) the context has, a named family or its alternate or a
-  generic's first face; else the `sans-serif` slot's first face. Chrome drew
-  `font-family: Oswald` in Times New Roman, 501.66px for a 74-character line
-  where rinch drew 547px (#2255). Why append at all (#1198): parley queries a
+  `FontDefaults::standard` (rinch-core, `'Times New Roman'` by default, `Times`
+  on macOS — Chrome's standard font) the context has, a named family or its
+  alternate or a generic's first face; else the `sans-serif` slot's first face.
+  Chrome drew `font-family: Oswald` in Times New Roman, 501.66px for a
+  74-character line where rinch drew 547px (#2255). The default names Times
+  **alone**, no `serif` after it: on a host with no Times New Roman Chrome 156
+  draws an exhausted stack in fontconfig's "Sans" (DejaVu Sans, 609.94px, on a
+  DejaVu-only host, by `CSS.getPlatformFontsForNode`), never its serif setting;
+  `'Times New Roman', serif` gave DejaVu Serif, 618px (review of PR #2337). So
+  on CI (DejaVu only) an exhausted stack is the `sans-serif` face, as before
+  #2255. Why append at all (#1198): parley queries a
   cluster with the Unicode `Emoji` property — the ASCII digits, `#` and `*`
   have it, as keycap bases — against the stack and then the `emoji` generic,
   *ahead of* the script fallback, so in a missing-only stack digits were drawn
@@ -1131,14 +1137,16 @@ is `sans-serif`. Otherwise:
   **Accepted consequence:** where the appended face is DejaVu, an emoji in a
   missing-only stack is DejaVu's monochrome glyph, because a named family that
   covers an emoji draws it (below). wasm and an embed whose only faces are sans
-  (no Times, empty `serif`) still end in the `sans-serif` face, as before; a
-  context with no face at all appends nothing.
+  still end in the `sans-serif` face, as before; a context with no face at all
+  appends nothing.
 
 A stack that resolves to anything gets no default, so a theme's stack (it ends
 in `sans-serif`) is never changed by it. Cached per thread by (first
 `sans-serif` face, first `serif` face, stack); `set_font_defaults` clears the
-cache, and a context with neither generic is not cached (two bare contexts
-would share the key).
+cache. A context with neither generic gets its stack back as written, with no
+lookup (two bare contexts would share the key, so it is not cached).
+`FontDefaults` is `#[non_exhaustive]` with `with_*` builders, so a later
+setting (`monospace`) breaks no caller.
 
 **The `serif` and `sans-serif` slots are headed by Chrome's settings on a
 desktop** (`apply_generic_defaults`, from `new_font_context`; not Android or

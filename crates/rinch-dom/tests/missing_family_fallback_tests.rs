@@ -422,11 +422,12 @@ fn no_source_builds_a_parley_font_family_by_hand() {
 /// (Chrome's default font, rinch's since #2255; `fonts::tests::finish_stack`
 /// pins that). Per thread, so per test.
 fn sans_serif_default() {
-    rinch_dom::fonts::set_font_defaults(rinch_dom::fonts::FontDefaults {
-        standard: "sans-serif".into(),
-        serif: None,
-        sans_serif: None,
-    });
+    rinch_dom::fonts::set_font_defaults(
+        rinch_dom::fonts::FontDefaults::default()
+            .with_standard("sans-serif")
+            .with_serif(None)
+            .with_sans_serif(None),
+    );
 }
 
 /// #2255: a missing-only stack is drawn in the **default font**
@@ -447,11 +448,12 @@ fn a_missing_only_stack_is_drawn_in_the_default_font() {
             ..Default::default()
         }),
     );
-    rinch_dom::fonts::set_font_defaults(rinch_dom::fonts::FontDefaults {
-        standard: "NotInstalled2255, ProbeDefault2255, serif".into(),
-        serif: None,
-        sans_serif: None,
-    });
+    rinch_dom::fonts::set_font_defaults(
+        rinch_dom::fonts::FontDefaults::default()
+            .with_standard("NotInstalled2255, ProbeDefault2255, serif")
+            .with_serif(None)
+            .with_sans_serif(None),
+    );
     let body = doc.body();
     let div = doc.create_element("div");
     doc.set_attribute(

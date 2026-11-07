@@ -298,9 +298,10 @@ fn a_family_name_with_both_quote_kinds_does_not_hide_the_family_after_it() {
 /// (Chrome's default font, rinch's since #2255; `fonts::tests::finish_stack`
 /// pins that). Per thread, so per test.
 fn sans_serif_default() {
-    rinch_dom::fonts::set_font_defaults(rinch_dom::fonts::FontDefaults {
-        standard: "sans-serif".into(),
-        serif: None,
-        sans_serif: None,
-    });
+    rinch_dom::fonts::set_font_defaults(
+        rinch_dom::fonts::FontDefaults::default()
+            .with_standard("sans-serif")
+            .with_serif(None)
+            .with_sans_serif(None),
+    );
 }

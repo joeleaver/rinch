@@ -207,11 +207,11 @@ fn twin<H>(
     // The platform's own `sans-serif`, as before #2255: Chrome's Arial (a
     // host that has it) has an italic with the regular's advances, so
     // `font_style_from_an_ancestor` could not see its change. CI has no Arial.
-    rinch_dom::fonts::set_font_defaults(rinch_dom::fonts::FontDefaults {
-        serif: None,
-        sans_serif: None,
-        ..Default::default()
-    });
+    rinch_dom::fonts::set_font_defaults(
+        rinch_dom::fonts::FontDefaults::default()
+            .with_serif(None)
+            .with_sans_serif(None),
+    );
     let make = |state: bool| {
         let mut doc = RinchDocument::new();
         doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
