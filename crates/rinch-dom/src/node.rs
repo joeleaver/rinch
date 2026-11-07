@@ -1651,6 +1651,14 @@ pub struct Node {
     /// attribute — Stylo's own gate for native anonymous content, the same
     /// one a shadow root's contents pass. Inheritance is untouched.
     pub style_isolated: bool,
+    /// Whether an ancestor has [`Self::style_isolated`] set, as of this
+    /// element's last style visit (`resolve_styles_recursive` sets it from
+    /// the parent's, top-down, while the document has an isolated node at
+    /// all). `matches_user_and_content_rules` reads it, so the check is O(1)
+    /// rather than a walk of the ancestors per cascade, per pseudo-element
+    /// and per invalidation (review of #2366: +3.7% on 15 full restyles of
+    /// 6,040 elements 40 deep).
+    pub under_isolated: Cell<bool>,
     /// A closed `<select>`'s widest option label width in CSS px, with the
     /// hash of what it was shaped from (the labels and the font) — so a
     /// restyle that moves neither re-shapes nothing (#1098). `None` until an
@@ -2005,6 +2013,7 @@ impl Node {
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             style_isolated: false,
+            under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
@@ -2096,6 +2105,7 @@ impl Node {
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             style_isolated: false,
+            under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
@@ -2186,6 +2196,7 @@ impl Node {
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             style_isolated: false,
+            under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
@@ -2274,6 +2285,7 @@ impl Node {
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             style_isolated: false,
+            under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
@@ -3402,10 +3414,9 @@ pub struct NodeTree {
     pub text_selections: HashMap<RawNodeId, (usize, usize, rinch_core::dom::SelectionDirection)>,
     /// How many live nodes have [`Node::style_isolated`] set (#2357). While
     /// it is `0`, `TElement::matches_user_and_content_rules` answers `true`
-    /// without walking the element's ancestors, so a document with no
-    /// isolated subtree (an app with no `HtmlView`) pays nothing for the
-    /// check; it is asked once per cascade, per pseudo-element and per
-    /// invalidation. Raised by `isolate_styles`, lowered by
+    /// without reading the element, and the style walk does not maintain
+    /// [`Node::under_isolated`], so a document with no isolated subtree (an
+    /// app with no `HtmlView`) pays nothing for either. Raised by `isolate_styles`, lowered by
     /// [`Self::remove_subtree`] when it frees such a node.
     pub isolated_nodes: usize,
     /// Shared lock for Stylo CSS engine.

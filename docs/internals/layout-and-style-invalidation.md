@@ -780,12 +780,16 @@ the view's own `<style>` (rules on `.rinch-html-view`) still works.
 - **Desktop** uses Stylo's own gate for native anonymous content:
   `Node::style_isolated` is set on the node, and
   `TElement::matches_user_and_content_rules` answers `false` for any element
-  with an isolated ancestor (an O(depth) walk of `parent` ids, only false
-  under a view). The walk runs only while `NodeTree::isolated_nodes` (raised
-  by `isolate_styles`, lowered by `remove_subtree` freeing such a node) is
-  non-zero: Stylo asks once per cascade, per pseudo-element and per
-  invalidation, and the walk cost a full restyle of 6,040 elements 5–7% in
-  an app with no `HtmlView` at all before the count (review of #2366). With it false, `RuleCollector::collect_all` skips user and
+  with an isolated ancestor. That answer is O(1): `resolve_styles_recursive`
+  sets `Node::under_isolated` from the parent's (`style_isolated ||
+  under_isolated`) as it visits each element, top-down, before the cascade,
+  and the check reads it; a node moved under or out of a view is restyled,
+  so visited again. While `NodeTree::isolated_nodes` (raised by
+  `isolate_styles`, lowered by `remove_subtree` freeing such a node) is 0,
+  neither the walk nor the check touches the node at all. Stylo asks once per
+  cascade, per pseudo-element and per invalidation; the first version walked
+  the ancestors each time, which cost 15 full restyles of 6,040 elements 40
+  deep +3.7% (review of #2366). With it false, `RuleCollector::collect_all` skips user and
   document author rules but still collects UA rules, presentational hints
   and the style attribute; Stylo also leaves such an element out of the
   style-sharing cache and of document-rule invalidation

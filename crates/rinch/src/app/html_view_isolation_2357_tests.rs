@@ -260,3 +260,44 @@ fn freeing_the_view_lowers_the_documents_isolated_count() {
         .set_inner_html(rinch_core::dom::NodeId(host), "");
     assert_eq!(count(), 0, "the view was freed with the host's children");
 }
+
+/// The style walk caches "below an isolated node" per element; a node moved
+/// out of the view, or into it, is restyled with the new answer.
+#[test]
+fn a_node_moved_out_of_the_view_or_into_it_is_matched_anew() {
+    let mut app = mount(false);
+    let host = node(&app, "host").id;
+    let p = node(&app, "p").id;
+    let box_sizing = |app: &RinchApp| node(app, "p").computed_style.box_sizing_border_box;
+    assert!(
+        !box_sizing(&app),
+        "inside the view, the theme's reset does not reach it"
+    );
+
+    // Out to the host, outside the view: the theme's `*` rule matches it.
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .append_child(rinch_core::dom::NodeId(host), rinch_core::dom::NodeId(p));
+    app.resolve_and_repaint(VP.0, VP.1);
+    assert!(box_sizing(&app), "moved out of the view");
+
+    // And back into the document's body.
+    let body = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        d.tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.attributes.get("class").map(String::as_str) == Some("rinch-html-body"))
+            .map(|(id, _)| id)
+            .unwrap()
+    };
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .append_child(rinch_core::dom::NodeId(body), rinch_core::dom::NodeId(p));
+    app.resolve_and_repaint(VP.0, VP.1);
+    assert!(!box_sizing(&app), "moved back into the view");
+}

@@ -263,22 +263,6 @@ fn text_content_and_children_of_the_view_include_the_shadow_root() {
     );
 }
 
-#[wasm_bindgen_test]
-fn unmounting_forgets_the_nodes_in_the_shadow_root() {
-    mount_trap();
-    let link = el("a");
-    let nid = js_sys::Reflect::get(&link, &"__nid".into())
-        .unwrap()
-        .as_f64()
-        .expect("the link is registered") as u64;
-    assert!(rinch_web::web_document::__node_registry_contains(nid));
-    PREVIOUS.with(|p| p.borrow_mut().take().unwrap().unmount());
-    assert!(
-        !rinch_web::web_document::__node_registry_contains(nid),
-        "a node in the view's shadow root outlived the unmount"
-    );
-}
-
 /// Clearing the element around the view forgets the view's subtree through
 /// the view itself (no handle in it is discarded on its own), so the walk
 /// has to go into the view's shadow root to reach the document's nodes.

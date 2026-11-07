@@ -611,6 +611,18 @@ impl RinchDocument {
             }
             return;
         }
+        // Whether this element is below an isolated node (#2357), from its
+        // parent's answer, which the walk set first (top-down): what
+        // `TElement::matches_user_and_content_rules` reads, in O(1), for
+        // this cascade, its pseudo-elements and invalidation until the next
+        // visit. A node moved under or out of a view is restyled, so visited.
+        if self.tree.isolated_nodes > 0 {
+            let under = node
+                .parent
+                .and_then(|p| self.tree.nodes.get(p))
+                .is_some_and(|p| p.style_isolated || p.under_isolated.get());
+            node.under_isolated.set(under);
+        }
         let dirty_descendants = node.style_dirty_descendants.replace(false);
         let (old_style, hint) = {
             let mut data = node.stylo_element_data.borrow_mut();
