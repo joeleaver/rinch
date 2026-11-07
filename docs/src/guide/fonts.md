@@ -235,7 +235,9 @@ App::new(app)
 |---|---|---|
 | `hinting` | The OS's hint style; `Slight` where it says nothing, `None` on macOS | `None`, `Slight`, `Medium`, `Full` (the last three all hint today) |
 | `stem_darkening` | Light text is grown by up to 0.10 px a side | `Off`, `Px(amount)` (up to 0.5) |
-| `antialias` | The OS's: none, subpixel, or grayscale (macOS: grayscale) | `Grayscale`, `Subpixel`, `None` |
+| `antialias` | The OS's: subpixel where it names a subpixel order, else grayscale (macOS: always grayscale) | `Grayscale`, `Subpixel`, `None` (drawn grayscale) |
+| `subpixel_order` | `None`: the OS's (fontconfig `rgba`, ClearType's orientation) | `Some(Rgb)`, `Bgr`, `VRgb`, `VBgr`; `Some(SubpixelOrder::None)` turns subpixel text off |
+| `lcd_filter` | `None`: the OS's (fontconfig `lcdfilter`), FreeType's default filter where it says nothing | `Some(Default)`, `Light`, `Legacy`, `None` |
 | `gpu_glyph_outlines` | `false`: the GPU draws glyphs from the glyph-mask atlas | `true`: from outlines (below) |
 
 **Stem darkening.** Both renderers blend a glyph's coverage in sRGB-encoded
@@ -280,8 +282,56 @@ shift by up to about half a pixel and its weight by about 1%; the animation
 itself hides the first, and the second is one frame. An app can keep outlines
 for everything with `TextRasterization::default().gpu_glyph_outlines(true)`.
 
-Today rinch draws grayscale whatever `antialias` resolves to: subpixel (LCD)
-text and aliased text come with the subpixel compositing planned in #2286. The subpixel order and LCD filter are stored for that. An
+**Subpixel (LCD) text.** Where the OS draws subpixel text — fontconfig's `rgba`
+on Linux (KDE's "Sub-pixel rendering: RGB" writes `rgba=rgb`), ClearType on
+Windows — rinch does too, on both renderers: each glyph is rasterised at three
+times the resolution across the panel's subpixels, filtered with the OS's LCD
+filter (FreeType's `lcddefault`, `lcdlight` or `lcdlegacy`, as FreeType
+computes them) and drawn per channel, so its edges use the red, green and blue
+subpixels of a pixel separately, as KDE's and Chrome's text does. macOS has
+drawn no subpixel text since 10.14, and rinch never does there. Subpixel text
+needs to know the pixel under it, so, as Chrome and Skia do, rinch draws grey
+text instead:
+
+- inside an opacity group (any `opacity` below 1), a `mask-image`, a `filter`,
+  or anything else drawn into a layer of its own;
+- over a pixel that is not opaque: in a transparent window where nothing opaque
+  is under the text, or over a translucent background (decided per pixel, so
+  text on an opaque panel in a transparent window is still subpixel);
+- under a rotation, a skew or an uneven scale, and while its size animates
+  (the outlines those draw are grey); a uniform scale (HiDPI, `scale()`) is
+  rasterised at the device size and stays subpixel;
+- for emoji and other colour glyphs, and text larger than 64 device pixels on
+  the GPU.
+
+Clips (`overflow: hidden`, rounded or not) do not stop it. Text that fades in
+with an `opacity` animation is grey while it fades and turns subpixel when the
+animation ends at `opacity: 1`, as in Chrome. At a fractional scale factor
+(125%, 150%) the masks are still rasterised for the device pixels the window is
+drawn at, so the subpixel grid lines up with the panel as long as the
+compositor shows the window's pixels unscaled (Wayland's fractional-scale
+protocol, Windows' per-monitor DPI). An app can set the order for a panel the
+OS reports wrongly, or not at all (a BGR monitor, one rotated to portrait,
+`VRgb`), or turn subpixel text off:
+
+```rust
+App::new(app)
+    .text_rasterization(
+        TextRasterization::default()
+            .subpixel_order(Some(SubpixelOrder::Bgr)) // or Some(SubpixelOrder::None): grey
+            .lcd_filter(Some(LcdFilter::Light)),
+    )
+    .run();
+```
+
+The colour fringes are visible when a screenshot is scaled or shown on another
+display; an app that takes screenshots for others to see can ask for
+`TextAntialias::Grayscale`. Subpixel coverage is blended in sRGB-encoded space
+like grey coverage (and like FreeType's usual callers, KDE's included), and
+takes the same stem darkening. `antialias: None` (fontconfig `antialias=false`)
+is drawn grayscale: rinch has no aliased text.
+
+An
 embedding host that wants the OS's settings calls
 `rinch::text_rasterization::set_text_rasterization(TextRasterization::default())` before its
 first frame; without it an embedded document renders as if the OS said nothing

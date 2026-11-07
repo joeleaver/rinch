@@ -7,19 +7,18 @@
 //! Windows, fixed on macOS; the facade crate reads them). The two resolve into
 //! a [`ResolvedTextRasterization`], which is what a painter consults per glyph run.
 //!
-//! Stage 1 of #2286 uses three things out of it:
+//! Painters use three things out of it:
 //! - **hinting** — `hint` is off when the resolved hinting is
 //!   [`TextHinting::None`];
 //! - **stem darkening of light text** — [`ResolvedTextRasterization::darkening_for`],
 //!   applied by the Vello painter through `DrawGlyphs::font_embolden` and by
 //!   the tiny-skia painter through swash's embolden, so both thicken the same
 //!   glyphs by the same amount;
-//! - the antialiasing choice, which is recorded but renders as grayscale on
-//!   both painters until the glyph-mask atlas (stage 2) and subpixel
-//!   compositing (stage 3) land: [`ResolvedAntialias::Subpixel`] carries the
-//!   OS's subpixel order and LCD filter for that stage, and
-//!   [`ResolvedAntialias::None`] (fontconfig `antialias=false`, Windows font
-//!   smoothing off) has no aliased path in Vello's compute renderer.
+//! - the antialiasing choice: [`ResolvedAntialias::Subpixel`] carries the
+//!   subpixel order and LCD filter both painters draw subpixel (LCD) text with
+//!   (stage 3, [`ResolvedTextRasterization::subpixel`]), where they can
+//!   composite it; [`ResolvedAntialias::None`] (fontconfig `antialias=false`,
+//!   Windows font smoothing off) has no aliased path and draws grayscale.
 //!
 //! The resolved policy is per thread ([`set_thread_policy`] /
 //! [`thread_policy`]): the runtime paints on the thread that runs its event
@@ -193,8 +192,8 @@ pub enum TextAntialias {
     /// skew or uneven scale, while a run's size animates, and for colour
     /// glyphs.
     Subpixel,
-    /// No antialiasing. Recorded; both painters render grayscale until the
-    /// glyph-mask atlas (stage 2 of #2286).
+    /// No antialiasing. Recorded; both painters draw grayscale (there is no
+    /// aliased path).
     None,
 }
 
@@ -250,7 +249,7 @@ pub const DEFAULT_STEM_DARKENING_PX: f32 = 0.10;
 /// The largest amount [`StemDarkening::Px`] takes.
 pub const MAX_STEM_DARKENING_PX: f32 = 0.5;
 
-/// The order of a panel's subpixels, for subpixel antialiasing (stage 3).
+/// The order of a panel's subpixels, for subpixel (LCD) antialiasing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SubpixelOrder {
     /// The OS turns subpixel rendering off (fontconfig `rgba=none`).
@@ -265,7 +264,7 @@ pub enum SubpixelOrder {
     VBgr,
 }
 
-/// The filter applied across subpixels (fontconfig `lcdfilter`), for stage 3.
+/// The filter applied across subpixels (fontconfig `lcdfilter`), FreeType's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LcdFilter {
     /// No filter.
@@ -375,7 +374,7 @@ pub enum ResolvedAntialias {
         /// The filter across subpixels.
         filter: LcdFilter,
     },
-    /// No antialiasing (rendered grayscale until stage 2).
+    /// No antialiasing (drawn grayscale).
     None,
 }
 

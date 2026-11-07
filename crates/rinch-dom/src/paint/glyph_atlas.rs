@@ -21,10 +21,16 @@
 //!
 //! So the two painters draw identical glyph pixels wherever both use the
 //! atlas. Why a tint, not a colour baked into each image (which works with
-//! no fork change): stage 3's subpixel masks need a per-channel composite
-//! against the destination, which only the fine shader can do, and the tint
-//! word and mask mode are where that goes (mode 2). See
-//! `docs/internals/paint-and-damage.md` "Glyph-mask atlas".
+//! no fork change): subpixel masks need a per-channel composite against the
+//! destination, which only the fine shader can do, and the tint word and
+//! mask mode are where that goes (mode 2).
+//!
+//! **Subpixel (LCD) masks** (stage 3): a run with [`RunSpec::lcd`] is
+//! rasterised at three times the resolution across the subpixels and
+//! filtered with FreeType's LCD filter ([`MaskKind::Subpixel`]); both
+//! painters composite it per channel over an opaque pixel and as grey
+//! coverage elsewhere. See `docs/internals/paint-and-damage.md`
+//! "Glyph-mask atlas" and "Subpixel (LCD) text".
 //!
 //! **What the atlas does not draw** (each painter's own path does): a glyph
 //! under a rotation, skew or non-uniform scale (a uniform scale is

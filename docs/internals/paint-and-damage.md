@@ -204,9 +204,12 @@ parameter:
   darkened and cached apart),
   `gpu_light_text_is_darkened_and_off_turns_it_off_2286` (the same on lavapipe),
   and the module's unit tests.
-- **antialias** is resolved and recorded (`ResolvedAntialias::Subpixel { order,
-  filter }`, `None`) but both painters draw grayscale until the glyph atlas
-  (stage 2) and subpixel compositing (stage 3).
+- **antialias**: `ResolvedAntialias::Subpixel { order, filter }` turns on
+  subpixel text (stage 3, "Subpixel (LCD) text" below; `policy.subpixel()` /
+  `lcd_mode()`); `None` draws grayscale (no aliased path). The app's
+  `subpixel_order`/`lcd_filter` override the OS's; `Some(SubpixelOrder::None)`
+  turns it off; `SystemTextSettings::subpixel_capable == Some(false)` (macOS)
+  makes `Auto` and `Subpixel` grayscale.
 
 The OS read (`rinch::text_rasterization`, on a `rinch-text-settings` thread started
 by `set_text_rasterization`, cached in a `OnceLock`; the first paint waits for it if
@@ -218,7 +221,7 @@ links it here, though fontique does) and runs `FcInitLoadConfigAndFonts`,
 `ftref2286.c` take; KDE writes its settings as `fonts.conf` edits, which only a
 match applies). GNOME's GSettings/XSETTINGS values are not read. Windows reads
 `SPI_GETFONTSMOOTHING`, `…TYPE` (ClearType) and `…ORIENTATION`; macOS is fixed
-(grayscale, no hinting, no subpixel). `print_the_system_text_settings` (ignored)
+(grayscale, no hinting, no subpixel, `subpixel_capable: false`). `print_the_system_text_settings` (ignored)
 prints the host's.
 
 The software renderer includes **dirty region caching**: when only a few nodes change, only the affected rectangular area is cleared and repainted. Subtrees outside the dirty region are skipped during paint traversal.
@@ -850,9 +853,8 @@ in the `embed` build without it). Stage 2 of the text-antialiasing plan in
 - **Why a tint and not a colour baked into each image.** Baking works with no
   fork change (the design's prototype), but multiplies the masks by the colours
   text is drawn in, and stage 3's subpixel text needs a per-channel composite
-  against the destination pixel, which only the fine shader can do. The tint
-  word and the mask mode are where it goes: mode 2 is reserved for it, reading
-  per-channel coverage from the same RGBA texels.
+  against the destination pixel, which only the fine shader can do: mask mode 2
+  (below).
 - **Ownership.** One atlas a thread (`thread_atlas`), shared by every painter on
   it: the window's Vello painter, its snapshots and split slices, a software
   window, the text-shadow scratch painter. A painter can be given its own
@@ -923,6 +925,78 @@ swash cannot render is an outline; an unreadable font does not panic), the `#[ig
 `crates/rinch/tests/gpu_glyph_atlas_2286.rs` (GPU pixels equal to the software
 painter's at 1x and 1.5x, one mask in two colours, every fallback, a new
 renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
+
+### Subpixel (LCD) text (#2286 stage 3)
+
+- **Masks.** A run whose `RunSpec::lcd` is `Some(LcdMode { order, filter })`
+  is rasterised by `rasterise_lcd`: swash's `Render` with `transform(scale(3,
+  1))` (`(1, 3)` for VRGB/VBGR) and the bucket offset scaled with it, so the
+  outline is hinted at the real size, emboldened (stem darkening) before the
+  stretch, and only then stretched, as FreeType's `FT_RENDER_MODE_LCD` does.
+  `lcd_mask` filters the 3x coverage with FreeType's filters in FreeType's
+  arithmetic (`lcddefault` `[8, 77, 86, 77, 8]/256` and `lcdlight`
+  `[0, 85, 86, 85, 0]/256`, shifted down and clamped; `lcdlegacy`'s in-pixel
+  matrix in 65538ths; none) and groups each three subpixels into one pixel,
+  swapping red and blue for BGR/VBGR. The five-tap filters widen the mask by a
+  pixel each side. `MaskKind::Subpixel`, three bytes a pixel, logical RGB; the
+  GPU copy is `[r, g, b, mean]` (premultiplied in name only: the shader reads
+  it raw). The `LcdMode` is part of the run key. Colour glyphs are colour in
+  an LCD run.
+- **Who asks for LCD masks.** Both painters, under the same rule: the policy
+  is subpixel, the run is on the atlas's grid (`atlas_scale`), the painter
+  allows it (`set_subpixel_text`, default on; off for the blurred-shadow
+  scratch painter), and **no layer is open** — any `push_layer` or
+  `push_isolated_layer`, counted the same way on both (`VelloPainter::layers_open`,
+  `TinySkiaPainter::layer_marks`, so tiny-skia's no-op layers for opacity 1
+  within epsilon count as Vello's real ones do). Clips do not count. Inside a
+  layer the destination is the layer's own pixels, composited later, and a
+  layer may hold a blend that would see the folded backdrop (below); Skia and
+  Chrome draw grey there too. The decision is per run, so text fading in with
+  an `opacity` animation is grey until the layer goes away.
+- **Vello: mask mode 2** (`Scene::draw_image_lcd_mask`, the fork's
+  `IMAGE_MASK_LCD`; `app-and-windows.md` "Vello Fork"). The fine shader's
+  `lcd_composite`, in the nearest-sampling arm, finds the destination per pixel:
+  the current layer's pixel over each open clip's backdrop (the blend stack, and
+  its spill past four), innermost out, until one makes it opaque (alpha ≥
+  0.998). Opaque: each channel takes `dst * (1 - c * tint.a) + tint * c`, and the
+  opaque result is written into the current layer. Folding the backdrop into a
+  layer is exact for source-over clip layers (the composite is linear in the
+  backdrop: `mix(B, Y over B, k) = (kY) over B`, and it holds through any
+  nesting), which is why the CPU side allows LCD only inside clips. Not opaque
+  (transparent base, a translucent background, a split slice rendered over
+  transparent): the grey coverage in the texel's alpha, as mode 1. So a
+  transparent window draws subpixel text exactly where something opaque is
+  under it. Partial frames are re-rendered by Vello from the scene, so they
+  find the same destination.
+- **tiny-skia** (`blit_subpixel_mask_into`): straight into the pixmap at whole
+  pixels, through the clip mask; per channel where the pixel's alpha is 255,
+  grey source-over elsewhere, in `f32` then rounded, as the shader does.
+  Layers start transparent, so the per-pixel test alone would already be grey
+  in most of them; the layer count makes it agree with Vello in the no-op ones.
+- **Gamma and contrast.** No LUT: coverage is blended in sRGB-encoded space, as
+  for grey text and as FreeType's callers (cairo, Qt: KDE's text) blend LCD
+  output. Light text gets the same stem darkening (applied to the outline
+  before the stretch, so the same device amount). The design's §5 Skia-style
+  LUT is not done for either kind.
+- **Not done / not known.** A rotated display's order is not read on any
+  platform (winit does not expose `wl_output`'s subpixel or transform, and
+  Windows' SPI orientation is system-wide); `TextRasterization::subpixel_order`
+  is the app's fix. Fractional scale factors keep LCD: masks are in device
+  pixels, so the grid lines up wherever the compositor shows the buffer 1:1.
+  Nested clips that share a fractional edge differ between the painters (Vello
+  multiplies the edge coverage once per clip layer, tiny-skia's intersected mask
+  keeps it), grey text or not; the GPU fixture keeps its clip edges whole.
+- **Pins.** `glyph_atlas::tests` (`an_lcd_run_is_per_channel_coverage`,
+  `subpixel_orders`, `the_filters_are_freetypes`,
+  `lcd_masks_are_keyed_and_uploaded_as_rgb`, `lcd_masks_take_the_stem_darkening`),
+  `text_rasterization::tests` (`never_subpixel_on_macos`,
+  `the_app_overrides_order_and_filter`),
+  `crates/rinch-dom/tests/subpixel_text_2286_tests.rs` (software pixels: opaque
+  page, clip, BGR swap, opacity/no-op opacity/mask/filter layers, transparency
+  and translucency per pixel, rotation and scale; Vello's mask choice), and
+  `crates/rinch/tests/gpu_subpixel_text_2286.rs` (lavapipe: parity with the
+  software painter under Area and Msaa16 at 1x and 1.5x, nested clips to depth
+  6, the grey fallbacks, BGR).
 
 ### `vello_clip_tiles`: what a frame asks Vello for
 
