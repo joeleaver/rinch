@@ -3017,7 +3017,7 @@ mod flattened_tests {
 
     #[test]
     fn a_large_near_arc_follows_the_cubic() {
-        // An SVG quarter arc whose arms are 0.2% long, at radii 300 and
+        // An SVG quarter arc whose arms are 0.1% long, at radii 300 and
         // 1000: within a thousandth of the radius of a circle's, but drawn
         // as the circle it would be 0.13-0.45 px off the cubic. It goes
         // through Wang's steps instead. kurbo's own quarter arc, at those
@@ -3028,7 +3028,7 @@ mod flattened_tests {
             let exact = (p0, p0 + Vec2::new(0.0, -k), p3 + Vec2::new(-k, 0.0), p3);
             assert!(circular_arc(exact.0, exact.1, exact.2, exact.3, CURVE_TOLERANCE).is_some());
             assert!(circular_arc(exact.3, exact.2, exact.1, exact.0, CURVE_TOLERANCE).is_some());
-            let k = k * 1.002;
+            let k = k * 1.001;
             let near = peniko::kurbo::CubicBez::new(
                 p0,
                 p0 + Vec2::new(0.0, -k),
