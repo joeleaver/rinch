@@ -315,12 +315,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`8fdef733e1a59df72a4129e402e4545c27e16e1c`, branch `rinch-patch`): twenty-three commits on the taffy `v0.14.0` tag
-(item 10 is two of them, item 15 three, item 18 two). It is a dependency, not a
+(`7eac0940f91e664d2ab92f49704757809a2c7e7e`, branch `rinch-patch`): twenty-four commits on the taffy `v0.14.0` tag
+(item 10 is two of them, item 15 three, item 18 three). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the twenty-three commits onto the new tag. All are upstream
+and a Taffy bump rebases the twenty-four commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -566,7 +566,7 @@ candidates.
    Pins: the fork's `tests/leaf_margins.rs` (eleven shapes) and
    `crates/rinch-dom/tests/float_room_round3_tests.rs`.
 18. **A row flex container sized to fit its content wraps in its room** (#2370, commits
-   `f7079d5a` and `8fdef733`). A row flex container whose width is fit-content (a float, an
+   `f7079d5a`, `8fdef733` and `7eac0940`). A row flex container whose width is fit-content (a float, an
    absolutely positioned box, `width: fit-content`, a grid item aligned to its start, a row in a
    column aligned to its start) took its longest line, the sum of its items' max-content flex
    bases, whatever the room: a float holding `alpha beta … kappa` (431px of Inter) in 260px of
@@ -583,7 +583,7 @@ candidates.
    the room less its padding (it compared a border-box size with its content box's room). A
    column's main size is its height, its max-content size, and is unchanged; its width, the
    cross size, was already fit to its items. `inline-flex` was already right: rinch sizes an
-   atomic inline itself. Pins: the fork's `tests/fit_content_flex.rs` (25 shapes) and
+   atomic inline itself. Pins: the fork's `tests/fit_content_flex.rs` (26 shapes) and
    `crates/rinch-dom/tests/fit_content_flex_tests.rs` (Chrome's numbers).
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's

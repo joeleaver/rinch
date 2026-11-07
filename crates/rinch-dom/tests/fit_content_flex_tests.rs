@@ -177,6 +177,15 @@ fn a_float_wrapping_row() {
     let mut d = float("flex-wrap:wrap", &[("", T), ("width:280px", "")]);
     near(&mut d, "t", [23.0, 0.0, 280.0, 40.0]);
     near(&mut d, "i0", [23.0, ANY, 280.0, 40.0]);
+    // Lines that each fit, and padding: the room, padding included (it was
+    // the room less the padding).
+    let fixed = "width:100px;height:20px";
+    let mut d = float(
+        "flex-wrap:wrap;padding:0 6px 0 11px",
+        &[(fixed, ""), (fixed, ""), (fixed, "")],
+    );
+    near(&mut d, "t", [23.0, 0.0, 260.0, 40.0]);
+    near(&mut d, "i2", [34.0, 20.0, 100.0, 20.0]);
 }
 
 /// An item that does not shrink overflows the float: its min-content
