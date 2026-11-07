@@ -782,10 +782,38 @@ impl PaintFixture {
 /// the measured paint rasterises no glyph (a cold cache is a first frame,
 /// dominated by rasterisation, and would hide a regression in the walk).
 pub fn setup_full_paint() -> PaintFixture {
+    full_paint_page("")
+}
+
+/// The text page of [`setup_full_paint`] on a white page, painted with
+/// subpixel (LCD) text (#2286 stage 3), RGB through FreeType's default
+/// filter: each glyph blitted per channel. Warm, as the grey one.
+pub fn setup_full_paint_subpixel() -> PaintFixture {
+    subpixel_policy();
+    full_paint_page("background: #fff;")
+}
+
+/// The thread's text policy set to subpixel (LCD) text, RGB, lcddefault,
+/// for the measured process (each benchmark is its own process).
+fn subpixel_policy() {
+    use rinch_dom::paint::text_rasterization::{
+        LcdFilter, SubpixelOrder, SystemTextSettings, TextAntialias, TextRasterization,
+        set_thread_policy,
+    };
+    set_thread_policy(
+        TextRasterization::default()
+            .antialias(TextAntialias::Subpixel)
+            .subpixel_order(Some(SubpixelOrder::Rgb))
+            .lcd_filter(Some(LcdFilter::Default))
+            .resolve(&SystemTextSettings::default()),
+    );
+}
+
+fn full_paint_page(body_css: &str) -> PaintFixture {
     let mut doc = new_document();
     doc.load_css(&format!(
         "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
-         color: rgb(30, 30, 40); }} p {{ margin: 0 0 2px 0; }}"
+         color: rgb(30, 30, 40); {body_css} }} p {{ margin: 0 0 2px 0; }}"
     ));
     let mut html = String::new();
     for i in 0..40 {
@@ -937,6 +965,13 @@ pub fn setup_vello_paint_unsliced() -> VelloPaintFixture {
     f.slicing = None;
     f.paint();
     f
+}
+
+/// [`setup_vello_paint_unsliced`] with subpixel (LCD) text (#2286 stage 3):
+/// every glyph a mask-mode-2 image. Warm.
+pub fn setup_vello_paint_subpixel() -> VelloPaintFixture {
+    subpixel_policy();
+    setup_vello_paint_unsliced()
 }
 
 /// The page of [`setup_vello_paint_split`] on a frame not opened for slicing:

@@ -21,10 +21,16 @@
 //!
 //! So the two painters draw identical glyph pixels wherever both use the
 //! atlas. Why a tint, not a colour baked into each image (which works with
-//! no fork change): stage 3's subpixel masks need a per-channel composite
-//! against the destination, which only the fine shader can do, and the tint
-//! word and mask mode are where that goes (mode 2). See
-//! `docs/internals/paint-and-damage.md` "Glyph-mask atlas".
+//! no fork change): subpixel masks need a per-channel composite against the
+//! destination, which only the fine shader can do, and the tint word and
+//! mask mode are where that goes (mode 2).
+//!
+//! **Subpixel (LCD) masks** (stage 3): a run with [`RunSpec::lcd`] is
+//! rasterised at three times the resolution across the subpixels and
+//! filtered with FreeType's LCD filter ([`MaskKind::Subpixel`]); both
+//! painters composite it per channel over an opaque pixel and as grey
+//! coverage elsewhere. See `docs/internals/paint-and-damage.md`
+//! "Glyph-mask atlas" and "Subpixel (LCD) text".
 //!
 //! **What the atlas does not draw** (each painter's own path does): a glyph
 //! under a rotation, skew or non-uniform scale (a uniform scale is
@@ -51,6 +57,8 @@ use std::collections::HashMap;
 
 use peniko::kurbo::Affine;
 use peniko::{Blob, FontData, ImageAlphaType, ImageData, ImageFormat};
+
+use super::text_rasterization::{LcdFilter, SubpixelOrder};
 
 /// Horizontal sub-pixel positions a glyph is rasterised at: `0`, `0.25`,
 /// `0.5`, `0.75` of a pixel (upstream glifo's `SUBPIXEL_BUCKETS`).
@@ -112,11 +120,29 @@ impl AtlasStats {
     }
 }
 
+/// How a run's glyphs are rasterised for subpixel (LCD) text (#2286 stage 3):
+/// the panel's subpixel order and the filter across subpixels. Part of the
+/// run's key: a subpixel mask and a grey one are different masks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LcdMode {
+    /// The panel's subpixel order. [`SubpixelOrder::None`] is not a mode: a
+    /// run with no order is grey ([`RunSpec::lcd`] `None`).
+    pub order: SubpixelOrder,
+    /// The filter across subpixels.
+    pub filter: LcdFilter,
+}
+
 /// What a mask holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaskKind {
     /// One coverage byte a pixel, painted in the text colour.
     Coverage,
+    /// Three coverage bytes a pixel, red, green and blue: each the coverage
+    /// of that channel's subpixel (the panel's order already applied), for
+    /// subpixel (LCD) text. Composited per channel over an opaque
+    /// destination, and as grey coverage, the three's mean, over any other
+    /// ([`GlyphMask::grey`]).
+    Subpixel,
     /// RGBA (a COLR glyph or a colour bitmap strike), drawn as it is; the
     /// text colour's alpha still applies. `premultiplied`: a scaled bitmap
     /// strike, premultiplied before it was scaled (#804); otherwise straight.
@@ -138,12 +164,22 @@ pub struct GlyphMask {
     pub height: u32,
     /// What `data` holds.
     pub kind: MaskKind,
-    /// The pixels: `width * height` bytes for [`MaskKind::Coverage`],
-    /// four times that for a colour glyph.
+    /// The pixels: `width * height` bytes for [`MaskKind::Coverage`], three
+    /// times that (red, green, blue) for [`MaskKind::Subpixel`], four times
+    /// that for a colour glyph.
     pub data: Vec<u8>,
     /// The GPU's copy of a coverage mask: RGBA, the coverage in every channel
     /// (so premultiplied), made the first time a Vello scene draws the mask.
+    /// For a subpixel mask, the three channels' coverage in red, green and
+    /// blue, and their mean in alpha (the fork's mask mode 2).
     gpu: Option<ImageData>,
+}
+
+/// The grey coverage of a subpixel mask's pixel: the mean of its three
+/// channels, rounded. What it paints over a destination that is not opaque.
+#[inline]
+pub fn grey_of(rgb: [u8; 3]) -> u8 {
+    ((rgb[0] as u16 + rgb[1] as u16 + rgb[2] as u16 + 1) / 3) as u8
 }
 
 impl GlyphMask {
@@ -157,11 +193,30 @@ impl GlyphMask {
         self.data.len() + self.gpu.as_ref().map_or(0, |g| g.data.len())
     }
 
+    /// The grey coverage of pixel `i` (`y * width + x`): the coverage of a
+    /// coverage mask, the mean of a subpixel mask's channels; `0` for a
+    /// colour glyph.
+    pub fn grey(&self, i: usize) -> u8 {
+        match self.kind {
+            MaskKind::Coverage => self.data[i],
+            MaskKind::Subpixel => {
+                grey_of([self.data[i * 3], self.data[i * 3 + 1], self.data[i * 3 + 2]])
+            }
+            MaskKind::Color { .. } => 0,
+        }
+    }
+
     /// Make the GPU copy; returns its size in bytes.
     fn make_gpu(&mut self) -> usize {
-        let mut rgba = Vec::with_capacity(self.data.len() * 4);
-        for &c in &self.data {
-            rgba.extend_from_slice(&[c, c, c, c]);
+        let mut rgba = Vec::with_capacity(self.width as usize * self.height as usize * 4);
+        if self.kind == MaskKind::Subpixel {
+            for px in self.data.as_chunks::<3>().0 {
+                rgba.extend_from_slice(&[px[0], px[1], px[2], grey_of(*px)]);
+            }
+        } else {
+            for &c in &self.data {
+                rgba.extend_from_slice(&[c, c, c, c]);
+            }
         }
         let n = rgba.len();
         self.gpu = Some(ImageData {
@@ -190,6 +245,8 @@ struct RunKey {
     /// `f32::to_bits` of swash's emboldening strength (0 for none).
     embolden_bits: u32,
     coords: Box<[i16]>,
+    /// Subpixel (LCD) masks in this mode, or grey ones.
+    lcd: Option<LcdMode>,
 }
 
 /// One cached glyph: its mask (`None` for a glyph with no pixels, a space)
@@ -320,6 +377,9 @@ pub struct RunSpec<'a> {
     pub embolden: f32,
     /// Variation coordinates.
     pub coords: &'a [i16],
+    /// Rasterise subpixel (LCD) masks in this mode (#2286 stage 3); `None`
+    /// for grey ones. A colour glyph is the same either way.
+    pub lcd: Option<LcdMode>,
 }
 
 /// Where a glyph lands on the device grid.
@@ -418,6 +478,7 @@ impl GlyphAtlas {
                 && r.key.hint == spec.hint
                 && r.key.embolden_bits == spec.embolden.to_bits()
                 && *r.key.coords == *spec.coords
+                && r.key.lcd == spec.lcd
                 && r.glyphs.contains_key(&key(id, bucket))
         })
     }
@@ -436,6 +497,12 @@ impl GlyphAtlas {
                 )
             })
             .collect()
+    }
+
+    /// The LCD mode of each run held, in the order of [`Self::run_keys`].
+    #[doc(hidden)]
+    pub fn run_lcd_modes(&self) -> Vec<Option<LcdMode>> {
+        self.runs.iter().map(|r| r.key.lcd).collect()
     }
 
     /// Drop every mask.
@@ -534,6 +601,7 @@ impl GlyphAtlas {
                 && k.hint == spec.hint
                 && k.embolden_bits == embolden_bits
                 && *k.coords == *spec.coords
+                && k.lcd == spec.lcd
         };
         let generation = self.generation;
         if let Some(r) = self.runs.get_mut(self.last).filter(|r| matches(&r.key)) {
@@ -553,6 +621,7 @@ impl GlyphAtlas {
                 hint: spec.hint,
                 embolden_bits,
                 coords: spec.coords.into(),
+                lcd: spec.lcd,
             },
             glyphs: Default::default(),
             outlines: Default::default(),
@@ -668,7 +737,7 @@ impl GlyphAtlas {
             entry.used = generation;
             if want_gpu
                 && let Some(m) = entry.mask.as_mut()
-                && m.kind == MaskKind::Coverage
+                && matches!(m.kind, MaskKind::Coverage | MaskKind::Subpixel)
                 && m.gpu.is_none()
             {
                 *bytes += m.make_gpu();
@@ -912,8 +981,6 @@ fn key(id: u32, bucket: u8) -> u32 {
 }
 
 /// Rasterise `id` at sub-pixel `bucket`: a colour outline or bitmap strike
-/// as colour, else the outline as coverage. The order is swash's own, as the
-/// software painter has always asked (#804).
 /// A run's kept outlines, and the byte counts they are charged to.
 struct Kept<'a> {
     outlines: &'a mut rustc_hash::FxHashMap<u16, Option<swash::scale::outline::Outline>>,
@@ -921,6 +988,31 @@ struct Kept<'a> {
     total: &'a mut usize,
 }
 
+impl Kept<'_> {
+    /// The hinted outline of `id`, scaled once per run and kept.
+    fn outline(
+        &mut self,
+        scaler: &mut swash::scale::Scaler<'_>,
+        id: u16,
+    ) -> Option<&swash::scale::outline::Outline> {
+        match self.outlines.entry(id) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                let o = scaler.scale_outline(id);
+                let n = outline_bytes(&o);
+                *self.bytes += n;
+                *self.total += n;
+                v.insert(o)
+            }
+        }
+        .as_ref()
+    }
+}
+
+/// Rasterise `id` at sub-pixel `bucket`: a colour outline or bitmap strike
+/// as colour, else the outline as coverage (subpixel coverage for an LCD
+/// run, [`lcd_mask`]). The order is swash's own, as the software painter has
+/// always asked (#804).
 fn rasterise(
     scaler: &mut swash::scale::Scaler<'_>,
     bitmap_scale: &mut swash::scale::ScaleContext,
@@ -939,6 +1031,9 @@ fn rasterise(
     // bucket is the offset's x.
     let em = spec.embolden;
     let x = bucket as f32 / SUBPIXEL_BUCKETS as f32;
+    if let Some(mode) = spec.lcd {
+        return rasterise_lcd(scaler, bitmap_scale, kept, font, spec, id, x, mode);
+    }
     let render = |sources: &[Source], s: &mut swash::scale::Scaler<'_>, darken: bool| {
         let mut r = Render::new(sources);
         if darken && em > 0.0 {
@@ -956,17 +1051,7 @@ fn rasterise(
         && !scaler.has_color_bitmaps()
         && !scaler.has_color_outlines()
     {
-        let outline = match kept.outlines.entry(id as u16) {
-            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-            std::collections::hash_map::Entry::Vacant(v) => {
-                let o = scaler.scale_outline(id as u16);
-                let n = outline_bytes(&o);
-                *kept.bytes += n;
-                *kept.total += n;
-                v.insert(o)
-            }
-        };
-        let Some(outline) = outline.as_ref() else {
+        let Some(outline) = kept.outline(scaler, id as u16) else {
             return Raster::Failed;
         };
         let emboldened;
@@ -1021,6 +1106,207 @@ fn rasterise(
         return Raster::Mask(g);
     }
     Raster::from(render(&[Source::Outline], scaler, true))
+}
+
+/// [`rasterise`] for an LCD run: a colour glyph as on a grey run, else the
+/// outline at three times the resolution across the subpixels (horizontally,
+/// or vertically for a vertical panel), filtered and grouped into pixels by
+/// [`lcd_mask`]. The outline is hinted at the real size and only then
+/// stretched, as FreeType's LCD rendering does, and emboldened before the
+/// stretch, so the stem darkening is the same device amount as on grey text.
+#[allow(clippy::too_many_arguments)]
+fn rasterise_lcd(
+    scaler: &mut swash::scale::Scaler<'_>,
+    bitmap_scale: &mut swash::scale::ScaleContext,
+    kept: Option<&mut Kept<'_>>,
+    font: swash::FontRef<'_>,
+    spec: &RunSpec<'_>,
+    id: u32,
+    x: f32,
+    mode: LcdMode,
+) -> Raster {
+    use swash::scale::{Render, Source};
+    if scaler.has_color_outlines()
+        && let Some(image) = Render::new(&[Source::ColorOutline(0)])
+            .offset(swash::zeno::Vector::new(x, 0.0))
+            .render(scaler, id as u16)
+    {
+        return Raster::from(Some(image));
+    }
+    if scaler.has_color_bitmaps()
+        && let Some(g) = color_bitmap_glyph(bitmap_scale, font, spec.size, id as u16)
+    {
+        return Raster::Mask(g);
+    }
+    let vertical = matches!(mode.order, SubpixelOrder::VRgb | SubpixelOrder::VBgr);
+    let em = spec.embolden;
+    let (stretch, offset) = if vertical {
+        (
+            swash::zeno::Transform::scale(1.0, 3.0),
+            swash::zeno::Vector::new(x, -3.0 * em),
+        )
+    } else {
+        (
+            swash::zeno::Transform::scale(3.0, 1.0),
+            swash::zeno::Vector::new(3.0 * x, -em),
+        )
+    };
+    // A face with no colour glyphs: the kept hinted outline, emboldened and
+    // stretched as `Render` would, so the same pixels.
+    if let Some(kept) = kept
+        && !scaler.has_color_bitmaps()
+        && !scaler.has_color_outlines()
+    {
+        let Some(outline) = kept.outline(scaler, id as u16) else {
+            return Raster::Failed;
+        };
+        let mut o = outline.clone();
+        if em > 0.0 {
+            o.embolden(em, em);
+        }
+        o.transform(&stretch);
+        let mut data = Vec::new();
+        let placement = swash::zeno::Mask::new(o.path())
+            .format(swash::zeno::Format::Alpha)
+            .origin(swash::zeno::Origin::BottomLeft)
+            .offset(offset)
+            .render_offset(offset)
+            .inspect(|fmt, w, h| data.resize(fmt.buffer_size(w, h), 0))
+            .render_into(&mut data[..], None);
+        let mut image = swash::scale::image::Image::new();
+        image.placement = placement;
+        image.data = data;
+        if image.placement.width == 0 || image.placement.height == 0 {
+            return Raster::Empty;
+        }
+        return lcd_mask(&image, mode).map_or(Raster::Empty, Raster::Mask);
+    }
+    let mut r = Render::new(&[Source::Outline]);
+    r.transform(Some(stretch)).offset(offset);
+    if em > 0.0 {
+        r.embolden(em);
+    }
+    match r.render(scaler, id as u16) {
+        None => Raster::Failed,
+        Some(image) => {
+            if image.placement.width == 0 || image.placement.height == 0 {
+                return Raster::Empty;
+            }
+            lcd_mask(&image, mode).map_or(Raster::Empty, Raster::Mask)
+        }
+    }
+}
+
+/// FreeType's five-tap LCD filters (`FT_LCD_FILTER_DEFAULT`, `_LIGHT`), in
+/// 256ths: the weights of the subpixels two before to two after.
+const LCD_FIR_DEFAULT: [u32; 5] = [0x08, 0x4D, 0x56, 0x4D, 0x08];
+const LCD_FIR_LIGHT: [u32; 5] = [0x00, 0x55, 0x56, 0x55, 0x00];
+
+/// The subpixel mask of a glyph rendered at three times the resolution
+/// across the subpixels (`image`, swash coverage, its placement in subpixels
+/// along that axis): FreeType's LCD filter for `mode.filter`, then each run
+/// of three subpixels grouped into a pixel, in the panel's order. The
+/// five-tap filters spread coverage two subpixels each way, so the mask is
+/// up to a pixel wider on each side (taller, for a vertical panel) than the
+/// grey one. `None` when nothing is inked.
+///
+/// The arithmetic is FreeType's (`ft_lcd_filter_fir`: weights summing to 256,
+/// shifted down and clamped), so the masks match FreeType's
+/// `FT_RENDER_MODE_LCD` output for the same coverage. `lcdlegacy` is
+/// lcddefault, as in current FreeType, which has no legacy filter.
+fn lcd_mask(image: &swash::scale::image::Image, mode: LcdMode) -> Option<GlyphMask> {
+    let vertical = matches!(mode.order, SubpixelOrder::VRgb | SubpixelOrder::VBgr);
+    let flip = matches!(mode.order, SubpixelOrder::Bgr | SubpixelOrder::VBgr);
+    let (w, h) = (image.placement.width as i32, image.placement.height as i32);
+    let raw = &image.data;
+    // Along the subpixel axis: the image's first subpixel and its length,
+    // and the other axis's length. Vertically, the subpixel axis runs down
+    // from the image's top, which is `top` subrows above the baseline.
+    let (s0, n, across) = if vertical {
+        (-image.placement.top, h, w)
+    } else {
+        (image.placement.left, w, h)
+    };
+    let pad = match mode.filter {
+        LcdFilter::Default | LcdFilter::Light | LcdFilter::Legacy => 2,
+        LcdFilter::None => 0,
+    };
+    let p0 = (s0 - pad).div_euclid(3);
+    let p1 = (s0 + n + pad + 2).div_euclid(3);
+    let len = (p1 - p0) as usize;
+    let sample = |a: i32, s: i32| -> u32 {
+        let j = s - s0;
+        if j < 0 || j >= n {
+            return 0;
+        }
+        let i = if vertical { j * w + a } else { a * w + j };
+        raw[i as usize] as u32
+    };
+    let mut lines = vec![[0u8; 3]; len * across as usize];
+    let mut any = false;
+    for a in 0..across {
+        for k in 0..len {
+            let p = p0 + k as i32;
+            let mut v = [0u32; 3];
+            match mode.filter {
+                // fontconfig's `lcdlegacy` is lcddefault, as in current
+                // FreeType (2.14's `FT_Library_SetLcdFilter(LEGACY)` is
+                // `Invalid_Argument`).
+                LcdFilter::Default | LcdFilter::Light | LcdFilter::Legacy => {
+                    let fir = if mode.filter == LcdFilter::Light {
+                        &LCD_FIR_LIGHT
+                    } else {
+                        &LCD_FIR_DEFAULT
+                    };
+                    for (c, out) in v.iter_mut().enumerate() {
+                        let s = 3 * p + c as i32;
+                        let sum: u32 = (0..5).map(|t| fir[t] * sample(a, s + t as i32 - 2)).sum();
+                        *out = (sum >> 8).min(255);
+                    }
+                }
+                LcdFilter::None => {
+                    for (c, out) in v.iter_mut().enumerate() {
+                        *out = sample(a, 3 * p + c as i32);
+                    }
+                }
+            }
+            let mut rgb = [v[0] as u8, v[1] as u8, v[2] as u8];
+            if flip {
+                rgb.swap(0, 2);
+            }
+            any |= rgb != [0, 0, 0];
+            lines[a as usize * len + k] = rgb;
+        }
+    }
+    if !any {
+        return None;
+    }
+    // Lay the lines out as rows of pixels.
+    let (width, height, left, top) = if vertical {
+        (w as u32, len as u32, image.placement.left, -p0)
+    } else {
+        (len as u32, h as u32, p0, image.placement.top)
+    };
+    let mut data = Vec::with_capacity(lines.len() * 3);
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let px = if vertical {
+                lines[x * len + y]
+            } else {
+                lines[y * len + x]
+            };
+            data.extend_from_slice(&px);
+        }
+    }
+    Some(GlyphMask {
+        left,
+        top,
+        width,
+        height,
+        kind: MaskKind::Subpixel,
+        data,
+        gpu: None,
+    })
 }
 
 /// What rasterising one glyph gave.
@@ -1292,6 +1578,7 @@ mod tests {
             hint: true,
             embolden: 0.0,
             coords: &[],
+            lcd: None,
         }
     }
 
@@ -1490,6 +1777,269 @@ mod tests {
         assert_eq!(stats.uploads, 0);
     }
 
+    // ---- Subpixel (LCD) masks, #2286 stage 3 ----
+
+    fn lcd(order: SubpixelOrder, filter: LcdFilter) -> Option<LcdMode> {
+        Some(LcdMode { order, filter })
+    }
+
+    /// The mask the atlas has for `id` at `bucket` in `spec` (one lookup).
+    fn mask_of(spec: &RunSpec<'_>, id: u32, bucket: u8) -> GlyphMask {
+        let mut atlas = GlyphAtlas::default();
+        let mut stats = AtlasStats::default();
+        let mut out = None;
+        atlas.lookup(spec, &[(id, bucket)], false, &mut stats, |_, m| {
+            let m = m.mask().expect("inked");
+            out = Some(GlyphMask {
+                left: m.left,
+                top: m.top,
+                width: m.width,
+                height: m.height,
+                kind: m.kind,
+                data: m.data.clone(),
+                gpu: None,
+            });
+        });
+        out.unwrap()
+    }
+
+    fn rgb_at(m: &GlyphMask, x: u32, y: u32) -> [u8; 3] {
+        let i = ((y * m.width + x) * 3) as usize;
+        [m.data[i], m.data[i + 1], m.data[i + 2]]
+    }
+
+    /// An LCD run's glyph is per-channel coverage: on each row through the
+    /// stem of an `l` (at bucket 1, off the whole pixel), the first inked
+    /// pixel has more blue than red (its blue subpixel is the nearest the
+    /// stem) and the last more red than blue, and the three
+    /// channels' mean carries the grey mask's ink (the filters sum to 1).
+    /// Red against a grey mask copied into three channels.
+    #[test]
+    fn an_lcd_run_is_per_channel_coverage() {
+        let f = font(INTER);
+        let l = glyph_id(INTER, 'l');
+        let mut s = spec(&f, 13.0);
+        let grey = mask_of(&s, l, 1);
+        s.lcd = lcd(SubpixelOrder::Rgb, LcdFilter::Default);
+        let m = mask_of(&s, l, 1);
+        assert_eq!(m.kind, MaskKind::Subpixel);
+        assert_eq!(m.data.len(), (m.width * m.height * 3) as usize);
+        let mut fringed_rows = 0;
+        for y in 0..m.height {
+            let row: Vec<[u8; 3]> = (0..m.width).map(|x| rgb_at(&m, x, y)).collect();
+            let inked = |p: &[u8; 3]| p.iter().any(|&c| c > 8);
+            let (Some(first), Some(last)) =
+                (row.iter().position(inked), row.iter().rposition(inked))
+            else {
+                continue;
+            };
+            let (left, right) = (row[first], row[last]);
+            assert!(left[2] > left[0], "row {y}: the stem's left edge {left:?}");
+            assert!(right[0] > right[2], "row {y}: its right edge {right:?}");
+            fringed_rows += 1;
+        }
+        assert!(fringed_rows >= 6, "{fringed_rows} stem rows");
+        let ink = |m: &GlyphMask| -> f64 {
+            (0..(m.width * m.height) as usize)
+                .map(|i| m.grey(i) as f64)
+                .sum()
+        };
+        let (gi, li) = (ink(&grey), ink(&m));
+        assert!((li - gi).abs() / gi < 0.06, "grey ink {gi}, LCD ink {li}");
+        // The five-tap filter spreads coverage: wider than the grey mask.
+        assert!(m.width > grey.width, "{} vs {}", m.width, grey.width);
+    }
+
+    /// BGR is RGB with red and blue swapped, pixel for pixel, at the same
+    /// place; so is VBGR of VRGB. A vertical panel fringes vertically: above
+    /// a horizontal stroke (an unhinted `-`, so the edge falls inside a
+    /// pixel) the bottom subpixel, blue on VRGB, is the nearest the stroke.
+    #[test]
+    fn subpixel_orders() {
+        let f = font(INTER);
+        let l = glyph_id(INTER, 'l');
+        let mut s = spec(&f, 13.0);
+        s.lcd = lcd(SubpixelOrder::Rgb, LcdFilter::Default);
+        let rgb = mask_of(&s, l, 2);
+        s.lcd = lcd(SubpixelOrder::Bgr, LcdFilter::Default);
+        let bgr = mask_of(&s, l, 2);
+        assert_eq!(
+            (rgb.left, rgb.top, rgb.width, rgb.height),
+            (bgr.left, bgr.top, bgr.width, bgr.height)
+        );
+        let swapped: Vec<u8> = rgb
+            .data
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0]])
+            .collect();
+        assert_eq!(bgr.data, swapped);
+        assert_ne!(bgr.data, rgb.data, "the swap shows");
+
+        let dash = glyph_id(INTER, '-');
+        let mut s = spec(&f, 13.3);
+        s.hint = false;
+        s.lcd = lcd(SubpixelOrder::VRgb, LcdFilter::Default);
+        let v = mask_of(&s, dash, 0);
+        s.lcd = lcd(SubpixelOrder::VBgr, LcdFilter::Default);
+        let vb = mask_of(&s, dash, 0);
+        let swapped: Vec<u8> = v
+            .data
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0]])
+            .collect();
+        assert_eq!(vb.data, swapped);
+        // Down the middle column: the first row with ink in any channel is
+        // above the stroke, blue (bottom subpixel) over red (top).
+        let x = v.width / 2;
+        let top = (0..v.height)
+            .find(|&y| rgb_at(&v, x, y) != [0, 0, 0])
+            .unwrap();
+        let px = rgb_at(&v, x, top);
+        assert!(px[2] > px[0], "above the stroke: {px:?}");
+        let bottom = (0..v.height)
+            .rev()
+            .find(|&y| rgb_at(&v, x, y) != [0, 0, 0])
+            .unwrap();
+        let px = rgb_at(&v, x, bottom);
+        assert!(px[0] > px[2], "below the stroke: {px:?}");
+        // Vertically the mask is taller than the stroke's grey mask, not wider.
+        s.lcd = None;
+        let g = mask_of(&s, dash, 0);
+        assert_eq!(v.width, g.width);
+        assert!(v.height > g.height);
+    }
+
+    /// An oversampled image of one subpixel inked, at subpixel 4 (pixel 1's
+    /// green), placed `left` subpixels from the origin.
+    fn one_subpixel(left: i32) -> swash::scale::image::Image {
+        let mut image = swash::scale::image::Image::new();
+        image.placement = swash::zeno::Placement {
+            left,
+            top: 1,
+            width: 1,
+            height: 1,
+        };
+        image.data = vec![255];
+        image
+    }
+
+    /// FreeType's arithmetic, exactly: one inked subpixel through each
+    /// filter. lcddefault spreads it over five subpixels as
+    /// `255 * [8, 77, 86, 77, 8] >> 8`; lcdlight over three; legacy is
+    /// lcddefault (below); none leaves it alone. The mask's left edge is the
+    /// first pixel any tap reaches.
+    #[test]
+    fn the_filters_are_freetypes() {
+        let image = one_subpixel(4);
+        let rows = |filter| {
+            let m = lcd_mask(
+                &image,
+                LcdMode {
+                    order: SubpixelOrder::Rgb,
+                    filter,
+                },
+            )
+            .unwrap();
+            assert_eq!((m.top, m.height), (1, 1));
+            (m.left, m.data)
+        };
+        assert_eq!(
+            rows(LcdFilter::Default),
+            (0, vec![0, 0, 7, 76, 85, 76, 7, 0, 0])
+        );
+        assert_eq!(
+            rows(LcdFilter::Light),
+            (0, vec![0, 0, 0, 84, 85, 84, 0, 0, 0])
+        );
+        // fontconfig's `lcdlegacy` is lcddefault: current FreeType has no
+        // legacy filter (2.14's `FT_Library_SetLcdFilter(LEGACY)` returns
+        // `Invalid_Argument`), and 2.9's in-pixel matrix gave one green
+        // subpixel `[58, 170, 58]`, which a review caught this transposed.
+        assert_eq!(rows(LcdFilter::Legacy), rows(LcdFilter::Default));
+        assert_eq!(rows(LcdFilter::None), (1, vec![0, 255, 0]));
+        // A negative placement floors to the pixel left of it.
+        let m = lcd_mask(
+            &one_subpixel(-1),
+            LcdMode {
+                order: SubpixelOrder::Rgb,
+                filter: LcdFilter::None,
+            },
+        )
+        .unwrap();
+        assert_eq!((m.left, m.data), (-1, vec![0, 0, 255]));
+    }
+
+    /// An LCD run and a grey run of the same glyph are two masks; a colour
+    /// glyph is colour whatever the run; the GPU copy of a subpixel mask is
+    /// its three channels with their mean in alpha.
+    #[test]
+    fn lcd_masks_are_keyed_and_uploaded_as_rgb() {
+        let f = font(INTER);
+        let a = glyph_id(INTER, 'a');
+        let mut atlas = GlyphAtlas::default();
+        let mut stats = AtlasStats::default();
+        let grey = spec(&f, 13.0);
+        let mut s = spec(&f, 13.0);
+        s.lcd = lcd(SubpixelOrder::Rgb, LcdFilter::Default);
+        atlas.lookup(&grey, &[(a, 1)], false, &mut stats, |_, _| {});
+        assert!(atlas.holds(&grey, a, 1));
+        assert!(!atlas.holds(&s, a, 1), "a grey mask is not an LCD one");
+        let mut checked = false;
+        atlas.lookup(&s, &[(a, 1)], true, &mut stats, |_, m| {
+            let m = m.mask().unwrap();
+            assert_eq!(m.kind, MaskKind::Subpixel);
+            let img = m.gpu_image().expect("made for a GPU draw");
+            assert_eq!((img.width, img.height), (m.width, m.height));
+            let px: &[u8] = img.data.as_ref();
+            for (i, c) in m.data.as_chunks::<3>().0.iter().enumerate() {
+                assert_eq!(px[i * 4..i * 4 + 4], [c[0], c[1], c[2], grey_of(*c)]);
+            }
+            checked = true;
+        });
+        assert!(checked);
+        assert_eq!(stats.misses, 2);
+        assert_eq!(stats.uploads, 1);
+        assert_eq!(
+            atlas.run_lcd_modes(),
+            vec![None, lcd(SubpixelOrder::Rgb, LcdFilter::Default)]
+        );
+        s.lcd = lcd(SubpixelOrder::Bgr, LcdFilter::Default);
+        assert!(!atlas.holds(&s, a, 1), "the order is part of the key");
+
+        let e = font(EMOJI);
+        let id = glyph_id(EMOJI, '\u{1F600}');
+        let mut es = spec(&e, 20.0);
+        es.lcd = lcd(SubpixelOrder::Rgb, LcdFilter::Default);
+        let m = mask_of(&es, id, 0);
+        assert!(matches!(m.kind, MaskKind::Color { .. }), "{:?}", m.kind);
+    }
+
+    /// Stem darkening thickens an LCD glyph as it does a grey one: by the
+    /// same device amount, so the ink grows by about the same fraction.
+    #[test]
+    fn lcd_masks_take_the_stem_darkening() {
+        let f = font(INTER);
+        let n = glyph_id(INTER, 'n');
+        let ink = |embolden: f32, lcd_mode: Option<LcdMode>| -> f64 {
+            let mut s = spec(&f, 13.0);
+            s.embolden = embolden;
+            s.lcd = lcd_mode;
+            let m = mask_of(&s, n, 1);
+            (0..(m.width * m.height) as usize)
+                .map(|i| m.grey(i) as f64)
+                .sum()
+        };
+        let l = lcd(SubpixelOrder::Rgb, LcdFilter::Default);
+        let grey = ink(0.25, None) / ink(0.0, None);
+        let sub = ink(0.25, l) / ink(0.0, l);
+        assert!(grey > 1.05, "{grey}");
+        assert!((sub - grey).abs() < 0.03, "grey grows {grey}, LCD {sub}");
+    }
+
     /// Past the budget the entries drawn longest ago go first, down to three
     /// quarters of it: of glyphs drawn in generations 1..=n, the newest stay.
     /// Red against an eviction that drops newest-first or clears everything.
@@ -1594,6 +2144,7 @@ mod tests {
             hint: true,
             embolden: 0.0,
             coords: &[],
+            lcd: None,
         };
         // A page with two sizes: first frame new, never animating; still.
         for _ in 0..3 {
@@ -1652,6 +2203,7 @@ mod tests {
                 hint,
                 embolden,
                 coords: &[],
+                lcd: None,
             };
             atlas.lookup(&s, &[(a, 0)], false, &mut stats, |_, m| {
                 let m = m.mask().unwrap();
@@ -1671,7 +2223,8 @@ mod tests {
 }
 /// The kept-outline path (hint once per glyph, rasterise each bucket from the
 /// outline, review of #2317's Perf job) gives swash `Render`'s masks byte for
-/// byte, placement included, at every bucket and with emboldening. Red with
+/// byte, placement included, at every bucket and with emboldening, grey and
+/// subpixel (LCD). Red with
 /// zeno's `render()` (which loses the bottom-left origin) or a missing
 /// re-centring offset.
 #[cfg(test)]
@@ -1683,13 +2236,28 @@ mod kept_outline_tests {
         const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
         let f = FontData::new(Blob::new(std::sync::Arc::new(INTER)), 0);
         let face = swash::FontRef::from_index(INTER, 0).unwrap();
-        for embolden in [0.0, 6.0 / 64.0] {
+        let lcd = |order| {
+            Some(LcdMode {
+                order,
+                filter: LcdFilter::Default,
+            })
+        };
+        for (embolden, lcd) in [
+            (0.0, None),
+            (6.0 / 64.0, None),
+            // Stage 3: an LCD run stretches the kept outline as `Render`
+            // stretches the one it scales.
+            (0.0, lcd(SubpixelOrder::Rgb)),
+            (6.0 / 64.0, lcd(SubpixelOrder::Rgb)),
+            (6.0 / 64.0, lcd(SubpixelOrder::VBgr)),
+        ] {
             let spec = RunSpec {
                 font: &f,
                 size: 13.0,
                 hint: true,
                 embolden,
                 coords: &[],
+                lcd,
             };
             let mut atlas = GlyphAtlas::default();
             let mut n = 0;

@@ -293,3 +293,99 @@ fn text_aa_cost_probe_2286() {
         }
     }
 }
+
+/// #2286 stage 3's cost probe: a 1280x800 page of 13px text drawn from the
+/// atlas as grey masks (mask mode 1) and as subpixel masks (mode 2), the GPU
+/// frame's median over 20 renders, under Area, plus the CPU cost of the
+/// paint (`build_scene`, fresh atlas and warm) and the masks' bytes.
+/// `--ignored --nocapture`; CI's `test-gpu` skips it by name.
+#[test]
+#[ignore]
+fn lcd_cost_probe_2286() {
+    use rinch_dom::paint::text_rasterization::{LcdFilter, SubpixelOrder, TextAntialias};
+    const PW: u32 = 1280;
+    const PH: u32 = 800;
+    let (device, queue) = gpu();
+    let mut renderer = vello::Renderer::new(
+        &device,
+        vello::RendererOptions {
+            antialiasing_support: vello::AaSupport::all(),
+            use_cpu: false,
+            num_init_threads: None,
+            pipeline_cache: None,
+        },
+    )
+    .unwrap();
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: PW,
+            height: PH,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&Default::default());
+    for subpixel in [false, true] {
+        let mut config = TextRasterization::default();
+        config = if subpixel {
+            config
+                .antialias(TextAntialias::Subpixel)
+                .subpixel_order(Some(SubpixelOrder::Rgb))
+                .lcd_filter(Some(LcdFilter::Default))
+        } else {
+            config.antialias(TextAntialias::Grayscale)
+        };
+        set_thread_policy(config.resolve(&SystemTextSettings::default()));
+        rinch_dom::paint::glyph_atlas::thread_atlas()
+            .borrow_mut()
+            .clear();
+        let t = std::time::Instant::now();
+        let mut app = text_app("#232629", "#ffffff", PW, PH);
+        let cold = t.elapsed().as_secs_f64() * 1e3;
+        let t = std::time::Instant::now();
+        let scene = app.build_scene(1.0, (PW, PH)).clone();
+        let warm = t.elapsed().as_secs_f64() * 1e3;
+        let bytes = rinch_dom::paint::glyph_atlas::thread_atlas()
+            .borrow()
+            .bytes();
+        reset_thread_policy();
+        let mut ms = Vec::new();
+        for i in 0..23 {
+            let t = std::time::Instant::now();
+            renderer
+                .render_to_texture(
+                    &device,
+                    &queue,
+                    &scene,
+                    &view,
+                    &vello::RenderParams {
+                        base_color: vello::peniko::Color::WHITE,
+                        width: PW,
+                        height: PH,
+                        antialiasing_method: vello::AaConfig::Area,
+                    },
+                )
+                .unwrap();
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            if i >= 3 {
+                ms.push(t.elapsed().as_secs_f64() * 1e3);
+            }
+        }
+        ms.sort_by(f64::total_cmp);
+        eprintln!(
+            "lcd_cost_2286 subpixel={subpixel}: GPU median {:.2} ms (min {:.2}, max {:.2}); \
+             CPU first paint (mount + layout + rasterise) {cold:.1} ms, warm build_scene \
+             {warm:.1} ms; atlas {} KiB",
+            ms[ms.len() / 2],
+            ms[0],
+            ms[ms.len() - 1],
+            bytes / 1024
+        );
+    }
+}

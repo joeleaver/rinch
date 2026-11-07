@@ -17,12 +17,16 @@
 //! - **Windows**: `SystemParametersInfo` — `SPI_GETFONTSMOOTHING`, and with
 //!   ClearType (`SPI_GETFONTSMOOTHINGTYPE`) its `SPI_GETFONTSMOOTHINGORIENTATION`.
 //! - **macOS**: grayscale and unhinted, which is all macOS has done since
-//!   10.14.
+//!   10.14. Subpixel text is never drawn there, even when the app asks for
+//!   it (`SystemTextSettings::subpixel_capable` is `false`).
 //!
-//! Stage 1 uses the hinting (off for `hintstyle=hintnone` or `hinting=false`)
-//! and records the rest: subpixel order and LCD filter are for stage 3's
-//! subpixel antialiasing, and `antialias=false` has no aliased path in Vello
-//! before stage 2's glyph atlas. Both painters draw grayscale meanwhile.
+//! The hinting is off for `hintstyle=hintnone` or `hinting=false`. A subpixel
+//! order (`rgba` other than `none`, ClearType's orientation) turns on subpixel
+//! (LCD) text through the glyph-mask atlas (#2286 stage 3), filtered with the
+//! `lcdfilter` (FreeType's default five-tap filter where fontconfig names
+//! none); an app overrides the order and the filter with
+//! `TextRasterization::subpixel_order` and `lcd_filter`. `antialias=false`
+//! has no aliased path and draws grayscale.
 //!
 //! The read happens on a thread of its own, started by [`App::run`], so it
 //! does not hold up the window; the first frame that paints text waits for it
@@ -103,6 +107,7 @@ fn read_system() -> SystemTextSettings {
         .with_antialias(Some(true))
         .with_hinting(Some(TextHinting::None))
         .with_subpixel_order(Some(SubpixelOrder::None))
+        .with_subpixel_capable(Some(false))
 }
 
 #[cfg(not(any(
