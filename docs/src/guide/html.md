@@ -167,7 +167,36 @@ contains it; `clean` never lets one through, so this holds for what it
 returns. HTML you pass as `html` or `body_style` is taken as it is.) A document that sets no colours is drawn black on white, as a
 browser draws a page, whatever your theme. All of this is the view's own
 CSS on `.rinch-html-view`: restyle it through the cascade (your font, your
-page colour) as you need.
+page colour) as you need. A rule of yours reaches the view's own element,
+not the document inside it ([below](#your-apps-styles-stop-at-the-view)).
+
+## Your app's styles stop at the view
+
+A document in an `HtmlView` is laid out as a browser lays out the same HTML
+put in a `<div>` of a page with no style sheet of its own: by the browser's
+own (user-agent) sheet, its presentational attributes (`width`, `bgcolor`,
+`cellpadding`…) and its own styles. Your theme's base styles, your
+components' CSS and your app's own CSS do not match its elements, so a
+theme's `* { box-sizing: border-box }` cannot turn a mail's `<td
+style="width: 200pt; padding: 0 6pt">` into a narrower cell, and a theme's
+`h5 { line-height: 1.5 }` cannot override the `line-height` a heading
+inherits. Its links have the browser's look (blue, underlined), not your
+theme's. On the web the view keeps the document in a shadow root; on
+desktop rinch matches it the same way (issue #2357).
+
+Inherited properties still come in from the view, as they would from the
+`<div>`: put `font-family`, `font-size` or `line-height` on the view or on
+an element around it, and a document that sets none uses yours. The view
+sets its own `color` and `background-color` (black on white, below), so a
+`color` from around it does not reach the document; set a colour on the
+view itself to change that.
+
+To have your styles reach the document anyway, for HTML of your own that
+should look like the rest of your app, set `app_styles: true`:
+
+```rust
+rsx! { HtmlView { html: help_page, app_styles: true } }
+```
 
 ## Text, and hidden text
 

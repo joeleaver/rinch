@@ -323,13 +323,35 @@ fn forget_subtree(nodes: &mut HashMap<u64, web_sys::Node>, node: &web_sys::Node)
 fn forget_children(nodes: &mut HashMap<u64, web_sys::Node>, parent: &web_sys::Node) {
     NODE_REGISTRY.with(|m| {
         let mut reg = m.borrow_mut();
-        let mut child = parent.first_child();
+        let mut child = children_of(parent).first_child();
         while let Some(c) = child {
             let next = c.next_sibling();
             forget_recursive(nodes, &mut reg, &c);
             child = next;
         }
     });
+}
+
+/// The open shadow root `isolate_styles` attached to `node` (#2357).
+fn shadow_of(node: &web_sys::Node) -> Option<web_sys::ShadowRoot> {
+    node.dyn_ref::<web_sys::Element>()?.shadow_root()
+}
+
+/// Where `node`'s children live: the shadow root `isolate_styles` attached
+/// to it (#2357), or the node itself. The children it had before that stay
+/// in the light tree, unrendered, and are reached through the browser only.
+fn children_of(node: &web_sys::Node) -> web_sys::Node {
+    shadow_of(node).map_or_else(|| node.clone(), Into::into)
+}
+
+/// `node`'s parent, with a shadow root standing for its host: the parent an
+/// app's tree has (#2357).
+fn parent_of(node: &web_sys::Node) -> Option<web_sys::Node> {
+    let parent = node.parent_node()?;
+    match parent.dyn_ref::<web_sys::ShadowRoot>() {
+        Some(shadow) => Some(shadow.host().into()),
+        None => Some(parent),
+    }
 }
 
 fn forget_recursive(
@@ -345,6 +367,15 @@ fn forget_recursive(
         let next = c.next_sibling();
         forget_recursive(nodes, reg, &c);
         child = next;
+    }
+    // And the children an `isolate_styles` element keeps in its shadow root.
+    if let Some(shadow) = shadow_of(node) {
+        let mut child = shadow.first_child();
+        while let Some(c) = child {
+            let next = c.next_sibling();
+            forget_recursive(nodes, reg, &c);
+            child = next;
+        }
     }
     // An `<img>` the app's image sources recorded leaves that record with it.
     crate::images::forget_node(node);
@@ -1267,8 +1298,9 @@ impl WebDocument {
             set_nid(node, id);
             self.nodes.insert(id.0, node.clone());
         }
-        // Recurse into children
-        let children = node.child_nodes();
+        // Recurse into children (an `isolate_styles` element's, in its
+        // shadow root).
+        let children = children_of(node).child_nodes();
         for i in 0..children.length() {
             if let Some(child) = children.item(i) {
                 self.register_subtree(&child);
@@ -1794,13 +1826,40 @@ impl DomDocument for WebDocument {
 
     fn append_child(&mut self, parent: NodeId, child: NodeId) {
         if let (Some(p), Some(c)) = (self.nodes.get(&parent.0), self.nodes.get(&child.0)) {
-            insert_or_move(p, c, None);
+            insert_or_move(&children_of(p), c, None);
         }
     }
 
     fn remove_child(&mut self, parent: NodeId, child: NodeId) {
         if let (Some(p), Some(c)) = (self.nodes.get(&parent.0), self.nodes.get(&child.0)) {
-            p.remove_child(c).ok();
+            if c.parent_node().is_some_and(|cp| !cp.is_same_node(Some(p))) {
+                children_of(p).remove_child(c).ok();
+            } else {
+                p.remove_child(c).ok();
+            }
+        }
+    }
+
+    /// Attaches an open shadow root (#2357): the page's style sheets do not
+    /// match what is in it, while it inherits from the element, which is
+    /// what desktop's `isolate_styles` mirrors. Children added from here on
+    /// go into it ([`children_of`]).
+    fn isolate_styles(&mut self, node: NodeId) {
+        let Some(el) = self
+            .nodes
+            .get(&node.0)
+            .and_then(|n| n.dyn_ref::<web_sys::Element>())
+        else {
+            return;
+        };
+        if el.shadow_root().is_some() {
+            return;
+        }
+        if el
+            .attach_shadow(&web_sys::ShadowRootInit::new(web_sys::ShadowRootMode::Open))
+            .is_ok()
+        {
+            el.set_attribute("rinch-style-isolated", "").ok();
         }
     }
 
@@ -1810,7 +1869,14 @@ impl DomDocument for WebDocument {
             self.nodes.get(&child.0),
             self.nodes.get(&reference.0),
         ) {
-            insert_or_move(p, c, Some(r));
+            // Into the shadow root when the reference is there (#2357).
+            let container = r.parent_node().unwrap_or_else(|| p.clone());
+            let container = if container.is_same_node(Some(p)) {
+                p.clone()
+            } else {
+                children_of(p)
+            };
+            insert_or_move(&container, c, Some(r));
         }
     }
 
@@ -2186,7 +2252,7 @@ impl DomDocument for WebDocument {
     fn get_children(&self, node: NodeId) -> Vec<NodeId> {
         let mut result = Vec::new();
         if let Some(n) = self.nodes.get(&node.0) {
-            let children = n.child_nodes();
+            let children = children_of(n).child_nodes();
             for i in 0..children.length() {
                 if let Some(child) = children.item(i)
                     && let Some(nid) = get_nid(&child)
@@ -2200,6 +2266,7 @@ impl DomDocument for WebDocument {
 
     fn insert_child(&mut self, parent: NodeId, child: NodeId, index: usize) {
         if let (Some(p), Some(c)) = (self.nodes.get(&parent.0), self.nodes.get(&child.0)) {
+            let p = &children_of(p);
             // `item` past the end is `None`, which appends.
             let reference = p.child_nodes().item(index as u32);
             insert_or_move(p, c, reference.as_ref());
@@ -2208,7 +2275,7 @@ impl DomDocument for WebDocument {
 
     fn parent_node(&self, node: NodeId) -> Option<NodeId> {
         let n = self.nodes.get(&node.0)?;
-        let parent = n.parent_node()?;
+        let parent = parent_of(n)?;
         get_nid(&parent)
     }
 
@@ -2481,17 +2548,31 @@ impl DomDocument for WebDocument {
             // first — the desktop backend already does this (issue #184). One
             // registry borrow for the whole sweep, not one per child.
             forget_children(&mut self.nodes, &el);
-            el.set_inner_html(html);
+            // An `isolate_styles` element's children are its shadow root's
+            // (#2357).
+            let shadow = el.shadow_root();
+            match &shadow {
+                Some(shadow) => shadow.set_inner_html(html),
+                None => el.set_inner_html(html),
+            }
             // Walk all new child nodes and register them
-            let children = el.child_nodes();
+            let children = children_of(&el).child_nodes();
+            let mut parsed = Vec::new();
             for i in 0..children.length() {
                 if let Some(child) = children.item(i) {
                     self.register_subtree(&child);
+                    parsed.extend(child.dyn_into::<web_sys::Element>().ok());
                 }
             }
             // Parsed markup skipped `set_attribute`: an `<img>` source the
             // app answers for goes through the same path as one set one.
-            crate::images::adopt_parsed_images(&el);
+            if shadow.is_none() {
+                crate::images::adopt_parsed_images(&el);
+            } else {
+                for child in &parsed {
+                    crate::images::adopt_parsed_images(child);
+                }
+            }
         }
     }
 

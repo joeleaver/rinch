@@ -2218,7 +2218,8 @@ fn dispatch_click_at(
         let active = active_in(el);
         // The link the press went through on its way to the handler
         // (`events::click_link`), as on desktop.
-        events::set_click_link(link_in(el, &rid_el));
+        let deep = deep_target(event).filter(|d| contains_composed(el, d));
+        events::set_click_link(link_in(deep.as_ref().unwrap_or(el), &rid_el));
         let ran = dispatch_rid(rid);
         events::set_click_link(None);
         if let PressFocus::Focus(target) = press_focus.clone()
@@ -2326,6 +2327,7 @@ fn focus_press_target(start: &web_sys::Element) {
 /// [`dispatch_rid`]) — and leaves its `ClickContext` untouched.
 fn dispatch_activation(
     el: &web_sys::Element,
+    deep: &web_sys::Element,
     cursor: Option<(f32, f32)>,
     modifiers: events::ModifierState,
 ) -> Option<events::EventHandlerId> {
@@ -2340,28 +2342,69 @@ fn dispatch_activation(
         events::MouseButton::Left,
         modifiers,
     );
-    // A keyboard or AT activation of a link names it too.
-    events::set_click_link(link_in(el, &rid_el));
+    // A keyboard or AT activation of a link names it too (`deep`: the
+    // element itself, in a shadow root under `el` or `el`).
+    events::set_click_link(link_in(deep, &rid_el));
     let ran = dispatch_rid(rid);
     events::set_click_link(None);
     ran.then_some(rid)
 }
 
 /// The `href` of the nearest `<a href>` at or above `el` that is inside the
-/// handler's element `rid_el` (`events::click_link`).
+/// handler's element `rid_el` (`events::click_link`). `el` may be in a
+/// shadow root under `rid_el` ([`deep_target`]).
 fn link_in(el: &web_sys::Element, rid_el: &web_sys::Element) -> Option<String> {
-    el.closest("a[href]")
-        .ok()
-        .flatten()
-        .filter(|a| rid_el.contains(Some(a)))
+    closest_composed(el, "a[href]")
+        .filter(|a| contains_composed(rid_el, a))
         .and_then(|a| a.get_attribute("href"))
 }
 
 /// The `<a href>` at or above `el` when an element around it claims its
-/// links (`data-claim-links`).
+/// links (`data-claim-links`), across shadow roots.
 fn claimed_link(el: &web_sys::Element) -> Option<web_sys::Element> {
-    let a = el.closest("a[href]").ok().flatten()?;
-    a.closest("[data-claim-links]").ok().flatten().map(|_| a)
+    let a = closest_composed(el, "a[href]")?;
+    closest_composed(&a, "[data-claim-links]").map(|_| a)
+}
+
+/// The element `event` was dispatched at, inside a shadow root too: an
+/// `HtmlView`'s document is in one (`isolate_styles`, #2357), and at the
+/// document `event.target()` is retargeted to its host, the view. The links
+/// helpers above need the element itself; the handler lookups (`data-rid`
+/// on the view) keep the retargeted one.
+fn deep_target(event: &web_sys::Event) -> Option<web_sys::Element> {
+    event
+        .composed_path()
+        .get(0)
+        .dyn_into::<web_sys::Element>()
+        .ok()
+        .or_else(|| event.target()?.dyn_into::<web_sys::Element>().ok())
+}
+
+/// `el.closest(selector)`, continuing from a shadow root to its host.
+fn closest_composed(el: &web_sys::Element, selector: &str) -> Option<web_sys::Element> {
+    let mut from = el.clone();
+    loop {
+        if let Some(found) = from.closest(selector).ok().flatten() {
+            return Some(found);
+        }
+        let root = from.get_root_node();
+        from = root.dyn_ref::<web_sys::ShadowRoot>()?.host();
+    }
+}
+
+/// `outer.contains(inner)`, counting what is in shadow roots below `outer`.
+fn contains_composed(outer: &web_sys::Element, inner: &web_sys::Element) -> bool {
+    let mut node = inner.clone();
+    loop {
+        if outer.contains(Some(&node)) {
+            return true;
+        }
+        let root = node.get_root_node();
+        match root.dyn_ref::<web_sys::ShadowRoot>() {
+            Some(shadow) => node = shadow.host(),
+            None => return false,
+        }
+    }
 }
 
 /// Whether the browser's own ways to open a claimed link other than a click
@@ -2372,9 +2415,7 @@ fn claimed_link_menu_blocked(el: &web_sys::Element) -> bool {
     let Some(a) = claimed_link(el) else {
         return false;
     };
-    a.closest("[data-claim-links]")
-        .ok()
-        .flatten()
+    closest_composed(&a, "[data-claim-links]")
         .and_then(|c| c.get_attribute("data-claim-links"))
         .is_none_or(|v| !v.split_whitespace().any(|t| t == "menu"))
 }
@@ -2603,12 +2644,15 @@ fn try_keyboard_activation(event: &web_sys::KeyboardEvent, key: &str) -> bool {
     {
         return false;
     }
-    let Some(el) = event
+    let Some(target) = event
         .target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
     else {
         return false;
     };
+    // The focused element itself, in an `HtmlView`'s shadow root too
+    // (#2357); its handler is found from the retargeted `target`.
+    let el = deep_target(event).unwrap_or_else(|| target.clone());
     if !el
         .matches(activation::ACTIVATABLE_SELECTOR)
         .unwrap_or(false)
@@ -2622,9 +2666,9 @@ fn try_keyboard_activation(event: &web_sys::KeyboardEvent, key: &str) -> bool {
         return false;
     }
     if event.repeat() {
-        return nearest_live_rid(&el).is_some();
+        return nearest_live_rid(&target).is_some();
     }
-    dispatch_activation(&el, None, modifiers_from_key_event(event)).is_some()
+    dispatch_activation(&target, &el, None, modifiers_from_key_event(event)).is_some()
 }
 
 // ── Tab containment (`data-trap-focus`, issue #474) ─────────────────────────
@@ -3620,7 +3664,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         // A link inside an element that claims its links (`data-claim-links`,
         // `HtmlView`) is the app's to follow: the browser never navigates
         // the app's own tab to it, whatever input clicked it.
-        if target_el
+        let deep_el = deep_target(&event);
+        if deep_el
             .as_ref()
             .is_some_and(|el| claimed_link(el).is_some())
         {
@@ -3676,7 +3721,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 .filter(|m| m.detail() != 0)
                 .map(|m| (m.client_x() as f32, m.client_y() as f32));
             let modifiers = mouse.map(modifiers_from_event).unwrap_or_default();
-            if let Some(rid) = dispatch_activation(&el, cursor, modifiers)
+            let deep = deep_el.unwrap_or_else(|| el.clone());
+            if let Some(rid) = dispatch_activation(&el, &deep, cursor, modifiers)
                 && el.closest("label").ok().flatten().is_some()
             {
                 LABEL_FORWARD.with(|l| l.set(Some(rid)));
@@ -3703,7 +3749,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         else {
             return;
         };
-        if claimed_link(&el).is_none() {
+        let deep = deep_target(&event).unwrap_or_else(|| el.clone());
+        if claimed_link(&deep).is_none() {
             return;
         }
         event.prevent_default();
@@ -3718,7 +3765,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 events::MouseButton::Middle,
                 modifiers_from_event(mouse),
             );
-            events::set_click_link(link_in(&el, &rid_el));
+            events::set_click_link(link_in(&deep, &rid_el));
             dispatch_rid(rid);
             events::set_click_link(None);
         }
@@ -3739,7 +3786,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             && let Ok(el) = target.dyn_into::<web_sys::Element>()
             && (el.closest("[draggable=\"true\"]").ok().flatten().is_some()
                 // A claimed link dragged to the tab bar would open it.
-                || claimed_link_menu_blocked(&el))
+                || deep_target(&event).is_some_and(|d| claimed_link_menu_blocked(&d)))
         {
             event.prevent_default();
         }
@@ -4177,7 +4224,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             .target()
             .and_then(|target| target.dyn_into::<web_sys::Element>().ok());
         // "Open link in new tab" on a claimed link would open it.
-        if target.as_ref().is_some_and(claimed_link_menu_blocked) {
+        // (The link itself: it may be in an `HtmlView`'s shadow root, #2357.)
+        if deep_target(&event).is_some_and(|d| claimed_link_menu_blocked(&d)) {
             event.prevent_default();
         }
         // A stale `data-oncontextmenu` — its scope disposed, the attribute

@@ -836,6 +836,27 @@ impl<'a> TElement for RinchNode<'a> {
         None
     }
 
+    /// `false` under a node whose styles are isolated (#2357,
+    /// [`Node::style_isolated`]): Stylo's `RuleCollector` then collects only
+    /// user-agent rules, presentational hints and the `style` attribute for
+    /// this element (and its pseudo-elements), and its style-sharing cache
+    /// and document-rule invalidation leave it out — the treatment a
+    /// browser gives a shadow tree's contents against the document's
+    /// sheets. The isolating node itself is not under itself.
+    fn matches_user_and_content_rules(&self) -> bool {
+        let mut parent = self.node().parent;
+        while let Some(id) = parent {
+            let Some(node) = self.tree.nodes.get(id) else {
+                break;
+            };
+            if node.style_isolated {
+                return false;
+            }
+            parent = node.parent;
+        }
+        true
+    }
+
     /// The resolved `lang` (#681): this element's own `lang` attribute, or
     /// the nearest ancestor's — see [`resolve_lang`]. Used by Stylo's
     /// invalidation wrapper (`element_wrapper.rs`'s `get_lang`), not by

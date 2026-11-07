@@ -1644,6 +1644,13 @@ pub struct Node {
     /// each cascade of the element and set when that cascade, or a pseudo
     /// resolution after it, asks `TElement::get_attr` for an attribute.
     pub content_reads_attrs: Cell<bool>,
+    /// The document's style sheets stop at this node (#2357,
+    /// `DomDocument::isolate_styles`): its descendants answer `false` to
+    /// Stylo's `TElement::matches_user_and_content_rules`, so they match
+    /// only user-agent rules, presentational hints and their `style`
+    /// attribute — Stylo's own gate for native anonymous content, the same
+    /// one a shadow root's contents pass. Inheritance is untouched.
+    pub style_isolated: bool,
     /// A closed `<select>`'s widest option label width in CSS px, with the
     /// hash of what it was shaped from (the labels and the font) — so a
     /// restyle that moves neither re-shapes nothing (#1098). `None` until an
@@ -1997,6 +2004,7 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            style_isolated: false,
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
@@ -2087,6 +2095,7 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            style_isolated: false,
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
@@ -2176,6 +2185,7 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            style_isolated: false,
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
@@ -2263,6 +2273,7 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            style_isolated: false,
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),

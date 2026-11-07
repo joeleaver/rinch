@@ -766,3 +766,49 @@ cascade now re-cascades the children of any element whose inherited style moved
 `crates/rinch-dom/tests/incremental_text_layout_oracle_tests.rs` is the pin:
 each input above against a fresh layout of the final state, with the mutant
 that kills it named in the PR.
+
+**Style isolation: `isolate_styles` (#2357).** `NodeHandle::isolate_styles`
+stops the document's style sheets (author origin: the theme, component CSS,
+an app's own `<style>`s) matching the node's **descendants**, as a shadow
+root stops the page's sheets in a browser; `rinch_html::HtmlView` calls it on
+its view unless `app_styles` is set. Below the node only user-agent rules,
+presentational hints and `style` attributes apply; inheritance is untouched,
+so the host's `font-*` / `line-height` still reach the content. The node
+itself keeps matching author rules (it is the shadow *host*), which is why
+the view's own `<style>` (rules on `.rinch-html-view`) still works.
+
+- **Desktop** uses Stylo's own gate for native anonymous content:
+  `Node::style_isolated` is set on the node, and
+  `TElement::matches_user_and_content_rules` answers `false` for any element
+  with an isolated ancestor (an O(depth) walk of `parent` ids, only false
+  under a view). With it false, `RuleCollector::collect_all` skips user and
+  document author rules but still collects UA rules, presentational hints
+  and the style attribute; Stylo also leaves such an element out of the
+  style-sharing cache and of document-rule invalidation
+  (`each_applicable_non_document_style_rule_data`). rinch-dom calls
+  `Stylist::push_applicable_declarations`, which builds that collector, so
+  pseudo-elements follow their originating element. The node also gets the
+  `rinch-style-isolated` attribute, which the UA sheet's
+  `[rinch-style-isolated] a[href]` rule keys on to give links Chrome's
+  `a:-webkit-any-link` look (`#0000ee`, underline, pointer): the UA sheet
+  has no link rule otherwise, and an app's own links must stay as they were.
+- **Web** attaches an open shadow root to the node; `WebDocument` puts
+  children added afterwards into it (`children_of`), answers the host as a
+  shadow child's `parent_node` (`parent_of`), and walks it when registering
+  or forgetting nodes. Children the node had before stay in the light tree,
+  unrendered (the view's `<style>` is one: still a document sheet). At the
+  document, an event from inside is retargeted to the host, which carries
+  the view's `data-rid`, so handler lookup is unchanged; the link helpers
+  (`link_in`, `claimed_link`) read `composedPath()[0]` (`deep_target`) and
+  cross shadow boundaries (`closest_composed`, `contains_composed`), or a
+  link click would navigate the tab. A synthetic event in a test needs
+  `composed: true` to leave the shadow root, as the browser's own do.
+- **Why not a CSS reset** (`:where(.rinch-html-body *) { all: revert }`):
+  `revert` in the author origin rolls back to the user-agent origin and so
+  also drops presentational hints, measured in Chrome 156 (a `<td width=300
+  bgcolor=red>` under it is 24px wide and transparent); mail is made of
+  them. A zero-specificity reset also loses to any app rule with a type or
+  class selector.
+- **Not isolated**: `document.querySelectorAll` on the web does not see
+  into the shadow root (desktop's does), and an app rule that names the
+  view's own element still reaches it.
