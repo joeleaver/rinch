@@ -297,6 +297,120 @@ fn a_caption_follows_a_change_of_spacing() {
     );
 }
 
+/// A caption with `style`, 20px tall, over a 40px cell, in a table with
+/// `table` (`border-spacing` and size).
+fn margined(table: &str, style: &str) -> RinchDocument {
+    doc(&format!(
+        "<table id=t style='{table}'><caption id=cap style='{style}'>{}</caption><tr><td id=a>{}</td></tr></table>",
+        d(0, 20),
+        d(40, 10)
+    ))
+}
+
+#[test]
+fn a_captions_percentage_margins_resolve_against_the_tables_width() {
+    // Review of #2401: these stayed inside the padding (`margin-top: 5%`
+    // gave 15 / 41 / 57).
+    let t = "border-spacing:6px;width:200px";
+    check(
+        "margin-top: 5%",
+        &margined(t, "margin-top:5%"),
+        &[
+            ("t", (0.0, 0.0, 200.0, 52.0)),
+            ("cap", (0.0, 10.0, 200.0, 20.0)),
+            ("a", (6.0, 36.0, 188.0, 10.0)),
+        ],
+    );
+    check(
+        "margin-left: 10%",
+        &margined(t, "margin-left:10%"),
+        &[
+            ("t", (0.0, 0.0, 200.0, 42.0)),
+            ("cap", (20.0, 0.0, 180.0, 20.0)),
+        ],
+    );
+    check(
+        "margin-left: calc(4px + 1%)",
+        &margined(t, "margin-left:calc(4px + 1%)"),
+        &[("cap", (6.0, 0.0, 194.0, 20.0))],
+    );
+    check(
+        "margin-top: calc(2px + 3%)",
+        &margined(t, "margin-top:calc(2px + 3%)"),
+        &[
+            ("t", (0.0, 0.0, 200.0, 50.0)),
+            ("cap", (0.0, 8.0, 200.0, 20.0)),
+            ("a", (6.0, 34.0, 188.0, 10.0)),
+        ],
+    );
+    // A bottom caption, uneven spacing.
+    check(
+        "bottom, 2% / 7% / 3%",
+        &margined(
+            "border-spacing:5px 3px;width:300px",
+            "caption-side:bottom;margin-bottom:3%;margin-right:7%;margin-top:2%",
+        ),
+        &[
+            ("t", (0.0, 0.0, 300.0, 51.0)),
+            ("cap", (0.0, 22.0, 279.0, 20.0)),
+            ("a", (5.0, 3.0, 290.0, 10.0)),
+        ],
+    );
+    // A table as wide as its content: a top margin resolves (it sizes no
+    // width). Chrome 156: 15.188, 41.188, 57.188.
+    let doc = doc(&format!(
+        "<table id=t style='border-spacing:6px'><caption id=cap style='margin-top:10%'>{}</caption>\
+         <tr><td id=a>{}</td></tr></table>",
+        d(0, 20),
+        d(140, 10)
+    ));
+    assert_eq!(rect(&doc, "cap"), (0.0, 15.0, 152.0, 20.0));
+    assert_eq!(rect(&doc, "t"), (0.0, 0.0, 152.0, 57.0));
+}
+
+/// A side margin in a percentage in a table as wide as its content would feed
+/// its own basis, and is taken as zero. Chrome 156 resolves it against the
+/// final width: the caption at `(15.188, 0, 136.813, 20)`.
+#[test]
+fn a_captions_side_percentage_in_a_content_sized_table_is_zero() {
+    let doc = doc(&format!(
+        "<table id=t style='border-spacing:6px'><caption id=cap style='margin-left:10%'>{}</caption>\
+         <tr><td id=a>{}</td></tr></table>",
+        d(0, 20),
+        d(140, 10)
+    ));
+    assert_eq!(rect(&doc, "cap"), (0.0, 0.0, 152.0, 20.0));
+    assert_eq!(rect(&doc, "t"), (0.0, 0.0, 152.0, 42.0));
+}
+
+#[test]
+fn a_sized_captions_auto_margins_share_the_tables_width() {
+    // Review of #2401: centred in the padding box less the left padding (90).
+    check(
+        "margin: 0 auto",
+        &margined(
+            "border-spacing:6px;width:200px;padding-left:30px",
+            "width:50px;margin:0 auto",
+        ),
+        &[
+            ("t", (0.0, 0.0, 200.0, 42.0)),
+            ("cap", (75.0, 0.0, 50.0, 20.0)),
+            ("a", (36.0, 26.0, 158.0, 10.0)),
+        ],
+    );
+    check(
+        "margin-left: auto",
+        &margined(
+            "border-spacing:4px;width:250px",
+            "width:60px;margin-left:auto;margin-right:15px",
+        ),
+        &[
+            ("t", (0.0, 0.0, 250.0, 38.0)),
+            ("cap", (175.0, 0.0, 60.0, 20.0)),
+        ],
+    );
+}
+
 // ---------------------------------------------------------------- #2358
 
 const ROWS: &str =
