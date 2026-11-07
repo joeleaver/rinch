@@ -270,6 +270,9 @@ pub enum RinchNativeEvent {
     ShowWindow,
     /// Hide the window.
     HideWindow,
+    /// Bring the window to the front and ask for keyboard focus: shown if
+    /// hidden, restored if minimized.
+    FocusWindow,
     /// Let pointer events through the window, or stop (issue #1519).
     SetClickThrough(bool),
     /// Move the window's outer top-left to this logical position (#1546).
@@ -3977,6 +3980,25 @@ impl RinchRuntime {
             }
             RinchNativeEvent::ShowWindow => PlatformEvent::UserEvent(UserEvent::ShowWindow),
             RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
+            RinchNativeEvent::FocusWindow => {
+                // A hidden window is shown, which focuses it as a first
+                // appearance does.
+                let Some(w) = &self.window else {
+                    return self.handle_native_event(RinchNativeEvent::ShowWindow, event_loop);
+                };
+                // The shell's alone, like click-through. A non-activating
+                // window never takes focus, so it is only restored.
+                w.set_minimized(false);
+                let non_activating = self
+                    .app
+                    .window_props
+                    .as_ref()
+                    .is_some_and(|p| p.non_activating);
+                if !non_activating {
+                    w.raw().focus_window();
+                }
+                return;
+            }
             RinchNativeEvent::SetClickThrough(click_through) => {
                 // The shell's alone: no app state depends on it.
                 let apply = self.note_click_through(click_through);
@@ -6273,8 +6295,10 @@ mod native_event_queue_tests {
         assert!(q.push(RinchNativeEvent::MinimizeWindow));
         assert!(!q.push(RinchNativeEvent::ReRender));
         assert!(q.push(RinchNativeEvent::ShowWindow));
+        assert!(q.push(RinchNativeEvent::FocusWindow));
+        assert!(q.push(RinchNativeEvent::FocusWindow));
         let drained = q.drain();
-        assert_eq!(drained.len(), 4, "{drained:?}");
+        assert_eq!(drained.len(), 6, "{drained:?}");
         assert!(matches!(drained[1], RinchNativeEvent::ReRender));
         assert_eq!(rerenders(&drained), 1);
     }
