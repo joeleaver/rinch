@@ -482,6 +482,17 @@ impl RinchDocument {
                 cursor: pointer;
             }
 
+            /* And the browser's keyboard focus ring there (#2357 review):
+               Chrome's UA `:focus-visible { outline: auto 1px
+               -webkit-focus-ring-color }`. A theme's `:focus-visible` rule
+               no longer reaches isolated content, so without this a
+               keyboard-focused link in mail showed no ring at all. `auto` is
+               drawn solid here; the colour is Chrome's ring colour on a
+               light page. */
+            [rinch-style-isolated] :focus-visible {
+                outline: auto 1px #101010;
+            }
+
             /* `svg` is here for the same reason `img` is: in a browser it is an
                inline **replaced** element — an atomic inline — and `inline-block`
                is the model rinch already uses for one. Stylo gives an unknown

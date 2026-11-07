@@ -1245,6 +1245,7 @@ impl DomDocument for RinchDocument {
             return;
         }
         n.style_isolated = true;
+        self.tree.isolated_nodes += 1;
         self.set_attribute(node, "rinch-style-isolated", "");
         self.mark_restyle(node.0, true);
     }

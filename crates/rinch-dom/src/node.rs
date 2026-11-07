@@ -3400,6 +3400,14 @@ pub struct NodeTree {
     /// `DomDocument::text_selection_range` answers for an unfocused control as
     /// a browser does (issue #1678). Dropped with the node.
     pub text_selections: HashMap<RawNodeId, (usize, usize, rinch_core::dom::SelectionDirection)>,
+    /// How many live nodes have [`Node::style_isolated`] set (#2357). While
+    /// it is `0`, `TElement::matches_user_and_content_rules` answers `true`
+    /// without walking the element's ancestors, so a document with no
+    /// isolated subtree (an app with no `HtmlView`) pays nothing for the
+    /// check; it is asked once per cascade, per pseudo-element and per
+    /// invalidation. Raised by `isolate_styles`, lowered by
+    /// [`Self::remove_subtree`] when it frees such a node.
+    pub isolated_nodes: usize,
     /// Shared lock for Stylo CSS engine.
     pub guard: SharedRwLock,
     /// IDs of anonymous block box nodes created during layout.
@@ -3962,6 +3970,7 @@ impl NodeTree {
             scroll_lock_exempt: Vec::new(),
             select_value_fresh: HashSet::new(),
             text_selections: HashMap::new(),
+            isolated_nodes: 0,
             guard,
             anonymous_block_boxes: Vec::new(),
             split_inlines: Vec::new(),
@@ -4552,7 +4561,9 @@ impl NodeTree {
             }
         }
         for node_id in to_remove {
-            self.nodes.remove(node_id);
+            if self.nodes.remove(node_id).style_isolated {
+                self.isolated_nodes -= 1;
+            }
         }
     }
 

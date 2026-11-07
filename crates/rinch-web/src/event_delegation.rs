@@ -2817,7 +2817,21 @@ pub(crate) fn trap_focusables(root: &web_sys::Element) -> Vec<web_sys::HtmlEleme
     if root.matches(FOCUSABLE_SELECTOR).unwrap_or(false) {
         consider(root.clone());
     }
-    if let Ok(list) = root.query_selector_all(FOCUSABLE_SELECTOR) {
+    // An `HtmlView`'s links are in its shadow root (`isolate_styles`,
+    // #2357), where `querySelectorAll` does not look: with such a host in
+    // the trap, walk the tree, shadow roots included, in tree order.
+    if root
+        .query_selector("[rinch-style-isolated]")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        let mut found = Vec::new();
+        focusables_composed(root, &mut found);
+        for el in found {
+            consider(el);
+        }
+    } else if let Ok(list) = root.query_selector_all(FOCUSABLE_SELECTOR) {
         for i in 0..list.length() {
             if let Some(el) = list.item(i).and_then(|n| n.dyn_into().ok()) {
                 consider(el);
@@ -2825,6 +2839,36 @@ pub(crate) fn trap_focusables(root: &web_sys::Element) -> Vec<web_sys::HtmlEleme
         }
     }
     out
+}
+
+/// Every [`FOCUSABLE_SELECTOR`] element below `node`, in tree order, with
+/// an open shadow root's content where its host is (its light children,
+/// which it does not render, after; the visibility filter drops them).
+fn focusables_composed(node: &web_sys::Node, out: &mut Vec<web_sys::Element>) {
+    let mut child = node.first_child();
+    while let Some(c) = child {
+        if let Some(el) = c.dyn_ref::<web_sys::Element>() {
+            if el.matches(FOCUSABLE_SELECTOR).unwrap_or(false) {
+                out.push(el.clone());
+            }
+            if let Some(shadow) = el.shadow_root() {
+                focusables_composed(&shadow, out);
+            }
+        }
+        focusables_composed(&c, out);
+        child = c.next_sibling();
+    }
+}
+
+/// The focused element, inside open shadow roots too: `activeElement` at
+/// the document answers a shadow host (an `HtmlView`, #2357) for focus on
+/// a link in its document.
+pub(crate) fn deep_active_element(doc: &web_sys::Document) -> Option<web_sys::Element> {
+    let mut active = doc.active_element()?;
+    while let Some(inner) = active.shadow_root().and_then(|s| s.active_element()) {
+        active = inner;
+    }
+    Some(active)
 }
 
 /// Move focus within the live trap, if there is one. Returns whether the key
@@ -2854,7 +2898,7 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
     move_tab(
         browser_doc,
         &root,
-        browser_doc.active_element(),
+        deep_active_element(browser_doc),
         shift,
         true,
     )
@@ -2982,8 +3026,7 @@ fn move_tab(
             (first + step) % n
         };
         let _ = items[idx].focus();
-        if browser_doc
-            .active_element()
+        if deep_active_element(browser_doc)
             .is_some_and(|a| items[idx].is_same_node(Some(a.unchecked_ref())))
         {
             return true;

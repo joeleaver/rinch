@@ -27,18 +27,24 @@ const VP: (f32, f32) = (1000.0, 600.0);
 const REPRO: &str = r#"<table style="border-collapse:collapse"><tr><td id="c" style="width:200pt; padding:0 6pt; height:10px"></td></tr></table><div style="font-size:14px; line-height:1"><h5 id="h" style="margin:0; font-size:14px">Heading</h5></div><h3 id="t" style="margin:0">Title</h3><p id="p" style="margin:0">plain</p><a id="a" href="https://example.com/">link</a>"#;
 
 /// The host's inherited properties, as Postrinch's `.mail-html` sets them.
-/// (`color` too, which the view's own `color: #000` replaces.)
+/// (`color` too: the view sets none of its own unless `paper`.)
 const HOST_STYLE: &str = "font-family: monospace; font-size: 13px; line-height: 2; color: #ff0000";
 
 /// Mounts the repro in an `HtmlView` inside a host `div` carrying
 /// [`HOST_STYLE`], under the real theme and component sheets.
 fn mount(app_styles: bool) -> RinchApp {
+    mount_with(app_styles, false)
+}
+
+/// [`mount`], with `paper` too.
+fn mount_with(app_styles: bool, paper: bool) -> RinchApp {
     let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
         let host = rsx! { div { id: "host" } };
         host.set_attribute("style", HOST_STYLE);
         let view = rinch_html::HtmlView {
             html: REPRO.into(),
             app_styles,
+            paper,
             ..Default::default()
         }
         .render(__scope, &[]);
@@ -132,9 +138,49 @@ fn the_hosts_inherited_properties_still_reach_the_document() {
         s.line_height
     );
     drop(p);
-    // The view itself is still styled by its own sheet (and an app's): its
-    // `color: #000` replaces the host's red, and the document inherits it.
+    // And `color`: the view sets none (#2357 review), so the host's red
+    // reaches a document that sets none, as in a `<div>` in Chrome.
+    assert_eq!(rgb(&app, "p"), Some((255, 0, 0)));
+}
+
+/// The view's own element.
+fn view(app: &RinchApp) -> std::cell::Ref<'_, rinch_dom::Node> {
+    let d = app.doc.as_ref().unwrap().borrow();
+    std::cell::Ref::map(d, |d| {
+        d.tree
+            .nodes
+            .iter()
+            .find(|(_, n)| {
+                n.attributes
+                    .get("class")
+                    .is_some_and(|c| c.split_whitespace().any(|c| c == "rinch-html-view"))
+            })
+            .map(|(_, n)| n)
+            .expect("the view")
+    })
+}
+
+#[test]
+fn paper_draws_the_document_black_on_white() {
+    let app = mount_with(false, false);
+    let bg = view(&app).computed_style.background_color();
+    assert!(
+        bg.is_none_or(|c| c.to_rgba8().a == 0),
+        "no background of its own by default: {bg:?}"
+    );
+    drop(app);
+
+    // The view itself is still styled by its own sheet (it is the host, not
+    // inside): `paper`'s rule replaces the host's red, and the document
+    // inherits it.
+    let app = mount_with(false, true);
     assert_eq!(rgb(&app, "p"), Some((0, 0, 0)));
+    let bg = view(&app)
+        .computed_style
+        .background_color()
+        .map(|c| c.to_rgba8())
+        .map(|c| (c.r, c.g, c.b, c.a));
+    assert_eq!(bg, Some((255, 255, 255, 255)));
 }
 
 #[test]
@@ -168,4 +214,49 @@ fn app_styles_lets_the_theme_match_inside_the_view() {
         "#h is {} high; themed: 21 (the theme's `line-height: 1.5`)",
         h.layout.height
     );
+}
+
+#[test]
+fn a_keyboard_focused_link_in_the_document_shows_the_browsers_ring() {
+    let app = mount(false);
+    let a = node(&app, "a").id;
+    let no_ring = node(&app, "a").computed_style.outline_width;
+    {
+        let mut d = app.doc.as_ref().unwrap().borrow_mut();
+        d.update_focus(Some(a));
+        d.set_focus_visible(a, true);
+    }
+    // A new viewport, so the resolve does not early-return.
+    let mut app = app;
+    app.resolve_and_repaint(VP.0 + 1.0, VP.1);
+    let s = &node(&app, "a").computed_style;
+    assert_eq!(no_ring, 0.0, "no ring before the focus");
+    assert_eq!(
+        s.outline_style,
+        rinch_dom::computed_style::BorderStyleValue::Solid,
+        "the UA's `outline: auto`"
+    );
+    assert_eq!(s.outline_width, 1.0);
+    assert_eq!(
+        s.outline_color
+            .map(|c| c.to_rgba8())
+            .map(|c| (c.r, c.g, c.b)),
+        Some((0x10, 0x10, 0x10))
+    );
+}
+
+/// The document counts its isolated nodes, so that one without any skips
+/// the ancestor walk; freeing the view takes it back to zero.
+#[test]
+fn freeing_the_view_lowers_the_documents_isolated_count() {
+    let app = mount(false);
+    let host = node(&app, "host").id;
+    let count = || app.doc.as_ref().unwrap().borrow().tree.isolated_nodes;
+    assert_eq!(count(), 1, "the view");
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .set_inner_html(rinch_core::dom::NodeId(host), "");
+    assert_eq!(count(), 0, "the view was freed with the host's children");
 }

@@ -344,6 +344,23 @@ fn children_of(node: &web_sys::Node) -> web_sys::Node {
     shadow_of(node).map_or_else(|| node.clone(), Into::into)
 }
 
+/// `textContent` with open shadow roots' text, each after its host's light
+/// children's (#2357): the order desktop's tree has.
+fn composed_text(node: &web_sys::Node, out: &mut String) {
+    if node.node_type() == web_sys::Node::TEXT_NODE {
+        out.push_str(&node.text_content().unwrap_or_default());
+        return;
+    }
+    let mut child = node.first_child();
+    while let Some(c) = child {
+        composed_text(&c, out);
+        child = c.next_sibling();
+    }
+    if let Some(shadow) = shadow_of(node) {
+        composed_text(&shadow, out);
+    }
+}
+
 /// `node`'s parent, with a shadow root standing for its host: the parent an
 /// app's tree has (#2357).
 fn parent_of(node: &web_sys::Node) -> Option<web_sys::Node> {
@@ -2239,8 +2256,25 @@ impl DomDocument for WebDocument {
     }
 
     /// The DOM `textContent`: a text node's text, an element's descendants'.
+    /// Below an `isolate_styles` host it includes the shadow root's text
+    /// (after the host's light children's), as desktop's does (#2357);
+    /// the browser's own `textContent` stops at a shadow root.
     fn text_content(&self, node: NodeId) -> Option<String> {
-        self.nodes.get(&node.0).and_then(|n| n.text_content())
+        let n = self.nodes.get(&node.0)?;
+        let holds_host = n.dyn_ref::<web_sys::Element>().is_some_and(|el| {
+            el.shadow_root().is_some()
+                || el
+                    .query_selector("[rinch-style-isolated]")
+                    .ok()
+                    .flatten()
+                    .is_some()
+        });
+        if !holds_host {
+            return n.text_content();
+        }
+        let mut text = String::new();
+        composed_text(n, &mut text);
+        Some(text)
     }
 
     fn is_text_node(&self, node: NodeId) -> bool {
@@ -2252,12 +2286,19 @@ impl DomDocument for WebDocument {
     fn get_children(&self, node: NodeId) -> Vec<NodeId> {
         let mut result = Vec::new();
         if let Some(n) = self.nodes.get(&node.0) {
-            let children = children_of(n).child_nodes();
-            for i in 0..children.length() {
-                if let Some(child) = children.item(i)
-                    && let Some(nid) = get_nid(&child)
-                {
-                    result.push(nid);
+            // An `isolate_styles` host's light children (those it had
+            // before), then its shadow root's: desktop's order (#2357).
+            let mut lists = vec![n.child_nodes()];
+            if let Some(shadow) = shadow_of(n) {
+                lists.push(shadow.child_nodes());
+            }
+            for children in lists {
+                for i in 0..children.length() {
+                    if let Some(child) = children.item(i)
+                        && let Some(nid) = get_nid(&child)
+                    {
+                        result.push(nid);
+                    }
                 }
             }
         }
@@ -2266,10 +2307,17 @@ impl DomDocument for WebDocument {
 
     fn insert_child(&mut self, parent: NodeId, child: NodeId, index: usize) {
         if let (Some(p), Some(c)) = (self.nodes.get(&parent.0), self.nodes.get(&child.0)) {
-            let p = &children_of(p);
+            // The index counts what `get_children` lists: an `isolate_styles`
+            // host's light children, then its shadow root's (#2357); one
+            // past the light ones goes into the shadow root.
+            let light = p.child_nodes().length() as usize;
+            let (p, index) = match shadow_of(p) {
+                Some(shadow) if index >= light => (shadow.into(), index - light),
+                _ => (p.clone(), index),
+            };
             // `item` past the end is `None`, which appends.
             let reference = p.child_nodes().item(index as u32);
-            insert_or_move(p, c, reference.as_ref());
+            insert_or_move(&p, c, reference.as_ref());
         }
     }
 
@@ -3368,8 +3416,15 @@ impl DomDocument for WebDocument {
     /// it sits in `<body>`, outside everything. So an overlay opened from an
     /// editor remembers the editor, and a key entry whose owner holds the
     /// editor counts the focus as inside it.
+    ///
+    /// Focus inside an open shadow root (an `HtmlView`'s document, #2357)
+    /// answers the focused element there, as desktop does, not the host
+    /// `document.activeElement` names.
     fn active_element(&self) -> Option<NodeId> {
-        let active = crate::editor_input::effective_active_element(&self.browser_doc)?;
+        let mut active = crate::editor_input::effective_active_element(&self.browser_doc)?;
+        while let Some(inner) = active.shadow_root().and_then(|s| s.active_element()) {
+            active = inner;
+        }
         get_nid(&active)
     }
 

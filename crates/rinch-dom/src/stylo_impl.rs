@@ -842,8 +842,10 @@ impl<'a> TElement for RinchNode<'a> {
     /// this element (and its pseudo-elements), and its style-sharing cache
     /// and document-rule invalidation leave it out — the treatment a
     /// browser gives a shadow tree's contents against the document's
-    /// sheets. The isolating node itself is not under itself.
+    /// sheets. The isolating node itself is not under itself. Free while
+    /// the document has no isolated node ([`crate::NodeTree::isolated_nodes`]).
     fn matches_user_and_content_rules(&self) -> bool {
+        // No isolated node in the document: nothing to walk for.
         let mut parent = self.node().parent;
         while let Some(id) = parent {
             let Some(node) = self.tree.nodes.get(id) else {
