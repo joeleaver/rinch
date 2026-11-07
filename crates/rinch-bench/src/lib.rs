@@ -2157,6 +2157,7 @@ const MAIL_STACKS: [&str; 20] = [
 /// The host's font context (fontconfig on Linux), with the per-thread stack
 /// and system-match caches empty.
 pub fn setup_font_stack_resolve() -> parley::FontContext {
+    alloc::reserve();
     let cx = rinch_dom::fonts::new_font_context();
     // Drops what building the context asked (the generic defaults).
     rinch_dom::fonts::set_font_defaults(Default::default());
