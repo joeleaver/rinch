@@ -315,12 +315,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`f1d5882c981319c11cd09d8867df1c9ca15858a7`, branch `rinch-patch`): nineteen commits on the taffy `v0.14.0` tag
+(`5e353dc065d247edf8a58c3a15295ef6c30b3e01`, branch `fix-2362-float-tail`, two commits on `rinch-patch`): twenty-one commits on the taffy `v0.14.0` tag
 (item 10 is two of them, item 15 three). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the nineteen commits onto the new tag. All are upstream
+and a Taffy bump rebases the twenty-one commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -541,6 +541,30 @@ candidates.
    every table, `sized` off for a block standing for an anonymous table
    (`apply_table_style`). Pins: the fork's `tests/table_rows.rs` and
    `crates/rinch-dom/tests/table_row_heights_2312_tests.rs`.
+
+16. **A float that reaches below every segment keeps its tail** (#2362, commit `31f83118`).
+   `FloatContext::place_floated_box` wrote a float's inset only into the segments that existed
+   when it was placed: when the float reached below the last of them (left floats 100x30, then
+   100x50 beside it), the part below was in no segment, and `find_content_slot`, a later float
+   and the lines beside it saw the full width there (a line at 40 went to x 0 in the 100px gap,
+   Chrome 156 x 200; a third float 120x10 went to (0, 30), overlapping the second). That part is
+   now a segment of its own. Pins: the fork's `tests/hand_written/floats.rs` (two shapes) and
+   `crates/rinch-dom/tests/float_room_round3_tests.rs`.
+17. **A child's horizontal margins come out of its room once** (#2361, commit `5e353dc0`). The
+   width a parent hands a child is the room for the child's border box: the block algorithm
+   takes the child's horizontal margins out of it (a float, a sizing-keyword width, an
+   absolutely positioned box now too), grid takes them out of the area, and a block container
+   child takes nothing more out. `compute_leaf_layout` took them out again, so a shrink-to-fit
+   leaf was its room less its margins twice (a float of wrapping text with `margin: 0 20px` in
+   300px was 220 wide, Chrome 156 260), and a flex container took its own out too. Only a
+   column flex's auto cross size relied on the leaf, handing an item the whole width (a block
+   there holding the text was 300). Now the leaf and a flex container take no horizontal
+   margins of their own out (the vertical ones still), a column flex takes each item's out of
+   the width it measures it in (`horizontal_cross_less_margins`), and the block and flex
+   algorithms measure an absolutely positioned child in the area less its margins (rinch's
+   `out_of_flow::absolute_leaf_inputs`, which put them back for an absolute leaf, is gone).
+   Pins: the fork's `tests/leaf_margins.rs` (eleven shapes) and
+   `crates/rinch-dom/tests/float_room_round3_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7

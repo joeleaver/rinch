@@ -2540,6 +2540,9 @@ fn hang_pass<'p>(
         // Whether the line CSS ends below holds a stretch wider than its
         // room that has no break opportunity (#2331).
         let mut css_overflows = false;
+        // Whether that line replaced parley's: its metrics are then
+        // parley's line's, and only `css_overflows` speaks for it.
+        let mut rebroken = false;
         if (has_edges && soft) || seams {
             let Some(end) = line_end(&units, cursor, data.metrics.advance) else {
                 in_step = false;
@@ -2581,6 +2584,7 @@ fn hang_pass<'p>(
                 data.reason = reason;
                 data.metrics.advance = advance;
                 css_overflows = line_overflows(&units[cursor..css.0], max);
+                rebroken = true;
             }
         }
         // #2331: a line beside a float that has too little room there for
@@ -2597,7 +2601,8 @@ fn hang_pass<'p>(
         // nowrap><ib 300><ib 303>` puts it at 31.
         if !placed_after_content
             && let (Some(begin), Some(floats)) = (&begin, &bands)
-            && (css_overflows || line_overflows_room(data.reason, data.metrics.advance, max))
+            && (css_overflows
+                || (!rebroken && line_overflows_room(data.reason, &data.metrics, max)))
         {
             let top = begin.line_y() as f32;
             let bottom = top + (data.line_y_end - data.line_y_start) as f32;
@@ -2746,7 +2751,7 @@ fn place_line_beside_floats(
         let bottom = top + (line.line_y_end - line.line_y_start) as f32;
         let (x, room) = floats.room(top, bottom, full);
         // Its content does not fit: its first piece is wider than the room.
-        if line_overflows_room(line.reason, line.metrics.advance, room)
+        if line_overflows_room(line.reason, &line.metrics, room)
             && room < full
             && let Some(below) = floats.next_change_below(top)
         {
@@ -2761,14 +2766,22 @@ fn place_line_beside_floats(
     (full, top - from)
 }
 
-/// Whether a line parley broke with `reason`, `advance` wide, holds content
+/// Whether a line parley broke with `reason` and `metrics` holds content
 /// whose first piece is wider than the `room` it was broken in. parley breaks
-/// such a line as an emergency, or, when the piece ends the paragraph or a
-/// forced break follows it, keeps it whole past the room. A line it wrapped
-/// (`Regular`) fit, but for the space it hangs.
-fn line_overflows_room(reason: parley::layout::BreakReason, advance: f32, room: f32) -> bool {
+/// such a line as an emergency, or keeps the piece whole past the room: when
+/// it ends the paragraph, when a forced break follows it, and when a space
+/// follows it, where parley ends the line `Regular` (#2360: a long word or
+/// URL, `Supercalifragilistic word` beside a 250px float in 300px, stayed
+/// beside the float). So the line's content less the white space that hangs
+/// at its end ([`parley::layout::LineMetrics::hanging_advance`]) is compared
+/// with the room, whatever ended the line.
+fn line_overflows_room(
+    reason: parley::layout::BreakReason,
+    metrics: &parley::layout::LineMetrics,
+    room: f32,
+) -> bool {
     use parley::layout::BreakReason;
-    reason == BreakReason::Emergency || (reason != BreakReason::Regular && advance > room + 0.01)
+    reason == BreakReason::Emergency || metrics.advance - metrics.hanging_advance > room + 0.01
 }
 
 /// Break again a line that ends in an inline box parley placed by its
@@ -8654,7 +8667,7 @@ impl RinchDocument {
                 // `align-items: baseline` aligns its own items by it.
                 let mut first_baseline: Option<f32> = None;
                 let out = taffy::compute_leaf_layout(
-                    crate::out_of_flow::absolute_leaf_inputs(inputs, style),
+                    inputs,
                     style,
                     |_, _| 0.0,
                     |known_dims, avail_space| {
