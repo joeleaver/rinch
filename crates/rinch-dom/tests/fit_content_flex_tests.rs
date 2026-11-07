@@ -151,6 +151,10 @@ fn container_padding_and_border() {
     near(&mut d, "i0", [34.0, ANY, 243.0, 40.0]);
     let mut d = float("border:3px solid", &[("", T)]);
     near(&mut d, "t", [23.0, 0.0, 260.0, 46.0]);
+    // Two words' 279.4 and 70 of padding pass the room.
+    let mut d = float("padding:0 35px", &[("", W), ("", W)]);
+    near(&mut d, "t", [23.0, 0.0, 349.41, 20.0]);
+    near(&mut d, "i0", [58.0, ANY, 139.7, 20.0]);
 }
 
 /// A container's max-width and min-width clamp the result.
