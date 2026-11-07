@@ -978,6 +978,34 @@ impl InlineLayout {
             &self.break_spaces,
         )
     }
+
+    /// The width a box sized fit-content takes for these lines, broken at
+    /// [`Self::max_width`] (#2330): CSS's `min(max-content, max(min-content,
+    /// available))`. Lines that wrapped softly (a line ended `Regular` or
+    /// `Emergency`) say the max-content width is more than the room, so the
+    /// answer is the room, or the widest line when a piece that cannot break
+    /// is wider still; lines that did not wrap are the max-content width,
+    /// [`Self::measured_width`]. The width of the widest line alone is no
+    /// CSS width: a float holding `alpha beta … kappa` in 300px was 277 wide
+    /// where Chrome 156 makes it 300.
+    pub(crate) fn fit_content_width(&self) -> f32 {
+        let measured = self.measured_width();
+        if !self.max_width.is_finite() {
+            return measured;
+        }
+        use parley::layout::BreakReason;
+        let wrapped = self.layout.lines().any(|line| {
+            matches!(
+                line.break_reason(),
+                BreakReason::Regular | BreakReason::Emergency
+            )
+        });
+        if wrapped {
+            measured.max(self.max_width)
+        } else {
+            measured
+        }
+    }
 }
 
 /// [`InlineLayout::measured_width`] for any laid-out text: `layout` built

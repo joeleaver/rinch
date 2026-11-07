@@ -1040,7 +1040,17 @@ impl RinchDocument {
                             let mut h = hang.get();
                             h.add(inline_layout.hang);
                             hang.set(h);
-                            let mut w = inline_layout.measured_width();
+                            // Asked at a definite room with no width known,
+                            // the box is sized fit-content (#2330): a float,
+                            // an absolutely positioned box, a flex or grid item
+                            // aligned to its start. Beside floats the lines
+                            // wrap for the floats too, so the widest line is
+                            // kept there.
+                            let mut w = if beside_floats {
+                                inline_layout.measured_width()
+                            } else {
+                                inline_layout.fit_content_width()
+                            };
                             if let Some(ctx) = intrinsic {
                                 // Asked at a definite room, the max-content
                                 // lines are broken again: the floats are added

@@ -318,9 +318,17 @@ once laid out there — so a container sized from it does not move by the
 rounding between an incremental and a fresh layout, nor come out a pixel
 narrower than the box it holds. Pins:
 `tests/abs_shrink_to_fit_1404_tests.rs` (74 Chrome 155 rows) and
-`review_1510_1010_fixtures.rs`. Not Chrome's: content that wraps answers its
-widest line (**#1276**: the issue's own example is 390x40, was 130x80, Chrome
-394x40), and the static position in a grid container that is not the
+`review_1510_1010_fixtures.rs`. Content that wraps is as wide as the room
+(**#1276**, #2330): an IFC measured at a definite width with no width known
+answers `InlineLayout::fit_content_width`, CSS's `min(max-content,
+max(min-content, available))` — the room when a line wrapped softly, the widest
+line when a piece that cannot break is wider, the max-content width when
+nothing wrapped. It answered the widest line (the issue's example 390x40,
+Chrome 394x40). The same answer sizes a float, a `fit-content` box and a flex
+or grid item aligned to its start (`fit_content_wrapped_2330_tests.rs`); a row
+flex item's base size is still its max-content width. A paragraph laid out
+beside floats keeps the widest line (its lines wrap for the floats as well).
+Not Chrome's: the static position in a grid container that is not the
 containing block (its content edge in Chrome).
 A box whose containing block is a non-parent ancestor is counted in the scroll
 range of the nearest scroll container at or above that block since #770
