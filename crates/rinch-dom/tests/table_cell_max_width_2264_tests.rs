@@ -189,14 +189,14 @@ fn a_cells_width_and_max_width_together() {
 #[test]
 fn the_cells_minimum_is_capped_too() {
     // 2l2: the 300px box asks min(300, 150) of a 100px table. Chrome widens
-    // the table to 150; rinch keeps it at 100 and the column overflows it
-    // (#2266, any cell wider than its table's `width`). The cell is 150.
+    // the table to 150, as rinch does since #2266. The cell is 150.
     let d = doc(&format!(
         "<table id=t style='border-spacing:0;width:100px'><tr>\
          <td id=a style='padding:0;max-width:150px'>{}</td></tr></table>",
         bx(300.0, 20.0)
     ));
     assert_eq!(abs(&d, "a"), (0.0, 0.0, 150.0, 20.0));
+    assert_eq!(abs(&d, "t").2, 150.0);
 }
 
 #[test]
