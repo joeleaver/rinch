@@ -14,7 +14,8 @@
 //!   size for the cell, so it is read here and never reaches Taffy. See
 //!   *Column widths*.
 //! - **Spacing.** `border-spacing` is the grid's gap, and the same amount of
-//!   padding on the table, which is where the outer spacing lives.
+//!   padding on the table, which is where the outer spacing lives. A caption
+//!   is outside both (*Captions*).
 //! - **Row backgrounds.** A row has no box to paint. css-tables-3 paints a
 //!   row's background per cell anyway, which is why the spacing between two
 //!   cells of a coloured row shows the table: [`TableCell::under`] carries the
@@ -104,13 +105,31 @@
 //! way, empty rows growing when every other is constrained (a section's
 //! share is by its rows' heights before any rowspan grew them); a caption
 //! takes none (the table is its `height` plus its captions), and a table
-//! shorter than its rows grows to them (#2312), unless its parent imposes
-//! its height: a flex item, an absolutely positioned table or a grid item
-//! stays at it (#2358). `rebuild_table`
+//! shorter than its rows grows to them (#2312), also when its parent hands
+//! it its height: a flex item, a grid item in a shorter track (which it
+//! overflows) and an absolutely positioned table grow too (#2358; the fork's
+//! `resolves_own_height` on each kind of child style). `rebuild_table`
 //! hands the fork each row's section (`TableBox::sections`) and which rows
 //! are captions. A block standing for an anonymous table keeps its own
 //! height. A percentage and a row group's `height` size nothing. A
 //! collapsing table has no padding (CSS 2.1 §17.6.2).
+//!
+//! ## Captions
+//!
+//! A caption is a row of the grid that spans every column, above the rows or
+//! below them. CSS puts it outside the table box (CSS 2.2 §17.4), so outside
+//! the padding that carries the outer spacing, and with no spacing between it
+//! and the rows or another caption (#2350). The fork leaves the gutters beside
+//! a caption row empty, and the caption's Taffy margins take the table's
+//! padding back (`TableCell::outside`, written by `rebuild_table`): a top
+//! caption gets `-padding-top` above and `+padding-top` below, so it sits at
+//! the table's top edge and the padding (spacing included) lies between it
+//! and the first row; a bottom caption the mirror; and `-padding` on both
+//! sides, so it is as wide as the table, and a wider caption widens the table
+//! to its own width. Its own length margins are kept on top. The table's
+//! border is not taken out: rinch paints the table's border and background
+//! around the whole grid, captions included, so a caption stays inside the
+//! border where Chrome puts it outside.
 //!
 //! ## Vertical alignment
 //!
@@ -177,6 +196,10 @@ pub struct TableCell {
     /// (#2288). The width itself is read at each weighing: a cell's `width`
     /// never reaches its Taffy style, so a change to it leaves this valid.
     pub min_content: Option<f32>,
+    /// A caption's: what its Taffy margins (top, right, bottom, left) add to
+    /// its own, to take it out of the table's padding and outer spacing
+    /// (#2350; see *Captions* in the module docs). Zero for a cell.
+    pub outside: [f32; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -944,12 +967,43 @@ impl RinchDocument {
                     .map(|(i, &c)| (c, last + i)),
             )
             .collect::<Vec<_>>();
-        for (c, y) in captions {
+        // A caption is outside the table box (CSS 2.2 §17.4), and so outside
+        // the padding that carries the outer spacing: its margins take that
+        // padding back, on its outer side and across, and give it to its
+        // inner side, where it separates the caption from the rows (the fork
+        // leaves the gutters beside a caption row empty). The same padding as
+        // [`Self::apply_table_style`] writes.
+        let pads = {
+            let cs = &self.tree.nodes[table].computed_style;
+            let host = is_host(&self.tree.nodes[table]);
+            let pad = |p: LengthPercentageValue, spacing: f32| {
+                if collapse && !host {
+                    0.0
+                } else {
+                    p.to_px() + spacing
+                }
+            };
+            [
+                pad(cs.padding_top, spacing.1),
+                pad(cs.padding_right, spacing.0),
+                pad(cs.padding_bottom, spacing.1),
+                pad(cs.padding_left, spacing.0),
+            ]
+        };
+        let top_count = s.top_captions.len();
+        for (i, (c, y)) in captions.into_iter().enumerate() {
+            let [top, right, bottom, left] = pads;
+            let outside = if i < top_count {
+                [-top, -right, top, -left]
+            } else {
+                [bottom, -right, -bottom, -left]
+            };
             let t = TableCell {
                 row: y as i16,
                 col: 0,
                 rowspan: 1,
                 colspan: (cols.max(1) + 1) as u16,
+                outside,
                 ..Default::default()
             };
             self.place(c, t);
@@ -1214,6 +1268,21 @@ impl RinchDocument {
                     style.padding.top =
                         length((node.computed_style.padding_top.to_px() - c.shift).max(0.0));
                 }
+            } else if c.outside != [0.0; 4] {
+                // A caption, out of the table's padding (#2350). A length
+                // margin of its own is kept; `auto`, a percentage or a
+                // `calc()` one is left as it is, inside the padding.
+                use crate::computed_style::values::LengthPercentageAutoValue as M;
+                let cs = &node.computed_style;
+                let out = |m: M, d: f32, side: &mut taffy::LengthPercentageAuto| {
+                    if let M::Length(v) = m {
+                        *side = taffy::LengthPercentageAuto::length(v + d);
+                    }
+                };
+                out(cs.margin_top, c.outside[0], &mut style.margin.top);
+                out(cs.margin_right, c.outside[1], &mut style.margin.right);
+                out(cs.margin_bottom, c.outside[2], &mut style.margin.bottom);
+                out(cs.margin_left, c.outside[3], &mut style.margin.left);
             }
         }
     }
