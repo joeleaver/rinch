@@ -389,6 +389,7 @@ pub(super) fn paint_input_value(
             None,
             None,
             None,
+            node.computed_style.font_synthesis_weight,
         );
     }
 

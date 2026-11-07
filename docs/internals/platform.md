@@ -1112,15 +1112,59 @@ is `sans-serif`. Otherwise:
 - **A missing named family is replaced, in place, by its Blink alternate** where
   that is installed (`alternate_family_name`, Blink's `AlternateFamilyName`):
   Helvetica↔Arial, Times↔Times New Roman, Courier→Courier New, and Courier
-  New→Courier except on Windows. Not fontconfig's aliases: `fc-match Helvetica`
-  is Nimbus Sans on the #2250 host (165.77px), and Chrome drew Arial (166.53px).
-  Past the first family that resolves only a name with an alternate is looked
-  up, because each lookup of an installed family loads its faces.
+  New→Courier except on Windows. Not fontconfig's best match: `fc-match
+  Helvetica` is Nimbus Sans on the #2250 host (165.77px), and Chrome drew Arial
+  (166.53px).
+- **…or by fontconfig's substitute, where Chrome accepts it** (#2336;
+  `resolve_family`, `system_substitute`, `metric_compatible`). The order is
+  Blink's: the name, else the system's acceptable match for the name, else the
+  alternate, else the alternate's acceptable match (Blink asks for the alternate
+  only when the font manager returns nothing for the name, and on Linux that
+  manager is Skia's `SkFontConfigInterfaceDirect`). The query is fontique's
+  `Collection::system_family_match` (parley fork): the pattern Skia builds
+  (family, `FC_SCALABLE`, the SFNT wrapper, `FcConfigSubstitute` +
+  `FcDefaultSubstitute`), its first family after substitution, and the names of
+  `FcFontMatch`'s font. A match is accepted (Skia's `isAcceptableMatch`) when
+  one of its names is that first family, the name itself, or in the name's
+  class of Skia's `kFontEquivMap` (`METRIC_COMPATIBLE`: Arial/Arimo/Liberation
+  Sans, Times New Roman/Tinos/Liberation Serif, Courier New/Cousine/Liberation
+  Mono, Symbol, the CJK classes, Cambria/Caladea, Calibri/Carlito; a name in
+  two classes is judged by its first, as in Skia); `sans`, `serif`,
+  `monospace` and the empty name accept anything. Measured in Chrome 156 with
+  `CSS.getPlatformFontsForNode` and a private fontconfig hiding msttcorefonts:
+  Arial, Arimo and Helvetica → Liberation Sans; Times New Roman, Tinos and
+  Times → Liberation Serif; Courier New and Courier → Liberation Mono; MS
+  PGothic → Noto Sans CJK JP; a family a rule *prepends* is used, one it
+  *appends* is not; Calibri without Carlito, Carlito and Georgia fall through
+  (fontconfig matched Noto Sans / Noto Serif). Not followed: Chrome checks only
+  fontconfig's top match and, failing `FcFontMatch`, the first SFNT font of
+  `FcFontSort`; rinch asks `FcFontMatch` only. And rinch takes an installed
+  family as itself without asking fontconfig, so a configuration that replaces
+  an *installed* family with a preferred one is followed by Chrome and not by
+  rinch. The fork's pattern carries no weight or slant, where Skia adds the
+  requested style (`fcpattern_from_skfontstyle`) before matching, so a
+  configuration whose top match differs by style can be answered differently.
+  And rinch looks the accepted name up in fontique (`family_by_name`, then
+  fontique's own style match), where Chrome draws the matched file itself;
+  the two differ only where fontique's family for that name holds other
+  faces than fontconfig's match. Each name's answer is asked once per
+  thread (`memoized`, keyed like the stack cache and cleared with it,
+  negative answers included): one `FcFontMatch` is about 0.9 ms with 1,300
+  fonts, and before the memo 100 distinct stacks of 10 missing names took
+  526–877 ms against 2–3 ms on main (review of #2349). Measured by
+  `rinch-bench`'s `font_stack_resolve`. `FontDefaults::system_substitutes`
+  (default `true`) turns it off;
+  fontique answers on Linux and the BSDs only. Past the first family that
+  resolves, a name is checked in the name map alone (`family_id`, which loads
+  no faces) and only a missing one is resolved: a character the first family
+  lacks reaches it, and Chrome resolves every family the same way.
 - **A stack that still resolves to no family** *in that font context* ends in
   the **default font**, appended **by name**: the first family of the thread's
   `FontDefaults::standard` (rinch-core, `'Times New Roman'` by default, `Times`
-  on macOS — Chrome's standard font) the context has, a named family or its
-  alternate or a generic's first face; else the `sans-serif` slot's first face.
+  on macOS — Chrome's standard font) the context has, a named family (or its
+  substitute or alternate) or a generic's first face; else the `sans-serif`
+  slot's first face. On a host with Liberation and no Times New Roman that is
+  Liberation Serif, as Chrome 156 draws `NoSuchFont2336` there (#2336).
   Chrome drew `font-family: Oswald` in Times New Roman, 501.66px for a
   74-character line where rinch drew 547px (#2255). The default names Times
   **alone**, no `serif` after it: on a host with no Times New Roman Chrome 156
@@ -1153,7 +1197,10 @@ setting (`monospace`) breaks no caller.
 desktop** (`apply_generic_defaults`, from `new_font_context`; not Android or
 wasm). `FontDefaults::serif` (Times New Roman; Times on macOS) and
 `sans_serif` (Arial; Helvetica) are moved to the head of their slot where the
-family or its alternate is installed, the platform's families behind. Chrome's
+family is drawn in an installed face (itself, its substitute or its
+alternate, as above), the platform's families behind: Liberation Serif and
+Liberation Sans on a host with Liberation and no msttcorefonts, Chrome 156's
+`serif` and `sans-serif` there. Chrome's
 `serif` is its setting, not fontconfig's `serif` (Noto Serif on the #2255
 host, 593px against Chrome's 501.66px). A host without the family keeps the
 platform's slot, so CI (DejaVu, no Times or Arial) is unchanged. A claim
@@ -1161,9 +1208,31 @@ platform's slot, so CI (DejaVu, no Times or Arial) is unchanged. A claim
 `FontDefaults` is per thread (`set_font_defaults`); `App::font_defaults` sets it
 on the UI thread before the first document, and an embedder calls
 `rinch::font::set_font_defaults` before building its context. The pins are
-`fonts::tests::finish_stack` (bare contexts with stand-ins registered under the
-real names, so they are host-independent) and `app_builder`'s
+`fonts::tests::finish_stack` and `fonts::tests::system_substitutes` (bare
+contexts with stand-ins registered under the real names and, for the
+substitutes, a stand-in for fontconfig's answers, so they are
+host-independent), `tests/fontconfig_metric_aliases_2336.rs` (fontconfig on a
+private `FONTCONFIG_FILE`: Liberation stand-ins rewritten from the bundled
+Inter, the test's own alias rules, a positive control; CI is DejaVu-only, so
+nothing there depends on the host) and `app_builder`'s
 `font_defaults_reach_the_startup`.
+
+**Faux bold follows Blink's two rules** (parley fork, `FontInfo::synthesis`;
+#2343). A static face *registered* with the collection (every face rinch
+registers: `AppFont`, `register_font_data`, embed fonts, test fonts), like an
+`@font-face` face, is emboldened when the request is ≥ 600 and the face < 600
+(`CSSSegmentedFontFace::GetFontData`); a *system* face when the request is more
+than 200 over the face (`FontCache::CreateFontPlatformData`, fontique's old rule
+for every face). Measured in Chrome 156 by canvas ink at 48px: `@font-face`
+faces declared 300/400/500 are emboldened from 600 (not 599) and one declared
+600 never; system Liberation Sans Regular from 601, DejaVu Sans ExtraLight from
+401, IBM Plex Sans SemiBold from 801. Not followed: Blink's third rule, for a
+font chosen by per-character fallback (`MatchFamilyStyleCharacter`) or the
+last-resort font: request ≥ 600 and the typeface not bold.
+This is the selection side (`Run::synthesis().embolden()`); painting the
+embolden is the painters'. Pinned by fontique's tests,
+`tests/faux_bold_threshold_2343.rs` (registered) and the fontconfig test above
+(system).
 
 **fontconfig: a font is in every family it lists** (parley fork, #2294).
 fontique's fontconfig backend made a font's second `FC_FAMILY` name an alias of

@@ -2126,3 +2126,50 @@ pub fn op_marker_list_unrelated(mut f: MarkerListFixture) -> MarkerListFixture {
     f.doc.resolve_layout(VP.0, VP.1);
     f
 }
+
+// ── rinch-dom: font stacks naming missing families ────────────────────────
+
+/// Mail and web `font-family` stacks: ten family names, most missing on a
+/// Linux host, in twenty different orders and combinations.
+const MAIL_STACKS: [&str; 20] = [
+    "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    "'Helvetica Neue', Helvetica, 'Lucida Grande', Tahoma, Verdana, Arial, sans-serif",
+    "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
+    "-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif",
+    "BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif",
+    "'Lucida Grande', 'Segoe UI', Geneva, sans-serif",
+    "Roboto, 'Helvetica Neue', Arial, sans-serif",
+    "Verdana, Geneva, Tahoma, sans-serif",
+    "Oxygen, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif",
+    "Tahoma, Verdana, Segoe, sans-serif",
+    "'Segoe UI', -apple-system, Roboto, sans-serif",
+    "'Helvetica Neue', 'Segoe UI', Tahoma, sans-serif",
+    "Geneva, 'Lucida Grande', Verdana, sans-serif",
+    "Cantarell, Oxygen, Roboto, -apple-system, sans-serif",
+    "'Droid Sans', 'Fira Sans', Ubuntu, sans-serif",
+    "Ubuntu, 'Segoe UI', Roboto, sans-serif",
+    "-apple-system, BlinkMacSystemFont, sans-serif",
+    "Arial, 'Helvetica Neue', Helvetica, sans-serif",
+    "'Fira Sans', Geneva, 'Segoe UI', sans-serif",
+    "Segoe, 'Lucida Grande', Tahoma, Arial, sans-serif",
+];
+
+/// The host's font context (fontconfig on Linux), with the per-thread stack
+/// and system-match caches empty.
+pub fn setup_font_stack_resolve() -> parley::FontContext {
+    alloc::reserve();
+    let cx = rinch_dom::fonts::new_font_context();
+    // Drops what building the context asked (the generic defaults).
+    rinch_dom::fonts::set_font_defaults(Default::default());
+    cx
+}
+
+/// The first layout of each of `MAIL_STACKS`: every missing family name is
+/// looked up once, and on Linux asked of fontconfig once (#2336, review of
+/// #2349: per stack, 100 such stacks cost 526–877 ms on the UI thread).
+pub fn op_font_stack_resolve(mut cx: parley::FontContext) -> parley::FontContext {
+    for stack in MAIL_STACKS {
+        std::hint::black_box(rinch_dom::fonts::parley_font_family(&mut cx, stack));
+    }
+    cx
+}

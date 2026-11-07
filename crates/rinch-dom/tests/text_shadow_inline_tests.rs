@@ -110,7 +110,7 @@ impl Painter for Recorder {
         _: &FontData,
         _: f32,
         transform: Affine,
-        _: Option<Affine>,
+        _: rinch_dom::paint::painter::GlyphSynthesis,
         brush: &Brush,
         _: bool,
         _: &[i16],

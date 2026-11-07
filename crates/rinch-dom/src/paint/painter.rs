@@ -268,6 +268,44 @@ pub struct PaintGlyph {
     pub y: f32,
 }
 
+/// How a glyph run's outlines are synthesised from the face it is drawn in
+/// (#2296): Parley's [`Synthesis`](parley::fontique::Synthesis) for a run set
+/// in a weight or style its family has no face for, in the terms both
+/// painters draw it with. [`GlyphSynthesis::NONE`] for a run drawn as the face
+/// draws it.
+///
+/// Both are applied to each glyph's outline about its own origin, in the
+/// face's y-up space, emboldening first and then the skew (swash's and
+/// Vello's order). A painter that also darkens light text
+/// ([`text_rasterization`](super::text_rasterization)) adds the two
+/// emboldenings: they are one outline expansion.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GlyphSynthesis {
+    /// Faux bold: how far each side of the outline moves out, in the run's
+    /// own units (those of the `font_size` it is drawn at, before the draw's
+    /// transform). `0` for none. Chrome's amount is
+    /// [`synthetic_bold_px`](super::text_rasterization::synthetic_bold_px).
+    pub embolden: f32,
+    /// Faux italic or oblique: the horizontal shear `tan(angle)`, leaning the
+    /// glyph's top to the right (`x + skew * y` with y up). `0` for none.
+    pub skew: f32,
+}
+
+impl GlyphSynthesis {
+    /// No synthesis.
+    pub const NONE: Self = Self {
+        embolden: 0.0,
+        skew: 0.0,
+    };
+
+    /// The per-glyph transform of the skew, as Vello's `glyph_transform`
+    /// takes it: `None` without one.
+    #[inline]
+    pub fn glyph_transform(&self) -> Option<Affine> {
+        (self.skew != 0.0).then(|| Affine::skew(self.skew as f64, 0.0))
+    }
+}
+
 // ── Split surfaces (#1865) ──────────────────────────────────────────────────
 
 /// A GPU surface's frame at its place in paint order, offered to the painter
@@ -388,6 +426,7 @@ pub trait Painter {
     /// Draw a run of pre-shaped glyphs.
     ///
     /// The font, size, and brush come from Parley's glyph run styling.
+    /// `synthesis` is the run's faux bold and italic ([`GlyphSynthesis`]).
     /// `normalized_coords` are font variation settings.
     #[allow(clippy::too_many_arguments)]
     fn draw_glyphs(
@@ -395,7 +434,7 @@ pub trait Painter {
         font: &FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],

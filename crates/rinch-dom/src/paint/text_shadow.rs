@@ -703,6 +703,57 @@ mod cache_tests {
 #[derive(Default)]
 struct CallHasher(rustc_hash::FxHasher);
 
+/// The mask key holds a run's faux bold and faux italic (#2296): the same
+/// glyphs at the same places, emboldened or slanted, are other pixels, and
+/// would otherwise reuse the plain run's mask. (A page cannot easily witness
+/// the skew: a faux-italic line's box, and so its mask's size, differs too.)
+#[cfg(all(test, feature = "software-renderer"))]
+mod call_hasher_synthesis_tests {
+    use super::super::painter::{GlyphSynthesis, PaintGlyph};
+    use super::*;
+    use std::hash::Hasher;
+
+    fn key(font: &peniko::FontData, synthesis: GlyphSynthesis) -> u64 {
+        let mut h = CallHasher::default();
+        h.draw_glyphs(
+            font,
+            16.0,
+            Affine::translate((3.0, 20.0)),
+            synthesis,
+            &Brush::Solid(AlphaColor::from_rgba8(0, 0, 0, 255)),
+            true,
+            &[],
+            &[PaintGlyph {
+                id: 5,
+                x: 1.0,
+                y: 0.0,
+            }],
+        );
+        h.0.finish()
+    }
+
+    #[test]
+    fn the_key_holds_the_synthesis() {
+        const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+        // One blob: its id is in the key.
+        let font = peniko::FontData::new(peniko::Blob::new(std::sync::Arc::new(INTER)), 0);
+        let key = |s| key(&font, s);
+        let plain = key(GlyphSynthesis::NONE);
+        let bold = key(GlyphSynthesis {
+            embolden: 0.3,
+            skew: 0.0,
+        });
+        let italic = key(GlyphSynthesis {
+            embolden: 0.0,
+            skew: 0.25,
+        });
+        assert_ne!(plain, bold, "faux bold");
+        assert_ne!(plain, italic, "faux italic");
+        assert_ne!(bold, italic);
+        assert_eq!(plain, key(GlyphSynthesis::NONE), "deterministic");
+    }
+}
+
 /// How far from a half pixel a position has to be for [`CallHasher`] to key
 /// it by the pixel it rounds to rather than by its exact value. Closer than
 /// this, float error in the painter could round it either way.
@@ -824,7 +875,7 @@ impl Painter for CallHasher {
         font: &peniko::FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: super::painter::GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
@@ -851,9 +902,10 @@ impl Painter for CallHasher {
             Some(_) => self.0.write_u8(0xA1),
             None => self.affine(transform),
         }
-        if let Some(g) = glyph_transform {
-            self.affine(g);
-        }
+        // The run's faux bold and italic (#2296): the same glyphs of the
+        // same face, emboldened or slanted, are other pixels.
+        self.0.write_u32(synthesis.embolden.to_bits());
+        self.0.write_u32(synthesis.skew.to_bits());
         self.0.write_u8(hint as u8);
         for c in normalized_coords {
             self.0.write_i16(*c);

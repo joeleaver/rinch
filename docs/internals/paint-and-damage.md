@@ -168,13 +168,18 @@ parameter:
   per side by default), quantised to 1/64 px so the glyph caches see few
   values. Vello gets it as `DrawGlyphs::font_embolden` (`kurbo::expand_path`,
   the amount on every side; Vello's glyph cache keys on it). tiny-skia gets
-  swash's `Render::embolden` with `offset(0, -a)`: swash's embolden
-  (FreeType's `EmboldenXY` without the halving) grows a glyph about evenly
-  left and right but by `2a` at the top and none at the bottom (measured: the
-  ink's centre moved 0.022 px right and 0.100 px up at `a` = 6/64), so the
-  offset moves it back down to the same per-side growth as Vello's within
-  0.03 px; the amount is in `GlyphRunKey` (`darkening`, the image-space
-  amount's bits). A face with colour
+  swash's `Render::embolden` with the offset `glyph_atlas::embolden_offset`
+  gives, `(-a, -a)`: swash's embolden (FreeType's `EmboldenXY` without the
+  halving) is an even expansion by `a` plus a move of `(a, a)` up and right,
+  so a glyph grows by `2a` at the right and the top and none at the left and
+  the bottom, and the offset moves it back. Measured on the stems of `l`
+  (#2296): with the offset the left and right edges each move out by `a`.
+  Stage 1 moved it back down only, which left every darkened (and, later,
+  faux-bold) mask `a` to the right of Vello's centred `expand_path`; its
+  test measured the ink's centre over mixed text, where an even band also
+  moves the centre (by about 0.06 px for that text, towards where the outline
+  is longest) and the two happened to cancel within 0.04 px. The amount is in
+  the atlas key (`embolden_bits`, the image-space amount's bits). A face with colour
   outlines asks for the COLR glyph without the offset first (COLR glyphs are not
   emboldened by swash). Why: sRGB-encoded blending gives light-on-dark text
   0.73–0.79 of its linear-light weight against 1.21–1.27 dark-on-light; 0.10 px
@@ -204,6 +209,88 @@ parameter:
   darkened and cached apart),
   `gpu_light_text_is_darkened_and_off_turns_it_off_2286` (the same on lavapipe),
   and the module's unit tests.
+- **synthetic bold and italic** (#2296): below.
+
+**Synthetic (faux) bold and italic** (#2296). Parley marks a run set in a weight
+or a style its family has no face for (`Run::synthesis()`: `embolden()` when the
+weight asked for is over the face's by more than 200, as for `bold` in a
+family with only a regular face; `skew()`, 14 degrees, for `italic` with no
+italic face or axis). `paint::text::draw_text` hands both to the painter as a
+`painter::GlyphSynthesis` (`Painter::draw_glyphs`'s fourth argument, which was
+`glyph_transform: Option<Affine>`): `embolden`, px per side in the run's own
+units, and `skew`, `tan(angle)`. Before #2296 only the skew was read, and only
+the Vello outline path applied it: no painter emboldened, and the software
+painter drew faux italics upright.
+- **The amount is Chrome's**: `text_rasterization::synthetic_bold_px(css
+  size)`. Skia draws fake bold by stroking the outline as it fills it, with a
+  stroke `size × k` wide, `k` 1/24 of the em up to 9px, 1/32 from 36px, linear
+  between (`kStdFakeBoldInterpKeys`/`Values` in `SkScalerContext`); each side
+  moves out by half. Measured in Chrome 156 on Linux with Inter registered as
+  its regular face only: an `l`'s stem grew 0.401 px at 9px, 0.660 at 16px,
+  0.866 at 24px, 1.124 at 36px, 1.498 at 48px, 3.004 at 96px (em/22.4, /24.2,
+  /27.7, /32.0, /32.0, /32.0), centred (its left edge moved left by half, its
+  top and bottom out by half), advances unchanged. FreeType's own
+  `FT_GlyphSlot_Embolden` (ppem/24 at every size, growing right and up) is not
+  what Chrome draws. **The size is the device size before any CSS transform**:
+  Chrome folds the device scale factor into the font size before the curve
+  (measured at 2x: 0.349, 0.459, 0.518 and 0.751 CSS px of growth at 9, 13,
+  16 and 24px, where taking the curve at the CSS size and scaling it gives
+  0.375, 0.522, 0.623 and 0.861), so `draw_text` takes `synthetic_bold_px` of
+  `font_size × paint scale`. A CSS transform is not folded in: under
+  `scale(2)` the stroke is scaled with the text, by the painters, like the
+  darkening.
+- **It adds to the stem darkening.** Both are one outline expansion: Vello's
+  `font_embolden` gets the sum (`encode_glyphs`; folded into device size where
+  Vello folds a hinted uniform scale, as the darkening is); the atlas's
+  `RunSpec` carries `embolden` (the darkening) and `synthetic_bold` apart, keys
+  both (`synthetic_bold_bits`, `skew_bits`: a faux-bold mask never serves a
+  regular run, nor one darkened by the same amount, though they rasterise the
+  same pixels), and rasterises with their sum and the centring offset.
+- **The skew** is applied after emboldening, about the glyph's origin in the
+  outline's y-up space, as swash's `Render` and Vello's `glyph_transform` both
+  order it; the centring offset is sheared with it (`(-a(1 + k), -a)`). On the
+  software painter it is rasterised into the mask (`RunSpec::skew`; an LCD
+  run's stretch is composed after it). On Vello a skewed run still leaves the
+  atlas for outlines (a `glyph_outline_fallbacks` count, unchanged); its faux
+  bold reaches those outlines. Colour bitmap glyphs (CBDT/sbix) are neither
+  emboldened nor slanted on the software painter.
+- **Shadows**: every `text-shadow` pass draws through `draw_text`, so it is
+  emboldened and slanted with its text; `CallHasher` keys a blurred shadow's
+  mask on both (two runs of the same glyphs, one bold, would otherwise share a
+  mask).
+- **`font-synthesis-weight: none`** turns faux bold off, per element and
+  inherited, as Chrome does: `ComputedStyle::font_synthesis_weight` (Stylo's
+  servo build parses this longhand), read at paint, since Parley has no knob
+  for it: `paint::text::WeightSynthesisOff` gives an IFC's bytes that are under
+  `none` (`for_ifc`, from `text_ranges` and each range's element, skipped with
+  no walk until some element has computed `none`, the sticky
+  `NodeTree::font_synthesis_weight_off`), and `draw_text` draws those glyphs
+  with `GlyphSynthesis::embolden` 0, splitting a run glyph by glyph as a
+  recolour does. A form control's text, a `contenteditable` field, a
+  `<select>`, an image's alt text and an ellipsis cut's "…" take their element's
+  value through `render_text_with_shadow`'s / `paint_ellipsis`'s
+  `weight_synthesis` (`WeightSynthesisOff::uniform`). **There is no way yet to
+  turn faux italic off**: `font-synthesis-style` and the `font-synthesis`
+  shorthand are `engine = "gecko"` in Stylo 0.22 and dropped at parse (#2345).
+- **Not done here**: which face is synthesised from is fontique's choice (its
+  rule is "over the face's weight by more than 200"; Chrome synthesises from
+  600 up over a face under 600, and not for a 600 face asked for 900: #2343),
+  and the advance is not widened (Chrome does not widen it either).
+- Pins: `crates/rinch-dom/tests/faux_bold_2296_tests.rs` (stem growth against
+  Chrome's numbers at 16px and 48px, hinted and not, and at 2x at 9, 13, 16 and
+  24px; even growth for faux bold,
+  darkening, both, and faux bold under a faux italic; the software painter's
+  slant, grey and LCD, and its blurred shadow's; `font-synthesis-weight: none`
+  on an element, inherited, on a span inside a run, on form-control text and an
+  ellipsis, on Vello, and repainted when it is turned on; Vello's encoded
+  amounts with and without darkening and under
+  `scale(2)` and a rotation; the software painter's under `scale(2)` on and off
+  the grid; blurred and hard shadows; both painters' atlas keys),
+  `glyph_atlas::tests::synthesis_is_in_the_key`,
+  `text_shadow::call_hasher_synthesis_tests`, the kept-outline parity cases
+  with faux bold and skew, and `crates/rinch/tests/gpu_faux_bold_2296.rs` (GPU
+  atlas against the software painter; Vello's outlines at 48px with the atlas
+  off and at 80px grow by Chrome's amount, centred).
 - **antialias**: `ResolvedAntialias::Subpixel { order, filter }` turns on
   subpixel text (stage 3, "Subpixel (LCD) text" below; `policy.subpixel()` /
   `lcd_mode()`); `None` draws grayscale (no aliased path). The app's
@@ -823,7 +910,8 @@ in the `embed` build without it). Stage 2 of the text-antialiasing plan in
 
 - **Key.** Font blob id and face index, the exact device font size
   (`f32::to_bits`), hinting, the stem darkening in device pixels (stage 1's
-  `run_darkening_px`; swash embolden with the `(0, -amount)` re-centring offset), variation coords, glyph id, and the horizontal
+  `run_darkening_px`; swash embolden with the `(-amount, -amount)` centring
+  offset), the faux bold and faux italic shear (#2296), variation coords, glyph id, and the horizontal
   sub-pixel bucket: `place` rounds the device x to the nearest quarter pixel,
   and a fraction past the last bucket rounds up to the next pixel's bucket 0
   (glifo clamps it to bucket 3 instead, up to 0.25 px off; this is at most
@@ -849,7 +937,8 @@ in the `embed` build without it). Stage 2 of the text-antialiasing plan in
   paths), a glyph swash cannot render (cached as failed; a font swash cannot
   read at all goes to Vello only if skrifa can, as Vello's `draw_glyphs`
   panics on an unreadable font), a run whose size is animating (below), a device size past
-  `ATLAS_MAX_FONT_PX` (64), a run with a glyph transform (synthetic italic), a
+  `ATLAS_MAX_FONT_PX` (64), a synthetic italic (Vello's glyph transform; the
+  software painter rasterises its shear into the mask, #2296), a
   non-solid brush, and a transform off the grid. A split frame routes a run by
   the union of its masks' rects.
 - **Why a tint and not a colour baked into each image.** Baking works with no

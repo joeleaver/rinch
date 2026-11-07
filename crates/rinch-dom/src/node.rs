@@ -3149,6 +3149,10 @@ pub struct NodeTree {
     /// the painted state skip the per-run walk that finds the others. Set by
     /// the cascade; sticky — clearing it would need a count nobody keeps.
     pub inline_text_shadows: bool,
+    /// Whether any element has ever computed `font-synthesis-weight: none`
+    /// (#2296). Until one has, paint draws every faux-bold run emboldened
+    /// without looking per element. Set by the cascade; sticky.
+    pub font_synthesis_weight_off: bool,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
     /// Tables owed a `RinchDocument::resolve_tables` rebuild: a part restyled,
@@ -3936,6 +3940,7 @@ impl NodeTree {
             painted_bars: HashMap::new(),
             whole_document_damaged: false,
             inline_text_shadows: false,
+            font_synthesis_weight_off: false,
             style_dirty_nodes: Vec::new(),
             tables_owed: Vec::new(),
             tables: Vec::new(),

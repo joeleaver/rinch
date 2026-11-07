@@ -347,7 +347,8 @@ fn a_text_control_in_a_missing_only_stack_is_as_wide_as_under_sans_serif() {
 
 /// The issue's own case on the host's fonts: digits in `font-family:
 /// Helvetica` (and `Times`, `Courier`) measure as `sans-serif`'s, wherever
-/// fontique does not have the family (it has no fontconfig aliases). Was
+/// the family is drawn in no installed face (not itself, its alternate or a
+/// fontconfig substitute). Was
 /// 199px against 92px for ten zeros at 16px on this host.
 #[test]
 fn digits_in_an_uninstalled_named_family_measure_as_sans_serif_on_the_host() {
@@ -359,12 +360,20 @@ fn digits_in_an_uninstalled_named_family_measure_as_sans_serif_on_the_host() {
     let mut fcx = rinch_dom::fonts::new_font_context();
     let mut asserted = 0;
     for family in ["Helvetica", "Times", "Courier", "NoSuchFamily1198"] {
-        // An installed family, or an installed Blink alternate (Arial for
-        // Helvetica, #2250), is drawn as itself.
-        let alternate = rinch_dom::fonts::alternate_family_name(family);
-        if fcx.collection.family_by_name(family).is_some()
-            || alternate.is_some_and(|a| fcx.collection.family_by_name(a).is_some())
-        {
+        // A family drawn in an installed face is skipped: installed itself,
+        // an installed Blink alternate (Arial for Helvetica, #2250), or a
+        // fontconfig substitute Chrome accepts (Liberation Serif for Times by
+        // way of Times New Roman, #2336). Such a family gets no default font
+        // appended, so its finished stack is one family.
+        let finished = match rinch_dom::fonts::parley_font_family(&mut fcx, family) {
+            parley::style::FontFamily::Source(s) => s.into_owned(),
+            other => panic!("not a source list: {other:?}"),
+        };
+        let resolves = parley::style::FontFamilyName::parse_css_list(&finished)
+            .map_while(Result::ok)
+            .count()
+            == 1;
+        if resolves {
             continue;
         }
         assert_eq!(width_on_host(family), sans, "`{family}`");

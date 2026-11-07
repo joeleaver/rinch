@@ -1272,6 +1272,14 @@ impl RinchDocument {
             if !self.tree.inline_text_shadows {
                 self.note_inline_text_shadow(node_id);
             }
+            // `font-synthesis-weight: none` anywhere turns on paint's per-run
+            // look-up of it (#2296).
+            if !self.tree.nodes[node_id]
+                .computed_style
+                .font_synthesis_weight
+            {
+                self.tree.font_synthesis_weight_off = true;
+            }
 
             // --- Animation logic ---
             //

@@ -168,6 +168,7 @@ pub(super) fn paint_img_placeholder(
         None,
         Some(current),
         None,
+        cs.font_synthesis_weight,
     );
     painter.pop_layer();
 }

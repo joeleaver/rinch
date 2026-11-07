@@ -338,6 +338,8 @@ fn lcd_quality_probe_2286() {
                 size,
                 hint: true,
                 embolden: 0.0,
+                synthetic_bold: 0.0,
+                skew: 0.0,
                 coords: &[],
                 lcd: Some(LcdMode {
                     order: SubpixelOrder::Rgb,
