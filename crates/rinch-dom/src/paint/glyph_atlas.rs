@@ -257,8 +257,7 @@ impl Run {
 fn outline_bytes(o: &Option<swash::scale::outline::Outline>) -> usize {
     ENTRY_OVERHEAD
         + o.as_ref().map_or(0, |o| {
-            o.points().len() * std::mem::size_of::<swash::zeno::Point>()
-                + o.verbs().len() * std::mem::size_of::<swash::zeno::Verb>()
+            std::mem::size_of_val(o.points()) + std::mem::size_of_val(o.verbs())
         })
 }
 
