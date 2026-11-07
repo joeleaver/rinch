@@ -470,6 +470,29 @@ impl RinchDocument {
                 text-decoration-line: line-through;
             }
 
+            /* #2357: a link in content whose styles are isolated
+               (`isolate_styles`, an `HtmlView`) gets the browser's link style,
+               Chrome's `a:-webkit-any-link` rule with `-webkit-link`'s colour:
+               no app sheet reaches it there to say otherwise, and the same
+               content on the web is styled by the browser's own sheet. Scoped
+               to isolated content so that an app's own links are unchanged. */
+            [rinch-style-isolated] a[href] {
+                color: #0000ee;
+                text-decoration-line: underline;
+                cursor: pointer;
+            }
+
+            /* And the browser's keyboard focus ring there (#2357 review):
+               Chrome's UA `:focus-visible { outline: auto 1px
+               -webkit-focus-ring-color }`. A theme's `:focus-visible` rule
+               no longer reaches isolated content, so without this a
+               keyboard-focused link in mail showed no ring at all. `auto` is
+               drawn solid here; the colour is Chrome's ring colour on a
+               light page. */
+            [rinch-style-isolated] :focus-visible {
+                outline: auto 1px #101010;
+            }
+
             /* `svg` is here for the same reason `img` is: in a browser it is an
                inline **replaced** element — an atomic inline — and `inline-block`
                is the model rinch already uses for one. Stylo gives an unknown
