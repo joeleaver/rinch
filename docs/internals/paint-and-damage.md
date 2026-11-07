@@ -935,8 +935,10 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   stretch, and only then stretched, as FreeType's `FT_RENDER_MODE_LCD` does.
   `lcd_mask` filters the 3x coverage with FreeType's filters in FreeType's
   arithmetic (`lcddefault` `[8, 77, 86, 77, 8]/256` and `lcdlight`
-  `[0, 85, 86, 85, 0]/256`, shifted down and clamped; `lcdlegacy`'s in-pixel
-  matrix in 65538ths; none) and groups each three subpixels into one pixel,
+  `[0, 85, 86, 85, 0]/256`, shifted down and clamped; none). `lcdlegacy` is
+  drawn as `lcddefault`: current FreeType has no legacy filter (2.14's
+  `FT_Library_SetLcdFilter(LEGACY)` returns `Invalid_Argument`), and stage 3's
+  first matrix for it was transposed against 2.9's. It groups each three subpixels into one pixel,
   swapping red and blue for BGR/VBGR. The five-tap filters widen the mask by a
   pixel each side. `MaskKind::Subpixel`, three bytes a pixel, logical RGB; the
   GPU copy is `[r, g, b, mean]` (premultiplied in name only: the shader reads
@@ -968,6 +970,15 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   transparent window draws subpixel text exactly where something opaque is
   under it. Partial frames are re-rendered by Vello from the scene, so they
   find the same destination.
+- **The window's base colour decides more than it looks.** `ui_base_color`
+  (`shell/desktop.rs`) renders the UI over transparent while composite layers or
+  split GPU surfaces are present, so text over no opaque box of its own flips
+  LCD to grey when a `RenderSurface`, `GameViewport` or video layer appears and
+  back when it goes. Embed hosts render over transparent always; the guide
+  tells them to ask for grayscale when the UI texture is not shown 1:1.
+- **Snapshots.** The drag ghost's painters (`activate_drag` in
+  `app/event_dispatch.rs`, Vello and software) are `set_subpixel_text(false)`:
+  the ghost is appended at the pointer's fractional `Affine::translate`.
 - **tiny-skia** (`blit_subpixel_mask_into`): straight into the pixmap at whole
   pixels, through the clip mask; per channel where the pixel's alpha is 255,
   grey source-over elsewhere, in `f32` then rounded, as the shader does.
@@ -983,9 +994,8 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   Windows' SPI orientation is system-wide); `TextRasterization::subpixel_order`
   is the app's fix. Fractional scale factors keep LCD: masks are in device
   pixels, so the grid lines up wherever the compositor shows the buffer 1:1.
-  Nested clips that share a fractional edge differ between the painters (Vello
-  multiplies the edge coverage once per clip layer, tiny-skia's intersected mask
-  keeps it), grey text or not; the GPU fixture keeps its clip edges whole.
+  The painters differ at the edge pixels of nested clips (#2321), grey text or
+  not; the GPU fixtures keep their clip edges on whole pixels.
 - **Against FreeType** (`lcd_quality_probe_2286` writes the atlas's masks and
   the glyph list; design-2286's `ftref2286` renders it with
   `FT_RENDER_MODE_LCD`, lcddefault, hintslight, on the same quarter-pixel
@@ -1021,7 +1031,8 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   and translucency per pixel, rotation and scale; Vello's mask choice), and
   `crates/rinch/tests/gpu_subpixel_text_2286.rs` (lavapipe: parity with the
   software painter under Area and Msaa16 at 1x and 1.5x, nested clips to depth
-  6, the grey fallbacks, BGR).
+  6 on an opaque page, the page found in the blend stack's spill, the grey
+  fallbacks, BGR).
 
 ### `vello_clip_tiles`: what a frame asks Vello for
 
