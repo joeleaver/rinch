@@ -1625,7 +1625,35 @@ impl Painter for TinySkiaPainter {
         }
         let masked = self.draw_is_masked(x0, y0, x1, y1, ts, DEVICE_PAD);
         let mask = self.clip_mask.as_ref().filter(|_| masked).map(|m| &m.mask);
-        self.pixmap.stroke_path(&path, &paint, &sk_stroke, ts, mask);
+        if sk_stroke.width <= 0.0 {
+            self.pixmap.stroke_path(&path, &paint, &sk_stroke, ts, mask);
+            return;
+        }
+        // Always the stroke's outline, filled (#2344). `stroke_path` does
+        // exactly this (dash, stroke, fill non-zero) unless the stroke is at
+        // most one device pixel wide, which it draws as an anti-aliased
+        // *hairline* instead (`treat_as_hairline`): a different scan
+        // converter, whose coverage is not the stroke's area. On a closed
+        // rect at scale 1 it smeared the closing (left) edge of a 1px border
+        // over two pixels, half into the page. Vello and Chrome stroke by
+        // area at every width, so this does too.
+        let res_scale = tiny_skia::PathStroker::compute_resolution_scale(&ts);
+        let dashed;
+        let path = match &sk_stroke.dash {
+            Some(dash) => match path.dash(dash, res_scale) {
+                Some(p) => {
+                    dashed = p;
+                    &dashed
+                }
+                None => return,
+            },
+            None => &path,
+        };
+        let Some(outline) = path.stroke(&sk_stroke, res_scale) else {
+            return;
+        };
+        self.pixmap
+            .fill_path(&outline, &paint, FillRule::Winding, ts, mask);
     }
 
     fn draw_glyphs(
