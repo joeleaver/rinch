@@ -286,13 +286,17 @@ for everything with `TextRasterization::default().gpu_glyph_outlines(true)`.
 `font-weight: bold` (any weight more than 200 over the face's), is drawn from
 its regular face emboldened, as Chrome draws it: each side of a glyph's outline
 moves out by `size / 48` up to 9px, `size / 64` from 36px and in between
-proportionally (an `l` at 16px is 0.62 px wider), the same on both renderers,
-and on top of any stem darkening. A family with no italic face (and no
-italic or slant axis), set in `font-style: italic`, is slanted by 14 degrees.
-Shadows of such text are emboldened and slanted with it. Ship the real face
-(`App::font`) where the weight matters: a synthesised bold is heavier than the
-regular but is not the designer's bold, and its advances are the regular
-face's.
+proportionally, the size being in device pixels (an `l` at 16px is 0.62 px
+wider at 1x, 0.52 CSS px at 2x), the same on both renderers, and on top of any
+stem darkening. A family with no italic face (and no italic or slant axis),
+set in `font-style: italic`, is slanted by 14 degrees. Shadows of such text are
+emboldened and slanted with it. `font-synthesis-weight: none` on an element
+(inherited) draws its bold from the regular face as it is, as in Chrome.
+Synthesised italics cannot be turned off yet: `font-synthesis-style` and the
+`font-synthesis` shorthand are not parsed (#2345). Ship the real face
+(`App::font`) where the weight or style matters: a synthesised bold is heavier
+than the regular but is not the designer's bold, and its advances are the
+regular face's.
 
 **Subpixel (LCD) text.** Where the OS draws subpixel text — fontconfig's `rgba`
 on Linux (KDE's "Sub-pixel rendering: RGB" writes `rgba=rgb`), ClearType on

@@ -265,6 +265,13 @@ pub struct ComputedStyle {
     /// back whole (#1223).
     pub font_family: String,
     pub font_style: FontStyleValue,
+    /// `font-synthesis-weight` (#2296): `false` for `none`, which draws a
+    /// weight the family has no face for from the face fontique picked, not
+    /// emboldened. Inherited. `true` (`auto`, the initial value) lets the
+    /// painters draw Parley's faux bold. Stylo's servo build parses only this
+    /// longhand: `font-synthesis-style` and the `font-synthesis` shorthand
+    /// are Gecko-only there (#2345).
+    pub font_synthesis_weight: bool,
     pub line_height: LineHeightValue,
     pub letter_spacing: f32, // in pixels, 0.0 means normal
     pub word_spacing: f32,   // in pixels, 0.0 means normal
@@ -461,6 +468,7 @@ impl Default for ComputedStyle {
             font_weight: 400.0,
             font_family: String::new(),
             font_style: FontStyleValue::default(),
+            font_synthesis_weight: true,
             line_height: LineHeightValue::default(),
             letter_spacing: 0.0,
             word_spacing: 0.0,
@@ -548,6 +556,7 @@ impl ComputedStyle {
             font_weight: parent.font_weight,
             font_family: parent.font_family.clone(),
             font_style: parent.font_style,
+            font_synthesis_weight: parent.font_synthesis_weight,
             line_height: parent.line_height,
             letter_spacing: parent.letter_spacing,
             word_spacing: parent.word_spacing,

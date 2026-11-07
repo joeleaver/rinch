@@ -231,9 +231,14 @@ painter drew faux italics upright.
   /27.7, /32.0, /32.0, /32.0), centred (its left edge moved left by half, its
   top and bottom out by half), advances unchanged. FreeType's own
   `FT_GlyphSlot_Embolden` (ppem/24 at every size, growing right and up) is not
-  what Chrome draws. The size is the CSS size: under `scale(2)` the stroke is
-  scaled with the text, so `draw_text` multiplies by the paint scale and the
-  painters by the transform's, like the darkening.
+  what Chrome draws. **The size is the device size before any CSS transform**:
+  Chrome folds the device scale factor into the font size before the curve
+  (measured at 2x: 0.349, 0.459, 0.518 and 0.751 CSS px of growth at 9, 13,
+  16 and 24px, where taking the curve at the CSS size and scaling it gives
+  0.375, 0.522, 0.623 and 0.861), so `draw_text` takes `synthetic_bold_px` of
+  `font_size × paint scale`. A CSS transform is not folded in: under
+  `scale(2)` the stroke is scaled with the text, by the painters, like the
+  darkening.
 - **It adds to the stem darkening.** Both are one outline expansion: Vello's
   `font_embolden` gets the sum (`encode_glyphs`; folded into device size where
   Vello folds a hinted uniform scale, as the darkening is); the atlas's
@@ -253,17 +258,36 @@ painter drew faux italics upright.
   emboldened and slanted with its text; `CallHasher` keys a blurred shadow's
   mask on both (two runs of the same glyphs, one bold, would otherwise share a
   mask).
+- **`font-synthesis-weight: none`** turns faux bold off, per element and
+  inherited, as Chrome does: `ComputedStyle::font_synthesis_weight` (Stylo's
+  servo build parses this longhand), read at paint, since Parley has no knob
+  for it: `paint::text::WeightSynthesisOff` gives an IFC's bytes that are under
+  `none` (`for_ifc`, from `text_ranges` and each range's element, skipped with
+  no walk until some element has computed `none`, the sticky
+  `NodeTree::font_synthesis_weight_off`), and `draw_text` draws those glyphs
+  with `GlyphSynthesis::embolden` 0, splitting a run glyph by glyph as a
+  recolour does. A form control's text, a `contenteditable` field, a
+  `<select>`, an image's alt text and an ellipsis cut's "…" take their element's
+  value through `render_text_with_shadow`'s / `paint_ellipsis`'s
+  `weight_synthesis` (`WeightSynthesisOff::uniform`). **There is no way yet to
+  turn faux italic off**: `font-synthesis-style` and the `font-synthesis`
+  shorthand are `engine = "gecko"` in Stylo 0.22 and dropped at parse (#2345).
 - **Not done here**: which face is synthesised from is fontique's choice (its
   rule is "over the face's weight by more than 200"; Chrome synthesises from
-  600 up over a face under 600), and the advance is not widened (Chrome does
-  not widen it either).
+  600 up over a face under 600, and not for a 600 face asked for 900: #2343),
+  and the advance is not widened (Chrome does not widen it either).
 - Pins: `crates/rinch-dom/tests/faux_bold_2296_tests.rs` (stem growth against
-  Chrome's numbers at 16px and 48px, hinted and not; even growth for faux bold,
+  Chrome's numbers at 16px and 48px, hinted and not, and at 2x at 9, 13, 16 and
+  24px; even growth for faux bold,
   darkening, both, and faux bold under a faux italic; the software painter's
-  slant; Vello's encoded amounts with and without darkening and under
+  slant, grey and LCD, and its blurred shadow's; `font-synthesis-weight: none`
+  on an element, inherited, on a span inside a run, on form-control text and an
+  ellipsis, on Vello, and repainted when it is turned on; Vello's encoded
+  amounts with and without darkening and under
   `scale(2)` and a rotation; the software painter's under `scale(2)` on and off
   the grid; blurred and hard shadows; both painters' atlas keys),
-  `glyph_atlas::tests::synthesis_is_in_the_key`, the kept-outline parity cases
+  `glyph_atlas::tests::synthesis_is_in_the_key`,
+  `text_shadow::call_hasher_synthesis_tests`, the kept-outline parity cases
   with faux bold and skew, and `crates/rinch/tests/gpu_faux_bold_2296.rs` (GPU
   atlas against the software painter; Vello's outlines at 48px with the atlas
   off and at 80px grow by Chrome's amount, centred).

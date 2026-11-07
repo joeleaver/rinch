@@ -4232,6 +4232,14 @@ fn visible_part(r: Rect) -> Option<Rect> {
     cut.then_some(v)
 }
 
+/// The `font-synthesis-weight` a text leaf is drawn with: its parent
+/// element's (#2296).
+fn parent_weight_synthesis(tree: &NodeTree, node: &Node) -> bool {
+    node.parent
+        .and_then(|p| tree.get_live(p))
+        .is_none_or(|p| p.computed_style.font_synthesis_weight)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn paint_node_unmasked(
     tree: &NodeTree,
@@ -5406,169 +5414,203 @@ fn paint_node_unmasked(
             }
         }
 
-        NodeKind::Text(text_data) => {
-            if text_data.content.is_empty() {
-                return;
-            }
-
-            // Check visibility (inherited from parent)
-            let parent_visibility = node
-                .parent
-                .and_then(|p| tree.get_live(p))
-                .map(|p| &p.computed_style.visibility);
-            if matches!(
-                parent_visibility,
-                Some(VisibilityValue::Hidden | VisibilityValue::Collapse)
-            ) {
-                return;
-            }
-
-            // Use cached layout if available (built after Taffy layout with final widths)
-            if let Some(cached_layout) = &node.cached_text_parley {
-                // Layout is already aligned during caching, use it directly
-                let text_shadows = node
-                    .parent
-                    .and_then(|p| tree.get_live(p))
-                    .map(|p| p.computed_style.text_shadow.as_slice())
-                    .unwrap_or(&[]);
-                // Painted in the parent's **current** colour, not the brush
-                // the layout was shaped with (#904): a leaf's layout is rebuilt
-                // only by a compute, and a colour-only change — a hover, every
-                // frame of a `transition: color` — must reach the glyphs
-                // without one. The same default as the fallback below.
-                let color = node
-                    .parent
-                    .and_then(|p| tree.get_live(p))
-                    .and_then(|p| p.computed_style.color)
-                    .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
-                render_text_with_shadow(
-                    painter,
-                    cached_layout,
-                    x,
-                    y,
-                    text_shadows,
-                    parent_transform,
-                    scale,
-                    None,
-                    Some(color),
-                    None,
-                );
-                return;
-            }
-
-            // Fallback: build layout on demand (should not happen with caching)
-            let parent_node = node.parent.and_then(|p| tree.get_live(p));
-            let parent_computed = parent_node.map(|p| &p.computed_style);
-
-            let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
-            let font_weight = parent_computed.map(|s| s.font_weight).unwrap_or(400.0);
-            let font_family = crate::fonts::parley_text_family(
-                font_cx,
-                parent_computed.map_or("", |s| s.font_family.as_str()),
-                &text_data.content,
-            );
-
-            let color = parent_computed
-                .and_then(|s| s.color)
-                .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
-
-            // Build the Parley layout at the *logical* font size (scale 1.0) — the
-            // same space `measure_inline_blocks` sized the box in and the same space
-            // the cached IFC path (`build_inline_layout(..., 1.0, ...)`) uses. The
-            // painter re-applies `scale` in `render_text`. (Building at `font_size *
-            // scale` here would both double-scale the glyphs at render *and*, because
-            // glyph advances don't scale perfectly linearly, make this layout's width
-            // diverge from the width the box was measured at — breaking the wrap
-            // constraint below at fractional scale factors.)
-            tree.perf.bump(crate::perf::Counter::ShapePaint);
-            let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
-            builder.set_line_break_override(Some(crate::ifc::SPACE_RUN_BREAKS));
-            builder.push_default(parley::style::StyleProperty::FontSize(font_size));
-            builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-            font_family.push_to(&mut builder);
-            if (font_weight - 400.0).abs() > 1.0 {
-                builder.push_default(parley::style::StyleProperty::FontWeight(
-                    parley::style::FontWeight::new(font_weight),
-                ));
-            }
-            if let Some(lh) = parent_computed.and_then(|s| s.line_height.to_parley()) {
-                builder.push_default(parley::style::StyleProperty::LineHeight(lh));
-            }
-            // letter-/word-spacing (#698) — in CSS pixels, like everything else
-            // on this builder, which was made at scale 1.0 for the reason above.
-            // Without these two the box this fallback paints into was measured
-            // with the spacing and the glyphs would be drawn without it.
-            let (letter_spacing, word_spacing) = parent_computed
-                .map(|s| (s.letter_spacing, s.word_spacing))
-                .unwrap_or((0.0, 0.0));
-            builder.push_default(parley::style::StyleProperty::LetterSpacing(letter_spacing));
-            builder.push_default(parley::style::StyleProperty::WordSpacing(word_spacing));
-
-            let mut text_layout = builder.build(&text_data.content);
-
-            // Lay out unwrapped first to get the natural (single-line) width & height.
-            text_layout.break_all_lines(None);
-
-            // This fallback fires for text that is not part of a cached IFC layout —
-            // notably the sole text child of an `inline-block`, which is not an IFC
-            // root (so it never gets a `cached_text_parley`). Such text was measured
-            // at the parent's max-content width, so for an *auto*-width box painting
-            // it unwrapped is correct. But once the box is clamped
-            // (`width`/`max-width`/`min-width` narrower than the content) layout wraps
-            // the text and sizes the box for the *wrapped* height, while these glyphs
-            // would still paint one overflowing line (#127).
-            //
-            // We can't decide "is it clamped?" by comparing this layout's width to the
-            // box: this on-demand layout's width drifts a pixel or two from the width
-            // the box was measured at (a different Parley build path), so a width test
-            // spuriously wraps auto-width boxes. Instead compare *heights*: layout
-            // records this text node's wrapped height, and line counts are discrete —
-            // if the node is more than ~1.5 single lines tall, layout wrapped it, so
-            // the box is clamped and paint must wrap to the content box too.
-            let one_line_h = text_layout.height();
-            let clamped = one_line_h > 0.0 && node.layout.height > one_line_h * 1.5;
-            if clamped && let Some(p) = parent_node {
-                let cs = &p.computed_style;
-                let padding_h = cs.padding_left.to_px() + cs.padding_right.to_px();
-                let border_h = cs.border_left_width.to_px() + cs.border_right_width.to_px();
-                let content_width = p.layout.width - padding_h - border_h;
-                if content_width > 0.0 {
-                    // Wrap to the content box, but 2% wider. This on-demand layout is a
-                    // hair wider per glyph run than the one layout wrapped the box with,
-                    // so breaking at exactly `content_width` fits fewer words per line
-                    // and can spill one extra line past the box's reserved height. The
-                    // small proportional slack reproduces layout's line breaks; any
-                    // residual right overflow stays within the element's padding.
-                    text_layout.break_all_lines(Some(content_width * 1.02));
-                }
-            }
-
-            // Read text-align from parent's computed style
-            let alignment = parent_computed
-                .map(|s| s.text_align.to_parley())
-                .unwrap_or(parley::layout::Alignment::Start);
-            text_layout.align(alignment, parley::layout::AlignmentOptions::default());
-
-            // Render text glyphs
-            let text_shadows = parent_computed
-                .map(|s| s.text_shadow.as_slice())
-                .unwrap_or(&[]);
-            render_text_with_shadow(
-                painter,
-                &text_layout,
-                x,
-                y,
-                text_shadows,
-                parent_transform,
-                scale,
-                None,
-                None,
-                None,
-            );
-        }
-
+        NodeKind::Text(text_data) => paint_text_leaf(
+            tree,
+            node,
+            text_data,
+            painter,
+            scale,
+            x,
+            y,
+            font_cx,
+            layout_cx,
+            parent_transform,
+        ),
         _ => {} // Document, Comment -- invisible
     }
+}
+
+/// [`paint_node_unmasked`]'s text-leaf arm, out of line: that function
+/// recurses once per level of the tree, so its frame is what a deep tree's
+/// stack is made of, and this arm's locals (an on-demand Parley layout among
+/// them) were part of every level's. A chain of 140 nested boxes
+/// (`positioned_row_cull_1719_tests`) overflowed a test thread's 2 MiB stack
+/// in a debug build once the arm gained the `font-synthesis-weight` look-up
+/// (#2296); out of line, the recursive frame is 8,696 bytes there, not 11,096.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn paint_text_leaf(
+    tree: &NodeTree,
+    node: &Node,
+    text_data: &crate::node::TextData,
+    painter: &mut dyn Painter,
+    scale: f64,
+    x: f64,
+    y: f64,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+    parent_transform: Affine,
+) {
+    if text_data.content.is_empty() {
+        return;
+    }
+
+    // Check visibility (inherited from parent)
+    let parent_visibility = node
+        .parent
+        .and_then(|p| tree.get_live(p))
+        .map(|p| &p.computed_style.visibility);
+    if matches!(
+        parent_visibility,
+        Some(VisibilityValue::Hidden | VisibilityValue::Collapse)
+    ) {
+        return;
+    }
+
+    // Use cached layout if available (built after Taffy layout with final widths)
+    if let Some(cached_layout) = &node.cached_text_parley {
+        // Layout is already aligned during caching, use it directly
+        let text_shadows = node
+            .parent
+            .and_then(|p| tree.get_live(p))
+            .map(|p| p.computed_style.text_shadow.as_slice())
+            .unwrap_or(&[]);
+        // Painted in the parent's **current** colour, not the brush
+        // the layout was shaped with (#904): a leaf's layout is rebuilt
+        // only by a compute, and a colour-only change — a hover, every
+        // frame of a `transition: color` — must reach the glyphs
+        // without one. The same default as the fallback below.
+        let color = node
+            .parent
+            .and_then(|p| tree.get_live(p))
+            .and_then(|p| p.computed_style.color)
+            .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
+        render_text_with_shadow(
+            painter,
+            cached_layout,
+            x,
+            y,
+            text_shadows,
+            parent_transform,
+            scale,
+            None,
+            Some(color),
+            None,
+            parent_weight_synthesis(tree, node),
+        );
+        return;
+    }
+
+    // Fallback: build layout on demand (should not happen with caching)
+    let parent_node = node.parent.and_then(|p| tree.get_live(p));
+    let parent_computed = parent_node.map(|p| &p.computed_style);
+
+    let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
+    let font_weight = parent_computed.map(|s| s.font_weight).unwrap_or(400.0);
+    let font_family = crate::fonts::parley_text_family(
+        font_cx,
+        parent_computed.map_or("", |s| s.font_family.as_str()),
+        &text_data.content,
+    );
+
+    let color = parent_computed
+        .and_then(|s| s.color)
+        .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
+
+    // Build the Parley layout at the *logical* font size (scale 1.0) — the
+    // same space `measure_inline_blocks` sized the box in and the same space
+    // the cached IFC path (`build_inline_layout(..., 1.0, ...)`) uses. The
+    // painter re-applies `scale` in `render_text`. (Building at `font_size *
+    // scale` here would both double-scale the glyphs at render *and*, because
+    // glyph advances don't scale perfectly linearly, make this layout's width
+    // diverge from the width the box was measured at — breaking the wrap
+    // constraint below at fractional scale factors.)
+    tree.perf.bump(crate::perf::Counter::ShapePaint);
+    let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
+    builder.set_line_break_override(Some(crate::ifc::SPACE_RUN_BREAKS));
+    builder.push_default(parley::style::StyleProperty::FontSize(font_size));
+    builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
+    font_family.push_to(&mut builder);
+    if (font_weight - 400.0).abs() > 1.0 {
+        builder.push_default(parley::style::StyleProperty::FontWeight(
+            parley::style::FontWeight::new(font_weight),
+        ));
+    }
+    if let Some(lh) = parent_computed.and_then(|s| s.line_height.to_parley()) {
+        builder.push_default(parley::style::StyleProperty::LineHeight(lh));
+    }
+    // letter-/word-spacing (#698) — in CSS pixels, like everything else
+    // on this builder, which was made at scale 1.0 for the reason above.
+    // Without these two the box this fallback paints into was measured
+    // with the spacing and the glyphs would be drawn without it.
+    let (letter_spacing, word_spacing) = parent_computed
+        .map(|s| (s.letter_spacing, s.word_spacing))
+        .unwrap_or((0.0, 0.0));
+    builder.push_default(parley::style::StyleProperty::LetterSpacing(letter_spacing));
+    builder.push_default(parley::style::StyleProperty::WordSpacing(word_spacing));
+
+    let mut text_layout = builder.build(&text_data.content);
+
+    // Lay out unwrapped first to get the natural (single-line) width & height.
+    text_layout.break_all_lines(None);
+
+    // This fallback fires for text that is not part of a cached IFC layout —
+    // notably the sole text child of an `inline-block`, which is not an IFC
+    // root (so it never gets a `cached_text_parley`). Such text was measured
+    // at the parent's max-content width, so for an *auto*-width box painting
+    // it unwrapped is correct. But once the box is clamped
+    // (`width`/`max-width`/`min-width` narrower than the content) layout wraps
+    // the text and sizes the box for the *wrapped* height, while these glyphs
+    // would still paint one overflowing line (#127).
+    //
+    // We can't decide "is it clamped?" by comparing this layout's width to the
+    // box: this on-demand layout's width drifts a pixel or two from the width
+    // the box was measured at (a different Parley build path), so a width test
+    // spuriously wraps auto-width boxes. Instead compare *heights*: layout
+    // records this text node's wrapped height, and line counts are discrete —
+    // if the node is more than ~1.5 single lines tall, layout wrapped it, so
+    // the box is clamped and paint must wrap to the content box too.
+    let one_line_h = text_layout.height();
+    let clamped = one_line_h > 0.0 && node.layout.height > one_line_h * 1.5;
+    if clamped && let Some(p) = parent_node {
+        let cs = &p.computed_style;
+        let padding_h = cs.padding_left.to_px() + cs.padding_right.to_px();
+        let border_h = cs.border_left_width.to_px() + cs.border_right_width.to_px();
+        let content_width = p.layout.width - padding_h - border_h;
+        if content_width > 0.0 {
+            // Wrap to the content box, but 2% wider. This on-demand layout is a
+            // hair wider per glyph run than the one layout wrapped the box with,
+            // so breaking at exactly `content_width` fits fewer words per line
+            // and can spill one extra line past the box's reserved height. The
+            // small proportional slack reproduces layout's line breaks; any
+            // residual right overflow stays within the element's padding.
+            text_layout.break_all_lines(Some(content_width * 1.02));
+        }
+    }
+
+    // Read text-align from parent's computed style
+    let alignment = parent_computed
+        .map(|s| s.text_align.to_parley())
+        .unwrap_or(parley::layout::Alignment::Start);
+    text_layout.align(alignment, parley::layout::AlignmentOptions::default());
+
+    // Render text glyphs
+    let text_shadows = parent_computed
+        .map(|s| s.text_shadow.as_slice())
+        .unwrap_or(&[]);
+    render_text_with_shadow(
+        painter,
+        &text_layout,
+        x,
+        y,
+        text_shadows,
+        parent_transform,
+        scale,
+        None,
+        None,
+        None,
+        parent_weight_synthesis(tree, node),
+    );
 }
 
 #[cfg(test)]

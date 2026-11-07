@@ -504,18 +504,22 @@ impl ResolvedTextRasterization {
     }
 }
 
-/// Chrome's faux bold for text of `font_size` CSS px (#2296): how far each
-/// side of a glyph's outline moves out, in the same px.
+/// Chrome's faux bold for text of `font_size` px (#2296): how far each side
+/// of a glyph's outline moves out, in the same px. The size is CSS px times
+/// the device scale factor: Chrome folds the DPR into the font size before
+/// this curve, so 16px text at 2x takes the 32px amount (measured: 0.518 CSS
+/// px of stem growth there, against 0.660 at 1x), while a CSS transform is
+/// not folded in and scales the 1x stroke.
 ///
 /// Skia draws a faux-bold run by stroking each outline as it fills it, with a
 /// stroke `font_size × k` wide: `k` is 1/24 of the em up to 9px, 1/32 from
 /// 36px, and linear between (`kStdFakeBoldInterpKeys`/`Values`). The stroke
-/// straddles the outline, so each side moves out by half of it. The size is
-/// the font's, before any transform: under `scale(2)` the stroke is doubled
-/// with the text, not taken at 40px. Measured in Chrome 156 on Linux, on Inter
-/// with only its regular face: an `l`'s stem grew by 0.401 px at 9px, 0.866 at
-/// 24px, 1.498 at 48px and 3.004 at 96px, and its centre did not move
-/// (`faux_bold_2296_tests`).
+/// straddles the outline, so each side moves out by half of it. Under a CSS
+/// `scale(2)` the stroke is doubled with the text, not taken at 40px.
+/// Measured in Chrome 156 on Linux at 1x, on Inter with only its regular
+/// face: an `l`'s stem grew by 0.401 px at 9px, 0.866 at 24px, 1.498 at 48px
+/// and 3.004 at 96px, and its centre did not move; at 2x by 0.349, 0.459,
+/// 0.518 and 0.751 CSS px at 9, 13, 16 and 24px (`faux_bold_2296_tests`).
 ///
 /// The amount adds to any [stem darkening](ResolvedTextRasterization::darkening_for):
 /// each painter grows a faux-bold run's outlines by the sum.

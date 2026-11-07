@@ -24,8 +24,8 @@ use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use rinch_dom::paint::text_rasterization::{
-    ResolvedTextRasterization, StemDarkening, SystemTextSettings, TextHinting, TextRasterization,
-    reset_thread_policy, set_thread_policy,
+    LcdFilter, ResolvedTextRasterization, StemDarkening, SubpixelOrder, SystemTextSettings,
+    TextAntialias, TextHinting, TextRasterization, reset_thread_policy, set_thread_policy,
 };
 use rinch_dom::paint::vello_painter::VelloPainter;
 
@@ -53,6 +53,16 @@ fn chrome_growth(size: f64) -> f64 {
 fn off() -> ResolvedTextRasterization {
     TextRasterization::default()
         .stem_darkening(StemDarkening::Off)
+        .resolve(&SystemTextSettings::default())
+}
+
+/// Subpixel (LCD) text, RGB, FreeType's default filter, no darkening.
+fn lcd_off() -> ResolvedTextRasterization {
+    TextRasterization::default()
+        .stem_darkening(StemDarkening::Off)
+        .antialias(TextAntialias::Subpixel)
+        .subpixel_order(Some(SubpixelOrder::Rgb))
+        .lcd_filter(Some(LcdFilter::Default))
         .resolve(&SystemTextSettings::default())
 }
 
@@ -324,25 +334,69 @@ fn software_faux_bold_is_even_on_every_side() {
 /// degrees (Chrome's too) on the software painter: the top of a stem sits
 /// `tan 14°` of the height to the right of its bottom.
 ///
+/// Grey and subpixel (LCD) masks alike: an LCD mask is rasterised three times
+/// as wide, and the shear is composed before that stretch.
+///
 /// Red before #2296: the software painter drew it upright.
 #[test]
 fn software_faux_italic_is_slanted() {
+    for (name, policy) in [("grey", off()), ("LCD", lcd_off())] {
+        let mut doc = document(&[
+            ("font: 48px/72px ProbeFace", STEMS),
+            ("font: italic 48px/72px ProbeFace", STEMS),
+        ]);
+        let px = software(&mut doc, policy);
+        let coloured = px
+            .chunks(4)
+            .filter(|p| p[0].abs_diff(p[1]) > 8 || p[1].abs_diff(p[2]) > 8)
+            .count();
+        assert_eq!(
+            coloured > 50,
+            name == "LCD",
+            "{name}: {coloured} pixels with colour fringes"
+        );
+        let lean = |s: &Stems| (s.top.0 - s.bottom.0) / (s.bottom.1 - s.top.1);
+        let upright = measure(&band_coverage(&px, 0), 10);
+        let italic = measure(&band_coverage(&px, 1), 10);
+        assert!(
+            lean(&upright).abs() < 0.01,
+            "{name}: the control leans: {upright:?}"
+        );
+        let want = 14f64.to_radians().tan();
+        assert!(
+            (lean(&italic) - want).abs() < 0.01,
+            "{name}: italic leans {:.4}, want {want:.4}: {italic:?}",
+            lean(&italic)
+        );
+    }
+}
+
+/// A blurred `text-shadow` of a faux italic leans with its text (its mask is
+/// rasterised from a copy drawn through the software painter, which did not
+/// apply the shear before #2296). That the mask's key holds the shear is
+/// pinned by `text_shadow::call_hasher_synthesis_tests`.
+#[test]
+fn software_faux_italic_reaches_blurred_shadows() {
+    let shadow = "color: transparent; text-shadow: 0 0 2px #000";
     let mut doc = document(&[
-        ("font: 48px/72px ProbeFace", STEMS),
-        ("font: italic 48px/72px ProbeFace", STEMS),
+        (&format!("font: 48px/72px ProbeFace; {shadow}"), STEMS),
+        (
+            &format!("font: italic 48px/72px ProbeFace; {shadow}"),
+            STEMS,
+        ),
     ]);
     let px = software(&mut doc, off());
     let lean = |s: &Stems| (s.top.0 - s.bottom.0) / (s.bottom.1 - s.top.1);
     let upright = measure(&band_coverage(&px, 0), 10);
     let italic = measure(&band_coverage(&px, 1), 10);
+    assert!(upright.ink > 500.0, "no shadow drawn: {upright:?}");
     assert!(
-        lean(&upright).abs() < 0.01,
+        lean(&upright).abs() < 0.02,
         "the control leans: {upright:?}"
     );
-    let want = 14f64.to_radians().tan();
     assert!(
-        (lean(&italic) - want).abs() < 0.01,
-        "italic leans {:.4}, want {want:.4}: {italic:?}",
+        lean(&italic) > 0.15,
+        "the italic's shadow leans {:.4}: {italic:?}",
         lean(&italic)
     );
 }
@@ -526,7 +580,9 @@ fn both_painters_key_faux_bold_masks_apart() {
         );
         reset_thread_policy();
         let gpu = atlas.borrow().run_synthesis();
-        let device = faux * scale as f32;
+        // The device scale factor is folded into the size, as Chrome folds
+        // it: at 2x, the 26px amount in device px.
+        let device = (chrome_growth(13.0 * scale) / 2.0) as f32;
         let near = |got: &[(f32, f32)], want: &[(f32, f32)]| {
             got.len() == want.len()
                 && got
@@ -610,4 +666,250 @@ fn software_faux_bold_scales_with_the_text() {
             "{transform}: stems grew {growth:.3} px, want {want:.3} ({regular:?} -> {bold:?})"
         );
     }
+}
+
+/// At a device scale factor of 2, Chrome folds the scale into the font size
+/// before Skia's curve: 16px text takes the 32px stroke, so its stems grow
+/// less, in CSS px, than at 1x. Chrome 156 at 2x (CSS px of stem growth):
+/// 9px 0.349, 13px 0.459, 16px 0.518, 24px 0.751. Taking the curve at the CSS
+/// size and scaling it (the first cut of #2296) gave 0.62 at 16px and 0.86 at
+/// 24px.
+#[test]
+fn software_faux_bold_at_2x_matches_chrome() {
+    const SCALE: f64 = 2.0;
+    let (pw, ph) = ((W as f64 * SCALE) as u32, (BAND as f64 * SCALE) as u32);
+    // Mean stem width of a one-row document painted at 2x, in CSS px.
+    let stems = |css: &str| {
+        let mut doc = document(&[(css, STEMS)]);
+        set_thread_policy(unhinted_off());
+        let mut painter = TinySkiaPainter::new(pw, ph);
+        painter.pixels_mut().fill(255);
+        let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            SCALE,
+            (W as f32, BAND as f32),
+            &mut doc.font_cx,
+            &mut cx,
+        );
+        reset_thread_policy();
+        let px = painter.pixels();
+        let at = |x: u32, y: u32| 1.0 - px[((y * pw + x) * 4) as usize] as f64 / 255.0;
+        let rows: Vec<u32> = (0..ph)
+            .filter(|&y| (0..pw).map(|x| at(x, y)).sum::<f64>() > 0.5)
+            .collect();
+        let mid = (rows[0] + rows[rows.len() - 1]) / 2;
+        (mid - 2..=mid + 2)
+            .map(|y| (0..pw).map(|x| at(x, y)).sum::<f64>())
+            .sum::<f64>()
+            / 5.0
+            / 10.0
+            / SCALE
+    };
+    for (size, chrome) in [(9.0, 0.349), (13.0, 0.459), (16.0, 0.518), (24.0, 0.751)] {
+        let regular = stems(&format!("font: {size}px/{}px ProbeFace", size * 1.5));
+        let bold = stems(&format!("font: bold {size}px/{}px ProbeFace", size * 1.5));
+        let growth = bold - regular;
+        assert!(
+            (growth - chrome).abs() < 0.04,
+            "{size}px at 2x: stems grew {growth:.3} CSS px, Chrome {chrome:.3}"
+        );
+    }
+}
+
+// ── font-synthesis-weight ────────────────────────────────────────────────
+
+/// One `BAND`-tall row per entry, each row's content `html` and style `css`.
+fn html_document(rows: &[(&str, &str)]) -> RinchDocument {
+    use parley::fontique::{Blob, FontInfoOverride};
+    let mut doc = RinchDocument::new();
+    doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(FACE)),
+        Some(FontInfoOverride {
+            family_name: Some("ProbeFace"),
+            ..Default::default()
+        }),
+    );
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0; background: #ffffff");
+    for (css, html) in rows {
+        let row = doc.create_element("div");
+        doc.set_attribute(
+            row,
+            "style",
+            &format!(
+                "height: {BAND}px; padding: 8px 0 0 10.3px; box-sizing: border-box; \
+                 white-space: pre; {css}"
+            ),
+        );
+        doc.append_child(body, row);
+        doc.set_inner_html(row, html);
+    }
+    doc.resolve_layout(W as f32, (BAND * rows.len() as u32) as f32);
+    doc
+}
+
+/// `font-synthesis-weight: none`, the escape hatch from faux bold: a bold
+/// run in a family with no bold face is drawn as its regular face draws it,
+/// pixel for pixel, on the element and inherited by its descendants (a `<b>`
+/// inside); and inside one glyph run only the element's own glyphs (the
+/// `<span>` shares the run of the bold text around it).
+#[test]
+fn software_font_synthesis_weight_none_draws_the_regular_face() {
+    const FONT: &str = "font: 48px/72px ProbeFace";
+    let mut doc = html_document(&[
+        (FONT, "llllllllll"),
+        (&format!("{FONT}; font-weight: bold"), "llllllllll"),
+        (
+            &format!("{FONT}; font-weight: bold; font-synthesis-weight: none"),
+            "llllllllll",
+        ),
+        (
+            &format!("{FONT}; font-synthesis-weight: none"),
+            "<b>llllllllll</b>",
+        ),
+        (
+            &format!("{FONT}; font-weight: bold"),
+            "lllll<span style=\"font-synthesis-weight: none\">lllll</span>",
+        ),
+    ]);
+    let px = software(&mut doc, unhinted_off());
+    let band = |b| band_coverage(&px, b);
+    let (regular, bold) = (band(0), band(1));
+    assert_ne!(regular, bold, "the control: bold is faux bold");
+    assert_eq!(band(2), regular, "none: the regular face");
+    assert_eq!(band(3), regular, "none, inherited by a <b>");
+    let stems = stem_edges(&band(4));
+    let widths: Vec<f64> = stems.iter().map(|(l, r)| r - l).collect();
+    let (r0, b0) = (stem_edges(&regular)[0], stem_edges(&bold)[0]);
+    let (rw, bw) = (r0.1 - r0.0, b0.1 - b0.0);
+    assert_eq!(widths.len(), 10, "{stems:?}");
+    for (i, w) in widths.iter().enumerate() {
+        let want = if i < 5 { bw } else { rw };
+        assert!(
+            (w - want).abs() < 0.05,
+            "stem {i} is {w:.3} px, want {want:.3} (bold {bw:.3}, regular {rw:.3})"
+        );
+    }
+}
+
+/// The same on the Vello painter's outline path: the run under `none` is
+/// encoded with no expansion.
+#[test]
+fn vello_font_synthesis_weight_none_encodes_no_faux_bold() {
+    let got = vello_amounts(
+        &[
+            ("font: bold 13px/20px ProbeFace", "Hamburg"),
+            (
+                "font: bold 13px/20px ProbeFace; font-synthesis-weight: none",
+                "Hamburg",
+            ),
+        ],
+        off(),
+    );
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(close(got[0], chrome_growth(13.0) / 2.0), "auto: {got:?}");
+    assert_eq!(got[1], 0.0, "none: {got:?}");
+}
+
+/// A form control's text (not an IFC) follows its element's
+/// `font-synthesis-weight` too, and so does the "…" of a `text-overflow:
+/// ellipsis` cut (drawn apart from the IFC's runs).
+#[test]
+fn software_font_synthesis_weight_none_reaches_form_control_text() {
+    let input = |css: &str| {
+        format!(
+            "<input value=\"llllllllll\" style=\"font: 24px/30px ProbeFace; width: 400px; {css}\">"
+        )
+    };
+    let mut doc = html_document(&[
+        ("", &input("")),
+        ("", &input("font-weight: bold")),
+        ("", &input("font-weight: bold; font-synthesis-weight: none")),
+    ]);
+    let px = software(&mut doc, unhinted_off());
+    let band = |b| band_coverage(&px, b);
+    assert_ne!(band(0), band(1), "the control: a bold input is faux bold");
+    assert_eq!(band(2), band(0), "none: the regular face");
+    let cut = |css: &str| {
+        format!(
+            "font: 24px/30px ProbeFace; width: 60px; overflow: hidden; \
+             text-overflow: ellipsis; {css}"
+        )
+    };
+    let mut doc = html_document(&[
+        (&cut(""), "llllllllllllllllllll"),
+        (&cut("font-weight: bold"), "llllllllllllllllllll"),
+        (
+            &cut("font-weight: bold; font-synthesis-weight: none"),
+            "llllllllllllllllllll",
+        ),
+    ]);
+    let px = software(&mut doc, unhinted_off());
+    let band = |b| band_coverage(&px, b);
+    assert_ne!(band(0), band(1), "the control: a bold cut is faux bold");
+    assert_eq!(band(2), band(0), "none: the stems and the \u{2026} regular");
+}
+
+/// Turning `font-synthesis-weight` off on a painted span repaints its text: a
+/// partial repaint of the damage the restyle names is the full paint of the
+/// new state.
+#[test]
+fn turning_weight_synthesis_off_repaints_the_text() {
+    use peniko::Fill;
+    use peniko::kurbo::Affine;
+    use rinch_dom::paint::painter::{PaintShape, Painter};
+    let mut doc = html_document(&[("font: bold 48px/72px ProbeFace", "lllll<span>lllll</span>")]);
+    let h = doc_height(&doc);
+    let vp = (W as f32, h as f32);
+    let full = |doc: &mut RinchDocument, p: &mut TinySkiaPainter| {
+        p.pixels_mut().fill(255);
+        let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(&doc.tree, p, 1.0, vp, &mut doc.font_cx, &mut cx);
+    };
+    set_thread_policy(off());
+    let mut p = TinySkiaPainter::new(W, h);
+    full(&mut doc, &mut p);
+    let before = p.pixels().to_vec();
+    doc.tree.consume_paint_dirty();
+    let row = doc.get_children(doc.body())[0];
+    let span = doc.get_children(row)[1];
+    doc.set_attribute(span, "style", "font-synthesis-weight: none");
+    doc.resolve_layout(vp.0, vp.1);
+    let damage = rinch_dom::paint::compute_damage(&doc.tree, 1.0, vp.0 as f64, vp.1 as f64);
+    // Today this restyle damages the whole frame; a partial damage would
+    // have to cover the span.
+    let rects: Vec<peniko::kurbo::Rect> = if damage.is_full() {
+        vec![peniko::kurbo::Rect::new(0.0, 0.0, vp.0 as f64, vp.1 as f64)]
+    } else {
+        damage.rects().to_vec()
+    };
+    assert!(!rects.is_empty(), "the restyle names no damage");
+    for r in &rects {
+        let r = r.intersect(peniko::kurbo::Rect::new(0.0, 0.0, vp.0 as f64, vp.1 as f64));
+        p.clear_rect_white(
+            r.x0 as u32,
+            r.y0 as u32,
+            r.width().ceil() as u32,
+            r.height().ceil() as u32,
+        );
+    }
+    rinch_dom::paint::set_dirty_rects(Some(&rects));
+    for r in &rects {
+        p.push_clip(Fill::NonZero, Affine::IDENTITY, &PaintShape::Rect(*r));
+        let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(&doc.tree, &mut p, 1.0, vp, &mut doc.font_cx, &mut cx);
+        p.pop_layer();
+    }
+    rinch_dom::paint::set_dirty_region(None);
+    let partial = p.pixels().to_vec();
+    full(&mut doc, &mut p);
+    reset_thread_policy();
+    assert_ne!(p.pixels(), &before[..], "the restyle changed nothing");
+    assert_eq!(
+        partial,
+        p.pixels(),
+        "the partial repaint is not the new state ({rects:?})"
+    );
 }
