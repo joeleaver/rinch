@@ -79,6 +79,7 @@ impl DomDocument for RinchDocument {
                 src: String::new(),
                 natural: None,
                 aspect: Default::default(),
+                alt: None,
             };
             self.tree
                 .taffy
@@ -865,6 +866,11 @@ impl DomDocument for RinchDocument {
         if name == "src" && self.tree.nodes[node.0].tag() == Some("img") {
             self.request_image_load_for_node(node.0, value);
         }
+        // What an `<img>` with no picture shows rests on its `src` and its
+        // `alt` (#2309); neither need restyle it.
+        if matches!(name, "src" | "alt") {
+            self.sync_img_placeholder(node.0);
+        }
 
         // Which elements the change restyles is decided at the next
         // `resolve_styles`, by Stylo's invalidator against the snapshot
@@ -971,6 +977,11 @@ impl DomDocument for RinchDocument {
             self.tree.nodes[node.0].style_attribute_cache = None;
         }
         self.sync_presentational_hints(node.0, name);
+        // As in `set_attribute` (#2309): an `<img>` without its `src` has no
+        // picture, and one without its `alt` no alt text.
+        if matches!(name, "src" | "alt") {
+            self.sync_img_placeholder(node.0);
+        }
         // Symmetric with `set_attribute`: removing an attribute a selector
         // named (`[data-highlighted]`, `[aria-selected]`) restyles what
         // Stylo's invalidator says it reaches.

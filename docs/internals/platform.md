@@ -30,6 +30,84 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 6. `paint_image()` renders via `Painter::draw_image` with proper affine transforms. Vello samples an image at each pixel's centre, as tiny-skia does (#1027), so `VelloPainter::draw_image` and `fill_repeating` draw it with its own transform. (Vello 0.7 sampled from the pixel's top-left **corner** — an image at a whole-pixel origin came out averaged with its neighbours — and rinch moved the image half a device pixel up-left, `vello_painter::centre_sampling`, to compensate; Vello 0.9 moved the sample to the centre, so the shift was dropped for images with the Vello 0.11 upgrade, #1955. Gradients still take it: Vello evaluates them at the corner.) Pins: `vello_painter::sampling_tests` (a CPU model of the shader arm) and the `#[ignore]`d `compositor::gpu_alpha_tests::gpu_alpha_vello_draw_image_*` (real GPU)
 7. **`image-rendering`** (#2098): `ComputedStyle::image_rendering` (inherited; Stylo's servo build parses `auto`, `crisp-edges`/`-moz-crisp-edges`, `pixelated`, not `smooth`) becomes `painter::ImageSampling` on `PaintImage::sampling`, handed through `image::paint_image` by the `<img>` paint and by `background::paint_layer` (backgrounds and url masks). `Nearest` is Vello `ImageQuality::Low` (`vello_painter::image_brush`; `Auto` keeps the brush's default `Medium`, the old brush exactly) and makes a repeating pattern's `RepeatTile::smooth` false. Both keywords are nearest up and down, as Chrome 156 draws them (the spec lets `pixelated` downscale smoothly). **tiny-skia's `draw_image` was already nearest under `auto`** (`PixmapPaint::default()`), unlike Chrome's smooth `auto`. That is unchanged, so in software the keywords change only patterns sampled at a fractional phase. Sampling is a brush or pattern parameter, not image content: Vello's atlas (keyed by blob) needs no key for it, and a rasterised background tile is the same pixels either way (its cache key mixes in `Nearest` only so the two stay apart if `Auto` ever filters; an `auto` layer's key is unchanged). Not read by: `RenderSurface`/`<video>` frames (`paint_frame_data`, `draw_gpu_image`, the split-surface compositor) or `<canvas>`. Rinch paints no SVG `<image>`. Pins: `image_rendering_mask_2098_2099_tests`, `gpu_image_rendering_mask_2098`.
 
+**Placeholders for an `<img>` with no picture** (#2309, Joe's rules;
+`crates/rinch-dom/src/img_placeholder.rs`, painted by
+`paint/img_placeholder.rs` for both painters). "No picture" is no `src`
+(absent, empty or blank) or a source the cache holds as `Failed`, or one
+being reloaded after a failure (`ImageCache::shows_failure`, the
+`retrying_failed` set that `begin_reload` fills and the drain empties, so a
+reload keeps the placeholder up until its answer instead of blanking it); a
+first load in flight is not one. `img_placeholder::placeholder` answers
+`None` when every declared size is a length of at most 1px (a tracking
+pixel), `Box` when the box has both dimensions without its picture (computed
+`width` and `height` non-`auto`, or one with a ratio, the #684 hint), else
+`Inline` with alt text, else `None`; and `None` everywhere under
+`--rinch-img-placeholder: none` (custom property, inherited, read off the
+Stylo primary style like `paint/tooltip.rs`'s). **Box**: no layout change;
+paint draws nothing when the content box is under `min_box` on either axis
+(`MIN_BOX_NO_SRC` 3px with no `src`, `MIN_BOX_FAILED` 18px with one: Chrome
+156, measured on a grid of `WxH` images, `.scratch/chrome/m4` of the PR —
+held-back spacers and dividers draw nothing), else fills
+`--rinch-img-placeholder-background` (default none) and an even-odd ring of
+`--rinch-img-placeholder-border-width` (default 1px; an absolute length,
+`em` or `0`, through `replaced::svg_length`) in
+`--rinch-img-placeholder-border-color` (default `silver`, `currentcolor`
+allowed) on the **content box**'s edge, then the alt text wrapped at the box
+less border and 1px of padding, clipped to the inside of the ring (Chrome
+156's alt container: `border: 1px solid silver; padding: 1px; box-sizing:
+border-box; overflow: hidden`, in the content box). **Inline**: an
+inline-block of the alt text, as Chrome's alt container is: the measure
+(`replaced::measure_image` → `img_placeholder::measure_inline_alt`, both
+measure arms) takes a declared width (found by asking `replaced::measure`
+with two natural widths: one it ignores is decided by the style or Taffy),
+else shrink-to-fit (`min(max-content, max(min-content, available))`), and a
+declared height, else its lines' at that width; `ifc::atomic_inline_baseline`
+returns its last line's baseline. So `width=600 alt=Banner style="width:
+100%; height: auto"` in a 150px column is 150 by one line, and a long alt
+text in an 80px column 80 wide, wrapped, on a line of its own after text
+(all Chrome 156's sizes). Its text is `NodeContext::Image::alt`
+(`AltText`): shaped once on one line in `build_parley_layout`, with its min-
+and max-content widths and line metrics, keyed by the text, every
+typography input and `NodeTree::font_generation`; measure and paint only
+re-break a clone (`AltText::broken`), so no paint shapes it. Its line box,
+not the font's content area (which can be taller than `line-height` and
+pushed the line's baseline down a pixel), is what it adds to a line.  A change
+of kind alone (the escape hatch toggled on a box) is repainted by the restyle
+that made it. It is written by
+`RinchDocument::sync_img_placeholder`, called from the cascade (for every
+restyled node, after `sync_replaced_measure`), `note_fonts_registered`,
+`set_attribute` / `remove_attribute` of `src` and `alt` (neither need
+restyle), and `drain_pending_images` for each source
+`ImageCache::take_newly_failed` names (which also marks each such `<img>`
+paint-dirty). A changed context seeds the IFC, marks the atomic inline dirty
+and sets `layout_dirty`. The sync also drops a natural size the cache holds
+no picture for (the `src` removed, emptied, switched to a failed source or to
+one still loading; before, the old picture's size stayed); and the
+cached-`src` path of `request_image_load_for_node` seeds the IFC and sets
+`layout_dirty` (before, a cached picture written over an inline image at an
+unchanged viewport never re-laid it out). Hit-testing and the cursor are the
+image's (the box is the element's). Selection copy writes an `<img>` as
+nothing, alt or not (`text_selection_copy::is_picture`), which is Chrome
+156's `getSelection().toString()`. Measured in Chrome 156 (standards mode,
+`.scratch` pages of the PR): the ring is Chrome's box for a sized image
+**without** alt (`#c0c0c0` at the content edge, white padding, from 18px its
+icon from 2px in); a sized image **with** alt is inline alt text there (100x50
+attributes, `alt="Hello world"`: a 95x20 inline box, the 16px icon and the
+text), whether `src` is missing or failed — so drawing the box with the alt
+text is Joe's rule, Chrome's quirks-mode rendering. Not Chrome's (the guide's
+list): no broken-image icon anywhere, the box for a sized image with alt, and
+a failed image with no alt and one or no dimension drawing nothing at its
+declared size (Chrome: a 16x16 box holding the broken-image icon; Joe's rule
+3). A box under the minimum that has alt text is `Inline` with its size
+dropped from its Taffy style (`img_placeholder::ignores_size`, read by
+`taffy_style_from_computed`; `Node::img_size_ignored` records what the style
+was last given, so `sync_img_placeholder` rebuilds it when a failure or a
+picture arrives), as Chrome shows a failed 16x16 `alt="Facebook"` icon. The web backend
+is the browser's `<img>`. Pins: `rinch-dom/tests/img_placeholder_2309_tests.rs`
+(software, 1x and 2x, a partial repaint after a `src` arrives, the review of
+#2313's thresholds, one-dimension and wrapping cases) and
+`rinch/tests/gpu_img_placeholder_2309.rs`.
+
 **SVG files as images** (#2111, `crates/rinch-dom/src/svg_image.rs`). An SVG *file* — an
 `<img>`'s, a background's or mask's `url()`, an app scheme's bytes — decodes to a
 `DecodedImage` with no pixels (`data` empty) and a `VectorImage` (`DecodedImage::vector`):
@@ -397,10 +475,11 @@ width comes from its content does not take its height from it (30x10 around
 a 30x10 child with `aspect-ratio: 1`, Chrome 30x30 — #1570); and a flex item
 grown from a 0 basis (`flex: 1`) under `align-items: center` takes no cross
 size from the ratio (400x0, Chrome 400x100 — #1571). Also not
-Chrome's: an unloaded or failed image with a non-empty `alt` reserves its
-attributes' 100x50 where Chrome lays out the alt text (48x18, both attributes
-ignored), and a failed one with one attribute and no `alt` is 100x0 where
-Chrome draws its 16x16 broken-image box; an out-of-flow image with an `auto`
+Chrome's: an image with no picture (no `src`, or failed) and a non-empty `alt`
+keeps its attributes' 100x50 and draws a placeholder box in it (#2309, above)
+where Chrome 156 lays out the alt text inline (both attributes ignored), and a failed one with no `alt`
+and one attribute is 100x0, or with none 0x0, drawing nothing, where Chrome
+draws a 16x16 box holding its broken-image icon (Joe's rule 3); an out-of-flow image with an `auto`
 dimension fills its containing block (#1432, older than the hints); a percentage `height`
 attribute does nothing on an inline-level image, as a CSS one does not
 (#1420); a `<video>` with a mapped ratio and both dimensions `auto` is 300
