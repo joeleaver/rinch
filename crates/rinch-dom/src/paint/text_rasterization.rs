@@ -59,6 +59,11 @@ pub struct TextRasterization {
     pub hinting: TextHinting,
     /// Thickening of light text. See [`StemDarkening`].
     pub stem_darkening: StemDarkening,
+    /// Draw every glyph from its outline on the GPU, not from the glyph-mask
+    /// atlas (#2286 stage 2). Off by default; for text whose size changes
+    /// every frame (an animated zoom), where each size is a new set of masks.
+    /// The software renderer always draws masks.
+    pub gpu_glyph_outlines: bool,
 }
 
 impl TextRasterization {
@@ -80,6 +85,13 @@ impl TextRasterization {
     #[must_use]
     pub fn stem_darkening(mut self, stem_darkening: StemDarkening) -> Self {
         self.stem_darkening = stem_darkening;
+        self
+    }
+
+    /// Set [`gpu_glyph_outlines`](Self::gpu_glyph_outlines).
+    #[must_use]
+    pub fn gpu_glyph_outlines(mut self, on: bool) -> Self {
+        self.gpu_glyph_outlines = on;
         self
     }
 
@@ -120,6 +132,7 @@ impl TextRasterization {
             antialias,
             hinting,
             darkening_px,
+            gpu_glyph_outlines: self.gpu_glyph_outlines,
         }
     }
 }
@@ -323,6 +336,8 @@ pub struct ResolvedTextRasterization {
     /// The most stem darkening, in device pixels per side, that the lightest
     /// small text gets; `0` turns it off.
     pub darkening_px: f32,
+    /// The GPU painter draws glyphs from outlines, not the glyph-mask atlas.
+    pub gpu_glyph_outlines: bool,
 }
 
 impl Default for ResolvedTextRasterization {

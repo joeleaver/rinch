@@ -1957,6 +1957,22 @@ mod text_geometry_units_tests {
             let d = app.doc.as_ref().unwrap().borrow();
             crate::app::hit_testing::painted_element_box(&d.tree, input)
         };
+        // The field unfocused first: no caret. Glyphs are drawn at their
+        // quarter-pixel positions (#2286), so the last glyph's edge can reach
+        // into the caret's column; ink this paint already has is not the caret.
+        {
+            let doc = app.doc.clone().unwrap();
+            let mut d = doc.borrow_mut();
+            let n = d.tree.nodes.get_mut(input).unwrap();
+            n.attributes.remove("data-focused");
+            d.tree.mark_paint_dirty(input);
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+        app.scene_dirty = true;
+        app.has_previous_frame = false;
+        let (without, _, _) = app.build_pixels(2.0, (1600, 1200), true);
+        let dark = |p: &[u8; 4]| p[3] > 200 && p[0] < 100 && p[1] < 100 && p[2] < 100;
+        let without: Vec<bool> = without.as_chunks::<4>().0.iter().map(dark).collect();
         // Focused with its caret at `byte`, as the runtime's caret sync
         // writes it (the attributes paint, the scroll and MCP all read).
         {
@@ -2001,7 +2017,7 @@ mod text_geometry_units_tests {
                 && x < cx1
                 && (y as f32) > (by + 2.5) * 2.0
                 && (y as f32) < (by + bh - 2.5) * 2.0;
-            if inside && p[3] > 200 && p[0] < 100 && p[1] < 100 && p[2] < 100 {
+            if inside && dark(p) && !without[i] {
                 left = left.min(x);
                 top = top.min(y);
             }

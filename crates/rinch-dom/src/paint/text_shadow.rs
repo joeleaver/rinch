@@ -706,14 +706,26 @@ const TIE_GUARD_PX: f64 = 1.0 / 64.0;
 
 #[cfg(feature = "software-renderer")]
 impl CallHasher {
-    /// A glyph's device position as the software painter places it: it
-    /// blits each glyph image by nearest-neighbour sampling, so the image
-    /// lands on the pixel `ceil(p - 0.5)` and the fraction of `p` is in no
-    /// pixel. Near a tie the exact value is keyed too, so an ambiguous
-    /// position misses rather than reuses the other rounding.
-    fn glyph_pos(&mut self, p: f64) {
+    /// A glyph's device x as the software painter places it: on the glyph
+    /// atlas's grid (#2286), the nearest quarter pixel picks both the whole
+    /// pixel and the sub-pixel mask (`glyph_atlas::place`), so the quarter is
+    /// keyed. Near a tie between two quarters the exact value is keyed too,
+    /// so an ambiguous position misses rather than reuses the other rounding.
+    fn glyph_x(&mut self, p: f64) {
         use std::hash::Hasher;
-        self.0.write_i64((p - 0.5).ceil() as i64);
+        let q = p * super::glyph_atlas::SUBPIXEL_BUCKETS as f64;
+        self.0.write_i64(q.round() as i64);
+        if (q - q.floor() - 0.5).abs() < TIE_GUARD_PX * super::glyph_atlas::SUBPIXEL_BUCKETS as f64
+        {
+            self.0.write_u64(p.to_bits());
+        }
+    }
+
+    /// A glyph's device baseline as the software painter places it: on the
+    /// nearest row, half up (`glyph_atlas::place`); near the tie, exactly.
+    fn glyph_y(&mut self, p: f64) {
+        use std::hash::Hasher;
+        self.0.write_i64((p + 0.5).floor() as i64);
         let frac = p - p.floor();
         if (frac - 0.5).abs() < TIE_GUARD_PX {
             self.0.write_u64(p.to_bits());
@@ -845,11 +857,11 @@ impl Painter for CallHasher {
         for g in glyphs {
             self.0.write_u32(g.id);
             match place {
-                // The painter adds the image's whole-pixel bearing to this,
-                // which moves the rounding with it.
+                // The painter places the glyph's origin on the atlas's grid
+                // and adds the mask's whole-pixel bearing to that.
                 Some((tx, ty)) => {
-                    self.glyph_pos(tx + g.x as f64);
-                    self.glyph_pos(ty + g.y as f64);
+                    self.glyph_x(tx + g.x as f64);
+                    self.glyph_y(ty + g.y as f64);
                 }
                 None => {
                     self.0.write_u32(g.x.to_bits());

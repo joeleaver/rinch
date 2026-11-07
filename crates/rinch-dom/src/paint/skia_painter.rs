@@ -11,6 +11,9 @@ use tiny_skia::{
     PathBuilder, Pixmap, PixmapPaint, PixmapRef, SpreadMode, Stroke as SkStroke, Transform,
 };
 
+use super::glyph_atlas::{
+    AtlasStats, GlyphMask, Looked, MaskKind, RunSpec, SharedAtlas, atlas_scale, place, thread_atlas,
+};
 use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
 
 // ── Conversion helpers ────────────────────────────────────────────────────
@@ -532,157 +535,6 @@ enum LayerState {
     },
 }
 
-// ── Glyph cache ───────────────────────────────────────────────────────────
-
-/// One rasterised glyph, as swash produced it for one font, size, hinting
-/// setting and variation instance.
-///
-/// **No sub-pixel position is in the key, because none is in the image.**
-/// This painter asks swash for a glyph at the origin (no `Render::offset`)
-/// and places it by translating the finished image with nearest-neighbour
-/// sampling, so a glyph at `x = 10.25` and one at `x = 10.75` are the same
-/// coverage bytes drawn one sample apart. Caching per sub-pixel bucket would
-/// store identical images several times over. If glyphs are ever rasterised
-/// at their fractional offset (a quality change: better spacing, different
-/// pixels), that offset — bucketed — has to join [`GlyphRunKey`], and
-/// `skia_painter_oracle_tests` is what fails when it does not.
-///
-/// The synthesis a run carries is not in the key either, for the same
-/// reason: `draw_glyphs` has never applied `glyph_transform` (faux italic)
-/// on this backend, and Parley's faux bold reaches no painter.
-struct CachedGlyph {
-    left: i32,
-    top: i32,
-    width: u32,
-    height: u32,
-    /// `true`: `data` is RGBA and the brush is ignored (a COLR glyph, or a
-    /// colour bitmap strike). `false`: `data` is one coverage byte per pixel.
-    color: bool,
-    /// For a colour glyph: `data` is already premultiplied (a bitmap strike,
-    /// premultiplied before it was scaled to the font size, #804), so it is
-    /// drawn as it is. `false`: straight alpha, premultiplied at the blit.
-    premultiplied: bool,
-    data: Vec<u8>,
-}
-
-/// Everything about a glyph run that changes a glyph's pixels, except the
-/// glyph id.
-struct GlyphRunKey {
-    /// `Blob::id()` of the font file's bytes: unique per blob for the life of
-    /// the process, so a font dropped and another loaded can never alias.
-    font_id: u64,
-    font_index: u32,
-    /// `f32::to_bits` of the physical font size. Exact, not bucketed: two
-    /// sizes one ulp apart rasterise differently often enough to matter to a
-    /// pixel oracle, and real documents use a handful of sizes.
-    size_bits: u32,
-    hint: bool,
-    /// `f32::to_bits` of the stem darkening the run is rasterised with, in
-    /// glyph-image pixels per side (#2286): `0` for none.
-    darkening: u32,
-    coords: Box<[i16]>,
-}
-
-struct GlyphRun {
-    key: GlyphRunKey,
-    /// `None` is a cached *empty* glyph (a space): swash rendered nothing.
-    glyphs: std::collections::HashMap<u32, Option<CachedGlyph>>,
-}
-
-/// The rasterised-glyph cache, bounded by an approximate byte budget.
-///
-/// Runs are found by a linear scan (a document uses a few dozen font/size
-/// combinations at most, and comparing one is five integer compares plus an
-/// usually empty slice), with a remembered last hit because consecutive runs
-/// almost always share one. The bound is **clear-on-threshold**: when the
-/// accounted bytes exceed [`GLYPH_CACHE_BUDGET`], or the run count
-/// [`GLYPH_CACHE_MAX_RUNS`], everything is dropped and the next frame
-/// re-rasterises what it draws. An LRU would keep the warm set warmer across
-/// that one frame; for a working set that fits the budget — any real UI — the
-/// threshold is never reached and the difference never arises.
-///
-/// The accounting is an estimate: each glyph counts its image bytes plus
-/// [`GLYPH_ENTRY_OVERHEAD`] for the hash-map slot, the `CachedGlyph` and the
-/// hash map's spare capacity. Measured with a counting allocator on about
-/// 24 700 small (9-13px) glyphs: the real heap was the image bytes plus about
-/// 118 bytes per entry, so a flat 32 under-counted it 2x, 96 still 1.15x, and
-/// 128 over-counts by about 6% (the conservative side). Large glyphs are
-/// dominated by their image bytes either way.
-#[derive(Default)]
-struct GlyphCache {
-    runs: Vec<GlyphRun>,
-    last: usize,
-    bytes: usize,
-    /// One swash cache key per font file, so swash's own scaler cache
-    /// (outlines, hinting state) is hit across calls. `FontRef::from_index`
-    /// mints a fresh key every time, which made every `draw_glyphs` call a
-    /// miss there. Cleared with the glyphs: a new font file always opens a
-    /// new run, so this map never outgrows [`GLYPH_CACHE_MAX_RUNS`] entries
-    /// before the run cap clears both.
-    font_keys: std::collections::HashMap<(u64, u32), swash::CacheKey>,
-}
-
-/// Accounted bytes before the cache is cleared.
-const GLYPH_CACHE_BUDGET: usize = 16 * 1024 * 1024;
-/// Per-glyph bookkeeping charged on top of the image bytes: the hash-map
-/// slot (`u32` key + `Option<CachedGlyph>`), its share of the map's spare
-/// capacity, and the image allocation's rounding. See [`GlyphCache`].
-const GLYPH_ENTRY_OVERHEAD: usize = 128;
-/// Distinct (font, size, hinting, variation) runs before the cache is cleared.
-const GLYPH_CACHE_MAX_RUNS: usize = 512;
-
-impl GlyphCache {
-    fn run_index(
-        &mut self,
-        font_id: u64,
-        font_index: u32,
-        size: f32,
-        hint: bool,
-        darkening: u32,
-        coords: &[i16],
-    ) -> usize {
-        let size_bits = size.to_bits();
-        let matches = |k: &GlyphRunKey| {
-            k.font_id == font_id
-                && k.font_index == font_index
-                && k.size_bits == size_bits
-                && k.hint == hint
-                && k.darkening == darkening
-                && *k.coords == *coords
-        };
-        if self.runs.get(self.last).is_some_and(|r| matches(&r.key)) {
-            return self.last;
-        }
-        if let Some(i) = self.runs.iter().position(|r| matches(&r.key)) {
-            self.last = i;
-            return i;
-        }
-        if self.runs.len() >= GLYPH_CACHE_MAX_RUNS {
-            self.clear();
-        }
-        self.runs.push(GlyphRun {
-            key: GlyphRunKey {
-                font_id,
-                font_index,
-                size_bits,
-                hint,
-                darkening,
-                coords: coords.into(),
-            },
-            glyphs: std::collections::HashMap::new(),
-        });
-        self.last = self.runs.len() - 1;
-        self.last
-    }
-
-    fn clear(&mut self) {
-        self.runs.clear();
-        self.last = 0;
-        self.bytes = 0;
-        self.font_keys.clear();
-    }
-}
-
 // ── Painter statistics ────────────────────────────────────────────────────
 
 /// What the software painter did, for the perf counters.
@@ -693,10 +545,9 @@ impl GlyphCache {
 /// [`TinySkiaPainter::take_stats`]. See `docs/src/guide/performance.md`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SkiaPainterStats {
-    /// Glyphs drawn from the rasterised-glyph cache.
-    pub glyph_cache_hits: u64,
-    /// Glyphs swash had to rasterise (then cached).
-    pub glyph_cache_misses: u64,
+    /// The glyph-mask atlas's hits, misses and evictions for this painter's
+    /// draws (#2286; it uploads nothing here).
+    pub atlas: AtlasStats,
     /// Clip masks pushed (`push_clip` calls).
     pub clip_masks: u64,
     /// Mask pixels those pushes worked over: the clip's bounds, filled and
@@ -737,8 +588,7 @@ impl SkiaPainterStats {
     /// Add these counts to the current frame of `perf`.
     pub fn add_to(&self, perf: &crate::perf::PerfCounters) {
         use crate::perf::Counter;
-        perf.add(Counter::GlyphCacheHits, self.glyph_cache_hits);
-        perf.add(Counter::GlyphCacheMisses, self.glyph_cache_misses);
+        self.atlas.add_to(perf);
         perf.add(Counter::ClipMasks, self.clip_masks);
         perf.add(Counter::ClipMaskPx, self.clip_mask_px);
         perf.add(Counter::PaintLayers, self.layers);
@@ -819,16 +669,17 @@ pub struct TinySkiaPainter {
     clip_mask: Option<ClipMask>,
     /// Stack of saved layer states.
     layer_stack: Vec<LayerState>,
-    /// Reusable swash scale context for glyph rasterization.
-    scale_context: swash::scale::ScaleContext,
-    /// A second swash context for colour bitmap strikes (#804): a strike is
-    /// read at its own ppem, by a scaler built while the run's scaler (from
-    /// `scale_context`, at the font size) is still alive.
-    bitmap_scale_context: swash::scale::ScaleContext,
-    /// Rasterised glyphs, reused across calls and frames.
-    glyph_cache: GlyphCache,
+    /// The glyph masks text is drawn from: the thread's atlas, shared with
+    /// every other painter on it (#2286), unless [`Self::set_glyph_atlas`]
+    /// gave this painter its own.
+    atlas: SharedAtlas,
+    /// This painter's id in `atlas` (its frames protect what they drew).
+    atlas_painter: u32,
     /// Scratch RGBA buffer a glyph is coloured into before it is drawn.
     glyph_scratch: Vec<u8>,
+    /// Scratch for a run's atlas keys and glyph origins, reused across runs.
+    glyph_keys: Vec<(u32, u8)>,
+    glyph_origins: Vec<(f32, f32)>,
     /// All-zero surface-sized masks ready for reuse.
     mask_pool: Vec<Mask>,
     /// Fully transparent surface-sized pixmaps ready for reuse as layers.
@@ -848,19 +699,30 @@ pub struct TinySkiaPainter {
     damage_rects: Vec<DeviceRect>,
 }
 
+impl Drop for TinySkiaPainter {
+    fn drop(&mut self) {
+        if let Ok(mut a) = self.atlas.try_borrow_mut() {
+            a.forget_painter(self.atlas_painter);
+        }
+    }
+}
+
 impl TinySkiaPainter {
     /// Create a new painter with the given dimensions.
     ///
     /// Panics if width or height is 0.
     pub fn new(width: u32, height: u32) -> Self {
+        let atlas = thread_atlas();
+        let atlas_painter = atlas.borrow_mut().register_painter();
         Self {
             pixmap: Pixmap::new(width.max(1), height.max(1)).expect("invalid pixmap dimensions"),
             clip_mask: None,
             layer_stack: Vec::new(),
-            scale_context: swash::scale::ScaleContext::new(),
-            bitmap_scale_context: swash::scale::ScaleContext::new(),
-            glyph_cache: GlyphCache::default(),
+            atlas_painter,
+            atlas,
             glyph_scratch: Vec::new(),
+            glyph_keys: Vec::new(),
+            glyph_origins: Vec::new(),
             mask_pool: Vec::new(),
             layer_pool: Vec::new(),
             touched: None,
@@ -895,14 +757,28 @@ impl TinySkiaPainter {
         std::mem::take(&mut self.stats)
     }
 
-    /// How many bytes of glyph images the cache holds.
+    /// How many bytes of glyph masks the atlas this painter draws from holds
+    /// (accounted: shared with the thread's other painters by default).
     pub fn glyph_cache_bytes(&self) -> usize {
-        self.glyph_cache.bytes
+        self.atlas.borrow().bytes()
     }
 
-    /// Drop every cached glyph image.
+    /// Drop every glyph mask of the atlas this painter draws from.
     pub fn clear_glyph_cache(&mut self) {
-        self.glyph_cache.clear();
+        self.atlas.borrow_mut().clear();
+    }
+
+    /// Draw text from `atlas` instead of the thread's (a test's own, or one
+    /// with a smaller budget).
+    pub fn set_glyph_atlas(&mut self, atlas: SharedAtlas) {
+        self.atlas.borrow_mut().forget_painter(self.atlas_painter);
+        self.atlas_painter = atlas.borrow_mut().register_painter();
+        self.atlas = atlas;
+    }
+
+    /// The atlas this painter draws text from.
+    pub fn glyph_atlas(&self) -> &SharedAtlas {
+        &self.atlas
     }
 
     /// Close a frame: release pooled masks and layer pixmaps beyond the
@@ -1572,6 +1448,10 @@ impl Painter for TinySkiaPainter {
         self.touched = None;
         self.mask_use.live = 0;
         self.layer_use.live = 0;
+        self.stats.atlas.evictions += self
+            .atlas
+            .borrow_mut()
+            .begin_painter_frame(self.atlas_painter);
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
@@ -1738,238 +1618,111 @@ impl Painter for TinySkiaPainter {
         normalized_coords: &[i16],
         glyphs: &[PaintGlyph],
     ) {
-        let font_data: &[u8] = font.data.as_ref();
-        let Some(mut font_ref) = swash::FontRef::from_index(font_data, font.index as usize) else {
-            return;
-        };
-        let font_id = font.data.id();
-        if !self.reference_mode {
-            font_ref.key = *self
-                .glyph_cache
-                .font_keys
-                .entry((font_id, font.index))
-                .or_insert(font_ref.key);
-        }
-
         // Resolve brush color (only solid colors for now)
         let color = match brush {
             Brush::Solid(c) => *c,
             _ => AlphaColor::new([0.0, 0.0, 0.0, 1.0]), // fallback to black
         };
         let rgba = color.to_rgba8();
-        let (cr, cg, cb, ca) = (rgba.r, rgba.g, rgba.b, rgba.a);
+        let rgba = [rgba.r, rgba.g, rgba.b, rgba.a];
+        // This backend has never applied `glyph_transform` (faux italic); the
+        // atlas does not change that.
+        let _ = glyph_transform;
 
-        let ts = affine_to_transform(transform);
-        let glyph_ts = glyph_transform.map(affine_to_transform);
-
-        // This thread's text-rendering policy (#2286): hinting, and the stem
-        // darkening of light text, which is the Vello painter's
-        // `font_embolden` amount for the same run. swash's embolden (FreeType's
-        // `FT_Outline_EmboldenXY` without its halving) grows a glyph by about
-        // the amount on each side horizontally but by twice the amount at the
-        // top and none at the bottom (y is up in its outline space): measured
-        // on Inter 13px at 6/64 px, the ink's centre moved 0.022 px right and
-        // 0.100 px up. The `(0, -amount)` offset moves it back down, which
-        // makes it kurbo's `expand_path` (Vello's) to within 0.03 px: the
-        // amount on every side (`stem_darkening_2286_tests`).
+        // On the atlas's grid (#2286): under no rotation, skew or uneven
+        // scale, each glyph is the mask for its device size and sub-pixel
+        // bucket, blitted at a whole device pixel. Otherwise the bucket-0
+        // mask at the run's size, placed through the transform, as this
+        // painter always drew.
+        let scale = atlas_scale(transform);
+        // This thread's text-rasterization policy (#2286 stage 1): hinting,
+        // and the stem darkening of light text, in device pixels. On the
+        // atlas's grid the mask is rasterised at the device size, so it takes
+        // the device amount; off it, the bucket-0 mask is drawn through
+        // `transform`, which scales it, so it takes the amount over that
+        // scale.
         let policy = super::text_rasterization::thread_policy();
-        let hint = hint && policy.hint();
-        // The policy's amount is in device pixels; a glyph image is
-        // rasterised at `font_size` and drawn through `transform`, which
-        // scales it, so the image grows by the amount over that scale.
         let device = policy.run_darkening_px(brush, font_size, transform);
-        let scale = super::text_rasterization::device_scale(transform) as f32;
-        let darkening = if device > 0.0 && scale > 0.0 {
-            device / scale
-        } else {
-            0.0
-        };
-        let darkening_bits = darkening.to_bits();
-
-        let mut render = swash::scale::Render::new(&[
-            swash::scale::Source::ColorOutline(0),
-            swash::scale::Source::Outline,
-        ]);
-        let render_color = swash::scale::Render::new(&[swash::scale::Source::ColorOutline(0)]);
-        let mut render_outline = swash::scale::Render::new(&[swash::scale::Source::Outline]);
-        if darkening > 0.0 {
-            let back = swash::zeno::Vector::new(0.0, -darkening);
-            render.embolden(darkening).offset(back);
-            render_outline.embolden(darkening).offset(back);
-        }
-        let to_cached = |image: swash::scale::image::Image| -> Option<CachedGlyph> {
-            if image.placement.width == 0 || image.placement.height == 0 {
-                return None;
-            }
-            let (color, data) = match image.content {
-                swash::scale::image::Content::Mask => (false, image.data),
-                swash::scale::image::Content::Color => (true, image.data),
-                swash::scale::image::Content::SubpixelMask => (
-                    false,
-                    image
-                        .data
-                        .chunks(4)
-                        .map(|px| px.get(3).copied().unwrap_or(0))
-                        .collect(),
-                ),
-            };
-            Some(CachedGlyph {
-                left: image.placement.left,
-                top: image.placement.top,
-                width: image.placement.width,
-                height: image.placement.height,
-                color,
-                premultiplied: false,
-                data,
-            })
-        };
-        let bitmap_cx = &mut self.bitmap_scale_context;
-        // A face with colour bitmap strikes (CBDT/CBLC, sbix) is asked in
-        // swash's order — colour outline, colour bitmap, outline — with the
-        // bitmap read at its strike's own size and scaled here (#804). Any
-        // other face takes the one `Render` it always did.
-        let mut rasterise = |s: &mut swash::scale::Scaler<'_>, id: u32| -> Option<CachedGlyph> {
-            // A darkened run on a face with colour outlines asks for the colour
-            // glyph on its own first: the darkening's re-centring offset is the
-            // whole `Render`'s, and a COLR glyph is not emboldened.
-            if !s.has_color_bitmaps() && (darkening == 0.0 || !s.has_color_outlines()) {
-                return render.render(s, id as u16).and_then(to_cached);
-            }
-            if let Some(image) = render_color.render(s, id as u16) {
-                return to_cached(image);
-            }
-            if s.has_color_bitmaps()
-                && let Some(g) = color_bitmap_glyph(bitmap_cx, font_ref, font_size, id as u16)
-            {
-                return Some(g);
-            }
-            render_outline.render(s, id as u16).and_then(to_cached)
-        };
-
-        let run = if self.reference_mode {
-            None
-        } else {
-            Some(self.glyph_cache.run_index(
-                font_id,
-                font.index,
-                font_size,
-                hint,
-                darkening_bits,
-                normalized_coords,
-            ))
-        };
-
-        // Built only when something misses: a fully cached run never pays
-        // for a scaler (which is where swash sets up hinting state).
-        let needs_scaler = match run {
-            Some(run) => {
-                let cached = &self.glyph_cache.runs[run].glyphs;
-                glyphs.iter().any(|g| !cached.contains_key(&g.id))
-            }
-            None => true,
-        };
-        let mut scaler = needs_scaler.then(|| {
-            self.scale_context
-                .builder(font_ref)
-                .size(font_size)
-                .hint(hint)
-                .normalized_coords(normalized_coords)
-                .build()
-        });
-
-        for glyph in glyphs {
-            // Look the glyph up, rasterising it on a miss.
-            let owned;
-            let cached: Option<&CachedGlyph> = match run {
-                Some(run) => {
-                    let cache = &mut self.glyph_cache;
-                    if !cache.runs[run].glyphs.contains_key(&glyph.id) {
-                        self.stats.glyph_cache_misses += 1;
-                        let g = scaler.as_mut().and_then(|s| rasterise(s, glyph.id));
-                        cache.bytes +=
-                            g.as_ref().map_or(0, |g| g.data.len()) + GLYPH_ENTRY_OVERHEAD;
-                        cache.runs[run].glyphs.insert(glyph.id, g);
-                    } else {
-                        self.stats.glyph_cache_hits += 1;
-                    }
-                    cache.runs[run].glyphs[&glyph.id].as_ref()
-                }
-                None => {
-                    self.stats.glyph_cache_misses += 1;
-                    owned = scaler.as_mut().and_then(|s| rasterise(s, glyph.id));
-                    owned.as_ref()
-                }
-            };
-            let Some(g) = cached else {
-                continue;
-            };
-            let gx = glyph.x + g.left as f32;
-            let gy = glyph.y - g.top as f32;
-            if self.touched.is_some() {
-                let (w, h) = (self.pixmap.width(), self.pixmap.height());
-                let r = DeviceRect::from_local(
-                    gx,
-                    gy,
-                    gx + g.width as f32,
-                    gy + g.height as f32,
-                    ts,
-                    DEVICE_PAD,
-                    w,
-                    h,
-                );
-                if let Some(t) = self.touched.as_mut() {
-                    let r = match &self.clip_mask {
-                        Some(m) => r.intersect(m.bounds),
-                        None => r,
-                    };
-                    *t = t.union(r);
+        let embolden = match scale {
+            Some(_) => device,
+            None => {
+                let s = super::text_rasterization::device_scale(transform) as f32;
+                if device > 0.0 && s > 0.0 {
+                    device / s
+                } else {
+                    0.0
                 }
             }
-            let mask = self.clip_mask.as_ref().map(|m| &m.mask);
-            if g.color && g.premultiplied {
-                blit_premultiplied_into(
-                    &mut self.pixmap,
-                    mask,
-                    &g.data,
-                    g.width,
-                    g.height,
-                    gx,
-                    gy,
-                    ts,
-                    ca,
-                );
-            } else if g.color {
-                blit_color_glyph_into(
-                    &mut self.pixmap,
-                    mask,
-                    &mut self.glyph_scratch,
-                    &g.data,
-                    g.width,
-                    g.height,
-                    gx,
-                    gy,
-                    ts,
-                );
+        };
+        let spec = RunSpec {
+            font,
+            size: scale.map_or(font_size, |s| (font_size as f64 * s) as f32),
+            hint: hint && policy.hint(),
+            embolden,
+            coords: normalized_coords,
+        };
+        let mut keys = std::mem::take(&mut self.glyph_keys);
+        keys.clear();
+        let mut origins = std::mem::take(&mut self.glyph_origins);
+        origins.clear();
+        for g in glyphs {
+            if scale.is_some() {
+                let p = transform * peniko::kurbo::Point::new(g.x as f64, g.y as f64);
+                let pl = place(p.x, p.y);
+                keys.push((g.id, pl.bucket));
+                origins.push((pl.x as f32, pl.y as f32));
             } else {
-                blit_alpha_mask_into(
-                    &mut self.pixmap,
-                    mask,
-                    &mut self.glyph_scratch,
-                    &g.data,
-                    g.width,
-                    g.height,
-                    gx,
-                    gy,
-                    [cr, cg, cb, ca],
-                    ts,
-                );
+                keys.push((g.id, 0));
+                origins.push((g.x, g.y));
             }
         }
-        let _ = glyph_ts;
-
-        if self.glyph_cache.bytes > GLYPH_CACHE_BUDGET {
-            self.glyph_cache.clear();
+        let ts = match scale {
+            Some(_) => Transform::identity(),
+            None => affine_to_transform(transform),
+        };
+        let atlas = self.atlas.clone();
+        let mut atlas = atlas.borrow_mut();
+        let Self {
+            pixmap,
+            clip_mask,
+            touched,
+            glyph_scratch,
+            stats,
+            reference_mode,
+            ..
+        } = self;
+        let mut blit = |i: usize, mask: Option<&GlyphMask>| {
+            if let Some(m) = mask {
+                let (x, y) = origins[i];
+                blit_glyph(
+                    pixmap,
+                    clip_mask.as_ref(),
+                    touched,
+                    glyph_scratch,
+                    m,
+                    x + m.left as f32,
+                    y - m.top as f32,
+                    ts,
+                    rgba,
+                );
+            }
+        };
+        if *reference_mode {
+            for (i, &(id, bucket)) in keys.iter().enumerate() {
+                stats.atlas.misses += 1;
+                let mask = atlas.rasterise_uncached(&spec, id, bucket);
+                blit(i, mask.as_ref());
+            }
+        } else {
+            // A font swash cannot read draws nothing here, as it always did.
+            let _ = atlas.lookup(&spec, &keys, false, &mut stats.atlas, |i, looked| {
+                if let Looked::Mask(m) = looked {
+                    blit(i, Some(m));
+                }
+            });
         }
+        self.glyph_keys = keys;
+        self.glyph_origins = origins;
     }
 
     fn draw_image(&mut self, image: &PaintImage<'_>, transform: Affine) {
@@ -2571,6 +2324,57 @@ fn glyph_placement(transform: Transform, gx: f32, gy: f32) -> Transform {
     }
 }
 
+/// Blit one atlas mask with its top-left at `(gx, gy)` under `transform`
+/// (the identity on the atlas's grid): a coverage mask in `rgba`, a colour
+/// glyph as it is at `rgba`'s alpha. Records the pixels written in `touched`.
+#[allow(clippy::too_many_arguments)]
+fn blit_glyph(
+    pixmap: &mut Pixmap,
+    clip: Option<&ClipMask>,
+    touched: &mut Option<DeviceRect>,
+    scratch: &mut Vec<u8>,
+    g: &GlyphMask,
+    gx: f32,
+    gy: f32,
+    ts: Transform,
+    rgba: [u8; 4],
+) {
+    if let Some(t) = touched.as_mut() {
+        let (w, h) = (pixmap.width(), pixmap.height());
+        let r = DeviceRect::from_local(
+            gx,
+            gy,
+            gx + g.width as f32,
+            gy + g.height as f32,
+            ts,
+            DEVICE_PAD,
+            w,
+            h,
+        );
+        let r = match clip {
+            Some(m) => r.intersect(m.bounds),
+            None => r,
+        };
+        *t = t.union(r);
+    }
+    let mask = clip.map(|m| &m.mask);
+    match g.kind {
+        MaskKind::Color {
+            premultiplied: true,
+        } => blit_premultiplied_into(
+            pixmap, mask, &g.data, g.width, g.height, gx, gy, ts, rgba[3],
+        ),
+        MaskKind::Color {
+            premultiplied: false,
+        } => blit_color_glyph_into(
+            pixmap, mask, scratch, &g.data, g.width, g.height, gx, gy, ts,
+        ),
+        MaskKind::Coverage => blit_alpha_mask_into(
+            pixmap, mask, scratch, &g.data, g.width, g.height, gx, gy, rgba, ts,
+        ),
+    }
+}
+
 /// Blit an alpha mask glyph onto `pixmap` with the given straight-alpha
 /// colour.
 ///
@@ -2649,150 +2453,6 @@ fn blit_premultiplied_into(
     };
     let ts = glyph_placement(transform, gx, gy);
     pixmap.draw_pixmap(0, 0, src, &paint, ts, clip);
-}
-
-/// A colour bitmap glyph (CBDT/CBLC, sbix) at `font_size` (#804), or `None`
-/// when the face has no strike holding `glyph`.
-///
-/// The strike is the smallest whose ppem is at least the font size (shrinking
-/// keeps detail), else the largest. It is decoded at its own size — a scaler
-/// at exactly the strike's ppem, so swash does not resample it — then
-/// premultiplied and only then scaled, by area averaging: swash's own resize
-/// filters straight alpha, which drags the colour of the transparent pixels
-/// (black, in Noto Color Emoji) into every edge.
-fn color_bitmap_glyph(
-    cx: &mut swash::scale::ScaleContext,
-    font: swash::FontRef<'_>,
-    font_size: f32,
-    glyph: u16,
-) -> Option<CachedGlyph> {
-    let best = pick_strike(
-        font.color_strikes()
-            .filter(|strike| strike.contains(glyph))
-            .map(|strike| strike.ppem()),
-        font_size,
-    );
-    let ppem = best.filter(|&p| p > 0)?;
-    let mut scaler = cx.builder(font).size(ppem as f32).build();
-    let image = scaler.scale_color_bitmap(glyph, swash::scale::StrikeWith::ExactSize)?;
-    let (sw, sh) = (image.placement.width, image.placement.height);
-    if sw == 0 || sh == 0 || image.content != swash::scale::image::Content::Color {
-        return None;
-    }
-    let scale = font_size / ppem as f32;
-    let dw = ((sw as f32 * scale).round() as u32).max(1);
-    let dh = ((sh as f32 * scale).round() as u32).max(1);
-    let mut data = image.data;
-    data.truncate((sw * sh * 4) as usize);
-    let data = scale_strike(data, sw, sh, dw, dh);
-    Some(CachedGlyph {
-        left: (image.placement.left as f32 * scale).round() as i32,
-        top: (image.placement.top as f32 * scale).round() as i32,
-        width: dw,
-        height: dh,
-        color: true,
-        premultiplied: true,
-        data,
-    })
-}
-
-/// A strike's straight-alpha RGBA, premultiplied and then scaled from
-/// `sw`x`sh` to `dw`x`dh` (#804). Premultiplying FIRST is the point: the colour
-/// under a transparent pixel is arbitrary, and averaging straight alpha would
-/// blend it into the edge.
-fn scale_strike(mut rgba: Vec<u8>, sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
-    for px in rgba.as_chunks_mut::<4>().0 {
-        let a = px[3];
-        if a < 255 {
-            px[0] = premultiply_channel(px[0], a);
-            px[1] = premultiply_channel(px[1], a);
-            px[2] = premultiply_channel(px[2], a);
-        }
-    }
-    if (dw, dh) == (sw, sh) {
-        rgba
-    } else {
-        resample_area(&rgba, sw, sh, dw, dh)
-    }
-}
-
-/// The strike a colour bitmap glyph is read from, among the `ppems` of the
-/// strikes holding it, for a physical `font_size`: the smallest at least the
-/// font size (shrinking keeps detail), else the largest.
-fn pick_strike(ppems: impl Iterator<Item = u16>, font_size: f32) -> Option<u16> {
-    let mut best: Option<u16> = None;
-    for ppem in ppems {
-        best = Some(match best {
-            None => ppem,
-            Some(b) if (b as f32) < font_size => b.max(ppem),
-            Some(b) if (ppem as f32) >= font_size => b.min(ppem),
-            Some(b) => b,
-        });
-    }
-    best
-}
-
-/// Resize premultiplied RGBA from `sw`x`sh` to `dw`x`dh` by area averaging:
-/// each output pixel is the mean of the source area it covers (fractional
-/// pixels weighted by how much of them it covers). Separable: rows, then
-/// columns.
-fn resample_area(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
-    // The source spans `[lo, hi)` of one axis that output pixel `i` covers,
-    // as (index, weight) pairs summing to 1.
-    fn taps(n_src: u32, n_dst: u32) -> Vec<Vec<(usize, f32)>> {
-        let step = n_src as f32 / n_dst as f32;
-        (0..n_dst)
-            .map(|i| {
-                let (lo, hi) = (i as f32 * step, (i as f32 + 1.0) * step);
-                let mut out = Vec::new();
-                let mut j = lo.floor() as u32;
-                while (j as f32) < hi && j < n_src {
-                    let w = (hi.min(j as f32 + 1.0) - lo.max(j as f32)).max(0.0);
-                    if w > 0.0 {
-                        out.push((j as usize, w / step));
-                    }
-                    j += 1;
-                }
-                out
-            })
-            .collect()
-    }
-    let (sw_u, dw_u) = (sw as usize, dw as usize);
-    let xt = taps(sw, dw);
-    let yt = taps(sh, dh);
-    // Rows: sh x dw, as f32.
-    let mut mid = vec![0f32; sh as usize * dw_u * 4];
-    for y in 0..sh as usize {
-        for (x, t) in xt.iter().enumerate() {
-            for &(j, w) in t {
-                let s = (y * sw_u + j) * 4;
-                let d = (y * dw_u + x) * 4;
-                for c in 0..4 {
-                    mid[d + c] += src[s + c] as f32 * w;
-                }
-            }
-        }
-    }
-    let mut out = vec![0u8; dh as usize * dw_u * 4];
-    for (y, t) in yt.iter().enumerate() {
-        for x in 0..dw_u {
-            let mut acc = [0f32; 4];
-            for &(j, w) in t {
-                let s = (j * dw_u + x) * 4;
-                for c in 0..4 {
-                    acc[c] += mid[s + c] * w;
-                }
-            }
-            let d = (y * dw_u + x) * 4;
-            let a = acc[3].round().clamp(0.0, 255.0);
-            out[d + 3] = a as u8;
-            for c in 0..3 {
-                // A premultiplied channel never exceeds its alpha.
-                out[d + c] = acc[c].round().clamp(0.0, a) as u8;
-            }
-        }
-    }
-    out
 }
 
 /// Blit a color (RGBA) glyph onto `pixmap`, converting it to premultiplied
@@ -3307,49 +2967,5 @@ mod premultiply_tests {
                 );
             }
         }
-    }
-}
-
-/// #804: a colour bitmap strike is premultiplied before it is scaled, so the
-/// colour under a transparent pixel never reaches the scaled edge, and the
-/// area filter weighs each source pixel by how much of it an output covers.
-#[cfg(test)]
-mod strike_scale_tests {
-    use super::{pick_strike, resample_area, scale_strike};
-
-    /// The smallest strike at least the physical size, else the largest —
-    /// in any table order (the bundled face has one strike, so only this
-    /// pins the choice).
-    #[test]
-    fn the_strike_is_the_smallest_at_least_the_size_else_the_largest() {
-        let strikes = [64u16, 160, 20, 109, 32];
-        let pick = |size: f32| pick_strike(strikes.iter().copied(), size);
-        assert_eq!(pick(16.0), Some(20));
-        assert_eq!(pick(32.0), Some(32));
-        assert_eq!(pick(40.0), Some(64));
-        assert_eq!(pick(100.0), Some(109));
-        assert_eq!(pick(120.0), Some(160));
-        assert_eq!(pick(400.0), Some(160));
-        assert_eq!(pick_strike(std::iter::empty(), 16.0), None);
-    }
-
-    /// Opaque green beside a transparent pixel whose (arbitrary) straight
-    /// colour is red, halved: the result is green at half alpha. Scaled
-    /// straight, half the red would bleed in.
-    #[test]
-    fn transparent_colour_does_not_bleed_into_the_edge() {
-        let src = vec![0, 255, 0, 255, 255, 0, 0, 0];
-        assert_eq!(scale_strike(src, 2, 1, 1, 1), vec![0, 128, 0, 128]);
-    }
-
-    /// A 3-to-2 shrink: the middle source pixel is split half and half
-    /// between the two outputs (off the 2:1 fixed point where every source
-    /// pixel goes whole to one output).
-    #[test]
-    fn a_fractional_shrink_splits_the_shared_pixel() {
-        let px = |v: u8| [v, v, v, 255];
-        let src: Vec<u8> = [px(0), px(150), px(255)].concat();
-        // out0 = (0 + 150/2) / 1.5 = 50; out1 = (150/2 + 255) / 1.5 = 220.
-        assert_eq!(resample_area(&src, 3, 1, 2, 1), [px(50), px(220)].concat());
     }
 }
