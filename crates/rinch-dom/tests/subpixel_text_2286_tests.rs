@@ -158,6 +158,9 @@ fn software_bgr_swaps_red_and_blue() {
 fn software_layers_draw_grey_text() {
     for wrapper in [
         "opacity: 0.99",
+        // The one f32 below 1 within its epsilon: tiny-skia composites it as
+        // no layer at all (#560's no-op branch), Vello as a layer; both grey.
+        "opacity: 0.99999994",
         "mask-image: linear-gradient(#000, #000)",
         "filter: grayscale(1)",
     ] {
@@ -281,7 +284,18 @@ fn vello_asks_for_lcd_masks_where_software_does() {
             true
         ),
         vec![lcd, None],
-        "the layer's pop gives LCD back (the opacity group paints last, as a stacking context)"
+        "the opacity group paints last, as a stacking context"
+    );
+    assert_eq!(
+        modes(
+            &format!(
+                "<p style='opacity: .5'>{TEXT}</p>\
+                 <p style='position: relative; z-index: 1'>{TEXT}</p>"
+            ),
+            true
+        ),
+        vec![None, lcd],
+        "the layer's pop gives LCD back to what paints after it"
     );
     assert_eq!(modes(&format!("<p>{TEXT}</p>"), false), vec![None]);
 }
