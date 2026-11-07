@@ -767,3 +767,82 @@ cascade now re-cascades the children of any element whose inherited style moved
 `crates/rinch-dom/tests/incremental_text_layout_oracle_tests.rs` is the pin:
 each input above against a fresh layout of the final state, with the mutant
 that kills it named in the PR.
+
+**Style isolation: `isolate_styles` (#2357).** `NodeHandle::isolate_styles`
+stops the document's style sheets (author origin: the theme, component CSS,
+an app's own `<style>`s) matching the node's **descendants**, as a shadow
+root stops the page's sheets in a browser; `rinch_html::HtmlView` calls it on
+its view unless `app_styles` is set. Below the node only user-agent rules,
+presentational hints and `style` attributes apply; inheritance is untouched,
+so the host's `font-*` / `line-height` still reach the content. The node
+itself keeps matching author rules (it is the shadow *host*), which is why
+the view's own `<style>` (rules on `.rinch-html-view`) still works.
+
+- **Desktop** uses Stylo's own gate for native anonymous content:
+  `Node::style_isolated` is set on the node, and
+  `TElement::matches_user_and_content_rules` answers `false` for any element
+  with an isolated ancestor. That answer is O(1): `resolve_styles_recursive`
+  sets `Node::under_isolated` from the parent's (`style_isolated ||
+  under_isolated`) as it visits each element, top-down, before the cascade,
+  and the check reads it; a node moved under or out of a view is restyled,
+  so visited again. The walk keeps the flag on every visit, also while
+  `NodeTree::isolated_nodes` (raised by `isolate_styles`, lowered by
+  `remove_subtree` freeing such a node) is 0, when the check answers `true`
+  without reading it: a subtree detached from a view, re-inserted after the
+  view was freed and so styled at count 0, would otherwise keep a stale
+  `true` that a later view's count made the check read (review of #2366,
+  round 3; `style_isolation_flag_2357_tests`). Stylo asks once per
+  cascade, per pseudo-element and per invalidation; the first version walked
+  the ancestors each time, which cost 15 full restyles of 6,040 elements 40
+  deep +3.7% (review of #2366). With it false, `RuleCollector::collect_all` skips user and
+  document author rules but still collects UA rules, presentational hints
+  and the style attribute; Stylo also leaves such an element out of the
+  style-sharing cache and of document-rule invalidation
+  (`each_applicable_non_document_style_rule_data`). rinch-dom calls
+  `Stylist::push_applicable_declarations`, which builds that collector, so
+  pseudo-elements follow their originating element. The node also gets the
+  `rinch-style-isolated` attribute, which the UA sheet's
+  `[rinch-style-isolated] a[href]` rule keys on to give links Chrome's
+  `a:-webkit-any-link` look (`#0000ee`, underline, pointer): the UA sheet
+  has no link rule otherwise, and an app's own links must stay as they were.
+  `[rinch-style-isolated] :focus-visible { outline: auto 1px #101010 }` is
+  Chrome's UA focus ring, since a theme's `:focus-visible` rule no longer
+  reaches a link in mail (`auto` draws solid).
+- **Web** attaches an open shadow root to the node; `WebDocument` puts
+  children added afterwards into it (`children_of`), answers the host as a
+  shadow child's `parent_node` (`parent_of`), and walks it when registering
+  or forgetting nodes. Children the node had before stay in the light tree,
+  unrendered (the view's `<style>` is one: still a document sheet). At the
+  document, an event from inside is retargeted to the host, which carries
+  the view's `data-rid`, so handler lookup is unchanged; the link helpers
+  (`link_in`, `claimed_link`) read `composedPath()[0]` (`deep_target`) and
+  cross shadow boundaries (`closest_composed`, `contains_composed`), or a
+  link click would navigate the tab. A synthetic event in a test needs
+  `composed: true` to leave the shadow root, as the browser's own do.
+  Where the browser stops at the shadow root and desktop does not, the web
+  side walks it: `trap_focusables` (a `data-trap-focus` trap's Tab stops,
+  through `focusables_composed` when the trap holds a
+  `[rinch-style-isolated]` host), `deep_active_element` (the trap's Tab
+  start and its focus check) and `DomDocument::active_element` follow
+  `shadowRoot.activeElement`, `text_content` includes shadow text after the
+  host's light children's, and `get_children` / `insert_child` list and
+  index a host's light children, then its shadow root's (desktop's order).
+  `query_selector*` and `query_selector*_in` do **not** see into it (a
+  browser selector cannot cross a shadow boundary, and emulating one was not
+  cheap): query from the view's body (reached through `get_children`) or
+  below, which works on both.
+- **Why not a CSS reset** (`:where(.rinch-html-body *) { all: revert }`):
+  `revert` in the author origin rolls back to the user-agent origin and so
+  also drops presentational hints, measured in Chrome 156 (a `<td width=300
+  bgcolor=red>` under it is 24px wide and transparent); mail is made of
+  them. A zero-specificity reset also loses to any app rule with a type or
+  class selector.
+- **Not isolated**: an app rule that names the view's own element still
+  reaches it (it is the host). A `<style>` put into the view through
+  `html:` (which wants cleaned HTML, and `clean` drops `<style>`) differs:
+  on desktop it joins the document's sheets, styling the app and not the
+  mail; on the web it stays in the shadow root, styling the mail only.
+- **Colour**: the view sets no `color` / `background-color` of its own
+  (it was black on white until the review of #2366), so the host's colour
+  inherits, as in Chrome; `HtmlView { paper: true }` restores black on white
+  through a zero-specificity class rule.

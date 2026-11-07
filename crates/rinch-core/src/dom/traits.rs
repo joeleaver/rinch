@@ -566,6 +566,20 @@ pub trait DomDocument {
     /// re-attached or written to afterwards.
     fn set_inner_html(&mut self, node: NodeId, html: &str);
 
+    /// Stop the document's style sheets matching `node`'s descendants
+    /// (#2357), as a shadow root stops them in a browser: below `node` only
+    /// the user-agent sheet, presentational attributes (`width`, `bgcolor`,
+    /// …) and `style` attributes apply, while inherited properties (`color`,
+    /// `font-*`, `line-height`, …) still inherit from `node`. `node` itself
+    /// is styled as before. One-way. On the web it attaches a shadow root,
+    /// and children added afterwards go into it; children `node` already
+    /// has stay in the light tree, where they are not rendered (a `<style>`
+    /// among them still applies, to the document), so give it its rendered
+    /// children afterwards.
+    ///
+    /// The default does nothing, for a backend without style sheets.
+    fn isolate_styles(&mut self, _node: NodeId) {}
+
     /// Query the screen position of a text caret at the given byte offset.
     ///
     /// Returns the (x, y) coordinates where a text cursor would be rendered

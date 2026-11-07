@@ -252,7 +252,17 @@ const CHROME: &[((u32, u32), [u8; 3])] = &[
     ((230, 110), G),
     ((255, 110), G),
     // The percentage padding: border 300..301, padding 8px, content 309..325.
-    // (Its 1px border is not sampled: rinch blends that edge.)
+    // Its 1px border on all four sides (#2344: the software painter used to
+    // blend the left edge over two pixels), and the page outside it: a solid
+    // 1px border on whole pixels, as Chrome 156 draws one (the issue's table).
+    ((299, 79), WH),
+    ((300, 79), BD),
+    ((333, 79), BD),
+    ((334, 79), WH),
+    ((316, 69), WH),
+    ((316, 70), BD),
+    ((316, 103), BD),
+    ((316, 104), WH),
     ((308, 79), BG),
     ((309, 78), BG),
     ((309, 79), R),

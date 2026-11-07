@@ -309,9 +309,11 @@ width — newly including one with a single inset — pays one more on its first
 layout and one per resize of its containing block, as `inset: 0` always has,
 and **two** more on its first layout with a static anchor too; none pays
 anything on a relayout that moves nothing. An ICB box re-bakes (and is
-re-measured) on every viewport resize, with no extra compute. Taffy's leaf
-algorithm took an absolute leaf's own margins off a second time;
-`out_of_flow::absolute_leaf_inputs` puts them back at both leaf measure sites.
+re-measured) on every viewport resize, with no extra compute. The room a
+box is measured in has its own horizontal margins out already, and Taffy's
+leaf algorithm no longer takes them off a second time (#2361, Taffy fork item
+17); `out_of_flow::absolute_leaf_inputs`, which put them back for an absolute
+leaf, went with that.
 An `auto` atomic inline capped by #1476 answers an IFC measure at its capped
 width **rounded**, as its layout will be (`round(width)`) — the answer it gives
 once laid out there — so a container sized from it does not move by the
@@ -325,7 +327,13 @@ max(min-content, available))` — the room when a line wrapped softly, the wides
 line when a piece that cannot break is wider, the max-content width when
 nothing wrapped. It answered the widest line (the issue's example 390x40,
 Chrome 394x40). The same answer sizes a float, a `fit-content` box and a flex
-or grid item aligned to its start (`fit_content_wrapped_2330_tests.rs`); a row
+or grid item aligned to its start (`fit_content_wrapped_2330_tests.rs`), and
+it is the room less the box's horizontal margins once: Taffy's leaf algorithm
+took them out of a room its parent had already taken them out of (#2361: a
+float of wrapping text with `margin: 0 20px` in 300px was 220x60, Chrome
+260x40; the same for `fit-content` and a start-aligned grid item), and a column
+flex handed an item its whole width, so a block there holding the text was 300
+(the fork's item 17, `float_room_round3_tests.rs`); a row
 flex item's base size is still its max-content width. A paragraph laid out
 beside floats keeps the widest line (its lines wrap for the floats as well).
 Not Chrome's: the static position in a grid container that is not the
