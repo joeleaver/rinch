@@ -491,10 +491,25 @@ draws a 16x16 box holding its broken-image icon (Joe's rule 3); an out-of-flow i
 dimension fills its containing block (#1432, older than the hints); a percentage `height`
 attribute does nothing on an inline-level image, as a CSS one does not
 (#1420); a `<video>` with a mapped ratio and both dimensions `auto` is 300
-wide where Chrome stretches it to its container. The other presentational
-attributes (`hspace`, `vspace`, `border`, `align`, `<hr width>`, a table's)
-map to nothing (#1419). Pins:
+wide where Chrome stretches it to its container. Pins:
 `crates/rinch-dom/tests/presentational_size_hints_tests.rs`.
+
+The other legacy attributes (`bgcolor`, `align`, `valign`, `hspace`,
+`vspace`, `border`, `cellspacing`, `cellpadding`, `<font>`'s, a table's and
+a cell's `width`/`height`, …) map to CSS in `crates/rinch-dom/src/legacy_hints.rs`.
+Their values are read as Chrome 156 reads them, by the HTML Standard's
+parsers: `cellspacing`, `hspace` and `vspace` by the rules for parsing
+dimension values (`"10px"` is 10, `"1e1"` is 1; `cellspacing` drops a
+percentage, the spaces keep it); a table's and an image's `border` as a
+non-negative integer, where an error is 1px on a table (an empty `border`
+too) and none on an image; `cellpadding` as an integer, where an error or a
+negative number is 0 and an empty value maps nothing. `border-spacing`, from
+the attribute or CSS, is whole pixels with the fraction cut off, as Chrome
+keeps it (`from_stylo`). Before, every one was a plain number parse, so a
+mail's `cellspacing="10px"` got the 2px default (Postrinch mail 020, 16px
+short). Pins: `crates/rinch-dom/tests/legacy_attribute_values_tests.rs`.
+Still different: an inline image's `hspace`, like any atomic inline's
+horizontal margin, does not move it in its line (#1405).
 
 **App-installed schemes and retry:** `App::image_scheme("myapp-blob", loader)` (or
 `rinch::image::register_image_scheme`, the same registry without a builder) makes
