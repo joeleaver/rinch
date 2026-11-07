@@ -315,12 +315,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`d82d505fa25f6ae607ecdd99c266a3452e323d85`, branch `rinch-patch`): sixteen commits on the taffy `v0.14.0` tag
-(item 10 is two of them). It is a dependency, not a
+(`627ea72df743af4463ebe8fc1dabd2192c59bc07`, branch `rinch-patch`): eighteen commits on the taffy `v0.14.0` tag
+(items 10 and 15 are two each). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the sixteen commits onto the new tag. All are upstream
+and a Taffy bump rebases the eighteen commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -513,11 +513,35 @@ candidates.
    wrapped below the float. Such a leaf takes the uncached path (item 1), as
    it does in a layout. Pins: the fork's `tests/rinch_intrinsic_widths.rs` and
    `crates/rinch-dom/tests/float_intrinsic_width_2322_tests.rs`.
+15. **`Style::table_rows`** (#2312, commits `4be20203` and `627ea72d`). Sizes a
+   grid's rows as Blink sizes a table's (`compute/grid/table_rows.rs`, in place
+   of the block-axis track sizing algorithm, from LayoutNG's
+   `table_layout_utils.cc`). A row is as tall as its tallest cell of span 1 and
+   at least its track's minimum (rinch writes a row's `height` as
+   `minmax(<height>, auto)`); a row with such a minimum, or a span-1 cell with
+   a length `min_size.height` (a cell's `height`), is *constrained*. A
+   spanning cell taller than its rows grows, in Blink's order, the rows past
+   its first where another spanning cell starts (equally), else the
+   unconstrained rows that hold something (in proportion to their heights),
+   else the last row when all are empty, else every non-empty row in
+   proportion to its height. With `TableRows::sized`, a table taller than its
+   rows gives the excess to its body sections (`TableRow::body`; all sections
+   when there is none) in proportion to their heights, and each section to its
+   rows the same way less the rowspan step, the empty rows growing when every
+   row that holds something is constrained; a caption row
+   (`TableRow::caption`) takes none of it; and a table shorter than its rows
+   and captions grows to them unless its parent imposed its height (block
+   layout hands it none, `BlockItemStyle::resolves_own_height`, and a size
+   request does not stop at its `height`). Not modelled: percentage row
+   heights and row baselines. `Style` is 32 bytes bigger. rinch sets it on
+   every table, `sized` off for a block standing for an anonymous table
+   (`apply_table_style`). Pins: the fork's `tests/table_rows.rs` and
+   `crates/rinch-dom/tests/table_row_heights_2312_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
-and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, and (6,298 in all)
-with 13 and 14.
+and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
+with 13 and 14, and (6,021 generated, plus `tests/table_rows.rs`) with 15.
 
 
 ## Parley Fork

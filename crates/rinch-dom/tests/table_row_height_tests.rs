@@ -174,21 +174,18 @@ fn a_cells_content_is_centred_in_the_rows_height() {
     assert_eq!(yh(&doc, "c"), (8.5, 20.0));
 }
 
-/// When every row declares a height, a taller table still shares its height
-/// out between them: Chrome gives the 50px past 30 + 20 in proportion to the
-/// rows' heights (60 and 40). rinch's tracks stretch by equal shares (55
-/// and 45), as its `auto` rows do; what this pins is that the rows fill the
-/// table rather than leaving the 50px empty under them.
+/// When every row declares a height, a taller table shares its height out
+/// between them in proportion to their heights: Chrome gives the 50px past
+/// 30 + 20 as 60 and 40 (#2312; rinch's grid stretched them by equal shares,
+/// 55 and 45).
 #[test]
 fn rows_that_all_declare_a_height_fill_a_taller_table() {
     let doc = doc(&format!(
         "<table id=t style='border-spacing:0;height:100px'><tr style='height:30px'><td id=a style='padding:0'>{D}</td></tr>\
          <tr style='height:20px'><td id=b style='padding:0'>{D}</td></tr></table>"
     ));
-    let (a, b) = (yh(&doc, "a"), yh(&doc, "b"));
-    assert_eq!(a.1 + b.1, 100.0, "the rows fill the table: {a:?} {b:?}");
-    assert!(a.1 > 30.0 && b.1 > 20.0, "each row grows: {a:?} {b:?}");
-    assert_eq!(b.0, a.1, "the second row starts where the first ends");
+    assert_eq!(yh(&doc, "a"), (0.0, 60.0));
+    assert_eq!(yh(&doc, "b"), (60.0, 40.0));
 }
 
 /// A row restyled to another height lays its table out again.
