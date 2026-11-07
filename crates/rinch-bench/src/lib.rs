@@ -976,6 +976,58 @@ pub fn setup_vello_paint_subpixel() -> VelloPaintFixture {
 
 /// The page of [`setup_vello_paint_split`] on a frame not opened for slicing:
 /// the surface drawn in the scene, as before #1865 (#1899 review).
+/// 140 boxes of 50x30 with a 6px radius, each styled by `style`, painted by
+/// the Vello painter with no slicing (#2321: rounded borders and shadows are
+/// curved paths the painter flattens).
+fn vello_rounded_boxes(style: &str) -> VelloPaintFixture {
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; background: #fff; }} .b {{ position: absolute; width: 50px; \
+         height: 30px; border-radius: 6px; background: #fff; {style} }}"
+    ));
+    let mut html = String::new();
+    for i in 0..140 {
+        let (x, y) = (12 + (i % 10) * 76, 12 + (i / 10) * 40);
+        html.push_str(&format!(
+            "<div class=\"b\" style=\"left: {x}px; top: {y}px\"></div>"
+        ));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = VelloPaintFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
+    };
+    f.paint();
+    f
+}
+
+/// [`vello_rounded_boxes`] with a 1px solid border: a filled ring each.
+pub fn setup_vello_paint_rounded_border() -> VelloPaintFixture {
+    vello_rounded_boxes("border: 1px solid rgb(200, 200, 200);")
+}
+
+/// [`vello_rounded_boxes`] with a blurred shadow (eight soft layers each).
+pub fn setup_vello_paint_soft_shadow() -> VelloPaintFixture {
+    vello_rounded_boxes("box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);")
+}
+
+/// [`vello_rounded_boxes`] with a hard offset shadow.
+pub fn setup_vello_paint_hard_shadow() -> VelloPaintFixture {
+    vello_rounded_boxes("box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);")
+}
+
+/// [`vello_rounded_boxes`] as cards: a border and two blurred shadows.
+pub fn setup_vello_paint_cards() -> VelloPaintFixture {
+    vello_rounded_boxes(
+        "border: 1px solid rgb(200, 200, 200); \
+         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.24);",
+    )
+}
+
 pub fn setup_vello_paint_split_unsliced() -> VelloPaintFixture {
     let mut f = setup_vello_paint_split();
     f.slicing = None;
