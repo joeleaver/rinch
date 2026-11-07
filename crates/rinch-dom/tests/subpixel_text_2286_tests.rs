@@ -270,8 +270,7 @@ fn vello_asks_for_lcd_masks_where_software_does() {
             &mut cx,
         );
         reset_thread_policy();
-        let modes = atlas.borrow().run_lcd_modes();
-        modes
+        atlas.borrow().run_lcd_modes()
     };
     assert_eq!(modes(&format!("<p>{TEXT}</p>"), true), vec![lcd]);
     assert_eq!(
