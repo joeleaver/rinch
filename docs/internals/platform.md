@@ -495,21 +495,35 @@ wide where Chrome stretches it to its container. Pins:
 `crates/rinch-dom/tests/presentational_size_hints_tests.rs`.
 
 The other legacy attributes (`bgcolor`, `align`, `valign`, `hspace`,
-`vspace`, `border`, `cellspacing`, `cellpadding`, `<font>`'s, a table's and
-a cell's `width`/`height`, …) map to CSS in `crates/rinch-dom/src/legacy_hints.rs`.
-Their values are read as Chrome 156 reads them, by the HTML Standard's
-parsers: `cellspacing`, `hspace` and `vspace` by the rules for parsing
-dimension values (`"10px"` is 10, `"1e1"` is 1; `cellspacing` drops a
-percentage, the spaces keep it); a table's and an image's `border` as a
-non-negative integer, where an error is 1px on a table (an empty `border`
-too) and none on an image; `cellpadding` as an integer, where an error or a
-negative number is 0 and an empty value maps nothing. `border-spacing`, from
-the attribute or CSS, is whole pixels with the fraction cut off, as Chrome
-keeps it (`from_stylo`). Before, every one was a plain number parse, so a
-mail's `cellspacing="10px"` got the 2px default (Postrinch mail 020, 16px
-short). Pins: `crates/rinch-dom/tests/legacy_attribute_values_tests.rs`.
-Still different: an inline image's `hspace`, like any atomic inline's
-horizontal margin, does not move it in its line (#1405).
+`vspace`, `border`, `cellspacing`, `cellpadding`, `<font>`'s, `<hr size>`, a
+table's and a cell's `width`/`height`, …) map to CSS in
+`crates/rinch-dom/src/legacy_hints.rs`. Their values are read as Chrome 156
+reads them, by the HTML Standard's parsers:
+- `cellspacing`, `hspace` and `vspace` by the rules for parsing dimension
+  values (`"10px"` is 10, `"1e1"` is 1; `cellspacing` drops a percentage, the
+  spaces keep it);
+- a table's and an image's `border` as a non-negative integer, Chrome's
+  `u32`: an error (or a number past `u32::MAX`) is 1px on a table (an empty
+  `border` too) and none on an image;
+- `cellpadding` and `<hr size>` by Chrome's lenient `ToInt`, an `i32` that
+  also skips a leading vertical tab: an error, an overflow or a negative
+  number is a padding of 0 (an empty `cellpadding` maps nothing); an `<hr
+  size>` of 1 or less drops the bottom border, a larger one is the height
+  less the two borders;
+- `<font size>` by the rules for parsing a legacy font size (`"4px"` is 4,
+  `"+1abc"` is 4).
+
+`border-spacing`, from the attribute or CSS, is laid out as Chrome keeps it:
+a `short` of **device** pixels converted by Blink's
+`RoundForImpreciseConversion` (0.01 added, the fraction cut off, 0 past
+32767; `table_layout::whole_device_spacing`, from the document's
+`device_scale`). So `10.9px` spaces by 10 at 1x and 10.5 at 2x, `9.99px` by
+10 at 1x, and `40000px` not at all. Before, every attribute was a plain
+number parse, so a mail's `cellspacing="10px"` got the 2px default
+(Postrinch mail 020, 16px short). Pins:
+`crates/rinch-dom/tests/legacy_attribute_values_tests.rs`. Still different:
+an inline image's `hspace`, like any atomic inline's horizontal margin, does
+not move it in its line (#1405).
 
 **App-installed schemes and retry:** `App::image_scheme("myapp-blob", loader)` (or
 `rinch::image::register_image_scheme`, the same registry without a builder) makes

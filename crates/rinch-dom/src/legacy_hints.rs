@@ -49,7 +49,8 @@ pub(crate) fn maps_attribute(tag: &str, name: &str) -> bool {
         "border" => matches!(tag, "table" | "img"),
         "hspace" | "vspace" => tag == "img",
         "color" => matches!(tag, "font" | "hr"),
-        "face" | "size" => tag == "font",
+        "face" => tag == "font",
+        "size" => matches!(tag, "font" | "hr"),
         "text" => tag == "body",
         _ => false,
     }
@@ -85,11 +86,17 @@ fn dimension(v: &str) -> Option<String> {
     }
 }
 
-/// The HTML Standard's rules for parsing integers: leading whitespace, an
-/// optional sign, then digits; whatever follows them is ignored, so `"10px"`
-/// is 10 and `"1e1"` is 1. `None` when there is no digit.
-fn integer(v: &str) -> Option<i64> {
-    let v = v.trim_start_matches(['\t', '\n', '\x0C', '\r', ' ']);
+/// The HTML Standard's whitespace, which its integer parsers skip.
+const HTML_SPACE: [char; 5] = ['\t', '\n', '\x0C', '\r', ' '];
+/// What Chrome's lenient `ToInt` skips (`cellpadding`, `<hr size>`): the
+/// HTML whitespace and a vertical tab.
+const TO_INT_SPACE: [char; 6] = ['\t', '\n', '\x0B', '\x0C', '\r', ' '];
+
+/// An optional sign, then digits; whatever follows them is ignored, so
+/// `"10px"` is 10 and `"1e1"` is 1. `None` when there is no digit, or when
+/// the number is too long to be any `i32` or `u32` (an overflow is an error
+/// in Chrome, not a clamp).
+fn signed_digits(v: &str) -> Option<(bool, i64)> {
     let (negative, digits) = match v.as_bytes().first()? {
         b'-' => (true, &v[1..]),
         b'+' => (false, &v[1..]),
@@ -98,20 +105,37 @@ fn integer(v: &str) -> Option<i64> {
     let end = digits
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(digits.len());
-    let n: i64 = digits[..end].parse().ok()?;
-    Some(if negative { -n } else { n })
+    let mut n: i64 = 0;
+    for b in digits[..end].bytes() {
+        n = n * 10 + i64::from(b - b'0');
+        if n > i64::from(u32::MAX) + 1 {
+            return None;
+        }
+    }
+    (end > 0).then_some((negative, n))
 }
 
-/// The rules for parsing non-negative integers: [`integer`], and an error
-/// below zero.
+/// The rules for parsing non-negative integers, as Chrome parses them into
+/// a `u32`: below zero or past `u32::MAX` is an error (`"-0"` is 0).
 fn non_negative_integer(v: &str) -> Option<f32> {
-    integer(v).filter(|n| *n >= 0).map(|n| n as f32)
+    let (negative, n) = signed_digits(v.trim_start_matches(HTML_SPACE))?;
+    let n = if negative { -n } else { n };
+    u32::try_from(n).ok().map(|n| n as f32)
 }
 
-/// `cellpadding` as Chrome reads it: [`integer`], where an error and a
+/// Chrome's lenient `ToInt` (`cellpadding`, `<hr size>`): an `i32` by the
+/// rules for parsing integers, also skipping a leading vertical tab, where
+/// an error (an overflow too) is 0.
+fn to_int(v: &str) -> i32 {
+    signed_digits(v.trim_start_matches(TO_INT_SPACE))
+        .and_then(|(negative, n)| i32::try_from(if negative { -n } else { n }).ok())
+        .unwrap_or(0)
+}
+
+/// `cellpadding` as Chrome reads it: [`to_int`], where an error and a
 /// negative number are both 0. An empty value maps nothing (the UA's 1px).
 fn cell_padding(v: &str) -> Option<f32> {
-    (!v.is_empty()).then(|| integer(v).unwrap_or(0).max(0) as f32)
+    (!v.is_empty()).then(|| to_int(v).max(0) as f32)
 }
 
 /// A table's `border`: a non-negative integer, and 1 when it fails to parse
@@ -144,11 +168,14 @@ fn families(v: &str) -> String {
         .join(",")
 }
 
-/// `<font size>`: 1 to 7, or relative to 3.
+/// `<font size>`: 1 to 7, or relative to 3, by the rules for parsing a
+/// legacy font size: a sign makes it relative, the digits after it count
+/// and the rest is ignored (`"4px"` is 4, `"+1abc"` is 4).
 fn font_size(v: &str) -> Option<&'static str> {
-    let v = v.trim();
-    let n: i32 = v.trim_start_matches(['+', '-']).parse().ok()?;
-    let n = match v.as_bytes().first()? {
+    let v = v.trim_start_matches(HTML_SPACE);
+    let (_, n) = signed_digits(v)?;
+    let n = n.min(100) as i32;
+    let n = match v.as_bytes()[0] {
         b'+' => 3 + n,
         b'-' => 3 - n,
         _ => n,
@@ -262,6 +289,15 @@ pub(crate) fn hints_css(node: &Node) -> Option<String> {
         "hr" => {
             if let Some(c) = attr("color").and_then(color) {
                 write!(css, "color:{c};background-color:{c};").unwrap();
+            }
+            // Chrome: a `size` of 1 or less (an error is 0) drops the
+            // bottom border; a larger one is the height, less the two
+            // borders.
+            if let Some(v) = attr("size") {
+                match to_int(v) {
+                    n if n <= 1 => css.push_str("border-bottom-width:0;"),
+                    n => write!(css, "height:{}px;", n - 2).unwrap(),
+                }
             }
         }
         _ => {}

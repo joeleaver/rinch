@@ -882,7 +882,11 @@ impl RinchDocument {
         let spacing = if collapse {
             (0.0, 0.0)
         } else {
-            (cs.border_spacing.0, cs.border_spacing.1)
+            let scale = self.tree.device_scale;
+            (
+                whole_device_spacing(cs.border_spacing.0, scale),
+                whole_device_spacing(cs.border_spacing.1, scale),
+            )
         };
 
         // Declared widths. Columns first, then cells of span 1; a fixed table
@@ -1856,5 +1860,23 @@ impl RinchDocument {
             }
             child.layout.y += delta;
         }
+    }
+}
+
+/// A `border-spacing` as Chrome keeps it: a `short` of device pixels,
+/// converted by Blink's `RoundForImpreciseConversion` (0.01 added, the
+/// fraction cut off, 0 past 32767). So `10.9px` is 10px at 1x and 10.5px at
+/// 2x, `9.99px` is 10px at 1x, and `40000px` is no spacing.
+pub(crate) fn whole_device_spacing(css_px: f32, scale: f64) -> f32 {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    // Blink holds the length as a double parsed from the text; ours went
+    // through an `f32`, which can sit just under it (9.99 is 9.98999977).
+    // One part in a million lifts it back past an integer it ought to reach
+    // and moves nothing else that matters.
+    let device = f64::from(css_px) * scale * (1.0 + 1e-6) + 0.01;
+    if device > f64::from(i16::MAX) {
+        0.0
+    } else {
+        (device.trunc() / scale) as f32
     }
 }

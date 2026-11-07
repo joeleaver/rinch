@@ -85,8 +85,8 @@
 //! never applies. A `<video>` with a mapped ratio and both dimensions `auto`
 //! is 300 wide and as tall as the ratio says, where Chrome 153 stretches it
 //! to its container's width. The other presentational attributes (`hspace`,
-//! `vspace`, `border`, `align` on an image; `<hr width>`; a table's) map to
-//! nothing (#1419).
+//! `vspace`, `border`, `align` on an image; `<hr width>`; a table's) are
+//! mapped in `legacy_hints.rs`.
 
 use crate::computed_style::{AspectRatioValue, UsedRatio};
 use crate::node::{Node, NodeContext, NodeTree};
