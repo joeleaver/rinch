@@ -850,12 +850,19 @@ pub(crate) fn frame_blob(frame: &std::sync::Arc<Vec<u8>>) -> Blob<u8> {
 /// true curve (#2321). Vello flattens every curve itself at a fixed 0.25
 /// device px (`flatten.wgsl`), and each chord lies inside a convex arc, so a
 /// rounded corner covered up to 64 levels less than its area (52 measured at
-/// 1x, a 5px corner). A pixel's coverage error from a chord is at most its
-/// sagitta, so at 0.02 a corner pixel is within about 5 levels of the area.
-/// Lines are not flattened again, and Vello's area coverage of a polygon is
-/// exact, so this is the whole error. Glyphs never come through here
-/// (`draw_glyphs` hands Vello outlines, or atlas masks, of its own).
-pub(crate) const CURVE_TOLERANCE: f64 = 0.02;
+/// 1x, a 5px corner). A pixel's coverage error is at most the distance the
+/// polygon strays, so at 0.03 a corner pixel is within about 8 levels of the
+/// area (measured 3–8). Lines are not flattened again, and Vello's area
+/// coverage of a polygon is exact, so this is the whole error. Glyphs never
+/// come through here (`draw_glyphs` hands Vello outlines, or atlas masks, of
+/// its own).
+///
+/// Why 0.03: each line costs about 130 instructions to work out and encode,
+/// and the corner's lines go as `1 / sqrt(tolerance)`. At 0.02 the 140
+/// rounded boxes of `vello_paint::split_surface_140_boxes` cost 6.6% more
+/// than Vello's own curves; at 0.03 they cost the same (−0.1%), at 0.04 5%
+/// less but up to 12 levels off. Measured by sweeping it (review of #2380).
+pub(crate) const CURVE_TOLERANCE: f64 = 0.03;
 
 /// `shape` with its curves flattened to lines at most [`CURVE_TOLERANCE`]
 /// device px from them under `transform`, or `None` when it has none to
@@ -2849,10 +2856,13 @@ mod flattened_tests {
             let f = flattened(Affine::scale(2.0), &PaintShape::BezPath(path.clone())).unwrap();
             assert_eq!(f.elements()[0], path.elements()[0]);
             assert_eq!(move_tos(&f), move_tos(&path));
+            // Chords inside a convex curve lose at most the tolerance (in
+            // local px: half the device tolerance at scale 2) along its length.
             let (a, b) = (signed_area(&vertices(&f)), path.area());
+            let most = CURVE_TOLERANCE / 2.0 * path.perimeter(1e-6);
             assert!(
-                a.signum() == b.signum() && (a - b).abs() < 0.5,
-                "{a} vs {b}"
+                a.signum() == b.signum() && (a - b).abs() < most,
+                "{a} vs {b} (at most {most} apart)"
             );
         }
         // Wang's steps are within the tolerance of the curve.

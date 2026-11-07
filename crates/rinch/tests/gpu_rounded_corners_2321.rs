@@ -104,13 +104,13 @@ const CASES: &[(&str, [f64; 4], f64, Kind)] = &[
 ];
 
 /// The most a corner pixel may differ from its true area, in levels: the
-/// polygon `VelloPainter` draws strays up to its `CURVE_TOLERANCE` (0.02
-/// device px) from the arc, which costs a pixel up to 5, plus a level of
-/// rounding (the oracle is exact). Two nested
-/// clips multiply, so their error is up to twice one clip's. With Vello's own
-/// flattening it was up to 71.
-const AREA_TOL: i32 = 7;
-const NESTED_AREA_TOL: i32 = 10;
+/// polygon `VelloPainter` draws strays up to its `CURVE_TOLERANCE` (0.03
+/// device px) from the arc, which costs a pixel up to 7.7, plus a level of
+/// rounding (the oracle is exact; 8 measured, at radius 25 and 2x). Two
+/// nested clips multiply, so their error is up to twice one clip's (9
+/// measured). With Vello's own flattening it was up to 71.
+const AREA_TOL: i32 = 9;
+const NESTED_AREA_TOL: i32 = 16;
 
 /// Chrome's software raster is itself up to 73 levels from the area here
 /// (Skia flattens curves at 0.25 device px for large radii, and supersamples),
