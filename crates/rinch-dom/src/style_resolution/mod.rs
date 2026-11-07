@@ -534,6 +534,18 @@ impl RinchDocument {
     /// *resolution* changed.
     pub fn note_fonts_registered(&mut self) {
         self.tree.font_generation += 1;
+        // An image's alt text placeholder is shaped once (#2309), keyed by the
+        // font generation: shape it again with the new fonts.
+        let images: Vec<RawNodeId> = self
+            .tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.tag() == Some("img"))
+            .map(|(id, _)| id)
+            .collect();
+        for node_id in images {
+            self.sync_img_placeholder(node_id);
+        }
         let controls: Vec<RawNodeId> = self
             .tree
             .nodes
@@ -1771,6 +1783,9 @@ impl RinchDocument {
                 self.tree.layout_dirty = true;
                 self.mark_atomic_inline_dirty(node_id);
             }
+            // An `<img>` with no picture: whether it is sized, its font and
+            // `--rinch-img-placeholder` are all computed style (#2309).
+            self.sync_img_placeholder(node_id);
         }
         // Children restyled on this pass carry their new table part now.
         self.resolve_tables();
@@ -1906,6 +1921,12 @@ impl RinchDocument {
         // element has its own.
         if crate::replaced::measures_aspect_ratio(&self.tree.nodes[node_id]) {
             style.aspect_ratio = None;
+        }
+        // An image too small to draw its placeholder box in shows its alt text
+        // inline at the text's size, its own size ignored, as Chrome does
+        // (#2309, review of #2313). Re-derived by `sync_img_placeholder`.
+        if crate::img_placeholder::ignores_size(&self.tree, &self.tree.nodes[node_id]) {
+            style.size = taffy::Size::auto();
         }
         // Nor does an internal table box take one (css-sizing-4 §5.1): a
         // cell, a row, a row group (Chrome 155: a `table-cell` 100px wide

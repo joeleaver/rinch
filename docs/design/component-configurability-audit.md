@@ -1617,8 +1617,8 @@ Ubuntu ships `appmenu:minimize,maximize,close`).
   (the same gap as Image below). Falling back to initials has no Chrome equivalent, so it stays off by
   default: `fallback_on_error: bool` (default `false`, today's behaviour).
   - *Chrome:* a failed `<img>` fires `error` and renders its `alt` text (with a broken-image icon when
-    it has a size and no alt fits). rinch-dom reserves the attributes' box for a failed image with `alt`
-    (`crates/rinch-dom/src/replaced.rs:72-73`); whether desktop paints the alt text: unsure.
+    it has a size and no alt fits). Since #2309 desktop draws a placeholder for a failed image: a sized
+    one a bordered box with its alt text, an unsized one its alt text inline (`rinch_dom::img_placeholder`).
   Likelihood: **Medium**.
 - **`avatar.rs:172-185`: the initials rule is fixed** (first letter of the first two words,
   uppercased), and `children` is ignored, so there is no custom placeholder content.
