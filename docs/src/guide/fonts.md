@@ -130,16 +130,57 @@ lose — on Android only, which is the platform nobody would test it on.
 
 ## A stack that names nothing installed
 
-CSS falls back to the browser's default font when every family in a
-`font-family` list is missing. rinch finishes such a stack with the first face
-of `sans-serif` — so `font-family: Helvetica` on a Linux machine without it
-draws its letters *and digits* in the default sans face, or in the face your
-app registered for `sans-serif` (`AppFont::sans_serif`) if it did. (Chrome resolves
-`Helvetica`, `Times` and `Courier` through fontconfig aliases, and an unknown
-name in its serif default; rinch knows only the families actually installed or
-registered.) A stack that finds any family, or names a generic that has one, is
-used exactly as written — end your stacks in a generic to choose the fallback
-yourself.
+rinch resolves a `font-family` list the way Chrome does:
+
+- **A missing family is replaced by its alternate** where that is installed:
+  Helvetica by Arial, Times by Times New Roman, Courier by Courier New, and
+  each the other way (Courier New by Courier except on Windows). This is
+  Blink's table, not fontconfig's aliases, so `Helvetica, Tahoma, sans-serif`
+  on a Linux machine with Arial and Tahoma but no Helvetica draws Arial, as
+  Chrome does, not Tahoma.
+- **A list whose every family is missing ends in the default font**: Times
+  New Roman, Chrome's "standard font", or the first face of `sans-serif`
+  where the machine has no Times (Chrome then takes fontconfig's sans face,
+  not its serif setting). So `font-family: Oswald` without Oswald draws its
+  letters *and digits* in Times New Roman, as in Chrome, and in DejaVu Sans
+  on a machine whose only fonts are DejaVu.
+- **`serif` means Times New Roman and `sans-serif` Arial** where the machine
+  has them (Times and Helvetica on macOS), ahead of the platform's own
+  choice for the slot: these are Chrome's font settings, and on Linux they
+  differ from fontconfig's `serif` and `sans-serif` (Noto Serif, DejaVu Sans).
+
+A stack that finds any family, or names a generic that has one, gets no
+default font. The theme's stack ends in `sans-serif`, so it never does, and an
+element under a theme is unaffected; end your own stacks in a generic to
+choose the fallback yourself.
+
+All three are settings, Chrome's by default. An app that wants its own face
+as the default font, or the platform's `serif`, says so:
+
+```rust,ignore
+App::new(app)
+    .fonts(&[AppFont::sans_serif(include_bytes!("../assets/Inter.ttf"))])
+    .font_defaults(
+        FontDefaults::default()
+            .with_standard("Inter, sans-serif") // the default font
+            .with_serif(None),                  // keep the platform's `serif`
+    )                                           // `sans-serif`: still Arial
+    .run();
+```
+
+`standard` is a `font-family` list: its first family the machine has (or a
+generic's first face) is the default font; when it has none, the first face of
+`sans-serif` is. A face claimed for a generic with `AppFont` still heads that
+slot, ahead of `serif` and `sans_serif` here. An embedder that builds its
+context itself calls `rinch::font::set_font_defaults` before creating it. On
+the web the browser's own settings apply. `FontDefaults` is
+`#[non_exhaustive]` (a later setting is not a breaking change), so it is built
+from `FontDefaults::default()` with its `with_*` methods, or by assigning its
+fields.
+
+rinch does not follow fontconfig's metric-compatible aliases (Liberation Sans
+for a missing Arial): it knows the families installed or registered and the
+alternates above.
 
 ## Emoji
 
