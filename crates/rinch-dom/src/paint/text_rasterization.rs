@@ -671,6 +671,60 @@ mod tests {
         );
     }
 
+    /// macOS draws no subpixel text, by policy: neither `Auto` nor an app's
+    /// `Subpixel` turns it on there, whatever order is named.
+    #[test]
+    fn never_subpixel_on_macos() {
+        let mac = SystemTextSettings::default()
+            .with_antialias(Some(true))
+            .with_hinting(Some(TextHinting::None))
+            .with_subpixel_order(Some(SubpixelOrder::None))
+            .with_subpixel_capable(Some(false));
+        for app in [
+            TextRasterization::default(),
+            TextRasterization::default().antialias(TextAntialias::Subpixel),
+            TextRasterization::default()
+                .antialias(TextAntialias::Subpixel)
+                .subpixel_order(Some(SubpixelOrder::Rgb)),
+            TextRasterization::default().subpixel_order(Some(SubpixelOrder::Bgr)),
+        ] {
+            let r = app.resolve(&mac);
+            assert_eq!(r.antialias, ResolvedAntialias::Grayscale, "{app:?}");
+            assert_eq!(r.subpixel(), None);
+        }
+    }
+
+    /// The app's subpixel order and filter override the OS's (a BGR or
+    /// rotated panel the OS reports wrongly); `SubpixelOrder::None` turns
+    /// subpixel text off. Joe's KDE (`rgba=1`, `lcddefault`) is RGB through
+    /// the default filter.
+    #[test]
+    fn the_app_overrides_order_and_filter() {
+        let kde = SystemTextSettings::default()
+            .with_antialias(Some(true))
+            .with_subpixel_order(Some(SubpixelOrder::Rgb))
+            .with_lcd_filter(Some(LcdFilter::Default));
+        let r = TextRasterization::default().resolve(&kde);
+        assert_eq!(r.subpixel(), Some((SubpixelOrder::Rgb, LcdFilter::Default)));
+        let r = TextRasterization::default()
+            .subpixel_order(Some(SubpixelOrder::VBgr))
+            .lcd_filter(Some(LcdFilter::Light))
+            .resolve(&kde);
+        assert_eq!(r.subpixel(), Some((SubpixelOrder::VBgr, LcdFilter::Light)));
+        for aa in [TextAntialias::Auto, TextAntialias::Subpixel] {
+            let r = TextRasterization::default()
+                .antialias(aa)
+                .subpixel_order(Some(SubpixelOrder::None))
+                .resolve(&kde);
+            assert_eq!(r.antialias, ResolvedAntialias::Grayscale, "{aa:?}");
+        }
+        // An order the OS does not name turns `Auto` on.
+        let r = TextRasterization::default()
+            .subpixel_order(Some(SubpixelOrder::Bgr))
+            .resolve(&SystemTextSettings::default());
+        assert_eq!(r.subpixel(), Some((SubpixelOrder::Bgr, LcdFilter::Default)));
+    }
+
     #[test]
     fn the_policy_is_per_thread() {
         set_thread_policy(ResolvedTextRasterization::default().with_darkening(0.0));
