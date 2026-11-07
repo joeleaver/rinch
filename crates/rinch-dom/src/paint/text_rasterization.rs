@@ -273,7 +273,8 @@ pub enum LcdFilter {
     Default,
     /// The lighter filter (`lcdlight`).
     Light,
-    /// The legacy filter (`lcdlegacy`).
+    /// The legacy filter (`lcdlegacy`). Drawn as [`Self::Default`]: current
+    /// FreeType (2.14) has no legacy filter.
     Legacy,
 }
 

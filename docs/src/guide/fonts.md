@@ -286,8 +286,8 @@ for everything with `TextRasterization::default().gpu_glyph_outlines(true)`.
 on Linux (KDE's "Sub-pixel rendering: RGB" writes `rgba=rgb`), ClearType on
 Windows — rinch does too, on both renderers: each glyph is rasterised at three
 times the resolution across the panel's subpixels, filtered with the OS's LCD
-filter (FreeType's `lcddefault`, `lcdlight` or `lcdlegacy`, as FreeType
-computes them) and drawn per channel, so its edges use the red, green and blue
+filter (FreeType's `lcddefault` or `lcdlight`, in FreeType's arithmetic;
+`lcdlegacy` is `lcddefault`: FreeType 2.14 no longer has the legacy filter) and drawn per channel, so its edges use the red, green and blue
 subpixels of a pixel separately, as KDE's and Chrome's text does. macOS has
 drawn no subpixel text since 10.14, and rinch never does there. Subpixel text
 needs to know the pixel under it, so, as Chrome and Skia do, rinch draws grey
@@ -303,6 +303,16 @@ text instead:
   rasterised at the device size and stays subpixel;
 - for emoji and other colour glyphs, and text larger than 64 device pixels on
   the GPU.
+
+While a window shows a `RenderSurface`, a `GameViewport` or a video layer, the
+GPU renders the UI over a transparent base (the layers show through it), so
+text with no opaque background of its own under it turns grey for as long as
+the layer is on screen, and back when it goes; give such text an opaque
+background (most pages have one on `body`) to keep it subpixel. **Embedding
+hosts** (`RinchContext`): subpixel text is right only when the UI texture
+reaches the screen pixel for pixel. A host that scales the texture, draws it
+at a fractional offset or maps it onto a surface in 3D should ask for
+`TextAntialias::Grayscale` through `set_text_rasterization`.
 
 Clips (`overflow: hidden`, rounded or not) do not stop it. Text that fades in
 with an `opacity` animation is grey while it fades and turns subpixel when the

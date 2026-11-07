@@ -1040,14 +1040,6 @@ fn rasterise_lcd(
 /// 256ths: the weights of the subpixels two before to two after.
 const LCD_FIR_DEFAULT: [u32; 5] = [0x08, 0x4D, 0x56, 0x4D, 0x08];
 const LCD_FIR_LIGHT: [u32; 5] = [0x00, 0x55, 0x56, 0x55, 0x00];
-/// FreeType's legacy filter (`FT_LCD_FILTER_LEGACY`, `_ft_lcd_filter_legacy`),
-/// within each pixel: `LEGACY[from][to]` is how much of subpixel `from`
-/// reaches channel `to`, in 65538ths.
-const LCD_LEGACY: [[u32; 3]; 3] = [
-    [65538 * 9 / 13, 65538 * 3 / 13, 65538 / 13],
-    [65538 / 6, 65538 * 4 / 6, 65538 / 6],
-    [65538 / 13, 65538 * 3 / 13, 65538 * 9 / 13],
-];
 
 /// The subpixel mask of a glyph rendered at three times the resolution
 /// across the subpixels (`image`, swash coverage, its placement in subpixels
@@ -1058,8 +1050,9 @@ const LCD_LEGACY: [[u32; 3]; 3] = [
 /// grey one. `None` when nothing is inked.
 ///
 /// The arithmetic is FreeType's (`ft_lcd_filter_fir`: weights summing to 256,
-/// shifted down and clamped; the legacy filter in 65538ths), so the masks
-/// match FreeType's `FT_RENDER_MODE_LCD` output for the same coverage.
+/// shifted down and clamped), so the masks match FreeType's
+/// `FT_RENDER_MODE_LCD` output for the same coverage. `lcdlegacy` is
+/// lcddefault, as in current FreeType, which has no legacy filter.
 fn lcd_mask(image: &swash::scale::image::Image, mode: LcdMode) -> Option<GlyphMask> {
     let vertical = matches!(mode.order, SubpixelOrder::VRgb | SubpixelOrder::VBgr);
     let flip = matches!(mode.order, SubpixelOrder::Bgr | SubpixelOrder::VBgr);
@@ -1074,8 +1067,8 @@ fn lcd_mask(image: &swash::scale::image::Image, mode: LcdMode) -> Option<GlyphMa
         (image.placement.left, w, h)
     };
     let pad = match mode.filter {
-        LcdFilter::Default | LcdFilter::Light => 2,
-        LcdFilter::Legacy | LcdFilter::None => 0,
+        LcdFilter::Default | LcdFilter::Light | LcdFilter::Legacy => 2,
+        LcdFilter::None => 0,
     };
     let p0 = (s0 - pad).div_euclid(3);
     let p1 = (s0 + n + pad + 2).div_euclid(3);
@@ -1095,27 +1088,19 @@ fn lcd_mask(image: &swash::scale::image::Image, mode: LcdMode) -> Option<GlyphMa
             let p = p0 + k as i32;
             let mut v = [0u32; 3];
             match mode.filter {
-                LcdFilter::Default | LcdFilter::Light => {
-                    let fir = if mode.filter == LcdFilter::Default {
-                        &LCD_FIR_DEFAULT
-                    } else {
+                // fontconfig's `lcdlegacy` is lcddefault, as in current
+                // FreeType (2.14's `FT_Library_SetLcdFilter(LEGACY)` is
+                // `Invalid_Argument`).
+                LcdFilter::Default | LcdFilter::Light | LcdFilter::Legacy => {
+                    let fir = if mode.filter == LcdFilter::Light {
                         &LCD_FIR_LIGHT
+                    } else {
+                        &LCD_FIR_DEFAULT
                     };
                     for (c, out) in v.iter_mut().enumerate() {
                         let s = 3 * p + c as i32;
                         let sum: u32 = (0..5).map(|t| fir[t] * sample(a, s + t as i32 - 2)).sum();
                         *out = (sum >> 8).min(255);
-                    }
-                }
-                LcdFilter::Legacy => {
-                    for from in 0..3 {
-                        let px = sample(a, 3 * p + from);
-                        for (to, out) in v.iter_mut().enumerate() {
-                            *out += LCD_LEGACY[from as usize][to] * px;
-                        }
-                    }
-                    for out in &mut v {
-                        *out = (*out >> 16).min(255);
                     }
                 }
                 LcdFilter::None => {
@@ -1783,9 +1768,9 @@ mod tests {
 
     /// FreeType's arithmetic, exactly: one inked subpixel through each
     /// filter. lcddefault spreads it over five subpixels as
-    /// `255 * [8, 77, 86, 77, 8] >> 8`; lcdlight over three; legacy keeps it
-    /// in its pixel, as `65538ths >> 16`; none leaves it alone. The mask's
-    /// left edge is the first pixel any tap reaches.
+    /// `255 * [8, 77, 86, 77, 8] >> 8`; lcdlight over three; legacy is
+    /// lcddefault (below); none leaves it alone. The mask's left edge is the
+    /// first pixel any tap reaches.
     #[test]
     fn the_filters_are_freetypes() {
         let image = one_subpixel(4);
@@ -1809,7 +1794,11 @@ mod tests {
             rows(LcdFilter::Light),
             (0, vec![0, 0, 0, 84, 85, 84, 0, 0, 0])
         );
-        assert_eq!(rows(LcdFilter::Legacy), (1, vec![42, 170, 42]));
+        // fontconfig's `lcdlegacy` is lcddefault: current FreeType has no
+        // legacy filter (2.14's `FT_Library_SetLcdFilter(LEGACY)` returns
+        // `Invalid_Argument`), and 2.9's in-pixel matrix gave one green
+        // subpixel `[58, 170, 58]`, which a review caught this transposed.
+        assert_eq!(rows(LcdFilter::Legacy), rows(LcdFilter::Default));
         assert_eq!(rows(LcdFilter::None), (1, vec![0, 255, 0]));
         // A negative placement floors to the pixel left of it.
         let m = lcd_mask(
