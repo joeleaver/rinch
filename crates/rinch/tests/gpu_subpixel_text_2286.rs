@@ -430,19 +430,22 @@ fn gpu_subpixel_text_inside_clips() {
     );
 }
 
-/// The opaque pixel is in the blend stack's spill buffer: in a transparent
-/// window, the white background belongs to the fifth of six nested clips, so
-/// the text's layer (inside the sixth) is opaque only over the backdrop the
-/// sixth clip saved at depth five, past the four registers. Per channel, and
-/// the software painter's. Red against a spill index that drops the per-depth
-/// stride (`* TILE_WIDTH * TILE_HEIGHT` in `lcd_composite`): that reads depth
-/// four's backdrop, transparent, and the text falls back to grey.
+/// The opaque pixel is in the blend stack's spill buffer. In a transparent
+/// window, the white background is the box of the sixth (or seventh) of six
+/// or seven nested clips; a box's background is painted outside its own clip,
+/// in the layer of the clip around it, so it is saved as the backdrop at
+/// depth five (or six) when that box's clip begins: the second or third level
+/// past the four registers. The text's layer is opaque only over it. Per
+/// channel, and the software painter's. Red against a spill index without the
+/// per-depth stride (`* TILE_WIDTH * TILE_HEIGHT` in `lcd_composite`), which
+/// reads depth four's transparent backdrop and draws grey (depth four itself
+/// is the same address either way, so a background there would not tell).
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_subpixel_text_finds_the_page_in_the_spill() {
     let mut gpu = Gpu::new();
     let mut report = Vec::new();
-    for (depth, opaque_at) in [(6usize, 5usize), (7, 5), (7, 6)] {
+    for (depth, opaque_at) in [(6usize, 6usize), (7, 6), (7, 7)] {
         // Rounded only at the bottom right, away from the text: over
         // transparency the painters' rounded corners differ by tens of
         // levels (#2321), text or not. Compared left of x = 260 (the text is
