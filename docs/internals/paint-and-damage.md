@@ -1085,8 +1085,10 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   Windows' SPI orientation is system-wide); `TextRasterization::subpixel_order`
   is the app's fix. Fractional scale factors keep LCD: masks are in device
   pixels, so the grid lines up wherever the compositor shows the buffer 1:1.
-  The painters differ at the edge pixels of nested clips (#2321), grey text or
-  not; the GPU fixtures keep their clip edges on whole pixels.
+  The painters differ at the edge pixels of rounded clips, grey text or not
+  (tiny-skia's 4x supersampling against Vello's area coverage; see "Rounded
+  corners on the GPU painter" below); the GPU fixtures keep their clip edges
+  on whole pixels.
 - **Against FreeType** (`lcd_quality_probe_2286` writes the atlas's masks and
   the glyph list; design-2286's `ftref2286` renders it with
   `FT_RENDER_MODE_LCD`, lcddefault, hintslight, on the same quarter-pixel
@@ -1124,6 +1126,82 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   software painter under Area and Msaa16 at 1x and 1.5x, nested clips to depth
   6 on an opaque page, the page found in the blend stack's spill, the grey
   fallbacks, BGR).
+
+### Rounded corners on the GPU painter (#2321)
+
+Vello flattens every curve it is given to lines at a fixed 0.25 device px
+(`let tol = 0.25` in `vello_shaders`' `flatten.wgsl`, the fork's too). Each
+chord lies inside a convex arc, so a rounded corner covered less than its
+area: a corner pixel up to 52 levels short at 1x (a 5px radius gets about
+three chords), and every level of nesting multiplied the shortfall (clip
+coverages multiply, in Chrome and tiny-skia too). **`VelloPainter` now hands
+Vello its curves already flattened** (`vello_painter::flattened`, applied in
+the `dispatch_fill`, `dispatch_stroke`, `dispatch_clip` and
+`dispatch_push_layer` macros, so the sliced and routed paths get it as well),
+at most `CURVE_TOLERANCE` (0.02) device px from the curve, in the shape's own
+space with the tolerance divided by the transform's largest stretch (so the
+transform, a brush transform and a stroke width are unchanged). Vello's area
+coverage of lines is exact (`GpuAntialiasing::Area`, the default; MSAA
+samples them), so a corner pixel is now within about 5 levels of
+its area. A shape with no curves (rects, lines, a square rounded rect, a path
+of lines) is passed as it was, with no allocation.
+
+- **How.** A rounded rect or circle (`PaintShape::RoundedRect`/`Circle`, the
+  common case) is built as a polygon directly (`rounded_rect_polyline`,
+  `ArcPolygon`): its vertices sit just outside the circle, as far out as each
+  chord's middle is in, so it strays half as far as an inscribed polygon with
+  the same vertices, either way, and its coverage errors partly cancel; each
+  arc still starts and ends on the circle, where the straight edges meet it.
+  One `sin_cos` per distinct corner radius, no `acos`. Any other curved
+  `BezPath` goes through `kurbo::flatten` at the tolerance.
+- **What it covers.** Rounded backgrounds and clips (`RoundedRect`, or the
+  `BezPath` of elliptical arcs `BorderRadii::shape` gives), rounded borders
+  (strokes of the per-side arc paths: Vello strokes the polyline, so the
+  joins between its segments are the stroke's join, invisible at these
+  angles; a round cap or round join is still Vello's own 0.25px arc),
+  and SVG paths, which come through the same `fill`/`stroke`.
+- **What it does not touch: glyphs.** `draw_glyphs` hands Vello its own glyph
+  outlines (`Scene::draw_glyphs`) or atlas masks (images), never a
+  `PaintShape`, so no text pixel changes; the wavy underline is built of
+  lines. `gpu_glyph_atlas_2286` and `gpu_subpixel_text_2286` pass unchanged.
+- **Why not the fork.** Lowering `tol` in `flatten.wgsl` would do the same for
+  every curve, glyph outlines drawn as paths included (which would change
+  text), and cost GPU flattening work on every glyph. Done here, it is
+  CPU-side work only for the shapes that have curves.
+- **Against Chrome** (156, `--headless=new --disable-gpu`: software raster).
+  Chrome is not the area either: within about 20 levels of it for a 3px corner
+  at 1x, but up to 64 for a 25px one, and up to 73 at 2x, where Skia flattens
+  at its own 0.25px. So `gpu_rounded_corners_2321` pins Vello against the
+  area (7 levels, 10 for two nested clips) and against Chrome by Chrome's own
+  distance from the area plus 7. Worst corner pixel against Chrome, before →
+  after (tiny-skia for comparison), 1x: radius 3, 70 → 22 (tiny-skia 39);
+  radius 8, 45 → 39 (47); radius 25, 50 → 58 (67); two nested radius-8
+  clips, 56 → 46 (44); a 3px border, 51 → 40 (40). 2x: radius 3, 70 → 35
+  (35); radius 25, 107 → 66/63 (63/66, clip/background). Against the area
+  the worst is 2–6 after, where it was 44–71; tiny-skia's is 17–51 (its 4x
+  supersampling).
+- **Cost.** CPU-side only: the polygon's lines are more path to encode than
+  Vello's cubics (a 4px corner is 7 lines at 1x), and Vello no longer
+  flattens those curves on the GPU. Callgrind (`hot_paths::dom::vello_paint`,
+  `main` → this): `split_surface_140_boxes` (140 boxes with a 4px radius)
+  1,258,826 → 1,339,322 (+6.4%, about 575 instructions a box),
+  `split_140_unsliced` 1,207,008 → 1,267,089 (+5.0%); the three text pages,
+  which draw no curve, 3,586,219 → 3,572,187 (−0.4%: code layout, nothing
+  they draw changed). Building the rounded rect through kurbo's cubics and
+  `kurbo::flatten`, the first version, cost +151% there.
+- **Not done.** Fractional scales: Chrome snaps box edges (and clip rects) to
+  device pixels and rinch does not, on either painter (#2368); at 1.25x that
+  is the largest difference at a clip's straight edge (143 against 255).
+- **Pins.** `crates/rinch/tests/gpu_rounded_corners_2321.rs` (lavapipe, both
+  corners of each box, at 1x and 2x, against
+  `tests/fixtures/rounded_corners_2321_chrome_{1,2}x.png` and the area: clips
+  of radius 3, 8 and 25, two nested clips, rounded backgrounds of 8 and 25, a
+  3px rounded border in one colour (a filled ring) and in four (strokes of
+  each side's arc path; the pixels on the corner diagonals, where the sides'
+  round caps overlap, are left out: #2375), and a radius-3 clip under
+  `transform: scale(3)`) and
+  `vello_painter::flattened_tests` (the tolerance, the stretch, and what it
+  leaves alone).
 
 ### `vello_clip_tiles`: what a frame asks Vello for
 
