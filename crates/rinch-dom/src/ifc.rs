@@ -8580,6 +8580,12 @@ impl RinchDocument {
                 // places itself.
                 let block_ctx =
                     block_ctx.filter(|_| matches!(context, Some(NodeContext::InlineRoot(_))));
+                // Asked only its width beside its own floats (#2326), as in
+                // the root compute.
+                let (block_ctx, intrinsic) = match block_ctx {
+                    Some(ctx) if ctx.is_intrinsic() => (None, Some(&*ctx)),
+                    other => (other, None),
+                };
                 let leaf_box = block_ctx
                     .as_ref()
                     .and_then(|_| crate::float_wrap::LeafBox::of(&inputs, style));
@@ -8658,6 +8664,58 @@ impl RinchDocument {
                                 );
                                 inline_layout.hang.record(perf);
                                 first_baseline = first_line_baseline(&inline_layout.layout);
+                                if let Some(ctx) = intrinsic {
+                                    // As the root compute: at a definite room
+                                    // the floats go on the max-content lines,
+                                    // then the room clamps.
+                                    let measured = inline_layout.measured_width();
+                                    let width = match max_width {
+                                        Some(room) => {
+                                            let atomic = AtomicContributions {
+                                                wrap_width: None,
+                                                min_content,
+                                                resolved_at,
+                                                requests: min_requests,
+                                            };
+                                            let (max, resolves) = Self::build_inline_layout(
+                                                nodes,
+                                                root_id,
+                                                None,
+                                                None,
+                                                1.0,
+                                                font_cx,
+                                                layout_cx,
+                                                Some(&atomic),
+                                                None,
+                                                None,
+                                            );
+                                            perf.add(
+                                                crate::perf::Counter::InlineFontFamilyResolves,
+                                                resolves,
+                                            );
+                                            crate::float_wrap::intrinsic_width_beside_floats(
+                                                ctx,
+                                                nodes,
+                                                &max.layout,
+                                                max.measured_width(),
+                                                Some((room, measured)),
+                                            )
+                                        }
+                                        None => crate::float_wrap::intrinsic_width_beside_floats(
+                                            ctx,
+                                            nodes,
+                                            &inline_layout.layout,
+                                            measured,
+                                            None,
+                                        ),
+                                    };
+                                    return taffy::Size {
+                                        width: known_dims.width.unwrap_or(width),
+                                        height: known_dims
+                                            .height
+                                            .unwrap_or(inline_layout.content_height()),
+                                    };
+                                }
                                 let width =
                                     known_dims.width.unwrap_or(inline_layout.measured_width());
                                 let height =
