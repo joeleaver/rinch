@@ -986,6 +986,26 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   Nested clips that share a fractional edge differ between the painters (Vello
   multiplies the edge coverage once per clip layer, tiny-skia's intersected mask
   keeps it), grey text or not; the GPU fixture keeps its clip edges whole.
+- **Against FreeType** (`lcd_quality_probe_2286` writes the atlas's masks and
+  the glyph list; design-2286's `ftref2286` renders it with
+  `FT_RENDER_MODE_LCD`, lcddefault, hintslight, on the same quarter-pixel
+  origins). Per-channel mean absolute error, of full scale, over inked pixels:
+  Inter 11px 0.0067, 16px 0.0077; Noto Sans 11/13/16px 0.0079/0.0085/0.0083
+  (correlation 0.997–0.999, the fringe strength and the ink equal to 1%);
+  DejaVu Sans 0.029–0.039. Inter 13px is 0.196, all of it vertical hinting:
+  swash's autohinter puts that size's cap height a row above FreeType's light
+  autohinter, and FreeType's own grey and LCD agree with each other, so the
+  grey masks (stage 2) differ there the same way. DejaVu's gap is hinting too
+  (its bytecode against FreeType's light autohinting). The filter and the
+  grouping match.
+- **Cost.** A 1280x800 page of 13px text (`lcd_cost_probe_2286`, Area):
+  lavapipe on a loaded host, three runs of grey against LCD masks, 38.8/44.1,
+  39.5/37.9, 25.5/21.1 ms: no difference above the noise (mode 2 is a few
+  more ALU operations on text pixels only, and reads the blend stack only
+  inside clips). The atlas holds 50% more bytes (70 KiB to 105 KiB for that
+  page: three coverage bytes a pixel, masks a pixel wider each side). The
+  instruction benches `full_paint::text_page_subpixel_warm` and
+  `vello_paint::text_page_subpixel` track the warm paint.
 - **Pins.** `glyph_atlas::tests` (`an_lcd_run_is_per_channel_coverage`,
   `subpixel_orders`, `the_filters_are_freetypes`,
   `lcd_masks_are_keyed_and_uploaded_as_rgb`, `lcd_masks_take_the_stem_darkening`),
