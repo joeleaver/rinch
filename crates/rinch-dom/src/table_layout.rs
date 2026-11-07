@@ -28,39 +28,60 @@
 //!
 //! ## Column widths
 //!
-//! A column with no declared width is `minmax(min-content, <max-content>fr)`
-//! when the table has a width of its own: never under a cell's minimum, and
-//! in proportion to what each column would like. That is the automatic table
-//! layout's share of a width past the columns' max-content; below it, Chrome
-//! interpolates between the min-content and max-content widths instead
-//! (#2281). Its max-content is measured by
-//! [`RinchDocument::measure_table_columns`]: the widest of its cells' own,
-//! each asked size-only and only again once it changed (#2141), or — with a
-//! spanning cell or a caption, which share their width between columns — by
-//! laying the table out detached with `auto` tracks.
+//! An automatic-layout table shares its width between its columns as CSS
+//! 2.1 §17.5.2.2 and Blink's `DistributeInlineSizeToComputedInlineSizeAuto`
+//! do, through the Taffy fork's `proportional_column_sizing` on its grid
+//! (items 10 and 12 in `docs/internals/dependencies.md`). Blink sizes the
+//! table between four "guesses": every column at its min-content (the *min
+//! guess*), then the percentage columns at their percentage, then the
+//! declared columns at their width (the *specified guess*), then every
+//! column at its max-content (the *max guess*). A width between two guesses
+//! is reached by growing the columns that differ between them, each by the
+//! same fraction of its own difference; Taffy's Maximise Tracks step does it
+//! in those stages, each track in proportion to its room to grow. So a
+//! table narrower than its declared columns gives each its min-content plus
+//! the same fraction of its declared width minus min-content (#2306; a
+//! cell's declared width counts its padding and border), and one narrower
+//! than its max-content does the same from min-content to max-content
+//! (#2281); both used to share the width in proportion to the declared or
+//! max-content widths. Past the max guess the excess goes to the `auto`
+//! columns in proportion to their max-content (when they are all empty, in
+//! equal shares: an email's filler cell beside its logo), or with none, to
+//! the declared ones in proportion to their widths, then to the percentage
+//! ones (the fork's stretch step). A percentage resolves against the
+//! table's width less its outer spacing, where Chrome leaves out every
+//! spacing (#2333), and percentages past 100% are not capped (#2334).
 //!
-//! When every column of such a table declares a width, each is
-//! `minmax(min-content, <weight>fr)`, its weight the widest of its cells'
-//! asks, as in Blink's `ComputeColumnInlineConstraints` (#2288): a cell with
-//! a `width` asks the larger of that width and its min-content, any other
-//! cell (a block in an anonymous cell among them) its max-content. So a
-//! `width=50` cell holding a 100px box is weighed by 100, and a picture that
-//! scales into its cell (min-content 0) by the cell's width alone. Under a
-//! spanning cell or a caption (the detached layout) a cell with a `width`
-//! asks just that width.
+//! The tracks: an `auto` column is `minmax(min-content, auto)` in a table
+//! with a width of its own (its growth limit is its cells' max-content) and
+//! `auto` in one without; a declared column is `minmax(min-content, Npx)`;
+//! a percentage column `minmax(min-content, P%)` in a table with a width,
+//! an `auto` track in one without (#2284). A declared column's limit is
+//! its width, floored at its cells' min-content (Taffy floors a growth
+//! limit at the base size): a `width=50` cell holding a 100px box asks 100
+//! (#2288), and a picture that scales into its cell (min-content 0) only
+//! the cell's width. Another cell's max-content does not raise it: Chrome
+//! 156 shares a table's excess between declared columns by their widths
+//! (`<td width=50>` over a cell of max-content 206, beside `<td width=60>`,
+//! comes out 56:66). [`RinchDocument::measure_table_columns`] still asks
+//! each cell of a table with a width its max-content (size-only, and only
+//! again once it changed, #2141; with a spanning cell or a caption, by a
+//! detached layout), which weighed the columns before #2306 and which
+//! nothing reads now.
 //!
-//! A table with no width of its own shrinks to fit on plain `auto` tracks and
-//! needs no measure. Its grid sets Taffy's `proportional_column_sizing`
-//! (#2280): when its content is wider than its room, each column is its
-//! min-content width plus the same fraction of its max-content minus
-//! min-content (CSS 2.1 §17.5.2.2, Blink's
-//! `DistributeInlineSizeToComputedInlineSizeAuto`), where a grid's equal
-//! shares gave a column that wants little as much as a wide one, and a
-//! `colspan` cell's max-content beyond its columns goes to them in proportion
-//! to their own. A column with a `width` (`minmax(min-content, Npx)`) reaches
-//! it before the `auto` columns grow, as Blink's "specified guess" does. A
-//! percentage column stays an `auto` track here (#2284), and a spanning
-//! cell's min-content is still shared as a grid shares it (#2281).
+//! A `colspan` cell's min-content past its columns' goes to them in
+//! proportion to their room to grow up to their max-content, then in
+//! proportion to their max-content (#2281; Blink's
+//! `DistributeColspanCellToColumnsAuto`), and its max-content past theirs in
+//! proportion to their max-content (#2280). A table with a width of its own
+//! is never narrower than its columns' minimum (#2266): its Taffy style sets
+//! `item_is_table`, so its block parent leaves it to resolve its own width,
+//! and the fork's grid widens to its tracks. A `table-layout: fixed` table
+//! keeps its width, as in Chrome. A table with no width of its own shrinks
+//! to fit on these tracks and needs no measure. Not modelled (Chrome 156
+//! widens both to the columns): a table with a width as a flex item, which
+//! is handed its width and does not widen; and a table's min-content
+//! contribution to a shrink-to-fit parent, which is its `width`.
 //!
 //! A cell's `max-width` caps what it asks of its column (its min-content,
 //! max-content and `width`), and the cell is still laid out at its column's
@@ -160,7 +181,7 @@ enum Track {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TableBox {
     tracks: Vec<Track>,
-    /// Max-content of each column ([`RinchDocument::measure_table_columns`]).
+    /// What each column's cells ask of it ([`RinchDocument::measure_table_columns`]).
     weights: Vec<f32>,
     /// Whether the table has a width of its own.
     definite: bool,
@@ -1000,30 +1021,32 @@ impl RinchDocument {
                 style.justify_content = Some(taffy::JustifyContent::START);
                 style.align_content = Some(taffy::AlignContent::START);
             }
-            // A table with no width of its own shares its room between its
-            // `auto` tracks as a table shares it between columns, not in a
-            // grid's equal shares (#2280, *Column widths*).
-            style.proportional_column_sizing = !b.definite;
-            let can_weigh = b.definite && !b.fixed;
-            let all_declared = b.tracks.iter().all(|t| *t != Track::Auto);
+            // An automatic-layout table shares its room between its tracks
+            // as a table shares it between columns, not in a grid's equal
+            // shares (#2280, #2306, *Column widths*), and one with a width
+            // of its own widens to its columns' minimum (#2266), which needs
+            // it to resolve its own width rather than be handed one by its
+            // block parent (Taffy's `item_is_table`).
+            style.proportional_column_sizing = !b.fixed;
+            let auto_with_width = b.definite && !b.fixed;
+            style.item_is_table = auto_with_width && !host;
             style.grid_template_columns = b
                 .tracks
                 .iter()
-                .enumerate()
-                .map(|(i, t)| {
-                    let w = b.weights.get(i).copied().filter(|w| *w > 0.0);
+                .map(|t| {
                     taffy::GridTemplateComponent::Single(match *t {
                         Track::Auto if b.fixed => fr(1.0),
-                        Track::Auto => match w {
-                            Some(w) if can_weigh => minmax(min_content(), fr(w)),
-                            _ => taffy::style_helpers::auto(),
-                        },
-                        Track::Px(p) if b.fixed => length(p),
-                        // Weighed by its cells' asks, never under its width
-                        // (*Column widths*).
-                        Track::Px(p) if can_weigh && all_declared => {
-                            minmax(min_content(), fr(p.max(w.unwrap_or(0.0)).max(1.0)))
+                        // Its cells' minimum, and their max-content as the
+                        // limit it grows to.
+                        Track::Auto if auto_with_width => {
+                            minmax(min_content(), taffy::style_helpers::auto())
                         }
+                        Track::Auto => taffy::style_helpers::auto(),
+                        Track::Px(p) if b.fixed => length(p),
+                        // From its minimum up to its width, or past it to
+                        // a cell's min-content (Taffy floors the limit at the
+                        // base), never by another cell's max-content: Chrome
+                        // 156 shares a table's excess by declared widths.
                         Track::Px(p) => minmax(min_content(), length(p)),
                         Track::Percent(p) if b.definite => minmax(min_content(), percent(p)),
                         Track::Percent(_) => taffy::style_helpers::auto(),
@@ -1299,10 +1322,11 @@ impl RinchDocument {
         }
     }
 
-    /// Measure the columns of every table whose room is shared out by weight:
-    /// a table with a width of its own, with `auto` columns, whose subtree
-    /// changed since. Innermost first, because an outer table's max-content
-    /// reads an inner one's.
+    /// Measure what the cells of every table with a width of its own ask of
+    /// their columns, whose subtree changed since. Its columns were weighed
+    /// by these before #2306; nothing reads them now (*Column widths*).
+    /// Innermost first, because an outer table's max-content reads an inner
+    /// one's.
     pub(crate) fn measure_table_columns(&mut self) {
         let owed = std::mem::take(&mut self.tree.tables_owed_columns);
         if self.tree.tables.is_empty() {
@@ -1324,9 +1348,7 @@ impl RinchDocument {
                 self.tree.nodes[id]
                     .table_box
                     .as_ref()
-                    // An `auto` column is weighed by its cells, and so is a
-                    // declared one in a table whose columns all declare
-                    // theirs (*Column widths*).
+                    // Nothing reads these since #2306 (*Column widths*).
                     .is_some_and(|b| {
                         b.definite
                             && !b.fixed
