@@ -784,9 +784,13 @@ the view's own `<style>` (rules on `.rinch-html-view`) still works.
   sets `Node::under_isolated` from the parent's (`style_isolated ||
   under_isolated`) as it visits each element, top-down, before the cascade,
   and the check reads it; a node moved under or out of a view is restyled,
-  so visited again. While `NodeTree::isolated_nodes` (raised by
-  `isolate_styles`, lowered by `remove_subtree` freeing such a node) is 0,
-  neither the walk nor the check touches the node at all. Stylo asks once per
+  so visited again. The walk keeps the flag on every visit, also while
+  `NodeTree::isolated_nodes` (raised by `isolate_styles`, lowered by
+  `remove_subtree` freeing such a node) is 0, when the check answers `true`
+  without reading it: a subtree detached from a view, re-inserted after the
+  view was freed and so styled at count 0, would otherwise keep a stale
+  `true` that a later view's count made the check read (review of #2366,
+  round 3; `style_isolation_flag_2357_tests`). Stylo asks once per
   cascade, per pseudo-element and per invalidation; the first version walked
   the ancestors each time, which cost 15 full restyles of 6,040 elements 40
   deep +3.7% (review of #2366). With it false, `RuleCollector::collect_all` skips user and

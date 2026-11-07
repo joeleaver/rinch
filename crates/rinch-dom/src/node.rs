@@ -1653,8 +1653,7 @@ pub struct Node {
     pub style_isolated: bool,
     /// Whether an ancestor has [`Self::style_isolated`] set, as of this
     /// element's last style visit (`resolve_styles_recursive` sets it from
-    /// the parent's, top-down, while the document has an isolated node at
-    /// all). `matches_user_and_content_rules` reads it, so the check is O(1)
+    /// the parent's, top-down, on every visit). `matches_user_and_content_rules` reads it, so the check is O(1)
     /// rather than a walk of the ancestors per cascade, per pseudo-element
     /// and per invalidation (review of #2366: +3.7% on 15 full restyles of
     /// 6,040 elements 40 deep).
@@ -3414,9 +3413,9 @@ pub struct NodeTree {
     pub text_selections: HashMap<RawNodeId, (usize, usize, rinch_core::dom::SelectionDirection)>,
     /// How many live nodes have [`Node::style_isolated`] set (#2357). While
     /// it is `0`, `TElement::matches_user_and_content_rules` answers `true`
-    /// without reading the element, and the style walk does not maintain
-    /// [`Node::under_isolated`], so a document with no isolated subtree (an
-    /// app with no `HtmlView`) pays nothing for either. Raised by `isolate_styles`, lowered by
+    /// without reading the element, so a document with no isolated subtree
+    /// (an app with no `HtmlView`) pays only the walk's one parent read per
+    /// visited element, which keeps [`Node::under_isolated`] current. Raised by `isolate_styles`, lowered by
     /// [`Self::remove_subtree`] when it frees such a node.
     pub isolated_nodes: usize,
     /// Shared lock for Stylo CSS engine.
