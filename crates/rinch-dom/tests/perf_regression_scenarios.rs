@@ -4457,7 +4457,11 @@ fn a_closed_panel_and_a_hidden_chip_cost_paint_one_visit() {
 /// row (#2141). Each column's width is now its cells' widest, each asked
 /// size-only and only once it changed: the frame asks the edited cell, the
 /// same at 12 rows and at 24. The edit changes no width (the same letters),
-/// so the root compute too asks only that cell's row.
+/// so the root compute too asks only that cell's row. Since the rows are
+/// sized as a table's (#2312, the Taffy fork's `table_rows`), each cell is
+/// asked its height once, where the grid's row sizing asked twice (its
+/// minimum and its max-content contribution; the second a cache hit): five
+/// measure calls, two of them hits, where it was six and three.
 #[test]
 fn a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone() {
     for rows in [12, 24] {
@@ -4491,11 +4495,11 @@ fn a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone() {
             &[
                 (ShapeMeasureIfc, 3),
                 (ShapeIfcBuild, 1),
-                (IfcMeasureCacheHits, 3),
+                (IfcMeasureCacheHits, 2),
                 (IfcMeasureInvalidations, 3),
                 (LayoutResolves, 1),
                 (TaffyRootComputes, 1),
-                (TaffyMeasureCalls, 6),
+                (TaffyMeasureCalls, 5),
                 (TableColumnMeasures, 1),
             ],
         );
