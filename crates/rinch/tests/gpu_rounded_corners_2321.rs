@@ -118,10 +118,11 @@ const CASES: &[(&str, [f64; 4], f64, Kind)] = &[
 /// polygon `VelloPainter` draws strays up to its `CURVE_TOLERANCE` (0.03
 /// device px) from the arc, which costs a pixel up to 7.7, plus a level of
 /// rounding (the oracle is exact; 8 measured, at radius 25 and 2x). Two
-/// nested clips multiply, so their error is up to twice one clip's (9
-/// measured). With Vello's own flattening it was up to 71.
+/// nested clips multiply, so their error can be up to twice one clip's; 9
+/// is measured, and the limit is 11, which a tolerance of 0.06 fails. With
+/// Vello's own flattening it was up to 71.
 const AREA_TOL: i32 = 9;
-const NESTED_AREA_TOL: i32 = 16;
+const NESTED_AREA_TOL: i32 = 11;
 
 /// Chrome's software raster is itself up to 73 levels from the area here
 /// (Skia flattens curves at 0.25 device px for large radii, and supersamples),

@@ -1295,7 +1295,9 @@ impl Iterator for FlatIter<'_> {
                     self.current = p2;
                 }
                 PathEl::CurveTo(p1, p2, p3) => {
-                    if let Some((centre, r, from, sweep)) = circular_arc(self.current, p1, p2, p3) {
+                    if let Some((centre, r, from, sweep)) =
+                        circular_arc(self.current, p1, p2, p3, self.tolerance)
+                    {
                         let quarter_turn = (sweep.abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-9;
                         let poly = match self.quarter {
                             Some((qr, qs, p)) if quarter_turn && qr == r && qs == sweep => p,
@@ -1348,11 +1350,26 @@ fn wang_steps(k: f64, tolerance: f64) -> usize {
 /// The circle the cubic `(p0, p1, p2, p3)` is an arc of, as `(centre,
 /// radius, from, sweep)` (`from` the unit direction of its start, `sweep`
 /// signed as [`ArcPolygon::new`] takes it), or `None` when it is not one to
-/// within a thousandth of the radius.
-fn circular_arc(p0: Point, p1: Point, p2: Point, p3: Point) -> Option<(Point, f64, Vec2, f64)> {
+/// within `tolerance` (local px), or sweeps more than a quarter turn.
+///
+/// The arc is drawn as the circle, so the cubic must be the circle's own
+/// cubic: its arms each `4/3 tan(sweep / 4) r` long (kurbo's, which puts its
+/// middle on the circle) to within the tolerance, tangent at both ends, and
+/// its middle on the circle. A cubic wider than a quarter turn is left to
+/// Wang's steps: one cubic is too far from a circle there, and past a half
+/// turn the angle between the ends no longer says which way round it goes
+/// (review of #2380). The sweep's sign is the start tangent's.
+fn circular_arc(
+    p0: Point,
+    p1: Point,
+    p2: Point,
+    p3: Point,
+    tolerance: f64,
+) -> Option<(Point, f64, Vec2, f64)> {
+    use std::f64::consts::FRAC_PI_2;
     let (t0, t1, d) = (p1 - p0, p3 - p2, p3 - p0);
     let (l0, l1) = (t0.hypot(), t1.hypot());
-    if l0.is_nan() || l0 <= 0.0 || (l0 - l1).abs() > 1e-3 * l0 {
+    if l0.is_nan() || l0 <= 0.0 || l1.is_nan() || l1 <= 0.0 {
         return None;
     }
     // The centre is on the normal at `p0`, on the side `p3` is, as far from
@@ -1368,21 +1385,36 @@ fn circular_arc(p0: Point, p1: Point, p2: Point, p3: Point) -> Option<(Point, f6
     let r = d.hypot2() / (2.0 * ud);
     let centre = p0 + u * r;
     let (a, b) = (p0 - centre, p3 - centre);
-    let tol = 1e-3 * r;
-    // `p3` is on the circle by construction; the cubic must be tangent to it
-    // there, and its middle on it too.
-    let mid =
-        ((p0.to_vec2() + 3.0 * p1.to_vec2() + 3.0 * p2.to_vec2() + p3.to_vec2()) / 8.0).to_point();
-    if t1.dot(b).abs() > tol * l1 || ((mid - centre).hypot() - r).abs() > tol {
+    // Which way round: the start tangent's turn about the centre. The end
+    // must be reached turning that way, by no more than a quarter turn (and
+    // a hair, for rounding).
+    let turn = a.cross(t0).signum();
+    let (cross, dot) = (a.cross(b), a.dot(b));
+    if cross * turn <= 0.0 || dot < -1e-6 * r * r {
         return None;
     }
-    let (cross, dot) = (a.cross(b), a.dot(b));
     let sweep = if dot.abs() < 1e-12 * r * r {
-        std::f64::consts::FRAC_PI_2.copysign(cross)
+        FRAC_PI_2
     } else {
-        cross.atan2(dot)
+        cross.abs().atan2(dot).min(FRAC_PI_2)
     };
-    Some((centre, r, a / r, sweep))
+    // The circle's own cubic, to within the tolerance: tangent at the end,
+    // both arms the right length, and the middle on the circle.
+    let arm = if sweep == FRAC_PI_2 {
+        4.0 / 3.0 * (std::f64::consts::FRAC_PI_8).tan() * r
+    } else {
+        4.0 / 3.0 * (sweep / 4.0).tan() * r
+    };
+    let mid =
+        ((p0.to_vec2() + 3.0 * p1.to_vec2() + 3.0 * p2.to_vec2() + p3.to_vec2()) / 8.0).to_point();
+    if t1.dot(b).abs() > tolerance * l1
+        || (l0 - arm).abs() > tolerance
+        || (l1 - arm).abs() > tolerance
+        || ((mid - centre).hypot() - r).abs() > tolerance
+    {
+        return None;
+    }
+    Some((centre, r, a / r, sweep * turn))
 }
 
 /// Dispatch a fill operation on a `PaintShape` to the appropriate Scene
@@ -2917,5 +2949,132 @@ mod flattened_tests {
         let corner = |v: Point| v.x <= 16.0 && v.y <= 16.0 && (v - c).hypot() > 5.5;
         let dev = worst_deviation(&v, corner, c, 6.0);
         assert!(dev <= CURVE_TOLERANCE * 1.01, "{dev}");
+    }
+
+    /// The most any vertex or chord middle of `poly` is from the curve `c`
+    /// (measured to a fine polyline of it).
+    fn off_curve(poly: &[Point], c: peniko::kurbo::CubicBez) -> f64 {
+        use peniko::kurbo::{ParamCurve, ParamCurveNearest};
+        let fine: Vec<Point> = (0..=4000).map(|i| c.eval(i as f64 / 4000.0)).collect();
+        let dist = |q: Point| {
+            fine.windows(2)
+                .map(|w| Line::new(w[0], w[1]).nearest(q, 1e-12).distance_sq)
+                .fold(f64::INFINITY, f64::min)
+                .sqrt()
+        };
+        poly.iter()
+            .copied()
+            .chain(poly.windows(2).map(|w| w[0].midpoint(w[1])))
+            .map(dist)
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn a_cubic_past_a_quarter_turn_follows_the_cubic() {
+        // A single cubic built as the circle's own for 100, 180 and 200
+        // degrees (both ways round, at several rotations and radii) is not
+        // taken for an arc: past a quarter turn one cubic is no circle, and
+        // past a half turn the ends' angle names the other way round (review
+        // of #2380: 200 degrees was drawn as its 160-degree complement).
+        // Its lines stay within the tolerance of the cubic itself.
+        for deg in [100.0f64, 180.0, 200.0] {
+            for turn in [1.0, -1.0] {
+                for rot in (0..12).map(|i| i as f64 * 30.0 + 10.0) {
+                    for r in [5.0, 20.0, 100.0] {
+                        let sweep = deg.to_radians() * turn;
+                        let (a0, a1) = (rot.to_radians(), rot.to_radians() + sweep);
+                        let k = 4.0 / 3.0 * (sweep / 4.0).tan() * r;
+                        let c = Point::new(50.0, 50.0);
+                        let at = |a: f64| c + Vec2::new(a.cos(), a.sin()) * r;
+                        let tan = |a: f64| Vec2::new(-a.sin(), a.cos());
+                        let cubic = peniko::kurbo::CubicBez::new(
+                            at(a0),
+                            at(a0) + tan(a0) * k,
+                            at(a1) - tan(a1) * k,
+                            at(a1),
+                        );
+                        assert!(
+                            circular_arc(cubic.p0, cubic.p1, cubic.p2, cubic.p3, CURVE_TOLERANCE)
+                                .is_none(),
+                            "{deg} deg ({turn}) at {rot}, r {r}: taken for an arc"
+                        );
+                        let mut p = BezPath::new();
+                        p.move_to(cubic.p0);
+                        p.curve_to(cubic.p1, cubic.p2, cubic.p3);
+                        let v = vertices(
+                            &flattened(Affine::IDENTITY, &PaintShape::BezPath(p)).unwrap(),
+                        );
+                        let off = off_curve(&v, cubic);
+                        assert!(
+                            off <= CURVE_TOLERANCE * 1.05,
+                            "{deg} deg ({turn}) at {rot}, r {r}: {off} px off the cubic"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_large_near_arc_follows_the_cubic() {
+        // An SVG quarter arc whose arms are 0.2% long, at radii 300 and
+        // 1000: within a thousandth of the radius of a circle's, but drawn
+        // as the circle it would be 0.13-0.45 px off the cubic. It goes
+        // through Wang's steps instead. kurbo's own quarter arc, at those
+        // radii and both ways round, is still recognised.
+        for r in [300.0, 1000.0] {
+            let k = 4.0 / 3.0 * std::f64::consts::FRAC_PI_8.tan() * r;
+            let (p0, p3) = (Point::new(0.0, r), Point::new(r, 0.0));
+            let exact = (p0, p0 + Vec2::new(0.0, -k), p3 + Vec2::new(-k, 0.0), p3);
+            assert!(circular_arc(exact.0, exact.1, exact.2, exact.3, CURVE_TOLERANCE).is_some());
+            assert!(circular_arc(exact.3, exact.2, exact.1, exact.0, CURVE_TOLERANCE).is_some());
+            let k = k * 1.002;
+            let near = peniko::kurbo::CubicBez::new(
+                p0,
+                p0 + Vec2::new(0.0, -k),
+                p3 + Vec2::new(-k, 0.0),
+                p3,
+            );
+            assert!(circular_arc(near.p0, near.p1, near.p2, near.p3, CURVE_TOLERANCE).is_none());
+            let mut p = BezPath::new();
+            p.move_to(near.p0);
+            p.curve_to(near.p1, near.p2, near.p3);
+            let v = vertices(&flattened(Affine::IDENTITY, &PaintShape::BezPath(p)).unwrap());
+            let off = off_curve(&v, near);
+            assert!(
+                off <= CURVE_TOLERANCE * 1.05,
+                "r {r}: {off} px off the cubic"
+            );
+        }
+        // And a rounded rect's kurbo path (both of a ring's windings) still
+        // is, at any radius: see `a_rings_arcs_are_drawn_as_circular_polygons`.
+        let big = RoundedRect::new(0.0, 0.0, 2000.0, 2000.0, 900.0).to_path(0.1);
+        let PathEl::CurveTo(p1, p2, p3) = big.elements()[1] else {
+            panic!("{:?}", big.elements()[1]);
+        };
+        let PathEl::MoveTo(p0) = big.elements()[0] else {
+            panic!()
+        };
+        assert!(circular_arc(p0, p1, p2, p3, CURVE_TOLERANCE).is_some());
+    }
+
+    #[test]
+    fn a_curve_after_a_close_starts_where_the_subpath_did() {
+        // `ClosePath` returns to the subpath's start; a curve after it with
+        // no `MoveTo` starts there (not at the last point before the close).
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((30.0, 0.0));
+        p.line_to((30.0, 20.0));
+        p.close_path();
+        p.quad_to((40.0, 40.0), (10.0, 30.0));
+        let v = vertices(&flattened(Affine::IDENTITY, &PaintShape::BezPath(p)).unwrap());
+        let quad = peniko::kurbo::QuadBez::new((0.0, 0.0), (40.0, 40.0), (10.0, 30.0)).raise();
+        // The vertices after the close (the quad's), with its start.
+        let after: Vec<Point> = std::iter::once(Point::ZERO)
+            .chain(v[3..].iter().copied())
+            .collect();
+        let off = off_curve(&after, quad);
+        assert!(off <= CURVE_TOLERANCE * 1.05, "{off} px off the quad");
     }
 }

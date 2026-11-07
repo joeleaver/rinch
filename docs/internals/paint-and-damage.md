@@ -1194,7 +1194,7 @@ is passed as it was.
   in the test's module docs). Chrome is not the area either: within about 20
   levels of it for a 3px corner at 1x, but up to 64 for a 25px one, and up to
   73 at 2x, where Skia flattens at its own 0.25px. So
-  `gpu_rounded_corners_2321` pins Vello against the area (9 levels, 16 for
+  `gpu_rounded_corners_2321` pins Vello against the area (9 levels, 11 for
   two nested clips; the oracle is the exact clipped area) and against Chrome
   by Chrome's own distance from the area plus 9. Worst corner pixel against
   Chrome, before → after (tiny-skia for comparison), 1x: radius 3, 70 → 23
