@@ -1054,7 +1054,7 @@ pub(super) fn paint_box_shadow(
                     (SQUARE, layer_rect.into_path(0.1))
                 };
                 let fits = hole_fits(element_box, radii, layer_rect, outer_radii);
-                shadow_layers.push((layer_color, layer_rect, outer, fits));
+                shadow_layers.push((layer_color, layer_rect, outer, fits, true));
             }
         } else {
             // No blur: simple offset shadow
@@ -1072,16 +1072,18 @@ pub(super) fn paint_box_shadow(
                 (SQUARE, shadow_rect.into_path(0.1))
             };
             let fits = hole_fits(element_box, radii, shadow_rect, outer_radii);
-            shadow_layers.push((color, shadow_rect, outer, fits));
+            shadow_layers.push((color, shadow_rect, outer, fits, false));
         }
     }
 
     paint_shadow_layers(painter, transform, &hole, shadow_layers);
 }
 
-/// One layer of an outer shadow: its colour, its rect, its shape, and whether
-/// the element's border box lies inside it (`hole_fits`).
-type ShadowLayer = (AlphaColor<Srgb>, Rect, BezPath, bool);
+/// One layer of an outer shadow: its colour, its rect, its shape, whether
+/// the element's border box lies inside it (`hole_fits`), and whether it is
+/// one of a blur's soft layers (painted with `Painter::set_coarse_curves`:
+/// eight layers approximating a blur need no 0.03px edge, #2321).
+type ShadowLayer = (AlphaColor<Srgb>, Rect, BezPath, bool, bool);
 
 /// Paint an element's outer-shadow layers, in paint order, outside its border
 /// box `hole` (#976).
@@ -1108,18 +1110,20 @@ fn paint_shadow_layers(
     hole: &BezPath,
     layers: Vec<ShadowLayer>,
 ) {
-    if layers.iter().all(|&(_, _, _, fits)| fits) {
-        for (color, _, layer, _) in layers {
+    if layers.iter().all(|&(_, _, _, fits, _)| fits) {
+        for (color, _, layer, _, soft) in layers {
             // The layer with the hole wound against it is what cuts: a
             // point inside both winds to zero and is left alone.
             let ring = punched(layer, hole);
+            painter.set_coarse_curves(soft);
             painter.fill_color(Fill::NonZero, transform, color, &ring.into());
         }
+        painter.set_coarse_curves(false);
         return;
     }
     let Some(around) = layers
         .iter()
-        .map(|(_, rect, _, _)| *rect)
+        .map(|(_, rect, _, _, _)| *rect)
         .reduce(|a, b| a.union(b))
     else {
         return;
@@ -1134,9 +1138,11 @@ fn paint_shadow_layers(
     let around = around.union(hole.bounding_box()).inflate(pad, pad);
     let outside_hole = punched(around.into_path(0.1), hole);
     painter.push_clip(Fill::NonZero, transform, &outside_hole.into());
-    for (color, _, outer, _) in layers {
+    for (color, _, outer, _, soft) in layers {
+        painter.set_coarse_curves(soft);
         painter.fill_color(Fill::NonZero, transform, color, &outer.into());
     }
+    painter.set_coarse_curves(false);
     painter.pop_layer();
 }
 

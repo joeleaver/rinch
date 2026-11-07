@@ -115,6 +115,9 @@ rinch-tabler-icons = { workspace = true }
 # through the real desktop wheel path, without the optional `graph` feature (so
 # the test runs under `cargo test -p rinch` with no flags).
 rinch-graph-view = { workspace = true }
+# Test-only: `gpu_rounded_corners_2321` reads Chrome's screenshots (grey PNGs
+# under `tests/fixtures`). The version the optional `png` dependency already is.
+png = "0.17"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The OS's text settings (#2286): libfontconfig is opened at run time
