@@ -314,6 +314,36 @@ fn a_float_holding_a_float_and_wrapping_text_takes_its_room() {
 }
 
 #[test]
+fn inside_an_inline_block_a_float_holding_a_float_and_wrapping_text_takes_its_room() {
+    // The same float laid out by an inline-block's own compute (the second
+    // measure site): Chrome 200 for both, rinch 190 with the floats added to
+    // lines broken in the room.
+    for html in [
+        format!(
+            "<div style='width:200px'><span style='display:inline-block;width:200px'>\
+             <div id=o style='float:left'><div style='float:left;width:100px;height:20px'></div>\
+             {} {}</div></span></div>",
+            text(90),
+            text(120)
+        ),
+        format!(
+            "<div style='width:300px'><span style='display:inline-block'><div style='width:200px'>\
+             <div id=o style='float:left'><div style='float:left;width:100px;height:20px'></div>\
+             {} {}</div></div></span></div>",
+            text(90),
+            text(120)
+        ),
+    ] {
+        let mut d = RinchDocument::new();
+        d.load_css(CSS);
+        let body = d.body();
+        d.set_inner_html(body, &html);
+        d.resolve_layout(800.0, 800.0);
+        near(width(&d, "o"), 200.0);
+    }
+}
+
+#[test]
 fn a_float_inside_an_inline_counts_in_the_cells_alignment() {
     // A middle-aligned cell 102 tall holding `<span><float 60 tall></span>`
     // and text: its content is 60, so the float moves down by 20 to y 23.
