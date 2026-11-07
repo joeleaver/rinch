@@ -315,12 +315,13 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`25caf91e87ad8ef2929ba4625f760e41e2765a80`, branch `rinch-patch`): eleven
-commits on the taffy `v0.14.0` tag (item 10 is two of them). It is a dependency, not a
+(`6e6feeebfa2711d869d78b516ef93a5860256c84`, branch `rinch-float-size-pass`, one
+commit on `rinch-patch`'s `25caf91e`): twelve commits on the taffy `v0.14.0` tag
+(item 10 is two of them). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the eleven commits onto the new tag. All are upstream
+and a Taffy bump rebases the twelve commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -447,6 +448,19 @@ candidates.
    table with a width uses `fr` weights and is not affected. Pins: the fork's
    `tests/proportional_column_sizing.rs` and
    `crates/rinch-dom/tests/table_auto_column_shares_2280_tests.rs`.
+
+11. **A float is laid out in its container's run mode** (commit `6e6feeeb`, review of
+   #2313/#2319). The block algorithm laid every float out with `perform_child_layout`,
+   also when the container was only asked its size (`RunMode::ComputeSize`: a table's
+   column measure, an auto table's or a shrink-to-fit box's intrinsic pass). That pass
+   wrote the float's descendants' layouts for the room of its question, a min-content
+   width, and the final layout of the float, answered from its own cache, never wrote them
+   back: in a Postrinch mail the one cell of an `align=left` table came out at its
+   min-content width (147 of 420) and the table's height left the wrapped cell out, so the
+   next block overlapped it. It took a second root compute to show (a sibling table whose
+   columns moved). A float is now laid out with the container's run mode, as an in-flow
+   child is. Pins: `crates/rinch-dom/tests/float_size_pass_2313_tests.rs` (Chrome 156's
+   sizes; the cell fills its table, the next block is below it).
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
