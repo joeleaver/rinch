@@ -1348,6 +1348,24 @@ impl NodeHandle {
         }
     }
 
+    /// Stop the app's style sheets (its theme, component and own CSS)
+    /// matching this node's descendants, as a shadow root does in a browser
+    /// (#2357). Below this node only the user-agent sheet, presentational
+    /// attributes and `style` attributes apply; inherited properties
+    /// (`color`, `font-*`, `line-height`, …) still inherit from it, and the
+    /// node itself is styled as before. `rinch_html::HtmlView` does this for
+    /// a document someone else wrote.
+    ///
+    /// One-way. Give the node its rendered children afterwards: on the web
+    /// this attaches a shadow root and children added later go into it,
+    /// while children it already has stay in the light tree, unrendered (a
+    /// `<style>` among them still applies, to the document).
+    pub fn isolate_styles(&self) {
+        if let Some(doc) = self.accessed_doc() {
+            doc.borrow_mut().isolate_styles(self.node_id);
+        }
+    }
+
     /// The first element under this node matching the CSS `selector`, as
     /// `Element.querySelector`: descendants only, in document order, the
     /// selector matched against the whole tree, `:scope` this node (#1796).

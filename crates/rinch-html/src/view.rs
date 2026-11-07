@@ -69,6 +69,25 @@ pub struct HtmlView {
     /// specificity, so an app's own `user-select` on the view (a style sheet
     /// rule for a `class:` it gives the view, or a `style:`) overrides it.
     pub selectable: bool,
+    /// Let the app's style sheets (its theme's base styles, its components'
+    /// and its own CSS) match the document's elements, for an app showing
+    /// HTML of its own that it wants themed. Off by default: the document
+    /// is then laid out as a browser lays out the same HTML put in a
+    /// `<div>` of a page with no style sheet, by the browser's own sheet,
+    /// its presentational attributes and its own styles, so a theme's
+    /// `* { box-sizing: border-box }` or heading sizes cannot change it
+    /// (#2357). Inherited properties (`font-*`, `line-height`, …) reach it
+    /// from the view either way.
+    pub app_styles: bool,
+    /// Draw the document black on white, as a browser draws a page with no
+    /// colours of its own, whatever the app's theme. Off by default: the
+    /// document then takes its `color` from the view's host and shows the
+    /// host's background, as the same HTML in a `<div>` does (#2357), so a
+    /// dark-themed app showing mail colours the element around the view
+    /// (Postrinch's `.mail-html`: `background: #fff; color: #222`) or sets
+    /// this. Set by a rule of zero specificity: an app's own `color` or
+    /// `background-color` on the view wins.
+    pub paper: bool,
 }
 
 impl Default for HtmlView {
@@ -82,6 +101,8 @@ impl Default for HtmlView {
             tooltips: Tooltips::default(),
             link_menu: false,
             selectable: true,
+            app_styles: false,
+            paper: false,
         }
     }
 }
@@ -97,6 +118,8 @@ impl std::fmt::Debug for HtmlView {
             .field("tooltips", &self.tooltips)
             .field("link_menu", &self.link_menu)
             .field("selectable", &self.selectable)
+            .field("app_styles", &self.app_styles)
+            .field("paper", &self.paper)
             .finish()
     }
 }
@@ -110,10 +133,14 @@ impl std::fmt::Debug for HtmlView {
 ///   than its window. (The cleaner already leaves out `position: fixed` and
 ///   `absolute` and `z-index`; this holds for whatever moves content
 ///   otherwise: relative offsets, transforms, negative margins.)
-/// - A document that sets no colours is drawn as a browser draws a page:
-///   black on white, whatever the app's own theme (a dark theme's light text
-///   would otherwise reach mail written for a white page).
-/// - Links show a pointer.
+/// - It sets no colours of its own (#2357): a document that sets none takes
+///   the host's `color` and shows the host's background, as the same HTML
+///   in a `<div>` does in a browser. Under `paper: true` it is black on
+///   white, whatever the app's theme, by a zero-specificity rule an app's
+///   own rule for the view overrides.
+/// - Links show a pointer. (In an isolated view, the default, no rule of
+///   the app's reaches the document: the user-agent sheet gives its links
+///   the browser's style, a pointer among it.)
 /// - Its text is selectable (`user-select: text`), or not under
 ///   `selectable: false`. Both rules are inside `:where()`, specificity zero,
 ///   so any rule of the app's that names the view (a `class:` on it, an
@@ -121,10 +148,11 @@ impl std::fmt::Debug for HtmlView {
 ///   document (#2231).
 ///
 /// An app may restyle `.rinch-html-view` through the cascade (its own
-/// colours, its font); one that lets content overflow takes that on.
+/// colours, its font, which the document inherits); one that lets content
+/// overflow takes that on.
 const CSS: &str = "\
-.rinch-html-view { position: relative; z-index: 0; overflow-x: auto; overflow-y: hidden; \
-background-color: #ffffff; color: #000000; }
+.rinch-html-view { position: relative; z-index: 0; overflow-x: auto; overflow-y: hidden; }
+:where(.rinch-html-view.rinch-html-paper) { background-color: #ffffff; color: #000000; }
 :where(.rinch-html-view) { user-select: text; }
 :where(.rinch-html-view.rinch-html-unselectable) { user-select: none; }
 .rinch-html-view a[href] { cursor: pointer; }";
@@ -141,20 +169,28 @@ impl Component for HtmlView {
         // rules of zero specificity (`CSS`), so the app's own `user-select`
         // on the view wins; the document's elements take it from here
         // unless they say otherwise.
-        view.set_attribute(
-            "class",
-            if self.selectable {
-                "rinch-html-view"
-            } else {
-                "rinch-html-view rinch-html-unselectable"
-            },
-        );
+        let mut class = String::from("rinch-html-view");
+        if !self.selectable {
+            class.push_str(" rinch-html-unselectable");
+        }
+        // Black on white whatever the theme, by request (`paper`).
+        if self.paper {
+            class.push_str(" rinch-html-paper");
+        }
+        view.set_attribute("class", &class);
         // Its links are the app's to follow (`onlink`): on the web, the
         // browser never navigates the app's own tab to one.
         view.set_attribute("data-claim-links", if self.link_menu { "menu" } else { "" });
         let style = scope.create_element("style");
         style.append_child(&scope.create_text(CSS));
         view.append_child(&style);
+        // The app's sheets stop here (#2357): below the view only the UA
+        // sheet, the document's attributes and its own styles apply, as in
+        // a browser. After the `<style>`, which styles the view itself (on
+        // the web, a shadow root takes the children added from here on).
+        if !self.app_styles {
+            view.isolate_styles();
+        }
 
         let body = scope.create_element("div");
         body.set_attribute("class", "rinch-html-body");
