@@ -151,3 +151,78 @@ fn an_empty_or_invalid_height_attribute_is_ignored() {
     let n = node(&doc, "h");
     let _ = NodeId(n);
 }
+
+/// Postrinch's bug 2, reduced from the live DOM's ancestor chain with the
+/// inline styles it carries: a no-src `<img alt width=250 style="display:
+/// block; width:100%">` in a cell with `padding-right: 100px`, in a fixed
+/// `width: 75%` table floated by `align=left`, in a `display: block` `<th>`
+/// (#2292's block-in-row path), in fixed 100% tables. Chrome 156 (Inter,
+/// `.scratch/chrome/p5.html` of the PR): the inner table and its cell
+/// 417 wide, the alt box 316x22.39 (one line), the next block right under
+/// the outer table (y 24.39); a loaded 3x2 picture of the same shape 316 x
+/// 210.66. Rinch lays both out the same (whole pixels). Postrinch's numbers
+/// (a 147-wide cell in a 420 table, the cell 45 tall in a 23px table) need a
+/// rule the transcript does not carry; a `display: block` on the outer
+/// table reproduces their shape and is tracked separately.
+#[test]
+fn the_reduced_mail_chain_lays_out_as_chrome() {
+    use parley::fontique::{Blob, FontInfoOverride};
+    let cell = |inner: &str| {
+        format!(
+            r#"<table width=100% style="border-collapse:collapse;font-size:16px;table-layout:fixed;width:100%!important;margin:0 auto!important"><tr><th width="41.67%" valign=top style="text-align:left;box-sizing:border-box!important;display:block!important;width:100%!important;font-weight:normal"><table width=250 align=left style="border-collapse:collapse;margin:0 auto 0 0!important;table-layout:fixed;width:75%!important"><tr><td style="border-collapse:collapse;padding-bottom:0!important;padding-right:100px!important;padding-top:0!important;font-size:16px"><a style="color:#fff;text-decoration:none">{inner}</a></td></tr></table></th><th style="text-align:left;box-sizing:border-box!important;display:block!important;width:100%!important;font-weight:normal"></th></tr></table><div class=n style="height:10px;background:#f00"></div>"#
+        )
+    };
+    let html = format!(
+        r#"<div style="width:560px"><table width=100% cellspacing=0 cellpadding=0 border=0 style="border-collapse:collapse;width:100%"><tr><td style="border-collapse:collapse"><table width=600 align=center style="border-collapse:collapse;margin:0 auto!important;table-layout:fixed;width:100%!important"><tr><td valign=top>{}{}</td></tr></table></td></tr></table></div>"#,
+        cell(
+            r#"<img width=250 border=0 alt="Brand Logo" style="border:none;display:block;width:100%">"#
+        ),
+        cell(&format!(
+            r#"<img src="{RED_3X2}" width=250 border=0 style="border:none;display:block;width:100%">"#
+        )),
+    );
+    let mut doc = RinchDocument::new();
+    doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(FACE)),
+        Some(FontInfoOverride {
+            family_name: Some("I"),
+            ..Default::default()
+        }),
+    );
+    doc.load_css(
+        "html, body { margin: 0; background: #fff; font-family: I; font-size: 16px; \
+         line-height: 1.4; color: #000 }",
+    );
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(800.0, 800.0);
+    let q = |sel: &str| rinch_dom::query::query_all(&doc.tree, doc.tree.root_id, sel);
+    let at = |n: u64| {
+        let (x, y) = rinch_dom::paint::compute_absolute_position(&doc.tree, n, 1.0);
+        let l = &doc.tree.nodes[n].layout;
+        (x, y, l.width, l.height)
+    };
+    let imgs = q("img");
+    let next = q("div.n");
+    let inner: Vec<u64> = q("table[width=\"250\"]");
+    for (k, (img, chrome_h)) in [(imgs[0], 22.39f32), (imgs[1], 210.66)]
+        .into_iter()
+        .enumerate()
+    {
+        let (_, iy, iw, ih) = at(img);
+        let (_, _, tw, th) = at(inner[k]);
+        let td = q("table[width=\"250\"] td")[k];
+        let (_, _, cw, _) = at(td);
+        assert_eq!((tw, cw, iw), (417.0, 417.0, 316.0), "#{k}: Chrome's widths");
+        assert!(
+            (ih - chrome_h).abs() <= 1.0,
+            "#{k}: {ih}, Chrome {chrome_h}"
+        );
+        assert!(th >= ih, "#{k}: the table holds its cell");
+        let (_, ny, _, _) = at(next[k]);
+        assert!(
+            ny >= iy + f64::from(ih),
+            "#{k}: the next block is below the image"
+        );
+    }
+}
