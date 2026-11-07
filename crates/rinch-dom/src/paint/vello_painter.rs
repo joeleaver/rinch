@@ -32,6 +32,11 @@ pub struct VelloPainter {
     open: Vec<OpenLayer>,
     /// The render target tiles are counted inside: see [`Self::set_tile_target`].
     tile_target: Rect,
+    /// How many of `open` are layers, not clips: subpixel (LCD) text is drawn
+    /// only while none is (#2286 stage 3).
+    layers_open: u32,
+    /// See [`Self::set_subpixel_text`].
+    subpixel_text: bool,
     /// See [`Self::clip_tiles`].
     clip_tiles: u64,
     /// The glyph masks text is drawn from (#2286): the thread's atlas, shared
@@ -86,6 +91,8 @@ struct MaskDraw {
     image: ImageData,
     x: f64,
     y: f64,
+    /// A subpixel mask (the fork's mask mode 2).
+    lcd: bool,
 }
 
 #[cfg(feature = "glyph-atlas")]
@@ -104,6 +111,9 @@ struct OpenLayer {
     pushed: bool,
     /// Device bounds drawing is confined to while this is open.
     region: Rect,
+    /// A layer (opacity, blend, isolation), not a clip: subpixel text is
+    /// grey inside it (#2286 stage 3).
+    layer: bool,
     /// `region` is exactly what the open clips leave, not just its bounds:
     /// every one of them is an axis-aligned rect. Only then is a clip judged
     /// against it: a rounded clip leaves less than its bounds.
@@ -205,6 +215,8 @@ impl VelloPainter {
             routing: false,
             open: Vec::new(),
             tile_target: EVERYWHERE,
+            layers_open: 0,
+            subpixel_text: true,
             clip_tiles: 0,
             #[cfg(feature = "glyph-atlas")]
             atlas_painter,
@@ -239,6 +251,25 @@ impl VelloPainter {
     #[cfg(feature = "glyph-atlas")]
     pub fn glyph_atlas(&self) -> &super::glyph_atlas::SharedAtlas {
         &self.atlas
+    }
+
+    /// Whether this painter may draw subpixel (LCD) text where the thread's
+    /// policy asks for it (the default), or, with `false`, draws grey text
+    /// whatever the policy (#2286 stage 3). For a scene drawn somewhere its
+    /// pixel grid is not known, such as a snapshot composited under a
+    /// transform.
+    pub fn set_subpixel_text(&mut self, on: bool) {
+        self.subpixel_text = on;
+    }
+
+    /// Whether a glyph run drawn now may be subpixel text: the painter allows
+    /// it and no layer is open. Inside an opacity, blend or isolated layer
+    /// the destination is the layer's own pixels, which are not opaque and
+    /// are composited later, so text there is grey, as Skia and Chrome draw
+    /// it. Clips do not stop it: the fork's per-channel composite reads the
+    /// pixel under the clip (`fine.wgsl`'s `lcd_composite`).
+    pub fn subpixel_text_allowed(&self) -> bool {
+        self.subpixel_text && self.layers_open == 0
     }
 
     /// Draw text from the glyph-mask atlas (the default) or, with `false`,
@@ -297,7 +328,7 @@ impl VelloPainter {
 
     /// Record a clip or layer pushed into the window's scene, confining
     /// drawing to `shape` under `transform` as well.
-    fn opened(&mut self, transform: Affine, shape: &PaintShape) {
+    fn opened(&mut self, transform: Affine, shape: &PaintShape, layer: bool) {
         let (region, exact) = self.region();
         let bounds = shape_bounds(transform, shape);
         let region = region.intersect(bounds);
@@ -309,8 +340,10 @@ impl VelloPainter {
         self.open.push(OpenLayer {
             pushed: true,
             region,
+            layer,
             exact,
         });
+        self.layers_open += u32::from(layer);
     }
 
     /// Open this frame for the split-layer path (#1865): GPU surfaces offered
@@ -509,6 +542,14 @@ impl VelloPainter {
             hint: hint && policy.hint(),
             embolden: policy.run_darkening_px(brush, font_size, transform),
             coords: normalized_coords,
+            // Subpixel masks where the policy asks for them and the painter
+            // can draw them here (#2286 stage 3); the fork composites them
+            // per channel only over an opaque pixel, and grey elsewhere.
+            lcd: if self.subpixel_text_allowed() {
+                policy.lcd_mode()
+            } else {
+                None
+            },
         };
         // A colour face is Vello's to draw (COLR, bitmaps): not rasterised
         // here just to be thrown away. A run whose size is animating draws
@@ -543,22 +584,26 @@ impl VelloPainter {
                 true,
                 &mut self.glyph_stats.atlas,
                 |i, looked| match looked {
-                    Looked::Mask(m) if m.kind == MaskKind::Coverage => {
+                    Looked::Mask(m)
+                        if matches!(m.kind, MaskKind::Coverage | MaskKind::Subpixel) =>
+                    {
                         if let Some(image) = m.gpu_image() {
                             let (x, y) =
                                 ((places[i].x + m.left) as f64, (places[i].y - m.top) as f64);
+                            let lcd = m.kind == MaskKind::Subpixel;
                             if routing {
                                 // Routed below, once the run's bounds are known.
                                 draws.push(MaskDraw {
                                     image: image.clone(),
                                     x,
                                     y,
+                                    lcd,
                                 });
                             } else {
                                 // The common frame: straight into the scene, the
                                 // image borrowed (the encoding takes its own
                                 // reference for the resolve).
-                                encode_mask(scene, image, tint, x, y);
+                                encode_mask(scene, image, tint, x, y, lcd);
                             }
                         }
                     }
@@ -580,7 +625,7 @@ impl VelloPainter {
         self.glyph_stats.outline_fallbacks += scratch.outlines.len() as u64;
         let encode = |scene: &mut Scene| {
             for d in &scratch.draws {
-                encode_mask(scene, &d.image, tint, d.x, d.y);
+                encode_mask(scene, &d.image, tint, d.x, d.y, d.lcd);
             }
             if !scratch.outlines.is_empty() {
                 encode_glyphs(
@@ -631,15 +676,25 @@ impl VelloPainter {
 
 /// Encode one atlas mask: its image, at the whole device pixel `(x, y)`,
 /// painted in `tint` (the fork's tinted alpha mask), sampled nearest, so the
-/// texels are copied as they are.
+/// texels are copied as they are. A subpixel mask (`lcd`) is the fork's mask
+/// mode 2, composited per channel over an opaque pixel (#2286 stage 3).
 #[cfg(feature = "glyph-atlas")]
 #[inline]
-fn encode_mask(scene: &mut Scene, image: &ImageData, tint: peniko::Color, x: f64, y: f64) {
-    scene.draw_image_mask(
-        peniko::ImageBrushRef::from(image).with_quality(peniko::ImageQuality::Low),
-        tint,
-        Affine::translate((x, y)),
-    );
+fn encode_mask(
+    scene: &mut Scene,
+    image: &ImageData,
+    tint: peniko::Color,
+    x: f64,
+    y: f64,
+    lcd: bool,
+) {
+    let brush = peniko::ImageBrushRef::from(image).with_quality(peniko::ImageQuality::Low);
+    let at = Affine::translate((x, y));
+    if lcd {
+        scene.draw_image_lcd_mask(brush, tint, at);
+    } else {
+        scene.draw_image_mask(brush, tint, at);
+    }
 }
 
 /// Encode one glyph run into `scene`, under this thread's text-rendering
@@ -915,6 +970,7 @@ impl Painter for VelloPainter {
     fn reset(&mut self) {
         self.scene.reset();
         self.open.clear();
+        self.layers_open = 0;
         self.tile_target = EVERYWHERE;
         self.clip_tiles = 0;
         self.slicing = None;
@@ -1144,21 +1200,23 @@ impl Painter for VelloPainter {
                 self.open.push(OpenLayer {
                     pushed: false,
                     region,
+                    layer: false,
                     exact,
                 });
                 return;
             }
-            self.opened(transform, shape);
+            self.opened(transform, shape, false);
             return push_clip_into(&mut self.scene, fill, transform, shape);
         }
         if elide {
             self.open.push(OpenLayer {
                 pushed: true,
                 region,
+                layer: false,
                 exact,
             });
         } else {
-            self.opened(transform, shape);
+            self.opened(transform, shape, false);
         }
         self.push_sliced(|| Open::Clip {
             fill,
@@ -1178,7 +1236,7 @@ impl Painter for VelloPainter {
         if matches!(blend, BlendMode::Saturation | BlendMode::Mix(_)) {
             self.reads_backdrop = true;
         }
-        self.opened(transform, bounds);
+        self.opened(transform, bounds, true);
         if self.slicing.is_none() {
             return push_layer_into(&mut self.scene, blend, opacity, transform, bounds);
         }
@@ -1191,7 +1249,7 @@ impl Painter for VelloPainter {
     }
 
     fn push_isolated_layer(&mut self, opacity: f32, transform: Affine, bounds: &PaintShape) {
-        self.opened(transform, bounds);
+        self.opened(transform, bounds, true);
         if self.slicing.is_none() {
             return push_layer_into(
                 &mut self.scene,
@@ -1210,7 +1268,13 @@ impl Painter for VelloPainter {
 
     fn pop_layer(&mut self) {
         // An elided clip's pop pops nothing.
-        if !self.open.pop().is_none_or(|o| o.pushed) {
+        let popped = self.open.pop();
+        if let Some(o) = popped
+            && o.layer
+        {
+            self.layers_open -= 1;
+        }
+        if !popped.is_none_or(|o| o.pushed) {
             return;
         }
         if self.slicing.is_none() {
