@@ -2748,8 +2748,39 @@ fn place_line_beside_floats(
         let YieldData::LineBreak(line) = trial else {
             return (width, top - from);
         };
-        let bottom = top + (line.line_y_end - line.line_y_start) as f32;
-        let (x, room) = floats.room(top, bottom, full);
+        let mut bottom = top + (line.line_y_end - line.line_y_start) as f32;
+        let (mut x, mut room) = floats.room(top, bottom, full);
+        // A band that starts partway down the line leaves it less room than
+        // the trial had, where the line starts. Content that wrapped to that
+        // trial width is not judged against the narrower room: the line is
+        // broken again at it first, and its room read again for the height
+        // it then has, until the room stops narrowing (review of #2374: a
+        // 100x40 float mid-paragraph moved the line below it, Chrome breaks
+        // it beside the float).
+        let mut line = line;
+        for _ in 0..4 {
+            if room >= width - 0.01 || !line_overflows_room(line.reason, &line.metrics, room) {
+                break;
+            }
+            let state = breaker.state_mut();
+            state.set_line_x(x);
+            state.set_line_max_advance(room);
+            let start = breaker.state().clone();
+            let Some(again) = skip_float_boxes(breaker) else {
+                break;
+            };
+            breaker.revert_to(start);
+            let YieldData::LineBreak(again) = again else {
+                break;
+            };
+            line = again;
+            bottom = top + (line.line_y_end - line.line_y_start) as f32;
+            let narrower = floats.room(top, bottom, full);
+            if narrower.1 >= room - 0.01 {
+                break;
+            }
+            (x, room) = narrower;
+        }
         // Its content does not fit: its first piece is wider than the room.
         if line_overflows_room(line.reason, &line.metrics, room)
             && room < full

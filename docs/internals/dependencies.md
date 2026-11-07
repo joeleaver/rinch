@@ -315,7 +315,7 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`5e353dc065d247edf8a58c3a15295ef6c30b3e01`, branch `fix-2362-float-tail`, two commits on `rinch-patch`): twenty-one commits on the taffy `v0.14.0` tag
+(`5e353dc065d247edf8a58c3a15295ef6c30b3e01`, branch `rinch-patch`): twenty-one commits on the taffy `v0.14.0` tag
 (item 10 is two of them, item 15 three). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned

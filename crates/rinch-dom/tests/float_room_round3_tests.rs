@@ -387,3 +387,160 @@ fn a_following_paragraph_starts_after_the_taller_float() {
     ));
     near(abs(&d, "b3"), [210.0, 40.0, ANY, ANY]);
 }
+
+// --- Lines that fit beside floats stay there (review of #2374) ---------------
+//
+// Measured against parley's `Regular` end, a line's content now counts, so
+// two errors the old rule hid moved fitting lines below their floats: a
+// line starting exactly on a band's top was given the whole width
+// (`FloatBands::room`'s `top + f32::EPSILON` is `top` at 20.0), and a band
+// starting partway down a line was judged against content broken for the
+// room at the line's top. Every float edge here is on the 20px line grid or
+// inside a line, where the fixtures above have none.
+
+/// The left edge and top of every line of the paint layout of `#root`,
+/// rounded to the pixel, in page coordinates.
+fn lines(d: &RinchDocument, root: &str) -> Vec<(f32, f32)> {
+    let (rx, ry, _, _) = abs(d, root);
+    let n = d.query_selector(&format!("#{root}")).expect(root);
+    let node = d.tree.get(n.0).unwrap();
+    let il = node.text_layout.as_ref().expect("an IFC root");
+    il.layout
+        .lines()
+        .map(|l| {
+            let m = l.metrics();
+            (
+                (rx + m.inline_min_coord + m.offset).round(),
+                (ry + m.block_min_coord).round(),
+            )
+        })
+        .collect()
+}
+
+/// Left floats 100x60, 100x40 and 100x20 stacked side by side, ending on
+/// the line tops 20, 40 and 60. Chrome: each line starts where the floats
+/// still beside it end.
+#[test]
+fn stacked_floats_ending_on_line_tops() {
+    let d = doc(&format!(
+        "<div id=a style='width:400px'>{}{}{}{TEXT} {TEXT}</div>",
+        float("left", 100, 60),
+        float("left", 100, 40),
+        float("left", 100, 20)
+    ));
+    assert_eq!(lines(&d, "a"), STACKED_60_40_20);
+    near(abs(&d, "a"), [ANY, ANY, ANY, 80.0]);
+}
+
+/// The reviewer's `s_desc`: 100x50, 100x30, 100x20 in 400px. Chrome:
+/// (300,0) (200,20) (100,40) (0,60), 80 tall (the PR's first version: a
+/// line at 50 and 90 tall).
+#[test]
+fn stacked_floats_of_descending_height() {
+    let d = doc(&format!(
+        "<div id=a style='width:400px'>{}{}{}{TEXT} {TEXT}</div>",
+        float("left", 100, 50),
+        float("left", 100, 30),
+        float("left", 100, 20)
+    ));
+    assert_eq!(
+        lines(&d, "a"),
+        [(300.0, 0.0), (200.0, 20.0), (100.0, 40.0), (0.0, 60.0)]
+    );
+    near(abs(&d, "a"), [ANY, ANY, ANY, 80.0]);
+}
+
+/// A left float 30x20 and a right float 30x40 (`bnd_icons`): the second line
+/// starts on the left float's bottom. Chrome: (30,0) (0,20) (0,40) (0,60),
+/// 80 tall.
+#[test]
+fn a_line_starting_on_a_floats_bottom() {
+    let d = doc(&format!(
+        "<div id=a style='width:300px'>{}{}{TEXT} {TEXT}</div>",
+        float("left", 30, 20),
+        float("right", 30, 40)
+    ));
+    assert_eq!(
+        lines(&d, "a"),
+        [(30.0, 0.0), (0.0, 20.0), (0.0, 40.0), (0.0, 60.0)]
+    );
+    near(abs(&d, "a"), [ANY, ANY, ANY, 80.0]);
+}
+
+/// A 100x40 left float in the middle of a paragraph (`bnd_mid`): it goes to
+/// the next line's top and the lines beside it wrap at its edge. Chrome:
+/// (0,0) (100,20) (100,40) (0,60), 80 tall.
+#[test]
+fn a_float_in_the_middle_of_a_paragraph() {
+    let d = doc(
+        "<div id=a style='width:300px'>alpha beta gamma delta epsilon zeta eta theta \
+         <span style='float:left;width:100px;height:40px'></span>iota kappa lambda mu nu \
+         xi omicron pi rho sigma tau</div>",
+    );
+    assert_eq!(
+        lines(&d, "a"),
+        [(0.0, 0.0), (100.0, 20.0), (100.0, 40.0), (0.0, 60.0)]
+    );
+    near(abs(&d, "a"), [ANY, ANY, ANY, 80.0]);
+}
+
+/// A band starting partway down the first line (`mid_band`): a right float
+/// 100x10, then a left float 100x40 that clears it, from 10 to 50. The
+/// first line overlaps both; it is broken for the room it has over its
+/// height, not moved below. Chrome: (100,0) (100,20) (100,40) (0,60).
+#[test]
+fn a_band_starting_partway_down_a_line() {
+    let d = doc(&format!(
+        "<div id=a style='width:400px'>{}<div style='float:left;clear:right;width:100px;\
+         height:40px'></div>{TEXT} {TEXT}</div>",
+        float("right", 100, 10)
+    ));
+    assert_eq!(
+        lines(&d, "a"),
+        [(100.0, 0.0), (100.0, 20.0), (100.0, 40.0), (0.0, 60.0)]
+    );
+}
+
+/// The same off the round numbers (`mid_band3`): a left float 50x13, then
+/// one 120x30 that clears it, from 13 to 43. Chrome: (120,0) (120,20)
+/// (120,40).
+#[test]
+fn a_band_starting_partway_down_a_line_off_the_grid() {
+    let d = doc(&format!(
+        "<div id=a style='width:300px'>{}<div style='float:left;clear:left;width:120px;\
+         height:30px'></div>{TEXT}</div>",
+        float("left", 50, 13)
+    ));
+    assert_eq!(lines(&d, "a"), [(120.0, 0.0), (120.0, 20.0), (120.0, 40.0)]);
+}
+
+/// Floats stacked by `clear` (`bnd_stack`): 100x20, then 150x40 below it,
+/// the second starting on the first line's bottom. Chrome: (100,0)
+/// (150,20) (150,40).
+#[test]
+fn a_cleared_float_starting_on_a_line_top() {
+    let d = doc(&format!(
+        "<div id=a style='width:300px'>{}<div style='float:left;clear:left;width:150px;\
+         height:40px'></div>{TEXT}</div>",
+        float("left", 100, 20)
+    ));
+    assert_eq!(lines(&d, "a"), [(100.0, 0.0), (150.0, 20.0), (150.0, 40.0)]);
+}
+
+/// A long word beside a left float 100x37 and a right float 120x23
+/// (`w_two_floats`): it does not fit the 80px beside both, and goes down to
+/// 23, where the right float ends and 200px are left beside the left one.
+/// Chrome: (100,23) (0,43), 63 tall.
+#[test]
+fn a_long_word_between_two_floats() {
+    let d = doc(&format!(
+        "<div id=a style='width:300px'>{}{}Supercalifragilistic word and more words here</div>",
+        float("left", 100, 37),
+        float("right", 120, 23)
+    ));
+    assert_eq!(lines(&d, "a"), [(100.0, 23.0), (0.0, 43.0)]);
+    near(abs(&d, "a"), [ANY, ANY, ANY, 63.0]);
+}
+
+/// Chrome 156's lines for [`stacked_floats_ending_on_line_tops`].
+const STACKED_60_40_20: [(f32, f32); 4] = [(300.0, 0.0), (200.0, 20.0), (100.0, 40.0), (0.0, 60.0)];
