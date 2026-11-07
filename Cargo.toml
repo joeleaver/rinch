@@ -71,10 +71,12 @@ rinch-android = { path = "crates/rinch-android" }
 # rendered over transparent, composites as the window's scene does. And its
 # tinted alpha-mask images (joeleaver/vello-fork#6, #2286): an image draw can paint a colour in the
 # image's alpha, which is how the glyph-mask atlas draws each glyph, one mask
-# for every colour. A dependency, not a [patch], so an app on rinch gets it with nothing to
+# for every colour. And its subpixel (LCD) masks (#2286 stage 3): mask mode 2
+# composites a per-channel coverage mask over an opaque pixel, grey elsewhere.
+# A dependency, not a [patch], so an app on rinch gets it with nothing to
 # copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
 # never changes rinch.
-vello = { git = "https://github.com/joeleaver/vello-fork", rev = "04fb11def44d7cde0dd53852bad6002fa02da3f9" }
+vello = { git = "https://github.com/joeleaver/vello-fork", rev = "ca3c6c5f5b20406d79c84d8feceac53c4a07e68f" }
 wgpu = "30"
 
 # Windowing and input: winit 0.31.0-beta.4 from joeleaver/winit-fork, branch
