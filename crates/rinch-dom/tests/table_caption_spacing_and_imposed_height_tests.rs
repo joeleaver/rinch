@@ -252,7 +252,8 @@ fn a_caption_shorter_than_the_spacing() {
 
 /// The table's border is not taken out: rinch paints a table's border and
 /// background around its captions, so the caption stays inside the border
-/// (Chrome: outside it, at `(0, 0, 62, 13)`). The rows and the table match.
+/// (Chrome: outside it, at `(0, 0, 62, 13)`; #2394). The rows and the table
+/// match.
 #[test]
 fn a_caption_stays_inside_the_tables_border() {
     let doc = doc(&format!(

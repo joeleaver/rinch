@@ -129,7 +129,7 @@
 //! to its own width. Its own length margins are kept on top. The table's
 //! border is not taken out: rinch paints the table's border and background
 //! around the whole grid, captions included, so a caption stays inside the
-//! border where Chrome puts it outside.
+//! border where Chrome puts it outside (#2394).
 //!
 //! ## Vertical alignment
 //!
