@@ -112,7 +112,9 @@ fn read(d: &RinchDocument, c: NodeId) -> Laid {
                     }
                     for cluster in g.run().clusters() {
                         let t = &il.text_content[cluster.text_range()];
-                        s.push_str(&t.replace(' ', "_").replace('\n', ""));
+                        // A `<wbr>` is laid out as a ZERO WIDTH SPACE (#2386),
+                        // which Chrome's per-character read never sees.
+                        s.push_str(&t.replace(' ', "_").replace(['\n', '\u{200b}'], ""));
                     }
                 }
                 PositionedLayoutItem::InlineBox(ib) => {

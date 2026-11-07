@@ -6,7 +6,7 @@
 //! - `N`: a `pre` or `nowrap` element ending in punctuation, glued to the
 //!   word after it (`<span pre>cccc!</span>dddd`, `Say <code pre>hello!
 //!   </code>world`), at widths every 12px from 60px. Chrome keeps `!`, `/`, `|` and `}`
-//!   with a letter or digit after them (`ifc::chrome_glues_ascii`);
+//!   with a letter or digit after them (`ifc::chrome_break`);
 //! - `M`'s `a0`/`b0` families: a wrapping run of spaces, through a text node
 //!   whose spaces collapsed away, before `pre` spaces (`ifc::pre_seam`);
 //! - `K`: a slice of the third review's family corpus: a run of spaces

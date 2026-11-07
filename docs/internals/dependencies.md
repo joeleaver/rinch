@@ -35,6 +35,36 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     right in English: `y` is 0 for ordinary Latin shaping and non-zero only for mark positioning.
     `crates/rinch-dom/src/paint/text.rs` **adds** it, in the main pass and the shadow pass alike;
     `crates/rinch-dom/tests/glyph_y_ydown_tests.rs` is the pin, one fixture per site.
+  - **Break opportunities between printable ASCII characters are Chrome's, not UAX #14's**
+    (#2369, #1910). parley's segmenter (ICU4X) follows UAX #14, which breaks after `/` (SY),
+    `!` (EX), `|` (BA) and `}` (CL) before a letter: no rule keeps those pairs together, so
+    LB31 breaks, and `https://example.com/a/long/url` broke as `https://` / `example.com/` /
+    `a/long/url` in a 120px box — in mail, a URL in a signature or footer wrapped at every
+    slash. Chrome keeps it whole (one 234px line, overflowing): Blink's `NextBreakablePosition`
+    reads its own ASCII pair table (`kAsciiLineBreakTable`, from
+    `character_property_data_generator.cc`) instead of ICU for every pair of printable ASCII
+    characters, and decides a hyphen before a digit itself (a break only after a letter or
+    digit: `cccc-|1234`, but `x -5` and `(-5)` keep the minus sign, where LB25 has no break at
+    all). So the URL breaks only after `?` and `-` (`…/search?` / `q=rinch&lang=en_US`). rinch
+    hands parley that table as its line-break override (`ifc::CHROME_LINE_BREAKS`, with the
+    opportunity after a space run that was already there; `ifc::chrome_break`), built with
+    parley's public `AsciiLineBreakTableBuilder` (`ifc::CHROME_ASCII_PAIRS`, the same table as
+    parley's private one behind `CHROMIUM_LINE_BREAK_OVERRIDE`), and the seams pass's
+    `ifc::TextBreaks` asks the same function, so both agree. Pairs with a space, a tab or a
+    non-ASCII character are still UAX #14's, so CJK and Thai break as before.
+    `crates/rinch-dom/tests/url_line_break_2369_tests.rs` pins all 8,836 printable pairs
+    against Chrome 156, between letters and between digits
+    (`tests/url_line_break_2369/chrome156_ascii_pairs.tsv`), and URLs beside CJK, Thai, a float
+    and in table cells (a cell's min-content width is now the whole URL's, so a 150px table
+    holding one is 234px wide, as in Chrome). The one pair that still differs is `->`: the
+    bundled Inter shapes it as one arrow ligature and parley cannot break inside a cluster
+    (#2381). A `<wbr>` is laid out as a ZERO WIDTH SPACE (`ifc::WBR_TEXT`, #2386): before
+    this, it made no opportunity of its own (`aaaa<wbr>bbbb` was one line), which a URL hid
+    while UAX #14 broke after every `/` anyway; with `/` glued, a mail template's
+    `https://example.com/<wbr>a/<wbr>long` needs it. The ZWSP is not content to white-space
+    collapsing (`a <wbr> b` is `a b`) and owns no DOM text: its three flat bytes lie between
+    the text ranges around it. The builders that set the override are the IFC, a flex or grid item's text leaf
+    and the paint fallback; a form control's text (`form_control::field_text_layout`) does not.
 
   What 0.12 changed, and what rinch does about it:
   - **Line boxes are CSS line boxes** (linebender/parley#697, #863, #864). A line holds the root
@@ -623,7 +653,7 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    `crates/rinch-dom/tests/faux_bold_threshold_2343.rs`.
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
-(`ifc::IfcText::wrap_spaces`, `ifc::SPACE_RUN_BREAKS`) and in the seams pass
+(`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass
 (`ifc::pre_seams_needed`, `ifc::break_overflowing_spaces`). `wrap_spaces` hands parley a `nowrap`
 or `pre` element's collapsible space as wrapping where Chrome has an opportunity before it, which
 Chrome decides item by item from the content before the space (`ifc::IfcText::last_wraps`,
