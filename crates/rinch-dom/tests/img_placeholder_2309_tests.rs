@@ -929,6 +929,14 @@ fn switching_from_a_loaded_src_to_a_failed_or_loading_one_drops_its_size() {
 /// lands, so no stale or blank frame is drawn; a second failure keeps it.
 #[test]
 fn reloading_a_failed_source_keeps_its_placeholder() {
+    // The alt text in the platform's own `serif`/`sans-serif`, as before
+    // #2255: with Chrome's Times New Roman and Arial heading them (a host
+    // that has them) its ink reaches the padding pixel probed. CI has neither.
+    rinch_dom::fonts::set_font_defaults(
+        rinch_dom::fonts::FontDefaults::default()
+            .with_serif(None)
+            .with_sans_serif(None),
+    );
     struct AlwaysFails;
     impl ImageLoader for AlwaysFails {
         fn load(&self, src: &str) -> ImageLoadResult {

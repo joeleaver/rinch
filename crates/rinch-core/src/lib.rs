@@ -28,6 +28,7 @@ pub mod element;
 pub mod event;
 pub mod events;
 pub mod file;
+pub mod font_defaults;
 pub mod for_loop;
 pub mod html_entities;
 pub mod image;

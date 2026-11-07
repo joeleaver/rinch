@@ -32,63 +32,170 @@
 use parley::fontique::{Collection, FamilyId, GenericFamily};
 
 /// Build a [`parley::FontContext`] with this platform's generic-family map
-/// repaired.
+/// repaired, and on a desktop the `serif` and `sans-serif` slots headed by
+/// this thread's [`FontDefaults`] (#2255).
 ///
 /// Construct font contexts through here rather than `FontContext::new()`, so
 /// no context can exist that resolves `monospace` differently from its peers.
 pub fn new_font_context() -> parley::FontContext {
     let mut font_cx = parley::FontContext::new();
     repair_generic_families(&mut font_cx.collection);
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    FONT_DEFAULTS
+        .with(|defaults| apply_generic_defaults(&mut font_cx.collection, &defaults.borrow()));
     font_cx
+}
+
+pub use rinch_core::font_defaults::FontDefaults;
+
+thread_local! {
+    /// This thread's [`FontDefaults`]. Per thread, like the stack cache: the
+    /// thread that lays out is the one that reads it (the UI thread, which
+    /// `App::run` sets it on).
+    static FONT_DEFAULTS: std::cell::RefCell<FontDefaults> =
+        std::cell::RefCell::new(FontDefaults::default());
+}
+
+/// Set this thread's [`FontDefaults`]. `standard` applies to every layout
+/// from here on; `serif` and `sans_serif` to the font contexts
+/// [`new_font_context`] builds from here on, so set them before the first
+/// document (the `App` builder does).
+pub fn set_font_defaults(defaults: FontDefaults) {
+    FONT_DEFAULTS.with(|d| *d.borrow_mut() = defaults);
+    STACK_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+/// This thread's [`FontDefaults`].
+pub fn font_defaults() -> FontDefaults {
+    FONT_DEFAULTS.with(|d| d.borrow().clone())
+}
+
+/// Put `defaults`' `serif` and `sans_serif` families at the head of their
+/// slots in `collection`, each only where it (or its
+/// [alternate](alternate_family_name)) is installed; the slot's other
+/// families stay behind it. [`new_font_context`] does this on a desktop.
+///
+/// Why: Chrome's `serif` is its serif *setting*, Times New Roman on Linux,
+/// not fontconfig's `serif` alias (Noto Serif or DejaVu Serif): 74 characters
+/// at 16px were 501.66px in Chrome and 593px in rinch on one host (#2255).
+/// A host without the family keeps the platform's slot, as Chrome then falls
+/// back to the platform too.
+pub fn apply_generic_defaults(collection: &mut Collection, defaults: &FontDefaults) {
+    for (generic, name) in [
+        (GenericFamily::Serif, &defaults.serif),
+        (GenericFamily::SansSerif, &defaults.sans_serif),
+    ] {
+        let Some(id) = name
+            .as_deref()
+            .and_then(|n| installed_family(collection, n))
+        else {
+            continue;
+        };
+        let rest: Vec<FamilyId> = collection
+            .generic_families(generic)
+            .filter(|f| *f != id)
+            .collect();
+        collection.set_generic_families(generic, core::iter::once(id).chain(rest));
+    }
+}
+
+/// Blink's alternate family for `name`, tried when `name` itself is not
+/// installed (`AlternateFamilyName`, `alternate_font_family.h`): Courier and
+/// Courier New, Times and Times New Roman, Arial and Helvetica, each way
+/// (Courier New to Courier except on Windows). ASCII case-insensitive.
+///
+/// Why (#2250): a mail stack such as `Helvetica Neue, Helvetica, Lucida
+/// Grande, tahoma, verdana, arial, sans-serif` on a Linux host without
+/// Helvetica is drawn in Arial by Chrome (166.53px, Arial's width), where
+/// rinch fell through to Tahoma. Not fontconfig's aliases: `fc-match
+/// Helvetica` there is Nimbus Sans (165.77px), which Chrome does not use.
+pub fn alternate_family_name(name: &str) -> Option<&'static str> {
+    let is = |s: &str| name.eq_ignore_ascii_case(s);
+    if is("Courier") {
+        Some("Courier New")
+    } else if is("Courier New") && !cfg!(target_os = "windows") {
+        Some("Courier")
+    } else if is("Times") {
+        Some("Times New Roman")
+    } else if is("Times New Roman") {
+        Some("Times")
+    } else if is("Arial") {
+        Some("Helvetica")
+    } else if is("Helvetica") {
+        Some("Arial")
+    } else {
+        None
+    }
+}
+
+/// The family `name` is drawn in here: `name` if this collection has it,
+/// else its [alternate](alternate_family_name) if it has that.
+fn installed_family(collection: &mut Collection, name: &str) -> Option<FamilyId> {
+    if let Some(family) = collection.family_by_name(name) {
+        return Some(family.id());
+    }
+    let alternate = alternate_family_name(name)?;
+    collection.family_by_name(alternate).map(|f| f.id())
 }
 
 /// The `font-family` to hand parley for a computed stack. **Every** parley
 /// layout rinch builds from a computed `font-family` takes its family from
 /// here, so no two sites can resolve a stack differently.
 ///
-/// An empty stack is `sans-serif`. A stack that resolves to **no family** in
-/// this font context — every name missing (`font-family: Helvetica` on Linux,
-/// a typo) and no generic, or only generics this platform left empty — is
-/// finished with the primary `sans-serif` family, by name (#1198).
+/// An empty stack is `sans-serif`. Otherwise two things are done to it, both
+/// what Chrome does:
 ///
-/// Why: CSS falls back to the user agent's default font once the list is
-/// exhausted, and parley has none. An ordinary character goes to the script
-/// fallback, but a character with the Unicode `Emoji` property — which the
-/// ASCII digits, `#` and `*` have, as keycap bases — is queried against the
-/// stack and then the `emoji` generic, **ahead of** the script fallback. In a
-/// stack that resolved to nothing, every digit was drawn from the colour-emoji
-/// face at 1.245em while the letters beside it were not.
+/// - **A missing family is replaced by its alternate** where that is
+///   installed (#2250): Helvetica by Arial, Times by Times New Roman, Courier
+///   by Courier New and back ([`alternate_family_name`], Blink's table), in
+///   its place in the list.
+/// - **A stack that resolves to no family** in this font context — every name
+///   missing (a typo, a web font the host lacks) and no generic, or only
+///   generics this platform left empty — **ends in the default font**, by
+///   name (#2255): the first family of this thread's
+///   [`FontDefaults::standard`] the context has, Times New Roman (or
+///   Times) by default as in Chrome; else the `sans-serif` slot's first
+///   face. Chrome on a host with no Times New Roman draws such a stack in
+///   fontconfig's "Sans" (DejaVu Sans, 609.94px on a DejaVu-only host), not
+///   in its serif setting, so the default `standard` names Times alone.
 ///
-/// The primary face only, not the `sans-serif` generic: the generic expands to
-/// the platform's whole list, whose text faces (DejaVu Sans, FreeSans) cover
-/// many emoji and would win them ahead of the `emoji` generic. One face covers
-/// the digits and letters and, where it has no emoji (Noto Sans, Roboto),
-/// leaves an emoji to the `emoji` generic as before. **Accepted consequence:**
-/// on a host whose primary `sans-serif` face is DejaVu Sans, an emoji in such
-/// a stack is drawn in DejaVu's monochrome glyph: the appended face is named,
-/// and a named family that covers an emoji draws it ([`TextFamily`], #1204),
-/// as Chrome draws U+1F600 under `'DejaVu Sans'`.
+/// Why the default font is appended at all (#1198): CSS falls back to the user
+/// agent's default font once the list is exhausted, and parley has none. An
+/// ordinary character goes to the script fallback, but a character with the
+/// Unicode `Emoji` property — which the ASCII digits, `#` and `*` have, as
+/// keycap bases — is queried against the stack and then the `emoji` generic,
+/// **ahead of** the script fallback. In a stack that resolved to nothing,
+/// every digit was drawn from the colour-emoji face at 1.245em while the
+/// letters beside it were not. And Chrome draws such a stack in its standard
+/// font: `font-family: Oswald` measured 501.66px in Chrome (Times New Roman)
+/// and 547px in rinch (the script fallback) for one 74-character line.
 ///
-/// A stack that resolves to anything is left alone, emoji included. So is
-/// every stack in a context with no `sans-serif` face at all (wasm or embed
-/// with no fonts registered), where there is nothing to append.
+/// One face by name, not a generic: a generic expands to the platform's whole
+/// list, whose text faces (DejaVu Sans, FreeSans) cover many emoji and would
+/// win them ahead of the `emoji` generic. One face covers the digits and
+/// letters and, where it has no emoji (Times New Roman, Noto Sans), leaves an
+/// emoji to the `emoji` generic as before. **Accepted consequence:** where
+/// that face is DejaVu, an emoji in such a stack is drawn in DejaVu's
+/// monochrome glyph: the appended face is named, and a named family that
+/// covers an emoji draws it ([`TextFamily`], #1204), as Chrome draws U+1F600
+/// under `'DejaVu Sans'`.
 ///
-/// Not Chrome's answer for every name: Chrome 153 on Linux resolves
-/// `Helvetica`, `Times` and `Courier` through fontconfig aliases (Nimbus,
-/// Liberation) and draws an unknown family in its serif default. fontique
-/// knows only installed names. Where no app font claims `sans-serif`, its
-/// first face is where rinch's letters already fell back to (the platform's
-/// script fallback), so this moves the digits and emoji-property punctuation
-/// and leaves the letters where they were. With a claim
-/// (`AppFont::sans_serif`), the letters of such a stack move to the claimed
-/// face as well — the app's default, as CSS's UA default would be.
+/// A stack that resolves to anything gets no default, emoji included, so a
+/// theme's stack (which ends in a generic) is never changed by it. A context
+/// with no face to append appends nothing, and one with no generic family at
+/// all (wasm or an embed before any font is registered) gets its stack back
+/// as written (no alternates either), without a lookup.
 ///
-/// Cached per thread, keyed by the context's primary `sans-serif` family id
-/// (unique per loaded collection, and changed by a claim on the slot) and the
-/// stack, so a layout pays one lookup. A family registered after a stack was
-/// cached as resolving to nothing leaves the appended face behind the newly
-/// found one, which changes nothing it draws; registration cannot make a
-/// resolving stack stop resolving.
+/// fontconfig's metric-compatible aliases (Liberation Sans for a missing
+/// Arial) are not followed: only installed names and the alternates count.
+///
+/// Cached per thread, keyed by the context's first `sans-serif` and `serif`
+/// faces (unique per loaded collection, and changed by a claim on either
+/// slot) and the stack, so a layout pays one lookup; [`set_font_defaults`]
+/// drops the cache. A family
+/// registered after a stack was cached as resolving to nothing leaves the
+/// appended face behind the newly found one, which changes nothing it draws;
+/// registration cannot make a resolving stack stop resolving.
 pub fn parley_font_family(
     font_cx: &mut parley::FontContext,
     stack: &str,
@@ -99,33 +206,32 @@ pub fn parley_font_family(
         return FontFamily::Source(Cow::Borrowed(STACK_FALLBACK_GENERIC));
     }
     let collection = &mut font_cx.collection;
-    let Some(primary) = collection.generic_families(GenericFamily::SansSerif).next() else {
+    let sans = collection.generic_families(GenericFamily::SansSerif).next();
+    let serif = collection.generic_families(GenericFamily::Serif).next();
+    let key = (sans, serif);
+    if key == (None, None) {
+        // No generic at all (wasm or an embed before any font is registered):
+        // used as written, as before #2255, with no scan per call. Not
+        // cached, because every such context would share the key.
         return FontFamily::Source(Cow::Owned(stack.to_owned()));
-    };
+    }
     let cached = STACK_CACHE.with(|cache| {
         cache
             .borrow()
-            .get(&primary)
+            .get(&key)
             .and_then(|stacks| stacks.get(stack).cloned())
     });
     let finished = match cached {
         Some(finished) => finished,
         None => {
-            let finished = if stack_resolves(collection, stack) {
-                None
-            } else {
-                collection
-                    .family_name(primary)
-                    .and_then(quote_family)
-                    .map(|name| format!("{stack}, {name}"))
-            };
+            let finished = finish_stack(collection, stack);
             STACK_CACHE.with(|cache| {
                 let mut cache = cache.borrow_mut();
                 if cache.values().map(|m| m.len()).sum::<usize>() >= STACK_CACHE_LIMIT {
                     cache.clear();
                 }
                 cache
-                    .entry(primary)
+                    .entry(key)
                     .or_default()
                     .insert(stack.to_owned(), finished.clone());
             });
@@ -133,6 +239,77 @@ pub fn parley_font_family(
         }
     };
     FontFamily::Source(Cow::Owned(finished.unwrap_or_else(|| stack.to_owned())))
+}
+
+/// [`parley_font_family`]'s answer for a non-empty `stack`, uncached:
+/// `Some(rewritten stack)`, or `None` to use it as written.
+fn finish_stack(collection: &mut Collection, stack: &str) -> Option<String> {
+    let (with_alternates, resolves) = with_alternates(collection, stack);
+    if resolves {
+        return with_alternates;
+    }
+    let base = with_alternates.as_deref().unwrap_or(stack);
+    default_face(collection).map(|face| format!("{base}, {face}"))
+}
+
+/// `stack` with each missing named family that has an installed
+/// [alternate](alternate_family_name) replaced by it (`Some` only when one
+/// was), and whether the result names a family this collection has. Read the
+/// way parley reads it (`parse_css_list`, stopping at the first parse error).
+///
+/// Past the first family that resolves, only a name with an alternate is
+/// looked up: the rest cannot change, and looking each up loads its faces.
+fn with_alternates(collection: &mut Collection, stack: &str) -> (Option<String>, bool) {
+    use parley::style::FontFamilyName;
+    let mut items: Vec<String> = Vec::new();
+    let mut changed = false;
+    let mut resolves = false;
+    for family in FontFamilyName::parse_css_list(stack).map_while(Result::ok) {
+        match family {
+            FontFamilyName::Named(name) => {
+                let alternate = alternate_family_name(&name);
+                let mut item = name.as_ref();
+                if !resolves || alternate.is_some() {
+                    if collection.family_by_name(&name).is_some() {
+                        resolves = true;
+                    } else if let Some(alt) =
+                        alternate.filter(|a| collection.family_by_name(a).is_some())
+                    {
+                        resolves = true;
+                        changed = true;
+                        item = alt;
+                    }
+                }
+                items.extend(quote_family(item));
+            }
+            FontFamilyName::Generic(generic) => {
+                resolves |= collection.generic_families(generic).next().is_some();
+                items.push(generic.to_string());
+            }
+        }
+    }
+    (changed.then(|| items.join(", ")), resolves)
+}
+
+/// The default font a stack that resolves to nothing ends in, as a quoted
+/// family name: the first family of this thread's [`FontDefaults::standard`]
+/// this collection has (a named family or its alternate, or a generic's first
+/// face), else the `sans-serif` slot's first face; `None` if neither exists.
+fn default_face(collection: &mut Collection) -> Option<String> {
+    use parley::style::FontFamilyName;
+    let standard = FONT_DEFAULTS.with(|d| d.borrow().standard.clone());
+    let mut id = None;
+    for family in FontFamilyName::parse_css_list(&standard).map_while(Result::ok) {
+        id = match family {
+            FontFamilyName::Named(name) => installed_family(collection, &name),
+            FontFamilyName::Generic(generic) => collection.generic_families(generic).next(),
+        };
+        if id.is_some() {
+            break;
+        }
+    }
+    let id = id.or_else(|| collection.generic_families(GenericFamily::SansSerif).next())?;
+    collection.family_name(id).and_then(quote_family)
 }
 
 /// The families a text is shaped with: [`parley_font_family`]'s for the whole
@@ -305,38 +482,24 @@ pub fn emoji_presentation_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
 }
 
 /// The generic an empty stack means, and whose primary face finishes a stack
-/// that resolves to nothing.
+/// that resolves to nothing when [`FontDefaults::standard`] resolves to
+/// nothing too.
 pub const STACK_FALLBACK_GENERIC: &str = "sans-serif";
 
 /// Distinct stacks kept per thread before the cache is dropped and rebuilt.
 const STACK_CACHE_LIMIT: usize = 4096;
 
+/// The first `sans-serif` and `serif` faces of a context.
+type StackCacheKey = (Option<FamilyId>, Option<FamilyId>);
+
 type StackCache =
-    std::collections::HashMap<FamilyId, std::collections::HashMap<String, Option<String>>>;
+    std::collections::HashMap<StackCacheKey, std::collections::HashMap<String, Option<String>>>;
 
 thread_local! {
-    /// primary `sans-serif` family → stack → `Some(finished stack)` or `None`
-    /// (the stack resolves; use it as written).
+    /// first `sans-serif` and `serif` faces → stack → `Some(finished stack)`
+    /// or `None` (use the stack as written).
     static STACK_CACHE: std::cell::RefCell<StackCache> =
         std::cell::RefCell::new(StackCache::new());
-}
-
-/// Whether `stack` names at least one family this collection has, the way
-/// parley resolves it (`parse_css_list`, stopping at the first parse error).
-fn stack_resolves(collection: &mut Collection, stack: &str) -> bool {
-    use parley::style::FontFamilyName;
-    for family in FontFamilyName::parse_css_list(stack).map_while(Result::ok) {
-        let found = match family {
-            FontFamilyName::Named(name) => collection.family_by_name(&name).is_some(),
-            FontFamilyName::Generic(generic) => {
-                collection.generic_families(generic).next().is_some()
-            }
-        };
-        if found {
-            return true;
-        }
-    }
-    false
 }
 
 /// `name` as a CSS string that parley's `parse_css_list` reads back as that
@@ -1257,6 +1420,199 @@ mod tests {
                 source(parley_font_family(&mut cx, "Gone1198")),
                 r#"Gone1198, "SecondPrimary1198""#
             );
+        }
+
+        /// A context whose `sans-serif` is `Sans2255` and `serif` is
+        /// `Serif2255`, so the default font is visible against both.
+        fn context_with_generics() -> parley::FontContext {
+            let mut cx = context();
+            let sans = register(&mut cx, "Sans2255");
+            let serif = register(&mut cx, "Serif2255");
+            cx.collection
+                .set_generic_families(GenericFamily::SansSerif, core::iter::once(sans));
+            cx.collection
+                .set_generic_families(GenericFamily::Serif, core::iter::once(serif));
+            cx
+        }
+
+        #[test]
+        fn an_exhausted_stack_ends_in_times_new_roman_as_in_chrome() {
+            // #2255: Chrome draws `font-family: Oswald` (not installed) in its
+            // standard font, Times New Roman; rinch drew the sans face.
+            let mut cx = context_with_generics();
+            register(&mut cx, "Times New Roman");
+            assert_eq!(
+                source(parley_font_family(&mut cx, "Oswald")),
+                r#"Oswald, "Times New Roman""#
+            );
+        }
+
+        #[test]
+        fn without_times_an_exhausted_stack_ends_in_the_sans_serif_face() {
+            // Not the serif face: on a host with no Times New Roman, Chrome
+            // draws such a stack in fontconfig's "Sans" (DejaVu Sans,
+            // 609.94px), never in its serif setting (review of PR #2337).
+            let mut cx = context_with_generics();
+            assert_eq!(
+                source(parley_font_family(&mut cx, "Oswald, NoSuchFamilyX")),
+                r#"Oswald, NoSuchFamilyX, "Sans2255""#
+            );
+            // The standard font's alternate counts: Times stands for Times
+            // New Roman.
+            let mut cx = context_with_generics();
+            register(&mut cx, "Times");
+            assert_eq!(
+                source(parley_font_family(&mut cx, "Oswald")),
+                r#"Oswald, "Times""#
+            );
+        }
+
+        #[test]
+        fn the_standard_font_is_the_apps_to_set() {
+            let mut cx = context_with_generics();
+            register(&mut cx, "Times New Roman");
+            register(&mut cx, "AppFace2255");
+            crate::fonts::set_font_defaults(
+                crate::fonts::FontDefaults::default()
+                    .with_standard("NotHere2255, AppFace2255, serif"),
+            );
+            assert_eq!(
+                source(parley_font_family(&mut cx, "Oswald")),
+                r#"Oswald, "AppFace2255""#
+            );
+            // A generic in it means that slot's first face.
+            crate::fonts::set_font_defaults(
+                crate::fonts::FontDefaults::default().with_standard("sans-serif"),
+            );
+            assert_eq!(
+                source(parley_font_family(&mut cx, "Oswald")),
+                r#"Oswald, "Sans2255""#
+            );
+            // One that resolves to nothing falls to the `sans-serif` face.
+            crate::fonts::set_font_defaults(
+                crate::fonts::FontDefaults::default().with_standard("NotHere2255"),
+            );
+            assert_eq!(
+                source(parley_font_family(&mut cx, "Oswald")),
+                r#"Oswald, "Sans2255""#
+            );
+            crate::fonts::set_font_defaults(Default::default());
+        }
+
+        #[test]
+        fn a_missing_family_is_replaced_by_its_alternate_in_place() {
+            // #2250: Chrome draws a missing Helvetica in Arial, ahead of the
+            // next family in the list.
+            let mut cx = context_with_generics();
+            register(&mut cx, "Arial");
+            register(&mut cx, "Tahoma2250");
+            assert_eq!(
+                source(parley_font_family(
+                    &mut cx,
+                    "Helvetica Neue, Helvetica, Tahoma2250, sans-serif"
+                )),
+                r#""Helvetica Neue", "Arial", "Tahoma2250", sans-serif"#
+            );
+            // ASCII case-insensitive, as Blink's table is.
+            assert_eq!(
+                source(parley_font_family(&mut cx, "helvetica")),
+                r#""Arial""#
+            );
+        }
+
+        #[test]
+        fn each_alternate_pair_goes_both_ways() {
+            for (asked, installed) in [
+                ("Helvetica", "Arial"),
+                ("Arial", "Helvetica"),
+                ("Times", "Times New Roman"),
+                ("Times New Roman", "Times"),
+                ("Courier", "Courier New"),
+                #[cfg(not(target_os = "windows"))]
+                ("Courier New", "Courier"),
+            ] {
+                let mut cx = context_with_generics();
+                register(&mut cx, installed);
+                assert_eq!(
+                    source(parley_font_family(&mut cx, &format!("'{asked}', Gone2250"))),
+                    format!("\"{installed}\", \"Gone2250\""),
+                    "{asked}"
+                );
+            }
+        }
+
+        #[test]
+        fn an_installed_family_or_a_missing_alternate_is_left_alone() {
+            let mut cx = context_with_generics();
+            register(&mut cx, "Helvetica");
+            register(&mut cx, "Arial");
+            // Both installed: Helvetica is drawn as Helvetica.
+            assert_eq!(
+                source(parley_font_family(&mut cx, "Helvetica, x")),
+                "Helvetica, x"
+            );
+            // A missing family whose alternate is missing too is written
+            // as it was, ahead of the default font.
+            let mut cx = context_with_generics();
+            assert_eq!(
+                source(parley_font_family(&mut cx, "Courier, sans-serif")),
+                "Courier, sans-serif"
+            );
+            // An alternate after the first family that resolves is still
+            // substituted: it is what a character the first lacks reaches.
+            let mut cx = context_with_generics();
+            register(&mut cx, "Arial");
+            assert_eq!(
+                source(parley_font_family(&mut cx, "Sans2255, Helvetica")),
+                r#""Sans2255", "Arial""#
+            );
+        }
+
+        #[test]
+        fn the_generic_defaults_head_their_slots_where_installed() {
+            use crate::fonts::{FontDefaults, apply_generic_defaults};
+            let mut cx = context_with_generics();
+            let sans = cx
+                .collection
+                .generic_families(GenericFamily::SansSerif)
+                .next();
+            let serif = cx.collection.generic_families(GenericFamily::Serif).next();
+            let tnr = register(&mut cx, "Times New Roman");
+            apply_generic_defaults(&mut cx.collection, &FontDefaults::default());
+            let slot = |cx: &mut parley::FontContext, g| -> Vec<_> {
+                cx.collection.generic_families(g).collect()
+            };
+            // Chrome's `serif` is Times New Roman, ahead of the platform's;
+            // no Arial here, so `sans-serif` keeps the platform's.
+            assert_eq!(
+                slot(&mut cx, GenericFamily::Serif),
+                vec![tnr, serif.unwrap()]
+            );
+            assert_eq!(slot(&mut cx, GenericFamily::SansSerif), vec![sans.unwrap()]);
+            // Idempotent: the head is not added twice.
+            apply_generic_defaults(&mut cx.collection, &FontDefaults::default());
+            assert_eq!(
+                slot(&mut cx, GenericFamily::Serif),
+                vec![tnr, serif.unwrap()]
+            );
+            // The alternate counts, and `None` leaves a slot alone.
+            let mut cx = context_with_generics();
+            let sans = cx
+                .collection
+                .generic_families(GenericFamily::SansSerif)
+                .next();
+            let helvetica = register(&mut cx, "Helvetica");
+            register(&mut cx, "Times New Roman");
+            let serif = cx.collection.generic_families(GenericFamily::Serif).next();
+            apply_generic_defaults(
+                &mut cx.collection,
+                &FontDefaults::default().with_serif(None),
+            );
+            assert_eq!(
+                slot(&mut cx, GenericFamily::SansSerif),
+                vec![helvetica, sans.unwrap()]
+            );
+            assert_eq!(slot(&mut cx, GenericFamily::Serif), vec![serif.unwrap()]);
         }
     }
 
