@@ -101,9 +101,12 @@
 //! something in proportion to their heights, else (all empty) the last, else
 //! every row by its height. A taller table gives its extra height to its
 //! body sections by their heights, and each section to its rows the same
-//! way, empty rows growing when every other is constrained; a caption takes
-//! none (the table is its `height` plus its captions), and a table shorter
-//! than its rows grows to them (#2312). `rebuild_table`
+//! way, empty rows growing when every other is constrained (a section's
+//! share is by its rows' heights before any rowspan grew them); a caption
+//! takes none (the table is its `height` plus its captions), and a table
+//! shorter than its rows grows to them (#2312), unless its parent imposes
+//! its height: a flex item, an absolutely positioned table or a grid item
+//! stays at it (#2358). `rebuild_table`
 //! hands the fork each row's section (`TableBox::sections`) and which rows
 //! are captions. A block standing for an anonymous table keeps its own
 //! height. A percentage and a row group's `height` size nothing. A
@@ -1197,7 +1200,9 @@ impl RinchDocument {
                     style.margin = taffy::Rect::length(0.0);
                 }
                 // A cell is as tall as its row. A block in an anonymous
-                // cell is as tall as its content, at the cell's top (Chrome:
+                // cell is as tall as its content. The anonymous cell's
+                // `vertical-align` is `baseline`, which rinch aligns as `top`
+                // (#2359), so the block sits at the row's top (Chrome:
                 // a 10px block in a `height: 40px` row is 10 tall, #2312).
                 style.align_self = Some(if real {
                     taffy::AlignSelf::STRETCH

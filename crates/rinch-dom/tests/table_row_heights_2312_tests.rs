@@ -6,13 +6,17 @@
 //!   all empty, the last; else every row that holds something, in proportion
 //!   to its height. rinch shared it equally (Taffy's grid).
 //! - A table taller than its rows gives the extra height to its body
-//!   sections (not a `thead` or `tfoot`), in proportion to their heights, and
+//!   sections (not a `thead` or `tfoot`), in proportion to their heights (as
+//!   their rows were before any rowspan grew them), and
 //!   each section to its rows as above, except that empty rows grow when the
 //!   rows that hold something all declare a height. rinch shared it equally
 //!   between the rows of no declared height.
 //! - A caption takes none of it: the table's `height` is its rows'.
-//! - A table whose `height` is less than its rows is as tall as its rows.
-//! - A `display: block` cell stands in an anonymous cell, at its top: it is
+//! - A table whose `height` is less than its rows is as tall as its rows
+//!   (not yet when its parent imposes its height, #2358).
+//! - A `display: block` cell stands in an anonymous cell, whose
+//!   `vertical-align` is `baseline` (rinch aligns it as `top`, #2359; the
+//!   same as Chrome when no cell of the row is baseline-aligned): it is
 //!   as tall as its content, not stretched to its row.
 //!
 //! Every expected number is Chrome 156's for the same markup
@@ -275,6 +279,52 @@ fn a_taller_table_grows_its_body_not_its_header_or_footer() {
             ("a", (2.0, 62.578)),
             ("b", (66.578, 10.0)),
             ("c", (78.578, 119.422)),
+        ],
+    );
+}
+
+/// Sections share a taller table by their heights before any rowspan grew
+/// their rows (Blink records a section's height ahead of its rowspan step):
+/// by 30 and 10 here, where the rows after the 60px rowspan, 20 + 40 and 10,
+/// would give 57, 114 | 29 and a 171px rowspan.
+#[test]
+fn sections_share_a_taller_table_by_their_heights_before_rowspans() {
+    check(
+        "the review's",
+        &format!(
+            "<table id=t style='border-spacing:0;height:200px'><tbody><tr><td id=a style='padding:0'>{}</td>\
+             <td id=s rowspan=3 style='padding:0'>{}</td></tr><tr><td id=b style='padding:0'>{}</td></tr></tbody>\
+             <tbody><tr><td id=c style='padding:0'>{}</td></tr></tbody></table>",
+            d(10),
+            d(60),
+            d(20),
+            d(10)
+        ),
+        &[
+            ("a", (0.0, 50.0)),
+            ("s", (0.0, 150.0)),
+            ("b", (50.0, 100.0)),
+            ("c", (150.0, 50.0)),
+        ],
+    );
+    check(
+        "spacing, padding, two rows a section",
+        &format!(
+            "<table id=t style='border-spacing:3px;height:250px'><tbody><tr><td id=a style='padding:1px'>{}</td>\
+             <td id=s rowspan=3 style='padding:1px'>{}</td></tr><tr><td id=b style='padding:1px'>{}</td></tr></tbody>\
+             <tbody><tr><td id=c style='padding:1px'>{}</td></tr><tr><td id=e style='padding:1px'>{}</td></tr></tbody></table>",
+            d(10),
+            d(90),
+            d(25),
+            d(15),
+            d(5)
+        ),
+        &[
+            ("a", (3.0, 44.188)),
+            ("s", (3.0, 146.688)),
+            ("b", (50.188, 99.5)),
+            ("c", (152.688, 64.672)),
+            ("e", (220.359, 26.641)),
         ],
     );
 }
