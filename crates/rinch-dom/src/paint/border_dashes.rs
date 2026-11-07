@@ -25,26 +25,29 @@
 //! - **Corners:** two sides of the same style and colour overlap in the
 //!   corner square, and both put a whole dash or dot there. Where the colour
 //!   or the style changes, a side is cut on the diagonal from the outer
-//!   corner to the inner one, as Chrome's corner comes out (its miter
-//!   clip). The caller paints dashed and dotted sides after the others, so
-//!   the cut side lands on top of a solid neighbour's full corner square.
-//! - **Rounded:** the whole centre line is one closed path, starting at the
-//!   left end of the top edge and running clockwise (measured against Chrome;
-//!   see [`centre_line`]). The dashes are fitted to its perimeter, `n` dashes and `n` gaps. A thin
-//!   pattern is stroked `2.2 * w` wide and clipped to the border's ring; round
-//!   dots are stroked at `w`.
+//!   corner to the inner one (Blink's miter clip, `ComputeMiter`). The
+//!   caller paints in Blink's order (dashed and dotted first) and mitres a
+//!   solid neighbour too, so each side keeps its half of the corner.
+//! - **Rounded:** a side whose inner edge has no arc (a radius no larger
+//!   than the width) is straight, as above, under the outer clip. A side
+//!   whose inner edge arcs is part of one closed centre line, starting at
+//!   the left end of the top edge and running clockwise (measured against
+//!   Chrome; see [`centre_line`]), measured as Skia measures it (see
+//!   `Measure`). The dashes are fitted to its perimeter, `n` dashes and `n`
+//!   gaps. A thin pattern is stroked `2.2 * w` wide and clipped to the
+//!   border's ring; round dots are filled.
 //!
 //! No dash pattern reaches a painter. The straight sides are filled
-//! rectangles and circles, and the rounded path is dashed here (with
-//! `kurbo::dash`) and stroked plain. So tiny-skia never draws a dash as a
-//! hairline (a 1px dotted border used to come out as a near-solid line,
-//! #2371), and both painters draw the same geometry.
+//! rectangles and circles, and the rounded path is dashed here and stroked
+//! plain. So tiny-skia never draws a dash as a hairline (a 1px dotted border
+//! used to come out as a near-solid line, #2371), and both painters draw the
+//! same geometry.
 
 use peniko::Fill;
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{
-    Affine, Arc, BezPath, Cap, Circle, Join, ParamCurve, ParamCurveArclen, PathEl, PathSeg, Point,
-    Rect, Shape, Stroke, Vec2,
+    Affine, BezPath, Cap, Circle, Join, ParamCurve, PathEl, PathSeg, Point, Rect, Shape, Stroke,
+    Vec2,
 };
 
 use super::painter::Painter;
@@ -375,20 +378,65 @@ pub(super) fn straight_side(
     };
     let marks = straight_marks(dash, length, w);
     for (a, b) in marks.spans {
-        let poly = [at(a, b0), at(b, b0), at(b, b1), at(a, b1)];
-        push_polygon(out, &poly, cuts);
+        if cuts.is_empty() {
+            // A plain rect, wound as `push_polygon` winds: kurbo's `Rect`
+            // path runs clockwise on screen.
+            let rect = Rect::from_points(at(a, b0), at(b, b1));
+            out.extend(rect.path_elements(0.0));
+        } else {
+            let poly = [at(a, b0), at(b, b0), at(b, b1), at(a, b1)];
+            push_polygon(out, &poly, cuts);
+        }
     }
     for c in marks.dots {
-        // Flattened, so it is wound like the rects and cut like them.
-        let circle = Circle::new(at(c, (b0 + b1) / 2.0), w / 2.0);
-        let mut flat = Vec::new();
-        peniko::kurbo::flatten(circle.path_elements(TOLERANCE), TOLERANCE, |el| {
-            if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el {
-                flat.push(p);
-            }
-        });
-        push_polygon(out, &flat, cuts);
+        push_dot(out, Circle::new(at(c, (b0 + b1) / 2.0), w / 2.0), cuts);
     }
+}
+
+/// Append a round dot cut by `cuts`. A dot no cut crosses is four cubics, as
+/// kurbo draws a circle, wound like the rects (clockwise on screen); one a
+/// cut crosses is flattened and cut as a polygon; one wholly cut off is
+/// dropped.
+fn push_dot(out: &mut BezPath, circle: Circle, cuts: &[Cut]) {
+    let mut crossed = false;
+    for cut in cuts {
+        let d = cut.side(circle.center) / cut.dir.hypot();
+        if d <= -circle.radius {
+            return;
+        }
+        crossed |= d < circle.radius;
+    }
+    if !crossed {
+        out.extend(circle.path_elements(TOLERANCE));
+        return;
+    }
+    let mut flat = Vec::new();
+    peniko::kurbo::flatten(circle.path_elements(TOLERANCE), TOLERANCE, |el| {
+        if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el {
+            flat.push(p);
+        }
+    });
+    push_polygon(out, &flat, cuts);
+}
+
+/// Append a solid side's whole band, cut by `cuts` (a solid side beside a
+/// dashed or dotted one, which Blink mitres).
+pub(super) fn solid_side(out: &mut BezPath, edges: &BoxEdges, side: Side, cuts: &[Cut]) {
+    let r = edges.rect;
+    let w = edges.width(side);
+    let band = match side {
+        Side::Top => Rect::new(r.x0, r.y0, r.x1, r.y0 + w),
+        Side::Bottom => Rect::new(r.x0, r.y1 - w, r.x1, r.y1),
+        Side::Left => Rect::new(r.x0, r.y0, r.x0 + w, r.y1),
+        Side::Right => Rect::new(r.x1 - w, r.y0, r.x1, r.y1),
+    };
+    let poly = [
+        Point::new(band.x0, band.y0),
+        Point::new(band.x1, band.y0),
+        Point::new(band.x1, band.y1),
+        Point::new(band.x0, band.y1),
+    ];
+    push_polygon(out, &poly, cuts);
 }
 
 /// Append `poly` cut by every half-plane in `cuts` (Sutherland-Hodgman), as a
@@ -450,7 +498,11 @@ pub(super) fn paint_square_uniform(
         rect,
         widths: [width; 4],
     };
-    let mut path = BezPath::new();
+    // A mark is at most six elements (a dot's move, four cubics and close),
+    // and the marks are at least `2w` apart: reserve that, so building the
+    // path does not reallocate as it grows.
+    let marks = (2.0 * (rect.width() + rect.height()) / (2.0 * width)).ceil() as usize + 8;
+    let mut path = BezPath::from_vec(Vec::with_capacity(marks.min(4096) * 6));
     for side in [Side::Top, Side::Right, Side::Bottom, Side::Left] {
         straight_side(&mut path, &edges, side, dash, &[]);
     }
@@ -469,84 +521,153 @@ pub(super) fn paint_square_uniform(
 /// here, not taken from a kurbo `RoundedRect`, so the dashes do not depend on
 /// where a shape's path happens to start.
 pub(super) fn centre_line(rect: Rect, radii: BorderRadii) -> BezPath {
-    use std::f64::consts::{FRAC_PI_2, PI};
     let r = radii.fitted(rect.width(), rect.height());
     let Rect { x0, y0, x1, y1 } = rect;
     let mut path = BezPath::new();
     path.move_to((x0 + r.top_left.x, y0));
-    let corner = |path: &mut BezPath, rad: Vec2, center: Point, start: f64| {
+    // One cubic per corner, as Skia keeps one conic per corner: the dashes are
+    // measured by splitting each corner the way Skia splits it.
+    const K: f64 = 0.552_284_749_8;
+    let corner = |path: &mut BezPath, rad: Vec2, start: Point, end: Point, c1: Vec2, c2: Vec2| {
+        path.line_to(start);
         if rad.x > 0.0 && rad.y > 0.0 {
-            let arc = Arc::new(center, rad, start, FRAC_PI_2, 0.0);
-            path.line_to(arc.center + Vec2::new(rad.x * start.cos(), rad.y * start.sin()));
-            path.extend(arc.append_iter(TOLERANCE));
+            path.curve_to(start + c1, end + c2, end);
         } else {
-            path.line_to(center);
+            path.line_to(end);
         }
     };
+    let (tr, br, bl, tl) = (r.top_right, r.bottom_right, r.bottom_left, r.top_left);
     corner(
         &mut path,
-        r.top_right,
-        Point::new(x1 - r.top_right.x, y0 + r.top_right.y),
-        -FRAC_PI_2,
+        tr,
+        Point::new(x1 - tr.x, y0),
+        Point::new(x1, y0 + tr.y),
+        Vec2::new(K * tr.x, 0.0),
+        Vec2::new(0.0, -K * tr.y),
     );
     corner(
         &mut path,
-        r.bottom_right,
-        Point::new(x1 - r.bottom_right.x, y1 - r.bottom_right.y),
-        0.0,
+        br,
+        Point::new(x1, y1 - br.y),
+        Point::new(x1 - br.x, y1),
+        Vec2::new(0.0, K * br.y),
+        Vec2::new(K * br.x, 0.0),
     );
     corner(
         &mut path,
-        r.bottom_left,
-        Point::new(x0 + r.bottom_left.x, y1 - r.bottom_left.y),
-        FRAC_PI_2,
+        bl,
+        Point::new(x0 + bl.x, y1),
+        Point::new(x0, y1 - bl.y),
+        Vec2::new(-K * bl.x, 0.0),
+        Vec2::new(0.0, K * bl.y),
     );
     corner(
         &mut path,
-        r.top_left,
-        Point::new(x0 + r.top_left.x, y0 + r.top_left.y),
-        PI,
+        tl,
+        Point::new(x0, y0 + tl.y),
+        Point::new(x0 + tl.x, y0),
+        Vec2::new(0.0, -K * tl.y),
+        Vec2::new(-K * tl.x, 0.0),
     );
     path.close_path();
     path
 }
 
-/// The length of a path.
-fn path_length(path: &BezPath) -> f64 {
-    path.segments().map(|s| s.arclen(1e-3)).sum()
+/// A path measured as Skia measures it (`SkContourMeasure`), so that the
+/// dashes fall where Chrome's do along a curve.
+///
+/// Skia measures a curve as a polyline: it splits a corner at its middle
+/// until the curve's midpoint is within half a pixel (on each axis) of the
+/// chord's, and maps a distance to a curve parameter linearly within a
+/// chord. That polyline is a little shorter than the curve (a 2x `12px`
+/// radius by about 0.2 px a corner), which matters twice: Blink floors the
+/// measured length before fitting the dashes, and a dash's place along the
+/// path follows the chords. Measuring the true arc length instead put one
+/// dash too many round a long rounded box at 2x, and the dashes drifted by
+/// a pixel along its edges (review of #2391).
+struct Measure {
+    /// `(segment, t0, t1, d0, d1)`: a chord of `segment` from `t0` to `t1`,
+    /// at distances `d0` to `d1` along the path.
+    pieces: Vec<(PathSeg, f64, f64, f64, f64)>,
+    length: f64,
 }
 
-/// The points at which a closed `path` puts its round dots, every `period`
-/// along it from its start.
-fn dots_along(path: &BezPath, period: f64, length: f64) -> Vec<Point> {
-    let mut out = Vec::new();
-    let mut next = 0.0;
-    let mut walked = 0.0;
-    for seg in path.segments() {
-        let len = seg.arclen(1e-3);
-        while next <= walked + len + 1e-9 && next <= length + 1e-9 {
-            let t = if len > 0.0 {
-                seg_param(&seg, next - walked)
-            } else {
-                0.0
-            };
-            out.push(seg.eval(t));
-            next += period;
+impl Measure {
+    /// Skia's `CHEAP_DIST_LIMIT`.
+    const TOLERANCE: f64 = 0.5;
+
+    fn new(path: &BezPath) -> Self {
+        let mut m = Measure {
+            pieces: Vec::new(),
+            length: 0.0,
+        };
+        for seg in path.segments() {
+            match seg {
+                PathSeg::Line(l) => m.push(seg, 0.0, 1.0, (l.p1 - l.p0).hypot()),
+                _ => m.split(seg, 0.0, 1.0, 0),
+            }
         }
-        walked += len;
+        m
     }
-    // A closed path's end is its start: a dot there would sit on the first.
-    if let (Some(first), Some(last)) = (out.first(), out.last())
-        && out.len() > 1
-        && (*first - *last).hypot() < 1e-6
-    {
-        out.pop();
-    }
-    out
-}
 
-fn seg_param(seg: &PathSeg, at: f64) -> f64 {
-    seg.inv_arclen(at.max(0.0), 1e-4).clamp(0.0, 1.0)
+    fn push(&mut self, seg: PathSeg, t0: f64, t1: f64, len: f64) {
+        if len <= 0.0 {
+            return;
+        }
+        let d0 = self.length;
+        self.length += len;
+        self.pieces.push((seg, t0, t1, d0, self.length));
+    }
+
+    fn split(&mut self, seg: PathSeg, t0: f64, t1: f64, depth: u32) {
+        let (a, b) = (seg.eval(t0), seg.eval(t1));
+        let tm = (t0 + t1) / 2.0;
+        let off = seg.eval(tm) - a.midpoint(b);
+        if depth < 10 && off.x.abs().max(off.y.abs()) > Self::TOLERANCE {
+            self.split(seg, t0, tm, depth + 1);
+            self.split(seg, tm, t1, depth + 1);
+        } else {
+            self.push(seg, t0, t1, (b - a).hypot());
+        }
+    }
+
+    /// The segment and parameter at distance `d`.
+    fn at(&self, d: f64) -> Option<(usize, f64)> {
+        let i = self
+            .pieces
+            .iter()
+            .position(|p| d <= p.4 + 1e-9)
+            .or_else(|| self.pieces.len().checked_sub(1))?;
+        let (_, t0, t1, d0, d1) = self.pieces[i];
+        let f = ((d - d0) / (d1 - d0)).clamp(0.0, 1.0);
+        Some((i, t0 + (t1 - t0) * f))
+    }
+
+    fn point(&self, d: f64) -> Option<Point> {
+        self.at(d).map(|(i, t)| self.pieces[i].0.eval(t))
+    }
+
+    /// The part of the path from `a` to `b`, appended as one open subpath.
+    fn segment(&self, a: f64, b: f64, out: &mut BezPath) {
+        let mut started = false;
+        for &(seg, t0, t1, d0, d1) in &self.pieces {
+            if d1 <= a || d0 >= b {
+                continue;
+            }
+            let lerp = |d: f64| t0 + (t1 - t0) * ((d - d0) / (d1 - d0)).clamp(0.0, 1.0);
+            let (ta, tb) = (lerp(a.max(d0)), lerp(b.min(d1)));
+            let part = seg.subsegment(ta..tb);
+            if !started {
+                out.move_to(part.start());
+                started = true;
+            }
+            match part {
+                PathSeg::Line(l) => out.line_to(l.p1),
+                PathSeg::Quad(q) => out.quad_to(q.p1, q.p2),
+                PathSeg::Cubic(c) => out.curve_to(c.p1, c.p2, c.p3),
+            }
+        }
+    }
 }
 
 /// A rounded dashed or dotted border (`DrawCurvedDashedDottedBoxSide`):
@@ -565,7 +686,8 @@ pub(super) fn paint_rounded(
     dash: Dash,
 ) {
     // Blink takes the length as a whole number of pixels.
-    let length = path_length(centre).floor();
+    let measure = Measure::new(centre);
+    let length = measure.length.floor();
     let pattern = pattern(dash, length, width, true);
     painter.push_clip(Fill::NonZero, transform, &ring.clone().into());
     if let Some(clip) = side_clip {
@@ -574,25 +696,28 @@ pub(super) fn paint_rounded(
     match pattern {
         Some(p) if p.round => {
             let mut dots = BezPath::new();
-            for c in dots_along(centre, p.on + p.off, length) {
-                let mut flat = Vec::new();
-                peniko::kurbo::flatten(
-                    Circle::new(c, width / 2.0).path_elements(TOLERANCE),
-                    TOLERANCE,
-                    |el| {
-                        if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el {
-                            flat.push(p);
-                        }
-                    },
-                );
-                push_polygon(&mut dots, &flat, &[]);
+            let period = p.on + p.off;
+            let mut at = 0.0;
+            // Not at `length` itself on a closed path: that is the start.
+            while at < length - 1e-6 {
+                if let Some(c) = measure.point(at) {
+                    push_dot(&mut dots, Circle::new(c, width / 2.0), &[]);
+                }
+                at += period;
             }
             if !dots.is_empty() {
                 painter.fill_color(Fill::NonZero, transform, color, &dots.into());
             }
         }
         Some(p) => {
-            let dashes: BezPath = peniko::kurbo::dash(centre.iter(), 0.0, &[p.on, p.off]).collect();
+            let mut dashes = BezPath::new();
+            let period = p.on + p.off;
+            let mut at = 0.0;
+            // Skia dashes to the measured end, past the floored length.
+            while at < measure.length {
+                measure.segment(at, (at + p.on).min(measure.length), &mut dashes);
+                at += period;
+            }
             // The stroke is `2.2 w` wide and the ring clips it, so the
             // dashes' ends are clipped along with their sides.
             let stroke = Stroke::new(stroke_width * 2.2)
@@ -658,6 +783,31 @@ mod tests {
                 "{len} {w}: {s:?}"
             );
         }
+    }
+
+    /// An uncut dot is kurbo's circle, which must wind as the rects do, or a
+    /// non-zero fill would cancel a dot against a dash it overlaps.
+    #[test]
+    fn a_dot_winds_like_a_dash() {
+        let mut dot = BezPath::new();
+        push_dot(&mut dot, Circle::new((5.0, 5.0), 2.0), &[]);
+        let mut rect = BezPath::new();
+        push_polygon(
+            &mut rect,
+            &[
+                Point::new(0.0, 0.0),
+                Point::new(4.0, 0.0),
+                Point::new(4.0, 4.0),
+                Point::new(0.0, 4.0),
+            ],
+            &[],
+        );
+        assert!(
+            dot.area() * rect.area() > 0.0,
+            "{} {}",
+            dot.area(),
+            rect.area()
+        );
     }
 
     #[test]

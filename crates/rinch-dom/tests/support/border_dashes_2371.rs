@@ -2,13 +2,16 @@
 //! painter's `border_dashes_2371_tests` and the GPU painter's
 //! `gpu_border_dashes_2371` (`rinch/tests`, through `#[path]`).
 //!
-//! Dashed and dotted borders 1, 2, 3 and 5px wide, on boxes of even and odd
-//! sizes, the issue's 40x20 box, per-side styles, and rounded corners. Each
-//! box is compared with Chrome 156 (headless, the same page; `chrome.rs` holds
-//! the captured rows) along its top border's middle device row and its left
-//! border's middle device column, corners included. Where Chrome is dark
-//! (`#`) the painter must be under 128, and where Chrome is light (`.`) it
-//! must be over 128; an in-between pixel is not judged.
+//! Dashed and dotted borders 1, 2, 3, 5 and 8px wide, on boxes of even and
+//! odd sizes, the issue's 40x20 box, per-side styles and colours, a
+//! translucent border, and rounded corners (larger and smaller than the
+//! width, one corner only, a long box). Each box is compared with Chrome 156
+//! (headless, the same page; `border_dashes_2371_chrome.rs` holds the captured
+//! rows) along its top border's middle device row and its left border's
+//! middle device column, each at the middle of that side's own width,
+//! corners included. Where Chrome is dark (`#`) the painter must be under
+//! 128, and where Chrome is light (`.`) it must be over 128; an in-between
+//! pixel is not judged.
 
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
@@ -18,7 +21,7 @@ mod chrome;
 pub use chrome::{BOXES, CHROME_1X, CHROME_2X};
 
 pub const W: u32 = 200;
-pub const H: u32 = 960;
+pub const H: u32 = 1310;
 
 /// The boxes that are rounded. Painters may differ from Chrome along an arc
 /// by antialiasing, so these are allowed a few pixels (see `misses`).
@@ -30,6 +33,12 @@ pub fn rounded(i: usize) -> bool {
 /// `misses` skips; `corner_colours` checks them.
 pub fn coloured(i: usize) -> bool {
     BOXES[i].4.contains("#f00")
+}
+
+/// The translucent box, which `misses` skips (every pixel is in between);
+/// `level_misses` checks its corners.
+pub fn translucent(i: usize) -> bool {
+    BOXES[i].4.contains("rgba")
 }
 
 pub fn document() -> RinchDocument {
@@ -52,8 +61,19 @@ pub fn document() -> RinchDocument {
     doc
 }
 
-/// The first border width a box's style names, in CSS px.
-fn border_width(css: &str) -> u32 {
+/// A box's `side` border width, in CSS px: its own `border-{side}` width
+/// when the style names one, else the first width the style names.
+fn border_width(css: &str, side: &str) -> u32 {
+    let digits = |at: &str| -> u32 {
+        at.chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap()
+    };
+    if let Some(at) = css.find(&format!("border-{side}:")) {
+        return digits(&css[at + side.len() + 8..]);
+    }
     let at = css.find("px").expect("a width");
     css[..at]
         .rsplit(|c: char| !c.is_ascii_digit())
@@ -83,13 +103,13 @@ fn level(p: [u8; 4]) -> u8 {
 pub fn sample(px: &[[u8; 4]], pw: u32, scale: u32, i: usize) -> (Vec<u8>, Vec<u8>) {
     let (x, y, w, h, css) = BOXES[i];
     let s = scale;
-    let b = border_width(css) * s;
+    let (bt, bl) = (border_width(css, "top") * s, border_width(css, "left") * s);
     let (x0, y0) = (x * s, y * s);
     let top = (0..w * s)
-        .map(|k| level(px[((y0 + b / 2) * pw + x0 + k) as usize]))
+        .map(|k| level(px[((y0 + bt / 2) * pw + x0 + k) as usize]))
         .collect();
     let left = (0..h * s)
-        .map(|k| level(px[((y0 + k) * pw + x0 + b / 2) as usize]))
+        .map(|k| level(px[((y0 + k) * pw + x0 + bl / 2) as usize]))
         .collect();
     (top, left)
 }
@@ -136,6 +156,58 @@ pub fn disagreements(got: &[u8], want: &str) -> Vec<usize> {
         .collect()
 }
 
+/// The box whose style is `css`.
+pub fn box_index(css: &str) -> usize {
+    BOXES.iter().position(|b| b.4 == css).expect(css)
+}
+
+/// Grey levels Chrome 156 draws at single pixels, from a box's top-left
+/// corner: `(box style, scale, x, y, lowest, highest)`.
+///
+/// - The translucent box (dashed top and right, solid bottom and left, all
+///   `rgba(0, 0, 0, 0.5)`): every corner is 126, one layer's worth. Painted
+///   side by side, two sides darkened each corner twice (64).
+/// - An `8px dotted` left side against solid sides: the solid top is mitred
+///   and the dot keeps its round half, so the corner's edge pixels outside
+///   the dot stay light. Painted over a full solid corner square, they were
+///   black.
+const LEVELS: &[(&str, u32, u32, u32, u8, u8)] = &[
+    (TRANSLUCENT, 1, 1, 1, 110, 142),
+    (TRANSLUCENT, 1, 58, 1, 110, 142),
+    (TRANSLUCENT, 1, 1, 28, 110, 142),
+    (TRANSLUCENT, 1, 58, 28, 110, 142),
+    (TRANSLUCENT, 2, 2, 2, 110, 142),
+    (TRANSLUCENT, 2, 117, 2, 110, 142),
+    (TRANSLUCENT, 2, 2, 57, 110, 142),
+    (TRANSLUCENT, 2, 117, 57, 110, 142),
+    (DOTTED_SOLID, 1, 0, 1, 140, 255),
+    (DOTTED_SOLID, 1, 0, 6, 140, 255),
+    (DOTTED_SOLID, 2, 0, 1, 193, 255),
+    (DOTTED_SOLID, 2, 0, 2, 193, 255),
+    (DOTTED_SOLID, 2, 1, 2, 193, 255),
+    (DOTTED_SOLID, 2, 0, 3, 193, 255),
+];
+const TRANSLUCENT: &str = "border-top:4px dashed rgba(0,0,0,0.5);border-right:4px dashed rgba(0,0,0,0.5);\
+border-bottom:4px solid rgba(0,0,0,0.5);border-left:4px solid rgba(0,0,0,0.5)";
+const DOTTED_SOLID: &str = "border-top:8px solid #000;border-right:8px solid #000;\
+border-bottom:8px solid #000;border-left:8px dotted #000";
+
+/// The [`LEVELS`] samples the painter misses at `scale`, as failure lines.
+pub fn level_misses(px: &[[u8; 4]], pw: u32, scale: u32) -> Vec<String> {
+    LEVELS
+        .iter()
+        .filter(|l| l.1 == scale)
+        .filter_map(|&(css, s, dx, dy, lo, hi)| {
+            let (x, y, ..) = BOXES[box_index(css)];
+            let (px_x, px_y) = (x * s + dx, y * s + dy);
+            let got = level(px[(px_y * pw + px_x) as usize]);
+            (got < lo || got > hi).then(|| {
+                format!("scale {s} {css} at +({dx}, {dy}): {got}, Chrome's range {lo}..={hi}")
+            })
+        })
+        .collect()
+}
+
 /// Every box's disagreements with Chrome at `scale`, as failure lines.
 /// A square box must agree on every judged pixel; a rounded one may miss
 /// `ROUNDED_SLACK` per row or column (antialiasing on the arcs).
@@ -145,7 +217,7 @@ pub fn misses(px: &[[u8; 4]], pw: u32, scale: u32) -> Vec<String> {
     let chrome = if scale == 1 { CHROME_1X } else { CHROME_2X };
     let mut out = Vec::new();
     for i in 0..BOXES.len() {
-        if coloured(i) {
+        if coloured(i) || translucent(i) {
             continue;
         }
         let (top, left) = sample(px, pw, scale, i);

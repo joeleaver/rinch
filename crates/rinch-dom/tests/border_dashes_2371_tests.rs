@@ -50,6 +50,8 @@ fn check(scale: u32) {
     );
     let bad = scene::corner_misses(&px, pw, scale);
     assert!(bad.is_empty(), "per-side corners:\n{}", bad.join("\n"));
+    let bad = scene::level_misses(&px, pw, scale);
+    assert!(bad.is_empty(), "levels:\n{}", bad.join("\n"));
 }
 
 #[test]

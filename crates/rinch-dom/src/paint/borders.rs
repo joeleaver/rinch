@@ -6,7 +6,7 @@ use peniko::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Shape, Stroke, Vec2
 
 use super::blur::Blur1d;
 use super::border_dashes::{self, Dash};
-use super::painter::{PaintShape, Painter};
+use super::painter::{BlendMode, PaintShape, Painter};
 use super::radii::BorderRadii;
 use crate::computed_style::BorderStyleValue;
 use crate::node::Node;
@@ -257,9 +257,48 @@ pub(super) fn paint_borders(
                         radii.inner(half, half, half, half),
                     );
                     let ring = border_ring(outer, radii, [bw; 4]);
-                    border_dashes::paint_rounded(
-                        painter, transform, bc, &centre, &ring, None, bw, bw, dash,
-                    );
+                    let curved = inner_edge_arcs(radii, [bw; 4]);
+                    if curved.iter().all(|&c| c) {
+                        border_dashes::paint_rounded(
+                            painter, transform, bc, &centre, &ring, None, bw, bw, dash,
+                        );
+                    } else {
+                        // Blink draws a side whose inner edge has no arc as a
+                        // straight side under the outer clip (its dashes
+                        // fitted to the side), and the others as the whole
+                        // dashed path clipped to their part.
+                        let edges = border_dashes::BoxEdges {
+                            rect: outer,
+                            widths: [bw; 4],
+                        };
+                        let mut straight = BezPath::new();
+                        for i in (0..4).filter(|&i| !curved[i]) {
+                            border_dashes::straight_side(
+                                &mut straight,
+                                &edges,
+                                DASH_SIDES[i],
+                                dash,
+                                &[],
+                            );
+                        }
+                        painter.push_clip(Fill::NonZero, transform, &ring.clone().into());
+                        painter.fill_color(Fill::NonZero, transform, bc, &straight.into());
+                        painter.pop_layer();
+                        for i in (0..4).filter(|&i| curved[i]) {
+                            let clip = side_quad(outer, ARC_SIDES[i]);
+                            border_dashes::paint_rounded(
+                                painter,
+                                transform,
+                                bc,
+                                &centre,
+                                &ring,
+                                Some(&clip),
+                                bw,
+                                bw,
+                                dash,
+                            );
+                        }
+                    }
                 }
             } else if radii.is_square() {
                 painter.stroke_color(&stroke, transform, bc, &border_rect.into());
@@ -322,14 +361,50 @@ pub(super) fn paint_borders(
     }
 
     // Fallback: straight lines per side (no border-radius).
-    //
-    // A dashed or dotted side is cut on the diagonal at a corner where the
-    // colour or the style changes. Chrome cuts the neighbour there too (a
-    // solid side paints only its own half of the corner), but this painter's
-    // solid and 3D sides fill the whole corner square. So the dashed and
-    // dotted sides paint last, over them, and the corner comes out split as
-    // Chrome's does.
     let widths = [top_w, right_w, bottom_w, left_w];
+    paint_straight_sides(
+        painter,
+        &sides,
+        widths,
+        Rect::new(x, y, x + w, y + h),
+        None,
+        transform,
+    );
+}
+
+/// Blink's `kStylePriority`: dashed, dotted and double sides paint first,
+/// then the 3D styles, then solid, so a side painted later and filling its
+/// whole band covers the corner the earlier one left whole.
+fn style_priority(style: BorderStyleValue) -> u8 {
+    match style {
+        BorderStyleValue::Dashed | BorderStyleValue::Dotted | BorderStyleValue::Double => 1,
+        BorderStyleValue::Inset
+        | BorderStyleValue::Outset
+        | BorderStyleValue::Groove
+        | BorderStyleValue::Ridge => 2,
+        BorderStyleValue::Solid => 3,
+        _ => 0,
+    }
+}
+
+/// The straight sides of a border whose sides differ, in Blink's order
+/// ([`style_priority`]). A dashed or dotted side is cut on a corner's
+/// diagonal where Blink mitres it ([`blink_cuts`]), and so is a solid side
+/// beside a dashed or dotted one (Blink mitres it there, so the dashed
+/// side's dot or dash keeps its half of the corner). With `ring`, the sides
+/// are drawn under that clip (a rounded border whose inner edge has no arc).
+///
+/// When a side is dashed or dotted and every painted side has the same alpha
+/// below 1, the sides are drawn opaque into one layer of that opacity, as
+/// Blink's opacity groups do, so the corners they share do not darken twice.
+fn paint_straight_sides(
+    painter: &mut dyn Painter,
+    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
+    widths: [f64; 4],
+    outer: Rect,
+    ring: Option<&BezPath>,
+    transform: Affine,
+) {
     const SIDES: [bevel::Side; 4] = [
         bevel::Side::Top,
         bevel::Side::Right,
@@ -337,27 +412,145 @@ pub(super) fn paint_borders(
         bevel::Side::Left,
     ];
     let mut order = [0usize, 1, 2, 3];
-    order.sort_by_key(|&i| Dash::of(sides[i].2).is_some());
+    order.sort_by_key(|&i| style_priority(sides[i].2));
     let edges = border_dashes::BoxEdges {
-        rect: Rect::new(x, y, x + w, y + h),
+        rect: outer,
         widths,
     };
+    let painted = |i: usize| {
+        widths[i] > 0.0
+            && sides[i].1.is_some()
+            && !matches!(
+                sides[i].2,
+                BorderStyleValue::None | BorderStyleValue::Hidden
+            )
+    };
+    let any_dash = (0..4).any(|i| painted(i) && Dash::of(sides[i].2).is_some());
+    let alphas: Vec<f32> = (0..4)
+        .filter(|&i| painted(i))
+        .map(|i| sides[i].1.unwrap().components[3])
+        .collect();
+    let group = (any_dash && !alphas.is_empty() && alphas[0] < 1.0)
+        .then_some(alphas[0])
+        .filter(|&a| alphas.iter().all(|&b| b == a));
+    if let Some(r) = ring {
+        painter.push_clip(Fill::NonZero, transform, &r.clone().into());
+    }
+    if let Some(alpha) = group {
+        painter.push_layer(BlendMode::Normal, alpha, transform, &outer.into());
+    }
+    let (x, y, w, h) = (outer.x0, outer.y0, outer.width(), outer.height());
+    let mut done = [false; 4];
     for i in order {
         let (_, color, style) = sides[i];
-        let Some(bc) = color else { continue };
+        let Some(mut bc) = color else {
+            done[i] = true;
+            continue;
+        };
+        if group.is_some() {
+            bc = bc.with_alpha(1.0);
+        }
         if let Some(dash) = Dash::of(style) {
-            let cuts = dash_side_cuts(&sides, &widths, &edges, i);
+            let cuts = blink_cuts(sides, &widths, &done, &edges, i);
             let mut path = BezPath::new();
             border_dashes::straight_side(&mut path, &edges, DASH_SIDES[i], dash, &cuts);
             if !path.is_empty() {
                 painter.fill_color(Fill::NonZero, transform, bc, &path.into());
             }
+        } else if matches!(style, BorderStyleValue::Solid)
+            && widths[i] > 0.0
+            && let cuts = solid_cuts(sides, &widths, &done, &edges, i)
+            && !cuts.is_empty()
+        {
+            let mut path = BezPath::new();
+            border_dashes::solid_side(&mut path, &edges, DASH_SIDES[i], &cuts);
+            painter.fill_color(Fill::NonZero, transform, bc, &path.into());
         } else {
             paint_border_side(
                 painter, SIDES[i], widths[i], style, bc, x, y, w, h, transform,
             );
         }
+        done[i] = true;
     }
+    if group.is_some() {
+        painter.pop_layer();
+    }
+    if ring.is_some() {
+        painter.pop_layer();
+    }
+}
+
+/// Whether side `a` is drawn at all.
+fn side_present(
+    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
+    widths: &[f64; 4],
+    a: usize,
+) -> bool {
+    widths[a] > 0.0
+        && !matches!(
+            sides[a].2,
+            BorderStyleValue::None | BorderStyleValue::Hidden
+        )
+}
+
+/// Blink's `ComputeMiter` for side `i` at each of its corners: no cut where
+/// the neighbour is absent, or is still to be painted and fills its whole
+/// band (it will cover the corner); otherwise a cut where the colours differ
+/// or the styles need one (`BorderStylesRequireMiter`: any two different
+/// styles, or a double, groove or ridge neighbour). `done` says which sides
+/// are painted already.
+fn blink_cuts(
+    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
+    widths: &[f64; 4],
+    done: &[bool; 4],
+    edges: &border_dashes::BoxEdges,
+    i: usize,
+) -> Vec<border_dashes::Cut> {
+    let (_, color, style) = sides[i];
+    let mut cuts = Vec::new();
+    for a in [(i + 3) % 4, (i + 1) % 4] {
+        if !side_present(sides, widths, a) {
+            continue;
+        }
+        let (_, a_color, a_style) = sides[a];
+        let fills = !matches!(
+            a_style,
+            BorderStyleValue::Dashed | BorderStyleValue::Dotted | BorderStyleValue::Double
+        );
+        if !done[a] && fills {
+            continue;
+        }
+        let styles_need = style != a_style
+            || matches!(
+                a_style,
+                BorderStyleValue::Double | BorderStyleValue::Groove | BorderStyleValue::Ridge
+            )
+            || matches!(style, BorderStyleValue::Double);
+        if a_color != color || styles_need {
+            cuts.push(edges.miter(DASH_SIDES[i], DASH_SIDES[a]));
+        }
+    }
+    cuts
+}
+
+/// [`blink_cuts`] for a solid side, kept to the corners it shares with a
+/// dashed or dotted side: elsewhere a solid side keeps its whole-band stroke.
+fn solid_cuts(
+    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
+    widths: &[f64; 4],
+    done: &[bool; 4],
+    edges: &border_dashes::BoxEdges,
+    i: usize,
+) -> Vec<border_dashes::Cut> {
+    // A neighbour that is not dashed or dotted is not a corner this concerns:
+    // treat it as absent.
+    let mut masked = *sides;
+    for (a, side) in masked.iter_mut().enumerate() {
+        if a != i && Dash::of(side.2).is_none() {
+            side.2 = BorderStyleValue::None;
+        }
+    }
+    blink_cuts(&masked, widths, done, edges, i)
 }
 
 /// [`bevel::Side`]'s order, as `border_dashes` names it.
@@ -368,28 +561,30 @@ const DASH_SIDES: [border_dashes::Side; 4] = [
     border_dashes::Side::Left,
 ];
 
-/// The corner cuts for dashed or dotted side `i` of a border whose sides
-/// differ: on the diagonal from the outer corner to the inner one, wherever
-/// the neighbour is present and differs in colour or style (Blink's miter,
-/// `ComputeMiter`). Two sides of one style and colour overlap in the corner
-/// instead, each with a whole dash or dot there.
-fn dash_side_cuts(
-    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
-    widths: &[f64; 4],
-    edges: &border_dashes::BoxEdges,
-    i: usize,
-) -> Vec<border_dashes::Cut> {
-    let (_, color, style) = sides[i];
-    let mut cuts = Vec::new();
-    for a in [(i + 3) % 4, (i + 1) % 4] {
-        let (_, a_color, a_style) = sides[a];
-        let present = widths[a] > 0.0
-            && !matches!(a_style, BorderStyleValue::None | BorderStyleValue::Hidden);
-        if present && (a_color != color || a_style != style) {
-            cuts.push(edges.miter(DASH_SIDES[i], DASH_SIDES[a]));
-        }
-    }
-    cuts
+/// [`bevel::Side`] in `[top, right, bottom, left]` order.
+const ARC_SIDES: [bevel::Side; 4] = [
+    bevel::Side::Top,
+    bevel::Side::Right,
+    bevel::Side::Bottom,
+    bevel::Side::Left,
+];
+
+/// Per side, top, right, bottom, left: whether the padding box is rounded at
+/// either of that side's corners (Blink's `BorderWillArcInnerEdge`). A
+/// dashed or dotted side whose inner edge has no arc is drawn straight, as
+/// Blink draws it, even when its outer corners are rounded (a radius no
+/// larger than the border width).
+fn inner_edge_arcs(radii: BorderRadii, widths: [f64; 4]) -> [bool; 4] {
+    let [t, r, b, l] = widths;
+    let inner = radii.inner(t, r, b, l);
+    let arcs = |c: Vec2| c.x > 0.0 && c.y > 0.0;
+    let (tl, tr, br, bl) = (
+        arcs(inner.top_left),
+        arcs(inner.top_right),
+        arcs(inner.bottom_right),
+        arcs(inner.bottom_left),
+    );
+    [tl || tr, tr || br, br || bl, bl || tl]
 }
 
 /// The ring a border covers, the border box less the padding box, for a
@@ -588,6 +783,21 @@ fn paint_borders_arc_per_side(
                 let centre_line =
                     border_dashes::centre_line(Rect::new(ix, iy, ix + iw, iy + ih), centre);
                 let ring = border_ring(outer, radii, [bw; 4]);
+                if !inner_edge_arcs(radii, [bw; 4])[i] {
+                    // No arc on this side's inner edge: straight, under the
+                    // outer clip, cut where its neighbours differ.
+                    let edges = border_dashes::BoxEdges {
+                        rect: outer,
+                        widths: [bw; 4],
+                    };
+                    let cuts = blink_cuts(sides, &[bw; 4], &[true; 4], &edges, i);
+                    let mut path = BezPath::new();
+                    border_dashes::straight_side(&mut path, &edges, DASH_SIDES[i], dash, &cuts);
+                    painter.push_clip(Fill::NonZero, transform, &ring.into());
+                    painter.fill_color(Fill::NonZero, transform, resolved, &path.into());
+                    painter.pop_layer();
+                    continue;
+                }
                 let clip = side_quad(outer, SIDE_ORDER[i]);
                 border_dashes::paint_rounded(
                     painter,

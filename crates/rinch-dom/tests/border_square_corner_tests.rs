@@ -215,12 +215,16 @@ fn solid_border_strokes_carry_a_miter_join() {
 
 /// Dashed and dotted borders are laid out as Chrome lays them out and reach
 /// the painter as filled dashes and dots, not as a stroke with a dash pattern
-/// (#2371, #2372), so no join is involved; their corners are pinned by
-/// `border_dashes_2371_tests`.
+/// (#2371, #2372), so no join is involved. A dashed side starts and ends
+/// with a whole dash, so its corners are filled, which also shows the border
+/// was painted at all.
 #[test]
 fn dashed_and_dotted_square_borders_are_not_strokes() {
     for style in ["dashed", "dotted"] {
         let got = joins(&format!("{BOX}border: 20px {style} rgb(0, 128, 0)"));
         assert!(got.is_empty(), "{style}: strokes {got:?}");
     }
+    let mut doc = document(&format!("{BOX}border: 20px dashed rgb(0, 128, 0)"));
+    let p = rasterize(&mut doc);
+    assert_corners(&p, GREEN, "border: 20px dashed");
 }
