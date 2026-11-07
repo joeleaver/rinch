@@ -370,6 +370,13 @@ fn gpu_subpixel_text_matches_the_software_painter() {
     }
 }
 
+/// The clip fixture's body: the clips' edges on whole pixels. The painters
+/// differ on nested clips that share a fractional edge (tiny-skia's
+/// intersected mask keeps the edge pixel's coverage, Vello's layers multiply
+/// it once per clip), grey text or not; an LCD fringe spilling into that
+/// column showed it. The text is put off the whole pixel inside instead.
+const CLIP_BODY: &str = "background: #fff; padding-left: 3px;";
+
 /// Text inside one, two and six nested rounded clips is per channel and the
 /// software painter's: the shader finds the opaque page through each clip's
 /// backdrop, past the four in registers into the spill buffer at six.
@@ -386,13 +393,13 @@ fn gpu_subpixel_text_inside_clips() {
                 (depth - i) as f32 * 1.5
             ));
         }
-        html.push_str(&format!("<p>{TEXT}</p>"));
+        html.push_str(&format!("<p style='padding-left: 0.3px'>{TEXT}</p>"));
         for _ in 0..depth {
             html.push_str("</div>");
         }
         let (g, c) = both(
             &mut gpu,
-            "background: #fff;",
+            CLIP_BODY,
             &html,
             SubpixelOrder::Rgb,
             1.0,
@@ -406,7 +413,7 @@ fn gpu_subpixel_text_inside_clips() {
         // differ no more than that, and at least the usual two levels.
         let (gg, gc) = both_under(
             &mut gpu,
-            "background: #fff;",
+            CLIP_BODY,
             &html,
             grey_policy(),
             1.0,

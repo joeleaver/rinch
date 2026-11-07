@@ -396,6 +396,11 @@ jobs:
           # outlines on request.
           run 6 -p rinch --features gpu,video --test gpu_glyph_atlas_2286 -- \
             --ignored --test-threads=1
+          # #2286 stage 3's subpixel (LCD) text: against the software painter
+          # under Area and Msaa16, inside nested clips (the blend stack's
+          # spill), grey in layers and over transparency, and BGR.
+          run 4 -p rinch --features gpu,video --test gpu_subpixel_text_2286 -- \
+            --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).
           run 2 -p rinch-dom --no-default-features --test background_tiling_embed_tests -- \
