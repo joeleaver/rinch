@@ -367,3 +367,53 @@ fn a_flex_row_in_a_float_column() {
     near(&mut d, "t", [23.0, 0.0, 260.0, 80.0]);
     near(&mut d, "i1", [153.0, ANY, 130.0, 80.0]);
 }
+
+// --- Review of #2389 ---------------------------------------------------------
+
+/// An item's max-width caps its max-content contribution: 80 + 41.11, not
+/// the room (rinch was 300), in a float, an absolutely positioned box and a
+/// wrapping float alike; a min-width above the max wins (120 + 41.11). No
+/// margins on the container here.
+#[test]
+fn an_item_max_width_caps_the_max_content() {
+    let words = "alpha beta gamma delta epsilon zeta";
+    for (parent_style, container_style, item_style, w, h) in [
+        (
+            "",
+            "float:left;display:flex",
+            "max-width:80px",
+            121.11,
+            100.0,
+        ),
+        (
+            "position:relative",
+            "position:absolute;display:flex",
+            "max-width:80px",
+            121.11,
+            100.0,
+        ),
+        (
+            "",
+            "float:left;display:flex;flex-wrap:wrap",
+            "max-width:80px",
+            121.11,
+            100.0,
+        ),
+        (
+            "",
+            "float:left;display:flex",
+            "max-width:80px;min-width:120px",
+            161.11,
+            60.0,
+        ),
+    ] {
+        let mut d = doc(&parent(
+            parent_style,
+            &format!(
+                "<div id=t style='{container_style}'><div id=i0 style='{item_style}'>{words}</div><div id=i1>alpha</div></div>"
+            ),
+        ));
+        near(&mut d, "t", [0.0, 0.0, w, h]);
+        near(&mut d, "i1", [w - 41.11, ANY, 41.11, h]);
+    }
+}

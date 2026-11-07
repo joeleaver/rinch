@@ -315,12 +315,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`7eac0940f91e664d2ab92f49704757809a2c7e7e`, branch `rinch-patch`): twenty-four commits on the taffy `v0.14.0` tag
-(item 10 is two of them, item 15 three, item 18 three). It is a dependency, not a
+(`cac51813534b05bbc731127b18ae18d67949330e`, branch `rinch-patch`): twenty-five commits on the taffy `v0.14.0` tag
+(item 10 is two of them, item 15 three, item 18 four). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the twenty-four commits onto the new tag. All are upstream
+and a Taffy bump rebases the twenty-five commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -566,14 +566,15 @@ candidates.
    Pins: the fork's `tests/leaf_margins.rs` (eleven shapes) and
    `crates/rinch-dom/tests/float_room_round3_tests.rs`.
 18. **A row flex container sized to fit its content wraps in its room** (#2370, commits
-   `f7079d5a`, `8fdef733` and `7eac0940`). A row flex container whose width is fit-content (a float, an
+   `f7079d5a`, `8fdef733`, `7eac0940` and `cac51813`). A row flex container whose width is fit-content (a float, an
    absolutely positioned box, `width: fit-content`, a grid item aligned to its start, a row in a
    column aligned to its start) took its longest line, the sum of its items' max-content flex
    bases, whatever the room: a float holding `alpha beta … kappa` (431px of Inter) in 260px of
    room was 431 x 20, Chrome 156 260 x 40; with `flex: 1 1 0` items it was 0 wide. Its width is
    now `min(max-content, max(min-content, room))` (CSS Sizing 3 §5.2,
    `flexbox.rs` `fit_content_main_size`). The max-content size is the sum of the items'
-   max-content contributions: their hypothetical sizes, except an item whose basis a
+   max-content contributions: their flex bases clamped by their max and then min widths (a
+   `max-width: 80px` item counts 80, not its text's width), except an item whose basis a
    `flex-basis` set, which is measured. The min-content size is the sum of the items'
    min-content contributions in a single-line container and the largest in a multi-line one
    (css-flexbox-1 §9.9.1), measured only when the max-content size does not fit, so a container
@@ -583,7 +584,7 @@ candidates.
    the room less its padding (it compared a border-box size with its content box's room). A
    column's main size is its height, its max-content size, and is unchanged; its width, the
    cross size, was already fit to its items. `inline-flex` was already right: rinch sizes an
-   atomic inline itself. Pins: the fork's `tests/fit_content_flex.rs` (26 shapes) and
+   atomic inline itself. Pins: the fork's `tests/fit_content_flex.rs` (27 shapes) and
    `crates/rinch-dom/tests/fit_content_flex_tests.rs` (Chrome's numbers).
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
