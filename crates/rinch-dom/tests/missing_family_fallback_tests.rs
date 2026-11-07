@@ -35,6 +35,7 @@ const EMOJI_STAND_IN: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf"
 /// A document whose `sans-serif` is Space Grotesk and whose `emoji` generic is
 /// Inter. Returns the two faces' blob ids, to recognise their runs by.
 fn document() -> (RinchDocument, u64, u64) {
+    sans_serif_default();
     let mut doc = RinchDocument::new();
     let collection = &mut doc.font_cx.collection;
     let sans_blob = Blob::new(std::sync::Arc::new(SANS));
@@ -222,6 +223,7 @@ fn a_host_emoji_follows_the_primary_face_under_a_missing_only_stack() {
 /// separately registered copies, so the two faces are told apart by blob.
 #[test]
 fn an_emoji_the_appended_face_has_is_drawn_in_it() {
+    sans_serif_default();
     let mut doc = RinchDocument::new();
     let collection = &mut doc.font_cx.collection;
     let mut register = |name: &'static str| {
@@ -268,6 +270,7 @@ fn an_emoji_the_appended_face_has_is_drawn_in_it() {
 
 /// [`block`] in a document with the host's own generics (no stand-ins).
 fn block_on_host(family: &str, text: &str) -> (RinchDocument, NodeId) {
+    sans_serif_default();
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let div = doc.create_element("div");
@@ -320,6 +323,7 @@ fn faces_of(doc: &RinchDocument, div: NodeId) -> Vec<(u64, bool, String)> {
 #[test]
 fn a_text_control_in_a_missing_only_stack_is_as_wide_as_under_sans_serif() {
     let input = |family: &str| {
+        sans_serif_default();
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let c = doc.create_element("input");
@@ -334,7 +338,9 @@ fn a_text_control_in_a_missing_only_stack_is_as_wide_as_under_sans_serif() {
     };
     let sans = input("sans-serif");
     assert!(sans > 0.0);
-    for family in ["Helvetica", "NoSuchFamily1198"] {
+    // Not `Helvetica` itself: where Arial is installed it is Helvetica's
+    // alternate now (#2250), and drawn as Arial.
+    for family in ["Helvetica1198", "NoSuchFamily1198"] {
         assert_eq!(input(family), sans, "input under `{family}`");
     }
 }
@@ -353,7 +359,12 @@ fn digits_in_an_uninstalled_named_family_measure_as_sans_serif_on_the_host() {
     let mut fcx = rinch_dom::fonts::new_font_context();
     let mut asserted = 0;
     for family in ["Helvetica", "Times", "Courier", "NoSuchFamily1198"] {
-        if fcx.collection.family_by_name(family).is_some() {
+        // An installed family, or an installed Blink alternate (Arial for
+        // Helvetica, #2250), is drawn as itself.
+        let alternate = rinch_dom::fonts::alternate_family_name(family);
+        if fcx.collection.family_by_name(family).is_some()
+            || alternate.is_some_and(|a| fcx.collection.family_by_name(a).is_some())
+        {
             continue;
         }
         assert_eq!(width_on_host(family), sans, "`{family}`");
@@ -403,5 +414,59 @@ fn no_source_builds_a_parley_font_family_by_hand() {
         offenders.is_empty(),
         "build the family with fonts::parley_font_family:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// These tests pin #1198's rule with the `sans-serif` face as the default
+/// font, so they do not depend on whether the host has Times New Roman
+/// (Chrome's default font, rinch's since #2255; `fonts::tests::finish_stack`
+/// pins that). Per thread, so per test.
+fn sans_serif_default() {
+    rinch_dom::fonts::set_font_defaults(rinch_dom::fonts::FontDefaults {
+        standard: "sans-serif".into(),
+        serif: None,
+        sans_serif: None,
+    });
+}
+
+/// #2255: a missing-only stack is drawn in the **default font**
+/// (`FontDefaults::standard`), letters and digits alike, not in `sans-serif`.
+/// Chrome's default font is Times New Roman; here the default is a face of
+/// the test's own (a second copy of Inter), so the host's fonts do not
+/// matter, and it differs from `sans-serif` (Space Grotesk) and from the
+/// `emoji` stand-in by blob. Before #2255 every run was `sans-serif`'s.
+#[test]
+fn a_missing_only_stack_is_drawn_in_the_default_font() {
+    let (mut doc, sans, emoji) = document();
+    let std_blob = Blob::new(std::sync::Arc::new(EMOJI_STAND_IN));
+    let std_id = std_blob.id();
+    doc.font_cx.collection.register_fonts(
+        std_blob,
+        Some(FontInfoOverride {
+            family_name: Some("ProbeDefault2255"),
+            ..Default::default()
+        }),
+    );
+    rinch_dom::fonts::set_font_defaults(rinch_dom::fonts::FontDefaults {
+        standard: "NotInstalled2255, ProbeDefault2255, serif".into(),
+        serif: None,
+        sans_serif: None,
+    });
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "display: inline-block; font: 40px/48px Oswald, NoSuchFamily2255",
+    );
+    let t = doc.create_text("a1b2#3*c");
+    doc.append_child(div, t);
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+    let faces: Vec<u64> = faces_of(&doc, div).into_iter().map(|f| f.0).collect();
+    assert!(!faces.is_empty());
+    assert!(
+        faces.iter().all(|f| *f == std_id),
+        "runs {faces:?}: the default font is {std_id}, sans-serif {sans}, emoji {emoji}"
     );
 }

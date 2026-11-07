@@ -470,7 +470,7 @@ and 9, and (6,286 tests) with 10.
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`f25dc8f3e32d5b1c589304391c9ba75f9721c8dc`, branch `rinch-patch`): commits on parley's
+(`0601dc37d30b572c6519f1d71c1261f644c33721`, branch `rinch-patch`): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -491,6 +491,16 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    parley does, and without such an element the two rules agree. #1238 corpus `p704`
    (`[B2]q-refg` / `[I1]xyz`, Chrome 155), and with it `m420` and `p660`, known differences since
    before 0.12.
+
+2. **fontconfig: a font is in every family it lists** (`0601dc37`,
+   `fontique/src/backend/fontconfig.rs`, #2294; fork PR joeleaver/parley-fork#1). A font's
+   second `FC_FAMILY` name was an alias of its first name's family, and `family_uncached`
+   collected only fonts whose *first* name was the one asked for, so `'Arial Black'` was Arial
+   Regular (or nothing) where a font lists "Arial, Arial Black". Every listed name is now a family
+   of its own, and a family is the sorted fonts that list its name at any index
+   (case-insensitively). A second name that is an RBIZ name ("Roboto Light") is now the faces that
+   list it rather than the first name's whole family. Pinned by
+   `crates/rinch-dom/tests/fontconfig_second_family_name_2294.rs` (a private `FONTCONFIG_FILE`).
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::SPACE_RUN_BREAKS`) and in the seams pass

@@ -114,6 +114,14 @@ fn clamp_after_resize_wider_leaves_no_illegal_offset() {
 
 #[test]
 fn clamp_mixed_after_text_append_in_run() {
+    // Laid out in the platform's own `sans-serif`, as before #2255: with
+    // Chrome's Arial heading it (a host that has Arial) this host-font
+    // fixture lays out differently. CI has no Arial.
+    rinch_dom::fonts::set_font_defaults(rinch_dom::fonts::FontDefaults {
+        serif: None,
+        sans_serif: None,
+        ..Default::default()
+    });
     // #995's shape: text, block, text; the trailing run grows.
     let mut doc = RinchDocument::new();
     doc.load_css(CSS);

@@ -101,6 +101,8 @@ pub struct App<F, M = NoMenuBar> {
     /// Faces the build carries, in the order they were added. Not an `Option`:
     /// "no bundled fonts" and "an empty list of them" are the same startup.
     pub(crate) fonts: Vec<crate::font::AppFont>,
+    /// See [`font_defaults`](App::font_defaults); `None` keeps Chrome's.
+    pub(crate) font_defaults: Option<crate::font::FontDefaults>,
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
     #[cfg(feature = "desktop")]
     pub(crate) renderer: crate::shell::renderer::Renderer,
@@ -165,6 +167,7 @@ where
             size: None,
             theme: None,
             fonts: Vec::new(),
+            font_defaults: None,
             menus: None,
             #[cfg(feature = "desktop")]
             renderer: crate::shell::renderer::Renderer::Auto,
@@ -269,6 +272,42 @@ where
         self
     }
 
+    /// The browser's font settings for this app: the default font a
+    /// `font-family` list whose every family is missing falls back to, and
+    /// the families `serif` and `sans-serif` mean (#2255). See
+    /// [`FontDefaults`](crate::font::FontDefaults).
+    ///
+    /// Without it they are Chrome's: Times New Roman for the default font and
+    /// `serif`, Arial for `sans-serif` (Times, Times and Helvetica on macOS),
+    /// each where the host has it. So `font-family: Oswald` on a host without
+    /// Oswald is drawn in Times New Roman, as in Chrome. An app whose own face
+    /// should take that role names it:
+    ///
+    /// ```ignore
+    /// use rinch::prelude::*;
+    ///
+    /// App::new(app)
+    ///     .fonts(&[AppFont::sans_serif(include_bytes!("../assets/Inter.ttf"))])
+    ///     .font_defaults(FontDefaults {
+    ///         standard: "Inter, sans-serif".into(),
+    ///         ..Default::default()
+    ///     })
+    ///     .run();
+    /// ```
+    ///
+    /// A theme's `font-family` (rinch's ends in `sans-serif`) always resolves,
+    /// so it never reaches the default font; only an element whose own list
+    /// is exhausted does. A face claimed for a generic with
+    /// [`AppFont`](crate::font::AppFont) still heads that slot, ahead of
+    /// `serif`/`sans_serif` here.
+    ///
+    /// A second call replaces the first. On a web build the browser's own
+    /// settings apply and this is ignored.
+    pub fn font_defaults(mut self, defaults: crate::font::FontDefaults) -> Self {
+        self.font_defaults = Some(defaults);
+        self
+    }
+
     /// Answer for an image URL scheme the app alone can resolve.
     ///
     /// Every `<img src>` and `background-image: url(…)` whose source starts
@@ -350,6 +389,7 @@ where
             size: self.size,
             theme: self.theme,
             fonts: self.fonts,
+            font_defaults: self.font_defaults,
             menus: Some(owned_menus(menus)),
             #[cfg(feature = "desktop")]
             renderer: self.renderer,
@@ -599,6 +639,7 @@ where
             props: resolve_window_props(self.props, self.title, self.size),
             theme: self.theme.unwrap_or_default(),
             fonts: self.fonts,
+            font_defaults: self.font_defaults,
             menus: self.menus,
             renderer: self.renderer,
             shortcut_matching: self.shortcut_matching,
@@ -673,6 +714,7 @@ where
             props,
             theme,
             fonts,
+            font_defaults,
             menus,
             renderer,
             shortcut_matching,
@@ -693,6 +735,11 @@ where
         #[cfg(feature = "gpu")]
         if let Some(mode) = gpu_antialiasing {
             crate::gpu_antialiasing::set_gpu_antialiasing(mode);
+        }
+        // Before any font context exists: the documents' contexts take the
+        // generic families from it (#2255).
+        if let Some(defaults) = font_defaults {
+            rinch_dom::fonts::set_font_defaults(defaults);
         }
         crate::app::set_title_tooltips_default(title_tooltips);
         crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
@@ -768,6 +815,9 @@ where
             );
         }
 
+        if let Some(defaults) = self.font_defaults {
+            rinch_dom::fonts::set_font_defaults(defaults);
+        }
         crate::text_rasterization::set_text_rasterization(self.text_rasterization);
         crate::setup_theme_css(&self.theme.unwrap_or_default());
         crate::shell::android_runtime::run_component(android_app, self.component, &self.fonts);
@@ -986,6 +1036,8 @@ pub(crate) struct Startup<F> {
     pub(crate) theme: ThemeProviderProps,
     /// Faces to register before the first layout pass.
     pub(crate) fonts: Vec<crate::font::AppFont>,
+    /// See [`App::font_defaults`].
+    pub(crate) font_defaults: Option<crate::font::FontDefaults>,
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
     /// The renderer the app asked for (`RINCH_RENDERER` still overrides it).
     pub(crate) renderer: crate::shell::renderer::Renderer,
@@ -1228,6 +1280,27 @@ mod tests {
                 .title_tooltips(false)
                 .into_startup()
                 .title_tooltips
+        );
+    }
+
+    /// `font_defaults` reaches the startup (#2255): Chrome's unless set, and
+    /// a second call replaces the first.
+    #[test]
+    fn font_defaults_reach_the_startup() {
+        use crate::font::FontDefaults;
+        assert_eq!(App::new(component).into_startup().font_defaults, None);
+        let mine = FontDefaults {
+            standard: "Inter, sans-serif".into(),
+            serif: None,
+            sans_serif: None,
+        };
+        assert_eq!(
+            App::new(component)
+                .font_defaults(FontDefaults::default())
+                .font_defaults(mine.clone())
+                .into_startup()
+                .font_defaults,
+            Some(mine)
         );
     }
 

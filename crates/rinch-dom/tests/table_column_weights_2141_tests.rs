@@ -136,6 +136,14 @@ fn a_table_with_a_spanning_cell_matches_a_fresh_layout() {
 /// layout, which must agree with themselves): each built fresh both ways.
 #[test]
 fn cell_widths_give_the_detached_layouts_columns() {
+    // Laid out in the platform's own `serif`/`sans-serif`, as before #2255:
+    // with Chrome's Times New Roman and Arial heading them (a host that has
+    // them) the two layouts this compares differ by 1px. CI has neither.
+    rinch_dom::fonts::set_font_defaults(rinch_dom::fonts::FontDefaults {
+        serif: None,
+        sans_serif: None,
+        ..Default::default()
+    });
     let shapes = [
         rows(&[(SHORT, "x"), (LONG, "y"), ("ef", LONG)]),
         // A block, an inline-block and a percentage-padded cell.

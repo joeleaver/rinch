@@ -262,7 +262,7 @@ pub mod prelude {
         all(target_arch = "wasm32", target_os = "unknown")
     ))]
     pub use crate::app_builder::App;
-    pub use crate::font::{AppFont, FontData, GenericFamily};
+    pub use crate::font::{AppFont, FontData, FontDefaults, GenericFamily};
     #[cfg(feature = "gpu")]
     pub use crate::gpu_antialiasing::GpuAntialiasing;
     #[cfg(feature = "desktop")]

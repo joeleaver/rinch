@@ -651,6 +651,14 @@ fn an_absolute_in_an_inline_with_no_positioned_ancestor_resolves_against_the_icb
 /// #632, for the unwrapped twin as well. Twin identity is pinned here.
 #[test]
 fn an_absolute_in_a_multi_line_run_agrees_with_its_twin() {
+    // Laid out in the platform's own `serif`, as before #2255: Chrome's
+    // narrower Times New Roman (a host that has it) fits the run in two
+    // lines. CI has no Times New Roman.
+    rinch_dom::fonts::set_font_defaults(rinch_dom::fonts::FontDefaults {
+        serif: None,
+        sans_serif: None,
+        ..Default::default()
+    });
     let (w, _) = assert_twin("multiline", "span");
     assert_eq!(height_of(&w.doc, w.container), 3.0 * LINE, "three lines");
 }
