@@ -467,7 +467,7 @@ impl rinch_dom::paint::painter::Painter for Layers {
         _: &peniko::FontData,
         _: f32,
         _: peniko::kurbo::Affine,
-        _: Option<peniko::kurbo::Affine>,
+        _: rinch_dom::paint::painter::GlyphSynthesis,
         _: &Brush,
         _: bool,
         _: &[i16],

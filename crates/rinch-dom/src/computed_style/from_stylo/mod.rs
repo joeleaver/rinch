@@ -303,6 +303,10 @@ impl ComputedStyle {
             font_weight: font.font_weight.value(),
             font_family: font_family_from_stylo(&font.font_family),
             font_style: font_style_from_stylo(&font.font_style),
+            font_synthesis_weight: !matches!(
+                font.font_synthesis_weight,
+                style::values::computed::FontSynthesis::None
+            ),
             line_height: line_height_from_stylo(&font.line_height),
             letter_spacing: letter_spacing_from_stylo(&text.letter_spacing, font_size_px),
             word_spacing: word_spacing_from_stylo(&text.word_spacing, font_size_px),

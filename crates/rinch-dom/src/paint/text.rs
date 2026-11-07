@@ -5,7 +5,7 @@ use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, Rect, Stroke, Vec2};
 use peniko::{Brush, Fill};
 
-use super::painter::{PaintGlyph, Painter};
+use super::painter::{GlyphSynthesis, PaintGlyph, Painter};
 use crate::computed_style::{TextShadowValue, VisibilityValue};
 use crate::node::{Node, NodeTree};
 
@@ -41,7 +41,9 @@ pub(super) fn paint_inline_layout(
     let live = live.as_ref();
     // Every pass below draws from the same lines (#1066). Set up as shared
     // below when there are passes per fragment or per span list.
-    let text = PaintText::of_ifc(inline_layout);
+    let mut text = PaintText::of_ifc(inline_layout);
+    // Where `font-synthesis-weight: none` keeps faux bold off (#2296).
+    text.set_weight_synthesis_off(WeightSynthesisOff::for_ifc(tree, inline_layout, root));
 
     // Paint inline element backgrounds BEFORE text so text renders on top
     if !inline_layout.background_spans.is_empty() {
@@ -189,6 +191,7 @@ pub(super) fn paint_inline_layout(
             scale,
             &owner.computed_style.text_shadow,
             crate::ifc::root_text_color(&owner.computed_style),
+            owner.computed_style.font_synthesis_weight,
         );
     }
 
@@ -237,8 +240,10 @@ fn paint_ellipsis(
     scale: f64,
     text_shadows: &[TextShadowValue],
     color: peniko::Color,
+    weight_synthesis: bool,
 ) {
-    let text = PaintText::new(&cut.glyph);
+    let mut text = PaintText::new(&cut.glyph);
+    text.set_weight_synthesis_off(WeightSynthesisOff::uniform(weight_synthesis));
     let brush = Brush::Solid(color);
     for mark in &cut.marks {
         let x = parent_x + mark.x as f64 * scale;
@@ -1811,6 +1816,66 @@ pub(super) struct PaintText<'a> {
     /// [`ellipsis_line_limits`]: a line's glyphs past its cut are not
     /// collected.
     limits: Vec<(usize, f32)>,
+    /// Where `font-synthesis-weight: none` keeps a faux-bold run regular
+    /// (#2296); `None`, the common case, synthesises everywhere.
+    weight_synthesis_off: Option<WeightSynthesisOff>,
+}
+
+/// Which of a text's bytes are under `font-synthesis-weight: none` (#2296):
+/// a run Parley would embolden is drawn from its face as it is there. The
+/// property is per element and does not reach Parley, so text that differs
+/// only in it shares a glyph run, and the run is split glyph by glyph (as a
+/// recolour is, [`LiveColours`]).
+pub(super) struct WeightSynthesisOff {
+    /// `(flat_start, flat_end, off)` per text range.
+    ranges: Vec<(usize, usize, bool)>,
+    /// Bytes no range covers (the "…" of an ellipsis cut): the root's.
+    default_off: bool,
+}
+
+impl WeightSynthesisOff {
+    /// One element's text, all of it one way: `None` where it synthesises.
+    pub(super) fn uniform(synthesise: bool) -> Option<Self> {
+        (!synthesise).then(|| Self {
+            ranges: Vec::new(),
+            default_off: true,
+        })
+    }
+
+    /// An IFC's text, per element. `None` when every byte synthesises, which
+    /// is always the answer, with no walk, until some element has computed
+    /// `none` ([`NodeTree::font_synthesis_weight_off`]).
+    pub(super) fn for_ifc(
+        tree: &NodeTree,
+        inline_layout: &crate::node::InlineLayout,
+        root: &Node,
+    ) -> Option<Self> {
+        if !tree.font_synthesis_weight_off {
+            return None;
+        }
+        let default_off = !root.computed_style.font_synthesis_weight;
+        let ranges: Vec<(usize, usize, bool)> = inline_layout
+            .text_ranges
+            .iter()
+            .filter(|r| !r.is_br)
+            .map(|r| {
+                let off = range_element(tree, r)
+                    .map_or(default_off, |e| !e.computed_style.font_synthesis_weight);
+                (r.flat_start, r.flat_end, off)
+            })
+            .collect();
+        (default_off || ranges.iter().any(|r| r.2)).then_some(Self {
+            ranges,
+            default_off,
+        })
+    }
+
+    fn off_at(&self, byte: usize) -> bool {
+        self.ranges
+            .iter()
+            .find(|&&(s, e, _)| s <= byte && byte < e)
+            .map_or(self.default_off, |r| r.2)
+    }
 }
 
 /// One line of a [`PaintText`].
@@ -2034,7 +2099,14 @@ impl<'a> PaintText<'a> {
             run_glyphs: Default::default(),
             glyph_count: Default::default(),
             limits: Vec::new(),
+            weight_synthesis_off: None,
         }
+    }
+
+    /// Keep faux-bold runs regular where `off` says (`font-synthesis-weight:
+    /// none`, #2296).
+    pub(super) fn set_weight_synthesis_off(&mut self, off: Option<WeightSynthesisOff>) {
+        self.weight_synthesis_off = off;
     }
 
     /// An IFC's text: a line an ellipsis cut ends is walked only up to its
@@ -2137,8 +2209,9 @@ pub(super) fn draw_text(
         // Nothing declares a non-`baseline` `vertical-align` in the
         // overwhelming majority of documents: no lookup then.
         let valign = valign.filter(|v| !v.vertical_align_spans.is_empty());
-        let bytes =
-            (mask.is_some() || valign.is_some() || live.is_some()).then(|| line.glyph_bytes());
+        let weight_off = text.weight_synthesis_off.as_ref();
+        let bytes = (mask.is_some() || valign.is_some() || live.is_some() || weight_off.is_some())
+            .then(|| line.glyph_bytes());
         for (glyph_run, run_glyphs, range) in line.glyph_runs_at() {
             let bytes = bytes.map_or(&[][..], |b| &b[range]);
             let recolours = live.and_then(|l| per_glyph(bytes, |b| l.at(b), Recolour::KEEP));
@@ -2154,10 +2227,27 @@ pub(super) fn draw_text(
             let run = glyph_run.run();
             let font = run.font();
             let font_size = run.font_size() * sf;
-            let synthesis = run.synthesis();
-            let glyph_xform = synthesis
-                .skew()
-                .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+            // Faux bold and italic for a weight or style the family has no
+            // face for (#2296): Chrome's emboldening, and Parley's skew.
+            // Chrome folds the device scale factor into the font size before
+            // Skia's interpolation (16px at 2x is a 32px stroke), so the
+            // amount is taken at `font_size`, the run's size in the painter's
+            // units; a CSS transform is not folded in and scales the stroke
+            // with the text, through the painters.
+            let synth = run.synthesis();
+            // `font-synthesis-weight: none` (#2296), glyph by glyph: `None`
+            // where the whole run is as Parley shaped it.
+            let unbolds = weight_off
+                .filter(|_| synth.embolden())
+                .and_then(|w| per_glyph(bytes, |b| w.off_at(b), false));
+            let synthesis = GlyphSynthesis {
+                embolden: if synth.embolden() {
+                    super::text_rasterization::synthetic_bold_px(font_size)
+                } else {
+                    0.0
+                },
+                skew: synth.skew().map_or(0.0, |angle| angle.to_radians().tan()),
+            };
             let style = glyph_run.style();
             let brush = glyph_brush.unwrap_or(&style.brush);
             // The shift this whole run's decorations (underline/line-through)
@@ -2194,13 +2284,22 @@ pub(super) fn draw_text(
             // decorations. `recolour` is the stretch's; a decoration takes
             // the new colour only where its own was the text's (the
             // underline, then the line-through).
-            let mut draw = |glyphs: &[PaintGlyph], segments: &[(f32, f32)], recolour: Recolour| {
+            let mut draw = |glyphs: &[PaintGlyph],
+                            segments: &[(f32, f32)],
+                            (recolour, unbold): (Recolour, bool)| {
                 let recoloured = recolour.color.map(Brush::Solid);
                 painter.draw_glyphs(
                     font,
                     font_size,
                     transform,
-                    glyph_xform,
+                    if unbold {
+                        GlyphSynthesis {
+                            embolden: 0.0,
+                            ..synthesis
+                        }
+                    } else {
+                        synthesis
+                    },
                     recoloured.as_ref().unwrap_or(brush),
                     true,
                     bytemuck::cast_slice(run.normalized_coords()),
@@ -2230,7 +2329,7 @@ pub(super) fn draw_text(
             // decorations: the whole run when nothing in it is hidden.
             let mut segments: Vec<(f32, f32)> = Vec::new();
             let mut glyphs: Vec<PaintGlyph> = Vec::new();
-            let mut stretch = Recolour::KEEP;
+            let mut stretch = (Recolour::KEEP, false);
             for (i, glyph) in run_glyphs.iter().enumerate() {
                 let start_x = gx;
                 let shift = shifts.as_ref().map(|s| s[i]).unwrap_or(0.0) * sf;
@@ -2243,15 +2342,17 @@ pub(super) fn draw_text(
                 {
                     continue;
                 }
-                if let Some(recolours) = &recolours
-                    && recolours[i] != stretch
-                {
+                let here = (
+                    recolours.as_ref().map_or(Recolour::KEEP, |r| r[i]),
+                    unbolds.as_ref().is_some_and(|u| u[i]),
+                );
+                if here != stretch {
                     if !glyphs.is_empty() {
                         draw(&glyphs, &segments, stretch);
                         glyphs.clear();
                         segments.clear();
                     }
-                    stretch = recolours[i];
+                    stretch = here;
                 }
                 match segments.last_mut() {
                     Some(seg) if seg.1 == start_x => seg.1 = gx,
@@ -2315,7 +2416,8 @@ pub(super) fn draw_shadow_copy(
 /// at the specified offsets, then draws the normal text on top. `mask` is
 /// [`render_text`]'s, applied to every pass. `wavy` is the IFC whose wavy
 /// underlines the shadows cast too (#981); the main pass's own wavy
-/// underlines are the caller's, drawn after the text.
+/// underlines are the caller's, drawn after the text. `weight_synthesis` is
+/// the element's `font-synthesis-weight` (`false` for `none`, #2296).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_text_with_shadow(
     painter: &mut dyn Painter,
@@ -2328,8 +2430,10 @@ pub(super) fn render_text_with_shadow(
     mask: Option<&TextMask>,
     color: Option<AlphaColor<Srgb>>,
     wavy: Option<&crate::node::InlineLayout>,
+    weight_synthesis: bool,
 ) {
-    let text = PaintText::new(layout);
+    let mut text = PaintText::new(layout);
+    text.set_weight_synthesis_off(WeightSynthesisOff::uniform(weight_synthesis));
     render_text_shadows(
         painter,
         &text,

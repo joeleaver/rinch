@@ -14,7 +14,7 @@ use tiny_skia::{
 use super::glyph_atlas::{
     AtlasStats, GlyphMask, Looked, MaskKind, RunSpec, SharedAtlas, atlas_scale, place, thread_atlas,
 };
-use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
+use super::painter::{BlendMode, GlyphSynthesis, PaintGlyph, PaintImage, PaintShape, Painter};
 
 // ── Conversion helpers ────────────────────────────────────────────────────
 
@@ -1633,7 +1633,7 @@ impl Painter for TinySkiaPainter {
         font: &FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
@@ -1646,9 +1646,6 @@ impl Painter for TinySkiaPainter {
         };
         let rgba = color.to_rgba8();
         let rgba = [rgba.r, rgba.g, rgba.b, rgba.a];
-        // This backend has never applied `glyph_transform` (faux italic); the
-        // atlas does not change that.
-        let _ = glyph_transform;
 
         // On the atlas's grid (#2286): under no rotation, skew or uneven
         // scale, each glyph is the mask for its device size and sub-pixel
@@ -1675,11 +1672,19 @@ impl Painter for TinySkiaPainter {
                 }
             }
         };
+        // The run's faux bold and italic (#2296), rasterised into its masks:
+        // the emboldening is in the run's units, so the device amount on the
+        // grid; the skew is a shape, the same at any size.
         let spec = RunSpec {
             font,
             size: scale.map_or(font_size, |s| (font_size as f64 * s) as f32),
             hint: hint && policy.hint(),
             embolden,
+            synthetic_bold: match scale {
+                Some(s) if synthesis.embolden != 0.0 => (synthesis.embolden as f64 * s) as f32,
+                _ => synthesis.embolden,
+            },
+            skew: synthesis.skew,
             coords: normalized_coords,
             // Subpixel masks on the device grid, outside any layer, where the
             // policy asks for them (#2286 stage 3), as the GPU painter
