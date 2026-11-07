@@ -71,23 +71,33 @@ pub fn font_defaults() -> FontDefaults {
 }
 
 /// Put `defaults`' `serif` and `sans_serif` families at the head of their
-/// slots in `collection`, each only where it (or its
-/// [alternate](alternate_family_name)) is installed; the slot's other
-/// families stay behind it. [`new_font_context`] does this on a desktop.
+/// slots in `collection`, each only where it is drawn in an installed face
+/// (itself, a system substitute (`system_substitute`) or its
+/// [alternate](alternate_family_name)); the slot's other families stay
+/// behind it. [`new_font_context`] does this on a desktop.
 ///
 /// Why: Chrome's `serif` is its serif *setting*, Times New Roman on Linux,
 /// not fontconfig's `serif` alias (Noto Serif or DejaVu Serif): 74 characters
 /// at 16px were 501.66px in Chrome and 593px in rinch on one host (#2255).
 /// A host without the family keeps the platform's slot, as Chrome then falls
-/// back to the platform too.
+/// back to the platform too. A host with Liberation Serif and no Times New
+/// Roman gets Liberation Serif, as in Chrome (#2336).
 pub fn apply_generic_defaults(collection: &mut Collection, defaults: &FontDefaults) {
+    apply_generic_defaults_with(collection, defaults, &mut system_matcher(defaults));
+}
+
+fn apply_generic_defaults_with(
+    collection: &mut Collection,
+    defaults: &FontDefaults,
+    system: &mut SystemMatcher<'_>,
+) {
     for (generic, name) in [
         (GenericFamily::Serif, &defaults.serif),
         (GenericFamily::SansSerif, &defaults.sans_serif),
     ] {
         let Some(id) = name
             .as_deref()
-            .and_then(|n| installed_family(collection, n))
+            .and_then(|n| installed_family(collection, n, system))
         else {
             continue;
         };
@@ -107,8 +117,9 @@ pub fn apply_generic_defaults(collection: &mut Collection, defaults: &FontDefaul
 /// Why (#2250): a mail stack such as `Helvetica Neue, Helvetica, Lucida
 /// Grande, tahoma, verdana, arial, sans-serif` on a Linux host without
 /// Helvetica is drawn in Arial by Chrome (166.53px, Arial's width), where
-/// rinch fell through to Tahoma. Not fontconfig's aliases: `fc-match
-/// Helvetica` there is Nimbus Sans (165.77px), which Chrome does not use.
+/// rinch fell through to Tahoma. Not fontconfig's best match: `fc-match
+/// Helvetica` there is Nimbus Sans (165.77px), which Chrome does not use
+/// (not a replacement it accepts, `system_substitute`).
 pub fn alternate_family_name(name: &str) -> Option<&'static str> {
     let is = |s: &str| name.eq_ignore_ascii_case(s);
     if is("Courier") {
@@ -128,15 +139,257 @@ pub fn alternate_family_name(name: &str) -> Option<&'static str> {
     }
 }
 
-/// The family `name` is drawn in here: `name` if this collection has it,
-/// else its [alternate](alternate_family_name) if it has that.
-fn installed_family(collection: &mut Collection, name: &str) -> Option<FamilyId> {
+/// The family `name` is drawn in here, as [`resolve_family`] finds it.
+fn installed_family(
+    collection: &mut Collection,
+    name: &str,
+    system: &mut SystemMatcher<'_>,
+) -> Option<FamilyId> {
+    resolve_family(collection, name, system).map(|(id, _)| id)
+}
+
+/// The family a named family `name` is drawn in, in Chrome's order, and the
+/// name to write in its place (`None` when it is `name` itself):
+///
+/// 1. `name`, if this collection has it;
+/// 2. else the family the system substitutes for `name`, where Chrome
+///    accepts it ([`system_substitute`], #2336);
+/// 3. else `name`'s [alternate](alternate_family_name), if the collection has
+///    it, or else the system's substitute for the alternate.
+///
+/// That is Blink's order: `FontCache` asks the font manager for `name`, which
+/// on Linux takes fontconfig's match when it is acceptable, and only when
+/// that fails asks again for the alternate. So with Liberation Sans and
+/// Nimbus Sans installed and no Arial, `Helvetica` is Liberation Sans:
+/// fontconfig's Nimbus Sans is not acceptable for Helvetica, and Arial's
+/// match, Liberation Sans, is (Chrome 156).
+fn resolve_family(
+    collection: &mut Collection,
+    name: &str,
+    system: &mut SystemMatcher<'_>,
+) -> Option<(FamilyId, Option<String>)> {
     if let Some(family) = collection.family_by_name(name) {
-        return Some(family.id());
+        return Some((family.id(), None));
+    }
+    if let Some(found) = substitute_family(collection, name, system) {
+        return Some(found);
     }
     let alternate = alternate_family_name(name)?;
-    collection.family_by_name(alternate).map(|f| f.id())
+    if let Some(family) = collection.family_by_name(alternate) {
+        return Some((family.id(), Some(alternate.to_owned())));
+    }
+    substitute_family(collection, alternate, system)
 }
+
+/// The system's substitute for a missing `name`, where Chrome accepts it,
+/// with the family the collection has under that name.
+fn substitute_family(
+    collection: &mut Collection,
+    name: &str,
+    system: &mut SystemMatcher<'_>,
+) -> Option<(FamilyId, Option<String>)> {
+    let answer = system(collection, name)?;
+    let substitute = system_substitute(name, &answer)?;
+    let family = collection.family_by_name(substitute)?;
+    Some((family.id(), Some(substitute.to_owned())))
+}
+
+/// What the system's font configuration answers for a family name: the
+/// query's first family after the configuration's substitutions, and the
+/// family names of the font it matches (fontique's
+/// `Collection::system_family_match`, fontconfig's `FcConfigSubstitute` and
+/// `FcFontMatch`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SystemMatch {
+    pub(crate) configured: String,
+    pub(crate) matched: Vec<String>,
+}
+
+/// Asks the system for a family name's [`SystemMatch`].
+pub(crate) type SystemMatcher<'a> = dyn FnMut(&mut Collection, &str) -> Option<SystemMatch> + 'a;
+
+/// The system matcher a layout uses: fontique's fontconfig query where
+/// `defaults` follow the system's substitutes, else none. fontique answers
+/// on Linux and the BSDs only, so elsewhere this finds nothing.
+fn system_matcher(
+    defaults: &FontDefaults,
+) -> impl FnMut(&mut Collection, &str) -> Option<SystemMatch> + use<> {
+    gated(defaults, |collection: &mut Collection, name: &str| {
+        let answer = collection.system_family_match(name)?;
+        Some(SystemMatch {
+            configured: answer.configured,
+            matched: answer.matched,
+        })
+    })
+}
+
+/// `query`, or nothing where `defaults` turn system substitutes off.
+fn gated<Q>(
+    defaults: &FontDefaults,
+    mut query: Q,
+) -> impl FnMut(&mut Collection, &str) -> Option<SystemMatch> + use<Q>
+where
+    Q: FnMut(&mut Collection, &str) -> Option<SystemMatch>,
+{
+    let on = defaults.system_substitutes;
+    move |collection: &mut Collection, name: &str| if on { query(collection, name) } else { None }
+}
+
+/// The name of the font the system matched for the family `name`, where
+/// Chrome draws `name` in it, else `None` (Skia's
+/// `SkFontConfigInterfaceDirect::isAcceptableMatch`, which Chrome on Linux
+/// uses for every family it looks up).
+///
+/// fontconfig always matches *some* font, so Chrome accepts the match only
+/// when one of its family names is
+///
+/// - the family the configuration put first (`configured`): an alias the
+///   configuration prefers, such as a user's rule mapping Arial to another
+///   family;
+/// - `name` itself;
+/// - or a metric-compatible replacement of `name` ([`metric_compatible`]):
+///   Liberation Sans or Arimo for Arial, Liberation Serif or Tinos for Times
+///   New Roman, and so on.
+///
+/// `sans`, `serif` and `monospace` written as family names (and an empty
+/// name) accept any match, as Chrome's fixed-width default `Monospace` does.
+///
+/// Measured in Chrome 156 on a host with Liberation and no msttcorefonts
+/// (#2336): `Arial` is drawn in Liberation Sans, `Times New Roman` in
+/// Liberation Serif, `Courier New` in Liberation Mono, `'MS PGothic'` in
+/// Noto Sans CJK JP, and a family a configuration rule *prepends* in front
+/// of a name is drawn for it; but `Calibri` without Carlito, `Georgia`, and a
+/// family a rule only *appends* (fontconfig's `fc-match` answer) are not:
+/// the list moves on to its next family.
+pub(crate) fn system_substitute<'m>(name: &str, answer: &'m SystemMatch) -> Option<&'m str> {
+    let any = name.is_empty()
+        || ["sans", "serif", "monospace"]
+            .iter()
+            .any(|g| name.eq_ignore_ascii_case(g));
+    if any {
+        return answer.matched.first().map(String::as_str);
+    }
+    answer
+        .matched
+        .iter()
+        .find(|m| {
+            m.eq_ignore_ascii_case(&answer.configured)
+                || m.eq_ignore_ascii_case(name)
+                || metric_compatible(name, m)
+        })
+        .map(String::as_str)
+}
+
+/// Whether `a` and `b` are metric-compatible replacements for each other in
+/// Chrome's table (Skia's `GetFontEquivClass`, `SkFontConfigInterface_direct`):
+/// both in one of its classes. ASCII case-insensitive, as Skia's `strcasecmp`
+/// is.
+pub fn metric_compatible(a: &str, b: &str) -> bool {
+    let class = |name: &str| {
+        METRIC_COMPATIBLE
+            .iter()
+            .position(|class| class.iter().any(|n| n.eq_ignore_ascii_case(name)))
+    };
+    let a = class(a);
+    a.is_some() && a == class(b)
+}
+
+/// Chrome's metric-compatible classes (Skia's `kFontEquivMap`): the
+/// families each class may draw in each other's place. A name may be in more
+/// than one class (Noto Serif CJK JP is both MS PMincho's and MS Mincho's);
+/// as in Skia, its first class is the one it is judged by.
+const METRIC_COMPATIBLE: &[&[&str]] = &[
+    &["Arial", "Arimo", "Liberation Sans"],
+    &["Times New Roman", "Tinos", "Liberation Serif"],
+    &["Courier New", "Cousine", "Liberation Mono"],
+    &["Symbol", "Symbol Neu"],
+    // MS PGothic
+    &[
+        "MS PGothic",
+        "\u{ff2d}\u{ff33} \u{ff30}\u{30b4}\u{30b7}\u{30c3}\u{30af}",
+        "Noto Sans CJK JP",
+        "IPAPGothic",
+        "MotoyaG04Gothic",
+    ],
+    // MS Gothic
+    &[
+        "MS Gothic",
+        "\u{ff2d}\u{ff33} \u{30b4}\u{30b7}\u{30c3}\u{30af}",
+        "Noto Sans Mono CJK JP",
+        "IPAGothic",
+        "MotoyaG04GothicMono",
+    ],
+    // MS PMincho
+    &[
+        "MS PMincho",
+        "\u{ff2d}\u{ff33} \u{ff30}\u{660e}\u{671d}",
+        "Noto Serif CJK JP",
+        "IPAPMincho",
+        "MotoyaG04Mincho",
+    ],
+    // MS Mincho
+    &[
+        "MS Mincho",
+        "\u{ff2d}\u{ff33} \u{660e}\u{671d}",
+        "Noto Serif CJK JP",
+        "IPAMincho",
+        "MotoyaG04MinchoMono",
+    ],
+    // SimSun
+    &[
+        "Simsun",
+        "\u{5b8b}\u{4f53}",
+        "Noto Serif CJK SC",
+        "MSung GB18030",
+        "Song ASC",
+    ],
+    // NSimSun
+    &[
+        "NSimsun",
+        "\u{65b0}\u{5b8b}\u{4f53}",
+        "Noto Serif CJK SC",
+        "MSung GB18030",
+        "N Song ASC",
+    ],
+    // SimHei
+    &[
+        "Simhei",
+        "\u{9ed1}\u{4f53}",
+        "Noto Sans CJK SC",
+        "MYingHeiGB18030",
+        "MYingHeiB5HK",
+    ],
+    // PMingLiU
+    &[
+        "PMingLiU",
+        "\u{65b0}\u{7d30}\u{660e}\u{9ad4}",
+        "Noto Serif CJK TC",
+        "MSung B5HK",
+    ],
+    // MingLiU
+    &[
+        "MingLiU",
+        "\u{7d30}\u{660e}\u{9ad4}",
+        "Noto Serif CJK TC",
+        "MSung B5HK",
+    ],
+    // PMingLiU_HKSCS
+    &[
+        "PMingLiU_HKSCS",
+        "\u{65b0}\u{7d30}\u{660e}\u{9ad4}_HKSCS",
+        "Noto Serif CJK TC",
+        "MSung B5HK",
+    ],
+    // MingLiU_HKSCS
+    &[
+        "MingLiU_HKSCS",
+        "\u{7d30}\u{660e}\u{9ad4}_HKSCS",
+        "Noto Serif CJK TC",
+        "MSung B5HK",
+    ],
+    &["Cambria", "Caladea"],
+    &["Calibri", "Carlito"],
+];
 
 /// The `font-family` to hand parley for a computed stack. **Every** parley
 /// layout rinch builds from a computed `font-family` takes its family from
@@ -145,10 +398,11 @@ fn installed_family(collection: &mut Collection, name: &str) -> Option<FamilyId>
 /// An empty stack is `sans-serif`. Otherwise two things are done to it, both
 /// what Chrome does:
 ///
-/// - **A missing family is replaced by its alternate** where that is
-///   installed (#2250): Helvetica by Arial, Times by Times New Roman, Courier
-///   by Courier New and back ([`alternate_family_name`], Blink's table), in
-///   its place in the list.
+/// - **A missing family is replaced by the family it is drawn in**, in its
+///   place in the list: fontconfig's substitute where Chrome accepts it
+///   (#2336), else its alternate where that is installed (#2250): Helvetica
+///   by Arial, Times by Times New Roman, Courier by Courier New and back
+///   ([`alternate_family_name`], Blink's table). See `resolve_family`.
 /// - **A stack that resolves to no family** in this font context — every name
 ///   missing (a typo, a web font the host lacks) and no generic, or only
 ///   generics this platform left empty — **ends in the default font**, by
@@ -186,8 +440,11 @@ fn installed_family(collection: &mut Collection, name: &str) -> Option<FamilyId>
 /// all (wasm or an embed before any font is registered) gets its stack back
 /// as written (no alternates either), without a lookup.
 ///
-/// fontconfig's metric-compatible aliases (Liberation Sans for a missing
-/// Arial) are not followed: only installed names and the alternates count.
+/// fontconfig's substitutes are followed where Chrome follows them (#2336):
+/// a missing family is drawn in fontconfig's match when that is a
+/// metric-compatible replacement (Liberation Sans for a missing Arial) or the
+/// family the configuration puts first (`resolve_family`,
+/// `system_substitute`; [`FontDefaults::system_substitutes`] turns it off).
 ///
 /// Cached per thread, keyed by the context's first `sans-serif` and `serif`
 /// faces (unique per loaded collection, and changed by a claim on either
@@ -244,22 +501,40 @@ pub fn parley_font_family(
 /// [`parley_font_family`]'s answer for a non-empty `stack`, uncached:
 /// `Some(rewritten stack)`, or `None` to use it as written.
 fn finish_stack(collection: &mut Collection, stack: &str) -> Option<String> {
-    let (with_alternates, resolves) = with_alternates(collection, stack);
+    let defaults = font_defaults();
+    finish_stack_with(collection, stack, &defaults, &mut system_matcher(&defaults))
+}
+
+/// [`finish_stack`] with these defaults and this system matcher.
+fn finish_stack_with(
+    collection: &mut Collection,
+    stack: &str,
+    defaults: &FontDefaults,
+    system: &mut SystemMatcher<'_>,
+) -> Option<String> {
+    let (with_alternates, resolves) = with_alternates(collection, stack, system);
     if resolves {
         return with_alternates;
     }
     let base = with_alternates.as_deref().unwrap_or(stack);
-    default_face(collection).map(|face| format!("{base}, {face}"))
+    default_face(collection, defaults, system).map(|face| format!("{base}, {face}"))
 }
 
-/// `stack` with each missing named family that has an installed
-/// [alternate](alternate_family_name) replaced by it (`Some` only when one
-/// was), and whether the result names a family this collection has. Read the
-/// way parley reads it (`parse_css_list`, stopping at the first parse error).
+/// `stack` with each missing named family that is drawn in another family
+/// ([`resolve_family`]: a system substitute or an alternate) replaced by it
+/// in its place (`Some` only when one was), and whether the result names a
+/// family this collection has. Read the way parley reads it
+/// (`parse_css_list`, stopping at the first parse error).
 ///
-/// Past the first family that resolves, only a name with an alternate is
-/// looked up: the rest cannot change, and looking each up loads its faces.
-fn with_alternates(collection: &mut Collection, stack: &str) -> (Option<String>, bool) {
+/// Past the first family that resolves, a name is checked by the name map
+/// alone (`family_id`, which loads no faces) and only a missing one is
+/// resolved: the rest cannot change, but a missing one is what a character
+/// the first family lacks reaches, and Chrome looks it up the same way.
+fn with_alternates(
+    collection: &mut Collection,
+    stack: &str,
+    system: &mut SystemMatcher<'_>,
+) -> (Option<String>, bool) {
     use parley::style::FontFamilyName;
     let mut items: Vec<String> = Vec::new();
     let mut changed = false;
@@ -267,20 +542,17 @@ fn with_alternates(collection: &mut Collection, stack: &str) -> (Option<String>,
     for family in FontFamilyName::parse_css_list(stack).map_while(Result::ok) {
         match family {
             FontFamilyName::Named(name) => {
-                let alternate = alternate_family_name(&name);
-                let mut item = name.as_ref();
-                if !resolves || alternate.is_some() {
-                    if collection.family_by_name(&name).is_some() {
+                let mut item = name.to_string();
+                if !resolves || collection.family_id(&name).is_none() {
+                    if let Some((_, replacement)) = resolve_family(collection, &name, system) {
                         resolves = true;
-                    } else if let Some(alt) =
-                        alternate.filter(|a| collection.family_by_name(a).is_some())
-                    {
-                        resolves = true;
-                        changed = true;
-                        item = alt;
+                        if let Some(replacement) = replacement {
+                            changed = true;
+                            item = replacement;
+                        }
                     }
                 }
-                items.extend(quote_family(item));
+                items.extend(quote_family(&item));
             }
             FontFamilyName::Generic(generic) => {
                 resolves |= collection.generic_families(generic).next().is_some();
@@ -293,15 +565,18 @@ fn with_alternates(collection: &mut Collection, stack: &str) -> (Option<String>,
 
 /// The default font a stack that resolves to nothing ends in, as a quoted
 /// family name: the first family of this thread's [`FontDefaults::standard`]
-/// this collection has (a named family or its alternate, or a generic's first
-/// face), else the `sans-serif` slot's first face; `None` if neither exists.
-fn default_face(collection: &mut Collection) -> Option<String> {
+/// this collection has (a named family, its system substitute or its
+/// alternate, or a generic's first face), else the `sans-serif` slot's first face; `None` if neither exists.
+fn default_face(
+    collection: &mut Collection,
+    defaults: &FontDefaults,
+    system: &mut SystemMatcher<'_>,
+) -> Option<String> {
     use parley::style::FontFamilyName;
-    let standard = FONT_DEFAULTS.with(|d| d.borrow().standard.clone());
     let mut id = None;
-    for family in FontFamilyName::parse_css_list(&standard).map_while(Result::ok) {
+    for family in FontFamilyName::parse_css_list(&defaults.standard).map_while(Result::ok) {
         id = match family {
-            FontFamilyName::Named(name) => installed_family(collection, &name),
+            FontFamilyName::Named(name) => installed_family(collection, &name, system),
             FontFamilyName::Generic(generic) => collection.generic_families(generic).next(),
         };
         if id.is_some() {
@@ -1613,6 +1888,262 @@ mod tests {
                 vec![helvetica, sans.unwrap()]
             );
             assert_eq!(slot(&mut cx, GenericFamily::Serif), vec![serif.unwrap()]);
+        }
+    }
+
+    /// Chrome's fontconfig substitutes (#2336), on bare collections with a
+    /// stand-in for fontconfig: host-independent. The fontconfig query itself
+    /// is pinned by `tests/fontconfig_metric_aliases_2336.rs`.
+    mod system_substitutes {
+        use super::super::{
+            FontDefaults, SystemMatch, apply_generic_defaults_with, finish_stack_with, gated,
+            metric_compatible, system_substitute,
+        };
+        use parley::fontique::{
+            Blob, Collection, CollectionOptions, FamilyId, FontInfoOverride, GenericFamily,
+        };
+
+        const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+
+        fn answer(configured: &str, matched: &[&str]) -> SystemMatch {
+            SystemMatch {
+                configured: configured.to_owned(),
+                matched: matched.iter().map(|m| (*m).to_owned()).collect(),
+            }
+        }
+
+        #[test]
+        fn chromes_metric_classes() {
+            for (a, b) in [
+                ("Arial", "Liberation Sans"),
+                ("Arial", "Arimo"),
+                ("liberation sans", "ARIAL"),
+                ("Times New Roman", "Tinos"),
+                ("Times New Roman", "Liberation Serif"),
+                ("Courier New", "Cousine"),
+                ("Liberation Mono", "Courier New"),
+                ("Calibri", "Carlito"),
+                ("Cambria", "Caladea"),
+                ("Symbol", "Symbol Neu"),
+                ("MS PGothic", "Noto Sans CJK JP"),
+                (
+                    "\u{ff2d}\u{ff33} \u{ff30}\u{30b4}\u{30b7}\u{30c3}\u{30af}",
+                    "MS PGothic",
+                ),
+                ("MS PMincho", "Noto Serif CJK JP"),
+                ("Simhei", "Noto Sans CJK SC"),
+            ] {
+                assert!(metric_compatible(a, b), "{a} ~ {b}");
+            }
+            for (a, b) in [
+                // Not in the same class.
+                ("Arial", "Liberation Serif"),
+                ("Times New Roman", "Arimo"),
+                ("Courier New", "Liberation Sans"),
+                // Not in Chrome's table, though fontconfig aliases them.
+                ("Helvetica", "Liberation Sans"),
+                ("Times", "Liberation Serif"),
+                ("Georgia", "Gelasio"),
+                ("Tahoma", "DejaVu Sans"),
+                // A family in no class is no one's replacement, even its own.
+                ("Tahoma", "Tahoma"),
+                // As in Skia, a name in two classes is judged by its first:
+                // Noto Serif CJK JP is MS PMincho's, so not MS Mincho's.
+                ("MS Mincho", "Noto Serif CJK JP"),
+            ] {
+                assert!(!metric_compatible(a, b), "{a} !~ {b}");
+            }
+        }
+
+        #[test]
+        fn chrome_accepts_a_match_only_for_these_three_reasons() {
+            // A metric-compatible replacement.
+            let arial = answer("Arial", &["Liberation Sans"]);
+            assert_eq!(system_substitute("Arial", &arial), Some("Liberation Sans"));
+            // Any of the match's names counts.
+            let two = answer("Arial", &["Something", "Arimo"]);
+            assert_eq!(system_substitute("Arial", &two), Some("Arimo"));
+            // The family the configuration put first (a prepended alias).
+            let prepended = answer("DejaVu Serif", &["DejaVu Serif"]);
+            assert_eq!(system_substitute("Probe", &prepended), Some("DejaVu Serif"));
+            // The name itself.
+            let itself = answer("Other", &["probe"]);
+            assert_eq!(system_substitute("Probe", &itself), Some("probe"));
+            // Not fontconfig's best guess: an appended alias, a fontconfig
+            // alias outside Chrome's table, a replacement that is missing.
+            let appended = answer("Probe", &["DejaVu Serif"]);
+            assert_eq!(system_substitute("Probe", &appended), None);
+            let helvetica = answer("Helvetica", &["Nimbus Sans"]);
+            assert_eq!(system_substitute("Helvetica", &helvetica), None);
+            let calibri = answer("Calibri", &["Noto Sans"]);
+            assert_eq!(system_substitute("Calibri", &calibri), None);
+            // `sans`, `serif` and `monospace` as names accept anything.
+            let mono = answer("monospace", &["DejaVu Sans Mono"]);
+            for name in ["Monospace", "sans", "SERIF", ""] {
+                assert_eq!(system_substitute(name, &mono), Some("DejaVu Sans Mono"));
+            }
+            assert_eq!(system_substitute("Arial", &answer("Arial", &[])), None);
+        }
+
+        fn register(collection: &mut Collection, name: &str) -> FamilyId {
+            collection.register_fonts(
+                Blob::new(std::sync::Arc::new(FACE)),
+                Some(FontInfoOverride {
+                    family_name: Some(name),
+                    ..Default::default()
+                }),
+            )[0]
+            .0
+        }
+
+        /// A host with Liberation and Nimbus but no msttcorefonts, and a
+        /// stand-in for its fontconfig: the answers fontconfig gave for these
+        /// names on such a host (`FcFontMatch`, Chrome's query).
+        fn liberation_host() -> Collection {
+            let mut collection = Collection::new(CollectionOptions {
+                shared: false,
+                system_fonts: false,
+            });
+            let sans = register(&mut collection, "Sans2336");
+            let serif = register(&mut collection, "Serif2336");
+            for name in [
+                "Liberation Sans",
+                "Liberation Serif",
+                "Liberation Mono",
+                "Nimbus Sans",
+                "Nimbus Roman",
+                "Noto Sans CJK JP",
+            ] {
+                register(&mut collection, name);
+            }
+            collection.set_generic_families(GenericFamily::SansSerif, core::iter::once(sans));
+            collection.set_generic_families(GenericFamily::Serif, core::iter::once(serif));
+            collection
+        }
+
+        fn fontconfig(_: &mut Collection, name: &str) -> Option<SystemMatch> {
+            let (configured, matched) = match name.to_ascii_lowercase().as_str() {
+                "arial" | "arimo" => ("Arial", "Liberation Sans"),
+                "times new roman" => ("Times New Roman", "Liberation Serif"),
+                "courier new" => ("Courier New", "Liberation Mono"),
+                "helvetica" => ("Helvetica", "Nimbus Sans"),
+                "times" => ("Times", "Nimbus Roman"),
+                "ms pgothic" => ("MS PGothic", "Noto Sans CJK JP"),
+                // Everything else falls to fontconfig's sans face.
+                _ => return Some(answer(name, &["Sans2336"])),
+            };
+            Some(answer(configured, &[matched]))
+        }
+
+        fn finish(collection: &mut Collection, stack: &str, defaults: &FontDefaults) -> String {
+            finish_stack_with(collection, stack, defaults, &mut fontconfig)
+                .unwrap_or_else(|| stack.to_owned())
+        }
+
+        #[test]
+        fn a_missing_family_is_drawn_in_its_metric_replacement_in_place() {
+            let mut host = liberation_host();
+            let chrome = FontDefaults::default();
+            for (stack, finished) in [
+                ("Arial, Tahoma2336", r#""Liberation Sans", "Tahoma2336""#),
+                ("Arimo, Tahoma2336", r#""Liberation Sans", "Tahoma2336""#),
+                ("'Times New Roman', x", r#""Liberation Serif", "x""#),
+                ("'Courier New', x", r#""Liberation Mono", "x""#),
+                ("'MS PGothic', x", r#""Noto Sans CJK JP", "x""#),
+                // Helvetica: fontconfig's Nimbus Sans is not acceptable, so
+                // Chrome tries the alternate, Arial, and takes its match.
+                (
+                    "Helvetica, Tahoma2336",
+                    r#""Liberation Sans", "Tahoma2336""#,
+                ),
+                ("Times, x", r#""Liberation Serif", "x""#),
+                // Past the first family that resolves, a missing family is
+                // replaced too: a character the first lacks reaches it.
+                ("Sans2336, Arial", r#""Sans2336", "Liberation Sans""#),
+                // An installed family is left alone.
+                (
+                    "'Liberation Sans', Arial",
+                    r#""Liberation Sans", "Liberation Sans""#,
+                ),
+                ("Sans2336, x", "Sans2336, x"),
+            ] {
+                assert_eq!(finish(&mut host, stack, &chrome), finished, "{stack}");
+            }
+        }
+
+        #[test]
+        fn the_substitute_comes_before_the_alternate() {
+            // Blink asks for the alternate only when the name itself finds
+            // nothing, and on Linux finding the name includes fontconfig's
+            // acceptable match: with Helvetica and Liberation Sans installed
+            // and no Arial, Arial is Liberation Sans, not Helvetica.
+            let mut host = liberation_host();
+            register(&mut host, "Helvetica");
+            assert_eq!(
+                finish(&mut host, "Arial, x", &FontDefaults::default()),
+                r#""Liberation Sans", "x""#
+            );
+        }
+
+        #[test]
+        fn an_unacceptable_match_falls_through_to_the_next_family() {
+            let mut host = liberation_host();
+            let chrome = FontDefaults::default();
+            // fontconfig answers Sans2336 for Calibri; Chrome moves on.
+            assert_eq!(
+                finish(&mut host, "Calibri, sans-serif", &chrome),
+                "Calibri, sans-serif"
+            );
+            // A stack of such names ends in the default font, Times New
+            // Roman, which is Liberation Serif here (Chrome 156).
+            assert_eq!(
+                finish(&mut host, "Oswald", &chrome),
+                r#"Oswald, "Liberation Serif""#
+            );
+        }
+
+        #[test]
+        fn the_app_can_turn_system_substitutes_off() {
+            let mut host = liberation_host();
+            for (defaults, arial, oswald) in [
+                (
+                    FontDefaults::default(),
+                    r#""Liberation Sans", "x""#,
+                    r#"Oswald, "Liberation Serif""#,
+                ),
+                // Off: Arial is missing, so the list ends in the default
+                // font, and with no Times New Roman that is the sans face.
+                (
+                    FontDefaults::default().with_system_substitutes(false),
+                    r#"Arial, x, "Sans2336""#,
+                    r#"Oswald, "Sans2336""#,
+                ),
+            ] {
+                let mut matcher = gated(&defaults, fontconfig);
+                for (stack, finished) in [("Arial, x", arial), ("Oswald", oswald)] {
+                    let got = finish_stack_with(&mut host, stack, &defaults, &mut matcher)
+                        .unwrap_or_else(|| stack.to_owned());
+                    assert_eq!(got, finished, "{stack}, {}", defaults.system_substitutes);
+                }
+            }
+        }
+
+        #[test]
+        fn the_generic_defaults_take_their_substitutes() {
+            let mut host = liberation_host();
+            let sans = host.generic_families(GenericFamily::SansSerif).next();
+            let serif = host.generic_families(GenericFamily::Serif).next();
+            apply_generic_defaults_with(&mut host, &FontDefaults::default(), &mut fontconfig);
+            let head = |host: &mut Collection, g| {
+                let id = host.generic_families(g).next().unwrap();
+                host.family_name(id).unwrap().to_owned()
+            };
+            // Chrome's `serif` (Times New Roman) and `sans-serif` (Arial) on
+            // this host: Liberation Serif and Liberation Sans (Chrome 156).
+            assert_eq!(head(&mut host, GenericFamily::Serif), "Liberation Serif");
+            assert_eq!(head(&mut host, GenericFamily::SansSerif), "Liberation Sans");
+            assert_eq!(host.generic_families(GenericFamily::Serif).nth(1), serif);
+            assert_eq!(host.generic_families(GenericFamily::SansSerif).nth(1), sans);
         }
     }
 

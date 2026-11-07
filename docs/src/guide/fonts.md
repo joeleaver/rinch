@@ -135,9 +135,10 @@ rinch resolves a `font-family` list the way Chrome does:
 - **A missing family is replaced by its alternate** where that is installed:
   Helvetica by Arial, Times by Times New Roman, Courier by Courier New, and
   each the other way (Courier New by Courier except on Windows). This is
-  Blink's table, not fontconfig's aliases, so `Helvetica, Tahoma, sans-serif`
-  on a Linux machine with Arial and Tahoma but no Helvetica draws Arial, as
-  Chrome does, not Tahoma.
+  Blink's table, so `Helvetica, Tahoma, sans-serif` on a Linux machine with
+  Arial and Tahoma but no Helvetica draws Arial, as Chrome does, not Tahoma
+  (nor fontconfig's Helvetica, Nimbus Sans). On Linux a missing family can
+  also be drawn in fontconfig's substitute, [below](#fontconfigs-substitutes-linux-and-the-bsds).
 - **A list whose every family is missing ends in the default font**: Times
   New Roman, Chrome's "standard font", or the first face of `sans-serif`
   where the machine has no Times (Chrome then takes fontconfig's sans face,
@@ -145,8 +146,8 @@ rinch resolves a `font-family` list the way Chrome does:
   letters *and digits* in Times New Roman, as in Chrome, and in DejaVu Sans
   on a machine whose only fonts are DejaVu.
 - **`serif` means Times New Roman and `sans-serif` Arial** where the machine
-  has them (Times and Helvetica on macOS), ahead of the platform's own
-  choice for the slot: these are Chrome's font settings, and on Linux they
+  has them or their substitutes (Times and Helvetica on macOS), ahead of the
+  platform's own choice for the slot: these are Chrome's font settings, and on Linux they
   differ from fontconfig's `serif` and `sans-serif` (Noto Serif, DejaVu Sans).
 
 A stack that finds any family, or names a generic that has one, gets no
@@ -178,9 +179,49 @@ the web the browser's own settings apply. `FontDefaults` is
 from `FontDefaults::default()` with its `with_*` methods, or by assigning its
 fields.
 
-rinch does not follow fontconfig's metric-compatible aliases (Liberation Sans
-for a missing Arial): it knows the families installed or registered and the
-alternates above.
+### fontconfig's substitutes (Linux and the BSDs)
+
+Where fontconfig is the font source, a missing family is also drawn in the
+face fontconfig substitutes for it, **when Chrome would draw it there**.
+fontconfig always matches *some* font, so, like Chrome, rinch takes its match
+only when the match is
+
+- a **metric-compatible replacement** in Chrome's table: Liberation Sans or
+  Arimo for Arial, Liberation Serif or Tinos for Times New Roman, Liberation
+  Mono or Cousine for Courier New, Carlito for Calibri, Caladea for Cambria,
+  and the CJK pairs (Noto Sans CJK JP for MS PGothic, and so on);
+- or the family the configuration puts **first** for the name (a rule that
+  prepends or prefers it, such as your own `~/.config/fontconfig` alias).
+
+So on a machine with Liberation and no Microsoft fonts (most Linux desktops)
+`Arial` is Liberation Sans, `Helvetica` is Liberation Sans too (by way of its
+alternate, Arial), and `serif` and the default font, both Times New Roman, are
+Liberation Serif, as in Chrome. fontconfig's other guesses are not used:
+`Calibri` without Carlito, `Georgia`, or a family a rule only appends (what
+`fc-match` prints) leave the list to move on to its next family. An installed
+family is always itself. The substitute is tried before the alternate, as in
+Chrome: with Helvetica and Liberation Sans but no Arial, `Arial` is Liberation
+Sans.
+
+This is `FontDefaults::system_substitutes`, on by default. An app that wants
+the same face on every machine that has its families turns it off:
+
+```rust,ignore
+App::new(app)
+    .font_defaults(FontDefaults::default().with_system_substitutes(false))
+    .run();
+```
+
+### Faux bold
+
+A family with no face as heavy as the text asks for is drawn faux bold, by
+Chrome's two rules. A face you registered (`AppFont`, `register_font_data`, an
+embed's fonts), like an `@font-face` face, is emboldened when the text asks
+for 600 or more and the face is under 600: a regular-only family at
+`font-weight: 600` is faux bold, a semibold (600) face never is. A system face
+is emboldened when the text asks for more than 200 over the face's weight:
+Liberation Sans Regular from 601. A variable face takes its weight from its
+`wght` axis instead.
 
 ## Emoji
 
