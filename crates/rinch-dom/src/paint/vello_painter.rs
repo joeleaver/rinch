@@ -23,6 +23,8 @@ pub struct VelloPainter {
     /// This scene holds a layer that blends with its backdrop (grayscale's
     /// saturation): appended over a split surface, it taints it (D5a).
     reads_backdrop: bool,
+    /// [`Painter::set_coarse_curves`]: fills leave their curves to Vello.
+    coarse_curves: bool,
     /// A surface was split this frame, so draws are routed by their bounds.
     /// A plain field, so a draw on a frame with none tests one bool and is
     /// otherwise the draw itself (#1899 review: the routing generic cost
@@ -214,6 +216,7 @@ impl VelloPainter {
             slicing: None,
             node_starts: Default::default(),
             reads_backdrop: false,
+            coarse_curves: false,
             routing: false,
             open: Vec::new(),
             tile_target: EVERYWHERE,
@@ -887,18 +890,14 @@ pub(crate) fn flattened(transform: Affine, shape: &PaintShape) -> Option<BezPath
     }
     let tolerance = CURVE_TOLERANCE / stretch;
     match shape {
-        PaintShape::BezPath(p) => {
-            let mut path = BezPath::new();
-            peniko::kurbo::flatten(p, tolerance, |e| path.push(e));
-            Some(path)
-        }
+        PaintShape::BezPath(p) => Some(flatten_path(p, tolerance)),
         PaintShape::RoundedRect(r) => Some(rounded_rect_polyline(r, tolerance)),
         PaintShape::Circle(c) => {
             let poly = ArcPolygon::new(c.radius, tolerance, TAU);
             let mut path = BezPath::with_capacity(poly.n + 3);
             let east = Vec2::new(1.0, 0.0);
             path.move_to(c.center + east * c.radius);
-            arc_to(&mut path, c.center, c.radius, [east, east], poly);
+            arc_to(&mut path, c.center, east, c.center + east * c.radius, poly);
             path.close_path();
             Some(path)
         }
@@ -929,6 +928,8 @@ struct ArcPolygon {
 }
 
 impl ArcPolygon {
+    /// `sweep` is signed: positive turns from +x towards +y (clockwise on
+    /// screen).
     fn new(r: f64, tolerance: f64, sweep: f64) -> Self {
         let none = Self {
             n: 0,
@@ -943,7 +944,8 @@ impl ArcPolygon {
         }
         // `acos(1 - x) >= sqrt(2x) (1 + x / 12)`: no wider than allowed.
         let a = 2.0 * (2.0 * x).sqrt() * (1.0 + x / 12.0);
-        let n = ((sweep / a).ceil() as usize).clamp(1, 4096);
+        // A negative sweep turns the other way: `half`'s sine carries it.
+        let n = ((sweep.abs() / a).ceil() as usize).clamp(1, 4096);
         let half = (sweep / (2 * n) as f64).sin_cos();
         Self {
             n,
@@ -953,10 +955,10 @@ impl ArcPolygon {
     }
 }
 
-/// Append the chords of `poly` for the arc about `centre` of radius `r` from
-/// the unit direction `from` to the unit direction `to` (y down). The path's
-/// current point is the arc's start; its end is on the circle too.
-fn arc_to(path: &mut BezPath, centre: Point, r: f64, [from, to]: [Vec2; 2], poly: ArcPolygon) {
+/// Append the chords of `poly` for the arc about `centre` from the unit
+/// direction `from` to the point `end` (y down). The path's current point is
+/// the arc's start, on the circle; `end` is its end, on the circle too.
+fn arc_to(path: &mut BezPath, centre: Point, from: Vec2, end: Point, poly: ArcPolygon) {
     let rotate =
         |v: Vec2, (sin, cos): (f64, f64)| Vec2::new(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
     let (sin, cos) = poly.half;
@@ -968,10 +970,13 @@ fn arc_to(path: &mut BezPath, centre: Point, r: f64, [from, to]: [Vec2; 2], poly
         }
         path.line_to(centre + v * poly.radius);
     }
-    path.line_to(centre + to * r);
+    path.line_to(end);
 }
 
-/// A rounded rect as a polygon, its corners within `tolerance`.
+/// A rounded rect as a polygon, its corners within `tolerance`. It runs as
+/// kurbo's `RoundedRect` path does, so a dash pattern stroked along it has
+/// the same phase on both painters: from the top-left corner's start on the
+/// left edge `(x0, y0 + r)`, round that corner, then clockwise on screen.
 fn rounded_rect_polyline(rr: &peniko::kurbo::RoundedRect, tolerance: f64) -> BezPath {
     use std::f64::consts::FRAC_PI_2;
     let Rect { x0, y0, x1, y1 } = rr.rect();
@@ -985,6 +990,11 @@ fn rounded_rect_polyline(rr: &peniko::kurbo::RoundedRect, tolerance: f64) -> Bez
     // Each corner: its radius, its centre, and the directions it runs from
     // and to.
     let corners = [
+        (
+            r.top_left,
+            Point::new(x0 + r.top_left, y0 + r.top_left),
+            [left, up],
+        ),
         (
             r.top_right,
             Point::new(x1 - r.top_right, y0 + r.top_right),
@@ -1000,11 +1010,6 @@ fn rounded_rect_polyline(rr: &peniko::kurbo::RoundedRect, tolerance: f64) -> Bez
             Point::new(x0 + r.bottom_left, y1 - r.bottom_left),
             [down, left],
         ),
-        (
-            r.top_left,
-            Point::new(x0 + r.top_left, y0 + r.top_left),
-            [left, up],
-        ),
     ];
     // The corners usually share a radius: work its polygon out once.
     let mut last: Option<(f64, ArcPolygon)> = None;
@@ -1018,12 +1023,14 @@ fn rounded_rect_polyline(rr: &peniko::kurbo::RoundedRect, tolerance: f64) -> Bez
     };
     let polys = corners.map(|(rad, ..)| poly(rad));
     let mut path = BezPath::with_capacity(6 + polys.iter().map(|p| p.n + 1).sum::<usize>());
-    path.move_to((x0 + r.top_left, y0));
-    for ((rad, centre, ends), poly) in corners.into_iter().zip(polys) {
+    path.move_to(Point::new(x0, y0 + r.top_left));
+    for (i, ((rad, centre, [from, to]), poly)) in corners.into_iter().zip(polys).enumerate() {
         if rad > 0.0 {
-            path.line_to(centre + ends[0] * rad);
-            arc_to(&mut path, centre, rad, ends, poly);
-        } else {
+            if i > 0 {
+                path.line_to(centre + from * rad);
+            }
+            arc_to(&mut path, centre, from, centre + to * rad, poly);
+        } else if i > 0 {
             path.line_to(centre);
         }
     }
@@ -1031,11 +1038,149 @@ fn rounded_rect_polyline(rr: &peniko::kurbo::RoundedRect, tolerance: f64) -> Bez
     path
 }
 
+/// `path` with every curve flattened to within `tolerance`, element by
+/// element: its subpaths, their start points and their direction are
+/// unchanged, and its lines are kept as they are.
+///
+/// A cubic that is a circular arc (what kurbo makes of a `RoundedRect`'s or
+/// `BorderRadii`'s circular corners, so a solid rounded border's ring and a
+/// shadow's shape: endpoints on one circle, tangent to it, equal arms, and
+/// its middle on it too) is drawn as [`ArcPolygon`]'s chords, as a rounded
+/// rect is. Any other quad or cubic is cut into `n` equal steps of its
+/// parameter, `n` by Wang's formula (`n^2 >= d(d - 1) M / (8 tol)`, `M` the
+/// largest second difference of its control points), which bounds the
+/// distance from the curve to its chords by the tolerance with no recursion.
+fn flatten_path(path: &BezPath, tolerance: f64) -> BezPath {
+    use peniko::kurbo::PathEl;
+    let mut out = BezPath::with_capacity(path.elements().len() * 4);
+    let mut current = Point::ZERO;
+    let mut start = Point::ZERO;
+    // The last circular quarter's polygon, by radius and turn.
+    let mut quarter: Option<(f64, f64, ArcPolygon)> = None;
+    for &el in path.elements() {
+        match el {
+            PathEl::MoveTo(p) => {
+                out.move_to(p);
+                (current, start) = (p, p);
+            }
+            PathEl::LineTo(p) => {
+                out.line_to(p);
+                current = p;
+            }
+            PathEl::QuadTo(p1, p2) => {
+                let (a, b, c) = (current.to_vec2(), p1.to_vec2(), p2.to_vec2());
+                let n = wang_steps(0.25 * (a - 2.0 * b + c).hypot(), tolerance);
+                for i in 1..n {
+                    let t = i as f64 / n as f64;
+                    let mt = 1.0 - t;
+                    out.line_to((a * (mt * mt) + b * (2.0 * mt * t) + c * (t * t)).to_point());
+                }
+                out.line_to(p2);
+                current = p2;
+            }
+            PathEl::CurveTo(p1, p2, p3) => {
+                if let Some((centre, r, from, sweep)) = circular_arc(current, p1, p2, p3) {
+                    let quarter_turn = (sweep.abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-9;
+                    let poly = match quarter {
+                        Some((qr, qs, p)) if quarter_turn && qr == r && qs == sweep => p,
+                        _ => {
+                            let p = ArcPolygon::new(r, tolerance, sweep);
+                            if quarter_turn {
+                                quarter = Some((r, sweep, p));
+                            }
+                            p
+                        }
+                    };
+                    arc_to(&mut out, centre, from, p3, poly);
+                } else {
+                    let (a, b, c, d) =
+                        (current.to_vec2(), p1.to_vec2(), p2.to_vec2(), p3.to_vec2());
+                    let m = (a - 2.0 * b + c).hypot().max((b - 2.0 * c + d).hypot());
+                    let n = wang_steps(0.75 * m, tolerance);
+                    for i in 1..n {
+                        let t = i as f64 / n as f64;
+                        let mt = 1.0 - t;
+                        let p = a * (mt * mt * mt)
+                            + b * (3.0 * mt * mt * t)
+                            + c * (3.0 * mt * t * t)
+                            + d * (t * t * t);
+                        out.line_to(p.to_point());
+                    }
+                    out.line_to(p3);
+                }
+                current = p3;
+            }
+            PathEl::ClosePath => {
+                out.close_path();
+                current = start;
+            }
+        }
+    }
+    out
+}
+
+/// Wang's step count for a curve whose `d(d - 1) / 8 * M` is `k`.
+fn wang_steps(k: f64, tolerance: f64) -> usize {
+    let n = (k / tolerance).sqrt().ceil();
+    if n.is_finite() {
+        (n as usize).clamp(1, 4096)
+    } else {
+        1
+    }
+}
+
+/// The circle the cubic `(p0, p1, p2, p3)` is an arc of, as `(centre,
+/// radius, from, sweep)` (`from` the unit direction of its start, `sweep`
+/// signed as [`ArcPolygon::new`] takes it), or `None` when it is not one to
+/// within a thousandth of the radius.
+fn circular_arc(p0: Point, p1: Point, p2: Point, p3: Point) -> Option<(Point, f64, Vec2, f64)> {
+    let (t0, t1, d) = (p1 - p0, p3 - p2, p3 - p0);
+    let (l0, l1) = (t0.hypot(), t1.hypot());
+    if l0.is_nan() || l0 <= 0.0 || (l0 - l1).abs() > 1e-3 * l0 {
+        return None;
+    }
+    // The centre is on the normal at `p0`, on the side `p3` is, as far from
+    // `p3` as from `p0`: `r = |d|^2 / (2 u.d)`.
+    let mut u = Vec2::new(-t0.y, t0.x) / l0;
+    if u.dot(d) < 0.0 {
+        u = -u;
+    }
+    let ud = u.dot(d);
+    if ud.is_nan() || ud <= 0.0 {
+        return None;
+    }
+    let r = d.hypot2() / (2.0 * ud);
+    let centre = p0 + u * r;
+    let (a, b) = (p0 - centre, p3 - centre);
+    let tol = 1e-3 * r;
+    // `p3` is on the circle by construction; the cubic must be tangent to it
+    // there, and its middle on it too.
+    let mid =
+        ((p0.to_vec2() + 3.0 * p1.to_vec2() + 3.0 * p2.to_vec2() + p3.to_vec2()) / 8.0).to_point();
+    if t1.dot(b).abs() > tol * l1 || ((mid - centre).hypot() - r).abs() > tol {
+        return None;
+    }
+    let (cross, dot) = (a.cross(b), a.dot(b));
+    let sweep = if dot.abs() < 1e-12 * r * r {
+        std::f64::consts::FRAC_PI_2.copysign(cross)
+    } else {
+        cross.atan2(dot)
+    };
+    Some((centre, r, a / r, sweep))
+}
+
 /// Run `$body` with `$s` bound to the shape Vello should get for `$shape`
 /// under `$transform`: its curves flattened by [`flattened`], or itself.
 macro_rules! with_flattened {
-    ($transform:expr, $shape:expr, |$s:ident| $body:expr) => {{
-        let fine = flattened($transform, $shape).map(PaintShape::BezPath);
+    ($transform:expr, $shape:expr, |$s:ident| $body:expr) => {
+        with_flattened!($transform, $shape, coarse: false, |$s| $body)
+    };
+    ($transform:expr, $shape:expr, coarse: $coarse:expr, |$s:ident| $body:expr) => {{
+        let fine = if $coarse {
+            None
+        } else {
+            flattened($transform, $shape).map(PaintShape::BezPath)
+        };
         let $s: &PaintShape = fine.as_ref().unwrap_or($shape);
         $body
     }};
@@ -1047,7 +1192,10 @@ macro_rules! dispatch_fill {
         dispatch_fill!($scene, $fill, $transform, $brush, None, $shape)
     };
     ($scene:expr, $fill:expr, $transform:expr, $brush:expr, $bt:expr, $shape:expr) => {
-        with_flattened!($transform, $shape, |shape| match shape {
+        dispatch_fill!($scene, $fill, $transform, $brush, $bt, $shape, coarse: false)
+    };
+    ($scene:expr, $fill:expr, $transform:expr, $brush:expr, $bt:expr, $shape:expr, coarse: $coarse:expr) => {
+        with_flattened!($transform, $shape, coarse: $coarse, |shape| match shape {
             PaintShape::Rect(r) => $scene.fill($fill, $transform, $brush, $bt, r),
             PaintShape::RoundedRect(r) => $scene.fill($fill, $transform, $brush, $bt, r),
             PaintShape::BezPath(p) => $scene.fill($fill, $transform, $brush, $bt, p),
@@ -1184,6 +1332,7 @@ impl Painter for VelloPainter {
         self.tile_target = EVERYWHERE;
         self.clip_tiles = 0;
         self.slicing = None;
+        self.coarse_curves = false;
         self.routing = false;
         self.reads_backdrop = false;
         #[cfg(feature = "glyph-atlas")]
@@ -1203,11 +1352,16 @@ impl Painter for VelloPainter {
         // gradient fell between two corners and was not drawn (#1798).
         let bt = matches!(brush, Brush::Gradient(_))
             .then(|| centre_sampling(transform, Affine::IDENTITY));
+        let coarse = self.coarse_curves;
         route!(
             self,
             || Some(shape_bounds(transform, shape)),
-            |scene| dispatch_fill!(scene, fill, transform, brush, bt, shape)
+            |scene| dispatch_fill!(scene, fill, transform, brush, bt, shape, coarse: coarse)
         );
+    }
+
+    fn set_coarse_curves(&mut self, coarse: bool) {
+        self.coarse_curves = coarse;
     }
 
     fn stroke(
@@ -2415,5 +2569,131 @@ mod flattened_tests {
             f.area(),
             p.area()
         );
+    }
+
+    /// The signed area of a polygon given by its vertices (y down: positive
+    /// is clockwise on screen).
+    fn signed_area(v: &[Point]) -> f64 {
+        v.iter()
+            .zip(v.iter().cycle().skip(1))
+            .map(|(a, b)| a.x * b.y - b.x * a.y)
+            .sum::<f64>()
+            / 2.0
+    }
+
+    fn move_tos(p: &BezPath) -> Vec<Point> {
+        p.elements()
+            .iter()
+            .filter_map(|e| match e {
+                PathEl::MoveTo(p) => Some(*p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_rounded_rect_runs_as_kurbos_does() {
+        // Same start, same direction, same corner order: a dash pattern
+        // stroked along either has the same phase (review of #2380: starting
+        // at the top edge moved every dash by a quarter arc).
+        let rr = RoundedRect::new(11.0, 7.0, 51.0, 37.0, (7.0, 3.0, 11.0, 6.0));
+        let ours = flattened(Affine::IDENTITY, &PaintShape::RoundedRect(rr)).unwrap();
+        let kurbo = rr.to_path(1e-6);
+        let ends = |p: &BezPath| -> Vec<Point> {
+            p.elements().iter().filter_map(|e| e.end_point()).collect()
+        };
+        let (ov, kv) = (ends(&ours), ends(&kurbo));
+        assert_eq!(ov[0], kv[0], "first point");
+        assert_eq!(ov[0], Point::new(11.0, 14.0));
+        // Every point of kurbo's path on the rect's edges (where its arcs
+        // start and end) is one of ours, in order.
+        let on_edge = |p: &&Point| p.x == 11.0 || p.x == 51.0 || p.y == 7.0 || p.y == 37.0;
+        let mut it = ov.iter();
+        for k in kv.iter().filter(on_edge) {
+            assert!(it.any(|o| (*o - *k).hypot() < 1e-9), "{k:?} out of order");
+        }
+        assert!(signed_area(&vertices(&ours)) > 0.0);
+        // And the dashes land where kurbo's do, to within the tolerance.
+        let dashes = |p: &BezPath| {
+            move_tos(&peniko::kurbo::dash(p.elements().iter().copied(), 0.0, &[3.0, 2.0]).collect())
+        };
+        let (od, kd) = (dashes(&ours), dashes(&kurbo));
+        assert_eq!(od.len(), kd.len());
+        for (o, k) in od.iter().zip(&kd) {
+            assert!((*o - *k).hypot() < 0.1, "dash at {o:?}, kurbo's at {k:?}");
+        }
+    }
+
+    #[test]
+    fn a_flattened_path_keeps_its_start_and_winding() {
+        // A path of general cubics and a quad (Wang's steps), and the same
+        // reversed: the first point, every subpath's start and the sign of
+        // the area are kept (#2371's dashed borders root their own paths).
+        let mut p = BezPath::new();
+        p.move_to((3.0, 20.0));
+        p.curve_to((3.0, 4.0), (30.0, 9.0), (40.0, 2.0));
+        p.quad_to((60.0, 20.0), (40.0, 30.0));
+        p.curve_to((20.0, 40.0), (10.0, 35.0), (3.0, 20.0));
+        p.close_path();
+        for path in [p.clone(), p.reverse_subpaths()] {
+            let f = flattened(Affine::scale(2.0), &PaintShape::BezPath(path.clone())).unwrap();
+            assert_eq!(f.elements()[0], path.elements()[0]);
+            assert_eq!(move_tos(&f), move_tos(&path));
+            let (a, b) = (signed_area(&vertices(&f)), path.area());
+            assert!(
+                a.signum() == b.signum() && (a - b).abs() < 0.5,
+                "{a} vs {b}"
+            );
+        }
+        // Wang's steps are within the tolerance of the curve.
+        let c = peniko::kurbo::CubicBez::new((3.0, 20.0), (3.0, 4.0), (30.0, 9.0), (40.0, 2.0));
+        let mut one = BezPath::new();
+        one.move_to(c.p0);
+        one.curve_to(c.p1, c.p2, c.p3);
+        let f = vertices(&flattened(Affine::IDENTITY, &PaintShape::BezPath(one)).unwrap());
+        use peniko::kurbo::{ParamCurve, ParamCurveNearest};
+        for i in 0..=200 {
+            let q = c.eval(i as f64 / 200.0);
+            let d = f
+                .windows(2)
+                .map(|w| Line::new(w[0], w[1]).nearest(q, 1e-9).distance_sq.sqrt())
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                d <= CURVE_TOLERANCE * 1.001,
+                "{d} at t = {}",
+                i as f64 / 200.0
+            );
+        }
+    }
+
+    #[test]
+    fn a_rings_arcs_are_drawn_as_circular_polygons() {
+        // A solid rounded border's ring: kurbo's rounded rect with the
+        // inner one wound against it. Both outlines' arcs are recognised as
+        // circular (vertices outside the circle, as `ArcPolygon` puts them),
+        // within the tolerance, and the ring keeps both subpaths' starts and
+        // their directions.
+        let outer = RoundedRect::new(10.0, 10.0, 60.0, 40.0, 6.0).to_path(0.1);
+        let inner = RoundedRect::new(11.0, 11.0, 59.0, 39.0, 5.0).to_path(0.1);
+        let mut ring = outer.clone();
+        ring.extend(inner.reverse_subpaths());
+        let f = flattened(Affine::IDENTITY, &PaintShape::BezPath(ring.clone())).unwrap();
+        assert_eq!(move_tos(&f), move_tos(&ring));
+        assert!(
+            (f.area() - ring.area()).abs() < 0.2,
+            "{} vs {}",
+            f.area(),
+            ring.area()
+        );
+        let c = Point::new(16.0, 16.0);
+        let v = vertices(&f);
+        let outside = v
+            .iter()
+            .filter(|v| v.x < 16.0 && v.y < 16.0 && (**v - c).hypot() > 6.0 + 1e-6)
+            .count();
+        assert!(outside > 0, "not drawn as an ArcPolygon");
+        let corner = |v: Point| v.x <= 16.0 && v.y <= 16.0 && (v - c).hypot() > 5.5;
+        let dev = worst_deviation(&v, corner, c, 6.0);
+        assert!(dev <= CURVE_TOLERANCE * 1.01, "{dev}");
     }
 }

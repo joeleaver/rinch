@@ -106,7 +106,7 @@ const CASES: &[(&str, [f64; 4], f64, Kind)] = &[
 /// The most a corner pixel may differ from its true area, in levels: the
 /// polygon `VelloPainter` draws strays up to its `CURVE_TOLERANCE` (0.02
 /// device px) from the arc, which costs a pixel up to 5, plus a level of
-/// rounding and the oracle's sampling (6 measured, at radius 25). Two nested
+/// rounding (the oracle is exact). Two nested
 /// clips multiply, so their error is up to twice one clip's. With Vello's own
 /// flattening it was up to 71.
 const AREA_TOL: i32 = 7;
@@ -161,31 +161,54 @@ fn chrome(scale: f64) -> (u32, Vec<u8>) {
     (info.width, buf)
 }
 
-/// Whether the device point `(x, y)` is inside the rounded rect `r` with
-/// circular radius `rad` (device px).
-fn inside(x: f64, y: f64, r: [f64; 4], rad: f64) -> bool {
-    let [x0, y0, x1, y1] = r;
-    if x < x0 || y < y0 || x > x1 || y > y1 {
-        return false;
+/// The area of `{0 <= u <= U, 0 <= v <= V, u^2 + v^2 <= r^2}`: a quarter
+/// disc of radius `r` cut by a rect from its centre, exactly.
+fn quarter_disc(u: f64, v: f64, r: f64) -> f64 {
+    let (u, v) = (u.clamp(0.0, r), v.clamp(0.0, r));
+    if u * u + v * v <= r * r {
+        return u * v;
     }
-    let cx = x.clamp(x0 + rad, x1 - rad);
-    let cy = y.clamp(y0 + rad, y1 - rad);
-    (x - cx).powi(2) + (y - cy).powi(2) <= rad * rad
+    // Below `u*` the rect's top `v` is under the circle; past it the circle.
+    let g = |x: f64| (x * (r * r - x * x).max(0.0).sqrt() + r * r * (x / r).asin()) / 2.0;
+    let knee = (r * r - v * v).max(0.0).sqrt().min(u);
+    v * knee + g(u) - g(knee)
 }
 
-/// The area of device pixel `(px, py)` the rounded rect covers, 0..=1, by
-/// 64x64 samples (exact to about 1/4096 of a pixel).
+/// The area of device pixel `(px, py)` the rounded rect `r` with circular
+/// radius `rad` covers, 0..=1, exactly: the pixel's overlap with the rect,
+/// less, at each corner, its overlap with the corner's square outside the
+/// circle.
 fn area(px: u32, py: u32, r: [f64; 4], rad: f64) -> f64 {
-    const N: u32 = 64;
-    let mut n = 0;
-    for j in 0..N {
-        for i in 0..N {
-            let x = px as f64 + (i as f64 + 0.5) / N as f64;
-            let y = py as f64 + (j as f64 + 0.5) / N as f64;
-            n += inside(x, y, r, rad) as u32;
-        }
+    let [x0, y0, x1, y1] = r;
+    let (px0, py0) = (px as f64, py as f64);
+    let (px1, py1) = (px0 + 1.0, py0 + 1.0);
+    let overlap = |a0: f64, a1: f64, b0: f64, b1: f64| (a1.min(b1) - a0.max(b0)).max(0.0);
+    let mut a = overlap(px0, px1, x0, x1) * overlap(py0, py1, y0, y1);
+    if rad <= 0.0 {
+        return a;
     }
-    n as f64 / (N * N) as f64
+    // Each corner: its centre, and which way is outward on each axis.
+    for (cx, cy, sx, sy) in [
+        (x0 + rad, y0 + rad, -1.0, -1.0),
+        (x1 - rad, y0 + rad, 1.0, -1.0),
+        (x1 - rad, y1 - rad, 1.0, 1.0),
+        (x0 + rad, y1 - rad, -1.0, 1.0),
+    ] {
+        // The pixel in the corner's (u, v), distances outward from the
+        // centre, clipped to its square `[0, rad]^2`.
+        let (ua, ub) = (sx * (px0 - cx), sx * (px1 - cx));
+        let (va, vb) = (sy * (py0 - cy), sy * (py1 - cy));
+        let (u0, u1) = (ua.min(ub).max(0.0), ua.max(ub).min(rad));
+        let (v0, v1) = (va.min(vb).max(0.0), va.max(vb).min(rad));
+        if u0 >= u1 || v0 >= v1 {
+            continue;
+        }
+        let disc =
+            quarter_disc(u1, v1, rad) - quarter_disc(u0, v1, rad) - quarter_disc(u1, v0, rad)
+                + quarter_disc(u0, v0, rad);
+        a -= (u1 - u0) * (v1 - v0) - disc;
+    }
+    a
 }
 
 /// The coverage (255 = black) a case's pixel should have, from the area.
@@ -281,4 +304,46 @@ fn gpu_rounded_corners_match_chrome_and_the_area() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// The exact oracle against 512x512 samples, on corner pixels of an
+/// odd-placed rect at three radii (no GPU: runs everywhere).
+#[test]
+fn the_area_oracle_is_exact() {
+    let inside = |x: f64, y: f64, [x0, y0, x1, y1]: [f64; 4], rad: f64| {
+        if x < x0 || y < y0 || x > x1 || y > y1 {
+            return false;
+        }
+        let cx = x.clamp(x0 + rad, x1 - rad);
+        let cy = y.clamp(y0 + rad, y1 - rad);
+        (x - cx).powi(2) + (y - cy).powi(2) <= rad * rad
+    };
+    for rad in [3.0, 8.5, 25.0] {
+        let r = [11.25, 7.0, 81.0, 67.5];
+        for (px, py) in [
+            (11, 7),
+            (12, 8),
+            (13, 9),
+            (11, 10),
+            (79, 65),
+            (80, 66),
+            (14, 7),
+        ] {
+            const N: u32 = 512;
+            let mut n = 0;
+            for j in 0..N {
+                for i in 0..N {
+                    let x = px as f64 + (i as f64 + 0.5) / N as f64;
+                    let y = py as f64 + (j as f64 + 0.5) / N as f64;
+                    n += inside(x, y, r, rad) as u32;
+                }
+            }
+            let sampled = n as f64 / (N * N) as f64;
+            let exact = area(px, py, r, rad);
+            assert!(
+                (exact - sampled).abs() < 2e-3,
+                "r {rad} ({px}, {py}): {exact} vs {sampled}"
+            );
+        }
+    }
 }
