@@ -20,8 +20,9 @@
 //! boxes is one `inline-block` holding a line whose max-content width is
 //! 544.2 and whose longest word is 66.1: an `auto` atomic inline is capped at
 //! the width its line gives it (#1476), so the box is exactly as wide as the
-//! space it was given, between 66 and 544. (Plain wrapping content answers
-//! its widest line instead — issue #1276, the `g` rows.)
+//! space it was given, between 66 and 544. (Plain wrapping content takes the
+//! room as well, the `g` rows; it answered its widest line until #2330,
+//! issue #1276.)
 
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
@@ -407,25 +408,11 @@ const CHROME: &[(&str, &str, &str)] = &[
 /// (name, rinch's answer, why) — rows of `CHROME` that are not Chrome's yet,
 /// each for a reason that is not this issue's. Pinned so that a fix has to
 /// come here and take the row out.
-const KNOWN: &[(&str, &str, &str)] = &[
-    (
-        "a12_static_in_grid",
-        "p=45,8,200,200 a=45,8,352,40 t=45,8,352,40",
-        "the static position in a grid container that is not the containing block is its padding edge in rinch and its content edge in Chrome",
-    ),
-    (
-        "g01_boxes_direct_left",
-        "a=23,8,260,40",
-        "#1276: content that wraps answers its widest line, not the available width",
-    ),
-    (
-        "g02_boxes_issue_example",
-        "p=45,8,200,200 a=3,3,390,40",
-        "#1276 (the issue's own example: 130x80 before this fix)",
-    ),
-    ("g03_text_direct_left", "a=23,8,328,40", "#1276"),
-    ("g04_text_anc_left", "p=45,8,200,200 a=23,8,328,40", "#1276"),
-];
+const KNOWN: &[(&str, &str, &str)] = &[(
+    "a12_static_in_grid",
+    "p=45,8,200,200 a=45,8,352,40 t=45,8,352,40",
+    "the static position in a grid container that is not the containing block is its padding edge in rinch and its content edge in Chrome",
+)];
 
 fn document() -> RinchDocument {
     use parley::fontique::{Blob, FontInfoOverride};

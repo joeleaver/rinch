@@ -2475,6 +2475,11 @@ fn hang_pass<'p>(
         let state = breaker.state_mut();
         state.set_layout_max_advance(full);
         state.set_line_max_advance(max);
+        // #2331: where this line starts, kept while floats may be beside it
+        // (the paragraph's own, placed as it goes, or its context's), and
+        // whether it placed a float of its own after content of its own.
+        let begin = (placer.is_some() || bands.is_some()).then(|| breaker.state().clone());
+        let mut placed_after_content = false;
         // A float's box: placed at this line's top when it fits beside what
         // the line holds so far, else at the next line's, and the line's room
         // narrowed by it (CSS 2.2 §9.5.1). Then on to the line's end.
@@ -2490,6 +2495,7 @@ fn hang_pass<'p>(
                         if width <= max - at.advance + 0.01 {
                             if let Some(now) = placer.place(float, top) {
                                 bands = Some(now);
+                                placed_after_content |= at.advance > 0.01;
                             }
                             if let Some(bands) = &bands {
                                 let (x, room) = bands.room(top, top, full);
@@ -2531,6 +2537,9 @@ fn hang_pass<'p>(
         // whatever ended it. Not an `overflow-wrap` line.
         let soft = matches!(data.reason, BreakReason::Regular | BreakReason::Emergency);
         let emergency = data.reason == BreakReason::Emergency;
+        // Whether the line CSS ends below holds a stretch wider than its
+        // room that has no break opportunity (#2331).
+        let mut css_overflows = false;
         if (has_edges && soft) || seams {
             let Some(end) = line_end(&units, cursor, data.metrics.advance) else {
                 in_step = false;
@@ -2571,6 +2580,35 @@ fn hang_pass<'p>(
                 stats.lines += 1;
                 data.reason = reason;
                 data.metrics.advance = advance;
+                css_overflows = line_overflows(&units[cursor..css.0], max);
+            }
+        }
+        // #2331: a line beside a float that has too little room there for
+        // its first piece of content, as CSS ends the line (after the rebreak
+        // above, which glues a `nowrap` run parley broke), is moved down to
+        // where the room changes and broken again from its start, and the
+        // next turn places it there as it places any line
+        // (`place_line_beside_floats`, whose trial break is parley's and does
+        // not see the glue). The move counts in `float_drop`. A float the line
+        // placed at its own start counts as beside it, and stays where it was
+        // placed; one placed after content of the line's own does not. Chrome
+        // 156: `<div 556><float 307x36><ib 311>` puts the line at 36 and the
+        // div is 56 tall, not the line's 20; `<float 100x31><span
+        // nowrap><ib 300><ib 303>` puts it at 31.
+        if !placed_after_content
+            && let (Some(begin), Some(floats)) = (&begin, &bands)
+            && (css_overflows || line_overflows_room(data.reason, data.metrics.advance, max))
+        {
+            let top = begin.line_y() as f32;
+            let bottom = top + (data.line_y_end - data.line_y_start) as f32;
+            if floats.room(top, bottom, full).1 < full
+                && let Some(below) = floats.next_change_below(top)
+            {
+                breaker.revert_to(begin.clone());
+                breaker.state_mut().set_line_y(f64::from(below));
+                *float_drop += below - top;
+                committed -= 1;
+                continue;
             }
         }
         // The last line is committed as it is (`BreakReason::None`; an empty
@@ -2682,7 +2720,7 @@ fn place_line_beside_floats(
     floats: &FloatBands,
     full: f32,
 ) -> (f32, f32) {
-    use parley::layout::{BreakReason, YieldData};
+    use parley::layout::YieldData;
     let from = breaker.committed_y() as f32;
     let mut top = from;
     // One move per band boundary at most; the guard is against a band that
@@ -2708,12 +2746,7 @@ fn place_line_beside_floats(
         let bottom = top + (line.line_y_end - line.line_y_start) as f32;
         let (x, room) = floats.room(top, bottom, full);
         // Its content does not fit: its first piece is wider than the room.
-        // parley breaks such a line as an emergency, or, when the piece ends
-        // the paragraph or a forced break follows it, keeps it whole past the
-        // room. A line it wrapped (`Regular`) fit, but for the space it hangs.
-        let overflows = line.reason == BreakReason::Emergency
-            || (line.reason != BreakReason::Regular && line.metrics.advance > room + 0.01);
-        if overflows
+        if line_overflows_room(line.reason, line.metrics.advance, room)
             && room < full
             && let Some(below) = floats.next_change_below(top)
         {
@@ -2726,6 +2759,16 @@ fn place_line_beside_floats(
         return (room, top - from);
     }
     (full, top - from)
+}
+
+/// Whether a line parley broke with `reason`, `advance` wide, holds content
+/// whose first piece is wider than the `room` it was broken in. parley breaks
+/// such a line as an emergency, or, when the piece ends the paragraph or a
+/// forced break follows it, keeps it whole past the room. A line it wrapped
+/// (`Regular`) fit, but for the space it hangs.
+fn line_overflows_room(reason: parley::layout::BreakReason, advance: f32, room: f32) -> bool {
+    use parley::layout::BreakReason;
+    reason == BreakReason::Emergency || (reason != BreakReason::Regular && advance > room + 0.01)
 }
 
 /// Break again a line that ends in an inline box parley placed by its
@@ -3873,8 +3916,15 @@ fn css_line(
     let mut hanging = 0.0f32;
     let mut fit: Option<(usize, f32)> = None;
     let mut chosen = None;
+    // Whether the line holds anything in flow yet. Out-of-flow boxes (a float
+    // or an absolutely positioned box, `counted` 0) before it make no line
+    // of their own: a break right after them would leave the line empty and
+    // put what follows on a line of its own below it (#2331: `<float><span
+    // nowrap>` 600px wide in 560 was two lines, Chrome 156 keeps one).
+    let mut in_flow = false;
     for e in first + 1..=units.len() {
         let u = &units[e - 1];
+        in_flow |= u.counted > 0;
         if u.newline {
             // The forced break ends the line, unless what is before it
             // overflows and an earlier break fits.
@@ -3891,7 +3941,7 @@ fn css_line(
         } else {
             0.0
         };
-        if !edge_break_allowed(units, breaks, e, false, true, pre_seams) {
+        if !in_flow || !edge_break_allowed(units, breaks, e, false, true, pre_seams) {
             continue;
         }
         let seam = pre_seams.then(|| pre_seam(units, e)).flatten();
@@ -8716,8 +8766,15 @@ impl RinchDocument {
                                             .unwrap_or(inline_layout.content_height()),
                                     };
                                 }
-                                let width =
-                                    known_dims.width.unwrap_or(inline_layout.measured_width());
+                                // Fit-content at a definite room, as the
+                                // root compute answers (#2330).
+                                let width = known_dims.width.unwrap_or(
+                                    if floats.is_some() || places_floats {
+                                        inline_layout.measured_width()
+                                    } else {
+                                        inline_layout.fit_content_width()
+                                    },
+                                );
                                 let height =
                                     known_dims.height.unwrap_or(inline_layout.content_height());
                                 baselines.push((

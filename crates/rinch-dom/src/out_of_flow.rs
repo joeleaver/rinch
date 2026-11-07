@@ -251,11 +251,10 @@
 //!   box tree, never meets the span, and ends the box's clip chain at the
 //!   next positioned *box*. Layout, the scroll range and damage do see the
 //!   span.
-//! - An auto-width box shrunk to fit (see *The shrink-to-fit width*) whose
-//!   content wraps is as wide as its widest line, not the room it has
-//!   (issue #1276); and a box placed from its static position by a flex
-//!   container's `justify-content` is given the room after the container's
-//!   content edge, wherever it is then put.
+//! - A box placed from its static position by a flex container's
+//!   `justify-content` is given the room after the container's content edge,
+//!   wherever it is then put. (An auto-width box shrunk to fit whose content
+//!   wraps is as wide as the room since #2330, issue #1276.)
 //! - `position: fixed` is shrunk to fit in the viewport (#893) and takes a
 //!   percentage `min-`/`max-` size from it, but none of the margin and
 //!   padding rules below (#1980), and a transformed ancestor does not
