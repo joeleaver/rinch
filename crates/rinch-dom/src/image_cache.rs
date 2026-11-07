@@ -254,6 +254,12 @@ pub struct ImageCache {
     /// when it lands and the source asked for once more. Removed when the
     /// reload's answer is taken.
     reloading: HashMap<String, bool>,
+    /// Sources whose load [`Self::drain_pending`] found failed (and with no
+    /// picture to keep): their `<img>`s now show a placeholder (#2309).
+    newly_failed: Vec<String>,
+    /// Failed sources whose reload is in flight ([`Self::shows_failure`]).
+    /// Removed when the reload's answer is taken.
+    retrying_failed: HashSet<String>,
 }
 
 impl Default for ImageCache {
@@ -270,6 +276,8 @@ impl ImageCache {
             doc_key: 0,
             retries: Vec::new(),
             reloading: HashMap::new(),
+            newly_failed: Vec::new(),
+            retrying_failed: HashSet::new(),
         }
     }
 
@@ -317,6 +325,14 @@ impl ImageCache {
         matches!(self.entries.get(src), Some(ImageState::Failed(_)))
     }
 
+    /// Whether `src` has no picture because its load failed, including while
+    /// a reload of that failure is in flight: an `<img>` naming it keeps its
+    /// placeholder (#2309) until the reload's answer lands, rather than
+    /// blanking it for the reload (whose answer may well be another failure).
+    pub fn shows_failure(&self, src: &str) -> bool {
+        self.is_failed(src) || self.retrying_failed.contains(src)
+    }
+
     /// Forget what is known about `src` so that it is asked for again: the
     /// cache half of [`reload_image`]. Returns whether the caller should start
     /// a load for it now.
@@ -341,6 +357,7 @@ impl ImageCache {
         match self.entries.get_mut(src) {
             Some(state @ ImageState::Failed(_)) => {
                 *state = ImageState::Loading { reload: false };
+                self.retrying_failed.insert(src.to_string());
                 true
             }
             Some(ImageState::Decoded(_)) => match self.reloading.get_mut(src) {
@@ -366,6 +383,13 @@ impl ImageCache {
     /// the caller starts their loads.
     pub fn take_retries(&mut self) -> Vec<String> {
         std::mem::take(&mut self.retries)
+    }
+
+    /// The sources [`Self::drain_pending`] recorded as failed since the last
+    /// call, each once per answer: what an `<img>` naming one draws changed
+    /// from nothing to its placeholder (#2309).
+    pub fn take_newly_failed(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.newly_failed)
     }
 
     /// Insert a decoded image into the cache.
@@ -411,6 +435,7 @@ impl ImageCache {
                 }
                 self.reloading.remove(&item.src);
             }
+            self.retrying_failed.remove(&item.src);
             match item.result {
                 Ok(img) => {
                     newly_decoded.push(item.src.clone());
@@ -420,6 +445,7 @@ impl ImageCache {
                     tracing::warn!("Image load failed for {}: {}", item.src, e);
                     // A reload of a picture that is on screen keeps it there.
                     if !matches!(self.entries.get(&item.src), Some(ImageState::Decoded(_))) {
+                        self.newly_failed.push(item.src.clone());
                         self.put(item.src, ImageState::Failed(e));
                     }
                 }

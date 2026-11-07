@@ -913,33 +913,20 @@ impl RinchDocument {
                             }
                         }
                         Some(NodeContext::Image {
-                            natural, aspect, ..
-                        }) => {
-                            // A loaded image's own ratio unless `aspect-ratio`
-                            // declares one without `auto`; before it loads (or when
-                            // it failed), the declared one, which is the one its
-                            // `width` and `height` attributes map to (#684) unless an
-                            // author rule replaced it (#1286); with neither, none.
-                            let (natural, ratio) =
-                                crate::replaced::image_natural_size(*natural, *aspect);
-                            // A replaced element with a natural size and
-                            // ratio (#788, #1150): a style width or height
-                            // gives the other through the ratio, and so do
-                            // `min-*`/`max-*` clamps.
-                            crate::replaced::contribution(
-                                crate::replaced::measure(
-                                    natural,
-                                    ratio,
-                                    known_dims,
-                                    style,
-                                    inputs.parent_size,
-                                    inputs.sizing_mode == taffy::SizingMode::InherentSize,
-                                ),
-                                style,
-                                known_dims,
-                                inputs.available_space,
-                            )
-                        }
+                            natural,
+                            aspect,
+                            alt,
+                            ..
+                        }) => crate::replaced::measure_image(
+                            *natural,
+                            *aspect,
+                            alt.as_ref(),
+                            known_dims,
+                            style,
+                            inputs.parent_size,
+                            inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                            inputs.available_space,
+                        ),
                         Some(NodeContext::InlineRoot(root_id)) => {
                             let root_id = *root_id;
 

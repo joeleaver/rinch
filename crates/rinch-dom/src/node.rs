@@ -158,6 +158,12 @@ pub enum NodeContext {
         /// image's own ratio. Kept current by
         /// [`crate::replaced::sync_replaced_measure`].
         aspect: crate::computed_style::AspectRatioValue,
+        /// The `alt` text an image with no picture shows in its place (#2309,
+        /// [`crate::img_placeholder`]), shaped: `Some` while it is a
+        /// placeholder with alt text. An inline one is measured from it
+        /// ([`crate::replaced::measure_image`]); paint draws it re-broken.
+        /// Kept current by [`crate::RinchDocument::sync_img_placeholder`].
+        alt: Option<crate::img_placeholder::AltText>,
     },
     /// IFC root that needs Parley TreeBuilder measurement.
     ///
@@ -1158,6 +1164,13 @@ pub struct Node {
     /// browser's flag, and only a form reset clears that — which desktop does
     /// not model — so nothing clears this either.
     pub value_dirty: bool,
+    /// An `<img>` alt placeholder too small for its box shows its alt text
+    /// inline with its `width`/`height` dropped from its Taffy style (#2309,
+    /// [`crate::img_placeholder::ignores_size`]): whether the style it was
+    /// last given dropped them, so `sync_img_placeholder` knows when to
+    /// rebuild it (a failure or a picture arriving changes it without a
+    /// restyle).
+    pub img_size_ignored: bool,
     /// A single-line `<input>`'s horizontal scroll, in logical px: how far its
     /// one unwrapped line of text is moved left so the caret stays in view
     /// (#1721). `NaN` until the field is focused (and again after it loses
@@ -1920,6 +1933,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             value_dirty: false,
+            img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
@@ -2009,6 +2023,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             value_dirty: false,
+            img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
             dirty: DirtyFlags::STYLE | DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
@@ -2097,6 +2112,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             value_dirty: false,
+            img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
             dirty: DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
@@ -2183,6 +2199,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             value_dirty: false,
+            img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
