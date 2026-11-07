@@ -1140,7 +1140,19 @@ is `sans-serif`. Otherwise:
   `FcFontSort`; rinch asks `FcFontMatch` only. And rinch takes an installed
   family as itself without asking fontconfig, so a configuration that replaces
   an *installed* family with a preferred one is followed by Chrome and not by
-  rinch. `FontDefaults::system_substitutes` (default `true`) turns it off;
+  rinch. The fork's pattern carries no weight or slant, where Skia adds the
+  requested style (`fcpattern_from_skfontstyle`) before matching, so a
+  configuration whose top match differs by style can be answered differently.
+  And rinch looks the accepted name up in fontique (`family_by_name`, then
+  fontique's own style match), where Chrome draws the matched file itself;
+  the two differ only where fontique's family for that name holds other
+  faces than fontconfig's match. Each name's answer is asked once per
+  thread (`memoized`, keyed like the stack cache and cleared with it,
+  negative answers included): one `FcFontMatch` is about 0.9 ms with 1,300
+  fonts, and before the memo 100 distinct stacks of 10 missing names took
+  526–877 ms against 2–3 ms on main (review of #2349). Measured by
+  `rinch-bench`'s `font_stack_resolve`. `FontDefaults::system_substitutes`
+  (default `true`) turns it off;
   fontique answers on Linux and the BSDs only. Past the first family that
   resolves, a name is checked in the name map alone (`family_id`, which loads
   no faces) and only a missing one is resolved: a character the first family

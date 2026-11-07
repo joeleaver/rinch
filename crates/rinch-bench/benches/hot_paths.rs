@@ -193,6 +193,13 @@ fn memo_flush(f: ShellFixture<Signal<usize>>) -> ShellFixture<Signal<usize>> {
     black_box(measure(black_box(f), op_memo_selection))
 }
 
+// The first layout of twenty mail stacks naming missing families (#2336).
+#[library_benchmark]
+#[bench::mail_stacks_20(setup = setup_font_stack_resolve)]
+fn font_stack_resolve(cx: parley::FontContext) -> parley::FontContext {
+    black_box(measure(black_box(cx), op_font_stack_resolve))
+}
+
 library_benchmark_group!(
     name = dom,
     benchmarks = [
@@ -216,7 +223,8 @@ library_benchmark_group!(
         full_paint,
         vello_paint,
         shadow_paint,
-        text_shadow_paint
+        text_shadow_paint,
+        font_stack_resolve
     ]
 );
 

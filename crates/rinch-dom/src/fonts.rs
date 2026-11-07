@@ -63,6 +63,7 @@ thread_local! {
 pub fn set_font_defaults(defaults: FontDefaults) {
     FONT_DEFAULTS.with(|d| *d.borrow_mut() = defaults);
     STACK_CACHE.with(|cache| cache.borrow_mut().clear());
+    SYSTEM_MATCH_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
 /// This thread's [`FontDefaults`].
@@ -208,19 +209,62 @@ pub(crate) struct SystemMatch {
 /// Asks the system for a family name's [`SystemMatch`].
 pub(crate) type SystemMatcher<'a> = dyn FnMut(&mut Collection, &str) -> Option<SystemMatch> + 'a;
 
-/// The system matcher a layout uses: fontique's fontconfig query where
-/// `defaults` follow the system's substitutes, else none. fontique answers
-/// on Linux and the BSDs only, so elsewhere this finds nothing.
+/// The system matcher a layout uses: fontique's fontconfig query, asked once
+/// per name ([`memoized`]), where `defaults` follow the system's substitutes,
+/// else none. fontique answers on Linux and the BSDs only, so elsewhere this
+/// finds nothing.
 fn system_matcher(
     defaults: &FontDefaults,
 ) -> impl FnMut(&mut Collection, &str) -> Option<SystemMatch> + use<> {
-    gated(defaults, |collection: &mut Collection, name: &str| {
-        let answer = collection.system_family_match(name)?;
-        Some(SystemMatch {
-            configured: answer.configured,
-            matched: answer.matched,
-        })
-    })
+    gated(
+        defaults,
+        memoized(|collection: &mut Collection, name: &str| {
+            let answer = collection.system_family_match(name)?;
+            Some(SystemMatch {
+                configured: answer.configured,
+                matched: answer.matched,
+            })
+        }),
+    )
+}
+
+/// `query`, remembered per thread by family name (ASCII case-insensitive),
+/// negative answers included, and keyed like the stack cache by the
+/// context's first `sans-serif` and `serif` faces.
+///
+/// Why (review of #2349): one `FcFontMatch` costs about 0.9 ms with 1,300
+/// fonts installed, and mail and web stacks repeat the same missing names
+/// (`-apple-system`, `'Segoe UI'`, `'Helvetica Neue'`) in many different
+/// stacks. Asked per stack, 100 distinct stacks of 10 missing names took
+/// 526–877 ms on the UI thread; asked per name, it is one query per name.
+/// Cleared wherever the stack cache is ([`set_font_defaults`], its size
+/// limit). A context with neither generic is not remembered, as in the stack
+/// cache (every such context would share the key).
+fn memoized<Q>(mut query: Q) -> impl FnMut(&mut Collection, &str) -> Option<SystemMatch> + use<Q>
+where
+    Q: FnMut(&mut Collection, &str) -> Option<SystemMatch>,
+{
+    move |collection: &mut Collection, name: &str| {
+        let sans = collection.generic_families(GenericFamily::SansSerif).next();
+        let serif = collection.generic_families(GenericFamily::Serif).next();
+        let context = (sans, serif);
+        if context == (None, None) {
+            return query(collection, name);
+        }
+        let key = (context, name.to_ascii_lowercase());
+        if let Some(hit) = SYSTEM_MATCH_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+            return hit;
+        }
+        let answer = query(collection, name);
+        SYSTEM_MATCH_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= STACK_CACHE_LIMIT {
+                cache.clear();
+            }
+            cache.insert(key, answer.clone());
+        });
+        answer
+    }
 }
 
 /// `query`, or nothing where `defaults` turn system substitutes off.
@@ -486,6 +530,7 @@ pub fn parley_font_family(
                 let mut cache = cache.borrow_mut();
                 if cache.values().map(|m| m.len()).sum::<usize>() >= STACK_CACHE_LIMIT {
                     cache.clear();
+                    SYSTEM_MATCH_CACHE.with(|cache| cache.borrow_mut().clear());
                 }
                 cache
                     .entry(key)
@@ -775,6 +820,12 @@ thread_local! {
     /// or `None` (use the stack as written).
     static STACK_CACHE: std::cell::RefCell<StackCache> =
         std::cell::RefCell::new(StackCache::new());
+
+    /// (first `sans-serif` and `serif` faces, lowercased family name) → the
+    /// system's answer for it, `None` included ([`memoized`]).
+    static SYSTEM_MATCH_CACHE: std::cell::RefCell<
+        std::collections::HashMap<(StackCacheKey, String), Option<SystemMatch>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// `name` as a CSS string that parley's `parse_css_list` reads back as that
@@ -1897,7 +1948,7 @@ mod tests {
     mod system_substitutes {
         use super::super::{
             FontDefaults, SystemMatch, apply_generic_defaults_with, finish_stack_with, gated,
-            metric_compatible, system_substitute,
+            memoized, metric_compatible, system_substitute,
         };
         use parley::fontique::{
             Blob, Collection, CollectionOptions, FamilyId, FontInfoOverride, GenericFamily,
@@ -2069,6 +2120,54 @@ mod tests {
             ] {
                 assert_eq!(finish(&mut host, stack, &chrome), finished, "{stack}");
             }
+        }
+
+        #[test]
+        fn fontconfig_is_asked_once_per_missing_name() {
+            // Review of #2349: each `FcFontMatch` is about 0.9 ms, and mail
+            // stacks repeat the same missing names in many stacks. Two stacks
+            // sharing names ask each name once, a negative answer included,
+            // whatever its case; clearing the stack cache asks again.
+            crate::fonts::set_font_defaults(FontDefaults::default());
+            let mut host = liberation_host();
+            let asked = std::cell::RefCell::new(Vec::<String>::new());
+            let counting = |c: &mut Collection, name: &str| {
+                asked.borrow_mut().push(name.to_owned());
+                fontconfig(c, name)
+            };
+            let defaults = FontDefaults::default();
+            let mut matcher = gated(&defaults, memoized(counting));
+            for stack in [
+                "'Segoe UI', 'Helvetica Neue', Arial, sans-serif",
+                "'helvetica neue', -apple-system, 'Segoe UI', Arial",
+            ] {
+                finish_stack_with(&mut host, stack, &defaults, &mut matcher);
+            }
+            let mut names: Vec<String> = asked.borrow().iter().map(|n| n.to_lowercase()).collect();
+            let all = names.len();
+            names.sort();
+            names.dedup();
+            assert_eq!(
+                all,
+                names.len(),
+                "a name was asked twice: {:?}",
+                asked.borrow()
+            );
+            assert_eq!(
+                names,
+                ["-apple-system", "arial", "helvetica neue", "segoe ui"]
+            );
+            // The answers are the same as unmemoized.
+            assert_eq!(
+                finish_stack_with(&mut host, "Arial, 'Segoe UI'", &defaults, &mut matcher),
+                Some(r#""Liberation Sans", "Segoe UI""#.to_owned())
+            );
+            assert_eq!(asked.borrow().len(), all);
+            drop(matcher);
+            crate::fonts::set_font_defaults(FontDefaults::default());
+            let mut matcher = gated(&defaults, memoized(counting));
+            finish_stack_with(&mut host, "Arial, 'Segoe UI'", &defaults, &mut matcher);
+            assert_eq!(asked.borrow().len(), all + 2);
         }
 
         #[test]

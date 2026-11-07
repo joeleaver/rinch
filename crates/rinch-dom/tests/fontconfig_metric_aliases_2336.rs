@@ -95,7 +95,17 @@ fn face(family: &str) -> Vec<u8> {
 const FALLBACK: &str = "Fallback Face 2336";
 const TARGET: &str = "Target Face 2336";
 
-fn configure() -> std::path::PathBuf {
+/// The test's temporary directory, removed when dropped, so a failing
+/// assertion does not leave it behind.
+struct TempDir(std::path::PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn configure() -> TempDir {
     let dir = std::env::temp_dir().join(format!("rinch-fc-2336-{}", std::process::id()));
     let fonts = dir.join("fonts");
     std::fs::create_dir_all(&fonts).unwrap();
@@ -138,7 +148,7 @@ fn configure() -> std::path::PathBuf {
         ),
     )
     .unwrap();
-    dir
+    TempDir(dir)
 }
 
 fn source(family: FontFamily<'_>) -> String {
@@ -184,7 +194,7 @@ fn a_missing_family_takes_the_substitute_chrome_accepts() {
     let dir = configure();
     // SAFETY: the only test in this binary, before any thread or fontconfig
     // call reads the environment.
-    unsafe { std::env::set_var("FONTCONFIG_FILE", dir.join("fonts.conf")) };
+    unsafe { std::env::set_var("FONTCONFIG_FILE", dir.0.join("fonts.conf")) };
 
     let mut cx = rinch_dom::fonts::new_font_context();
 
@@ -272,6 +282,4 @@ fn a_missing_family_takes_the_substitute_chrome_accepts() {
     let mut cx = rinch_dom::fonts::new_font_context();
     assert!(!emboldened(&mut cx, "Liberation Sans", 600.0));
     assert!(emboldened(&mut cx, "Liberation Sans", 601.0));
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
