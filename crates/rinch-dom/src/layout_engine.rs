@@ -839,6 +839,13 @@ impl RinchDocument {
             // to place as its lines reach them (`float_wrap`).
             let block_ctx =
                 block_ctx.filter(|_| matches!(context, Some(NodeContext::InlineRoot(_))));
+            // Asked only its width beside its own floats (#2326): its lines
+            // are broken with no float placed, and the floats added to the
+            // lines they stand in after.
+            let (block_ctx, intrinsic) = match block_ctx {
+                Some(ctx) if ctx.is_intrinsic() => (None, Some(&*ctx)),
+                other => (other, None),
+            };
             let leaf_box = block_ctx
                 .as_ref()
                 .and_then(|_| crate::float_wrap::LeafBox::of(&inputs, style));
@@ -950,7 +957,8 @@ impl RinchDocument {
                             // Use wrap_width bits as cache key
                             let wrap_bits = max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
 
-                            let beside_floats = floats.is_some() || places_floats;
+                            let beside_floats =
+                                floats.is_some() || places_floats || intrinsic.is_some();
                             // Laid out with no float beside it, the root's paint
                             // layout has the whole width again: its old bands go
                             // before the cache below can answer (the bands of a
@@ -1032,7 +1040,52 @@ impl RinchDocument {
                             let mut h = hang.get();
                             h.add(inline_layout.hang);
                             hang.set(h);
-                            let w = inline_layout.measured_width();
+                            let mut w = inline_layout.measured_width();
+                            if let Some(ctx) = intrinsic {
+                                // Asked at a definite room, the max-content
+                                // lines are broken again: the floats are added
+                                // to unbroken lines, then the room clamps.
+                                let max = max_width.map(|room| {
+                                    let atomic = crate::ifc::AtomicContributions {
+                                        wrap_width: None,
+                                        min_content,
+                                        resolved_at,
+                                        requests: min_requests,
+                                    };
+                                    let (max, resolved) = Self::build_inline_layout(
+                                        nodes,
+                                        root_id,
+                                        None,
+                                        None,
+                                        1.0,
+                                        font_cx,
+                                        layout_cx,
+                                        Some(&atomic),
+                                        None,
+                                        None,
+                                    );
+                                    font_family_resolves.set(font_family_resolves.get() + resolved);
+                                    (max, room)
+                                });
+                                w = match &max {
+                                    Some((max, room)) => {
+                                        crate::float_wrap::intrinsic_width_beside_floats(
+                                            ctx,
+                                            nodes,
+                                            &max.layout,
+                                            max.measured_width(),
+                                            Some((*room, w)),
+                                        )
+                                    }
+                                    None => crate::float_wrap::intrinsic_width_beside_floats(
+                                        ctx,
+                                        nodes,
+                                        &inline_layout.layout,
+                                        w,
+                                        None,
+                                    ),
+                                };
+                            }
                             let h = inline_layout.content_height();
                             first_baseline = crate::ifc::first_line_baseline(&inline_layout.layout);
 
