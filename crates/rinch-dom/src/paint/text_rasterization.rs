@@ -504,6 +504,34 @@ impl ResolvedTextRasterization {
     }
 }
 
+/// Chrome's faux bold for text of `font_size` CSS px (#2296): how far each
+/// side of a glyph's outline moves out, in the same px.
+///
+/// Skia draws a faux-bold run by stroking each outline as it fills it, with a
+/// stroke `font_size × k` wide: `k` is 1/24 of the em up to 9px, 1/32 from
+/// 36px, and linear between (`kStdFakeBoldInterpKeys`/`Values`). The stroke
+/// straddles the outline, so each side moves out by half of it. The size is
+/// the font's, before any transform: under `scale(2)` the stroke is doubled
+/// with the text, not taken at 40px. Measured in Chrome 156 on Linux, on Inter
+/// with only its regular face: an `l`'s stem grew by 0.401 px at 9px, 0.866 at
+/// 24px, 1.498 at 48px and 3.004 at 96px, and its centre did not move
+/// (`faux_bold_2296_tests`).
+///
+/// The amount adds to any [stem darkening](ResolvedTextRasterization::darkening_for):
+/// each painter grows a faux-bold run's outlines by the sum.
+#[inline]
+pub fn synthetic_bold_px(font_size: f32) -> f32 {
+    const SMALL_PX: f32 = 9.0;
+    const LARGE_PX: f32 = 36.0;
+    const SMALL_K: f32 = 1.0 / 24.0;
+    const LARGE_K: f32 = 1.0 / 32.0;
+    if font_size.is_nan() || font_size <= 0.0 {
+        return 0.0;
+    }
+    let t = ((font_size - SMALL_PX) / (LARGE_PX - SMALL_PX)).clamp(0.0, 1.0);
+    font_size * (SMALL_K + t * (LARGE_K - SMALL_K)) / 2.0
+}
+
 /// How much `transform` scales lengths: the square root of its linear part's
 /// determinant (`1` for a translation or a rotation, `2` for `scale(2)`). A degenerate transform reads as `0`.
 #[inline]

@@ -272,7 +272,7 @@ device size and quarter-pixel horizontal position, and drawn at a whole device
 pixel, so letters keep their fractional spacing and the GPU and software
 renderers draw the same pixels. Text under a rotation, a skew or an uneven
 scale, emoji and other colour glyphs, text larger than 64 device pixels and
-synthetic italics are drawn from outlines on the GPU instead; a uniform scale
+synthetic italics (below) are drawn from outlines on the GPU instead; a uniform scale
 (a HiDPI display, CSS `scale()`) is rasterised at the scaled size. Text whose
 size is animating (a `font-size` or `scale()` transition or animation) is
 drawn from outlines while it changes, since each size would be a new set of
@@ -281,6 +281,18 @@ slightly, so on the frame the text starts or stops animating its glyph edges
 shift by up to about half a pixel and its weight by about 1%; the animation
 itself hides the first, and the second is one frame. An app can keep outlines
 for everything with `TextRasterization::default().gpu_glyph_outlines(true)`.
+
+**Synthetic bold and italic.** A family with no bold face, set in
+`font-weight: bold` (any weight more than 200 over the face's), is drawn from
+its regular face emboldened, as Chrome draws it: each side of a glyph's outline
+moves out by `size / 48` up to 9px, `size / 64` from 36px and in between
+proportionally (an `l` at 16px is 0.62 px wider), the same on both renderers,
+and on top of any stem darkening. A family with no italic face (and no
+italic or slant axis), set in `font-style: italic`, is slanted by 14 degrees.
+Shadows of such text are emboldened and slanted with it. Ship the real face
+(`App::font`) where the weight matters: a synthesised bold is heavier than the
+regular but is not the designer's bold, and its advances are the regular
+face's.
 
 **Subpixel (LCD) text.** Where the OS draws subpixel text — fontconfig's `rgba`
 on Linux (KDE's "Sub-pixel rendering: RGB" writes `rgba=rgb`), ClearType on

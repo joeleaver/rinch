@@ -4,7 +4,9 @@ use peniko::kurbo::Affine;
 use peniko::{Blob, Brush, Fill, FontData, ImageAlphaType, ImageData, ImageFormat};
 use vello::Scene;
 
-use super::painter::{BlendMode, ImageSampling, PaintGlyph, PaintImage, PaintShape, Painter};
+use super::painter::{
+    BlendMode, GlyphSynthesis, ImageSampling, PaintGlyph, PaintImage, PaintShape, Painter,
+};
 use super::slicing::{Open, Slicing, SurfaceSlice};
 use peniko::kurbo::Rect;
 
@@ -456,7 +458,7 @@ impl VelloPainter {
         font: &FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
@@ -483,7 +485,7 @@ impl VelloPainter {
                 font,
                 font_size,
                 transform,
-                glyph_transform,
+                synthesis,
                 brush,
                 hint,
                 normalized_coords,
@@ -507,7 +509,7 @@ impl VelloPainter {
         font: &FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
@@ -519,7 +521,9 @@ impl VelloPainter {
         let Brush::Solid(tint) = brush else {
             return false;
         };
-        if glyph_transform.is_some() {
+        // A faux italic draws as outlines, Vello's glyph transform; a faux
+        // bold is rasterised emboldened (#2296).
+        if synthesis.skew != 0.0 {
             return false;
         }
         let Some(scale) = atlas_scale(transform) else {
@@ -541,6 +545,10 @@ impl VelloPainter {
             size,
             hint: hint && policy.hint(),
             embolden: policy.run_darkening_px(brush, font_size, transform),
+            // The mask is rasterised at the device size, so the faux bold
+            // takes the device amount too.
+            synthetic_bold: (synthesis.embolden as f64 * scale) as f32,
+            skew: 0.0,
             coords: normalized_coords,
             // Subpixel masks where the policy asks for them and the painter
             // can draw them here (#2286 stage 3); the fork composites them
@@ -633,7 +641,7 @@ impl VelloPainter {
                     font,
                     font_size,
                     transform,
-                    None,
+                    synthesis,
                     brush,
                     hint,
                     normalized_coords,
@@ -708,7 +716,7 @@ fn encode_glyphs(
     font: &FontData,
     font_size: f32,
     transform: Affine,
-    glyph_transform: Option<Affine>,
+    synthesis: GlyphSynthesis,
     brush: &Brush,
     hint: bool,
     normalized_coords: &[i16],
@@ -722,24 +730,28 @@ fn encode_glyphs(
     // (`vello_encoding::resolve`, the `GlyphRun` patch, compares the f32
     // matrix this way), otherwise at `font_size`, scaled by `transform`
     // afterwards.
+    //
+    // A faux bold (#2296) is in the run's own units, so it is scaled up where
+    // the scale is folded in, and adds to the darkening.
     let device = policy.run_darkening_px(brush, font_size, transform) as f64;
-    let darkening = if device == 0.0 {
+    let faux = synthesis.embolden as f64;
+    let darkening = if device == 0.0 && faux == 0.0 {
         0.0
     } else {
         let [a, b, c, d, _, _] = transform.as_coeffs();
         let folds = hint && a as f32 == d as f32 && b as f32 == 0.0 && c as f32 == 0.0;
         let scale = super::text_rasterization::device_scale(transform);
         if folds || scale == 0.0 {
-            device
+            device + faux * scale
         } else {
-            device / scale
+            device / scale + faux
         }
     };
     scene
         .draw_glyphs(font)
         .font_size(font_size)
         .transform(transform)
-        .glyph_transform(glyph_transform)
+        .glyph_transform(synthesis.glyph_transform())
         .brush(brush)
         .hint(hint)
         .font_embolden(vello::FontEmbolden::new(peniko::kurbo::Diagonal2::new(
@@ -1028,7 +1040,7 @@ impl Painter for VelloPainter {
         font: &FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
@@ -1041,7 +1053,7 @@ impl Painter for VelloPainter {
                 font,
                 font_size,
                 transform,
-                glyph_transform,
+                synthesis,
                 brush,
                 hint,
                 normalized_coords,
@@ -1060,7 +1072,7 @@ impl Painter for VelloPainter {
                 font,
                 font_size,
                 transform,
-                glyph_transform,
+                synthesis,
                 brush,
                 hint,
                 normalized_coords,
@@ -1072,7 +1084,7 @@ impl Painter for VelloPainter {
             font,
             font_size,
             transform,
-            glyph_transform,
+            synthesis,
             brush,
             hint,
             normalized_coords,
