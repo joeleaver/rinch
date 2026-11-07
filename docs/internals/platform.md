@@ -61,7 +61,14 @@ inline-block of the alt text, as Chrome's alt container is: the measure
 measure arms) takes a declared width (found by asking `replaced::measure`
 with two natural widths: one it ignores is decided by the style or Taffy),
 else shrink-to-fit (`min(max-content, max(min-content, available))`), and a
-declared height, else its lines' at that width; `ifc::atomic_inline_baseline`
+declared height, else its lines' at that width, never under
+`MIN_INLINE_HEIGHT` (16px: Chrome 156's alt container holds its 16x16
+icon, so a mail cell's `line-height: 0`, `line-height: 10px` or
+`font-size: 0` leaves a 16px box; its text is laid out from the top and
+clipped, so at `line-height: 0` only the glyphs' lower half shows, Chrome's
+rows 0..8 — `tests/img_placeholder_mail_2313_tests.rs`; an empty or invalid
+`height` attribute maps nothing, as HTML says, so `width=40 height=""` in a
+`font-size: 0` cell is a 40x16 box with no visible text, Chrome's too); `ifc::atomic_inline_baseline`
 returns its last line's baseline. So `width=600 alt=Banner style="width:
 100%; height: auto"` in a 150px column is 150 by one line, and a long alt
 text in an 80px column 80 wide, wrapped, on a line of its own after text

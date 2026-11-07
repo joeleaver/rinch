@@ -26,7 +26,8 @@
 //! 2. **`alt`, and not both dimensions**: [`Placeholder::Inline`], the alt
 //!    text as Chrome lays it out, an inline-block of it ([`AltText`]): as
 //!    wide as the text up to the room it has (it wraps), or its declared
-//!    width; as tall as its wrapped lines, or its declared height; on its
+//!    width; as tall as its wrapped lines, or its declared height, and at
+//!    least [`MIN_INLINE_HEIGHT`] (Chrome's 16px icon); on its
 //!    last line's baseline. `<img width=600 alt=Banner style="display:block;
 //!    width:100%; height:auto">` in a 150px column is 150 by one line, as in
 //!    Chrome; a long alt text in an 80px column is 80 wide and wraps.
@@ -86,6 +87,12 @@ pub const MIN_BOX_NO_SRC: f32 = 3.0;
 /// The same after a failed load (Chrome 156: nothing at 17x100 or 300x17,
 /// the ring and its icon at 18).
 pub const MIN_BOX_FAILED: f32 = 18.0;
+
+/// The least height of an inline alt placeholder's content box: Chrome
+/// 156's alt container holds its 16x16 broken-image icon, so a cell's
+/// `line-height: 0` or `font-size: 0` leaves it 16px tall (rinch draws no
+/// icon, but keeps the box: the layout is Chrome's).
+pub const MIN_INLINE_HEIGHT: f32 = 16.0;
 
 /// The escape hatch: `none` turns placeholders off.
 pub const PROPERTY: &str = "rinch-img-placeholder";
@@ -164,10 +171,10 @@ impl AltText {
         (layout.width(), layout.height())
     }
 
-    /// The last line's baseline from the top of a box `height` tall holding
-    /// its lines (every line one line box).
-    pub fn last_baseline(&self, height: f32) -> f32 {
-        height - (self.line_height - self.baseline)
+    /// The last line's baseline from the top of its box, its lines broken at
+    /// `width` and laid out from the box's top (every line one line box).
+    pub fn last_baseline(&self, width: f32) -> f32 {
+        self.wrapped(width).1 - (self.line_height - self.baseline)
     }
 }
 
@@ -393,7 +400,7 @@ pub(crate) fn wanted_alt(
 /// of an inline-block holding its text. Its width is its declared one when it
 /// has one, else shrink-to-fit (the text's advance, down to the room it has,
 /// never under its widest word); its height its declared one, else its
-/// lines' at that width. `min-*`/`max-*` clamp both, as
+/// lines' at that width, and never under [`MIN_INLINE_HEIGHT`]. `min-*`/`max-*` clamp both, as
 /// [`crate::replaced::measure`] does.
 pub(crate) fn measure_inline_alt(
     alt: &AltText,
@@ -425,7 +432,7 @@ pub(crate) fn measure_inline_alt(
         m(alt.max_content.min(room.max(alt.min_content)), 0.0).width
     };
     let (_, lines) = alt.wrapped(width);
-    m(width, lines)
+    m(width, lines.max(MIN_INLINE_HEIGHT))
 }
 
 #[cfg(test)]
