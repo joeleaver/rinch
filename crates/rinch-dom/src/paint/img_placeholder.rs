@@ -38,18 +38,17 @@ fn width_property(node: &Node) -> Option<f32> {
     (px.is_finite() && px >= 0.0).then_some(px)
 }
 
-/// Draw `node`'s placeholder, if it is owed one, in its content box (the
-/// border box `x, y, w, h` in device px less its border and padding).
+/// Draw `node`'s placeholder, if it is owed one, in its content box
+/// `content` (device px: the border box less the border and padding layout
+/// resolved). The caller clips it to the content edge's curve when the box is
+/// rounded, as it clips a picture.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_img_placeholder(
     tree: &NodeTree,
     node: &Node,
     painter: &mut dyn Painter,
     scale: f64,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
+    content: Rect,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
     transform: Affine,
@@ -59,15 +58,10 @@ pub(super) fn paint_img_placeholder(
         return;
     }
     let cs = &node.computed_style;
-    let (l, t, r, b) = super::content_box_insets(node);
-    let cx = x + f64::from(l) * scale;
-    let cy = y + f64::from(t) * scale;
-    let cw = (w - f64::from(l + r) * scale).max(0.0);
-    let chh = (h - f64::from(t + b) * scale).max(0.0);
+    let (cx, cy, cw, chh) = (content.x0, content.y0, content.width(), content.height());
     if cw <= 0.0 || chh <= 0.0 {
         return;
     }
-    let content = Rect::new(cx, cy, cx + cw, cy + chh);
     // A box too thin for Chrome to draw one in draws nothing: a held-back
     // spacer or divider is not a silver line (3px with no `src`, 18px after
     // a failed load, on each axis).
