@@ -1037,8 +1037,8 @@ impl RinchDocument {
             // room, and the percentage then resolves against that (#2322).
             // (A mixed `calc()` reaches Taffy as a resolved length, so it
             // does not fill: Chrome fills for one too.)
-            style.fill_max_content = b.fixed
-                && matches!(node.computed_style.width, DimensionValue::Percent(p) if p != 0.0);
+            style.fill_max_content =
+                b.fixed && matches!(node.computed_style.width, DimensionValue::Percent(_));
             style.grid_template_columns = b
                 .tracks
                 .iter()
@@ -1717,18 +1717,28 @@ impl RinchDocument {
             // than the text was aligned as if the float were not there, and
             // the float moved down by the shift (#2326: Chrome puts it at
             // the cell's top).
+            // Its floats are those in its inline content, inside inline
+            // elements too (`<span><div style="float:left">`): the IFC root's
+            // own, laid out relative to it.
             Some(l) => {
-                let floats = Self::box_tree_children(&self.tree.nodes, id)
-                    .iter()
-                    .map(|&c| &self.tree.nodes[c])
-                    .filter(|c| c.computed_style.float != taffy::Float::None)
-                    .map(|c| {
-                        c.layout.y - kids_old
-                            + c.layout.height
-                            + c.computed_style.margin_bottom.to_px()
-                            - inset_top
-                    })
-                    .fold(0.0, f32::max);
+                let nodes = &self.tree.nodes;
+                let mut floats = 0.0f32;
+                let mut stack: Vec<RawNodeId> = nodes[id].children.clone();
+                while let Some(c) = stack.pop() {
+                    let Some(n) = nodes.get(c) else {
+                        continue;
+                    };
+                    if n.computed_style.float != taffy::Float::None {
+                        floats = floats.max(
+                            n.layout.y - kids_old
+                                + n.layout.height
+                                + n.computed_style.margin_bottom.to_px()
+                                - inset_top,
+                        );
+                    } else if n.display_mode == crate::node::DisplayMode::Inline {
+                        stack.extend(n.children.iter().copied());
+                    }
+                }
                 l.content_height().max(floats)
             }
             None => {
@@ -1776,9 +1786,13 @@ impl RinchDocument {
         for c in children {
             let child = &mut self.tree.nodes[c];
             // Placed by the cell's own lines, relative to its content box:
-            // the padding above has moved it already.
+            // the padding above has moved it already. So is an inline
+            // element, and moving it moved the boxes in it a second time (a
+            // float inside a `<span>`, #2339 review).
             if child.ifc_root == Some(id)
-                && (child.is_text() || child.display_mode.is_atomic_inline())
+                && (child.is_text()
+                    || child.display_mode.is_atomic_inline()
+                    || child.display_mode == crate::node::DisplayMode::Inline)
             {
                 continue;
             }

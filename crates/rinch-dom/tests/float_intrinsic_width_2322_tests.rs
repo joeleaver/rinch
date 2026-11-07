@@ -289,3 +289,53 @@ fn a_middle_aligned_cell_keeps_a_float_taller_than_its_text_at_the_top() {
     ));
     near(abs(&d, "f").1, 3.0);
 }
+
+// --- #2339 review --------------------------------------------------------
+
+#[test]
+fn a_float_holding_a_float_and_wrapping_text_takes_its_room() {
+    // In a 200px column: max-content 100 + 90 + a space + 120, clamped to
+    // 200. Measured with its lines already broken in the 200 it was 190
+    // (the 90 line beside the float).
+    let mut d = RinchDocument::new();
+    d.load_css(CSS);
+    let body = d.body();
+    d.set_inner_html(
+        body,
+        &format!(
+            "<div style='width:200px'><div id=o style='float:left'>\
+             <div id=f style='float:left;width:100px;height:20px'></div>{} {}</div></div>",
+            text(90),
+            text(120)
+        ),
+    );
+    d.resolve_layout(800.0, 800.0);
+    near(width(&d, "o"), 200.0);
+}
+
+#[test]
+fn a_float_inside_an_inline_counts_in_the_cells_alignment() {
+    // A middle-aligned cell 102 tall holding `<span><float 60 tall></span>`
+    // and text: its content is 60, so the float moves down by 20 to y 23.
+    // Counting only the cell's direct children, rinch moved it to 43.
+    let d = doc(&format!(
+        "<table id=o><tr><td id=c style='height:100px'><span>\
+         <div id=f style='float:left;width:50px;height:60px'></div></span>{}</td></tr></table>",
+        text(40)
+    ));
+    near(abs(&d, "c").3, 102.0);
+    near(abs(&d, "f").1, 23.0);
+}
+
+#[test]
+fn a_fixed_zero_percent_table_fills_too() {
+    for outer in [
+        "<div id=o style='float:left'>",
+        "<div id=o style='display:inline-block'>",
+    ] {
+        let d = doc(&format!(
+            "{outer}<table id=f style='table-layout:fixed;width:0%'><tr><td>{BOX37}</td></tr></table></div>"
+        ));
+        near(width(&d, "o"), 560.0);
+    }
+}

@@ -8665,13 +8665,50 @@ impl RinchDocument {
                                 inline_layout.hang.record(perf);
                                 first_baseline = first_line_baseline(&inline_layout.layout);
                                 if let Some(ctx) = intrinsic {
-                                    let width = crate::float_wrap::intrinsic_width_beside_floats(
-                                        ctx,
-                                        nodes,
-                                        &inline_layout.layout,
-                                        inline_layout.measured_width(),
-                                        avail_space.width,
-                                    );
+                                    // As the root compute: at a definite room
+                                    // the floats go on the max-content lines,
+                                    // then the room clamps.
+                                    let measured = inline_layout.measured_width();
+                                    let width = match max_width {
+                                        Some(room) => {
+                                            let atomic = AtomicContributions {
+                                                wrap_width: None,
+                                                min_content,
+                                                resolved_at,
+                                                requests: min_requests,
+                                            };
+                                            let (max, resolves) = Self::build_inline_layout(
+                                                nodes,
+                                                root_id,
+                                                None,
+                                                None,
+                                                1.0,
+                                                font_cx,
+                                                layout_cx,
+                                                Some(&atomic),
+                                                None,
+                                                None,
+                                            );
+                                            perf.add(
+                                                crate::perf::Counter::InlineFontFamilyResolves,
+                                                resolves,
+                                            );
+                                            crate::float_wrap::intrinsic_width_beside_floats(
+                                                ctx,
+                                                nodes,
+                                                &max.layout,
+                                                max.measured_width(),
+                                                Some((room, measured)),
+                                            )
+                                        }
+                                        None => crate::float_wrap::intrinsic_width_beside_floats(
+                                            ctx,
+                                            nodes,
+                                            &inline_layout.layout,
+                                            measured,
+                                            None,
+                                        ),
+                                    };
                                     return taffy::Size {
                                         width: known_dims.width.unwrap_or(width),
                                         height: known_dims

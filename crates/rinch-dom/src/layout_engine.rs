@@ -1042,13 +1042,49 @@ impl RinchDocument {
                             hang.set(h);
                             let mut w = inline_layout.measured_width();
                             if let Some(ctx) = intrinsic {
-                                w = crate::float_wrap::intrinsic_width_beside_floats(
-                                    ctx,
-                                    nodes,
-                                    &inline_layout.layout,
-                                    w,
-                                    avail_space.width,
-                                );
+                                // Asked at a definite room, the max-content
+                                // lines are broken again: the floats are added
+                                // to unbroken lines, then the room clamps.
+                                let max = max_width.map(|room| {
+                                    let atomic = crate::ifc::AtomicContributions {
+                                        wrap_width: None,
+                                        min_content,
+                                        resolved_at,
+                                        requests: min_requests,
+                                    };
+                                    let (max, resolved) = Self::build_inline_layout(
+                                        nodes,
+                                        root_id,
+                                        None,
+                                        None,
+                                        1.0,
+                                        font_cx,
+                                        layout_cx,
+                                        Some(&atomic),
+                                        None,
+                                        None,
+                                    );
+                                    font_family_resolves.set(font_family_resolves.get() + resolved);
+                                    (max, room)
+                                });
+                                w = match &max {
+                                    Some((max, room)) => {
+                                        crate::float_wrap::intrinsic_width_beside_floats(
+                                            ctx,
+                                            nodes,
+                                            &max.layout,
+                                            max.measured_width(),
+                                            Some((*room, w)),
+                                        )
+                                    }
+                                    None => crate::float_wrap::intrinsic_width_beside_floats(
+                                        ctx,
+                                        nodes,
+                                        &inline_layout.layout,
+                                        w,
+                                        None,
+                                    ),
+                                };
                             }
                             let h = inline_layout.content_height();
                             first_baseline = crate::ifc::first_line_baseline(&inline_layout.layout);
