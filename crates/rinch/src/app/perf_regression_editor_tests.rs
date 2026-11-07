@@ -464,7 +464,13 @@ fn a_toolbar_bold_over_a_word() {
             // `visibility: hidden`, and paint skips it without a visit.
             (PaintNodesVisited, 5),
             (StackingOrderBuilds, 6),
-            (GlyphAtlasHits, 19),
+            // #2296: 19 hits → 11 hits and 8 misses. The page's sans-serif
+            // is Inter's regular face alone, so the bolded word is drawn
+            // faux bold: its 8 distinct (glyph, bucket) masks are emboldened
+            // ones, keyed apart from the regular masks it used to reuse
+            // (the word drew at regular weight before).
+            (GlyphAtlasHits, 11),
+            (GlyphAtlasMisses, 8),
             (ClipMasks, 2),
             (ClipMaskPx, 20520),
             (HitTests, 2),

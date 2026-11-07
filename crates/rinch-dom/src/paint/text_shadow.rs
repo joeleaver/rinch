@@ -824,7 +824,7 @@ impl Painter for CallHasher {
         font: &peniko::FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: super::painter::GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
@@ -851,9 +851,10 @@ impl Painter for CallHasher {
             Some(_) => self.0.write_u8(0xA1),
             None => self.affine(transform),
         }
-        if let Some(g) = glyph_transform {
-            self.affine(g);
-        }
+        // The run's faux bold and italic (#2296): the same glyphs of the
+        // same face, emboldened or slanted, are other pixels.
+        self.0.write_u32(synthesis.embolden.to_bits());
+        self.0.write_u32(synthesis.skew.to_bits());
         self.0.write_u8(hint as u8);
         for c in normalized_coords {
             self.0.write_i16(*c);

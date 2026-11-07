@@ -5,7 +5,7 @@ use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, Rect, Stroke, Vec2};
 use peniko::{Brush, Fill};
 
-use super::painter::{PaintGlyph, Painter};
+use super::painter::{GlyphSynthesis, PaintGlyph, Painter};
 use crate::computed_style::{TextShadowValue, VisibilityValue};
 use crate::node::{Node, NodeTree};
 
@@ -2154,10 +2154,19 @@ pub(super) fn draw_text(
             let run = glyph_run.run();
             let font = run.font();
             let font_size = run.font_size() * sf;
-            let synthesis = run.synthesis();
-            let glyph_xform = synthesis
-                .skew()
-                .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+            // Faux bold and italic for a weight or style the family has no
+            // face for (#2296): Chrome's emboldening at the run's CSS size,
+            // in the painter's units (scaled with the text, as Skia's stroke
+            // is), and Parley's skew.
+            let synth = run.synthesis();
+            let synthesis = GlyphSynthesis {
+                embolden: if synth.embolden() {
+                    super::text_rasterization::synthetic_bold_px(run.font_size()) * sf
+                } else {
+                    0.0
+                },
+                skew: synth.skew().map_or(0.0, |angle| angle.to_radians().tan()),
+            };
             let style = glyph_run.style();
             let brush = glyph_brush.unwrap_or(&style.brush);
             // The shift this whole run's decorations (underline/line-through)
@@ -2200,7 +2209,7 @@ pub(super) fn draw_text(
                     font,
                     font_size,
                     transform,
-                    glyph_xform,
+                    synthesis,
                     recoloured.as_ref().unwrap_or(brush),
                     true,
                     bytemuck::cast_slice(run.normalized_coords()),

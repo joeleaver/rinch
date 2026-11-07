@@ -2,8 +2,8 @@
 //!
 //! Each glyph is rasterised once by swash — the rasteriser the software
 //! painter has always used, FreeType-grade on the design's coverage metric —
-//! per **(font, size, hinting, emboldening, variation instance, glyph, x
-//! bucket)**, and kept as a one-byte-a-pixel coverage mask. The x bucket is the
+//! per **(font, size, hinting, emboldening, synthesis, variation instance,
+//! glyph, x bucket)**, and kept as a one-byte-a-pixel coverage mask. The x bucket is the
 //! glyph's horizontal sub-pixel position, quantised to [`SUBPIXEL_BUCKETS`]
 //! steps, as upstream Vello's `glifo` does: a glyph at `x = 10.3` is the bucket
 //! `0.25` mask drawn at whole pixel 10. Vertically a glyph sits on a whole
@@ -35,7 +35,7 @@
 //! **What the atlas does not draw** (each painter's own path does): a glyph
 //! under a rotation, skew or non-uniform scale (a uniform scale is
 //! rasterised again at the device size, so HiDPI and `scale()` stay crisp), a
-//! run with a glyph transform (synthetic italic), a non-solid brush, and on
+//! non-solid brush, on Vello a synthetic italic (Vello's glyph transform), and on
 //! Vello a colour glyph (COLR, bitmap strikes: Vello draws those itself) and a
 //! device size over [`ATLAS_MAX_FONT_PX`] (an outline is cheaper than its mask
 //! there, and as sharp).
@@ -244,6 +244,10 @@ struct RunKey {
     hint: bool,
     /// `f32::to_bits` of swash's emboldening strength (0 for none).
     embolden_bits: u32,
+    /// `f32::to_bits` of the faux bold and of the faux italic's shear (#2296):
+    /// a faux-bold mask is never a regular one, nor one only darkened.
+    synthetic_bold_bits: u32,
+    skew_bits: u32,
     coords: Box<[i16]>,
     /// Subpixel (LCD) masks in this mode, or grey ones.
     lcd: Option<LcdMode>,
@@ -373,8 +377,15 @@ pub struct RunSpec<'a> {
     pub size: f32,
     /// Hinted (the text painter always asks for hinting).
     pub hint: bool,
-    /// swash emboldening strength in px (0 for none).
+    /// The stem darkening of light text, swash emboldening strength in px
+    /// per side (0 for none).
     pub embolden: f32,
+    /// Faux bold (#2296), in px per side like `embolden`, which it adds to:
+    /// the outline is expanded by the sum. Keyed apart from it.
+    pub synthetic_bold: f32,
+    /// Faux italic (#2296): the horizontal shear `tan(angle)` applied to the
+    /// outline after emboldening (`x + skew * y`, y up); 0 for none.
+    pub skew: f32,
     /// Variation coordinates.
     pub coords: &'a [i16],
     /// Rasterise subpixel (LCD) masks in this mode (#2286 stage 3); `None`
@@ -477,6 +488,8 @@ impl GlyphAtlas {
                 && r.key.size_bits == spec.size.to_bits()
                 && r.key.hint == spec.hint
                 && r.key.embolden_bits == spec.embolden.to_bits()
+                && r.key.synthetic_bold_bits == spec.synthetic_bold.to_bits()
+                && r.key.skew_bits == spec.skew.to_bits()
                 && *r.key.coords == *spec.coords
                 && r.key.lcd == spec.lcd
                 && r.glyphs.contains_key(&key(id, bucket))
@@ -494,6 +507,21 @@ impl GlyphAtlas {
                     f32::from_bits(r.key.size_bits),
                     r.key.hint,
                     f32::from_bits(r.key.embolden_bits),
+                )
+            })
+            .collect()
+    }
+
+    /// The faux bold and the faux italic's shear of each run held, in the
+    /// order of [`Self::run_keys`] (#2296).
+    #[doc(hidden)]
+    pub fn run_synthesis(&self) -> Vec<(f32, f32)> {
+        self.runs
+            .iter()
+            .map(|r| {
+                (
+                    f32::from_bits(r.key.synthetic_bold_bits),
+                    f32::from_bits(r.key.skew_bits),
                 )
             })
             .collect()
@@ -594,12 +622,16 @@ impl GlyphAtlas {
         let font_id = spec.font.data.id();
         let size_bits = spec.size.to_bits();
         let embolden_bits = spec.embolden.to_bits();
+        let synthetic_bold_bits = spec.synthetic_bold.to_bits();
+        let skew_bits = spec.skew.to_bits();
         let matches = |k: &RunKey| {
             k.font_id == font_id
                 && k.font_index == spec.font.index
                 && k.size_bits == size_bits
                 && k.hint == spec.hint
                 && k.embolden_bits == embolden_bits
+                && k.synthetic_bold_bits == synthetic_bold_bits
+                && k.skew_bits == skew_bits
                 && *k.coords == *spec.coords
                 && k.lcd == spec.lcd
         };
@@ -620,6 +652,8 @@ impl GlyphAtlas {
                 size_bits,
                 hint: spec.hint,
                 embolden_bits,
+                synthetic_bold_bits,
+                skew_bits,
                 coords: spec.coords.into(),
                 lcd: spec.lcd,
             },
@@ -920,6 +954,8 @@ impl SizeChurn {
         let mut h = rustc_hash::FxHasher::default();
         spec.size.to_bits().hash(&mut h);
         spec.embolden.to_bits().hash(&mut h);
+        spec.synthetic_bold.to_bits().hash(&mut h);
+        spec.skew.to_bits().hash(&mut h);
         spec.hint.hash(&mut h);
         spec.coords.hash(&mut h);
         let size = h.finish();
@@ -1024,20 +1060,26 @@ fn rasterise(
 ) -> Raster {
     use swash::scale::{Render, Source};
     // swash's embolden (FreeType's `FT_Outline_EmboldenXY` without its
-    // halving) grows a glyph by about the amount on each side horizontally
-    // but by twice it at the top and none at the bottom; the `(0, -amount)`
-    // offset re-centres it to Vello's `font_embolden` (`expand_path`) within
-    // 0.03 px (#2286 stage 1, `stem_darkening_2286_tests`). The sub-pixel
-    // bucket is the offset's x.
-    let em = spec.embolden;
+    // halving) moves each point out by the amount and then by the amount
+    // again up and right: a glyph grows by twice it at the right and the top,
+    // and none at the left and the bottom (measured on a stem,
+    // `faux_bold_2296_tests`). The [`embolden_offset`] moves it back by the
+    // amount, which centres it as Vello's `font_embolden` (`expand_path`)
+    // and Chrome's faux bold are. The sub-pixel bucket is the offset's x.
+    //
+    // A faux bold (#2296) is the same expansion, added to the stem darkening;
+    // a faux italic shears the emboldened outline about the glyph's origin.
+    let em = spec.embolden + spec.synthetic_bold;
+    let skew = skew_transform(spec.skew);
     let x = bucket as f32 / SUBPIXEL_BUCKETS as f32;
     if let Some(mode) = spec.lcd {
         return rasterise_lcd(scaler, bitmap_scale, kept, font, spec, id, x, mode);
     }
     let render = |sources: &[Source], s: &mut swash::scale::Scaler<'_>, darken: bool| {
         let mut r = Render::new(sources);
+        r.transform(skew);
         if darken && em > 0.0 {
-            r.embolden(em).offset(swash::zeno::Vector::new(x, -em));
+            r.embolden(em).offset(embolden_offset(x, em, spec.skew));
         } else {
             r.offset(swash::zeno::Vector::new(x, 0.0));
         }
@@ -1054,16 +1096,25 @@ fn rasterise(
         let Some(outline) = kept.outline(scaler, id as u16) else {
             return Raster::Failed;
         };
-        let emboldened;
-        let outline = if em > 0.0 {
+        let synthesised;
+        let outline = if em > 0.0 || skew.is_some() {
             let mut o = outline.clone();
-            o.embolden(em, em);
-            emboldened = o;
-            &emboldened
+            if em > 0.0 {
+                o.embolden(em, em);
+            }
+            if let Some(t) = &skew {
+                o.transform(t);
+            }
+            synthesised = o;
+            &synthesised
         } else {
             outline
         };
-        let offset = swash::zeno::Vector::new(x, if em > 0.0 { -em } else { 0.0 });
+        let offset = if em > 0.0 {
+            embolden_offset(x, em, spec.skew)
+        } else {
+            swash::zeno::Vector::new(x, 0.0)
+        };
         // `render_into` with `inspect`, as `Render` calls it: zeno's `render()`
         // leaves the bottom-left origin out of the placement it returns.
         let mut data = Vec::new();
@@ -1108,6 +1159,22 @@ fn rasterise(
     Raster::from(render(&[Source::Outline], scaler, true))
 }
 
+/// The offset a mask emboldened by `em` (px per side) at sub-pixel `x` is
+/// rendered at: swash's embolden grows a glyph up and to the right only (see
+/// [`rasterise`]), so the glyph is moved back by `em` on each axis, as a
+/// centred expansion would leave it. Under a faux-italic shear `skew` that
+/// move is sheared too: `(-em, -em)` in the outline's y-up space is
+/// `(-em * (1 + skew), -em)` after it. `em == 0` is `(x, 0)`.
+fn embolden_offset(x: f32, em: f32, skew: f32) -> swash::zeno::Vector {
+    swash::zeno::Vector::new(x - em * (1.0 + skew), -em)
+}
+
+/// The faux italic's shear as swash takes it: `x + skew * y` in the outline's
+/// y-up space, which is Vello's `glyph_transform` of `Affine::skew(skew, 0)`.
+fn skew_transform(skew: f32) -> Option<swash::zeno::Transform> {
+    (skew != 0.0).then(|| swash::zeno::Transform::new(1.0, 0.0, skew, 1.0, 0.0, 0.0))
+}
+
 /// [`rasterise`] for an LCD run: a colour glyph as on a grey run, else the
 /// outline at three times the resolution across the subpixels (horizontally,
 /// or vertically for a vertical panel), filtered and grouped into pixels by
@@ -1139,16 +1206,21 @@ fn rasterise_lcd(
         return Raster::Mask(g);
     }
     let vertical = matches!(mode.order, SubpixelOrder::VRgb | SubpixelOrder::VBgr);
-    let em = spec.embolden;
+    let em = spec.embolden + spec.synthetic_bold;
+    // The stretch across the subpixels, after any faux-italic shear (#2296):
+    // `(x + skew * y)` then stretched.
+    // The centring offset is [`embolden_offset`]'s, stretched with it.
+    let k = spec.skew;
+    let centre = embolden_offset(x, em, k);
     let (stretch, offset) = if vertical {
         (
-            swash::zeno::Transform::scale(1.0, 3.0),
-            swash::zeno::Vector::new(x, -3.0 * em),
+            swash::zeno::Transform::new(1.0, 0.0, k, 3.0, 0.0, 0.0),
+            swash::zeno::Vector::new(centre.x, 3.0 * centre.y),
         )
     } else {
         (
-            swash::zeno::Transform::scale(3.0, 1.0),
-            swash::zeno::Vector::new(3.0 * x, -em),
+            swash::zeno::Transform::new(3.0, 0.0, 3.0 * k, 1.0, 0.0, 0.0),
+            swash::zeno::Vector::new(3.0 * centre.x, centre.y),
         )
     };
     // A face with no colour glyphs: the kept hinted outline, emboldened and
@@ -1577,6 +1649,8 @@ mod tests {
             size,
             hint: true,
             embolden: 0.0,
+            synthetic_bold: 0.0,
+            skew: 0.0,
             coords: &[],
             lcd: None,
         }
@@ -2143,6 +2217,8 @@ mod tests {
             size,
             hint: true,
             embolden: 0.0,
+            synthetic_bold: 0.0,
+            skew: 0.0,
             coords: &[],
             lcd: None,
         };
@@ -2202,6 +2278,8 @@ mod tests {
                 size,
                 hint,
                 embolden,
+                synthetic_bold: 0.0,
+                skew: 0.0,
                 coords: &[],
                 lcd: None,
             };
@@ -2219,6 +2297,66 @@ mod tests {
             widths[2].1 > widths[0].1,
             "emboldened has more ink: {widths:?}"
         );
+    }
+
+    /// A run's faux bold and faux italic are in the key (#2296): a faux-bold
+    /// or slanted mask never serves the regular run, nor a faux bold the run
+    /// only darkened by the same amount, though the two expansions are one
+    /// and rasterise the same pixels. Each run is looked up twice: a miss and
+    /// then a hit of its own.
+    #[test]
+    fn synthesis_is_in_the_key() {
+        let f = font(INTER);
+        let a = glyph_id(INTER, 'a');
+        let mut atlas = GlyphAtlas::default();
+        let runs = [
+            // (darkening, faux bold, skew)
+            (0.0, 0.0, 0.0),
+            (0.0, 0.3, 0.0),
+            (0.3, 0.0, 0.0),
+            (0.0, 0.0, 0.25),
+            (0.1, 0.2, 0.25),
+        ];
+        let mut masks = Vec::new();
+        for (embolden, synthetic_bold, skew) in runs {
+            let s = RunSpec {
+                font: &f,
+                size: 13.0,
+                hint: true,
+                embolden,
+                synthetic_bold,
+                skew,
+                coords: &[],
+                lcd: None,
+            };
+            for pass in 0..2 {
+                let mut stats = AtlasStats::default();
+                atlas.lookup(&s, &[(a, 1)], false, &mut stats, |_, m| {
+                    if pass == 0 {
+                        let m = m.mask().unwrap();
+                        masks.push((m.left, m.top, m.data.clone()));
+                    }
+                });
+                assert_eq!(
+                    (stats.misses, stats.hits),
+                    if pass == 0 { (1, 0) } else { (0, 1) },
+                    "{embolden} + {synthetic_bold}, skew {skew}, pass {pass}"
+                );
+            }
+            assert!(atlas.holds(&s, a, 1));
+        }
+        assert_eq!(atlas.run_keys().len(), runs.len(), "a run each");
+        assert_eq!(
+            atlas.run_synthesis(),
+            runs.iter().map(|r| (r.1, r.2)).collect::<Vec<_>>()
+        );
+        let ink = |m: &(i32, i32, Vec<u8>)| m.2.iter().map(|&c| c as u64).sum::<u64>();
+        assert!(ink(&masks[1]) > ink(&masks[0]), "faux bold has more ink");
+        assert_eq!(
+            masks[1], masks[2],
+            "faux bold and darkening are one expansion"
+        );
+        assert_ne!(masks[3].2, masks[0].2, "the skew slants the glyph");
     }
 }
 /// The kept-outline path (hint once per glyph, rasterise each bucket from the
@@ -2242,7 +2380,7 @@ mod kept_outline_tests {
                 filter: LcdFilter::Default,
             })
         };
-        for (embolden, lcd) in [
+        for (embolden, synthetic_bold, skew, lcd) in [
             (0.0, None),
             (6.0 / 64.0, None),
             // Stage 3: an LCD run stretches the kept outline as `Render`
@@ -2250,12 +2388,24 @@ mod kept_outline_tests {
             (0.0, lcd(SubpixelOrder::Rgb)),
             (6.0 / 64.0, lcd(SubpixelOrder::Rgb)),
             (6.0 / 64.0, lcd(SubpixelOrder::VBgr)),
-        ] {
+        ]
+        .into_iter()
+        .map(|(e, l)| (e, 0.0, 0.0, l))
+        // #2296: a faux bold on top of the darkening, and a faux italic's
+        // shear, on each mask kind.
+        .chain([
+            (6.0 / 64.0, 0.27, 0.25, None),
+            (0.0, 0.0, 0.25, None),
+            (6.0 / 64.0, 0.27, 0.25, lcd(SubpixelOrder::Rgb)),
+            (6.0 / 64.0, 0.27, 0.25, lcd(SubpixelOrder::VBgr)),
+        ]) {
             let spec = RunSpec {
                 font: &f,
                 size: 13.0,
                 hint: true,
                 embolden,
+                synthetic_bold,
+                skew,
                 coords: &[],
                 lcd,
             };

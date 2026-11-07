@@ -132,7 +132,16 @@ fn software_with_darkening_off_light_text_is_the_inverse_of_dark() {
 
 /// By default the light row carries more ink than the dark row (its glyphs
 /// are grown), the dark row is byte-for-byte what it is with darkening off,
-/// and the growth is even on every side: the ink's centre does not move.
+/// and the growth is even at the top and the bottom: the ink's vertical
+/// centre does not move.
+///
+/// Not the horizontal centre (#2296): an even band round a glyph moves its
+/// ink's centre towards where its outline is longest, by about 0.06 px for
+/// this text, and a mask moved half its growth to the right (the placement
+/// stage 1 had, which swash's embolden gives unless the mask is moved back)
+/// happened to land within 0.04 px of where it started. The even growth
+/// left and right is pinned on stems, whose outline and ink share a centre:
+/// `faux_bold_2296_tests::software_faux_bold_is_even_on_every_side`.
 #[test]
 fn software_light_text_is_darkened_evenly_and_dark_text_is_not() {
     let base = software(off());
@@ -150,9 +159,9 @@ fn software_light_text_is_darkened_evenly_and_dark_text_is_not() {
     let (cx0, cy0) = centroid(&light_base);
     let (cx1, cy1) = centroid(&light);
     assert!(
-        (cx1 - cx0).abs() < 0.04 && (cy1 - cy0).abs() < 0.04,
+        (cy1 - cy0).abs() < 0.04,
         "darkening moved the ink's centre from ({cx0:.3}, {cy0:.3}) to ({cx1:.3}, {cy1:.3}): \
-         it is not even on every side"
+         it is not even at the top and the bottom"
     );
 }
 
