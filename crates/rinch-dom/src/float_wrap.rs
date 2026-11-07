@@ -219,6 +219,63 @@ impl crate::ifc::PlaceFloats for BlockFloats<'_, '_> {
     }
 }
 
+/// The width of a paragraph asked only its intrinsic width beside its own
+/// floats (`BlockContext::is_intrinsic`, #2326), from `layout`, its lines
+/// broken with no float placed. The floats share the lines they stand in (CSS
+/// 2.2 §9.5), so at max-content a line is as wide as its content and its
+/// floats together (Blink's `NGInlineNode::ComputeMinMaxSizes`): an auto
+/// table cell or a float holding `<float> text` is as wide as both, not the
+/// wider of the two. Each line's floats are the float boxes in it
+/// ([`crate::ifc::FLOAT_BOX`]) with the widths the container measured
+/// (`pending_floats`); a float that clears a side starts that side's sum
+/// again, as the container sums its own floats. Never under `measured`, the
+/// width of the lines alone; asked at a definite `available` width (a
+/// fit-content question), no wider than that, unless the lines or a float
+/// alone are.
+pub(crate) fn intrinsic_width_beside_floats(
+    ctx: &taffy::BlockContext<'_>,
+    nodes: &crate::node_slab::NodeSlab,
+    layout: &parley::Layout<peniko::Brush>,
+    measured: f32,
+    available: taffy::AvailableSpace,
+) -> f32 {
+    let pending = ctx.pending_floats();
+    let float_of = |id: u64| {
+        let taffy_id = nodes.get(crate::ifc::float_box_node(id)?)?.taffy_id?;
+        pending.iter().find(|p| p.node_id == taffy_id)
+    };
+    let mut widest = measured;
+    let mut widest_float = 0.0f32;
+    for line in layout.lines() {
+        let (mut sides, mut most) = ([0.0f32; 2], 0.0f32);
+        for item in line.items() {
+            let parley::PositionedLayoutItem::InlineBox(b) = item else {
+                continue;
+            };
+            let Some(float) = float_of(b.id) else {
+                continue;
+            };
+            if matches!(float.clear, taffy::Clear::Left | taffy::Clear::Both) {
+                sides[0] = 0.0;
+            }
+            if matches!(float.clear, taffy::Clear::Right | taffy::Clear::Both) {
+                sides[1] = 0.0;
+            }
+            sides[float.direction as usize] += float.size.width;
+            most = most.max(sides[0] + sides[1]);
+            widest_float = widest_float.max(float.size.width);
+        }
+        if most > 0.0 {
+            let m = line.metrics();
+            widest = widest.max(m.advance - m.hanging_advance + most);
+        }
+    }
+    match available {
+        taffy::AvailableSpace::Definite(room) => widest.min(room).max(measured).max(widest_float),
+        _ => widest,
+    }
+}
+
 /// Where `cluster` starts, from the content box's left edge.
 ///
 /// parley (0.11.1, and 0.12 still) places a line's glyph runs and inline boxes from the line's

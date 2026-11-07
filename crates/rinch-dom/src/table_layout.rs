@@ -1004,6 +1004,15 @@ impl RinchDocument {
             // `auto` tracks as a table shares it between columns, not in a
             // grid's equal shares (#2280, *Column widths*).
             style.proportional_column_sizing = !b.definite;
+            // A fixed table whose width is a percentage asks for all the
+            // room it is offered: its max-content width is Blink's cap on a
+            // table's width (the Taffy fork's `fill_max_content`), so the
+            // auto table, float or shrink-to-fit box around it fills its
+            // room, and the percentage then resolves against that (#2322).
+            // (A mixed `calc()` reaches Taffy as a resolved length, so it
+            // does not fill: Chrome fills for one too.)
+            style.fill_max_content = b.fixed
+                && matches!(node.computed_style.width, DimensionValue::Percent(p) if p != 0.0);
             let can_weigh = b.definite && !b.fixed;
             let all_declared = b.tracks.iter().all(|t| *t != Track::Auto);
             style.grid_template_columns = b
@@ -1679,7 +1688,27 @@ impl RinchDocument {
         let inset_bottom = cs.padding_bottom.to_px() + cs.border_bottom_width.to_px();
         let avail = node.layout.height - inset_top - inset_bottom;
         let content = match &node.text_layout {
-            Some(l) => l.layout.height(),
+            // Its lines, and the floats among them: a cell is a block
+            // formatting context root, so its content reaches the bottom of
+            // its floats' margin boxes (CSS 2.2 §10.6.7). With the lines
+            // alone, a cell whose text sits beside or below a float taller
+            // than the text was aligned as if the float were not there, and
+            // the float moved down by the shift (#2326: Chrome puts it at
+            // the cell's top).
+            Some(l) => {
+                let floats = Self::box_tree_children(&self.tree.nodes, id)
+                    .iter()
+                    .map(|&c| &self.tree.nodes[c])
+                    .filter(|c| c.computed_style.float != taffy::Float::None)
+                    .map(|c| {
+                        c.layout.y - kids_old
+                            + c.layout.height
+                            + c.computed_style.margin_bottom.to_px()
+                            - inset_top
+                    })
+                    .fold(0.0, f32::max);
+                l.content_height().max(floats)
+            }
             None => {
                 let kids = Self::box_tree_children(&self.tree.nodes, id);
                 kids.iter()
