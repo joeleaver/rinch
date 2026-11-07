@@ -524,7 +524,7 @@ with 13 and 14.
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`0601dc37d30b572c6519f1d71c1261f644c33721`, branch `rinch-patch`): commits on parley's
+(`96699deb74d2b494af6aa27c1cccde2bd73028f2`, branch `rinch-patch`): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -555,6 +555,20 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    (case-insensitively). A second name that is an RBIZ name ("Roboto Light") is now the faces that
    list it rather than the first name's whole family. Pinned by
    `crates/rinch-dom/tests/fontconfig_second_family_name_2294.rs` (a private `FONTCONFIG_FILE`).
+
+3. **Blink's two synthetic-bold rules, and `Collection::system_family_match`** (`96699deb`,
+   `fontique/src/font.rs`, `fontique/src/collection/mod.rs`, `fontique/src/backend/fontconfig.rs`;
+   #2343, #2336; fork PR joeleaver/parley-fork#2). A static face registered with the
+   collection (`register_fonts`, `load_fonts_from_paths`: rinch's app and test fonts, the
+   counterpart of `@font-face`) is emboldened when the request is 600 or more and the face is
+   under 600 (Blink's `CSSSegmentedFontFace`); a system face keeps the old rule, more than 200
+   over the face (Blink's `FontCache::CreateFontPlatformData`). `FontInfo::is_registered` says
+   which a face is. `system_family_match(name)` is fontconfig's answer for a family name as
+   Chrome's Linux font manager asks it: the first family after `FcConfigSubstitute` and the names
+   of `FcFontMatch`'s font. rinch judges it (`rinch_dom::fonts::system_substitute`); other
+   backends return `None`. Pinned by fontique's own tests (the weight tables measured in Chrome
+   156), `crates/rinch-dom/tests/fontconfig_metric_aliases_2336.rs` and
+   `crates/rinch-dom/tests/faux_bold_threshold_2343.rs`.
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::SPACE_RUN_BREAKS`) and in the seams pass

@@ -32,17 +32,31 @@ pub struct FontDefaults {
     /// A CSS `font-family` list naming the default font: what a list whose
     /// every family is missing ends in, the user agent's default font in CSS
     /// terms. Its first family the font context has (a named family, its
-    /// Blink alternate, or a generic's first face) is appended to such a list
+    /// [system substitute](Self::system_substitutes), its Blink alternate,
+    /// or a generic's first face) is appended to such a list
     /// **by name**. When it has none, the `sans-serif` slot's first face is,
     /// which is where Chrome on Linux goes when Times New Roman is missing
     /// (fontconfig's "Sans", not its serif slot).
     pub standard: String,
-    /// The family put at the head of the `serif` slot where it (or its Blink
+    /// The family put at the head of the `serif` slot where it (or its
+    /// [system substitute](Self::system_substitutes), or its Blink
     /// alternate) is installed; `None` leaves the platform's slot. Applied on
     /// a desktop only.
     pub serif: Option<String>,
     /// As [`serif`](Self::serif), for `sans-serif`.
     pub sans_serif: Option<String>,
+    /// Whether a missing family is drawn in the face the system's font
+    /// configuration substitutes for it, where Chrome would draw it there
+    /// (#2336): a metric-compatible replacement (Liberation Sans or Arimo for
+    /// Arial, Liberation Serif or Tinos for Times New Roman, Liberation Mono
+    /// or Cousine for Courier New, and Chrome's other pairs), or a family the
+    /// configuration puts ahead of the name. It applies to every family
+    /// looked up, the three above included, so on a host with Liberation and
+    /// no Times New Roman `serif` and the default font are Liberation Serif,
+    /// as in Chrome. fontconfig only (Linux and the BSDs); `true` by default.
+    /// `false` keeps to the families installed or registered and their
+    /// alternates, the same on every host that has them.
+    pub system_substitutes: bool,
 }
 
 impl FontDefaults {
@@ -63,6 +77,13 @@ impl FontDefaults {
         self.sans_serif = family.map(str::to_owned);
         self
     }
+
+    /// These settings with [`system_substitutes`](Self::system_substitutes)
+    /// set to `on`.
+    pub fn with_system_substitutes(mut self, on: bool) -> Self {
+        self.system_substitutes = on;
+        self
+    }
 }
 
 impl Default for FontDefaults {
@@ -79,6 +100,7 @@ impl Default for FontDefaults {
             standard: standard.to_owned(),
             serif: Some(serif.to_owned()),
             sans_serif: Some(sans.to_owned()),
+            system_substitutes: true,
         }
     }
 }
