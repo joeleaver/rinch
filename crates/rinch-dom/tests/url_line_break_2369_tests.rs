@@ -278,11 +278,10 @@ fn a_url_beside_a_float_stays_whole() {
     );
 }
 
-/// Chrome moves that line below the 40px float, so the box is 80px tall;
-/// rinch leaves an overflowing line beside the float (60px). That is #2360,
-/// fixed by PR #2374's float work, not by the break opportunities.
+/// Chrome moves that line below the 40px float, so the box is 80px tall
+/// (the float move is #2360's; before it rinch left the line beside the
+/// float, 60px).
 #[test]
-#[ignore = "needs #2360 (PR #2374): a line too wide beside a float moves below it"]
 fn a_url_beside_a_float_moves_below_it_at_chromes_height() {
     let d = html(
         "<div id=f style='width:200px'><div style='float:left;width:80px;height:40px'></div>\
@@ -366,4 +365,71 @@ fn every_printable_ascii_pair_breaks_as_in_chrome() {
         wrong.len(),
         wrong.join("\n")
     );
+}
+
+/// A hyphen before a digit after a letter that is not ASCII is not an
+/// opportunity (Blink checks `IsASCIIAlphanumeric`): `é-5` may be a minus.
+#[test]
+fn a_hyphen_after_a_non_ascii_letter_keeps_its_digit() {
+    assert_eq!(lines("width: 1px", "é-5 ü-1"), ["é-5 ", "ü-1"]);
+}
+
+/// The seams pass (`pre` spaces after a wrapping run, #1243) reads the
+/// character before a hyphen too: `bb-12` breaks after the hyphen there as
+/// anywhere (Chrome 156, at 1px and 40px).
+#[test]
+fn the_seams_pass_reads_the_letter_before_a_hyphen() {
+    let d = html(
+        "<div id=a style='width:1px'>aa <span style='white-space:pre'>  </span>bb-12 cc</div>\
+         <div id=b style='width:40px'>aa <span style='white-space:pre'>  </span>bb-12 cc</div>",
+    );
+    assert_eq!(lines_of(&d, by_id(&d, "a")), ["aa   bb-", "12 ", "cc"]);
+    assert_eq!(lines_of(&d, by_id(&d, "b")), ["aa ", "  bb-", "12 cc"]);
+}
+
+/// The layout's lines without the zero-width space a `<wbr>` is laid out as.
+fn visible_lines(d: &RinchDocument, id: &str) -> Vec<String> {
+    lines_of(d, by_id(d, id))
+        .into_iter()
+        .map(|l| l.replace('\u{200b}', ""))
+        .collect()
+}
+
+/// A `<wbr>` is an opportunity of its own (#2386): with `/` glued to what
+/// follows, it is what lets a mail template's long URL wrap.
+#[test]
+fn a_wbr_is_an_opportunity() {
+    let d = html(
+        "<div id=a style='width:1px'>aaaa<wbr>bbbb</div>\
+                  <div id=u style='width:1px'>https://example.com/<wbr>a/<wbr>long<wbr>.url</div>\
+                  <div id=w style='width:120px'>https://example.com/<wbr>a/<wbr>long<wbr>.url</div>",
+    );
+    assert_eq!(visible_lines(&d, "a"), ["aaaa", "bbbb"]);
+    assert_eq!(
+        visible_lines(&d, "u"),
+        ["https://example.com/", "a/", "long", ".url"]
+    );
+    assert_eq!(
+        visible_lines(&d, "w"),
+        ["https://example.com/", "a/long.url"]
+    );
+    assert_eq!(size(&d, "w").1, 40.0);
+}
+
+/// A `<wbr>` is not content to white-space processing: `a <wbr> b` is
+/// `a b`, one space wide (Chrome 156: one line at 300px; `a ` / `b` at 1px).
+#[test]
+fn a_wbr_between_spaces_leaves_one_space() {
+    let d = html(
+        "<div id=w style='width:300px'>a <wbr> b</div>\
+                  <div id=s style='width:300px'>a b</div>\
+                  <div id=n style='width:1px'>a <wbr> b</div>",
+    );
+    assert_eq!(visible_lines(&d, "w"), ["a b"]);
+    let (w, s) = (
+        widest_line(&d, by_id(&d, "w")),
+        widest_line(&d, by_id(&d, "s")),
+    );
+    assert!((w - s).abs() < 0.01, "{w} vs {s}");
+    assert_eq!(visible_lines(&d, "n"), ["a ", "b"]);
 }

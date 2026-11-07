@@ -1532,6 +1532,11 @@ fn laid_out_as(c: char, preserved: bool) -> Option<&'static str> {
         .map(|&(_, sub)| sub)
 }
 
+/// What a `<wbr>` element is laid out as ([`IfcText::push_wbr`]): Chrome 156
+/// breaks `aaaa<wbr>bbbb` in a narrow box, where nothing else in the text
+/// allows it, and draws nothing there.
+pub(crate) const WBR_TEXT: &str = "\u{200b}";
+
 /// What [`laid_out_as`] hands parley for each character in preserved text.
 pub(crate) const PRESERVED_SUBSTITUTES: [(char, &str); 4] = [
     ('\u{2028}', "\u{a0}\u{200b}"),
@@ -1674,9 +1679,17 @@ impl<'a> IfcText<'a> {
         }
     }
 
+    /// A `<wbr>`'s own opportunity (#2386): a ZERO WIDTH SPACE in the text
+    /// parley lays out ([`WBR_TEXT`]), which UAX #14 breaks after (LB8) and
+    /// [`TextBreaks`] reads the same way. It is not content to white-space
+    /// processing — a space held before it stays held and a space after it
+    /// still collapses (`a <wbr> b` is `a b`, as in Chrome) — and it owns no
+    /// DOM text: its flat bytes lie between the text ranges around it.
     pub(crate) fn push_wbr(&mut self) {
         self.last_wraps = Some(true);
         self.wbr = true;
+        self.ops.push(IfcOp::Text(WBR_TEXT.into()));
+        self.len += WBR_TEXT.len();
     }
 
     /// The runs of spaces that do not wrap and have a break opportunity
@@ -11649,6 +11662,7 @@ impl RinchDocument {
                     let wbr = child.tag() == Some("wbr");
                     if wbr {
                         builder.push_wbr();
+                        *flat_pos += WBR_TEXT.len();
                     } else {
                         builder.open_element(wraps(child_computed));
                     }

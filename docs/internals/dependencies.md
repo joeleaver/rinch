@@ -58,7 +58,12 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     and in table cells (a cell's min-content width is now the whole URL's, so a 150px table
     holding one is 234px wide, as in Chrome). The one pair that still differs is `->`: the
     bundled Inter shapes it as one arrow ligature and parley cannot break inside a cluster
-    (#2381). The builders that set the override are the IFC, a flex or grid item's text leaf
+    (#2381). A `<wbr>` is laid out as a ZERO WIDTH SPACE (`ifc::WBR_TEXT`, #2386): before
+    this, it made no opportunity of its own (`aaaa<wbr>bbbb` was one line), which a URL hid
+    while UAX #14 broke after every `/` anyway; with `/` glued, a mail template's
+    `https://example.com/<wbr>a/<wbr>long` needs it. The ZWSP is not content to white-space
+    collapsing (`a <wbr> b` is `a b`) and owns no DOM text: its three flat bytes lie between
+    the text ranges around it. The builders that set the override are the IFC, a flex or grid item's text leaf
     and the paint fallback; a form control's text (`form_control::field_text_layout`) does not.
 
   What 0.12 changed, and what rinch does about it:
