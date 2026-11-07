@@ -9,9 +9,10 @@
 //! - **parity**: subpixel text on an opaque page is the software painter's,
 //!   to rounding, under Area and Msaa16, at 1x and 1.5x, with fringes in
 //!   both (red against a fork that draws mode 2 as grey);
-//! - **clips**: text inside one rounded clip, two, and six (past the blend
-//!   stack's four registers, into its spill buffer) is still per channel and
-//!   still the software painter's;
+//! - **clips**: text inside one to six nested rounded clips on an opaque page
+//!   is still per channel and still the software painter's; and where the
+//!   opaque pixel is a backdrop past the blend stack's four registers, in its
+//!   spill buffer, it is found there;
 //! - **grey where it must be**: in an opacity group, over a transparent
 //!   window (base colour transparent), and over a translucent background;
 //!   per channel over an opaque box in the same transparent window;
@@ -370,33 +371,49 @@ fn gpu_subpixel_text_matches_the_software_painter() {
     }
 }
 
-/// The clip fixture's body: the clips' edges on whole pixels. The painters
-/// differ on nested clips that share a fractional edge (tiny-skia's
-/// intersected mask keeps the edge pixel's coverage, Vello's layers multiply
-/// it once per clip), grey text or not; an LCD fringe spilling into that
-/// column showed it. The text is put off the whole pixel inside instead.
+/// The clip fixtures' body: the clips' edges on whole pixels. The painters
+/// differ at the edge pixels of nested clips there (#2321), grey text or not,
+/// and an LCD fringe spilling into that column showed it. The text is put
+/// off the whole pixel inside instead.
 const CLIP_BODY: &str = "background: #fff; padding-left: 3px;";
 
-/// Text inside one, two and six nested rounded clips is per channel and the
-/// software painter's: the shader finds the opaque page through each clip's
-/// backdrop, past the four in registers into the spill buffer at six.
+/// `depth` nested rounded clips around `inner`, each a little narrower; the
+/// clip at `opaque_at` (1-based) has a white background.
+fn nested_clips(depth: usize, opaque_at: Option<usize>, inner: &str) -> String {
+    let mut html = String::new();
+    for i in 0..depth {
+        let bg = if opaque_at == Some(i + 1) {
+            "background: #fff; "
+        } else {
+            ""
+        };
+        html.push_str(&format!(
+            "<div style='{bg}overflow: hidden; border-radius: 5px; padding: 0 {}px 1px 0'>",
+            (depth - i) as f32 * 1.5
+        ));
+    }
+    html.push_str(inner);
+    for _ in 0..depth {
+        html.push_str("</div>");
+    }
+    html
+}
+
+/// Text inside one, two, four, five and six nested rounded clips on an
+/// opaque page is per channel and the software painter's, within two levels:
+/// the shader composites the text's layer over each clip's backdrop until the
+/// page (in the first register) makes it opaque.
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_subpixel_text_inside_clips() {
     let mut gpu = Gpu::new();
     let mut report = Vec::new();
     for depth in [1usize, 2, 4, 5, 6] {
-        let mut html = String::new();
-        for i in 0..depth {
-            html.push_str(&format!(
-                "<div style='overflow: hidden; border-radius: 5px; padding: 0 {}px 1px 0'>",
-                (depth - i) as f32 * 1.5
-            ));
-        }
-        html.push_str(&format!("<p style='padding-left: 0.3px'>{TEXT}</p>"));
-        for _ in 0..depth {
-            html.push_str("</div>");
-        }
+        let html = nested_clips(
+            depth,
+            None,
+            &format!("<p style='padding-left: 0.3px'>{TEXT}</p>"),
+        );
         let (g, c) = both(
             &mut gpu,
             CLIP_BODY,
@@ -407,29 +424,54 @@ fn gpu_subpixel_text_inside_clips() {
             vello::AaConfig::Area,
         );
         let (fg, fc) = (fringed(&g), fringed(&c));
-        // The same page in grey text: where the painters' clips differ (an
-        // 8-bit mask against Vello's analytic area, compounding over nested
-        // rounded corners) the grey pages differ too. Subpixel text may
-        // differ no more than that, and at least the usual two levels.
-        let (gg, gc) = both_under(
-            &mut gpu,
-            CLIP_BODY,
-            &html,
-            grey_policy(),
-            1.0,
-            false,
-            vello::AaConfig::Area,
-        );
-        let (_, grey_worst) = differ(&gg, &gc, 255);
-        let (n, worst) = differ(&g, &c, grey_worst.max(2));
-        report.push((depth, fg, fc, n, worst, grey_worst));
+        let (n, worst) = differ(&g, &c, 2);
+        report.push((depth, fg, fc, n, worst));
     }
     assert!(
         report
             .iter()
-            .all(|&(_, fg, fc, n, _, _)| fg > 150 && fc > 150 && n == 0),
-        "(depth, GPU fringes, software fringes, pixels past grey's worst, worst, \
-         grey's worst): {report:?}"
+            .all(|&(_, fg, fc, n, _)| fg > 150 && fc > 150 && n == 0),
+        "(depth, GPU fringes, software fringes, pixels past 2 levels, worst): {report:?}"
+    );
+}
+
+/// The opaque pixel is in the blend stack's spill buffer: in a transparent
+/// window, the white background belongs to the fifth of six nested clips, so
+/// the text's layer (inside the sixth) is opaque only over the backdrop the
+/// sixth clip saved at depth five, past the four registers. Per channel, and
+/// the software painter's. Red against a spill index that drops the per-depth
+/// stride (`* TILE_WIDTH * TILE_HEIGHT` in `lcd_composite`): that reads depth
+/// four's backdrop, transparent, and the text falls back to grey.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_subpixel_text_finds_the_page_in_the_spill() {
+    let mut gpu = Gpu::new();
+    let mut report = Vec::new();
+    for (depth, opaque_at) in [(6usize, 5usize), (7, 5), (7, 6)] {
+        let html = nested_clips(
+            depth,
+            Some(opaque_at),
+            &format!("<p style='padding-left: 0.3px'>{TEXT}</p>"),
+        );
+        let (g, c) = both(
+            &mut gpu,
+            "padding-left: 3px;",
+            &html,
+            SubpixelOrder::Rgb,
+            1.0,
+            true,
+            vello::AaConfig::Area,
+        );
+        let (fg, fc) = (fringed(&g), fringed(&c));
+        let (n, worst) = differ(&g, &c, 2);
+        report.push((depth, opaque_at, fg, fc, n, worst));
+    }
+    assert!(
+        report
+            .iter()
+            .all(|&(_, _, fg, fc, n, _)| fg > 150 && fc > 150 && n == 0),
+        "(depth, opaque clip, GPU fringes, software fringes, pixels past 2 levels, \
+         worst): {report:?}"
     );
 }
 
@@ -517,4 +559,54 @@ fn gpu_bgr_swaps_red_and_blue() {
     let swapped: Vec<[u8; 4]> = rgb.iter().map(|p| [p[2], p[1], p[0], p[3]]).collect();
     let (n, worst) = differ(&bgr, &swapped, 1);
     assert_eq!(n, 0, "{n} pixels differ from the swap (worst {worst})");
+}
+
+/// TEMPORARY probe for #2321 (not to commit).
+#[test]
+#[ignore = "probe"]
+fn probe_2321_nested_clip_edges() {
+    let mut gpu = Gpu::new();
+    for scale in [1.0f64, 1.25] {
+        for radius in ["0", "5px"] {
+            for pad in ["3px", "3.3px"] {
+                let mut row = Vec::new();
+                for depth in 1..=6usize {
+                    let mut html = String::new();
+                    for _ in 0..depth {
+                        html.push_str(&format!(
+                            "<div style='overflow: hidden; border-radius: {radius}'>"
+                        ));
+                    }
+                    html.push_str("<div style='height: 40px; background: #000'></div>");
+                    for _ in 0..depth {
+                        html.push_str("</div>");
+                    }
+                    let (g, c) = both_under(
+                        &mut gpu,
+                        &format!("background: #fff; padding: 6px {pad};"),
+                        &html,
+                        grey_policy(),
+                        scale,
+                        false,
+                        vello::AaConfig::Area,
+                    );
+                    let pw = (W as f64 * scale) as u32;
+                    let y = (26.0 * scale) as u32;
+                    let x0 = (3.0 * scale) as u32;
+                    let at = |px: &[[u8; 4]], x: u32| px[(y * pw + x) as usize][0];
+                    let yc = (6.5 * scale) as u32 + 1;
+                    let corner = |px: &[[u8; 4]]| px[(yc * pw + x0 + 1) as usize][0];
+                    row.push((
+                        depth,
+                        (at(&g, x0), at(&c, x0)),
+                        (at(&g, x0 + 1), at(&c, x0 + 1)),
+                        (corner(&g), corner(&c)),
+                    ));
+                }
+                eprintln!(
+                    "PROBE scale {scale} radius {radius} pad {pad}: (depth, (gpu,cpu) at x0, at x0+1, corner) {row:?}"
+                );
+            }
+        }
+    }
 }
