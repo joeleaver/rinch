@@ -76,6 +76,8 @@ fn color(v: &str) -> Option<String> {
     })
 }
 
+/// A dimension value as CSS: a length in px or a percentage (`width`,
+/// `height`, `hspace`, `vspace`).
 fn dimension(v: &str) -> Option<String> {
     match parse_html_dimension(v)? {
         HtmlDimension::Length(v) => Some(format!("{v}px")),
@@ -83,8 +85,49 @@ fn dimension(v: &str) -> Option<String> {
     }
 }
 
-fn pixels(v: &str) -> Option<f32> {
-    v.trim().parse::<f32>().ok().filter(|p| *p >= 0.0)
+/// The HTML Standard's rules for parsing integers: leading whitespace, an
+/// optional sign, then digits; whatever follows them is ignored, so `"10px"`
+/// is 10 and `"1e1"` is 1. `None` when there is no digit.
+fn integer(v: &str) -> Option<i64> {
+    let v = v.trim_start_matches(['\t', '\n', '\x0C', '\r', ' ']);
+    let (negative, digits) = match v.as_bytes().first()? {
+        b'-' => (true, &v[1..]),
+        b'+' => (false, &v[1..]),
+        _ => (false, v),
+    };
+    let end = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(digits.len());
+    let n: i64 = digits[..end].parse().ok()?;
+    Some(if negative { -n } else { n })
+}
+
+/// The rules for parsing non-negative integers: [`integer`], and an error
+/// below zero.
+fn non_negative_integer(v: &str) -> Option<f32> {
+    integer(v).filter(|n| *n >= 0).map(|n| n as f32)
+}
+
+/// `cellpadding` as Chrome reads it: [`integer`], where an error and a
+/// negative number are both 0. An empty value maps nothing (the UA's 1px).
+fn cell_padding(v: &str) -> Option<f32> {
+    (!v.is_empty()).then(|| integer(v).unwrap_or(0).max(0) as f32)
+}
+
+/// A table's `border`: a non-negative integer, and 1 when it fails to parse
+/// (an empty `border` is a 1px border, as in Chrome).
+fn table_border(v: &str) -> f32 {
+    non_negative_integer(v).unwrap_or(1.0)
+}
+
+/// A length by the rules for parsing dimension values (`"10px"` and
+/// `"10.5"` are lengths; the rest of the value is ignored), with no
+/// percentage: `cellspacing`.
+fn dimension_length(v: &str) -> Option<f64> {
+    match parse_html_dimension(v)? {
+        HtmlDimension::Length(v) => Some(v),
+        HtmlDimension::Percentage(_) => None,
+    }
 }
 
 /// `<font face>`: a family list, each name a CSS string.
@@ -181,22 +224,22 @@ pub(crate) fn hints_css(node: &Node) -> Option<String> {
     match tag {
         "td" | "th" if attr("nowrap").is_some() => css.push_str("white-space:nowrap;"),
         "table" => {
-            if let Some(v) = attr("cellspacing").and_then(pixels) {
+            if let Some(v) = attr("cellspacing").and_then(dimension_length) {
                 write!(css, "border-spacing:{v}px;").unwrap();
             }
-            if let Some(v) = attr("border").and_then(pixels).filter(|v| *v > 0.0) {
+            if let Some(v) = attr("border").map(table_border).filter(|v| *v > 0.0) {
                 let c = attr("bordercolor").and_then(color).unwrap_or_default();
                 write!(css, "border:{v}px outset {c};").unwrap();
             }
         }
         "img" => {
-            if let Some(v) = attr("hspace").and_then(pixels) {
-                write!(css, "margin-left:{v}px;margin-right:{v}px;").unwrap();
+            if let Some(v) = attr("hspace").and_then(dimension) {
+                write!(css, "margin-left:{v};margin-right:{v};").unwrap();
             }
-            if let Some(v) = attr("vspace").and_then(pixels) {
-                write!(css, "margin-top:{v}px;margin-bottom:{v}px;").unwrap();
+            if let Some(v) = attr("vspace").and_then(dimension) {
+                write!(css, "margin-top:{v};margin-bottom:{v};").unwrap();
             }
-            if let Some(v) = attr("border").and_then(pixels) {
+            if let Some(v) = attr("border").and_then(non_negative_integer) {
                 write!(css, "border:{v}px solid;").unwrap();
             }
         }
@@ -230,14 +273,17 @@ pub(crate) fn hints_css(node: &Node) -> Option<String> {
 /// the table has `border`.
 pub(crate) fn cell_hints_css(table: &Node) -> Option<String> {
     let mut css = String::new();
-    if let Some(v) = table.attributes.get("cellpadding").and_then(|v| pixels(v)) {
+    if let Some(v) = table
+        .attributes
+        .get("cellpadding")
+        .and_then(|v| cell_padding(v))
+    {
         write!(css, "padding:{v}px;").unwrap();
     }
     if table
         .attributes
         .get("border")
-        .and_then(|v| pixels(v))
-        .is_some_and(|v| v > 0.0)
+        .is_some_and(|v| table_border(v) > 0.0)
     {
         let c = table.attributes.get("bordercolor").and_then(|v| color(v));
         let c = c.unwrap_or_default();

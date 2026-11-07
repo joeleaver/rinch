@@ -96,9 +96,11 @@ impl ComputedStyle {
                 == style::computed_values::box_sizing::T::BorderBox,
             border_collapse: inherited_table.border_collapse
                 == style::computed_values::border_collapse::T::Collapse,
+            // Whole pixels, the fraction cut off, as Chrome keeps it:
+            // `border-spacing: 10.9px` spaces by 10px there.
             border_spacing: (
-                inherited_table.border_spacing.0.width().px(),
-                inherited_table.border_spacing.0.height().px(),
+                inherited_table.border_spacing.0.width().px().trunc(),
+                inherited_table.border_spacing.0.height().px().trunc(),
             ),
             table_layout_fixed: cv.get_table().table_layout
                 == style::computed_values::table_layout::T::Fixed,
