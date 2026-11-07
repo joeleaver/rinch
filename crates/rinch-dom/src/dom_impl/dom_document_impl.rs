@@ -1234,6 +1234,22 @@ impl DomDocument for RinchDocument {
         self.tree.mark_scrolled(node.0);
     }
 
+    /// Flags the node ([`crate::Node::style_isolated`]) and marks it with
+    /// the `rinch-style-isolated` attribute, which the UA sheet's link rules
+    /// for isolated content key on. Any children it already has restyle.
+    fn isolate_styles(&mut self, node: NodeId) {
+        let Some(n) = self.tree.nodes.get_mut(node.0) else {
+            return;
+        };
+        if n.style_isolated {
+            return;
+        }
+        n.style_isolated = true;
+        self.tree.isolated_nodes += 1;
+        self.set_attribute(node, "rinch-style-isolated", "");
+        self.mark_restyle(node.0, true);
+    }
+
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
         // #723: an id that names no live node is a no-op, as on the web.
         if !self.tree.nodes.contains(node.0) {

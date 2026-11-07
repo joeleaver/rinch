@@ -164,10 +164,66 @@ containing block of everything in it, so a relative offset, a transform or
 a negative margin cannot put the document's link over your app's own
 controls. (A `position: fixed` box is placed against the window whatever
 contains it; `clean` never lets one through, so this holds for what it
-returns. HTML you pass as `html` or `body_style` is taken as it is.) A document that sets no colours is drawn black on white, as a
-browser draws a page, whatever your theme. All of this is the view's own
-CSS on `.rinch-html-view`: restyle it through the cascade (your font, your
-page colour) as you need.
+returns. HTML you pass as `html` or `body_style` is taken as it is.) All of
+this is the view's own CSS on `.rinch-html-view`: restyle it through the
+cascade (your font, your page colour) as you need. A rule of yours reaches the view's own element,
+not the document inside it ([below](#your-apps-styles-stop-at-the-view)).
+
+## Your app's styles stop at the view
+
+A document in an `HtmlView` is laid out as a browser lays out the same HTML
+put in a `<div>` of a page with no style sheet of its own: by the browser's
+own (user-agent) sheet, its presentational attributes (`width`, `bgcolor`,
+`cellpadding`…) and its own styles. Your theme's base styles, your
+components' CSS and your app's own CSS do not match its elements, so a
+theme's `* { box-sizing: border-box }` cannot turn a mail's `<td
+style="width: 200pt; padding: 0 6pt">` into a narrower cell, and a theme's
+`h5 { line-height: 1.5 }` cannot override the `line-height` a heading
+inherits. Its links have the browser's look (blue, underlined), not your
+theme's. On the web the view keeps the document in a shadow root; on
+desktop rinch matches it the same way (issue #2357).
+
+Inherited properties still come in from the view, as they would from the
+`<div>`: put `color`, `font-family`, `font-size` or `line-height` on the
+view or on an element around it, and a document that sets none uses yours.
+The view sets no colours of its own, so a document that sets none takes
+your text colour and shows your background.
+
+**A dark-themed app colours the view's host, or sets `paper: true`.**
+Most mail is written for a white page; under a dark theme its text would
+otherwise come out light on your dark background, with its own coloured
+tables beside it. Give the element around the view the page you want
+(Postrinch's `.mail-html` is `background: #fff; color: #222`), or set
+`paper: true` and the view draws the document black on white whatever your
+theme, as a browser draws a page with no colours of its own:
+
+```rust
+rsx! { HtmlView { document: mail, paper: true } }
+```
+
+`paper` is a rule of zero specificity, so your own `color` or
+`background-color` on the view still wins. (Until #2357 every view was
+black on white.)
+
+To have your styles reach the document anyway, for HTML of your own that
+should look like the rest of your app, set `app_styles: true`:
+
+```rust
+rsx! { HtmlView { html: help_page, app_styles: true } }
+```
+
+A `<style>` element is not something `clean` lets through, and `html` is
+meant for cleaned HTML; if you put one there anyway, the two backends
+differ. On desktop its rules join your app's sheets (they style your app
+and, being author rules, do not match inside the view); on the web it sits
+in the view's shadow root and styles the document only.
+
+On the web, a selector you run from outside the view
+(`query_selector`, `query_selector_all` on the view or above) does not
+see into the document, as a browser selector stops at a shadow root; run
+it on the view's body (`.rinch-html-body`, the view's last child in
+`children()`) or below, which works on both backends. `text_content` and `children` on the view do include the
+document on both.
 
 ## Text, and hidden text
 

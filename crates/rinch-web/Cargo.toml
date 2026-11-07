@@ -44,6 +44,9 @@ web-sys = { version = "0.3", features = [
     # attribute's presence the same way `checked`/`selected` are (#754).
     "HtmlMediaElement",
     "Node", "NodeList", "Text", "Comment",
+    # `isolate_styles` (#2357): an `HtmlView`'s document goes in a shadow
+    # root, where the page's style sheets do not match it.
+    "ShadowRoot", "ShadowRootInit", "ShadowRootMode", "DocumentFragment",
     "CssStyleDeclaration", "DomRect", "DomRectList",
     "Event", "MouseEvent", "KeyboardEvent",
     # Pointer Events unify mouse + touch + pen so the element drag-and-drop

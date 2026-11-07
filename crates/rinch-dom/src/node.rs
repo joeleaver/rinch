@@ -1672,6 +1672,20 @@ pub struct Node {
     /// each cascade of the element and set when that cascade, or a pseudo
     /// resolution after it, asks `TElement::get_attr` for an attribute.
     pub content_reads_attrs: Cell<bool>,
+    /// The document's style sheets stop at this node (#2357,
+    /// `DomDocument::isolate_styles`): its descendants answer `false` to
+    /// Stylo's `TElement::matches_user_and_content_rules`, so they match
+    /// only user-agent rules, presentational hints and their `style`
+    /// attribute — Stylo's own gate for native anonymous content, the same
+    /// one a shadow root's contents pass. Inheritance is untouched.
+    pub style_isolated: bool,
+    /// Whether an ancestor has [`Self::style_isolated`] set, as of this
+    /// element's last style visit (`resolve_styles_recursive` sets it from
+    /// the parent's, top-down, on every visit). `matches_user_and_content_rules` reads it, so the check is O(1)
+    /// rather than a walk of the ancestors per cascade, per pseudo-element
+    /// and per invalidation (review of #2366: +3.7% on 15 full restyles of
+    /// 6,040 elements 40 deep).
+    pub under_isolated: Cell<bool>,
     /// A closed `<select>`'s widest option label width in CSS px, with the
     /// hash of what it was shaped from (the labels and the font) — so a
     /// restyle that moves neither re-shapes nothing (#1098). `None` until an
@@ -2025,6 +2039,8 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            style_isolated: false,
+            under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
@@ -2115,6 +2131,8 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            style_isolated: false,
+            under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
@@ -2204,6 +2222,8 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            style_isolated: false,
+            under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
@@ -2291,6 +2311,8 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            style_isolated: false,
+            under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
@@ -3421,6 +3443,13 @@ pub struct NodeTree {
     /// `DomDocument::text_selection_range` answers for an unfocused control as
     /// a browser does (issue #1678). Dropped with the node.
     pub text_selections: HashMap<RawNodeId, (usize, usize, rinch_core::dom::SelectionDirection)>,
+    /// How many live nodes have [`Node::style_isolated`] set (#2357). While
+    /// it is `0`, `TElement::matches_user_and_content_rules` answers `true`
+    /// without reading the element, so a document with no isolated subtree
+    /// (an app with no `HtmlView`) pays only the walk's one parent read per
+    /// visited element, which keeps [`Node::under_isolated`] current. Raised by `isolate_styles`, lowered by
+    /// [`Self::remove_subtree`] when it frees such a node.
+    pub isolated_nodes: usize,
     /// Shared lock for Stylo CSS engine.
     pub guard: SharedRwLock,
     /// IDs of anonymous block box nodes created during layout.
@@ -3984,6 +4013,7 @@ impl NodeTree {
             scroll_lock_exempt: Vec::new(),
             select_value_fresh: HashSet::new(),
             text_selections: HashMap::new(),
+            isolated_nodes: 0,
             guard,
             anonymous_block_boxes: Vec::new(),
             split_inlines: Vec::new(),
@@ -4574,7 +4604,9 @@ impl NodeTree {
             }
         }
         for node_id in to_remove {
-            self.nodes.remove(node_id);
+            if self.nodes.remove(node_id).style_isolated {
+                self.isolated_nodes -= 1;
+            }
         }
     }
 
