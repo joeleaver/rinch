@@ -295,7 +295,7 @@ draws nothing until it arrives.
 
 | The image | What it draws |
 |---|---|
-| has both dimensions without its picture (its `width` and `height` attributes or CSS, or one of them and the attributes' ratio) | a box of that size with a faint 1px `silver` border inside its content box, and its `alt` text inside that (1px in from the border), wrapped to the box and clipped to it — but nothing when the box is thinner than **3px** on either axis (no `src`) or **18px** (a failed load), as in Chrome, so spacers and dividers stay invisible |
+| has both dimensions without its picture (its `width` and `height` attributes or CSS, or one of them and the attributes' ratio) | a box of that size with a faint 1px `silver` border inside its content box, and its `alt` text inside that (1px in from the border), wrapped to the box and clipped to it — but nothing when the box is thinner than **3px** on either axis (no `src`) or **18px** (a failed load), as in Chrome, so spacers and dividers stay invisible (one with alt text shows the text inline instead, its size ignored, as Chrome does) |
 | has `alt` text and not both dimensions | the alt text as text, an inline-block of it: as wide as the text up to the room it has (a long one wraps), or its declared width; as tall as its lines, or its declared height |
 | has neither, or every declared size is 1px or less (a tracking pixel) | nothing, and it takes up only its declared size |
 
@@ -342,8 +342,11 @@ and what Chrome does in quirks mode), so held-back pictures keep their place.
 An image with alt text and one dimension is laid out as Chrome lays it out
 (`width: 100%; height: auto` with no ratio is the column's width by the
 text's lines). An unsized image with alt text is, in Chrome, an inline-block
-of the icon and the text; in rinch of the text alone. A failed image with no
-size is an empty 16x16 box in Chrome, 0x0 in rinch; neither draws anything.
+of the icon and the text; in rinch of the text alone. A sized image too small
+for its box that has alt text (a failed 16x16 `alt="Facebook"` icon) shows
+the alt text inline in both, its size ignored. A failed image with no alt and
+one or no dimension is, in Chrome, a 16x16 box holding the broken-image icon;
+rinch draws nothing there and keeps its declared size (0x0 with none).
 Chrome copies no alt text (`getSelection().toString()` of
 `a<img alt="Hello">b` is `"ab"`), and neither does rinch. **On the web**
 (rinch-web) the browser draws

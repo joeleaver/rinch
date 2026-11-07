@@ -1922,6 +1922,12 @@ impl RinchDocument {
         if crate::replaced::measures_aspect_ratio(&self.tree.nodes[node_id]) {
             style.aspect_ratio = None;
         }
+        // An image too small to draw its placeholder box in shows its alt text
+        // inline at the text's size, its own size ignored, as Chrome does
+        // (#2309, review of #2313). Re-derived by `sync_img_placeholder`.
+        if crate::img_placeholder::ignores_size(&self.tree, &self.tree.nodes[node_id]) {
+            style.size = taffy::Size::auto();
+        }
         // Nor does an internal table box take one (css-sizing-4 §5.1): a
         // cell, a row, a row group (Chrome 155: a `table-cell` 100px wide
         // with `aspect-ratio: 2` is 100x0). A caption and the table do.

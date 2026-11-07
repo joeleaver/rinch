@@ -31,13 +31,19 @@
 //!    width:100%; height:auto">` in a 150px column is 150 by one line, as in
 //!    Chrome; a long alt text in an 80px column is 80 wide and wraps.
 //! 3. **No alt and not both dimensions, or every declared size at most 1px**
-//!    (a tracking pixel): nothing drawn, the declared size only. Chrome lays
-//!    a failed image without a size out as an empty 16x16 box; rinch keeps
-//!    the declared size (0x0).
+//!    (a tracking pixel): nothing drawn, the declared size only (Joe's rule
+//!    3). Chrome draws a failed image with no alt and one or no dimension as
+//!    a 16x16 box holding its broken-image icon; rinch draws nothing there
+//!    and keeps the declared size (0x0).
+//!
+//! A box below the minimum that has alt text (a failed 16x16
+//! `alt="Facebook"` icon) shows the text inline instead, its size ignored
+//! ([`ignores_size`]), as Chrome shows it.
 //!
 //! Rinch draws Chrome's broken-image icon nowhere (Chrome draws it in the
-//! box's corner after a failed load at 18px and up, and before the alt text
-//! of an inline one).
+//! box's corner after a failed load at 18px and up, as the whole 16x16 box
+//! of a failed image with no alt and no size, and before the alt text of an
+//! inline one).
 //!
 //! **Overriding the look.** The box is drawn from custom properties, read only
 //! while the element is a placeholder, inherited like any custom property (so
@@ -228,15 +234,56 @@ pub fn placeholder(tree: &NodeTree, node: &Node) -> Placeholder {
         return Placeholder::None;
     }
     // Both dimensions without the picture: both declared, or one and a ratio.
-    let ratio = cs.aspect_ratio.used_ratio(None).is_some();
-    if (w.is_some() && h.is_some()) || ((w.is_some() || h.is_some()) && ratio) {
-        return Placeholder::Box;
+    let ratio = cs.aspect_ratio.used_ratio(None).map(|r| r.value);
+    if (w.is_some() && h.is_some()) || ((w.is_some() || h.is_some()) && ratio.is_some()) {
+        // Too small a box for Chrome to draw one in: with alt text, the text
+        // inline instead, its size ignored, as Chrome shows it (review of
+        // #2313: a failed 16x16 `alt="Facebook"` icon); without, nothing.
+        return if alt_text(node).is_some() && below_min_box(node, w, h, ratio) {
+            Placeholder::Inline
+        } else {
+            Placeholder::Box
+        };
     }
     if alt_text(node).is_some() {
         Placeholder::Inline
     } else {
         Placeholder::None
     }
+}
+
+/// Whether the box `node`'s declared lengths give it (`w`, `h`, the other
+/// through `ratio` when one is missing) is under [`min_box`] on an axis. A
+/// percentage or keyword size is not known here and counts as large enough
+/// (paint still draws no box under the minimum).
+fn below_min_box(
+    node: &Node,
+    w: Option<Option<f32>>,
+    h: Option<Option<f32>>,
+    ratio: Option<f32>,
+) -> bool {
+    let (w, h) = (w.flatten(), h.flatten());
+    let (w, h) = match (w, h, ratio) {
+        (Some(w), None, Some(r)) => (Some(w), Some(w / r)),
+        (None, Some(h), Some(r)) => (Some(h * r), Some(h)),
+        _ => (w, h),
+    };
+    let min = min_box(node);
+    w.is_some_and(|v| v < min) || h.is_some_and(|v| v < min)
+}
+
+/// Whether `node` is an alt placeholder whose declared size is ignored: a
+/// box too small to draw ([`placeholder`]) shows its alt text inline, at the
+/// text's size, as Chrome does. Its Taffy style drops its `width` and
+/// `height` (`taffy_style_from_computed`).
+pub fn ignores_size(tree: &NodeTree, node: &Node) -> bool {
+    let cs = &node.computed_style;
+    let (w, h) = (
+        declared(&cs.width).is_some(),
+        declared(&cs.height).is_some(),
+    );
+    let ratio = cs.aspect_ratio.used_ratio(None).is_some();
+    placeholder(tree, node) == Placeholder::Inline && ((w && h) || ((w || h) && ratio))
 }
 
 /// The smallest content box, on each axis, that `node`'s box placeholder is

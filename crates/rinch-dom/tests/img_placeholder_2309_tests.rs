@@ -1100,3 +1100,66 @@ fn a_wrapped_alt_box_sits_on_its_last_line() {
         "the x {x_ink:?} is on the image's last line (from {line_top})"
     );
 }
+
+/// A box too small for its placeholder that has alt text shows the text
+/// inline, its size ignored, as Chrome 156 shows a failed 10x10
+/// `alt="Facebook"` icon; at the threshold it is the box again. A picture
+/// arriving gives it its declared size back.
+#[test]
+fn a_box_below_the_threshold_with_alt_shows_the_alt_inline() {
+    let mut doc = new_doc("");
+    let (tw, th) = span_box(&mut doc, "Facebook", "");
+    for (w, h, src, inline) in [
+        ("10", "10", Some(BROKEN), true),
+        ("17", "17", Some(BROKEN), true),
+        ("40", "17", Some(BROKEN), true),
+        ("18", "18", Some(BROKEN), false),
+        ("2", "20", None, true),
+        ("3", "20", None, false),
+    ] {
+        let mut doc = new_doc("");
+        let mut attrs = vec![
+            ("style", POS),
+            ("width", w),
+            ("height", h),
+            ("alt", "Facebook"),
+        ];
+        if let Some(src) = src {
+            attrs.push(("src", src));
+        }
+        let i = img(&mut doc, &attrs);
+        let p = paint(&mut doc);
+        let what = format!("{w}x{h} src={src:?}");
+        if inline {
+            assert_eq!(size(&doc, i), (tw, th), "{what}: the text's box");
+            assert!(count(&p, ink) > 0, "{what}: its text");
+            // No ring (even the smallest, 10x10, is 36 pixels); an
+            // anti-aliased glyph edge can land on silver's value.
+            assert!(count(&p, |c| c == SILVER) < 8, "{what}: no box");
+        } else {
+            let (ww, hh) = (w.parse::<f32>().unwrap(), h.parse::<f32>().unwrap());
+            assert_eq!(size(&doc, i), (ww, hh), "{what}: its declared box");
+            assert!(count(&p, |c| c == SILVER) > 0, "{what}: the box");
+        }
+    }
+    // The picture arrives: its declared size again.
+    let mut doc = new_doc("");
+    let i = img(
+        &mut doc,
+        &[
+            ("style", POS),
+            ("width", "10"),
+            ("height", "10"),
+            ("alt", "Facebook"),
+            ("src", BROKEN),
+        ],
+    );
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(size(&doc, i), (tw, th));
+    doc.set_attribute(i, "src", RED_3X2);
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(size(&doc, i), (10.0, 10.0));
+    doc.set_attribute(i, "src", BROKEN);
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(size(&doc, i), (tw, th), "and failed again");
+}

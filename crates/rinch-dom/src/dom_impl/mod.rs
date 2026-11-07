@@ -1726,7 +1726,16 @@ impl RinchDocument {
                 .attributes
                 .get("src")
                 .is_none_or(|s| self.tree.image_cache.get(s).is_none());
-        if want == have && !stale {
+        // Whether its Taffy style should drop its size (an alt placeholder
+        // too small for its box), against whether it does: a failure or a
+        // picture arriving changes that without a restyle.
+        let ignore = crate::img_placeholder::ignores_size(&self.tree, node);
+        let ignored = node.img_size_ignored;
+        if ignore != ignored {
+            self.tree.nodes[node_id].img_size_ignored = ignore;
+            self.rewrite_taffy_style(node_id);
+        }
+        if want == have && !stale && ignore == ignored {
             return false;
         }
         let Some(crate::node::NodeContext::Image { natural, alt, .. }) =

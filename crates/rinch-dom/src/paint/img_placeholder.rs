@@ -85,7 +85,7 @@ pub(super) fn paint_img_placeholder(
     let alt = node
         .taffy_id
         .and_then(|t| match tree.taffy.get_node_context(t) {
-            Some(crate::node::NodeContext::Image { alt, .. }) => alt.clone(),
+            Some(crate::node::NodeContext::Image { alt, .. }) => alt.as_ref(),
             _ => None,
         });
 
@@ -136,16 +136,23 @@ pub(super) fn paint_img_placeholder(
     if clip.width() <= 0.0 || clip.height() <= 0.0 {
         return;
     }
-    let layout = match &alt {
-        Some(alt) if max_width + 0.01 >= alt.max_content => (*alt.layout).clone(),
-        Some(alt) => alt.broken(max_width),
+    // The shaped text as it is when it fits on one line (no copy), else
+    // re-broken to the width.
+    let owned;
+    let layout: &parley::Layout<Brush> = match alt {
+        Some(alt) if max_width + 0.01 >= alt.max_content => &alt.layout,
+        Some(alt) => {
+            owned = alt.broken(max_width);
+            &owned
+        }
         // Not synced yet (no layout has run since the alt text appeared).
         None => {
             let Some(text) = ph::alt_text(node) else {
                 return;
             };
             tree.perf.bump(crate::perf::Counter::ShapePaint);
-            ph::alt_layout(node, &text, font_cx, layout_cx, Some(max_width))
+            owned = ph::alt_layout(node, &text, font_cx, layout_cx, Some(max_width));
+            &owned
         }
     };
     // Its lines from the top of its box.
@@ -158,7 +165,7 @@ pub(super) fn paint_img_placeholder(
     painter.push_clip(Fill::NonZero, transform, &clip.into());
     render_text_with_shadow(
         painter,
-        &layout,
+        layout,
         origin_x,
         origin_y + shift,
         cs.text_shadow.as_slice(),

@@ -96,7 +96,13 @@ attributes, `alt="Hello world"`: a 95x20 inline box, the 16px icon and the
 text), whether `src` is missing or failed — so drawing the box with the alt
 text is Joe's rule, Chrome's quirks-mode rendering. Not Chrome's (the guide's
 list): no broken-image icon anywhere, the box for a sized image with alt, and
-a failed image with no size 0x0 (Chrome: an empty 16x16 box). The web backend
+a failed image with no alt and one or no dimension drawing nothing at its
+declared size (Chrome: a 16x16 box holding the broken-image icon; Joe's rule
+3). A box under the minimum that has alt text is `Inline` with its size
+dropped from its Taffy style (`img_placeholder::ignores_size`, read by
+`taffy_style_from_computed`; `Node::img_size_ignored` records what the style
+was last given, so `sync_img_placeholder` rebuilds it when a failure or a
+picture arrives), as Chrome shows a failed 16x16 `alt="Facebook"` icon. The web backend
 is the browser's `<img>`. Pins: `rinch-dom/tests/img_placeholder_2309_tests.rs`
 (software, 1x and 2x, a partial repaint after a `src` arrives, the review of
 #2313's thresholds, one-dimension and wrapping cases) and
@@ -472,8 +478,8 @@ size from the ratio (400x0, Chrome 400x100 — #1571). Also not
 Chrome's: an image with no picture (no `src`, or failed) and a non-empty `alt`
 keeps its attributes' 100x50 and draws a placeholder box in it (#2309, above)
 where Chrome 156 lays out the alt text inline (both attributes ignored), and a failed one with no `alt`
-and one attribute is 100x0, or with none 0x0, where Chrome lays out an empty
-16x16 box (it draws nothing in a box under 18px); an out-of-flow image with an `auto`
+and one attribute is 100x0, or with none 0x0, drawing nothing, where Chrome
+draws a 16x16 box holding its broken-image icon (Joe's rule 3); an out-of-flow image with an `auto`
 dimension fills its containing block (#1432, older than the hints); a percentage `height`
 attribute does nothing on an inline-level image, as a CSS one does not
 (#1420); a `<video>` with a mapped ratio and both dimensions `auto` is 300
