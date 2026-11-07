@@ -45,8 +45,12 @@
 //! than its max-content does the same from min-content to max-content
 //! (#2281); both used to share the width in proportion to the declared or
 //! max-content widths. Past the max guess the excess goes to the `auto`
-//! columns in proportion to their max-content, or with none, to the
-//! declared ones in proportion to their widths (the fork's stretch step).
+//! columns in proportion to their max-content (when they are all empty, in
+//! equal shares: an email's filler cell beside its logo), or with none, to
+//! the declared ones in proportion to their widths, then to the percentage
+//! ones (the fork's stretch step). A percentage resolves against the
+//! table's width less its outer spacing, where Chrome leaves out every
+//! spacing (#2333), and percentages past 100% are not capped (#2334).
 //!
 //! The tracks: an `auto` column is `minmax(min-content, auto)` in a table
 //! with a width of its own (its growth limit is its cells' max-content) and

@@ -295,3 +295,91 @@ fn a_colspan_min_content_between_its_columns_min_and_max_grows_them_by_their_roo
     assert_near("columns", &w[..2], &[82.0, 63.0]);
     assert_eq!(tw, 160.0);
 }
+
+/// One row of `tds` (each `(attributes, blocks)`) in a table `width` px wide
+/// with 4px spacing, laid out, and the row's widths.
+fn row_widths(width: u32, tds: &[(&str, usize)]) -> Vec<f32> {
+    let cells: String = tds
+        .iter()
+        .map(|(a, n)| format!("<td {a}>{}</td>", b(*n)))
+        .collect();
+    let d = layout(&format!(
+        "<table id=t style=\"width:{width}px;border-spacing:4px;font-size:0\"><tr>{cells}</tr></table>"
+    ));
+    measure(&d).0
+}
+
+#[test]
+fn empty_auto_columns_share_the_excess_equally_before_a_declared_one() {
+    // Email's logo-and-filler row: a `width=100` cell beside an empty one.
+    // Chrome 156 gives the empty auto column the excess (108 / 280); the
+    // first cut of #2306 gave it to the declared column (388 / 0).
+    let decl = "width=100 style=\"padding:0 4px\"";
+    let empty = "style=\"padding:0\"";
+    assert_near(
+        "one filler",
+        &row_widths(400, &[(decl, 1), (empty, 0)]),
+        &[108.0, 280.0],
+    );
+    assert_near(
+        "two fillers",
+        &row_widths(400, &[(decl, 1), (empty, 0), (empty, 0)]),
+        &[108.0, 138.0, 138.0],
+    );
+    // Before a percentage column too.
+    assert_near(
+        "beside a percentage",
+        &row_widths(400, &[("style=\"width:20%;padding:0 4px\"", 1), (empty, 0)]),
+        &[77.59, 310.41],
+    );
+    // An empty auto column beside one with content gets none of it.
+    assert_near(
+        "beside content",
+        &row_widths(400, &[("style=\"padding:0 4px\"", 1), (empty, 0)]),
+        &[388.0, 0.0],
+    );
+    // Over two rows, the second empty too: 126 / 368 in Chrome.
+    let d = layout(&format!(
+        "<table id=t style=\"width:500px;border-spacing:2px;font-size:0\">\
+         <tr><td width=120 style=\"padding:0 3px\">{0}</td><td style=\"padding:0\"></td></tr>\
+         <tr><td style=\"padding:0 3px\">{0}</td><td style=\"padding:0\"></td></tr></table>",
+        b(1)
+    ));
+    assert_near("two rows", &measure(&d).0[..2], &[126.0, 368.0]);
+}
+
+#[test]
+fn the_excess_goes_to_a_declared_column_before_a_percentage_one() {
+    // A `width:20%` cell stops at 20% of the table's room; the `width=100`
+    // one takes the rest. Chrome 156: 157.59 / 630.41 (the tiers swapped
+    // give 678 / 110).
+    assert_near(
+        "columns",
+        &row_widths(
+            800,
+            &[
+                ("style=\"width:20%;padding:0 5px\"", 1),
+                ("width=100 style=\"padding:0 5px\"", 1),
+            ],
+        ),
+        &[157.59, 630.41],
+    );
+}
+
+#[test]
+fn percentage_columns_share_the_excess_by_their_percentages() {
+    // 20% and 30% in an 800px table: Chrome 156 gives 315.19 / 472.81, the
+    // excess past the percentages going 2:3. As `auto` tracks they would
+    // share it by max-content, equally (394 / 394).
+    assert_near(
+        "columns",
+        &row_widths(
+            800,
+            &[
+                ("style=\"width:20%;padding:0 5px\"", 1),
+                ("style=\"width:30%;padding:0 5px\"", 1),
+            ],
+        ),
+        &[315.19, 472.81],
+    );
+}

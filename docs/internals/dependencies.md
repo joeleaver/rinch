@@ -315,12 +315,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`1566e27e9c1cab2b398a9225d268b4099a970dde`, branch `rinch-patch-2306`, which is `rinch-patch` plus item 12): thirteen commits on the taffy `v0.14.0` tag
+(`54fac8c091f62681e0a8550f98e7e9637c4127cb`, branch `rinch-patch-2306`, which is `rinch-patch` plus item 12's two commits): fourteen commits on the taffy `v0.14.0` tag
 (item 10 is two of them). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirteen commits onto the new tag. All are upstream
+and a Taffy bump rebases the fourteen commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -449,10 +449,12 @@ candidates.
    `crates/rinch-dom/tests/table_auto_column_shares_2280_tests.rs`.
 
 12. **A table's excess, a spanning cell's minimum and a table's width floor** (#2306, #2281,
-   #2266; commit `1566e27e` on `rinch-patch-2306`). With `proportional_column_sizing`:
+   #2266; commits `1566e27e` and `54fac8c0` on `rinch-patch-2306`). With `proportional_column_sizing`:
    the Stretch auto Tracks step gives the width past every column's limit (Blink's "max
    guess") to the tracks with an intrinsic max and a non-zero size in proportion to their
-   sizes, with none to the fixed-length ones in proportion to theirs, then the percentage
+   sizes; when every such track is empty (size 0, an email's filler cell beside its logo), to
+   those in equal shares (Chrome 156: `<td width=100>` and an empty `<td>` in 400px are
+   108 / 280; the first commit gave 388 / 0, review of #2329); with none to the fixed-length ones in proportion to theirs, then the percentage
    ones, then equally (`distribute_table_excess`; a grid stretches its `auto` tracks
    equally); a spanning item's base-size contribution goes to its tracks in proportion to
    their room up to their growth limits and past them in proportion to the limits
@@ -462,7 +464,7 @@ candidates.
    widens to its tracks (`compute/grid/mod.rs`, CSS 2.1 §17.5.2.2). rinch sets
    `item_is_table` on a table with a width of its own and automatic layout, so Taffy's block
    algorithm hands it no width and it resolves its own. Pins: the fork's
-   `tests/proportional_column_sizing.rs` (five cases) and
+   `tests/proportional_column_sizing.rs` (seven cases) and
    `crates/rinch-dom/tests/table_width_distribution_2306_tests.rs`.
 
 11. **A float is laid out in its container's run mode** (commit `6e6feeeb`, review of
@@ -480,7 +482,7 @@ candidates.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
-and 9, (6,286 tests) with 10, and (6,021 generated tests, 6,291 in all) with 12.
+and 9, (6,286 tests) with 10, and (6,021 generated tests, 6,293 in all) with 12.
 
 
 ## Parley Fork
