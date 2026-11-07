@@ -1183,7 +1183,7 @@ pub(crate) fn shape_text_leaf(
     let leaf = LeafText::of(&text.content, text.white_space);
     let font_family = crate::fonts::parley_text_family(font_cx, &text.font_family, &leaf.text);
     let mut builder = layout_cx.ranged_builder(font_cx, &leaf.text, 1.0, true);
-    builder.set_line_break_override(Some(SPACE_RUN_BREAKS));
+    builder.set_line_break_override(Some(CHROME_LINE_BREAKS));
     use parley::style::StyleProperty as P;
     builder.push_default(P::FontSize(text.font_size));
     if (text.font_weight - 400.0).abs() > 1.0 {
@@ -3780,7 +3780,7 @@ fn is_plain_space(u: &LineUnit) -> bool {
 /// Chrome's soft wrap opportunity after a run of spaces, whatever follows
 /// (Blink's `NextBreakablePosition`): UAX #14 has none before a zero-width
 /// space (LB7) or a closing punctuation mark (LB13). parley's breaker is
-/// handed it ([`SPACE_RUN_BREAKS`]), and [`TextBreaks`] agrees.
+/// handed it ([`CHROME_LINE_BREAKS`]), and [`TextBreaks`] agrees.
 fn space_run_break(before: char, after: char) -> bool {
     before == ' ' && !matches!(after, ' ' | '\t')
 }
@@ -3795,16 +3795,93 @@ fn after_a_space_run(text: &str, byte: usize) -> bool {
             .is_some_and(|after| space_run_break(' ', after))
 }
 
-fn space_run_override(cx: parley::LineBreakContext) -> Option<bool> {
-    space_run_break(cx.before, cx.after).then_some(true)
+/// Blink's ASCII pair table (`kAsciiLineBreakTable`, written by
+/// `character_property_data_generator.cc`): for two printable ASCII
+/// characters in a row, whether a line may break between them. Blink reads
+/// it in `NextBreakablePosition` *instead of* ICU for every such pair, so it
+/// overrides UAX #14 both ways. It glues `/`, `!`, `|` and `}` to what
+/// follows, where UAX #14 breaks after them before a letter (SY, EX, BA and
+/// CL have no rule against `÷ AL`, LB31): a URL breaks after every `/`
+/// under UAX #14 and stays whole in Chrome (#2369, #1910). It breaks before
+/// `(`, `<`, `[` and `{` after most marks, after `-` and `?` before most
+/// characters, and glues the rest. The same table as parley's own
+/// `CHROMIUM_LINE_BREAK_OVERRIDE` (whose table and `LineBreakContext`
+/// constructor are private, so [`TextBreaks`] could not ask it), and
+/// `tests/url_line_break_2369_tests.rs` pins all 8,836 pairs against
+/// Chrome 156, between letters and between digits.
+static CHROME_ASCII_PAIRS: parley::AsciiLineBreakTable<5> = {
+    use parley::AsciiLineBreakTableBuilder as B;
+    // The printable ASCII range `'!'..=0x7F`.
+    const ALL: std::ops::RangeInclusive<char> = '!'..='\u{7f}';
+    B::new()
+        .with_pairs(ALL, ALL, false)
+        .with_pairs(ALL, '('..='(', true)
+        .with_pairs(ALL, '<'..='<', true)
+        .with_pairs(ALL, '['..='[', true)
+        .with_pairs(ALL, '{'..='{', true)
+        .with_pairs('-'..='-', ALL, true)
+        .with_pairs('?'..='?', ALL, true)
+        .with_pairs('-'..='-', '$'..='$', false)
+        .with_pairs(ALL, '!'..='!', false)
+        .with_pairs('?'..='?', '"'..='"', false)
+        .with_pairs('?'..='?', '\''..='\'', false)
+        .with_pairs(ALL, ')'..=')', false)
+        .with_pairs(ALL, ','..=',', false)
+        .with_pairs(ALL, '.'..='.', false)
+        .with_pairs(ALL, '/'..='/', false)
+        .with_pairs('-'..='-', '0'..='9', false)
+        .with_pairs(ALL, ':'..=':', false)
+        .with_pairs(ALL, ';'..=';', false)
+        .with_pairs(ALL, '?'..='?', false)
+        .with_pairs(ALL, ']'..=']', false)
+        .with_pairs(ALL, '}'..='}', false)
+        .with_pairs('$'..='$', ALL, false)
+        .with_pairs('\''..='\'', ALL, false)
+        .with_pairs('('..='(', ALL, false)
+        .with_pairs('/'..='/', ALL, false)
+        .with_pairs('0'..='9', ALL, false)
+        .with_pairs('<'..='<', ALL, false)
+        .with_pairs('@'..='@', ALL, false)
+        .with_pairs('A'..='Z', ALL, false)
+        .with_pairs('['..='[', ALL, false)
+        .with_pairs('^'..='`', ALL, false)
+        .with_pairs('a'..='z', ALL, false)
+        .with_pairs('{'..='{', ALL, false)
+        .with_pairs('\u{7f}'..='\u{7f}', ALL, false)
+        .build::<5>()
+};
+
+/// Chrome's answer for the opportunity between `before` and `after`, with
+/// `before_before` the character before them: `Some` where Blink decides
+/// without ICU, `None` where UAX #14 (parley's ICU4X segmenter) answers.
+///
+/// - After a run of spaces, always ([`space_run_break`]).
+/// - A hyphen before a digit: only after an ASCII letter or digit
+///   (`cccc-1234` breaks, `x -5` and `(-5)` do not — a minus sign), which
+///   Blink decides before its table (`ShouldBreakAfter`); UAX #14 LB25 has
+///   none there at all.
+/// - Any other pair of printable ASCII characters: [`CHROME_ASCII_PAIRS`].
+fn chrome_break(before_before: Option<char>, before: char, after: char) -> Option<bool> {
+    if space_run_break(before, after) {
+        return Some(true);
+    }
+    if before == '-' && after.is_ascii_digit() {
+        return Some(before_before.is_some_and(|c| c.is_ascii_alphanumeric()));
+    }
+    CHROME_ASCII_PAIRS.lookup(before, after)
 }
 
-/// [`space_run_break`] as parley's line-break override: every builder whose
+fn chrome_override(cx: parley::LineBreakContext) -> Option<bool> {
+    chrome_break(cx.before_before, cx.before, cx.after)
+}
+
+/// [`chrome_break`] as parley's line-break override: every builder whose
 /// layout rinch breaks into lines sets it (`aaaa~bbbbbb ␣ZWSP␣cc` at 40px
 /// is `aaaa~bbbbbb ` / `ZWSP cc` in Chrome 153; parley alone broke after the
-/// ZWSP's space).
-pub(crate) static SPACE_RUN_BREAKS: &parley::LineBreakOverrideFn =
-    &(space_run_override as fn(parley::LineBreakContext) -> Option<bool>);
+/// ZWSP's space; `https://example.com/a/long/url` is one line in Chrome 156,
+/// and parley alone broke it after each slash).
+pub(crate) static CHROME_LINE_BREAKS: &parley::LineBreakOverrideFn =
+    &(chrome_override as fn(parley::LineBreakContext) -> Option<bool>);
 
 /// The UAX #14 break opportunities of a paragraph's text, as parley's own
 /// analysis finds them: the same segmenter, with the complex-script
@@ -3835,8 +3912,8 @@ impl<'t> TextBreaks<'t> {
         if after_a_space_run(self.text, byte) {
             return true;
         }
-        if chrome_glues_ascii(self.text, byte) {
-            return false;
+        if let Some(chrome) = chrome_break_at(self.text, byte) {
+            return chrome;
         }
         self.positions
             .get_or_init(|| {
@@ -3852,22 +3929,16 @@ impl<'t> TextBreaks<'t> {
     }
 }
 
-/// Whether `byte` of `text` lies between `!`, `/`, `|` or `}` and an ASCII
-/// letter or digit, where UAX #14 (and ICU4X, parley's segmenter) has a
-/// break and Chrome 155 does not: `cccc!dddd`, `cccc/dddd`, `cccc}1234` stay
-/// whole in a box too narrow for them (review of #1897, measured over every
-/// ASCII punctuation mark before and after a letter and a digit). Only the
-/// lines [`css_line`] breaks (#1426, #1238, #1243) ask it: elsewhere
-/// parley's own breaks still split there (a separate difference, #1910).
-/// `?` and the other marks agree with ICU4X.
-fn chrome_glues_ascii(text: &str, byte: usize) -> bool {
-    let (Some(before), Some(after)) = (
-        text.get(..byte).and_then(|t| t.chars().next_back()),
-        text.get(byte..).and_then(|t| t.chars().next()),
-    ) else {
-        return false;
-    };
-    matches!(before, '!' | '/' | '|' | '}') && after.is_ascii_alphanumeric()
+/// [`chrome_break`] at `byte` of `text`, for the lines [`css_line`] breaks
+/// (#1426, #1238, #1243): the same answer parley's breaker gets from
+/// [`CHROME_LINE_BREAKS`] (review of #1897 measured the glue after `!`,
+/// `/`, `|` and `}`; #2369 the whole table).
+fn chrome_break_at(text: &str, byte: usize) -> Option<bool> {
+    let head = text.get(..byte)?;
+    let mut back = head.chars().rev();
+    let before = back.next()?;
+    let after = text.get(byte..)?.chars().next()?;
+    chrome_break(back.next(), before, after)
 }
 
 /// Whether `byte` of `text` lies between a complex-context (`SA`) character
@@ -10465,7 +10536,7 @@ impl RinchDocument {
         let mut builds = 0u32;
         let (text_layout, text_content) = loop {
             let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
-            builder.set_line_break_override(Some(SPACE_RUN_BREAKS));
+            builder.set_line_break_override(Some(CHROME_LINE_BREAKS));
             // A `direction: rtl` block's paragraph is right to left whatever
             // its text (parley 0.12 takes a base direction): its trailing
             // spaces are at its visual left, inside the box (Chrome 155,
@@ -12360,5 +12431,36 @@ mod atomic_leaf_layout_tests {
             n,
             "the painted layout is the one laid out for the box, not the unwrapped line"
         );
+    }
+}
+
+#[cfg(test)]
+mod chrome_break_tests {
+    use super::{chrome_break, chrome_break_at};
+
+    /// The table's answers the Chrome pair fixture cannot show through the
+    /// bundled Inter: `->` is one ligature there (#2381), so the break after
+    /// the hyphen is never taken in a layout, though Chrome 156 has it.
+    #[test]
+    fn a_hyphen_before_a_greater_than_sign_is_an_opportunity() {
+        assert_eq!(chrome_break(Some('a'), '-', '>'), Some(true));
+        assert_eq!(chrome_break_at("a->b", 2), Some(true));
+    }
+
+    /// Spaces, tabs and non-ASCII characters are UAX #14's, except the
+    /// opportunity after a space run; a hyphen before a digit is Blink's
+    /// minus-sign rule, which reads the character before the hyphen.
+    #[test]
+    fn what_the_table_leaves_to_uax_14() {
+        assert_eq!(chrome_break(Some('a'), ' ', ')'), Some(true));
+        assert_eq!(chrome_break(Some('a'), ' ', ' '), None);
+        assert_eq!(chrome_break(Some('a'), ' ', '\t'), None);
+        assert_eq!(chrome_break(Some('a'), 'b', 'é'), None);
+        assert_eq!(chrome_break(Some('a'), '/', '日'), None);
+        assert_eq!(chrome_break(Some('c'), '-', '1'), Some(true));
+        assert_eq!(chrome_break(Some(' '), '-', '1'), Some(false));
+        assert_eq!(chrome_break(None, '-', '1'), Some(false));
+        assert_eq!(chrome_break_at("-1", 1), Some(false));
+        assert_eq!(chrome_break_at("x", 0), None);
     }
 }
