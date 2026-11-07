@@ -813,10 +813,6 @@ They are checked against Chrome 153 in block, flex (both axes, and
 contexts (`crates/rinch-dom/tests/intrinsic_sizing_twin_tests.rs`). What still
 differs, each with its issue:
 
-- **`fit-content` around content that wraps** comes out as wide as its widest
-  wrapped line rather than the available width (#1276) — the same measurement
-  that makes an `auto`-width absolute too narrow. It is right whenever the
-  content fits on one line, or cannot wrap at all.
 - **`height: stretch` on an `inline-block`** lays out as `auto`, and
   **`width: stretch` on a flex item** whose content is wider than the
   container is not capped by it (#1277).
