@@ -96,8 +96,8 @@ fn paint_vello(doc: &mut RinchDocument, scale: f64, atlas: &SharedAtlas) -> Vell
     painter
 }
 
-/// The software painter's pixels over `base` (straight RGBA; the GPU
-/// render's base colour), unpremultiplied as the GPU's target holds them.
+/// The software painter's pixels over `base` (premultiplied RGBA; the GPU
+/// render's base colour).
 fn paint_skia(
     doc: &mut RinchDocument,
     scale: f64,
@@ -119,21 +119,14 @@ fn paint_skia(
         &mut doc.font_cx,
         &mut layout_cx,
     );
-    painter
-        .pixels()
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|p| unpremultiply(*p))
-        .collect()
+    painter.pixels().as_chunks::<4>().0.to_vec()
 }
 
-fn unpremultiply(p: [u8; 4]) -> [u8; 4] {
-    if p[3] == 0 || p[3] == 255 {
-        return p;
-    }
-    let a = p[3] as f32 / 255.0;
-    let c = |v: u8| (v as f32 / a).round().min(255.0) as u8;
+/// The GPU target's straight RGBA premultiplied, to compare with the
+/// software painter's: unpremultiplied, a faint pixel's colour carries its
+/// rounding times `255 / alpha`.
+fn premultiply(p: [u8; 4]) -> [u8; 4] {
+    let c = |v: u8| ((v as u16 * p[3] as u16 + 127) / 255) as u8;
     [c(p[0]), c(p[1]), c(p[2]), p[3]]
 }
 
@@ -148,7 +141,27 @@ fn both(
     transparent: bool,
     aa: vello::AaConfig,
 ) -> (Vec<[u8; 4]>, Vec<[u8; 4]>) {
-    set_thread_policy(policy(order));
+    both_under(gpu, body_css, html, policy(order), scale, transparent, aa)
+}
+
+fn grey_policy() -> ResolvedTextRasterization {
+    TextRasterization::default()
+        .antialias(TextAntialias::Grayscale)
+        .stem_darkening(StemDarkening::Off)
+        .resolve(&SystemTextSettings::default())
+}
+
+/// [`both`] under any policy.
+fn both_under(
+    gpu: &mut Gpu,
+    body_css: &str,
+    html: &str,
+    policy: ResolvedTextRasterization,
+    scale: f64,
+    transparent: bool,
+    aa: vello::AaConfig,
+) -> (Vec<[u8; 4]>, Vec<[u8; 4]>) {
+    set_thread_policy(policy);
     let atlas = private_atlas();
     let mut d = doc(body_css, html);
     let painter = paint_vello(&mut d, scale, &atlas);
@@ -158,7 +171,11 @@ fn both(
     } else {
         (peniko::Color::WHITE, [255; 4])
     };
-    let g = gpu.render(painter.scene(), pw, ph, base, aa);
+    let g = gpu
+        .render(painter.scene(), pw, ph, base, aa)
+        .into_iter()
+        .map(premultiply)
+        .collect();
     let c = paint_skia(&mut d, scale, &atlas, base_px);
     reset_thread_policy();
     (g, c)
@@ -360,7 +377,8 @@ fn gpu_subpixel_text_matches_the_software_painter() {
 #[ignore = "needs a GPU adapter"]
 fn gpu_subpixel_text_inside_clips() {
     let mut gpu = Gpu::new();
-    for depth in [1usize, 2, 6] {
+    let mut report = Vec::new();
+    for depth in [1usize, 2, 4, 5, 6] {
         let mut html = String::new();
         for i in 0..depth {
             html.push_str(&format!(
@@ -382,11 +400,30 @@ fn gpu_subpixel_text_inside_clips() {
             vello::AaConfig::Area,
         );
         let (fg, fc) = (fringed(&g), fringed(&c));
-        assert!(fc > 150, "depth {depth}: software fringes {fc}");
-        assert!(fg > 150, "depth {depth}: GPU fringes {fg}");
-        let (n, worst) = differ(&g, &c, 2);
-        assert_eq!(n, 0, "depth {depth}: {n} pixels differ (worst {worst})");
+        // The same page in grey text: where the painters' clips differ (an
+        // 8-bit mask against Vello's analytic area, compounding over nested
+        // rounded corners) the grey pages differ too. Subpixel text may
+        // differ no more than that, and at least the usual two levels.
+        let (gg, gc) = both_under(
+            &mut gpu,
+            "background: #fff;",
+            &html,
+            grey_policy(),
+            1.0,
+            false,
+            vello::AaConfig::Area,
+        );
+        let (_, grey_worst) = differ(&gg, &gc, 255);
+        let (n, worst) = differ(&g, &c, grey_worst.max(2));
+        report.push((depth, fg, fc, n, worst, grey_worst));
     }
+    assert!(
+        report
+            .iter()
+            .all(|&(_, fg, fc, n, _, _)| fg > 150 && fc > 150 && n == 0),
+        "(depth, GPU fringes, software fringes, pixels past grey's worst, worst, \
+         grey's worst): {report:?}"
+    );
 }
 
 /// Grey where the destination is not opaque or is a layer: an opacity group
