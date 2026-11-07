@@ -64,6 +64,16 @@ pub struct TextRasterization {
     /// every frame (an animated zoom), where each size is a new set of masks.
     /// The software renderer always draws masks.
     pub gpu_glyph_outlines: bool,
+    /// The panel's subpixel order for subpixel text, over the OS's (#2286
+    /// stage 3): for a display the OS reports wrongly or not at all, such as
+    /// a BGR panel or one rotated to portrait (`VRgb`). `None` follows the
+    /// OS. [`SubpixelOrder::None`] turns subpixel text off, as fontconfig's
+    /// `rgba=none` does.
+    pub subpixel_order: Option<SubpixelOrder>,
+    /// The filter across subpixels, over the OS's (fontconfig `lcdfilter`).
+    /// `None` follows the OS, and FreeType's default five-tap filter where it
+    /// says nothing.
+    pub lcd_filter: Option<LcdFilter>,
 }
 
 impl TextRasterization {
@@ -95,26 +105,54 @@ impl TextRasterization {
         self
     }
 
+    /// Set [`subpixel_order`](Self::subpixel_order).
+    #[must_use]
+    pub fn subpixel_order(mut self, order: Option<SubpixelOrder>) -> Self {
+        self.subpixel_order = order;
+        self
+    }
+
+    /// Set [`lcd_filter`](Self::lcd_filter).
+    #[must_use]
+    pub fn lcd_filter(mut self, filter: Option<LcdFilter>) -> Self {
+        self.lcd_filter = filter;
+        self
+    }
+
     /// Resolve every `Auto` against the OS's settings.
     pub fn resolve(&self, system: &SystemTextSettings) -> ResolvedTextRasterization {
+        let filter = self
+            .lcd_filter
+            .or(system.lcd_filter)
+            .unwrap_or(LcdFilter::Default);
+        // The app's order over the OS's.
+        let order = self.subpixel_order.or(system.subpixel_order);
         let antialias = match self.antialias {
             TextAntialias::Grayscale => ResolvedAntialias::Grayscale,
             TextAntialias::None => ResolvedAntialias::None,
-            TextAntialias::Subpixel => ResolvedAntialias::Subpixel {
+            // Never where the OS cannot show it (macOS), whatever the app asks.
+            TextAntialias::Subpixel if system.subpixel_capable == Some(false) => {
+                ResolvedAntialias::Grayscale
+            }
+            TextAntialias::Subpixel => match self.subpixel_order {
+                // The app turned the order off: grey.
+                Some(SubpixelOrder::None) => ResolvedAntialias::Grayscale,
                 // Asked for without the OS naming an order: RGB, the order of
                 // nearly every desktop panel and Chrome's default.
-                order: match system.subpixel_order {
-                    Some(SubpixelOrder::None) | None => SubpixelOrder::Rgb,
-                    Some(order) => order,
+                _ => ResolvedAntialias::Subpixel {
+                    order: match order {
+                        Some(SubpixelOrder::None) | None => SubpixelOrder::Rgb,
+                        Some(order) => order,
+                    },
+                    filter,
                 },
-                filter: system.lcd_filter.unwrap_or(LcdFilter::Default),
             },
-            TextAntialias::Auto => match (system.antialias, system.subpixel_order) {
+            TextAntialias::Auto => match (system.antialias, order) {
                 (Some(false), _) => ResolvedAntialias::None,
-                (_, Some(order)) if order != SubpixelOrder::None => ResolvedAntialias::Subpixel {
-                    order,
-                    filter: system.lcd_filter.unwrap_or(LcdFilter::Default),
-                },
+                _ if system.subpixel_capable == Some(false) => ResolvedAntialias::Grayscale,
+                (_, Some(order)) if order != SubpixelOrder::None => {
+                    ResolvedAntialias::Subpixel { order, filter }
+                }
                 _ => ResolvedAntialias::Grayscale,
             },
         };
@@ -147,8 +185,13 @@ pub enum TextAntialias {
     Auto,
     /// One coverage value per pixel.
     Grayscale,
-    /// Per-channel (LCD) coverage. Stage 1 of #2286 records it and renders
-    /// grayscale; subpixel compositing is stage 3.
+    /// Per-channel (LCD) coverage, in the OS's subpixel order (RGB where it
+    /// names none) unless [`TextRasterization::subpixel_order`] says
+    /// otherwise. Never on macOS. Painters still draw grey text where
+    /// subpixel text cannot be composited: inside an opacity, blend or
+    /// isolated layer, over a pixel that is not opaque, under a rotation,
+    /// skew or uneven scale, while a run's size animates, and for colour
+    /// glyphs.
     Subpixel,
     /// No antialiasing. Recorded; both painters render grayscale until the
     /// glyph-mask atlas (stage 2 of #2286).
@@ -274,6 +317,10 @@ pub struct SystemTextSettings {
     pub subpixel_order: Option<SubpixelOrder>,
     /// fontconfig `lcdfilter`.
     pub lcd_filter: Option<LcdFilter>,
+    /// Whether the OS's text can be subpixel text at all: `Some(false)` on
+    /// macOS, which has drawn none since 10.14, so neither `Auto` nor an
+    /// app's [`TextAntialias::Subpixel`] turns it on there.
+    pub subpixel_capable: Option<bool>,
 }
 
 // `#[non_exhaustive]`, so built with `default()` and these.
@@ -305,6 +352,13 @@ impl SystemTextSettings {
         self.lcd_filter = v;
         self
     }
+
+    /// Set [`subpixel_capable`](Self::subpixel_capable).
+    #[must_use]
+    pub fn with_subpixel_capable(mut self, v: Option<bool>) -> Self {
+        self.subpixel_capable = v;
+        self
+    }
 }
 
 /// The antialiasing [`TextRasterization::antialias`] resolved to.
@@ -313,8 +367,8 @@ impl SystemTextSettings {
 pub enum ResolvedAntialias {
     /// One coverage value per pixel.
     Grayscale,
-    /// Per-channel coverage in this order through this filter (rendered
-    /// grayscale until stage 3).
+    /// Per-channel coverage in this order through this filter (#2286 stage
+    /// 3), where the painters can composite it.
     Subpixel {
         /// The panel's subpixel order.
         order: SubpixelOrder,
@@ -366,6 +420,28 @@ impl ResolvedTextRasterization {
     pub fn with_darkening(mut self, px: f32) -> Self {
         self.darkening_px = px;
         self
+    }
+
+    /// The subpixel order and LCD filter text is rasterised with, when the
+    /// antialiasing is subpixel (#2286 stage 3); `None` for grey text.
+    /// Painters draw grey text anyway where subpixel text cannot be
+    /// composited (inside layers, off the device grid, colour glyphs).
+    #[inline]
+    pub fn subpixel(&self) -> Option<(SubpixelOrder, LcdFilter)> {
+        match self.antialias {
+            ResolvedAntialias::Subpixel { order, filter } if order != SubpixelOrder::None => {
+                Some((order, filter))
+            }
+            _ => None,
+        }
+    }
+
+    /// [`Self::subpixel`] as the glyph-mask atlas's key.
+    #[cfg(feature = "glyph-atlas")]
+    #[inline]
+    pub fn lcd_mode(&self) -> Option<super::glyph_atlas::LcdMode> {
+        self.subpixel()
+            .map(|(order, filter)| super::glyph_atlas::LcdMode { order, filter })
     }
 
     /// Whether outlines are hinted.
@@ -535,6 +611,7 @@ mod tests {
             hinting: Some(TextHinting::Slight),
             subpixel_order: Some(SubpixelOrder::Rgb),
             lcd_filter: Some(LcdFilter::Default),
+            subpixel_capable: None,
         };
         let r = TextRasterization::default().resolve(&kde);
         assert_eq!(
@@ -574,6 +651,7 @@ mod tests {
             hinting: Some(TextHinting::Slight),
             subpixel_order: Some(SubpixelOrder::Bgr),
             lcd_filter: Some(LcdFilter::Light),
+            subpixel_capable: None,
         };
         let r = TextRasterization::default()
             .antialias(TextAntialias::Grayscale)
