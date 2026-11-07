@@ -43,5 +43,10 @@ fn gpu_a_uniform_1px_border_is_solid_on_every_side() {
             bad.is_empty(),
             "scale {scale}: (device point, vello, chrome): {bad:?}"
         );
+        let (dashes, gaps) = scene::dashes_and_gaps(&px, pw, scale);
+        assert!(
+            dashes > 0 && gaps > 0,
+            "scale {scale}: the dashed border, {dashes} dash and {gaps} gap pixels"
+        );
     }
 }

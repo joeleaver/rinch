@@ -33,10 +33,16 @@ fn check(scale: u32) {
         &mut doc.font_cx,
         &mut cx,
     );
-    let bad = scene::misses(painter.pixels().as_chunks::<4>().0, pw, scale);
+    let px = painter.pixels().as_chunks::<4>().0;
+    let bad = scene::misses(px, pw, scale);
     assert!(
         bad.is_empty(),
         "scale {scale}: (device point, tiny-skia, chrome): {bad:?}"
+    );
+    let (dashes, gaps) = scene::dashes_and_gaps(px, pw, scale);
+    assert!(
+        dashes > 0 && gaps > 0,
+        "scale {scale}: the dashed border, {dashes} dash and {gaps} gap pixels"
     );
 }
 

@@ -124,3 +124,21 @@ pub fn misses(px: &[[u8; 4]], pw: u32, scale: u32) -> Vec<Miss> {
         })
         .collect()
 }
+
+/// The dashed box's dashes, at `scale`: along the middle device row of its
+/// left border, from below its top border to above its bottom one, the
+/// pixels that are the border colour (a dash) and those that are the
+/// background (a gap), each within 2 levels. A dashed 1px border keeps
+/// its dashes on both painters (review of #2344: dropping the dash only for
+/// strokes of a device pixel or less survived every pin before).
+pub fn dashes_and_gaps(px: &[[u8; 4]], pw: u32, scale: u32) -> (usize, usize) {
+    let s = scale;
+    let &(l, t, _, h, border) = &BOXES[2];
+    assert!(border.contains("dashed"));
+    let x = l * s + s / 2;
+    let near = |p: [u8; 4], c: [u8; 3]| (0..3).all(|i| p[i].abs_diff(c[i]) <= 2);
+    let col = ((t + 1) * s..(t + h + 1) * s).map(|y| px[(y * pw + x) as usize]);
+    col.fold((0, 0), |(d, g), p| {
+        (d + near(p, BD) as usize, g + near(p, BG) as usize)
+    })
+}

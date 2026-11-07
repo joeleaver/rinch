@@ -229,6 +229,81 @@ fn shape_to_path(shape: &PaintShape) -> Option<Path> {
     }
 }
 
+/// The rect `r` as a closed path whose last edge is an explicit `line_to` its
+/// start (see [`close_explicitly`]).
+fn explicit_rect(r: &peniko::kurbo::Rect) -> Option<Path> {
+    let (x0, y0, x1, y1) = (r.x0 as f32, r.y0 as f32, r.x1 as f32, r.y1 as f32);
+    let mut pb = PathBuilder::with_capacity(6, 6);
+    pb.move_to(x0, y0);
+    pb.line_to(x1, y0);
+    pb.line_to(x1, y1);
+    pb.line_to(x0, y1);
+    pb.line_to(x0, y0);
+    pb.close();
+    pb.finish()
+}
+
+/// `path` with every implicit closing segment made explicit (a `line_to` the
+/// contour's start before its `close`), or `None` when no contour has one
+/// (no `Close`, or each closes where it started) and `path` is drawn as is.
+/// See `TinySkiaPainter::stroke` (#2344).
+fn close_explicitly(path: &Path) -> Option<Path> {
+    use tiny_skia::PathSegment as S;
+    let mut start = None;
+    let mut last = None;
+    let mut needed = false;
+    for seg in path.segments() {
+        match seg {
+            S::MoveTo(p) => {
+                start = Some(p);
+                last = Some(p);
+            }
+            S::LineTo(p) | S::QuadTo(_, p) | S::CubicTo(_, _, p) => last = Some(p),
+            S::Close => {
+                needed |= start != last;
+                last = start;
+            }
+        }
+    }
+    if !needed {
+        return None;
+    }
+    let mut pb = PathBuilder::new();
+    let mut start = None;
+    let mut last = None;
+    for seg in path.segments() {
+        match seg {
+            S::MoveTo(p) => {
+                pb.move_to(p.x, p.y);
+                start = Some(p);
+                last = Some(p);
+            }
+            S::LineTo(p) => {
+                pb.line_to(p.x, p.y);
+                last = Some(p);
+            }
+            S::QuadTo(a, p) => {
+                pb.quad_to(a.x, a.y, p.x, p.y);
+                last = Some(p);
+            }
+            S::CubicTo(a, b, p) => {
+                pb.cubic_to(a.x, a.y, b.x, b.y, p.x, p.y);
+                last = Some(p);
+            }
+            S::Close => {
+                if let Some(s) = start
+                    && start != last
+                {
+                    pb.line_to(s.x, s.y);
+                }
+                pb.close();
+                last = start;
+            }
+        }
+    }
+    pb.finish()
+}
+
 /// Convert a kurbo `Stroke` to a tiny-skia `Stroke`.
 fn to_skia_stroke(stroke: &KurboStroke) -> SkStroke {
     let line_cap = match stroke.start_cap {
@@ -1625,35 +1700,31 @@ impl Painter for TinySkiaPainter {
         }
         let masked = self.draw_is_masked(x0, y0, x1, y1, ts, DEVICE_PAD);
         let mask = self.clip_mask.as_ref().filter(|_| masked).map(|m| &m.mask);
-        if sk_stroke.width <= 0.0 {
-            self.pixmap.stroke_path(&path, &paint, &sk_stroke, ts, mask);
-            return;
-        }
-        // Always the stroke's outline, filled (#2344). `stroke_path` does
-        // exactly this (dash, stroke, fill non-zero) unless the stroke is at
-        // most one device pixel wide, which it draws as an anti-aliased
-        // *hairline* instead (`treat_as_hairline`): a different scan
-        // converter, whose coverage is not the stroke's area. On a closed
-        // rect at scale 1 it smeared the closing (left) edge of a 1px border
-        // over two pixels, half into the page. Vello and Chrome stroke by
-        // area at every width, so this does too.
+        // A stroke at most one device pixel wide is drawn by tiny-skia as an
+        // anti-aliased hairline (`treat_as_hairline`), and its hairline scan
+        // converter smears a path's *implicit* closing segment over two
+        // pixels: a uniform `border: 1px` (a stroked closed rect) drew its
+        // left edge half into the page (#2344). An explicit `line_to` back to
+        // the contour's start draws that edge as every other one. The
+        // hairline itself is kept: Chrome draws thin strokes the same way
+        // (an SVG 1px circle, a 0.1px line), where a filled outline would
+        // not.
         let res_scale = tiny_skia::PathStroker::compute_resolution_scale(&ts);
-        let dashed;
-        let path = match &sk_stroke.dash {
-            Some(dash) => match path.dash(dash, res_scale) {
-                Some(p) => {
-                    dashed = p;
-                    &dashed
-                }
-                None => return,
-            },
-            None => &path,
-        };
-        let Some(outline) = path.stroke(&sk_stroke, res_scale) else {
-            return;
-        };
-        self.pixmap
-            .fill_path(&outline, &paint, FillRule::Winding, ts, mask);
+        if sk_stroke.width * res_scale <= 1.0 {
+            // A rect (the border and outline fast paths) is built closed
+            // explicitly in one go; any other shape is rebuilt only when
+            // one of its contours closes away from its start.
+            let closed = match shape {
+                PaintShape::Rect(r) => explicit_rect(r),
+                _ => close_explicitly(&path),
+            };
+            if let Some(closed) = closed {
+                self.pixmap
+                    .stroke_path(&closed, &paint, &sk_stroke, ts, mask);
+                return;
+            }
+        }
+        self.pixmap.stroke_path(&path, &paint, &sk_stroke, ts, mask);
     }
 
     fn draw_glyphs(
