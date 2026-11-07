@@ -315,12 +315,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`54fac8c091f62681e0a8550f98e7e9637c4127cb`, branch `rinch-patch`): fourteen commits on the taffy `v0.14.0` tag
+(`d82d505fa25f6ae607ecdd99c266a3452e323d85`, branch `rinch-patch`): sixteen commits on the taffy `v0.14.0` tag
 (item 10 is two of them). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the fourteen commits onto the new tag. All are upstream
+and a Taffy bump rebases the sixteen commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -480,9 +480,44 @@ candidates.
    child is. Pins: `crates/rinch-dom/tests/float_size_pass_2313_tests.rs` (Chrome 156's
    sizes; the cell fills its table, the next block is below it).
 
+13. **`Style::fill_max_content`** (#2322, commit `82428ec2`). A grid whose
+   percentage width has no basis, asked its size (an inherent-size request with
+   no parent width: its contribution to an auto table cell, a float, an
+   inline-block), answers a max-content width of `FILL_MAX_CONTENT_WIDTH`
+   (1,000,000), or its definite available width when that is smaller, clamped
+   by its min and max widths; its min-content width is its content's
+   (`compute/grid/mod.rs`, where the preferred size is read). Blink's quirk for a
+   `table-layout: fixed` table with a percentage width (`kTableMaxInlineSize`):
+   the box around it fills its room and the percentage resolves against that.
+   Chrome 156 caps it at 1,000,000 (an inline-block in a 2,000,000px column).
+   rinch sets it on a fixed table whose `width` is a percentage
+   (`apply_table_style`; a mixed `calc()` reaches Taffy as a resolved length
+   and does not fill, where Chrome fills). Pins: the fork's
+   `tests/fill_max_content.rs` and
+   `crates/rinch-dom/tests/float_intrinsic_width_2322_tests.rs`.
+14. **A content-sized block resolves its children's percentages; a leaf is
+   measured beside the floats it places** (#2322, #2326, commit `d82d505f`).
+   Two rules of `compute/block.rs`. A block whose width came from its content
+   (a float, or another box laid out with no known width) reads its children's
+   styles again once it has that width (`generate_item_list`), so a
+   `width: 70%` child of an auto-width float is 70% of it (it was stretched to
+   the whole float). And the floats right before a leaf that places them
+   (item 3) share that leaf's lines: `determine_content_based_container_width`
+   measures the leaf with a block context holding those floats, sized, and
+   nothing placed (`BlockContext::is_intrinsic`), except at min-content, where
+   each float is its own. rinch's measure lays the paragraph out with no float
+   placed and adds each float to the line it stands in
+   (`float_wrap::intrinsic_width_beside_floats`), as Blink's
+   `NGInlineNode::ComputeMinMaxSizes` does: a cell holding `<float 100px>` and
+   83px of text is 183 wide, where it was the wider of the two and the text
+   wrapped below the float. Such a leaf takes the uncached path (item 1), as
+   it does in a layout. Pins: the fork's `tests/rinch_intrinsic_widths.rs` and
+   `crates/rinch-dom/tests/float_intrinsic_width_2322_tests.rs`.
+
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
-and 9, (6,286 tests) with 10, and (6,021 generated tests, 6,293 in all) with 12.
+and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, and (6,298 in all)
+with 13 and 14.
 
 
 ## Parley Fork

@@ -1725,6 +1725,128 @@ pub fn content_box_insets(node: &Node) -> (f32, f32, f32, f32) {
     )
 }
 
+/// [`content_box_insets`] as layout resolved them: the border and padding
+/// Taffy gave `node`, a percentage padding included (#2311 review). Falls back
+/// to the computed style for a node with no Taffy layout.
+pub fn content_box_insets_in(tree: &NodeTree, node: &Node) -> (f32, f32, f32, f32) {
+    if let Some(id) = node.taffy_id
+        && let Ok(l) = tree.taffy.layout(id)
+    {
+        return (
+            l.border.left + l.padding.left,
+            l.border.top + l.padding.top,
+            l.border.right + l.padding.right,
+            l.border.bottom + l.padding.bottom,
+        );
+    }
+    content_box_insets(node)
+}
+
+/// The `<img>` arm of [`paint_node_unmasked`]: its colour background, its
+/// picture (or #2309 placeholder) in the content box, and its border. Out of
+/// line so its locals do not grow `paint_node_unmasked`'s frame, which every
+/// level of a deep tree's paint recursion pays for
+/// (`positioned_row_cull_1719_tests` nests 140 levels in a debug build).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn paint_img(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    node: &Node,
+    painter: &mut dyn Painter,
+    scale: f64,
+    (x, y, w, h): (f64, f64, f64, f64),
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+    node_transform: Affine,
+) {
+    let rect = Rect::new(x, y, x + w, y + h);
+
+    let fit = node.computed_style.object_fit;
+
+    // Opacity. Bounds as in the general element arm below: the
+    // subtree's painted extent, not this element's border box.
+    let opacity = node.computed_style.opacity;
+    if opacity < 1.0 {
+        let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
+        painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
+    }
+
+    // Paint background (if any) before image
+    let visible = !matches!(
+        node.computed_style.visibility,
+        VisibilityValue::Hidden | VisibilityValue::Collapse
+    );
+    if visible {
+        // Rounded as any box's background and border are; the
+        // picture is clipped to the content edge's curve below.
+        let radii = border_radii(node, scale);
+        if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
+            painter.fill_color(Fill::NonZero, node_transform, *bg_color, &radii.shape(rect));
+        }
+
+        // The picture: a replaced element's content, so it is fitted
+        // into the content box (inside the padding and border, #2311)
+        // and clipped to the content edge's curve, as a browser draws
+        // it. A placeholder (#2309) is drawn in the same box under the
+        // same clip. The insets are the resolved ones, so a percentage
+        // padding counts.
+        let decoded = node
+            .attributes
+            .get("src")
+            .and_then(|src| tree.image_cache.get(src));
+        let owes_placeholder = decoded.is_none()
+            && crate::img_placeholder::placeholder(tree, node)
+                != crate::img_placeholder::Placeholder::None;
+        if decoded.is_some() || owes_placeholder {
+            let (l, t, r, b) = content_box_insets_in(tree, node);
+            let (l, t, r, b) = (
+                f64::from(l) * scale,
+                f64::from(t) * scale,
+                f64::from(r) * scale,
+                f64::from(b) * scale,
+            );
+            let content = Rect::new(x + l, y + t, (x + w - r).max(x + l), (y + h - b).max(y + t));
+            let inner = radii.inner(t, r, b, l);
+            let rounded = !inner.is_square();
+            if rounded {
+                painter.push_clip(Fill::NonZero, node_transform, &inner.shape(content));
+            }
+            if let Some(decoded) = decoded {
+                image::paint_image(
+                    painter,
+                    decoded,
+                    content,
+                    scale,
+                    fit,
+                    node_transform,
+                    painter::ImageSampling::of(node.computed_style.image_rendering),
+                );
+            } else {
+                img_placeholder::paint_img_placeholder(
+                    tree,
+                    node,
+                    painter,
+                    scale,
+                    content,
+                    font_cx,
+                    layout_cx,
+                    node_transform,
+                );
+            }
+            if rounded {
+                painter.pop_layer();
+            }
+        }
+
+        paint_borders(painter, node, scale, x, y, w, h, radii, node_transform);
+    }
+
+    if opacity < 1.0 {
+        painter.pop_layer();
+    }
+}
+
 /// Draw a `RenderSurface` element's frame — its GPU image or its CPU pixels,
 /// whichever this paint was handed — into its content box, `contain`-fitted,
 /// clipped to the inner (content-edge) radius (#1768). The border box is
@@ -4693,75 +4815,17 @@ fn paint_node_unmasked(
             paint_svg(tree, node, painter, scale, x, y, w, h, node_transform);
         }
         NodeKind::Element(el) if el.tag == "img" => {
-            let rect = Rect::new(x, y, x + w, y + h);
-
-            let fit = node.computed_style.object_fit;
-
-            // Opacity. Bounds as in the general element arm below: the
-            // subtree's painted extent, not this element's border box.
-            let opacity = node.computed_style.opacity;
-            if opacity < 1.0 {
-                let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
-                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
-            }
-
-            // Paint background (if any) before image
-            let visible = !matches!(
-                node.computed_style.visibility,
-                VisibilityValue::Hidden | VisibilityValue::Collapse
+            paint_img(
+                tree,
+                node_id,
+                node,
+                painter,
+                scale,
+                (x, y, w, h),
+                font_cx,
+                layout_cx,
+                node_transform,
             );
-            if visible {
-                if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
-                    painter.fill_color(Fill::NonZero, node_transform, *bg_color, &rect.into());
-                }
-
-                // Paint the image itself
-                if let Some(src) = node.attributes.get("src")
-                    && let Some(decoded) = tree.image_cache.get(src)
-                {
-                    image::paint_image(
-                        painter,
-                        decoded,
-                        rect,
-                        scale,
-                        fit,
-                        node_transform,
-                        painter::ImageSampling::of(node.computed_style.image_rendering),
-                    );
-                } else {
-                    // No picture: its placeholder, if it is owed one (#2309).
-                    img_placeholder::paint_img_placeholder(
-                        tree,
-                        node,
-                        painter,
-                        scale,
-                        x,
-                        y,
-                        w,
-                        h,
-                        font_cx,
-                        layout_cx,
-                        node_transform,
-                    );
-                }
-
-                // Borders (no border-radius for img elements)
-                paint_borders(
-                    painter,
-                    node,
-                    scale,
-                    x,
-                    y,
-                    w,
-                    h,
-                    BorderRadii::ZERO,
-                    node_transform,
-                );
-            }
-
-            if opacity < 1.0 {
-                painter.pop_layer();
-            }
         }
         // Inline painting for a `data-viewport` node whose frame arrives by
         // name — the software backend's video path (issue #358).
