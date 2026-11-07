@@ -4711,23 +4711,51 @@ fn paint_node_unmasked(
                 VisibilityValue::Hidden | VisibilityValue::Collapse
             );
             if visible {
+                // Rounded as any box's background and border are; the
+                // picture is clipped to the content edge's curve below.
+                let radii = border_radii(node, scale);
                 if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
-                    painter.fill_color(Fill::NonZero, node_transform, *bg_color, &rect.into());
+                    painter.fill_color(
+                        Fill::NonZero,
+                        node_transform,
+                        *bg_color,
+                        &radii.shape(rect),
+                    );
                 }
 
-                // Paint the image itself
+                // The picture: a replaced element's content, so it is fitted
+                // into the content box (inside the padding and border, #2311)
+                // and clipped to the content edge's curve, as a browser draws
+                // it.
                 if let Some(src) = node.attributes.get("src")
                     && let Some(decoded) = tree.image_cache.get(src)
                 {
+                    let (l, t, r, b) = content_box_insets(node);
+                    let (l, t, r, b) = (
+                        f64::from(l) * scale,
+                        f64::from(t) * scale,
+                        f64::from(r) * scale,
+                        f64::from(b) * scale,
+                    );
+                    let content =
+                        Rect::new(x + l, y + t, (x + w - r).max(x + l), (y + h - b).max(y + t));
+                    let inner = radii.inner(t, r, b, l);
+                    let rounded = !inner.is_square();
+                    if rounded {
+                        painter.push_clip(Fill::NonZero, node_transform, &inner.shape(content));
+                    }
                     image::paint_image(
                         painter,
                         decoded,
-                        rect,
+                        content,
                         scale,
                         fit,
                         node_transform,
                         painter::ImageSampling::of(node.computed_style.image_rendering),
                     );
+                    if rounded {
+                        painter.pop_layer();
+                    }
                 } else {
                     // No picture: its placeholder, if it is owed one (#2309).
                     img_placeholder::paint_img_placeholder(
@@ -4745,18 +4773,7 @@ fn paint_node_unmasked(
                     );
                 }
 
-                // Borders (no border-radius for img elements)
-                paint_borders(
-                    painter,
-                    node,
-                    scale,
-                    x,
-                    y,
-                    w,
-                    h,
-                    BorderRadii::ZERO,
-                    node_transform,
-                );
+                paint_borders(painter, node, scale, x, y, w, h, radii, node_transform);
             }
 
             if opacity < 1.0 {

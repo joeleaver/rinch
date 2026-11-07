@@ -1565,7 +1565,10 @@ impl Painter for TinySkiaPainter {
             tiny_skia::FilterQuality::Nearest
         };
         let mut pattern_ts = affine_to_transform(tile.transform);
-        if tile.smooth {
+        if !tile.smooth {
+            // Nearest: the tile grid on whole device pixels (#2254).
+            pattern_ts = snap_pattern_phase(affine_to_transform(transform), pattern_ts);
+        } else {
             // tiny-skia samples a pattern whose image-to-device map is a pure
             // translation nearest, fractional or not (`Pattern::push_stages`),
             // so a tile at a fractional device position (#1151) would be
@@ -1756,7 +1759,9 @@ impl Painter for TinySkiaPainter {
             return;
         }
 
-        let ts = affine_to_transform(transform);
+        // On whole device pixels, or a half-pixel edge loses the first row
+        // or column (#2254).
+        let ts = snap_image_placement(affine_to_transform(transform), image.width, image.height);
         if image.opaque && !self.reference_mode && self.copy_opaque_image(image, ts) {
             return;
         }
@@ -1812,22 +1817,24 @@ impl Painter for TinySkiaPainter {
         if width == 0 || height == 0 || mask.len() != (width * height) as usize {
             return;
         }
-        let c = transform.as_coeffs();
+        // On whole device pixels, as an image is (#2254): a blurred shadow's
+        // mask at a half pixel lost its first row and column.
+        let ts = snap_image_placement(affine_to_transform(transform), width, height);
         // Not a cache, so taken in reference mode too (whose masks are
         // fresh allocations rather than pooled ones).
-        if c[0] == 1.0
-            && c[1] == 0.0
-            && c[2] == 0.0
-            && c[3] == 1.0
-            && c[4].fract() == 0.0
-            && c[5].fract() == 0.0
+        if ts.sx == 1.0
+            && ts.ky == 0.0
+            && ts.kx == 0.0
+            && ts.sy == 1.0
+            && ts.tx.fract() == 0.0
+            && ts.ty.fract() == 0.0
         {
             // On whole pixels: the coverage goes into a pooled surface mask,
             // intersected with the clip in force, and the colour is filled
             // through it — tiny-skia's solid-colour mask fill, with no RGBA
             // intermediate at all.
             let (sw, sh) = (self.pixmap.width() as i64, self.pixmap.height() as i64);
-            let (ox, oy, w, h) = (c[4] as i64, c[5] as i64, width as i64, height as i64);
+            let (ox, oy, w, h) = (ts.tx as i64, ts.ty as i64, width as i64, height as i64);
             let (x0, y0) = (ox.max(0), oy.max(0));
             let (x1, y1) = ((ox + w).min(sw), (oy + h).min(sh));
             if x0 >= x1 || y0 >= y1 {
@@ -1900,7 +1907,6 @@ impl Painter for TinySkiaPainter {
         let Some(src) = PixmapRef::from_bytes(&data, width, height) else {
             return;
         };
-        let ts = affine_to_transform(transform);
         self.touch_local(0.0, 0.0, width as f32, height as f32, ts);
         let paint = PixmapPaint::default();
         let clip = self.clip_mask.as_ref().map(|m| &m.mask);
@@ -2338,21 +2344,91 @@ fn reference_premultiply(data: &[u8]) -> Vec<u8> {
 /// Where a cached glyph image goes: `transform` after a translation to the
 /// image's top-left corner `(gx, gy)`.
 ///
-/// When the result is a plain translation (no scale, rotation or skew: every
-/// glyph not under a CSS transform), the translation is rounded to whole
-/// device pixels here, half up, which is where nearest-neighbour sampling
-/// would put the image anyway. Left to tiny-skia, a translation of exactly
+/// The image is `width` x `height` texels, and goes where
+/// [`snap_image_placement`] puts it: on an axis-aligned result its edges are
+/// rounded to whole device pixels, half up, which for a plain translation
+/// (every glyph not under a CSS transform) is where nearest-neighbour
+/// sampling would put it anyway. Left to tiny-skia, a translation of exactly
 /// `k + 0.5` covers pixels from `k + 1` but samples the image's row (or
 /// column) 1 there: row 0 is never drawn and the last row is drawn twice,
 /// which cut the tops (and the left edge) off text that layout centred on a
-/// half pixel. `half_pixel_glyph_blit_tests` is the fixture.
-fn glyph_placement(transform: Transform, gx: f32, gy: f32) -> Transform {
-    let ts = transform.pre_concat(Transform::from_translate(gx, gy));
-    if ts.sx == 1.0 && ts.sy == 1.0 && ts.kx == 0.0 && ts.ky == 0.0 {
-        Transform::from_translate((ts.tx + 0.5).floor(), (ts.ty + 0.5).floor())
-    } else {
-        ts
+/// half pixel (#2251). Under a scale the same edge rounding keeps every
+/// texel's share (#2254). `half_pixel_glyph_blit_tests` is the fixture. A
+/// rotated or skewed result is drawn as it is.
+fn glyph_placement(transform: Transform, gx: f32, gy: f32, width: u32, height: u32) -> Transform {
+    snap_image_placement(
+        transform.pre_concat(Transform::from_translate(gx, gy)),
+        width,
+        height,
+    )
+}
+
+/// Where a `width` x `height` image drawn under `ts` with nearest sampling
+/// lands: on an axis-aligned `ts` (no rotation or skew; any scale, flips
+/// included), each edge of the image's device rect is rounded to a whole
+/// pixel, half up, and the image is stretched to exactly that rect (#2254).
+///
+/// This is #2251's glyph fix ([`glyph_placement`]) for everything else
+/// `draw_pixmap` places. tiny-skia fills the rect's pixels by rounding its
+/// edges and samples the texel under each pixel's centre, so at a `k + 0.5`
+/// edge the first pixel's centre falls on the boundary between texels 0
+/// and 1 and takes texel 1: row (or column) 0 is never drawn and the last one
+/// is drawn twice. Scaled, the same skew of the sampling grid draws the first
+/// texel once and the last one three times at `scale(2)`. With whole-pixel
+/// edges every pixel centre falls inside a texel, each texel gets its share
+/// of the rect, and a scale-1 image is a plain translation again, which
+/// [`TinySkiaPainter::copy_opaque_image`] can copy. Chrome snaps a replaced
+/// element's image rect to device pixels the same way.
+///
+/// A rect that would round to nothing on an axis, and a rotated or skewed
+/// `ts`, keep `ts` as it is.
+fn snap_image_placement(ts: Transform, width: u32, height: u32) -> Transform {
+    if ts.kx != 0.0 || ts.ky != 0.0 {
+        return ts;
     }
+    let round = |v: f32| (v + 0.5).floor();
+    let (x0, y0) = (round(ts.tx), round(ts.ty));
+    let x1 = round(width as f32 * ts.sx + ts.tx);
+    let y1 = round(height as f32 * ts.sy + ts.ty);
+    if x1 == x0
+        || y1 == y0
+        || !(x0.is_finite() && x1.is_finite() && y0.is_finite() && y1.is_finite())
+    {
+        return ts;
+    }
+    Transform::from_row(
+        (x1 - x0) / width as f32,
+        0.0,
+        0.0,
+        (y1 - y0) / height as f32,
+        x0,
+        y0,
+    )
+}
+
+/// The pattern transform of a nearest-sampled repeating tile, with its phase
+/// moved onto the device grid (#2254): under an axis-aligned fill transform,
+/// the tile grid's device origin is rounded to a whole pixel, half up, so no
+/// pixel centre falls on a texel boundary — the case where `draw_pixmap`'s
+/// nearest sample takes the texel after it. `pattern_ts` maps the tile into
+/// the shape's space and `transform` the shape onto the device.
+fn snap_pattern_phase(transform: Transform, pattern_ts: Transform) -> Transform {
+    let total = transform.pre_concat(pattern_ts);
+    if transform.kx != 0.0
+        || transform.ky != 0.0
+        || transform.sx == 0.0
+        || transform.sy == 0.0
+        || total.kx != 0.0
+        || total.ky != 0.0
+    {
+        return pattern_ts;
+    }
+    let dx = (total.tx + 0.5).floor() - total.tx;
+    let dy = (total.ty + 0.5).floor() - total.ty;
+    let mut snapped = pattern_ts;
+    snapped.tx += dx / transform.sx;
+    snapped.ty += dy / transform.sy;
+    snapped
 }
 
 /// Blit one atlas mask with its top-left at `(gx, gy)` under `transform`
@@ -2529,7 +2605,7 @@ fn blit_alpha_mask_into(
         return;
     };
     // Compose the transform: first translate to glyph position, then apply the node transform
-    let ts = glyph_placement(transform, gx, gy);
+    let ts = glyph_placement(transform, gx, gy, glyph_w, glyph_h);
     pixmap.draw_pixmap(0, 0, src, &PixmapPaint::default(), ts, clip);
 }
 
@@ -2559,7 +2635,7 @@ fn blit_premultiplied_into(
         opacity: alpha as f32 / 255.0,
         ..PixmapPaint::default()
     };
-    let ts = glyph_placement(transform, gx, gy);
+    let ts = glyph_placement(transform, gx, gy, glyph_w, glyph_h);
     pixmap.draw_pixmap(0, 0, src, &paint, ts, clip);
 }
 
@@ -2613,7 +2689,7 @@ fn blit_color_glyph_into(
     let Some(src) = PixmapRef::from_bytes(scratch, glyph_w, glyph_h) else {
         return;
     };
-    let ts = glyph_placement(transform, gx, gy);
+    let ts = glyph_placement(transform, gx, gy, glyph_w, glyph_h);
     pixmap.draw_pixmap(0, 0, src, &PixmapPaint::default(), ts, clip);
 }
 
@@ -3074,6 +3150,121 @@ mod premultiply_tests {
                     "channel {ch} at coverage {coverage} (combined alpha {alpha})"
                 );
             }
+        }
+    }
+}
+
+/// #2254 (the review gaps of #2251): each glyph blit helper on its own, at a
+/// half pixel and under an uneven scale, where the glyph atlas's whole-pixel
+/// origins do not reach it. Every texel of a glyph image must be drawn, and
+/// drawn as often as every other.
+#[cfg(test)]
+mod half_pixel_glyph_blit_helper_tests {
+    use super::*;
+
+    /// A 4x3 glyph image whose texel `(x, y)` has red `40 * x + 20` and green
+    /// `60 * y + 30`, all opaque: each texel is told apart by its colour.
+    fn ramp() -> Vec<u8> {
+        (0..3_u32)
+            .flat_map(|y| {
+                (0..4_u32).map(move |x| [(40 * x + 20) as u8, (60 * y + 30) as u8, 9, 255])
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// How many device pixels each texel of [`ramp`] landed on.
+    fn counts(pixmap: &Pixmap) -> [[u32; 4]; 3] {
+        let mut n = [[0_u32; 4]; 3];
+        for p in pixmap.data().as_chunks::<4>().0 {
+            if p[3] != 0 {
+                let (x, y) = ((p[0] as usize - 20) / 40, (p[1] as usize - 30) / 60);
+                n[y][x] += 1;
+            }
+        }
+        n
+    }
+
+    /// `(gx, gy, transform)` placements and the pixels each texel must get.
+    fn placements() -> [(f32, f32, Transform, u32); 5] {
+        [
+            (10.0, 10.0, Transform::identity(), 1),
+            (10.5, 10.0, Transform::identity(), 1),
+            (10.0, 10.5, Transform::identity(), 1),
+            (10.5, 10.5, Transform::identity(), 1),
+            // Off the atlas's grid: an uneven scale, the glyph's corner at
+            // device (21.5, 31.5).
+            (
+                10.25,
+                10.5,
+                Transform::from_row(2.0, 0.0, 0.0, 3.0, 1.0, 0.0),
+                6,
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_premultiplied_colour_glyph_on_a_half_pixel_keeps_every_texel() {
+        let data = ramp();
+        for (gx, gy, ts, want) in placements() {
+            let mut pixmap = Pixmap::new(64, 64).unwrap();
+            blit_premultiplied_into(&mut pixmap, None, &data, 4, 3, gx, gy, ts, 255);
+            let n = counts(&pixmap);
+            assert!(
+                n.iter().flatten().all(|&c| c == want),
+                "at ({gx}, {gy}) under {ts:?}: pixels per texel {n:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_straight_colour_glyph_on_a_half_pixel_keeps_every_texel() {
+        let data = ramp();
+        let mut scratch = Vec::new();
+        for (gx, gy, ts, want) in placements() {
+            let mut pixmap = Pixmap::new(64, 64).unwrap();
+            blit_color_glyph_into(&mut pixmap, None, &mut scratch, &data, 4, 3, gx, gy, ts);
+            let n = counts(&pixmap);
+            assert!(
+                n.iter().flatten().all(|&c| c == want),
+                "at ({gx}, {gy}) under {ts:?}: pixels per texel {n:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_coverage_glyph_on_a_half_pixel_keeps_every_texel() {
+        // Coverage `10 + 20 * x + 80 * y` per texel, drawn in opaque white: the
+        // texel is read back from the pixel's alpha.
+        let mask: Vec<u8> = (0..3_u32)
+            .flat_map(|y| (0..4_u32).map(move |x| (10 + 20 * x + 80 * y) as u8))
+            .collect();
+        let mut scratch = Vec::new();
+        for (gx, gy, ts, want) in placements() {
+            let mut pixmap = Pixmap::new(64, 64).unwrap();
+            blit_alpha_mask_into(
+                &mut pixmap,
+                None,
+                &mut scratch,
+                &mask,
+                4,
+                3,
+                gx,
+                gy,
+                [255, 255, 255, 255],
+                ts,
+            );
+            let mut n = [[0_u32; 4]; 3];
+            for p in pixmap.data().as_chunks::<4>().0 {
+                if p[3] != 0 {
+                    let v = p[3] as u32 - 10;
+                    n[(v / 80) as usize][((v % 80) / 20) as usize] += 1;
+                }
+            }
+            assert!(
+                n.iter().flatten().all(|&c| c == want),
+                "at ({gx}, {gy}) under {ts:?}: pixels per texel {n:?}"
+            );
         }
     }
 }
