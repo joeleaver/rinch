@@ -298,3 +298,87 @@ fn vello_asks_for_lcd_masks_where_software_does() {
     );
     assert_eq!(modes(&format!("<p>{TEXT}</p>"), false), vec![None]);
 }
+
+/// The quality check against FreeType (#2286 stage 3), not run by default:
+/// lays out a pangram in Inter and in each `RINCH_LCD_PROBE_FONTS` file at
+/// 11, 13 and 16px, on quarter-pixel origins (so FreeType's `b4` placement in
+/// design-2286's `ftref2286.c` is the atlas's), and writes to
+/// `RINCH_LCD_PROBE_DIR` the `glyphs.txt` that `ftref2286` renders and
+/// `rinch_lcd.ppm`, the atlas's RGB lcddefault masks summed the way
+/// `ftref2286` sums FreeType's (`ft_lcd_b4.ppm`).
+#[test]
+#[ignore = "a probe: writes files for design-2286's FreeType reference"]
+fn lcd_quality_probe_2286() {
+    use rinch_dom::paint::glyph_atlas::{AtlasStats, RunSpec, place};
+    let dir = std::path::PathBuf::from(std::env::var("RINCH_LCD_PROBE_DIR").expect("a dir"));
+    let inter = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/fonts/Inter-Regular.ttf"
+    );
+    let mut fonts = vec![inter.to_string()];
+    if let Ok(more) = std::env::var("RINCH_LCD_PROBE_FONTS") {
+        fonts.extend(more.split(':').map(str::to_string));
+    }
+    let (w, h) = (420u32, 30 * 3 * fonts.len() as u32 + 10);
+    let mut cov = vec![0f32; (w * h * 3) as usize];
+    let mut txt = format!("W {w} H {h}\n");
+    let mut atlas = GlyphAtlas::default();
+    let mut stats = AtlasStats::default();
+    let mut baseline = 20.0;
+    for path in &fonts {
+        let bytes: &'static [u8] = Box::leak(std::fs::read(path).unwrap().into_boxed_slice());
+        let font = peniko::FontData::new(peniko::Blob::new(std::sync::Arc::new(bytes)), 0);
+        let face = swash::FontRef::from_index(bytes, 0).unwrap();
+        for size in [11.0f32, 13.0, 16.0] {
+            txt.push_str(&format!("R {path} {size} 0 0 0\n"));
+            let metrics = face.glyph_metrics(&[]).scale(size);
+            let mut x = 4.0f64;
+            let spec = RunSpec {
+                font: &font,
+                size,
+                hint: true,
+                embolden: 0.0,
+                coords: &[],
+                lcd: Some(LcdMode {
+                    order: SubpixelOrder::Rgb,
+                    filter: LcdFilter::Default,
+                }),
+            };
+            for ch in "Sphinx of black quartz, judge my vow. 0123456789".chars() {
+                let gid = face.charmap().map(ch);
+                let qx = (x * 4.0).round() / 4.0;
+                let pl = place(qx, baseline);
+                txt.push_str(&format!("G {gid} {qx} {baseline}\n"));
+                atlas.lookup(
+                    &spec,
+                    &[(gid as u32, pl.bucket)],
+                    false,
+                    &mut stats,
+                    |_, m| {
+                        let Some(m) = m.mask() else { return };
+                        for my in 0..m.height as i32 {
+                            for mx in 0..m.width as i32 {
+                                let (px, py) = (pl.x + m.left + mx, pl.y - m.top + my);
+                                if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
+                                    continue;
+                                }
+                                for c in 0..3 {
+                                    let v = m.data[((my * m.width as i32 + mx) * 3 + c) as usize];
+                                    let d = &mut cov
+                                        [((py as u32 * w + px as u32) * 3) as usize + c as usize];
+                                    *d = (*d + v as f32 / 255.0).min(1.0);
+                                }
+                            }
+                        }
+                    },
+                );
+                x += metrics.advance_width(gid) as f64;
+            }
+            baseline += 30.0;
+        }
+    }
+    std::fs::write(dir.join("glyphs.txt"), txt).unwrap();
+    let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+    ppm.extend(cov.iter().map(|c| (c * 255.0).round() as u8));
+    std::fs::write(dir.join("rinch_lcd.ppm"), ppm).unwrap();
+}
