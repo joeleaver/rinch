@@ -1189,13 +1189,15 @@ mod text_shadow_bench_tests {
     /// a pixel had the same coverage and shared a mask. The atlas draws each
     /// glyph at its quarter-pixel position, so those fragments' coverage now
     /// differs, and the mask key (`CallHasher::glyph_x`) says so: 33 more
-    /// fragments rasterise a mask of their own. Of those, 27 are fragments
-    /// at other quarter-pixel positions. The other 6 sit within 1/64 px of a
-    /// quarter boundary, where the key holds the exact position so that float
-    /// error cannot round it to the neighbouring bucket (the old key did the
-    /// same at the half pixel). Keyed by the whole pixel, as before, the page
-    /// gives 377 again, but shares masks whose pixels differ: a shadow drawn
-    /// up to a quarter pixel off its text before the blur.
+    /// fragments rasterise a mask of their own. Measured by taking the key
+    /// apart: 6 of them are fragments at other quarter-pixel positions, and
+    /// 27 sit within 1/64 px of a quarter boundary, where the key holds the
+    /// exact position so that float error cannot round it to the neighbouring
+    /// bucket (the old key did the same at the half pixel only). The
+    /// whole-pixel key with the quarter-boundary guard gives 404; the old key,
+    /// whole pixel and half-pixel guard, gives 377 again. That key shares
+    /// masks whose pixels differ: a shadow drawn up to a quarter pixel off
+    /// its text before the blur.
     ///
     /// Kills: the colour difference left out (the one-colour pages go per
     /// fragment); a tolerance that lets the highlighted page keep one pass
