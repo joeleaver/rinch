@@ -864,7 +864,7 @@ impl RinchDocument {
             // `with_first_baseline` hands it to Taffy (#1013).
             let mut first_baseline: Option<f32> = None;
             let out = taffy::compute_leaf_layout(
-                crate::out_of_flow::absolute_leaf_inputs(inputs, style),
+                inputs,
                 style,
                 |_, _| 0.0,
                 |known_dims, avail_space| {

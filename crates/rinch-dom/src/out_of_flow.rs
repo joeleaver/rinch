@@ -1580,37 +1580,6 @@ fn shrinks_to_fit(cs: &ComputedStyle) -> bool {
     )
 }
 
-/// The inputs to hand `taffy::compute_leaf_layout` for a leaf with `style`.
-///
-/// Taffy's leaf algorithm takes the leaf's **own margins** off the available
-/// width it was given; its block, flex and grid algorithms do not take a
-/// container's own. An absolutely positioned box is measured at the room its
-/// containing block leaves it, margins already out ([`fit_in_layout_parent`],
-/// the bake in [`apply_out_of_flow_size_overrides`], Taffy's grid), so a
-/// leaf — a box holding only inline content — had them taken off twice:
-/// `right: 20px; margin-right: 20px` in 394px came out 334 wide, and the
-/// same box around a block child 354 (Chrome: 354). The margins are put
-/// back here, so one rule holds for both.
-pub(crate) fn absolute_leaf_inputs(
-    mut inputs: taffy::LayoutInput,
-    style: &taffy::Style,
-) -> taffy::LayoutInput {
-    if style.position == taffy::Position::Absolute
-        && inputs.known_dimensions.width.is_none()
-        && let taffy::AvailableSpace::Definite(width) = inputs.available_space.width
-    {
-        use taffy::{CoreStyle, ResolveOrZero};
-        let margin = style
-            .margin()
-            .resolve_or_zero(inputs.parent_size.width, |_, _| 0.0);
-        let margins = margin.left + margin.right;
-        if margins != 0.0 {
-            inputs.available_space.width = taffy::AvailableSpace::Definite(width + margins);
-        }
-    }
-    inputs
-}
-
 /// Whether an absolute box with this style is **shrunk to fit from its
 /// static position**: an `auto` or `fit-content` width and both inline insets
 /// `auto`, so the room it has is what its containing block leaves after the

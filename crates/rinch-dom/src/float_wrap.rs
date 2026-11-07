@@ -101,13 +101,16 @@ impl FloatBands {
     }
 
     /// The left inset and width of a line from `top` to `bottom` broken at
-    /// `full`: the room left beside every band the line overlaps. A line of
-    /// no height overlaps the band it starts in.
+    /// `full`: the room left beside every band the line overlaps. A line
+    /// overlaps the band it starts in, whatever its height (one of no height
+    /// too). That is tested as such: `bottom.max(top + f32::EPSILON)` did not
+    /// make a line of no height reach a band starting at its top, since
+    /// `20.0 + f32::EPSILON == 20.0` in `f32`, and a line starting on a
+    /// band's top was given the whole width (review of #2374).
     pub(crate) fn room(&self, top: f32, bottom: f32, full: f32) -> (f32, f32) {
-        let bottom = bottom.max(top + f32::EPSILON);
         let (mut left, mut right) = (0.0f32, 0.0f32);
         for b in &self.bands {
-            if b.top < bottom && top < b.bottom {
+            if (b.top < bottom || b.top <= top) && top < b.bottom {
                 left = left.max(b.left);
                 right = right.max(b.right);
             }
