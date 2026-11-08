@@ -435,6 +435,18 @@ fn an_absolute_box_in_the_span_hangs_from_its_moved_fragment() {
     };
     assert_eq!(abs("left: 0; top: 0;"), [53.0, 10.0, 40.0, 30.0]);
     assert_eq!(abs(""), [81.0, 10.0, 40.0, 30.0]);
+    // A block-level one's static position is below the line, at the
+    // content box's left edge: moved 7px right and 5px down by a
+    // `left: 7px; top: 5px` span, Chrome 156's `(18, 32)` (`(11, 27)`
+    // without the offset).
+    let block = |offset: &str| {
+        Case::new(&format!(
+            r#"lead <span style="{R}; {offset}">text<div data-m="abs" style="position: absolute; width: 40px; height: 30px"></div>tail</span>"#
+        ))
+        .rect("abs")
+    };
+    assert_eq!(block(""), [11.0, 27.0, 40.0, 30.0]);
+    assert_eq!(block("left: 7px; top: 5px"), [18.0, 32.0, 40.0, 30.0]);
 }
 
 /// A change of the offset moves the box and the text on the next layout.

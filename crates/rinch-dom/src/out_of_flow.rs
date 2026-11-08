@@ -1902,7 +1902,7 @@ fn inline_static_position(tree: &NodeTree, node_id: RawNodeId) -> Option<(f32, f
     let (x, y) = if node.computed_style.inline_level_before_blockify {
         mark.inline
     } else {
-        (0.0, mark.block_y)
+        (mark.block_x, mark.block_y)
     };
     // On the pixel grid, where Taffy puts every box (and Chrome paints this
     // one: laid out at 39.33, its edge drawn at 39).

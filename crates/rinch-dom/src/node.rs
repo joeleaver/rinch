@@ -857,8 +857,12 @@ pub(crate) struct OutOfFlowMark {
     pub inline: (f32, f32),
     /// For a block-level box: below the line holding the content before it,
     /// or the first line's top when nothing precedes it. Its x is the content
-    /// box's left edge whatever the `text-align`.
+    /// box's left edge whatever the `text-align`, moved only by the relative
+    /// inline elements around the box (`block_x`, #1425).
     pub block_y: f32,
+    /// The horizontal move of a block-level box's static position: the
+    /// offset of the relative inline elements around it (#1425), else 0.
+    pub block_x: f32,
 }
 
 impl InlineLayout {

@@ -308,7 +308,9 @@ span's edges) are where the text is drawn; a span's fragments
 (`measure_span_fragments`) move, so a box hung from it does
 (`left: 5px; top: 3px` puts `left: 0; top: 0` at Chrome's `(52.641, 10)`,
 snapped to 53), and so does the static position of an `auto`-inset box in it
-(the `OutOfFlowMark`s). A change of `position` or an inset of an inline
+(the `OutOfFlowMark`s: an inline-level box's `inline`, a block-level one's
+`block_x`/`block_y` — Chrome's `(18, 32)` for a `left: 7px; top: 5px` span,
+`(11, 27)` without), and the span's own `getBoundingClientRect`. A change of `position` or an inset of an inline
 element rebuilds the lines (`same_relative_offset_inputs`, part of
 `same_text_layout_inputs`, not of the measured inputs: the offset sizes
 nothing). A `position: sticky` inline is not moved, as before: where nothing
@@ -317,10 +319,11 @@ would push it rinch's does not stick (sticky offsets are applied to boxes).
 Pinned in `tests/relative_inline_offset_2346_tests.rs`
 (layout, paint, pixels, Chrome 156) and `rinch/src/app/relative_inline_hit_2346_tests.rs`.
 Not Chrome's yet: a pointer on moved **text** is still mapped to a character
-by the unmoved lines (`byte_offset_from_position`, `cluster_range_at_point`),
-so a click 7px right of a `left: 7px` span's glyph lands 7px later in the
-text; and a percentage `top` of a block whose `height` changes with no width
-change keeps the old offset until the lines are rebuilt.
+by the unmoved lines (`byte_offset_from_position`, `cluster_range_at_point`;
+**#2404**); a block inside a relative **split** inline (#513) is not moved
+(**#2408**: Chrome moves it with the span); and a percentage `top` of a block
+whose `height` changes with no width change keeps the old offset until the
+lines are rebuilt.
 
 **An auto-width absolute box is shrunk to fit in what its containing block
 leaves it** (#1404, CSS 2.1 §10.3.7): that block's padding-box width less the

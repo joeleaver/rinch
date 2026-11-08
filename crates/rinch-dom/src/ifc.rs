@@ -1842,6 +1842,7 @@ impl<'a> IfcText<'a> {
             after_box: self.last_box,
             inline: (0.0, 0.0),
             block_y: 0.0,
+            block_x: 0.0,
         });
     }
 
@@ -4981,6 +4982,7 @@ impl RinchDocument {
             };
             let (dx, dy) = inline.element_relative_offset(parent, |id| nodes.get(id));
             mark.inline = (mark.inline.0 + dx, mark.inline.1 + dy);
+            mark.block_x += dx;
             mark.block_y += dy;
         }
         inline.out_of_flow = marks;
