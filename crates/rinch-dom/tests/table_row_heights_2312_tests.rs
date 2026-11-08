@@ -13,7 +13,8 @@
 //!   between the rows of no declared height.
 //! - A caption takes none of it: the table's `height` is its rows'.
 //! - A table whose `height` is less than its rows is as tall as its rows
-//!   (not yet when its parent imposes its height, #2358).
+//!   (also when its parent imposes its height, #2358:
+//!   `table_caption_spacing_and_imposed_height_tests.rs`).
 //! - A `display: block` cell stands in an anonymous cell, whose
 //!   `vertical-align` is `baseline` (rinch aligns it as `top`, #2359; the
 //!   same as Chrome when no cell of the row is baseline-aligned): it is
@@ -348,10 +349,8 @@ fn a_caption_takes_none_of_a_tables_height() {
     );
 }
 
-/// With spacing, rinch's caption sits inside the table's outer spacing (at
-/// `y = 3`, and one more spacing above the first row), where Chrome's is
-/// outside it (#2350): the rows' heights are compared, and the table is that
-/// one spacing taller than Chrome's.
+/// With spacing: the caption is outside the table's outer spacing (#2350),
+/// and the rows share the table's height.
 #[test]
 fn a_caption_takes_none_of_a_spaced_tables_height() {
     let doc = doc(&format!(
@@ -363,12 +362,12 @@ fn a_caption_takes_none_of_a_spaced_tables_height() {
         d(25)
     ));
     // Chrome 156: the rows at 23, 56 and 104.141, 30, 45.141 and 112.859
-    // tall, in a table 220 tall; rinch's are 3px lower.
+    // tall, in a table 220 tall.
     let rows = [yh(&doc, "a"), yh(&doc, "b"), yh(&doc, "c")];
-    let chrome = [(26.0, 30.0), (59.0, 45.141), (107.141, 112.859)].map(snapped);
+    let chrome = [(23.0, 30.0), (56.0, 45.141), (104.141, 112.859)].map(snapped);
     assert_eq!(rows, chrome, "the rows");
-    // Chrome: 220. rinch: 220 and the caption's extra gap (#2350).
-    assert_eq!(yh(&doc, "t"), (0.0, 223.0), "the table");
+    assert_eq!(yh(&doc, "cap"), (0.0, 20.0), "the caption");
+    assert_eq!(yh(&doc, "t"), (0.0, 220.0), "the table");
 }
 
 #[test]
