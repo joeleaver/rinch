@@ -4673,14 +4673,22 @@ impl RinchDocument {
         }
     }
 
-    /// An IFC root's content-box width, `None` when it is not positive.
+    /// An IFC root's content-box width, never below 0.
+    ///
+    /// A zero-width box is a width, not "unconstrained" (#2382): `width: 0`,
+    /// `max-width: 0`, a zero-width float or a flex item shrunk to nothing
+    /// takes every break opportunity its text has, as in Chrome 156, the
+    /// same lines as `width: 1px`. This used to answer `None` for a content
+    /// width that was not positive, and the paint layout was then broken with
+    /// no limit — one line of max-content text in a box its measure had
+    /// sized for five lines.
     fn ifc_content_width(&self, root_id: RawNodeId) -> Option<f32> {
         let node = &self.tree.nodes[root_id];
         let cs = &node.computed_style;
         let padding_h = cs.padding_left.to_px() + cs.padding_right.to_px();
         let border_h = cs.border_left_width.to_px() + cs.border_right_width.to_px();
         let content_width = node.layout.width - padding_h - border_h;
-        (content_width > 0.0).then_some(content_width)
+        Some(content_width.max(0.0))
     }
 
     /// The width an IFC root's paint layout is broken at: its content-box
