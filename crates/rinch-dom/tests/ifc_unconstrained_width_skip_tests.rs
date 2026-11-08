@@ -3,8 +3,8 @@
 //!
 //! `build_ifc_layouts` skips a root whose text is clean and whose previous layout
 //! was built at the same `max_width`. A root whose content box is not positive
-//! (a zero-width box) was built with `max_width:
-//! None`, stored as `f32::INFINITY`, and the skip compared widths with
+//! (a zero-width box) was built with `max_width: None`, stored as
+//! `f32::INFINITY`, and the skip compared widths with
 //! `(old - new).abs() < 0.01`: `INFINITY - INFINITY` is NaN, so every such root
 //! was reshaped by Parley on every layout pass that changed no text. In
 //! Pimble's window that was
