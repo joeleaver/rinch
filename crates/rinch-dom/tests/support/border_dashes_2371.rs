@@ -21,7 +21,7 @@ mod chrome;
 pub use chrome::{BOXES, CHROME_1X, CHROME_2X};
 
 pub const W: u32 = 200;
-pub const H: u32 = 1310;
+pub const H: u32 = 1420;
 
 /// The boxes that are rounded. Painters may differ from Chrome along an arc
 /// by antialiasing, so these are allowed a few pixels (see `misses`).
@@ -186,7 +186,26 @@ const LEVELS: &[(&str, u32, u32, u32, u8, u8)] = &[
     (DOTTED_SOLID, 2, 0, 2, 193, 255),
     (DOTTED_SOLID, 2, 1, 2, 193, 255),
     (DOTTED_SOLID, 2, 0, 3, 193, 255),
+    (ROUNDED_TRANSLUCENT, 1, 78, 1, 110, 142),
+    (ROUNDED_TRANSLUCENT, 1, 78, 4, 110, 142),
+    (ROUNDED_TRANSLUCENT, 2, 157, 2, 110, 142),
+    (ROUNDED_TRANSLUCENT, 2, 157, 8, 110, 142),
+    (TWO_ALPHAS, 1, 1, 15, 35, 65),
+    (TWO_ALPHAS, 1, 30, 28, 35, 65),
+    (TWO_ALPHAS, 1, 58, 1, 110, 142),
+    (TWO_ALPHAS, 2, 2, 30, 35, 65),
+    (TWO_ALPHAS, 2, 60, 57, 35, 65),
+    (TWO_ALPHAS, 2, 117, 2, 110, 142),
 ];
+/// A translucent uniform dashed border with curved and straight sides
+/// (review of #2391): where the curved top meets the straight right side,
+/// Chrome's corner is 127, one layer's worth. Without a layer it was 64.
+const ROUNDED_TRANSLUCENT: &str = "border:6px dashed rgba(0,0,0,0.5);border-radius:20px 0 0 0";
+/// Dashed sides at alpha 0.5 and solid sides at 0.8: each keeps its own
+/// alpha (the solid sides 50, the dashed corner 127). One layer at the first
+/// side's alpha would paint the solid sides at 0.5.
+const TWO_ALPHAS: &str = "border-top:4px dashed rgba(0,0,0,0.5);border-right:4px dashed rgba(0,0,0,0.5);\
+border-bottom:4px solid rgba(0,0,0,0.8);border-left:4px solid rgba(0,0,0,0.8)";
 const TRANSLUCENT: &str = "border-top:4px dashed rgba(0,0,0,0.5);border-right:4px dashed rgba(0,0,0,0.5);\
 border-bottom:4px solid rgba(0,0,0,0.5);border-left:4px solid rgba(0,0,0,0.5)";
 const DOTTED_SOLID: &str = "border-top:8px solid #000;border-right:8px solid #000;\

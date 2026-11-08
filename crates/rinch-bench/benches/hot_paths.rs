@@ -133,6 +133,7 @@ fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
 #[bench::closed_drawer_500(setup = setup_closed_drawer_paint)]
 #[bench::text_page_subpixel_warm(setup = setup_full_paint_subpixel)]
 #[bench::dashed_borders_500(setup = setup_dashed_borders_paint)]
+#[bench::dashed_translucent_500(setup = setup_dashed_translucent_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
 }

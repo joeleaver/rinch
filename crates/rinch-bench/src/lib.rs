@@ -1073,6 +1073,40 @@ fn dashed_borders_page() -> RinchDocument {
     doc
 }
 
+/// 500 small boxes whose dashed top and right sides meet solid bottom and
+/// left ones, every side `rgba(40, 40, 40, 0.5)` (review of #2391): each
+/// border is painted opaque into a layer of its alpha, as Blink's opacity
+/// groups paint it, so its corners do not darken twice. This measures that
+/// layer.
+fn dashed_translucent_page() -> RinchDocument {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; } div { position: absolute; box-sizing: border-box; \
+         width: 30px; height: 26px; border: 3px solid rgba(40, 40, 40, 0.5); \
+         border-top-style: dashed; border-right-style: dashed; }",
+    );
+    let mut html = String::new();
+    for i in 0..500 {
+        let (x, y) = ((i % 25) * 32, (i / 25) * 29);
+        html.push_str(&format!("<div style=\"left: {x}px; top: {y}px\"></div>"));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc
+}
+
+/// [`dashed_translucent_page`] on the software painter.
+pub fn setup_dashed_translucent_paint() -> PaintFixture {
+    let mut f = PaintFixture {
+        doc: dashed_translucent_page(),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
 /// [`dashed_borders_page`] on the software painter.
 pub fn setup_dashed_borders_paint() -> PaintFixture {
     let mut f = PaintFixture {

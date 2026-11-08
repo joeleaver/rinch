@@ -74,6 +74,20 @@ pub const BOXES: &[(u32, u32, u32, u32, &str)] = &[
         40,
         "border-top:8px solid #000;border-right:8px solid #000;border-bottom:8px solid #000;border-left:8px dotted #000",
     ),
+    (
+        10,
+        1298,
+        80,
+        40,
+        "border:6px dashed rgba(0,0,0,0.5);border-radius:20px 0 0 0",
+    ),
+    (
+        10,
+        1350,
+        60,
+        30,
+        "border-top:4px dashed rgba(0,0,0,0.5);border-right:4px dashed rgba(0,0,0,0.5);border-bottom:4px solid rgba(0,0,0,0.8);border-left:4px solid rgba(0,0,0,0.8)",
+    ),
 ];
 
 /// Chrome 156 at scale 1: per box, its top border's middle device row and
@@ -180,6 +194,8 @@ pub const CHROME_1X: &[(&str, &str)] = &[
     ),
     ("~8 .5 ~8 .5 ~8 .5 ~8 .5 ~8", "~30"),
     ("#60", "#8 .8 #8 .8 #8"),
+    (".8 ~6 .6 ~12 .5 ~12 .6 ~12 .3 ~10", ".9 ~2 .6 ~12 .1 ~10"),
+    ("#2 ~6 .5 ~8 .5 ~8 .5 ~8 .5 ~8", "~3 #27"),
 ];
 
 /// Chrome 156 at scale 2: per box, its top border's middle device row and
@@ -286,4 +302,9 @@ pub const CHROME_2X: &[(&str, &str)] = &[
     ),
     ("~16 .10 ~16 .10 ~16 .10 ~16 .10 ~16", "~60"),
     ("#120", "#16 .16 #16 .16 #16"),
+    (
+        ".18 ~11 .11 ~24 .11 ~24 .10 ~25 .7 ~19",
+        ".18 ~2 .12 ~25 .4 ~19",
+    ),
+    ("#4 ~12 .10 ~16 .10 ~16 .10 ~16 .10 ~16", "~5 #55"),
 ];

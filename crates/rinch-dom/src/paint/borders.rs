@@ -267,6 +267,19 @@ pub(super) fn paint_borders(
                         // straight side under the outer clip (its dashes
                         // fitted to the side), and the others as the whole
                         // dashed path clipped to their part.
+                        //
+                        // The two kinds of side overlap where they meet, so
+                        // a translucent border paints them opaque into one
+                        // layer of its alpha (Blink's opacity group), or
+                        // that corner darkens twice.
+                        let alpha = bc.components[3];
+                        let layered = alpha < 1.0;
+                        let bc = if layered {
+                            painter.push_layer(BlendMode::Normal, alpha, transform, &outer.into());
+                            bc.with_alpha(1.0)
+                        } else {
+                            bc
+                        };
                         let edges = border_dashes::BoxEdges {
                             rect: outer,
                             widths: [bw; 4],
@@ -297,6 +310,9 @@ pub(super) fn paint_borders(
                                 bw,
                                 dash,
                             );
+                        }
+                        if layered {
+                            painter.pop_layer();
                         }
                     }
                 }
@@ -394,9 +410,9 @@ fn style_priority(style: BorderStyleValue) -> u8 {
 /// side's dot or dash keeps its half of the corner). With `ring`, the sides
 /// are drawn under that clip (a rounded border whose inner edge has no arc).
 ///
-/// When a side is dashed or dotted and every painted side has the same alpha
-/// below 1, the sides are drawn opaque into one layer of that opacity, as
-/// Blink's opacity groups do, so the corners they share do not darken twice.
+/// When a side is dashed or dotted, the sides of each alpha below 1 are drawn
+/// opaque into one layer of that opacity, lowest first, as Blink's opacity
+/// groups are, so the corners they share do not darken twice.
 fn paint_straight_sides(
     painter: &mut dyn Painter,
     sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
@@ -426,54 +442,70 @@ fn paint_straight_sides(
             )
     };
     let any_dash = (0..4).any(|i| painted(i) && Dash::of(sides[i].2).is_some());
-    let alphas: Vec<f32> = (0..4)
-        .filter(|&i| painted(i))
-        .map(|i| sides[i].1.unwrap().components[3])
-        .collect();
-    let group = (any_dash && !alphas.is_empty() && alphas[0] < 1.0)
-        .then_some(alphas[0])
-        .filter(|&a| alphas.iter().all(|&b| b == a));
+    let alpha = |i: usize| sides[i].1.map_or(1.0, |c| c.components[3]);
+    // Blink's opacity groups: the sides of one alpha below 1 paint opaque
+    // into one layer of it, the lowest opacity first, so two of them meeting
+    // in a corner do not darken it twice. Only where a side is dashed or
+    // dotted: elsewhere this painter keeps its own solid-side corners.
+    let mut groups: Vec<f32> = Vec::new();
+    if any_dash {
+        for i in (0..4).filter(|&i| painted(i)) {
+            let a = alpha(i);
+            if a < 1.0 && !groups.contains(&a) {
+                groups.push(a);
+            }
+        }
+        groups.sort_by(f32::total_cmp);
+    }
+    // The opaque sides last, with no layer.
+    let layers: Vec<Option<f32>> = groups.iter().map(|&a| Some(a)).chain([None]).collect();
     if let Some(r) = ring {
         painter.push_clip(Fill::NonZero, transform, &r.clone().into());
     }
-    if let Some(alpha) = group {
-        painter.push_layer(BlendMode::Normal, alpha, transform, &outer.into());
-    }
     let (x, y, w, h) = (outer.x0, outer.y0, outer.width(), outer.height());
     let mut done = [false; 4];
-    for i in order {
-        let (_, color, style) = sides[i];
-        let Some(mut bc) = color else {
-            done[i] = true;
-            continue;
+    for layer in layers {
+        let in_layer = |i: usize| match layer {
+            Some(a) => alpha(i) == a,
+            None => !groups.contains(&alpha(i)),
         };
-        if group.is_some() {
-            bc = bc.with_alpha(1.0);
+        if let Some(a) = layer {
+            painter.push_layer(BlendMode::Normal, a, transform, &outer.into());
         }
-        if let Some(dash) = Dash::of(style) {
-            let cuts = blink_cuts(sides, &widths, &done, &edges, i);
-            let mut path = BezPath::new();
-            border_dashes::straight_side(&mut path, &edges, DASH_SIDES[i], dash, &cuts);
-            if !path.is_empty() {
-                painter.fill_color(Fill::NonZero, transform, bc, &path.into());
+        for &i in order.iter().filter(|&&i| in_layer(i)) {
+            let (_, color, style) = sides[i];
+            let Some(mut bc) = color else {
+                done[i] = true;
+                continue;
+            };
+            if layer.is_some() {
+                bc = bc.with_alpha(1.0);
             }
-        } else if matches!(style, BorderStyleValue::Solid)
-            && widths[i] > 0.0
-            && let cuts = solid_cuts(sides, &widths, &done, &edges, i)
-            && !cuts.is_empty()
-        {
-            let mut path = BezPath::new();
-            border_dashes::solid_side(&mut path, &edges, DASH_SIDES[i], &cuts);
-            painter.fill_color(Fill::NonZero, transform, bc, &path.into());
-        } else {
-            paint_border_side(
-                painter, SIDES[i], widths[i], style, bc, x, y, w, h, transform,
-            );
+            if let Some(dash) = Dash::of(style) {
+                let cuts = blink_cuts(sides, &widths, &done, &edges, i);
+                let mut path = BezPath::new();
+                border_dashes::straight_side(&mut path, &edges, DASH_SIDES[i], dash, &cuts);
+                if !path.is_empty() {
+                    painter.fill_color(Fill::NonZero, transform, bc, &path.into());
+                }
+            } else if matches!(style, BorderStyleValue::Solid)
+                && widths[i] > 0.0
+                && let cuts = solid_cuts(sides, &widths, &done, &edges, i)
+                && !cuts.is_empty()
+            {
+                let mut path = BezPath::new();
+                border_dashes::solid_side(&mut path, &edges, DASH_SIDES[i], &cuts);
+                painter.fill_color(Fill::NonZero, transform, bc, &path.into());
+            } else {
+                paint_border_side(
+                    painter, SIDES[i], widths[i], style, bc, x, y, w, h, transform,
+                );
+            }
+            done[i] = true;
         }
-        done[i] = true;
-    }
-    if group.is_some() {
-        painter.pop_layer();
+        if layer.is_some() {
+            painter.pop_layer();
+        }
     }
     if ring.is_some() {
         painter.pop_layer();
