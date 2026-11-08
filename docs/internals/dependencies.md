@@ -617,11 +617,30 @@ candidates.
    atomic inline itself. Pins: the fork's `tests/fit_content_flex.rs` (27 shapes) and
    `crates/rinch-dom/tests/fit_content_flex_tests.rs` (Chrome's numbers).
 
+19. **A self-sized formatting-context root fits beside floats by its own width** (#2397, commit
+   `1da863f7`, fork PR joeleaver/taffy-fork#8). A box whose border box must not overlap floats
+   (CSS 2.2 §9.5: a formatting-context root, a table, a block-level replaced element) goes in the
+   highest slot beside the floats it fits, else below them. The fit test took an auto width as
+   the width it *stretches* to in the slot, which always fits, so a box that sizes itself was put
+   beside the floats whatever its width: rinch's auto table (a grid with `width: fit-content`,
+   `table_layout::apply_table_style`) holding a 40px box beside a 280px float in 300px sat at
+   x 280, 20px past the edge, where Chrome 156 moves it to (0, 50); the email pattern (a
+   `<table align=left width=100%>` logo, then an auto spacer table) left the spacer beside the
+   logo at x 300. The fit test now measures the width the box will have there, as the layout
+   lays it out: a table's or replaced element's own size with the slot's stretch width
+   available, or a sizing keyword's (`fit-content`, `max-content`, …), else the stretch width as
+   before. A box that stretches (an auto-width `overflow: hidden` block, a flex container) still
+   takes the room beside the float however narrow, as in Chrome; a table's margins may overlap
+   the float, its borders and padding count. Not fixed (pre-existing, separate): rinch does not
+   treat `display: flow-root` as a formatting-context root, so it overlaps a float (Chrome puts
+   it beside; #2351). Pins: the fork's `tests/hand_written/floats.rs` (two tests) and
+   `crates/rinch-dom/tests/table_beside_float_2397_tests.rs` (21 shapes, Chrome's numbers).
+
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, and (6,021 generated, plus `tests/table_rows.rs`) with 15, and (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18.
+`tests/fit_content_flex.rs`) with 18, and (6,021 generated) with 19.
 
 
 ## Parley Fork
