@@ -173,8 +173,14 @@ fn families(v: &str) -> String {
 /// and the rest is ignored (`"4px"` is 4, `"+1abc"` is 4).
 fn font_size(v: &str) -> Option<&'static str> {
     let v = v.trim_start_matches(HTML_SPACE);
+    // Chrome reads the digits as an `i32`; past `i32::MAX` they are 0
+    // (`"2147483648"` is size 1, `"+2147483648"` is 3).
     let (_, n) = signed_digits(v)?;
-    let n = n.min(100) as i32;
+    let n = if n > i64::from(i32::MAX) {
+        0
+    } else {
+        n.min(100) as i32
+    };
     let n = match v.as_bytes()[0] {
         b'+' => 3 + n,
         b'-' => 3 - n,

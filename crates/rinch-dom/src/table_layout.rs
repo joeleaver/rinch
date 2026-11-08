@@ -1871,9 +1871,10 @@ pub(crate) fn whole_device_spacing(css_px: f32, scale: f64) -> f32 {
     let scale = if scale > 0.0 { scale } else { 1.0 };
     // Blink holds the length as a double parsed from the text; ours went
     // through an `f32`, which can sit just under it (9.99 is 9.98999977).
-    // One part in a million lifts it back past an integer it ought to reach
-    // and moves nothing else that matters.
-    let device = f64::from(css_px) * scale * (1.0 + 1e-6) + 0.01;
+    // Two steps of the `f32` lift it back to the text's value and no
+    // further, so a value really below `k - 0.01` (9.98999) stays below.
+    let lifted = css_px.next_up().next_up();
+    let device = f64::from(lifted) * scale + 0.01;
     if device > f64::from(i16::MAX) {
         0.0
     } else {

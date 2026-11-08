@@ -185,6 +185,9 @@ fn border_spacing_is_whole_device_pixels_at_1x() {
         ("style='border-spacing:9.99px'", 30.0, 30.0),
         ("style='border-spacing:9.995px'", 30.0, 30.0),
         ("style='border-spacing:9.994px'", 30.0, 30.0),
+        ("style='border-spacing:9.98999px'", 28.0, 28.0),
+        // Wider than the page, so the empty cell gives up its width.
+        ("style='border-spacing:999.989px'", 1998.0, 2008.0),
         ("cellspacing='10.9'", 30.0, 30.0),
         ("cellspacing='0.5'", 10.0, 10.0),
         ("cellspacing='9.99'", 30.0, 30.0),
@@ -199,17 +202,19 @@ fn border_spacing_is_whole_device_pixels_at_1x() {
 #[test]
 fn border_spacing_is_whole_device_pixels_at_2x() {
     let chrome = [
-        ("style='border-spacing:10.5px'", 31.0),
-        ("style='border-spacing:9.99px'", 29.0),
-        ("style='border-spacing:9.994px'", 29.0),
-        ("style='border-spacing:9.995px'", 30.0),
-        ("style='border-spacing:10.25px'", 30.0),
-        ("style='border-spacing:10.75px'", 31.0),
-        ("cellspacing='10.5'", 31.0),
-        ("cellspacing='9.99'", 29.0),
+        ("style='border-spacing:10.5px'", 31.0, 31.0),
+        ("style='border-spacing:9.99px'", 29.0, 29.0),
+        ("style='border-spacing:9.994px'", 29.0, 29.0),
+        ("style='border-spacing:9.98999px'", 29.0, 29.0),
+        ("style='border-spacing:999.989px'", 1999.0, 2009.0),
+        ("style='border-spacing:9.995px'", 30.0, 30.0),
+        ("style='border-spacing:10.25px'", 30.0, 30.0),
+        ("style='border-spacing:10.75px'", 31.0, 31.0),
+        ("cellspacing='10.5'", 31.0, 31.0),
+        ("cellspacing='9.99'", 29.0, 29.0),
     ];
-    for (attrs, want) in chrome {
-        assert_eq!(spaced(attrs, 2.0), (want, want), "{attrs} at 2x");
+    for (attrs, w, h) in chrome {
+        assert_eq!(spaced(attrs, 2.0), (w, h), "{attrs} at 2x");
     }
 }
 
@@ -300,6 +305,12 @@ fn font_size_reads_its_leading_digits() {
         ("", 20.0),
         ("\u{b}4", 20.0),
         ("+ 1", 20.0),
+        // Past `i32::MAX` the digits are 0: size 1 absolute, 3 relative.
+        ("2147483647", 48.0),
+        ("2147483648", 10.0),
+        ("4294967296", 10.0),
+        ("+2147483648", 16.0),
+        ("-2147483649", 16.0),
     ];
     for (v, want) in chrome {
         let d = doc(&format!(
