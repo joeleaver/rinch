@@ -14,7 +14,8 @@ use super::text::render_text_with_shadow;
 /// The translucent wash both selection painters draw.
 const SELECTION_WASH: (u8, u8, u8, u8) = (51, 154, 240, 100);
 
-/// Paint the selection `a..b` (byte offsets, either order) over `layout`, whose
+/// Paint the selection rectangles `rects` of a layout (the selection `a..b`,
+/// byte offsets, either order), whose
 /// origin is at `(text_x, text_y)` and whose units are `units` device px each:
 /// one rect per line (per visual piece on a line holding a right-to-left run,
 /// #1114), from [`crate::text_query::selection_rects_for_layout`] —
@@ -31,16 +32,14 @@ const SELECTION_WASH: (u8, u8, u8, u8) = (51, 154, 240, 100);
 fn paint_selection_rects(
     painter: &mut dyn Painter,
     transform: Affine,
-    layout: &parley::layout::Layout<Brush>,
-    a: usize,
-    b: usize,
+    rects: Vec<(f32, f32, f32, f32)>,
     text_x: f64,
     text_y: f64,
     units: f64,
 ) {
     let (r, g, bl, al) = SELECTION_WASH;
     let color = AlphaColor::<Srgb>::from_rgba8(r, g, bl, al);
-    for (left, top, width, height) in crate::text_query::selection_rects_for_layout(layout, a, b) {
+    for (left, top, width, height) in rects {
         let rect = Rect::new(
             text_x + left as f64 * units,
             text_y + top as f64 * units,
@@ -100,7 +99,7 @@ pub(crate) fn read_only_selection_outsets(node: &Node) -> [f32; 4] {
     let (w, h) = (node.layout.width, node.layout.height);
     for (left, top, width, height) in read_only_selection(node)
         .into_iter()
-        .flat_map(|(a, b)| crate::text_query::selection_rects_for_layout(&layout.layout, a, b))
+        .flat_map(|(a, b)| crate::text_query::selection_rects_for_inline(layout, a, b))
     {
         o[0] = o[0].max(-(ox + left));
         o[1] = o[1].max(-(oy + top));
@@ -128,12 +127,11 @@ pub(super) fn paint_text_selection_highlight(
         return;
     };
     for (a, b) in read_only_selection(node) {
+        // Where the text is drawn: moved by a relative inline element (#1425).
         paint_selection_rects(
             painter,
             transform,
-            &layout.layout,
-            a,
-            b,
+            crate::text_query::selection_rects_for_inline(layout, a, b),
             text_x,
             text_y,
             scale,
@@ -364,9 +362,11 @@ pub(super) fn paint_input_value(
         paint_selection_rects(
             painter,
             transform,
-            &text_layout,
-            sel_start_byte,
-            sel_end_byte,
+            crate::text_query::selection_rects_for_layout(
+                &text_layout,
+                sel_start_byte,
+                sel_end_byte,
+            ),
             text_x,
             text_y,
             // The control's layout is built at the scaled font size: already

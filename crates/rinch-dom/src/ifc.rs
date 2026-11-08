@@ -4714,6 +4714,10 @@ impl RinchDocument {
             }
         }
 
+        // The relative inline elements' offsets (#1425, #2346), against the
+        // containing block, before the boxes they move are written.
+        self.resolve_relative_spans(root_id, &mut inline_layout);
+
         // Write positions from Parley layout back to child nodes
         // Walk the layout lines to find positioned inline boxes and text runs
         self.write_inline_positions(root_id, &inline_layout);
@@ -4898,6 +4902,90 @@ impl RinchDocument {
         }
     }
 
+    /// Resolve each relative inline element's offset (#1425, #2346; CSS 2.1
+    /// §9.4.3) against its containing block, and drop the spans that move
+    /// nothing, so an IFC whose relative spans are only containing blocks
+    /// (a tooltip's anchor) pays nothing at paint.
+    ///
+    /// The containing block is the block container holding the line: the
+    /// root, or the element an anonymous block box stands in. A percentage
+    /// `left`/`right` is of its content width; a percentage `top`/`bottom` of
+    /// its content height when its `height` is a length, and otherwise
+    /// computes to `auto` (CSS 2.1 §9.3.2) — measured in Chrome 156. Of an
+    /// over-constrained pair, `top` wins, and `left` in a left-to-right
+    /// containing block (`right` in a right-to-left one).
+    pub(crate) fn resolve_relative_spans(&self, root_id: RawNodeId, inline: &mut InlineLayout) {
+        if inline.relative_spans.is_empty() {
+            return;
+        }
+        use crate::computed_style::{DimensionValue, LengthPercentageAutoValue as L};
+        let nodes = &self.tree.nodes;
+        let root = &nodes[root_id];
+        let cb = root
+            .parent
+            .filter(|_| root.is_anonymous_block_box)
+            .and_then(|p| nodes.get_live(p))
+            .unwrap_or(root);
+        let cs = &cb.computed_style;
+        let width = cb.layout.width
+            - cs.padding_left.to_px()
+            - cs.padding_right.to_px()
+            - cs.border_left_width.to_px()
+            - cs.border_right_width.to_px();
+        let height = matches!(cs.height, DimensionValue::Length(_)).then(|| {
+            cb.layout.height
+                - cs.padding_top.to_px()
+                - cs.padding_bottom.to_px()
+                - cs.border_top_width.to_px()
+                - cs.border_bottom_width.to_px()
+        });
+        let ltr = element_is_ltr(cb);
+        let vertical = |v: L| match (v, height) {
+            (L::Percent(_) | L::Calc { .. }, None) => None,
+            (v, h) => v.resolve(h.unwrap_or(0.0)),
+        };
+        inline.relative_spans.retain_mut(|span| {
+            let Some(owner) = nodes.get_live(span.owner) else {
+                return false;
+            };
+            let o = &owner.computed_style;
+            let (left, right) = (o.left.resolve(width), o.right.resolve(width));
+            span.dx = match (left, right) {
+                (Some(l), Some(r)) => {
+                    if ltr {
+                        l
+                    } else {
+                        -r
+                    }
+                }
+                (Some(l), None) => l,
+                (None, Some(r)) => -r,
+                (None, None) => 0.0,
+            };
+            span.dy = vertical(o.top)
+                .or_else(|| vertical(o.bottom).map(|b| -b))
+                .unwrap_or(0.0);
+            span.dx != 0.0 || span.dy != 0.0
+        });
+        if inline.relative_spans.is_empty() {
+            return;
+        }
+        // An out-of-flow box's static position is where it would be in the
+        // line, which the relative inline elements around it move too:
+        // Chrome 156 puts an `auto`-inset box in a `left: 5px; top: 3px` span
+        // 5px right of and 3px below where it stands without the offset.
+        let mut marks = std::mem::take(&mut inline.out_of_flow);
+        for mark in &mut marks {
+            let Some(parent) = nodes.get_live(mark.id).and_then(|n| n.parent) else {
+                continue;
+            };
+            let (dx, dy) = inline.element_relative_offset(parent, |id| nodes.get(id));
+            mark.inline = (mark.inline.0 + dx, mark.inline.1 + dy);
+            mark.block_y += dy;
+        }
+        inline.out_of_flow = marks;
+    }
+
     /// Write computed positions from an InlineLayout back into child node layout fields.
     pub(crate) fn write_inline_positions(
         &mut self,
@@ -4918,11 +5006,23 @@ impl RinchDocument {
                             continue;
                         }
                         let child_id = positioned_box.id as RawNodeId;
+                        // Moved by every relatively positioned inline element
+                        // around it (#2346): its line placed it where it would
+                        // be without them.
+                        let (dx, dy) = (!inline_layout.relative_spans.is_empty())
+                            .then_some(child_id)
+                            .and_then(|c| self.tree.nodes.get_live(c)?.parent)
+                            .map_or((0.0, 0.0), |p| {
+                                inline_layout
+                                    .element_relative_offset(p, |id| self.tree.nodes.get(id))
+                            });
                         if let Some(child) = self.tree.nodes.get_live_mut(child_id) {
                             // The inline box is its margin box on the block
                             // axis ([`atomic_vertical_margins`]).
-                            let y =
-                                positioned_box.y + atomic_vertical_margins(&child.computed_style).0;
+                            let x = positioned_box.x + dx;
+                            let y = positioned_box.y
+                                + atomic_vertical_margins(&child.computed_style).0
+                                + dy;
                             // A move is a move, whoever makes it: push the box
                             // paint-dirty like any other layout change, so the
                             // region clears where it was painted and draws where
@@ -4933,8 +5033,8 @@ impl RinchDocument {
                             // consumes it. Review of #880, probe N: unpushed, the
                             // chip's absolute kid was neither drawn at its new
                             // spot nor cleared from its old one.
-                            let moved = child.layout.x != positioned_box.x || child.layout.y != y;
-                            child.layout.x = positioned_box.x;
+                            let moved = child.layout.x != x || child.layout.y != y;
+                            child.layout.x = x;
                             child.layout.y = y;
                             if moved {
                                 self.tree.paint_dirty_nodes.push(child_id);
@@ -10292,6 +10392,7 @@ impl RinchDocument {
         let mut background_spans = Vec::new();
         let mut decoration_spans = Vec::new();
         let mut vertical_align_spans = Vec::new();
+        let mut relative_spans = Vec::new();
         let mut flat_pos = 0usize;
 
         // Walk children into an `IfcText`, which collapses white space across
@@ -10314,6 +10415,7 @@ impl RinchDocument {
             &mut background_spans,
             &mut decoration_spans,
             &mut vertical_align_spans,
+            &mut relative_spans,
             &mut flat_pos,
             scale,
             font_cx,
@@ -10351,6 +10453,10 @@ impl RinchDocument {
         for v in &mut vertical_align_spans {
             v.start = ifc_text.remap(v.start);
             v.end = ifc_text.remap(v.end);
+        }
+        for r in &mut relative_spans {
+            r.start = ifc_text.remap(r.start);
+            r.end = ifc_text.remap(r.end);
         }
         let flat_len = ifc_text.final_len();
         let mut out_of_flow = ifc_text.out_of_flow_marks();
@@ -10564,6 +10670,7 @@ impl RinchDocument {
                 background_spans,
                 decoration_spans,
                 vertical_align_spans,
+                relative_spans,
                 max_width: max_width.unwrap_or(f32::INFINITY),
                 align_width: align_width.map_or(f32::INFINITY, |a| a.width),
                 preserves_spaces,
@@ -11243,7 +11350,22 @@ impl RinchDocument {
         background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
         decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
         vertical_align_spans: &mut Vec<crate::node::InlineVerticalAlignSpan>,
+        relative_spans: &mut Vec<crate::node::InlineRelativeSpan>,
     ) {
+        // #1425/#2346: a relatively positioned inline element moves its text
+        // and its atomic inlines, even when it holds no text of its own.
+        // Recorded with no offset: the offset is resolved against the
+        // containing block once the root's box is known
+        // (`resolve_relative_spans`), and a span left at zero is dropped then.
+        if owner.computed_style.position == crate::computed_style::PositionValue::Relative {
+            relative_spans.push(crate::node::InlineRelativeSpan {
+                owner: owner.id,
+                start,
+                end: end.max(start),
+                dx: 0.0,
+                dy: 0.0,
+            });
+        }
         if end <= start {
             // An element with no text still has its edge boxes (#1426), and
             // draws its background and border over them.
@@ -11332,6 +11454,7 @@ impl RinchDocument {
         background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
         decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
         vertical_align_spans: &mut Vec<crate::node::InlineVerticalAlignSpan>,
+        relative_spans: &mut Vec<crate::node::InlineRelativeSpan>,
         flat_pos: &mut usize,
         scale: f32,
         font_cx: &mut parley::FontContext,
@@ -11405,6 +11528,7 @@ impl RinchDocument {
                             background_spans,
                             decoration_spans,
                             vertical_align_spans,
+                            relative_spans,
                         );
                     }
                 }
@@ -11607,6 +11731,7 @@ impl RinchDocument {
                         background_spans,
                         decoration_spans,
                         vertical_align_spans,
+                        relative_spans,
                         flat_pos,
                         scale,
                         font_cx,
@@ -11641,7 +11766,10 @@ impl RinchDocument {
                     // element with edge boxes still draws its background and
                     // border over them (#1426).
                     let has_edges = edge_start > 0.0 || edge_end > 0.0;
-                    if has_bg || has_valign || has_inline_border(child_computed) {
+                    // #1425/#2346: a relative element moves what it holds.
+                    let is_relative =
+                        child_computed.position == crate::computed_style::PositionValue::Relative;
+                    if has_bg || has_valign || is_relative || has_inline_border(child_computed) {
                         Self::push_inline_spans(
                             nodes,
                             child,
@@ -11651,6 +11779,7 @@ impl RinchDocument {
                             background_spans,
                             decoration_spans,
                             vertical_align_spans,
+                            relative_spans,
                         );
                     }
                 }
@@ -11755,6 +11884,7 @@ impl RinchDocument {
                         background_spans,
                         decoration_spans,
                         vertical_align_spans,
+                        relative_spans,
                         flat_pos,
                         scale,
                         font_cx,
@@ -11860,6 +11990,7 @@ impl RinchDocument {
                     background_spans,
                     decoration_spans,
                     vertical_align_spans,
+                    relative_spans,
                 );
             }
         }

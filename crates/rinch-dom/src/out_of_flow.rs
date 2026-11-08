@@ -235,10 +235,8 @@
 //! - A **split** inline span — one holding a block-level child (#513), whose
 //!   fragments lie in several anonymous boxes — is not measured: a box inside
 //!   it keeps Taffy's answer, the block container (issue #1424).
-//! - A relative span's own `left`/`top` moves neither its text nor a box
-//!   resolved against it (issue #1425): the containing block is the span as
-//!   rinch draws it. So is a raised one (`<sup>`, any positive
-//!   `vertical-align`): its fragment follows its glyphs, which rinch draws
+//! - A raised span (`<sup>`, any positive `vertical-align`) is the
+//!   containing block as rinch draws it: its fragment follows its glyphs, which rinch draws
 //!   higher than Chrome because the line does not grow for them (issue
 //!   #1357). A span in a larger font with no text of its own sits 5px high
 //!   for the same kind of reason: it gives rinch's line no strut (issue
@@ -1025,15 +1023,19 @@ fn measure_span_fragments(
             continue;
         };
         let (union_left, union_right) = extent.unwrap_or((first.1, last.1));
+        // Moved by its own `position: relative` offset and those of the
+        // relative inline elements around it (#1425): measured in the lines,
+        // which place it where it would be without them.
+        let (dx, dy) = inline.element_relative_offset(span_id, |id| tree.get(id));
         out.insert(
             span_id,
             Some(SpanFragments {
-                left: first.1,
-                top: base_first + shift - ascent.round(),
-                right: last.1,
-                bottom: base_last + shift + descent.round(),
-                union_left,
-                union_right,
+                left: first.1 + dx,
+                top: base_first + shift - ascent.round() + dy,
+                right: last.1 + dx,
+                bottom: base_last + shift + descent.round() + dy,
+                union_left: union_left + dx,
+                union_right: union_right + dx,
             }),
         );
     }

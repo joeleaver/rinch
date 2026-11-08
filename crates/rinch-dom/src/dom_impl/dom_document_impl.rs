@@ -1601,13 +1601,17 @@ impl DomDocument for RinchDocument {
             (None, None) => return Vec::new(),
         };
         let (ox, oy) = self.text_layout_origin(node_id);
-        let rects = crate::text_query::selection_rects_for_layout(layout, byte_a, byte_b);
-        self.cut_generated(node_id, byte_a, byte_b, rects, |s, e| {
-            crate::text_query::selection_rects_for_layout(layout, s, e)
-        })
-        .into_iter()
-        .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
-        .collect()
+        // An IFC root's pieces are where its text is drawn: moved by a
+        // relative inline element (#1425).
+        let rects_of = |s: usize, e: usize| match &node.text_layout {
+            Some(inline) => crate::text_query::selection_rects_for_inline(inline, s, e),
+            None => crate::text_query::selection_rects_for_layout(layout, s, e),
+        };
+        let rects = rects_of(byte_a, byte_b);
+        self.cut_generated(node_id, byte_a, byte_b, rects, rects_of)
+            .into_iter()
+            .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
+            .collect()
     }
 
     fn query_selection_rects_with_boxes(

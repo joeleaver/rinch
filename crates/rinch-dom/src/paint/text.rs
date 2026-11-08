@@ -389,7 +389,9 @@ pub(super) struct InlineBoxFragment<'a> {
 /// the end ones on its last (CSS `box-decoration-break: slice`) — grown
 /// vertically by its padding and border, and moved by the `vertical-align`
 /// shift its text is drawn with ([`crate::node::InlineLayout::element_shift`],
-/// #1817): a `<sup>`'s background is around the raised text.
+/// #1817): a `<sup>`'s background is around the raised text — and by the
+/// offset of the relative inline elements it is or is in
+/// ([`crate::node::InlineLayout::element_relative_offset`], #1425).
 ///
 /// The layout is built in CSS px, so everything here is multiplied by
 /// `scale`, as [`render_text`] scales the glyphs drawn over it (#1762).
@@ -460,6 +462,10 @@ pub(super) fn inline_background_rects<'a>(
             style.map_or((0.0, 0.0), |cs| (px(cs.margin_left), px(cs.margin_right)));
         let [bt, _, bb, _] = style.map_or([0.0; 4], inline_border_widths);
         let shift = inline_layout.element_shift(bg_span.owner, &get) as f64;
+        // And the offset of the relative inline elements it is or is in
+        // (#1425): its box moves with its text.
+        let (mdx, mdy) = inline_layout.element_relative_offset(bg_span.owner, &get);
+        let (mdx, shift) = (mdx as f64, shift + mdy as f64);
 
         let on = lines_of_span(&ranges, bg_span.start, bg_span.end, true);
         note_span_line_visits(on.len());
@@ -531,9 +537,9 @@ pub(super) fn inline_background_rects<'a>(
             // The border box: the content area grown by the padding and the
             // border (those of the sides it closes are in its edge boxes).
             let rect = Rect::new(
-                left * scale,
+                (left + mdx) * scale,
                 (baseline - ascent - pt - bt + shift) * scale,
-                right.max(left) * scale,
+                (right.max(left) + mdx) * scale,
                 (baseline + descent + pb + bb + shift) * scale,
             );
             f(InlineBoxFragment {
@@ -611,10 +617,13 @@ fn paint_wavy_decorations(
             }
             let (mid, amp) = wavy_wave(&line, scale);
             let half = (PERIOD * scale) / 2.0;
+            // Moved with its text by a relative inline element (#1425).
+            let (mdx, mdy) = inline_layout.relative_offset_at(start);
+            let mid = mid + (mdy * sf) as f64;
 
             let mut path = BezPath::new();
             for (x0, x1) in segments {
-                let (x0, x1) = ((x0 * sf) as f64, (x1 * sf) as f64);
+                let (x0, x1) = (((x0 + mdx) * sf) as f64, ((x1 + mdx) * sf) as f64);
                 path.move_to((x0, mid + amp));
                 let mut x = x0;
                 let mut up = true;
@@ -719,7 +728,8 @@ fn line_reach(m: &parley::layout::LineMetrics) -> (f64, f64) {
 
 /// What an IFC root draws past its **unshifted** line boxes, in device px
 /// relative to its content origin, or `None` when it draws nothing there:
-/// text moved off its line by `vertical-align` (#724), the inline
+/// text moved off its line by `vertical-align` (#724) or by a relative
+/// inline element's offset (#1425), the inline
 /// elements' backgrounds and borders ([`inline_background_rects`], which
 /// reach past the line by their padding and border and move with their
 /// text), and wavy underlines ([`paint_wavy_decorations`]).
@@ -734,7 +744,7 @@ pub(crate) fn inline_ink_past_lines<'a>(
     inline_layout: &crate::node::InlineLayout,
     scale: f64,
 ) -> Option<Rect> {
-    if inline_layout.vertical_align_spans.is_empty()
+    if !inline_layout.shifts_glyphs()
         && inline_layout.background_spans.is_empty()
         && inline_layout.decoration_spans.is_empty()
     {
@@ -743,13 +753,12 @@ pub(crate) fn inline_ink_past_lines<'a>(
     let layout = &inline_layout.layout;
     let mut ink: Option<Rect> = None;
     let mut add = |r: Rect| ink = Some(ink.map_or(r, |i| i.union(r)));
-    let ranges: Vec<std::ops::Range<usize>> = if inline_layout.vertical_align_spans.is_empty()
-        && inline_layout.decoration_spans.is_empty()
-    {
-        Vec::new()
-    } else {
-        layout.lines().map(|l| l.text_range()).collect()
-    };
+    let ranges: Vec<std::ops::Range<usize>> =
+        if !inline_layout.shifts_glyphs() && inline_layout.decoration_spans.is_empty() {
+            Vec::new()
+        } else {
+            layout.lines().map(|l| l.text_range()).collect()
+        };
 
     for span in &inline_layout.vertical_align_spans {
         let shift = span.shift_px as f64;
@@ -772,6 +781,34 @@ pub(crate) fn inline_ink_past_lines<'a>(
         }
     }
 
+    // A relative inline element's text (#1425): each of its lines' boxes
+    // moved by its offset, as a shifted line is above. Nested spans compose,
+    // so the offset is the one its first byte is drawn at.
+    for span in &inline_layout.relative_spans {
+        if span.end <= span.start {
+            continue;
+        }
+        let (dx, dy) = inline_layout.relative_offset_at(span.start);
+        let (dx, dy) = (
+            dx as f64,
+            dy as f64 + inline_layout.vertical_align_shift_at(span.start) as f64,
+        );
+        let on = lines_of_span(&ranges, span.start, span.end, false);
+        note_span_line_visits(on.len());
+        for line in on.filter_map(|i| layout.get(i)) {
+            let m = line.metrics();
+            let top = m.block_min_coord.min(m.content_block_min_coord) as f64;
+            let bottom = m.block_max_coord.max(m.content_block_max_coord) as f64;
+            let (x0, x1) = line_reach(m);
+            add(Rect::new(
+                (x0 + dx) * scale,
+                (top + dy) * scale,
+                (x1 + dx) * scale,
+                (bottom + dy) * scale,
+            ));
+        }
+    }
+
     if !inline_layout.background_spans.is_empty() {
         inline_background_rects(&get, inline_layout, scale, |frag| add(frag.rect));
     }
@@ -785,12 +822,16 @@ pub(crate) fn inline_ink_past_lines<'a>(
             let m = line.metrics();
             let (x0, x1) = line_reach(m);
             let (mid, amp) = wavy_wave(&line, scale);
+            // Where `paint_wavy_decorations` moves it (#1425).
+            let (mdx, mdy) =
+                inline_layout.relative_offset_at(span.start.max(line.text_range().start));
+            let (mdx, mid) = (mdx as f64 * scale, mid + mdy as f64 * scale);
             let reach = amp + THICKNESS * scale / 2.0;
             let half = THICKNESS * scale / 2.0;
             add(Rect::new(
-                x0 * scale - half,
+                x0 * scale - half + mdx,
                 mid - reach,
-                x1 * scale + half,
+                x1 * scale + half + mdx,
                 mid + reach,
             ));
         }
@@ -2206,17 +2247,25 @@ pub(super) fn draw_text(
     let sf = scale as f32;
     let live = live.filter(|_| glyph_brush.is_none());
     text.for_each_line(mask, |line| {
-        // Nothing declares a non-`baseline` `vertical-align` in the
-        // overwhelming majority of documents: no lookup then.
-        let valign = valign.filter(|v| !v.vertical_align_spans.is_empty());
+        // Nothing declares a non-`baseline` `vertical-align` or moves a
+        // relative inline element in the overwhelming majority of documents:
+        // no lookup then.
+        let valign = valign.filter(|v| v.shifts_glyphs());
         let weight_off = text.weight_synthesis_off.as_ref();
         let bytes = (mask.is_some() || valign.is_some() || live.is_some() || weight_off.is_some())
             .then(|| line.glyph_bytes());
         for (glyph_run, run_glyphs, range) in line.glyph_runs_at() {
             let bytes = bytes.map_or(&[][..], |b| &b[range]);
             let recolours = live.and_then(|l| per_glyph(bytes, |b| l.at(b), Recolour::KEEP));
-            let shifts =
-                valign.and_then(|v| per_glyph(bytes, |b| v.vertical_align_shift_at(b), 0.0));
+            let shifts = valign
+                .filter(|v| !v.vertical_align_spans.is_empty())
+                .and_then(|v| per_glyph(bytes, |b| v.vertical_align_shift_at(b), 0.0));
+            // A relative inline element's offset (#1425, #2346), glyph by
+            // glyph: offsets compose, and a span's boundary need not split a
+            // glyph run, so a change of offset starts a new stretch below.
+            let moves = valign
+                .filter(|v| !v.relative_spans.is_empty())
+                .and_then(|v| per_glyph(bytes, |b| v.relative_offset_at(b), (0.0, 0.0)));
             let flags = mask.and_then(|m| per_glyph(bytes, |b| m.hidden_at(b), false));
             // A glyph run past an ellipsis cut has no glyphs collected.
             if run_glyphs.is_empty() || flags.as_ref().is_some_and(|f| f.iter().all(|&h| h)) {
@@ -2283,58 +2332,62 @@ pub(super) fn draw_text(
             // Draw one stretch of the run: its glyphs, then its share of the
             // decorations. `recolour` is the stretch's; a decoration takes
             // the new colour only where its own was the text's (the
-            // underline, then the line-through).
-            let mut draw = |glyphs: &[PaintGlyph],
-                            segments: &[(f32, f32)],
-                            (recolour, unbold): (Recolour, bool)| {
-                let recoloured = recolour.color.map(Brush::Solid);
-                painter.draw_glyphs(
-                    font,
-                    font_size,
-                    transform,
-                    if unbold {
-                        GlyphSynthesis {
-                            embolden: 0.0,
-                            ..synthesis
+            // underline, then the line-through). `(mx, my)` is the stretch's
+            // relative offset, which its glyphs already carry and its
+            // decorations take here.
+            let mut draw =
+                |glyphs: &[PaintGlyph],
+                 segments: &[(f32, f32)],
+                 (recolour, unbold, (mx, my)): (Recolour, bool, (f32, f32))| {
+                    let recoloured = recolour.color.map(Brush::Solid);
+                    painter.draw_glyphs(
+                        font,
+                        font_size,
+                        transform,
+                        if unbold {
+                            GlyphSynthesis {
+                                embolden: 0.0,
+                                ..synthesis
+                            }
+                        } else {
+                            synthesis
+                        },
+                        recoloured.as_ref().unwrap_or(brush),
+                        true,
+                        bytemuck::cast_slice(run.normalized_coords()),
+                        glyphs,
+                    );
+                    let follows = [recolour.underline, recolour.strikethrough];
+                    for ((offset, size, own_brush), follows) in decorations
+                        .iter()
+                        .zip(follows)
+                        .filter_map(|(d, f)| d.map(|d| (d, f)))
+                    {
+                        let dec_brush = decoration_brush.unwrap_or(match &recoloured {
+                            Some(now) if follows => now,
+                            _ => own_brush,
+                        });
+                        let line_y = (gy + decoration_shift + my * sf - offset * sf) as f64;
+                        let stroke = Stroke::new((size * sf).max(1.0) as f64);
+                        for &(x0, x1) in segments {
+                            let (x0, x1) = ((x0 + mx * sf) as f64, (x1 + mx * sf) as f64);
+                            let line = peniko::kurbo::Line::new((x0, line_y), (x1, line_y));
+                            painter.stroke(&stroke, transform, dec_brush, &line.into());
                         }
-                    } else {
-                        synthesis
-                    },
-                    recoloured.as_ref().unwrap_or(brush),
-                    true,
-                    bytemuck::cast_slice(run.normalized_coords()),
-                    glyphs,
-                );
-                let follows = [recolour.underline, recolour.strikethrough];
-                for ((offset, size, own_brush), follows) in decorations
-                    .iter()
-                    .zip(follows)
-                    .filter_map(|(d, f)| d.map(|d| (d, f)))
-                {
-                    let dec_brush = decoration_brush.unwrap_or(match &recoloured {
-                        Some(now) if follows => now,
-                        _ => own_brush,
-                    });
-                    let line_y = (gy + decoration_shift - offset * sf) as f64;
-                    let stroke = Stroke::new((size * sf).max(1.0) as f64);
-                    for &(x0, x1) in segments {
-                        let line =
-                            peniko::kurbo::Line::new((x0 as f64, line_y), (x1 as f64, line_y));
-                        painter.stroke(&stroke, transform, dec_brush, &line.into());
                     }
-                }
-            };
+                };
 
             // The x extents of the shown stretches of this run, for the
             // decorations: the whole run when nothing in it is hidden.
             let mut segments: Vec<(f32, f32)> = Vec::new();
             let mut glyphs: Vec<PaintGlyph> = Vec::new();
-            let mut stretch = (Recolour::KEEP, false);
+            let mut stretch = (Recolour::KEEP, false, (0.0, 0.0));
             for (i, glyph) in run_glyphs.iter().enumerate() {
                 let start_x = gx;
                 let shift = shifts.as_ref().map(|s| s[i]).unwrap_or(0.0) * sf;
-                let px = gx + glyph.x * sf;
-                let py = gy + glyph.y * sf + shift;
+                let moved = moves.as_ref().map_or((0.0, 0.0), |m| m[i]);
+                let px = gx + glyph.x * sf + moved.0 * sf;
+                let py = gy + glyph.y * sf + shift + moved.1 * sf;
                 gx += glyph.advance * sf;
                 if flags
                     .as_ref()
@@ -2345,6 +2398,7 @@ pub(super) fn draw_text(
                 let here = (
                     recolours.as_ref().map_or(Recolour::KEEP, |r| r[i]),
                     unbolds.as_ref().is_some_and(|u| u[i]),
+                    moved,
                 );
                 if here != stretch {
                     if !glyphs.is_empty() {

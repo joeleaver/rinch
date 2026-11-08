@@ -679,6 +679,40 @@ pub struct InlineVerticalAlignSpan {
     pub shift_px: f32,
 }
 
+/// A `position: relative` **inline** element within an IFC (#1425, #2346).
+///
+/// Such an element has no box of its own: its text is part of the root's
+/// lines and its atomic inlines are placed by them. CSS 2.1 §9.4.3 moves
+/// everything it holds by its offset after the line is laid out, so like
+/// [`InlineVerticalAlignSpan`] this is a post-layout move, recorded as a byte
+/// range over the flat IFC text and applied by the painter, the text-position
+/// queries and the selection rectangles; its atomic inlines are moved where
+/// their boxes are written (`write_inline_positions`), so layout, hit testing
+/// and the painted box follow them; a box it is the containing block of hangs
+/// from its moved fragments (`out_of_flow`).
+///
+/// Unlike `vertical-align`, offsets **compose**: a relative span inside
+/// another moves by both ([`InlineLayout::relative_offset_at`] sums every span
+/// covering a byte).
+#[derive(Debug, Clone, Copy)]
+pub struct InlineRelativeSpan {
+    /// The relatively positioned inline element.
+    pub owner: RawNodeId,
+    /// Byte range start in the IFC `text_content`.
+    pub start: usize,
+    /// Byte range end (exclusive) in the IFC `text_content`; equal to `start`
+    /// for an element with no text (one holding only atomic inlines), which
+    /// still moves them.
+    pub end: usize,
+    /// The resolved horizontal offset in layout px, positive to the right:
+    /// `left`, else the negated `right` (CSS 2.1 §9.4.3; `left` wins over an
+    /// over-constrained `right` in a left-to-right block).
+    pub dx: f32,
+    /// The resolved vertical offset in layout px, positive down: `top`, else
+    /// the negated `bottom`.
+    pub dy: f32,
+}
+
 /// Cached Parley inline layout for an IFC (Inline Formatting Context) root.
 ///
 /// Stored on the IFC root element. Rebuilt when any inline child mutates.
@@ -702,6 +736,11 @@ pub struct InlineLayout {
     pub decoration_spans: Vec<InlineDecorationSpan>,
     /// `vertical-align` spans (#724) — see [`InlineVerticalAlignSpan`].
     pub vertical_align_spans: Vec<InlineVerticalAlignSpan>,
+    /// `position: relative` inline elements (#1425, #2346) — see
+    /// [`InlineRelativeSpan`]. Empty unless some inline element in the IFC is
+    /// relatively positioned with a non-zero offset, which every consumer
+    /// checks first.
+    pub relative_spans: Vec<InlineRelativeSpan>,
     /// The max_width used to build this layout (for cache invalidation).
     pub max_width: f32,
     /// The content width a paragraph that does not wrap was aligned within
@@ -919,6 +958,62 @@ impl InlineLayout {
             cur = get(id).and_then(|n| n.parent);
         }
         0.0
+    }
+
+    /// The `position: relative` offset (#1425, #2346) an inline element's own
+    /// box is drawn at — its background, border and edge boxes, and the
+    /// atomic inlines it holds: the sum of the offsets of `owner` and every
+    /// relatively positioned inline element around it in this IFC. `(0, 0)`
+    /// when nothing is relatively positioned. `get` looks a node up.
+    pub(crate) fn element_relative_offset<'a>(
+        &self,
+        owner: RawNodeId,
+        get: impl Fn(RawNodeId) -> Option<&'a Node>,
+    ) -> (f32, f32) {
+        let mut sum = (0.0, 0.0);
+        if self.relative_spans.is_empty() {
+            return sum;
+        }
+        let mut cur = Some(owner);
+        // Inline nesting is shallow; the bound only guards a cycle.
+        for _ in 0..64 {
+            let Some(id) = cur else { break };
+            if let Some(s) = self.relative_spans.iter().find(|s| s.owner == id) {
+                sum.0 += s.dx;
+                sum.1 += s.dy;
+            }
+            cur = get(id).and_then(|n| n.parent);
+        }
+        sum
+    }
+
+    /// The `position: relative` offset (#1425, #2346) of the glyph at layout
+    /// byte `byte`: the sum of every relative span covering it, so nested
+    /// relative spans compose. `(0, 0)` when none does.
+    pub(crate) fn relative_offset_at(&self, byte: usize) -> (f32, f32) {
+        let mut sum = (0.0, 0.0);
+        for s in &self.relative_spans {
+            if s.start <= byte && byte < s.end {
+                sum.0 += s.dx;
+                sum.1 += s.dy;
+            }
+        }
+        sum
+    }
+
+    /// Where the glyph at layout byte `byte` is drawn relative to where its
+    /// line put it: its relative offset (#1425) plus its `vertical-align`
+    /// shift (#724) on the block axis. The one lookup paint and every text
+    /// query share.
+    pub(crate) fn glyph_offset_at(&self, byte: usize) -> (f32, f32) {
+        let (dx, dy) = self.relative_offset_at(byte);
+        (dx, dy + self.vertical_align_shift_at(byte))
+    }
+
+    /// Whether any glyph of this IFC is drawn off its line: a
+    /// `vertical-align` span (#724) or a relative inline element (#1425).
+    pub(crate) fn shifts_glyphs(&self) -> bool {
+        !self.vertical_align_spans.is_empty() || !self.relative_spans.is_empty()
     }
 
     /// The `vertical-align` shift (#724) at layout byte `byte`, or `0.0` when

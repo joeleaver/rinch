@@ -1,0 +1,624 @@
+//! A `position: relative` **inline** element moves everything it holds by its
+//! offset (CSS 2.1 §9.4.3): its text, its background, the atomic inlines in
+//! its lines (an `inline-block`, an `inline-flex`, an image), the relative
+//! spans nested in it, and an absolute box it is the containing block of
+//! (issues #2346 and #1425).
+//!
+//! Every absolute number is Chrome 156's (`--headless`, standards mode,
+//! `* { box-sizing: border-box }`, 800x600), from `getBoundingClientRect`
+//! **relative to the block container's border box**, with this crate's
+//! bundled Inter loaded through `@font-face` under the name the fixtures
+//! register it with. The scaffold is `abs_inline_containing_block_tests.rs`'s:
+//!
+//! ```html
+//! <div C="position: relative; width: 400px; font: 16px/20px ProbeFace;
+//!         margin: 13px 0 0 17px; padding: 7px 0 0 11px">…</div>
+//! ```
+//!
+//! so the content box starts at `(11, 7)`, and every offset is off the
+//! fixed point (none is 0, and `left` differs from `top`). The vertical
+//! numbers are declarations (Inter at 16px is 20px from ascent to descent,
+//! the declared line height); a horizontal number after `lead ` is the
+//! advance of `lead ` in Inter (36.641). Each case is also checked against
+//! a twin without the offset, so the move is exactly the offset whatever the
+//! line is.
+
+use rinch_core::dom::DomDocument;
+use rinch_dom::RinchDocument;
+use rinch_dom::testing::query_selector;
+
+const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+const VW: f32 = 800.0;
+const VH: f32 = 600.0;
+const C: &str = "position: relative; width: 400px; font: 16px/20px ProbeFace; \
+                 margin: 13px 0 0 17px; padding: 7px 0 0 11px;";
+const R: &str = "position: relative";
+const IB: &str = "display: inline-block; width: 30px; height: 20px; background: rgb(255, 0, 255)";
+
+fn document() -> RinchDocument {
+    use parley::fontique::{Blob, FontInfoOverride};
+    let mut doc = RinchDocument::new();
+    doc.load_css("* { box-sizing: border-box; }");
+    let registered = doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(FACE)),
+        Some(FontInfoOverride {
+            family_name: Some("ProbeFace"),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(registered.len(), 1, "one file, one family");
+    doc
+}
+
+struct Case {
+    doc: RinchDocument,
+    c: u64,
+}
+
+fn one(doc: &RinchDocument, sel: &str) -> u64 {
+    let ids = query_selector(&doc.tree, sel);
+    assert_eq!(ids.len(), 1, "exactly one {sel}");
+    ids[0]
+}
+
+impl Case {
+    fn with(c_extra: &str, inner: &str) -> Self {
+        let mut doc = document();
+        let body = doc.body();
+        let wrap = doc.create_element("div");
+        doc.set_inner_html(
+            wrap,
+            &format!(r#"<div data-m="c" style="{C}{c_extra}">{inner}</div>"#),
+        );
+        doc.append_child(body, wrap);
+        doc.resolve_layout(VW, VH);
+        let c = one(&doc, "[data-m=c]");
+        Case { doc, c }
+    }
+
+    fn new(inner: &str) -> Self {
+        Self::with("", inner)
+    }
+
+    fn id(&self, m: &str) -> u64 {
+        one(&self.doc, &format!("[data-m={m}]"))
+    }
+
+    /// `m`'s box relative to the container's border box, as laid out.
+    fn rect(&self, m: &str) -> [f32; 4] {
+        let id = self.id(m);
+        let (x, y) = rinch_dom::paint::compute_absolute_position(&self.doc.tree, id, 1.0);
+        let (cx, cy) = rinch_dom::paint::compute_absolute_position(&self.doc.tree, self.c, 1.0);
+        let l = self.doc.tree.get(id).unwrap().layout;
+        [(x - cx) as f32, (y - cy) as f32, l.width, l.height]
+    }
+
+    /// `m`'s **painted** border box (what `getBoundingClientRect` answers on
+    /// desktop) relative to the container's.
+    fn painted(&self, m: &str) -> [f32; 4] {
+        let r = rinch_dom::paint::painted_border_box(&self.doc.tree, self.id(m), 1.0);
+        let c = rinch_dom::paint::painted_border_box(&self.doc.tree, self.c, 1.0);
+        [
+            (r.x0 - c.x0) as f32,
+            (r.y0 - c.y0) as f32,
+            r.width() as f32,
+            r.height() as f32,
+        ]
+    }
+
+    /// The glyph at flat byte `byte` of the container's lines, relative to
+    /// its content origin.
+    fn glyph(&self, byte: usize) -> [f32; 2] {
+        let b = rinch_dom::text_query::glyph_bounds_for_offset(&self.doc, self.c, byte)
+            .expect("a glyph there");
+        [b.x, b.y]
+    }
+
+    fn caret(&self, byte: usize) -> [f32; 2] {
+        let (x, y) = rinch_dom::text_query::caret_position_for_offset(&self.doc, self.c, byte)
+            .expect("a caret there");
+        [x, y]
+    }
+}
+
+fn ib(extra: &str) -> String {
+    format!(r#"<span data-m="ib" style="{IB}; {extra}"></span>"#)
+}
+
+#[track_caller]
+fn assert_rect(got: [f32; 4], want: [f32; 4], what: &str) {
+    for (g, w) in got.iter().zip(want) {
+        assert!(
+            (g - w).abs() < 0.01,
+            "{what}: got {got:?}, Chrome 156 {want:?}"
+        );
+    }
+}
+
+/// `inner` with `{OFF}` replaced by `offset`, against the same markup with
+/// no offset: the move of `m`'s box, laid out and painted.
+#[track_caller]
+fn moved_by(c_extra: &str, inner: &str, offset: &str, m: &str) -> [f32; 2] {
+    let moved = Case::with(c_extra, &inner.replace("{OFF}", offset));
+    let twin = Case::with(c_extra, &inner.replace("{OFF}", ""));
+    let (a, b) = (moved.rect(m), twin.rect(m));
+    assert_eq!(&a[2..], &b[2..], "the offset moves the box, never sizes it");
+    let (pa, pb) = (moved.painted(m), twin.painted(m));
+    let laid = [a[0] - b[0], a[1] - b[1]];
+    assert_eq!(
+        laid,
+        [pa[0] - pb[0], pa[1] - pb[1]],
+        "the painted box moves as the laid-out one does"
+    );
+    laid
+}
+
+// ── The issue ───────────────────────────────────────────────────────────────
+
+/// #2346's markup: the box is 5px down, at `(11, 12)` (Chrome 156; it was
+/// at `(11, 7)`, where it would be without the offset).
+#[test]
+fn the_issues_inline_block_is_moved_down_by_the_spans_top() {
+    let c = Case::new(&format!(r#"<span style="{R}; top: 5px">{}</span>"#, ib("")));
+    assert_rect(c.rect("ib"), [11.0, 12.0, 30.0, 20.0], "laid out");
+    assert_rect(c.painted("ib"), [11.0, 12.0, 30.0, 20.0], "painted");
+}
+
+/// #2346's second case, in a middle-aligned 100px cell: the cell's
+/// alignment plus the span's 5. With the issue's default font Chrome 156
+/// puts the box 46 down (41 + 5); with Inter at `16px/20px` its line is 24
+/// tall (the box on the baseline, the strut's descent below it), so 43:
+/// `(100 - 24) / 2 + 5`. Before the fix rinch gave 38, where the box would
+/// be without the offset.
+#[test]
+fn in_a_middle_aligned_cell_the_offset_adds_to_the_alignment() {
+    let mut doc = document();
+    let body = doc.body();
+    let wrap = doc.create_element("div");
+    doc.set_inner_html(
+        wrap,
+        &format!(
+            r#"<table style="border-collapse: collapse; font: 16px/20px ProbeFace"><tr>
+               <td data-m="td" style="height: 100px; vertical-align: middle; padding: 0">
+               <span style="{R}; top: 5px">{}</span></td></tr></table>"#,
+            ib("")
+        ),
+    );
+    doc.append_child(body, wrap);
+    doc.resolve_layout(VW, VH);
+    let td = one(&doc, "[data-m=td]");
+    let b = one(&doc, "[data-m=ib]");
+    let (_, ty) = rinch_dom::paint::compute_absolute_position(&doc.tree, td, 1.0);
+    let (_, by) = rinch_dom::paint::compute_absolute_position(&doc.tree, b, 1.0);
+    assert_eq!((by - ty) as f32, 43.0, "Chrome 156: 38 + 5");
+}
+
+// ── Each inset ──────────────────────────────────────────────────────────────
+
+const LEAD: &str = r#"lead <span style="position: relative; {OFF}">IB</span>"#;
+
+fn lead() -> String {
+    LEAD.replace("IB", &ib(""))
+}
+
+#[test]
+fn top_moves_the_box_down() {
+    assert_eq!(moved_by("", &lead(), "top: 5px", "ib"), [0.0, 5.0]);
+    let c = Case::new(&lead().replace("{OFF}", "top: 5px"));
+    assert_rect(c.rect("ib"), [47.641, 12.0, 30.0, 20.0], "Chrome 156");
+}
+
+#[test]
+fn left_moves_the_box_right() {
+    assert_eq!(moved_by("", &lead(), "left: 7px", "ib"), [7.0, 0.0]);
+    let c = Case::new(&lead().replace("{OFF}", "left: 7px"));
+    assert_rect(c.rect("ib"), [54.641, 7.0, 30.0, 20.0], "Chrome 156");
+}
+
+#[test]
+fn bottom_moves_the_box_up() {
+    assert_eq!(moved_by("", &lead(), "bottom: 5px", "ib"), [0.0, -5.0]);
+}
+
+#[test]
+fn right_moves_the_box_left() {
+    assert_eq!(moved_by("", &lead(), "right: 7px", "ib"), [-7.0, 0.0]);
+}
+
+/// Over-constrained: `top` wins over `bottom`, and `left` over `right` in a
+/// left-to-right block (CSS 2.1 §9.4.3).
+#[test]
+fn top_and_left_win_over_bottom_and_right() {
+    assert_eq!(
+        moved_by(
+            "",
+            &lead(),
+            "top: 5px; bottom: 9px; left: 3px; right: 11px",
+            "ib"
+        ),
+        [3.0, 5.0]
+    );
+}
+
+/// A percentage `left` is of the containing block's content width (389, the
+/// 400px border box less its 11px padding → 38.9, Chrome 156's
+/// `86.531 - 47.641`); a
+/// percentage `top` of its height only when that is a length — here it is
+/// `auto`, so `top: 10%` computes to `auto` and moves nothing (Chrome 156).
+#[test]
+fn a_percentage_left_is_of_the_blocks_width_and_top_needs_a_definite_height() {
+    let [dx, dy] = moved_by("", &lead(), "left: 10%; top: 10%", "ib");
+    assert!((dx - 38.9).abs() < 0.001, "got {dx}");
+    assert_eq!(dy, 0.0);
+}
+
+/// With `height: 100px` (content 93 tall under the 7px top padding) a
+/// percentage `top` is of it: `10%` is 9.3 (Chrome 156: 16.297 and, for
+/// `bottom: 10%`, -2.297, against 7).
+#[test]
+fn a_percentage_top_is_of_a_definite_height() {
+    let [dx, dy] = moved_by("height: 100px;", &lead(), "left: 10%; top: 10%", "ib");
+    assert!((dx - 38.9).abs() < 0.001, "got {dx}");
+    assert!((dy - 9.3).abs() < 0.001, "got {dy}");
+    let [dx, dy] = moved_by("height: 100px;", &lead(), "right: 10%; bottom: 10%", "ib");
+    assert!((dx + 38.9).abs() < 0.001, "got {dx}");
+    assert!((dy + 9.3).abs() < 0.001, "got {dy}");
+}
+
+/// A sticky span is not moved by its insets where nothing scrolls it past
+/// them: this one is below its `top: 5px` line, so it stays where it flows.
+#[test]
+fn a_sticky_span_out_of_reach_of_its_insets_moves_nothing() {
+    let sticky = r#"lead <span style="position: sticky; {OFF}">IB</span>"#.replace("IB", &ib(""));
+    assert_eq!(
+        moved_by("", &sticky, "top: 5px; left: 7px", "ib"),
+        [0.0, 0.0]
+    );
+}
+
+// ── Nesting and what moves ──────────────────────────────────────────────────
+
+/// Offsets compose: a relative span in a relative span moves by both.
+#[test]
+fn nested_relative_spans_add_up() {
+    let inner = format!(
+        r#"lead <span style="{R}; {{OFF}}">a<span style="{R}; top: 4px; left: 5px">b{}</span></span>"#,
+        ib("")
+    );
+    assert_eq!(
+        moved_by("", &inner, "top: 3px; left: 2px", "ib"),
+        [2.0, 3.0]
+    );
+    let c = Case::new(&inner.replace("{OFF}", "top: 3px; left: 2px"));
+    let twin = Case::new(
+        &inner
+            .replace("{OFF}", "")
+            .replace("top: 4px; left: 5px", ""),
+    );
+    let (a, b) = (c.rect("ib"), twin.rect("ib"));
+    assert_eq!(
+        [a[0] - b[0], a[1] - b[1]],
+        [7.0, 7.0],
+        "3 + 4 down, 2 + 5 right"
+    );
+    // And the text: `a` (byte 5) by the outer span's alone, `b` (byte 6) by
+    // both.
+    let (ga, gb) = (c.glyph(5), twin.glyph(5));
+    assert_eq!([ga[0] - gb[0], ga[1] - gb[1]], [2.0, 3.0], "`a`");
+    let (ga, gb) = (c.glyph(6), twin.glyph(6));
+    assert_eq!([ga[0] - gb[0], ga[1] - gb[1]], [7.0, 7.0], "`b`");
+}
+
+/// The box's own offset adds to the span's.
+#[test]
+fn an_inline_blocks_own_offset_adds_to_its_spans() {
+    let inner = format!(
+        r#"lead <span style="{R}; {{OFF}}">{}</span>"#,
+        ib("position: relative; top: 2px; left: 3px")
+    );
+    assert_eq!(
+        moved_by("", &inner, "top: 5px; left: 7px", "ib"),
+        [7.0, 5.0]
+    );
+}
+
+#[test]
+fn an_image_and_an_inline_flex_move_with_the_span() {
+    let img = r#"lead <span style="position: relative; {OFF}"><img data-m="ib" style="width: 30px; height: 20px"></span>"#;
+    assert_eq!(moved_by("", img, "top: 5px; left: 7px", "ib"), [7.0, 5.0]);
+    let flex = r#"lead <span style="position: relative; {OFF}"><span data-m="ib" style="display: inline-flex; width: 30px; height: 20px"></span></span>"#;
+    assert_eq!(moved_by("", flex, "top: 5px; left: 7px", "ib"), [7.0, 5.0]);
+}
+
+/// A span that wraps moves the box on its second line too.
+#[test]
+fn a_wrapped_span_moves_the_box_on_its_second_line() {
+    let inner = format!(
+        r#"lead <span style="{R}; {{OFF}}">alpha beta gamma {} delta</span>"#,
+        ib("")
+    );
+    let c = Case::with("width: 131px;", &inner.replace("{OFF}", ""));
+    assert!(c.rect("ib")[1] >= 7.0 + 20.0, "the box is on a later line");
+    assert_eq!(
+        moved_by("width: 131px;", &inner, "top: 5px; left: 7px", "ib"),
+        [7.0, 5.0]
+    );
+}
+
+/// The text moves too (#1425): its glyphs and the caret, where `get_glyph_bounds`
+/// and the editor read them. The text after the span does not.
+#[test]
+fn the_spans_text_and_caret_move_and_the_text_after_it_does_not() {
+    let inner = r#"lead <span style="position: relative; {OFF}">text</span> tail"#;
+    let moved = Case::new(&inner.replace("{OFF}", "top: 5px; left: 7px"));
+    let twin = Case::new(&inner.replace("{OFF}", ""));
+    // "lead " is bytes 0..5, "text" 5..9, " tail" after.
+    for byte in [5, 8] {
+        let (a, b) = (moved.glyph(byte), twin.glyph(byte));
+        assert_eq!([a[0] - b[0], a[1] - b[1]], [7.0, 5.0], "glyph at {byte}");
+        let (a, b) = (moved.caret(byte), twin.caret(byte));
+        assert_eq!([a[0] - b[0], a[1] - b[1]], [7.0, 5.0], "caret at {byte}");
+    }
+    for byte in [0, 11] {
+        assert_eq!(moved.glyph(byte), twin.glyph(byte), "glyph at {byte} stays");
+    }
+}
+
+/// The span's own `getBoundingClientRect()` (the union of its fragments,
+/// #1779) is where it is drawn: Chrome 156 answers `(54.641, 12)`,
+/// 28.328 x 20, the unmoved `(47.641, 7)` plus the offset.
+#[test]
+fn the_spans_bounding_rect_is_moved() {
+    let inner = r#"lead <span data-m="span" style="position: relative; {OFF}">text</span>"#;
+    let rect = |offset: &str| {
+        let mut c = Case::new(&inner.replace("{OFF}", offset));
+        let span = rinch_core::dom::NodeId(c.id("span"));
+        let cid = rinch_core::dom::NodeId(c.c);
+        let s = c.doc.bounding_rect(span).unwrap();
+        let o = c.doc.bounding_rect(cid).unwrap();
+        [s.x - o.x, s.y - o.y, s.width, s.height]
+    };
+    let (a, b) = (rect("top: 5px; left: 7px"), rect(""));
+    assert_eq!([a[0] - b[0], a[1] - b[1]], [7.0, 5.0]);
+    assert_eq!(&a[2..], &b[2..]);
+    assert_rect(a, [54.641, 12.0, 28.328, 20.0], "Chrome 156");
+}
+
+/// The selection highlight over the span's text is where the text is drawn.
+#[test]
+fn the_selection_highlight_moves_with_the_text() {
+    let inner = r#"lead <span style="position: relative; {OFF}">text</span> tail"#;
+    let moved = Case::new(&inner.replace("{OFF}", "top: 5px; left: 7px"));
+    let twin = Case::new(&inner.replace("{OFF}", ""));
+    let rects = |c: &Case| {
+        c.doc
+            .query_selection_rects(c.c, 5, 9)
+            .into_iter()
+            .map(|(x, y, w, h)| [x, y, w, h])
+            .collect::<Vec<_>>()
+    };
+    let (a, b) = (rects(&moved), rects(&twin));
+    assert_eq!(a.len(), 1);
+    assert_eq!(b.len(), 1);
+    assert_eq!(
+        [a[0][0] - b[0][0], a[0][1] - b[0][1], a[0][2], a[0][3]],
+        [7.0, 5.0, b[0][2], b[0][3]]
+    );
+    // Across the span's edges: the pieces outside it stay.
+    let (a, b) = (
+        moved.doc.query_selection_rects(moved.c, 2, 12),
+        twin.doc.query_selection_rects(twin.c, 2, 12),
+    );
+    assert_eq!(b.len(), 1, "one line, one piece");
+    assert_eq!(a.len(), 3, "before, in and after the span");
+    assert_eq!(
+        a[0].1, b[0].1,
+        "the piece before the span stays on its line"
+    );
+    assert_eq!(a[1].1, b[0].1 + 5.0, "the span's piece is 5px down");
+    assert_eq!(a[2].1, b[0].1, "the piece after it stays");
+}
+
+/// An absolute box whose containing block is the span hangs from its moved
+/// fragment: Chrome 153 and 156 put `left: 0; top: 0` at `(52.641, 10)`, the
+/// unmoved fragment's `(47.641, 7)` plus `(5, 3)` (#1425). rinch snaps such
+/// a box to the pixel grid (`abs_inline_containing_block_tests.rs`: the
+/// unmoved one is at 48), so 53. With `auto` insets it is at its static
+/// position, which moves with the span too: Chrome's `80.969`, after `text`.
+#[test]
+fn an_absolute_box_in_the_span_hangs_from_its_moved_fragment() {
+    let abs = |insets: &str| {
+        Case::new(&format!(
+            r#"lead <span style="{R}; left: 5px; top: 3px">text<span data-m="abs" style="position: absolute; {insets} width: 40px; height: 30px"></span>tail</span>"#
+        ))
+        .rect("abs")
+    };
+    assert_eq!(abs("left: 0; top: 0;"), [53.0, 10.0, 40.0, 30.0]);
+    assert_eq!(abs(""), [81.0, 10.0, 40.0, 30.0]);
+}
+
+/// A change of the offset moves the box and the text on the next layout.
+#[test]
+fn a_new_offset_is_applied_on_the_next_layout() {
+    let mut c = Case::new(&format!(
+        r#"lead <span data-m="span" style="{R}; top: 5px">text{}</span>"#,
+        ib("")
+    ));
+    let (before_box, before_glyph) = (c.rect("ib"), c.glyph(5));
+    let span = c.id("span");
+    c.doc.set_attribute(
+        rinch_core::dom::NodeId(span),
+        "style",
+        "position: relative; top: 9px; left: 4px",
+    );
+    c.doc.resolve_layout(VW, VH);
+    let (after_box, after_glyph) = (c.rect("ib"), c.glyph(5));
+    assert_eq!(
+        [after_box[0] - before_box[0], after_box[1] - before_box[1]],
+        [4.0, 4.0]
+    );
+    assert_eq!(
+        [
+            after_glyph[0] - before_glyph[0],
+            after_glyph[1] - before_glyph[1]
+        ],
+        [4.0, 4.0]
+    );
+}
+
+// ── Pixels ──────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "software-renderer")]
+mod painted {
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    fn pixels(doc: &mut RinchDocument) -> Vec<[u8; 4]> {
+        let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
+        let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            1.0,
+            (VW, VH),
+            &mut doc.font_cx,
+            &mut cx,
+        );
+        painter.pixels().as_chunks::<4>().0.to_vec()
+    }
+
+    /// The bounding box of the pixels `hit` picks, in device px.
+    fn bbox(px: &[[u8; 4]], hit: impl Fn(&[u8; 4]) -> bool) -> Option<[usize; 4]> {
+        let w = VW as usize;
+        let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+        for (i, p) in px.iter().enumerate() {
+            if hit(p) {
+                let (x, y) = (i % w, i / w);
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x + 1);
+                y1 = y1.max(y + 1);
+            }
+        }
+        (x0 != usize::MAX).then_some([x0, y0, x1, y1])
+    }
+
+    fn magenta(p: &[u8; 4]) -> bool {
+        p[0] > 200 && p[1] < 60 && p[2] > 200
+    }
+
+    fn green(p: &[u8; 4]) -> bool {
+        p[0] < 60 && p[1] > 200 && p[2] < 60
+    }
+
+    /// Dark ink: black text (the canvas is transparent, its pixels
+    /// premultiplied).
+    fn ink(p: &[u8; 4]) -> bool {
+        p[3] > 100 && p[0] < 60 && p[1] < 60 && p[2] < 60
+    }
+
+    fn painted_case(inner: &str, offset: &str) -> Vec<[u8; 4]> {
+        let mut c = Case::new(&inner.replace("{OFF}", offset));
+        pixels(&mut c.doc)
+    }
+
+    /// The inline-block is painted at its moved box: 7px right, 5px down.
+    #[test]
+    fn the_inline_block_is_painted_where_it_moved() {
+        let inner = lead();
+        let a = bbox(&painted_case(&inner, "top: 5px; left: 7px"), magenta).unwrap();
+        let b = bbox(&painted_case(&inner, ""), magenta).unwrap();
+        assert_eq!([a[0] - b[0], a[1] - b[1]], [7, 5]);
+        assert_eq!([a[2] - a[0], a[3] - a[1]], [b[2] - b[0], b[3] - b[1]]);
+    }
+
+    /// The span's text and background are painted where they moved; the
+    /// text before it is not.
+    #[test]
+    fn the_spans_text_and_background_are_painted_where_they_moved() {
+        let inner =
+            r#"<span style="position: relative; {OFF}; background: rgb(0, 255, 0)">text</span>"#;
+        let (moved, twin) = (
+            painted_case(inner, "top: 5px; left: 7px"),
+            painted_case(inner, "top: 0px"),
+        );
+        let (a, b) = (bbox(&moved, green).unwrap(), bbox(&twin, green).unwrap());
+        assert_eq!(
+            [a[0] as i64 - b[0] as i64, a[1] as i64 - b[1] as i64],
+            [7, 5],
+            "background"
+        );
+        let (a, b) = (bbox(&moved, ink).unwrap(), bbox(&twin, ink).unwrap());
+        assert_eq!(
+            [a[0] as i64 - b[0] as i64, a[1] as i64 - b[1] as i64],
+            [7, 5],
+            "text"
+        );
+        assert_eq!(
+            [a[2] - a[0], a[3] - a[1]],
+            [b[2] - b[0], b[3] - b[1]],
+            "same ink"
+        );
+    }
+
+    /// The span's underline moves with its glyphs: green, under black text,
+    /// 7px right and 5px down of where the twin draws it.
+    #[test]
+    fn the_spans_underline_moves_with_its_text() {
+        let inner = r#"lead <span style="position: relative; {OFF}; text-decoration: underline; text-decoration-color: rgb(0, 255, 0)">text</span>"#;
+        let (moved, twin) = (
+            painted_case(inner, "top: 5px; left: 7px"),
+            painted_case(inner, "top: 0px"),
+        );
+        // A 1px line between pixel rows: any green ink.
+        let greenish = |p: &[u8; 4]| p[1] > 40 && p[0] < 20 && p[2] < 20;
+        let (a, b) = (
+            bbox(&moved, greenish).unwrap(),
+            bbox(&twin, greenish).unwrap(),
+        );
+        assert_eq!([a[0] - b[0], a[1] - b[1]], [7, 5]);
+        assert_eq!([a[2] - a[0], a[3] - a[1]], [b[2] - b[0], b[3] - b[1]]);
+    }
+
+    /// A container that clips its overflow clips the moved text at its
+    /// padding box: the text moved 12px down in a 20px-tall `overflow:
+    /// hidden` box draws nothing below it, as in Chrome. (The clip is left
+    /// out only where nothing reaches past the box, so the moved lines must
+    /// count as reaching past it.) The twin without the clip draws below.
+    #[test]
+    fn a_clipping_container_clips_the_moved_text() {
+        let inner = r#"<span style="position: relative; top: 12px">text</span>"#;
+        let below = |overflow: &str| {
+            let mut c = Case::with(&format!("height: 27px; {overflow}"), inner);
+            let px = pixels(&mut c.doc);
+            let (_, cy) = rinch_dom::paint::compute_absolute_position(&c.doc.tree, c.c, 1.0);
+            let bottom = cy as usize + 27;
+            bbox(&px, ink).map(|b| b[3] > bottom)
+        };
+        assert_eq!(
+            below(""),
+            Some(true),
+            "positive control: unclipped, it draws below"
+        );
+        assert_eq!(
+            below("overflow: hidden;"),
+            Some(false),
+            "clipped at the box"
+        );
+    }
+
+    /// Text before the span is not moved: the ink of `lead ` alone is the
+    /// same with and without the offset.
+    #[test]
+    fn the_text_before_the_span_is_painted_where_it_was() {
+        let inner =
+            r#"lead <span style="position: relative; {OFF}; color: rgb(0, 255, 0)">text</span>"#;
+        let (moved, twin) = (
+            painted_case(inner, "top: 5px; left: 7px"),
+            painted_case(inner, "top: 0px"),
+        );
+        assert_eq!(bbox(&moved, ink), bbox(&twin, ink), "the black `lead `");
+        let (a, b) = (bbox(&moved, green).unwrap(), bbox(&twin, green).unwrap());
+        assert_eq!([a[0] - b[0], a[1] - b[1]], [7, 5], "the green `text`");
+    }
+}
