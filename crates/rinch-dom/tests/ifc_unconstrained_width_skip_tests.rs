@@ -3,13 +3,17 @@
 //!
 //! `build_ifc_layouts` skips a root whose text is clean and whose previous layout
 //! was built at the same `max_width`. A root whose content box is not positive
-//! (a zero-width box, or one inside `display: none`) is built with `max_width:
+//! (a zero-width box) was built with `max_width:
 //! None`, stored as `f32::INFINITY`, and the skip compared widths with
 //! `(old - new).abs() < 0.01`: `INFINITY - INFINITY` is NaN, so every such root
 //! was reshaped by Parley on every layout pass that changed no text. In
 //! Pimble's window that was
 //! 1,503 roots (collapsed tree rows, closed menus) on every keystroke, about
 //! 125 ms of a 150 ms frame.
+//!
+//! Since #2382 a zero-width root is broken at width 0, as Chrome breaks it
+//! (every break opportunity taken), and stores `0`, not `INFINITY`; the
+//! skip must still keep it.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -67,8 +71,8 @@ fn a_layout_only_pass_keeps_the_text_layout_of_a_zero_width_root() {
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(
         max_width(&doc, unconstrained),
-        f32::INFINITY,
-        "the premise: a zero-width root is built with no width constraint"
+        0.0,
+        "the premise: a zero-width root is broken at width 0 (#2382)"
     );
     stamp(&mut doc, unconstrained);
     stamp(&mut doc, constrained);
@@ -111,7 +115,7 @@ fn an_unconstrained_root_that_gains_a_width_is_rebuilt() {
 /// comparison runs — it passes with the comparison replaced by `if true`.)
 #[test]
 fn a_root_crossing_the_unconstrained_boundary_by_viewport_alone_is_rebuilt() {
-    for (from, to, want) in [(800.0, 1100.0, 300.0), (1100.0, 800.0, f32::INFINITY)] {
+    for (from, to, want) in [(800.0, 1100.0, 300.0), (1100.0, 800.0, 0.0)] {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let root = text_block(
