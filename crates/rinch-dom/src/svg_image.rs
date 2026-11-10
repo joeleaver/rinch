@@ -513,6 +513,25 @@ thread_local! {
         frame: 0,
     });
     static BUDGET: Cell<usize> = const { Cell::new(RASTER_BUDGET_BYTES) };
+    /// How many times this thread gave usvg a document, and resvg a tree to
+    /// draw (tests' counts: a refusal must come before either).
+    static USVG_PARSES: Cell<u64> = const { Cell::new(0) };
+    static RESVG_RENDERS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many documents this thread has handed usvg to parse. A test's count:
+/// an input [`decode_svg`] refuses by its own checks must not reach usvg,
+/// where the attacks this module stops spend their time.
+#[doc(hidden)]
+pub fn usvg_parses() -> u64 {
+    USVG_PARSES.with(Cell::get)
+}
+
+/// How many rasters this thread has asked resvg to draw, refused or not. A
+/// test's count: a raster refused by its estimate must not reach resvg.
+#[doc(hidden)]
+pub fn resvg_renders() -> u64 {
+    RESVG_RENDERS.with(Cell::get)
 }
 
 /// A new painted frame on this thread (`paint::paint_document` calls it):
@@ -671,6 +690,7 @@ fn decode_svg_unguarded(bytes: &[u8]) -> Result<VectorImage, String> {
         },
         ..usvg::Options::default()
     };
+    USVG_PARSES.with(|n| n.set(n.get() + 1));
     let tree =
         usvg::Tree::from_str(text, &options).map_err(|e| format!("Failed to parse SVG: {e}"))?;
     // What usvg built, measured: its element count (it expands a marker per
@@ -1063,6 +1083,7 @@ impl VectorImage {
             }
             None => tiny_skia::Transform::from_scale((dw / sw) as f32, (dh / sh) as f32),
         };
+        RESVG_RENDERS.with(|n| n.set(n.get() + 1));
         let pixels = guarded("SVG rasterising", || {
             let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("no pixmap")?;
             resvg::render(&self.tree, transform, &mut pixmap.as_mut());
