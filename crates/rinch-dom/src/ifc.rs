@@ -236,11 +236,19 @@ pub(crate) fn edge_box_id(owner: RawNodeId, end: bool) -> u64 {
 /// inline-end margin + border + padding, in CSS px, `(start, end)`. With
 /// `ltr` false the start is the right side. A percentage margin or padding is
 /// taken as 0 (its basis is the containing block's width, which the IFC does
-/// not know when it is built), and a negative total as 0.
+/// not know when it is built).
+///
+/// A side is `None` when its margin, border and padding are all 0, and
+/// `Some` otherwise, whatever they add up to: a negative margin takes room
+/// back, pulling what follows over the element's edge, and a side with any
+/// of the three non-zero makes an empty element's line non-empty — Blink's
+/// `IsInlineBoxStartEmpty` / `IsInlineBoxEndEmpty` (Chrome 156: an empty
+/// `<span style="margin-left:-5px">` gives a line, and so does
+/// `margin-left:-5px; padding-left:5px`, which sums to 0; #2406).
 pub(crate) fn inline_edge_widths(
     cs: &crate::computed_style::ComputedStyle,
     ltr: bool,
-) -> (f32, f32) {
+) -> (Option<f32>, Option<f32>) {
     use crate::computed_style::BorderStyleValue as S;
     use crate::computed_style::LengthPercentageAutoValue as M;
     let margin = |m: M| match m {
@@ -254,14 +262,18 @@ pub(crate) fn inline_edge_widths(
             w
         }
     };
-    let left = margin(cs.margin_left)
-        + border(cs.border_left_width.to_px(), cs.border_left_style)
-        + cs.padding_left.to_px();
-    let right = margin(cs.margin_right)
-        + border(cs.border_right_width.to_px(), cs.border_right_style)
-        + cs.padding_right.to_px();
-    let (start, end) = if ltr { (left, right) } else { (right, left) };
-    (start.max(0.0), end.max(0.0))
+    let side = |parts: [f32; 3]| parts.iter().any(|&p| p != 0.0).then(|| parts.iter().sum());
+    let left = side([
+        margin(cs.margin_left),
+        border(cs.border_left_width.to_px(), cs.border_left_style),
+        cs.padding_left.to_px(),
+    ]);
+    let right = side([
+        margin(cs.margin_right),
+        border(cs.border_right_width.to_px(), cs.border_right_style),
+        cs.padding_right.to_px(),
+    ]);
+    if ltr { (left, right) } else { (right, left) }
 }
 
 /// Whether an element's own direction is left to right.
@@ -11678,7 +11690,7 @@ impl RinchDocument {
                     } else {
                         (left, right)
                     };
-                    if edge_start > 0.0 {
+                    if let Some(edge_start) = edge_start {
                         builder.push_edge_box(child_id, false, edge_start * scale);
                     }
 
@@ -11699,7 +11711,7 @@ impl RinchDocument {
                         atomic,
                     );
 
-                    if edge_end > 0.0 {
+                    if let Some(edge_end) = edge_end {
                         builder.push_edge_box(child_id, true, edge_end * scale);
                     }
                     builder.pop_span();
@@ -11725,7 +11737,7 @@ impl RinchDocument {
                     // about padding, radius, or the vertical shift. An empty
                     // element with edge boxes still draws its background and
                     // border over them (#1426).
-                    let has_edges = edge_start > 0.0 || edge_end > 0.0;
+                    let has_edges = edge_start.is_some() || edge_end.is_some();
                     if has_bg || has_valign || has_inline_border(child_computed) {
                         Self::push_inline_spans(
                             nodes,
