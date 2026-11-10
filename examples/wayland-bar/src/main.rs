@@ -34,6 +34,12 @@
 //!   times, printing the size the compositor gave after each, then exits;
 //!   `BAR_SCRIPT=edges` moves it to the other edge instead, four times. What
 //!   the live checks of #2413 read.
+//! - `BAR_SCRIPT=outputs` moves it to the next connected output
+//!   (`rinch::outputs`, #2414) every step, eight times, through
+//!   `set_current_window_layer`, printing the outputs and the size the
+//!   compositor gave the bar at each step; an output unplugged under it is
+//!   left to the compositor (rinch re-creates the surface where the
+//!   compositor puts it). What the live check of #2414 reads.
 //!
 //! A wallpaper is a second process (`examples/wayland-wallpaper`): rinch
 //! shows one window per process.
@@ -153,6 +159,48 @@ fn script(placement: Signal<Placement>, edges: bool) {
     set_timeout(step, move || run(placement, edges, 4, step));
 }
 
+/// `BAR_SCRIPT=outputs`: move the bar to the next output every step. Each
+/// step first reports the outputs and the bar's size (its width is its
+/// output's logical width), then moves it.
+fn tour_outputs(placement: Signal<Placement>) {
+    let step: u32 = std::env::var("BAR_STEP_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1500);
+    fn run(placement: Signal<Placement>, next: usize, left: u32, step: u32) {
+        let list = outputs();
+        let names: Vec<String> = list
+            .iter()
+            .map(|o| {
+                format!(
+                    "{} {}x{}",
+                    o.name.as_deref().unwrap_or("?"),
+                    o.size.0,
+                    o.size.1
+                )
+            })
+            .collect();
+        println!(
+            "BAR outputs=[{}] size={:?}",
+            names.join(", "),
+            current_window_size()
+        );
+        if left == 0 {
+            println!("BAR done");
+            std::process::exit(0);
+        }
+        if let Some(output) = list.get(next % list.len().max(1)) {
+            println!("BAR move to {}", output.name.as_deref().unwrap_or("?"));
+            set_current_window_layer(LayerSurface {
+                output: output.name.clone(),
+                ..bar_surface(placement.get())
+            });
+        }
+        set_timeout(step, move || run(placement, next + 1, left - 1, step));
+    }
+    set_timeout(step, move || run(placement, 1, 8, step));
+}
+
 /// Where the bar starts: `BAR_EDGE=top`, else the bottom; thin.
 fn initial_placement() -> Placement {
     Placement {
@@ -175,6 +223,7 @@ fn bar() -> NodeHandle {
     });
     match std::env::var("BAR_SCRIPT").as_deref() {
         Ok("edges") => script(placement, true),
+        Ok("outputs") => tour_outputs(placement),
         Ok(_) => script(placement, false),
         Err(_) => {}
     }
