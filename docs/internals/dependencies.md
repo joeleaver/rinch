@@ -345,12 +345,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`4d5e0b8cd43014ca6dbf6f5f2817a5c8b03ac1fb`, branch `rinch-patch`): twenty-seven commits on the taffy `v0.14.0` tag
+(`3202fb027d67170e64b6adbb2bb823fae51343d6`, branch `rinch-patch`): twenty-eight commits on the taffy `v0.14.0` tag
 (item 10 is two of them, item 15 three, item 18 four, item 19 two). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the twenty-seven commits onto the new tag. All are upstream
+and a Taffy bump rebases the twenty-eight commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -628,12 +628,22 @@ candidates.
    an absolutely positioned table (60). An in-flow flex item already took the size its layout
    returns. Pins: the fork's `tests/table_rows.rs` and
    `crates/rinch-dom/tests/table_caption_spacing_and_imposed_height_tests.rs`.
+20. **A compressible replaced child gives no length width at min-content** (commit
+   `3202fb02`). A replaced child (`item_is_replaced`) whose `width` or `max-width` is a
+   percentage is compressible (css-sizing-3 §5.2.2), but the block algorithm's intrinsic width
+   (`determine_content_based_container_width`) took a length `width` as its contribution before
+   asking it, so `<img style="width: 800px; max-width: 100%">` gave a table column, or any
+   min-content measure, 800px where Chrome 156 gives it none. At a min-content width such a child
+   (`BlockItem::is_compressible`) now has no known width and is asked; rinch's leaf answers with
+   its percentages resolved against zero (`replaced::min_content_style`). Postrinch mail 033 drew
+   a `max-width: 640px` card 872 wide and 1,120px taller than Chrome. Pins:
+   `crates/rinch-dom/tests/compressible_replaced_min_content_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, and (6,345 in all) with 19.
+`tests/fit_content_flex.rs`) with 18, and (6,345 in all) with 19 and with 20.
 
 
 ## Parley Fork

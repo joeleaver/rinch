@@ -811,6 +811,13 @@ impl AtomicContributions<'_> {
                 at(natural.0, natural.1)
             };
         };
+        // A compressible replaced element contributes no min-content width
+        // (css-sizing-3 §5.2.2, #2398).
+        if wrap <= 0.0
+            && let Some(width) = crate::replaced::compressed_inline_min_content(node)
+        {
+            return (width, layout.1);
+        }
         // A percentage width in a min-content measure is cyclic: the box
         // contributes its min-content width, as `auto` does (#2159).
         if wrap <= 0.0
