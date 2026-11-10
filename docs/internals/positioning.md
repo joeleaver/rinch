@@ -290,11 +290,25 @@ each one's offset against the containing block — the root, or the element an
 anonymous block box stands in — and drops the spans that move nothing, so a
 span that is only an abspos anchor costs paint nothing. A percentage `left`/
 `right` is of the block's content width; a percentage `top`/`bottom` of its
-content height when that is definite (`ifc::definite_height`: a length, a
-percentage of a definite parent, an absolute box sized by `top` and `bottom`,
-a flex item stretched, with no `auto` block margin, across a row of
-definite height), else `auto` — #2427 lists the cases Chrome resolves that
-this does not; `top` wins over
+content height when that is definite, else `auto`. **Definite is layout's
+answer, not a mirror of its rules** (#2427): at each IFC root's final layout
+the measure closures (`run_taffy`, `compute_atomic_inline_root`) call
+`ifc::note_containing_block_height`, which stores in
+`Node::containing_block_height_definite` what Taffy itself would resolve a
+child's percentage height against — for a root, `ifc::leaf_height_is_definite`:
+the parent handed it a height and `known_dimensions_are_definite` calls it
+definite (every parent hands a leaf its style-resolved height — a length, a
+percentage of a definite parent, an `aspect-ratio` of its width; a flex, grid
+or absolute parent hands the height it lays it out at, definite for a
+stretched item, also in an auto-height or `min-height` row or an auto grid
+row, a column item's flexed height in a definite column, an absolute box's
+inset-given height); for an anonymous block box, whether its
+`parent_size.height` is `Some`, the parent's percentage basis. Chrome 157 agrees on every case
+pinned (a `flex-start` row item, a `flex: 1` item of an auto column, a
+`start` grid item and a `min-height`-only block stay indefinite). A
+`position: fixed` box's percentage `width`/`height` are baked from the
+viewport (`apply_out_of_flow_size_overrides`, #2427), where Taffy used to
+resolve them against the box's layout parent; `top` wins over
 `bottom`, and `left` over `right` in a left-to-right block (Chrome 156).
 Offsets **compose** (`InlineLayout::relative_offset_at` sums every span over a
 byte; `element_relative_offset` sums an element's and its inline ancestors').
@@ -332,8 +346,8 @@ by the unmoved lines (`byte_offset_from_position`, `cluster_range_at_point`;
 **#2404**); a block inside a relative **split** inline (#513) is not moved
 (**#2408**: Chrome moves it with the span); a percentage `top` of a block
 whose `height` changes with no width change keeps the old offset until the
-lines are rebuilt; heights Chrome takes as definite and `definite_height`
-does not (**#2427**) leave a percentage `top` at `auto`; and a change of an inset
+lines are rebuilt (likely also one whose height only becomes definite or
+indefinite, not pinned); and a change of an inset
 reshapes the paragraph, where moving the spans again would do (**#2412**).
 
 **An auto-width absolute box is shrunk to fit in what its containing block

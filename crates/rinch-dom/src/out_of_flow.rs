@@ -1232,7 +1232,8 @@ pub(crate) fn begin_read(tree: &mut NodeTree) {
 /// An auto (or `fit-content`) size with fewer than two insets on its axis is
 /// shrunk to fit: a width in what the block leaves it, a height its
 /// content's — a fixed box as well as an absolute one (#893). A percentage
-/// `min-`/`max-` size is resolved against the block for all three kinds.
+/// size, `min-` and `max-` size included, is resolved against the block for
+/// all three kinds (a fixed box's `width`/`height` since #2427).
 ///
 /// For the two absolute cases it also resolves what else Taffy would take
 /// from the direct parent: the margins that come out of the space between two
@@ -1324,9 +1325,12 @@ pub(crate) fn apply_out_of_flow_size_overrides(
                 taffy_style.size.width = taffy::Dimension::fit_content_px(available.max(0.0));
             }
         }
-    } else if absolute {
+    } else {
         // Taffy would resolve these against the direct parent. A mixed
         // calc() takes the same arm as a plain percentage (#278/#496 review).
+        // A fixed box's are of the viewport too (#2427: Chrome 157 gives
+        // `position: fixed; height: 50%` half the viewport, where Taffy
+        // gave it half of an auto-height parent).
         match cs.width {
             DimensionValue::Percent(p) => {
                 taffy_style.size.width = taffy::Dimension::length((cw * p).max(0.0));
@@ -1350,7 +1354,7 @@ pub(crate) fn apply_out_of_flow_size_overrides(
             taffy_style.size.height =
                 taffy::Dimension::length((ch - t - b - mt - mb - inset_y).max(0.0));
         }
-    } else if absolute {
+    } else {
         match cs.height {
             DimensionValue::Percent(p) => {
                 taffy_style.size.height = taffy::Dimension::length((ch * p).max(0.0));

@@ -1781,6 +1781,13 @@ pub struct Node {
     /// paint walk; see that method's doc for why it is cached rather than
     /// computed on the hot path.
     pub filter_creates_stacking_context: Cell<bool>,
+    /// For an IFC root: whether its containing block's content height is
+    /// **definite** — the root's own height, or its parent's for an
+    /// anonymous block box — as Taffy took it at the root's last final
+    /// layout (#2427): a percentage `top`/`bottom` of a relative inline
+    /// element resolves against that height only then
+    /// ([`crate::ifc::leaf_height_is_definite`]).
+    pub containing_block_height_definite: Cell<bool>,
     /// Some descendant of this element needs its style recomputed — the path
     /// Stylo's invalidator marks from an invalidated element down to each
     /// descendant it invalidated (`TElement::set_dirty_descendants`), and the
@@ -2156,6 +2163,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
@@ -2248,6 +2256,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
@@ -2339,6 +2348,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
@@ -2428,6 +2438,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
