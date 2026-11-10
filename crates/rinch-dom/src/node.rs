@@ -1342,7 +1342,9 @@ pub struct Node {
     /// Computed layout result.
     pub layout: LayoutResult,
     /// For an atomic inline with an entry in
-    /// `NodeTree::keyword_inline_cb_width`: the size it had before
+    /// `NodeTree::keyword_inline_cb_width` (or, for a box with a percentage
+    /// inline size, in `NodeTree::percent_inline_cb_width`, regress-017):
+    /// the size it had before
     /// `resolve_percentage_inline_blocks` first resolved it against a
     /// containing block — measured as `auto`, under max-content space, which
     /// for an `auto`-width box is its **max-content contribution** (#1476).

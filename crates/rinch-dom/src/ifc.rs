@@ -812,6 +812,9 @@ pub(crate) struct AtomicContributions<'a> {
     /// `NodeTree::keyword_inline_cb_width`: the containing-block width each
     /// resolved box was last resolved against.
     pub resolved_at: &'a HashMap<RawNodeId, f32>,
+    /// `NodeTree::percent_inline_cb_width`: the same for each box with a
+    /// percentage inline size.
+    pub percent_resolved_at: &'a HashMap<RawNodeId, f32>,
     /// `NodeTree::atomic_min_requests`.
     pub requests: &'a std::cell::RefCell<Vec<RawNodeId>>,
 }
@@ -845,6 +848,18 @@ impl AtomicContributions<'_> {
             }
         };
         let Some(wrap) = self.wrap_width else {
+            // A percentage inline size is cyclic in a max-content measure
+            // too, so the box contributes as `auto` does: its natural size,
+            // not the width it was last resolved to (regress-017). Lined up
+            // at that width, a table's `width: 100%` pictures gave their
+            // columns the widths they had been resolved to, and a picture
+            // that arrived after the first layout (measured at its natural
+            // width) took a wider share than the ones before it: the columns
+            // depended on the order the pictures loaded in.
+            if !self.percent_resolved_at.is_empty() && self.percent_resolved_at.contains_key(&id) {
+                let (w, h) = node.natural_inline_size;
+                return at(w, h);
+            }
             // Max-content: the box's own max-content size, whatever it has
             // been capped at since.
             return if natural == layout
@@ -8894,9 +8909,10 @@ impl RinchDocument {
         // `tree.nodes.get_mut` free after the call returns.
         let nodes = &tree.nodes;
         let perf = &tree.perf;
-        let (min_content, resolved_at, min_requests) = (
+        let (min_content, resolved_at, percent_resolved_at, min_requests) = (
             &tree.atomic_min_content,
             &tree.keyword_inline_cb_width,
+            &tree.percent_inline_cb_width,
             &tree.atomic_min_requests,
         );
         // The layouts this compute's text leaves are measured with, kept for
@@ -8979,6 +8995,7 @@ impl RinchDocument {
                                     wrap_width: max_width,
                                     min_content,
                                     resolved_at,
+                                    percent_resolved_at,
                                     requests: min_requests,
                                 };
                                 let (inline_layout, font_family_resolves) =
@@ -9019,6 +9036,7 @@ impl RinchDocument {
                                                 wrap_width: None,
                                                 min_content,
                                                 resolved_at,
+                                                percent_resolved_at,
                                                 requests: min_requests,
                                             };
                                             let (max, resolves) = Self::build_inline_layout(
@@ -10036,7 +10054,14 @@ impl RinchDocument {
             let _ = self.tree.taffy.mark_dirty(taffy_id);
             // Not resolved since it was last measured as `auto`: the size
             // it has is its natural one (#1476, `Node::natural_inline_size`).
-            if keyword_only && !self.tree.keyword_inline_cb_width.contains_key(&id) {
+            // A percentage box's too: a max-content measure lines it up there
+            // (regress-017).
+            let resolved = if keyword_only {
+                &self.tree.keyword_inline_cb_width
+            } else {
+                &self.tree.percent_inline_cb_width
+            };
+            if !resolved.contains_key(&id) {
                 self.tree.nodes[id].natural_inline_size = before;
             }
             self.measure_inline_blocks(&[(taffy_id, Some(available))]);
