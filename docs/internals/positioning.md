@@ -269,8 +269,11 @@ against Chrome's 70); a wrapped **right-to-left** span's right edge is 4.5px
 off Chrome's, since parley puts a right-to-left line's trailing space at the
 line's left end where Chrome hangs it out of the line, and an empty span at
 the very end of a right-to-left run is 5px right of Chrome's; a span that ends in a `<br>` has no empty last fragment
-on the next line; a line of nothing but atomic inlines has no strut (#624,
-#1258), so a span on one hangs from the boxes' bottom edge. And **paint does
+on the next line. (This list used to add that a line of nothing but atomic
+inlines has no strut, #624/#1258, so a span on one hangs from the boxes'
+bottom edge. Such a line has the strut since parley 0.12, and one holding only
+zero-size boxes since Parley Fork item 4 in `dependencies.md`; where a span's
+fragment sits on it has not been re-measured against Chrome.) And **paint does
 not clip such a box by a static scroller around its span** (**#1438**, older
 than #631: `stacking::Collector` descends the box tree, never meets the span,
 and ends the box's clip chain at the next positioned box), so a badge whose
