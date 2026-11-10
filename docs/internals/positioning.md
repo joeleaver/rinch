@@ -292,7 +292,9 @@ span that is only an abspos anchor costs paint nothing. A percentage `left`/
 `right` is of the block's content width; a percentage `top`/`bottom` of its
 content height when that is definite (`ifc::definite_height`: a length, a
 percentage of a definite parent, an absolute box sized by `top` and `bottom`,
-a flex item stretched across a row of definite height), else `auto`; `top` wins over
+a flex item stretched, with no `auto` block margin, across a row of
+definite height), else `auto` — #2427 lists the cases Chrome resolves that
+this does not; `top` wins over
 `bottom`, and `left` over `right` in a left-to-right block (Chrome 156).
 Offsets **compose** (`InlineLayout::relative_offset_at` sums every span over a
 byte; `element_relative_offset` sums an element's and its inline ancestors').
@@ -330,8 +332,8 @@ by the unmoved lines (`byte_offset_from_position`, `cluster_range_at_point`;
 **#2404**); a block inside a relative **split** inline (#513) is not moved
 (**#2408**: Chrome moves it with the span); a percentage `top` of a block
 whose `height` changes with no width change keeps the old offset until the
-lines are rebuilt; a grid item's stretched height, a column flex item's flexed
-one and a table cell's are not taken as definite; and a change of an inset
+lines are rebuilt; heights Chrome takes as definite and `definite_height`
+does not (**#2427**) leave a percentage `top` at `auto`; and a change of an inset
 reshapes the paragraph, where moving the spans again would do (**#2412**).
 
 **An auto-width absolute box is shrunk to fit in what its containing block

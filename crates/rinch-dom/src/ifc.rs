@@ -266,12 +266,16 @@ pub(crate) fn inline_edge_widths(
 
 /// Whether `node`'s height is **definite** for a percentage of it (CSS 2.1
 /// §10.5, CSS Sizing 3 §2.1), as a relative inline element's `top`/`bottom`
-/// asks (#2346): a length; a percentage of a definite parent; an absolute
-/// box sized by both `top` and `bottom`; a flex item stretched across a row
-/// container whose own height is definite (CSS Flexbox §9.8). Chrome 156
-/// resolves `top: 10%` against each; anything else is `auto` (an auto-height
-/// block). Not answered here, so `auto`: a grid item's stretch, a column
-/// flex item's flexed size, a table cell.
+/// asks (#2346). Four cases answer `true`, each measured in Chrome 156: a
+/// length; a percentage of a definite parent; an absolute box sized by both
+/// `top` and `bottom`; a flex item stretched (no `auto` block margin) across
+/// a row container whose own height is definite (CSS Flexbox §9.8).
+/// Everything else answers `false`, so the percentage is `auto`, which is
+/// right for an auto-height block but not for every case Chrome resolves:
+/// a stretched item in an auto-height (or `min-height`) row, an absolute
+/// box's percentage height against a containing block that is not its
+/// parent, `position: fixed`, a column flex item's flexed height, a
+/// stretched grid item and an `aspect-ratio` height (#2427).
 pub(crate) fn definite_height(nodes: &crate::node_slab::NodeSlab, node: &Node) -> bool {
     use crate::computed_style::{
         AlignItemsValue, AlignSelfValue, DimensionValue, DisplayValue, FlexDirectionValue,
@@ -305,12 +309,15 @@ pub(crate) fn definite_height(nodes: &crate::node_slab::NodeSlab, node: &Node) -
                 pcs.flex_direction,
                 FlexDirectionValue::Row | FlexDirectionValue::RowReverse
             );
+        // An `auto` margin on the block axis takes the room a stretch would
+        // (CSS Flexbox §8.1, §9.4 step 11): such an item is not stretched.
         let stretched = match cs.align_self {
             Some(a) => a == AlignSelfValue::Stretch,
             None => pcs
                 .align_items
                 .is_none_or(|a| a == AlignItemsValue::Stretch),
-        };
+        } && !matches!(cs.margin_top, L::Auto)
+            && !matches!(cs.margin_bottom, L::Auto);
         if !(row_flex && stretched) {
             return false;
         }

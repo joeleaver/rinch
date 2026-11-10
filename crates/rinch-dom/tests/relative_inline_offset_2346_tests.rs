@@ -312,6 +312,19 @@ fn a_percentage_top_is_of_a_height_that_layout_makes_definite() {
         assert_eq!(dx, 0.0, "{outer}");
         assert!((dy - want).abs() < 0.001, "{outer}: got {dy}");
     }
+    // A flex item with an `auto` block-axis margin is not stretched (CSS
+    // Flexbox §8.1), so its height is its content's: Chrome 156 moves the
+    // span by nothing, for `margin-top: auto` and `margin: auto 0` alike.
+    for margin in ["margin-top: auto;", "margin: auto 0;"] {
+        let [_, dy] = moved_in(
+            "display: flex; height: 100px",
+            margin,
+            &lead(),
+            "top: 10%",
+            "ib",
+        );
+        assert_eq!(dy, 0.0, "{margin}");
+    }
     // A column flex item's height is its content's here: not definite.
     let [_, dy] = moved_in(
         "display: flex; flex-direction: column",
@@ -523,6 +536,32 @@ fn the_editors_queries_follow_the_moved_text_and_boxes() {
         .query_line_box(twin.c, 1, CaretAffinity::Downstream)
         .unwrap();
     assert_eq!(a, b, "and not outside it");
+}
+
+/// Selected boxes drawn at two offsets, both at the byte where the span
+/// starts: the one before the span is highlighted where it stands, the one
+/// in the span where the span moved it.
+#[test]
+fn selected_boxes_are_highlighted_at_their_own_offsets() {
+    let c = Case::new(
+        r#"lead<img data-m="a" style="width: 10px; height: 10px"><span style="position: relative; top: 5px; left: 7px"><img data-m="b" style="width: 10px; height: 10px">text</span> tail"#,
+    );
+    let rects = c
+        .doc
+        .query_selection_rects_with_boxes(c.c, 1, 8, &[c.id("a"), c.id("b")]);
+    let covers = |m: &str| {
+        let [x, y, w, h] = c.painted(m);
+        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+        rects
+            .iter()
+            .any(|r| r.0 <= cx && cx <= r.0 + r.2 && r.1 <= cy && cy <= r.1 + r.3)
+    };
+    assert!(covers("a"), "the box before the span: {rects:?}");
+    assert!(
+        covers("b"),
+        "the moved box in the span: {rects:?} vs {:?}",
+        c.painted("b")
+    );
 }
 
 /// A change of `bottom` alone is a new offset too.
