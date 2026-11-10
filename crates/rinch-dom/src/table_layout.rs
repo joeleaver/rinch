@@ -1,4 +1,4 @@
-//! CSS table layout, on Taffy's grid.
+//! CSS ta    let resolve_in = |m: M,             M::Percent(p) => Some(width.map_or(0.0, |w| p * w)),idth: Option<f32>| -> Option<f32> {le layout, on Taffy's grid.
 //!
 //! Taffy has no table formatting context, and the box a table needs is close
 //! to the one a grid gives: tracks sized from their cells, spanning items,
@@ -14,7 +14,8 @@
 //!   size for the cell, so it is read here and never reaches Taffy. See
 //!   *Column widths*.
 //! - **Spacing.** `border-spacing` is the grid's gap, and the same amount of
-//!   padding on the table, which is where the outer spacing lives.
+//!   padding on the table, which is where the outer spacing lives. A caption
+//!   is outside both (*Captions*).
 //! - **Row backgrounds.** A row has no box to paint. css-tables-3 paints a
 //!   row's background per cell anyway, which is why the spacing between two
 //!   cells of a coloured row shows the table: [`TableCell::under`] carries the
@@ -104,13 +105,40 @@
 //! way, empty rows growing when every other is constrained (a section's
 //! share is by its rows' heights before any rowspan grew them); a caption
 //! takes none (the table is its `height` plus its captions), and a table
-//! shorter than its rows grows to them (#2312), unless its parent imposes
-//! its height: a flex item, an absolutely positioned table or a grid item
-//! stays at it (#2358). `rebuild_table`
+//! shorter than its rows grows to them (#2312), also when its parent hands
+//! it its height: a flex item, a grid item in a shorter track (which it
+//! overflows) and an absolutely positioned table grow too (#2358; the fork's
+//! `resolves_own_height` on each kind of child style). `rebuild_table`
 //! hands the fork each row's section (`TableBox::sections`) and which rows
 //! are captions. A block standing for an anonymous table keeps its own
 //! height. A percentage and a row group's `height` size nothing. A
 //! collapsing table has no padding (CSS 2.1 §17.6.2).
+//!
+//! ## Captions
+//!
+//! A caption is a row of the grid that spans every column, above the rows or
+//! below them. CSS puts it outside the table box (CSS 2.2 §17.4), so outside
+//! the padding that carries the outer spacing, and with no spacing between it
+//! and the rows or another caption (#2350). The fork leaves the gutters beside
+//! a caption row empty, and the caption's Taffy margins take the table's
+//! padding back (`TableCell::outside`, written by `rebuild_table`): a top
+//! caption gets `-padding-top` above and `+padding-top` below, so it sits at
+//! the table's top edge and the padding (spacing included) lies between it
+//! and the first row; a bottom caption the mirror; and `-padding` on both
+//! sides, so it is as wide as the table, and a wider caption widens the table
+//! to its own width. Its own margins are added on top, and every one is
+//! written as a length. A caption's containing block is the table wrapper, as
+//! wide as the table, so a percentage or `calc()` margin resolves against the
+//! table's border-box width, and `auto` side margins beside a `width` share
+//! what the table's width leaves (`auto` is zero otherwise). These need the
+//! width, so the calc pass resolves them after each compute
+//! (`patch_caption_margins`, from `calc_layout.rs`). A percentage side margin
+//! in a table as wide as its content is taken as zero, because it would feed
+//! its own basis (Chrome resolves it against the final width). A top or bottom
+//! one resolves, since it sizes no width. The table's
+//! border is not taken out: rinch paints the table's border and background
+//! around the whole grid, captions included, so a caption stays inside the
+//! border where Chrome puts it outside (#2394).
 //!
 //! ## Vertical alignment
 //!
@@ -177,6 +205,10 @@ pub struct TableCell {
     /// (#2288). The width itself is read at each weighing: a cell's `width`
     /// never reaches its Taffy style, so a change to it leaves this valid.
     pub min_content: Option<f32>,
+    /// A caption's: what its Taffy margins (top, right, bottom, left) add to
+    /// its own, to take it out of the table's padding and outer spacing
+    /// (#2350; see *Captions* in the module docs). Zero for a cell.
+    pub outside: [f32; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -944,12 +976,43 @@ impl RinchDocument {
                     .map(|(i, &c)| (c, last + i)),
             )
             .collect::<Vec<_>>();
-        for (c, y) in captions {
+        // A caption is outside the table box (CSS 2.2 §17.4), and so outside
+        // the padding that carries the outer spacing: its margins take that
+        // padding back, on its outer side and across, and give it to its
+        // inner side, where it separates the caption from the rows (the fork
+        // leaves the gutters beside a caption row empty). The same padding as
+        // [`Self::apply_table_style`] writes.
+        let pads = {
+            let cs = &self.tree.nodes[table].computed_style;
+            let host = is_host(&self.tree.nodes[table]);
+            let pad = |p: LengthPercentageValue, spacing: f32| {
+                if collapse && !host {
+                    0.0
+                } else {
+                    p.to_px() + spacing
+                }
+            };
+            [
+                pad(cs.padding_top, spacing.1),
+                pad(cs.padding_right, spacing.0),
+                pad(cs.padding_bottom, spacing.1),
+                pad(cs.padding_left, spacing.0),
+            ]
+        };
+        let top_count = s.top_captions.len();
+        for (i, (c, y)) in captions.into_iter().enumerate() {
+            let [top, right, bottom, left] = pads;
+            let outside = if i < top_count {
+                [-top, -right, top, -left]
+            } else {
+                [bottom, -right, -bottom, -left]
+            };
             let t = TableCell {
                 row: y as i16,
                 col: 0,
                 rowspan: 1,
                 colspan: (cols.max(1) + 1) as u16,
+                outside,
                 ..Default::default()
             };
             self.place(c, t);
@@ -1214,8 +1277,91 @@ impl RinchDocument {
                     style.padding.top =
                         length((node.computed_style.padding_top.to_px() - c.shift).max(0.0));
                 }
+            } else if c.outside != [0.0; 4] {
+                // A caption, out of the table's padding (#2350). A margin
+                // that needs the table's width (a percentage, a `calc()`, an
+                // `auto` beside a `width`) is seeded here and resolved after
+                // each compute (`patch_caption_margins`).
+                let [top, right, bottom, left] =
+                    caption_margins(&node.computed_style, c.outside, None);
+                style.margin = taffy::Rect {
+                    top: taffy::LengthPercentageAuto::length(top),
+                    right: taffy::LengthPercentageAuto::length(right),
+                    bottom: taffy::LengthPercentageAuto::length(bottom),
+                    left: taffy::LengthPercentageAuto::length(left),
+                };
             }
         }
+    }
+
+    /// Whether caption `node`'s margins wait on a compute: one is a
+    /// percentage or a `calc()`, which resolve against the table's width, or
+    /// a side margin is `auto` beside a `width`, which shares the room the
+    /// table leaves it. [`Self::patch_caption_margins`] resolves them.
+    pub(crate) fn caption_margins_need_layout(node: &crate::node::Node) -> bool {
+        use crate::computed_style::values::LengthPercentageAutoValue as M;
+        let Some(c) = &node.table_cell else {
+            return false;
+        };
+        if c.outside == [0.0; 4] || node.computed_style.table_part != TablePart::Caption {
+            return false;
+        }
+        let cs = &node.computed_style;
+        let relative = |m: M| matches!(m, M::Percent(_) | M::Calc { .. });
+        relative(cs.margin_top)
+            || relative(cs.margin_right)
+            || relative(cs.margin_bottom)
+            || relative(cs.margin_left)
+            || (caption_is_sized(cs)
+                && (matches!(cs.margin_left, M::Auto) || matches!(cs.margin_right, M::Auto)))
+    }
+
+    /// Write caption `id`'s margins into its Taffy style `ts`, resolved
+    /// against the table's border-box width from the last compute (CSS: a
+    /// caption's containing block is the table wrapper, as wide as the
+    /// table). A percentage side margin resolves only when the table has a
+    /// width of its own; in a table as wide as its content it would feed its
+    /// own basis, and it is taken as zero (Chrome resolves it against the
+    /// final width). A top or bottom one always resolves: it sizes no width.
+    pub(crate) fn patch_caption_margins(
+        &self,
+        id: RawNodeId,
+        taffy_id: taffy::NodeId,
+        ts: &mut taffy::Style,
+    ) {
+        let node = &self.tree.nodes[id];
+        let Some(c) = &node.table_cell else {
+            return;
+        };
+        let Some(table) = self.tree.taffy.parent(taffy_id) else {
+            return;
+        };
+        let (Ok(t), Ok(own)) = (
+            self.tree.taffy.layout(table),
+            self.tree.taffy.layout(taffy_id),
+        ) else {
+            return;
+        };
+        let definite = node
+            .parent
+            .and_then(|p| Self::table_of(&self.tree, p))
+            .and_then(|t| self.tree.nodes[t].table_box.as_ref())
+            .is_some_and(|b| b.definite);
+        let basis = CaptionBasis {
+            full: t.size.width,
+            percent: definite.then_some(t.size.width),
+            // A caption stays inside the table's border (#2394).
+            table: t.size.width - t.border.left - t.border.right,
+            caption: own.size.width,
+        };
+        let [top, right, bottom, left] =
+            caption_margins(&node.computed_style, c.outside, Some(basis));
+        ts.margin = taffy::Rect {
+            top: taffy::LengthPercentageAuto::length(top),
+            right: taffy::LengthPercentageAuto::length(right),
+            bottom: taffy::LengthPercentageAuto::length(bottom),
+            left: taffy::LengthPercentageAuto::length(left),
+        };
     }
 
     /// Resolve every shared edge of a collapsing table and write the winners
@@ -1857,4 +2003,79 @@ impl RinchDocument {
             child.layout.y += delta;
         }
     }
+}
+
+/// What a caption's margins resolve against, from the last compute.
+#[derive(Debug, Clone, Copy)]
+struct CaptionBasis {
+    /// The table's border-box width, for a percentage top or bottom margin.
+    full: f32,
+    /// The same for a percentage side margin, when the table has a width of
+    /// its own: in a table as wide as its content, a side margin would feed
+    /// its own basis.
+    percent: Option<f32>,
+    /// The table's width inside its border, where the caption is.
+    table: f32,
+    /// The caption's border-box width.
+    caption: f32,
+}
+
+/// Whether a caption has a `width` of its own, which `auto` side margins
+/// share the rest of the table's width around.
+fn caption_is_sized(cs: &crate::computed_style::ComputedStyle) -> bool {
+    matches!(
+        cs.width,
+        DimensionValue::Length(_) | DimensionValue::Percent(_) | DimensionValue::Calc { .. }
+    )
+}
+
+/// A caption's Taffy margins (top, right, bottom, left): its own, resolved
+/// against the table's width, plus `outside`, which takes it out of the
+/// table's padding (#2350; module docs, *Captions*). With no `basis` (before
+/// the first compute) a margin that needs one is seeded: a percentage as
+/// zero, a `calc()` as its length, an `auto` as zero. `auto` is zero
+/// vertically, and beside an `auto` width (the caption fills the table); beside
+/// a `width`, the side margins share what the table's width leaves.
+fn caption_margins(
+    cs: &crate::computed_style::ComputedStyle,
+    outside: [f32; 4],
+    basis: Option<CaptionBasis>,
+) -> [f32; 4] {
+    use crate::computed_style::values::LengthPercentageAutoValue as M;
+    let resolve_in = |m: M, width: Option<f32>| -> Option<f32> {
+        match m {
+            M::Auto => None,
+            M::Length(v) => Some(v),
+            M::Percent(p) => Some(width.map_or(0.0, |w| p * w)),
+            M::Calc { px, pct } => Some(px + width.map_or(0.0, |w| pct * w)),
+        }
+    };
+    let (full, side) = (basis.map(|b| b.full), basis.and_then(|b| b.percent));
+    let top = resolve_in(cs.margin_top, full).unwrap_or(0.0);
+    let bottom = resolve_in(cs.margin_bottom, full).unwrap_or(0.0);
+    let (l, r) = (
+        resolve_in(cs.margin_left, side),
+        resolve_in(cs.margin_right, side),
+    );
+    let (left, right) = match (l, r, basis) {
+        (Some(l), Some(r), _) => (l, r),
+        (l, r, Some(b)) if caption_is_sized(cs) => {
+            let free = b.table - b.caption;
+            match (l, r) {
+                (Some(l), None) => (l, free - l),
+                (None, Some(r)) => (free - r, r),
+                _ => {
+                    let half = (free / 2.0).max(0.0);
+                    (half, half)
+                }
+            }
+        }
+        (l, r, _) => (l.unwrap_or(0.0), r.unwrap_or(0.0)),
+    };
+    [
+        top + outside[0],
+        right + outside[1],
+        bottom + outside[2],
+        left + outside[3],
+    ]
 }

@@ -35,6 +35,36 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     right in English: `y` is 0 for ordinary Latin shaping and non-zero only for mark positioning.
     `crates/rinch-dom/src/paint/text.rs` **adds** it, in the main pass and the shadow pass alike;
     `crates/rinch-dom/tests/glyph_y_ydown_tests.rs` is the pin, one fixture per site.
+  - **Break opportunities between printable ASCII characters are Chrome's, not UAX #14's**
+    (#2369, #1910). parley's segmenter (ICU4X) follows UAX #14, which breaks after `/` (SY),
+    `!` (EX), `|` (BA) and `}` (CL) before a letter: no rule keeps those pairs together, so
+    LB31 breaks, and `https://example.com/a/long/url` broke as `https://` / `example.com/` /
+    `a/long/url` in a 120px box — in mail, a URL in a signature or footer wrapped at every
+    slash. Chrome keeps it whole (one 234px line, overflowing): Blink's `NextBreakablePosition`
+    reads its own ASCII pair table (`kAsciiLineBreakTable`, from
+    `character_property_data_generator.cc`) instead of ICU for every pair of printable ASCII
+    characters, and decides a hyphen before a digit itself (a break only after a letter or
+    digit: `cccc-|1234`, but `x -5` and `(-5)` keep the minus sign, where LB25 has no break at
+    all). So the URL breaks only after `?` and `-` (`…/search?` / `q=rinch&lang=en_US`). rinch
+    hands parley that table as its line-break override (`ifc::CHROME_LINE_BREAKS`, with the
+    opportunity after a space run that was already there; `ifc::chrome_break`), built with
+    parley's public `AsciiLineBreakTableBuilder` (`ifc::CHROME_ASCII_PAIRS`, the same table as
+    parley's private one behind `CHROMIUM_LINE_BREAK_OVERRIDE`), and the seams pass's
+    `ifc::TextBreaks` asks the same function, so both agree. Pairs with a space, a tab or a
+    non-ASCII character are still UAX #14's, so CJK and Thai break as before.
+    `crates/rinch-dom/tests/url_line_break_2369_tests.rs` pins all 8,836 printable pairs
+    against Chrome 156, between letters and between digits
+    (`tests/url_line_break_2369/chrome156_ascii_pairs.tsv`), and URLs beside CJK, Thai, a float
+    and in table cells (a cell's min-content width is now the whole URL's, so a 150px table
+    holding one is 234px wide, as in Chrome). The one pair that still differs is `->`: the
+    bundled Inter shapes it as one arrow ligature and parley cannot break inside a cluster
+    (#2381). A `<wbr>` is laid out as a ZERO WIDTH SPACE (`ifc::WBR_TEXT`, #2386): before
+    this, it made no opportunity of its own (`aaaa<wbr>bbbb` was one line), which a URL hid
+    while UAX #14 broke after every `/` anyway; with `/` glued, a mail template's
+    `https://example.com/<wbr>a/<wbr>long` needs it. The ZWSP is not content to white-space
+    collapsing (`a <wbr> b` is `a b`) and owns no DOM text: its three flat bytes lie between
+    the text ranges around it. The builders that set the override are the IFC, a flex or grid item's text leaf
+    and the paint fallback; a form control's text (`form_control::field_text_layout`) does not.
 
   What 0.12 changed, and what rinch does about it:
   - **Line boxes are CSS line boxes** (linebender/parley#697, #863, #864). A line holds the root
@@ -315,12 +345,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`cac51813534b05bbc731127b18ae18d67949330e`, branch `rinch-patch`): twenty-five commits on the taffy `v0.14.0` tag
-(item 10 is two of them, item 15 three, item 18 four). It is a dependency, not a
+(`4d5e0b8cd43014ca6dbf6f5f2817a5c8b03ac1fb`, branch `rinch-patch`): twenty-seven commits on the taffy `v0.14.0` tag
+(item 10 is two of them, item 15 three, item 18 four, item 19 two). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the twenty-five commits onto the new tag. All are upstream
+and a Taffy bump rebases the twenty-seven commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -532,11 +562,10 @@ candidates.
    rows the same way less the rowspan step, the empty rows growing when every
    row that holds something is constrained; a caption row
    (`TableRow::caption`) takes none of it; and a table shorter than its rows
-   and captions grows to them unless its parent imposed its height (block
-   layout hands it none, `BlockItemStyle::resolves_own_height`, and a size
-   request does not stop at its `height`; a flex item's, an absolutely
-   positioned table's or a grid item's height reaches it as `known_dimensions`
-   and it does not grow, where Chrome does: #2358). Not modelled: percentage row
+   and captions grows to them (block layout hands it no height,
+   `BlockItemStyle::resolves_own_height`, and a size request does not stop at
+   its `height`; a height handed down as `known_dimensions` grows too since
+   item 19). Not modelled: percentage row
    heights and row baselines. `Style` is 32 bytes bigger. rinch sets it on
    every table, `sized` off for a block standing for an anonymous table
    (`apply_table_style`). Pins: the fork's `tests/table_rows.rs` and
@@ -586,12 +615,25 @@ candidates.
    cross size, was already fit to its items. `inline-flex` was already right: rinch sizes an
    atomic inline itself. Pins: the fork's `tests/fit_content_flex.rs` (27 shapes) and
    `crates/rinch-dom/tests/fit_content_flex_tests.rs` (Chrome's numbers).
+19. **A table's captions and imposed heights** (#2350 and #2358, commits `68e87bfc` and
+   `4d5e0b8c`). `size_table_rows` empties the gutters on either side of a caption row: a caption
+   is outside the table box, with no `border-spacing` between it and the rows or another caption
+   (rinch takes the table's padding out of the caption's margins, `table_layout.rs` *Captions*).
+   And a sized table grows to its rows when its parent hands it its height as well: the grid grows
+   past `known_dimensions.height`, `GridItemStyle` and `FlexboxItemStyle` gain
+   `resolves_own_height` (as `BlockItemStyle` has), and grid item placement and the
+   absolute-children code of block, flex and grid containers keep the larger of the height they
+   handed the table and the one it returned. Chrome 156 grows a column flex item (`height: 40px`
+   over two 30px rows: 60), a grid item stretched to a 40px track (60, overflowing the track) and
+   an absolutely positioned table (60). An in-flow flex item already took the size its layout
+   returns. Pins: the fork's `tests/table_rows.rs` and
+   `crates/rinch-dom/tests/table_caption_spacing_and_imposed_height_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
-with 13 and 14, and (6,021 generated, plus `tests/table_rows.rs`) with 15, and (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18.
+with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
+`tests/fit_content_flex.rs`) with 18, and (6,345 in all) with 19.
 
 
 ## Parley Fork
@@ -645,7 +687,7 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    `crates/rinch-dom/tests/faux_bold_threshold_2343.rs`.
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
-(`ifc::IfcText::wrap_spaces`, `ifc::SPACE_RUN_BREAKS`) and in the seams pass
+(`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass
 (`ifc::pre_seams_needed`, `ifc::break_overflowing_spaces`). `wrap_spaces` hands parley a `nowrap`
 or `pre` element's collapsible space as wrapping where Chrome has an opportunity before it, which
 Chrome decides item by item from the content before the space (`ifc::IfcText::last_wraps`,
