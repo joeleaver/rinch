@@ -1041,7 +1041,7 @@ keeps the size it had until you set another.
 
 rinch shows one window per process, so a bar and a wallpaper are two
 processes: `examples/wayland-bar` (a bottom bar with a clock that reserves
-its height and changes it at run time) and `examples/wayland-wallpaper` (a
+its height, and changes its height or moves to the other edge at run time) and `examples/wayland-wallpaper` (a
 `Background` surface the size of its output).
 
 ## Programmatic Window Management

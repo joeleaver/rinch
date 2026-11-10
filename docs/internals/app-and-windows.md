@@ -829,8 +829,10 @@ output, the fork's attributes, the exclusive zone's values, assignable axes,
 `layer_update`), `rinch_runtime::layer_drag_tests` (`an_app_placed_…`,
 `an_overlay_layer_surface_keeps_its_position`,
 `without_layer_shell_an_explicit_surface_is_an_ordinary_toplevel`), and the
-fork's `layer_shell::tests`. Live: `examples/wayland-bar` (a bottom bar,
-`BAR_SCRIPT=1` changes its exclusive zone at run time) and
+fork's `layer_shell::tests`. Live: `examples/wayland-bar` (a bottom bar;
+`BAR_SCRIPT=1` changes its exclusive zone at run time, `BAR_SCRIPT=edges`
+moves it between the bottom and top edges by its anchors, `BAR_EDGE=top`
+starts it on top) and
 `examples/wayland-wallpaper` (a `background` surface; a second process,
 since rinch shows one window per process), checked in a nested
 `kwin_wayland --virtual` and a headless sway (PR for #2413).
