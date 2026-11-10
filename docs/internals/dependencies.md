@@ -345,12 +345,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`0fb6acf583f34f8b2ae93a07cd8e14adc6219dc2`, branch `rinch-patch`): thirty commits on the taffy `v0.14.0` tag
+(`ca75d423c3843faf8979bea3b744011ebabe968e`, branch `rinch-patch`): thirty-one commits on the taffy `v0.14.0` tag
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-one commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -658,12 +658,26 @@ candidates.
    its percentages resolved against zero (`replaced::min_content_style`). Postrinch mail 033 drew
    a `max-width: 640px` card 872 wide and 1,120px taller than Chrome. Pins:
    `crates/rinch-dom/tests/compressible_replaced_min_content_tests.rs`.
+22. **`round_layout` rounds a location as an absolute edge** (#2437, commit `ca75d423`, fork PR
+   joeleaver/taffy-fork#11). Taffy rounded a box's size, border and padding from its cumulative
+   position but its location on its own (`round(x)`), so the error in a box's absolute position grew
+   by up to half a pixel per nesting level: ten levels of `padding-left: 13.774px` put the innermost
+   box at 140 (Chrome 157: 137.66; the exact sum 137.74) and its right edge at 402 in a 400px column.
+   The location is now `round(abs) - round(parent abs)`, so a box's rounded absolute position is the
+   rounding of its exact one at any depth, and a child never overhangs its parent's rounded edge by
+   rounding alone. Eight of Taffy's generated expectations recorded the old parent-relative rounding
+   (`align_baseline_child_margin_percent` ×4, `rounding_fractial_input_6`/`_7` rtl ×4: a child at a
+   half-pixel offset in a parent at a half-pixel position) and were updated to the absolute-edge
+   answer, where each child stays inside its parent. Layout stays whole-pixel; Chrome's 1/64px layout
+   units with paint-time snapping is the larger design on #2437. A scroller's exact range reads a
+   child as Taffy-placed by the same rule (`paint::scrollbar::rounded_location`). Pins:
+   `crates/rinch-dom/tests/nested_fractional_insets_2437_tests.rs`, the fork's `tests/round_location.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, and with 21 the same 6,348 save one: `hand_written::floats::table_with_a_declared_width_fits_by_the_width_it_widens_to` fails at 20's own head `e1d656d2` too.
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, and with 21 the same 6,348 save one: `hand_written::floats::table_with_a_declared_width_fits_by_the_width_it_widens_to` fails at 20's own head `e1d656d2` too. With 22, 6,348 of 6,349 (that one again; eight generated expectations updated, item 22).
 
 
 ## Parley Fork

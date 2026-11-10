@@ -9,7 +9,7 @@ license.workspace = true
 rinch-words.workspace = true
 rinch-core = { workspace = true }
 slab = "0.4"
-# Taffy 0.14 from joeleaver/taffy-fork, branch `rinch-patch`: v0.14.0 plus twenty-nine commits (seven for floats, one
+# Taffy 0.14 from joeleaver/taffy-fork, branch `rinch-patch`: v0.14.0 plus thirty commits (seven for floats, one
 # laying a float out in its container's run mode, review of #2313, the last
 # keeping the tail of a float that reaches below the others, #2362; the measure
 # cache's sixteen entries, an auto-height grid's rows sized to their content,
@@ -42,10 +42,12 @@ slab = "0.4"
 # #2326); and `table_rows` sizes a table's rows as Blink does, a rowspan's
 # and a taller table's extra height in proportion to the rows' heights (#2312);
 # and a table, replaced element or sizing-keyword box sits beside floats only
-# if the width it takes there fits, else moves below them (#2397).
+# if the width it takes there fits, else moves below them (#2397); and
+# `round_layout` rounds a location as an absolute edge, so nested fractional
+# insets round once, not per level (#2437).
 # A dependency, not a [patch], so an app on rinch gets it with
 # nothing to copy. Pinned by rev so a push to the fork's branch never changes
-# rinch; moving it is a rinch PR, and a Taffy bump rebases the twenty-nine commits.
+# rinch; moving it is a rinch PR, and a Taffy bump rebases the thirty commits.
 #
 # Taffy's default features minus the four rinch never reads (#1260), which
 # cost instructions in every compute whether read or not:

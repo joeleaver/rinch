@@ -522,7 +522,8 @@ beside it: `clamp_scroll_offsets` never clamps the x offset (**#1368**).
 against its content-box height until #842 made it the padding box, #1367.)
 
 **A scroller's range is Chrome's whole-pixel range (#2116).** Taffy rounds
-a box's *location* on its own and its *size* from its absolute edges, so the
+a box's edges where they are on the page (its *location* too since #2437,
+`round(abs) - round(parent abs)`; it used to round that on its own), so the
 rounded rects of a container's children need not add up to its rounded size:
 the in-window menu bar's two-item dropdown (border 1, padding 4, two 32.8px
 rows and a separator) fits exactly and measured a pixel past its content box at
@@ -535,8 +536,9 @@ at 1, 1.25 and 1.5), and shows a bar when the first is larger: 0.4px of
 overflow is none, 0.5px is a pixel's range. So for a box that scrolls on either
 axis, `content_extents` (`scroller_extents`) measures from Taffy's
 **unrounded** layout — the container's size, and the rect of every box Taffy
-laid out directly in it (`child_rect`; a box whose `layout` is not a rounding
-of its unrounded rect, such as an absolute one moved by a scroll, is read
+laid out directly in it (`child_rect`; a box whose `layout` is not Taffy's
+rounding of its unrounded rect — `rounded_location` from the container's
+unrounded origin — such as an absolute one moved by a scroll, is read
 rounded) — and an overflowing scrolling axis reports the content box plus that
 whole-pixel range, so the bar, `overflows`, `can_scroll_toward`, the wheel's
 walks, layout's clamp and `scrollHeight` all read one number; an axis that
