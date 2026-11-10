@@ -249,7 +249,8 @@ pub(super) fn render_text_shadow_pass(
 /// `mask` may show ([`TextMask::may_show`]), from its first shown glyph's
 /// start to its last one's end and from its top to its bottom (ascent and
 /// descent, or the line box when that is taller), moved by any
-/// `vertical-align` shift of the glyphs (#724), grown by how far glyph ink may
+/// `vertical-align` shift of the glyphs (#724) and any relative inline
+/// element's offset (#1425), grown by how far glyph ink may
 /// reach past them.
 ///
 /// With a mask, only what the mask shows counts: a text fragment's mask
@@ -264,7 +265,7 @@ fn text_extent(
     mask: Option<&TextMask>,
     valign: Option<&crate::node::InlineLayout>,
 ) -> Rect {
-    let valign = valign.filter(|l| !l.vertical_align_spans.is_empty());
+    let valign = valign.filter(|l| l.shifts_glyphs());
     let mut r: Option<Rect> = None;
     let mut size = 0.0_f32;
     let mut add = |rect: Rect| r = Some(r.map_or(rect, |r| r.union(rect)));
@@ -322,13 +323,13 @@ fn text_extent(
                     let mut x = x0;
                     for (glyph, &byte) in glyphs.iter().zip(&bytes[range]) {
                         if mask.is_none_or(|m| !m.hidden_at(byte)) {
-                            let shift =
-                                valign.map_or(0.0, |l| l.vertical_align_shift_at(byte)) as f64;
+                            let (dx, dy) = valign.map_or((0.0, 0.0), |l| l.glyph_offset_at(byte));
+                            let (dx, dy) = (dx as f64, dy as f64);
                             add(Rect::new(
-                                x as f64,
-                                top + shift,
-                                (x + glyph.advance) as f64,
-                                bottom + shift,
+                                x as f64 + dx,
+                                top + dy,
+                                (x + glyph.advance) as f64 + dx,
+                                bottom + dy,
                             ));
                             shown = true;
                         }

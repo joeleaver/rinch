@@ -1339,6 +1339,10 @@ mod prune_tests;
 mod hidden_ancestor_hit_843_tests;
 
 #[cfg(test)]
+#[path = "relative_inline_hit_2346_tests.rs"]
+mod relative_inline_hit_2346_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{flow_extent, hit_test};
     use rinch_core::dom::{DomDocument, NodeId};

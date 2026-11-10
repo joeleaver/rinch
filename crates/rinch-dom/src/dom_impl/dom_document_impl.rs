@@ -1408,8 +1408,14 @@ impl DomDocument for RinchDocument {
                     .find_map(|c| c.cached_text_parley.as_deref())
             })?;
         let (top, height) = crate::text_query::line_box_for_offset(layout, byte_offset, affinity)?;
+        // The line as the text at `byte_offset` is drawn: moved by a relative
+        // inline element (#1425), as the caret there is.
+        let dy = node
+            .text_layout
+            .as_ref()
+            .map_or(0.0, |l| l.relative_offset_at(byte_offset).1);
         let (_, oy) = self.text_layout_origin(node_id);
-        Some((oy + top, height))
+        Some((oy + top + dy, height))
     }
 
     /// What the next `resolve_layout` would act on: a style change, a box
@@ -1469,10 +1475,13 @@ impl DomDocument for RinchDocument {
         box_id: u64,
         after: bool,
     ) -> Option<(f32, f32, f32)> {
-        let layout = &self.tree.nodes.get(node_id)?.text_layout.as_ref()?.layout;
-        let (x, y, h) = crate::text_query::inline_box_caret(layout, box_id, after)?;
+        let inline = self.tree.nodes.get(node_id)?.text_layout.as_ref()?;
+        let (x, y, h) = crate::text_query::inline_box_caret(&inline.layout, box_id, after)?;
+        // Beside the box where it is drawn: moved by the relative inline
+        // elements around it (#1425).
+        let (dx, dy) = inline.inline_box_relative_offset(box_id, |id| self.tree.nodes.get(id));
         let (ox, oy) = self.text_layout_origin(node_id);
-        Some((ox + x, oy + y, h))
+        Some((ox + x + dx, oy + y + dy, h))
     }
 
     fn query_inline_box_caret_rect(
@@ -1601,13 +1610,17 @@ impl DomDocument for RinchDocument {
             (None, None) => return Vec::new(),
         };
         let (ox, oy) = self.text_layout_origin(node_id);
-        let rects = crate::text_query::selection_rects_for_layout(layout, byte_a, byte_b);
-        self.cut_generated(node_id, byte_a, byte_b, rects, |s, e| {
-            crate::text_query::selection_rects_for_layout(layout, s, e)
-        })
-        .into_iter()
-        .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
-        .collect()
+        // An IFC root's pieces are where its text is drawn: moved by a
+        // relative inline element (#1425).
+        let rects_of = |s: usize, e: usize| match &node.text_layout {
+            Some(inline) => crate::text_query::selection_rects_for_inline(inline, s, e),
+            None => crate::text_query::selection_rects_for_layout(layout, s, e),
+        };
+        let rects = rects_of(byte_a, byte_b);
+        self.cut_generated(node_id, byte_a, byte_b, rects, rects_of)
+            .into_iter()
+            .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
+            .collect()
     }
 
     fn query_selection_rects_with_boxes(
@@ -1626,14 +1639,32 @@ impl DomDocument for RinchDocument {
             (None, None) => return Vec::new(),
         };
         let (ox, oy) = self.text_layout_origin(node_id);
-        let rects =
-            crate::text_query::selection_rects_with_boxes(layout, byte_a, byte_b, selected_boxes);
-        self.cut_generated(node_id, byte_a, byte_b, rects, |s, e| {
-            crate::text_query::selection_rects_for_layout(layout, s, e)
-        })
-        .into_iter()
-        .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
-        .collect()
+        // Where the text and the boxes are drawn: moved by a relative inline
+        // element (#1425).
+        let get = |id| self.tree.nodes.get(id);
+        let rects = match &node.text_layout {
+            Some(inline) => crate::text_query::selection_rects_with_boxes_for_inline(
+                inline,
+                byte_a,
+                byte_b,
+                selected_boxes,
+                get,
+            ),
+            None => crate::text_query::selection_rects_with_boxes(
+                layout,
+                byte_a,
+                byte_b,
+                selected_boxes,
+            ),
+        };
+        let rects_of = |s: usize, e: usize| match &node.text_layout {
+            Some(inline) => crate::text_query::selection_rects_for_inline(inline, s, e),
+            None => crate::text_query::selection_rects_for_layout(layout, s, e),
+        };
+        self.cut_generated(node_id, byte_a, byte_b, rects, rects_of)
+            .into_iter()
+            .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
+            .collect()
     }
 
     fn query_glyph_bounds(
