@@ -87,3 +87,44 @@ fn a_negative_margin_gives_the_line_room_back() {
     let first_line = target(25.0, &format!(r#"{T}{IB}"#)).1;
     assert_eq!((x, y), (5.0, first_line), "Chrome x 5, on the first line");
 }
+
+/// The height of a `.c` container `width` wide holding `inner`.
+fn height(width: f32, inner: &str) -> f32 {
+    let mut doc = RinchDocument::new();
+    doc.load_css("body { margin: 0 } .c { font-size: 12px; line-height: 23px }");
+    let body = doc.body();
+    doc.set_inner_html(
+        body,
+        &format!(r#"<div class="c" id="c" style="width:{width}px">{inner}</div>"#),
+    );
+    doc.resolve_layout(720.0, 800.0);
+    let c = rinch_dom::query::query_all(&doc.tree, doc.tree.root_id, "#c")[0];
+    doc.tree.nodes[c].layout.height
+}
+
+/// An edge box inside a word is no break opportunity, whatever its sign
+/// (review of #2450): in a 20px box the word overflows on one line. A
+/// negative edge broke it where a positive one did not. Chrome 156's
+/// heights; each word is wider than 20px in any font, so a line count is
+/// all they pin.
+#[test]
+fn a_negative_edge_inside_a_word_is_no_break_opportunity() {
+    let cases = [
+        (r#"abc<span style="margin-left:-3px">def</span>"#, 23.0),
+        (r#"abc def<span style="margin-left:-3px">ghi</span>"#, 46.0),
+        (r#"<span style="margin-right:-3px">abc</span>def"#, 23.0),
+        (
+            r#"abc<span style="margin-left:-3px;padding-left:3px">def</span>"#,
+            23.0,
+        ),
+        (r#"abc<span style="margin-left:3px">def</span>"#, 23.0),
+    ];
+    let wrong: Vec<String> = cases
+        .iter()
+        .filter_map(|&(inner, chrome)| {
+            let got = height(20.0, inner);
+            (got != chrome).then(|| format!("{inner}: rinch {got}, Chrome {chrome}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

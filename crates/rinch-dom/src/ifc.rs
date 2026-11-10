@@ -4444,6 +4444,14 @@ fn logical_units(
 /// width units right after it may belong to this line or the next; either way
 /// they add nothing to the next line's sum, and a line that hangs a space ends
 /// on that space, which has width.
+///
+/// An edge box of a negative inline margin has a negative width (#2406), so
+/// the sum can pass the advance and come back: past it, the edge boxes right
+/// after are added too, and the line ends after the one that brings the sum
+/// back to the advance. (`abc<span style="margin-left:-3px">def</span>`
+/// broken after the box: the sum passed the line's advance at `c`, the line
+/// was taken for one the table could not account for, and parley's break
+/// inside the word stood. Review of #2450.)
 fn line_end(units: &[LineUnit], start: usize, advance: f32) -> Option<usize> {
     const TOL: f32 = 0.005;
     if advance <= TOL {
@@ -4453,7 +4461,20 @@ fn line_end(units: &[LineUnit], start: usize, advance: f32) -> Option<usize> {
     for (i, u) in units.iter().enumerate().skip(start) {
         acc += u.advance;
         if acc >= advance - TOL {
-            return (acc <= advance + TOL).then_some(i + 1);
+            if acc <= advance + TOL {
+                return Some(i + 1);
+            }
+            let mut back = acc;
+            for (j, edge) in units.iter().enumerate().skip(i + 1) {
+                if edge.edge == 0 {
+                    break;
+                }
+                back += edge.advance;
+                if (back - advance).abs() <= TOL {
+                    return Some(j + 1);
+                }
+            }
+            return None;
         }
     }
     None
