@@ -2909,6 +2909,30 @@ impl Node {
         ) || self.has_transform()
     }
 
+    /// Whether this box is the containing block of a `position: fixed`
+    /// descendant in place of the viewport: it has a `transform`, or
+    /// `contain: paint` or `layout` (CSS Transforms 1 §2, CSS Containment 2
+    /// §3.2-3.3). Read only by the fixed box's percentage size bake
+    /// (`out_of_flow::fixed_containing_block_is_viewport`, #2427); rinch
+    /// still places such a box against the viewport.
+    pub fn establishes_fixed_containing_block(&self) -> bool {
+        if matches!(
+            self.computed_style.display,
+            crate::computed_style::DisplayValue::Contents
+        ) {
+            return false;
+        }
+        if self.has_transform() {
+            return true;
+        }
+        use style::values::computed::Contain;
+        self.stylo_element_data
+            .borrow()
+            .as_ref()
+            .and_then(|d| d.styles.get_primary().map(|p| p.get_box().clone_contain()))
+            .is_some_and(|c| c.intersects(Contain::PAINT | Contain::LAYOUT))
+    }
+
     /// Whether this box is taken **out of flow** — CSS 2.1 §9.3.
     ///
     /// An out-of-flow box is neither inline content nor in-flow block content,

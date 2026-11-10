@@ -308,7 +308,11 @@ pinned (a `flex-start` row item, a `flex: 1` item of an auto column, a
 `start` grid item and a `min-height`-only block stay indefinite). A
 `position: fixed` box's percentage `width`/`height` are baked from the
 viewport (`apply_out_of_flow_size_overrides`, #2427), where Taffy used to
-resolve them against the box's layout parent; `top` wins over
+resolve them against the box's layout parent — unless an ancestor with a
+`transform` or `contain: paint`/`layout` is its containing block
+(`out_of_flow::fixed_containing_block_is_viewport`), where Taffy's answer is
+kept (Chrome's when that ancestor is the layout parent; rinch still places
+such a box against the viewport); `top` wins over
 `bottom`, and `left` over `right` in a left-to-right block (Chrome 156).
 Offsets **compose** (`InlineLayout::relative_offset_at` sums every span over a
 byte; `element_relative_offset` sums an element's and its inline ancestors').
@@ -346,8 +350,9 @@ by the unmoved lines (`byte_offset_from_position`, `cluster_range_at_point`;
 **#2404**); a block inside a relative **split** inline (#513) is not moved
 (**#2408**: Chrome moves it with the span); a percentage `top` of a block
 whose `height` changes with no width change keeps the old offset until the
-lines are rebuilt (likely also one whose height only becomes definite or
-indefinite, not pinned); and a change of an inset
+lines are rebuilt, and so does one whose height or definiteness changes
+(a row growing 100 → 200px: Chrome 8 → 18, rinch 8), a span first resolved
+to 0 being dropped for good (**#2457**); and a change of an inset
 reshapes the paragraph, where moving the spans again would do (**#2412**).
 
 **An auto-width absolute box is shrunk to fit in what its containing block

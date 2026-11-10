@@ -351,7 +351,8 @@ fn a_percentage_top_is_of_a_height_that_layout_makes_definite() {
 /// Chrome 2.391 on its 1/64 px grid); an absolute box's `height: 50%` of
 /// its containing block, the 200px box two levels up, past a static
 /// parent, and `aspect-ratio: 4 / 1` of the 400px width — 100 tall, 93
-/// inside, 9.3 (Chrome 9.297); a column item's `flex: 1` of a 200px
+/// inside, 9.3 (Chrome 9.297), as is an `inline-block` of `height: 100px`
+/// (laid out by the atomic-inline compute); a column item's `flex: 1` of a 200px
 /// container — 187, 180 inside, 18; and `position: fixed; height: 50%`, of
 /// the viewport — 300, 293 inside, 29.3 (Chrome: 10% of its content height
 /// too, 24.938 of 249.5 in its 539px headless viewport). Where the size is
@@ -409,6 +410,11 @@ fn a_percentage_top_is_of_every_height_layout_takes_as_definite_2427() {
                 c("flex: 1;")
             ),
             18.0,
+        ),
+        (
+            "an inline-block of height 100px",
+            format!("<div>{}</div>", c("display: inline-block; height: 100px;")),
+            9.3,
         ),
         (
             "a fixed box's percentage of the viewport",
@@ -478,6 +484,29 @@ fn a_percentage_top_is_of_every_height_layout_takes_as_definite_2427() {
     doc.resolve_layout(VW, VH);
     let l = doc.tree.get(one(&doc, "[data-m=c]")).unwrap().layout;
     assert_eq!([l.width, l.height], [200.0, 300.0], "the fixed box's size");
+}
+
+/// Under a `transform` or `contain: paint` ancestor, a fixed box's
+/// percentage size is of that ancestor, not the viewport: `width: 50%;
+/// height: 50%` in a 300x200 one is 150x100, and `top: 10%` of its 93
+/// inside is 9.3 (Chrome 157: 150x100, 9.297, for both).
+#[test]
+fn a_fixed_box_under_a_containing_ancestor_takes_its_percentages_from_it_2427() {
+    for anc in ["transform: translateX(0)", "contain: paint"] {
+        let html = format!(
+            r#"<div style="width: 300px; height: 200px; {anc}"><div data-m="c" style="{C}position: fixed; top: 0; left: 0; width: 50%; height: 50%;">INNER</div></div>"#
+        );
+        let mut doc = document();
+        let body = doc.body();
+        let wrap = doc.create_element("div");
+        doc.set_inner_html(wrap, &html.replace("INNER", "x"));
+        doc.append_child(body, wrap);
+        doc.resolve_layout(VW, VH);
+        let l = doc.tree.get(one(&doc, "[data-m=c]")).unwrap().layout;
+        assert_eq!([l.width, l.height], [150.0, 100.0], "{anc}");
+        let [_, dy] = moved_in_html(&html, &lead(), "top: 10%", "ib");
+        assert!((dy - 9.3).abs() < 0.001, "{anc}: got {dy}");
+    }
 }
 
 /// A sticky span is not moved by its insets where nothing scrolls it past

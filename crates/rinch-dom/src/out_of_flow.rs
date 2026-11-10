@@ -1111,7 +1111,7 @@ pub(crate) fn bake_at_style_site(
         let known = ContainingBox::of(tree, kind)
             .filter(|cb| !ancestor || cb.width > 0.0 || cb.height > 0.0);
         if let Some(cb) = known {
-            apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), taffy_style);
+            apply_out_of_flow_size_overrides(tree, node, kind, (cb.width, cb.height), taffy_style);
             baked_against_ancestor = ancestor;
         }
     } else if node.box_position() == PositionValue::Absolute {
@@ -1173,7 +1173,7 @@ pub(crate) fn rebake_after_inset_write(
         return;
     };
     unbake(&node.computed_style, false, taffy_style);
-    apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), taffy_style);
+    apply_out_of_flow_size_overrides(tree, node, kind, (cb.width, cb.height), taffy_style);
 }
 
 /// `read_layout_results` has classified the absolute box `node_id` as `kind`.
@@ -1218,6 +1218,23 @@ pub(crate) fn begin_read(tree: &mut NodeTree) {
     tree.abs_chain_marked = marked;
 }
 
+/// Whether a `position: fixed` box's containing block is the viewport: no
+/// ancestor with a `transform` or `contain: paint`/`layout` stands in for it
+/// (CSS Transforms 1 §2, CSS Containment 2 §3.2-3.3).
+pub(crate) fn fixed_containing_block_is_viewport(tree: &NodeTree, node: &Node) -> bool {
+    let mut current = node.parent;
+    while let Some(id) = current {
+        let Some(ancestor) = tree.get_live(id) else {
+            break;
+        };
+        if ancestor.establishes_fixed_containing_block() {
+            return false;
+        }
+        current = ancestor.parent;
+    }
+    true
+}
+
 /// Bake an out-of-flow box's Taffy **size** from its real containing block,
 /// `cb` — the width and height of the viewport or of an ancestor's padding
 /// box.
@@ -1248,6 +1265,7 @@ pub(crate) fn begin_read(tree: &mut NodeTree) {
 /// image of `width`/`height`): the branches below read which of `auto`,
 /// `stretch` or a length the style carries.
 pub(crate) fn apply_out_of_flow_size_overrides(
+    tree: &NodeTree,
     node: &Node,
     kind: OutOfFlowKind,
     cb: (f32, f32),
@@ -1256,6 +1274,9 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     let (cw, ch) = cb;
     let cs = &node.computed_style;
     let absolute = kind.is_absolute();
+    // A percentage `width`/`height` is of the block: an absolute box's, and
+    // a fixed box's viewport unless an ancestor stands in for it (#2427).
+    let percent_of_cb = absolute || fixed_containing_block_is_viewport(tree, node);
     // What a margin takes out of the space between two insets. `auto` takes
     // none of it here: with an auto size the box fills the space and an auto
     // margin is zero (CSS 2.1 §10.3.7).
@@ -1325,12 +1346,16 @@ pub(crate) fn apply_out_of_flow_size_overrides(
                 taffy_style.size.width = taffy::Dimension::fit_content_px(available.max(0.0));
             }
         }
-    } else {
+    } else if percent_of_cb {
         // Taffy would resolve these against the direct parent. A mixed
         // calc() takes the same arm as a plain percentage (#278/#496 review).
         // A fixed box's are of the viewport too (#2427: Chrome 157 gives
         // `position: fixed; height: 50%` half the viewport, where Taffy
-        // gave it half of an auto-height parent).
+        // gave it half of an auto-height parent). Under a transformed or
+        // paint-contained ancestor, which is a fixed box's containing block
+        // instead, rinch places the box against the viewport still, but
+        // Taffy's size against the layout parent is Chrome's when that
+        // parent is the ancestor (150x100 in a 300x200 one), as on main.
         match cs.width {
             DimensionValue::Percent(p) => {
                 taffy_style.size.width = taffy::Dimension::length((cw * p).max(0.0));
@@ -1354,7 +1379,7 @@ pub(crate) fn apply_out_of_flow_size_overrides(
             taffy_style.size.height =
                 taffy::Dimension::length((ch - t - b - mt - mb - inset_y).max(0.0));
         }
-    } else {
+    } else if percent_of_cb {
         match cs.height {
             DimensionValue::Percent(p) => {
                 taffy_style.size.height = taffy::Dimension::length((ch * p).max(0.0));
@@ -2541,7 +2566,13 @@ impl RinchDocument {
                     let Some(cb) = ContainingBox::of(&self.tree, kind) else {
                         continue;
                     };
-                    apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), &mut next);
+                    apply_out_of_flow_size_overrides(
+                        &self.tree,
+                        node,
+                        kind,
+                        (cb.width, cb.height),
+                        &mut next,
+                    );
                 }
                 None => fit_in_layout_parent(&self.tree, node, &mut next),
             }
@@ -2636,6 +2667,7 @@ impl RinchDocument {
                         Some(cb) => {
                             unbake(&node.computed_style, false, &mut next);
                             apply_out_of_flow_size_overrides(
+                                &self.tree,
                                 node,
                                 kind,
                                 (cb.width, cb.height),
@@ -2660,6 +2692,7 @@ impl RinchDocument {
                         Some(kind) => {
                             let vp = self.tree.viewport;
                             apply_out_of_flow_size_overrides(
+                                &self.tree,
                                 node,
                                 kind,
                                 (vp.width, vp.height),
