@@ -198,12 +198,14 @@ jobs:
         github.event.label.name == 'perf-regression-accepted'))
     # Job-level, not workflow-level: a run whose job is skipped (an unrelated
     # label) never enters the group, so it cannot cancel a real run (D2).
-    # A PR's superseded run is cancelled. Pushes to `main` share one group
-    # keyed on the ref and are never cancelled in progress: a later push waits
-    # for the running one. (GitHub keeps one PENDING run per group, so a third
-    # push arriving while two wait replaces the older waiting one.)
+    # A PR's superseded run is cancelled. Each push to `main` has a group of
+    # its own (keyed on `github.sha`), so no push waits for, cancels or
+    # replaces another: every batch merge is measured. Keying on the ref would
+    # not do that, since GitHub keeps one PENDING run per group and a third
+    # push would replace the waiting one. Parallel runs are fine: instruction
+    # counts do not depend on the runner's load.
     concurrency:
-      group: perf-${{ github.event_name == 'push' && github.ref || github.event.pull_request.number }}
+      group: perf-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number }}
       cancel-in-progress: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60

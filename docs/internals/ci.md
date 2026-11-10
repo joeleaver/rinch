@@ -17,8 +17,9 @@ Two kinds of pull request into `main`:
 A push to `main` runs everything a batch does and deploys the docs. It is also
 where Perf measures by default: `instruction-counts` compares the pushed commit
 (a batch's merge commit) against its first parent, the `main` it landed on, so
-each batch's cost is measured once, after it lands (about 40 minutes; pushes
-queue, one at a time). There is no label escape hatch on a push: a Perf failure
+each batch's cost is measured once, after it lands (about 40 minutes; each
+push's run has its own concurrency group, keyed on the commit, so runs of
+successive pushes go in parallel and none is cancelled). There is no label escape hatch on a push: a Perf failure
 there is a red `main`, which the lead fixes forward or reverts. The report is
 the job summary only. To measure a batch **before** merging it, put the `perf`
 label on the batch PR. A manual dispatch of `CI`
