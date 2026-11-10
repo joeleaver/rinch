@@ -345,7 +345,7 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`e1d656d237030a526d9610a16afcb723a10d29fb`, branch `rinch-patch`): twenty-nine commits on the taffy `v0.14.0` tag
+(`bcb98683341871e3d694b3731954625b54fb9f93`, branch `rinch-patch`): twenty-nine commits on the taffy `v0.14.0` tag
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
@@ -630,7 +630,7 @@ candidates.
    `crates/rinch-dom/tests/table_caption_spacing_and_imposed_height_tests.rs`.
 
 20. **A self-sized formatting-context root fits beside floats by its own width** (#2397, commit
-   `e1d656d2`, fork PR joeleaver/taffy-fork#8). A box whose border box must not overlap floats
+   `bcb98683`, fork PR joeleaver/taffy-fork#8). A box whose border box must not overlap floats
    (CSS 2.2 §9.5: a formatting-context root, a table, a block-level replaced element) goes in the
    highest slot beside the floats it fits, else below them. The fit test took an auto width as
    the width it *stretches* to in the slot, which always fits, so a box that sizes itself was put
