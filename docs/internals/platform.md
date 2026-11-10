@@ -1277,9 +1277,12 @@ Stylo Device's provider used to answer `FontMetrics::default()`, so `ex` and
 font for the computed `font-family` (through `parley_font_family`, as for the
 element's text), weight and style. x-height and cap height come from OS/2
 `sxHeight`/`sCapHeight`, unrounded. A table without them (version < 2, or 0;
-DejaVu's is version 1) is measured from the top of the `x`/`H` outline and
-rounded to whole device pixels, which is what Chrome's hinted FreeType outline
-gives (Inter with its OS/2 cut to v1: `10ex` = 90px at 16px, 70px at 13px). `ch`
+DejaVu's is version 1) is measured from the top of the `x`/`H` outline hinted
+at the used size in device pixels by skrifa's autohinter in light mode
+(`MeasuredFace`, memoized per ppem). That is Chrome's FreeType `slight` hinting:
+it matched Chrome 157 for Times New Roman, Arial, Georgia, Verdana, Courier New
+and DejaVu Sans/Serif/Mono at 11-24px. The unhinted top rounded to a pixel did
+not (Times New Roman 16px `10ex`: 70, Chrome 80). `ch`
 is the `0` advance and `ic` the `水` advance, unrounded, `None` when the face
 lacks the glyph. The provider is `Sync` and cannot borrow the document's
 `font_cx`, so it answers from a per-document cache (`DeviceParams::font_metrics`)

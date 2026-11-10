@@ -312,6 +312,9 @@ pub(crate) fn face_metrics(
     })
 }
 
+/// The tops of `x` and `H`, in device pixels.
+type Tops = (Option<f32>, Option<f32>);
+
 /// A face whose x-height or cap height is not in its OS/2 table, so it is
 /// measured from the top of its `x` and `H` glyphs. Chrome 157 on Linux
 /// (Skia's FreeType scaler, `slight` hinting, which FreeType's light target
@@ -327,7 +330,7 @@ pub(crate) struct MeasuredFace {
     index: u32,
     variations: Vec<(skrifa::raw::types::Tag, f32)>,
     /// `(x top, H top)` in device pixels, per ppem (its bits).
-    tops: Mutex<HashMap<u32, (Option<f32>, Option<f32>)>>,
+    tops: Mutex<HashMap<u32, Tops>>,
 }
 
 impl std::fmt::Debug for MeasuredFace {
@@ -343,7 +346,7 @@ const TOPS_PER_FACE: usize = 64;
 
 impl MeasuredFace {
     /// The tops of `x` and `H` at `ppem` device pixels, hinted.
-    fn tops(&self, ppem: f32) -> (Option<f32>, Option<f32>) {
+    fn tops(&self, ppem: f32) -> Tops {
         if !(ppem.is_finite() && ppem > 0.0) {
             return (None, None);
         }
@@ -354,7 +357,7 @@ impl MeasuredFace {
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
         {
-            return found.clone();
+            return *found;
         }
         let found = self.measure(ppem);
         let mut tops = self.tops.lock().unwrap_or_else(|e| e.into_inner());
@@ -365,7 +368,7 @@ impl MeasuredFace {
         found
     }
 
-    fn measure(&self, ppem: f32) -> (Option<f32>, Option<f32>) {
+    fn measure(&self, ppem: f32) -> Tops {
         use skrifa::MetadataProvider;
         use skrifa::instance::Size;
         use skrifa::outline::{DrawSettings, Engine, HintingInstance, HintingOptions};
