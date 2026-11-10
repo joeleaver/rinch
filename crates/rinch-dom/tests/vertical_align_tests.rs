@@ -15,10 +15,11 @@
 //! against an atomic inline or a table cell, which is out of scope here —
 //! filed as #1357.
 //!
-//! The shift is a **post-layout glyph move**, not a Parley style (0.11.1 has
-//! no per-run baseline offset), so it does **not** grow the line box the way
-//! Chrome's does — a raised `<sup>` can paint into the line above. Also
-//! #1357, alongside the five keywords above.
+//! Since #1357 the shift is a parley `VerticalAlign` on the element's span,
+//! so parley places the glyphs by it and grows the line box to hold them
+//! (`vertical_align_line_box_tests.rs`). Parley's layout is quantized: a
+//! span's baseline offset is rounded to whole pixels, so the shifts below
+//! land on the pixel grid (`SUB_PX.round()`), where Chrome keeps 1/64 px.
 //!
 //! # Where the `sub`/`super` ratios come from
 //!
@@ -198,14 +199,15 @@ fn sub_and_super_shift_the_glyph_bounds_by_the_calibrated_amount() {
     let sub_shift = sub.y - base.y;
     let sup_shift = sup.y - base.y;
 
-    assert!(
-        (sub_shift - SUB_PX).abs() < 0.01,
-        "sub shift = {sub_shift}, want {SUB_PX}"
+    assert_eq!(
+        sub_shift,
+        SUB_PX.round(),
+        "sub shift = {sub_shift}, want {SUB_PX} on the pixel grid"
     );
-    assert!(
-        (sup_shift - -SUPER_PX).abs() < 0.01,
-        "super shift = {sup_shift}, want {}",
-        -SUPER_PX
+    assert_eq!(
+        sup_shift,
+        -SUPER_PX.round(),
+        "super shift = {sup_shift}, want -{SUPER_PX} on the pixel grid"
     );
 }
 
@@ -237,9 +239,10 @@ fn the_caret_and_the_glyph_bounds_agree_on_the_sub_shift() {
         "caret moved {caret_delta}, glyph bounds moved {bounds_delta} — paint and \
          hit-test/caret disagree about the sub shift"
     );
-    assert!(
-        (caret_delta - SUB_PX).abs() < 0.01,
-        "caret shift = {caret_delta}, want {SUB_PX}"
+    assert_eq!(
+        caret_delta,
+        SUB_PX.round(),
+        "caret shift = {caret_delta}, want {SUB_PX} on the pixel grid"
     );
 }
 

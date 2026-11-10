@@ -225,3 +225,36 @@ fn an_img_aligned_center_leaves_no_strut_under_it_in_a_cell() {
     assert_chrome(cell_height(Some("center")), 150.0, "align=center");
     assert_chrome(cell_height(Some("middle")), 150.0, "align=middle");
 }
+
+/// A raised inline split by a block (#513) raises each of its fragments: the
+/// lines before and after the block are both 30px (Chrome 157: 80 in all,
+/// with the block's 20), whether the fragment's content is its own text or
+/// an element of its own (`<b>`), which parley sees as no child of the span.
+#[test]
+fn a_split_raised_inline_grows_the_lines_on_both_sides_of_the_block() {
+    for wrap_tail in [false, true] {
+        let mut d = doc();
+        let body = d.body();
+        let p = el(&mut d, body, "div", BLOCK);
+        let s = el(&mut d, p, "span", "vertical-align: 10px");
+        text(&mut d, s, "a");
+        let block = el(&mut d, s, "div", "");
+        text(&mut d, block, "block");
+        if wrap_tail {
+            let b = el(&mut d, s, "b", "");
+            text(&mut d, b, "b");
+        } else {
+            text(&mut d, s, "b");
+        }
+        d.resolve_layout(800.0, 600.0);
+        assert_chrome(
+            height(&d, p),
+            80.0,
+            if wrap_tail {
+                "split, <b> tail"
+            } else {
+                "split, text tail"
+            },
+        );
+    }
+}

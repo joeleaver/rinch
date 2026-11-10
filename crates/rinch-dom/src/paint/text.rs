@@ -89,7 +89,6 @@ pub(super) fn paint_inline_layout(
                 Some(&fragment.mask),
                 None,
                 None,
-                Some(inline_layout),
                 live,
             );
             if !inline_layout.decoration_spans.is_empty() {
@@ -149,7 +148,6 @@ pub(super) fn paint_inline_layout(
             mask,
             None,
             None,
-            Some(inline_layout),
             live,
         );
 
@@ -266,7 +264,6 @@ fn paint_ellipsis(
             scale,
             None,
             Some(&brush),
-            None,
             None,
             None,
         );
@@ -1190,8 +1187,8 @@ impl<'a> TextFragment<'a> {
                     {
                         p.decorated |= decorated;
                         // A `vertical-align` shift moves the glyphs off the
-                        // line's ascent and descent (#724; the line does not
-                        // grow for it, #1357): the box goes with them.
+                        // line's baseline (#724; the line grows to hold
+                        // them, #1357): the box goes with them.
                         let shift = if inline_layout.vertical_align_spans.is_empty() {
                             0.0
                         } else {
@@ -1751,9 +1748,8 @@ fn per_glyph<T: Copy + PartialEq>(
 /// colour-only change — a hover, a transition frame — is applied here rather
 /// than by re-shaping.
 ///
-/// `valign` is the IFC whose `vertical-align` spans (#724) shift this text's
-/// glyphs; `None` — the common case, including every render with no
-/// `InlineLayout` in scope — shifts nothing.
+/// A `vertical-align` (#724) is parley's: the glyph runs' baselines carry it
+/// (#1357).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_text(
     painter: &mut dyn Painter,
@@ -1764,7 +1760,6 @@ pub(super) fn render_text(
     scale: f64,
     mask: Option<&TextMask>,
     color: Option<AlphaColor<Srgb>>,
-    valign: Option<&crate::node::InlineLayout>,
 ) {
     let transform = css_transform * Affine::translate((x, y));
     let color_brush = color.map(Brush::Solid);
@@ -1776,7 +1771,6 @@ pub(super) fn render_text(
         mask,
         color_brush.as_ref(),
         None,
-        valign,
         None,
     );
 }
@@ -2179,7 +2173,6 @@ impl<'a> PaintText<'a> {
 /// line-through) through `transform`, which already carries the text's
 /// origin. `glyph_brush` overrides the layout's brush for the glyphs and
 /// `decoration_brush` for the decorations; `None` keeps each one's own.
-/// `valign` is [`render_text`]'s.
 ///
 /// [`render_text`] and every `text-shadow` pass draw through this one
 /// function, so a shadow is the main pass's glyphs **and** decorations
@@ -2200,23 +2193,17 @@ pub(super) fn draw_text(
     mask: Option<&TextMask>,
     glyph_brush: Option<&Brush>,
     decoration_brush: Option<&Brush>,
-    valign: Option<&crate::node::InlineLayout>,
     live: Option<&LiveColours>,
 ) {
     let sf = scale as f32;
     let live = live.filter(|_| glyph_brush.is_none());
     text.for_each_line(mask, |line| {
-        // Nothing declares a non-`baseline` `vertical-align` in the
-        // overwhelming majority of documents: no lookup then.
-        let valign = valign.filter(|v| !v.vertical_align_spans.is_empty());
         let weight_off = text.weight_synthesis_off.as_ref();
-        let bytes = (mask.is_some() || valign.is_some() || live.is_some() || weight_off.is_some())
-            .then(|| line.glyph_bytes());
+        let bytes =
+            (mask.is_some() || live.is_some() || weight_off.is_some()).then(|| line.glyph_bytes());
         for (glyph_run, run_glyphs, range) in line.glyph_runs_at() {
             let bytes = bytes.map_or(&[][..], |b| &b[range]);
             let recolours = live.and_then(|l| per_glyph(bytes, |b| l.at(b), Recolour::KEEP));
-            let shifts =
-                valign.and_then(|v| per_glyph(bytes, |b| v.vertical_align_shift_at(b), 0.0));
             let flags = mask.and_then(|m| per_glyph(bytes, |b| m.hidden_at(b), false));
             // A glyph run past an ellipsis cut has no glyphs collected.
             if run_glyphs.is_empty() || flags.as_ref().is_some_and(|f| f.iter().all(|&h| h)) {
@@ -2250,18 +2237,6 @@ pub(super) fn draw_text(
             };
             let style = glyph_run.style();
             let brush = glyph_brush.unwrap_or(&style.brush);
-            // The shift this whole run's decorations (underline/line-through)
-            // sit at: the first glyph's, which is exact whenever the run is
-            // wholly inside one `vertical-align` span — the common case, since
-            // `<sub>`/`<sup>` also change `font-size` (#674), which already
-            // forces a run split at the same boundary.
-            let decoration_shift = shifts
-                .as_ref()
-                .and_then(|s| s.first())
-                .copied()
-                .unwrap_or(0.0)
-                * sf;
-
             let run_metrics = run.font_metrics();
             // Underline, then line-through: `(offset, size, brush)` each.
             let decorations = [
@@ -2315,7 +2290,7 @@ pub(super) fn draw_text(
                         Some(now) if follows => now,
                         _ => own_brush,
                     });
-                    let line_y = (gy + decoration_shift - offset * sf) as f64;
+                    let line_y = (gy - offset * sf) as f64;
                     let stroke = Stroke::new((size * sf).max(1.0) as f64);
                     for &(x0, x1) in segments {
                         let line =
@@ -2332,9 +2307,8 @@ pub(super) fn draw_text(
             let mut stretch = (Recolour::KEEP, false);
             for (i, glyph) in run_glyphs.iter().enumerate() {
                 let start_x = gx;
-                let shift = shifts.as_ref().map(|s| s[i]).unwrap_or(0.0) * sf;
                 let px = gx + glyph.x * sf;
-                let py = gy + glyph.y * sf + shift;
+                let py = gy + glyph.y * sf;
                 gx += glyph.advance * sf;
                 if flags
                     .as_ref()
@@ -2391,7 +2365,6 @@ pub(super) fn draw_shadow_copy(
         mask,
         Some(brush),
         Some(brush),
-        wavy,
         None,
     );
     if let Some(inline_layout) = wavy
@@ -2447,17 +2420,7 @@ pub(super) fn render_text_with_shadow(
     );
 
     // Render the main text on top
-    render_text(
-        painter,
-        &text,
-        x,
-        y,
-        css_transform,
-        scale,
-        mask,
-        color,
-        wavy,
-    );
+    render_text(painter, &text, x, y, css_transform, scale, mask, color);
 }
 
 /// The shadow passes of [`render_text_with_shadow`], without the text: every

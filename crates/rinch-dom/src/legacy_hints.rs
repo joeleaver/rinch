@@ -158,6 +158,11 @@ pub(crate) fn hints_css(node: &Node) -> Option<String> {
             }
             "img" => match a.as_str() {
                 "top" | "middle" | "bottom" => write!(css, "vertical-align:{a};").unwrap(),
+                // Chrome's `-webkit-baseline-middle` for both `center` and
+                // `middle`: the picture's middle on the baseline, which sits
+                // x-height / 2 lower than `middle` puts it. Stylo has no
+                // such value, so both are `middle` (#1357).
+                "center" => css.push_str("vertical-align:middle;"),
                 _ => {}
             },
             "table" => {}

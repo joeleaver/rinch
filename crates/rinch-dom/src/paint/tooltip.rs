@@ -255,7 +255,6 @@ impl Tooltip {
             None,
             None,
             None,
-            None,
         );
     }
 }

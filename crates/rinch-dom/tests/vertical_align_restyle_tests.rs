@@ -103,6 +103,9 @@ fn clearing_vertical_align_at_runtime_returns_the_glyph_to_baseline() {
     d.set_attribute(span, "style", "");
     d.resolve_layout(VW, VH);
     let cleared = glyph_bounds_for_offset(&d, line.0 as u64, 1).unwrap();
+    // The control again, on the line as it is now: the raised span grew the
+    // line it was on (#1357), so the line's top is not where it was.
+    let baseline = glyph_bounds_for_offset(&d, line.0 as u64, 2).unwrap();
 
     assert_eq!(
         cleared.y, baseline.y,
@@ -111,14 +114,15 @@ fn clearing_vertical_align_at_runtime_returns_the_glyph_to_baseline() {
     );
 }
 
-/// Confirms the doc comment on `InlineLayout::vertical_align_shift_at`:
-/// nested `<sub><sup>` does NOT compose (no "shift the shifted baseline").
-/// The innermost span wins outright, matching the push-order / first-match
-/// claim in the doc. This is a documented limitation, not something this
-/// fixture argues should change — it exists to prove the documented
-/// behaviour is what actually happens, not merely asserted in prose.
+/// Nested `<sub><sup>` composes, as CSS 2.1 §10.8.1 has it: the inner
+/// `super` raises the box from its parent's baseline, which the outer `sub`
+/// has already lowered (#1357; before, the innermost span's shift won
+/// outright). The inner `<sup>`'s parent is the `<sub>`, at `font-size:
+/// smaller` (16 / 1.2 = 13.33px, #674), so the `super` raise is
+/// 405/1024 × 13.33 = 5.2734375 against the `sub`'s 67/256 × 16 = 4.1875 drop:
+/// 1.0859375 up, which parley's quantized layout rounds to 1.
 #[test]
-fn nested_sub_in_sup_does_not_compose_the_shift() {
+fn nested_sub_in_sup_composes_the_shift() {
     use rinch_dom::text_query::glyph_bounds_for_offset;
 
     let mut d = doc();
@@ -135,24 +139,11 @@ fn nested_sub_in_sup_does_not_compose_the_shift() {
     let base = glyph_bounds_for_offset(&d, line.0 as u64, 1).unwrap(); // B
     let nested = glyph_bounds_for_offset(&d, line.0 as u64, 2).unwrap(); // C
 
-    // `<sup>` inside `<sub>` also inherits #674's `font-size: smaller`
-    // TWICE (it compounds per CLAUDE.md), so the inner sup's own
-    // "parent" (the outer `<sub>`) is already at 16/1.2 = 13.3333px, not
-    // 16px — the sup ratio is applied against THAT, not the line's base
-    // font-size. -(405/1024) * (16/1.2) = -5.2734375. rinch's mechanism
-    // takes the innermost span only (no composition of the outer sub's
-    // own shift at all) — assert the ACTUAL behaviour so a change in
-    // either the composition rule or the font-size-smaller compounding
-    // is caught.
     let shift = nested.y - base.y;
-    let sup_alone = -5.2734375_f32;
-    assert!(
-        (shift - sup_alone).abs() < 0.01,
-        "nested <sub><sup> shift = {shift}, expected the innermost-wins \
-         value {sup_alone} (sup alone) — if this fails, the shift is no \
-         longer innermost-only and CLAUDE.md / the doc comment on \
-         InlineLayout::vertical_align_shift_at need to catch up (or the \
-         compose-the-shifted-baseline gap was closed, which is good news \
-         that still needs the doc fixed)"
+    assert_eq!(
+        shift,
+        (4.1875_f32 - 5.2734375).round(),
+        "nested <sub><sup> shift = {shift}, want the sub's drop and the sup's \
+         raise added up and rounded"
     );
 }
