@@ -119,9 +119,8 @@ fn every_zero_room_box_breaks_at_every_opportunity() {
     }
 }
 
-/// Padding and border take all the room: a 4px `border-box` with 5px of
-/// padding each side has a content box of 0 (Taffy makes the box 10px), not
-/// of -6px. Chrome 156: the box is 10px wide, each line starts at x=5.
+/// Padding takes all the room: a 4px `border-box` with 5px of padding each
+/// side is 10px wide, its content box 0. Chrome 156: each line starts at x=5.
 #[test]
 fn padding_that_takes_all_the_room_leaves_a_zero_content_box() {
     let (d, t) = html(&format!(
