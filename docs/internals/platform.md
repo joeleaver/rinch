@@ -1302,6 +1302,34 @@ IFC's tree builder wraps each emoji range of a text op in a span of
 root's family. A cluster split across two text nodes (an emoji and its U+FE0F)
 is not found. The fixtures use bundled stand-ins, not the host's emoji face.
 
+**`ex`, `ch`, `cap` and `ic` read the first available font** (#2422,
+`crates/rinch-dom/src/font_metrics.rs`, whose module doc has the rules). The
+Stylo Device's provider used to answer `FontMetrics::default()`, so `ex` and
+`ch` were `0.5em` and `cap` was 0. Now the face is fontique's first available
+font for the computed `font-family` (through `parley_font_family`, as for the
+element's text), weight and style. x-height and cap height come from OS/2
+`sxHeight`/`sCapHeight`, unrounded. A table without them (version < 2, or 0;
+DejaVu's is version 1) is measured from the top of the `x`/`H` outline hinted
+at the used size in device pixels by skrifa's autohinter in light mode
+(`MeasuredFace`, memoized per ppem). That is Chrome's FreeType `slight` hinting:
+it matched Chrome 157 for Times New Roman, Arial, Georgia, Verdana, Courier New
+and DejaVu Sans/Serif/Mono at 11-24px. The unhinted top rounded to a pixel did
+not (Times New Roman 16px `10ex`: 70, Chrome 80). `ch`
+is the `0` advance and `ic` the `水` advance, unrounded, `None` when the face
+lacks the glyph. The provider is `Sync` and cannot borrow the document's
+`font_cx`, so it answers from a per-document cache (`DeviceParams::font_metrics`)
+keyed by family list, weight and style. A miss is recorded and answered with
+Stylo's fallbacks. The two cascade sites (`resolve.rs` for elements,
+`pseudo.rs` for `::before`/`::after`) then call `resolve_pending(&mut font_cx)`
+and cascade again, so each new font costs one extra cascade, once per document.
+A page that uses none of these units never queries the provider. A new cascade
+site has to loop the same way, or it keeps the fallbacks until a later cascade
+of that font. `note_fonts_registered` drops the cache and restyles the elements
+whose style carries Stylo's `DEPENDS_ON_SELF_FONT_METRICS` /
+`DEPENDS_ON_INHERITED_FONT_METRICS`, each with its subtree. Media queries in
+these units, and a vertical writing mode's `ch` (rinch lays none out), still
+get the fallbacks. rinch-web is unaffected: the browser resolves the units.
+
 **Window chrome inset (not ThemeProvider-generated).** `--rinch-window-top-inset`
 is published at runtime by whatever chrome rinch draws above your content — the
 DOM menu bar (28px, on Linux and in the browser alike: `render_with_menu_bar`

@@ -17,6 +17,7 @@ pub mod computed_style;
 mod dom_impl;
 mod float_wrap;
 mod floats;
+mod font_metrics;
 pub mod fonts;
 pub mod form_control;
 pub mod hit_cache;
