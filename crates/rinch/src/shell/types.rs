@@ -38,8 +38,6 @@ pub enum RinchEvent {
         shift: bool,
         key: winit::keyboard::KeyCode,
     },
-    /// Process pending window requests (open/close).
-    ProcessWindowRequests,
     /// Minimize a window.
     MinimizeWindow { window_id: winit::window::WindowId },
     /// Toggle maximize state of a window.

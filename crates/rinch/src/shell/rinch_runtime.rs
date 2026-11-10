@@ -3369,10 +3369,6 @@ impl ApplicationHandler for RinchRuntime {
                     }
                 }
 
-                // Set current window ID so window control functions work
-                if let Some(w) = &self.window {
-                    crate::windows::set_current_window_id(Some(w.window.id()));
-                }
                 let size = self.window_size();
                 let scale = self.scale_factor();
                 let actions = self.app.handle_event(
@@ -3384,7 +3380,6 @@ impl ApplicationHandler for RinchRuntime {
                     size,
                     scale,
                 );
-                crate::windows::set_current_window_id(None);
                 self.process_actions(actions, event_loop);
                 return;
             }
