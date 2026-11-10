@@ -45,7 +45,7 @@ slab = "0.4"
 # if the width it takes there fits, else moves below them (#2397).
 # A dependency, not a [patch], so an app on rinch gets it with
 # nothing to copy. Pinned by rev so a push to the fork's branch never changes
-# rinch; moving it is a rinch PR, and a Taffy bump rebases the twenty-seven commits.
+# rinch; moving it is a rinch PR, and a Taffy bump rebases the twenty-nine commits.
 #
 # Taffy's default features minus the four rinch never reads (#1260), which
 # cost instructions in every compute whether read or not:
@@ -63,7 +63,7 @@ slab = "0.4"
 # structural edit (append, remove, set_text_content). The dev-dependency below
 # must carry the same list, or `cargo test` unifies the defaults back in and
 # the suite runs a different Taffy than the build.
-taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "1da863f728c0496667efb3889b043e92b792b8e2", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "e1d656d237030a526d9610a16afcb723a10d29fb", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
 bitflags = "2"
 # Monotonic/wall clock usable on wasm32-unknown-unknown (layout perf timers + CSS
 # transition/animation clocks). Re-exports std::time on native — zero cost off web.
@@ -142,4 +142,4 @@ pollster = "0.4"
 # Integration tests name taffy types (the IFC leaf invariant tests, #466,
 # inspect `NodeTree::taffy` directly). The same fork and rev, with the same
 # features, as the dependency above (see there).
-taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "1da863f728c0496667efb3889b043e92b792b8e2", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "e1d656d237030a526d9610a16afcb723a10d29fb", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }

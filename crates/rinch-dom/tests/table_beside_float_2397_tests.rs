@@ -42,6 +42,9 @@
 //! | maxcontent | left 280 | `overflow:hidden; width:max-content` div | (0, 50, 40), 60 | **(280, 0, 40), 50** |
 //! | ofh | left 280 | `overflow:hidden` div, auto width | (280, 0, 20), 50 | same |
 //! | flex | left 280 | `display:flex` div, auto width | (280, 0, 20), 50 | same |
+//! | declared | left 250 | `width: 50px` (or `width="50"`), 100px box | (0, 50, 100), 60 | **(250, 0, 100), 50** |
+//! | pct30 | left 200 | `width: 30%`, 150px box | (0, 50, 150), 60 | **(200, 0, 150), 50** |
+//! | fixed50 | left 250 | `width: 50px; table-layout: fixed`, 100px box | (250, 0, 50), 50 | same |
 //! | flowroot | left 280 | `display:flow-root` div | (280, 0, 20), 50 | (0, 0, 300), 50 — not fixed |
 //!
 //! The `textmin`, `email` and `divfull` widths are the text's, so only their
@@ -264,6 +267,44 @@ fn self_sized_boxes_move_down_and_stretched_ones_stay_beside() {
             float("left", "280px", 50)
                 + r#"<div class="t" style="display:flex"><div style="width:40px;height:10px;flex-shrink:0"></div></div>"#,
             (280.0, 0.0, Some(20.0), 50.0),
+        ),
+    ]);
+}
+
+/// A table with a declared width narrower than its columns' minimum (an
+/// auto-layout table widens to it, #2266): what must fit is the width it
+/// widens to, not its declaration. Chrome 156 moves a `width: 50px` (or
+/// `width="50"`) table holding a 100px box below a 250px float, at width 100;
+/// a `width: 30%` table holding a 150px box below a 200px float, at 150. A
+/// `table-layout: fixed` table keeps its 50 and stays beside. (Review of
+/// #2415; rinch put the first three beside the float, overflowing.)
+#[test]
+fn a_table_narrower_than_its_minimum_fits_by_the_width_it_widens_to() {
+    let box_table = |style: &str, attrs: &str, w: u32| {
+        format!(
+            r#"<table class="t" {attrs} cellspacing="0" cellpadding="0" style="{style}"><tr><td style="padding:0"><div style="width:{w}px;height:10px"></div></td></tr></table>"#
+        )
+    };
+    check(&[
+        (
+            "declared 50px, min 100",
+            float("left", "250px", 50) + &box_table("width:50px", "", 100),
+            (0.0, 50.0, Some(100.0), 60.0),
+        ),
+        (
+            "width=50 attribute, min 100",
+            float("left", "250px", 50) + &box_table("", r#"width="50""#, 100),
+            (0.0, 50.0, Some(100.0), 60.0),
+        ),
+        (
+            "30%, min 150",
+            float("left", "200px", 50) + &box_table("width:30%", "", 150),
+            (0.0, 50.0, Some(150.0), 60.0),
+        ),
+        (
+            "fixed layout keeps its 50",
+            float("left", "250px", 50) + &box_table("width:50px;table-layout:fixed", "", 100),
+            (250.0, 0.0, Some(50.0), 50.0),
         ),
     ]);
 }
