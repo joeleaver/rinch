@@ -212,6 +212,46 @@ impl RinchDocument {
         self.tree.layout_dirty = true;
     }
 
+    /// Fonts were registered: a stack's first available font may be another
+    /// face now, so the `ex`/`ch`/`cap`/`ic` metrics measured so far are
+    /// dropped (#2422, `crate::font_metrics`), and every element whose style
+    /// Stylo flagged as resolved against font metrics — its own font's, or its
+    /// parent's for a `font-size` in those units — is restyled with its
+    /// subtree (which inherits a `font-size: 2ex` as pixels). A generated box
+    /// is restyled through its element, whose pseudo pass cascades it. Nothing
+    /// to do when no metrics were measured, which is every document that uses
+    /// none of these units.
+    fn restyle_font_metric_users(&mut self) {
+        use style::computed_value_flags::ComputedValueFlags as Flags;
+        if !self.device_params.font_metrics.clear() {
+            return;
+        }
+        let depends =
+            Flags::DEPENDS_ON_SELF_FONT_METRICS | Flags::DEPENDS_ON_INHERITED_FONT_METRICS;
+        let users: Vec<RawNodeId> = self
+            .tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| {
+                n.stylo_element_data.borrow().is_some_and(|data| {
+                    data.styles
+                        .get_primary()
+                        .is_some_and(|style| style.flags.intersects(depends))
+                })
+            })
+            .filter_map(|(id, n)| {
+                if n.is_generated_box() {
+                    n.parent
+                } else {
+                    Some(id)
+                }
+            })
+            .collect();
+        for id in users {
+            self.invalidate_subtree_styles(id);
+        }
+    }
+
     /// Drop the cached style of `node_id` and of its whole subtree, and record
     /// `node_id` as a style root, so the next `resolve_styles` re-cascades all
     /// of it.
@@ -534,6 +574,7 @@ impl RinchDocument {
     /// *resolution* changed.
     pub fn note_fonts_registered(&mut self) {
         self.tree.font_generation += 1;
+        self.restyle_font_metric_users();
         // An image's alt text placeholder is shaped once (#2309), keyed by the
         // font generation: shape it again with the new fonts.
         let images: Vec<RawNodeId> = self

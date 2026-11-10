@@ -794,28 +794,40 @@ impl RinchDocument {
             // Cascade to compute final styles
             let parent_style_ref = parent_style.as_deref();
             let layout_parent_style_ref = layout_parent_style.as_deref();
-            let mut rule_cache_conditions = RuleCacheConditions::default();
 
-            let computed = self.stylist.cascade_style_and_visited(
-                Some(rinch_node),
-                None, // pseudo
-                &CascadeInputs {
-                    rules: Some(rule_node),
-                    visited_rules: None,
-                    flags: matching_context.extra_data.cascade_input_flags,
-                    // Not `STARTING_STYLE`: `@starting-style` rules stay out,
-                    // as `IncludeStartingStyle::No` kept them before.
-                    included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
-                },
-                &guards,
-                parent_style_ref,        // parent_style
-                layout_parent_style_ref, // layout_parent_style
-                FirstLineReparenting::No,
-                &Default::default(), // try_tactic (PositionTryFallbacksTryTactic)
-                None,                // rule_cache
-                &mut rule_cache_conditions,
-                &mut Default::default(), // tree_counting_caches
-            );
+            // A cascade that resolved `ex`/`ch`/`cap`/`ic` against a font this
+            // document had not measured yet got Stylo's fallbacks: measure it
+            // and cascade again, which now hits (#2422, `crate::font_metrics`).
+            let computed = loop {
+                let mut rule_cache_conditions = RuleCacheConditions::default();
+                let computed = self.stylist.cascade_style_and_visited(
+                    Some(rinch_node),
+                    None, // pseudo
+                    &CascadeInputs {
+                        rules: Some(rule_node.clone()),
+                        visited_rules: None,
+                        flags: matching_context.extra_data.cascade_input_flags,
+                        // Not `STARTING_STYLE`: `@starting-style` rules stay out,
+                        // as `IncludeStartingStyle::No` kept them before.
+                        included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
+                    },
+                    &guards,
+                    parent_style_ref,        // parent_style
+                    layout_parent_style_ref, // layout_parent_style
+                    FirstLineReparenting::No,
+                    &Default::default(), // try_tactic (PositionTryFallbacksTryTactic)
+                    None,                // rule_cache
+                    &mut rule_cache_conditions,
+                    &mut Default::default(), // tree_counting_caches
+                );
+                if !self
+                    .device_params
+                    .font_metrics
+                    .resolve_pending(&mut self.font_cx)
+                {
+                    break computed;
+                }
+            };
 
             // Store the computed style in the node's ElementData
             {
