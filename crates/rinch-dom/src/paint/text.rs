@@ -714,12 +714,13 @@ fn line_reach(m: &parley::layout::LineMetrics) -> (f64, f64) {
     )
 }
 
-/// What an IFC root draws past its **unshifted** line boxes, in device px
-/// relative to its content origin, or `None` when it draws nothing there:
-/// text moved off its line by `vertical-align` (#724), the inline
+/// What an IFC root draws past its line boxes, in device px relative to its
+/// content origin, or `None` when it draws nothing there: the inline
 /// elements' backgrounds and borders ([`inline_background_rects`], which
 /// reach past the line by their padding and border and move with their
-/// text), and wavy underlines ([`paint_wavy_decorations`]).
+/// text), and wavy underlines ([`paint_wavy_decorations`]). Text moved by
+/// `vertical-align` (#724) is inside its line since the line grows to hold it
+/// (#1357): a line's box spans every span's content area on it.
 ///
 /// The clip proof (`layer_bounds`, #1762, #1817) unions this with the line
 /// boxes, and the damage ink of the root (`paint::ink_outsets_in`, #1815)
@@ -731,43 +732,17 @@ pub(crate) fn inline_ink_past_lines<'a>(
     inline_layout: &crate::node::InlineLayout,
     scale: f64,
 ) -> Option<Rect> {
-    if inline_layout.vertical_align_spans.is_empty()
-        && inline_layout.background_spans.is_empty()
-        && inline_layout.decoration_spans.is_empty()
-    {
+    if inline_layout.background_spans.is_empty() && inline_layout.decoration_spans.is_empty() {
         return None;
     }
     let layout = &inline_layout.layout;
     let mut ink: Option<Rect> = None;
     let mut add = |r: Rect| ink = Some(ink.map_or(r, |i| i.union(r)));
-    let ranges: Vec<std::ops::Range<usize>> = if inline_layout.vertical_align_spans.is_empty()
-        && inline_layout.decoration_spans.is_empty()
-    {
+    let ranges: Vec<std::ops::Range<usize>> = if inline_layout.decoration_spans.is_empty() {
         Vec::new()
     } else {
         layout.lines().map(|l| l.text_range()).collect()
     };
-
-    for span in &inline_layout.vertical_align_spans {
-        let shift = span.shift_px as f64;
-        if shift == 0.0 {
-            continue;
-        }
-        let on = lines_of_span(&ranges, span.start, span.end, false);
-        note_span_line_visits(on.len());
-        for line in on.filter_map(|i| layout.get(i)) {
-            let m = line.metrics();
-            let top = m.block_min_coord.min(m.content_block_min_coord) as f64;
-            let bottom = m.block_max_coord.max(m.content_block_max_coord) as f64;
-            let (x0, x1) = line_reach(m);
-            add(Rect::new(
-                x0 * scale,
-                (top + shift) * scale,
-                x1 * scale,
-                (bottom + shift) * scale,
-            ));
-        }
-    }
 
     if !inline_layout.background_spans.is_empty() {
         inline_background_rects(&get, inline_layout, scale, |frag| add(frag.rect));
@@ -1186,16 +1161,10 @@ impl<'a> TextFragment<'a> {
                         && p.start <= byte
                     {
                         p.decorated |= decorated;
-                        // A `vertical-align` shift moves the glyphs off the
-                        // line's baseline (#724; the line grows to hold
-                        // them, #1357): the box goes with them.
-                        let shift = if inline_layout.vertical_align_spans.is_empty() {
-                            0.0
-                        } else {
-                            inline_layout.vertical_align_shift_at(byte) as f64
-                        };
-                        let r =
-                            Rect::new(x as f64, top + shift, x as f64 + advance, bottom + shift);
+                        // A glyph `vertical-align` moved (#724) is inside
+                        // its line's content box, which grows to hold it
+                        // (#1357).
+                        let r = Rect::new(x as f64, top, x as f64 + advance, bottom);
                         p.text = Some(p.text.map_or(r, |q| q.union(r)));
                     }
                     x += cluster.advance();
