@@ -24,10 +24,12 @@
 //! - **x-height and cap height** from the OS/2 table (`sxHeight`,
 //!   `sCapHeight`, version 2 and later), unrounded. A table without them (older
 //!   than version 2, or a zero) is measured instead: the top of the `x` and `H`
-//!   glyphs, **rounded to whole device pixels**, because Chrome measures a
-//!   hinted outline there (Inter with its OS/2 table cut to version 1: `10ex` is
-//!   90px at 16px, 70px at 13px; DejaVu Sans Mono, whose table is version 1,
-//!   the same). No `x` (or `H`): `None`, the spec's fallback.
+//!   glyphs **hinted at the used size** (in device pixels) by skrifa's
+//!   autohinter in its light mode, which is what Chrome's FreeType `slight`
+//!   hinting measures ([`MeasuredFace`]). That lands on whole pixels, and not
+//!   always on the rounded unhinted top: DejaVu Serif's `x` is 8.31px at 16px
+//!   unhinted, 9px hinted, and Chrome's `10ex` is 90px. No `x` (or `H`):
+//!   `None`, the spec's fallback.
 //! - **`0` advance** from the `hmtx` advance of the face's `0` glyph,
 //!   unrounded; no `0` in the face, `None`. Horizontal only: rinch lays out no
 //!   vertical writing mode, so a vertical query gets `None`.
@@ -93,13 +95,15 @@ impl MetricsKey {
 }
 
 /// One face's metrics, in ems.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct EmMetrics {
-    /// x-height, and whether it was measured from the `x` glyph (rounded to
-    /// device pixels when scaled).
-    x_height: Option<(f32, bool)>,
-    /// Cap height, and whether it was measured from the `H` glyph.
-    cap_height: Option<(f32, bool)>,
+    /// x-height from the OS/2 table.
+    x_height: Option<f32>,
+    /// Cap height from the OS/2 table.
+    cap_height: Option<f32>,
+    /// The face, when either height is not in its OS/2 table and has to be
+    /// measured from a hinted glyph at each size.
+    measured: Option<Arc<MeasuredFace>>,
     /// Advance of `0`.
     zero_advance: Option<f32>,
     /// Advance of `水` (U+6C34).
@@ -130,7 +134,7 @@ impl FontMetricsCache {
         let key = MetricsKey::of(font);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(found) = state.resolved.get(&key) {
-            return *found;
+            return found.clone();
         }
         if !state.pending.contains(&key) {
             state.pending.push(key);
@@ -209,19 +213,17 @@ fn scale(m: &EmMetrics, size: f32, dpr: f32, vertical: bool) -> FontMetrics {
     } else {
         1.0
     };
-    let height = |h: Option<(f32, bool)>| {
-        h.map(|(em, from_glyph)| {
-            let px = em * size;
-            Length::new(if from_glyph {
-                (px * dpr).round() / dpr
-            } else {
-                px
-            })
-        })
+    let tops = match &m.measured {
+        Some(face) if m.x_height.is_none() || m.cap_height.is_none() => face.tops(size * dpr),
+        _ => (None, None),
+    };
+    let height = |os2: Option<f32>, top: Option<f32>| match os2 {
+        Some(em) => Some(Length::new(em * size)),
+        None => top.map(|device_px| Length::new(device_px / dpr)),
     };
     FontMetrics {
-        x_height: height(m.x_height),
-        cap_height: height(m.cap_height),
+        x_height: height(m.x_height, tops.0),
+        cap_height: height(m.cap_height, tops.1),
         zero_advance_measure: if vertical {
             None
         } else {
@@ -263,22 +265,18 @@ fn resolve(font_cx: &mut parley::FontContext, key: &MetricsKey) -> Option<EmMetr
         });
         query.first_available_font()?
     };
-    face_metrics(
-        font.blob.as_ref(),
-        font.index,
-        font.synthesis.variation_settings(),
-    )
+    face_metrics(&font.blob, font.index, font.synthesis.variation_settings())
 }
 
 /// A face's metrics in ems, read the way Chrome reads them (module docs).
 pub(crate) fn face_metrics(
-    data: &[u8],
+    blob: &parley::fontique::Blob<u8>,
     index: u32,
     variations: &[(skrifa::raw::types::Tag, f32)],
 ) -> Option<EmMetrics> {
     use skrifa::MetadataProvider;
     use skrifa::instance::Size;
-    let face = skrifa::FontRef::from_index(data, index).ok()?;
+    let face = skrifa::FontRef::from_index(blob.as_ref(), index).ok()?;
     let location = face.axes().location(variations.iter().copied());
     let metrics = skrifa::metrics::Metrics::new(&face, Size::unscaled(), &location);
     let upem = f32::from(metrics.units_per_em);
@@ -293,30 +291,121 @@ pub(crate) fn face_metrics(
             .and_then(|gid| glyphs.advance_width(gid))
             .map(|w| w / upem)
     };
-    let outlines = face.outline_glyphs();
-    let glyph_top = |c: char| -> Option<f32> {
-        let glyph = outlines.get(charmap.map(c)?)?;
-        let mut pen = TopPen(None);
-        glyph
-            .draw(
-                skrifa::outline::DrawSettings::unhinted(Size::unscaled(), &location),
-                &mut pen,
-            )
-            .ok()?;
-        pen.0.filter(|top| *top > 0.0).map(|top| top / upem)
-    };
     // A zero (or absent) OS/2 height is measured from the glyph, as Skia does.
-    let height = |os2: Option<f32>, c: char| match os2.filter(|h| *h > 0.0) {
-        Some(h) => Some((h / upem, false)),
-        None => glyph_top(c).map(|em| (em, true)),
-    };
+    let os2 = |h: Option<f32>| h.filter(|h| *h > 0.0).map(|h| h / upem);
+    let (x_height, cap_height) = (os2(metrics.x_height), os2(metrics.cap_height));
+    let measured = (x_height.is_none() || cap_height.is_none()).then(|| {
+        Arc::new(MeasuredFace {
+            blob: blob.clone(),
+            index,
+            variations: variations.to_vec(),
+            tops: Mutex::default(),
+        })
+    });
     Some(EmMetrics {
-        x_height: height(metrics.x_height, 'x'),
-        cap_height: height(metrics.cap_height, 'H'),
+        x_height,
+        cap_height,
+        measured,
         zero_advance: advance('0'),
         ic_width: advance('\u{6C34}'),
         ascent: metrics.ascent / upem,
     })
+}
+
+/// A face whose x-height or cap height is not in its OS/2 table, so it is
+/// measured from the top of its `x` and `H` glyphs. Chrome 157 on Linux
+/// (Skia's FreeType scaler, `slight` hinting, which FreeType's light target
+/// serves with its autohinter whatever the font's own instructions) measures
+/// the **hinted** outline at the used size. skrifa's autohinter in its light
+/// mode gives Chrome's number for every face and size measured: Times New
+/// Roman, Arial, Georgia, Verdana, Courier New, DejaVu Sans, Serif and Sans
+/// Mono, at 11, 12, 13, 14, 16, 18, 20 and 24px (both `ex` and `cap`). The
+/// unhinted top rounded to a pixel misses a quarter of them (Times New Roman
+/// 16px: 7.16 rounds to 7, the hinted `x` is 8).
+pub(crate) struct MeasuredFace {
+    blob: parley::fontique::Blob<u8>,
+    index: u32,
+    variations: Vec<(skrifa::raw::types::Tag, f32)>,
+    /// `(x top, H top)` in device pixels, per ppem (its bits).
+    tops: Mutex<HashMap<u32, (Option<f32>, Option<f32>)>>,
+}
+
+impl std::fmt::Debug for MeasuredFace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeasuredFace")
+            .field("index", &self.index)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Sizes one measured face keeps before it starts over.
+const TOPS_PER_FACE: usize = 64;
+
+impl MeasuredFace {
+    /// The tops of `x` and `H` at `ppem` device pixels, hinted.
+    fn tops(&self, ppem: f32) -> (Option<f32>, Option<f32>) {
+        if !(ppem.is_finite() && ppem > 0.0) {
+            return (None, None);
+        }
+        let key = ppem.to_bits();
+        if let Some(found) = self
+            .tops
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+        {
+            return found.clone();
+        }
+        let found = self.measure(ppem);
+        let mut tops = self.tops.lock().unwrap_or_else(|e| e.into_inner());
+        if tops.len() >= TOPS_PER_FACE {
+            tops.clear();
+        }
+        tops.insert(key, found);
+        found
+    }
+
+    fn measure(&self, ppem: f32) -> (Option<f32>, Option<f32>) {
+        use skrifa::MetadataProvider;
+        use skrifa::instance::Size;
+        use skrifa::outline::{DrawSettings, Engine, HintingInstance, HintingOptions};
+        use skrifa::outline::{SmoothMode, Target};
+        let Ok(face) = skrifa::FontRef::from_index(self.blob.as_ref(), self.index) else {
+            return (None, None);
+        };
+        let location = face.axes().location(self.variations.iter().copied());
+        let outlines = face.outline_glyphs();
+        let charmap = face.charmap();
+        let options = HintingOptions {
+            engine: Engine::Auto(None),
+            target: Target::Smooth {
+                mode: SmoothMode::Light,
+                symmetric_rendering: true,
+                preserve_linear_metrics: false,
+            },
+        };
+        let hinter = HintingInstance::new(&outlines, Size::new(ppem), &location, options).ok();
+        let top = |c: char| -> Option<f32> {
+            let glyph = outlines.get(charmap.map(c)?)?;
+            let hinted = hinter.as_ref().and_then(|hinter| {
+                let mut pen = TopPen(None);
+                glyph
+                    .draw(DrawSettings::hinted(hinter, false), &mut pen)
+                    .ok()?;
+                pen.0
+            });
+            // No hinter for this face: the unhinted top, on a whole pixel.
+            let top = hinted.or_else(|| {
+                let mut pen = TopPen(None);
+                glyph
+                    .draw(DrawSettings::unhinted(Size::new(ppem), &location), &mut pen)
+                    .ok()?;
+                pen.0.map(f32::round)
+            })?;
+            (top > 0.0).then_some(top)
+        };
+        (top('x'), top('H'))
+    }
 }
 
 /// The highest point of an outline (its control points: exact for the
@@ -355,32 +444,33 @@ mod tests {
     const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 
     /// Inter's OS/2 table: `sxHeight` 1118, `sCapHeight` 1490, `0` advance
-    /// 1292, 2048 units per em, no `水`.
+    /// 1292, 2048 units per em, no `水`; nothing to measure.
     #[test]
     fn inter_reads_its_os2_heights_and_zero_advance() {
-        let m = face_metrics(INTER, 0, &[]).unwrap();
-        assert_eq!(m.x_height, Some((1118.0 / 2048.0, false)));
-        assert_eq!(m.cap_height, Some((1490.0 / 2048.0, false)));
+        let blob = parley::fontique::Blob::new(Arc::new(INTER));
+        let m = face_metrics(&blob, 0, &[]).unwrap();
+        assert_eq!(m.x_height, Some(1118.0 / 2048.0));
+        assert_eq!(m.cap_height, Some(1490.0 / 2048.0));
+        assert!(m.measured.is_none());
         assert_eq!(m.zero_advance, Some(1292.0 / 2048.0));
         assert_eq!(m.ic_width, None);
     }
 
-    /// A glyph-measured height lands on a whole device pixel; an OS/2 one is
-    /// left as it is. A vertical query has no horizontal advances.
+    /// An OS/2 height is scaled as it is. A vertical query has no horizontal
+    /// advances.
     #[test]
-    fn scaling_rounds_only_glyph_measured_heights() {
+    fn scaling_keeps_os2_heights_unrounded() {
         let m = EmMetrics {
-            x_height: Some((0.546, true)),
-            cap_height: Some((0.7275, false)),
+            x_height: Some(0.546),
+            cap_height: Some(0.7275),
+            measured: None,
             zero_advance: Some(0.6309),
             ic_width: None,
             ascent: 0.96,
         };
         let f = scale(&m, 16.0, 1.0, false);
-        assert_eq!(f.x_height, Some(Length::new(9.0)));
+        assert_eq!(f.x_height, Some(Length::new(0.546 * 16.0)));
         assert_eq!(f.cap_height, Some(Length::new(0.7275 * 16.0)));
-        let f2 = scale(&m, 16.0, 2.0, false);
-        assert_eq!(f2.x_height, Some(Length::new(8.5)));
         assert_eq!(scale(&m, 16.0, 1.0, true).zero_advance_measure, None);
     }
 }

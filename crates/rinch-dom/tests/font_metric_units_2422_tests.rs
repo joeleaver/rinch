@@ -358,3 +358,75 @@ fn a_late_registered_face_replaces_the_cached_metrics() {
     );
     close(&[after], &[87.3438], "after registering LateFace");
 }
+
+/// A `font-size: 2ex` child of a parent that uses no such unit: only the
+/// child's style depends on font metrics (its parent's), and it is restyled
+/// when the parent's face arrives (Chrome, Inter 16px: 17.4688; before the
+/// face, DejaVu Sans Mono's 9px x-height gives 18).
+#[test]
+fn a_late_registered_face_restyles_a_font_size_in_ex() {
+    let mut doc = RinchDocument::new();
+    load(
+        &mut doc,
+        "<div style=\"font:16px/1px LateFace, monospace\">\
+         <div data-m=\"c\" style=\"font-size:2ex;height:1px\"></div></div>",
+    );
+    let size = |doc: &RinchDocument| {
+        doc.tree
+            .get(find(doc, "c"))
+            .unwrap()
+            .computed_style
+            .font_size
+    };
+    let before = size(&doc);
+    doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(FACE)),
+        Some(FontInfoOverride {
+            family_name: Some("LateFace"),
+            ..Default::default()
+        }),
+    );
+    doc.note_fonts_registered();
+    doc.resolve_layout(800.0, 600.0);
+    assert!(
+        (before - 17.4688).abs() > 0.3,
+        "the first resolve must not already be Inter's ({before})"
+    );
+    close(
+        &[size(&doc)],
+        &[17.4688],
+        "font-size: 2ex after registering LateFace",
+    );
+}
+
+/// A face without an OS/2 x-height is measured from its **hinted** `x` and
+/// `H`, as Chrome's FreeType `slight` hinting measures them, which is not
+/// always the unhinted top rounded: DejaVu Serif's `x` is 8.31px at 16px and
+/// 9.34px at 18px unhinted, 9px and 10px hinted. Chrome 157 (system DejaVu,
+/// `10ex` / `10cap`): DejaVu Serif 16px 90 / 120, 18px 100 / 140; DejaVu Sans
+/// 24px 140 / 180 (13.12px unhinted).
+#[test]
+fn a_measured_height_is_the_hinted_glyphs() {
+    let cx = rinch_dom::fonts::new_font_context();
+    for family in ["DejaVu Serif", "DejaVu Sans"] {
+        assert!(
+            cx.collection.clone().family_id(family).is_some(),
+            "these numbers are Chrome's for the system {family}, which this host lacks"
+        );
+    }
+    close(
+        &margins("'DejaVu Serif'", 16, &["10ex", "10cap"]),
+        &[90.0, 120.0],
+        "DejaVu Serif 16px",
+    );
+    close(
+        &margins("'DejaVu Serif'", 18, &["10ex", "10cap"]),
+        &[100.0, 140.0],
+        "DejaVu Serif 18px",
+    );
+    close(
+        &margins("'DejaVu Sans'", 24, &["10ex", "10cap"]),
+        &[140.0, 180.0],
+        "DejaVu Sans 24px",
+    );
+}
