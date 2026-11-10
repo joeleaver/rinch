@@ -98,6 +98,9 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
   - **A layout with no item keeps one line, the strut's**, for a caret. CSS makes such a line box
     zero-height, so an IFC with no text and no inline box is handed one zero-size out-of-flow box
     (`ifc::EMPTY_IFC_BOX`, an edge-box id no node owns): parley then makes the line invisible.
+    That box must stay **out of flow**: since Parley Fork item 4 an in-flow box is content
+    whatever its size, so a line holding only a 0x0 `<img>`, an empty `inline-block` or an empty
+    `<span>` with inline padding (its edge box, #1426) gets the strut (#624, #1258).
   - **An anonymous block box now matters to its text's line height** (its style is the strut), so
     a container's restyle refreshes its boxes' inherited style
     (`invalidate_text_layout_for_node`); they kept the style they were minted with until the
@@ -345,7 +348,7 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`0fb6acf583f34f8b2ae93a07cd8e14adc6219dc2`, branch `rinch-patch`): thirty commits on the taffy `v0.14.0` tag
+(`8104ec2e0fcc96a78470f2808a65f4f336368b53`, branch `rinch-patch`): thirty commits on the taffy `v0.14.0` tag
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
@@ -629,7 +632,7 @@ candidates.
    returns. Pins: the fork's `tests/table_rows.rs` and
    `crates/rinch-dom/tests/table_caption_spacing_and_imposed_height_tests.rs`.
 20. **A self-sized formatting-context root fits beside floats by its own width** (#2397, commit
-   `e1d656d2`, fork PR joeleaver/taffy-fork#8). A box whose border box must not overlap floats
+   `bcb98683`, fork PR joeleaver/taffy-fork#8). A box whose border box must not overlap floats
    (CSS 2.2 §9.5: a formatting-context root, a table, a block-level replaced element) goes in the
    highest slot beside the floats it fits, else below them. The fit test took an auto width as
    the width it *stretches* to in the slot, which always fits, so a box that sizes itself was put
@@ -649,7 +652,7 @@ candidates.
    it beside; #2351). Pins: the fork's `tests/hand_written/floats.rs` (three tests) and
    `crates/rinch-dom/tests/table_beside_float_2397_tests.rs` (25 shapes, Chrome's numbers).
 21. **A compressible replaced child gives no length width at min-content** (commit
-   `0fb6acf5`, fork PR joeleaver/taffy-fork#10). A replaced child (`item_is_replaced`) whose `width` or `max-width` is a
+   `8104ec2e`, fork PR joeleaver/taffy-fork#10). A replaced child (`item_is_replaced`) whose `width` or `max-width` is a
    percentage is compressible (css-sizing-3 §5.2.2), but the block algorithm's intrinsic width
    (`determine_content_based_container_width`) took a length `width` as its contribution before
    asking it, so `<img style="width: 800px; max-width: 100%">` gave a table column, or any
@@ -663,14 +666,14 @@ The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, and with 21 the same 6,348 save one: `hand_written::floats::table_with_a_declared_width_fits_by_the_width_it_widens_to` fails at 20's own head `e1d656d2` too.
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20 and with 21.
 
 
 ## Parley Fork
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`96699deb74d2b494af6aa27c1cccde2bd73028f2`, branch `rinch-patch`): commits on parley's
+(`f081073e4dbb6bfa483d1966828890fa7c90bb9b`, branch `rinch-patch`): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -715,6 +718,26 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    backends return `None`. Pinned by fontique's own tests (the weight tables measured in Chrome
    156), `crates/rinch-dom/tests/fontconfig_metric_aliases_2336.rs` and
    `crates/rinch-dom/tests/faux_bold_threshold_2343.rs`.
+
+4. **An in-flow inline box is content whatever its size** (`f081073e`,
+   `parley/src/layout/line_break.rs`; #624, #1258; fork PR joeleaver/parley-fork#3). Upstream made
+   a line holding no text and only zero-size in-flow boxes an invisible line box, 0 tall. CSS 2.2
+   §9.4.2 counts images and inline blocks as content with no size condition, and so does Blink
+   (`InlineItem::ComputeBoxProperties` leaves an atomic inline non-empty, and an inline box's
+   open/close tag is non-empty when its inline-start/end border, padding or margin is non-zero;
+   block-axis ones are not looked at). So a 0x0 tracking-pixel `<img>` on a line after the last
+   block was dropped (a 10px block then the image: rinch 10, Chrome 156 30 at `line-height:
+   20px`), and so was a line holding only an empty `<span style="padding-left: 5px">`, whose
+   padding rinch hands parley as a zero-height in-flow edge box (#1426). `add_inline_box` now
+   takes `in_flow`: a layout's own in-flow box is content whenever its extents are finite, a
+   `vertical-align: top | bottom` one always. A box a caller places through the public
+   `append_inline_box_to_line` (rinch's float boxes, `FLOAT_BOX`, placed at `0.0, 0.0`) keeps
+   the old rule, so a line holding only a float stays empty, and an out-of-flow box
+   (`EMPTY_IFC_BOX`) has infinitely negative extents and is not content. Not fixed: an empty
+   `<span>` with a **negative** inline margin is non-empty in Chrome, but rinch pushes an edge
+   box only for a positive edge. Pinned by the fork's `test_style_metrics.rs` (three tests) and
+   `crates/rinch-dom/tests/empty_line_strut_tests.rs` (Chrome's numbers, and the lines that must
+   stay empty).
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass
