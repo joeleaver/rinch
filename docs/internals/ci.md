@@ -10,12 +10,19 @@ Two kinds of pull request into `main`:
 |---|---|---|
 | `fmt`, `clippy`, `clippy-wasm`, `clippy-android`, `check-android`, `check-macos` | run | run |
 | `test (unit)`, `test (integration-a-m)`, `test (integration-n-z)`, `test (feature-gated)`, `test-gpu (lavapipe)`, `test-wasm` | skipped | run |
-| Perf `instruction-counts` (and its `comment`) | skipped | run, against `main` |
+| Perf `instruction-counts` (and its `comment`) | skipped | skipped, unless it carries the `perf` label: then run, against `main` |
 | Documentation `build` (rustdoc, mdBook, UI Zoo, Pages artifact) | skipped | run |
 | Documentation `book` (mdBook only) | run when the PR changes `docs/` | skipped |
 
-A push to `main` runs everything a batch does (Perf's push job only seeds its
-cache; it measures nothing) and deploys the docs. A manual dispatch of `CI`
+A push to `main` runs everything a batch does and deploys the docs. It is also
+where Perf measures by default: `instruction-counts` compares the pushed commit
+(a batch's merge commit) against its first parent, the `main` it landed on, so
+each batch's cost is measured once, after it lands (about 40 minutes; each
+push's run has its own concurrency group, keyed on the commit, so runs of
+successive pushes go in parallel and none is cancelled). There is no label escape hatch on a push: a Perf failure
+there is a red `main`, which the lead fixes forward or reverts. The report is
+the job summary only. To measure a batch **before** merging it, put the `perf`
+label on the batch PR. A manual dispatch of `CI`
 (`gh workflow run CI --ref <branch>`) runs every CI job on any branch.
 
 The slow jobs are skipped by a **job-level `if`** on `github.head_ref`, never by
@@ -102,9 +109,10 @@ cargo test -p rinch-dom --no-default-features --test background_tiling_embed_tes
    Resolve conflicts once, here, in the merge that meets them.
 4. Push and open one PR titled `batch: …` listing the PRs it carries, one
    `Refs #N` line each (not `Fixes`: each component PR closes its own issues
-   when it is merged). Carry over each PR's *Performance* notes, and put the
-   `perf-regression-accepted` label on the **batch** PR if one of them accepts a
-   cost.
+   when it is merged). Carry over each PR's *Performance* notes. Perf then
+   runs after the merge, on `main`. If one of them expects a cost, or you want
+   the Δ before merging, put the `perf` label on the **batch** PR (and
+   `perf-regression-accepted` with it if the cost is accepted).
 5. When it is green, merge the batch PR with a **merge commit** (never squash or
    rebase). The component PRs' head commits are then in `main`, so GitHub marks
    each of them merged and closes the issues they fix. Delete the batch branch.
@@ -123,7 +131,8 @@ author. Do not merge a batch with a red check.
 ## Retargets and other trigger traps
 
 `ci.yml`, `perf.yml` and `docs.yml` run on `pull_request` events whose base is
-`main`: opened, `synchronize`, reopened (and Perf on its label).
+`main`: opened, `synchronize`, reopened (and Perf on its `perf` and
+`perf-regression-accepted` labels).
 
 - **A base change to `main`** fires only `edited`, which those three do not
   list. `base-changed.yml` listens for `edited` and calls them as reusable
