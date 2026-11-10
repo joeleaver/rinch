@@ -720,7 +720,7 @@ Guide: `docs/src/guide/performance.md`.
 - `crates/rinch-debug/src/server.rs` - TCP listener (blocking I/O, no tokio dependency)
 - `crates/rinch-debug/src/protocol.rs` - Wire protocol types and framing
 - `crates/rinch-mcp-server/src/mcp_server.rs` - MCP tool implementations
-- `crates/rinch/src/app/debug_commands.rs` - `execute_debug_command()`, the debug-command dispatch; `shell/rinch_runtime.rs` only calls it
+- `crates/rinch/src/app/debug_commands.rs` - `execute_debug_command()`, the debug-command dispatch; `shell/rinch_runtime/debug.rs` only calls it
 
 ### File Dialogs (optional)
 

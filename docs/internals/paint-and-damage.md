@@ -83,7 +83,7 @@ has no present mode; Android presents `Fifo` and does not read the setting.
 Pins: `pacing_and_features_tests` (`shell/desktop.rs`, including the
 `apply_vsync_to` fan-out over fake surfaces),
 `window::tests::set_vsync_answers_what_the_surface_will_do`,
-`rinch_runtime::window_restore_tests::the_runtime_publishes_its_windows_pacing_2095`
+`rinch_runtime::main_window::window_restore_tests::the_runtime_publishes_its_windows_pacing_2095`
 (renderer start, apply, hide and shutdown without a surface). Not pinned by
 a test: the reconfigure call in `present()`, and the call sites in
 `create_window`/`show_window` (they need a real surface); the uncapped
@@ -809,7 +809,7 @@ keep a stale frame. Pins: `crates/rinch/src/app/viewport_inputs_349_tests.rs` an
 `viewport_inputs_349_more_tests.rs` (membership swaps at a constant count, among others);
 `perf_regression_tests::idle_viewports_repaint_nothing` is the exact-frame pin that an
 unchanged set costs nothing. The GPU shell's own call site
-(`paint` in `shell/rinch_runtime.rs`) has no fixture: it needs a window and a device.
+(`paint` in `shell/rinch_runtime/paint.rs`) has no fixture: it needs a window and a device.
 
 **SVG paint.** `paint/svg.rs` draws an `<svg>`'s shapes (`path`, `rect`,
 `circle`, `ellipse`, `line`, `polyline`, `polygon`) itself, walking `<g>`
