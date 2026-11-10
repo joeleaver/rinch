@@ -290,7 +290,9 @@ each one's offset against the containing block — the root, or the element an
 anonymous block box stands in — and drops the spans that move nothing, so a
 span that is only an abspos anchor costs paint nothing. A percentage `left`/
 `right` is of the block's content width; a percentage `top`/`bottom` of its
-content height when its `height` is a length, else `auto`; `top` wins over
+content height when that is definite (`ifc::definite_height`: a length, a
+percentage of a definite parent, an absolute box sized by `top` and `bottom`,
+a flex item stretched across a row of definite height), else `auto`; `top` wins over
 `bottom`, and `left` over `right` in a left-to-right block (Chrome 156).
 Offsets **compose** (`InlineLayout::relative_offset_at` sums every span over a
 byte; `element_relative_offset` sums an element's and its inline ancestors').
@@ -304,7 +306,12 @@ its first byte; `inline_ink_past_lines` counts the moved lines, so damage
 reaches them and a root that clips its overflow keeps its clip; the caret and
 `get_glyph_bounds` (`InlineLayout::glyph_offset_at`) and the selection
 highlight (`text_query::selection_rects_for_inline`, the range cut at each
-span's edges) are where the text is drawn; a span's fragments
+span's edges) are where the text is drawn, and so are the editor's queries
+(`query_selection_rects_with_boxes` through
+`selection_rects_with_boxes_for_inline`, each selected box asked with the
+piece drawn at its offset; `query_inline_box_caret` and the edge-box caret,
+`InlineLayout::inline_box_relative_offset`; `query_line_box`) and the
+desktop editor's link-hover rect; a span's fragments
 (`measure_span_fragments`) move, so a box hung from it does
 (`left: 5px; top: 3px` puts `left: 0; top: 0` at Chrome's `(52.641, 10)`,
 snapped to 53), and so does the static position of an `auto`-inset box in it
@@ -321,9 +328,11 @@ Pinned in `tests/relative_inline_offset_2346_tests.rs`
 Not Chrome's yet: a pointer on moved **text** is still mapped to a character
 by the unmoved lines (`byte_offset_from_position`, `cluster_range_at_point`;
 **#2404**); a block inside a relative **split** inline (#513) is not moved
-(**#2408**: Chrome moves it with the span); and a percentage `top` of a block
+(**#2408**: Chrome moves it with the span); a percentage `top` of a block
 whose `height` changes with no width change keeps the old offset until the
-lines are rebuilt.
+lines are rebuilt; a grid item's stretched height, a column flex item's flexed
+one and a table cell's are not taken as definite; and a change of an inset
+reshapes the paragraph, where moving the spans again would do (**#2412**).
 
 **An auto-width absolute box is shrunk to fit in what its containing block
 leaves it** (#1404, CSS 2.1 §10.3.7): that block's padding-box width less the

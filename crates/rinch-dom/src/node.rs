@@ -991,6 +991,27 @@ impl InlineLayout {
         sum
     }
 
+    /// The `position: relative` offset (#1425, #2346) of inline box `box_id`
+    /// of these lines: an atomic inline's (that of the relative inline
+    /// elements around it, as `write_inline_positions` moves it), or an edge
+    /// box's (its element's, as its background moves). `(0, 0)` when nothing
+    /// is relatively positioned. `get` looks a node up.
+    pub(crate) fn inline_box_relative_offset<'a>(
+        &self,
+        box_id: u64,
+        get: impl Fn(RawNodeId) -> Option<&'a Node>,
+    ) -> (f32, f32) {
+        if self.relative_spans.is_empty() {
+            return (0.0, 0.0);
+        }
+        let owner = match crate::ifc::edge_box_owner(box_id) {
+            Some((element, _)) => Some(element),
+            None if crate::ifc::is_edge_box(box_id) => None,
+            None => get(box_id).and_then(|n| n.parent),
+        };
+        owner.map_or((0.0, 0.0), |o| self.element_relative_offset(o, get))
+    }
+
     /// The `position: relative` offset (#1425, #2346) of the glyph at layout
     /// byte `byte`: the sum of every relative span covering it, so nested
     /// relative spans compose. `(0, 0)` when none does.

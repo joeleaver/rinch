@@ -264,6 +264,61 @@ pub(crate) fn inline_edge_widths(
     (start.max(0.0), end.max(0.0))
 }
 
+/// Whether `node`'s height is **definite** for a percentage of it (CSS 2.1
+/// §10.5, CSS Sizing 3 §2.1), as a relative inline element's `top`/`bottom`
+/// asks (#2346): a length; a percentage of a definite parent; an absolute
+/// box sized by both `top` and `bottom`; a flex item stretched across a row
+/// container whose own height is definite (CSS Flexbox §9.8). Chrome 156
+/// resolves `top: 10%` against each; anything else is `auto` (an auto-height
+/// block). Not answered here, so `auto`: a grid item's stretch, a column
+/// flex item's flexed size, a table cell.
+pub(crate) fn definite_height(nodes: &crate::node_slab::NodeSlab, node: &Node) -> bool {
+    use crate::computed_style::{
+        AlignItemsValue, AlignSelfValue, DimensionValue, DisplayValue, FlexDirectionValue,
+        LengthPercentageAutoValue as L, PositionValue,
+    };
+    let mut cur = node;
+    // A percentage chain is shallow; the bound only guards a cycle.
+    for _ in 0..64 {
+        let cs = &cur.computed_style;
+        let parent = cur.parent.and_then(|p| nodes.get_live(p));
+        match cs.height {
+            DimensionValue::Length(_) => return true,
+            DimensionValue::Percent(_) | DimensionValue::Calc { .. } => match parent {
+                Some(p) => {
+                    cur = p;
+                    continue;
+                }
+                None => return true,
+            },
+            DimensionValue::Auto => {}
+            // `min-content`, `fit-content`…: sized by the content.
+            DimensionValue::Intrinsic(_) => return false,
+        }
+        if matches!(cs.position, PositionValue::Absolute | PositionValue::Fixed) {
+            return !matches!(cs.top, L::Auto) && !matches!(cs.bottom, L::Auto);
+        }
+        let Some(p) = parent else { return false };
+        let pcs = &p.computed_style;
+        let row_flex = matches!(pcs.display, DisplayValue::Flex | DisplayValue::InlineFlex)
+            && matches!(
+                pcs.flex_direction,
+                FlexDirectionValue::Row | FlexDirectionValue::RowReverse
+            );
+        let stretched = match cs.align_self {
+            Some(a) => a == AlignSelfValue::Stretch,
+            None => pcs
+                .align_items
+                .is_none_or(|a| a == AlignItemsValue::Stretch),
+        };
+        if !(row_flex && stretched) {
+            return false;
+        }
+        cur = p;
+    }
+    false
+}
+
 /// Whether an element's own direction is left to right.
 pub(crate) fn element_is_ltr(node: &Node) -> bool {
     node.stylo_element_data
@@ -4995,7 +5050,7 @@ impl RinchDocument {
     /// The containing block is the block container holding the line: the
     /// root, or the element an anonymous block box stands in. A percentage
     /// `left`/`right` is of its content width; a percentage `top`/`bottom` of
-    /// its content height when its `height` is a length, and otherwise
+    /// its content height when that is definite ([`definite_height`]), and otherwise
     /// computes to `auto` (CSS 2.1 §9.3.2) — measured in Chrome 156. Of an
     /// over-constrained pair, `top` wins, and `left` in a left-to-right
     /// containing block (`right` in a right-to-left one).
@@ -5003,7 +5058,7 @@ impl RinchDocument {
         if inline.relative_spans.is_empty() {
             return;
         }
-        use crate::computed_style::{DimensionValue, LengthPercentageAutoValue as L};
+        use crate::computed_style::LengthPercentageAutoValue as L;
         let nodes = &self.tree.nodes;
         let root = &nodes[root_id];
         let cb = root
@@ -5017,7 +5072,7 @@ impl RinchDocument {
             - cs.padding_right.to_px()
             - cs.border_left_width.to_px()
             - cs.border_right_width.to_px();
-        let height = matches!(cs.height, DimensionValue::Length(_)).then(|| {
+        let height = definite_height(nodes, cb).then(|| {
             cb.layout.height
                 - cs.padding_top.to_px()
                 - cs.padding_bottom.to_px()

@@ -265,6 +265,64 @@ fn a_percentage_top_is_of_a_definite_height() {
     assert!((dy + 9.3).abs() < 0.001, "got {dy}");
 }
 
+/// `inner` in the container `C` (`c_extra` appended) inside a wrapper
+/// styled `outer`, against the same with no offset: the move of `m`'s box.
+#[track_caller]
+fn moved_in(outer: &str, c_extra: &str, inner: &str, offset: &str, m: &str) -> [f32; 2] {
+    let case = |off: &str| {
+        let mut doc = document();
+        let body = doc.body();
+        let wrap = doc.create_element("div");
+        doc.set_inner_html(
+            wrap,
+            &format!(
+                r#"<div style="{outer}"><div data-m="c" style="{C}{c_extra}">{}</div></div>"#,
+                inner.replace("{OFF}", off)
+            ),
+        );
+        doc.append_child(body, wrap);
+        doc.resolve_layout(VW, VH);
+        let c = one(&doc, "[data-m=c]");
+        Case { doc, c }.rect(m)
+    };
+    let (a, b) = (case(offset), case(""));
+    [a[0] - b[0], a[1] - b[1]]
+}
+
+/// A height that is definite without being a length is one a percentage
+/// `top` resolves against, as Chrome 156 does: a flex item stretched across
+/// a 100px row, an absolute box sized by `top: 0; bottom: 100px` in a 200px
+/// block, and `height: 50%` of a 200px parent. The first two are 87 tall
+/// (100 less the container's 13px top margin), 80 under its 7px padding, so
+/// `top: 10%` is 8; the third is 100 (`box-sizing: border-box`), 93 inside,
+/// so 9.3 (Chrome 156: 15, 15 and 16.297, against 7). An auto-height
+/// block's is not definite (above).
+#[test]
+fn a_percentage_top_is_of_a_height_that_layout_makes_definite() {
+    for (outer, c_extra, want) in [
+        ("display: flex; height: 100px", "", 8.0),
+        (
+            "position: relative; height: 200px",
+            "position: absolute; top: 0; bottom: 100px;",
+            8.0,
+        ),
+        ("height: 200px", "height: 50%;", 9.3),
+    ] {
+        let [dx, dy] = moved_in(outer, c_extra, &lead(), "top: 10%", "ib");
+        assert_eq!(dx, 0.0, "{outer}");
+        assert!((dy - want).abs() < 0.001, "{outer}: got {dy}");
+    }
+    // A column flex item's height is its content's here: not definite.
+    let [_, dy] = moved_in(
+        "display: flex; flex-direction: column",
+        "",
+        &lead(),
+        "top: 10%",
+        "ib",
+    );
+    assert_eq!(dy, 0.0, "an auto-height column item");
+}
+
 /// A sticky span is not moved by its insets where nothing scrolls it past
 /// them: this one is below its `top: 5px` line, so it stays where it flows.
 #[test]
@@ -382,6 +440,118 @@ fn the_spans_bounding_rect_is_moved() {
     assert_eq!([a[0] - b[0], a[1] - b[1]], [7.0, 5.0]);
     assert_eq!(&a[2..], &b[2..]);
     assert_rect(a, [54.641, 12.0, 28.328, 20.0], "Chrome 156");
+}
+
+/// The editor's queries (`rinch-editor-view` paints its highlight and
+/// carets through them) answer where the span's text and boxes are drawn:
+/// the selection with its boxes, the caret beside an image, the line box
+/// under the caret, and the caret at an element's edge box.
+#[test]
+fn the_editors_queries_follow_the_moved_text_and_boxes() {
+    use rinch_core::dom::CaretAffinity;
+    let inner = r#"lead <span data-m="span" style="position: relative; padding-left: 2px; {OFF}">te<img data-m="img" style="width: 10px; height: 10px">xt</span> tail"#;
+    let moved = Case::new(&inner.replace("{OFF}", "top: 5px; left: 7px"));
+    let twin = Case::new(&inner.replace("{OFF}", ""));
+    let d = |a: (f32, f32), b: (f32, f32)| [a.0 - b.0, a.1 - b.1];
+    // The text alone, then with the image selected.
+    for boxes in [vec![], vec![moved.id("img")]] {
+        let twin_boxes: Vec<u64> = if boxes.is_empty() {
+            vec![]
+        } else {
+            vec![twin.id("img")]
+        };
+        let a = moved
+            .doc
+            .query_selection_rects_with_boxes(moved.c, 5, 9, &boxes);
+        let b = twin
+            .doc
+            .query_selection_rects_with_boxes(twin.c, 5, 9, &twin_boxes);
+        assert_eq!(a.len(), b.len(), "{boxes:?}");
+        for (a, b) in a.iter().zip(&b) {
+            assert_eq!(d((a.0, a.1), (b.0, b.1)), [7.0, 5.0], "{boxes:?}");
+            assert_eq!((a.2, a.3), (b.2, b.3));
+        }
+    }
+    // The pieces outside the span stay.
+    let a = moved
+        .doc
+        .query_selection_rects_with_boxes(moved.c, 1, 12, &[]);
+    let b = twin
+        .doc
+        .query_selection_rects_with_boxes(twin.c, 1, 12, &[]);
+    assert_eq!(a.first().map(|r| r.1), b.first().map(|r| r.1));
+    assert_eq!(a.last().map(|r| r.1), b.last().map(|r| r.1));
+    for after in [false, true] {
+        let a = moved
+            .doc
+            .query_inline_box_caret(moved.c, moved.id("img"), after)
+            .unwrap();
+        let b = twin
+            .doc
+            .query_inline_box_caret(twin.c, twin.id("img"), after)
+            .unwrap();
+        assert_eq!(d((a.0, a.1), (b.0, b.1)), [7.0, 5.0], "beside the image");
+        let a = moved
+            .doc
+            .query_inline_edge_caret(moved.c, moved.id("span"), false, after)
+            .unwrap();
+        let b = twin
+            .doc
+            .query_inline_edge_caret(twin.c, twin.id("span"), false, after)
+            .unwrap();
+        assert_eq!(
+            d((a.0, a.1), (b.0, b.1)),
+            [7.0, 5.0],
+            "at the span's start edge"
+        );
+    }
+    let a = moved
+        .doc
+        .query_line_box(moved.c, 6, CaretAffinity::Downstream)
+        .unwrap();
+    let b = twin
+        .doc
+        .query_line_box(twin.c, 6, CaretAffinity::Downstream)
+        .unwrap();
+    assert_eq!(a.0 - b.0, 5.0, "the line box under a caret in the span");
+    let a = moved
+        .doc
+        .query_line_box(moved.c, 1, CaretAffinity::Downstream)
+        .unwrap();
+    let b = twin
+        .doc
+        .query_line_box(twin.c, 1, CaretAffinity::Downstream)
+        .unwrap();
+    assert_eq!(a, b, "and not outside it");
+}
+
+/// A change of `bottom` alone is a new offset too.
+#[test]
+fn a_new_bottom_alone_is_applied_on_the_next_layout() {
+    let mut c = Case::new(&format!(
+        r#"lead <span data-m="span" style="{R}; bottom: 3px">text{}</span>"#,
+        ib("")
+    ));
+    let (before_box, before_glyph) = (c.rect("ib"), c.glyph(5));
+    let span = c.id("span");
+    c.doc.set_attribute(
+        rinch_core::dom::NodeId(span),
+        "style",
+        "position: relative; bottom: 9px",
+    );
+    c.doc.resolve_layout(VW, VH);
+    assert_eq!(c.rect("ib")[1] - before_box[1], -6.0);
+    assert_eq!(c.glyph(5)[1] - before_glyph[1], -6.0);
+}
+
+/// Over-constrained in a right-to-left block, `right` wins: `left: 3px;
+/// right: 9px` moves the box 9px left (Chrome 156).
+#[test]
+fn right_wins_over_left_in_a_right_to_left_block() {
+    assert_eq!(
+        moved_by("direction: rtl;", &lead(), "left: 3px; right: 9px", "ib"),
+        [-9.0, 0.0]
+    );
 }
 
 /// The selection highlight over the span's text is where the text is drawn.
@@ -583,6 +753,24 @@ mod painted {
             painted_case(inner, "top: 0px"),
         );
         // A 1px line between pixel rows: any green ink.
+        let greenish = |p: &[u8; 4]| p[1] > 40 && p[0] < 20 && p[2] < 20;
+        let (a, b) = (
+            bbox(&moved, greenish).unwrap(),
+            bbox(&twin, greenish).unwrap(),
+        );
+        assert_eq!([a[0] - b[0], a[1] - b[1]], [7, 5]);
+        assert_eq!([a[2] - a[0], a[3] - a[1]], [b[2] - b[0], b[3] - b[1]]);
+    }
+
+    /// A wavy underline (`text-decoration-style: wavy`, painted as a path)
+    /// moves with its text too.
+    #[test]
+    fn the_spans_wavy_underline_moves_with_its_text() {
+        let inner = r#"lead <span style="position: relative; {OFF}; text-decoration: underline wavy rgb(0, 255, 0)">text</span>"#;
+        let (moved, twin) = (
+            painted_case(inner, "top: 5px; left: 7px"),
+            painted_case(inner, "top: 0px"),
+        );
         let greenish = |p: &[u8; 4]| p[1] > 40 && p[0] < 20 && p[2] < 20;
         let (a, b) = (
             bbox(&moved, greenish).unwrap(),
