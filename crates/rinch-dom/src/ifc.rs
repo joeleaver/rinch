@@ -3893,6 +3893,29 @@ fn wrap_allowed_after(units: &[LineUnit], end: usize) -> bool {
 
 /// A space or tab that is not a no-break space nor a `break-spaces` one: a
 /// run of them has one opportunity ([`wrap_allowed_after`]).
+/// Whether `node` is a grid container whose text runs are anonymous grid
+/// items (CSS Grid 1 §6.1, #2411): a block-level `display: grid` element that
+/// is not a table (which `display_from_stylo` maps to a grid, and
+/// `table_layout` lays out) and not a control or replaced element (which has
+/// no inner display, #1288).
+pub(crate) fn is_grid_container(node: &Node) -> bool {
+    use crate::computed_style::values::{DisplayValue, TablePart};
+    node.computed_style.display == DisplayValue::Grid
+        && node.computed_style.table_part == TablePart::None
+        && !crate::replaced::ignores_inner_display(node)
+}
+
+/// Whether `node` is a text node holding only white space: "characters that
+/// can be affected by the white-space property" (CSS Grid 1 §6.1, CSS Flexbox
+/// 1 §4), which CSS Text 3 §4.1 lists as spaces, tabs and segment breaks. An
+/// empty text node counts (it holds no other character). A text run of these
+/// alone in a grid or flex container is not rendered, whatever its
+/// `white-space` (#2443).
+pub(crate) fn is_white_space_text(node: &Node) -> bool {
+    node.text_content()
+        .is_some_and(|t| t.chars().all(|c| matches!(c, ' ' | '\t' | '\n' | '\r')))
+}
+
 fn is_plain_space(u: &LineUnit) -> bool {
     u.space && !u.nbsp && !u.breaks
 }
@@ -5711,7 +5734,18 @@ impl RinchDocument {
                 .iter()
                 .any(|&c| role_of(c) == InlineFlowRole::InFlowBlock);
 
-            if !(has_inline && has_block) {
+            // A **grid container** wraps every run of its text in an anonymous
+            // grid item, block children or none (CSS Grid 1 §6.1: "each child
+            // text sequence is wrapped in an anonymous block container grid
+            // item"). Its inline-level children are blockified items already,
+            // so the runs here are text and the boxless wrappers around it.
+            // Without this, a grid holding only text was an IFC root itself
+            // and broke the text at its own width, not its track's (#2411).
+            // A run of nothing but white space is minted too, and hidden below
+            // (#2443). A table is a grid in rinch (`display_from_stylo`) and is
+            // left to `table_layout`, which hides its own blank runs.
+            let grid = is_grid_container(node);
+            if !(has_inline && (has_block || grid)) {
                 continue;
             }
 
@@ -5866,12 +5900,24 @@ impl RinchDocument {
                     &self.tree.nodes[parent_id].computed_style,
                 );
 
-                // Create Taffy node for the anonymous box
+                // Create Taffy node for the anonymous box. In a grid container
+                // a run of nothing but white space is not rendered, "just as if
+                // its text nodes were display:none" (CSS Grid 1 §6.1), so it
+                // takes no cell (#2443): its box is `display: none`, which grid
+                // placement skips.
+                let blank_grid_run = is_grid_container(&self.tree.nodes[parent_id])
+                    && run
+                        .iter()
+                        .all(|&m| is_white_space_text(&self.tree.nodes[m]));
                 let anon_taffy = self
                     .tree
                     .taffy
                     .new_leaf(taffy::Style {
-                        display: taffy::Display::Block,
+                        display: if blank_grid_run {
+                            taffy::Display::None
+                        } else {
+                            taffy::Display::Block
+                        },
                         ..Default::default()
                     })
                     .unwrap();
@@ -6400,6 +6446,60 @@ impl RinchDocument {
     /// entries the pass did not reach are kept (`kept`: what
     /// `setup_inline_formatting_contexts` left in the list after taking the
     /// in-scope ones out to restore).
+    /// Hide the white-space-only text items of flex and inline-grid containers
+    /// (#2443): CSS Flexbox 1 §4 and CSS Grid 1 §6.1 render a child text run of
+    /// nothing but white space "as if its text nodes were display:none", so it
+    /// is no item — it takes no grid cell, no `gap` and no share of
+    /// `justify-content`'s free space. A text child of such a container stays a
+    /// Taffy text leaf, so the leaf's own `display` says so; every other text
+    /// unit a container in scope holds gets the default back, for a text node
+    /// that moved or whose container changed its `display`. (A block-level
+    /// grid's text is an anonymous item, hidden where it is minted,
+    /// `create_anonymous_block_boxes`.)
+    fn hide_blank_text_items(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
+        let candidates: Vec<RawNodeId> = match scope {
+            None => self.tree.nodes.iter().map(|(id, _)| id).collect(),
+            Some(scope) => scope.containers.clone(),
+        };
+        let shown = taffy::Display::DEFAULT;
+        let mut units: Vec<RawNodeId> = Vec::new();
+        for id in candidates {
+            let Some(node) = self.tree.nodes.get_live(id) else {
+                continue;
+            };
+            if !node.is_element() || node.is_anonymous_block_box {
+                continue;
+            }
+            let item_container = matches!(
+                node.display_mode,
+                DisplayMode::Flex | DisplayMode::InlineFlex | DisplayMode::InlineGrid
+            ) && !crate::replaced::ignores_inner_display(node);
+            units.clear();
+            Self::collect_run_units(&self.tree.nodes, id, &mut units);
+            for &u in &units {
+                let n = &self.tree.nodes[u];
+                if !matches!(n.kind, NodeKind::Text(_)) {
+                    continue;
+                }
+                let Some(t) = n.taffy_id else {
+                    continue;
+                };
+                let want = if item_container && is_white_space_text(n) {
+                    taffy::Display::None
+                } else {
+                    shown
+                };
+                if let Ok(old) = self.tree.taffy.style(t)
+                    && old.display != want
+                {
+                    let mut st = old.clone();
+                    st.display = want;
+                    let _ = self.tree.taffy.set_style(t, st);
+                }
+            }
+        }
+    }
+
     fn split_inline_boxes(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
         let split: Vec<RawNodeId> = match scope {
             None => self
@@ -6518,6 +6618,7 @@ impl RinchDocument {
         // After the boxes exist, so the container's rebuilt list names them
         // rather than their members (#513).
         self.split_inline_boxes(scope);
+        self.hide_blank_text_items(scope);
 
         // `ifc_root` is *derived* state — "this node's boxes are drawn by that
         // IFC, so the paint tree-walk must skip it" — and the marking pass below
