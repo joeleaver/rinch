@@ -607,18 +607,23 @@ pub(crate) fn compressed_inline_min_content(node: &Node) -> Option<f32> {
 }
 
 /// The size a compressible atomic inline replaced element laid out at
-/// `layout` (its border box) is lined up at in a measure of its line at
-/// `wrap` px, when that is narrower than its margin box: its shrink-to-fit
-/// contribution `min(max-content, max(min-content, wrap))`, the margin box
-/// `max(wrap, min-content)` wide and, with an `auto` height, as tall as its
-/// ratio makes it there. `None` when it fits, or for any other box.
+/// `layout` (its border box) is lined up at in the content measure of a box
+/// being sized to fit its lines at `wrap` px, when that is narrower than its
+/// margin box: its shrink-to-fit contribution `min(max-content,
+/// max(min-content, wrap))`, so the line is `max(wrap, min-content)` wide.
+/// With an `auto` height it is as tall as it will be once its box is that
+/// wide: its `width` and `max-width` resolved against `wrap`, through its
+/// ratio, so the box is sized to the line the paint layout lines it up on
+/// (a picture with margins or a `max-width` over 100% overflows that line
+/// and keeps its height, as in Chrome). `None` when it fits, or for any
+/// other box.
 ///
 /// Why (#2424): a measure at a definite width cannot resolve the picture's
 /// percentage `max-width` (the measure is how wide its container will be),
 /// so the picture was lined up at its natural width: a float, an
 /// `inline-block` or an absolutely positioned box holding an inline
 /// `<img width=800 style="max-width: 100%">` in a 300px container was 800
-/// wide. Chrome 156 fits it to the 300px, and the picture's `max-width`
+/// wide. Chrome 157 fits it to the 300px, and the picture's `max-width`
 /// then resolves against that.
 pub(crate) fn compressed_inline_fit(
     node: &Node,
@@ -626,6 +631,7 @@ pub(crate) fn compressed_inline_fit(
     wrap: f32,
 ) -> Option<(f32, f32)> {
     use crate::computed_style::DimensionValue as D;
+    use crate::computed_style::LengthPercentageValue as L;
     let (pb, margins) = compressed_inline_insets(node)?;
     let min = compressed_inline_min_content(node)?;
     let room = wrap.max(min);
@@ -633,9 +639,9 @@ pub(crate) fn compressed_inline_fit(
         return None;
     }
     let width = (room - margins).max(pb);
-    let height = match node.computed_style.height {
+    let s = &node.computed_style;
+    let height = match s.height {
         D::Auto if layout.0 - pb > 0.0 => {
-            let s = &node.computed_style;
             let pb_v = [
                 s.padding_top,
                 s.padding_bottom,
@@ -644,16 +650,53 @@ pub(crate) fn compressed_inline_fit(
             ]
             .into_iter()
             .map(|v| match v {
-                crate::computed_style::LengthPercentageValue::Length(px) => px.max(0.0),
+                L::Length(px) => px.max(0.0),
                 _ => 0.0,
             })
             .sum::<f32>()
             .min(layout.1);
-            pb_v + (layout.1 - pb_v) * (width - pb) / (layout.0 - pb)
+            // A content width resolved against `wrap`, `auto` keeping the
+            // one it has.
+            let content = |v: f32| {
+                if s.box_sizing_border_box {
+                    (v - pb).max(0.0)
+                } else {
+                    v
+                }
+            };
+            let resolve = |d: D| match d {
+                D::Length(px) => Some(content(px)),
+                D::Percent(p) => Some(content(p * wrap)),
+                D::Calc { px, pct } => Some(content(px + pct * wrap)),
+                _ => None,
+            };
+            let current = layout.0 - pb;
+            let mut used = resolve(s.width).unwrap_or(current);
+            if let Some(max) = resolve(s.max_width) {
+                used = used.min(max);
+            }
+            if let Some(min) = resolve(s.min_width) {
+                used = used.max(min);
+            }
+            pb_v + (layout.1 - pb_v) * used / current
         }
         _ => layout.1,
     };
     Some((width + margins, height))
+}
+
+/// Whether a leaf asked `inputs` is being sized to fit its content: it is
+/// handed no width, and has no width of its own that resolves (a float's,
+/// an absolutely positioned box's or an `inline-block`'s `auto` width, in
+/// the room it may take). A leaf with a known width, or a length or
+/// resolvable percentage one, is not.
+pub(crate) fn sizing_to_fit(inputs: &taffy::LayoutInput, style: &taffy::Style) -> bool {
+    inputs.known_dimensions.width.is_none()
+        && style
+            .size
+            .width
+            .maybe_resolve(inputs.parent_size.width, |_: *const (), _: f32| 0.0)
+            .is_none()
 }
 
 /// The style a [compressible](is_compressible) replaced box is computed with

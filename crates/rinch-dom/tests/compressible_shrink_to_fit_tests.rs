@@ -171,3 +171,84 @@ fn an_inline_picture_with_percentage_padding_gives_no_min_content_width_issue_24
         size(&d, "t")
     );
 }
+
+/// The height of `#f`: a 300px block holding an inline picture and then a
+/// second line.
+fn block_height(picture: &str) -> f32 {
+    let d = doc(&format!(
+        "<div id=f style='width:300px'>{picture}<div>next</div></div>"
+    ));
+    size(&d, "f").1
+}
+
+#[test]
+fn a_picture_on_a_line_of_a_box_with_a_width_keeps_its_resolved_size() {
+    // Only a box sized to fit its lines lines a compressible picture up at
+    // the room (#2445 review). In a 300px block the picture's percentages
+    // resolve against 300 and a picture wider than the line overflows it
+    // at its full height, as in Chrome 157; fitted, it was lined up at the
+    // room, scaled down, and the next line overlapped it.
+    for (picture, chrome) in [
+        ("<img src='W800' width=800 style='max-width:150%'>", 250.0),
+        (
+            "<img src='W800' width=800 style='max-width:100%; margin:0 10px'>",
+            175.0,
+        ),
+        (
+            "<img src='W800' width=800 style='max-width:100%; padding:10px'>",
+            195.0,
+        ),
+        ("<img src='W800' style='width:120%'>", 205.0),
+        (
+            "<img src='W800' width=800 border=1 style='max-width:100%'>",
+            177.0,
+        ),
+        (
+            "<img src='W800' width=800 border=2 style='max-width:100%'>",
+            179.0,
+        ),
+    ] {
+        let got = block_height(picture);
+        assert!(
+            (got - chrome).abs() < 0.6,
+            "{picture}: {got}, Chrome {chrome}"
+        );
+    }
+}
+
+#[test]
+fn a_cells_picture_keeps_its_height_beside_a_text_cell() {
+    // An auto table in 300px, the picture's cell beside a cell of text
+    // (#2445 review). The row is the picture's line: the picture plus the
+    // strut's descent (Chrome 157: 249.81x124.91 in a 129.91 row; the
+    // widths follow the text's font, so the relation is pinned). Fitted in
+    // the cell's own layout, the line was 119 and the picture 125.
+    let d = doc(
+        "<div style='width:300px'><table id=t cellpadding=0 cellspacing=0><tr>         <td id=a><img id=i src='W800' width=800 style='max-width:100%'></td>         <td>hello world</td></tr></table></div>",
+    );
+    let (t, i) = (size(&d, "t"), size(&d, "i"));
+    assert!((t.1 - (i.1 + 5.0)).abs() < 0.6, "row {t:?}, picture {i:?}");
+    assert!((i.0 - 2.0 * i.1).abs() < 0.6, "picture {i:?}");
+}
+
+#[test]
+fn a_float_keeps_the_height_of_a_picture_with_margins() {
+    // The float fits the room; the picture's `max-width` then resolves
+    // against it, and its margins overflow the line: the line is as tall
+    // as the 300x150 picture, not as one scaled to fit its margin box.
+    let d = doc(
+        "<div style='width:300px'><div id=f style='float:left'>         <img id=i src='W800' width=800 style='max-width:100%; margin:0 10px'></div></div>",
+    );
+    close(&d, "f", (300.0, 155.0));
+    close(&d, "i", (300.0, 150.0));
+}
+
+#[test]
+fn a_grid_items_picture_keeps_a_max_width_over_100_percent() {
+    // A leaf with a percentage basis is not capped at its room: in a 300px
+    // track a `max-width: 150%` picture is 450x225.
+    let d = doc(
+        "<div style='display:grid; grid-template-columns:300px; width:300px'>         <img id=i src='W800' style='max-width:150%; justify-self:start'></div>",
+    );
+    close(&d, "i", (450.0, 225.0));
+}

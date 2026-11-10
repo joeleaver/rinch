@@ -770,6 +770,19 @@ pub(crate) struct AtomicContributions<'a> {
     pub resolved_at: &'a HashMap<RawNodeId, f32>,
     /// `NodeTree::atomic_min_requests`.
     pub requests: &'a std::cell::RefCell<Vec<RawNodeId>>,
+    /// Whether this is the content measure of a box sized to fit its
+    /// content: the box whose lines these are has no width yet (the measure
+    /// is handed no known width), so a percentage of it has no basis. Only
+    /// then is a
+    /// compressible picture lined up at its shrink-to-fit size
+    /// ([`crate::replaced::compressed_inline_fit`]); in a line of a box
+    /// with a width it keeps the size resolved against that width, and
+    /// overflows the line as in Chrome (#2445 review).
+    pub fits_compressible: bool,
+    /// Set when a compressible picture was lined up at its shrink-to-fit
+    /// size: the measure is then not the one a line of the same width with
+    /// a percentage basis gives, and is cached apart from it.
+    pub fitted: std::cell::Cell<bool>,
 }
 
 impl AtomicContributions<'_> {
@@ -820,8 +833,10 @@ impl AtomicContributions<'_> {
         }
         // At a definite width, its shrink-to-fit contribution (#2424).
         if wrap > 0.0
+            && self.fits_compressible
             && let Some(size) = crate::replaced::compressed_inline_fit(node, layout, wrap)
         {
+            self.fitted.set(true);
             return size;
         }
         // A percentage width in a min-content measure is cyclic: the box
@@ -8796,6 +8811,9 @@ impl RinchDocument {
                 let mut first_baseline: Option<f32> = None;
                 // A compressible replaced box asked an intrinsic size, as in
                 // the root compute (`replaced::min_content_style`, #2424).
+                // The box whose lines a measure breaks has no width yet: it is
+                // being sized to fit them (`AtomicContributions::fits_compressible`).
+                let sizing_to_fit = crate::replaced::sizing_to_fit(&inputs, style);
                 let compressed = match context {
                     Some(NodeContext::Replaced { .. } | NodeContext::Image { .. }) => {
                         crate::replaced::min_content_style(&inputs, style)
@@ -8836,6 +8854,8 @@ impl RinchDocument {
                                     min_content,
                                     resolved_at,
                                     requests: min_requests,
+                                    fits_compressible: sizing_to_fit,
+                                    fitted: std::cell::Cell::new(false),
                                 };
                                 let (inline_layout, font_family_resolves) =
                                     Self::build_inline_layout(
@@ -8876,6 +8896,8 @@ impl RinchDocument {
                                                 min_content,
                                                 resolved_at,
                                                 requests: min_requests,
+                                                fits_compressible: false,
+                                                fitted: std::cell::Cell::new(false),
                                             };
                                             let (max, resolves) = Self::build_inline_layout(
                                                 nodes,

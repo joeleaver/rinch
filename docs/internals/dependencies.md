@@ -668,7 +668,7 @@ candidates.
    contribution, its border box capped at the room (`replaced::min_content_style`, used by the
    root compute and `compute_atomic_inline_root` alike): a float, `inline-block`, `fit-content`
    or absolutely positioned box holding `<img style="width: 800px; max-width: 100%">` in 300px
-   was 800 wide (Chrome 157: 300). A flex row's min-content contribution of such an item
+   was 800 wide (Chrome 157: 300). An inline picture is fitted the same way only in the content measure of a box being sized to fit its lines (`replaced::sizing_to_fit`: no width known or resolvable); in a box with a width it keeps the size resolved against it and overflows the line (#2445 review: fitted there, the line came out shorter than the picture). Such a measure is cached apart (`AtomicContributions::fitted`). A flex row's min-content contribution of such an item
    (`item_intrinsic_main_contribution`, `FlexItem::is_compressible`) and a grid item's
    min-content and minimum contributions in the inline axis
    (`GridItem::compressed_min_content_contribution`) are now its length `min-width` or nothing,
