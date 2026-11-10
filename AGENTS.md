@@ -324,6 +324,18 @@ feature-gated set), `clippy`, `clippy-wasm` (per-crate `wasm32` lint for
 `rinch-http`, `rinch-ws`, `rinch-web`), `test-wasm` (headless Chrome, for
 `rinch-storage` and `rinch-web`), and `fmt`.
 
+**Live tests that need a compositor or a D-Bus bus run in an isolated session,
+always** (issue #2429): `scripts/isolated-session.sh [--kwin [KWIN_OPTION...]] --
+COMMAND` gives the command private XDG directories and `HOME` under `/tmp`, no
+`WAYLAND_DISPLAY`/`DISPLAY`/`DBUS_SESSION_BUS_ADDRESS` of the desktop's, a
+`dbus-daemon` of its own with no service activation, optionally a headless KWin
+(`--kwin`, `--xwayland` for X11), and one process group it ends and checks for
+leftovers. Never `dbus-run-session`, `dbus-launch`, a bare `kwin_wayland
+--virtual` or an `Xwayland -rootless` from the desktop: on 2026-11-10 such
+sessions started the real desktop portals against the real compositor and
+rewrote the real `kwinoutputconfig.json`. The recipes in the code (`hide_show_geometry.rs`,
+`tray.rs`, `hotkey/backend/portal.rs`) use it.
+
 **Feature-gated tests are a trap.** A test file whose `cfg` is false compiles to an
 *empty* binary that still prints `Running tests/x.rs` — only the test **count** reveals
 it. And `cargo test --workspace` unifies features across members, so a gated test can

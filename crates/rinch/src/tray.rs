@@ -1727,12 +1727,13 @@ mod tests {
     /// watcher has stopped answering returns within the bound, keeping its
     /// callbacks. At bd2719ae (an unbounded join) the drop never returned.
     ///
-    /// Recipe (needs `dbus-run-session` and python3-gi; the test binary path is
+    /// Recipe (needs python3-gi; the bus is an isolated session's,
+    /// `scripts/isolated-session.sh`, issue #2429; the test binary path is
     /// whatever cargo printed):
     ///
     /// ```text
     /// cargo test -p rinch --features system-tray --lib --no-run
-    /// dbus-run-session -- bash -c 'python3 crates/rinch/tests/fixtures/hung_sni_watcher.py & sleep 1;
+    /// scripts/isolated-session.sh -- bash -c 'python3 -I crates/rinch/tests/fixtures/hung_sni_watcher.py & sleep 1;
     ///   <test bin> tray::tests::live_dropping_a_tray_under_a_hung_watcher_is_bounded --include-ignored --nocapture'
     /// ```
     ///

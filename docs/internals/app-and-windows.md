@@ -483,8 +483,9 @@ creation, `Moved`, `SurfaceResized`, `ScaleFactorChanged` and hide. The native
 menu bar is detached at hide (Windows: `remove_for_hwnd`, which also clears
 `NATIVE_ACCELERATOR_ATTACHED`) and attached to the re-created window (#1533).
 Pins: `shell::window_geometry::tests`, and the `#[ignore]`d live
-`crates/rinch/tests/hide_show_geometry.rs` (a private X server; its `wm_`
-tests inside a private headless KWin, `kwin_wayland --virtual --xwayland`).
+`crates/rinch/tests/hide_show_geometry.rs` (an Xvfb, and for its `wm_`
+tests a headless KWin with Xwayland, each inside
+`scripts/isolated-session.sh`; the recipes are in the file).
 
 ### Window facts on every target (`rinch::window`, #1770)
 
@@ -580,8 +581,10 @@ surface holding a granted lock hears `SurfaceEvent::PointerMotion`, then the
 handlers, in one batch, untracked) and resolves layout when a handler dirtied
 it. winit delivers device events only while the window is focused
 (`DeviceEvents::WhenFocused`, the default; rinch does not change it). Measured
-live in a private nested KWin (`kwin_wayland --virtual --xwayland`, XDG dirs
-pointed at a temp dir): Wayland grants `Locked`, Xwayland `Confined`, and
+live in a headless KWin with Xwayland in an isolated session
+(`scripts/isolated-session.sh --kwin --xwayland -- env POINTER_LOCK_LOG=1
+POINTER_LOCK_AUTO=1 timeout 5 target/release/pointer-lock`, and the same with
+`env -u WAYLAND_DISPLAY` for Xwayland): Wayland grants `Locked`, Xwayland `Confined`, and
 under Xwayland XTest's relative moves arrive as raw motion and Escape releases.
 Each raw motion arrives once under the X11 grab since the winit-fork fix for #2114
 (see "winit Fork" below); before it, the server's second copy doubled the deltas.
@@ -698,8 +701,10 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   with no move before it is judged where the pointer is. Where the compositor
   has no layer shell (GNOME) the fork makes an xdg-toplevel and one
   `tracing::warn!` says so (`AfterCreate::CheckLayerShell`);
-  `current_window_surface_kind()` answers which. Tested live in a private
-  `kwin_wayland --virtual` (no focus taken on map, click, hide/show; move,
+  `current_window_surface_kind()` answers which. Tested live in a headless
+  KWin in an isolated session (`scripts/isolated-session.sh --kwin -- env
+  OVERLAY_SCRIPT=1 target/release/wayland-overlay` runs the scripted part;
+  no focus taken on map, click, hide/show; move,
   resize, output, hide/show geometry; software and GPU); the GNOME fallback
   is not (no such compositor on the host). `App::prefer_x11(true)`
   builds the event loop on X11 whenever `DISPLAY` is set (XWayland), and

@@ -4,13 +4,29 @@
 //! still shown without taking the input focus.
 //!
 //! Needs an X server and `xdotool`/`xwininfo`/`xprop`, so every test is
-//! `#[ignore]`d. Run it on a private server, never your desktop's:
+//! `#[ignore]`d. Run it on an X server of its own with no window manager,
+//! inside an isolated session (`scripts/isolated-session.sh`, issue #2429):
+//! never on your desktop's server, and not on an `Xwayland -rootless` started
+//! from the desktop (that is a client of the desktop's compositor). Here the
+//! server is a windowed (not rootless) Xwayland on the session's own headless
+//! KWin, which does not manage that server's windows (`-geometry`: its
+//! screen is otherwise 640x480, smaller than the positions the tests use;
+//! `-noreset`: a server that resets when its last client leaves refuses the
+//! next test's probe while it does).
+//! `WAYLAND_DISPLAY` is unset for the tests, so the probe takes the X11
+//! backend:
 //!
 //! ```sh
-//! Xwayland :97 -rootless &            # or Xvfb :97
 //! cargo build -p rinch --example hide_show_geometry
-//! DISPLAY=:97 cargo test -p rinch --test hide_show_geometry -- --ignored --test-threads=1 --skip wm_
+//! cargo test -p rinch --test hide_show_geometry --no-run
+//! scripts/isolated-session.sh --kwin -- sh -c '
+//!   Xwayland -geometry 1920x1080 -noreset -displayfd 3 3> "$RINCH_SESSION_DIR/x" &
+//!   until [ -s "$RINCH_SESSION_DIR/x" ]; do sleep 0.1; done
+//!   env -u WAYLAND_DISPLAY DISPLAY=:$(cat "$RINCH_SESSION_DIR/x") \
+//!     cargo test -p rinch --test hide_show_geometry -- --ignored --test-threads=1 --skip wm_'
 //! ```
+//!
+//! (`Xvfb -displayfd 3` without `--kwin` serves as well, where Xvfb is installed.)
 //!
 //! The probe is found beside this test binary (see `debug_event_latency.rs`
 //! for why it is not built from here). With no window manager the server
@@ -313,15 +329,14 @@ fn a_hidden_start_appears_at_the_requested_position() {
 // A reparenting window manager puts a frame around the window, so the
 // position a client asks for is the frame's and `xwininfo` reports the
 // client's: these compare the window with itself before the hide rather than
-// with fixed numbers. Run them inside a private headless KWin:
+// with fixed numbers. Run them inside a headless KWin in an isolated session
+// (`scripts/isolated-session.sh`, issue #2429); `WAYLAND_DISPLAY` is unset so
+// the probe takes the X11 backend (Xwayland):
 //
 // ```sh
-// dbus-run-session -- kwin_wayland --virtual --xwayland --socket wayland-test \
-//     --no-lockscreen --no-global-shortcuts --exit-with-session ./run.sh
+// scripts/isolated-session.sh --kwin --xwayland -- sh -c 'unset WAYLAND_DISPLAY;
+//   cargo test -p rinch --test hide_show_geometry -- --ignored --test-threads=1 wm_'
 // ```
-//
-// where `run.sh` unsets `WAYLAND_DISPLAY` (so the probe takes the X11
-// backend) and runs this test binary with `--ignored wm_`.
 
 /// The window `_NET_ACTIVE_WINDOW` names, as `xdotool` spells ids (decimal).
 fn active_window() -> String {
