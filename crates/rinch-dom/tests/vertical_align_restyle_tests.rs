@@ -57,17 +57,18 @@ fn a_runtime_vertical_align_change_moves_the_glyph_on_the_next_layout() {
     text(&mut d, span, "B");
     d.resolve_layout(VW, VH);
 
-    let before = glyph_bounds_for_offset(&d, line.0 as u64, 1).unwrap(); // "B"
+    // The line's height: a raised span grows its line (#1357).
+    let before = d.tree.get(line.0).unwrap().layout.height;
 
     // Flip the SAME element to `vertical-align: super`. Nothing else about
     // its typography changes.
     d.set_attribute(span, "style", "vertical-align: super");
     d.resolve_layout(VW, VH);
 
-    let after = glyph_bounds_for_offset(&d, line.0 as u64, 1).unwrap(); // "B"
+    let after = d.tree.get(line.0).unwrap().layout.height;
 
     assert_ne!(
-        before.y, after.y,
+        before, after,
         "vertical-align: super set at runtime on an already-laid-out element \
          produced NO shift — ComputedStyle::same_text_layout_inputs does not \
          compare `vertical_align`, so invalidate_text_measure_for_node never \
@@ -118,32 +119,31 @@ fn clearing_vertical_align_at_runtime_returns_the_glyph_to_baseline() {
 /// `super` raises the box from its parent's baseline, which the outer `sub`
 /// has already lowered (#1357; before, the innermost span's shift won
 /// outright). The inner `<sup>`'s parent is the `<sub>`, at `font-size:
-/// smaller` (16 / 1.2 = 13.33px, #674), so the `super` raise is
-/// 405/1024 × 13.33 = 5.2734375 against the `sub`'s 67/256 × 16 = 4.1875 drop:
-/// 1.0859375 up, which parley's quantized layout rounds to 1.
+/// smaller` (13.33px, #674): a raise of 5.27 against the `sub`'s 4.19 drop,
+/// 1.09 up in all. Chrome 157 (`A<sub><sup>C</sup></sub>`, 16px/20px): the
+/// inner `<sup>` box at y 3.75. Innermost-only, it would be 4px higher.
 #[test]
 fn nested_sub_in_sup_composes_the_shift() {
     use rinch_dom::text_query::glyph_bounds_for_offset;
 
     let mut d = doc();
     let body = d.body();
-    let line = el(&mut d, body, "div", &format!("{BASE}; white-space: nowrap"));
+    let line = el(
+        &mut d,
+        body,
+        "div",
+        "font-family: ProbeFace; font-size: 16px; line-height: 20px; white-space: nowrap",
+    );
     text(&mut d, line, "A");
-    let plain = el(&mut d, line, "span", "");
-    text(&mut d, plain, "B");
     let outer_sub = el(&mut d, line, "sub", "");
     let inner_sup = el(&mut d, outer_sub, "sup", "");
     text(&mut d, inner_sup, "C");
     d.resolve_layout(VW, VH);
 
-    let base = glyph_bounds_for_offset(&d, line.0 as u64, 1).unwrap(); // B
-    let nested = glyph_bounds_for_offset(&d, line.0 as u64, 2).unwrap(); // C
-
-    let shift = nested.y - base.y;
-    assert_eq!(
-        shift,
-        (4.1875_f32 - 5.2734375).round(),
-        "nested <sub><sup> shift = {shift}, want the sub's drop and the sup's \
-         raise added up and rounded"
+    let nested = glyph_bounds_for_offset(&d, line.0, 1).unwrap(); // C
+    assert!(
+        (nested.y - 3.75).abs() <= 1.0,
+        "nested <sub><sup> glyph at y {}, Chrome 3.75",
+        nested.y
     );
 }

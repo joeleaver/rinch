@@ -520,8 +520,23 @@ pub(super) fn inline_background_rects<'a>(
 
             let line_metrics = line.metrics();
             let baseline = line_metrics.baseline as f64;
-            let ascent = crate::ifc::line_ascent(line_metrics) as f64;
-            let descent = crate::ifc::line_descent(line_metrics) as f64;
+            // The content area: the line's ascent and descent, or, for an
+            // element `vertical-align` moved, its own text's where parley put
+            // it. The line grows to hold the moved span (#1357), so its
+            // extent moved by the shift would count it twice.
+            let moved = (shift != 0.0)
+                .then(|| {
+                    let at = bg_span.start.max(line_range.start);
+                    crate::ifc::span_content_box(layout, &line, at)
+                })
+                .flatten();
+            let (top, bottom) = match moved {
+                Some((t, b)) => (t as f64, b as f64),
+                None => (
+                    baseline - crate::ifc::line_ascent(line_metrics) as f64,
+                    baseline + crate::ifc::line_descent(line_metrics) as f64,
+                ),
+            };
             let pt = bg_span.padding_top as f64;
             let pb = bg_span.padding_bottom as f64;
 
@@ -529,9 +544,9 @@ pub(super) fn inline_background_rects<'a>(
             // border (those of the sides it closes are in its edge boxes).
             let rect = Rect::new(
                 left * scale,
-                (baseline - ascent - pt - bt + shift) * scale,
+                (top - pt - bt) * scale,
                 right.max(left) * scale,
-                (baseline + descent + pb + bb + shift) * scale,
+                (bottom + pb + bb) * scale,
             );
             f(InlineBoxFragment {
                 span: bg_span,

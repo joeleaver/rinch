@@ -126,6 +126,32 @@ pub(crate) fn line_top(line: &parley::layout::Line<'_, Brush>) -> f32 {
         .fold(m.block_min_coord, f32::min)
 }
 
+/// The content area of the text at layout byte `byte` on `line`, as `(top,
+/// bottom)`: its font's rounded ascent and descent around the baseline parley
+/// placed its span on, which `vertical-align` moved (#1357). `None` when no
+/// glyph run on the line holds the byte's span.
+///
+/// What a shifted element's background box and a shifted glyph's bounds are
+/// measured from: the line's own extent already holds the shifted span, so
+/// the line moved by the shift counts it twice.
+pub(crate) fn span_content_box(
+    layout: &parley::Layout<Brush>,
+    line: &parley::layout::Line<'_, Brush>,
+    byte: usize,
+) -> Option<(f32, f32)> {
+    let cluster = parley::layout::Cluster::from_byte_index(layout, byte)?;
+    let style = cluster.style_index();
+    let run = cluster.run();
+    let metrics = run.font_metrics();
+    let (ascent, descent) = (metrics.ascent.round(), metrics.descent.round());
+    line.items().find_map(|item| match item {
+        parley::layout::PositionedLayoutItem::GlyphRun(run) if run.style_index() == style => {
+            Some((run.baseline() - ascent, run.baseline() + descent))
+        }
+        _ => None,
+    })
+}
+
 /// [`line_top`]'s counterpart at the bottom: the line box's, or its runs'
 /// descent below the baseline.
 pub(crate) fn line_bottom(line: &parley::layout::Line<'_, Brush>) -> f32 {
