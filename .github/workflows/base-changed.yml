@@ -35,12 +35,14 @@ name: Base changed
 # `pull_request`, the ref is `refs/pull/N/merge`, so each one checks out and
 # tests the merge with the new base exactly as it does on a push to the PR.
 # `paths-ignore` in `perf.yml` is a trigger filter and does not apply to a
-# call, so a docs-only batch PR gets one Perf run when it is retargeted.
+# call, so a docs-only batch PR with the `perf` label gets one Perf run when
+# it is retargeted.
 #
 # Batched merges (docs/internals/ci.md): the three called workflows decide
 # inside, by job-level `if`s on `github.head_ref` (which is this run's PR head
 # branch in a call too), whether the PR is a component PR (fast jobs only, no
-# Perf, the mdBook only if `docs/` changed) or a `batch/…` PR (everything).
+# Perf, the mdBook only if `docs/` changed) or a `batch/…` PR (everything;
+# Perf only with the `perf` label).
 # Nothing here needs to know which.
 #
 # No workflow-level `concurrency:` here, on purpose: a run whose jobs are all

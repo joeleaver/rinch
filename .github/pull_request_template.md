@@ -25,9 +25,10 @@ paste-ready frame).
 -->
 
 - [ ] This PR is expected to make a hot path more expensive (the `Perf` job
-      runs on the batch PR, not here — see `docs/internals/ci.md`): which
-      benchmark, roughly how much, and why the cost is accepted. The lead puts
-      the `perf-regression-accepted` label on the batch that carries it.
+      runs on `main` after the batch lands, or on the batch PR when it has the
+      `perf` label, not here — see `docs/internals/ci.md`): which benchmark,
+      roughly how much, and why the cost is accepted. The lead puts the `perf`
+      and `perf-regression-accepted` labels on the batch that carries it.
 
 <!--
 A batch PR (head branch `batch/…`): list the PRs it carries, one `Refs #N` per
