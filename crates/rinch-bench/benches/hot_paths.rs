@@ -132,6 +132,8 @@ fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
 #[bench::text_page_warm(setup = setup_full_paint)]
 #[bench::closed_drawer_500(setup = setup_closed_drawer_paint)]
 #[bench::text_page_subpixel_warm(setup = setup_full_paint_subpixel)]
+#[bench::dashed_borders_500(setup = setup_dashed_borders_paint)]
+#[bench::dashed_translucent_500(setup = setup_dashed_translucent_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
 }
@@ -142,6 +144,7 @@ fn full_paint(f: PaintFixture) -> PaintFixture {
 #[bench::text_page_unsliced(setup = setup_vello_paint_unsliced)]
 #[bench::split_140_unsliced(setup = setup_vello_paint_split_unsliced)]
 #[bench::text_page_subpixel(setup = setup_vello_paint_subpixel)]
+#[bench::dashed_borders_500(setup = setup_vello_dashed_borders)]
 #[bench::rounded_border_140(setup = setup_vello_paint_rounded_border)]
 #[bench::soft_shadow_140(setup = setup_vello_paint_soft_shadow)]
 #[bench::hard_shadow_140(setup = setup_vello_paint_hard_shadow)]

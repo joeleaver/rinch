@@ -290,6 +290,50 @@ pub(crate) fn inline_edge_widths(
     (start.max(0.0), end.max(0.0))
 }
 
+/// Whether a leaf's height is **definite** for a percentage of it (CSS 2.1
+/// §10.5, CSS Sizing 3 §2.1), as Taffy lays the leaf out with `inputs`
+/// (#2427): whether its parent handed it a height and called that height
+/// definite (`known_dimensions_are_definite`). That is the test Taffy's
+/// block and flex algorithms make before resolving a child's percentage
+/// height against a box, so the answer is layout's, not a mirror of its
+/// rules. Every parent hands a leaf the height its style resolves to — a
+/// length, a percentage of a definite parent, an `aspect-ratio` of the
+/// width it is given — and a flex, grid or absolute parent hands it the
+/// height it lays it out at, definite for a stretched flex or grid item, a column
+/// item's flexed height in a definite column, or an absolute
+/// box's inset-given height, and not for a content-sized item.
+pub(crate) fn leaf_height_is_definite(inputs: &taffy::LayoutInput) -> bool {
+    inputs.known_dimensions.height.is_some() && inputs.known_dimensions_are_definite.height
+}
+
+/// Record, at an IFC root's final layout, whether its containing block's
+/// content height is definite ([`Node::containing_block_height_definite`],
+/// read by [`crate::RinchDocument::resolve_relative_spans`]). An anonymous
+/// block box stands in for its parent, whose percentage basis is the
+/// `parent_size` Taffy hands the box: `Some` exactly when that height is
+/// definite. Any other root is its own containing block.
+pub(crate) fn note_containing_block_height(
+    nodes: &crate::node_slab::NodeSlab,
+    context: Option<&crate::node::NodeContext>,
+    inputs: &taffy::LayoutInput,
+) {
+    let Some(crate::node::NodeContext::InlineRoot(root_id)) = context else {
+        return;
+    };
+    if inputs.run_mode != taffy::RunMode::PerformLayout {
+        return;
+    }
+    let Some(root) = nodes.get_live(*root_id) else {
+        return;
+    };
+    let definite = if root.is_anonymous_block_box && root.parent.is_some() {
+        inputs.parent_size.height.is_some()
+    } else {
+        leaf_height_is_definite(inputs)
+    };
+    root.containing_block_height_definite.set(definite);
+}
+
 /// Whether an element's own direction is left to right.
 pub(crate) fn element_is_ltr(node: &Node) -> bool {
     node.stylo_element_data
@@ -794,6 +838,9 @@ pub(crate) struct AtomicContributions<'a> {
     /// `NodeTree::keyword_inline_cb_width`: the containing-block width each
     /// resolved box was last resolved against.
     pub resolved_at: &'a HashMap<RawNodeId, f32>,
+    /// `NodeTree::percent_inline_cb_width`: the same for each box with a
+    /// percentage inline size.
+    pub percent_resolved_at: &'a HashMap<RawNodeId, f32>,
     /// `NodeTree::atomic_min_requests`.
     pub requests: &'a std::cell::RefCell<Vec<RawNodeId>>,
 }
@@ -827,6 +874,18 @@ impl AtomicContributions<'_> {
             }
         };
         let Some(wrap) = self.wrap_width else {
+            // A percentage inline size is cyclic in a max-content measure
+            // too, so the box contributes as `auto` does: its natural size,
+            // not the width it was last resolved to (regress-017). Lined up
+            // at that width, a table's `width: 100%` pictures gave their
+            // columns the widths they had been resolved to, and a picture
+            // that arrived after the first layout (measured at its natural
+            // width) took a wider share than the ones before it: the columns
+            // depended on the order the pictures loaded in.
+            if !self.percent_resolved_at.is_empty() && self.percent_resolved_at.contains_key(&id) {
+                let (w, h) = node.natural_inline_size;
+                return at(w, h);
+            }
             // Max-content: the box's own max-content size, whatever it has
             // been capped at since.
             return if natural == layout
@@ -837,6 +896,13 @@ impl AtomicContributions<'_> {
                 at(natural.0, natural.1)
             };
         };
+        // A compressible replaced element contributes no min-content width
+        // (css-sizing-3 §5.2.2, #2398).
+        if wrap <= 0.0
+            && let Some(width) = crate::replaced::compressed_inline_min_content(node)
+        {
+            return (width, layout.1);
+        }
         // A percentage width in a min-content measure is cyclic: the box
         // contributes its min-content width, as `auto` does (#2159).
         if wrap <= 0.0
@@ -1881,6 +1947,7 @@ impl<'a> IfcText<'a> {
             after_box: self.last_box,
             inline: (0.0, 0.0),
             block_y: 0.0,
+            block_x: 0.0,
         });
     }
 
@@ -4661,17 +4728,16 @@ impl RinchDocument {
             // text_layout is still valid.
             if !self.tree.dirty_ifc_text_roots.contains(&root_id) {
                 if let Some(existing) = &node.text_layout {
-                    // `==` first: an unconstrained root stores `INFINITY`, and
-                    // `INFINITY - INFINITY` is NaN, which no tolerance admits, so
-                    // without it every such root was reshaped on every layout
-                    // pass that changed no text (ifc_unconstrained_width_skip_tests).
+                    // `==` first: a root laid out unconstrained stores
+                    // `INFINITY`, and `INFINITY - INFINITY` is NaN, which no
+                    // tolerance admits, so without it every such root was
+                    // reshaped on every layout pass that changed no text
+                    // (ifc_unconstrained_width_skip_tests). Since #2382 a
+                    // root's paint layout always has a width, a zero one
+                    // included, so it stores none; the guard stays for free.
                     let same = |old: f32, new: f32| old == new || (old - new).abs() < 0.01;
-                    let new_align = match max_width {
-                        Some(_) => self.ifc_content_width(root_id).unwrap_or(f32::INFINITY),
-                        None => f32::INFINITY,
-                    };
-                    if same(existing.max_width, max_width.unwrap_or(f32::INFINITY))
-                        && same(existing.align_width, new_align)
+                    if same(existing.max_width, max_width)
+                        && same(existing.align_width, self.ifc_content_width(root_id))
                         && existing.float_bands.as_ref() == self.tree.ifc_float_bands.get(&root_id)
                     {
                         continue; // Skip — text_layout is still valid
@@ -4699,52 +4765,62 @@ impl RinchDocument {
         }
     }
 
-    /// An IFC root's content-box width, `None` when it is not positive.
-    fn ifc_content_width(&self, root_id: RawNodeId) -> Option<f32> {
+    /// An IFC root's content-box width, never below 0.
+    ///
+    /// A zero-width box is a width, not "unconstrained" (#2382): `width: 0`,
+    /// `max-width: 0`, a zero-width float or a flex item shrunk to nothing
+    /// takes every break opportunity its text has, as in Chrome 156, the
+    /// same lines as `width: 1px`. This used to answer `None` for a content
+    /// width that was not positive, and the paint layout was then broken with
+    /// no limit — one line of max-content text in a box its measure had
+    /// sized for five lines.
+    fn ifc_content_width(&self, root_id: RawNodeId) -> f32 {
         let node = &self.tree.nodes[root_id];
         let cs = &node.computed_style;
         let padding_h = cs.padding_left.to_px() + cs.padding_right.to_px();
         let border_h = cs.border_left_width.to_px() + cs.border_right_width.to_px();
         let content_width = node.layout.width - padding_h - border_h;
-        (content_width > 0.0).then_some(content_width)
+        content_width.max(0.0)
     }
 
     /// The width an IFC root's paint layout is broken at: its content-box
-    /// width, with the auto-width slack below. `None` for a root with no
-    /// positive content width (unconstrained).
-    fn ifc_paint_max_width(&self, root_id: RawNodeId) -> Option<f32> {
+    /// width, with the auto-width slack below. Always a width, 0 included
+    /// (#2382); whether the text may wrap at all is `build_inline_layout`'s
+    /// question, from `white-space`.
+    fn ifc_paint_max_width(&self, root_id: RawNodeId) -> f32 {
         // Use content-box width (subtract padding+border) for line breaking.
         // For auto-width elements, don't re-constrain text to measured width
         // as floating-point precision can cause unwanted line breaks.
         let cs = &self.tree.nodes[root_id].computed_style;
-        if let Some(content_width) = self.ifc_content_width(root_id) {
-            // An auto-width element is sized to its content: its box width is
-            // the text's max-content width (+ padding/border) measured with NO
-            // wrap, then ROUNDED DOWN to an integer pixel — losing strictly
-            // less than 1px of the text's true width. So the paint layout here
-            // must allow up to 1px more than `content_width`, or it re-wraps
-            // the text at a space inside a box that was sized for one line
-            // (the box says one line, the glyphs render two). A 0.5px
-            // tolerance can't absorb a full 1px floor; 1.0px provably can
-            // (`natural - content_width == frac(natural) < 1.0`). Explicit-
-            // width elements get no tolerance — they should wrap at their width.
-            //
-            // The question is whether the width was *derived* rather than
-            // declared, so it is `is_auto_or_keyword` (#626, #691): a
-            // `width: max-content` box is measured and floored the same
-            // way `auto` is and needs the same slack. Reading `is_auto()`
-            // here gave such a box 0px and re-wrapped its text inside a
-            // box sized for one line — the box unchanged, the glyphs on
-            // two.
-            let tolerance = if cs.width.is_auto_or_keyword() {
-                1.0
-            } else {
-                0.0
-            };
-            Some(content_width + tolerance)
+        let content_width = self.ifc_content_width(root_id);
+        // An auto-width element is sized to its content: its box width is
+        // the text's max-content width (+ padding/border) measured with NO
+        // wrap, then ROUNDED DOWN to an integer pixel — losing strictly
+        // less than 1px of the text's true width. So the paint layout here
+        // must allow up to 1px more than `content_width`, or it re-wraps
+        // the text at a space inside a box that was sized for one line
+        // (the box says one line, the glyphs render two). A 0.5px
+        // tolerance can't absorb a full 1px floor; 1.0px provably can
+        // (`natural - content_width == frac(natural) < 1.0`). Explicit-
+        // width elements get no tolerance — they should wrap at their width.
+        //
+        // The question is whether the width was *derived* rather than
+        // declared, so it is `is_auto_or_keyword` (#626, #691): a
+        // `width: max-content` box is measured and floored the same
+        // way `auto` is and needs the same slack. Reading `is_auto()`
+        // here gave such a box 0px and re-wrapped its text inside a
+        // box sized for one line — the box unchanged, the glyphs on
+        // two.
+        //
+        // A box with no room was not rounded down to 0 from a width its
+        // text needs, so it gets no slack (#2382): a pixel of slack fitted
+        // two 2px-font glyphs a line in a box laid out with one each.
+        let tolerance = if cs.width.is_auto_or_keyword() && content_width > 0.0 {
+            1.0
         } else {
-            None
-        }
+            0.0
+        };
+        content_width + tolerance
     }
 
     /// Shape `root_id`'s paint layout at `max_width` and store it — the
@@ -4752,20 +4828,20 @@ impl RinchDocument {
     fn shape_ifc_root_paint_layout(
         &mut self,
         root_id: RawNodeId,
-        max_width: Option<f32>,
+        max_width: f32,
         paint_layout_cx: &mut parley::LayoutContext<Brush>,
     ) {
         self.tree.perf.bump(crate::perf::Counter::ShapeIfcBuild);
         // A paragraph that does not wrap is aligned within the content box
         // itself, without the auto-width slack `max_width` carries (#1237).
-        let align_width = self
-            .ifc_content_width(root_id)
-            .zip(max_width)
-            .map(|(width, up_to)| AlignWidth { width, up_to });
+        let align_width = Some(AlignWidth {
+            width: self.ifc_content_width(root_id),
+            up_to: max_width,
+        });
         let (mut inline_layout, font_family_resolves) = Self::build_inline_layout(
             &self.tree.nodes,
             root_id,
-            max_width,
+            Some(max_width),
             align_width,
             1.0,
             &mut self.font_cx,
@@ -4793,7 +4869,7 @@ impl RinchDocument {
             use crate::computed_style::{OverflowValue, TextOverflowValue};
             let cs = &self.tree.nodes[Self::ellipsis_style_owner(&self.tree.nodes, root_id)]
                 .computed_style;
-            let container_width = max_width.unwrap_or(f32::INFINITY);
+            let container_width = max_width;
             // A grid (or flex) container holding only text is laid out
             // here as an IFC root, but that text is an anonymous item of
             // the container, which does not clip — so no "…", as in
@@ -4823,6 +4899,10 @@ impl RinchDocument {
                 }
             }
         }
+
+        // The relative inline elements' offsets (#1425, #2346), against the
+        // containing block, before the boxes they move are written.
+        self.resolve_relative_spans(root_id, &mut inline_layout);
 
         // Write positions from Parley layout back to child nodes
         // Walk the layout lines to find positioned inline boxes and text runs
@@ -5008,6 +5088,92 @@ impl RinchDocument {
         }
     }
 
+    /// Resolve each relative inline element's offset (#1425, #2346; CSS 2.1
+    /// §9.4.3) against its containing block, and drop the spans that move
+    /// nothing, so an IFC whose relative spans are only containing blocks
+    /// (a tooltip's anchor) pays nothing at paint.
+    ///
+    /// The containing block is the block container holding the line: the
+    /// root, or the element an anonymous block box stands in. A percentage
+    /// `left`/`right` is of its content width; a percentage `top`/`bottom` of
+    /// its content height when that is definite (as layout took it,
+    /// [`note_containing_block_height`]), and otherwise
+    /// computes to `auto` (CSS 2.1 §9.3.2) — measured in Chrome 156. Of an
+    /// over-constrained pair, `top` wins, and `left` in a left-to-right
+    /// containing block (`right` in a right-to-left one).
+    pub(crate) fn resolve_relative_spans(&self, root_id: RawNodeId, inline: &mut InlineLayout) {
+        if inline.relative_spans.is_empty() {
+            return;
+        }
+        use crate::computed_style::LengthPercentageAutoValue as L;
+        let nodes = &self.tree.nodes;
+        let root = &nodes[root_id];
+        let cb = root
+            .parent
+            .filter(|_| root.is_anonymous_block_box)
+            .and_then(|p| nodes.get_live(p))
+            .unwrap_or(root);
+        let cs = &cb.computed_style;
+        let width = cb.layout.width
+            - cs.padding_left.to_px()
+            - cs.padding_right.to_px()
+            - cs.border_left_width.to_px()
+            - cs.border_right_width.to_px();
+        let height = root.containing_block_height_definite.get().then(|| {
+            cb.layout.height
+                - cs.padding_top.to_px()
+                - cs.padding_bottom.to_px()
+                - cs.border_top_width.to_px()
+                - cs.border_bottom_width.to_px()
+        });
+        let ltr = element_is_ltr(cb);
+        let vertical = |v: L| match (v, height) {
+            (L::Percent(_) | L::Calc { .. }, None) => None,
+            (v, h) => v.resolve(h.unwrap_or(0.0)),
+        };
+        inline.relative_spans.retain_mut(|span| {
+            let Some(owner) = nodes.get_live(span.owner) else {
+                return false;
+            };
+            let o = &owner.computed_style;
+            let (left, right) = (o.left.resolve(width), o.right.resolve(width));
+            span.dx = match (left, right) {
+                (Some(l), Some(r)) => {
+                    if ltr {
+                        l
+                    } else {
+                        -r
+                    }
+                }
+                (Some(l), None) => l,
+                (None, Some(r)) => -r,
+                (None, None) => 0.0,
+            };
+            span.dy = vertical(o.top)
+                .or_else(|| vertical(o.bottom).map(|b| -b))
+                .unwrap_or(0.0);
+            span.dx != 0.0 || span.dy != 0.0
+        });
+        if inline.relative_spans.is_empty() {
+            return;
+        }
+        // An out-of-flow box's static position is where it would be in the
+        // line, which the relative inline elements around it move too:
+        // Chrome 156 puts an `auto`-inset box in a `left: 5px; top: 3px` span
+        // 5px right of and 3px below where it stands without the offset.
+        let mut marks = std::mem::take(&mut inline.out_of_flow);
+        for mark in &mut marks {
+            let Some(parent) = nodes.get_live(mark.id).and_then(|n| n.parent) else {
+                continue;
+            };
+            let (dx, dy) = inline.element_relative_offset(parent, |id| nodes.get(id));
+            mark.inline = (mark.inline.0 + dx, mark.inline.1 + dy);
+            mark.block_x += dx;
+            mark.block_y += dy;
+        }
+        inline.out_of_flow = marks;
+    }
+
     /// Write computed positions from an InlineLayout back into child node layout fields.
     pub(crate) fn write_inline_positions(
         &mut self,
@@ -5028,11 +5194,23 @@ impl RinchDocument {
                             continue;
                         }
                         let child_id = positioned_box.id as RawNodeId;
+                        // Moved by every relatively positioned inline element
+                        // around it (#2346): its line placed it where it would
+                        // be without them.
+                        let (dx, dy) = (!inline_layout.relative_spans.is_empty())
+                            .then_some(child_id)
+                            .and_then(|c| self.tree.nodes.get_live(c)?.parent)
+                            .map_or((0.0, 0.0), |p| {
+                                inline_layout
+                                    .element_relative_offset(p, |id| self.tree.nodes.get(id))
+                            });
                         if let Some(child) = self.tree.nodes.get_live_mut(child_id) {
                             // The inline box is its margin box on the block
                             // axis ([`atomic_vertical_margins`]).
-                            let y =
-                                positioned_box.y + atomic_vertical_margins(&child.computed_style).0;
+                            let x = positioned_box.x + dx;
+                            let y = positioned_box.y
+                                + atomic_vertical_margins(&child.computed_style).0
+                                + dy;
                             // A move is a move, whoever makes it: push the box
                             // paint-dirty like any other layout change, so the
                             // region clears where it was painted and draws where
@@ -5043,8 +5221,8 @@ impl RinchDocument {
                             // consumes it. Review of #880, probe N: unpushed, the
                             // chip's absolute kid was neither drawn at its new
                             // spot nor cleared from its old one.
-                            let moved = child.layout.x != positioned_box.x || child.layout.y != y;
-                            child.layout.x = positioned_box.x;
+                            let moved = child.layout.x != x || child.layout.y != y;
+                            child.layout.x = x;
                             child.layout.y = y;
                             if moved {
                                 self.tree.paint_dirty_nodes.push(child_id);
@@ -8757,9 +8935,10 @@ impl RinchDocument {
         // `tree.nodes.get_mut` free after the call returns.
         let nodes = &tree.nodes;
         let perf = &tree.perf;
-        let (min_content, resolved_at, min_requests) = (
+        let (min_content, resolved_at, percent_resolved_at, min_requests) = (
             &tree.atomic_min_content,
             &tree.keyword_inline_cb_width,
+            &tree.percent_inline_cb_width,
             &tree.atomic_min_requests,
         );
         // The layouts this compute's text leaves are measured with, kept for
@@ -8806,6 +8985,9 @@ impl RinchDocument {
                 // same `0.0` calc resolver. The first line's baseline goes to
                 // Taffy too (#1013): an `inline-flex` / `inline-grid` with
                 // `align-items: baseline` aligns its own items by it.
+                // Whether its containing block's height is definite, as this
+                // final layout takes it (#2427).
+                crate::ifc::note_containing_block_height(nodes, context.as_deref(), &inputs);
                 let mut first_baseline: Option<f32> = None;
                 let out = taffy::compute_leaf_layout(
                     inputs,
@@ -8839,6 +9021,7 @@ impl RinchDocument {
                                     wrap_width: max_width,
                                     min_content,
                                     resolved_at,
+                                    percent_resolved_at,
                                     requests: min_requests,
                                 };
                                 let (inline_layout, font_family_resolves) =
@@ -8879,6 +9062,7 @@ impl RinchDocument {
                                                 wrap_width: None,
                                                 min_content,
                                                 resolved_at,
+                                                percent_resolved_at,
                                                 requests: min_requests,
                                             };
                                             let (max, resolves) = Self::build_inline_layout(
@@ -9896,7 +10080,14 @@ impl RinchDocument {
             let _ = self.tree.taffy.mark_dirty(taffy_id);
             // Not resolved since it was last measured as `auto`: the size
             // it has is its natural one (#1476, `Node::natural_inline_size`).
-            if keyword_only && !self.tree.keyword_inline_cb_width.contains_key(&id) {
+            // A percentage box's too: a max-content measure lines it up there
+            // (regress-017).
+            let resolved = if keyword_only {
+                &self.tree.keyword_inline_cb_width
+            } else {
+                &self.tree.percent_inline_cb_width
+            };
+            if !resolved.contains_key(&id) {
                 self.tree.nodes[id].natural_inline_size = before;
             }
             self.measure_inline_blocks(&[(taffy_id, Some(available))]);
@@ -10402,6 +10593,7 @@ impl RinchDocument {
         let mut background_spans = Vec::new();
         let mut decoration_spans = Vec::new();
         let mut vertical_align_spans = Vec::new();
+        let mut relative_spans = Vec::new();
         let mut flat_pos = 0usize;
 
         // Walk children into an `IfcText`, which collapses white space across
@@ -10424,6 +10616,7 @@ impl RinchDocument {
             &mut background_spans,
             &mut decoration_spans,
             &mut vertical_align_spans,
+            &mut relative_spans,
             &mut flat_pos,
             scale,
             font_cx,
@@ -10461,6 +10654,10 @@ impl RinchDocument {
         for v in &mut vertical_align_spans {
             v.start = ifc_text.remap(v.start);
             v.end = ifc_text.remap(v.end);
+        }
+        for r in &mut relative_spans {
+            r.start = ifc_text.remap(r.start);
+            r.end = ifc_text.remap(r.end);
         }
         let flat_len = ifc_text.final_len();
         let mut out_of_flow = ifc_text.out_of_flow_marks();
@@ -10674,6 +10871,7 @@ impl RinchDocument {
                 background_spans,
                 decoration_spans,
                 vertical_align_spans,
+                relative_spans,
                 max_width: max_width.unwrap_or(f32::INFINITY),
                 align_width: align_width.map_or(f32::INFINITY, |a| a.width),
                 preserves_spaces,
@@ -11429,7 +11627,22 @@ impl RinchDocument {
         background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
         decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
         vertical_align_spans: &mut Vec<crate::node::InlineVerticalAlignSpan>,
+        relative_spans: &mut Vec<crate::node::InlineRelativeSpan>,
     ) {
+        // #1425/#2346: a relatively positioned inline element moves its text
+        // and its atomic inlines, even when it holds no text of its own.
+        // Recorded with no offset: the offset is resolved against the
+        // containing block once the root's box is known
+        // (`resolve_relative_spans`), and a span left at zero is dropped then.
+        if owner.computed_style.position == crate::computed_style::PositionValue::Relative {
+            relative_spans.push(crate::node::InlineRelativeSpan {
+                owner: owner.id,
+                start,
+                end: end.max(start),
+                dx: 0.0,
+                dy: 0.0,
+            });
+        }
         if end <= start {
             // An element with no text still has its edge boxes (#1426), and
             // draws its background and border over them.
@@ -11516,6 +11729,7 @@ impl RinchDocument {
         background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
         decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
         vertical_align_spans: &mut Vec<crate::node::InlineVerticalAlignSpan>,
+        relative_spans: &mut Vec<crate::node::InlineRelativeSpan>,
         flat_pos: &mut usize,
         scale: f32,
         font_cx: &mut parley::FontContext,
@@ -11597,6 +11811,7 @@ impl RinchDocument {
                             background_spans,
                             decoration_spans,
                             vertical_align_spans,
+                            relative_spans,
                         );
                     }
                 }
@@ -11813,6 +12028,7 @@ impl RinchDocument {
                         background_spans,
                         decoration_spans,
                         vertical_align_spans,
+                        relative_spans,
                         flat_pos,
                         scale,
                         font_cx,
@@ -11847,7 +12063,10 @@ impl RinchDocument {
                     // element with edge boxes still draws its background and
                     // border over them (#1426).
                     let has_edges = edge_start > 0.0 || edge_end > 0.0;
-                    if has_bg || has_valign || has_inline_border(child_computed) {
+                    // #1425/#2346: a relative element moves what it holds.
+                    let is_relative =
+                        child_computed.position == crate::computed_style::PositionValue::Relative;
+                    if has_bg || has_valign || is_relative || has_inline_border(child_computed) {
                         Self::push_inline_spans(
                             nodes,
                             child,
@@ -11857,6 +12076,7 @@ impl RinchDocument {
                             background_spans,
                             decoration_spans,
                             vertical_align_spans,
+                            relative_spans,
                         );
                     }
                 }
@@ -11963,6 +12183,7 @@ impl RinchDocument {
                         background_spans,
                         decoration_spans,
                         vertical_align_spans,
+                        relative_spans,
                         flat_pos,
                         scale,
                         font_cx,
@@ -12071,6 +12292,7 @@ impl RinchDocument {
                     background_spans,
                     decoration_spans,
                     vertical_align_spans,
+                    relative_spans,
                 );
             }
         }

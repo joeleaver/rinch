@@ -20,6 +20,9 @@ pub(crate) mod layer_shell;
 pub mod memory_profile;
 #[cfg(feature = "desktop")]
 pub(crate) mod os_file_drag;
+// The connected monitors, for placing windows and for `rinch::outputs` (#2414).
+#[cfg(feature = "desktop")]
+pub(crate) mod outputs;
 #[cfg(feature = "desktop")]
 pub(crate) mod overlay_window;
 // The main window's pointer lock and raw motion (#2092).
@@ -46,7 +49,6 @@ mod split_pages_1865_oracle;
 mod split_pages_1865_tests;
 #[cfg(all(test, feature = "gpu"))]
 mod split_slices_1865_tests;
-pub mod types;
 #[cfg(feature = "desktop")]
 pub mod window;
 #[cfg(feature = "desktop")]
@@ -88,9 +90,6 @@ pub use rinch_runtime::inject_platform_event;
 #[cfg(feature = "desktop")]
 #[allow(deprecated)]
 pub use rinch_runtime::{run_on_main_thread, run_rinch, run_rinch_with_window_props};
-#[cfg(feature = "desktop")]
-pub use types::RinchEvent;
-pub use types::{ElementLayout, HoveredElementInfo};
 
 #[cfg(feature = "desktop")]
 use rinch_core::dom::{NodeHandle, RenderScope};

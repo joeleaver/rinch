@@ -1041,6 +1041,93 @@ pub fn op_vello_paint(mut f: VelloPaintFixture) -> VelloPaintFixture {
     f
 }
 
+/// 500 small boxes with dashed and dotted borders (#2371, #2372; review of
+/// #2391): 1px dashed, 2px dotted (square dots), 3px dashed, 5px dotted
+/// (round dots) and a rounded 2px dashed, a hundred of each, laid out and
+/// painted once. Every dash and dot is laid out by `paint::border_dashes`
+/// and drawn as a fill, so this measures that layout and the path it hands
+/// the painter.
+fn dashed_borders_page() -> RinchDocument {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; } div { position: absolute; box-sizing: border-box; \
+         width: 30px; height: 26px; } \
+         .a { border: 1px dashed rgb(40, 40, 40); } \
+         .b { border: 2px dotted rgb(40, 40, 40); } \
+         .c { border: 3px dashed rgb(40, 40, 40); } \
+         .d { border: 5px dotted rgb(40, 40, 40); } \
+         .e { border: 2px dashed rgb(40, 40, 40); border-radius: 6px; }",
+    );
+    let mut html = String::new();
+    for i in 0..500 {
+        let (x, y) = ((i % 25) * 32, (i / 25) * 29);
+        let class = ["a", "b", "c", "d", "e"][i % 5];
+        html.push_str(&format!(
+            "<div class=\"{class}\" style=\"left: {x}px; top: {y}px\"></div>"
+        ));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc
+}
+
+/// 500 small boxes whose dashed top and right sides meet solid bottom and
+/// left ones, every side `rgba(40, 40, 40, 0.5)` (review of #2391): each
+/// border is painted opaque into a layer of its alpha, as Blink's opacity
+/// groups paint it, so its corners do not darken twice. This measures that
+/// layer.
+fn dashed_translucent_page() -> RinchDocument {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; } div { position: absolute; box-sizing: border-box; \
+         width: 30px; height: 26px; border: 3px solid rgba(40, 40, 40, 0.5); \
+         border-top-style: dashed; border-right-style: dashed; }",
+    );
+    let mut html = String::new();
+    for i in 0..500 {
+        let (x, y) = ((i % 25) * 32, (i / 25) * 29);
+        html.push_str(&format!("<div style=\"left: {x}px; top: {y}px\"></div>"));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc
+}
+
+/// [`dashed_translucent_page`] on the software painter.
+pub fn setup_dashed_translucent_paint() -> PaintFixture {
+    let mut f = PaintFixture {
+        doc: dashed_translucent_page(),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// [`dashed_borders_page`] on the software painter.
+pub fn setup_dashed_borders_paint() -> PaintFixture {
+    let mut f = PaintFixture {
+        doc: dashed_borders_page(),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// [`dashed_borders_page`] on the Vello painter (the encoding alone).
+pub fn setup_vello_dashed_borders() -> VelloPaintFixture {
+    let mut f = VelloPaintFixture {
+        doc: dashed_borders_page(),
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
+    };
+    f.paint();
+    f
+}
+
 /// 40 form fields styled the way an app styles a text input — a 1px border,
 /// a small radius and a blurred `inset` shadow — laid out and painted once
 /// (#974). An inset shadow builds and draws a blurred mask per box per paint,

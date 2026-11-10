@@ -6190,9 +6190,7 @@ impl RinchApp {
                 (wx as f32, wy as f32)
             };
             let mut bounds: Option<(f32, f32, f32, f32)> = None;
-            for (lx, ly, w, h) in
-                rinch_dom::text_query::selection_rects_for_layout(&layout.layout, a, b)
-            {
+            for (lx, ly, w, h) in rinch_dom::text_query::selection_rects_for_inline(layout, a, b) {
                 for (px, py) in [
                     fwd(lx, ly),
                     fwd(lx + w, ly + h),

@@ -965,17 +965,18 @@ fn a_split_inline_is_not_yet_a_containing_block() {
     );
 }
 
-/// rinch does not move a flowed inline by its `left`/`top` (the text of a
-/// `position: relative; left: 5px; top: 3px` span is drawn where it flows),
-/// so the box is hung from the unmoved fragment — where rinch draws the
-/// span. Chrome 153 moves both: `(52.641, 10)`. Tracked in #1425.
+/// A flowed inline is moved by its own `left`/`top` (#1425), its text and
+/// the box hung from its fragment alike: Chrome 153 puts the box at
+/// `(52.641, 10)`, the unmoved fragment's corner plus `(5, 3)`; rinch snaps
+/// it to the pixel grid, as it snaps the unmoved one to 48. More in
+/// `relative_inline_offset_2346_tests.rs`.
 #[test]
-fn a_relative_spans_own_offset_moves_nothing() {
+fn a_relative_spans_own_offset_moves_the_box() {
     let c = Case::new(&format!(
         r#"lead <span style="{REL}; left: 5px; top: 3px">text{}tail</span>"#,
         abs(&format!("{BOX} left: 0; top: 0"), "")
     ));
-    assert_eq!(c.rect("abs"), [48.0, 7.0, 40.0, 30.0]);
+    assert_eq!(c.rect("abs"), [53.0, 10.0, 40.0, 30.0]);
 }
 
 /// An inline element's horizontal padding takes room on its line (#1426):

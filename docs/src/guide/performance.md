@@ -457,16 +457,24 @@ none, for a shadow of more than 153 glyphs, decided by that shadow alone.
 ## CI regression job
 
 Counters say *what* a frame did; they do not say how much it cost. The `Perf`
-workflow (`.github/workflows/perf.yml`) covers cost. It runs on a **batch**
-pull request, one whose head branch starts with `batch/`: reviewed pull
-requests are merged into a batch branch and land on `main` together (see
-`docs/internals/ci.md`), and an ordinary pull request skips the job. On a batch
-it counts the **instructions** each hot path executes. It counts them on the merge
-commit GitHub builds for the PR, and on that commit's first parent, the tip of
-`main` it was merged onto. It fails when one count grew by more than a
-threshold. Every run re-bases on `main` as it is at that moment, so the Δ says
-what merging the PR would do now. Changes other PRs landed on `main` are not
-counted against it.
+workflow (`.github/workflows/perf.yml`) covers cost. It counts the
+**instructions** each hot path executes on a commit and on that commit's first
+parent, and fails when one count grew by more than a threshold. It runs:
+
+- on every **push to `main`**. Reviewed pull requests are merged into a batch
+  branch and land on `main` together (see `docs/internals/ci.md`), so the
+  pushed commit is a batch's merge commit and its first parent is the `main` it
+  landed on: each batch's cost is measured once, after it lands. A failure
+  there is a red `main`, fixed forward or reverted; no label excuses it.
+- on a **batch** pull request (head branch `batch/…`) only when it carries the
+  **`perf`** label, to see the cost before merging. It then counts the merge
+  commit GitHub builds for the PR against that commit's first parent, the tip
+  of `main` it was merged onto. Every run re-bases on `main` as it is at that
+  moment, so the Δ says what merging the PR would do now. Changes other PRs
+  landed on `main` are not counted against it.
+
+Every other pull request, a batch without the label included, reports the job
+as skipped.
 
 It counts instructions and not time because a hosted runner's timings move with
 whatever else shares the machine, while an instruction count moves only when
@@ -490,6 +498,8 @@ The benchmarks live in `crates/rinch-bench`:
 | `dom::full_paint.closed_drawer_500` | A full `TinySkiaPainter` paint of the `drawer_toggle` page — 500 rows under a closed `Drawer`, the theme's and component library's stylesheets loaded — glyph cache warm. The drawer is `visibility: hidden` with nothing visible in it, so paint and the stacking collector skip it whole (#2137) |
 | `dom::vello_paint.text_page` | The same page painted by the **Vello** painter (the GPU window's encoding walk, no GPU), on a frame opened for split GPU surfaces with none in it: the split-layer bookkeeping where it does nothing (#1865, #1894 review) |
 | `dom::vello_paint.split_surface_140_boxes` | A 640×360 GPU surface split out of the scene, 70 boxes over it and 70 beside it: every draw after the split routed by its device bounds |
+| `dom::full_paint.dashed_borders_500` / `dom::vello_paint.dashed_borders_500` | 500 small boxes with dashed and dotted borders (1px dashed, 2px square dots, 3px dashed, 5px round dots, a rounded 2px dashed), painted by `TinySkiaPainter` and encoded by the Vello painter: the dash layout of `paint/border_dashes.rs` and the fill it hands the painter (#2371, review of #2391) |
+| `dom::full_paint.dashed_translucent_500` | 500 boxes whose dashed top and right sides meet solid bottom and left ones, all at alpha 0.5, painted by `TinySkiaPainter`: each border goes into one layer of its alpha (Blink's opacity group) so its corners do not darken twice (review of #2391) |
 | `dom::shadow_paint.fields_40` | A full `TinySkiaPainter` paint of 40 input-like boxes, each with a 1px border, a 6px radius and a blurred `inset` shadow (#974: a blurred mask built and drawn per box) |
 | `dom::text_shadow_paint.paragraphs_40` | The same 40 paragraphs with `text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4)` on each, painted again: every blurred mask is served from the cache (#980) |
 | `dom::text_shadow_paint.paragraphs_40_cold` | The same page restyled to a 4.01px blur first, so no mask is cached: every visible shadow is rasterised into a coverage mask, blurred and filled |
@@ -518,8 +528,9 @@ comparable with another local run.
 
 ### Reading the report
 
-The job writes a table to its summary page and to one comment on the PR, which
-it edits in place on each push. A row looks like this (the numbers are from a
+The job writes a table to its summary page and, on a pull request, to one
+comment on the PR, which it edits in place on each push. A push to `main` has
+the summary only. A row looks like this (the numbers are from a
 deliberately slowed `update_hover`):
 
 | Benchmark | base | head | Δ | |
@@ -577,13 +588,14 @@ threshold with the repository variable `PERF_REGRESSION_THRESHOLD`, a number of
 percent.
 
 A PR that makes a path more expensive on purpose can carry the
-**`perf-regression-accepted`** label. The job runs on the batch PR, so that is
-where the label goes. With the label, the regression is still
-reported, as a warning, and the job passes. Adding or removing the label runs
-the job again. So does changing the PR's base branch to `main`: that run
+**`perf-regression-accepted`** label. The label is read only by a run on a
+pull request, so it goes on the batch PR, together with `perf` so that the job
+runs there before the merge. With the label, the regression is still
+reported, as a warning, and the job passes. Adding or removing either label
+runs the job again. A push to `main` has no such hatch. So does changing the PR's base branch to `main`: that run
 comes from `.github/workflows/base-changed.yml`, which calls `perf.yml`, and
-its check is named `perf / instruction-counts`. A docs-only batch PR, which the
-`Perf` workflow otherwise skips, gets one run there. Say in the PR which benchmark moved and why, in the pull request
+its check is named `perf / instruction-counts`. A docs-only batch PR with the
+`perf` label, which the `Perf` workflow otherwise skips, gets one run there. Say in the PR which benchmark moved and why, in the pull request
 template's *Performance* section, the same way a counter-baseline update does
 (see [The baselines are the contract](#the-baselines-are-the-contract)). The
 two checks complement each other. The baselines are exact and say *which* work
@@ -595,8 +607,8 @@ The comment is posted by a separate `comment` job, which is the only job with
 that carries the `<!-- rinch-perf-bench -->` marker **and** is authored by
 `github-actions[bot]`, so a human comment that quotes the marker is left alone.
 A pull request from a fork gets a read-only token and cannot comment. For those
-PRs the report is on the job's summary page only. A batch PR that changes only
-`docs/**` or Markdown files does not run the job.
+PRs the report is on the job's summary page only. A batch PR or a push to
+`main` that changes only `docs/**` or Markdown files does not run the job.
 
 The cargo cache holds only dependency artifacts. A fresh checkout makes every
 workspace crate look stale to cargo, so those rebuild on every run anyway. Only

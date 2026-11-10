@@ -232,7 +232,10 @@ text. Every check runs on the document usvg reads.
   or a duplicate gradient id (a Breeze weather icon), now drawn as Chrome draws them. The
   real-file pass rate is unchanged: 11,840 of 11,843 (99.97%).
 - Pins: `svg_image_limits_2111_tests.rs` (the inputs of all four reviews refused or defused
-  within 300 ms; references dropped and resolved; the profile's refusals; real-world shapes)
+  before the work they spent their time in: a decode refusal reaches no usvg parse, a raster
+  refusal no resvg draw, counted by the `#[doc(hidden)]` `svg_image::usvg_parses()` and
+  `resvg_renders()`, not timed, since a wall-clock bound failed under load (#2420);
+  references dropped and resolved; the profile's refusals; real-world shapes)
   and `svg_sanitize::tests` (vertex counting, duplicate ids, ignored subtrees, CSS cascade).
 
 Parsing and rasterising run under `catch_unwind` (`guarded`;
@@ -491,10 +494,39 @@ draws a 16x16 box holding its broken-image icon (Joe's rule 3); an out-of-flow i
 dimension fills its containing block (#1432, older than the hints); a percentage `height`
 attribute does nothing on an inline-level image, as a CSS one does not
 (#1420); a `<video>` with a mapped ratio and both dimensions `auto` is 300
-wide where Chrome stretches it to its container. The other presentational
-attributes (`hspace`, `vspace`, `border`, `align`, `<hr width>`, a table's)
-map to nothing (#1419). Pins:
+wide where Chrome stretches it to its container. Pins:
 `crates/rinch-dom/tests/presentational_size_hints_tests.rs`.
+
+The other legacy attributes (`bgcolor`, `align`, `valign`, `hspace`,
+`vspace`, `border`, `cellspacing`, `cellpadding`, `<font>`'s, `<hr size>`, a
+table's and a cell's `width`/`height`, …) map to CSS in
+`crates/rinch-dom/src/legacy_hints.rs`. Their values are read as Chrome 156
+reads them, by the HTML Standard's parsers:
+- `cellspacing`, `hspace` and `vspace` by the rules for parsing dimension
+  values (`"10px"` is 10, `"1e1"` is 1; `cellspacing` drops a percentage, the
+  spaces keep it);
+- a table's and an image's `border` as a non-negative integer, Chrome's
+  `u32`: an error (or a number past `u32::MAX`) is 1px on a table (an empty
+  `border` too) and none on an image;
+- `cellpadding` and `<hr size>` by Chrome's lenient `ToInt`, an `i32` that
+  also skips a leading vertical tab: an error, an overflow or a negative
+  number is a padding of 0 (an empty `cellpadding` maps nothing); an `<hr
+  size>` of 1 or less drops the bottom border, a larger one is the height
+  less the two borders;
+- `<font size>` by the rules for parsing a legacy font size (`"4px"` is 4,
+  `"+1abc"` is 4).
+
+`border-spacing`, from the attribute or CSS, is laid out as Chrome keeps it:
+a `short` of **device** pixels converted by Blink's
+`RoundForImpreciseConversion` (0.01 added, the fraction cut off, 0 past
+32767; `table_layout::whole_device_spacing`, from the document's
+`device_scale`). So `10.9px` spaces by 10 at 1x and 10.5 at 2x, `9.99px` by
+10 at 1x, and `40000px` not at all. Before, every attribute was a plain
+number parse, so a mail's `cellspacing="10px"` got the 2px default
+(Postrinch mail 020, 16px short). Pins:
+`crates/rinch-dom/tests/legacy_attribute_values_tests.rs`. Still different:
+an inline image's `hspace`, like any atomic inline's horizontal margin, does
+not move it in its line (#1405).
 
 **App-installed schemes and retry:** `App::image_scheme("myapp-blob", loader)` (or
 `rinch::image::register_image_scheme`, the same registry without a builder) makes
@@ -1269,6 +1301,34 @@ IFC's tree builder wraps each emoji range of a text op in a span of
 `parley_emoji_font_family` (`IfcText::finish`). Every IFC text is shaped in the
 root's family. A cluster split across two text nodes (an emoji and its U+FE0F)
 is not found. The fixtures use bundled stand-ins, not the host's emoji face.
+
+**`ex`, `ch`, `cap` and `ic` read the first available font** (#2422,
+`crates/rinch-dom/src/font_metrics.rs`, whose module doc has the rules). The
+Stylo Device's provider used to answer `FontMetrics::default()`, so `ex` and
+`ch` were `0.5em` and `cap` was 0. Now the face is fontique's first available
+font for the computed `font-family` (through `parley_font_family`, as for the
+element's text), weight and style. x-height and cap height come from OS/2
+`sxHeight`/`sCapHeight`, unrounded. A table without them (version < 2, or 0;
+DejaVu's is version 1) is measured from the top of the `x`/`H` outline hinted
+at the used size in device pixels by skrifa's autohinter in light mode
+(`MeasuredFace`, memoized per ppem). That is Chrome's FreeType `slight` hinting:
+it matched Chrome 157 for Times New Roman, Arial, Georgia, Verdana, Courier New
+and DejaVu Sans/Serif/Mono at 11-24px. The unhinted top rounded to a pixel did
+not (Times New Roman 16px `10ex`: 70, Chrome 80). `ch`
+is the `0` advance and `ic` the `水` advance, unrounded, `None` when the face
+lacks the glyph. The provider is `Sync` and cannot borrow the document's
+`font_cx`, so it answers from a per-document cache (`DeviceParams::font_metrics`)
+keyed by family list, weight and style. A miss is recorded and answered with
+Stylo's fallbacks. The two cascade sites (`resolve.rs` for elements,
+`pseudo.rs` for `::before`/`::after`) then call `resolve_pending(&mut font_cx)`
+and cascade again, so each new font costs one extra cascade, once per document.
+A page that uses none of these units never queries the provider. A new cascade
+site has to loop the same way, or it keeps the fallbacks until a later cascade
+of that font. `note_fonts_registered` drops the cache and restyles the elements
+whose style carries Stylo's `DEPENDS_ON_SELF_FONT_METRICS` /
+`DEPENDS_ON_INHERITED_FONT_METRICS`, each with its subtree. Media queries in
+these units, and a vertical writing mode's `ch` (rinch lays none out), still
+get the fallbacks. rinch-web is unaffected: the browser resolves the units.
 
 **Window chrome inset (not ThemeProvider-generated).** `--rinch-window-top-inset`
 is published at runtime by whatever chrome rinch draws above your content — the

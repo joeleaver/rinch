@@ -384,6 +384,22 @@ inserted nothing — reproduced in Chrome 150, silent, no error anywhere.
 (it retires a discard and keeps a remove), which is why a `remove`/`discard`
 mistake now fails `cargo test` rather than only a browser.
 
+### Never queue a handler id for later delivery (#141)
+
+An event handler belongs to the scope that registered it, and disposing that
+scope frees it (#141 PR4: the dispose fixpoint unregisters a scope's handlers
+first). An `EventHandlerId` is only a number: a `data-rid` attribute, or an id
+put in a queue, outlives the handler it names, and nothing removes either when
+the handler goes. So **no deferred delivery may carry a handler id** — a queued
+"element clicked" event, a native event, a message drained on a later turn —
+because the branch, row or component that owned the handler can be disposed
+before the queue drains, and the id then names nothing. Either carry the callback itself (a `Callback` or an
+`Rc<dyn Fn()>`, which keeps it alive for the delivery), or re-check liveness
+when the queue drains with `rinch_core::events::has_click_handler(id)` and drop
+the event when it answers false. The synchronous dispatchers already do the
+second: walking an ancestor chain, they skip a node whose handler is gone and
+keep walking, rather than consuming the event on its behalf.
+
 ### Usage
 
 Components use `#[component]` and return a `NodeHandle`:

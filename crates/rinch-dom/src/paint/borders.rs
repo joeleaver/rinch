@@ -5,7 +5,8 @@ use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Shape, Stroke, Vec2};
 
 use super::blur::Blur1d;
-use super::painter::{PaintShape, Painter};
+use super::border_dashes::{self, Dash};
+use super::painter::{BlendMode, PaintShape, Painter};
 use super::radii::BorderRadii;
 use crate::computed_style::BorderStyleValue;
 use crate::node::Node;
@@ -245,7 +246,77 @@ pub(super) fn paint_borders(
             let half = bw * 0.5;
             let border_rect = Rect::new(x + half, y + half, x + w - half, y + h - half);
 
-            if radii.is_square() {
+            if let Some(dash) = Dash::of(style) {
+                // Chrome's dash layout (#2371, #2372): `border_dashes`.
+                let outer = Rect::new(x, y, x + w, y + h);
+                if radii.is_square() {
+                    border_dashes::paint_square_uniform(painter, transform, bc, outer, bw, dash);
+                } else {
+                    let centre = border_dashes::centre_line(
+                        border_rect,
+                        radii.inner(half, half, half, half),
+                    );
+                    let ring = border_ring(outer, radii, [bw; 4]);
+                    let curved = inner_edge_arcs(radii, [bw; 4]);
+                    if curved.iter().all(|&c| c) {
+                        border_dashes::paint_rounded(
+                            painter, transform, bc, &centre, &ring, None, bw, bw, dash,
+                        );
+                    } else {
+                        // Blink draws a side whose inner edge has no arc as a
+                        // straight side under the outer clip (its dashes
+                        // fitted to the side), and the others as the whole
+                        // dashed path clipped to their part.
+                        //
+                        // The two kinds of side overlap where they meet, so
+                        // a translucent border paints them opaque into one
+                        // layer of its alpha (Blink's opacity group), or
+                        // that corner darkens twice.
+                        let alpha = bc.components[3];
+                        let layered = alpha < 1.0;
+                        let bc = if layered {
+                            painter.push_layer(BlendMode::Normal, alpha, transform, &outer.into());
+                            bc.with_alpha(1.0)
+                        } else {
+                            bc
+                        };
+                        let edges = border_dashes::BoxEdges {
+                            rect: outer,
+                            widths: [bw; 4],
+                        };
+                        let mut straight = BezPath::new();
+                        for i in (0..4).filter(|&i| !curved[i]) {
+                            border_dashes::straight_side(
+                                &mut straight,
+                                &edges,
+                                DASH_SIDES[i],
+                                dash,
+                                &[],
+                            );
+                        }
+                        painter.push_clip(Fill::NonZero, transform, &ring.clone().into());
+                        painter.fill_color(Fill::NonZero, transform, bc, &straight.into());
+                        painter.pop_layer();
+                        for i in (0..4).filter(|&i| curved[i]) {
+                            let clip = side_quad(outer, ARC_SIDES[i]);
+                            border_dashes::paint_rounded(
+                                painter,
+                                transform,
+                                bc,
+                                &centre,
+                                &ring,
+                                Some(&clip),
+                                bw,
+                                bw,
+                                dash,
+                            );
+                        }
+                        if layered {
+                            painter.pop_layer();
+                        }
+                    }
+                }
+            } else if radii.is_square() {
                 painter.stroke_color(&stroke, transform, bc, &border_rect.into());
             } else if matches!(style, BorderStyleValue::Solid) {
                 // A solid rounded border is exactly the ring between the
@@ -262,11 +333,11 @@ pub(super) fn paint_borders(
                 }
                 painter.fill_color(Fill::NonZero, transform, bc, &ring.into());
             } else {
-                // The dashed, dotted and double strokes run along the
-                // border's centre line, whose radii are the outer ones less
-                // half the width — the stroke's outer edge then has the
-                // border box's radius. (It used to stroke the centre line
-                // with the outer radii, half a width too round, #977.)
+                // The double stroke runs along the border's centre line,
+                // whose radii are the outer ones less half the width — the
+                // stroke's outer edge then has the border box's radius. (It
+                // used to stroke the centre line with the outer radii, half
+                // a width too round, #977.)
                 let centre = radii.inner(half, half, half, half);
                 painter.stroke_color(&stroke, transform, bc, &centre.shape(border_rect));
             }
@@ -305,62 +376,259 @@ pub(super) fn paint_borders(
         return;
     }
 
-    // Fallback: straight lines per side (no border-radius)
-    if let Some(bc) = sides[0].1 {
-        paint_border_side(
-            painter,
-            bevel::Side::Top,
-            top_w,
-            sides[0].2,
-            bc,
-            x,
-            y,
-            w,
-            h,
-            transform,
-        );
+    // Fallback: straight lines per side (no border-radius).
+    let widths = [top_w, right_w, bottom_w, left_w];
+    paint_straight_sides(
+        painter,
+        &sides,
+        widths,
+        Rect::new(x, y, x + w, y + h),
+        None,
+        transform,
+    );
+}
+
+/// Blink's `kStylePriority`: dashed, dotted and double sides paint first,
+/// then the 3D styles, then solid, so a side painted later and filling its
+/// whole band covers the corner the earlier one left whole.
+fn style_priority(style: BorderStyleValue) -> u8 {
+    match style {
+        BorderStyleValue::Dashed | BorderStyleValue::Dotted | BorderStyleValue::Double => 1,
+        BorderStyleValue::Inset
+        | BorderStyleValue::Outset
+        | BorderStyleValue::Groove
+        | BorderStyleValue::Ridge => 2,
+        BorderStyleValue::Solid => 3,
+        _ => 0,
     }
-    if let Some(bc) = sides[1].1 {
-        paint_border_side(
-            painter,
-            bevel::Side::Right,
-            right_w,
-            sides[1].2,
-            bc,
-            x,
-            y,
-            w,
-            h,
-            transform,
-        );
+}
+
+/// The straight sides of a border whose sides differ, in Blink's order
+/// ([`style_priority`]). A dashed or dotted side is cut on a corner's
+/// diagonal where Blink mitres it ([`blink_cuts`]), and so is a solid side
+/// beside a dashed or dotted one (Blink mitres it there, so the dashed
+/// side's dot or dash keeps its half of the corner). With `ring`, the sides
+/// are drawn under that clip (a rounded border whose inner edge has no arc).
+///
+/// When a side is dashed or dotted, the sides of each alpha below 1 are drawn
+/// opaque into one layer of that opacity, lowest first, as Blink's opacity
+/// groups are, so the corners they share do not darken twice.
+fn paint_straight_sides(
+    painter: &mut dyn Painter,
+    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
+    widths: [f64; 4],
+    outer: Rect,
+    ring: Option<&BezPath>,
+    transform: Affine,
+) {
+    const SIDES: [bevel::Side; 4] = [
+        bevel::Side::Top,
+        bevel::Side::Right,
+        bevel::Side::Bottom,
+        bevel::Side::Left,
+    ];
+    let mut order = [0usize, 1, 2, 3];
+    order.sort_by_key(|&i| style_priority(sides[i].2));
+    let edges = border_dashes::BoxEdges {
+        rect: outer,
+        widths,
+    };
+    let painted = |i: usize| {
+        widths[i] > 0.0
+            && sides[i].1.is_some()
+            && !matches!(
+                sides[i].2,
+                BorderStyleValue::None | BorderStyleValue::Hidden
+            )
+    };
+    let any_dash = (0..4).any(|i| painted(i) && Dash::of(sides[i].2).is_some());
+    let alpha = |i: usize| sides[i].1.map_or(1.0, |c| c.components[3]);
+    // Blink's opacity groups: the sides of one alpha below 1 paint opaque
+    // into one layer of it, the lowest opacity first, so two of them meeting
+    // in a corner do not darken it twice. Only where a side is dashed or
+    // dotted: elsewhere this painter keeps its own solid-side corners.
+    let mut groups: Vec<f32> = Vec::new();
+    if any_dash {
+        for i in (0..4).filter(|&i| painted(i)) {
+            let a = alpha(i);
+            if a < 1.0 && !groups.contains(&a) {
+                groups.push(a);
+            }
+        }
+        groups.sort_by(f32::total_cmp);
     }
-    if let Some(bc) = sides[2].1 {
-        paint_border_side(
-            painter,
-            bevel::Side::Bottom,
-            bottom_w,
-            sides[2].2,
-            bc,
-            x,
-            y,
-            w,
-            h,
-            transform,
-        );
+    // The opaque sides last, with no layer.
+    let layers: Vec<Option<f32>> = groups.iter().map(|&a| Some(a)).chain([None]).collect();
+    if let Some(r) = ring {
+        painter.push_clip(Fill::NonZero, transform, &r.clone().into());
     }
-    if let Some(bc) = sides[3].1 {
-        paint_border_side(
-            painter,
-            bevel::Side::Left,
-            left_w,
-            sides[3].2,
-            bc,
-            x,
-            y,
-            w,
-            h,
-            transform,
+    let (x, y, w, h) = (outer.x0, outer.y0, outer.width(), outer.height());
+    let mut done = [false; 4];
+    for layer in layers {
+        let in_layer = |i: usize| match layer {
+            Some(a) => alpha(i) == a,
+            None => !groups.contains(&alpha(i)),
+        };
+        if let Some(a) = layer {
+            painter.push_layer(BlendMode::Normal, a, transform, &outer.into());
+        }
+        for &i in order.iter().filter(|&&i| in_layer(i)) {
+            let (_, color, style) = sides[i];
+            let Some(mut bc) = color else {
+                done[i] = true;
+                continue;
+            };
+            if layer.is_some() {
+                bc = bc.with_alpha(1.0);
+            }
+            if let Some(dash) = Dash::of(style) {
+                let cuts = blink_cuts(sides, &widths, &done, &edges, i);
+                let mut path = BezPath::new();
+                border_dashes::straight_side(&mut path, &edges, DASH_SIDES[i], dash, &cuts);
+                if !path.is_empty() {
+                    painter.fill_color(Fill::NonZero, transform, bc, &path.into());
+                }
+            } else if matches!(style, BorderStyleValue::Solid)
+                && widths[i] > 0.0
+                && let cuts = solid_cuts(sides, &widths, &done, &edges, i)
+                && !cuts.is_empty()
+            {
+                let mut path = BezPath::new();
+                border_dashes::solid_side(&mut path, &edges, DASH_SIDES[i], &cuts);
+                painter.fill_color(Fill::NonZero, transform, bc, &path.into());
+            } else {
+                paint_border_side(
+                    painter, SIDES[i], widths[i], style, bc, x, y, w, h, transform,
+                );
+            }
+            done[i] = true;
+        }
+        if layer.is_some() {
+            painter.pop_layer();
+        }
+    }
+    if ring.is_some() {
+        painter.pop_layer();
+    }
+}
+
+/// Whether side `a` is drawn at all.
+fn side_present(
+    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
+    widths: &[f64; 4],
+    a: usize,
+) -> bool {
+    widths[a] > 0.0
+        && !matches!(
+            sides[a].2,
+            BorderStyleValue::None | BorderStyleValue::Hidden
+        )
+}
+
+/// Blink's `ComputeMiter` for side `i` at each of its corners: no cut where
+/// the neighbour is absent, or is still to be painted and fills its whole
+/// band (it will cover the corner); otherwise a cut where the colours differ
+/// or the styles need one (`BorderStylesRequireMiter`: any two different
+/// styles, or a double, groove or ridge neighbour). `done` says which sides
+/// are painted already.
+fn blink_cuts(
+    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
+    widths: &[f64; 4],
+    done: &[bool; 4],
+    edges: &border_dashes::BoxEdges,
+    i: usize,
+) -> Vec<border_dashes::Cut> {
+    let (_, color, style) = sides[i];
+    let mut cuts = Vec::new();
+    for a in [(i + 3) % 4, (i + 1) % 4] {
+        if !side_present(sides, widths, a) {
+            continue;
+        }
+        let (_, a_color, a_style) = sides[a];
+        let fills = !matches!(
+            a_style,
+            BorderStyleValue::Dashed | BorderStyleValue::Dotted | BorderStyleValue::Double
         );
+        if !done[a] && fills {
+            continue;
+        }
+        let styles_need = style != a_style
+            || matches!(
+                a_style,
+                BorderStyleValue::Double | BorderStyleValue::Groove | BorderStyleValue::Ridge
+            )
+            || matches!(style, BorderStyleValue::Double);
+        if a_color != color || styles_need {
+            cuts.push(edges.miter(DASH_SIDES[i], DASH_SIDES[a]));
+        }
+    }
+    cuts
+}
+
+/// [`blink_cuts`] for a solid side, kept to the corners it shares with a
+/// dashed or dotted side: elsewhere a solid side keeps its whole-band stroke.
+fn solid_cuts(
+    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
+    widths: &[f64; 4],
+    done: &[bool; 4],
+    edges: &border_dashes::BoxEdges,
+    i: usize,
+) -> Vec<border_dashes::Cut> {
+    // A neighbour that is not dashed or dotted is not a corner this concerns:
+    // treat it as absent.
+    let mut masked = *sides;
+    for (a, side) in masked.iter_mut().enumerate() {
+        if a != i && Dash::of(side.2).is_none() {
+            side.2 = BorderStyleValue::None;
+        }
+    }
+    blink_cuts(&masked, widths, done, edges, i)
+}
+
+/// [`bevel::Side`]'s order, as `border_dashes` names it.
+const DASH_SIDES: [border_dashes::Side; 4] = [
+    border_dashes::Side::Top,
+    border_dashes::Side::Right,
+    border_dashes::Side::Bottom,
+    border_dashes::Side::Left,
+];
+
+/// [`bevel::Side`] in `[top, right, bottom, left]` order.
+const ARC_SIDES: [bevel::Side; 4] = [
+    bevel::Side::Top,
+    bevel::Side::Right,
+    bevel::Side::Bottom,
+    bevel::Side::Left,
+];
+
+/// Per side, top, right, bottom, left: whether the padding box is rounded at
+/// either of that side's corners (Blink's `BorderWillArcInnerEdge`). A
+/// dashed or dotted side whose inner edge has no arc is drawn straight, as
+/// Blink draws it, even when its outer corners are rounded (a radius no
+/// larger than the border width).
+fn inner_edge_arcs(radii: BorderRadii, widths: [f64; 4]) -> [bool; 4] {
+    let [t, r, b, l] = widths;
+    let inner = radii.inner(t, r, b, l);
+    let arcs = |c: Vec2| c.x > 0.0 && c.y > 0.0;
+    let (tl, tr, br, bl) = (
+        arcs(inner.top_left),
+        arcs(inner.top_right),
+        arcs(inner.bottom_right),
+        arcs(inner.bottom_left),
+    );
+    [tl || tr, tr || br, br || bl, bl || tl]
+}
+
+/// The ring a border covers, the border box less the padding box, for a
+/// clip: `widths` top, right, bottom, left.
+fn border_ring(outer: Rect, radii: BorderRadii, widths: [f64; 4]) -> BezPath {
+    let [t, r, b, l] = widths;
+    let ring = radii.path(outer);
+    let inner = Rect::new(outer.x0 + l, outer.y0 + t, outer.x1 - r, outer.y1 - b);
+    if inner.width() > 0.0 && inner.height() > 0.0 {
+        punched(ring, &radii.inner(t, r, b, l).path(inner))
+    } else {
+        ring
     }
 }
 
@@ -540,10 +808,67 @@ fn paint_borders_arc_per_side(
                 ),
                 _ => bc,
             };
+            if let Some(dash) = Dash::of(style) {
+                // Chrome strokes the whole dashed centre line for each such
+                // side, clipped to that side's part of the ring.
+                let outer = Rect::new(x, y, x + w, y + h);
+                let centre_line =
+                    border_dashes::centre_line(Rect::new(ix, iy, ix + iw, iy + ih), centre);
+                let ring = border_ring(outer, radii, [bw; 4]);
+                if !inner_edge_arcs(radii, [bw; 4])[i] {
+                    // No arc on this side's inner edge: straight, under the
+                    // outer clip, cut where its neighbours differ.
+                    let edges = border_dashes::BoxEdges {
+                        rect: outer,
+                        widths: [bw; 4],
+                    };
+                    let cuts = blink_cuts(sides, &[bw; 4], &[true; 4], &edges, i);
+                    let mut path = BezPath::new();
+                    border_dashes::straight_side(&mut path, &edges, DASH_SIDES[i], dash, &cuts);
+                    painter.push_clip(Fill::NonZero, transform, &ring.into());
+                    painter.fill_color(Fill::NonZero, transform, resolved, &path.into());
+                    painter.pop_layer();
+                    continue;
+                }
+                let clip = side_quad(outer, SIDE_ORDER[i]);
+                border_dashes::paint_rounded(
+                    painter,
+                    transform,
+                    resolved,
+                    &centre_line,
+                    &ring,
+                    Some(&clip),
+                    bw,
+                    bw,
+                    dash,
+                );
+                continue;
+            }
             let stroke = make_border_stroke(bw, style);
             painter.stroke_color(&stroke, transform, resolved, &path.clone().into());
         }
     }
+}
+
+/// The part of a box that belongs to one side, for clipping a rounded
+/// border's side: the outer edge and the 45° diagonals in from its corners,
+/// which meet where the arc paths' halves do (a corner split at its middle).
+fn side_quad(outer: Rect, side: bevel::Side) -> BezPath {
+    let Rect { x0, y0, x1, y1 } = outer;
+    let d = outer.width().min(outer.height()) / 2.0;
+    let pts = match side {
+        bevel::Side::Top => [(x0, y0), (x1, y0), (x1 - d, y0 + d), (x0 + d, y0 + d)],
+        bevel::Side::Right => [(x1, y0), (x1, y1), (x1 - d, y1 - d), (x1 - d, y0 + d)],
+        bevel::Side::Bottom => [(x1, y1), (x0, y1), (x0 + d, y1 - d), (x1 - d, y1 - d)],
+        bevel::Side::Left => [(x0, y1), (x0, y0), (x0 + d, y0 + d), (x0 + d, y1 - d)],
+    };
+    let mut path = BezPath::new();
+    path.move_to(pts[0]);
+    for p in &pts[1..] {
+        path.line_to(*p);
+    }
+    path.close_path();
+    path
 }
 
 /// Build BezPath for each side of a rounded rect.
@@ -668,25 +993,22 @@ fn midpt(a: Point, b: Point) -> Point {
     Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
 }
 
-/// Create a Stroke with dash pattern based on border style.
+/// The stroke for a border or outline of `style`.
 ///
-/// Every style but `dotted` takes a **miter** join. A uniform border or an
-/// outline is one stroke around the rectangle through the middle of its band,
-/// and kurbo's `Stroke::new` defaults to `Join::Round`, which leaves each
-/// outer corner square of the band unpainted — a notch `width / 2` on a side,
-/// enough to make a 50px border on a 100px box read as rounded (#1022). A 90°
-/// miter reaches exactly the corner (ratio √2, under the default limit of 4),
-/// so the band is the border box minus the padding box, as CSS draws it. On a
+/// Every style takes a **miter** join. A uniform border or an outline is one
+/// stroke around the rectangle through the middle of its band, and kurbo's
+/// `Stroke::new` defaults to `Join::Round`, which leaves each outer corner
+/// square of the band unpainted — a notch `width / 2` on a side, enough to
+/// make a 50px border on a 100px box read as rounded (#1022). A 90° miter
+/// reaches exactly the corner (ratio √2, under the default limit of 4), so
+/// the band is the border box minus the padding box, as CSS draws it. On a
 /// rounded rect the path is smooth at every joint and the join is moot.
-/// `dotted` keeps its round join along with its round caps.
+///
+/// `dashed` and `dotted` never reach a painter as a dash pattern: they are
+/// laid out by `border_dashes` (#2371, #2372), and this returns them a plain
+/// stroke.
 pub(super) fn make_border_stroke(width: f64, style: BorderStyleValue) -> Stroke {
     match style {
-        BorderStyleValue::Dashed => Stroke::new(width)
-            .with_join(Join::Miter)
-            .with_dashes(0.0, [width * 3.0, width * 3.0]),
-        BorderStyleValue::Dotted => Stroke::new(width)
-            .with_dashes(0.0, [width, width])
-            .with_caps(Cap::Round),
         BorderStyleValue::Double => {
             // For double, draw at 1/3 width (the caller draws two passes)
             // We approximate by drawing a single thinner stroke
@@ -737,7 +1059,24 @@ pub(super) fn paint_outline(
         y + h + offset + half,
     );
 
-    if radii.as_circular().is_none() && matches!(cs.outline_style, BorderStyleValue::Solid) {
+    if let Some(dash) = Dash::of(cs.outline_style) {
+        // Laid out as a uniform border on the outline's own box (Chrome
+        // paints an outline with its border painter, #2371).
+        let inner_rect = Rect::new(x - offset, y - offset, x + w + offset, y + h + offset);
+        let outer_rect = inner_rect.inflate(ow, ow);
+        if radii.is_square() {
+            border_dashes::paint_square_uniform(painter, transform, color, outer_rect, ow, dash);
+        } else {
+            let centre = border_dashes::centre_line(outline_rect, radii.grown(offset + half));
+            let mut ring = radii.grown(offset + ow).path(outer_rect);
+            if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
+                ring = punched(ring, &radii.grown(offset).path(inner_rect));
+            }
+            border_dashes::paint_rounded(
+                painter, transform, color, &centre, &ring, None, ow, ow, dash,
+            );
+        }
+    } else if radii.as_circular().is_none() && matches!(cs.outline_style, BorderStyleValue::Solid) {
         // A solid outline round an elliptical corner (#977) is the ring
         // between the border box grown by the offset and that grown by the
         // offset and the width, each radius grown by the same amount on both

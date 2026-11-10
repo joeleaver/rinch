@@ -255,8 +255,7 @@ first one, a text edit inside the span) and a position-only one costs none.
 Not Chrome's, each pinned: a **split** inline (one holding a block-level child,
 #513) is not measured and keeps the block container (**#1424**) (a span in a
 block that draws a `text-overflow: ellipsis` "…" is measured since #1100, which
-keeps the lines and cuts them at paint); a relative span's own `left`/`top` moves neither its
-text nor the box (**#1425**); a span in a larger font with **no text of its
+keeps the lines and cuts them at paint); a span in a larger font with **no text of its
 own** (empty, or holding only an atomic inline or smaller text) is the right
 size and sits 5px high, because rinch's line gets no strut from it (**#1463**);
 a wrapped span in a font taller than its `line-height` allows spans lines
@@ -275,6 +274,86 @@ than #631: `stacking::Collector` descends the box tree, never meets the span,
 and ends the box's clip chain at the next positioned box), so a badge whose
 line is scrolled out of a static `overflow: auto` div is drawn outside it;
 layout, the scroll range and damage do see the span.
+
+**A relative inline element moves everything it holds** (#1425, #2346; CSS
+2.1 §9.4.3): its text, background, border and decorations, the atomic inlines
+in its lines (`inline-block`, `inline-flex`, images), the relative spans
+nested in it, and the boxes it is the containing block of. It has no box, so
+the move is post-layout, recorded with the lines (a `vertical-align` is
+parley's since #1357, placed in the line it grows):
+the IFC walk (`push_inline_spans`) records an `InlineRelativeSpan` (owner and
+byte range, an empty range for a span holding only atomic inlines) for every
+`display: inline` element with `position: relative`, and
+`RinchDocument::resolve_relative_spans`, run when the paint lines are shaped
+(`shape_ifc_root_paint_layout`, before `write_inline_positions`), resolves
+each one's offset against the containing block — the root, or the element an
+anonymous block box stands in — and drops the spans that move nothing, so a
+span that is only an abspos anchor costs paint nothing. A percentage `left`/
+`right` is of the block's content width; a percentage `top`/`bottom` of its
+content height when that is definite, else `auto`. **Definite is layout's
+answer, not a mirror of its rules** (#2427): at each IFC root's final layout
+the measure closures (`run_taffy`, `compute_atomic_inline_root`) call
+`ifc::note_containing_block_height`, which stores in
+`Node::containing_block_height_definite` what Taffy itself would resolve a
+child's percentage height against — for a root, `ifc::leaf_height_is_definite`:
+the parent handed it a height and `known_dimensions_are_definite` calls it
+definite (every parent hands a leaf its style-resolved height — a length, a
+percentage of a definite parent, an `aspect-ratio` of its width; a flex, grid
+or absolute parent hands the height it lays it out at, definite for a
+stretched item, also in an auto-height or `min-height` row or an auto grid
+row, a column item's flexed height in a definite column, an absolute box's
+inset-given height); for an anonymous block box, whether its
+`parent_size.height` is `Some`, the parent's percentage basis. Chrome 157 agrees on every case
+pinned (a `flex-start` row item, a `flex: 1` item of an auto column, a
+`start` grid item and a `min-height`-only block stay indefinite). A
+`position: fixed` box's percentage `width`/`height` are baked from the
+viewport (`apply_out_of_flow_size_overrides`, #2427), where Taffy used to
+resolve them against the box's layout parent — unless an ancestor with a
+`transform` or `contain: paint`/`layout` is its containing block
+(`out_of_flow::fixed_containing_block_is_viewport`), where Taffy's answer is
+kept (Chrome's when that ancestor is the layout parent; rinch still places
+such a box against the viewport); `top` wins over
+`bottom`, and `left` over `right` in a left-to-right block (Chrome 156).
+Offsets **compose** (`InlineLayout::relative_offset_at` sums every span over a
+byte; `element_relative_offset` sums an element's and its inline ancestors').
+The consumers: `write_inline_positions` adds the offset to each atomic
+inline's `layout` (so layout, paint, hit testing, `painted_border_box` and
+damage follow it with nothing of their own); `paint::text::draw_text` moves
+each glyph, and starts a new stretch where the offset changes so the
+underline and line-through move with their glyphs; `inline_background_rects`
+moves the element's background and border; the wavy underline moves with
+its first byte; `inline_ink_past_lines` counts the moved lines, so damage
+reaches them and a root that clips its overflow keeps its clip; the caret and
+`get_glyph_bounds` (`InlineLayout::glyph_offset_at`) and the selection
+highlight (`text_query::selection_rects_for_inline`, the range cut at each
+span's edges) are where the text is drawn, and so are the editor's queries
+(`query_selection_rects_with_boxes` through
+`selection_rects_with_boxes_for_inline`, each selected box asked with the
+piece drawn at its offset; `query_inline_box_caret` and the edge-box caret,
+`InlineLayout::inline_box_relative_offset`; `query_line_box`) and the
+desktop editor's link-hover rect; a span's fragments
+(`measure_span_fragments`) move, so a box hung from it does
+(`left: 5px; top: 3px` puts `left: 0; top: 0` at Chrome's `(52.641, 10)`,
+snapped to 53), and so does the static position of an `auto`-inset box in it
+(the `OutOfFlowMark`s: an inline-level box's `inline`, a block-level one's
+`block_x`/`block_y` — Chrome's `(18, 32)` for a `left: 7px; top: 5px` span,
+`(11, 27)` without), and the span's own `getBoundingClientRect`. A change of `position` or an inset of an inline
+element rebuilds the lines (`same_relative_offset_inputs`, part of
+`same_text_layout_inputs`, not of the measured inputs: the offset sizes
+nothing). A `position: sticky` inline is not moved, as before: where nothing
+scrolls it past its insets that is Chrome's answer too, and where a scroll
+would push it rinch's does not stick (sticky offsets are applied to boxes).
+Pinned in `tests/relative_inline_offset_2346_tests.rs`
+(layout, paint, pixels, Chrome 156) and `rinch/src/app/relative_inline_hit_2346_tests.rs`.
+Not Chrome's yet: a pointer on moved **text** is still mapped to a character
+by the unmoved lines (`byte_offset_from_position`, `cluster_range_at_point`;
+**#2404**); a block inside a relative **split** inline (#513) is not moved
+(**#2408**: Chrome moves it with the span); a percentage `top` of a block
+whose `height` changes with no width change keeps the old offset until the
+lines are rebuilt, and so does one whose height or definiteness changes
+(a row growing 100 → 200px: Chrome 8 → 18, rinch 8), a span first resolved
+to 0 being dropped for good (**#2457**); and a change of an inset
+reshapes the paragraph, where moving the spans again would do (**#2412**).
 
 **An auto-width absolute box is shrunk to fit in what its containing block
 leaves it** (#1404, CSS 2.1 §10.3.7): that block's padding-box width less the

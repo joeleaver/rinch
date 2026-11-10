@@ -415,6 +415,9 @@ jobs:
           # #2344's uniform 1px border and outline, solid on every side, at 1x and 2x.
           run 1 -p rinch --features gpu,video --test gpu_border_edges_2344 -- \
             --ignored --test-threads=1
+          # #2371/#2372's dashed and dotted borders against Chrome's pixels, at 1x and 2x.
+          run 1 -p rinch --features gpu,video --test gpu_border_dashes_2371 -- \
+            --ignored --test-threads=1
           # #2321's rounded corners (clips, nested clips, backgrounds, borders,
           # a scaled clip) against Chrome's pixels and the area, at 1x and 2x.
           run 1 -p rinch --features gpu,video --test gpu_rounded_corners_2321 -- \

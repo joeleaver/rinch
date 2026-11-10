@@ -65,6 +65,15 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     collapsing (`a <wbr> b` is `a b`) and owns no DOM text: its three flat bytes lie between
     the text ranges around it. The builders that set the override are the IFC, a flex or grid item's text leaf
     and the paint fallback; a form control's text (`form_control::field_text_layout`) does not.
+    A box with no room breaks at every opportunity (#2382): an IFC root's paint layout is
+    broken at its content width even when that is 0 (`width: 0`, `max-width: 0`, a zero-width
+    float or inline-block, a flex item shrunk to 0, a `0px` grid track; padding wider than the
+    box clamps it to 0), as in Chrome 156, the same lines as `width: 1px`. Before, a content
+    width that was not positive was handed to parley as no limit: the measure sized the box for
+    five lines and the glyphs were one max-content line. With `overflow-wrap: anywhere` or
+    `break-word` that is one grapheme a line. A box floored by an automatic minimum (a flex
+    item's `min-width: auto`, a table cell) is its min-content width, as before.
+    `crates/rinch-dom/tests/zero_width_line_break_2382_tests.rs`.
 
   What 0.12 changed, and what rinch does about it:
   - **Line boxes are CSS line boxes** (linebender/parley#697, #863, #864). A line holds the root
@@ -349,12 +358,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`4d5e0b8cd43014ca6dbf6f5f2817a5c8b03ac1fb`, branch `rinch-patch`): twenty-seven commits on the taffy `v0.14.0` tag
-(item 10 is two of them, item 15 three, item 18 four, item 19 two). It is a dependency, not a
+(`8104ec2e0fcc96a78470f2808a65f4f336368b53`, branch `rinch-patch`): thirty commits on the taffy `v0.14.0` tag
+(item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the twenty-seven commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -632,12 +641,42 @@ candidates.
    an absolutely positioned table (60). An in-flow flex item already took the size its layout
    returns. Pins: the fork's `tests/table_rows.rs` and
    `crates/rinch-dom/tests/table_caption_spacing_and_imposed_height_tests.rs`.
+20. **A self-sized formatting-context root fits beside floats by its own width** (#2397, commit
+   `bcb98683`, fork PR joeleaver/taffy-fork#8). A box whose border box must not overlap floats
+   (CSS 2.2 §9.5: a formatting-context root, a table, a block-level replaced element) goes in the
+   highest slot beside the floats it fits, else below them. The fit test took an auto width as
+   the width it *stretches* to in the slot, which always fits, so a box that sizes itself was put
+   beside the floats whatever its width: rinch's auto table (a grid with `width: fit-content`,
+   `table_layout::apply_table_style`) holding a 40px box beside a 280px float in 300px sat at
+   x 280, 20px past the edge, where Chrome 156 moves it to (0, 50); the email pattern (a
+   `<table align=left width=100%>` logo, then an auto spacer table) left the spacer beside the
+   logo at x 300. The fit test now measures the width the box will have there, as the layout
+   lays it out: a table's or replaced element's own size with the slot's stretch width
+   available, declared width or not (rinch's table with a `width` widens past it to its columns'
+   minimum: a `width: 50px` table holding a 100px box is 100 and moves below a 250px float in
+   300px, Chrome 156 (0, 50); review of #2415), or a sizing keyword's (`fit-content`, `max-content`, …), else the stretch width as
+   before. A box that stretches (an auto-width `overflow: hidden` block, a flex container) still
+   takes the room beside the float however narrow, as in Chrome; a table's margins may overlap
+   the float, its borders and padding count. Not fixed (pre-existing, separate): rinch does not
+   treat `display: flow-root` as a formatting-context root, so it overlaps a float (Chrome puts
+   it beside; #2351). Pins: the fork's `tests/hand_written/floats.rs` (three tests) and
+   `crates/rinch-dom/tests/table_beside_float_2397_tests.rs` (25 shapes, Chrome's numbers).
+21. **A compressible replaced child gives no length width at min-content** (commit
+   `8104ec2e`, fork PR joeleaver/taffy-fork#10). A replaced child (`item_is_replaced`) whose `width` or `max-width` is a
+   percentage is compressible (css-sizing-3 §5.2.2), but the block algorithm's intrinsic width
+   (`determine_content_based_container_width`) took a length `width` as its contribution before
+   asking it, so `<img style="width: 800px; max-width: 100%">` gave a table column, or any
+   min-content measure, 800px where Chrome 156 gives it none. At a min-content width such a child
+   (`BlockItem::is_compressible`) now has no known width and is asked; rinch's leaf answers with
+   its percentages resolved against zero (`replaced::min_content_style`). Postrinch mail 033 drew
+   a `max-width: 640px` card 872 wide and 1,120px taller than Chrome. Pins:
+   `crates/rinch-dom/tests/compressible_replaced_min_content_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, and (6,345 in all) with 19.
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20 and with 21.
 
 
 ## Parley Fork
