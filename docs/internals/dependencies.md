@@ -83,7 +83,8 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     ascent and descent in `CharMetrics`). The baseline is in the IFC content signature, a box that
     became an atomic inline by a restyle is measured before the IFC around it
     (`Node::atomic_baseline_known`), and an atomic inline's `vertical-align` is parley's
-    (`ifc::atomic_vertical_align`; a text span's is still rinch's glyph shift).
+    (`ifc::atomic_vertical_align`; a text span's is parley's too since #1357, as a length,
+`ifc::span_vertical_align`).
     `tests/atomic_inline_baseline_663_tests.rs` pins Chrome 156. Not done: a zero-height atomic
     inline alone on a line still makes a 0px line (Chrome: the strut's; parley counts a box with
     no extent as no content), and the **horizontal** margins of an atomic inline take no room on

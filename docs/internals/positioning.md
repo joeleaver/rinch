@@ -221,9 +221,9 @@ are the **visual** extent of its content (a span of right-to-left text is as
 wide as its text), its top and bottom the span's **own font's** rounded ascent
 and descent around the baseline whatever its children are set in (the face its
 stack resolves an `x` to, `out_of_flow::font_box`), moved by the span's **own**
-`vertical-align` shift (the nearest one among the span and the inline elements
-around it, as its text is drawn — a shifted child at its start or end moves
-nothing); an empty span is a zero-width fragment where it sits
+`vertical-align` shift (the shifts of the span and the inline elements around
+it added up and rounded, as parley places its text, #1357 — a shifted child at
+its start or end moves nothing); an empty span is a zero-width fragment where it sits
 (Chrome 153, pinned with the bundled Inter in
 `tests/abs_inline_containing_block_tests.rs` and `review_1434_tests.rs`).
 **The spans of one context are measured together, once per set of lines**
@@ -256,11 +256,7 @@ Not Chrome's, each pinned: a **split** inline (one holding a block-level child,
 #513) is not measured and keeps the block container (**#1424**) (a span in a
 block that draws a `text-overflow: ellipsis` "…" is measured since #1100, which
 keeps the lines and cuts them at paint); a relative span's own `left`/`top` moves neither its
-text nor the box (**#1425**); a
-raised span's fragment (`<sup>`, any positive `vertical-align`) follows glyphs
-rinch draws higher than Chrome, whose line grows for them (#1357: a `<sup>` 5px
-higher, `vertical-align: 10px` 10px, and a raised span that wraps is shorter
-by the growth of each line); a span in a larger font with **no text of its
+text nor the box (**#1425**); a span in a larger font with **no text of its
 own** (empty, or holding only an atomic inline or smaller text) is the right
 size and sits 5px high, because rinch's line gets no strut from it (**#1463**);
 a wrapped span in a font taller than its `line-height` allows spans lines

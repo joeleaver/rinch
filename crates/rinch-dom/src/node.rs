@@ -651,19 +651,15 @@ pub struct InlineDecorationSpan {
 /// A `vertical-align: sub|super|<length>|<percentage>` span within an IFC
 /// (#724).
 ///
-/// Parley 0.11.1's shaping API has no per-run baseline offset, so a non-`baseline`
-/// `vertical-align` is not a Parley style at all — like [`InlineDecorationSpan`]'s
-/// wave, it is recorded here as a byte range over the flat IFC text and applied
-/// by the painter and the text-position queries directly, each glyph shifted by
-/// `shift_px` in *layout* pixels (positive = down, matching rinch's Y-down glyph
-/// convention — see `ifc::vertical_align_shift_px`'s doc for the sign and the
-/// calibration this was measured against).
-///
-/// **Known gap:** this is a pure post-layout shift. It does not grow the line
-/// box the way Chrome's does (a raised `<sup>` can paint into the line above),
-/// because Parley computed the line's own ascent/descent with no idea the glyph
-/// would move — filed as #1357, alongside the five `vertical-align` keywords
-/// this crate does not lay out at all.
+/// Parley places the glyphs and grows the line for it (#1357: the span's
+/// parley `VerticalAlign`, `ifc::span_vertical_align`); this records, as a byte
+/// range over the flat IFC text, where it put them: `shift_px` is the offset of
+/// the element's baseline from its line's, in *layout* pixels (positive = down,
+/// rinch's Y-down convention — see `ifc::vertical_align_shift_px`'s doc for the
+/// sign and the calibration), the shifts of the elements around it added up
+/// and rounded as parley does (`ifc::composed_vertical_align_shift`). What is
+/// measured from the line box rather than the glyphs reads it: the caret, the
+/// glyph bounds, the element's background and border.
 #[derive(Debug, Clone, Copy)]
 pub struct InlineVerticalAlignSpan {
     /// The element whose `vertical-align` this is. Its background and border
@@ -932,12 +928,8 @@ impl InlineLayout {
     /// ancestor's (post-order — a `push_inline_spans` call closes a stretch,
     /// which happens as each element's own walk returns). So the first match
     /// in **insertion order** is always the innermost one covering `byte`,
-    /// which is what CSS composes toward anyway for a single level, and is
-    /// close enough for two: `vertical-align` is deliberately not chained
-    /// here (true nested composition — an outer `sub` shifting the *shifted*
-    /// baseline an inner `super` already moved — is out of scope, filed
-    /// alongside the five keywords this crate does not lay out). The list
-    /// stays this short in practice (elements with a non-`baseline`
+    /// and its `shift_px` already holds its ancestors' shifts (#1357). The
+    /// list stays this short in practice (elements with a non-`baseline`
     /// `vertical-align` are rare), so the scan costs nothing a sort-then-
     /// search would have saved.
     pub(crate) fn vertical_align_shift_at(&self, byte: usize) -> f32 {

@@ -1067,8 +1067,8 @@ pub(crate) fn atomic_vertical_margins(style: &crate::computed_style::ComputedSty
 /// An atomic inline's `vertical-align` as parley 0.12 lines a box up by it
 /// (CSS 2.1 §10.8.1; #663): every keyword, and a length or percentage (of the
 /// box's own `line-height`) raising it. Before 0.12 an atomic inline sat on
-/// the baseline whatever it declared. A text span's `vertical-align` is still
-/// rinch's own glyph shift ([`RinchDocument::vertical_align_shift_px`]).
+/// the baseline whatever it declared. A text span's `vertical-align` is a
+/// parley length too ([`RinchDocument::span_vertical_align`], #1357).
 pub(crate) fn atomic_vertical_align(
     style: &crate::computed_style::ComputedStyle,
     scale: f32,
