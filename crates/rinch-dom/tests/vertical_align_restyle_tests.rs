@@ -140,7 +140,7 @@ fn nested_sub_in_sup_composes_the_shift() {
     text(&mut d, inner_sup, "C");
     d.resolve_layout(VW, VH);
 
-    let nested = glyph_bounds_for_offset(&d, line.0 as u64, 1).unwrap(); // C
+    let nested = glyph_bounds_for_offset(&d, line.0, 1).unwrap(); // C
     assert!(
         (nested.y - 3.75).abs() <= 1.0,
         "nested <sub><sup> glyph at y {}, Chrome 3.75",
