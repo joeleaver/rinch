@@ -258,3 +258,91 @@ fn a_split_raised_inline_grows_the_lines_on_both_sides_of_the_block() {
         );
     }
 }
+
+/// The rows a red background paints, first and last, in a 16px/20px block
+/// whose second line is `alpha <EL style="background: red; STYLE">1</EL>
+/// gamma`.
+#[cfg(feature = "software-renderer")]
+fn red_rows(tag: &str, style: &str) -> (usize, usize) {
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+    const W: u32 = 200;
+    const H: u32 = 80;
+    let mut d = doc();
+    let body = d.body();
+    d.set_attribute(body, "style", "margin: 0");
+    let p = el(&mut d, body, "p", BLOCK);
+    text(&mut d, p, "first line here");
+    el(&mut d, p, "br", "");
+    text(&mut d, p, "alpha ");
+    let s = el(
+        &mut d,
+        p,
+        tag,
+        &format!("background: rgb(255, 0, 0); {style}"),
+    );
+    text(&mut d, s, "1");
+    text(&mut d, p, " gamma");
+    d.resolve_layout(W as f32, H as f32);
+    let mut painter = TinySkiaPainter::new(W, H);
+    let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &d.tree,
+        &mut painter,
+        1.0,
+        (W as f32, H as f32),
+        &mut d.font_cx,
+        &mut cx,
+    );
+    let px = painter.pixels();
+    let red: Vec<usize> = (0..H as usize)
+        .filter(|&y| {
+            (0..W as usize).any(|x| {
+                let i = (y * W as usize + x) * 4;
+                px[i] > 240 && px[i + 1] < 16 && px[i + 2] < 16 && px[i + 3] > 240
+            })
+        })
+        .collect();
+    (*red.first().expect("no red"), *red.last().unwrap())
+}
+
+/// A moved element's background is its own content area where its text is
+/// drawn, not the grown line's extent moved by the shift again (review of
+/// #2449). Chrome 157 boxes, as rows `[top, bottom)`: `<sup>` 22–38,
+/// `vertical-align: 10px` 20–40, `<sub>` 27.19–43.19 (rinch's shift is on
+/// whole pixels: 27–43).
+#[cfg(feature = "software-renderer")]
+#[test]
+fn a_moved_elements_background_is_where_its_text_is() {
+    for (tag, style, top, bottom) in [
+        ("sup", "", 22, 38),
+        ("span", "vertical-align: 10px", 20, 40),
+        ("sub", "", 27, 43),
+    ] {
+        let (first, last) = red_rows(tag, style);
+        assert_eq!(
+            (first, last + 1),
+            (top, bottom),
+            "<{tag} style=\"{style}\">: background rows {first}..={last}, Chrome {top}..{bottom}"
+        );
+    }
+}
+
+/// A moved glyph's bounds are its own content area (Chrome 157: the `1` of
+/// `alpha <sup>1</sup> gamma` at y 2, 16 tall), and the caret before it is at
+/// its line's top, not above the block (review of #2449: y -6).
+#[test]
+fn a_moved_glyphs_bounds_and_caret_are_inside_the_line() {
+    use rinch_dom::text_query::{caret_position_for_offset, glyph_bounds_for_offset};
+    let mut d = doc();
+    let body = d.body();
+    let p = el(&mut d, body, "p", BLOCK);
+    text(&mut d, p, "alpha ");
+    let s = el(&mut d, p, "sup", "");
+    text(&mut d, s, "1");
+    text(&mut d, p, " gamma");
+    d.resolve_layout(800.0, 600.0);
+    let b = glyph_bounds_for_offset(&d, p.0, 6).unwrap();
+    assert_eq!((b.y, b.height), (2.0, 16.0), "the <sup>'s glyph bounds");
+    let caret = caret_position_for_offset(&d, p.0, 6).unwrap();
+    assert_eq!(caret.1, 0.0, "the caret before the <sup>'s glyph");
+}

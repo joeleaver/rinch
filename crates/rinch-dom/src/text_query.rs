@@ -51,14 +51,11 @@ pub fn caret_position_for_offset_with_affinity(
         caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity)
     };
 
-    // Check inline layout first (IFC root). `vertical_align_shift_at` (#724)
-    // is the same lookup `paint::text::draw_text` shifts glyphs by, so a
-    // caret inside a `<sub>`/`<sup>` lands where its glyph is actually drawn
-    // rather than on the line's unshifted baseline.
+    // Check inline layout first (IFC root). The caret is topped at its
+    // line's top, whose line grows to hold a `<sub>`/`<sup>` (#1357), so it
+    // spans the moved glyph without a `vertical-align` shift of its own.
     if let Some(ref inline_layout) = node.text_layout {
-        let (x, y) = at(&inline_layout.layout);
-        let shift = inline_layout.vertical_align_shift_at(byte_offset);
-        return Some((x, y + shift));
+        return Some(at(&inline_layout.layout));
     }
 
     // Check cached standalone text layout
@@ -98,13 +95,27 @@ pub fn glyph_bounds_for_offset(
 ) -> Option<GlyphBounds> {
     let node = doc.tree.nodes.get(node_id)?;
 
-    // Check inline layout first (IFC root). Shifted the same way
-    // `caret_position_for_offset_with_affinity` is, and for the same reason
-    // (#724): this is what makes `get_glyph_bounds` agree with where the
-    // glyph is actually painted.
+    // Check inline layout first (IFC root). A glyph `vertical-align` moved
+    // (#724) is bounded by its own content area where parley drew it
+    // (#1357), not by its line moved by the shift: the line already grew to
+    // hold it, so that counted the shift twice.
     if let Some(ref inline_layout) = node.text_layout {
         let mut bounds = glyph_bounds_for_offset_layout(&inline_layout.layout, byte_offset)?;
-        bounds.y += inline_layout.vertical_align_shift_at(byte_offset);
+        if inline_layout.vertical_align_shift_at(byte_offset) != 0.0 {
+            let layout = &inline_layout.layout;
+            let cursor = Cursor::from_byte_index(layout, byte_offset, Affinity::Downstream);
+            let [upstream, downstream] = cursor.visual_clusters(layout);
+            if let Some(cluster) = downstream.or(upstream)
+                && let Some((top, bottom)) = crate::ifc::span_content_box(
+                    layout,
+                    &cluster.line(),
+                    cluster.text_range().start,
+                )
+            {
+                bounds.y = top;
+                bounds.height = bottom - top;
+            }
+        }
         return Some(bounds);
     }
 
