@@ -65,6 +65,15 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     collapsing (`a <wbr> b` is `a b`) and owns no DOM text: its three flat bytes lie between
     the text ranges around it. The builders that set the override are the IFC, a flex or grid item's text leaf
     and the paint fallback; a form control's text (`form_control::field_text_layout`) does not.
+    A box with no room breaks at every opportunity (#2382): an IFC root's paint layout is
+    broken at its content width even when that is 0 (`width: 0`, `max-width: 0`, a zero-width
+    float or inline-block, a flex item shrunk to 0, a `0px` grid track; padding wider than the
+    box clamps it to 0), as in Chrome 156, the same lines as `width: 1px`. Before, a content
+    width that was not positive was handed to parley as no limit: the measure sized the box for
+    five lines and the glyphs were one max-content line. With `overflow-wrap: anywhere` or
+    `break-word` that is one grapheme a line. A box floored by an automatic minimum (a flex
+    item's `min-width: auto`, a table cell) is its min-content width, as before.
+    `crates/rinch-dom/tests/zero_width_line_break_2382_tests.rs`.
 
   What 0.12 changed, and what rinch does about it:
   - **Line boxes are CSS line boxes** (linebender/parley#697, #863, #864). A line holds the root

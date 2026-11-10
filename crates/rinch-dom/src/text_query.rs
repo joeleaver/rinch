@@ -51,14 +51,14 @@ pub fn caret_position_for_offset_with_affinity(
         caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity)
     };
 
-    // Check inline layout first (IFC root). `vertical_align_shift_at` (#724)
-    // is the same lookup `paint::text::draw_text` shifts glyphs by, so a
-    // caret inside a `<sub>`/`<sup>` lands where its glyph is actually drawn
-    // rather than on the line's unshifted baseline.
+    // Check inline layout first (IFC root). `glyph_offset_at` is the same
+    // lookup `paint::text::draw_text` moves glyphs by, so a caret inside a
+    // `<sub>`/`<sup>` (#724) or a relative span (#1425) lands where its glyph
+    // is actually drawn rather than where the line put it.
     if let Some(ref inline_layout) = node.text_layout {
         let (x, y) = at(&inline_layout.layout);
-        let shift = inline_layout.vertical_align_shift_at(byte_offset);
-        return Some((x, y + shift));
+        let (dx, dy) = inline_layout.glyph_offset_at(byte_offset);
+        return Some((x + dx, y + dy));
     }
 
     // Check cached standalone text layout
@@ -104,7 +104,9 @@ pub fn glyph_bounds_for_offset(
     // glyph is actually painted.
     if let Some(ref inline_layout) = node.text_layout {
         let mut bounds = glyph_bounds_for_offset_layout(&inline_layout.layout, byte_offset)?;
-        bounds.y += inline_layout.vertical_align_shift_at(byte_offset);
+        let (dx, dy) = inline_layout.glyph_offset_at(byte_offset);
+        bounds.x += dx;
+        bounds.y += dy;
         return Some(bounds);
     }
 
@@ -692,6 +694,107 @@ pub fn selection_rects_for_layout(
     b: usize,
 ) -> Vec<(f32, f32, f32, f32)> {
     selection_rects_impl(layout, a, b, None)
+}
+
+/// [`selection_rects_for_layout`] over an IFC root's lines, each piece moved
+/// where its text is drawn by the relative inline elements around it (#1425):
+/// the range is cut at every relative span's edge inside it and each part is
+/// moved by the offset its first byte is drawn at. The same rects as
+/// [`selection_rects_for_layout`] when nothing in the IFC is relatively
+/// positioned.
+pub fn selection_rects_for_inline(
+    inline: &crate::node::InlineLayout,
+    a: usize,
+    b: usize,
+) -> Vec<(f32, f32, f32, f32)> {
+    let (a, b) = (a.min(b), a.max(b));
+    if inline.relative_spans.is_empty() {
+        return selection_rects_impl(&inline.layout, a, b, None);
+    }
+    let mut cuts: Vec<usize> = inline
+        .relative_spans
+        .iter()
+        .flat_map(|s| [s.start, s.end])
+        .filter(|&c| a < c && c < b)
+        .collect();
+    cuts.push(a);
+    cuts.push(b);
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut out = Vec::new();
+    for w in cuts.windows(2) {
+        let (dx, dy) = inline.relative_offset_at(w[0]);
+        out.extend(
+            selection_rects_impl(&inline.layout, w[0], w[1], None)
+                .into_iter()
+                .map(|(x, y, width, height)| (x + dx, y + dy, width, height)),
+        );
+    }
+    out
+}
+
+/// [`selection_rects_with_boxes`] over an IFC root's lines, moved where the
+/// text and boxes are drawn (#1425), as [`selection_rects_for_inline`] moves
+/// the text: the range is cut at each relative span's edge, and each part is
+/// asked with the selected boxes that are drawn at its offset and stand in
+/// it (each box once). `get` looks a node up.
+pub fn selection_rects_with_boxes_for_inline<'a>(
+    inline: &crate::node::InlineLayout,
+    a: usize,
+    b: usize,
+    selected: &[u64],
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a crate::node::Node> + Copy,
+) -> Vec<(f32, f32, f32, f32)> {
+    let (a, b) = (a.min(b), a.max(b));
+    if inline.relative_spans.is_empty() {
+        return selection_rects_impl(&inline.layout, a, b, Some(selected));
+    }
+    let mut cuts: Vec<usize> = inline
+        .relative_spans
+        .iter()
+        .flat_map(|s| [s.start, s.end])
+        .filter(|&c| a < c && c < b)
+        .collect();
+    cuts.push(a);
+    cuts.push(b);
+    cuts.sort_unstable();
+    cuts.dedup();
+    // Each selected box: where it stands in the text (an atomic inline's
+    // byte; `None` for an edge box) and the offset it is drawn at.
+    let at: std::collections::HashMap<u64, usize> = inline.atomic_inlines().collect();
+    let boxes: Vec<(u64, Option<usize>, (f32, f32))> = selected
+        .iter()
+        .map(|&id| {
+            (
+                id,
+                at.get(&id).copied(),
+                inline.inline_box_relative_offset(id, get),
+            )
+        })
+        .collect();
+    let mut taken = vec![false; boxes.len()];
+    let mut out = Vec::new();
+    for w in cuts.windows(2) {
+        let offset = inline.relative_offset_at(w[0]);
+        let mine: Vec<u64> = boxes
+            .iter()
+            .zip(taken.iter_mut())
+            .filter_map(|(&(id, at, o), taken)| {
+                let here = o == offset && at.is_none_or(|at| w[0] <= at && at <= w[1]);
+                (here && !*taken).then(|| {
+                    *taken = true;
+                    id
+                })
+            })
+            .collect();
+        let (dx, dy) = offset;
+        out.extend(
+            selection_rects_impl(&inline.layout, w[0], w[1], Some(&mine))
+                .into_iter()
+                .map(|(x, y, width, height)| (x + dx, y + dy, width, height)),
+        );
+    }
+    out
 }
 
 /// [`selection_rects_for_layout`] for a selection that says which inline

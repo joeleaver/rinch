@@ -1126,7 +1126,7 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
         && cs.outline_width <= 0.0
         && node.text_layout.as_ref().is_none_or(|l| {
             !tree.inline_text_shadows
-                && l.vertical_align_spans.is_empty()
+                && !l.shifts_glyphs()
                 && l.background_spans.is_empty()
                 && l.decoration_spans.is_empty()
                 && contenteditable::read_only_selection(node).is_empty()
