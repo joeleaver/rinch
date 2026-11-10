@@ -105,6 +105,10 @@ mod host_texture;
 /// mount the same menus in a browser. The `muda` builders inside it are gated
 /// instead. See the module docs.
 pub mod menu;
+/// The connected outputs (monitors) and their changes (issue #2414):
+/// [`outputs`](outputs::outputs), reactive.
+#[cfg(feature = "desktop")]
+pub mod outputs;
 /// Pointer lock and raw pointer motion (#2092); the API is re-exported through
 /// [`window`].
 mod pointer_lock;
@@ -346,6 +350,11 @@ pub mod prelude {
     pub use crate::window::{
         PointerLockError, PointerLockMode, PointerMotion, exit_pointer_lock, on_pointer_motion,
         pointer_lock, request_pointer_lock, request_pointer_lock_on,
+    };
+    // The connected outputs and their changes (#2414)
+    #[cfg(feature = "desktop")]
+    pub use crate::outputs::{
+        Output, OutputChange, OutputTracking, output_changes, output_tracking, outputs,
     };
     // Window control functions
     #[cfg(feature = "desktop")]

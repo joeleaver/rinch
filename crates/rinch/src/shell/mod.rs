@@ -20,6 +20,9 @@ pub(crate) mod layer_shell;
 pub mod memory_profile;
 #[cfg(feature = "desktop")]
 pub(crate) mod os_file_drag;
+// The connected monitors, for placing windows and for `rinch::outputs` (#2414).
+#[cfg(feature = "desktop")]
+pub(crate) mod outputs;
 #[cfg(feature = "desktop")]
 pub(crate) mod overlay_window;
 // The main window's pointer lock and raw motion (#2092).

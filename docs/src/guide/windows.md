@@ -608,6 +608,82 @@ same component render, effect run or handler — returns the same signal, so
 asking for it per event costs nothing after the first call. A call from
 another component gets a signal of its own, freed with that component.
 
+## Outputs (Monitors)
+
+`outputs()` lists the monitors connected to the desktop, and it is reactive:
+read it in a `{|| …}` expression, a `Memo` or an `Effect`, and that code runs
+again when a monitor is plugged in or out, moved, rotated or rescaled. There
+is nothing to poll.
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn monitor_list() -> NodeHandle {
+    rsx! {
+        ul {
+            for output in outputs() {
+                // Keyed by every field, so a changed output's row is rebuilt.
+                li {
+                    key: format!("{output:?}"),
+                    {format!("{}: {} x {} at {:?}, scale {}",
+                        output.name.clone().unwrap_or_default(),
+                        output.size.0, output.size.1, output.position, output.scale)}
+                }
+            }
+        }
+    }
+}
+```
+
+Each `Output` has:
+
+| Field | |
+|---|---|
+| `name` | The platform's name for it: the connector on Wayland and X11 (`DP-1`, `HDMI-A-1`), `\\.\DISPLAY1` on Windows, `Monitor #<model>` on macOS. It is exactly what `WindowProps::monitor` and, for a Wayland layer-shell window, `WindowProps::output` / `set_current_window_output` take, so it is how you put a window on that monitor. |
+| `position` | Top-left on the desktop, logical pixels. |
+| `size` | Width and height, logical pixels (rotated with the monitor). |
+| `scale` | Physical pixels per logical pixel: `1.0`, `2.0`, `1.5`, … |
+
+Positions and sizes are in the units window positions use: logical pixels,
+each monitor's desktop rectangle over its own scale on X11 and Windows,
+points on macOS, the compositor's logical space on Wayland (a Wayland
+layer-shell window's position is relative to its output's top-left).
+
+To act on each change rather than redraw a list, keep the last list and ask
+`output_changes` what changed: `OutputChange::Added`, `Removed` or
+`Changed { before, after }`, matched by name.
+
+```rust
+use rinch_core::Effect;
+
+let mut last: Vec<Output> = Vec::new();
+Effect::new(move || {
+    let now = outputs();
+    for change in output_changes(&last, &now) {
+        match change {
+            OutputChange::Added(o) => println!("plugged in: {:?}", o.name),
+            OutputChange::Removed(o) => println!("unplugged: {:?}", o.name),
+            OutputChange::Changed { after, .. } => println!("changed: {after:?}"),
+            _ => {}
+        }
+    }
+    last = now;
+});
+```
+
+**Not every platform reports changes.** `output_tracking()` (reactive too)
+says which you have:
+
+| | `output_tracking()` | |
+|---|---|---|
+| Wayland, X11 | `Live` | Every change, as it happens. |
+| Windows, macOS | `Snapshot` | Listed at start-up; later changes are not reported yet ([#2414](https://github.com/joeleaver/rinch/issues/2414)). |
+| Before `App::run`, a native embed host, the web, Android | `NotListed` | The list is empty. |
+
+The list is published before the window is created, so the first render
+already has it. `examples/outputs` shows the list and logs each change.
+
 ## Pointer Lock and Raw Mouse Motion
 
 A game's mouse look or an editor's fly camera needs the pointer hidden and
