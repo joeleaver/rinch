@@ -4635,17 +4635,16 @@ impl RinchDocument {
             // text_layout is still valid.
             if !self.tree.dirty_ifc_text_roots.contains(&root_id) {
                 if let Some(existing) = &node.text_layout {
-                    // `==` first: an unconstrained root stores `INFINITY`, and
-                    // `INFINITY - INFINITY` is NaN, which no tolerance admits, so
-                    // without it every such root was reshaped on every layout
-                    // pass that changed no text (ifc_unconstrained_width_skip_tests).
+                    // `==` first: a root laid out unconstrained stores
+                    // `INFINITY`, and `INFINITY - INFINITY` is NaN, which no
+                    // tolerance admits, so without it every such root was
+                    // reshaped on every layout pass that changed no text
+                    // (ifc_unconstrained_width_skip_tests). Since #2382 a
+                    // root's paint layout always has a width, a zero one
+                    // included, so it stores none; the guard stays for free.
                     let same = |old: f32, new: f32| old == new || (old - new).abs() < 0.01;
-                    let new_align = match max_width {
-                        Some(_) => self.ifc_content_width(root_id).unwrap_or(f32::INFINITY),
-                        None => f32::INFINITY,
-                    };
-                    if same(existing.max_width, max_width.unwrap_or(f32::INFINITY))
-                        && same(existing.align_width, new_align)
+                    if same(existing.max_width, max_width)
+                        && same(existing.align_width, self.ifc_content_width(root_id))
                         && existing.float_bands.as_ref() == self.tree.ifc_float_bands.get(&root_id)
                     {
                         continue; // Skip — text_layout is still valid
@@ -4673,52 +4672,62 @@ impl RinchDocument {
         }
     }
 
-    /// An IFC root's content-box width, `None` when it is not positive.
-    fn ifc_content_width(&self, root_id: RawNodeId) -> Option<f32> {
+    /// An IFC root's content-box width, never below 0.
+    ///
+    /// A zero-width box is a width, not "unconstrained" (#2382): `width: 0`,
+    /// `max-width: 0`, a zero-width float or a flex item shrunk to nothing
+    /// takes every break opportunity its text has, as in Chrome 156, the
+    /// same lines as `width: 1px`. This used to answer `None` for a content
+    /// width that was not positive, and the paint layout was then broken with
+    /// no limit — one line of max-content text in a box its measure had
+    /// sized for five lines.
+    fn ifc_content_width(&self, root_id: RawNodeId) -> f32 {
         let node = &self.tree.nodes[root_id];
         let cs = &node.computed_style;
         let padding_h = cs.padding_left.to_px() + cs.padding_right.to_px();
         let border_h = cs.border_left_width.to_px() + cs.border_right_width.to_px();
         let content_width = node.layout.width - padding_h - border_h;
-        (content_width > 0.0).then_some(content_width)
+        content_width.max(0.0)
     }
 
     /// The width an IFC root's paint layout is broken at: its content-box
-    /// width, with the auto-width slack below. `None` for a root with no
-    /// positive content width (unconstrained).
-    fn ifc_paint_max_width(&self, root_id: RawNodeId) -> Option<f32> {
+    /// width, with the auto-width slack below. Always a width, 0 included
+    /// (#2382); whether the text may wrap at all is `build_inline_layout`'s
+    /// question, from `white-space`.
+    fn ifc_paint_max_width(&self, root_id: RawNodeId) -> f32 {
         // Use content-box width (subtract padding+border) for line breaking.
         // For auto-width elements, don't re-constrain text to measured width
         // as floating-point precision can cause unwanted line breaks.
         let cs = &self.tree.nodes[root_id].computed_style;
-        if let Some(content_width) = self.ifc_content_width(root_id) {
-            // An auto-width element is sized to its content: its box width is
-            // the text's max-content width (+ padding/border) measured with NO
-            // wrap, then ROUNDED DOWN to an integer pixel — losing strictly
-            // less than 1px of the text's true width. So the paint layout here
-            // must allow up to 1px more than `content_width`, or it re-wraps
-            // the text at a space inside a box that was sized for one line
-            // (the box says one line, the glyphs render two). A 0.5px
-            // tolerance can't absorb a full 1px floor; 1.0px provably can
-            // (`natural - content_width == frac(natural) < 1.0`). Explicit-
-            // width elements get no tolerance — they should wrap at their width.
-            //
-            // The question is whether the width was *derived* rather than
-            // declared, so it is `is_auto_or_keyword` (#626, #691): a
-            // `width: max-content` box is measured and floored the same
-            // way `auto` is and needs the same slack. Reading `is_auto()`
-            // here gave such a box 0px and re-wrapped its text inside a
-            // box sized for one line — the box unchanged, the glyphs on
-            // two.
-            let tolerance = if cs.width.is_auto_or_keyword() {
-                1.0
-            } else {
-                0.0
-            };
-            Some(content_width + tolerance)
+        let content_width = self.ifc_content_width(root_id);
+        // An auto-width element is sized to its content: its box width is
+        // the text's max-content width (+ padding/border) measured with NO
+        // wrap, then ROUNDED DOWN to an integer pixel — losing strictly
+        // less than 1px of the text's true width. So the paint layout here
+        // must allow up to 1px more than `content_width`, or it re-wraps
+        // the text at a space inside a box that was sized for one line
+        // (the box says one line, the glyphs render two). A 0.5px
+        // tolerance can't absorb a full 1px floor; 1.0px provably can
+        // (`natural - content_width == frac(natural) < 1.0`). Explicit-
+        // width elements get no tolerance — they should wrap at their width.
+        //
+        // The question is whether the width was *derived* rather than
+        // declared, so it is `is_auto_or_keyword` (#626, #691): a
+        // `width: max-content` box is measured and floored the same
+        // way `auto` is and needs the same slack. Reading `is_auto()`
+        // here gave such a box 0px and re-wrapped its text inside a
+        // box sized for one line — the box unchanged, the glyphs on
+        // two.
+        //
+        // A box with no room was not rounded down to 0 from a width its
+        // text needs, so it gets no slack (#2382): a pixel of slack fitted
+        // two 2px-font glyphs a line in a box laid out with one each.
+        let tolerance = if cs.width.is_auto_or_keyword() && content_width > 0.0 {
+            1.0
         } else {
-            None
-        }
+            0.0
+        };
+        content_width + tolerance
     }
 
     /// Shape `root_id`'s paint layout at `max_width` and store it — the
@@ -4726,20 +4735,20 @@ impl RinchDocument {
     fn shape_ifc_root_paint_layout(
         &mut self,
         root_id: RawNodeId,
-        max_width: Option<f32>,
+        max_width: f32,
         paint_layout_cx: &mut parley::LayoutContext<Brush>,
     ) {
         self.tree.perf.bump(crate::perf::Counter::ShapeIfcBuild);
         // A paragraph that does not wrap is aligned within the content box
         // itself, without the auto-width slack `max_width` carries (#1237).
-        let align_width = self
-            .ifc_content_width(root_id)
-            .zip(max_width)
-            .map(|(width, up_to)| AlignWidth { width, up_to });
+        let align_width = Some(AlignWidth {
+            width: self.ifc_content_width(root_id),
+            up_to: max_width,
+        });
         let (mut inline_layout, font_family_resolves) = Self::build_inline_layout(
             &self.tree.nodes,
             root_id,
-            max_width,
+            Some(max_width),
             align_width,
             1.0,
             &mut self.font_cx,
@@ -4767,7 +4776,7 @@ impl RinchDocument {
             use crate::computed_style::{OverflowValue, TextOverflowValue};
             let cs = &self.tree.nodes[Self::ellipsis_style_owner(&self.tree.nodes, root_id)]
                 .computed_style;
-            let container_width = max_width.unwrap_or(f32::INFINITY);
+            let container_width = max_width;
             // A grid (or flex) container holding only text is laid out
             // here as an IFC root, but that text is an anonymous item of
             // the container, which does not clip — so no "…", as in
