@@ -62,8 +62,11 @@
 //!   read in, monitor by monitor.
 //! - **macOS**: points (`CGDisplayBounds`), the unit AppKit positions windows
 //!   in; the scale is the backing scale (`2.0` on a Retina display).
-//! - **Wayland**: the compositor's logical space (`xdg_output`'s logical
-//!   position and size), where outputs sit edge to edge. The scale is the
+//! - **Wayland**: the compositor's logical layout (`xdg_output`'s logical
+//!   position and size). Outputs in it need not be contiguous: under KWin,
+//!   giving one output scale 1.5 shrank its logical size and left its
+//!   neighbour where it was, with a gap between them. So read each output's
+//!   own position rather than assume where it is from the others. The scale is the
 //!   output's mode over its logical size, to the nearest 1/120 (the unit of the
 //!   fractional-scale protocol), so `1.25` and `1.5` come out as they are set.
 //!   A layer-shell window's position ([`WindowProps::output`]) is relative to

@@ -650,8 +650,12 @@ Each `Output` has:
 
 Positions and sizes are in the units window positions use: logical pixels,
 each monitor's desktop rectangle over its own scale on X11 and Windows,
-points on macOS, the compositor's logical space on Wayland (a Wayland
+points on macOS, the compositor's logical layout on Wayland (a Wayland
 layer-shell window's position is relative to its output's top-left).
+Outputs need not be contiguous in any of these: under KWin, giving one output
+scale 1.5 shrinks its logical size and leaves its neighbour where it was, with
+a gap between them. Read each output's own `position`; do not work it out
+from its neighbours.
 
 To act on each change rather than redraw a list, keep the last list and ask
 `output_changes` what changed: `OutputChange::Added`, `Removed` or
