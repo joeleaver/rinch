@@ -543,17 +543,19 @@ not on the whole frame.
 
 **The baselines say which work a frame did; CI's `Perf` workflow says what it
 cost** (`.github/workflows/perf.yml`, benchmarks in `crates/rinch-bench`).
-It records Callgrind instruction counts (Gungraun) for every benchmark in the crate, on a
-**batch** PR's merge commit and on its first parent (the current `main` tip); a
-component PR skips it (see CI below). The report
-is a table in the job summary and one PR comment. The job fails past +3%
+It records Callgrind instruction counts (Gungraun) for every benchmark in the crate, on
+each **push to `main`** (a batch's merge commit) and on its first parent (the
+`main` it landed on); a pull request skips it unless it is a batch PR with the
+`perf` label, which measures its merge commit against the current `main` tip
+before merging (see CI below). The report
+is a table in the job summary and, on a PR, one PR comment. The job fails past +3%
 (`vars.PERF_REGRESSION_THRESHOLD`), or when a base that has the benchmarks
 cannot run them. The base runs the head's benchmark sources, and its own when
 those do not build there — a new bench calling a new API (#1036) — so the rest
 are still compared and the new one shows as `new`; the report names what was
 not compared, and fails unlabelled if the head's copy also edits an existing
-scenario rather than only adding. The `perf-regression-accepted` label (on the batch PR) turns either failure into
-a warning, and the PR then explains the cost the same way a baseline change
+scenario rather than only adding. The `perf-regression-accepted` label (on a `perf`-labelled batch PR; a push to
+`main` has none) turns either failure into a warning, and the PR then explains the cost the same way a baseline change
 does. Inside the measured operation the bench binary bump-allocates
 (`rinch_bench::alloc`): glibc's malloc cost depends on heap history and moved
 one count 7% between identical runs, and with the bump allocator runs agree to
@@ -563,9 +565,10 @@ about 0.03%. Counts are comparable only between runs on one machine.
 ## CI: batched merges
 
 An ordinary PR into `main` (a **component** PR) runs only the fast jobs: `fmt`,
-the `clippy` jobs, `check-android` and `check-macos`. The `test (…)` shards, `test-wasm`, Perf
+the `clippy` jobs, `check-android` and `check-macos`. The `test (…)` shards, `test-wasm`
 and the full Documentation build run on a PR whose head branch starts with
-`batch/`, and on every push to `main`. To land reviewed PRs, the lead merges
+`batch/`, and on every push to `main`; Perf runs on every push to `main` and on
+a batch PR only with the `perf` label. To land reviewed PRs, the lead merges
 their heads (`git merge --no-ff`) into `batch/YYYY-MM-DD-N` cut from `main`,
 opens one `batch: …` PR listing them (`Refs #N`), and merges it with a **merge
 commit** once green, which marks each component PR merged. A red batch is the
