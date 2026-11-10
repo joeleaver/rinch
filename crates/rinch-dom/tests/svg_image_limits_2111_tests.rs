@@ -424,6 +424,26 @@ fn refused_at_raster(v: &svg_image::VectorImage, w: f64, h: f64) -> bool {
     v.raster(w, h).is_none() && svg_image::resvg_renders() == before
 }
 
+/// The positive control for the two helpers above: the counts do count. A
+/// file within the profile is parsed by usvg once, its first raster drawn by
+/// resvg once, and a second raster at that size is the kept one, not drawn.
+/// Without this, counts that never moved would pass every "unchanged" check.
+#[test]
+fn the_usvg_and_resvg_counts_count() {
+    let svg = format!(
+        r##"<svg {NS} width="10" height="10"><rect width="10" height="10" fill="#f00"/></svg>"##
+    );
+    let parses = svg_image::usvg_parses();
+    let v = decode_svg(svg.as_bytes()).unwrap();
+    assert_eq!(svg_image::usvg_parses(), parses + 1);
+    let renders = svg_image::resvg_renders();
+    assert!(v.raster(10.0, 10.0).is_some());
+    assert_eq!(svg_image::resvg_renders(), renders + 1);
+    assert!(v.raster(10.0, 10.0).is_some());
+    assert_eq!(svg_image::resvg_renders(), renders + 1, "a kept raster");
+    assert_eq!(v.rasters_made(), 1);
+}
+
 /// A name declared twice: roxmltree keeps the first declaration, so a
 /// reader that kept the last counted 1 byte where 64 KB was expanded (78 KB
 /// file: 1.59 s, 529 MB). A duplicate refuses the file.
