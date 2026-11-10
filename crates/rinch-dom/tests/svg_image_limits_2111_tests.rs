@@ -510,12 +510,36 @@ fn dense_dashes_are_charged() {
 }
 
 /// A huge blur deviation costs what a small one does (resvg's box blur):
-/// drawn, quickly.
+/// drawn, and in about the time a 3 px blur of the same canvas takes.
+///
+/// Measured against that control, not a wall-clock bound: this suite runs
+/// unoptimised and in parallel, where the one draw takes 180 to 520 ms on a
+/// loaded host and 575 ms on a CI runner (batch #2410) against an
+/// earlier 500 ms limit, with the code unchanged. Both draws run under the
+/// same load, interleaved, and each keeps its fastest of three; a blur whose
+/// cost grew with its deviation would take many times the control.
 #[test]
 fn a_huge_blur_draws_quickly() {
-    let v = decode_svg(filtered(r#"<feGaussianBlur stdDeviation="1000000"/>"#, 400).as_bytes())
-        .unwrap();
-    assert!(quick(500, || v.raster(400.0, 400.0)).is_some());
+    let blur = |deviation: &str| {
+        let fe = format!(r#"<feGaussianBlur stdDeviation="{deviation}"/>"#);
+        decode_svg(filtered(&fe, 400).as_bytes()).unwrap()
+    };
+    assert_eq!(
+        blur("1000000").estimated_work(400, 400),
+        blur("3").estimated_work(400, 400)
+    );
+    // A decoded image keeps its raster, so each draw is of a fresh decode.
+    let mut fastest = [Duration::MAX; 2];
+    for _ in 0..3 {
+        for (best, deviation) in fastest.iter_mut().zip(["1000000", "3"]) {
+            let v = blur(deviation);
+            let t = Instant::now();
+            assert!(v.raster(400.0, 400.0).is_some());
+            *best = (*best).min(t.elapsed());
+        }
+    }
+    let [huge, small] = fastest;
+    assert!(huge < small * 3, "huge blur {huge:?}, 3 px blur {small:?}");
 }
 
 /// A filter region far past the canvas makes resvg allocate up to five
