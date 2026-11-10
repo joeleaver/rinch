@@ -818,6 +818,12 @@ impl AtomicContributions<'_> {
         {
             return (width, layout.1);
         }
+        // At a definite width, its shrink-to-fit contribution (#2424).
+        if wrap > 0.0
+            && let Some(size) = crate::replaced::compressed_inline_fit(node, layout, wrap)
+        {
+            return size;
+        }
         // A percentage width in a min-content measure is cyclic: the box
         // contributes its min-content width, as `auto` does (#2159).
         if wrap <= 0.0
@@ -8788,6 +8794,15 @@ impl RinchDocument {
                 // Taffy too (#1013): an `inline-flex` / `inline-grid` with
                 // `align-items: baseline` aligns its own items by it.
                 let mut first_baseline: Option<f32> = None;
+                // A compressible replaced box asked an intrinsic size, as in
+                // the root compute (`replaced::min_content_style`, #2424).
+                let compressed = match context {
+                    Some(NodeContext::Replaced { .. } | NodeContext::Image { .. }) => {
+                        crate::replaced::min_content_style(&inputs, style)
+                    }
+                    _ => None,
+                };
+                let style = compressed.as_ref().unwrap_or(style);
                 let out = taffy::compute_leaf_layout(
                     inputs,
                     style,

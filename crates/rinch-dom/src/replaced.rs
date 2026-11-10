@@ -548,19 +548,13 @@ pub(crate) fn is_compressible(style: &taffy::Style) -> bool {
     percent(style.size.width.into_raw()) || percent(style.max_size.width.into_raw())
 }
 
-/// The width an atomic inline replaced element (an `<img>`, `<svg>`,
-/// `<canvas>`, `<video>` or `<iframe>`) is lined up at in a **min-content**
-/// measure of its line when it is compressible (css-sizing-3 §5.2.2: its
-/// `width` or `max-width` is a percentage): its percentages resolve against
-/// zero, so its content box is its length `min-width` or nothing, and the
-/// line holds that plus its padding, border and length margins. `None` for
-/// any other box, or a margin, padding or border that is not a length.
-///
-/// Why (#2398): the IFC lined an inline `<img style="max-width: 100%">` up at
-/// its natural width in every measure, so a table cell holding one asked its
-/// column for the picture's natural width (an 88px logo in a `width: 45pt`
-/// cell made it 88 wide; Chrome 156: 60).
-pub(crate) fn compressed_inline_min_content(node: &Node) -> Option<f32> {
+/// The insets of a [compressible](compressed_inline_min_content) atomic
+/// inline replaced element in an intrinsic measure of its line: its
+/// horizontal padding plus border, and its horizontal margins. Their
+/// percentages resolve against zero there (css-sizing-3 §5.2.1, cyclic
+/// percentages), so a percentage counts nothing and a `calc()` its length
+/// part (#2432). `None` for any other box.
+fn compressed_inline_insets(node: &Node) -> Option<(f32, f32)> {
     use crate::computed_style::DimensionValue as D;
     use crate::computed_style::LengthPercentageAutoValue as M;
     use crate::computed_style::LengthPercentageValue as L;
@@ -573,52 +567,151 @@ pub(crate) fn compressed_inline_min_content(node: &Node) -> Option<f32> {
         return None;
     }
     let margin = |m: M| match m {
-        M::Auto => Some(0.0),
-        M::Length(px) => Some(px),
-        _ => None,
+        M::Auto | M::Percent(_) => 0.0,
+        M::Length(px) | M::Calc { px, .. } => px,
     };
     let inset = |v: L| match v {
-        L::Zero => Some(0.0),
-        L::Length(px) => Some(px),
-        _ => None,
+        L::Zero | L::Percent(_) => 0.0,
+        L::Length(px) | L::Calc { px, .. } => px.max(0.0),
     };
-    let pb = inset(s.padding_left)?
-        + inset(s.padding_right)?
-        + inset(s.border_left_width)?
-        + inset(s.border_right_width)?;
+    let pb = inset(s.padding_left)
+        + inset(s.padding_right)
+        + inset(s.border_left_width)
+        + inset(s.border_right_width);
+    Some((pb, margin(s.margin_left) + margin(s.margin_right)))
+}
+
+/// The width an atomic inline replaced element (an `<img>`, `<svg>`,
+/// `<canvas>`, `<video>` or `<iframe>`) is lined up at in a **min-content**
+/// measure of its line when it is compressible (css-sizing-3 §5.2.2: its
+/// `width` or `max-width` is a percentage): its percentages resolve against
+/// zero, so its content box is its length `min-width` or nothing, and the
+/// line holds that plus its padding, border and margins, their percentages
+/// counting nothing ([`compressed_inline_insets`]). `None` for any other box.
+///
+/// Why (#2398): the IFC lined an inline `<img style="max-width: 100%">` up at
+/// its natural width in every measure, so a table cell holding one asked its
+/// column for the picture's natural width (an 88px logo in a `width: 45pt`
+/// cell made it 88 wide; Chrome 156: 60). And a percentage padding made it
+/// give up and line the picture up at its natural width again (#2432).
+pub(crate) fn compressed_inline_min_content(node: &Node) -> Option<f32> {
+    use crate::computed_style::DimensionValue as D;
+    let (pb, margins) = compressed_inline_insets(node)?;
+    let s = &node.computed_style;
     let min = match s.min_width {
         D::Length(px) if s.box_sizing_border_box => (px - pb).max(0.0),
         D::Length(px) => px.max(0.0),
         _ => 0.0,
     };
-    Some(min + pb + margin(s.margin_left)? + margin(s.margin_right)?)
+    Some(min + pb + margins)
+}
+
+/// The size a compressible atomic inline replaced element laid out at
+/// `layout` (its border box) is lined up at in a measure of its line at
+/// `wrap` px, when that is narrower than its margin box: its shrink-to-fit
+/// contribution `min(max-content, max(min-content, wrap))`, the margin box
+/// `max(wrap, min-content)` wide and, with an `auto` height, as tall as its
+/// ratio makes it there. `None` when it fits, or for any other box.
+///
+/// Why (#2424): a measure at a definite width cannot resolve the picture's
+/// percentage `max-width` (the measure is how wide its container will be),
+/// so the picture was lined up at its natural width: a float, an
+/// `inline-block` or an absolutely positioned box holding an inline
+/// `<img width=800 style="max-width: 100%">` in a 300px container was 800
+/// wide. Chrome 156 fits it to the 300px, and the picture's `max-width`
+/// then resolves against that.
+pub(crate) fn compressed_inline_fit(
+    node: &Node,
+    layout: (f32, f32),
+    wrap: f32,
+) -> Option<(f32, f32)> {
+    use crate::computed_style::DimensionValue as D;
+    let (pb, margins) = compressed_inline_insets(node)?;
+    let min = compressed_inline_min_content(node)?;
+    let room = wrap.max(min);
+    if layout.0 + margins <= room + 0.5 {
+        return None;
+    }
+    let width = (room - margins).max(pb);
+    let height = match node.computed_style.height {
+        D::Auto if layout.0 - pb > 0.0 => {
+            let s = &node.computed_style;
+            let pb_v = [
+                s.padding_top,
+                s.padding_bottom,
+                s.border_top_width,
+                s.border_bottom_width,
+            ]
+            .into_iter()
+            .map(|v| match v {
+                crate::computed_style::LengthPercentageValue::Length(px) => px.max(0.0),
+                _ => 0.0,
+            })
+            .sum::<f32>()
+            .min(layout.1);
+            pb_v + (layout.1 - pb_v) * (width - pb) / (layout.0 - pb)
+        }
+        _ => layout.1,
+    };
+    Some((width + margins, height))
 }
 
 /// The style a [compressible](is_compressible) replaced box is computed with
-/// when it is asked for its min-content contribution, or `None` when it is
-/// asked something else: its percentages resolve against zero
-/// (css-sizing-3 §5.2.2), so its `width` and `max-width` give way to the
-/// measure ([`contribution`] answers 0) and a length `min-width` still holds.
+/// when it is asked for an intrinsic contribution, or `None` when it is
+/// asked something else:
+///
+/// - **Its min-content contribution:** its percentages resolve against zero
+///   (css-sizing-3 §5.2.2), so its `width` and `max-width` give way to the
+///   measure ([`contribution`] answers 0) and a length `min-width` still
+///   holds.
+/// - **Its size at a definite width with no percentage basis** (a
+///   shrink-to-fit container measuring its content): its shrink-to-fit
+///   contribution `min(max-content, max(min-content, room))`, so its
+///   border box is capped at the room, a length `min-width` still holding.
 ///
 /// Why (Postrinch mail 033): `<img style="width: 800px; max-width: 100%">`
 /// is compressible, but Taffy's leaf takes a length `width` as the box's
 /// width before the measure runs, so the 800px reached the table's columns
 /// and widened a `max-width: 640px` table to 872. Chrome 156 gives it no
 /// min-content width: the table keeps 640 and the picture scales into it.
+/// And (#2424) a float, `inline-block`, `fit-content` or absolutely
+/// positioned box holding it in 300px was 800 wide; Chrome 156: 300.
 pub(crate) fn min_content_style(
     inputs: &taffy::LayoutInput,
     style: &taffy::Style,
 ) -> Option<taffy::Style> {
     let asked = inputs.run_mode == taffy::RunMode::ComputeSize
         && inputs.sizing_mode == taffy::SizingMode::InherentSize
-        && inputs.known_dimensions.width.is_none()
-        && inputs.available_space.width == taffy::AvailableSpace::MinContent;
+        && inputs.known_dimensions.width.is_none();
     if !asked || !is_compressible(style) {
         return None;
     }
     let mut compressed = style.clone();
-    compressed.size.width = taffy::Dimension::auto();
-    compressed.max_size.width = taffy::LengthPercentageAuto::length(0.0);
+    match inputs.available_space.width {
+        taffy::AvailableSpace::MinContent => {
+            compressed.size.width = taffy::Dimension::auto();
+            compressed.max_size.width = taffy::LengthPercentageAuto::length(0.0);
+        }
+        taffy::AvailableSpace::Definite(room) if inputs.parent_size.width.is_none() => {
+            let calc = |_: *const (), _: f32| 0.0;
+            let pb = (style.padding.resolve_or_zero(None, calc)
+                + style.border.resolve_or_zero(None, calc))
+            .horizontal_axis_sum();
+            let room = if style.box_sizing == taffy::BoxSizing::BorderBox {
+                room
+            } else {
+                room - pb
+            }
+            .max(0.0);
+            let max = style
+                .max_size
+                .width
+                .maybe_resolve(None, calc)
+                .map_or(room, |max: f32| max.min(room));
+            compressed.max_size.width = taffy::LengthPercentageAuto::length(max);
+        }
+        _ => return None,
+    }
     Some(compressed)
 }
 
