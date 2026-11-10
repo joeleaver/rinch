@@ -1,0 +1,15 @@
+[package]
+name = "wayland-bar"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+# `cargo run -p wayland-bar --features debug`: the rinch debug server, for
+# the MCP tools (screenshots, `perf_stats`).
+debug = ["rinch/debug"]
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop"] }
+# The clock's local time.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

@@ -568,16 +568,21 @@ tracking per backend). Example: `examples/outputs` (prints `OUTPUTS …` and
 backend makes `--output-count` outputs, and `kscreen-doctor` disables (the
 `wl_output` global and the RandR output are withdrawn), enables, rescales and
 rotates them while the example runs, once on Wayland and once under Xwayland.
+Then `examples/wayland-bar` (`BAR_SCRIPT=outputs`), a layer surface, is moved
+from one output to the other with `set_current_window_layer`, and one of its
+outputs is disabled under it. The procedure below is written out in full; it
+moves onto `scripts/isolated-session.sh` when that lands (#2429).
 
 **The session must not be able to reach the real one.** A nested KWin and
 `kscreen-doctor` find the desktop through the environment and the session
 bus: run with the real `XDG_RUNTIME_DIR` or the real bus, or with
 `dbus-run-session` (whose default bus activates the desktop's services, and
 starts them with the environment `dbus-run-session` was started with), they
-start the real desktop portals and secret service against the real
-compositor, can apply an output change to the real monitors, and can rewrite
-the real `~/.config/kwinoutputconfig.json`. That happened on 2026-11-10 with
-an earlier version of this procedure. So:
+start the desktop's services with the real session's environment. On
+2026-11-10 an earlier version of this procedure started the desktop portals
+and the secret service with the real session's runtime directory, Wayland
+display and home; one of them crashed 391 times, and orphans were left
+running. So:
 
 - a fresh short directory in `/tmp` holds a private `XDG_RUNTIME_DIR` and
   private `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and
@@ -602,12 +607,13 @@ is the `Exec=` of `/usr/share/dbus-1/services/org.kde.kscreen.service`
 
 ```bash
 #!/bin/bash
-# nested-outputs.sh SESSION_DIR OUTPUTS_BINARY: a nested KWin with two virtual
-# outputs, the `outputs` example on Wayland and on Xwayland, and a loop that
-# runs each line appended to SESSION_DIR/cmd as kscreen-doctor's arguments.
-# Start it in a process group of its own (see below).
+# nested-outputs.sh SESSION_DIR OUTPUTS_BINARY BAR_BINARY: a nested KWin with
+# two virtual outputs, the `outputs` example on Wayland and on Xwayland, and a
+# loop that runs each line appended to SESSION_DIR/cmd as kscreen-doctor's
+# arguments, except `bar`, which starts the `wayland-bar` example's output
+# tour. Start it in a process group of its own (see below).
 set -eu
-T=$1 BIN=$(realpath "$2")
+T=$1 BIN=$(realpath "$2") BAR=$(realpath "$3")
 echo $$ > "$T/pgid" # setsid made this shell the leader of the session's group
 mkdir -m 700 "$T/run" "$T/config" "$T/data" "$T/cache" "$T/state"
 
@@ -660,7 +666,11 @@ until [ -s "$T/x11.env" ]; do sleep 0.1; done
 
 : > "$T/cmd"
 tail -n0 -f "$T/cmd" | while read -r line; do
-  echo "== $line" | tee -a "$T/wayland.log" "$T/x11.log" >> "$T/steps.log"
+  echo "== $line" | tee -a "$T/wayland.log" "$T/x11.log" "$T/bar.log" >> "$T/steps.log"
+  if [ "$line" = bar ]; then
+    BAR_OUTPUT=Virtual-0 BAR_SCRIPT=outputs BAR_STEP_MS=6000 "$BAR" >> "$T/bar.log" 2>&1 &
+    continue
+  fi
   kscreen-doctor $line >> "$T/steps.log" 2>&1
   env $(cat "$T/x11.env") xrandr --listmonitors >> "$T/steps.log" 2>&1
 done
@@ -670,14 +680,25 @@ Run it, drive it, and end it:
 
 ```bash
 T=$(mktemp -d /tmp/rinch-outputs-XXXXXX)
-setsid ./nested-outputs.sh "$T" target/release/outputs < /dev/null &
+setsid ./nested-outputs.sh "$T" target/release/outputs target/release/wayland-bar \
+  < /dev/null &
 until [ -e "$T/cmd" ]; do sleep 0.2; done
 for step in -o output.Virtual-1.disable output.Virtual-1.enable \
     output.Virtual-0.scale.1.5 output.Virtual-1.rotation.left \
-    output.Virtual-0.scale.1; do
+    output.Virtual-0.scale.1 output.Virtual-1.rotation.none \
+    output.Virtual-1.scale.2; do
   echo "$step" >> "$T/cmd"; sleep 6
 done
-cat "$T/wayland.log" "$T/x11.log" "$T/steps.log"
+# The bar: on Virtual-0 (1920 wide), moved to Virtual-1 (960 wide at scale 2)
+# every other 6 s step; Virtual-1 disabled under it 1.5 s after its first
+# move there (the loop reads cmd within a second, and kscreen-doctor takes
+# one or two more), enabled again 9 s later; the tour ends after eight steps.
+echo bar >> "$T/cmd"
+until grep -q 'BAR move to Virtual-1' "$T/bar.log"; do sleep 0.1; done; sleep 1.5
+echo output.Virtual-1.disable >> "$T/cmd"; sleep 9
+echo output.Virtual-1.enable >> "$T/cmd"
+until grep -q 'BAR done' "$T/bar.log"; do sleep 0.5; done
+cat "$T/wayland.log" "$T/x11.log" "$T/bar.log" "$T/steps.log"
 
 # End the whole group, then check that nothing of the session is left.
 PGID=$(cat "$T/pgid")
@@ -705,6 +726,17 @@ disable gives `removed Virtual-1`, enable `added Virtual-1`, scale 1.5
 terms: one global scale (`Xft.dpi`, so every output's scale moves together)
 and, while KWin rescales Xwayland, an intermediate RandR list in the old
 scale followed by the `RESOURCE_MANAGER` change that settles it.
+
+The bar (2026-11-10, with fork PR #2's head carrying #2413 too): on
+`Virtual-0` it is 1920 wide; moved with `set_current_window_layer` to
+`Virtual-1` (960 x 540 at scale 2) it is 960 wide, and back 1920, at each
+step. Disabled while the bar was on it, `Virtual-1` took the surface with it:
+rinch logged "the compositor closed the layer surface (its output went away);
+making it again", and the bar came back on `Virtual-0`, 1920 wide; after
+`Virtual-1` was enabled again the tour moved it there and back as before. A
+move asked for an output that had just gone (an earlier run, where the move
+raced the disable) is placed by the compositor, with winit-fork's warning "no
+wl_output named …".
 
 ### Pointer lock and raw motion (#2092)
 
@@ -887,7 +919,9 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   `current_window_surface_kind()` answers which. Tested live in a private
   `kwin_wayland --virtual` (no focus taken on map, click, hide/show; move,
   resize, output, hide/show geometry; software and GPU); the GNOME fallback
-  is not (no such compositor on the host). `App::prefer_x11(true)`
+  is not (no such compositor on the host). An app's own configuration of
+  the role (`WindowProps::wayland_layer`, #2413) is the next section.
+  `App::prefer_x11(true)`
   builds the event loop on X11 whenever `DISPLAY` is set (XWayland), and
   falls back to the default backend with a warning when that server refuses
   the connection.
@@ -936,11 +970,100 @@ let window_props = WindowProps {
 };
 ```
 
+### Layer surfaces of the app's own (`WindowProps::wayland_layer`, #2413)
+
+The overlay above is one configuration of the `wlr-layer-shell` role, which
+rinch picks. `WindowProps::wayland_layer: Option<LayerSurface>`
+(`rinch-core/src/element.rs`, with `LayerShellLayer`, `LayerAnchor`,
+`LayerMargins`, `LayerExclusiveZone`, `LayerKeyboard`, `LayerAxes`; named
+after the protocol, re-exported at the `rinch` root) is any other: a panel,
+a dock, a wallpaper, kiosk or signage. Everything goes through
+`shell/layer_shell.rs`:
+
+- **Which configuration.** `LayerSpec::for_window` (pure) answers the
+  surface a window is created as: `wayland_layer` when it is `Some` — it
+  **wins over the shorthands**: a layer surface even with
+  `wayland_layer_shell: Some(false)` (`uses_layer_shell`), its own keyboard
+  whatever `non_activating` says, its own layer whatever `level` says, no
+  `x`/`y` margins, its own output rather than `WindowProps::output` — else
+  the overlay, `LayerRequest::surface()`, which spells today's overlay as a
+  `LayerSurface` (top-left anchor and margins or none, exclusive zone 0,
+  layer `top`/`overlay`, keyboard none/on-demand). An output chosen since
+  (`RinchRuntime::output_override`: `set_current_window_output`, or none
+  after the compositor closed the surface) replaces either's. The shell and
+  the tests both go through `LayerSpec`, and `LayerRequest::to_winit` (test
+  only) pins that the overlay reaches the fork field for field as before.
+- **Compositor-assigned size.** `LayerSurface::compositor_size` asks for the
+  protocol's size 0 on an axis, which the compositor then assigns (a bar's
+  width: the output's width less the margins, and again on a mode change).
+  The protocol allows it only on an axis anchored to both edges
+  (`LayerSurface::assigned_axes`); asked elsewhere the window's own size is
+  used and `warn_unassignable` logs it. The fork does the protocol side
+  (below): it creates the surface with 0 there, sends 0 there on every later
+  `set_size` (so a resize of the other axis does not pin the compositor's
+  width), keeps the axis at the compositor's size against
+  `request_surface_size`, and takes each axis a configure gives. The
+  configure goes through the window's ordinary resize path
+  (`SurfaceResized`), so the document lays out to the compositor's size with
+  nothing layer-specific in the shell. `WindowProps::width`/`height` is the
+  first frame's size on an assigned axis, and the toplevel's on GNOME.
+- **No gestures, no position.** The app places its own surface by anchors and
+  margins, so the shell keeps `LayerState::app_placed()` for it
+  (`take_surface_kind`, the window-free half of `note_surface_kind`): no
+  position, and `start_layer_gesture` takes a drag or resize request
+  (`data-drag-window`, `resize_inset`, `start_window_*`) and does nothing
+  (answering `true`, so it does not fall through to the compositor's move,
+  which a layer surface has not got); `place_layer` (`set_current_window_position`)
+  never re-anchors it. `current_window_position` is `None` for it (Wayland
+  readings carry no position and none is published). Re-anchoring a move
+  for every other anchor would mean choosing which margins a drag changes on
+  a stretched or centred axis, and a panel has no use for it; an app that
+  wants a draggable surface changes its margins from a `Drag` itself. The
+  overlay keeps its gestures exactly (#1604 is about them, and is untouched).
+- **Runtime changes.** `set_current_window_layer(LayerSurface)` posts
+  `RinchNativeEvent::SetWindowLayer`; `RinchRuntime::set_layer_surface` stores
+  it in `WindowProps::wayland_layer` (what a hide/show re-creation and a
+  later call start from), clears `output_override`, and on a live layer
+  surface applies `layer_update(was, new)` (pure): the changed fields
+  (`LayerSet`: layer, anchor, margins, exclusive zone, keyboard,
+  compositor-size axes), sent to the fork together as one
+  `LayerShellChanges` (`winit_changes`, `set_layer_shell_changes`) and so in
+  **one commit** — one setter per field was a commit per field, and a bar
+  moved to the top edge with a new margin showed the compositor the top
+  anchor with the old margin first — or
+  `Recreate` when the output differs — `get_layer_surface` fixes it and the
+  protocol has no request to change it, so the surface is made again over
+  the same document through `hide_window`/`show_window`, as
+  `SetWindowOutput` already did. `was` is computed by `for_window` from the
+  props before the change, so an overlay turned into an app's own surface is
+  diffed from its overlay configuration. A live window that was not asked to
+  be a layer surface is re-created as one; a toplevel given for one (GNOME)
+  keeps the configuration for nothing. A change of anchors or axes is not a
+  protocol hazard: the fork sends 0 only on an axis anchored to both edges
+  in the same commit.
+- **GNOME.** No `zwlr_layer_shell_v1`: the fork makes an xdg-toplevel of
+  `width` x `height`, `AfterCreate::CheckLayerShell` warns once, and
+  `take_surface_kind(Toplevel)` keeps no layer state, so moves and resizes go
+  to the compositor as for any window.
+
+Pins: `layer_shell::tests` (precedence, the shorthands' configuration, the
+output, the fork's attributes, the exclusive zone's values, assignable axes,
+`layer_update`), `rinch_runtime::layer_drag_tests` (`an_app_placed_…`,
+`an_overlay_layer_surface_keeps_its_position`,
+`without_layer_shell_an_explicit_surface_is_an_ordinary_toplevel`), and the
+fork's `layer_shell::tests`. Live: `examples/wayland-bar` (a bottom bar;
+`BAR_SCRIPT=1` changes its exclusive zone at run time, `BAR_SCRIPT=edges`
+moves it between the bottom and top edges by its anchors, `BAR_EDGE=top`
+starts it on top) and
+`examples/wayland-wallpaper` (a `background` surface; a second process,
+since rinch shows one window per process), checked in a nested
+`kwin_wayland --virtual` and a headless sway (PR for #2413).
+
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`0988c2fe7e15ea1062b9fe0a90cff6640b980a26`,
-#1962, moved for #2114 and #2414). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`fa1a4be4836c3a8cd4a73227f76e5810a30d5aed`,
+#1962, moved for #2114, #2413 and #2414). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -948,13 +1071,16 @@ API) declares its own dependency, and naming this git rev keeps one winit in
 its build. The rev is pinned so a push to the fork's branch
 never changes rinch; moving it is a commit here.
 
-The branch is upstream's `v0.31.0-beta.4` tag plus ten commits: four in
-`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597), one
-taking crates.io `dpi` (below), one in `winit-x11` for raw pointer events
-under a grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`), and four
-for monitor changes (#2414, joeleaver/winit-fork#2: the event and a note on its
-X11 sources, and two X11 fixes without which it, and winit-x11's own
-scale-change path, never ran):
+The branch is upstream's `v0.31.0-beta.4` tag plus: seven commits in
+`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597, #2413;
+the last two through joeleaver/winit-fork#3, merged as `bd30ec7c`); one taking
+crates.io `dpi` (below); one in `winit-x11` for raw pointer events under a
+grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`). The pin is
+`fa1a4be4`, the head of joeleaver/winit-fork#2 (#2414, monitor changes: the
+event and a note on its X11 sources, two X11 fixes without which it and
+winit-x11's own scale-change path never ran, a merge of the branch after #3,
+and a rustfmt commit); when that PR merges with a merge commit, the pin moves
+to it:
 
 - `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
   window a `zwlr_layer_surface_v1` (layer, keyboard interactivity, anchors,
@@ -971,6 +1097,24 @@ scale-change path, never ran):
   (`set_layer` v2, on-demand keyboard interactivity v4, which falls back to
   none): wayland-client does not check, and the compositor kills the
   connection.
+- **Compositor-assigned size** (#2413): `LayerShellAttributes::compositor_size`
+  (`LayerShellCompositorSize { width, height }`, changed at run time by
+  `set_layer_shell_compositor_size`) asks for the protocol's size 0 on an
+  axis, sent only while it is anchored to both edges
+  (`LayerShellAttributes::assigned_axes` / `requested_size`; 0 elsewhere is
+  `invalid_size`). The surface is created with it, `WindowState::resize`
+  sends it on every size request, `request_surface_size` keeps an assigned
+  axis at the compositor's size, every attribute change re-sends the size
+  (`send_layer_size`: new anchors can start or end an assignment), and
+  `configure_layer` takes each axis a configure gives (it took the size only
+  when both were given).
+- **Several changes in one commit** (#2413):
+  `set_layer_shell_changes(LayerShellChanges)` takes any of the properties
+  above (`None` keeps one) and sends them under a single commit; the
+  single-property setters stay, one commit each (the overlay's moves use
+  `set_layer_shell_anchor` and `set_layer_shell_margins`).
+- The role's public enums are `#[non_exhaustive]`, as the crate's
+  `clippy::exhaustive_enums` asks of upstream's.
 - A margin change is confirmed by `WindowEvent::Moved` after a
   `wl_display.sync`, so an app following the pointer with the surface knows
   which origin each pointer position is relative to (#1597;
@@ -1044,7 +1188,7 @@ crates.io `dpi` itself never meets "expected `dpi::PhysicalSize`, found
 `dpi::PhysicalSize`". `cargo tree -d` shows no second `dpi`; keep it so on a
 bump.
 
-On a winit bump: rebase the ten commits onto the new tag on a new branch
+On a winit bump: rebase the branch's commits onto the new tag on a new branch
 (apps on the old one keep building), move the rev here, and read upstream's
 changelog for API breaks (beta.3 made most public enums `#[non_exhaustive]`;
 beta.3/4 replaced the path-carrying `DragEntered`/`DragMoved`/`DragDropped`

@@ -467,13 +467,30 @@ mod tests {
 
         #[cfg(target_os = "linux")]
         {
-            use crate::shell::layer_shell::LayerRequest;
-            let props = rinch_core::element::WindowProps {
-                output: outputs[1].name.clone(),
+            use crate::shell::layer_shell::LayerSpec;
+            use rinch_core::element::{LayerSurface, WindowProps};
+            let name = outputs[1].name.clone();
+            // The overlay shorthand (`WindowProps::output`), a full layer
+            // surface (`WindowProps::wayland_layer`), and an output chosen at
+            // run time (`set_current_window_output`) all hand it on as is.
+            let shorthand = WindowProps {
+                output: name.clone(),
                 ..Default::default()
             };
-            let request = LayerRequest::new(&props, None, props.output.clone(), "app");
-            assert_eq!(request.to_winit().output_name.as_deref(), Some("HDMI-A-1"));
+            let layer = WindowProps {
+                wayland_layer: Some(LayerSurface {
+                    output: name.clone(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            for spec in [
+                LayerSpec::for_window(&shorthand, None, None, "app"),
+                LayerSpec::for_window(&layer, None, None, "app"),
+                LayerSpec::for_window(&WindowProps::default(), None, Some(name.clone()), "app"),
+            ] {
+                assert_eq!(spec.to_winit().output_name.as_deref(), Some("HDMI-A-1"));
+            }
         }
     }
 
