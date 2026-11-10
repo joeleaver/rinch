@@ -3339,6 +3339,8 @@ pub fn paint_document(
     tree.background_tiles.borrow_mut().begin_frame();
     // And the SVG rasters (#2111): ones this frame draws are kept.
     crate::svg_image::begin_frame();
+    // And the minified image copies (#2456).
+    crate::image_minify::begin_frame();
     ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,

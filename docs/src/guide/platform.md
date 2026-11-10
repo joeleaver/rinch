@@ -365,9 +365,21 @@ up and when scaling down. The property is inherited. `auto` is smooth
 (bilinear) on the GPU renderer. The software renderer has always drawn a
 scaled `<img>` nearest, where Chrome's `auto` is smooth, so there the
 keywords change only repeating backgrounds and masks at a fractional
-position. `smooth` is not parsed, so the declaration is dropped and the
+position, and minified pictures (below). `smooth` is not parsed, so the declaration is dropped and the
 inherited value stays. A `RenderSurface`, `<video>` or `<canvas>` frame does
 not read the property.
+
+**Pictures drawn well below their natural size** (#2456). Under `auto`, a
+decoded picture (an `<img>`, a non-repeating `background-image: url(...)`)
+drawn at under 0.75x on either axis is drawn from a copy box-filtered down to
+the size it covers on the screen, on both renderers, so 1px lines and the
+thin strokes of small text in it survive, as Chrome's mipmapped filtering
+keeps them. The copy is made the first time the picture is drawn at that
+size and kept while it is drawn (up to 64 MB of copies per window thread,
+let go after 60 frames unused). `pixelated` and `crisp-edges` are never
+filtered this way. A picture whose drawn size changes every frame (scaled by
+an animation) makes a new copy each frame, within a budget of 16M source
+pixels a frame; past it the picture is drawn from its full pixels.
 
 `background-position` is animatable, by `transition` and `@keyframes` alike;
 it moves paint only, never layout. This is what makes the striped `Progress`

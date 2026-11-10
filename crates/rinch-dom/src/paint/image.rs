@@ -196,16 +196,45 @@ fn paint_image_pixels(
         painter.push_clip(Fill::NonZero, node_transform, &rect.into());
     }
 
-    let paint_image = PaintImage {
-        data,
-        width,
-        height,
-        decoded,
-        frame,
-        opaque,
-        sampling,
+    // Well below its natural size, a decoded image is drawn from a copy
+    // box-filtered to the size it covers (#2456), so its thin lines survive.
+    let minified = match decoded {
+        Some(d) if sampling == ImageSampling::Auto => {
+            crate::image_minify::minified(d, img_transform)
+        }
+        _ => None,
     };
-    painter.draw_image(&paint_image, img_transform);
+    if let Some(small) = &minified {
+        painter.draw_image(
+            &PaintImage {
+                data: &small.data,
+                width: small.width,
+                height: small.height,
+                decoded: Some(small),
+                frame: None,
+                opaque,
+                sampling,
+            },
+            img_transform
+                * Affine::scale_non_uniform(
+                    iw / f64::from(small.width),
+                    ih / f64::from(small.height),
+                ),
+        );
+    } else {
+        painter.draw_image(
+            &PaintImage {
+                data,
+                width,
+                height,
+                decoded,
+                frame,
+                opaque,
+                sampling,
+            },
+            img_transform,
+        );
+    }
 
     if needs_clip {
         painter.pop_layer();
