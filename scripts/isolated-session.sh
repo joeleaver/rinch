@@ -38,9 +38,10 @@
 #
 # Never run a nested compositor or a test bus any other way: `dbus-run-session`
 # and `dbus-launch` start a bus that activates the desktop's services, with
-# the environment they were started from. On 2026-11-10 that started the real
-# desktop portals and secret service against the real compositor (one crashed
-# 391 times) and the real ~/.config/kwinoutputconfig.json was rewritten.
+# the environment they were started from. On 2026-11-10 such sessions started
+# the desktop portals and the secret service with the real session's
+# environment (its runtime directory, Wayland display and home); one of them
+# crashed 391 times, and orphans were left running.
 
 set -u
 

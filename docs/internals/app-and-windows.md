@@ -483,8 +483,9 @@ creation, `Moved`, `SurfaceResized`, `ScaleFactorChanged` and hide. The native
 menu bar is detached at hide (Windows: `remove_for_hwnd`, which also clears
 `NATIVE_ACCELERATOR_ATTACHED`) and attached to the re-created window (#1533).
 Pins: `shell::window_geometry::tests`, and the `#[ignore]`d live
-`crates/rinch/tests/hide_show_geometry.rs` (an Xvfb, and for its `wm_`
-tests a headless KWin with Xwayland, each inside
+`crates/rinch/tests/hide_show_geometry.rs` (a windowed Xwayland on the
+session's own headless KWin, or an Xvfb where one is installed, and for its
+`wm_` tests a headless KWin with Xwayland, each inside
 `scripts/isolated-session.sh`; the recipes are in the file).
 
 ### Window facts on every target (`rinch::window`, #1770)

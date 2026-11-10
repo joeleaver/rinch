@@ -332,8 +332,9 @@ COMMAND` gives the command private XDG directories and `HOME` under `/tmp`, no
 (`--kwin`, `--xwayland` for X11), and one process group it ends and checks for
 leftovers. Never `dbus-run-session`, `dbus-launch`, a bare `kwin_wayland
 --virtual` or an `Xwayland -rootless` from the desktop: on 2026-11-10 such
-sessions started the real desktop portals against the real compositor and
-rewrote the real `kwinoutputconfig.json`. The recipes in the code (`hide_show_geometry.rs`,
+sessions started the desktop portals and the secret service with the real
+session's environment (its runtime directory, Wayland display and home); one
+of them crashed 391 times, and orphans were left running. The recipes in the code (`hide_show_geometry.rs`,
 `tray.rs`, `hotkey/backend/portal.rs`) use it.
 
 **Feature-gated tests are a trap.** A test file whose `cfg` is false compiles to an
