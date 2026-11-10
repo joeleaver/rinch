@@ -426,6 +426,25 @@ pub fn show_current_window() {
     send_native_event(RinchNativeEvent::ShowWindow);
 }
 
+/// Bring the current window to the front and ask for keyboard focus: shown if
+/// it was hidden ([`hide_current_window`]), restored if it was minimized. For
+/// an app asked to show something from outside itself, such as a second launch
+/// handing over what it was started with.
+///
+/// The operating system has the last word: a compositor that prevents focus
+/// stealing (GNOME, KDE) may only mark the window as wanting attention. A
+/// [`WindowProps::non_activating`](rinch_core::element::WindowProps::non_activating)
+/// window is restored but never takes focus.
+///
+/// # Example
+///
+/// ```ignore
+/// on_link_from_outside(|link| { focus_current_window(); open(link) })
+/// ```
+pub fn focus_current_window() {
+    send_native_event(RinchNativeEvent::FocusWindow);
+}
+
 /// Let pointer events pass through the current window to whatever is under
 /// it (`true`), or make it take them again (`false`). Starts at
 /// [`WindowProps::click_through`](rinch_core::element::WindowProps::click_through)
