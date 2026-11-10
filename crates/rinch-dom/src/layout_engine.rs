@@ -994,18 +994,24 @@ impl RinchDocument {
                                     .get(&root_id)
                                     .and_then(|e| e.get(wrap_bits));
                                 // A box sized by its content wider than
-                                // the room is broken at its own width, not
-                                // the room's: not this entry, kept for a box
-                                // laid out at the room (#2425, below).
-                                let overflows = |m: &crate::node::IfcMeasure| {
-                                    sized_by_content && max_width.is_some_and(|room| m.width > room)
-                                };
-                                if let Some(m) = cached.filter(|m| !overflows(m)) {
+                                // the room has the lines of its own width
+                                // (#2425, below), kept beside the room's in
+                                // the entry once a measure has broken them.
+                                let answer = cached.and_then(|m| {
+                                    let own = sized_by_content
+                                        && max_width.is_some_and(|room| m.width > room);
+                                    match (own, m.at_width) {
+                                        (false, _) => Some((m.width, m.height, m.first_baseline)),
+                                        (true, Some((h, b))) => Some((m.width, h, b)),
+                                        (true, None) => None,
+                                    }
+                                });
+                                if let Some((width, height, baseline)) = answer {
                                     cache_hits.set(cache_hits.get() + 1);
-                                    first_baseline = m.first_baseline;
+                                    first_baseline = baseline;
                                     return taffy::Size {
-                                        width: known_dims.width.unwrap_or(m.width),
-                                        height: known_dims.height.unwrap_or(m.height),
+                                        width: known_dims.width.unwrap_or(width),
+                                        height: known_dims.height.unwrap_or(height),
                                     };
                                 }
                             }
@@ -1151,30 +1157,45 @@ impl RinchDocument {
                                 font_family_resolves.set(font_family_resolves.get() + resolved);
                                 at_width
                             });
-                            let lines = rebroken.as_ref().unwrap_or(&inline_layout);
-                            let h = lines.content_height();
-                            first_baseline = crate::ifc::first_line_baseline(&lines.layout);
+                            let room_height = inline_layout.content_height();
+                            let room_baseline =
+                                crate::ifc::first_line_baseline(&inline_layout.layout);
+                            let at_width = rebroken.as_ref().map(|lines| {
+                                (
+                                    lines.content_height(),
+                                    crate::ifc::first_line_baseline(&lines.layout),
+                                )
+                            });
+                            let (h, baseline) = at_width.unwrap_or((room_height, room_baseline));
+                            first_baseline = baseline;
 
-                            if beside_floats || rebroken.is_some() {
+                            if beside_floats {
                                 return taffy::Size {
                                     width: known_dims.width.unwrap_or(w),
                                     height: known_dims.height.unwrap_or(h),
                                 };
                             }
 
-                            // Store in persistent cache
-                            ifc_measure_cache
-                                .borrow_mut()
-                                .entry(root_id)
-                                .or_default()
-                                .insert(
-                                    wrap_bits,
-                                    crate::node::IfcMeasure {
-                                        width: w,
-                                        height: h,
-                                        first_baseline,
-                                    },
-                                );
+                            // Store in persistent cache: the room's lines,
+                            // and those of its own width when they were
+                            // broken (by this measure or an earlier one).
+                            let mut cache = ifc_measure_cache.borrow_mut();
+                            let entry = cache.entry(root_id).or_default();
+                            let at_width = at_width.or_else(|| {
+                                entry
+                                    .get(wrap_bits)
+                                    .filter(|m| m.width == w)
+                                    .and_then(|m| m.at_width)
+                            });
+                            entry.insert(
+                                wrap_bits,
+                                crate::node::IfcMeasure {
+                                    width: w,
+                                    height: room_height,
+                                    first_baseline: room_baseline,
+                                    at_width,
+                                },
+                            );
 
                             // Measure callback for IFC root
                             taffy::Size {
