@@ -632,7 +632,7 @@ impl DomDocument for RinchDocument {
         if let Some(parent_id) = self.tree.nodes[n].parent
             && matches!(self.tree.nodes[n].kind, NodeKind::Text(_))
             && crate::ifc::is_white_space_text(&self.tree.nodes[n])
-                != text.chars().all(|c| matches!(c, ' ' | '\t' | '\n' | '\r'))
+                != crate::ifc::is_white_space_only(text)
         {
             self.tree.seed_ifc(parent_id, IfcSeed::Children);
         }

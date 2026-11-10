@@ -3891,8 +3891,6 @@ fn wrap_allowed_after(units: &[LineUnit], end: usize) -> bool {
     p.newline || p.wrap_after
 }
 
-/// A space or tab that is not a no-break space nor a `break-spaces` one: a
-/// run of them has one opportunity ([`wrap_allowed_after`]).
 /// Whether `node` is a grid container whose text runs are anonymous grid
 /// items (CSS Grid 1 §6.1, #2411): a block-level `display: grid` element that
 /// is not a table (which `display_from_stylo` maps to a grid, and
@@ -3907,15 +3905,25 @@ pub(crate) fn is_grid_container(node: &Node) -> bool {
 
 /// Whether `node` is a text node holding only white space: "characters that
 /// can be affected by the white-space property" (CSS Grid 1 §6.1, CSS Flexbox
-/// 1 §4), which CSS Text 3 §4.1 lists as spaces, tabs and segment breaks. An
+/// 1 §4), which CSS Text 3 §4.1 lists as spaces, tabs and segment breaks (and a
+/// form feed, which Chrome drops with them). An
 /// empty text node counts (it holds no other character). A text run of these
 /// alone in a grid or flex container is not rendered, whatever its
 /// `white-space` (#2443).
 pub(crate) fn is_white_space_text(node: &Node) -> bool {
-    node.text_content()
-        .is_some_and(|t| t.chars().all(|c| matches!(c, ' ' | '\t' | '\n' | '\r')))
+    node.text_content().is_some_and(is_white_space_only)
 }
 
+/// Whether `text` holds nothing but spaces, tabs, segment breaks and form
+/// feeds, which Chrome drops between flex and grid items as it drops a space
+/// (#2443). A no-break space is not white space here: it is text.
+pub(crate) fn is_white_space_only(text: &str) -> bool {
+    text.chars()
+        .all(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}'))
+}
+
+/// A space or tab that is not a no-break space nor a `break-spaces` one: a
+/// run of them has one opportunity ([`wrap_allowed_after`]).
 fn is_plain_space(u: &LineUnit) -> bool {
     u.space && !u.nbsp && !u.breaks
 }
@@ -6418,34 +6426,6 @@ impl RinchDocument {
         }
     }
 
-    /// Take every split inline's boxes into its block container's Taffy child
-    /// list, and record the split so the next pass can undo it (#513).
-    ///
-    /// **Only the container's list is rebuilt, never the split inline's own**,
-    /// and that asymmetry is load-bearing. By the time this runs,
-    /// `create_anonymous_block_boxes` has already given each anonymous box its
-    /// members, so rebuilding the inline element's list from its DOM children
-    /// would steal those members straight back out of the boxes that lay them
-    /// out. The element's Taffy node is left childless by the rebuild itself:
-    /// every one of its children is a unit of the container — an anonymous box
-    /// stands in for each inline run, and a block, out-of-flow or `display: none`
-    /// child appears directly — so `set_children` on the container adopts all of
-    /// them and Taffy removes each from its previous parent.
-    ///
-    /// **This pass is needed even when no anonymous box was minted**, which is
-    /// the case `create_anonymous_block_boxes`' own rebuild cannot cover:
-    /// `<a><div>card</div></a>` holds no inline content, so `has_inline` is false
-    /// and no run exists, and without this the block would stay a Taffy child of
-    /// the `<a>`. Measured consequence of skipping it — not hypothetical, and not
-    /// merely untidy: with a block sibling before the `<a>`, Taffy positions the
-    /// block relative to the `<a>` while paint reaches it directly from the
-    /// container (the `<a>` is not in the box tree and its `layout` is zeroed), so
-    /// it is drawn over that sibling.
-    ///
-    /// With a `scope`, only the scope's region nodes are looked at, and the
-    /// entries the pass did not reach are kept (`kept`: what
-    /// `setup_inline_formatting_contexts` left in the list after taking the
-    /// in-scope ones out to restore).
     /// Hide the white-space-only text items of flex and inline-grid containers
     /// (#2443): CSS Flexbox 1 §4 and CSS Grid 1 §6.1 render a child text run of
     /// nothing but white space "as if its text nodes were display:none", so it
@@ -6457,8 +6437,18 @@ impl RinchDocument {
     /// grid's text is an anonymous item, hidden where it is minted,
     /// `create_anonymous_block_boxes`.)
     fn hide_blank_text_items(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
+        // Formatting containers only, as a scoped pass's `containers` are: a
+        // `display: contents` wrapper is not one, and visiting it would hand
+        // its text — a unit of the flex container above it — the default
+        // `display` back, the winner then decided by slab order.
         let candidates: Vec<RawNodeId> = match scope {
-            None => self.tree.nodes.iter().map(|(id, _)| id).collect(),
+            None => self
+                .tree
+                .nodes
+                .iter()
+                .filter(|(_, n)| crate::ifc_scope::is_formatting_container(n))
+                .map(|(id, _)| id)
+                .collect(),
             Some(scope) => scope.containers.clone(),
         };
         let shown = taffy::Display::DEFAULT;
@@ -6500,6 +6490,34 @@ impl RinchDocument {
         }
     }
 
+    /// Take every split inline's boxes into its block container's Taffy child
+    /// list, and record the split so the next pass can undo it (#513).
+    ///
+    /// **Only the container's list is rebuilt, never the split inline's own**,
+    /// and that asymmetry is load-bearing. By the time this runs,
+    /// `create_anonymous_block_boxes` has already given each anonymous box its
+    /// members, so rebuilding the inline element's list from its DOM children
+    /// would steal those members straight back out of the boxes that lay them
+    /// out. The element's Taffy node is left childless by the rebuild itself:
+    /// every one of its children is a unit of the container — an anonymous box
+    /// stands in for each inline run, and a block, out-of-flow or `display: none`
+    /// child appears directly — so `set_children` on the container adopts all of
+    /// them and Taffy removes each from its previous parent.
+    ///
+    /// **This pass is needed even when no anonymous box was minted**, which is
+    /// the case `create_anonymous_block_boxes`' own rebuild cannot cover:
+    /// `<a><div>card</div></a>` holds no inline content, so `has_inline` is false
+    /// and no run exists, and without this the block would stay a Taffy child of
+    /// the `<a>`. Measured consequence of skipping it — not hypothetical, and not
+    /// merely untidy: with a block sibling before the `<a>`, Taffy positions the
+    /// block relative to the `<a>` while paint reaches it directly from the
+    /// container (the `<a>` is not in the box tree and its `layout` is zeroed), so
+    /// it is drawn over that sibling.
+    ///
+    /// With a `scope`, only the scope's region nodes are looked at, and the
+    /// entries the pass did not reach are kept (`kept`: what
+    /// `setup_inline_formatting_contexts` left in the list after taking the
+    /// in-scope ones out to restore).
     fn split_inline_boxes(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
         let split: Vec<RawNodeId> = match scope {
             None => self

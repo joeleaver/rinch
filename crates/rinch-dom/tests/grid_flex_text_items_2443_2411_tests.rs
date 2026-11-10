@@ -215,3 +215,50 @@ fn text_behind_a_contents_wrapper_joins_one_grid_item() {
     assert_eq!(item_lines(&d, "#g17"), ["x -5 ", "(-5) ", "a-5"]);
     assert_eq!(rect(&mut d, "#x17"), (40.0, 0.0, 100.0, 60.0));
 }
+
+// ---- review of #2455 -----------------------------------------------------
+
+/// Blank text behind a `display: contents` wrapper is a unit of the flex
+/// container above it, and is hidden by it: the wrapper, which is no
+/// formatting container, must not hand it its `display` back on a
+/// whole-document pass. rsx's `for`/`if`/component wrappers inside a
+/// `Group`/`Stack` are this shape. Chrome: `#a1` 8.984 wide, `#b1` at 18.984.
+#[test]
+fn blank_text_behind_a_contents_wrapper_takes_no_flex_gap() {
+    let mut d = html(
+        r#"<div style="display:flex; gap:10px"><b id=a1>a</b><span style="display:contents"> </span><b id=b1>b</b></div>"#,
+    );
+    let a = rect(&mut d, "#a1");
+    let b = rect(&mut d, "#b1");
+    assert_eq!(a.0, 0.0);
+    assert_eq!(b.0, a.2 + 10.0);
+}
+
+/// A form feed between items is dropped like a space. Chrome: `#b2` at
+/// 18.984, one gap past `#a2`.
+#[test]
+fn a_form_feed_takes_no_flex_gap() {
+    let mut d =
+        html(r#"<div style="display:flex; gap:10px"><b id=a2>a</b>&#12;<b id=b2>b</b></div>"#);
+    let a = rect(&mut d, "#a2");
+    let b = rect(&mut d, "#b2");
+    assert_eq!(b.0, a.2 + 10.0);
+}
+
+/// A no-break space is text, not white space: it is an item of its own, with
+/// a gap on each side. Chrome: `#b3` at 33.484, two gaps and the space's
+/// 4.5px advance past `#a3` (rinch's boxes are on whole pixels, so the
+/// assertion is the structure, read off rinch's own advance).
+#[test]
+fn a_no_break_space_is_a_flex_item() {
+    let mut d = html(
+        r#"<div id=f3 style="display:flex; gap:10px"><b id=a3>a</b>&nbsp;<b id=b3>b</b></div>"#,
+    );
+    let a = rect(&mut d, "#a3");
+    let b = rect(&mut d, "#b3");
+    let f = d.query_selector("#f3").unwrap();
+    let nbsp = d.tree.get(f.0).unwrap().children[1];
+    let w = d.tree.get(nbsp).unwrap().layout.width;
+    assert!(w > 0.0, "the no-break space has an advance");
+    assert_eq!(b.0, a.2 + 10.0 + w + 10.0);
+}
