@@ -2234,7 +2234,7 @@ impl<'a> IfcText<'a> {
         }
         let has_content = self.ops.iter().any(|op| match op {
             IfcOp::Text(text) => !text.is_empty(),
-            IfcOp::InlineBox(b) => b.id != EMPTY_INLINE_BOX,
+            IfcOp::InlineBox(_) => true,
             _ => false,
         });
         if !has_content {
@@ -11174,6 +11174,22 @@ impl RinchDocument {
 
     /// `id`, or its nearest ancestor that is not `display: contents`: the
     /// element whose box an inline item of `id` sits in.
+    /// Whether an inline element's strut (CSS 2.1 §10.8.1) is the one of
+    /// `parent`, the box it sits in: the same font family at the same size
+    /// and `line-height`, on the parent's baseline. An empty such element
+    /// adds nothing to its line (#1463). Weight and style are not compared:
+    /// a family's faces share their vertical metrics in practice, and an
+    /// empty `<b>`/`<i>` is the common case this exists for.
+    fn same_strut(
+        el: &crate::computed_style::ComputedStyle,
+        parent: &crate::computed_style::ComputedStyle,
+    ) -> bool {
+        el.vertical_align == VerticalAlignValue::Baseline
+            && el.font_size == parent.font_size
+            && el.font_family == parent.font_family
+            && el.line_height_px() == parent.line_height_px()
+    }
+
     fn box_ancestor(nodes: &crate::node_slab::NodeSlab, mut id: RawNodeId) -> RawNodeId {
         while nodes[id].computed_style.display
             == crate::computed_style::values::DisplayValue::Contents
@@ -11919,9 +11935,18 @@ impl RinchDocument {
                     if edge_end > 0.0 {
                         builder.push_edge_box(child_id, true, edge_end * scale);
                     }
-                    if !wbr {
-                        // #1463: its strut is on the line though it holds
-                        // nothing (an edge box already holds it there).
+                    // #1463: its strut is on the line though it holds
+                    // nothing (an edge box already holds it there) — unless
+                    // it is its parent's strut again, which is on the line
+                    // already: the box cuts shaping (kerning, ligatures,
+                    // joining) across the element, and empty `<b>`/`<a
+                    // name>` in a paragraph's font are common.
+                    if !wbr
+                        && !Self::same_strut(
+                            child_computed,
+                            &nodes[Self::box_ancestor(nodes, parent_id)].computed_style,
+                        )
+                    {
                         builder.push_empty_inline_box(content_from);
                     }
                     builder.pop_span();

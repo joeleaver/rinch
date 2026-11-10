@@ -5,8 +5,9 @@
 //! CSS 2.1 §10.8.1: each inline box contributes its font's ascent, descent
 //! and half-leading to the line box. parley added a span's box to a line only
 //! from a text atom, so a span holding only an atomic inline, or nothing at
-//! all, added nothing (parley fork `4e872e97`; rinch hands an empty inline
-//! element a zero-size out-of-flow box, `ifc::EMPTY_INLINE_BOX`).
+//! all, added nothing (parley fork `5ba48da5`; rinch hands an empty inline
+//! element a zero-size out-of-flow box, `ifc::EMPTY_INLINE_BOX`, when its
+//! strut is not its parent's).
 //!
 //! Every number is Chrome 157's, from synthetic pages serving the bundled
 //! Inter as `@font-face` in a 400px block at `font: 16px/20px`: the block's
@@ -205,4 +206,32 @@ fn a_small_text_span_aligned_by_a_keyword_moves() {
             &format!("{va}: glyph bounds top"),
         );
     }
+}
+
+/// The width of `html` in a shrink-to-fit `inline-block` at the block's font.
+fn shrink_width(html: &str) -> f32 {
+    let mut d = doc();
+    let body = d.body();
+    d.set_attribute(body, "style", "margin: 0");
+    let p = d.create_element("div");
+    d.set_attribute(p, "style", BLOCK);
+    d.append_child(body, p);
+    let ib = d.create_element("span");
+    d.set_attribute(ib, "style", "display: inline-block; white-space: nowrap");
+    d.append_child(p, ib);
+    d.set_inner_html(ib, html);
+    d.resolve_layout(800.0, 600.0);
+    d.tree.get(ib.0).unwrap().layout.width
+}
+
+/// An empty element whose strut is its parent's adds nothing to the line,
+/// and must not cut shaping: Chrome 157 kerns `AV`, `VA`, `TA` and `To`
+/// across an empty `<b>`, `<span>` and `<a name>` (83.06 against 83.05
+/// without them). A box there split the text into separately shaped items.
+#[test]
+fn an_empty_element_in_its_parents_font_keeps_kerning_across_it() {
+    let plain = shrink_width("AVATAR To");
+    assert_chrome(plain, 83.046875, 0.5, "the control, no elements");
+    let with = shrink_width(r#"A<b></b>VA<span></span>TA<a name="x"></a>R T<b></b>o"#);
+    assert_chrome(with, 83.0625, 0.5, "empty elements between kerned pairs");
 }
