@@ -35,7 +35,7 @@ fn pointer_modifiers(names: &Option<Vec<String>>) -> Result<Option<Modifiers>, D
 /// Map a printable character to a physical `KeyCode` for synthesizing keystrokes
 /// (the `text` field carries the actual character). Characters without a
 /// dedicated keycode map to `KeyCode::Other` — exactly how real hardware
-/// delivers punctuation (`shell/rinch_runtime.rs` translates unlisted winit
+/// delivers punctuation (`shell/rinch_runtime/winit_input.rs` translates unlisted winit
 /// keys to `Other`) — so the keyboard hook's key string falls through to the
 /// `text` field instead of masquerading as a named key. Space keeps its
 /// explicit arm: an injected `' '` must still read as the spacebar —

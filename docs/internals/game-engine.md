@@ -56,7 +56,7 @@ pointer events is a `Pinch`; desktop negates winit's `delta_y` so the direction 
 browser's `deltaY` (`wheel_zoom_scale` takes the DOM sign). Pointer ids: desktop mouse `1`,
 tablet tool `2`, fingers above `1 << 32`; the web passes `pointerId` through; Android and
 embed report every pointer as the mouse. Pins: `app/surface_pointer_tests.rs`,
-`shell/rinch_runtime.rs` `pointer_source_tests`, `rinch-web/tests/render_surface_pointer_events.rs`.
+`shell/rinch_runtime/winit_input.rs` `pointer_source_tests`, `rinch-web/tests/render_surface_pointer_events.rs`.
 
 **Pointer lock on a surface** (#2092). `RenderSurfaceHandle::request_pointer_lock`
 is the window's lock held by the surface's element (`element`, set by

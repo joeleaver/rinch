@@ -1781,7 +1781,7 @@ fn full_repaint_gpu_warm_atlas() {
 
 /// `rerender_events_queued` is folded into the frame by `end_perf_frame` from
 /// a process-wide atomic, which the runtime's dispatcher bumps
-/// (`rinch_runtime::send_native_event_counts_one_rerender_per_drain` pins the
+/// (`rinch_runtime::wake::native_event_queue_tests::send_native_event_counts_one_rerender_per_drain` pins the
 /// bump). This pins the fold: three events queued between two frames reach the
 /// frame, exactly. The atomic is process-wide, so every test that writes it —
 /// this one and the `rinch_runtime` queue tests that send a `ReRender` — holds

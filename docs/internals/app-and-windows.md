@@ -172,7 +172,7 @@ compile its own test target.
 A window's `app_id` is how a Wayland compositor decides which `.desktop` entry,
 icon and taskbar group a window belongs to. rinch derives it from the
 executable's file name unless `WindowProps::app_id` says otherwise
-(`resolved_app_id`, `shell/rinch_runtime.rs`), at **both** the initial
+(`resolved_app_id`, `shell/rinch_runtime/app_identity.rs`), at **both** the initial
 `create_window` and the `show_window` re-creation path that minimize-to-tray
 restores through. On X11 an **explicit** `app_id` is the window's `WM_CLASS`
 (instance and class) since #1519: a window has one platform-attributes box,
@@ -471,7 +471,7 @@ drop's — and at the main window's `CloseRequested`, before the app's
 is believed and the wait is `Done`, which has no deadline, so the wake is not
 armed again. Residue: a maximize done in two resizes of different sizes before
 the property is set ends the wait at the second. Pins:
-`window_geometry::tests`, `rinch_runtime::window_restore_tests`. **On
+`window_geometry::tests`, `rinch_runtime::main_window::window_restore_tests`. **On
 X11 the frame position is read by rinch** (`overlay_window::outer_position`:
 the client's root coordinates less `_NET_FRAME_EXTENTS`), because winit's
 `outer_position` subtracts extents cached before the window manager wrote
@@ -839,7 +839,7 @@ reads as connected there.
 
 Pins: `pointer_lock::tests` (incl. an unowned subscription dropped, a grant
 with no request), `shell::pointer_lock::tests` (lock vs confine, unfocused
-refused, cursor), `shell::rinch_runtime::pointer_lock_2092_tests` (device motion summed
+refused, cursor), `shell::rinch_runtime::actions::pointer_lock_2092_tests` (device motion summed
 and gated, hide), `app/pointer_lock_2092_tests.rs` (motion to the surface and
 the handlers, focus loss, Escape consumed ahead of the dismiss stack and an app
 key listener, its repeats, another app's blur and Escape, a surface's and an
@@ -912,7 +912,7 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   put fast drags 30–590 px off. Measured in a nested KWin with fake input:
   60 moves at 0–16 ms apart all land exactly under the pointer, and nothing
   moves after the release. Pins: `layer_shell::tests::a_drag_lands_under_the_pointer_at_every_lag`,
-  `rinch_runtime::layer_drag_tests`. The compositor closes a layer surface whose output went away: the
+  `rinch_runtime::main_window::layer_drag_tests`. The compositor closes a layer surface whose output went away: the
   shell's `CloseRequested` for a layer surface re-creates it
   (`layer_surface_closed`, output name dropped; with no output left it retries
   every second) instead of quitting. A
@@ -1054,7 +1054,7 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
 
 Pins: `layer_shell::tests` (precedence, the shorthands' configuration, the
 output, the fork's attributes, the exclusive zone's values, assignable axes,
-`layer_update`), `rinch_runtime::layer_drag_tests` (`an_app_placed_…`,
+`layer_update`), `rinch_runtime::main_window::layer_drag_tests` (`an_app_placed_…`,
 `an_overlay_layer_surface_keeps_its_position`,
 `without_layer_shell_an_explicit_surface_is_an_ordinary_toplevel`), and the
 fork's `layer_shell::tests`. Live: `examples/wayland-bar` (a bottom bar;
