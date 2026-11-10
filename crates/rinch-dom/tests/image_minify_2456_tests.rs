@@ -9,9 +9,10 @@
 //! Before #2456 the software painter sampled it nearest-neighbour and dropped
 //! 8 of the 20 vertical lines outright (darkness 0); Vello sampled it
 //! bilinearly with no mipmaps. Chrome 157 (`--force-device-scale-factor=1`)
-//! keeps every line: its darkest pixel per line is at least `CHROME_MIN`,
-//! the measurements in [`CHROME_VERTICAL`] and [`CHROME_HORIZONTAL`].
-//! `gpu_image_minify_2456` (in `rinch`) holds Vello to the same bound.
+//! keeps every line (its faintest is 80), and so must rinch, within
+//! [`CHROME_MIN`]'s margin; Chrome's lines are [`CHROME_VERTICAL`] and
+//! [`CHROME_HORIZONTAL`]. `gpu_image_minify_2456` (in `rinch`) holds Vello
+//! to Chrome's faintest at 0.4x.
 
 #![cfg(feature = "software-renderer")]
 
@@ -33,9 +34,11 @@ const CHROME_VERTICAL: [u8; 20] = [
 const CHROME_HORIZONTAL: [u8; 14] = [
     176, 255, 160, 80, 96, 176, 255, 160, 80, 96, 176, 255, 160, 80,
 ];
-/// The faintest line Chrome draws: every line is at least this dark. (A box
-/// filter's faintest here is 102, a line split 0.2/0.4 over two pixels.)
-const CHROME_MIN: u8 = 80;
+/// The faintest line Chrome draws (80), less 10: every line is at least this
+/// dark. Chrome's mipmaps are drawn down bilinearly from the level above, and
+/// so is rinch's quarter-octave copy (`image_minify::LEVELS_PER_OCTAVE`),
+/// whose faintest line here is 78. Nearest sampling's is 0.
+const CHROME_MIN: u8 = 70;
 
 fn picture() -> DecodedImage {
     let (w, h) = (300usize, 200usize);
@@ -55,6 +58,17 @@ fn picture() -> DecodedImage {
 }
 
 fn document(img_css: &str) -> RinchDocument {
+    document_with_nodes(img_css).0
+}
+
+/// [`document`], and its `<div>` and `<img>`.
+fn document_with_nodes(
+    img_css: &str,
+) -> (
+    RinchDocument,
+    rinch_core::dom::NodeId,
+    rinch_core::dom::NodeId,
+) {
     let mut doc = RinchDocument::new();
     doc.load_css(&format!(
         "html, body {{ margin: 0; background: #fff; }} div {{ width: 300px; }}
@@ -69,7 +83,7 @@ fn document(img_css: &str) -> RinchDocument {
     doc.set_attribute(img, "src", "lines.png");
     doc.append_child(div, img);
     doc.append_child(body, div);
-    doc
+    (doc, div, img)
 }
 
 fn paint(doc: &mut RinchDocument, w: u32, h: u32) -> Vec<[u8; 4]> {
@@ -154,11 +168,11 @@ fn pixelated_stays_nearest() {
     assert_eq!(rinch_dom::image_minify::made(), made, "no copy is made");
 }
 
-/// The copy is made once per drawn size and kept: a repaint makes none, a new
-/// size makes one, and a draw at 0.75x or more makes none.
+/// The copy is made once per level and kept: a repaint makes none, a new
+/// level makes one, and a draw at 0.75x or more makes none.
 #[test]
 fn one_copy_per_drawn_size() {
-    let mut doc = document("");
+    let (mut doc, _, img) = document_with_nodes("");
     let made = rinch_dom::image_minify::made();
     paint(&mut doc, W, H);
     assert_eq!(rinch_dom::image_minify::made(), made + 1);
@@ -166,15 +180,89 @@ fn one_copy_per_drawn_size() {
     paint(&mut doc, W + 10, H);
     assert_eq!(rinch_dom::image_minify::made(), made + 1, "kept");
 
+    // The same image drawn smaller within its level (0.62x, still the
+    // 0.707 level): no new copy; drawn at another level (0.45x): one.
+    doc.set_attribute(img, "style", "width: 62%");
+    paint(&mut doc, W, H);
+    assert_eq!(rinch_dom::image_minify::made(), made + 1, "the same level");
+    doc.set_attribute(img, "style", "width: 45%");
+    paint(&mut doc, W, H);
+    assert_eq!(rinch_dom::image_minify::made(), made + 2, "a new level");
+
     let mut doc = document("width: 50%;");
     paint(&mut doc, W, H);
-    assert_eq!(rinch_dom::image_minify::made(), made + 2, "a new size");
+    assert_eq!(rinch_dom::image_minify::made(), made + 3, "another image");
 
     let mut doc = document("width: 80%;");
     paint(&mut doc, W, H);
     assert_eq!(
         rinch_dom::image_minify::made(),
-        made + 2,
+        made + 3,
         "0.8x is not minified"
+    );
+}
+
+/// A picture the frame's budget cannot afford is drawn unfiltered that frame
+/// and painted again on the next (review of #2456): the paint records it, the
+/// next layout marks it paint-dirty, and the next paint filters it.
+#[test]
+fn a_picture_over_budget_is_filtered_on_the_next_frame() {
+    let _budget = rinch_dom::image_minify::test_work_budget(300 * 200);
+    let (mut doc, div, _) = document_with_nodes("");
+    doc.tree
+        .image_cache
+        .insert_decoded("second.png".to_string(), picture());
+    let second = doc.create_element("img");
+    doc.set_attribute(second, "src", "second.png");
+    doc.append_child(div, second);
+    let made = rinch_dom::image_minify::made();
+    paint(&mut doc, W, H);
+    assert_eq!(
+        rinch_dom::image_minify::made(),
+        made + 1,
+        "one fits the budget"
+    );
+    assert!(doc.tree.has_deferred_minify(), "the other is owed a frame");
+    doc.resolve_layout(W as f32, H as f32);
+    assert!(!doc.tree.has_deferred_minify(), "drained");
+    assert!(
+        doc.tree.paint_dirty_nodes.contains(&second.0),
+        "the deferred picture is paint-dirty"
+    );
+    paint(&mut doc, W, H);
+    assert_eq!(rinch_dom::image_minify::made(), made + 2, "filtered");
+    assert!(!doc.tree.has_deferred_minify());
+}
+
+/// A repeating background tile drawn while the budget refused its copy is
+/// not kept in the tile cache (review of #2456): the next paint rasterises it
+/// again, filtered, instead of drawing the unfiltered tile for good.
+#[test]
+fn a_tile_drawn_over_budget_is_not_cached() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(
+        "html, body { margin: 0; background: #fff; }
+         div { width: 360px; height: 120px;
+               background: url(lines.png) repeat; background-size: 180px 120px; }",
+    );
+    doc.tree
+        .image_cache
+        .insert_decoded("lines.png".to_string(), picture());
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.append_child(body, div);
+    let made = rinch_dom::image_minify::made();
+    let refused = rinch_dom::image_minify::refusals();
+    {
+        let _budget = rinch_dom::image_minify::test_work_budget(0);
+        paint(&mut doc, 400, 200);
+    }
+    assert!(rinch_dom::image_minify::refusals() > refused, "refused");
+    assert_eq!(rinch_dom::image_minify::made(), made);
+    paint(&mut doc, 410, 200);
+    assert_eq!(
+        rinch_dom::image_minify::made(),
+        made + 1,
+        "the tile was rasterised again, filtered"
     );
 }

@@ -192,6 +192,11 @@ pub enum ImageSampling {
     /// Nearest-neighbour (`image-rendering: pixelated` / `crisp-edges`):
     /// Vello `ImageQuality::Low`, tiny-skia `FilterQuality::Nearest`.
     Nearest,
+    /// Bilinear on both painters: Vello's `Medium`, as `Auto`, and
+    /// tiny-skia's `FilterQuality::Bilinear`. Only a minified copy is drawn
+    /// so (#2456): it is drawn down the rest of the way from its level, at
+    /// most 1.19x, where nearest would drop a copy pixel in six.
+    Smooth,
 }
 
 impl ImageSampling {

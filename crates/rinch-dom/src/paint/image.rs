@@ -213,7 +213,7 @@ fn paint_image_pixels(
                 decoded: Some(small),
                 frame: None,
                 opaque,
-                sampling,
+                sampling: ImageSampling::Smooth,
             },
             img_transform
                 * Affine::scale_non_uniform(

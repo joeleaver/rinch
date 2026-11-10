@@ -1817,6 +1817,7 @@ fn paint_img(
                 painter.push_clip(Fill::NonZero, node_transform, &inner.shape(content));
             }
             if let Some(decoded) = decoded {
+                let refused = crate::image_minify::refusals();
                 image::paint_image(
                     painter,
                     decoded,
@@ -1826,6 +1827,7 @@ fn paint_img(
                     node_transform,
                     painter::ImageSampling::of(node.computed_style.image_rendering),
                 );
+                defer_if_refused(tree, node_id, refused);
             } else {
                 img_placeholder::paint_img_placeholder(
                     tree,
@@ -4368,6 +4370,14 @@ fn parent_weight_synthesis(tree: &NodeTree, node: &Node) -> bool {
         .is_none_or(|p| p.computed_style.font_synthesis_weight)
 }
 
+/// Ask for `node_id` to be painted again next frame when the minify budget
+/// refused one of its pictures since `refused` was read (#2456).
+fn defer_if_refused(tree: &NodeTree, node_id: RawNodeId, refused: u64) {
+    if crate::image_minify::refusals() != refused {
+        tree.minify_deferred.borrow_mut().push(node_id);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn paint_node_unmasked(
     tree: &NodeTree,
@@ -5165,6 +5175,7 @@ fn paint_node_unmasked(
 
                 // Get background from computed style (solid color or gradient).
                 if paints_a_background {
+                    let refused = crate::image_minify::refusals();
                     background::paint_background(
                         painter,
                         tree,
@@ -5175,6 +5186,7 @@ fn paint_node_unmasked(
                         &radii.shape(rect),
                         node_transform,
                     );
+                    defer_if_refused(tree, node_id, refused);
                 }
 
                 // Inset shadows: above the background, below the border

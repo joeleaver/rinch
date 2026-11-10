@@ -219,6 +219,9 @@ impl RinchDocument {
         if self.drain_pending_images() {
             self.tree.layout_dirty = true;
         }
+        // A picture the last paint could not afford to filter is painted
+        // again (#2456).
+        self.tree.drain_deferred_minify();
 
         // Resolve Stylo styles and apply to Taffy nodes (only if dirty)
         if self.tree.styles_dirty {

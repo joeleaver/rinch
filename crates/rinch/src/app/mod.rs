@@ -1970,6 +1970,7 @@ impl RinchApp {
                 && !rinch_dom::image_cache::has_pending(d.doc_key())
                 && !self.has_owed_editor_overlay_pass()
                 && !Self::has_owed_scroll(&d)
+                && !d.tree.has_deferred_minify()
             {
                 return false;
             }
@@ -1978,6 +1979,9 @@ impl RinchApp {
         // Resolve layout
         {
             let mut d = doc.borrow_mut();
+            // Pictures the last paint could not afford to filter (#2456) are
+            // this frame's damage, as a DOM write before it would be.
+            d.tree.drain_deferred_minify();
             let _ = d.take_dirty_nodes();
             d.resolve_layout(viewport_width, viewport_height);
         }
@@ -3540,7 +3544,10 @@ impl RinchApp {
             .as_ref()
             .map(|doc| {
                 let d = doc.borrow();
-                !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty || Self::has_owed_scroll(&d)
+                !d.tree.dirty_nodes.is_empty()
+                    || d.tree.styles_dirty
+                    || Self::has_owed_scroll(&d)
+                    || d.tree.has_deferred_minify()
             })
             .unwrap_or(false)
             || self.has_pending_images()
@@ -3599,6 +3606,7 @@ impl RinchApp {
                     || d.tree.styles_dirty
                     || d.tree.layout_dirty
                     || Self::has_owed_scroll(&d)
+                    || d.tree.has_deferred_minify()
             })
             .unwrap_or(false)
             || self.has_pending_images()

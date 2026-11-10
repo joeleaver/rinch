@@ -11,10 +11,15 @@
 //! mipmaps (Skia's `kMedium` filter quality), where every source pixel
 //! counts.
 //!
-//! A box filter at the drawn size counts every source pixel by the area it
-//! covers on the device, which is what a mipmap pyramid approximates. The
-//! copy is drawn at about 1:1, so the painter's own sampling no longer
-//! decides which source pixels survive. It is made in premultiplied space,
+//! A box filter counts every source pixel by the area it covers, which is
+//! what a mipmap pyramid approximates. The copy is made at a **level**: the
+//! drawn scale rounded up to a quarter octave ([`LEVELS_PER_OCTAVE`], each
+//! axis on its own), so a picture whose scale moves continuously (a zoom, a
+//! `transform` transition) makes a new copy only every quarter octave, not
+//! every frame. The painter then draws the copy down the rest of the way, at
+//! most 2^(1/4) = 1.19x, bilinearly ([`ImageSampling::Smooth`]
+//! (crate::paint::painter::ImageSampling::Smooth), the software painter
+//! included), where every source pixel of the copy still counts. It is made in premultiplied space,
 //! as Skia filters (a transparent pixel's colour does not bleed), in the
 //! pixels' own sRGB encoding, as Chrome does.
 //!
@@ -29,9 +34,11 @@
 //! painted frames unused. Each copy is a [`DecodedImage`] of its own, so the
 //! software painter keeps its premultiplied form and Vello one atlas image
 //! for it across frames. A frame makes copies of at most
-//! [`MAX_MINIFY_WORK_PER_FRAME`] source pixels; past that (an image scaled by
-//! an animation makes a new size every frame) it draws the full image, as
-//! before.
+//! [`MAX_MINIFY_WORK_PER_FRAME`] source pixels; an image past that is drawn
+//! from its full pixels this frame, counted in [`refusals`], and the paint
+//! asks for it to be painted again on the next frame (`NodeTree`'s
+//! `minify_deferred`), so a page of large pictures is filtered over a few
+//! frames rather than left aliased until something else repaints.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -59,6 +66,10 @@ pub const MINIFY_IDLE_FRAMES: u64 = 60;
 /// frame.
 pub const MAX_MINIFY_WORK_PER_FRAME: u64 = 16 << 20;
 
+/// The levels a copy's scale is rounded up to, per octave (#2456 review): a
+/// copy is `2^(-k / LEVELS_PER_OCTAVE)` of its source on each minified axis.
+pub const LEVELS_PER_OCTAVE: f64 = 4.0;
+
 struct Entry {
     image: Arc<DecodedImage>,
     bytes: usize,
@@ -82,6 +93,34 @@ thread_local! {
     });
     /// How many copies this thread has made (a test's count).
     static MADE: Cell<u64> = const { Cell::new(0) };
+    /// How many draws the frame budget refused.
+    static REFUSALS: Cell<u64> = const { Cell::new(0) };
+    static WORK_BUDGET: Cell<u64> = const { Cell::new(MAX_MINIFY_WORK_PER_FRAME) };
+}
+
+/// How many draws on this thread the per-frame budget has refused a copy
+/// (each drawn from the full image instead). A paint that sees it move asks
+/// for the node again ([`crate::node::NodeTree`]'s `minify_deferred`), and a
+/// background tile drawn while it moved is not cached.
+pub fn refusals() -> u64 {
+    REFUSALS.with(Cell::get)
+}
+
+/// The guard [`test_work_budget`] returns.
+#[doc(hidden)]
+pub struct WorkBudgetGuard(u64);
+
+impl Drop for WorkBudgetGuard {
+    fn drop(&mut self) {
+        WORK_BUDGET.with(|b| b.set(self.0));
+    }
+}
+
+/// Set this thread's per-frame work budget (a test's), restored when the
+/// guard drops.
+#[doc(hidden)]
+pub fn test_work_budget(px: u64) -> WorkBudgetGuard {
+    WorkBudgetGuard(WORK_BUDGET.with(|b| b.replace(px)))
 }
 
 /// One painted frame on the cache's clock: copies not drawn for
@@ -116,8 +155,8 @@ pub fn held_bytes() -> usize {
     CACHE.with_borrow(|c| c.bytes)
 }
 
-/// The size a draw of `image` under `transform` (image pixels to device)
-/// is minified to, or `None` when it is not minified: a vector image, an
+/// The size of the copy a draw of `image` under `transform` (image pixels to
+/// device) is drawn from: each minified axis at its level (`LEVELS_PER_OCTAVE`), or `None` when it is not minified: a vector image, an
 /// empty one, a draw no axis of which is scaled below [`MINIFY_BELOW`].
 /// An axis scaled up keeps its natural size.
 pub fn target_size(image: &DecodedImage, transform: Affine) -> Option<(u32, u32)> {
@@ -131,10 +170,12 @@ pub fn target_size(image: &DecodedImage, transform: Affine) -> Option<(u32, u32)
     }
     let axis = |n: u32, s: f64| -> u32 {
         if s >= 1.0 {
-            n
-        } else {
-            ((f64::from(n) * s).round() as u32).clamp(1, n)
+            return n;
         }
+        // The level at or above `s`: the copy is never smaller than drawn.
+        let k = (-s.log2() * LEVELS_PER_OCTAVE + 1e-9).floor().max(0.0);
+        let level = (-k / LEVELS_PER_OCTAVE).exp2();
+        ((f64::from(n) * level).round() as u32).clamp(1, n)
     };
     let size = (axis(image.width, sx), axis(image.height, sy));
     (size != (image.width, image.height)).then_some(size)
@@ -153,7 +194,8 @@ pub fn minified(image: &DecodedImage, transform: Affine) -> Option<Arc<DecodedIm
             e.last_frame = frame;
             return Some(Some(e.image.clone()));
         }
-        if c.work + src_px > MAX_MINIFY_WORK_PER_FRAME {
+        if c.work + src_px > WORK_BUDGET.with(Cell::get) {
+            REFUSALS.with(|r| r.set(r.get() + 1));
             return Some(None);
         }
         c.work += src_px;
@@ -304,10 +346,35 @@ mod tests {
         assert_eq!(box_downscale(&src, 2, 1, 1, 1), vec![255, 0, 0, 128]);
     }
 
+    /// The budget refuses a copy past it within a frame, and starts again
+    /// with the next frame.
+    #[test]
+    fn the_work_budget_is_per_frame() {
+        let _budget = test_work_budget(100 * 100);
+        let a = DecodedImage::new(vec![255; 100 * 100 * 4], 100, 100);
+        let b = DecodedImage::new(vec![255; 100 * 100 * 4], 100, 100);
+        begin_frame();
+        let (made0, refused0) = (made(), refusals());
+        assert!(minified(&a, Affine::scale(0.5)).is_some());
+        assert!(minified(&b, Affine::scale(0.5)).is_none(), "over budget");
+        assert_eq!((made(), refusals()), (made0 + 1, refused0 + 1));
+        // A copy already made costs nothing.
+        assert!(minified(&a, Affine::scale(0.5)).is_some());
+        begin_frame();
+        assert!(minified(&b, Affine::scale(0.5)).is_some(), "the next frame");
+        assert_eq!(made(), made0 + 2);
+    }
+
     #[test]
     fn target_size_by_axis() {
         let img = DecodedImage::new(vec![0; 300 * 200 * 4], 300, 200);
-        assert_eq!(target_size(&img, Affine::scale(0.6)), Some((180, 120)));
+        // 0.6x is drawn from the 2^(-2/4) = 0.707 level, as is anything in
+        // (0.595, 0.707]: a zoom across it makes one copy.
+        assert_eq!(target_size(&img, Affine::scale(0.6)), Some((212, 141)));
+        assert_eq!(target_size(&img, Affine::scale(0.65)), Some((212, 141)));
+        assert_eq!(target_size(&img, Affine::scale(0.5)), Some((150, 100)));
+        assert_eq!(target_size(&img, Affine::scale(0.49)), Some((150, 100)));
+        assert_eq!(target_size(&img, Affine::scale(0.40)), Some((126, 84)));
         // At or above the threshold: drawn as it is.
         assert_eq!(target_size(&img, Affine::scale(0.75)), None);
         // One axis minified, the other scaled up: that one keeps its size.
@@ -315,6 +382,11 @@ mod tests {
             target_size(&img, Affine::scale_non_uniform(0.5, 2.0)),
             Some((150, 200))
         );
+        // A continuous zoom from 0.30x to 0.49x makes 3 levels, not 20.
+        let levels: std::collections::HashSet<_> = (0..20)
+            .map(|i| target_size(&img, Affine::scale(0.30 + 0.01 * i as f64)))
+            .collect();
+        assert_eq!(levels.len(), 3, "{levels:?}");
         // A rotation does not change the scale.
         assert_eq!(
             target_size(&img, Affine::rotate(0.7) * Affine::scale(0.5)),

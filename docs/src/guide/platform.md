@@ -370,16 +370,18 @@ inherited value stays. A `RenderSurface`, `<video>` or `<canvas>` frame does
 not read the property.
 
 **Pictures drawn well below their natural size** (#2456). Under `auto`, a
-decoded picture (an `<img>`, a non-repeating `background-image: url(...)`)
-drawn at under 0.75x on either axis is drawn from a copy box-filtered down to
-the size it covers on the screen, on both renderers, so 1px lines and the
-thin strokes of small text in it survive, as Chrome's mipmapped filtering
-keeps them. The copy is made the first time the picture is drawn at that
-size and kept while it is drawn (up to 64 MB of copies per window thread,
-let go after 60 frames unused). `pixelated` and `crisp-edges` are never
-filtered this way. A picture whose drawn size changes every frame (scaled by
-an animation) makes a new copy each frame, within a budget of 16M source
-pixels a frame; past it the picture is drawn from its full pixels.
+decoded picture (an `<img>` or a `background-image: url(...)`, repeating
+tiles included) drawn at under 0.75x on either axis is drawn from a copy
+box-filtered down to a size just above the one it covers on the screen (its
+scale rounded up to a quarter octave), then smoothly the rest of the way, on
+both renderers. So 1px lines and the thin strokes of small text in it
+survive, as Chrome's mipmapped filtering keeps them. The copy is made the
+first time the picture is drawn at that level and kept while it is drawn (up
+to 64 MB of copies per window thread, let go after 60 frames unused); a
+picture zoomed by an animation makes a new copy only every quarter octave.
+`pixelated` and `crisp-edges` are never filtered this way. A frame makes
+copies of at most 16M source pixels; a picture past that is drawn from its
+full pixels for that frame and filtered on the next.
 
 `background-position` is animatable, by `transition` and `@keyframes` alike;
 it moves paint only, never layout. This is what makes the striped `Progress`
