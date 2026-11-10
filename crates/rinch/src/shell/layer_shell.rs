@@ -296,7 +296,7 @@ pub(crate) enum LayerSet {
 /// What `set_current_window_layer` does to a live layer surface (#2413).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum LayerUpdate {
-    /// Each change, through the fork's setters, committed at once.
+    /// The changes, all in one commit ([`apply_layer_sets`]).
     Apply(Vec<LayerSet>),
     /// Make the surface again: the output changed, which the protocol fixes
     /// when the surface is made (`get_layer_surface`).
@@ -305,9 +305,9 @@ pub(crate) enum LayerUpdate {
 
 /// The update from the live surface's configuration `was` (with the output
 /// it is on) to `new`. Pure, so the rule is tested without a compositor.
-/// Every change but the output is one of the fork's setters; none of them
-/// can make the request a protocol error, since the fork sends the size 0
-/// only on an axis anchored to both edges in the same commit.
+/// Every change but the output goes to the fork together, in one commit
+/// ([`apply_layer_sets`]); it cannot be a protocol error, since the fork
+/// sends the size 0 only on an axis anchored to both edges in that commit.
 pub(crate) fn layer_update(was: &LayerSurface, new: &LayerSurface) -> LayerUpdate {
     if was.output != new.output {
         return LayerUpdate::Recreate;
@@ -334,27 +334,35 @@ pub(crate) fn layer_update(was: &LayerSurface, new: &LayerSurface) -> LayerUpdat
     LayerUpdate::Apply(sets)
 }
 
-/// Make the changes on the live window.
+/// The changes in the fork's terms: one [`LayerShellChanges`] carrying every
+/// one of them, so they reach the compositor in one commit.
+///
+/// [`LayerShellChanges`]: winit::platform::wayland::LayerShellChanges
+#[cfg(target_os = "linux")]
+pub(crate) fn winit_changes(sets: &[LayerSet]) -> winit::platform::wayland::LayerShellChanges {
+    let mut changes = winit::platform::wayland::LayerShellChanges::default();
+    for set in sets {
+        match *set {
+            LayerSet::Layer(l) => changes.layer = Some(winit_layer(l)),
+            LayerSet::Anchor(a) => changes.anchor = Some(winit_anchor(a)),
+            LayerSet::Margins(m) => changes.margins = Some(winit_margins(m)),
+            LayerSet::ExclusiveZone(z) => changes.exclusive_zone = Some(z.protocol_value()),
+            LayerSet::Keyboard(k) => changes.keyboard_interactivity = Some(winit_keyboard(k)),
+            LayerSet::CompositorSize(c) => changes.compositor_size = Some(winit_axes(c)),
+        }
+    }
+    changes
+}
+
+/// Make the changes on the live window, in **one** commit
+/// (`set_layer_shell_changes`): the layer-shell state is double-buffered, so
+/// the compositor goes from the old configuration to the new one with no
+/// state in between. Nothing to change sends nothing.
 pub(crate) fn apply_layer_sets(window: &dyn winit::window::Window, sets: &[LayerSet]) {
     #[cfg(target_os = "linux")]
-    {
+    if !sets.is_empty() {
         use winit::platform::wayland::WindowExtWayland;
-        for set in sets {
-            match *set {
-                LayerSet::Layer(l) => window.set_layer_shell_layer(winit_layer(l)),
-                LayerSet::Anchor(a) => window.set_layer_shell_anchor(winit_anchor(a)),
-                LayerSet::Margins(m) => window.set_layer_shell_margins(winit_margins(m)),
-                LayerSet::ExclusiveZone(z) => {
-                    window.set_layer_shell_exclusive_zone(z.protocol_value())
-                }
-                LayerSet::Keyboard(k) => {
-                    window.set_layer_shell_keyboard_interactivity(winit_keyboard(k))
-                }
-                LayerSet::CompositorSize(c) => {
-                    window.set_layer_shell_compositor_size(winit_axes(c))
-                }
-            }
-        }
+        window.set_layer_shell_changes(winit_changes(sets));
     }
     #[cfg(not(target_os = "linux"))]
     let _ = (window, sets);
@@ -1141,5 +1149,35 @@ mod tests {
         assert_eq!((s.position, s.applied(), s.gesture), (None, None, None));
         assert_eq!(s.follow((5.0, 5.0)), None);
         assert!(!LayerState::new(Some((1.0, 2.0))).app_placed);
+    }
+
+    /// A move to the other edge with a new margin and zone is one set of
+    /// changes for the fork: one commit, every property in it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_change_of_several_properties_is_one_set_of_changes() {
+        let moved = LayerSurface {
+            anchor: LayerAnchor::TOP | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+            margins: LayerMargins {
+                top: 6,
+                ..Default::default()
+            },
+            exclusive_zone: LayerExclusiveZone::Reserve(48),
+            ..bar()
+        };
+        let LayerUpdate::Apply(sets) = layer_update(&bar(), &moved) else {
+            panic!("no output change");
+        };
+        assert_eq!(sets.len(), 3);
+        let c = winit_changes(&sets);
+        let a = c.anchor.expect("the anchors");
+        assert!(a.top && a.left && a.right && !a.bottom);
+        assert_eq!(c.margins.map(|m| m.top), Some(6));
+        assert_eq!(c.exclusive_zone, Some(48));
+        assert_eq!(
+            (c.layer, c.keyboard_interactivity, c.compositor_size),
+            (None, None, None),
+            "what did not change is not sent"
+        );
     }
 }

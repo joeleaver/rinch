@@ -806,9 +806,13 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   `RinchNativeEvent::SetWindowLayer`; `RinchRuntime::set_layer_surface` stores
   it in `WindowProps::wayland_layer` (what a hide/show re-creation and a
   later call start from), clears `output_override`, and on a live layer
-  surface applies `layer_update(was, new)` (pure): one fork setter per
-  changed field (`LayerSet`: layer, anchor, margins, exclusive zone,
-  keyboard, compositor-size axes), each committed at once by the fork, or
+  surface applies `layer_update(was, new)` (pure): the changed fields
+  (`LayerSet`: layer, anchor, margins, exclusive zone, keyboard,
+  compositor-size axes), sent to the fork together as one
+  `LayerShellChanges` (`winit_changes`, `set_layer_shell_changes`) and so in
+  **one commit** — one setter per field was a commit per field, and a bar
+  moved to the top edge with a new margin showed the compositor the top
+  anchor with the old margin first — or
   `Recreate` when the output differs — `get_layer_surface` fixes it and the
   protocol has no request to change it, so the surface is made again over
   the same document through `hide_window`/`show_window`, as
@@ -818,7 +822,7 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   be a layer surface is re-created as one; a toplevel given for one (GNOME)
   keeps the configuration for nothing. A change of anchors or axes is not a
   protocol hazard: the fork sends 0 only on an axis anchored to both edges
-  in the same commit, whatever order the setters run in.
+  in the same commit.
 - **GNOME.** No `zwlr_layer_shell_v1`: the fork makes an xdg-toplevel of
   `width` x `height`, `AfterCreate::CheckLayerShell` warns once, and
   `take_surface_kind(Toplevel)` keeps no layer state, so moves and resizes go
@@ -840,7 +844,7 @@ since rinch shows one window per process), checked in a nested
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`5743db71d9e3198d2f2067a9759fb67eed7884c4`,
+`rinch-patch-beta4`, pinned by rev** (`aa9c4ece3c2bf94e8b54fa172c31a38ea3a5f9a0`,
 #1962, moved for #2114 and #2413). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
@@ -849,11 +853,11 @@ API) declares its own dependency, and naming this git rev keeps one winit in
 its build. The rev is pinned so a push to the fork's branch
 never changes rinch; moving it is a commit here.
 
-The branch is upstream's `v0.31.0-beta.4` tag plus seven commits: five in
+The branch is upstream's `v0.31.0-beta.4` tag plus nine commits: seven in
 `winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597, #2413),
 one taking crates.io `dpi` (below), and one in `winit-x11` for raw pointer
 events under a grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`).
-The pin is `5743db71`, the head of joeleaver/winit-fork's
+The pin is `aa9c4ece`, the head of joeleaver/winit-fork's
 `layer-shell-compositor-size` branch (#2413), on top of `d99384ed`:
 
 - `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
@@ -882,6 +886,13 @@ The pin is `5743db71`, the head of joeleaver/winit-fork's
   (`send_layer_size`: new anchors can start or end an assignment), and
   `configure_layer` takes each axis a configure gives (it took the size only
   when both were given).
+- **Several changes in one commit** (#2413):
+  `set_layer_shell_changes(LayerShellChanges)` takes any of the properties
+  above (`None` keeps one) and sends them under a single commit; the
+  single-property setters stay, one commit each (the overlay's moves use
+  `set_layer_shell_anchor` and `set_layer_shell_margins`).
+- The role's public enums are `#[non_exhaustive]`, as the crate's
+  `clippy::exhaustive_enums` asks of upstream's.
 - A margin change is confirmed by `WindowEvent::Moved` after a
   `wl_display.sync`, so an app following the pointer with the surface knows
   which origin each pointer position is relative to (#1597;

@@ -565,7 +565,10 @@ pub fn set_current_window_output(output: Option<&str>) {
 /// follows a signal (a panel's exclusive zone following its height).
 ///
 /// - Layer, anchors, margins, exclusive zone, keyboard interactivity and
-///   the compositor-sized axes change on the live surface, committed at once.
+///   the compositor-sized axes change on the live surface together, in one
+///   commit: the compositor sees the old configuration, then the new one,
+///   and nothing in between (a bar moved to another edge with a new margin
+///   and zone is arranged once).
 /// - A different [`output`](rinch_core::element::LayerSurface::output) makes
 ///   the surface again on that output, at the same size, over the same
 ///   document: the protocol fixes a layer surface's output when it is made.

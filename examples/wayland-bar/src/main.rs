@@ -25,6 +25,9 @@
 //! area moves with it.
 //!
 //! - `BAR_EDGE=top` starts it along the top edge instead.
+//! - `BAR_GAP=6` floats it that many logical pixels off its edge (a margin
+//!   on the anchored edge), so a move between edges changes the anchors and
+//!   the margins together.
 //! - `BAR_OUTPUT=DP-1` puts it on that output (default: the compositor's
 //!   choice).
 //! - `BAR_SCRIPT=1` changes the thickness every `BAR_STEP_MS` (1500) ms, four
@@ -36,7 +39,7 @@
 //! shows one window per process.
 
 use rinch::prelude::*;
-use rinch::{LayerAnchor, LayerAxes, LayerExclusiveZone, LayerSurface, WindowProps};
+use rinch::{LayerAnchor, LayerAxes, LayerExclusiveZone, LayerMargins, LayerSurface, WindowProps};
 
 /// The bar's thickness, logical pixels: thin, and taller.
 const THIN: u32 = 32;
@@ -64,8 +67,23 @@ fn bar_surface(placement: Placement) -> LayerSurface {
         LayerAnchor::BOTTOM
     };
     let thickness = placement.thickness();
+    let gap: i32 = std::env::var("BAR_GAP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     LayerSurface {
         anchor: edge | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+        margins: if placement.top {
+            LayerMargins {
+                top: gap,
+                ..Default::default()
+            }
+        } else {
+            LayerMargins {
+                bottom: gap,
+                ..Default::default()
+            }
+        },
         exclusive_zone: LayerExclusiveZone::Reserve(thickness),
         compositor_size: LayerAxes::WIDTH,
         output: std::env::var("BAR_OUTPUT").ok(),
@@ -73,12 +91,17 @@ fn bar_surface(placement: Placement) -> LayerSurface {
     }
 }
 
-/// Move and size the live bar to `placement`: the size first, so the zone
-/// never reserves more than the bar covers, then the anchors and the zone.
-/// The width is the compositor's whatever is asked here.
+/// Move and size the live bar to `placement`: a new thickness first, so the
+/// zone never reserves more than the bar covers, then the anchors, margins
+/// and zone in one change. The width is the compositor's whatever is asked
+/// here.
 fn place(placement: Placement) {
-    let width = current_window_size().map_or(1.0, |(w, _)| w);
-    set_current_window_size(width, f64::from(placement.thickness()));
+    let thickness = f64::from(placement.thickness());
+    if let Some((width, height)) = current_window_size()
+        && height != thickness
+    {
+        set_current_window_size(width, thickness);
+    }
     set_current_window_layer(bar_surface(placement));
 }
 
