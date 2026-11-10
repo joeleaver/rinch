@@ -7,45 +7,17 @@ use servo_arc::Arc as ServoArc;
 use euclid::Scale;
 use style::context::QuirksMode;
 use style::device::Device;
-use style::font_metrics::FontMetrics;
 use style::media_queries::MediaType;
 use style::properties::style_structs::Font as StyloFont;
 use style::properties::{ComputedValues, PropertyDeclarationBlock};
 use style::queries::values::PrefersColorScheme;
 use style::stylist::Stylist;
-use style::values::computed::font::GenericFontFamily;
-use style::values::computed::{CSSPixelLength, Length};
-use style::values::specified::font::QueryFontMetricsFlags;
 // CSSPixel and DevicePixel are used via euclid::Size2D type parameters
 
 use crate::node::RawNodeId;
 use crate::node::{DirtyFlags, NodeTree};
 
 mod dom_document_impl;
-
-/// A simple FontMetricsProvider that returns default/fixed values.
-/// This is used by the Stylist's Device to resolve font-relative units.
-#[derive(Debug)]
-pub(crate) struct SimpleFontMetricsProvider;
-
-impl style::device::servo::FontMetricsProvider for SimpleFontMetricsProvider {
-    fn query_font_metrics(
-        &self,
-        _vertical: bool,
-        _font: &StyloFont,
-        _base_size: CSSPixelLength,
-        _flags: QueryFontMetricsFlags,
-    ) -> FontMetrics {
-        // Return sensible defaults - these will be used for font-relative units
-        // like ex, ch, cap, ic when we don't have actual font metrics
-        FontMetrics::default()
-    }
-
-    fn base_size_for_generic(&self, _generic: GenericFontFamily) -> Length {
-        // Default base font size (16px for most generics)
-        Length::new(16.0)
-    }
-}
 
 /// Parameters baked into the Stylo [`Device`] that must survive its rebuild.
 ///
@@ -74,6 +46,10 @@ pub(crate) struct DeviceParams {
     /// without this, every later cascade would read the fresh Device's
     /// default root style (16px, the initial font).
     pub root_style: Option<ServoArc<ComputedValues>>,
+    /// The document's font metrics (`ex`, `ch`, `cap`, `ic`; #2422), which
+    /// every Device's provider answers from. Shared, not copied: a rebuild
+    /// keeps what earlier cascades resolved. See `crate::font_metrics`.
+    pub font_metrics: std::sync::Arc<crate::font_metrics::FontMetricsCache>,
 }
 
 impl Default for DeviceParams {
@@ -82,6 +58,7 @@ impl Default for DeviceParams {
             root_font_size: 16.0,
             device_pixel_ratio: 1.0,
             root_style: None,
+            font_metrics: Default::default(),
         }
     }
 }
@@ -95,7 +72,10 @@ impl Default for DeviceParams {
 pub(crate) fn build_device(width: f32, height: f32, params: &DeviceParams) -> Device {
     let viewport_size = euclid::Size2D::new(width, height);
     let device_pixel_ratio = Scale::new(params.device_pixel_ratio);
-    let font_metrics_provider = Box::new(SimpleFontMetricsProvider);
+    let font_metrics_provider = Box::new(crate::font_metrics::RinchFontMetricsProvider {
+        cache: params.font_metrics.clone(),
+        device_pixel_ratio: params.device_pixel_ratio,
+    });
     let default_font = StyloFont::initial_values();
     let default_computed_values = ComputedValues::initial_values_with_font_override(default_font);
 

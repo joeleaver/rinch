@@ -4,6 +4,9 @@
 //! on every layout and paint operation.
 
 mod from_stylo;
+pub(crate) use from_stylo::{
+    font_family_from_stylo as font_family_css, font_style_from_stylo as font_style_css,
+};
 mod taffy_conversion;
 mod text_layout;
 pub mod values;
