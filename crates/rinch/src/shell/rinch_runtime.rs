@@ -44,7 +44,7 @@ use crate::render_surface::{SurfacePointer, SurfacePointerKind};
 
 #[cfg(feature = "gpu")]
 use super::desktop::WgpuRenderer;
-use super::layer_shell::{Gesture, GestureKind, LayerRequest, LayerState, WindowSurfaceKind};
+use super::layer_shell::{Gesture, GestureKind, LayerSpec, LayerState, WindowSurfaceKind};
 use super::overlay_window::{self, Backend, WindowSteps};
 use super::window::WinitWindow;
 use super::window_geometry::{self, SavedGeometry};
@@ -284,6 +284,8 @@ pub enum RinchNativeEvent {
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).
     StartWindowDrag,
+    /// Replace a Wayland layer surface's configuration (#2413).
+    SetWindowLayer(Box<rinch_core::element::LayerSurface>),
     /// Look again for an output to show a layer surface on, after the
     /// compositor closed it with no output left (#1523).
     RetryLayerOutput,
@@ -1216,16 +1218,17 @@ impl RinchRuntime {
             requested_maximized,
             first_appearance,
         );
-        // A Wayland layer surface (#1523) is placed by its margins: the
-        // saved position, or the requested one on a first appearance.
+        // A Wayland layer surface: the app's own (#2413), or an overlay
+        // (#1523) placed by its margins: the saved position, or the
+        // requested one on a first appearance.
         let layer = steps.wayland_layer.then(|| {
-            LayerRequest::new(
+            LayerSpec::for_window(
                 self.app
                     .window_props
                     .as_ref()
                     .unwrap_or(&Default::default()),
                 self.layer_position(first_appearance),
-                self.layer_output(),
+                self.output_override.clone(),
                 app_id.as_deref().unwrap_or("rinch"),
             )
         });
@@ -1333,20 +1336,28 @@ impl RinchRuntime {
             .flatten()
     }
 
-    /// The output a layer surface is shown on (#1523).
-    fn layer_output(&self) -> Option<String> {
-        match &self.output_override {
-            Some(output) => output.clone(),
-            None => self.app.window_props.as_ref()?.output.clone(),
-        }
-    }
-
     /// After a main window is created: publish what it got (#1523) and keep
     /// the layer-shell state of a layer surface.
     fn note_surface_kind(&mut self, window: &dyn winit::window::Window, first_appearance: bool) {
         let kind = super::layer_shell::surface_kind_of(window);
         super::layer_shell::publish_surface_kind(kind);
+        self.take_surface_kind(kind, first_appearance);
+    }
+
+    /// [`Self::note_surface_kind`] past the window: the layer-shell state
+    /// for a window that got `kind` — none for a toplevel (on GNOME too, so
+    /// moves and resizes go to the compositor), the app's own surface
+    /// (#2413), or an overlay at its position.
+    fn take_surface_kind(&mut self, kind: WindowSurfaceKind, first_appearance: bool) {
+        let app_placed = self
+            .app
+            .window_props
+            .as_ref()
+            .is_some_and(|p| p.wayland_layer.is_some());
         self.layer = (kind == WindowSurfaceKind::LayerShell).then(|| {
+            if app_placed {
+                return LayerState::app_placed();
+            }
             let position = self.layer_position(first_appearance);
             if let Some((x, y)) = position {
                 self.saved_geometry.position = Some(Position::Logical(LogicalPosition::new(x, y)));
@@ -1369,6 +1380,14 @@ impl RinchRuntime {
         let Some(layer) = self.layer.as_mut() else {
             return;
         };
+        // The app's own surface (#2413) is placed by its anchors and margins.
+        if layer.app_placed {
+            tracing::debug!(
+                "a layer surface with WindowProps::wayland_layer has no position to set: \
+                 change its margins with set_current_window_layer"
+            );
+            return;
+        }
         layer.place(position);
         #[cfg(target_os = "linux")]
         if let Some(w) = self.window.as_ref() {
@@ -1387,12 +1406,20 @@ impl RinchRuntime {
     /// Start a move or resize of a layer surface at the pointer (#1523): the
     /// compositor has none. `false` when the window is no layer surface.
     fn start_layer_gesture(&mut self, kind: GestureKind) -> bool {
+        let Some(layer) = self.layer.as_ref() else {
+            return false;
+        };
+        // The app places its own surface (#2413): no gesture moves it.
+        if layer.app_placed {
+            tracing::debug!(
+                "window drag/resize ignored: a layer surface with WindowProps::wayland_layer \
+                 is placed by its anchors and margins"
+            );
+            return true;
+        }
         let Some(w) = self.window.as_ref() else {
             return false;
         };
-        if self.layer.is_none() {
-            return false;
-        }
         // Only while the primary button is held: nothing but its release ends
         // the gesture, so one started without it would follow the hovering
         // pointer (a compositor refuses a move with no live press, too).
@@ -1484,6 +1511,48 @@ impl RinchRuntime {
         let scale = self.scale_factor();
         if let Some(layer) = self.layer.as_mut() {
             layer.moved(super::layer_shell::moved_origin(physical, scale));
+        }
+    }
+
+    /// `set_current_window_layer` (#2413): the new configuration replaces
+    /// `WindowProps::wayland_layer`. A live layer surface takes the changes
+    /// through the fork's setters, or is made again for a new output; a live
+    /// window that was not asked to be a layer surface is made again as one.
+    fn set_layer_surface(
+        &mut self,
+        surface: rinch_core::element::LayerSurface,
+        event_loop: &dyn ActiveEventLoop,
+    ) {
+        let backend = Backend::of(event_loop);
+        let position = self.layer.and_then(|l| l.position);
+        let props = self.app.window_props.get_or_insert_with(Default::default);
+        let was_layer = super::layer_shell::uses_layer_shell(props, backend);
+        let was = LayerSpec::for_window(props, position, self.output_override.take(), "").surface;
+        props.wayland_layer = Some(surface.clone());
+        if self.window.is_none() {
+            return;
+        }
+        if self.layer.is_none() {
+            // A toplevel asked for (becomes a layer surface), or given for a
+            // layer surface (GNOME: stays one).
+            if !was_layer && backend == Backend::Wayland {
+                self.hide_window();
+                self.show_window(event_loop);
+            }
+            return;
+        }
+        match super::layer_shell::layer_update(&was, &surface) {
+            super::layer_shell::LayerUpdate::Recreate => {
+                self.hide_window();
+                self.show_window(event_loop);
+            }
+            super::layer_shell::LayerUpdate::Apply(sets) => {
+                super::layer_shell::warn_unassignable(&surface);
+                self.layer = Some(LayerState::app_placed());
+                if let Some(w) = &self.window {
+                    super::layer_shell::apply_layer_sets(w.raw(), &sets);
+                }
+            }
         }
     }
 
@@ -3986,6 +4055,21 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::SetWindowPosition(x, y) => {
+                // An app's own layer surface (#2413), shown or hidden, is
+                // placed by its anchors and margins (`place_layer` says so).
+                if Backend::of(event_loop) == Backend::Wayland
+                    && self
+                        .app
+                        .window_props
+                        .as_ref()
+                        .is_some_and(|p| p.wayland_layer.is_some())
+                {
+                    tracing::debug!(
+                        "set_current_window_position ignored: a layer surface with \
+                         WindowProps::wayland_layer is placed by its anchors and margins"
+                    );
+                    return;
+                }
                 let position = Position::Logical(LogicalPosition::new(x, y));
                 // A layer surface (#1523) is placed by its margins, on its
                 // output; hidden, it comes back there.
@@ -4070,6 +4154,10 @@ impl RinchRuntime {
                 } else {
                     tracing::debug!("start_window_resize refused: no button is down");
                 }
+                return;
+            }
+            RinchNativeEvent::SetWindowLayer(surface) => {
+                self.set_layer_surface(*surface, event_loop);
                 return;
             }
             RinchNativeEvent::RetryLayerOutput => {
@@ -6574,6 +6662,80 @@ mod layer_drag_tests {
             runtime.follow_layer_gesture((94.0, 40.0)),
             Some(Some((94.0, 84.0)))
         );
+    }
+
+    fn bar_props() -> WindowProps {
+        use rinch_core::element::{LayerAnchor, LayerAxes, LayerExclusiveZone, LayerSurface};
+        WindowProps {
+            height: 32,
+            wayland_layer: Some(LayerSurface {
+                anchor: LayerAnchor::BOTTOM | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+                exclusive_zone: LayerExclusiveZone::Reserve(32),
+                compositor_size: LayerAxes::WIDTH,
+                ..Default::default()
+            }),
+            // The shorthand would give a top-left overlay; the surface wins.
+            non_activating: true,
+            x: Some(40),
+            y: Some(50),
+            ..Default::default()
+        }
+    }
+
+    /// An app's own layer surface (#2413) is placed by its anchors and
+    /// margins: no move or resize gesture starts on it, and a position set
+    /// on it re-anchors nothing. The request is taken (`true`), so it does
+    /// not fall through to the compositor's move either.
+    #[test]
+    fn an_app_placed_layer_surface_takes_no_gesture_and_no_position() {
+        let mut runtime = RinchRuntime::new("t", 800, 32, component, &[]);
+        runtime.app.window_props = Some(bar_props());
+        runtime.take_surface_kind(WindowSurfaceKind::LayerShell, true);
+        assert_eq!(runtime.layer, Some(LayerState::app_placed()));
+        assert!(runtime.start_layer_gesture(GestureKind::Move));
+        assert!(
+            runtime.start_layer_gesture(GestureKind::Resize(rinch_platform::ResizeDirection::West))
+        );
+        assert_eq!(runtime.layer.unwrap().gesture, None);
+        runtime.place_layer((300.0, 200.0));
+        assert_eq!(runtime.layer.unwrap().position, None);
+        assert_eq!(
+            runtime.saved_geometry.position, None,
+            "x/y are not its margins"
+        );
+    }
+
+    /// An overlay keeps its gestures and its position, as before #2413.
+    #[test]
+    fn an_overlay_layer_surface_keeps_its_position() {
+        let mut runtime = RinchRuntime::new("t", 800, 32, component, &[]);
+        runtime.app.window_props = Some(WindowProps {
+            wayland_layer: None,
+            ..bar_props()
+        });
+        runtime.take_surface_kind(WindowSurfaceKind::LayerShell, true);
+        let layer = runtime.layer.unwrap();
+        assert!(!layer.app_placed);
+        assert_eq!(layer.position, Some((40.0, 50.0)));
+    }
+
+    /// GNOME (no layer shell): the window asked for a layer surface and got
+    /// an ordinary toplevel. The decision is the layer role, its check warns,
+    /// and the toplevel keeps no layer state, so moves and resizes go to the
+    /// compositor as for any window.
+    #[test]
+    fn without_layer_shell_an_explicit_surface_is_an_ordinary_toplevel() {
+        use super::overlay_window::{AfterCreate, WindowSteps, after_create_actions};
+        let props = bar_props();
+        let steps = WindowSteps::plan(&props, false, Backend::Wayland);
+        assert!(steps.wayland_layer);
+        assert!(!steps.wayland_unsupported);
+        assert!(after_create_actions(steps, false).contains(&AfterCreate::CheckLayerShell));
+        let mut runtime = RinchRuntime::new("t", 800, 32, component, &[]);
+        runtime.app.window_props = Some(props);
+        runtime.take_surface_kind(WindowSurfaceKind::Toplevel, true);
+        assert_eq!(runtime.layer, None);
+        assert!(!runtime.start_layer_gesture(GestureKind::Move));
     }
 
     #[test]

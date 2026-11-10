@@ -1,0 +1,11 @@
+[package]
+name = "wayland-wallpaper"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+debug = ["rinch/debug"]
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop"] }
