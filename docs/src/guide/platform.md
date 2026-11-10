@@ -165,8 +165,10 @@ its attributes' box and draws a placeholder in it
 ([below](#missing-and-failed-images-placeholders)). `<video>` reads
 the same two attributes with the same ratio, and `<iframe>` reads them with
 no ratio. The other legacy attributes (`hspace`, `vspace`, `border`, `align`,
-`<hr width>`, a table's `width`/`bgcolor`/…) still do nothing on desktop
-(#1419).
+a table's `width`/`bgcolor`/`cellspacing`/`cellpadding`, …) map to CSS as a
+browser maps them, and their values are read as Chrome reads them:
+`cellspacing="10px"` is 10px of spacing, and `border="abc"` on a table is a
+1px border.
 
 ### Inline SVG
 
