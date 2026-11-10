@@ -284,7 +284,8 @@ impl RinchDocument {
         let mut targets: Vec<(RawNodeId, taffy::NodeId)> = Vec::new();
         for (id, node) in &self.tree.nodes {
             if let Some(taffy_id) = node.taffy_id
-                && node.computed_style.has_layout_calc()
+                && (node.computed_style.has_layout_calc()
+                    || Self::caption_margins_need_layout(node))
             {
                 targets.push((id, taffy_id));
             }
@@ -378,7 +379,9 @@ impl RinchDocument {
         ts: &taffy::Style,
     ) -> Option<taffy::Style> {
         let node = &self.tree.nodes[id];
-        if !node.computed_style.has_layout_calc() || node.taffy_style_owned_by_contents_splice() {
+        if !(node.computed_style.has_layout_calc() || Self::caption_margins_need_layout(node))
+            || node.taffy_style_owned_by_contents_splice()
+        {
             return None;
         }
         let mut resolved = ts.clone();
@@ -519,5 +522,10 @@ impl RinchDocument {
         // Gap resolves against the container's own content box, per axis.
         patch_lp(&mut ts.gap.width, cs.gap_column, ow);
         patch_lp(&mut ts.gap.height, cs.gap_row, oh);
+        // A caption's margins resolve against its table's width, and
+        // take it out of the table's padding (#2350).
+        if Self::caption_margins_need_layout(&self.tree.nodes[id]) {
+            self.patch_caption_margins(id, taffy_id, ts);
+        }
     }
 }
