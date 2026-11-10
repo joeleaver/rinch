@@ -663,7 +663,7 @@ The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, and FORKCOUNT with 21.
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, and with 21 the same 6,348 save one: `hand_written::floats::table_with_a_declared_width_fits_by_the_width_it_widens_to` fails at 20's own head `e1d656d2` too.
 
 
 ## Parley Fork
